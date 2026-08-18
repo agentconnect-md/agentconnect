@@ -179,7 +179,7 @@ describe('TurnOutputWorkflow', () => {
     }
     const clarification = (daemon as any).dispatch('bot-a', clarificationMessage, 'int-a')
     const key = sessionKey('slack', 'C1', 'T1', 'bot-a', firstMessage.transportScope)
-    expect((daemon as any).serialQueue.get(key)).toHaveLength(1)
+    await vi.waitFor(() => expect((daemon as any).serialQueue.get(key)).toHaveLength(1))
     releaseFirst()
 
     await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(2), WAIT)
@@ -194,8 +194,9 @@ describe('TurnOutputWorkflow', () => {
     const publishedBodies = conn.postMessage.mock.calls.map((call) => String(call[1]))
     expect(publishedBodies).toContain('fresh replacement')
     expect(publishedBodies.join('\n')).not.toContain('stale candidate')
-    const replies = (daemon as any).store
-      .transcriptSince(transcriptChannelKey('C1', firstMessage.transportScope), 'T1', null)
+    const replies = (
+      await (daemon as any).store.transcriptSince(transcriptChannelKey('C1', firstMessage.transportScope), 'T1', null)
+    )
       .filter((row: any) => row.sender === 'bot-a')
       .map((row: any) => row.text)
     expect(replies).toEqual(['fresh replacement'])
@@ -211,8 +212,14 @@ describe('TurnOutputWorkflow', () => {
     let release!: () => void
     const blocked = new Promise<void>((resolve) => (release = resolve))
     const prompts: string[] = []
+    // The session opens only once both clarifications are queued: the window this test is
+    // about is the one BEFORE the first prompt is initiated.
+    let openSession!: () => void
+    const sessionReady = new Promise<void>((resolve) => (openSession = resolve))
     const host = {
-      start: vi.fn(async () => {}),
+      start: vi.fn(async () => {
+        await sessionReady
+      }),
       newSession: vi.fn(async () => 'acp-1'),
       hasSession: vi.fn(() => true),
       prompt: vi.fn(async (sessionId: string, blocks: { text?: string }[]) => {
@@ -252,10 +259,15 @@ describe('TurnOutputWorkflow', () => {
       sender: 'U3',
       text: 'the rollback is still running'
     }
+    // The first turn is already initializing — its gate entry is what makes the thread live —
+    // and its host is held open, so both clarifications land in the window this test is
+    // about: queued and observed BEFORE the first prompt is initiated.
+    await vi.waitFor(() => expect(host.start).toHaveBeenCalledOnce(), WAIT)
     const clarification = (daemon as any).dispatch('bot-a', firstClarification, 'int-a')
     const second = (daemon as any).dispatch('bot-a', secondClarification, 'int-a')
     const key = sessionKey('slack', 'C1', 'T1', 'bot-a', firstMessage.transportScope)
-
+    await vi.waitFor(() => expect((daemon as any).serialQueue.get(key)).toHaveLength(2), WAIT)
+    openSession()
     await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledOnce(), WAIT)
     expect(prompts[0]).toContain('original request')
     const firstQuote = prompts[0].indexOf('[U2] the deployment failed with ECONNRESET')
@@ -273,7 +285,7 @@ describe('TurnOutputWorkflow', () => {
     release()
     await expect(first).resolves.toBe('acp-1')
     expect(host.prompt).toHaveBeenCalledOnce()
-    expect((daemon as any).store.listInboxBySessionKeyFifo()).toEqual([])
+    expect(await (daemon as any).store.listInboxBySessionKeyFifo()).toEqual([])
 
     await daemon.stop()
   }, 15_000)
@@ -299,7 +311,7 @@ describe('TurnOutputWorkflow', () => {
           const clarification = msg('100.2', 'late clarification')
           clarification.transportScope = context.firstMessage.transportScope
           clarification.quoted = { messageId: '99.9', sender: 'U2', text: 'peer-only quoted source' }
-          ;(context.daemon as any).recordObservedInbound(clarification, 'bot-a')
+          await (context.daemon as any).recordObservedInbound(clarification, 'bot-a')
         } else if (generation === 2) {
           const approval = (context.daemon as any).permissions.onAcpPermission('bot-a', sessionId, {
             sessionId,
@@ -309,9 +321,10 @@ describe('TurnOutputWorkflow', () => {
             ],
             toolCall: { toolCallId: 'tc-1', title: 'Bash' }
           })
+          await vi.waitFor(() => expect((context.daemon as any).permissions.pendingEditorPermissions.size).toBe(1))
           const [requestId] = (context.daemon as any).permissions.pendingEditorPermissions.keys()
           clock.advance(120_001)
-          ;(context.daemon as any).permissions.decideEditorPermission({
+          await (context.daemon as any).permissions.decideEditorPermission({
             agentId: 'bot-a',
             requestId,
             decision: 'allow'
@@ -319,7 +332,7 @@ describe('TurnOutputWorkflow', () => {
           await approval
           const clarification = msg('100.3', 'clarification after approval')
           clarification.transportScope = context.firstMessage.transportScope
-          ;(context.daemon as any).recordObservedInbound(clarification, 'bot-a')
+          await (context.daemon as any).recordObservedInbound(clarification, 'bot-a')
         }
         return { stopReason: 'end_turn' }
       }),
@@ -387,12 +400,12 @@ describe('TurnOutputWorkflow', () => {
       sender: 'U2',
       text: 'durable quote: keep the compatibility branch'
     }
-    ;(firstDaemon as any).recordObservedInbound(unrouted)
+    await (firstDaemon as any).recordObservedInbound(unrouted)
     const transcriptChannel = transcriptChannelKey('C1', firstMessage.transportScope)
     expect(
-      (firstDaemon as any).store
-        .transcriptSince(transcriptChannel, 'T1', '100.1')
-        .find((row: any) => row.ts === '100.2')
+      (await (firstDaemon as any).store.transcriptSince(transcriptChannel, 'T1', '100.1')).find(
+        (row: any) => row.ts === '100.2'
+      )
     ).toMatchObject({ recipient: null, quoteJson: expect.stringContaining('durable quote') })
     await firstDaemon.stop()
 
@@ -487,9 +500,9 @@ describe('TurnOutputWorkflow', () => {
       String(call[1]).includes('conversation kept changing')
     )
     expect(churnNotice?.[3]).toMatchObject({ chrome: true })
-    const replies = (daemon as any).store
-      .transcriptSince(transcriptChannelKey('C1', firstMessage.transportScope), 'T1', null)
-      .filter((row: any) => row.sender === 'bot-a')
+    const replies = (
+      await (daemon as any).store.transcriptSince(transcriptChannelKey('C1', firstMessage.transportScope), 'T1', null)
+    ).filter((row: any) => row.sender === 'bot-a')
     expect(replies).toEqual([])
     await daemon.stop()
   }, 15_000)

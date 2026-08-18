@@ -64,7 +64,7 @@ describe('webchat multi-agent continuation (#549 parity)', () => {
     // Human kickoff, mention-narrowed to player-1; the other participants get the
     // user post as context only (user context copies never activate — §5.2).
     const kickoffText = 'count to 6 together, alternating, one number per message; referee: observe silently'
-    const ack = (daemon as any).handleRelayMsg(
+    const ack = await (daemon as any).handleRelayMsg(
       rd(
         {
           op: 'turn',
@@ -83,7 +83,7 @@ describe('webchat multi-agent continuation (#549 parity)', () => {
       [P2, 'uctx-p2'],
       [REF, 'uctx-ref']
     ] as const) {
-      ;(daemon as any).handleRelayMsg(
+      await (daemon as any).handleRelayMsg(
         rd({ op: 'context', post: userPost(kickoffText, 1_000, KICKOFF_TURN) }, { agentId: peer, msgId }),
         () => {}
       )
@@ -106,19 +106,19 @@ describe('webchat multi-agent continuation (#549 parity)', () => {
     expect(prompts.get(P1)).toHaveLength(4)
     expect(prompts.get(P2)).toHaveLength(3)
     for (const p of posts) {
-      expect((daemon as any).store.getActivation(rendezvousKey(p.post.postId, p.agentId))).toBeUndefined()
+      expect(await (daemon as any).store.getActivation(rendezvousKey(p.post.postId, p.agentId))).toBeUndefined()
     }
     // …while the delivered edges are admitted exactly-once records.
-    const firstWake = (daemon as any).store.getActivation(rendezvousKey(posts[0]!.post.postId, P2))
+    const firstWake = await (daemon as any).store.getActivation(rendezvousKey(posts[0]!.post.postId, P2))
     expect(firstWake?.state).toBe('admitted')
 
     // The silent referee: woken (at least once; queued wakes may coalesce into a
     // regeneration), never a post, never a transcript reply row.
     expect(prompts.get(REF)!.length).toBeGreaterThanOrEqual(1)
     expect(posts.some((p) => p.agentId === REF)).toBe(false)
-    const refRows = (daemon as any).store
-      .transcriptSince(transcriptChannelKey(CONV, undefined), `webchat:${CONV}`, null)
-      .filter((row: { sender: string }) => row.sender === REF)
+    const refRows = (
+      await (daemon as any).store.transcriptSince(transcriptChannelKey(CONV, undefined), `webchat:${CONV}`, null)
+    ).filter((row: { sender: string }) => row.sender === REF)
     expect(refRows).toEqual([])
 
     // A woken player's prompt names the author of the post that woke it.
@@ -135,7 +135,7 @@ describe('webchat multi-agent continuation (#549 parity)', () => {
       [P1, 'turn-a'],
       [P2, 'turn-b']
     ] as const) {
-      const ack = (daemon as any).handleRelayMsg(
+      const ack = await (daemon as any).handleRelayMsg(
         rd(
           {
             op: 'turn',
@@ -173,7 +173,7 @@ describe('webchat multi-agent continuation (#549 parity)', () => {
     const { posts, fanOut } = fakeRelay(holder, [P1, P2])
     ;(daemon as any).relays = { sendWebchatPost: fanOut, stop: async () => {} }
 
-    ;(daemon as any).handleRelayMsg(
+    await (daemon as any).handleRelayMsg(
       rd(
         {
           op: 'turn',
@@ -207,8 +207,8 @@ describe('webchat multi-agent continuation (#549 parity)', () => {
     ;(daemon as any).cpClient = fakeCpClient()
     seedCallPolicy(daemon, [P1, P2]) // the author lives on another daemon — only the edge matters
     const post = agentPost(P2, 'peer says hi', 2_000, '00000001-0000-4000-8000-000000000001', 0)
-    ;(daemon as any).handleRelayMsg(rd({ op: 'context', post }, { msgId: 'c-1' }), () => {})
-    ;(daemon as any).handleRelayMsg(rd({ op: 'context', post }, { msgId: 'c-2' }), () => {})
+    await (daemon as any).handleRelayMsg(rd({ op: 'context', post }, { msgId: 'c-1' }), () => {})
+    await (daemon as any).handleRelayMsg(rd({ op: 'context', post }, { msgId: 'c-2' }), () => {})
     await vi.waitFor(() => expect(prompts.get(P1)).toHaveLength(1), WAIT)
     await settle()
     expect(prompts.get(P1)).toHaveLength(1)
@@ -222,12 +222,12 @@ describe('webchat multi-agent continuation (#549 parity)', () => {
     ;(daemon as any).cpClient = fakeCpClient()
     seedCallPolicy(daemon, [P1, P2])
     const post = agentPost(P2, 'legacy peer post', 2_000, '00000002-0000-4000-8000-000000000002')
-    ;(daemon as any).handleRelayMsg(rd({ op: 'context', post }, { msgId: 'c-1' }), () => {})
+    await (daemon as any).handleRelayMsg(rd({ op: 'context', post }, { msgId: 'c-1' }), () => {})
     await settle()
     // Recorded for §8.5 catch-up…
-    const rows = (daemon as any).store
-      .transcriptSince(transcriptChannelKey(CONV, undefined), `webchat:${CONV}`, null)
-      .map((row: { text: string }) => row.text)
+    const rows = (
+      await (daemon as any).store.transcriptSince(transcriptChannelKey(CONV, undefined), `webchat:${CONV}`, null)
+    ).map((row: { text: string }) => row.text)
     expect(rows).toEqual(['legacy peer post'])
     // …but no activation.
     expect(prompts.get(P1)).toHaveLength(0)
@@ -242,10 +242,10 @@ describe('webchat multi-agent continuation (#549 parity)', () => {
     seedCallPolicy(daemon, [P1])
     // A (buggy or malicious) relay addressing the author's own post back at it.
     const post = agentPost(P1, 'my own words', 2_000, '00000003-0000-4000-8000-000000000003', 0)
-    ;(daemon as any).handleRelayMsg(rd({ op: 'context', post }, { agentId: P1, msgId: 'c-1' }), () => {})
+    await (daemon as any).handleRelayMsg(rd({ op: 'context', post }, { agentId: P1, msgId: 'c-1' }), () => {})
     await settle()
     expect(prompts.get(P1)).toHaveLength(0)
-    expect((daemon as any).store.getActivation(rendezvousKey(post.postId, P1))).toBeUndefined()
+    expect(await (daemon as any).store.getActivation(rendezvousKey(post.postId, P1))).toBeUndefined()
     await daemon.stop()
   }, 15_000)
 
@@ -256,12 +256,12 @@ describe('webchat multi-agent continuation (#549 parity)', () => {
     ;(daemon as any).cpClient = fakeCpClient()
     seedCallPolicy(daemon, [P1, P2], { [P1]: { callPolicy: 'selected', allowedCallerAgentIds: [] } })
     const post = agentPost(P2, 'not allowed to wake you', 2_000, '00000004-0000-4000-8000-000000000004', 0)
-    ;(daemon as any).handleRelayMsg(rd({ op: 'context', post }, { msgId: 'c-1' }), () => {})
+    await (daemon as any).handleRelayMsg(rd({ op: 'context', post }, { msgId: 'c-1' }), () => {})
     await settle()
     expect(prompts.get(P1)).toHaveLength(0) // transcript-only; the row still records
-    const rows = (daemon as any).store
-      .transcriptSince(transcriptChannelKey(CONV, undefined), `webchat:${CONV}`, null)
-      .map((row: { text: string }) => row.text)
+    const rows = (
+      await (daemon as any).store.transcriptSince(transcriptChannelKey(CONV, undefined), `webchat:${CONV}`, null)
+    ).map((row: { text: string }) => row.text)
     expect(rows).toEqual(['not allowed to wake you'])
     await daemon.stop()
   }, 15_000)
@@ -283,7 +283,7 @@ describe('webchat multi-agent continuation (#549 parity)', () => {
     const holder = { current: daemon }
     const { posts, fanOut } = fakeRelay(holder, [P1, P2])
     ;(daemon as any).relays = { sendWebchatPost: fanOut, stop: async () => {} }
-    ;(daemon as any).handleRelayMsg(
+    await (daemon as any).handleRelayMsg(
       rd(
         { op: 'turn', text: 'go', user: 'owner', turnId: KICKOFF_TURN, post: { postId: KICKOFF_TURN, at: 1_000 } },
         { agentId: P1, msgId: 'turn-p1' }

@@ -14,8 +14,8 @@ export interface CpRoutingSnapshot {
 }
 
 export interface CpRoutingIo {
-  load(): CpRoutingSnapshot | undefined
-  save(s: CpRoutingSnapshot): void
+  load(): CpRoutingSnapshot | undefined | Promise<CpRoutingSnapshot | undefined>
+  save(s: CpRoutingSnapshot): void | Promise<void>
 }
 
 export class CpRoutingLayer {
@@ -23,13 +23,16 @@ export class CpRoutingLayer {
   private assignments = new Map<string, CpRule[]>()
   private globalRules: CpRule[] = []
 
-  constructor(private readonly io: CpRoutingIo) {
-    const s = io.load()
-    if (s) {
-      this.routingEpoch = s.routingEpoch
-      this.assignments = new Map(Object.entries(s.assignments))
-      this.globalRules = s.globalRules
-    }
+  constructor(private readonly io: CpRoutingIo) {}
+
+  /** Rehydrate from the persisted snapshot. Explicit, not constructor work, so the io can read
+   *  an async store; a layer that is never hydrated simply starts empty. */
+  async hydrate(): Promise<void> {
+    const s = await this.io.load()
+    if (!s) return
+    this.routingEpoch = s.routingEpoch
+    this.assignments = new Map(Object.entries(s.assignments))
+    this.globalRules = s.globalRules
   }
 
   upsertAssign(a: RouteAssign): void {
@@ -60,10 +63,13 @@ export class CpRoutingLayer {
   }
 
   private persist(): void {
-    this.io.save({
-      routingEpoch: this.routingEpoch,
-      assignments: Object.fromEntries(this.assignments),
-      globalRules: this.globalRules
-    })
+    // Persistence is a write-behind of in-memory state; a Promise-returning io settles on its own.
+    void Promise.resolve(
+      this.io.save({
+        routingEpoch: this.routingEpoch,
+        assignments: Object.fromEntries(this.assignments),
+        globalRules: this.globalRules
+      })
+    ).catch(() => undefined)
   }
 }

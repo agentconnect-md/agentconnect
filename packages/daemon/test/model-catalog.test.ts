@@ -23,7 +23,7 @@ class FakeCatalogStore implements CatalogStorePort {
   private metas = new Map<string, RuntimeCatalogMetaRecord>()
   private caps = new Map<string, RuntimeModelCapRecord>()
 
-  recordRuntimeCatalogMeta(meta: Omit<RuntimeCatalogMetaRecord, 'complete' | 'modelsHash'>): void {
+  async recordRuntimeCatalogMeta(meta: Omit<RuntimeCatalogMetaRecord, 'complete' | 'modelsHash'>): Promise<void> {
     const prev = this.metas.get(meta.runtimeId)
     const same = prev && prev.fingerprint === meta.fingerprint ? prev : undefined
     this.metas.set(meta.runtimeId, {
@@ -33,27 +33,32 @@ class FakeCatalogStore implements CatalogStorePort {
     })
   }
 
-  markRuntimeCatalogComplete(runtimeId: string, fingerprint: string, hash: string, observedAt: number): void {
+  async markRuntimeCatalogComplete(
+    runtimeId: string,
+    fingerprint: string,
+    hash: string,
+    observedAt: number
+  ): Promise<void> {
     const prev = this.metas.get(runtimeId)
     if (prev && prev.fingerprint === fingerprint)
       this.metas.set(runtimeId, { ...prev, complete: true, modelsHash: hash, observedAt })
   }
 
-  upsertRuntimeModelCap(rec: RuntimeModelCapRecord): void {
+  async upsertRuntimeModelCap(rec: RuntimeModelCapRecord): Promise<void> {
     this.caps.set(`${rec.runtimeId}\0${rec.modelId}`, rec)
   }
 
-  pruneRuntimeModelCaps(runtimeId: string, keepModelIds: string[]): void {
+  async pruneRuntimeModelCaps(runtimeId: string, keepModelIds: string[]): Promise<void> {
     for (const [key, row] of this.caps) {
       if (row.runtimeId === runtimeId && !keepModelIds.includes(row.modelId)) this.caps.delete(key)
     }
   }
 
-  getRuntimeCatalogMeta(runtimeId: string): RuntimeCatalogMetaRecord | undefined {
+  async getRuntimeCatalogMeta(runtimeId: string): Promise<RuntimeCatalogMetaRecord | undefined> {
     return this.metas.get(runtimeId)
   }
 
-  listRuntimeModelCaps(runtimeId?: string): RuntimeModelCapRecord[] {
+  async listRuntimeModelCaps(runtimeId?: string): Promise<RuntimeModelCapRecord[]> {
     return [...this.caps.values()].filter((r) => runtimeId === undefined || r.runtimeId === runtimeId)
   }
 }
@@ -101,7 +106,7 @@ const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
 describe('ModelCatalogService discovery gate', () => {
   it('schedules on an unseen fingerprint, closes after a complete discovery, reopens on a fingerprint change', async () => {
     const h = harness()
-    h.probe(['a', 'b'])
+    await h.probe(['a', 'b'])
     expect(h.calls).toHaveLength(1)
     h.calls[0]!.resolve({
       models: [
@@ -110,15 +115,15 @@ describe('ModelCatalogService discovery gate', () => {
       ]
     })
     await settle()
-    h.probe(['a', 'b'])
+    await h.probe(['a', 'b'])
     expect(h.calls).toHaveLength(1) // complete + same fingerprint + same models ⇒ gate closed
-    h.probe(['a', 'b'], '2.0.0') // adapter upgrade ⇒ new fingerprint
+    await h.probe(['a', 'b'], '2.0.0') // adapter upgrade ⇒ new fingerprint
     expect(h.calls).toHaveLength(2)
   })
 
-  it('never schedules for an empty advertised model list', () => {
+  it('never schedules for an empty advertised model list', async () => {
     const h = harness()
-    h.probe([])
+    await h.probe([])
     expect(h.calls).toHaveLength(0)
   })
 
@@ -126,29 +131,29 @@ describe('ModelCatalogService discovery gate', () => {
     const h = harness()
     const fp = catalogFingerprint('fake', '1.0.0', rt)
     // Phase 1 records the fingerprint but never sets complete.
-    h.store.recordRuntimeCatalogMeta({ runtimeId: 'fake', fingerprint: fp, source: 'acp', observedAt: h.now() })
-    h.probe(['a'])
+    await h.store.recordRuntimeCatalogMeta({ runtimeId: 'fake', fingerprint: fp, source: 'acp', observedAt: h.now() })
+    await h.probe(['a'])
     expect(h.calls).toHaveLength(1)
     h.calls[0]!.resolve({ models: [], aborted: 'broken enumerator' })
     await settle()
-    h.probe(['a'])
+    await h.probe(['a'])
     expect(h.calls).toHaveLength(1) // first failure ⇒ 30s backoff window
     h.advance(30_000)
-    h.probe(['a'])
+    await h.probe(['a'])
     expect(h.calls).toHaveLength(2)
     h.calls[1]!.resolve({ models: [], aborted: 'still broken' })
     await settle()
     h.advance(30_000)
-    h.probe(['a'])
+    await h.probe(['a'])
     expect(h.calls).toHaveLength(2) // second failure doubled the window to 60s
     h.advance(30_000)
-    h.probe(['a'])
+    await h.probe(['a'])
     expect(h.calls).toHaveLength(3)
   })
 
   it('a changed advertised model set triggers rediscovery; reordering does not', async () => {
     const h = harness()
-    h.probe(['a', 'b'])
+    await h.probe(['a', 'b'])
     h.calls[0]!.resolve({
       models: [
         { id: 'a', efforts: [] },
@@ -156,9 +161,9 @@ describe('ModelCatalogService discovery gate', () => {
       ]
     })
     await settle()
-    h.probe(['b', 'a'])
+    await h.probe(['b', 'a'])
     expect(h.calls).toHaveLength(1) // the hash is order/duplicate-insensitive
-    h.probe(['a', 'c']) // server-side catalog update, same fingerprint
+    await h.probe(['a', 'c']) // server-side catalog update, same fingerprint
     expect(h.calls).toHaveLength(2)
   })
 
@@ -173,58 +178,58 @@ describe('ModelCatalogService discovery gate', () => {
       })
     }
     const h = harness({ drivers: [driver] })
-    h.probe(['a', 'b'])
+    await h.probe(['a', 'b'])
     await settle()
-    expect(h.store.getRuntimeCatalogMeta('fake')?.source).toBe('native')
+    expect((await h.store.getRuntimeCatalogMeta('fake'))?.source).toBe('native')
     expect(h.updated).toHaveLength(1)
     h.advance(3_600_000)
-    h.probe(['a', 'b'])
+    await h.probe(['a', 'b'])
     await settle()
     expect(h.updated).toHaveLength(1) // 1h old — still fresh
     h.advance(24 * 3_600_000)
-    h.probe(['a', 'b'])
+    await h.probe(['a', 'b'])
     await settle()
     expect(h.updated).toHaveLength(2) // past the TTL — rediscovered
   })
 })
 
 describe('ModelCatalogService single-flight and generation fencing', () => {
-  it('a same-fingerprint evaluation while a task is in flight is a no-op', () => {
+  it('a same-fingerprint evaluation while a task is in flight is a no-op', async () => {
     const h = harness()
-    h.probe(['a'])
-    h.probe(['a'])
+    await h.probe(['a'])
+    await h.probe(['a'])
     expect(h.calls).toHaveLength(1)
   })
 
   it('a fingerprint change cancels the in-flight task and drops its late writes', async () => {
     const h = harness()
-    h.probe(['a'], '1.0.0')
-    h.probe(['a'], '2.0.0')
+    await h.probe(['a'], '1.0.0')
+    await h.probe(['a'], '2.0.0')
     expect(h.calls).toHaveLength(2)
     // The superseded v1 task resolves late — every one of its writes is stale.
     h.calls[0]!.resolve({ models: [{ id: 'a', efforts: [{ value: 'stale' }] }] })
     await settle()
-    expect(h.store.listRuntimeModelCaps('fake')).toHaveLength(0)
+    expect(await h.store.listRuntimeModelCaps('fake')).toHaveLength(0)
     expect(h.updated).toHaveLength(0)
     // The v2 task is still current and commits under the new fingerprint.
     h.calls[1]!.resolve({ models: [{ id: 'a', efforts: [{ value: 'high' }] }] })
     await settle()
-    const rows = h.store.listRuntimeModelCaps('fake')
+    const rows = await h.store.listRuntimeModelCaps('fake')
     expect(rows).toHaveLength(1)
     expect(rows[0]!.fingerprint).toBe(catalogFingerprint('fake', '2.0.0', rt))
     expect(rows[0]!.caps.efforts).toEqual([{ value: 'high' }])
-    expect(h.store.getRuntimeCatalogMeta('fake')?.complete).toBe(true)
+    expect((await h.store.getRuntimeCatalogMeta('fake'))?.complete).toBe(true)
     expect(h.updated).toEqual(['fake'])
   })
 
   it('stop() cancels in-flight discoveries and blocks new ones', async () => {
     const h = harness()
-    h.probe(['a'])
+    await h.probe(['a'])
     await h.svc.stop()
     h.calls[0]!.resolve({ models: [{ id: 'a', efforts: [] }] })
     await settle()
-    expect(h.store.listRuntimeModelCaps('fake')).toHaveLength(0)
-    h.probe(['a'])
+    expect(await h.store.listRuntimeModelCaps('fake')).toHaveLength(0)
+    await h.probe(['a'])
     expect(h.calls).toHaveLength(1)
   })
 })
@@ -251,30 +256,31 @@ describe('ModelCatalogService driver path', () => {
       })
     }
     const h = harness({ drivers: [driver] })
-    h.store.recordRuntimeCatalogMeta({
+    await h.store.recordRuntimeCatalogMeta({
       runtimeId: 'fake',
       fingerprint: fp,
       source: 'acp',
       permissionModes: [{ value: 'safe' }],
       observedAt: h.now()
     })
-    h.store.upsertRuntimeModelCap({ runtimeId: 'fake', modelId: 'gone', fingerprint: 'old', caps: {}, observedAt: 1 })
-    h.probe(['a', 'b'])
+    await h.store.upsertRuntimeModelCap({
+      runtimeId: 'fake',
+      modelId: 'gone',
+      fingerprint: 'old',
+      caps: {},
+      observedAt: 1
+    })
+    await h.probe(['a', 'b'])
     await settle()
     expect(h.calls).toHaveLength(0) // no enumeration fallback
-    const meta = h.store.getRuntimeCatalogMeta('fake')!
+    const meta = (await h.store.getRuntimeCatalogMeta('fake'))!
     expect(meta.source).toBe('native')
     expect(meta.complete).toBe(true)
     expect(meta.defaultModel).toBe('a')
     expect(meta.permissionModes).toEqual([{ value: 'safe' }]) // phase-1 data preserved
     expect(meta.modelsHash).toBe(modelsHash(['a', 'b'])) // the PROBED set, so gate rule 3 stays closed
-    expect(
-      h.store
-        .listRuntimeModelCaps('fake')
-        .map((r) => r.modelId)
-        .sort()
-    ).toEqual(['a', 'b', 'x'])
-    expect(h.store.listRuntimeModelCaps('fake').find((r) => r.modelId === 'a')?.caps).toEqual({
+    expect((await h.store.listRuntimeModelCaps('fake')).map((r) => r.modelId).sort()).toEqual(['a', 'b', 'x'])
+    expect((await h.store.listRuntimeModelCaps('fake')).find((r) => r.modelId === 'a')?.caps).toEqual({
       name: 'Model A',
       efforts: [{ value: 'low' }, { value: 'high' }],
       defaultEffort: 'high',
@@ -289,9 +295,9 @@ describe('ModelCatalogService driver path', () => {
       discover: async () => ({ models: [{ id: 'prov/a' }, { id: 'prov/b' }, { id: 'prov/c' }, { id: 'prov/d' }] })
     }
     const h = harness({ drivers: [driver] })
-    h.probe(['a', 'b', 'c', 'd'])
+    await h.probe(['a', 'b', 'c', 'd'])
     await settle()
-    expect(h.store.listRuntimeModelCaps('fake')).toHaveLength(0) // alien-id rows never written
+    expect(await h.store.listRuntimeModelCaps('fake')).toHaveLength(0) // alien-id rows never written
     expect(h.calls).toHaveLength(1) // fell back to the generic enumerator
     expect(h.calls[0]!.modelIds).toEqual(['a', 'b', 'c', 'd'])
   })
@@ -304,7 +310,7 @@ describe('ModelCatalogService driver path', () => {
       }
     }
     const h = harness({ drivers: [driver] })
-    h.probe(['a'])
+    await h.probe(['a'])
     await settle()
     expect(h.calls).toHaveLength(1)
   })
@@ -313,8 +319,14 @@ describe('ModelCatalogService driver path', () => {
 describe('ModelCatalogService enumeration fallback', () => {
   it('a complete enumeration marks the catalog complete and prunes vanished models', async () => {
     const h = harness()
-    h.store.upsertRuntimeModelCap({ runtimeId: 'fake', modelId: 'gone', fingerprint: 'old', caps: {}, observedAt: 1 })
-    h.probe(['a', 'b'])
+    await h.store.upsertRuntimeModelCap({
+      runtimeId: 'fake',
+      modelId: 'gone',
+      fingerprint: 'old',
+      caps: {},
+      observedAt: 1
+    })
+    await h.probe(['a', 'b'])
     expect(h.calls[0]!.budget).toEqual({ perModelMs: 10_000, totalMs: 120_000 })
     h.calls[0]!.resolve({
       models: [
@@ -323,67 +335,57 @@ describe('ModelCatalogService enumeration fallback', () => {
       ]
     })
     await settle()
-    const meta = h.store.getRuntimeCatalogMeta('fake')!
+    const meta = (await h.store.getRuntimeCatalogMeta('fake'))!
     expect(meta.source).toBe('acp')
     expect(meta.complete).toBe(true)
     expect(meta.modelsHash).toBe(modelsHash(['a', 'b']))
-    expect(
-      h.store
-        .listRuntimeModelCaps('fake')
-        .map((r) => r.modelId)
-        .sort()
-    ).toEqual(['a', 'b'])
+    expect((await h.store.listRuntimeModelCaps('fake')).map((r) => r.modelId).sort()).toEqual(['a', 'b'])
     expect(h.updated).toEqual(['fake'])
     // An acp-sourced catalog has no TTL — only fingerprint/model-set changes reopen it.
     h.advance(25 * 3_600_000)
-    h.probe(['a', 'b'])
+    await h.probe(['a', 'b'])
     expect(h.calls).toHaveLength(1)
   })
 
   it('an aborted enumeration keeps partial rows, stays incomplete, and still reports', async () => {
     const h = harness()
     const fp = catalogFingerprint('fake', '1.0.0', rt)
-    h.store.recordRuntimeCatalogMeta({ runtimeId: 'fake', fingerprint: fp, source: 'acp', observedAt: h.now() })
-    h.store.upsertRuntimeModelCap({
+    await h.store.recordRuntimeCatalogMeta({ runtimeId: 'fake', fingerprint: fp, source: 'acp', observedAt: h.now() })
+    await h.store.upsertRuntimeModelCap({
       runtimeId: 'fake',
       modelId: 'b',
       fingerprint: fp,
       caps: { efforts: [{ value: 'old' }] },
       observedAt: 1
     })
-    h.probe(['a', 'b'])
+    await h.probe(['a', 'b'])
     h.calls[0]!.resolve({ models: [{ id: 'a', efforts: [] }], aborted: 'total budget exhausted' })
     await settle()
-    expect(h.store.getRuntimeCatalogMeta('fake')?.complete).toBe(false)
+    expect((await h.store.getRuntimeCatalogMeta('fake'))?.complete).toBe(false)
     // 'a' was learned this round; 'b' keeps its last-good row (no prune on failure).
-    expect(
-      h.store
-        .listRuntimeModelCaps('fake')
-        .map((r) => r.modelId)
-        .sort()
-    ).toEqual(['a', 'b'])
+    expect((await h.store.listRuntimeModelCaps('fake')).map((r) => r.modelId).sort()).toEqual(['a', 'b'])
     expect(h.updated).toEqual(['fake'])
   })
 
   it('an unavailable enumerator (undefined) records nothing and retries on backoff', async () => {
     const h = harness()
-    h.probe(['a'])
+    await h.probe(['a'])
     h.calls[0]!.resolve(undefined)
     await settle()
-    expect(h.store.listRuntimeModelCaps('fake')).toHaveLength(0)
-    expect(h.store.getRuntimeCatalogMeta('fake')).toBeUndefined()
+    expect(await h.store.listRuntimeModelCaps('fake')).toHaveLength(0)
+    expect(await h.store.getRuntimeCatalogMeta('fake')).toBeUndefined()
     expect(h.updated).toHaveLength(0)
-    h.probe(['a'])
+    await h.probe(['a'])
     expect(h.calls).toHaveLength(1) // inside the backoff window
     h.advance(30_000)
-    h.probe(['a'])
+    await h.probe(['a'])
     expect(h.calls).toHaveLength(2)
   })
 
-  it('drops the literal "default" id and caps the requested ids at 64', () => {
+  it('drops the literal "default" id and caps the requested ids at 64', async () => {
     const h = harness()
     const many = ['default', ...Array.from({ length: 80 }, (_, i) => `m${i}`)]
-    h.probe(many)
+    await h.probe(many)
     expect(h.calls[0]!.modelIds).toHaveLength(64)
     expect(h.calls[0]!.modelIds).toEqual(many.slice(1, 65))
   })

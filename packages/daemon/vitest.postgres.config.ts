@@ -4,7 +4,7 @@ import { githubActionsReporters } from '../../scripts/vitest-github-reporters.js
 
 /**
  * The `store-postgres` project: the daemon's store suites re-run with `LocalStore` opened
- * over `PostgresSyncDatabase` instead of `node:sqlite`, against a Testcontainers
+ * over `PostgresAsyncDatabase` instead of `node:sqlite`, against a Testcontainers
  * `postgres:16-alpine`. The pool runs this SQL for real, so SQLite-only constructs
  * (two-arg `MAX`/`MIN`, `IFNULL`, `datetime()`, …) fail here instead of on a cluster.
  *
@@ -17,8 +17,10 @@ export default defineConfig({
     environment: 'node',
     include: [
       'test/local-store.test.ts',
+      'test/store-concurrency.test.ts',
       'test/memory-capture-outbox.test.ts',
       'test/store-retention.test.ts',
+      'test/postgres-async-database.int.test.ts',
       'test/postgres-pool-store.int.test.ts',
       'test/postgres-transcript-org.int.test.ts'
     ],
@@ -27,8 +29,8 @@ export default defineConfig({
     maxWorkers: storePostgresWorkerCount(),
     fileParallelism: true,
     hookTimeout: 120_000,
-    // Every statement is a round trip to a Dockerized Postgres through a worker thread,
-    // so Vitest's 5s unit budget would time out on runner weather, not on the code.
+    // Every statement is a round trip to a Dockerized Postgres, so Vitest's 5s unit budget
+    // would time out on runner weather, not on the code.
     testTimeout: 30_000,
     reporters: githubActionsReporters('daemon-store-postgres.md')
   }

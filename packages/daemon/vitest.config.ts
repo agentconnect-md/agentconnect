@@ -22,6 +22,9 @@ export default defineConfig({
     // Keep process-heavy, integration-shaped unit files from oversubscribing
     // available test-worker resources.
     maxWorkers: 4,
+    // The async store pays a microtask hop per statement; on a loaded CI box the
+    // IO-heavy store files drift past vitest's 5 s default without being hung.
+    testTimeout: 30_000,
     reporters: githubActionsReporters('daemon.md'),
     projects: [
       {

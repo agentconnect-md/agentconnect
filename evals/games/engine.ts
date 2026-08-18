@@ -138,6 +138,12 @@ export function scriptedPeerCountingHostFactory(): (
  * from the prompt and reply with exactly that number — every member proposes
  * every round, exercising collisions, atomic acceptance, and the
  * no-consecutive-scorer rule deterministically.
+ *
+ * The announcement is remembered per session because peer numbers arrive DURING
+ * other turns: the daemon's turn-final fence then replaces the prompt with just
+ * that delta and discards the draft, and a real runtime would still have the
+ * referee's call in its own session history. Without the memory a regenerated
+ * invocation answers "waiting" and the round stalls with nobody proposing.
  */
 export function scriptedCountingHostFactory(): (
   agent: { id: string },
@@ -145,6 +151,7 @@ export function scriptedCountingHostFactory(): (
 ) => unknown {
   return (agent, onUpdate) => {
     let sessions = 0
+    const expectedBySession = new Map<string, string>()
     return {
       start: async () => {},
       newSession: async () => `scripted-${agent.id.slice(0, 8)}-${(sessions += 1)}`,
@@ -153,7 +160,9 @@ export function scriptedCountingHostFactory(): (
       prompt: async (sessionId: string, blocks: { text?: string }[]) => {
         const text = blocks.map((block) => block.text ?? '').join('\n')
         const matches = [...text.matchAll(/Next expected number:\s*(\d+)/g)]
-        const candidate = matches.at(-1)?.[1]
+        const announced = matches.at(-1)?.[1]
+        if (announced) expectedBySession.set(sessionId, announced)
+        const candidate = announced ?? expectedBySession.get(sessionId)
         onUpdate(sessionId, {
           sessionUpdate: 'agent_message_chunk',
           content: { type: 'text', text: candidate ?? 'waiting' }
@@ -322,6 +331,12 @@ export function scriptedWerewolfHostFactory(): (
       spoke: Set<string>
     }
     const days = new Map<string, DayView>()
+    /** The ballot this session last stated, and whether the previous invocation stated it.
+     *  The turn-final fence REPLACES the prompt with just the new-message delta and discards
+     *  the drafted answer, so a regeneration that follows an invocation which just voted must
+     *  vote again — that ballot never landed, and the VOTE call is no longer in the prompt. */
+    const lastVote = new Map<string, string>()
+    const actedOnLastInvocation = new Map<string, boolean>()
     const chunk = (sessionId: string, text: string) =>
       onUpdate(sessionId, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } })
     /** The product's silent branch: the renderer drops it before any post. */
@@ -346,6 +361,9 @@ export function scriptedWerewolfHostFactory(): (
       modelOptions: () => ({ current: 'scripted-werewolf', models: ['scripted-werewolf'] }),
       prompt: async (sessionId: string, blocks: { text?: string }[]) => {
         const text = blocks.map((block) => block.text ?? '').join('\n')
+        const redoDiscarded =
+          text.startsWith('(AgentConnect context update:') && actedOnLastInvocation.get(sessionId) === true
+        actedOnLastInvocation.set(sessionId, false)
         const role = /Your role: (\w+)/.exec(text)
         if (role) {
           state.role = role[1]
@@ -398,7 +416,17 @@ export function scriptedWerewolfHostFactory(): (
                 : candidates[0]
           if (!target) return stayQuiet(sessionId)
           // The vote is PUBLIC now — it is said in the room like anything else.
+          lastVote.set(sessionId, target)
+          actedOnLastInvocation.set(sessionId, true)
           chunk(sessionId, `I vote for ${target}.`)
+          return { stopReason: 'end_turn' }
+        }
+        // A regeneration right after this session stated its ballot: the draft was discarded
+        // and the VOTE call is not in the replacement prompt, so state the same ballot again.
+        const owed = redoDiscarded ? lastVote.get(sessionId) : undefined
+        if (owed) {
+          actedOnLastInvocation.set(sessionId, true)
+          chunk(sessionId, `I vote for ${owed}.`)
           return { stopReason: 'end_turn' }
         }
         // ── the sequential day ──
@@ -406,6 +434,8 @@ export function scriptedWerewolfHostFactory(): (
         // message and must be read for WHO has already spoken.
         const opening = /DAY (\d+)\..*?Speaking order: ([^.\n]+)\./s.exec(text)
         if (opening) {
+          // A new day retires the previous round's ballot; it can never be owed again.
+          lastVote.delete(sessionId)
           days.set(sessionId, {
             round: Number(opening[1]),
             order: opening[2]!

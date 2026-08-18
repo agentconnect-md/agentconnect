@@ -28,7 +28,9 @@ import {
 import { GithubReplyCollector } from '../src/github/poster.js'
 import { transcriptCoords } from '../src/session/session-manager.js'
 import { DatabaseSync } from 'node:sqlite'
-import { LocalStore, sessionKey } from '../src/store/local-store.js'
+import { sessionKey } from '../src/store/local-store.js'
+import { SqliteAsyncDatabase } from '../src/store/sqlite-async-database.js'
+import { openTestStore } from './store-support.js'
 import { statePath } from '../src/paths.js'
 import { WorkspaceManager } from '../src/workspace/workspace-manager.js'
 import { FakeClock } from '@agentconnect.md/connection'
@@ -139,7 +141,7 @@ describe('Daemon rd/msg hook fires', () => {
     ;(daemon as any).runtimeNames.claude = 'Claude Code'
     await (daemon as any).ensureHostAsync(AGENT_ID)
 
-    expect((daemon as any).githubReviews.githubCommentAttribution(AGENT_ID, 'acp-hook-1')).toMatchObject({
+    expect(await (daemon as any).githubReviews.githubCommentAttribution(AGENT_ID, 'acp-hook-1')).toMatchObject({
       agentName: 'Review Bot',
       runtime: 'Claude Code',
       model: 'claude-sonnet-4-5',
@@ -171,7 +173,10 @@ describe('Daemon rd/msg hook fires', () => {
     // Exactly one turn ran through the shared engine.
     const sent = host.prompt.mock.calls.length
     expect(sent).toBe(1)
-    const transcript = (daemon as any).store.threadTranscript(HOOK_ID, 'd-1') as Array<{ sender: string; text: string }>
+    const transcript = (await (daemon as any).store.threadTranscript(HOOK_ID, 'd-1')) as Array<{
+      sender: string
+      text: string
+    }>
     expect(transcript.some((r) => r.sender === AGENT_ID && r.text === 'done!')).toBe(true)
     await daemon.stop()
   }, 15_000)
@@ -212,7 +217,7 @@ describe('Daemon rd/msg hook fires', () => {
 
     expect(ack).toEqual({ msgId: `${HOOK_ID}:d-1`, accepted: true })
     await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1), WAIT)
-    expect((daemon as any).store.getSessionByAcpId('acp-hook-1')).toMatchObject({
+    expect(await (daemon as any).store.getSessionByAcpId('acp-hook-1')).toMatchObject({
       title: 'PR #144: perf(github): speed up review delivery',
       transportScope: 'github:123'
     })
@@ -985,7 +990,7 @@ describe('Daemon rd/msg hook fires', () => {
       // publish is the sole public write and receives the collector's full body.
       expect(poster.publish).toHaveBeenCalledWith('Final answer.')
 
-      const transcript = (daemon as any).store.threadTranscript('acme/infra', String(number)) as Array<{
+      const transcript = (await (daemon as any).store.threadTranscript('acme/infra', String(number))) as Array<{
         sender: string
         kind: string
         text: string
@@ -994,7 +999,7 @@ describe('Daemon rd/msg hook fires', () => {
       expect(transcript).toContainEqual(
         expect.objectContaining({ sender: 'alice', text: expect.stringContaining(`GitHub ${event}:opened`) })
       )
-      expect((daemon as any).store.getSessionByAcpId(`acp-${event}`)).toMatchObject({
+      expect(await (daemon as any).store.getSessionByAcpId(`acp-${event}`)).toMatchObject({
         triggeredBy: `hook:${HOOK_ID}`
       })
       // Commentary and tool activity remain session-local and observable.
@@ -1131,7 +1136,7 @@ describe('Daemon rd/msg hook fires', () => {
       if (publishes) expect(poster.publish).toHaveBeenCalledWith('Self-contained final.')
       else expect(hookState.mock.calls.some((call) => call[2] === 'settled')).toBe(true)
 
-      const transcript = (daemon as any).store.threadTranscript('acme/infra', '42') as Array<{
+      const transcript = (await (daemon as any).store.threadTranscript('acme/infra', '42')) as Array<{
         sender: string
         text: string
       }>
@@ -1163,7 +1168,7 @@ describe('Daemon rd/msg hook fires', () => {
     const key = `hook:acme/infra:42:${AGENT_ID}`
     const entry = { inboxId, hookContext: hook }
     expect(
-      (daemon as any).store.appendInbox({
+      await (daemon as any).store.appendInbox({
         id: inboxId,
         sessionKey: key,
         agentId: AGENT_ID,
@@ -1212,7 +1217,9 @@ describe('Daemon rd/msg hook fires', () => {
       })
     ).rejects.toThrow('simulated crash window')
 
-    const row = (daemon as any).store.listInboxBySessionKeyFifo().find(({ id }: { id: string }) => id === inboxId)
+    const row = (await (daemon as any).store.listInboxBySessionKeyFifo()).find(
+      ({ id }: { id: string }) => id === inboxId
+    )
     const persisted = JSON.parse(row.hookContext) as Record<string, unknown>
     expect(persisted).toMatchObject({
       reviewAttemptId: expect.any(String),
@@ -1291,7 +1298,7 @@ describe('Daemon rd/msg hook fires', () => {
       reviewReportResult: { state: 'not_submitted', code: 'revision_changed' }
     }
     expect(
-      (seed as any).store.appendInbox({
+      await (seed as any).store.appendInbox({
         id: replayMessage.msgId,
         sessionKey: `hook:acme/infra:42:${AGENT_ID}`,
         agentId: AGENT_ID,
@@ -1428,7 +1435,7 @@ describe('Daemon rd/msg hook fires', () => {
       }
     }
     expect(
-      (seed as any).store.appendInbox({
+      await (seed as any).store.appendInbox({
         id: replayMessage.msgId,
         sessionKey: `hook:acme/infra:42:${AGENT_ID}`,
         agentId: AGENT_ID,
@@ -1536,7 +1543,7 @@ describe('Daemon rd/msg hook fires', () => {
       const worktree = workspaces.sessionWorktreePath(agent, key)
       mkdirSync(join(agentDir, 'worktrees'), { recursive: true })
       execFileSync('git', ['worktree', 'add', '--detach', worktree, 'HEAD'], { cwd: workspace, stdio: 'ignore' })
-      ;(daemon as any).store.upsertSession({
+      await (daemon as any).store.upsertSession({
         key,
         agentId: AGENT_ID,
         platform: 'hook',
@@ -1601,7 +1608,7 @@ describe('Daemon rd/msg hook fires', () => {
       releaseDispatch()
       expect(cp.hookReports[0]).toMatchObject({ status: 'success', event })
       expect(existsSync(worktree)).toBe(false)
-      expect((daemon as any).store.getSession(key)).toBeTruthy()
+      expect(await (daemon as any).store.getSession(key)).toBeTruthy()
       expect(host.forgetSession).toHaveBeenCalledWith('acp-existing')
       expect(host.newSession).not.toHaveBeenCalled()
       expect(host.prompt).not.toHaveBeenCalled()
@@ -1696,7 +1703,7 @@ describe('Daemon rd/msg hook fires', () => {
     const msg = fire()
     const normalized = buildHookMessage(msg, 'trace-loop-open')
     const scope = `${normalized.platform}:${normalized.channel}:${normalized.thread ?? normalized.msgId}`
-    ;(daemon as any).store.tripLoopGuard(scope, 1, 'automatic_turn_burst')
+    await (daemon as any).store.tripLoopGuard(scope, 1, 'automatic_turn_burst')
 
     const ack = await (daemon as any).handleRelayMsg(msg, () => {})
 
@@ -1704,7 +1711,7 @@ describe('Daemon rd/msg hook fires', () => {
     expect(host.newSession).not.toHaveBeenCalled()
     expect(host.prompt).not.toHaveBeenCalled()
     expect(cp.hookReports).toHaveLength(0)
-    expect((daemon as any).store.hasInbox(`${HOOK_ID}:d-1`)).toBe(false)
+    expect(await (daemon as any).store.hasInbox(`${HOOK_ID}:d-1`)).toBe(false)
     await daemon.stop()
   })
 
@@ -1786,8 +1793,8 @@ describe('Daemon rd/msg hook fires', () => {
     const cp = fakeCpClient()
     ;(daemon as never as { cpClient: unknown }).cpClient = cp
 
-    const p1 = (daemon as any).handleRelayMsg(fire(), () => {})
-    const p2 = (daemon as any).handleRelayMsg(fire(), () => {}) // redelivery before admission settles
+    const p1 = await (daemon as any).handleRelayMsg(fire(), () => {})
+    const p2 = await (daemon as any).handleRelayMsg(fire(), () => {}) // redelivery before admission settles
     const [a1, a2] = await Promise.all([p1, p2])
     expect(a2).toEqual(a1)
     await vi.waitFor(() => expect(cp.hookReports.length).toBe(1), WAIT)
@@ -1831,7 +1838,7 @@ describe('Daemon rd/msg hook fires', () => {
     expect([...(daemon as any).inflight]).toHaveLength(1)
     await expect((daemon as any).handleRelayMsg(second, () => {})).resolves.toMatchObject({ accepted: true })
 
-    expect((daemon as any).store.listInboxBySessionKeyFifo().map((row: { id: string }) => row.id)).toEqual([
+    expect((await (daemon as any).store.listInboxBySessionKeyFifo()).map((row: { id: string }) => row.id)).toEqual([
       `${HOOK_ID}:d-1`,
       `${HOOK_ID}:d-2`
     ])
@@ -1885,7 +1892,7 @@ describe('Daemon rd/msg hook fires', () => {
     await expect((daemon as any).handleRelayMsg(queued, () => {})).resolves.toMatchObject({ accepted: true })
 
     // Exactly what the duty teardown does: stop running the work here, keep the durable rows.
-    ;(daemon as any).interruptAgentTurns(AGENT_ID, 'handover', 'handoff')
+    await (daemon as any).interruptAgentTurns(AGENT_ID, 'handover', 'handoff')
     releasePrompt()
 
     await vi.waitFor(() => expect(cp.hookReports).toHaveLength(2), WAIT)
@@ -1934,13 +1941,13 @@ describe('Daemon rd/msg hook fires', () => {
 
     // A pool member releases its duties while SIGTERM drains it, so both retentions meet on one row.
     ;(daemon as any).draining = true
-    ;(daemon as any).interruptAgentTurns(AGENT_ID, 'handover', 'handoff')
+    await (daemon as any).interruptAgentTurns(AGENT_ID, 'handover', 'handoff')
     releasePrompt()
 
     await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1), WAIT)
     expect(cp.hookReports[0]).toMatchObject({ deliveryKey: 'd-1', status: 'failed', reason: 'agent_handover' })
     // Redacted into a terminal receipt: no successor finds a model turn to replay.
-    expect((daemon as any).store.listInboxBySessionKeyFifo()).toEqual([
+    expect(await (daemon as any).store.listInboxBySessionKeyFifo()).toEqual([
       expect.objectContaining({ id: `${HOOK_ID}:d-1`, msg: '{}', hookContext: null })
     ])
     await daemon.stop()
@@ -1954,7 +1961,7 @@ describe('Daemon rd/msg hook fires', () => {
     expect((seed as any).cfg.daemonId).not.toBe(foreignDaemonId)
     const message = buildHookMessage(fire(), 'trace-foreign-dispatch')
     expect(
-      (seed as any).store.appendInbox({
+      await (seed as any).store.appendInbox({
         id: message.msgId,
         sessionKey: `${message.platform}:${message.channel}:${message.thread}:${AGENT_ID}`,
         agentId: AGENT_ID,
@@ -1995,7 +2002,7 @@ describe('Daemon rd/msg hook fires', () => {
     // The maintainer's Check gets that outcome now instead of a degraded rerun this member could
     // never expose a review from — and the row is terminal, so it cannot be replayed again.
     expect(host.prompt).not.toHaveBeenCalled()
-    expect((restarted as any).store.listInboxBySessionKeyFifo()).toEqual([
+    expect(await (restarted as any).store.listInboxBySessionKeyFifo()).toEqual([
       expect.objectContaining({ id: message.msgId, hookContext: null, completedAt: expect.any(Number) })
     ])
     await restarted.stop()
@@ -2012,8 +2019,8 @@ describe('Daemon rd/msg hook fires', () => {
     await daemon.start()
     const ownDaemonId = (daemon as any).cfg.daemonId as string
     const foreignDaemonId = '66666666-6666-4666-8666-666666666666'
-    const shared = new LocalStore({
-      database: new DatabaseSync(statePath(root)) as never,
+    const shared = await openTestStore({
+      database: SqliteAsyncDatabase.adopt(new DatabaseSync(statePath(root))),
       shared: true,
       ownerId: ownDaemonId,
       orgForAgent: () => 'org-1'
@@ -2024,7 +2031,7 @@ describe('Daemon rd/msg hook fires', () => {
 
     const message = buildHookMessage(fire(), 'trace-shared-outbox')
     expect(
-      shared.appendInbox({
+      await shared.appendInbox({
         id: message.msgId,
         sessionKey: `${message.platform}:${message.channel}:${message.thread}:${AGENT_ID}`,
         agentId: AGENT_ID,
@@ -2055,8 +2062,8 @@ describe('Daemon rd/msg hook fires', () => {
     expect(cp.hookReports[0]).toMatchObject({ deliveryKey: 'd-1', status: 'failed', reason: 'agent_handover' })
     expect(host.prompt).not.toHaveBeenCalled()
     await vi.waitFor(
-      () =>
-        expect(shared.listInboxBySessionKeyFifo()).toEqual([
+      async () =>
+        expect(await shared.listInboxBySessionKeyFifo()).toEqual([
           expect.objectContaining({ id: message.msgId, terminalReport: null, completedAt: expect.any(Number) })
         ]),
       WAIT
@@ -2176,10 +2183,16 @@ describe('Daemon rd/msg hook fires', () => {
       accepted: true
     })
 
-    const queued = [...(daemon as any).serialQueue.values()].flat() as Array<{
-      hookContext?: { deliveryKey: string }
-    }>
-    expect(queued.map((entry) => entry.hookContext?.deliveryKey)).toEqual(['comment', 'newest'])
+    // The gate may already have picked the head up, so the invariant is the order across the
+    // active entry and the queue behind it: neither survivor was reordered by the supersedes.
+    const laneOrder = () =>
+      [
+        ...((daemon as any).activeGateEntries.values() as Iterable<{ hookContext?: { deliveryKey: string } }>),
+        ...([...(daemon as any).serialQueue.values()].flat() as Array<{ hookContext?: { deliveryKey: string } }>)
+      ]
+        .map((entry) => entry.hookContext?.deliveryKey)
+        .filter((deliveryKey) => deliveryKey === 'comment' || deliveryKey === 'newest')
+    expect(laneOrder()).toEqual(['comment', 'newest'])
     await vi.waitFor(
       () =>
         expect(cp.hookReports.filter((report) => ['old', 'delayed-older'].includes(report.deliveryKey))).toEqual([
@@ -2392,7 +2405,7 @@ describe('Daemon rd/msg hook fires', () => {
       const reconciling = daemon.reconcile()
       await vi.waitFor(() => expect(host.cancel).toHaveBeenCalled(), WAIT)
 
-      const interrupted = (daemon as any).store.listInboxBySessionKeyFifo() as Array<{
+      const interrupted = (await (daemon as any).store.listInboxBySessionKeyFifo()) as Array<{
         id: string
         hookContext: string | null
         terminalReport: string | null
@@ -2408,8 +2421,8 @@ describe('Daemon rd/msg hook fires', () => {
 
       releasePrompt()
       await reconciling
-      await vi.waitFor(() => {
-        const rows = (daemon as any).store.listInboxBySessionKeyFifo() as Array<{
+      await vi.waitFor(async () => {
+        const rows = (await (daemon as any).store.listInboxBySessionKeyFifo()) as Array<{
           hookContext: string | null
           terminalReport: string | null
         }>
@@ -2442,11 +2455,11 @@ describe('Daemon rd/msg hook fires', () => {
         status: 'success'
       })
     }))
-    vi.spyOn((daemon as any).store, 'listHookTerminalReports').mockReturnValue(rows)
+    vi.spyOn((daemon as any).store, 'listHookTerminalReports').mockResolvedValue(rows)
 
-    ;(daemon as any).replayHookTerminalReports()
+    await (daemon as any).replayHookTerminalReports()
     expect(emitHookReport).toHaveBeenCalledTimes(100)
-    ;(daemon as any).replayHookTerminalReports()
+    await (daemon as any).replayHookTerminalReports()
     expect(emitHookReport).toHaveBeenCalledTimes(100)
     expect((daemon as any).hookReportInflight.size).toBe(100)
     await daemon.stop()
@@ -2462,7 +2475,7 @@ describe('Daemon rd/msg hook fires', () => {
       throw new Error('sqlite busy')
     })
 
-    ;(daemon as any).replayHookTerminalReports()
+    await (daemon as any).replayHookTerminalReports()
     expect(retry).toHaveBeenCalledOnce()
 
     list.mockRestore()
@@ -2501,7 +2514,7 @@ describe('Daemon rd/msg hook fires', () => {
     }
     const message = buildHookMessage(fire({ msgId: id, deliveryKey: 'double-terminal' }), 'trace-double')
     expect(
-      (daemon as any).store.appendInbox({
+      await (daemon as any).store.appendInbox({
         id,
         sessionKey: `${message.platform}:${message.channel}:${message.thread}:${AGENT_ID}`,
         agentId: AGENT_ID,
@@ -2517,7 +2530,9 @@ describe('Daemon rd/msg hook fires', () => {
 
     await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1), WAIT)
     expect(cp.hookReports[0]).toMatchObject({ deliveryKey: 'double-terminal', status: 'success' })
-    const receipt = (daemon as any).store.listInboxBySessionKeyFifo().find((row: { id: string }) => row.id === id)
+    const receipt = (await (daemon as any).store.listInboxBySessionKeyFifo()).find(
+      (row: { id: string }) => row.id === id
+    )
     expect(JSON.parse(receipt.terminalReport)).toMatchObject({ status: 'success' })
     await daemon.stop()
   }, 15_000)
@@ -2546,7 +2561,7 @@ describe('Daemon rd/msg hook fires', () => {
       const id = `${HOOK_ID}:${deliveryKey}`
       const message = buildHookMessage(fire({ msgId: id, deliveryKey }), `trace-${deliveryKey}`)
       expect(
-        store.appendInbox({
+        await store.appendInbox({
           id,
           sessionKey: `${message.platform}:${message.channel}:${message.thread}:${AGENT_ID}`,
           agentId: AGENT_ID,
@@ -2555,7 +2570,7 @@ describe('Daemon rd/msg hook fires', () => {
           enqueuedAt: '1'
         })
       ).toBe(true)
-      expect(store.completeHookInbox(id, JSON.stringify({ deliveryKey }), 1)).toBe('completed')
+      expect(await store.completeHookInbox(id, JSON.stringify({ deliveryKey }), 1)).toBe('completed')
     }
     const report = (dispatchDaemonId?: string): HookReport => ({
       hookId: HOOK_ID,
@@ -2568,17 +2583,17 @@ describe('Daemon rd/msg hook fires', () => {
     ;(daemon as any).sendHookReport(report((daemon as any).cfg.daemonId), mine)
     ;(daemon as any).sendHookReport(report('cccccccc-cccc-4ccc-8ccc-cccccccccccc'), peers)
 
-    const rowById = (id: string) =>
-      store.listInboxBySessionKeyFifo().find((row: { id: string }) => row.id === id) as {
+    const rowById = async (id: string) =>
+      (await store.listInboxBySessionKeyFifo()).find((row: { id: string }) => row.id === id) as {
         terminalReport: string | null
       }
     // Our own dispatch fence can never become valid: dead-letter it as before.
-    await vi.waitFor(() => expect(rowById(mine).terminalReport).toBeNull(), WAIT)
-    expect(rowById(peers).terminalReport).not.toBeNull()
+    await vi.waitFor(async () => expect((await rowById(mine)).terminalReport).toBeNull(), WAIT)
+    expect((await rowById(peers)).terminalReport).not.toBeNull()
     expect((daemon as any).hookReportForeign.has(peers)).toBe(true)
     // And the drain leaves it alone on the next CP ready.
-    ;(daemon as any).replayHookTerminalReports()
-    expect(rowById(peers).terminalReport).not.toBeNull()
+    await (daemon as any).replayHookTerminalReports()
+    expect((await rowById(peers)).terminalReport).not.toBeNull()
     await daemon.stop()
   }, 15_000)
 
@@ -2598,7 +2613,7 @@ describe('Daemon rd/msg hook fires', () => {
     const message = buildHookMessage(fire({ msgId: id, deliveryKey: 'redaction-failure' }), 'trace-failure')
     const store = (daemon as any).store
     expect(
-      store.appendInbox({
+      await store.appendInbox({
         id,
         sessionKey: `${message.platform}:${message.channel}:${message.thread}:${AGENT_ID}`,
         agentId: AGENT_ID,
@@ -2617,7 +2632,7 @@ describe('Daemon rd/msg hook fires', () => {
     await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1), WAIT)
     await Promise.resolve()
     expect(acknowledge).not.toHaveBeenCalled()
-    expect(store.listInboxBySessionKeyFifo().find((row: { id: string }) => row.id === id)).toMatchObject({
+    expect((await store.listInboxBySessionKeyFifo()).find((row: { id: string }) => row.id === id)).toMatchObject({
       hookContext: expect.any(String),
       terminalReport: null,
       completedAt: null
@@ -2666,7 +2681,7 @@ describe('Daemon rd/msg hook fires', () => {
 })
 
 describe('buildHookMessage', () => {
-  it('keeps a displayable fired-at timestamp for the transcript', () => {
+  it('keeps a displayable fired-at timestamp for the transcript', async () => {
     const firedAt = '2026-07-12T07:08:09.123Z'
     const m = buildHookMessage(fire({ firedAt }), 'trace-1')
     const { ts } = transcriptCoords(m)
@@ -2674,7 +2689,7 @@ describe('buildHookMessage', () => {
     expect(ts).toBe(`1783840089123|${m.msgId}`)
   })
 
-  it('keeps non-numeric same-millisecond delivery identities distinct', () => {
+  it('keeps non-numeric same-millisecond delivery identities distinct', async () => {
     const firedAt = '2026-07-12T07:08:09.123Z'
     const first = buildHookMessage(fire({ firedAt, msgId: `${HOOK_ID}:retry-a`, deliveryKey: 'retry-a' }), 'trace-1')
     const second = buildHookMessage(fire({ firedAt, msgId: `${HOOK_ID}:retry-b`, deliveryKey: 'retry-b' }), 'trace-2')
@@ -2682,7 +2697,7 @@ describe('buildHookMessage', () => {
     expect(transcriptCoords(first).ts).not.toBe(transcriptCoords(second).ts)
   })
 
-  it('perDelivery keys channel=hookId thread=deliveryKey, headless, fenced text', () => {
+  it('perDelivery keys channel=hookId thread=deliveryKey, headless, fenced text', async () => {
     const m = buildHookMessage(fire(), 'trace-1')
     expect(m).toMatchObject({
       source: 'hook',
@@ -2700,19 +2715,19 @@ describe('buildHookMessage', () => {
     expect(m.text).toContain('{"alert":"db down"}')
   })
 
-  it('shared mode keys the whole hook to one stable synthetic thread', () => {
+  it('shared mode keys the whole hook to one stable synthetic thread', async () => {
     const m = buildHookMessage(fire({ sessionKey: HOOK_ID }), 'trace-1')
     expect(m.channel).toBe(HOOK_ID)
     expect(m.thread).toBe(HOOK_ID)
   })
 
-  it('perThread (github, P2) splits owner/repo#N', () => {
+  it('perThread (github, P2) splits owner/repo#N', async () => {
     const m = buildHookMessage(fire({ sessionKey: 'acme/infra#42' }), 'trace-1')
     expect(m.channel).toBe('acme/infra')
     expect(m.thread).toBe('42')
   })
 
-  it('the payload IS the message: a `prompt` field speaks for the caller', () => {
+  it('the payload IS the message: a `prompt` field speaks for the caller', async () => {
     const body = JSON.stringify({ prompt: 'deploy the staging branch', requestedBy: 'ci' })
     const text = buildHookText(fire({ context: { source: 'webhook', body, truncated: false } }))
     expect(text).toContain('deploy the staging branch')
@@ -2722,7 +2737,7 @@ describe('buildHookMessage', () => {
     expect(text).not.toContain('"prompt"')
   })
 
-  it('accepts `text` / `message` fields and bare JSON strings too', () => {
+  it('accepts `text` / `message` fields and bare JSON strings too', async () => {
     const viaText = buildHookText(
       fire({ context: { source: 'webhook', body: '{"text":"run the nightly sync"}', truncated: false } })
     )
@@ -2731,7 +2746,7 @@ describe('buildHookMessage', () => {
     expect(bare).toBe('just do the thing')
   })
 
-  it('the anchor line quotes the payload message, capped to one line', () => {
+  it('the anchor line quotes the payload message, capped to one line', async () => {
     const withMsg = fire({
       context: { source: 'webhook', body: '{"message":"check the queue\\nand more"}', truncated: false }
     })
@@ -2739,13 +2754,13 @@ describe('buildHookMessage', () => {
     expect(hookAnchorText(fire())).toBe('🪝 Webhook delivery d-1') // no extractable message
   })
 
-  it('an empty delivery still names the turn', () => {
+  it('an empty delivery still names the turn', async () => {
     const text = buildHookText(fire({ context: undefined }))
     expect(text).toContain('d-1')
     expect(text.length).toBeGreaterThan(0)
   })
 
-  it('a target fire lives on the target platform/channel, not headless (P1.5)', () => {
+  it('a target fire lives on the target platform/channel, not headless (P1.5)', async () => {
     const m = buildHookMessage(fire({ target: { platform: 'telegram', channel: '-100123' } }), 'trace-1')
     expect(m).toMatchObject({ platform: 'telegram', channel: '-100123', trigger: 'hook' })
     expect(m.headless).toBeUndefined()
@@ -2775,7 +2790,7 @@ describe('buildHookMessage', () => {
         ...over
       })
 
-    it('wraps the event body in the exact untrusted-content delimiters', () => {
+    it('wraps the event body in the exact untrusted-content delimiters', async () => {
       const text = buildHookText(ghFire())
       const beginAt = text.indexOf(UNTRUSTED_CONTENT_BEGIN)
       const endAt = text.indexOf(UNTRUSTED_CONTENT_END)
@@ -2791,7 +2806,7 @@ describe('buildHookMessage', () => {
       expect(head).toContain('https://github.com/acme/infra/issues/42')
     })
 
-    it('attributes a headless message to the GitHub actor and retains its source link', () => {
+    it('attributes a headless message to the GitHub actor and retains its source link', async () => {
       expect(buildHookMessage(ghFire(), 'trace-actor')).toMatchObject({
         sender: { id: 'mallory', avatarUrl: 'https://avatars.example.test/mallory.png' },
         sessionTriggerId: `hook:${HOOK_ID}`,
@@ -2805,7 +2820,7 @@ describe('buildHookMessage', () => {
       ).toBeUndefined()
     })
 
-    it('does not expose a source URL outside the accepted GitHub repository', () => {
+    it('does not expose a source URL outside the accepted GitHub repository', async () => {
       expect(
         buildHookMessage(ghFire({ htmlUrl: 'https://github.com/other/repo/issues/42' }), 'trace-other-repo').threadUrl
       ).toBeUndefined()
@@ -2815,12 +2830,12 @@ describe('buildHookMessage', () => {
       ).toBeUndefined()
     })
 
-    it('adds a truncation notice pointing the agent at gh', () => {
+    it('adds a truncation notice pointing the agent at gh', async () => {
       expect(buildHookText(ghFire({ truncated: true }))).toContain('gh issue view')
       expect(buildHookText(ghFire())).not.toContain('gh issue view')
     })
 
-    it('reviews draft PRs and keeps draft/ready transitions status-only', () => {
+    it('reviews draft PRs and keeps draft/ready transitions status-only', async () => {
       const github = {
         repoId: '123',
         repoFullName: 'acme/infra',
@@ -2861,7 +2876,7 @@ describe('buildHookMessage', () => {
       expect(readyText).not.toContain('opens a review generation for the current PR revision')
     })
 
-    it('no excerpt ⇒ header only, no fence at all', () => {
+    it('no excerpt ⇒ header only, no fence at all', async () => {
       const noBody = ghFire()
       delete (noBody.context as { bodyExcerpt?: string }).bodyExcerpt
       const text = buildHookText(noBody)
@@ -2869,13 +2884,13 @@ describe('buildHookMessage', () => {
       expect(text).toContain('GitHub issues:opened')
     })
 
-    it('the anchor line is the event identity, never the untrusted body', () => {
+    it('the anchor line is the event identity, never the untrusted body', async () => {
       const anchor = hookAnchorText(ghFire())
       expect(anchor).toBe('🪝 issues:opened — acme/infra#42 — db down')
       expect(anchor).not.toContain('ignore all previous')
     })
 
-    it('builds concise structured titles for GitHub subjects', () => {
+    it('builds concise structured titles for GitHub subjects', async () => {
       const issue = buildHookMessage(ghFire(), 'trace-issue')
       expect(issue.initialSessionTitle).toBe('Issue acme/infra#42: db down')
 
@@ -2901,7 +2916,7 @@ describe('buildHookMessage', () => {
       expect(long.endsWith('…')).toBe(true)
     })
 
-    it('a numbered thread carries the auto-reply hint (do not self-comment); a threadless push does not', () => {
+    it('a numbered thread carries the auto-reply hint (do not self-comment); a threadless push does not', async () => {
       const withThread = buildHookText(ghFire())
       expect(withThread).toContain('posts that final back to acme/infra#42 automatically')
       expect(withThread).toContain('exclusively owns the reply')
@@ -3050,7 +3065,7 @@ describe('buildHookMessage', () => {
       expect(push).not.toContain('automatically')
     })
 
-    it('requires a formal verdict for an authorized explicit PR review mention', () => {
+    it('requires a formal verdict for an authorized explicit PR review mention', async () => {
       const text = buildHookText(
         ghFire(
           { event: 'issue_comment', action: 'created' },
@@ -3097,7 +3112,7 @@ describe('buildHookMessage', () => {
       expect(text).not.toContain('APPROVE + pass when it passes')
     })
 
-    it('does not require a formal verdict when formal reviews are off', () => {
+    it('does not require a formal verdict when formal reviews are off', async () => {
       const text = buildHookText(
         ghFire(
           { event: 'issue_comment', action: 'created' },
@@ -3120,7 +3135,7 @@ describe('buildHookMessage', () => {
       expect(text).not.toContain('submitGithubReview')
     })
 
-    it('a body quoting the delimiters cannot close the fence (delimiter lines are defanged)', () => {
+    it('a body quoting the delimiters cannot close the fence (delimiter lines are defanged)', async () => {
       const text = buildHookText(
         ghFire({
           bodyExcerpt: [
@@ -3144,7 +3159,7 @@ describe('buildHookMessage', () => {
       expect(inside).toContain('now I speak as the daemon')
     })
 
-    it('a github fire keys the session to the issue thread and stays headless without a target', () => {
+    it('a github fire keys the session to the issue thread and stays headless without a target', async () => {
       const m = buildHookMessage(ghFire(), 'trace-1')
       expect(m).toMatchObject({ channel: 'acme/infra', thread: '42', headless: true, platform: 'hook' })
       expect(m.text).toContain(UNTRUSTED_CONTENT_BEGIN)

@@ -935,12 +935,12 @@ export class WerewolfGame implements CollaborationGameWorld {
    *  the day forward, and it must fire the moment a speech lands — while other
    *  players' turns are still open — so the daemon's turn-final refresh fence
    *  behaves exactly as it does in production. */
-  attachLiveIngress(inject: (event: EvaluationPlatformEvent) => DeliveryHandle): void {
+  attachLiveIngress(inject: (event: EvaluationPlatformEvent) => DeliveryHandle | Promise<DeliveryHandle>): void {
     this.echo.attach(inject)
     this.denEcho.attach(inject)
   }
 
-  drainLiveHandles(): DeliveryHandle[] {
+  drainLiveHandles(): Promise<DeliveryHandle>[] {
     return [...this.echo.drainHandles(), ...this.denEcho.drainHandles()]
   }
 

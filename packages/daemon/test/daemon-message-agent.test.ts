@@ -177,7 +177,7 @@ describe('messageAgent: same-daemon delivery', () => {
     // Seed the caller's own session record (mid-turn its acpSessionId is already minted),
     // so messageAgent captures it as the child's origin — the SessionTarget for a reply.
     const callerKey = sessionKey('slack', 'C1', '100.1', 'bot-a')
-    ;(daemon as any).store.upsertSession({
+    await (daemon as any).store.upsertSession({
       key: callerKey,
       agentId: 'bot-a',
       platform: 'slack',
@@ -203,7 +203,7 @@ describe('messageAgent: same-daemon delivery', () => {
     const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
     const { daemon, calls, call } = await bootWithDispatchSpy(root)
     const callerKey = sessionKey('slack', 'C1', '100.1', 'bot-a')
-    ;(daemon as any).store.upsertSession({
+    await (daemon as any).store.upsertSession({
       key: callerKey,
       agentId: 'bot-a',
       platform: 'slack',
@@ -214,7 +214,7 @@ describe('messageAgent: same-daemon delivery', () => {
       lastDeliveredTs: null,
       updatedAt: Date.now()
     })
-    ;(daemon as any).store.setSessionClassification(callerKey, {
+    await (daemon as any).store.setSessionClassification(callerKey, {
       sourceBindingKind: 'external',
       externalProvider: 'slack',
       externalRealmKey: 'T1',
@@ -257,7 +257,7 @@ describe('messageAgent: same-daemon delivery', () => {
     expect(callMeta).toMatchObject({ callFrom: 'bot-a' })
     expect(callMeta.deliveryId).toBe(msg.msgId.split(':').pop())
     // No shared-transcript row is recorded for the (now invisible) agent message.
-    expect((daemon as any).store.transcriptSince('C1', '100.1', null)).toEqual([])
+    expect(await (daemon as any).store.transcriptSince('C1', '100.1', null)).toEqual([])
 
     await daemon.stop()
   })
@@ -283,7 +283,7 @@ describe('messageAgent: same-daemon delivery', () => {
     ])
     const { daemon, calls, call } = await bootWithDispatchSpy(root)
     const callerKey = sessionKey('slack', 'C1', '100.1', 'bot-a')
-    ;(daemon as any).store.upsertSession({
+    await (daemon as any).store.upsertSession({
       key: callerKey,
       agentId: 'bot-a',
       platform: 'slack',
@@ -363,7 +363,7 @@ describe('messageAgent: same-daemon delivery', () => {
       expect(res).toMatchObject({ delivered: false, reason: 'invalid_target' })
       expect(postMessage).not.toHaveBeenCalled()
       expect(calls).toHaveLength(0)
-      expect((daemon as any).store.transcriptSince('C1', '100.1', null)).toEqual([])
+      expect(await (daemon as any).store.transcriptSince('C1', '100.1', null)).toEqual([])
       await daemon.stop()
     }
   )
@@ -427,7 +427,7 @@ describe('messageAgent: same-daemon delivery', () => {
     expect(result.post).toBeUndefined()
     expect(postMessage).not.toHaveBeenCalled()
     expect(calls).toHaveLength(0)
-    expect((daemon as any).store.transcriptSince('C1', '100.1', null)).toEqual([])
+    expect(await (daemon as any).store.transcriptSince('C1', '100.1', null)).toEqual([])
     await daemon.stop()
   })
 
@@ -802,7 +802,7 @@ describe('messageAgent: cross-daemon routing (P2, source side)', () => {
         return { deliveryId: payload.deliveryId, delivered: true }
       })
     }
-    ;(daemon as any).store.upsertSession({
+    await (daemon as any).store.upsertSession({
       key: sessionKey('slack', 'C1', '100.1', 'bot-a'),
       agentId: 'bot-a',
       platform: 'slack',
@@ -1082,7 +1082,7 @@ describe('handleRelayAgentMsg: cross-daemon target side (P2)', () => {
     const { daemon, calls } = await bootWithDispatchSpy(root)
     withSnapshot(daemon)
     const originKey = sessionKey('dream', 'memory', 'dream-1', 'bot-b')
-    ;(daemon as any).store.upsertSession({
+    await (daemon as any).store.upsertSession({
       key: originKey,
       agentId: 'bot-b',
       platform: 'dream',
@@ -1121,7 +1121,7 @@ describe('handleRelayAgentMsg: cross-daemon target side (P2)', () => {
     withSnapshot(daemon)
     const CONV = '66666666-6666-4666-8666-666666666666'
     const originKey = sessionKey('webchat', CONV, `webchat:${CONV}`, 'bot-b')
-    ;(daemon as any).store.upsertSession({
+    await (daemon as any).store.upsertSession({
       key: originKey,
       agentId: 'bot-b',
       platform: 'webchat',
@@ -1166,7 +1166,7 @@ describe('handleRelayAgentMsg: cross-daemon target side (P2)', () => {
     const root = scaffold([{ id: 'bot-b' }])
     const { daemon, calls } = await bootWithDispatchSpy(root)
     withSnapshot(daemon)
-    ;(daemon as any).store.upsertSession({
+    await (daemon as any).store.upsertSession({
       key: sessionKey('dream', 'memory', 'dream-1', 'bot-b'),
       agentId: 'bot-b',
       platform: 'dream',
@@ -1198,7 +1198,7 @@ describe('handleRelayAgentMsg: cross-daemon target side (P2)', () => {
     const { daemon, calls } = await bootWithDispatchSpy(root)
     withSnapshot(daemon)
     // The colliding row is inserted FIRST so an insertion-ordered global lookup finds it.
-    ;(daemon as any).store.upsertSession({
+    await (daemon as any).store.upsertSession({
       key: sessionKey('slack', 'C9', '900.9', 'bot-x'),
       agentId: 'bot-x',
       platform: 'slack',
@@ -1210,7 +1210,7 @@ describe('handleRelayAgentMsg: cross-daemon target side (P2)', () => {
       updatedAt: Date.now()
     })
     const originKey = sessionKey('dream', 'memory', 'dream-2', 'bot-b')
-    ;(daemon as any).store.upsertSession({
+    await (daemon as any).store.upsertSession({
       key: originKey,
       agentId: 'bot-b',
       platform: 'dream',
@@ -1240,7 +1240,7 @@ describe('handleRelayAgentMsg: cross-daemon target side (P2)', () => {
     const { daemon, calls } = await bootWithDispatchSpy(root)
     withExecsSnapshot(daemon, 'slack') // C_EXECS members: bot-b only; caller bot-a is not in it
     const originKey = sessionKey('slack', 'C_EXECS', '900.1', 'bot-b')
-    ;(daemon as any).store.upsertSession({
+    await (daemon as any).store.upsertSession({
       key: originKey,
       agentId: 'bot-b',
       platform: 'slack',
@@ -1279,7 +1279,7 @@ describe('handleRelayAgentMsg: cross-daemon target side (P2)', () => {
     )
     expect(missing).toMatchObject({ delivered: false, reason: 'not_found' })
     // A session owned by ANOTHER agent is refused the same way (ownership half of the check).
-    ;(daemon as any).store.upsertSession({
+    await (daemon as any).store.upsertSession({
       key: sessionKey('dream', 'memory', 'dream-9', 'bot-x'),
       agentId: 'bot-x',
       platform: 'dream',
@@ -1679,7 +1679,7 @@ describe('replyToSession: SessionTarget delivery + origin-only authorization', (
     const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
     const { daemon, calls } = await bootWithDispatchSpy(root)
     // The origin session (owner bot-a) the replier bot-b was woken from.
-    ;(daemon as any).store.upsertSession({
+    await (daemon as any).store.upsertSession({
       key: sessionKey('slack', 'C1', '100.1', 'bot-a'),
       agentId: 'bot-a',
       platform: 'slack',
@@ -1691,7 +1691,7 @@ describe('replyToSession: SessionTarget delivery + origin-only authorization', (
       updatedAt: Date.now()
     })
     const callerKey = sessionKey('slack', 'C2', '200.1', 'bot-b')
-    ;(daemon as any).store.upsertSession({
+    await (daemon as any).store.upsertSession({
       key: callerKey,
       agentId: 'bot-b',
       platform: 'slack',
@@ -1754,7 +1754,7 @@ describe('replyToSession: SessionTarget delivery + origin-only authorization', (
     const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
     const { daemon, calls } = await bootWithDispatchSpy(root)
     const CONV = '22222222-2222-4222-8222-222222222222'
-    ;(daemon as any).store.upsertSession({
+    await (daemon as any).store.upsertSession({
       key: sessionKey('webchat', CONV, `webchat:${CONV}`, 'bot-a'),
       agentId: 'bot-a',
       platform: 'webchat',
@@ -1766,7 +1766,7 @@ describe('replyToSession: SessionTarget delivery + origin-only authorization', (
       updatedAt: Date.now()
     })
     const callerKey = sessionKey('slack', 'C2', '200.1', 'bot-b')
-    ;(daemon as any).store.upsertSession({
+    await (daemon as any).store.upsertSession({
       key: callerKey,
       agentId: 'bot-b',
       platform: 'slack',
@@ -1811,7 +1811,7 @@ describe('replyToSession: SessionTarget delivery + origin-only authorization', (
     const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
     const { daemon, calls } = await bootWithDispatchSpy(root)
     const SYNTHETIC = 'a2a:bot-a'
-    ;(daemon as any).store.upsertSession({
+    await (daemon as any).store.upsertSession({
       key: sessionKey('webchat', SYNTHETIC, `webchat:${SYNTHETIC}`, 'bot-a'),
       agentId: 'bot-a',
       platform: 'webchat',
@@ -1823,7 +1823,7 @@ describe('replyToSession: SessionTarget delivery + origin-only authorization', (
       updatedAt: Date.now()
     })
     const callerKey = sessionKey('slack', 'C2', '200.1', 'bot-b')
-    ;(daemon as any).store.upsertSession({
+    await (daemon as any).store.upsertSession({
       key: callerKey,
       agentId: 'bot-b',
       platform: 'slack',
@@ -1854,7 +1854,7 @@ describe('replyToSession: SessionTarget delivery + origin-only authorization', (
   it('reports a failed reply instead of queued-for-parent when local dispatch rejects admission', async () => {
     const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
     const { daemon } = await bootWithDispatchSpy(root)
-    ;(daemon as any).store.upsertSession({
+    await (daemon as any).store.upsertSession({
       key: sessionKey('slack', 'C1', '100.1', 'bot-a'),
       agentId: 'bot-a',
       platform: 'slack',
@@ -1866,7 +1866,7 @@ describe('replyToSession: SessionTarget delivery + origin-only authorization', (
       updatedAt: Date.now()
     })
     const callerKey = sessionKey('slack', 'C2', '200.1', 'bot-b')
-    ;(daemon as any).store.upsertSession({
+    await (daemon as any).store.upsertSession({
       key: callerKey,
       agentId: 'bot-b',
       platform: 'slack',
@@ -1930,7 +1930,7 @@ describe('replyToSession: SessionTarget delivery + origin-only authorization', (
     ;(daemon as any).agents.get('bot-a').integrations.push(slackInteg)
     const scope = (daemon as any).transportScopeForIntegration(slackInteg)
     const dreamKey = sessionKey('dream', 'a2a:bot-x', 'dream-1', 'bot-a', scope)
-    ;(daemon as any).store.upsertSession({
+    await (daemon as any).store.upsertSession({
       key: dreamKey,
       agentId: 'bot-a',
       platform: 'dream',
@@ -1979,7 +1979,7 @@ describe('replyToSession: SessionTarget delivery + origin-only authorization', (
     const scope = (daemon as any).transportScopeForIntegration(tgInteg)
     expect(scope.startsWith('telegram:')).toBe(true)
     const dreamKey = sessionKey('dream', 'a2a:bot-x', 'dream-2', 'bot-a', scope)
-    ;(daemon as any).store.upsertSession({
+    await (daemon as any).store.upsertSession({
       key: dreamKey,
       agentId: 'bot-a',
       platform: 'dream',
@@ -2049,7 +2049,7 @@ describe('replyToSession: SessionTarget delivery + origin-only authorization', (
     const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
     const { daemon, calls } = await bootWithDispatchSpy(root)
     // Origin (parent) session, owner bot-a.
-    ;(daemon as any).store.upsertSession({
+    await (daemon as any).store.upsertSession({
       key: sessionKey('slack', 'C1', '100.1', 'bot-a'),
       agentId: 'bot-a',
       platform: 'slack',
@@ -2061,7 +2061,7 @@ describe('replyToSession: SessionTarget delivery + origin-only authorization', (
       updatedAt: Date.now()
     })
     // The replier's OWN session, spawned earlier with a durable parent link persisted on the row.
-    ;(daemon as any).store.upsertSession({
+    await (daemon as any).store.upsertSession({
       key: sessionKey('slack', 'C2', '200.1', 'bot-b'),
       agentId: 'bot-b',
       platform: 'slack',
@@ -2126,7 +2126,7 @@ describe('spawnChannelRootSession — case 2a new-session seed', () => {
     const { daemon, calls } = await bootWithDispatchSpy(root)
     // Seed the origin (current) session so its acpSessionId becomes the child's originSessionId.
     const originKey = sessionKey('slack', 'C1', '100.1', 'bot-a')
-    ;(daemon as any).store.upsertSession({
+    await (daemon as any).store.upsertSession({
       key: originKey,
       agentId: 'bot-a',
       platform: 'slack',
@@ -2138,7 +2138,7 @@ describe('spawnChannelRootSession — case 2a new-session seed', () => {
       updatedAt: Date.now()
     })
 
-    ;(daemon as any).spawnChannelRootSession({
+    await (daemon as any).spawnChannelRootSession({
       agentId: 'bot-a',
       platform: 'slack',
       integrationId: 'int-a',
@@ -2176,7 +2176,7 @@ describe('spawnChannelRootSession — case 2a new-session seed', () => {
     await daemon.start()
     const targetKey = sessionKey('slack', 'C1', '1784297789.871789', 'bot-a')
 
-    ;(daemon as any).spawnChannelRootSession({
+    await (daemon as any).spawnChannelRootSession({
       agentId: 'bot-a',
       platform: 'slack',
       integrationId: 'int-a',
@@ -2188,8 +2188,8 @@ describe('spawnChannelRootSession — case 2a new-session seed', () => {
       originThread: '100.1'
     })
 
-    await vi.waitFor(() => {
-      expect((daemon as any).store.getSession(targetKey)).toMatchObject({
+    await vi.waitFor(async () => {
+      expect(await (daemon as any).store.getSession(targetKey)).toMatchObject({
         acpSessionId: 'acp-1',
         state: 'idle',
         lastDeliveredTs: null
@@ -2209,7 +2209,7 @@ describe('spawnChannelRootSession — case 2a new-session seed', () => {
     // A Feishu DM root post, the shape where the key and the raw ts differ most: ops resolves the
     // thread key to the CHAT id (what Feishu ingress keys a p2p conversation under) while the
     // post's own message id stays the transcript ts.
-    ;(daemon as any).spawnChannelRootSession({
+    await (daemon as any).spawnChannelRootSession({
       agentId: 'bot-a',
       platform: 'feishu',
       channel: 'oc_42',
@@ -2239,7 +2239,7 @@ describe('spawnChannelRootSession — case 2a new-session seed', () => {
     // The current turn runs in a TELEGRAM session; the agent posts to a SLACK channel. The
     // origin lookup must key by the origin's platform (telegram), not the post's (slack).
     const originKey = sessionKey('telegram', '-100999', 'tg:52', 'bot-a')
-    ;(daemon as any).store.upsertSession({
+    await (daemon as any).store.upsertSession({
       key: originKey,
       agentId: 'bot-a',
       platform: 'telegram',
@@ -2251,7 +2251,7 @@ describe('spawnChannelRootSession — case 2a new-session seed', () => {
       updatedAt: Date.now()
     })
 
-    ;(daemon as any).spawnChannelRootSession({
+    await (daemon as any).spawnChannelRootSession({
       agentId: 'bot-a',
       platform: 'slack',
       integrationId: 'int-a',
@@ -2284,7 +2284,7 @@ describe('spawnChannelRootSession — case 2a new-session seed', () => {
     // A Slack turn posting into a Telegram group: postMessage returned the bare message id
     // '172', which ops.ts converts to the canonical `tg:172` (threadKeyForPost) before calling
     // here — the two are separate fields precisely because they differ on Telegram.
-    ;(daemon as any).spawnChannelRootSession({
+    await (daemon as any).spawnChannelRootSession({
       agentId: 'bot-a',
       platform: 'telegram',
       channel: '-100123',
@@ -2313,8 +2313,8 @@ describe('spawnChannelRootSession — case 2a new-session seed', () => {
  * turn, which carries no CallMeta at all.
  */
 describe('rootPostRelation: did this post fork a conversation we are already in', () => {
-  const seed = (daemon: any, over: Record<string, unknown>) =>
-    daemon.store.upsertSession({
+  const seed = async (daemon: any, over: Record<string, unknown>) =>
+    await daemon.store.upsertSession({
       state: 'idle',
       lastDeliveredTs: null,
       updatedAt: Date.now(),
@@ -2339,7 +2339,7 @@ describe('rootPostRelation: did this post fork a conversation we are already in'
     const { daemon } = await bootWithDispatchSpy(root)
     // The parent conversation — a Telegram customer chat owned by ANOTHER agent, which is the
     // ordinary escalation shape: whoever asked is not whoever answers.
-    seed(daemon, {
+    await seed(daemon, {
       key: sessionKey('telegram', '-100123', 'tg:170', 'bot-a'),
       agentId: 'bot-a',
       platform: 'telegram',
@@ -2347,7 +2347,7 @@ describe('rootPostRelation: did this post fork a conversation we are already in'
       thread: 'tg:170',
       acpSessionId: 'acp-parent-1'
     })
-    seed(daemon, {
+    await seed(daemon, {
       key: sessionKey('slack', 'C2', '200.1', 'bot-b'),
       agentId: 'bot-b',
       platform: 'slack',
@@ -2357,11 +2357,11 @@ describe('rootPostRelation: did this post fork a conversation we are already in'
       originSessionId: 'acp-parent-1'
     })
 
-    expect(ask(daemon)).toEqual({ kind: 'parent', sessionId: 'acp-parent-1' })
+    expect(await ask(daemon)).toEqual({ kind: 'parent', sessionId: 'acp-parent-1' })
     // A post somewhere else is an ordinary new topic, not a fork.
-    expect(ask(daemon, { targetChannel: '-100999' })).toBeUndefined()
+    expect(await ask(daemon, { targetChannel: '-100999' })).toBeUndefined()
     // The caller's OWN conversation, which its turn reply already reaches.
-    expect(ask(daemon, { targetPlatform: 'slack', targetChannel: 'C2' })).toEqual({ kind: 'self' })
+    expect(await ask(daemon, { targetPlatform: 'slack', targetChannel: 'C2' })).toEqual({ kind: 'self' })
     await daemon.stop()
   })
 
@@ -2371,7 +2371,7 @@ describe('rootPostRelation: did this post fork a conversation we are already in'
     // The since-deleted `narrowPlatform` fold turned `feishu` into `slack`; keying the lookup
     // through it looked up a row that never existed, so a Feishu session could never resolve
     // its parent.
-    seed(daemon, {
+    await seed(daemon, {
       key: sessionKey('telegram', '-100123', 'tg:170', 'bot-a'),
       agentId: 'bot-a',
       platform: 'telegram',
@@ -2379,7 +2379,7 @@ describe('rootPostRelation: did this post fork a conversation we are already in'
       thread: 'tg:170',
       acpSessionId: 'acp-parent-1'
     })
-    seed(daemon, {
+    await seed(daemon, {
       key: sessionKey('feishu', 'oc_42', 'om_1', 'bot-b'),
       agentId: 'bot-b',
       platform: 'feishu',
@@ -2389,7 +2389,7 @@ describe('rootPostRelation: did this post fork a conversation we are already in'
       originSessionId: 'acp-parent-1'
     })
 
-    expect(ask(daemon, { platform: 'feishu', callerChannel: 'oc_42', callerThread: 'om_1' })).toEqual({
+    expect(await ask(daemon, { platform: 'feishu', callerChannel: 'oc_42', callerThread: 'om_1' })).toEqual({
       kind: 'parent',
       sessionId: 'acp-parent-1'
     })
@@ -2403,7 +2403,7 @@ describe('rootPostRelation: did this post fork a conversation we are already in'
     // across bots), so identity has to include the transport scope on both sides. The parent
     // here lives under one bot's scope; the post goes out on a channel id that merely LOOKS the
     // same, so comparing raw platform+channel would mislabel it as the parent's conversation.
-    seed(daemon, {
+    await seed(daemon, {
       key: sessionKey('telegram', '-100123', 'tg:170', 'bot-a', 'scope-bot-1'),
       agentId: 'bot-a',
       platform: 'telegram',
@@ -2412,7 +2412,7 @@ describe('rootPostRelation: did this post fork a conversation we are already in'
       transportScope: 'scope-bot-1',
       acpSessionId: 'acp-parent-scoped'
     })
-    seed(daemon, {
+    await seed(daemon, {
       key: sessionKey('slack', 'C2', '200.1', 'bot-b'),
       agentId: 'bot-b',
       platform: 'slack',
@@ -2421,11 +2421,11 @@ describe('rootPostRelation: did this post fork a conversation we are already in'
       acpSessionId: 'acp-child-1',
       originSessionId: 'acp-parent-scoped'
     })
-    expect(ask(daemon)).toBeUndefined()
+    expect(await ask(daemon)).toBeUndefined()
 
     // Control: an unscoped parent on the same coords IS the conversation the post landed on, so
     // the silence above is the scope doing the work and not a broken lookup.
-    seed(daemon, {
+    await seed(daemon, {
       key: sessionKey('telegram', '-100123', 'tg:171', 'bot-a'),
       agentId: 'bot-a',
       platform: 'telegram',
@@ -2433,7 +2433,7 @@ describe('rootPostRelation: did this post fork a conversation we are already in'
       thread: 'tg:171',
       acpSessionId: 'acp-parent-unscoped'
     })
-    ;(daemon as any).store.upsertSession({
+    await (daemon as any).store.upsertSession({
       key: sessionKey('slack', 'C3', '300.1', 'bot-b'),
       agentId: 'bot-b',
       platform: 'slack',
@@ -2445,7 +2445,7 @@ describe('rootPostRelation: did this post fork a conversation we are already in'
       updatedAt: Date.now(),
       originSessionId: 'acp-parent-unscoped'
     })
-    expect(ask(daemon, { callerChannel: 'C3', callerThread: '300.1' })).toEqual({
+    expect(await ask(daemon, { callerChannel: 'C3', callerThread: '300.1' })).toEqual({
       kind: 'parent',
       sessionId: 'acp-parent-unscoped'
     })
@@ -2456,7 +2456,7 @@ describe('rootPostRelation: did this post fork a conversation we are already in'
     const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
     const { daemon } = await bootWithDispatchSpy(root)
     const callerKey = sessionKey('slack', 'C2', '200.1', 'bot-b')
-    seed(daemon, {
+    await seed(daemon, {
       key: callerKey,
       agentId: 'bot-b',
       platform: 'slack',
@@ -2474,14 +2474,14 @@ describe('rootPostRelation: did this post fork a conversation we are already in'
       originSessionId: 'acp-remote-parent',
       originCoords: { platform: 'telegram', channel: '-100123', thread: 'tg:9' }
     })
-    expect(ask(daemon)).toEqual({ kind: 'parent', sessionId: 'acp-remote-parent' })
+    expect(await ask(daemon)).toEqual({ kind: 'parent', sessionId: 'acp-remote-parent' })
     // Still only for the conversation it actually names.
-    expect(ask(daemon, { targetChannel: '-100999' })).toBeUndefined()
+    expect(await ask(daemon, { targetChannel: '-100999' })).toBeUndefined()
     // Matching is coordinates-only here BY DESIGN — the remote scope is credential-derived and
     // never crosses the wire — so a target integration's own scope does not suppress the match.
     // Over-matching costs a hint naming the caller's real parent; silence would cost the hint
     // entirely on the cross-daemon escalation path.
-    expect(ask(daemon, { targetIntegrationId: 'int-tg-1' })).toEqual({
+    expect(await ask(daemon, { targetIntegrationId: 'int-tg-1' })).toEqual({
       kind: 'parent',
       sessionId: 'acp-remote-parent'
     })
@@ -2502,7 +2502,7 @@ describe('rootPostRelation: did this post fork a conversation we are already in'
 
     for (const [i, conv] of continuous.entries()) {
       const parentId = `acp-parent-continuous-${i}`
-      seed(daemon, {
+      await seed(daemon, {
         key: sessionKey(conv.platform, conv.channel, conv.thread, 'bot-a'),
         agentId: 'bot-a',
         platform: conv.platform,
@@ -2511,7 +2511,7 @@ describe('rootPostRelation: did this post fork a conversation we are already in'
         acpSessionId: parentId
       })
       const callerKey = sessionKey('slack', 'C2', '200.1', 'bot-b')
-      seed(daemon, {
+      await seed(daemon, {
         key: callerKey,
         agentId: 'bot-b',
         platform: 'slack',
@@ -2523,10 +2523,10 @@ describe('rootPostRelation: did this post fork a conversation we are already in'
 
       const target = { targetPlatform: conv.platform, targetChannel: conv.channel, targetThread: conv.thread }
       // Parent: the answer reached the waiting conversation, so there is nothing to say.
-      expect(ask(daemon, target)).toBeUndefined()
+      expect(await ask(daemon, target)).toBeUndefined()
       // Self: the same, from inside that conversation's own session.
       expect(
-        ask(daemon, {
+        await ask(daemon, {
           ...target,
           callerAgentId: 'bot-a',
           platform: conv.platform,
@@ -2542,7 +2542,7 @@ describe('rootPostRelation: did this post fork a conversation we are already in'
     const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
     const { daemon } = await bootWithDispatchSpy(root)
     const callerKey = sessionKey('slack', 'C2', '200.1', 'bot-b')
-    seed(daemon, {
+    await seed(daemon, {
       key: callerKey,
       agentId: 'bot-b',
       platform: 'slack',
@@ -2551,10 +2551,10 @@ describe('rootPostRelation: did this post fork a conversation we are already in'
       acpSessionId: 'acp-child-1'
     })
     // No parent link anywhere ⇒ a post into an unrelated channel relates to nothing.
-    expect(ask(daemon)).toBeUndefined()
+    expect(await ask(daemon)).toBeUndefined()
 
     // A live wake names its own origin, matching the precedence replyToSession authorizes on.
-    seed(daemon, {
+    await seed(daemon, {
       key: sessionKey('telegram', '-100999', 'tg:9', 'bot-a'),
       agentId: 'bot-a',
       platform: 'telegram',
@@ -2569,7 +2569,7 @@ describe('rootPostRelation: did this post fork a conversation we are already in'
       originSessionId: 'acp-parent-2',
       originCoords: { platform: 'telegram', channel: '-100999', thread: 'tg:9' }
     })
-    expect(ask(daemon, { targetChannel: '-100999' })).toEqual({ kind: 'parent', sessionId: 'acp-parent-2' })
+    expect(await ask(daemon, { targetChannel: '-100999' })).toEqual({ kind: 'parent', sessionId: 'acp-parent-2' })
     await daemon.stop()
   })
 })
@@ -2584,9 +2584,9 @@ describe('viewSessionStatus: child-only authorization + status collapse', () => 
   const PARENT_KEY = sessionKey('slack', 'C1', '100.1', 'bot-a')
   const CHILD_KEY = sessionKey('slack', 'C1', '100.1', 'bot-b')
 
-  const seedSession = (daemon: any, key: string, over: Record<string, unknown> = {}) => {
+  const seedSession = async (daemon: any, key: string, over: Record<string, unknown> = {}) => {
     const [platform, channel, thread, agentId] = key.split(':')
-    daemon.store.upsertSession({
+    await daemon.store.upsertSession({
       key,
       agentId,
       platform,
@@ -2621,7 +2621,7 @@ describe('viewSessionStatus: child-only authorization + status collapse', () => 
   it('reports a child woken by this session, keyed by the childSessionId sendMessage returned', async () => {
     const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
     const { daemon, call } = await bootWithDispatchSpy(root)
-    seedSession(daemon, PARENT_KEY, { acpSessionId: 'acp-parent-1', state: 'prompting' })
+    await seedSession(daemon, PARENT_KEY, { acpSessionId: 'acp-parent-1', state: 'prompting' })
 
     const res = await call(baseReq({ needsReply: true }))
     expect(res.delivered).toBe(true)
@@ -2652,9 +2652,9 @@ describe('viewSessionStatus: child-only authorization + status collapse', () => 
   ])('collapses state=$state + outcome=$outcome to $status', async ({ state, outcome, status }) => {
     const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
     const { daemon } = await bootWithDispatchSpy(root)
-    seedSession(daemon, PARENT_KEY, { acpSessionId: 'acp-parent-1' })
-    seedSession(daemon, CHILD_KEY, { acpSessionId: 'acp-child-1', state, originSessionId: 'acp-parent-1' })
-    if (outcome) (daemon as any).store.setSessionTurnOutcome(CHILD_KEY, outcome, 2_000)
+    await seedSession(daemon, PARENT_KEY, { acpSessionId: 'acp-parent-1' })
+    await seedSession(daemon, CHILD_KEY, { acpSessionId: 'acp-child-1', state, originSessionId: 'acp-parent-1' })
+    if (outcome) await (daemon as any).store.setSessionTurnOutcome(CHILD_KEY, outcome, 2_000)
 
     expect(await ask(daemon, CHILD_KEY)).toMatchObject({ agentId: 'bot-b', status, state })
     await daemon.stop()
@@ -2665,9 +2665,9 @@ describe('viewSessionStatus: child-only authorization + status collapse', () => 
   it('refuses the child’s ACP session id — only the returned logical key is addressable', async () => {
     const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
     const { daemon } = await bootWithDispatchSpy(root)
-    seedSession(daemon, PARENT_KEY, { acpSessionId: 'acp-parent-1' })
-    seedSession(daemon, CHILD_KEY, { acpSessionId: 'acp-child-1', originSessionId: 'acp-parent-1' })
-    ;(daemon as any).store.setSessionTurnOutcome(CHILD_KEY, 'done', 2_000)
+    await seedSession(daemon, PARENT_KEY, { acpSessionId: 'acp-parent-1' })
+    await seedSession(daemon, CHILD_KEY, { acpSessionId: 'acp-child-1', originSessionId: 'acp-parent-1' })
+    await (daemon as any).store.setSessionTurnOutcome(CHILD_KEY, 'done', 2_000)
 
     expect((await ask(daemon, CHILD_KEY))?.status).toBe('done')
     expect(await ask(daemon, 'acp-child-1')).toBeNull()
@@ -2679,9 +2679,9 @@ describe('viewSessionStatus: child-only authorization + status collapse', () => 
   it('reports in-progress for a re-wake of an already-finished child, not its old outcome', async () => {
     const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
     const { daemon, call } = await bootWithDispatchSpy(root)
-    seedSession(daemon, PARENT_KEY, { acpSessionId: 'acp-parent-1', state: 'prompting' })
-    seedSession(daemon, CHILD_KEY, { acpSessionId: 'acp-child-1', originSessionId: 'acp-parent-1' })
-    ;(daemon as any).store.setSessionTurnOutcome(CHILD_KEY, 'done', 2_000)
+    await seedSession(daemon, PARENT_KEY, { acpSessionId: 'acp-parent-1', state: 'prompting' })
+    await seedSession(daemon, CHILD_KEY, { acpSessionId: 'acp-child-1', originSessionId: 'acp-parent-1' })
+    await (daemon as any).store.setSessionTurnOutcome(CHILD_KEY, 'done', 2_000)
     // Before the re-wake the parent legitimately sees the finished first delegation.
     expect((await ask(daemon, CHILD_KEY))?.status).toBe('done')
 
@@ -2696,8 +2696,8 @@ describe('viewSessionStatus: child-only authorization + status collapse', () => 
   it('refuses a session this caller did not start (a sibling with a different parent)', async () => {
     const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
     const { daemon } = await bootWithDispatchSpy(root)
-    seedSession(daemon, PARENT_KEY, { acpSessionId: 'acp-parent-1' })
-    seedSession(daemon, CHILD_KEY, { acpSessionId: 'acp-child-1', originSessionId: 'acp-someone-else' })
+    await seedSession(daemon, PARENT_KEY, { acpSessionId: 'acp-parent-1' })
+    await seedSession(daemon, CHILD_KEY, { acpSessionId: 'acp-child-1', originSessionId: 'acp-someone-else' })
 
     expect(await ask(daemon, CHILD_KEY)).toBeNull()
     await daemon.stop()
@@ -2706,8 +2706,8 @@ describe('viewSessionStatus: child-only authorization + status collapse', () => 
   it('refuses a root session with no parent at all', async () => {
     const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
     const { daemon } = await bootWithDispatchSpy(root)
-    seedSession(daemon, PARENT_KEY, { acpSessionId: 'acp-parent-1' })
-    seedSession(daemon, CHILD_KEY, { acpSessionId: 'acp-child-1' })
+    await seedSession(daemon, PARENT_KEY, { acpSessionId: 'acp-parent-1' })
+    await seedSession(daemon, CHILD_KEY, { acpSessionId: 'acp-child-1' })
 
     expect(await ask(daemon, CHILD_KEY)).toBeNull()
     await daemon.stop()
@@ -2716,7 +2716,7 @@ describe('viewSessionStatus: child-only authorization + status collapse', () => 
   it('refuses the caller’s OWN session — a session is not its own child', async () => {
     const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
     const { daemon } = await bootWithDispatchSpy(root)
-    seedSession(daemon, PARENT_KEY, { acpSessionId: 'acp-parent-1' })
+    await seedSession(daemon, PARENT_KEY, { acpSessionId: 'acp-parent-1' })
 
     expect(await ask(daemon, PARENT_KEY)).toBeNull()
     expect(await ask(daemon, 'acp-parent-1')).toBeNull()
@@ -2726,11 +2726,11 @@ describe('viewSessionStatus: child-only authorization + status collapse', () => 
   it('refuses an unknown session id, and a known child asked for by a DIFFERENT session', async () => {
     const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
     const { daemon } = await bootWithDispatchSpy(root)
-    seedSession(daemon, PARENT_KEY, { acpSessionId: 'acp-parent-1' })
-    seedSession(daemon, CHILD_KEY, { acpSessionId: 'acp-child-1', originSessionId: 'acp-parent-1' })
+    await seedSession(daemon, PARENT_KEY, { acpSessionId: 'acp-parent-1' })
+    await seedSession(daemon, CHILD_KEY, { acpSessionId: 'acp-child-1', originSessionId: 'acp-parent-1' })
     // bot-b's own session in another thread: a real session, but not this child's parent.
     const otherKey = sessionKey('slack', 'C1', '999.9', 'bot-b')
-    seedSession(daemon, otherKey, { acpSessionId: 'acp-other-1' })
+    await seedSession(daemon, otherKey, { acpSessionId: 'acp-other-1' })
 
     expect(await ask(daemon, 'no-such-session')).toBeNull()
     expect(await ask(daemon, CHILD_KEY, { agentId: 'bot-b', channel: 'C1', thread: '999.9' })).toBeNull()
@@ -2744,7 +2744,7 @@ describe('viewSessionStatus: child-only authorization + status collapse', () => 
     const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
     const { daemon } = await bootWithDispatchSpy(root)
     const scopedParent = sessionKey('slack', 'C1', '100.1', 'bot-a', 'bot-scope-1')
-    ;(daemon as any).store.upsertSession({
+    await (daemon as any).store.upsertSession({
       key: scopedParent,
       agentId: 'bot-a',
       platform: 'slack',
@@ -2756,8 +2756,8 @@ describe('viewSessionStatus: child-only authorization + status collapse', () => 
       lastDeliveredTs: null,
       updatedAt: 1_000
     })
-    seedSession(daemon, CHILD_KEY, { acpSessionId: 'acp-child-1', originSessionId: 'acp-parent-scoped' })
-    ;(daemon as any).store.setSessionTurnOutcome(CHILD_KEY, 'done', 2_000)
+    await seedSession(daemon, CHILD_KEY, { acpSessionId: 'acp-child-1', originSessionId: 'acp-parent-scoped' })
+    await (daemon as any).store.setSessionTurnOutcome(CHILD_KEY, 'done', 2_000)
 
     const caller = { agentId: 'bot-a', channel: 'C1', thread: '100.1', transportScope: 'bot-scope-1' }
     expect((await ask(daemon, CHILD_KEY, caller))?.status).toBe('done')
@@ -2770,7 +2770,7 @@ describe('viewSessionStatus: child-only authorization + status collapse', () => 
     const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
     const { daemon } = await bootWithDispatchSpy(root)
     // A child whose parent link is absent must not match an absent caller session id.
-    seedSession(daemon, CHILD_KEY, { acpSessionId: 'acp-child-1' })
+    await seedSession(daemon, CHILD_KEY, { acpSessionId: 'acp-child-1' })
 
     expect(await ask(daemon, CHILD_KEY)).toBeNull()
     await daemon.stop()
@@ -2785,8 +2785,8 @@ describe('viewSessionStatus: child-only authorization + status collapse', () => 
 describe('viewSessionStatus: cross-daemon children', () => {
   const PARENT_KEY = sessionKey('slack', 'C1', '100.1', 'bot-a')
 
-  const seedParent = (daemon: any) =>
-    (daemon as any).store.upsertSession({
+  const seedParent = async (daemon: any) =>
+    await (daemon as any).store.upsertSession({
       key: PARENT_KEY,
       agentId: 'bot-a',
       platform: 'slack',
@@ -2816,7 +2816,7 @@ describe('viewSessionStatus: cross-daemon children', () => {
   it('asks the CP for a child admitted on another daemon, and maps the answer', async () => {
     const root = scaffold([{ id: 'bot-a' }]) // bot-b is remote
     const { daemon, call } = await bootWithDispatchSpy(root)
-    seedParent(daemon)
+    await seedParent(daemon)
     withRelay(daemon)
     const asks: any[] = []
     ;(daemon as any).cpClient = {
@@ -2851,7 +2851,7 @@ describe('viewSessionStatus: cross-daemon children', () => {
   it('does not track a remote child whose wake was REFUSED — nothing was opened', async () => {
     const root = scaffold([{ id: 'bot-a' }])
     const { daemon, call } = await bootWithDispatchSpy(root)
-    seedParent(daemon)
+    await seedParent(daemon)
     withRelay(daemon, false)
     ;(daemon as any).cpClient = {
       stop: vi.fn(async () => {}),
@@ -2869,7 +2869,7 @@ describe('viewSessionStatus: cross-daemon children', () => {
   it('surfaces an unreachable owning daemon and a disconnected CP as retryable errors, not denials', async () => {
     const root = scaffold([{ id: 'bot-a' }])
     const { daemon, call } = await bootWithDispatchSpy(root)
-    seedParent(daemon)
+    await seedParent(daemon)
     withRelay(daemon)
     ;(daemon as any).cpClient = {
       stop: vi.fn(async () => {}),
@@ -2890,7 +2890,7 @@ describe('viewSessionStatus: cross-daemon children', () => {
   it('refuses a remote child to a session that did not wake it', async () => {
     const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
     const { daemon, call } = await bootWithDispatchSpy(root)
-    seedParent(daemon)
+    await seedParent(daemon)
     withRelay(daemon)
     ;(daemon as any).cpClient = {
       stop: vi.fn(async () => {}),
@@ -2902,7 +2902,7 @@ describe('viewSessionStatus: cross-daemon children', () => {
     expect(res.delivered).toBe(true)
 
     // bot-b has its own session in the same channel but never woke this child.
-    ;(daemon as any).store.upsertSession({
+    await (daemon as any).store.upsertSession({
       key: sessionKey('slack', 'C1', '777.7', 'bot-b'),
       agentId: 'bot-b',
       platform: 'slack',
@@ -2934,7 +2934,7 @@ describe('viewSessionStatus: remote child handle identity', () => {
   it('returns the canonical key from the ACK, not the source’s unscoped guess', async () => {
     const root = scaffold([{ id: 'bot-a' }])
     const { daemon, call } = await bootWithDispatchSpy(root)
-    ;(daemon as any).store.upsertSession({
+    await (daemon as any).store.upsertSession({
       key: sessionKey('slack', 'C1', '100.1', 'bot-a'),
       agentId: 'bot-a',
       platform: 'slack',
@@ -3041,9 +3041,9 @@ describe('handleRelayAgentMsg: admission handle + pre-row probe window', () => {
     // dispatch is stubbed, so no row exists yet — the ACK handle plus the admission link are all
     // the owning daemon has, and a probe must still be answerable and authorized.
     expect(ack.childSessionId).toBe('slack:C1:100.1:bot-b')
-    expect((daemon as any).store.getSession(ack.childSessionId)).toBeUndefined()
+    expect(await (daemon as any).store.getSession(ack.childSessionId)).toBeUndefined()
     expect(
-      (daemon as any).childSessionStatusProbe({
+      await (daemon as any).childSessionStatusProbe({
         parentSessionId: 'acp-remote-parent',
         childSessionId: ack.childSessionId
       })
@@ -3058,7 +3058,7 @@ describe('handleRelayAgentMsg: admission handle + pre-row probe window', () => {
     })
     // …and only to the parent that actually woke it.
     expect(
-      (daemon as any).childSessionStatusProbe({
+      await (daemon as any).childSessionStatusProbe({
         parentSessionId: 'acp-someone-else',
         childSessionId: ack.childSessionId
       })
@@ -3071,8 +3071,8 @@ describe('handleRelayAgentMsg: admission handle + pre-row probe window', () => {
 describe('childSessionStatusProbe: owning-daemon authorization', () => {
   const CHILD_KEY = sessionKey('slack', 'C1', '100.1', 'bot-b')
 
-  const seedChild = (daemon: any, over: Record<string, unknown> = {}) =>
-    (daemon as any).store.upsertSession({
+  const seedChild = async (daemon: any, over: Record<string, unknown> = {}) =>
+    await (daemon as any).store.upsertSession({
       key: CHILD_KEY,
       agentId: 'bot-b',
       platform: 'slack',
@@ -3088,11 +3088,11 @@ describe('childSessionStatusProbe: owning-daemon authorization', () => {
   it('answers with the collapsed status when the child’s origin matches the claimed parent', async () => {
     const root = scaffold([{ id: 'bot-b' }])
     const { daemon } = await bootWithDispatchSpy(root)
-    seedChild(daemon, { originSessionId: 'acp-remote-parent' })
-    ;(daemon as any).store.setSessionTurnOutcome(CHILD_KEY, 'failed', 2_000)
+    await seedChild(daemon, { originSessionId: 'acp-remote-parent' })
+    await (daemon as any).store.setSessionTurnOutcome(CHILD_KEY, 'failed', 2_000)
 
     expect(
-      (daemon as any).childSessionStatusProbe({
+      await (daemon as any).childSessionStatusProbe({
         parentSessionId: 'acp-remote-parent',
         childSessionId: CHILD_KEY
       })
@@ -3103,18 +3103,18 @@ describe('childSessionStatusProbe: owning-daemon authorization', () => {
   it('refuses a mismatched parent, a parentless child, and an unknown session — all as found:false', async () => {
     const root = scaffold([{ id: 'bot-b' }])
     const { daemon } = await bootWithDispatchSpy(root)
-    seedChild(daemon, { originSessionId: 'acp-remote-parent' })
+    await seedChild(daemon, { originSessionId: 'acp-remote-parent' })
 
-    const probe = (parentSessionId: string, childSessionId = CHILD_KEY) =>
-      (daemon as any).childSessionStatusProbe({ parentSessionId, childSessionId })
+    const probe = async (parentSessionId: string, childSessionId = CHILD_KEY) =>
+      await (daemon as any).childSessionStatusProbe({ parentSessionId, childSessionId })
     // A CP that forwarded a wrong/forged parent still cannot read the child.
-    expect(probe('acp-someone-else')).toEqual({ found: false })
-    expect(probe('acp-remote-parent', 'slack:C1:999.9:nobody')).toEqual({ found: false })
+    expect(await probe('acp-someone-else')).toEqual({ found: false })
+    expect(await probe('acp-remote-parent', 'slack:C1:999.9:nobody')).toEqual({ found: false })
 
     // A parentless (root) child: originSessionId is first-wins in the store, so this needs a key
     // that was never given an origin rather than a re-seed with null.
     const rootKey = sessionKey('slack', 'C1', '555.5', 'bot-b')
-    ;(daemon as any).store.upsertSession({
+    await (daemon as any).store.upsertSession({
       key: rootKey,
       agentId: 'bot-b',
       platform: 'slack',
@@ -3125,7 +3125,7 @@ describe('childSessionStatusProbe: owning-daemon authorization', () => {
       lastDeliveredTs: null,
       updatedAt: 1_000
     })
-    expect(probe('acp-remote-parent', rootKey)).toEqual({ found: false })
+    expect(await probe('acp-remote-parent', rootKey)).toEqual({ found: false })
     await daemon.stop()
   })
 })
@@ -3137,7 +3137,7 @@ describe('viewSessionStatus: a reused child is readable by the current waking pa
     const { daemon, call } = await bootWithDispatchSpy(root)
     const CHILD = sessionKey('slack', 'C1', '100.1', 'bot-b')
     // The child already exists with parent A as its DURABLE origin.
-    ;(daemon as any).store.upsertSession({
+    await (daemon as any).store.upsertSession({
       key: CHILD,
       agentId: 'bot-b',
       platform: 'slack',
@@ -3149,10 +3149,10 @@ describe('viewSessionStatus: a reused child is readable by the current waking pa
       updatedAt: 1_000,
       originSessionId: 'acp-parent-a'
     })
-    ;(daemon as any).store.setSessionTurnOutcome(CHILD, 'done', 2_000)
+    await (daemon as any).store.setSessionTurnOutcome(CHILD, 'done', 2_000)
     // Parent C (a different session) now wakes it and receives the handle.
     const cKey = sessionKey('slack', 'C1', '300.3', 'bot-c')
-    ;(daemon as any).store.upsertSession({
+    await (daemon as any).store.upsertSession({
       key: cKey,
       agentId: 'bot-c',
       platform: 'slack',
@@ -3180,15 +3180,15 @@ describe('viewSessionStatus: a reused child is readable by the current waking pa
     expect((await askAs('bot-c', '300.3'))?.status).toBe('in-progress')
     // …and the owning-side probe agrees, so a cross-daemon C sees the same.
     expect(
-      (daemon as any).childSessionStatusProbe({ parentSessionId: 'acp-parent-c', childSessionId: CHILD }).found
+      (await (daemon as any).childSessionStatusProbe({ parentSessionId: 'acp-parent-c', childSessionId: CHILD })).found
     ).toBe(true)
     // The durable first parent A keeps its access too.
     expect(
-      (daemon as any).childSessionStatusProbe({ parentSessionId: 'acp-parent-a', childSessionId: CHILD }).found
+      (await (daemon as any).childSessionStatusProbe({ parentSessionId: 'acp-parent-a', childSessionId: CHILD })).found
     ).toBe(true)
     // An unrelated session still cannot read it.
     expect(
-      (daemon as any).childSessionStatusProbe({ parentSessionId: 'acp-stranger', childSessionId: CHILD }).found
+      (await (daemon as any).childSessionStatusProbe({ parentSessionId: 'acp-stranger', childSessionId: CHILD })).found
     ).toBe(false)
     await daemon.stop()
   })
@@ -3199,7 +3199,7 @@ describe('messageAgent: needsReply report-back directive', () => {
   it('carries needsReply on the child’s CallMeta when the caller has an origin session', async () => {
     const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
     const { daemon, calls, call } = await bootWithDispatchSpy(root)
-    ;(daemon as any).store.upsertSession({
+    await (daemon as any).store.upsertSession({
       key: sessionKey('slack', 'C1', '100.1', 'bot-a'),
       agentId: 'bot-a',
       platform: 'slack',
@@ -3231,7 +3231,7 @@ describe('messageAgent: needsReply report-back directive', () => {
     const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }, { id: 'bot-c' }])
     const { daemon, calls, call } = await bootWithDispatchSpy(root)
     const childKey = sessionKey('slack', 'C1', '100.1', 'bot-b')
-    ;(daemon as any).store.upsertSession({
+    await (daemon as any).store.upsertSession({
       key: childKey,
       agentId: 'bot-b',
       platform: 'slack',

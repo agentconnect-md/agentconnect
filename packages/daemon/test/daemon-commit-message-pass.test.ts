@@ -165,7 +165,7 @@ describe('runCommitMessagePass — a fresh isolated session on the warm host', (
       await pass(daemon)
       // The whole point of the collector: the turn never becomes a session, so nothing is delivered,
       // recorded or billed to a session row.
-      expect(inner.store.getSessionByAcpIdForAgent(AGENT, 'sess-1')).toBeUndefined()
+      expect(await inner.store.getSessionByAcpIdForAgent(AGENT, 'sess-1')).toBeUndefined()
       expect(inner.memoryExtractionCollectors.size).toBe(0)
       // …but the tombstone stays until the host stops, because an adapter can still emit late.
       // The key shape is daemon-private (`pendingTurnKey`), so match on its contents.

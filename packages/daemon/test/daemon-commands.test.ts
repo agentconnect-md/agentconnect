@@ -143,14 +143,14 @@ describe('Daemon in-conversation commands', () => {
     await daemon.start()
     const conn = makeRoutable(daemon)
     const scope = LOOP_SCOPE
-    ;(daemon as any).store.tripLoopGuard(scope, 1, 'test_loop')
+    await (daemon as any).store.tripLoopGuard(scope, 1, 'test_loop')
 
-    ;(daemon as any).onInbound({ ...dm('100', '!resume'), sender: { id: 'unknown', isBot: false } })
-    expect((daemon as any).store.isLoopGuardOpen(scope)).toBe(true)
+    await (daemon as any).onInboundOutcome({ ...dm('100', '!resume'), sender: { id: 'unknown', isBot: false } })
+    expect(await (daemon as any).store.isLoopGuardOpen(scope)).toBe(true)
     expect(conn.postMessage).not.toHaveBeenCalled()
 
-    ;(daemon as any).onInbound(dm('200', '!resume'))
-    expect((daemon as any).store.isLoopGuardOpen(scope)).toBe(false)
+    await (daemon as any).onInboundOutcome(dm('200', '!resume'))
+    expect(await (daemon as any).store.isLoopGuardOpen(scope)).toBe(false)
     expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('Resumed'), 'T1')
     expect(blocked.prompts).toHaveLength(0) // the control command never becomes a prompt
     await daemon.stop()
@@ -168,8 +168,8 @@ describe('Daemon in-conversation commands', () => {
     const integration = (daemon as any).agents.get('bot-a').integrations[0]
     integration.core.bindRules = [{ match: { kind: 'mention' } }]
     const scope = 'slack:C-top:top-level'
-    ;(daemon as any).store.tripLoopGuard(scope, 1, 'automatic_turn_burst')
-    expect((daemon as any).store.listSessions()).toHaveLength(0)
+    await (daemon as any).store.tripLoopGuard(scope, 1, 'automatic_turn_burst')
+    expect(await (daemon as any).store.listSessions()).toHaveLength(0)
 
     const resume = (senderId: string) => ({
       msgId: `slack:C-top:resume-${senderId}`,
@@ -187,8 +187,8 @@ describe('Daemon in-conversation commands', () => {
       trigger: 'mention' as const
     })
 
-    ;(daemon as any).onInbound(resume('U1'))
-    expect((daemon as any).store.isLoopGuardOpen(scope)).toBe(false)
+    await (daemon as any).onInboundOutcome(resume('U1'))
+    expect(await (daemon as any).store.isLoopGuardOpen(scope)).toBe(false)
     expect(conn.postMessage).toHaveBeenCalledWith('C-top', expect.stringContaining('Resumed'), '9')
     expect(blocked.prompts).toHaveLength(0)
     await daemon.stop()
@@ -204,7 +204,7 @@ describe('Daemon in-conversation commands', () => {
     await daemon.start()
     const conn = makeRoutable(daemon)
     const scope = LOOP_SCOPE
-    ;(daemon as any).store.tripLoopGuard(scope, 1, 'test_loop')
+    await (daemon as any).store.tripLoopGuard(scope, 1, 'test_loop')
 
     const relayResume = (msgId: string, sender: { id: string; isBot: boolean }): RdMsgIm => ({
       source: 'im',
@@ -218,24 +218,28 @@ describe('Daemon in-conversation commands', () => {
     })
 
     // A bot-authored event cannot issue control commands.
-    expect((daemon as any).handleRelayMsg(relayResume('relay-bot', { id: 'U1', isBot: true }), () => {})).toEqual({
-      msgId: 'relay-bot',
-      accepted: false,
-      reason: 'unauthorized'
-    })
-    expect((daemon as any).store.isLoopGuardOpen(scope)).toBe(true)
+    expect(await (daemon as any).handleRelayMsg(relayResume('relay-bot', { id: 'U1', isBot: true }), () => {})).toEqual(
+      {
+        msgId: 'relay-bot',
+        accepted: false,
+        reason: 'unauthorized'
+      }
+    )
+    expect(await (daemon as any).store.isLoopGuardOpen(scope)).toBe(true)
 
-    expect((daemon as any).handleRelayMsg(relayResume('relay-human', { id: 'U1', isBot: false }), () => {})).toEqual({
+    expect(
+      await (daemon as any).handleRelayMsg(relayResume('relay-human', { id: 'U1', isBot: false }), () => {})
+    ).toEqual({
       msgId: 'relay-human',
       accepted: true
     })
-    expect((daemon as any).store.isLoopGuardOpen(scope)).toBe(false)
+    expect(await (daemon as any).store.isLoopGuardOpen(scope)).toBe(false)
     expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('Resumed'), 'T1')
     expect(blocked.prompts).toHaveLength(0)
     await daemon.stop()
   })
 
-  it('passes shared-bot rd/msg(im) through Slack name resolution before dispatch', () => {
+  it('passes shared-bot rd/msg(im) through Slack name resolution before dispatch', async () => {
     const daemon = new Daemon()
     const conn = {}
     const noteMessage = vi.fn()
@@ -257,12 +261,12 @@ describe('Daemon in-conversation commands', () => {
       payload
     }
 
-    expect((daemon as any).handleRelayMsg(msg, () => {})).toEqual({ msgId: 'relay-names', accepted: true })
+    expect(await (daemon as any).handleRelayMsg(msg, () => {})).toEqual({ msgId: 'relay-names', accepted: true })
     expect(noteMessage).toHaveBeenCalledWith(conn, payload)
     expect(dispatch).toHaveBeenCalledWith('bot-a', payload, 'int-a')
   })
 
-  it('stamps trigger=mention on relay im when the message mentions the integration bot', () => {
+  it('stamps trigger=mention on relay im when the message mentions the integration bot', async () => {
     // Relay arbitration never populates the wire `trigger`; the daemon recomputes it
     // from the mention list + this integration's own bot identity (see handleRelayIm).
     const daemon = new Daemon()
@@ -282,11 +286,11 @@ describe('Daemon in-conversation commands', () => {
       chatId: 'C1',
       payload: { ...bare, mentionedBots: ['U-OTHER', 'U-SELF'] } as any
     }
-    expect((daemon as any).handleRelayMsg(msg, () => {})).toEqual({ msgId: 'relay-mention', accepted: true })
+    expect(await (daemon as any).handleRelayMsg(msg, () => {})).toEqual({ msgId: 'relay-mention', accepted: true })
     expect(dispatch).toHaveBeenCalledWith('bot-a', expect.objectContaining({ trigger: 'mention' }), 'int-a')
   })
 
-  it('leaves trigger unset on relay im when the mention list does not name this bot', () => {
+  it('leaves trigger unset on relay im when the mention list does not name this bot', async () => {
     const daemon = new Daemon()
     const dispatch = vi.fn(async () => {})
     ;(daemon as any).agents.set('bot-a', {})
@@ -304,11 +308,11 @@ describe('Daemon in-conversation commands', () => {
       chatId: 'C1',
       payload: { ...bare, mentionedBots: ['U-OTHER'] } as any
     }
-    ;(daemon as any).handleRelayMsg(msg, () => {})
+    await (daemon as any).handleRelayMsg(msg, () => {})
     expect(dispatch).toHaveBeenCalledWith('bot-a', expect.not.objectContaining({ trigger: expect.anything() }), 'int-a')
   })
 
-  it('an explicit mention un-mutes a !stop-muted relay session; anything else stays dropped', () => {
+  it('an explicit mention un-mutes a !stop-muted relay session; anything else stays dropped', async () => {
     // Without the recomputed trigger the mute check can never see 'mention' on the
     // relay path — a !stop-muted agent in a shared channel would be dead forever.
     const daemon = new Daemon()
@@ -333,14 +337,14 @@ describe('Daemon in-conversation commands', () => {
         payload: { ...bare, mentionedBots } as any
       }
     }
-    ;(daemon as any).handleRelayMsg(frame('muted-plain', []), () => {})
+    await (daemon as any).handleRelayMsg(frame('muted-plain', []), () => {})
     expect(dispatch).not.toHaveBeenCalled()
-    ;(daemon as any).handleRelayMsg(frame('muted-mention', ['U-SELF']), () => {})
+    await (daemon as any).handleRelayMsg(frame('muted-mention', ['U-SELF']), () => {})
     expect(setSessionMuted).toHaveBeenCalledWith(expect.any(String), false)
     expect(dispatch).toHaveBeenCalledWith('bot-a', expect.objectContaining({ trigger: 'mention' }), 'int-a')
   })
 
-  it('dedups shared-bot retries per bot while dispatching the same Slack message for two bots', () => {
+  it('dedups shared-bot retries per bot while dispatching the same Slack message for two bots', async () => {
     const daemon = new Daemon()
     const dispatch = vi.fn(async () => {})
     ;(daemon as any).agents.set('bot-a', {})
@@ -360,15 +364,15 @@ describe('Daemon in-conversation commands', () => {
     const botA = frame('bot-a', '11111111-1111-4111-8111-111111111111', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')
     const botB = frame('bot-b', '22222222-2222-4222-8222-222222222222', 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb')
 
-    expect((daemon as any).handleRelayMsg(botA, () => {})).toEqual({
+    expect(await (daemon as any).handleRelayMsg(botA, () => {})).toEqual({
       msgId: botA.msgId,
       accepted: true
     })
-    expect((daemon as any).handleRelayMsg(botA, () => {})).toEqual({
+    expect(await (daemon as any).handleRelayMsg(botA, () => {})).toEqual({
       msgId: botA.msgId,
       accepted: true
     })
-    expect((daemon as any).handleRelayMsg(botB, () => {})).toEqual({
+    expect(await (daemon as any).handleRelayMsg(botB, () => {})).toEqual({
       msgId: botB.msgId,
       accepted: true
     })
@@ -378,7 +382,7 @@ describe('Daemon in-conversation commands', () => {
     expect(dispatch).toHaveBeenNthCalledWith(2, 'bot-b', botB.payload, botB.integrationId)
   })
 
-  it('discovers an unroutable gated Feishu callback before the last-hop gate drops it', () => {
+  it('discovers an unroutable gated Feishu callback before the last-hop gate drops it', async () => {
     const daemon = new Daemon()
     const discover = vi.fn()
     const notice = vi.fn()
@@ -407,7 +411,7 @@ describe('Daemon in-conversation commands', () => {
       payload
     }
 
-    expect((daemon as any).handleRelayMsg(msg, () => {})).toEqual({
+    expect(await (daemon as any).handleRelayMsg(msg, () => {})).toEqual({
       msgId: 'relay-feishu-gated',
       accepted: true
     })
@@ -427,7 +431,7 @@ describe('Daemon in-conversation commands', () => {
     makeRoutable(daemon)
     // The session the HTTP bot's inbound keys to (sessionKey(platform, channel, thread, agent)).
     const muteKey = SESSION_KEY
-    ;(daemon as any).store.setSessionMuted(muteKey, true)
+    await (daemon as any).store.setSessionMuted(muteKey, true)
 
     const relayIm = (msgId: string, text: string, trigger: 'dm' | 'mention'): RdMsgIm => ({
       source: 'im',
@@ -441,20 +445,20 @@ describe('Daemon in-conversation commands', () => {
     })
 
     // Implicit thread traffic while muted: accepted (consumed) but the agent is NOT woken.
-    expect((daemon as any).handleRelayMsg(relayIm('m-implicit', 'still there?', 'dm'), () => {})).toEqual({
+    expect(await (daemon as any).handleRelayMsg(relayIm('m-implicit', 'still there?', 'dm'), () => {})).toEqual({
       msgId: 'm-implicit',
       accepted: true
     })
     expect(blocked.prompts).toHaveLength(0)
-    expect((daemon as any).store.isSessionMuted(muteKey)).toBe(true)
+    expect(await (daemon as any).store.isSessionMuted(muteKey)).toBe(true)
 
     // An explicit @mention clears the mute and dispatches.
-    expect((daemon as any).handleRelayMsg(relayIm('m-mention', 'hey again', 'mention'), () => {})).toEqual({
+    expect(await (daemon as any).handleRelayMsg(relayIm('m-mention', 'hey again', 'mention'), () => {})).toEqual({
       msgId: 'm-mention',
       accepted: true
     })
     await vi.waitFor(() => expect(blocked.prompts).toHaveLength(1), WAIT)
-    expect((daemon as any).store.isSessionMuted(muteKey)).toBe(false)
+    expect(await (daemon as any).store.isSessionMuted(muteKey)).toBe(false)
     blocked.release()
     await daemon.stop()
   }, 15_000)
@@ -474,8 +478,8 @@ describe('Daemon in-conversation commands', () => {
     await vi.waitFor(() => expect(hasPending(daemon, 'acp-1')).toBe(true), WAIT)
 
     // queue a follow-up while the turn is in flight
-    ;(daemon as any).onInbound(dm('200', '!queue do it'))
-    expect((daemon as any).serialQueue.get(SESSION_KEY)).toHaveLength(1)
+    await (daemon as any).onInboundOutcome(dm('200', '!queue do it'))
+    await vi.waitFor(() => expect((daemon as any).serialQueue.get(SESSION_KEY)).toHaveLength(1), WAIT)
     expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('Queued'), 'T1')
     expect(blocked.prompts).toHaveLength(1) // the 2nd message is queued, not dispatched yet
     expect(blocked.prompts[0]).toContain('hello') // (prefixed by the injected memory block)
@@ -485,7 +489,7 @@ describe('Daemon in-conversation commands', () => {
     await turn
     await vi.waitFor(() => expect(blocked.prompts.length).toBe(2), WAIT)
     expect(blocked.prompts[1]).toContain('do it')
-    expect((daemon as any).serialQueue.has(SESSION_KEY)).toBe(false)
+    await vi.waitFor(() => expect((daemon as any).serialQueue.has(SESSION_KEY)).toBe(false), WAIT)
 
     await daemon.stop()
   }, 15_000)
@@ -501,7 +505,7 @@ describe('Daemon in-conversation commands', () => {
     makeRoutable(daemon)
 
     // no in-flight turn for this thread → dispatch right away
-    ;(daemon as any).onInbound(dm('100', '!queue start now'))
+    await (daemon as any).onInboundOutcome(dm('100', '!queue start now'))
     await vi.waitFor(() => expect(blocked.prompts.length).toBe(1), WAIT)
     expect(blocked.prompts[0]).toContain('start now')
     expect((daemon as any).serialQueue.size).toBe(0)
@@ -523,10 +527,10 @@ describe('Daemon in-conversation commands', () => {
     const turn = (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
     await vi.waitFor(() => expect(hasPending(daemon, 'acp-1')).toBe(true), WAIT)
 
-    for (let i = 0; i < 10; i++) (daemon as any).onInbound(dm(`${200 + i}`, `!queue m${i}`))
-    expect((daemon as any).serialQueue.get(SESSION_KEY)).toHaveLength(10)
-    ;(daemon as any).onInbound(dm('999', '!queue overflow')) // 11th → rejected
-    expect((daemon as any).serialQueue.get(SESSION_KEY)).toHaveLength(10)
+    for (let i = 0; i < 10; i++) await (daemon as any).onInboundOutcome(dm(`${200 + i}`, `!queue m${i}`))
+    await vi.waitFor(() => expect((daemon as any).serialQueue.get(SESSION_KEY)).toHaveLength(10), WAIT)
+    await (daemon as any).onInboundOutcome(dm('999', '!queue overflow')) // 11th → rejected
+    await vi.waitFor(() => expect((daemon as any).serialQueue.get(SESSION_KEY)).toHaveLength(10), WAIT)
     expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('full'), 'T1')
 
     blocked.release()
@@ -547,7 +551,7 @@ describe('Daemon in-conversation commands', () => {
     const turn = (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
     await vi.waitFor(() => expect(hasPending(daemon, 'acp-1')).toBe(true), WAIT)
 
-    ;(daemon as any).onInbound(dm('200', '!stop'))
+    await (daemon as any).onInboundOutcome(dm('200', '!stop'))
     expect(blocked.host.cancel).toHaveBeenCalledWith('acp-1')
     expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('Stopped'), 'T1')
 
@@ -578,20 +582,20 @@ describe('Daemon in-conversation commands', () => {
 
     const turn = (daemon as any).dispatch('bot-a', dm('100', 'cold'), 'int-a')
     await vi.waitFor(() => expect(host.newSession).toHaveBeenCalled(), WAIT)
-    expect((daemon as any).store.getSession(key)).toBeUndefined()
-    ;(daemon as any).onInbound(dm('200', '!stop'))
-    expect((daemon as any).commands.isSessionMuted(key)).toBe(true)
+    expect(await (daemon as any).store.getSession(key)).toBeUndefined()
+    await (daemon as any).onInboundOutcome(dm('200', '!stop'))
+    expect(await (daemon as any).commands.isSessionMuted(key)).toBe(true)
     // The mute already exists outside the sessions table, so a daemon restart at
     // this exact cold point cannot forget the stop.
-    const reopened = new LocalStore(statePath(root))
-    expect(reopened.getSession(key)).toBeUndefined()
-    expect(reopened.isSessionMuted(key)).toBe(true)
-    reopened.close()
+    const reopened = await LocalStore.open(statePath(root))
+    expect(await reopened.getSession(key)).toBeUndefined()
+    expect(await reopened.isSessionMuted(key)).toBe(true)
+    await reopened.close()
 
     releaseSession()
     await expect(turn).resolves.toBeNull()
-    expect((daemon as any).store.isSessionMuted(key)).toBe(true)
-    ;(daemon as any).onInbound(dm('300', 'must remain muted'))
+    expect(await (daemon as any).store.isSessionMuted(key)).toBe(true)
+    await (daemon as any).onInboundOutcome(dm('300', 'must remain muted'))
     await new Promise((resolve) => setTimeout(resolve, 10))
     expect(host.prompt).not.toHaveBeenCalled()
     await daemon.stop()
@@ -620,7 +624,7 @@ describe('Daemon in-conversation commands', () => {
     makeRoutable(daemon)
     const oldKey = SESSION_KEY
     const coldKey = sessionKey('slack', 'C1', 'T2', 'bot-a', TRANSPORT_SCOPE)
-    ;(daemon as any).store.upsertSession({
+    await (daemon as any).store.upsertSession({
       key: oldKey,
       agentId: 'bot-a',
       platform: 'slack',
@@ -637,11 +641,11 @@ describe('Daemon in-conversation commands', () => {
     const cold = { ...dm('100', 'cold T2'), thread: 'T2' }
     const turn = (daemon as any).dispatch('bot-a', cold, 'int-a')
     await vi.waitFor(() => expect(host.newSession).toHaveBeenCalled(), WAIT)
-    expect((daemon as any).store.getSession(coldKey)).toBeUndefined()
+    expect(await (daemon as any).store.getSession(coldKey)).toBeUndefined()
 
-    ;(daemon as any).onInbound({ ...dm('200', '!stop'), thread: 'T2' })
-    expect((daemon as any).commands.isSessionMuted(coldKey)).toBe(true)
-    expect((daemon as any).commands.isSessionMuted(oldKey)).toBe(false)
+    await (daemon as any).onInboundOutcome({ ...dm('200', '!stop'), thread: 'T2' })
+    expect(await (daemon as any).commands.isSessionMuted(coldKey)).toBe(true)
+    expect(await (daemon as any).commands.isSessionMuted(oldKey)).toBe(false)
 
     releaseSession()
     await expect(turn).resolves.toBeNull()
@@ -662,12 +666,12 @@ describe('Daemon in-conversation commands', () => {
     const turn = (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
     await vi.waitFor(() => expect(hasPending(daemon, 'acp-1')).toBe(true), WAIT)
 
-    ;(daemon as any).onInbound(dm('200', '!cancel'))
+    await (daemon as any).onInboundOutcome(dm('200', '!cancel'))
     expect(blocked.host.cancel).toHaveBeenCalledWith('acp-1')
     expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('Cancelled'), 'T1')
     // unlike !stop, the session is NOT muted — follow-ups keep dispatching.
     const store = (daemon as any).store
-    expect(store.isSessionMuted(SESSION_KEY)).toBe(false)
+    expect(await store.isSessionMuted(SESSION_KEY)).toBe(false)
 
     blocked.release()
     await turn
@@ -684,9 +688,9 @@ describe('Daemon in-conversation commands', () => {
     await daemon.start()
     const conn = makeRoutable(daemon)
 
-    ;(daemon as any).onInbound({ ...dm('400', '!cancel'), thread: 'T9' })
+    await (daemon as any).onInboundOutcome({ ...dm('400', '!cancel'), thread: 'T9' })
     expect(conn.postMessage).toHaveBeenCalledWith('C1', 'Nothing is running to cancel.', 'T9')
-    expect((daemon as any).store.isSessionMuted('slack:C1:T9:bot-a')).toBe(false)
+    expect(await (daemon as any).store.isSessionMuted('slack:C1:T9:bot-a')).toBe(false)
     await daemon.stop()
   }, 15_000)
 
@@ -703,10 +707,10 @@ describe('Daemon in-conversation commands', () => {
     const turn = (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
     await vi.waitFor(() => expect(hasPending(daemon, 'acp-1')).toBe(true), WAIT)
 
-    ;(daemon as any).onInbound(dm('200', '!queue later')) // buffered behind the turn
-    expect((daemon as any).serialQueue.get(SESSION_KEY)).toHaveLength(1)
-    ;(daemon as any).onInbound(dm('300', '!stop')) // clears the queue + cancels
-    expect((daemon as any).serialQueue.has(SESSION_KEY)).toBe(false)
+    await (daemon as any).onInboundOutcome(dm('200', '!queue later')) // buffered behind the turn
+    await vi.waitFor(() => expect((daemon as any).serialQueue.get(SESSION_KEY)).toHaveLength(1), WAIT)
+    await (daemon as any).onInboundOutcome(dm('300', '!stop')) // clears the queue + cancels
+    await vi.waitFor(() => expect((daemon as any).serialQueue.has(SESSION_KEY)).toBe(false), WAIT)
 
     blocked.release()
     await turn
@@ -732,30 +736,30 @@ describe('Daemon in-conversation commands', () => {
     const turn = (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
     await vi.waitFor(() => expect(hasPending(daemon, 'acp-1')).toBe(true), WAIT)
 
-    ;(daemon as any).onInbound(dm('200', '!stop'))
-    expect(store.isSessionMuted(SESSION_KEY)).toBe(true)
+    await (daemon as any).onInboundOutcome(dm('200', '!stop'))
+    expect(await store.isSessionMuted(SESSION_KEY)).toBe(true)
     blocked.release()
     await turn
 
     // un-mentioned follow-up in the muted thread → not dispatched, but recorded for §8.5 catch-up
-    ;(daemon as any).onInbound(dm('300', 'humans talking amongst themselves'))
+    await (daemon as any).onInboundOutcome(dm('300', 'humans talking amongst themselves'))
     await new Promise((r) => setTimeout(r, 20))
     expect(blocked.prompts).toHaveLength(1) // the follow-up was dropped, not dispatched (memory prefixes the 'hello' turn)
     expect(blocked.prompts[0]).toContain('hello')
     expect(
-      store
-        .transcriptSince(transcriptChannelKey('C1', TRANSPORT_SCOPE), 'T1', null)
-        .some((r: any) => r.text === 'humans talking amongst themselves')
+      (await store.transcriptSince(transcriptChannelKey('C1', TRANSPORT_SCOPE), 'T1', null)).some(
+        (r: any) => r.text === 'humans talking amongst themselves'
+      )
     ).toBe(true)
 
     // explicit @mention clears the mute and dispatches (with the missed context replayed)
-    ;(daemon as any).onInbound({ ...dm('400', '<@UBOTA> resume please'), mentionedBots: ['UBOTA'] })
+    await (daemon as any).onInboundOutcome({ ...dm('400', '<@UBOTA> resume please'), mentionedBots: ['UBOTA'] })
     await vi.waitFor(() => expect(blocked.prompts.length).toBe(2), WAIT)
-    expect(store.isSessionMuted(SESSION_KEY)).toBe(false)
+    expect(await store.isSessionMuted(SESSION_KEY)).toBe(false)
     expect(blocked.prompts[1]).toContain('humans talking amongst themselves')
 
     // thread affinity works again after the un-mute
-    ;(daemon as any).onInbound(dm('500', 'carry on'))
+    await (daemon as any).onInboundOutcome(dm('500', 'carry on'))
     await vi.waitFor(() => expect(blocked.prompts.length).toBe(3), WAIT)
 
     await daemon.stop()
@@ -777,7 +781,7 @@ describe('Daemon in-conversation commands', () => {
     const store = (daemon as any).store
 
     await (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
-    expect(store.isSessionMuted(SESSION_KEY)).toBe(false)
+    expect(await store.isSessionMuted(SESSION_KEY)).toBe(false)
 
     // channel message (not a DM, no mention) in a thread bot-a does not own → routeRules
     // misses, and the guarded channel-latest fallback declines to cross into T-other.
@@ -788,13 +792,13 @@ describe('Daemon in-conversation commands', () => {
       thread: 'T-other',
       trigger: undefined
     }
-    ;(daemon as any).onInbound(channelStop)
+    await (daemon as any).onInboundOutcome(channelStop)
     await new Promise((r) => setTimeout(r, 20))
     expect(conn.postMessage).not.toHaveBeenCalled()
-    expect(store.isSessionMuted(SESSION_KEY)).toBe(false)
+    expect(await store.isSessionMuted(SESSION_KEY)).toBe(false)
 
     // A top-level channel command (no thread) still reaches the channel's active session.
-    ;(daemon as any).onInbound({ ...channelStop, msgId: 'slack:C1:300', thread: undefined })
+    await (daemon as any).onInboundOutcome({ ...channelStop, msgId: 'slack:C1:300', thread: undefined })
     expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('Nothing is running'), 'slack:C1:300')
 
     await daemon.stop()
@@ -813,20 +817,20 @@ describe('Daemon in-conversation commands', () => {
 
     // open a session in T1, let its turn finish, then stand the agent down
     await (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
-    ;(daemon as any).onInbound(dm('200', '!stop'))
-    expect(store.isSessionMuted(SESSION_KEY)).toBe(true)
+    await (daemon as any).onInboundOutcome(dm('200', '!stop'))
+    expect(await store.isSessionMuted(SESSION_KEY)).toBe(true)
     expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('Muted'), 'T1')
 
     // follow-up in the muted thread does not start a turn
-    ;(daemon as any).onInbound(dm('300', 'follow up'))
+    await (daemon as any).onInboundOutcome(dm('300', 'follow up'))
     await new Promise((r) => setTimeout(r, 20))
     expect(host.prompt).toHaveBeenCalledTimes(1)
 
     // a bare !stop from a thread with no session of its own now targets the channel's
     // latest session (T1): reports it's idle + (re)mutes T1, but still replies in T9.
-    ;(daemon as any).onInbound({ ...dm('400', '!stop'), thread: 'T9' })
+    await (daemon as any).onInboundOutcome({ ...dm('400', '!stop'), thread: 'T9' })
     expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('Nothing is running'), 'T9')
-    expect(store.isSessionMuted(SESSION_KEY)).toBe(true)
+    expect(await store.isSessionMuted(SESSION_KEY)).toBe(true)
 
     await daemon.stop()
   }, 15_000)
@@ -842,16 +846,21 @@ describe('Daemon in-conversation commands', () => {
 
     // open a session in T1, then query it
     await (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
-    ;(daemon as any).onInbound(dm('200', '!status'))
+    await (daemon as any).onInboundOutcome(dm('200', '!status'))
     expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining(':bar_chart:'), 'T1')
 
     // another thread in the SAME channel with no session of its own → falls back to the
     // channel's latest session (still reports the status line, not "nothing here")
-    ;(daemon as any).onInbound({ ...dm('400', '!status'), thread: 'T9' })
+    await (daemon as any).onInboundOutcome({ ...dm('400', '!status'), thread: 'T9' })
     expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining(':bar_chart:'), 'T9')
 
     // a channel with no session at all → a "nothing here" note
-    ;(daemon as any).onInbound({ ...dm('500', '!status'), channel: 'C2', thread: 'T2', msgId: 'slack:C2:500' })
+    await (daemon as any).onInboundOutcome({
+      ...dm('500', '!status'),
+      channel: 'C2',
+      thread: 'T2',
+      msgId: 'slack:C2:500'
+    })
     expect(conn.postMessage).toHaveBeenCalledWith('C2', expect.stringContaining('No active session'), 'T2')
 
     await daemon.stop()
@@ -871,14 +880,14 @@ describe('Daemon in-conversation commands', () => {
 
     await (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
 
-    ;(daemon as any).onInbound(dm('200', '!fast on'))
-    expect(store.getFastModeOverride(key)).toBe(true)
+    await (daemon as any).onInboundOutcome(dm('200', '!fast on'))
+    expect(await store.getFastModeOverride(key)).toBe(true)
     expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('Fast mode on'), 'T1')
 
-    ;(daemon as any).onInbound(dm('300', '!fast off'))
-    expect(store.getFastModeOverride(key)).toBe(false)
+    await (daemon as any).onInboundOutcome(dm('300', '!fast off'))
+    expect(await store.getFastModeOverride(key)).toBe(false)
 
-    ;(daemon as any).onInbound(dm('400', '!fast'))
+    await (daemon as any).onInboundOutcome(dm('400', '!fast'))
     expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('Usage:'), 'T1')
 
     await daemon.stop()
@@ -900,34 +909,34 @@ describe('Daemon in-conversation commands', () => {
     await (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
 
     // bare /models lists the options, marking the current one
-    ;(daemon as any).onInbound(dm('200', '/models'))
+    await (daemon as any).onInboundOutcome(dm('200', '/models'))
     const listed = conn.postMessage.mock.calls.at(-1)![1] as string
     expect(listed).toContain('opus')
     expect(listed).toContain('sonnet')
     expect(listed).toContain('✓ (current)')
 
     // select by 1-based index → sticky override recorded + applied live
-    ;(daemon as any).onInbound(dm('210', '/models 2'))
-    expect(store.getModelOverride(key)).toBe('sonnet')
+    await (daemon as any).onInboundOutcome(dm('210', '/models 2'))
+    expect(await store.getModelOverride(key)).toBe('sonnet')
     expect(host.setSessionModel).toHaveBeenCalledWith('acp-1', 'sonnet')
     expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('Model set to sonnet'), 'T1')
 
     // select by name (case-insensitive substring)
-    ;(daemon as any).onInbound(dm('220', '/effort HIGH'))
-    expect(store.getEffortOverride(key)).toBe('high')
+    await (daemon as any).onInboundOutcome(dm('220', '/effort HIGH'))
+    expect(await store.getEffortOverride(key)).toBe('high')
 
-    ;(daemon as any).onInbound(dm('230', '/permission plan'))
-    expect(store.getPermissionModeOverride(key)).toBe('plan')
+    await (daemon as any).onInboundOutcome(dm('230', '/permission plan'))
+    expect(await store.getPermissionModeOverride(key)).toBe('plan')
 
     // an unknown value is rejected with the option list, no override written
-    ;(daemon as any).onInbound(dm('240', '/models haiku'))
+    await (daemon as any).onInboundOutcome(dm('240', '/models haiku'))
     expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('Unknown model'), 'T1')
-    expect(store.getModelOverride(key)).toBe('sonnet')
+    expect(await store.getModelOverride(key)).toBe('sonnet')
 
     // a bare command from a DIFFERENT thread still targets the channel's latest session
     // (T1) — the override lands on T1's key, and the reply goes to the sender's thread.
-    ;(daemon as any).onInbound({ ...dm('250', '/models 1'), thread: 'T9' })
-    expect(store.getModelOverride(key)).toBe('opus')
+    await (daemon as any).onInboundOutcome({ ...dm('250', '/models 1'), thread: 'T9' })
+    expect(await store.getModelOverride(key)).toBe('opus')
     expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('Model set to opus'), 'T9')
 
     await daemon.stop()
@@ -959,21 +968,21 @@ describe('Daemon in-conversation commands', () => {
     await (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
 
     // Default-off agents expose no runtime controls to conversation users.
-    ;(daemon as any).onInbound(dm('160', '/models 2'))
-    ;(daemon as any).onInbound(dm('170', '/effort high'))
-    ;(daemon as any).onInbound(dm('180', '!fast on'))
-    ;(daemon as any).onInbound(dm('190', '/permission'))
+    await (daemon as any).onInboundOutcome(dm('160', '/models 2'))
+    await (daemon as any).onInboundOutcome(dm('170', '/effort high'))
+    await (daemon as any).onInboundOutcome(dm('180', '!fast on'))
+    await (daemon as any).onInboundOutcome(dm('190', '/permission'))
     expect(conn.postMessage.mock.calls.at(-1)![1]).toContain('Agent editor')
-    expect(store.getModelOverride(key)).toBeUndefined()
-    expect(store.getEffortOverride(key)).toBeUndefined()
-    expect(store.getFastModeOverride(key)).toBeUndefined()
-    expect(store.getPermissionModeOverride(key)).toBeUndefined()
+    expect(await store.getModelOverride(key)).toBeUndefined()
+    expect(await store.getEffortOverride(key)).toBeUndefined()
+    expect(await store.getFastModeOverride(key)).toBeUndefined()
+    expect(await store.getPermissionModeOverride(key)).toBeUndefined()
 
     ;(daemon as any).agents.get('bot-a').allowRuntimeChangesInChat = true
 
     // bare /permission lists Codex's own preset names (not the raw wire ids); the
     // default `agent` reads as "Ask for approval", matching Codex's own UI.
-    ;(daemon as any).onInbound(dm('200', '/permission'))
+    await (daemon as any).onInboundOutcome(dm('200', '/permission'))
     const listed = conn.postMessage.mock.calls.at(-1)![1] as string
     expect(listed).toContain('Read Only')
     expect(listed).toContain('Ask for approval')
@@ -982,8 +991,8 @@ describe('Daemon in-conversation commands', () => {
     expect(listed).not.toContain('agent-full-access')
 
     // choose by label ("full access") → resolves to the raw wire id, applied live
-    ;(daemon as any).onInbound(dm('210', '/permission full access'))
-    expect(store.getPermissionModeOverride(key)).toBe('agent-full-access')
+    await (daemon as any).onInboundOutcome(dm('210', '/permission full access'))
+    expect(await store.getPermissionModeOverride(key)).toBe('agent-full-access')
     await vi.waitFor(() => {
       expect(host.setSessionPermissionMode).toHaveBeenCalledWith('acp-1', 'agent-full-access')
     }, WAIT)
@@ -994,8 +1003,8 @@ describe('Daemon in-conversation commands', () => {
     )
 
     // the default preset resolves from its Codex label too ("ask for approval" → agent)
-    ;(daemon as any).onInbound(dm('220', '/permission ask for approval'))
-    expect(store.getPermissionModeOverride(key)).toBe('agent')
+    await (daemon as any).onInboundOutcome(dm('220', '/permission ask for approval'))
+    expect(await store.getPermissionModeOverride(key)).toBe('agent')
     await vi.waitFor(() => {
       expect(host.setSessionPermissionMode).toHaveBeenCalledWith('acp-1', 'agent')
     }, WAIT)
@@ -1004,8 +1013,8 @@ describe('Daemon in-conversation commands', () => {
 
     // Auto is one session preset in every chat surface, but reaches ACP as two
     // independent config selections.
-    ;(daemon as any).onInbound(dm('230', '/permission auto'))
-    expect(store.getPermissionModeOverride(key)).toBe('agent:auto-review')
+    await (daemon as any).onInboundOutcome(dm('230', '/permission auto'))
+    expect(await store.getPermissionModeOverride(key)).toBe('agent:auto-review')
     await vi.waitFor(() => {
       expect(host.setSessionPermissionMode).toHaveBeenCalledWith('acp-1', 'agent')
       expect(host.setSessionApprovalsReviewer).toHaveBeenCalledWith('acp-1', 'auto_review')
@@ -1023,7 +1032,7 @@ describe('Daemon in-conversation commands', () => {
     })
     await daemon.start()
     // no integration attached → routeRules resolves nothing
-    ;(daemon as any).onInbound(dm('100', '!stop'))
+    await (daemon as any).onInboundOutcome(dm('100', '!stop'))
     await new Promise((r) => setTimeout(r, 20))
     expect(blocked.prompts).toEqual([])
     await daemon.stop()
@@ -1105,13 +1114,13 @@ describe('Daemon managed-agent bot ingress', () => {
       trigger: mentionedBots.length > 0 ? ('mention' as const) : ('auto' as const)
     })
 
-    ;(daemon as any).onInbound(botMessage('managed-mention', 'AMANAGED', ['UBOTA']))
-    ;(daemon as any).onInbound(botMessage('managed-auto', 'AMANAGED', []))
-    ;(daemon as any).onInbound(botMessage('external-auto', 'AEXTERNAL', []))
+    await (daemon as any).onInboundOutcome(botMessage('managed-mention', 'AMANAGED', ['UBOTA']))
+    await (daemon as any).onInboundOutcome(botMessage('managed-auto', 'AMANAGED', []))
+    await (daemon as any).onInboundOutcome(botMessage('external-auto', 'AEXTERNAL', []))
     expect(host.prompt).not.toHaveBeenCalled()
 
     const relayManaged = botMessage('relay-managed', 'AMANAGED', ['UBOTA'])
-    const relayAck = (daemon as any).handleRelayMsg(
+    const relayAck = await (daemon as any).handleRelayMsg(
       {
         source: 'im',
         agentId: 'bot-a',
@@ -1127,7 +1136,7 @@ describe('Daemon managed-agent bot ingress', () => {
     expect(relayAck).toEqual({ msgId: relayManaged.msgId, accepted: true })
     expect(host.prompt).not.toHaveBeenCalled()
 
-    ;(daemon as any).onInbound(botMessage('external-mention', 'AEXTERNAL', ['UBOTA']))
+    await (daemon as any).onInboundOutcome(botMessage('external-mention', 'AEXTERNAL', ['UBOTA']))
     await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(1), WAIT)
 
     await daemon.stop()
@@ -1147,10 +1156,10 @@ describe('Daemon transcript recording (§8.5 unrouted)', () => {
 
     // open a session in thread T1 via a routable DM
     await (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
-    expect(store.openSessionAgents('C1', 'T1', TRANSPORT_SCOPE)).toContain('bot-a')
+    expect(await store.openSessionAgents('C1', 'T1', TRANSPORT_SCOPE)).toContain('bot-a')
 
     // A mention of an unknown bot must not fall back to this thread owner.
-    ;(daemon as any).onInbound({
+    await (daemon as any).onInboundOutcome({
       msgId: 'slack:C1:200',
       traceId: '200',
       source: 'user',
@@ -1163,7 +1172,7 @@ describe('Daemon transcript recording (§8.5 unrouted)', () => {
       mentionedBots: ['UOTHER'],
       isDm: false
     })
-    const rows = store.transcriptSince(transcriptChannelKey('C1', TRANSPORT_SCOPE), 'T1', null)
+    const rows = await store.transcriptSince(transcriptChannelKey('C1', TRANSPORT_SCOPE), 'T1', null)
     expect(rows.some((r: any) => r.text === 'beep from another bot' && r.sender === 'B999')).toBe(true)
 
     await daemon.stop()
@@ -1226,7 +1235,7 @@ describe('Daemon transcript recording (§8.5 unrouted)', () => {
       'int-a'
     )
 
-    const rows = (daemon as any).store.transcriptSince(transcriptChannelKey('C1', TRANSPORT_SCOPE), 'T1', null)
+    const rows = await (daemon as any).store.transcriptSince(transcriptChannelKey('C1', TRANSPORT_SCOPE), 'T1', null)
     const row = rows.find((r: any) => r.sender === 'U1')
     expect(row.text).toBe('look at this\n[attached: shot.png (image/png)]')
     expect(JSON.parse(row.attachmentsJson)).toEqual([
@@ -1326,12 +1335,12 @@ describe('Daemon transcript recording (§8.5 unrouted)', () => {
     await vi.waitFor(() => expect(hasPending(daemon, 'acp-1')).toBe(true), WAIT)
 
     // age the session record so the recency window alone would exclude it
-    const rec = store.getSession(SESSION_KEY)
-    store.upsertSession({ ...rec, updatedAt: rec.updatedAt - 60 * 60 * 1000 })
-    expect(store.activeSessionCountSince('C1', 'T1', Date.now() - 900_000, TRANSPORT_SCOPE)).toBe(0)
+    const rec = await store.getSession(SESSION_KEY)
+    await store.upsertSession({ ...rec, updatedAt: rec.updatedAt - 60 * 60 * 1000 })
+    expect(await store.activeSessionCountSince('C1', 'T1', Date.now() - 900_000, TRANSPORT_SCOPE)).toBe(0)
 
     // An unrouted peer mention arrives mid-turn → still recorded (in-flight keeps it active).
-    ;(daemon as any).onInbound({
+    await (daemon as any).onInboundOutcome({
       msgId: 'slack:C1:200',
       traceId: '200',
       source: 'user',
@@ -1345,9 +1354,9 @@ describe('Daemon transcript recording (§8.5 unrouted)', () => {
       isDm: false
     })
     expect(
-      store
-        .transcriptSince(transcriptChannelKey('C1', TRANSPORT_SCOPE), 'T1', null)
-        .some((r: any) => r.text === 'mid-turn peer message')
+      (await store.transcriptSince(transcriptChannelKey('C1', TRANSPORT_SCOPE), 'T1', null)).some(
+        (r: any) => r.text === 'mid-turn peer message'
+      )
     ).toBe(true)
 
     blocked.release()
@@ -1365,7 +1374,7 @@ describe('Daemon transcript recording (§8.5 unrouted)', () => {
     makeRoutable(daemon)
     const store = (daemon as any).store
 
-    ;(daemon as any).onInbound({
+    await (daemon as any).onInboundOutcome({
       msgId: 'slack:C9:500',
       traceId: '500',
       source: 'user',
@@ -1377,7 +1386,7 @@ describe('Daemon transcript recording (§8.5 unrouted)', () => {
       mentionedBots: [],
       isDm: false
     })
-    expect(store.transcriptSince('C9', 'T9', null)).toEqual([])
+    expect(await store.transcriptSince('C9', 'T9', null)).toEqual([])
 
     await daemon.stop()
   }, 15_000)
@@ -1553,7 +1562,7 @@ describe('Slack interactive status bar', () => {
       WAIT
     )
     expect(p.statusBarTs).toBe('sb1')
-    expect((daemon as any).store.getStatusBarTs(p.sessionKey)).toBe('sb1')
+    expect(await (daemon as any).store.getStatusBarTs(p.sessionKey)).toBe('sb1')
     expect(conn.postBlocks).toHaveBeenCalledTimes(1)
     expect(conn.deleteMessage).not.toHaveBeenCalled()
 
@@ -1681,7 +1690,7 @@ describe('Slack interactive status bar', () => {
     const KEY = sessionKey('slack', 'C1', 'T1', 'bot-a', sharedTransportScope)
     const openStatusModal = vi.fn(async () => {})
     ;(daemon as any).connByIntegration.set('int-a', { openStatusModal })
-    ;(daemon as any).store.upsertSession({
+    await (daemon as any).store.upsertSession({
       key: KEY,
       agentId: 'bot-a',
       platform: 'slack',
@@ -1705,15 +1714,15 @@ describe('Slack interactive status bar', () => {
       ...over
     })
     // The envelope routes into the SAME per-platform decode path as the legacy member.
-    expect((daemon as any).handleRelayMsg(envelope(), () => {})).toEqual({ msgId: 'pa-1', accepted: true })
+    expect(await (daemon as any).handleRelayMsg(envelope(), () => {})).toEqual({ msgId: 'pa-1', accepted: true })
     expect(openStatusModal).toHaveBeenCalledTimes(1)
     // An undecodable payload NAKs the ITEM, never the socket.
     expect(
-      (daemon as any).handleRelayMsg(envelope({ msgId: 'pa-2', payload: { kind: 'not-a-thing' } }), () => {})
+      await (daemon as any).handleRelayMsg(envelope({ msgId: 'pa-2', payload: { kind: 'not-a-thing' } }), () => {})
     ).toEqual({ msgId: 'pa-2', accepted: false, reason: 'unsupported_action' })
     // A platform id this build has no decoder for NAKs the same way.
     expect(
-      (daemon as any).handleRelayMsg(envelope({ msgId: 'pa-3', platformId: 'teams-x', payload: {} }), () => {})
+      await (daemon as any).handleRelayMsg(envelope({ msgId: 'pa-3', platformId: 'teams-x', payload: {} }), () => {})
     ).toEqual({ msgId: 'pa-3', accepted: false, reason: 'unsupported_action' })
     await daemon.stop()
   })
@@ -1736,7 +1745,7 @@ describe('Slack interactive status bar', () => {
     const openStatusModal = vi.fn(async () => {})
     const updateBlocks = vi.fn(async () => true)
     ;(daemon as any).connByIntegration.set('int-a', { openStatusModal, updateBlocks })
-    ;(daemon as any).store.upsertSession({
+    await (daemon as any).store.upsertSession({
       key: KEY,
       agentId: 'bot-a',
       platform: 'slack',
@@ -1748,7 +1757,7 @@ describe('Slack interactive status bar', () => {
       lastDeliveredTs: null,
       updatedAt: Date.now()
     })
-    ;(daemon as any).store.upsertSession({
+    await (daemon as any).store.upsertSession({
       key: FOREIGN_KEY,
       agentId: 'someone-else',
       platform: 'slack',
@@ -1773,10 +1782,10 @@ describe('Slack interactive status bar', () => {
       ...over
     })
 
-    expect((daemon as any).handleRelayMsg(action(), () => {})).toEqual({ msgId: 'action-ok', accepted: true })
+    expect(await (daemon as any).handleRelayMsg(action(), () => {})).toEqual({ msgId: 'action-ok', accepted: true })
     expect(openStatusModal).toHaveBeenCalledTimes(1)
     expect(
-      (daemon as any).handleRelayMsg(
+      await (daemon as any).handleRelayMsg(
         action({
           sessionKey: 'C1/T1',
           msgId: 'action-shortcut',
@@ -1804,7 +1813,7 @@ describe('Slack interactive status bar', () => {
     const permissionResolved = vi.fn()
     const permissionRequestId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
     ;(daemon as any).agents.get('bot-a').allowRuntimeChangesInChat = true
-    ;(daemon as any).store.createPermissionRequest({
+    await (daemon as any).store.createPermissionRequest({
       id: permissionRequestId,
       agentId: 'bot-a',
       sessionId: 'acp-1',
@@ -1826,7 +1835,7 @@ describe('Slack interactive status bar', () => {
       resolve: permissionResolved
     })
     expect(
-      (daemon as any).handleRelayMsg(
+      await (daemon as any).handleRelayMsg(
         action({
           msgId: 'action-permission',
           payload: { kind: 'permission-choice', requestId: permissionRequestId, optionId: 'allow_once' }
@@ -1850,7 +1859,7 @@ describe('Slack interactive status bar', () => {
       resolve: elicitationResolved
     })
     expect(
-      (daemon as any).handleRelayMsg(
+      await (daemon as any).handleRelayMsg(
         action({
           msgId: 'action-elicit',
           payload: { kind: 'elicitation-choice', requestId: 'elicit-1', value: 'TypeScript' }
@@ -1874,7 +1883,7 @@ describe('Slack interactive status bar', () => {
 
     // HTTP interactions may be redelivered. A replayed receipt must
     // not consume the same trigger_id by opening a second modal.
-    expect((daemon as any).handleRelayMsg(action(), () => {})).toEqual({ msgId: 'action-ok', accepted: true })
+    expect(await (daemon as any).handleRelayMsg(action(), () => {})).toEqual({ msgId: 'action-ok', accepted: true })
     expect(openStatusModal).toHaveBeenCalledTimes(2)
 
     const rejected = [
@@ -1883,7 +1892,7 @@ describe('Slack interactive status bar', () => {
       action({ integrationId: 'int-other', msgId: 'action-integration-mismatch' })
     ]
     for (const msg of rejected) {
-      expect((daemon as any).handleRelayMsg(msg, () => {})).toMatchObject({
+      expect(await (daemon as any).handleRelayMsg(msg, () => {})).toMatchObject({
         msgId: msg.msgId,
         accepted: false,
         reason: 'not_found'
@@ -1929,7 +1938,7 @@ describe('Slack interactive status bar', () => {
       }
     }
 
-    expect((daemon as any).handleRelayMsg(action, () => {})).toEqual({
+    expect(await (daemon as any).handleRelayMsg(action, () => {})).toEqual({
       msgId: action.msgId,
       accepted: true,
       // §6.6: the generic opaque slot is the one answer (named slot retired).
@@ -1937,7 +1946,10 @@ describe('Slack interactive status bar', () => {
     })
     expect(handleCardAction).toHaveBeenCalledWith(action.payload)
     expect(
-      (daemon as any).handleRelayMsg({ ...action, msgId: 'feishu-action:wrong', integrationId: 'int-other' }, () => {})
+      await (daemon as any).handleRelayMsg(
+        { ...action, msgId: 'feishu-action:wrong', integrationId: 'int-other' },
+        () => {}
+      )
     ).toMatchObject({ accepted: false, reason: 'not_found' })
 
     await daemon.stop()
@@ -1990,7 +2002,7 @@ describe('Slack interactive status bar', () => {
       WAIT
     )
     expect(conn.postBlocks).not.toHaveBeenCalled()
-    expect((daemon as any).store.getStatusBarTs(SESSION_KEY)).toBe('111.1')
+    expect(await (daemon as any).store.getStatusBarTs(SESSION_KEY)).toBe('111.1')
 
     release()
     await turn
@@ -2026,7 +2038,7 @@ describe('Slack interactive status bar', () => {
     const turn = (daemon as any).dispatch('bot-a', dm('100', 'hi'), 'int-a')
     await vi.waitFor(() => expect(conn.postBlocks).toHaveBeenCalled(), WAIT)
     expect(conn.updateBlocks.mock.calls.some((call) => call[1] === '111.1')).toBe(false)
-    expect((daemon as any).store.getStatusBarTs(SESSION_KEY)).not.toBe('111.1')
+    expect(await (daemon as any).store.getStatusBarTs(SESSION_KEY)).not.toBe('111.1')
 
     release()
     await turn
@@ -2062,7 +2074,7 @@ describe('Slack interactive status bar', () => {
       chrome: true,
       chromeOwnerAgentId: 'bot-a'
     })
-    expect((daemon as any).store.getStatusBarTs(SESSION_KEY)).not.toBe('111.1')
+    expect(await (daemon as any).store.getStatusBarTs(SESSION_KEY)).not.toBe('111.1')
 
     release()
     await turn
@@ -2087,7 +2099,7 @@ describe('Slack interactive status bar', () => {
     await vi.waitFor(() => expect(conn.postBlocks).toHaveBeenCalledTimes(1), WAIT)
     release()
     await turn1
-    const posted = (daemon as any).store.getStatusBarTs(SESSION_KEY)
+    const posted = await (daemon as any).store.getStatusBarTs(SESSION_KEY)
     expect(posted).toBeTruthy()
 
     // Turn 2: Slack rejects every edit of that ts (cant_update_message).
@@ -2110,7 +2122,7 @@ describe('Slack interactive status bar', () => {
     )
     // The dead ts is dropped and a later emit in the same turn posts a fresh bar.
     await vi.waitFor(() => expect(conn.postBlocks).toHaveBeenCalledTimes(2), WAIT)
-    await vi.waitFor(() => expect((daemon as any).store.getStatusBarTs(SESSION_KEY)).not.toBe(posted), WAIT)
+    await vi.waitFor(async () => expect(await (daemon as any).store.getStatusBarTs(SESSION_KEY)).not.toBe(posted), WAIT)
 
     second.release()
     await turn2
@@ -2190,7 +2202,7 @@ describe('Slack interactive status bar', () => {
     const t1 = (daemon as any).dispatch('bot-a', dm('100', 'hi'), 'int-a')
     await vi.waitFor(() => expect(hasPending(daemon, 'acp-1')).toBe(true), WAIT)
     // The connection queries statusInfoForKey to build the modal; it resolves the deep link.
-    const data = (daemon as any).statusInfoForKey(SESSION_KEY)
+    const data = await (daemon as any).statusInfoForKey(SESSION_KEY)
     expect(data.link).toBe('https://console.example.com/sessions/acp-1?source=slack')
     expect(data.info.models).toEqual(['opus-4.8', 'sonnet-5'])
     expect(data.identity).toMatchObject({
@@ -2199,16 +2211,16 @@ describe('Slack interactive status bar', () => {
       iconUrl: AGENT_IDENTITY.iconUrl
     })
     expect(data.identity.sessionTitle).toBeUndefined()
-    ;(daemon as any).store.setSessionTitle(SESSION_KEY, 'Fix login flow')
-    expect((daemon as any).statusInfoForKey(SESSION_KEY).identity.sessionTitle).toBe('Fix login flow')
+    await (daemon as any).store.setSessionTitle(SESSION_KEY, 'Fix login flow')
+    expect((await (daemon as any).statusInfoForKey(SESSION_KEY)).identity.sessionTitle).toBe('Fix login flow')
     expect(data.cancellable).toBe(true)
     release()
     await t1
-    expect((daemon as any).statusInfoForKey(SESSION_KEY).cancellable).toBe(false)
+    expect((await (daemon as any).statusInfoForKey(SESSION_KEY)).cancellable).toBe(false)
     await daemon.stop()
   }, 15_000)
 
-  it('uses the local Web App default when neither local nor CP configuration provides an origin', () => {
+  it('uses the local Web App default when neither local nor CP configuration provides an origin', async () => {
     const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
     ;(daemon as any).cfg = {}
     expect((daemon as any).sessionLink('acp-1')).toBe('http://localhost:3000/sessions/acp-1')
@@ -2219,7 +2231,7 @@ describe('Slack interactive status bar', () => {
     expect((daemon as any).agentLink('bot-a')).toBe('http://localhost:3000/agents/bot-a')
   })
 
-  it('uses the Feishu integration region as the session-link source hint', () => {
+  it('uses the Feishu integration region as the session-link source hint', async () => {
     const daemon = new Daemon()
     ;(daemon as any).cfg = {}
     ;(daemon as any).agents.set('bot-a', {
@@ -2261,12 +2273,12 @@ describe('Slack interactive status bar', () => {
     ;(host.modelOptions as any).mockReturnValue(null)
     ;(daemon as any).runtimeModels.set('claude', ['default', 'opus[1m]', 'sonnet', 'haiku'])
 
-    const fallback = (daemon as any).statusInfoForKey(key).info
+    const fallback = (await (daemon as any).statusInfoForKey(key)).info
     expect(fallback.model).toBe('default')
     expect(fallback.models).toEqual(['default', 'opus[1m]', 'sonnet', 'haiku'])
 
-    ;(daemon as any).store.setModelOverride(key, 'opus[1m]')
-    const info = (daemon as any).statusInfoForKey(key).info
+    await (daemon as any).store.setModelOverride(key, 'opus[1m]')
+    const info = (await (daemon as any).statusInfoForKey(key)).info
     expect(info.model).toBe('opus[1m]')
     expect(info.models).toEqual(['default', 'opus[1m]', 'sonnet', 'haiku'])
     await daemon.stop()
@@ -2289,14 +2301,14 @@ describe('Slack interactive status bar', () => {
     await vi.waitFor(() => expect(hasPending(daemon, 'acp-1')).toBe(true), WAIT)
 
     // set-model: sticky override persisted + applied live to the running session.
-    ;(daemon as any).commands.handleStatusAction({ kind: 'set-model', sessionKey: key, model: 'sonnet-5' })
-    expect(store.getModelOverride(key)).toBe('sonnet-5')
+    await (daemon as any).commands.handleStatusAction({ kind: 'set-model', sessionKey: key, model: 'sonnet-5' })
+    expect(await store.getModelOverride(key)).toBe('sonnet-5')
     expect(host.setSessionModel).toHaveBeenCalledWith('acp-1', 'sonnet-5')
 
     // cancel: interrupts the in-flight turn WITHOUT muting.
-    ;(daemon as any).commands.handleStatusAction({ kind: 'cancel', sessionKey: key })
+    await (daemon as any).commands.handleStatusAction({ kind: 'cancel', sessionKey: key })
     expect(host.cancel).toHaveBeenCalledWith('acp-1')
-    expect(store.isSessionMuted(key)).toBe(false)
+    expect(await store.isSessionMuted(key)).toBe(false)
     await vi.waitFor(() => {
       const settledStatus = [...conn.updateBlocks.mock.calls]
         .reverse()

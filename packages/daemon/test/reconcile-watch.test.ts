@@ -570,9 +570,9 @@ describe('Daemon.refreshObservedChannels (Telegram/Discord/Feishu discovery)', (
     ])
     const observed = vi
       .spyOn((daemon as any).store, 'observedChannels')
-      .mockReturnValue([{ id: '-100123', name: 'Team Chat' }, { id: '-100456' }])
+      .mockResolvedValue([{ id: '-100123', name: 'Team Chat' }, { id: '-100456' }])
 
-    ;(daemon as any).observedChannelsSync.refreshObservedChannels()
+    await (daemon as any).observedChannelsSync.refreshObservedChannels()
 
     // Only the Telegram integration is enumerated — Slack has its own membership snapshot.
     expect(observed).toHaveBeenCalledOnce()
@@ -611,7 +611,7 @@ describe('Daemon.refreshObservedChannels (Telegram/Discord/Feishu discovery)', (
       .spyOn((daemon as any).store, 'observedChannels')
       .mockReturnValue([{ id: '900123', name: 'general' }, { id: '900456' }])
 
-    ;(daemon as any).observedChannelsSync.refreshObservedChannels()
+    await (daemon as any).observedChannelsSync.refreshObservedChannels()
 
     expect(observed).toHaveBeenCalledWith(
       'bot-dc',
@@ -659,7 +659,7 @@ describe('Daemon.refreshObservedChannels (Telegram/Discord/Feishu discovery)', (
       .mockReturnValue([{ id: 'oc_group', name: 'Product Chat' }])
     const noteMessage = vi.spyOn((daemon as any).channelNameResolver, 'noteMessage').mockImplementation(() => {})
 
-    ;(daemon as any).connections.backfillChannelNames()
+    await (daemon as any).connections.backfillChannelNames()
 
     expect(noteMessage).toHaveBeenCalledWith(conn, {
       channel: 'oc_group',
@@ -693,7 +693,7 @@ describe('Daemon.refreshObservedChannels (Telegram/Discord/Feishu discovery)', (
     }
     ;(daemon as any).agents = new Map([['bot-fs', { id: 'bot-fs', integrations: [newIntegration] }]])
     const store = (daemon as any).store
-    store.upsertSession({
+    await store.upsertSession({
       key: 'old-session',
       agentId: 'bot-fs',
       platform: 'feishu',
@@ -706,12 +706,12 @@ describe('Daemon.refreshObservedChannels (Telegram/Discord/Feishu discovery)', (
       triggeredBy: 'ou_old',
       updatedAt: 1
     })
-    store.setDisplayName('oc_old', 'Old chat', 1)
+    await store.setDisplayName('oc_old', 'Old chat', 1)
 
-    ;(daemon as any).observedChannelsSync.refreshObservedChannels()
+    await (daemon as any).observedChannelsSync.refreshObservedChannels()
     expect(emit).not.toHaveBeenCalled()
 
-    store.upsertSession({
+    await store.upsertSession({
       key: 'new-session',
       agentId: 'bot-fs',
       platform: 'feishu',
@@ -724,9 +724,9 @@ describe('Daemon.refreshObservedChannels (Telegram/Discord/Feishu discovery)', (
       triggeredBy: 'ou_new',
       updatedAt: 2
     })
-    store.setDisplayName('oc_new', 'New chat', 2)
+    await store.setDisplayName('oc_new', 'New chat', 2)
 
-    ;(daemon as any).observedChannelsSync.refreshObservedChannels()
+    await (daemon as any).observedChannelsSync.refreshObservedChannels()
     expect(emit).toHaveBeenCalledOnce()
     expect(emit).toHaveBeenCalledWith({
       integrationId: 'fs-new',
@@ -784,8 +784,8 @@ describe('Daemon.refreshObservedChannels (Telegram/Discord/Feishu discovery)', (
 
     // Model the Lark lookup finishing while cold ACP startup is still blocked: there
     // is a resolved name, but no session row for discovery to publish yet.
-    ;(daemon as any).store.setDisplayName('oc_group', 'Product Chat', Date.now())
-    ;(daemon as any).observedChannelsSync.refreshObservedChannels()
+    await (daemon as any).store.setDisplayName('oc_group', 'Product Chat', Date.now())
+    await (daemon as any).observedChannelsSync.refreshObservedChannels()
     expect(emit).not.toHaveBeenCalled()
 
     releaseSession()
@@ -813,16 +813,16 @@ describe('Daemon.refreshObservedChannels (Telegram/Discord/Feishu discovery)', (
     // channel — the console showed "#general" three times before the fold.
     const store = (daemon as any).store
     for (const t of ['900001', '900002', '900003']) {
-      store.setChannelScope(t, { parentId: '900123' }, 1)
+      await store.setChannelScope(t, { parentId: '900123' }, 1)
     }
-    store.setDisplayName('900123', 'general', 1)
+    await store.setDisplayName('900123', 'general', 1)
     vi.spyOn(store, 'observedChannels').mockReturnValue([
       { id: '900003', name: 'general' },
       { id: '900002', name: 'general' },
       { id: '900001', name: 'general' }
     ])
 
-    ;(daemon as any).observedChannelsSync.refreshObservedChannels()
+    await (daemon as any).observedChannelsSync.refreshObservedChannels()
 
     const channels = [{ id: '900123', name: 'general' }]
     expect(emit).toHaveBeenCalledWith({ integrationId: 'dc-int', channels, authoritative: false })
@@ -843,14 +843,14 @@ describe('Daemon.refreshObservedChannels (Telegram/Discord/Feishu discovery)', (
       ['bot-dc', { id: 'bot-dc', integrations: [{ id: 'dc-int', platform: 'discord', config: { botToken: 'dc' } }] }]
     ])
     const store = (daemon as any).store
-    store.setChannelScope('900777', { isIm: true }, 1)
-    store.setChannelScope('900123', { isIm: false }, 1)
+    await store.setChannelScope('900777', { isIm: true }, 1)
+    await store.setChannelScope('900123', { isIm: false }, 1)
     vi.spyOn(store, 'observedChannels').mockReturnValue([
       { id: '900777', name: '@yulong' },
       { id: '900123', name: 'general' }
     ])
 
-    ;(daemon as any).observedChannelsSync.refreshObservedChannels()
+    await (daemon as any).observedChannelsSync.refreshObservedChannels()
 
     const channels = [
       { id: '900777', name: '@yulong', kind: 'im' },
@@ -886,7 +886,7 @@ describe('Daemon.refreshObservedChannels (Telegram/Discord/Feishu discovery)', (
         scope === scopeA ? [{ id: '-100', name: 'Team A' }] : [{ id: '-200', name: 'Team B' }]
       )
 
-    ;(daemon as any).observedChannelsSync.refreshObservedChannels()
+    await (daemon as any).observedChannelsSync.refreshObservedChannels()
 
     expect(observed).toHaveBeenCalledWith('bot-tg2', 'telegram', scopeA)
     expect(observed).toHaveBeenCalledWith('bot-tg2', 'telegram', scopeB)
@@ -924,10 +924,10 @@ describe('Daemon.refreshObservedChannels (Telegram/Discord/Feishu discovery)', (
       channels: [{ id: '-100999', kind: 'channel' }],
       authoritative: false
     })
-    ;(daemon as any).store.setDisplayName('-100999', 'New private group', Date.now())
+    await (daemon as any).store.setDisplayName('-100999', 'New private group', Date.now())
     vi.spyOn((daemon as any).store, 'observedChannels').mockReturnValue([])
 
-    ;(daemon as any).observedChannelsSync.refreshObservedChannels()
+    await (daemon as any).observedChannelsSync.refreshObservedChannels()
 
     const channels = [{ id: '-100999', kind: 'channel', name: 'New private group' }]
     expect((daemon as any).channelSnapshots.get('tg-int')).toEqual({ channels, authoritative: false })
@@ -945,7 +945,7 @@ describe('Daemon.refreshObservedChannels (Telegram/Discord/Feishu discovery)', (
     const channels = [{ id: 'C-new', kind: 'channel' }]
     ;(daemon as any).channelSnapshots.set('slack-int', { channels, authoritative: false })
 
-    ;(daemon as any).replayChannelSnapshots()
+    await (daemon as any).replayChannelSnapshots()
 
     expect(emit).toHaveBeenCalledWith({
       integrationId: 'slack-int',
@@ -1044,7 +1044,7 @@ describe('Daemon.leaveConversation', () => {
     // The chat is still all over session history — nothing deletes sessions on leave.
     vi.spyOn((daemon as any).store, 'observedChannels').mockReturnValue([{ id: '-100123', name: 'Team Chat' }])
     emit.mockClear()
-    ;(daemon as any).observedChannelsSync.refreshObservedChannels()
+    await (daemon as any).observedChannelsSync.refreshObservedChannels()
 
     expect((daemon as any).channelSnapshots.get('tg-int').channels).toEqual([])
     expect(emit.mock.calls.flatMap((c: unknown[]) => (c[0] as { channels: unknown[] }).channels)).toEqual([])
@@ -1061,16 +1061,16 @@ describe('Daemon.leaveConversation', () => {
       integrationId: 'tg-int',
       target: { kind: 'conversation', channel: '-100123' }
     })
-    expect((daemon as any).store.retractedConversations('tg-int').has('-100123')).toBe(true)
+    expect((await (daemon as any).store.retractedConversations('tg-int')).has('-100123')).toBe(true)
 
     // A platform only delivers messages for a conversation the bot is IN, so traffic
     // is proof it was re-invited — otherwise "leave" would be irreversible from here.
-    ;(daemon as any).observedChannelsSync.clearRetractionOnTraffic(
+    await (daemon as any).observedChannelsSync.clearRetractionOnTraffic(
       { source: 'user', channel: '-100123', sender: { id: 'U1', isBot: false } },
       ['tg-int']
     )
 
-    expect((daemon as any).store.retractedConversations('tg-int').has('-100123')).toBe(false)
+    expect((await (daemon as any).store.retractedConversations('tg-int')).has('-100123')).toBe(false)
   })
 
   // A Discord observation is a THREAD id; only the collapse turns it into the channel
@@ -1099,7 +1099,7 @@ describe('Daemon.leaveConversation', () => {
     vi.spyOn((daemon as any).store, 'observedChannels').mockReturnValue([{ id: 'T-in-C1' }])
     vi.spyOn((daemon as any).observedChannelsSync, 'collapseObserved').mockReturnValue([{ id: 'C1', spaceId: 'G1' }])
     emit.mockClear()
-    ;(daemon as any).observedChannelsSync.refreshObservedChannels()
+    await (daemon as any).observedChannelsSync.refreshObservedChannels()
 
     expect((daemon as any).channelSnapshots.get('dc-int').channels).toEqual([])
   })
@@ -1115,7 +1115,7 @@ describe('Daemon.leaveConversation', () => {
 
     const emit = vi.fn()
     ;(daemon as any).cpClient = { emitIntegrationChannels: emit, stop: vi.fn().mockResolvedValue(undefined) }
-    ;(daemon as any).replayChannelSnapshots()
+    await (daemon as any).replayChannelSnapshots()
 
     expect(emit).toHaveBeenCalledWith(expect.objectContaining({ integrationId: 'tg-int', removed: ['-100123'] }))
   })
@@ -1140,7 +1140,7 @@ describe('Daemon.leaveConversation', () => {
     expect((second as any).channelSnapshots.get('tg-int')).toBeUndefined()
     const emit = vi.fn()
     ;(second as any).cpClient = { emitIntegrationChannels: emit, stop: vi.fn().mockResolvedValue(undefined) }
-    ;(second as any).replayChannelSnapshots()
+    await (second as any).replayChannelSnapshots()
 
     expect(emit).toHaveBeenCalledWith(expect.objectContaining({ integrationId: 'tg-int', removed: ['-100123'] }))
     await second.stop()

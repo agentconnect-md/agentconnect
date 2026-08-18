@@ -1,0 +1,1056 @@
+{
+  "schemaVersion": 1,
+  "warning": "Synthetic benchmark: results describe only this declared workload and environment.",
+  "environment": {
+    "node": "v24.14.1",
+    "platform": "darwin",
+    "arch": "arm64",
+    "cpu": {
+      "model": "Apple M1 Max",
+      "count": 10
+    },
+    "postgres": {
+      "image": "postgres:16-alpine",
+      "version": "16.14"
+    }
+  },
+  "settings": {
+    "concurrency": [1, 2, 4, 8, 16, 32, 64],
+    "minTurns": 100,
+    "minWaves": 4,
+    "streamDelayMs": 5,
+    "asyncPoolSize": 16,
+    "turnTimeoutMs": 30000
+  },
+  "workload": {
+    "daemon": {
+      "emissions": 38,
+      "reasoning": 1,
+      "tools": 6,
+      "updatesPerTool": 5,
+      "pauses": 38,
+      "inboxExcluded": true
+    },
+    "trace": {
+      "handoffs": 17,
+      "totalSqlStatements": 21,
+      "logicalBatches": 4,
+      "statementsPerBatch": 2
+    }
+  },
+  "executorEquivalence": {
+    "realPostgres": true,
+    "concurrentTraceCount": 2
+  },
+  "daemon": {
+    "rungs": [
+      {
+        "concurrency": 1,
+        "attempted": 100,
+        "completed": 100,
+        "errors": 0,
+        "timeouts": 0,
+        "throughput": 3.626151788612226,
+        "infrastructureLatency": {
+          "p50": 83.87116699999751,
+          "p95": 125.96270800000002,
+          "p99": 138.5768339999995
+        },
+        "eventLoopDelay": {
+          "p50": 0.3032499999999345,
+          "p95": 1.6445840000014869,
+          "p99": 4.1947089999994205
+        },
+        "waves": 100,
+        "latency": {
+          "p50": 273.8711669999975,
+          "p95": 315.962708,
+          "p99": 328.5768339999995
+        },
+        "eventLoopDelayMax": 34.02833399999872
+      },
+      {
+        "concurrency": 2,
+        "attempted": 100,
+        "completed": 100,
+        "errors": 0,
+        "timeouts": 0,
+        "throughput": 6.778268867597418,
+        "infrastructureLatency": {
+          "p50": 57.45895900000323,
+          "p95": 323.7648330000011,
+          "p99": 477.1207499999946
+        },
+        "eventLoopDelay": {
+          "p50": 0.17141600000468316,
+          "p95": 1.8406249999970896,
+          "p99": 6.659540999993624
+        },
+        "waves": 50,
+        "latency": {
+          "p50": 247.45895900000323,
+          "p95": 513.7648330000011,
+          "p99": 667.1207499999946
+        },
+        "eventLoopDelayMax": 28.934624999994412
+      },
+      {
+        "concurrency": 4,
+        "attempted": 100,
+        "completed": 100,
+        "errors": 0,
+        "timeouts": 0,
+        "throughput": 14.885463522567441,
+        "infrastructureLatency": {
+          "p50": 55.07941700000083,
+          "p95": 95.13495900000271,
+          "p99": 249.515625
+        },
+        "eventLoopDelay": {
+          "p50": 0.025584000002709217,
+          "p95": 0.973958999995375,
+          "p99": 2.566916999996465
+        },
+        "waves": 25,
+        "latency": {
+          "p50": 245.07941700000083,
+          "p95": 285.1349590000027,
+          "p99": 439.515625
+        },
+        "eventLoopDelayMax": 12.324874999998428
+      },
+      {
+        "concurrency": 8,
+        "attempted": 104,
+        "completed": 104,
+        "errors": 0,
+        "timeouts": 0,
+        "throughput": 23.09537738526738,
+        "infrastructureLatency": {
+          "p50": 135.2367499999964,
+          "p95": 351.55112499999814,
+          "p99": 369.66041699999914
+        },
+        "eventLoopDelay": {
+          "p50": 0.01737499999580905,
+          "p95": 0.8732079999972484,
+          "p99": 1.9042919999992591
+        },
+        "waves": 13,
+        "latency": {
+          "p50": 325.2367499999964,
+          "p95": 541.5511249999981,
+          "p99": 559.6604169999991
+        },
+        "eventLoopDelayMax": 8.641208000000915
+      },
+      {
+        "concurrency": 16,
+        "attempted": 112,
+        "completed": 112,
+        "errors": 0,
+        "timeouts": 0,
+        "throughput": 25.79751560909374,
+        "infrastructureLatency": {
+          "p50": 393.6290420000005,
+          "p95": 505.77124999999796,
+          "p99": 517.9731249999968
+        },
+        "eventLoopDelay": {
+          "p50": 0.007666999998036772,
+          "p95": 0.8083330000008573,
+          "p99": 1.5679159999999683
+        },
+        "waves": 7,
+        "latency": {
+          "p50": 583.6290420000005,
+          "p95": 695.771249999998,
+          "p99": 707.9731249999968
+        },
+        "eventLoopDelayMax": 6.31904200000281
+      },
+      {
+        "concurrency": 32,
+        "attempted": 128,
+        "completed": 128,
+        "errors": 0,
+        "timeouts": 0,
+        "throughput": 26.07338157857883,
+        "infrastructureLatency": {
+          "p50": 996.4061250000013,
+          "p95": 1077.1581249999872,
+          "p99": 1084.440333999999
+        },
+        "eventLoopDelay": {
+          "p50": 0.013374999994994141,
+          "p95": 0.7373749999969732,
+          "p99": 1.2356660000077682
+        },
+        "waves": 4,
+        "latency": {
+          "p50": 1186.4061250000013,
+          "p95": 1267.1581249999872,
+          "p99": 1274.440333999999
+        },
+        "eventLoopDelayMax": 5.718541999987792
+      },
+      {
+        "concurrency": 64,
+        "attempted": 256,
+        "completed": 256,
+        "errors": 0,
+        "timeouts": 0,
+        "throughput": 27.564669028542493,
+        "infrastructureLatency": {
+          "p50": 2034.6148329999996,
+          "p95": 2209.928208000012,
+          "p99": 2237.343875000006
+        },
+        "eventLoopDelay": {
+          "p50": 0.0028749999910360202,
+          "p95": 0.7480000000068685,
+          "p99": 1.1303330000082497
+        },
+        "waves": 4,
+        "latency": {
+          "p50": 2224.6148329999996,
+          "p95": 2399.928208000012,
+          "p99": 2427.343875000006
+        },
+        "eventLoopDelayMax": 5.761958000002778
+      }
+    ],
+    "capacity": {
+      "kind": "measured",
+      "concurrency": 1,
+      "saturatedAt": 2,
+      "reason": "infrastructure-latency"
+    },
+    "verification": [
+      {
+        "concurrency": 1,
+        "completedOutputs": 100,
+        "terminalSessions": 1,
+        "reasoningRows": 100,
+        "toolRows": 600,
+        "resolvedOrganizationByAgent": {
+          "capacity-agent-001": "benchmark-org"
+        }
+      },
+      {
+        "concurrency": 2,
+        "completedOutputs": 100,
+        "terminalSessions": 2,
+        "reasoningRows": 100,
+        "toolRows": 600,
+        "resolvedOrganizationByAgent": {
+          "capacity-agent-002": "benchmark-org",
+          "capacity-agent-001": "benchmark-org"
+        }
+      },
+      {
+        "concurrency": 4,
+        "completedOutputs": 100,
+        "terminalSessions": 4,
+        "reasoningRows": 100,
+        "toolRows": 600,
+        "resolvedOrganizationByAgent": {
+          "capacity-agent-001": "benchmark-org",
+          "capacity-agent-003": "benchmark-org",
+          "capacity-agent-002": "benchmark-org",
+          "capacity-agent-004": "benchmark-org"
+        }
+      },
+      {
+        "concurrency": 8,
+        "completedOutputs": 104,
+        "terminalSessions": 8,
+        "reasoningRows": 104,
+        "toolRows": 624,
+        "resolvedOrganizationByAgent": {
+          "capacity-agent-002": "benchmark-org",
+          "capacity-agent-003": "benchmark-org",
+          "capacity-agent-001": "benchmark-org",
+          "capacity-agent-004": "benchmark-org",
+          "capacity-agent-008": "benchmark-org",
+          "capacity-agent-005": "benchmark-org",
+          "capacity-agent-006": "benchmark-org",
+          "capacity-agent-007": "benchmark-org"
+        }
+      },
+      {
+        "concurrency": 16,
+        "completedOutputs": 112,
+        "terminalSessions": 16,
+        "reasoningRows": 112,
+        "toolRows": 672,
+        "resolvedOrganizationByAgent": {
+          "capacity-agent-002": "benchmark-org",
+          "capacity-agent-016": "benchmark-org",
+          "capacity-agent-001": "benchmark-org",
+          "capacity-agent-003": "benchmark-org",
+          "capacity-agent-006": "benchmark-org",
+          "capacity-agent-007": "benchmark-org",
+          "capacity-agent-008": "benchmark-org",
+          "capacity-agent-004": "benchmark-org",
+          "capacity-agent-009": "benchmark-org",
+          "capacity-agent-010": "benchmark-org",
+          "capacity-agent-014": "benchmark-org",
+          "capacity-agent-005": "benchmark-org",
+          "capacity-agent-011": "benchmark-org",
+          "capacity-agent-012": "benchmark-org",
+          "capacity-agent-015": "benchmark-org",
+          "capacity-agent-013": "benchmark-org"
+        }
+      },
+      {
+        "concurrency": 32,
+        "completedOutputs": 128,
+        "terminalSessions": 32,
+        "reasoningRows": 128,
+        "toolRows": 768,
+        "resolvedOrganizationByAgent": {
+          "capacity-agent-017": "benchmark-org",
+          "capacity-agent-001": "benchmark-org",
+          "capacity-agent-019": "benchmark-org",
+          "capacity-agent-003": "benchmark-org",
+          "capacity-agent-018": "benchmark-org",
+          "capacity-agent-021": "benchmark-org",
+          "capacity-agent-016": "benchmark-org",
+          "capacity-agent-002": "benchmark-org",
+          "capacity-agent-020": "benchmark-org",
+          "capacity-agent-025": "benchmark-org",
+          "capacity-agent-026": "benchmark-org",
+          "capacity-agent-022": "benchmark-org",
+          "capacity-agent-023": "benchmark-org",
+          "capacity-agent-032": "benchmark-org",
+          "capacity-agent-028": "benchmark-org",
+          "capacity-agent-029": "benchmark-org",
+          "capacity-agent-031": "benchmark-org",
+          "capacity-agent-024": "benchmark-org",
+          "capacity-agent-027": "benchmark-org",
+          "capacity-agent-030": "benchmark-org",
+          "capacity-agent-011": "benchmark-org",
+          "capacity-agent-012": "benchmark-org",
+          "capacity-agent-005": "benchmark-org",
+          "capacity-agent-004": "benchmark-org",
+          "capacity-agent-007": "benchmark-org",
+          "capacity-agent-009": "benchmark-org",
+          "capacity-agent-010": "benchmark-org",
+          "capacity-agent-006": "benchmark-org",
+          "capacity-agent-015": "benchmark-org",
+          "capacity-agent-008": "benchmark-org",
+          "capacity-agent-013": "benchmark-org",
+          "capacity-agent-014": "benchmark-org"
+        }
+      },
+      {
+        "concurrency": 64,
+        "completedOutputs": 256,
+        "terminalSessions": 64,
+        "reasoningRows": 256,
+        "toolRows": 1536,
+        "resolvedOrganizationByAgent": {
+          "capacity-agent-023": "benchmark-org",
+          "capacity-agent-003": "benchmark-org",
+          "capacity-agent-002": "benchmark-org",
+          "capacity-agent-021": "benchmark-org",
+          "capacity-agent-001": "benchmark-org",
+          "capacity-agent-025": "benchmark-org",
+          "capacity-agent-020": "benchmark-org",
+          "capacity-agent-024": "benchmark-org",
+          "capacity-agent-017": "benchmark-org",
+          "capacity-agent-028": "benchmark-org",
+          "capacity-agent-016": "benchmark-org",
+          "capacity-agent-019": "benchmark-org",
+          "capacity-agent-022": "benchmark-org",
+          "capacity-agent-027": "benchmark-org",
+          "capacity-agent-029": "benchmark-org",
+          "capacity-agent-026": "benchmark-org",
+          "capacity-agent-018": "benchmark-org",
+          "capacity-agent-039": "benchmark-org",
+          "capacity-agent-037": "benchmark-org",
+          "capacity-agent-033": "benchmark-org",
+          "capacity-agent-032": "benchmark-org",
+          "capacity-agent-041": "benchmark-org",
+          "capacity-agent-034": "benchmark-org",
+          "capacity-agent-036": "benchmark-org",
+          "capacity-agent-040": "benchmark-org",
+          "capacity-agent-030": "benchmark-org",
+          "capacity-agent-031": "benchmark-org",
+          "capacity-agent-035": "benchmark-org",
+          "capacity-agent-043": "benchmark-org",
+          "capacity-agent-042": "benchmark-org",
+          "capacity-agent-046": "benchmark-org",
+          "capacity-agent-050": "benchmark-org",
+          "capacity-agent-004": "benchmark-org",
+          "capacity-agent-049": "benchmark-org",
+          "capacity-agent-038": "benchmark-org",
+          "capacity-agent-052": "benchmark-org",
+          "capacity-agent-056": "benchmark-org",
+          "capacity-agent-048": "benchmark-org",
+          "capacity-agent-054": "benchmark-org",
+          "capacity-agent-044": "benchmark-org",
+          "capacity-agent-047": "benchmark-org",
+          "capacity-agent-007": "benchmark-org",
+          "capacity-agent-051": "benchmark-org",
+          "capacity-agent-045": "benchmark-org",
+          "capacity-agent-061": "benchmark-org",
+          "capacity-agent-005": "benchmark-org",
+          "capacity-agent-006": "benchmark-org",
+          "capacity-agent-058": "benchmark-org",
+          "capacity-agent-063": "benchmark-org",
+          "capacity-agent-055": "benchmark-org",
+          "capacity-agent-064": "benchmark-org",
+          "capacity-agent-060": "benchmark-org",
+          "capacity-agent-062": "benchmark-org",
+          "capacity-agent-010": "benchmark-org",
+          "capacity-agent-053": "benchmark-org",
+          "capacity-agent-059": "benchmark-org",
+          "capacity-agent-057": "benchmark-org",
+          "capacity-agent-009": "benchmark-org",
+          "capacity-agent-008": "benchmark-org",
+          "capacity-agent-013": "benchmark-org",
+          "capacity-agent-011": "benchmark-org",
+          "capacity-agent-014": "benchmark-org",
+          "capacity-agent-015": "benchmark-org",
+          "capacity-agent-012": "benchmark-org"
+        }
+      }
+    ]
+  },
+  "traces": {
+    "syncWorker": {
+      "rungs": [
+        {
+          "concurrency": 1,
+          "attempted": 100,
+          "completed": 100,
+          "errors": 0,
+          "timeouts": 0,
+          "throughput": 50.541826269414486,
+          "infrastructureLatency": {
+            "p50": 19.280417000001762,
+            "p95": 27.042167000006884,
+            "p99": 30.82491700000537
+          },
+          "eventLoopDelay": {
+            "p50": 0.24833299999590963,
+            "p95": 2.126624999989872,
+            "p99": 7.280832999997074
+          },
+          "waves": 100,
+          "latency": {
+            "p50": 19.280417000001762,
+            "p95": 27.042167000006884,
+            "p99": 30.82491700000537
+          },
+          "eventLoopDelayMax": 7.942750000001979
+        },
+        {
+          "concurrency": 2,
+          "attempted": 100,
+          "completed": 100,
+          "errors": 0,
+          "timeouts": 0,
+          "throughput": 53.70453910764556,
+          "infrastructureLatency": {
+            "p50": 36.573208000001614,
+            "p95": 48.678916999997455,
+            "p99": 58.50533300000825
+          },
+          "eventLoopDelay": {
+            "p50": 0.9639159999933327,
+            "p95": 4.041417000000365,
+            "p99": 9.112208999998984
+          },
+          "waves": 50,
+          "latency": {
+            "p50": 36.573208000001614,
+            "p95": 48.678916999997455,
+            "p99": 58.50533300000825
+          },
+          "eventLoopDelayMax": 13.093167000013636
+        },
+        {
+          "concurrency": 4,
+          "attempted": 100,
+          "completed": 100,
+          "errors": 0,
+          "timeouts": 0,
+          "throughput": 50.151463689274706,
+          "infrastructureLatency": {
+            "p50": 64.93850000000384,
+            "p95": 143.79508300000452,
+            "p99": 245.47825000000012
+          },
+          "eventLoopDelay": {
+            "p50": 3.486333000008017,
+            "p95": 12.506582999994862,
+            "p99": 59.33916699999827
+          },
+          "waves": 25,
+          "latency": {
+            "p50": 64.93850000000384,
+            "p95": 143.79508300000452,
+            "p99": 245.47825000000012
+          },
+          "eventLoopDelayMax": 96.70379200000025
+        },
+        {
+          "concurrency": 8,
+          "attempted": 104,
+          "completed": 104,
+          "errors": 0,
+          "timeouts": 0,
+          "throughput": 59.382352175772205,
+          "infrastructureLatency": {
+            "p50": 134.0202500000014,
+            "p95": 163.39608299999963,
+            "p99": 163.40133399999468
+          },
+          "eventLoopDelay": {
+            "p50": 5.668792000011308,
+            "p95": 15.239832999999635,
+            "p99": 18.252957999997307
+          },
+          "waves": 13,
+          "latency": {
+            "p50": 134.0202500000014,
+            "p95": 163.39608299999963,
+            "p99": 163.40133399999468
+          },
+          "eventLoopDelayMax": 23.277874999999767
+        },
+        {
+          "concurrency": 16,
+          "attempted": 112,
+          "completed": 112,
+          "errors": 0,
+          "timeouts": 0,
+          "throughput": 62.071415958381834,
+          "infrastructureLatency": {
+            "p50": 250.14191600000777,
+            "p95": 279.0226249999978,
+            "p99": 279.0246249999909
+          },
+          "eventLoopDelay": {
+            "p50": 13.688249999991967,
+            "p95": 29.70204200000444,
+            "p99": 42.17399999999907
+          },
+          "waves": 7,
+          "latency": {
+            "p50": 250.14191600000777,
+            "p95": 279.0226249999978,
+            "p99": 279.0246249999909
+          },
+          "eventLoopDelayMax": 42.17399999999907
+        },
+        {
+          "concurrency": 32,
+          "attempted": 128,
+          "completed": 128,
+          "errors": 0,
+          "timeouts": 0,
+          "throughput": 64.6656738461564,
+          "infrastructureLatency": {
+            "p50": 494.28295799999614,
+            "p95": 519.7760419999977,
+            "p99": 519.7766249999986
+          },
+          "eventLoopDelay": {
+            "p50": 29.292749999993248,
+            "p95": 71.11262500000885,
+            "p99": 80.42974999999569
+          },
+          "waves": 4,
+          "latency": {
+            "p50": 494.28295799999614,
+            "p95": 519.7760419999977,
+            "p99": 519.7766249999986
+          },
+          "eventLoopDelayMax": 80.42974999999569
+        },
+        {
+          "concurrency": 64,
+          "attempted": 256,
+          "completed": 256,
+          "errors": 0,
+          "timeouts": 0,
+          "throughput": 61.9047012540453,
+          "infrastructureLatency": {
+            "p50": 1017.3728339999943,
+            "p95": 1084.5553749999963,
+            "p99": 1084.5564999999915
+          },
+          "eventLoopDelay": {
+            "p50": 50.25079099999857,
+            "p95": 137.92341699999815,
+            "p99": 156.457917000007
+          },
+          "waves": 4,
+          "latency": {
+            "p50": 1017.3728339999943,
+            "p95": 1084.5553749999963,
+            "p99": 1084.5564999999915
+          },
+          "eventLoopDelayMax": 156.457917000007
+        }
+      ],
+      "capacity": {
+        "kind": "measured",
+        "concurrency": 1,
+        "saturatedAt": 2,
+        "reason": "throughput-gain"
+      }
+    },
+    "asyncSingle": {
+      "rungs": [
+        {
+          "concurrency": 1,
+          "attempted": 100,
+          "completed": 100,
+          "errors": 0,
+          "timeouts": 0,
+          "throughput": 56.0185880878996,
+          "infrastructureLatency": {
+            "p50": 17.296000000002095,
+            "p95": 23.300875000000815,
+            "p99": 25.031458000012208
+          },
+          "eventLoopDelay": {
+            "p50": 0.08129200000257697,
+            "p95": 0.9982920000038575,
+            "p99": 1.7747499999968568
+          },
+          "waves": 100,
+          "latency": {
+            "p50": 17.296000000002095,
+            "p95": 23.300875000000815,
+            "p99": 25.031458000012208
+          },
+          "eventLoopDelayMax": 3.028374999994412
+        },
+        {
+          "concurrency": 2,
+          "attempted": 100,
+          "completed": 100,
+          "errors": 0,
+          "timeouts": 0,
+          "throughput": 66.3193778609409,
+          "infrastructureLatency": {
+            "p50": 28.791874999995343,
+            "p95": 38.297667000006186,
+            "p99": 57.685333000001265
+          },
+          "eventLoopDelay": {
+            "p50": 0.02554200000304263,
+            "p95": 0.9150829999998678,
+            "p99": 1.7315419999940787
+          },
+          "waves": 50,
+          "latency": {
+            "p50": 28.791874999995343,
+            "p95": 38.297667000006186,
+            "p99": 57.685333000001265
+          },
+          "eventLoopDelayMax": 9.29541700000118
+        },
+        {
+          "concurrency": 4,
+          "attempted": 100,
+          "completed": 100,
+          "errors": 0,
+          "timeouts": 0,
+          "throughput": 66.33248541821787,
+          "infrastructureLatency": {
+            "p50": 59.25812500000757,
+            "p95": 68.35837499999616,
+            "p99": 72.37662500000442
+          },
+          "eventLoopDelay": {
+            "p50": 0,
+            "p95": 0.7106250000069849,
+            "p99": 2.0177499999990687
+          },
+          "waves": 25,
+          "latency": {
+            "p50": 59.25812500000757,
+            "p95": 68.35837499999616,
+            "p99": 72.37662500000442
+          },
+          "eventLoopDelayMax": 3.0262909999873955
+        },
+        {
+          "concurrency": 8,
+          "attempted": 104,
+          "completed": 104,
+          "errors": 0,
+          "timeouts": 0,
+          "throughput": 65.61815894216579,
+          "infrastructureLatency": {
+            "p50": 121.58137500000885,
+            "p95": 133.46958299999824,
+            "p99": 134.22299999999814
+          },
+          "eventLoopDelay": {
+            "p50": 0.026542000006884336,
+            "p95": 0.8831659999996191,
+            "p99": 2.428749999991851
+          },
+          "waves": 13,
+          "latency": {
+            "p50": 121.58137500000885,
+            "p95": 133.46958299999824,
+            "p99": 134.22299999999814
+          },
+          "eventLoopDelayMax": 8.176791999998386
+        },
+        {
+          "concurrency": 16,
+          "attempted": 112,
+          "completed": 112,
+          "errors": 0,
+          "timeouts": 0,
+          "throughput": 67.8940503378604,
+          "infrastructureLatency": {
+            "p50": 232.5367499999993,
+            "p95": 258.7831670000014,
+            "p99": 259.41224999999395
+          },
+          "eventLoopDelay": {
+            "p50": 0.03862500000104774,
+            "p95": 0.6514999999926658,
+            "p99": 0.7717919999995502
+          },
+          "waves": 7,
+          "latency": {
+            "p50": 232.5367499999993,
+            "p95": 258.7831670000014,
+            "p99": 259.41224999999395
+          },
+          "eventLoopDelayMax": 1.0899159999971744
+        },
+        {
+          "concurrency": 32,
+          "attempted": 128,
+          "completed": 128,
+          "errors": 0,
+          "timeouts": 0,
+          "throughput": 71.43630504641698,
+          "infrastructureLatency": {
+            "p50": 440.32487499999115,
+            "p95": 468.5297500000015,
+            "p99": 469.37949999999546
+          },
+          "eventLoopDelay": {
+            "p50": 0,
+            "p95": 0.7106250000069849,
+            "p99": 1.5392500000016298
+          },
+          "waves": 4,
+          "latency": {
+            "p50": 440.32487499999115,
+            "p95": 468.5297500000015,
+            "p99": 469.37949999999546
+          },
+          "eventLoopDelayMax": 2.6275000000023283
+        },
+        {
+          "concurrency": 64,
+          "attempted": 256,
+          "completed": 256,
+          "errors": 0,
+          "timeouts": 0,
+          "throughput": 70.94104391007531,
+          "infrastructureLatency": {
+            "p50": 876.1377090000024,
+            "p95": 962.0970000000088,
+            "p99": 964.8372910000035
+          },
+          "eventLoopDelay": {
+            "p50": 0.01216700000804849,
+            "p95": 0.7964999999967404,
+            "p99": 2.0431249999965075
+          },
+          "waves": 4,
+          "latency": {
+            "p50": 876.1377090000024,
+            "p95": 962.0970000000088,
+            "p99": 964.8372910000035
+          },
+          "eventLoopDelayMax": 2.5077499999897555
+        }
+      ],
+      "capacity": {
+        "kind": "measured",
+        "concurrency": 1,
+        "saturatedAt": 2,
+        "reason": "throughput-gain"
+      }
+    },
+    "asyncPool": {
+      "rungs": [
+        {
+          "concurrency": 1,
+          "attempted": 100,
+          "completed": 100,
+          "errors": 0,
+          "timeouts": 0,
+          "throughput": 60.41437768546605,
+          "infrastructureLatency": {
+            "p50": 15.63787500000035,
+            "p95": 22.094250000009197,
+            "p99": 26.36666700000933
+          },
+          "eventLoopDelay": {
+            "p50": 0.04220799999893643,
+            "p95": 0.7487499999988358,
+            "p99": 1.7432499999995343
+          },
+          "waves": 100,
+          "latency": {
+            "p50": 15.63787500000035,
+            "p95": 22.094250000009197,
+            "p99": 26.36666700000933
+          },
+          "eventLoopDelayMax": 1.8502080000034766
+        },
+        {
+          "concurrency": 2,
+          "attempted": 100,
+          "completed": 100,
+          "errors": 0,
+          "timeouts": 0,
+          "throughput": 68.20082722488314,
+          "infrastructureLatency": {
+            "p50": 22.31891600000381,
+            "p95": 63.482709000003524,
+            "p99": 156.7734999999957
+          },
+          "eventLoopDelay": {
+            "p50": 0.04383300000336021,
+            "p95": 1.1033749999915017,
+            "p99": 2.801416000002064
+          },
+          "waves": 50,
+          "latency": {
+            "p50": 22.31891600000381,
+            "p95": 63.482709000003524,
+            "p99": 156.7734999999957
+          },
+          "eventLoopDelayMax": 4.989291999998386
+        },
+        {
+          "concurrency": 4,
+          "attempted": 100,
+          "completed": 100,
+          "errors": 0,
+          "timeouts": 0,
+          "throughput": 158.95860899670228,
+          "infrastructureLatency": {
+            "p50": 23.78720799999428,
+            "p95": 28.779291999991983,
+            "p99": 34.06491699999606
+          },
+          "eventLoopDelay": {
+            "p50": 0,
+            "p95": 0.594041999996989,
+            "p99": 2.156875000000582
+          },
+          "waves": 25,
+          "latency": {
+            "p50": 23.78720799999428,
+            "p95": 28.779291999991983,
+            "p99": 34.06491699999606
+          },
+          "eventLoopDelayMax": 2.156875000000582
+        },
+        {
+          "concurrency": 8,
+          "attempted": 104,
+          "completed": 104,
+          "errors": 0,
+          "timeouts": 0,
+          "throughput": 277.18260808343047,
+          "infrastructureLatency": {
+            "p50": 26.815291999999317,
+            "p95": 36.57758299999114,
+            "p99": 38.06999999999243
+          },
+          "eventLoopDelay": {
+            "p50": 0.07062499999301508,
+            "p95": 1.2346249999973224,
+            "p99": 2.9660410000069533
+          },
+          "waves": 13,
+          "latency": {
+            "p50": 26.815291999999317,
+            "p95": 36.57758299999114,
+            "p99": 38.06999999999243
+          },
+          "eventLoopDelayMax": 2.9660410000069533
+        },
+        {
+          "concurrency": 16,
+          "attempted": 112,
+          "completed": 112,
+          "errors": 0,
+          "timeouts": 0,
+          "throughput": 554.2877186296764,
+          "infrastructureLatency": {
+            "p50": 27.56883299999754,
+            "p95": 30.503541999991285,
+            "p99": 31.160167000009096
+          },
+          "eventLoopDelay": {
+            "p50": 0,
+            "p95": 0.5583330000081332,
+            "p99": 0.7358749999984866
+          },
+          "waves": 7,
+          "latency": {
+            "p50": 27.56883299999754,
+            "p95": 30.503541999991285,
+            "p99": 31.160167000009096
+          },
+          "eventLoopDelayMax": 0.7358749999984866
+        },
+        {
+          "concurrency": 32,
+          "attempted": 128,
+          "completed": 128,
+          "errors": 0,
+          "timeouts": 0,
+          "throughput": 572.6817371266172,
+          "infrastructureLatency": {
+            "p50": 53.57666600000812,
+            "p95": 55.642041999992216,
+            "p99": 56.24850000000151
+          },
+          "eventLoopDelay": {
+            "p50": 0,
+            "p95": 0.2824170000094455,
+            "p99": 0.35462499999266583
+          },
+          "waves": 4,
+          "latency": {
+            "p50": 53.57666600000812,
+            "p95": 55.642041999992216,
+            "p99": 56.24850000000151
+          },
+          "eventLoopDelayMax": 0.35462499999266583
+        },
+        {
+          "concurrency": 64,
+          "attempted": 256,
+          "completed": 256,
+          "errors": 0,
+          "timeouts": 0,
+          "throughput": 533.7624282854553,
+          "infrastructureLatency": {
+            "p50": 113.11066600000777,
+            "p95": 132.96279199999117,
+            "p99": 133.74804200000654
+          },
+          "eventLoopDelay": {
+            "p50": 0.017749999999068677,
+            "p95": 0.4688330000062706,
+            "p99": 0.9632909999927506
+          },
+          "waves": 4,
+          "latency": {
+            "p50": 113.11066600000777,
+            "p95": 132.96279199999117,
+            "p99": 133.74804200000654
+          },
+          "eventLoopDelayMax": 0.9632909999927506
+        }
+      ],
+      "capacity": {
+        "kind": "measured",
+        "concurrency": 1,
+        "saturatedAt": 2,
+        "reason": "infrastructure-latency"
+      },
+      "poolSize": 16
+    }
+  },
+  "ratios": {
+    "asyncSingleOverSync": [
+      {
+        "concurrency": 1,
+        "throughputSpeedup": 1.1083609798603458,
+        "p95LatencyRatio": 1.1605644423226997
+      },
+      {
+        "concurrency": 2,
+        "throughputSpeedup": 1.2348933435218599,
+        "p95LatencyRatio": 1.2710674255951306
+      },
+      {
+        "concurrency": 4,
+        "throughputSpeedup": 1.32264306041388,
+        "p95LatencyRatio": 2.1035474146366497
+      },
+      {
+        "concurrency": 8,
+        "throughputSpeedup": 1.1050111108420824,
+        "p95LatencyRatio": 1.2242196261301108
+      },
+      {
+        "concurrency": 16,
+        "throughputSpeedup": 1.093805406072621,
+        "p95LatencyRatio": 1.078210102436826
+      },
+      {
+        "concurrency": 32,
+        "throughputSpeedup": 1.1047020899583964,
+        "p95LatencyRatio": 1.1093768154530124
+      },
+      {
+        "concurrency": 64,
+        "throughputSpeedup": 1.1459718320737313,
+        "p95LatencyRatio": 1.1272827739822349
+      }
+    ],
+    "asyncPoolOverAsyncSingle": [
+      {
+        "concurrency": 1,
+        "throughputSpeedup": 1.0784701961903957,
+        "p95LatencyRatio": 1.0546126254564476
+      },
+      {
+        "concurrency": 2,
+        "throughputSpeedup": 1.028369526745068,
+        "p95LatencyRatio": 0.6032771380314608
+      },
+      {
+        "concurrency": 4,
+        "throughputSpeedup": 2.3963915718593762,
+        "p95LatencyRatio": 2.375262567265908
+      },
+      {
+        "concurrency": 8,
+        "throughputSpeedup": 4.22417532816994,
+        "p95LatencyRatio": 3.6489448469033774
+      },
+      {
+        "concurrency": 16,
+        "throughputSpeedup": 8.164010187510991,
+        "p95LatencyRatio": 8.483708777166775
+      },
+      {
+        "concurrency": 32,
+        "throughputSpeedup": 8.016676349014796,
+        "p95LatencyRatio": 8.420426949824506
+      },
+      {
+        "concurrency": 64,
+        "throughputSpeedup": 7.524028388446767,
+        "p95LatencyRatio": 7.235836323293157
+      }
+    ]
+  }
+}

@@ -218,8 +218,8 @@ describe('Daemon evaluation surface', () => {
 
     const started = await (daemon as any).dreamRunner().start(AGENT_ID, { trigger: 'manual' })
     let dream
-    await vi.waitFor(() => {
-      dream = (daemon as any).store.getDream(AGENT_ID, started.dreamId)
+    await vi.waitFor(async () => {
+      dream = await (daemon as any).store.getDream(AGENT_ID, started.dreamId)
       expect(dream?.status).toBe('adopted')
     }, WAIT)
 
@@ -230,16 +230,16 @@ describe('Daemon evaluation surface', () => {
       stopReason: 'end_turn',
       usage: { totalTokens: 12, inputTokens: 8, outputTokens: 4, costAmount: 0.05, costCurrency: 'USD' }
     })
-    const session = (daemon as any).store.getSessionByAcpIdForAgent(AGENT_ID, 'dream-session-1')
+    const session = await (daemon as any).store.getSessionByAcpIdForAgent(AGENT_ID, 'dream-session-1')
     expect(session).toMatchObject({ platform: 'dream', channel: 'memory', thread: started.dreamId, state: 'idle' })
-    expect((daemon as any).store.getUsage(session.key)).toMatchObject({
+    expect(await (daemon as any).store.getUsage(session.key)).toMatchObject({
       totalTokens: 12,
       contextUsed: 12,
       contextSize: 128_000,
       costAmount: 0.05,
       costCurrency: 'USD'
     })
-    const transcript = (daemon as any).store.threadTranscript('memory', started.dreamId) as Array<{
+    const transcript = (await (daemon as any).store.threadTranscript('memory', started.dreamId)) as Array<{
       kind: string
       text: string
       body?: string
@@ -285,7 +285,7 @@ describe('Daemon evaluation surface', () => {
       channel: 'memory'
     })
 
-    ;(daemon as any).recordDreamLifecycle({
+    await (daemon as any).recordDreamLifecycle({
       type: 'memory.dream.skill_accepted',
       dream: { ...dream, skills: [{ name: 'deploy-staging', description: 'Deploy to staging', state: 'accepted' }] },
       skillName: 'deploy-staging'
@@ -295,8 +295,7 @@ describe('Daemon evaluation surface', () => {
       sessionId: 'dream-session-1',
       data: { dreamId: started.dreamId, skillName: 'deploy-staging' }
     })
-    const reviewedHistory = (daemon as any).store
-      .threadTranscript('memory', started.dreamId)
+    const reviewedHistory = (await (daemon as any).store.threadTranscript('memory', started.dreamId))
       .map((row: { text: string }) => row.text)
       .join('\n')
     expect(reviewedHistory).toContain('A recommended skill was accepted.')
@@ -341,15 +340,15 @@ describe('Daemon evaluation surface', () => {
 
     const started = await (daemon as any).dreamRunner().start(AGENT_ID, { trigger: 'manual' })
     let dream
-    await vi.waitFor(() => {
-      dream = (daemon as any).store.getDream(AGENT_ID, started.dreamId)
+    await vi.waitFor(async () => {
+      dream = await (daemon as any).store.getDream(AGENT_ID, started.dreamId)
       expect(dream?.status).toBe('adopted')
     }, WAIT)
 
     expect(dream).not.toHaveProperty('model')
     expect(dream?.usage).not.toHaveProperty('costAmount')
-    const session = (daemon as any).store.getSessionByAcpIdForAgent(AGENT_ID, 'dream-default-model')
-    expect((daemon as any).store.getUsage(session.key)).not.toHaveProperty('costAmount')
+    const session = await (daemon as any).store.getSessionByAcpIdForAgent(AGENT_ID, 'dream-default-model')
+    expect(await (daemon as any).store.getUsage(session.key)).not.toHaveProperty('costAmount')
 
     await daemon.stop()
     collector.assertValid()
@@ -425,19 +424,21 @@ describe('Daemon evaluation surface', () => {
 
       // A late usage snapshot is safe metadata and still corrects the session's
       // latest-wins accounting.
-      const session = (daemon as any).store.getSessionByAcpIdForAgent(AGENT_ID, 'dream-ignored-cancel')
+      const session = await (daemon as any).store.getSessionByAcpIdForAgent(AGENT_ID, 'dream-ignored-cancel')
       onUpdate('dream-ignored-cancel', {
         sessionUpdate: 'usage_update',
         used: 99,
         size: 256_000,
         cost: { amount: 0.09, currency: 'USD' }
       })
-      expect((daemon as any).store.getUsage(session.key)).toMatchObject({
-        contextUsed: 99,
-        contextSize: 256_000,
-        costAmount: 0.09,
-        costCurrency: 'USD'
-      })
+      await vi.waitFor(async () =>
+        expect(await (daemon as any).store.getUsage(session.key)).toMatchObject({
+          contextUsed: 99,
+          contextSize: 256_000,
+          costAmount: 0.09,
+          costCurrency: 'USD'
+        })
+      )
 
       // Once the confined child is fully gone, its session's tombstone is reclaimed
       // — a stopped host can produce no further callbacks.
@@ -493,7 +494,7 @@ describe('Daemon evaluation surface', () => {
     mkdirSync(join(dreamDir, 'output'), { recursive: true })
     writeFileSync(bodyPath, privateBody)
     writeFileSync(outputPath, '# Held staging\n')
-    ;(seeder as any).store.insertDream({
+    await (seeder as any).store.insertDream({
       dreamId,
       agentId: AGENT_ID,
       status: 'superseded',
@@ -537,11 +538,11 @@ describe('Daemon evaluation surface', () => {
 
     const runner = (daemon as any).dreamRunnerInstance
     expect(runner).toBeDefined()
-    const inventory = runner.organizationSuggestionInventory()
+    const inventory = await runner.organizationSuggestionInventory()
     expect(syncOrganizationSuggestions).toHaveBeenCalledOnce()
     expect(syncOrganizationSuggestions).toHaveBeenCalledWith({ suggestions: inventory })
     expect(JSON.stringify(syncOrganizationSuggestions.mock.calls[0]![0])).not.toContain('PRIVATE HELD BODY')
-    expect((daemon as any).store.getDream(AGENT_ID, dreamId).organizationSuggestions[0].state).toBe('proposed')
+    expect((await (daemon as any).store.getDream(AGENT_ID, dreamId)).organizationSuggestions[0].state).toBe('proposed')
     expect(readFileSync(bodyPath, 'utf8')).toBe(privateBody)
     expect(readFileSync(outputPath, 'utf8')).toBe('# Held staging\n')
 
@@ -563,7 +564,7 @@ describe('Daemon evaluation surface', () => {
 
     expect(allowedReview).toHaveBeenCalledOnce()
     expect(allowedReview).toHaveBeenCalledWith(decision)
-    expect((allowed as any).store.getDream(AGENT_ID, dreamId).organizationSuggestions[0].state).toBe('accepted')
+    expect((await (allowed as any).store.getDream(AGENT_ID, dreamId)).organizationSuggestions[0].state).toBe('accepted')
     expect(() => readFileSync(bodyPath, 'utf8')).toThrow()
     await allowed.stop()
   }, 15_000)

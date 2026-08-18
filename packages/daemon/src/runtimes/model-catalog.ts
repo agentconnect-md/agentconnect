@@ -18,19 +18,24 @@ import { resolveCommandPath } from './probe.js'
  * WITH WHAT to discover, persists results into the LocalStore cache tables, and
  * reports completion via `onUpdated` so the daemon can re-emit facts.
  *
- * Nothing here is on any hot path: `noteProbe` never throws and never blocks —
+ * Nothing here is on any hot path: `noteProbe` never throws and only awaits its gate read —
  * discovery runs as a fire-and-forget background task whose every cache write is
  * fenced by the runtime's current generation.
  */
 
 /** The LocalStore surface the service writes through (structural — tests inject a fake). */
 export interface CatalogStorePort {
-  recordRuntimeCatalogMeta(meta: Omit<RuntimeCatalogMetaRecord, 'complete' | 'modelsHash'>): void
-  markRuntimeCatalogComplete(runtimeId: string, fingerprint: string, modelsHash: string, observedAt: number): void
-  upsertRuntimeModelCap(rec: RuntimeModelCapRecord): void
-  pruneRuntimeModelCaps(runtimeId: string, keepModelIds: string[]): void
-  getRuntimeCatalogMeta(runtimeId: string): RuntimeCatalogMetaRecord | undefined
-  listRuntimeModelCaps(runtimeId?: string): RuntimeModelCapRecord[]
+  recordRuntimeCatalogMeta(meta: Omit<RuntimeCatalogMetaRecord, 'complete' | 'modelsHash'>): Promise<void>
+  markRuntimeCatalogComplete(
+    runtimeId: string,
+    fingerprint: string,
+    modelsHash: string,
+    observedAt: number
+  ): Promise<void>
+  upsertRuntimeModelCap(rec: RuntimeModelCapRecord): Promise<void>
+  pruneRuntimeModelCaps(runtimeId: string, keepModelIds: string[]): Promise<void>
+  getRuntimeCatalogMeta(runtimeId: string): Promise<RuntimeCatalogMetaRecord | undefined>
+  listRuntimeModelCaps(runtimeId?: string): Promise<RuntimeModelCapRecord[]>
 }
 
 /** One model's RAW advertised capabilities (cache shape — no daemon-synthesized tiers). */
@@ -127,7 +132,7 @@ export interface ModelCatalogServiceDeps {
   /** Driver child environment — default curatedProbeEnvironment(process.env). */
   driverEnv?: () => Record<string, string>
   /** Fires after the cache writes of a finished (or driver-completed) discovery. */
-  onUpdated: (runtimeId: string) => void
+  onUpdated: (runtimeId: string) => Promise<void>
 }
 
 interface InflightTask {
@@ -164,7 +169,12 @@ export class ModelCatalogService {
   /** Called from the probe sweep fold for each successfully probed, admitted
    *  runtime. Evaluates the §3.3 discovery gate and (maybe) schedules a background
    *  discovery. Never throws, never blocks. */
-  noteProbe(input: { runtimeId: string; rt: RuntimeDef; probedVersion?: string; models: string[] }): void {
+  async noteProbe(input: {
+    runtimeId: string
+    rt: RuntimeDef
+    probedVersion?: string
+    models: string[]
+  }): Promise<void> {
     try {
       if (this.stopped) return
       // No advertised models ⇒ nothing to discover (phase 1 owns runtime-level data).
@@ -184,7 +194,7 @@ export class ModelCatalogService {
       const prevBackoff = this.backoff.get(input.runtimeId)
       if (prevBackoff && prevBackoff.fingerprint !== fingerprint) this.backoff.delete(input.runtimeId)
 
-      const reason = this.gateReason(input, fingerprint)
+      const reason = await this.gateReason(input, fingerprint)
       if (!reason) return
       const wait = this.backoff.get(input.runtimeId)
       if (wait && this.now() < wait.nextAttemptAt) return
@@ -209,8 +219,11 @@ export class ModelCatalogService {
   }
 
   /** §3.3 discovery gate — the first matching rule names why discovery is due. */
-  private gateReason(input: { runtimeId: string; models: string[] }, fingerprint: string): string | undefined {
-    const meta = this.deps.store.getRuntimeCatalogMeta(input.runtimeId)
+  private async gateReason(
+    input: { runtimeId: string; models: string[] },
+    fingerprint: string
+  ): Promise<string | undefined> {
+    const meta = await this.deps.store.getRuntimeCatalogMeta(input.runtimeId)
     if (!meta || meta.fingerprint !== fingerprint) return 'fingerprint changed'
     // Phase 1 writes meta WITHOUT complete, so a fresh install keeps this open.
     if (!meta.complete) return 'catalog incomplete'
@@ -283,12 +296,12 @@ export class ModelCatalogService {
         )
         if (!this.isCurrent(runtimeId, generation)) return
         if (this.validateDriverCatalog(runtimeId, catalog, input.models)) {
-          this.commitDiscovery(input, fingerprint, generation, 'native', catalog.models, catalog.defaultModel)
+          await this.commitDiscovery(input, fingerprint, generation, 'native', catalog.models, catalog.defaultModel)
           if (!this.isCurrent(runtimeId, generation)) return
           this.deps.log?.info(
             `catalog: ${runtimeId} native discovery complete (${catalog.models.length} model(s), ${this.now() - startedAt}ms)`
           )
-          this.deps.onUpdated(runtimeId)
+          await this.deps.onUpdated(runtimeId)
           return
         }
         // Discarded (empty / id-scheme mismatch) — fall through to enumeration.
@@ -331,7 +344,7 @@ export class ModelCatalogService {
 
     const complete = !r.aborted && capped.every((id) => r.models.some((m) => m.id === id))
     if (complete) {
-      this.commitDiscovery(input, fingerprint, generation, 'acp', r.models, undefined)
+      await this.commitDiscovery(input, fingerprint, generation, 'acp', r.models, undefined)
       if (!this.isCurrent(runtimeId, generation)) return
       this.deps.log?.info(
         `catalog: ${runtimeId} enumeration complete (${r.models.length} model(s), ${this.now() - startedAt}ms)`
@@ -342,7 +355,7 @@ export class ModelCatalogService {
       const observedAt = this.now()
       for (const m of r.models) {
         if (!this.isCurrent(runtimeId, generation)) return
-        this.upsertModel(runtimeId, fingerprint, m, observedAt)
+        await this.upsertModel(runtimeId, fingerprint, m, observedAt)
       }
       this.noteFailure(runtimeId, fingerprint)
       this.deps.log?.warn(
@@ -350,7 +363,7 @@ export class ModelCatalogService {
       )
       if (r.models.length === 0) return
     }
-    this.deps.onUpdated(runtimeId)
+    await this.deps.onUpdated(runtimeId)
   }
 
   /** A non-empty driver catalog must share the probe's id scheme: fewer than half
@@ -376,26 +389,26 @@ export class ModelCatalogService {
 
   /** Persist one COMPLETE discovery: model rows, meta (source + preserved phase-1
    *  fields), the complete flag keyed to the probed models hash, prune-on-success. */
-  private commitDiscovery(
+  private async commitDiscovery(
     input: { runtimeId: string; models: string[] },
     fingerprint: string,
     generation: number,
     source: 'native' | 'acp',
     models: Array<{ id: string } & ModelCaps>,
     driverDefaultModel: string | undefined
-  ): void {
+  ): Promise<void> {
     const { runtimeId } = input
     const observedAt = this.now()
     for (const m of models) {
       if (!this.isCurrent(runtimeId, generation)) return
-      this.upsertModel(runtimeId, fingerprint, m, observedAt)
+      await this.upsertModel(runtimeId, fingerprint, m, observedAt)
     }
     if (!this.isCurrent(runtimeId, generation)) return
     // Preserve phase-1 meta fields the discovery has no source for (permission
     // modes always; default model unless the driver named one — design §5).
-    const prev = this.deps.store.getRuntimeCatalogMeta(runtimeId)
+    const prev = await this.deps.store.getRuntimeCatalogMeta(runtimeId)
     const defaultModel = driverDefaultModel ?? prev?.defaultModel
-    this.deps.store.recordRuntimeCatalogMeta({
+    await this.deps.store.recordRuntimeCatalogMeta({
       runtimeId,
       fingerprint,
       source,
@@ -403,16 +416,21 @@ export class ModelCatalogService {
       ...(prev?.permissionModes ? { permissionModes: prev.permissionModes } : {}),
       observedAt
     })
-    this.deps.store.markRuntimeCatalogComplete(runtimeId, fingerprint, modelsHash(input.models), observedAt)
+    await this.deps.store.markRuntimeCatalogComplete(runtimeId, fingerprint, modelsHash(input.models), observedAt)
     // Keep everything still advertised even when this round learned no caps for
     // it — prune only models that vanished from both the catalog and the probe.
-    this.deps.store.pruneRuntimeModelCaps(runtimeId, [...new Set([...models.map((m) => m.id), ...input.models])])
+    await this.deps.store.pruneRuntimeModelCaps(runtimeId, [...new Set([...models.map((m) => m.id), ...input.models])])
     this.backoff.delete(runtimeId)
   }
 
-  private upsertModel(runtimeId: string, fingerprint: string, m: { id: string } & ModelCaps, observedAt: number): void {
+  private async upsertModel(
+    runtimeId: string,
+    fingerprint: string,
+    m: { id: string } & ModelCaps,
+    observedAt: number
+  ): Promise<void> {
     const { id, ...caps } = m
-    this.deps.store.upsertRuntimeModelCap({ runtimeId, modelId: id, fingerprint, caps, observedAt })
+    await this.deps.store.upsertRuntimeModelCap({ runtimeId, modelId: id, fingerprint, caps, observedAt })
   }
 }
 

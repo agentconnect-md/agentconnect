@@ -63,7 +63,8 @@ export class RoutingFixture {
   readonly room: CompiledRoom
   private readonly harness: DaemonEvaluationHarness
   private readonly subjectCleanup: () => void
-  private readonly echoHandles: DeliveryHandle[] = []
+  // The async store made inject() Promise-returning; the fixture carries the pending handles.
+  private readonly echoHandles: Promise<DeliveryHandle>[] = []
   private readonly echoAdmissionRecords: {
     messageId: string
     /** Set on the response-closing arrival; absent on the post it edits. */
@@ -226,7 +227,7 @@ export class RoutingFixture {
         messageId: echoMessageId,
         ...(ingressEventTag !== undefined ? { ingressEventTag } : {}),
         integrationId,
-        admission: handle.admission
+        admission: handle.then((settled) => settled.admission)
       })
     }
   }
@@ -262,7 +263,7 @@ export class RoutingFixture {
   injectHuman(
     text: string,
     options: { thread?: string; mentions?: string[]; sender?: string } = {}
-  ): { messageId: string; handles: DeliveryHandle[] } {
+  ): { messageId: string; handles: Promise<DeliveryHandle>[] } {
     const messageId = this.world.mintMessageId('slack')
     this.world.registerRoomMessage(this.room.channel, messageId)
     this.world.recordThreadMessage(this.room.channel, options.thread ?? messageId, {
@@ -293,7 +294,7 @@ export class RoutingFixture {
   injectThirdPartyBot(
     text: string,
     options: { thread?: string; mentions?: string[]; sender?: string } = {}
-  ): { messageId: string; handles: DeliveryHandle[] } {
+  ): { messageId: string; handles: Promise<DeliveryHandle>[] } {
     const sender = options.sender ?? 'UEXTBOT9'
     const messageId = this.world.mintMessageId('slack')
     this.world.registerRoomMessage(this.room.channel, messageId)
@@ -321,12 +322,12 @@ export class RoutingFixture {
 
   /** Settle everything in flight: await injected handles, drain echo cascades
    *  generation by generation, then wait for daemon idleness. */
-  async settle(handles: DeliveryHandle[] = []): Promise<void> {
+  async settle(handles: Promise<DeliveryHandle>[] = []): Promise<void> {
     let pending = [...handles, ...this.echoHandles.splice(0)]
     let generations = 0
     while (pending.length > 0 && generations < 32) {
       generations += 1
-      await Promise.all(pending.map((handle) => handle.completion))
+      await Promise.all(pending.map(async (handle) => (await handle).completion))
       pending = this.echoHandles.splice(0)
     }
     await this.harness.waitUntilIdle()
@@ -334,7 +335,7 @@ export class RoutingFixture {
     pending = this.echoHandles.splice(0)
     while (pending.length > 0 && generations < 32) {
       generations += 1
-      await Promise.all(pending.map((handle) => handle.completion))
+      await Promise.all(pending.map(async (handle) => (await handle).completion))
       await this.harness.waitUntilIdle()
       pending = this.echoHandles.splice(0)
     }

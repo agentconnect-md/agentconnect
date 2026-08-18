@@ -234,7 +234,11 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     ])
     expect(cp.dones).toEqual([{ conversationId: CONV, turnId, stopReason: 'end_turn' }])
     // … and the transcript still holds the reply.
-    const rows = (daemon as any).store.threadTranscript(CONV, msgId) as { sender: string; kind: string; text: string }[]
+    const rows = (await (daemon as any).store.threadTranscript(CONV, msgId)) as {
+      sender: string
+      kind: string
+      text: string
+    }[]
     expect(rows.filter((r) => r.sender === AGENT_ID && r.kind === 'text').map((r) => r.text)).toContain(
       'here is the answer'
     )
@@ -279,7 +283,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
       { kind: 'message', text: 'done' }
     ])
     // …and the persisted list row (the record) carries the same title (latest wins).
-    const list = (daemon as any).store.listSessions(AGENT_ID) as { title: string | null }[]
+    const list = (await (daemon as any).store.listSessions(AGENT_ID)) as { title: string | null }[]
     expect(list[0]?.title).toBe('Roll back the deploy')
     await daemon.stop()
   }, 15_000)
@@ -349,8 +353,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
       { kind: 'tool_call', toolCallId: 'visible-tool', title: 'Read file.ts', status: 'completed' },
       { kind: 'message', text: 'done' }
     ])
-    const toolRows = (daemon as any).store
-      .threadTranscript(CONV, `webchat:${CONV}`)
+    const toolRows = (await (daemon as any).store.threadTranscript(CONV, `webchat:${CONV}`))
       .filter((row: { kind: string }) => row.kind === 'tool')
       .map((row: { text: string }) => row.text)
     expect(toolRows).toEqual(['Read file.ts'])
@@ -439,7 +442,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     }
 
     const key = (daemon as any).webchatTransport.webchatSessionKey(CONV, AGENT_ID)
-    const usage = (daemon as any).store.getUsage(key)
+    const usage = await (daemon as any).store.getUsage(key)
     expect(usage).toMatchObject({
       totalTokens: 500_000,
       inputTokens: 200_000,
@@ -485,7 +488,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
       { conversationId: CONV, turnId, sink: cp.sink }
     )
     const key = (daemon as any).webchatTransport.webchatSessionKey(CONV, AGENT_ID)
-    expect((daemon as any).store.getUsage(key).costAmount).toBe(0)
+    expect((await (daemon as any).store.getUsage(key)).costAmount).toBe(0)
 
     // The marker is per-turn, not sticky across the session: no native cost on
     // turn two means the public-price fallback is added to the existing USD total.
@@ -509,7 +512,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
       undefined,
       { conversationId: CONV, turnId: turn2, sink: cp.sink }
     )
-    expect((daemon as any).store.getUsage(key).costAmount).toBeCloseTo(0.1305)
+    expect((await (daemon as any).store.getUsage(key)).costAmount).toBeCloseTo(0.1305)
     await daemon.stop()
   }, 15_000)
 
@@ -525,14 +528,13 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     await daemon.start()
     const cp = fakeCpClient()
     ;(daemon as any).cpClient = cp
-    let queuedDrainCorrection = false
+    let drainCorrection: Promise<unknown> | undefined
     cp.emitUsageReport.mockImplementation((report: unknown) => {
       cp.usageReports.push(report)
-      if (queuedDrainCorrection) return
-      queuedDrainCorrection = true
+      if (drainCorrection) return
       // The normal report is synchronous; this runs at the following await while
       // Pending still exists but usageReportSent has already flipped true.
-      queueMicrotask(() =>
+      drainCorrection = Promise.resolve().then(() =>
         (daemon as any).onAcpUpdate(
           AGENT_ID,
           'acp-wc-1',
@@ -560,15 +562,21 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
       { conversationId: CONV, turnId, sink: cp.sink }
     )
 
+    await drainCorrection
+
     const key = (daemon as any).webchatTransport.webchatSessionKey(CONV, AGENT_ID)
-    expect((daemon as any).store.getUsage(key).costAmount).toBeCloseTo(0.21)
+    expect((await (daemon as any).store.getUsage(key)).costAmount).toBeCloseTo(0.21)
     expect(cp.usageReports).toHaveLength(2)
     expect((cp.usageReports.at(-1) as any).usage.costAmount).toBeCloseTo(0.21)
 
     // After dispatch returns Pending is gone; the session-id lookup still applies
     // and reports a newer correction.
-    ;(daemon as any).onAcpUpdate(AGENT_ID, 'acp-wc-1', usageUpdate(20_000, 400_000, { amount: 0.22, currency: 'USD' }))
-    expect((daemon as any).store.getUsage(key).costAmount).toBeCloseTo(0.22)
+    await (daemon as any).onAcpUpdate(
+      AGENT_ID,
+      'acp-wc-1',
+      usageUpdate(20_000, 400_000, { amount: 0.22, currency: 'USD' })
+    )
+    expect((await (daemon as any).store.getUsage(key)).costAmount).toBeCloseTo(0.22)
     expect((cp.usageReports.at(-1) as any).usage.costAmount).toBeCloseTo(0.22)
     await daemon.stop()
   }, 15_000)
@@ -582,12 +590,12 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     ;(daemon as any).cpClient = cp
 
     // Run one full turn so a session row (with acpSessionId) exists for the conversation.
-    ;(daemon as any).webchatTransport.dispatchWebchatTurn(AGENT_ID, CONV, 'go', 'webchat', cp.sink)
+    await (daemon as any).webchatTransport.dispatchWebchatTurn(AGENT_ID, CONV, 'go', 'webchat', cp.sink)
     await vi.waitFor(() => expect(cp.dones).toHaveLength(1), WAIT)
 
     const key = (daemon as any).webchatTransport.webchatSessionKey(CONV, AGENT_ID)
-    ;(daemon as any).commands.setModelByKey(key, 'b')
-    expect((daemon as any).store.getModelOverride(key)).toBe('b') // sticky
+    await (daemon as any).commands.setModelByKey(key, 'b')
+    expect(await (daemon as any).store.getModelOverride(key)).toBe('b') // sticky
     expect(host.setSessionModel).toHaveBeenCalledWith('acp-wc-1', 'b') // applied live
     await daemon.stop()
   }, 15_000)
@@ -607,7 +615,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
       await daemon.start()
       const cp = fakeCpClient()
 
-      ;(daemon as any).webchatTransport.dispatchWebchatTurn(
+      await (daemon as any).webchatTransport.dispatchWebchatTurn(
         AGENT_ID,
         CONV,
         'go',
@@ -621,10 +629,10 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
 
       const key = (daemon as any).webchatTransport.webchatSessionKey(CONV, AGENT_ID)
       expect({
-        model: (daemon as any).store.getModelOverride(key),
-        effort: (daemon as any).store.getEffortOverride(key),
-        permissionMode: (daemon as any).store.getPermissionModeOverride(key),
-        fastMode: (daemon as any).store.getFastModeOverride(key)
+        model: await (daemon as any).store.getModelOverride(key),
+        effort: await (daemon as any).store.getEffortOverride(key),
+        permissionMode: await (daemon as any).store.getPermissionModeOverride(key),
+        fastMode: await (daemon as any).store.getFastModeOverride(key)
       }).toEqual(expected)
       expect(host.newSession.mock.calls[0]?.[2]).toBe(allowed ? 'high' : undefined)
       if (allowed) {
@@ -690,7 +698,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     const cp = fakeCpClient()
     const runtime = { model: 'b', effort: 'ultracode', permissionMode: 'plan', fastMode: true }
 
-    ;(daemon as any).webchatTransport.dispatchWebchatTurn(
+    await (daemon as any).webchatTransport.dispatchWebchatTurn(
       AGENT_ID,
       CONV,
       'go',
@@ -713,10 +721,10 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     await vi.waitFor(() => expect(cp.dones).toHaveLength(1), WAIT)
 
     const key = (daemon as any).webchatTransport.webchatSessionKey(CONV, AGENT_ID)
-    expect((daemon as any).store.getModelOverride(key)).toBeUndefined()
-    expect((daemon as any).store.getEffortOverride(key)).toBeUndefined()
-    expect((daemon as any).store.getPermissionModeOverride(key)).toBeUndefined()
-    expect((daemon as any).store.getFastModeOverride(key)).toBeUndefined()
+    expect(await (daemon as any).store.getModelOverride(key)).toBeUndefined()
+    expect(await (daemon as any).store.getEffortOverride(key)).toBeUndefined()
+    expect(await (daemon as any).store.getPermissionModeOverride(key)).toBeUndefined()
+    expect(await (daemon as any).store.getFastModeOverride(key)).toBeUndefined()
     expect(host.newSession).toHaveBeenCalledTimes(3)
     expect(host.newSession.mock.calls[0]?.[2]).toBe('ultracode')
     expect(host.newSession.mock.calls[1]?.[2]).toBe('ultracode')
@@ -754,16 +762,16 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     ;(daemon as any).cpClient = cp
 
     // Finish a turn first: Pending is gone, but the ACP session remains warm.
-    ;(daemon as any).webchatTransport.dispatchWebchatTurn(AGENT_ID, CONV, 'first', 'webchat', cp.sink)
+    await (daemon as any).webchatTransport.dispatchWebchatTurn(AGENT_ID, CONV, 'first', 'webchat', cp.sink)
     await vi.waitFor(() => expect(cp.dones).toHaveLength(1), WAIT)
     expect((daemon as any).pending.size).toBe(0)
     expect(host.newSession).toHaveBeenCalledTimes(1)
 
     const key = (daemon as any).webchatTransport.webchatSessionKey(CONV, AGENT_ID)
-    expect((daemon as any).commands.setModelByKey(key, 'b')).toBe(true)
-    expect((daemon as any).commands.setEffortByKey(key, 'high')).toBe(true)
-    expect((daemon as any).commands.setPermissionModeByKey(key, 'plan')).toBe(true)
-    expect((daemon as any).commands.setFastByKey(key, true)).toBe(true)
+    expect(await (daemon as any).commands.setModelByKey(key, 'b')).toBe(true)
+    expect(await (daemon as any).commands.setEffortByKey(key, 'high')).toBe(true)
+    expect(await (daemon as any).commands.setPermissionModeByKey(key, 'plan')).toBe(true)
+    expect(await (daemon as any).commands.setFastByKey(key, true)).toBe(true)
     await vi.waitFor(() => {
       expect(host.setSessionModel).toHaveBeenCalledWith('acp-wc-1', 'b')
       expect(host.setSessionEffort).toHaveBeenCalledWith('acp-wc-1', 'high')
@@ -784,13 +792,13 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
       expect(host.setSessionPermissionMode).toHaveBeenCalledWith('acp-wc-1', 'default')
       expect(host.setSessionFastMode).toHaveBeenCalledWith('acp-wc-1', false)
     }, WAIT)
-    expect((daemon as any).store.getModelOverride(key)).toBeUndefined()
-    expect((daemon as any).store.getEffortOverride(key)).toBeUndefined()
-    expect((daemon as any).store.getPermissionModeOverride(key)).toBeUndefined()
-    expect((daemon as any).store.getFastModeOverride(key)).toBeUndefined()
+    expect(await (daemon as any).store.getModelOverride(key)).toBeUndefined()
+    expect(await (daemon as any).store.getEffortOverride(key)).toBeUndefined()
+    expect(await (daemon as any).store.getPermissionModeOverride(key)).toBeUndefined()
+    expect(await (daemon as any).store.getFastModeOverride(key)).toBeUndefined()
 
     // The next turn reuses that same restored session while chat changes remain locked.
-    ;(daemon as any).webchatTransport.dispatchWebchatTurn(AGENT_ID, CONV, 'second', 'webchat', cp.sink)
+    await (daemon as any).webchatTransport.dispatchWebchatTurn(AGENT_ID, CONV, 'second', 'webchat', cp.sink)
     await vi.waitFor(() => expect(cp.dones).toHaveLength(2), WAIT)
     expect(host.newSession).toHaveBeenCalledTimes(1)
     expect((daemon as any).agents.get(AGENT_ID).allowRuntimeChangesInChat).toBe(false)
@@ -826,14 +834,14 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     const cp = fakeCpClient()
     ;(daemon as any).cpClient = cp
 
-    ;(daemon as any).webchatTransport.dispatchWebchatTurn(AGENT_ID, CONV, 'first', 'webchat', cp.sink)
+    await (daemon as any).webchatTransport.dispatchWebchatTurn(AGENT_ID, CONV, 'first', 'webchat', cp.sink)
     await vi.waitFor(() => expect(cp.dones).toHaveLength(1), WAIT)
     expect((daemon as any).pending.size).toBe(0)
 
     const key = (daemon as any).webchatTransport.webchatSessionKey(CONV, AGENT_ID)
-    expect((daemon as any).commands.setModelByKey(key, 'b')).toBe(true)
-    expect((daemon as any).commands.setEffortByKey(key, 'high')).toBe(true)
-    expect((daemon as any).commands.setFastByKey(key, true)).toBe(true)
+    expect(await (daemon as any).commands.setModelByKey(key, 'b')).toBe(true)
+    expect(await (daemon as any).commands.setEffortByKey(key, 'high')).toBe(true)
+    expect(await (daemon as any).commands.setFastByKey(key, true)).toBe(true)
     await vi.waitFor(() => {
       expect(host.setSessionModel).toHaveBeenCalledWith('acp-wc-1', 'b')
       expect(host.setSessionEffort).toHaveBeenCalledWith('acp-wc-1', 'high')
@@ -851,7 +859,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
       expect(host.setSessionFastMode).toHaveBeenCalledWith('acp-wc-1', false)
     }, WAIT)
 
-    ;(daemon as any).webchatTransport.dispatchWebchatTurn(AGENT_ID, CONV, 'second', 'webchat', cp.sink)
+    await (daemon as any).webchatTransport.dispatchWebchatTurn(AGENT_ID, CONV, 'second', 'webchat', cp.sink)
     await vi.waitFor(() => expect(cp.dones).toHaveLength(2), WAIT)
     expect(host.newSession).toHaveBeenCalledTimes(1)
     await daemon.stop()
@@ -878,7 +886,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     const cp = fakeCpClient()
     ;(daemon as any).cpClient = cp
 
-    ;(daemon as any).webchatTransport.dispatchWebchatTurn(AGENT_ID, CONV, 'go', 'webchat', cp.sink)
+    await (daemon as any).webchatTransport.dispatchWebchatTurn(AGENT_ID, CONV, 'go', 'webchat', cp.sink)
     await vi.waitFor(
       () =>
         expect([...(daemon as any).pending.values()].some((p: any) => p.webchat?.conversationId === CONV)).toBe(true),
@@ -886,12 +894,12 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     )
 
     const outputsBeforeCancel = cp.outputs.length
-    ;(daemon as any).webchatTransport.handleWebchatCancel(CONV)
+    await (daemon as any).webchatTransport.handleWebchatCancel(CONV)
     expect(host.cancel).toHaveBeenCalledWith('acp-wc-1')
     expect(cp.dones).toEqual([expect.objectContaining({ conversationId: CONV, error: 'cancel' })])
     // NOT muted — a follow-up turn would still dispatch.
     const key = (daemon as any).webchatTransport.webchatSessionKey(CONV, AGENT_ID)
-    expect((daemon as any).store.isSessionMuted(key)).toBe(false)
+    expect(await (daemon as any).store.isSessionMuted(key)).toBe(false)
 
     release()
     await vi.waitFor(() => expect((daemon as any).pending.size).toBe(0), WAIT)
@@ -919,12 +927,12 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     await daemon.start()
     const cp = fakeCpClient()
 
-    const ack = (daemon as any).webchatTransport.dispatchWebchatTurn(AGENT_ID, CONV, 'go', 'webchat', cp.sink)
+    const ack = await (daemon as any).webchatTransport.dispatchWebchatTurn(AGENT_ID, CONV, 'go', 'webchat', cp.sink)
     expect(ack.accepted).toBe(true)
     await vi.waitFor(() => expect(host.newSession).toHaveBeenCalledTimes(1), WAIT)
     expect((daemon as any).pending.size).toBe(0)
 
-    ;(daemon as any).webchatTransport.handleWebchatCancel(CONV)
+    await (daemon as any).webchatTransport.handleWebchatCancel(CONV)
     expect(cp.dones).toEqual([expect.objectContaining({ turnId: ack.turnId, error: 'cancel' })])
     expect(host.cancel).not.toHaveBeenCalled()
 
@@ -1074,7 +1082,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     const cp = fakeCpClient()
     ;(daemon as any).cpClient = cp
 
-    const ack = (daemon as any).webchatTransport.dispatchWebchatTurn(AGENT_ID, CONV, 'go', 'webchat', cp.sink)
+    const ack = await (daemon as any).webchatTransport.dispatchWebchatTurn(AGENT_ID, CONV, 'go', 'webchat', cp.sink)
 
     expect(ack).toMatchObject({ accepted: false, reason: 'paused' })
     expect(host.prompt).not.toHaveBeenCalled()
@@ -1101,22 +1109,24 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     await daemon.start()
     const cp = fakeCpClient()
 
-    const accepted = [(daemon as any).webchatTransport.dispatchWebchatTurn(AGENT_ID, CONV, 'head', 'webchat', cp.sink)]
+    const accepted = [
+      await (daemon as any).webchatTransport.dispatchWebchatTurn(AGENT_ID, CONV, 'head', 'webchat', cp.sink)
+    ]
     await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(1), WAIT)
 
     for (let n = 1; n <= 10; n++) {
       accepted.push(
-        (daemon as any).webchatTransport.dispatchWebchatTurn(AGENT_ID, CONV, `queued-${n}`, 'webchat', cp.sink)
+        await (daemon as any).webchatTransport.dispatchWebchatTurn(AGENT_ID, CONV, `queued-${n}`, 'webchat', cp.sink)
       )
     }
     expect(accepted.every((ack) => ack.accepted)).toBe(true)
     const key = (daemon as any).webchatTransport.webchatSessionKey(CONV, AGENT_ID)
-    expect((daemon as any).serialQueue.get(key)).toHaveLength(10)
+    await vi.waitFor(() => expect((daemon as any).serialQueue.get(key)).toHaveLength(10), WAIT)
 
     // The exact-key preflight must reject before returning an accepted ACK. A client
     // therefore never starts waiting for a `done` frame that this non-admitted turn
     // cannot produce.
-    const rejected = (daemon as any).webchatTransport.dispatchWebchatTurn(
+    const rejected = await (daemon as any).webchatTransport.dispatchWebchatTurn(
       AGENT_ID,
       CONV,
       'queue-full',
@@ -1162,7 +1172,11 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     // A webchat session is REAL: its activity log is recorded like any other session.
     // The agent's reply is recorded once (accumulated from the message chunks) under
     // the agent's id, since webchat has no Slack post boundary where text is saved.
-    const rows = (daemon as any).store.threadTranscript(CONV, msgId) as { sender: string; kind: string; text: string }[]
+    const rows = (await (daemon as any).store.threadTranscript(CONV, msgId)) as {
+      sender: string
+      kind: string
+      text: string
+    }[]
     const botText = rows.filter((r) => r.sender === AGENT_ID && r.kind === 'text').map((r) => r.text)
     expect(botText).toContain('the reply')
     await daemon.stop()
@@ -1216,7 +1230,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     })
     // The transcript row carries the same postId, so a later transcript refetch
     // reconciles the live step instead of double-rendering it.
-    const rows = (daemon as any).store.threadTranscript(CONV, thread) as {
+    const rows = (await (daemon as any).store.threadTranscript(CONV, thread)) as {
       sender: string
       postId?: string
       text: string
@@ -1262,7 +1276,11 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
       sink: cp.sink
     })
 
-    const rows = (daemon as any).store.threadTranscript(CONV, msgId) as { sender: string; kind: string; text: string }[]
+    const rows = (await (daemon as any).store.threadTranscript(CONV, msgId)) as {
+      sender: string
+      kind: string
+      text: string
+    }[]
     const userText = rows.filter((r) => r.sender === 'alice' && r.kind === 'text').map((r) => r.text)
     expect(userText).toContain('first question')
     expect(userText).toContain('second question') // was dropped before the per-turn-ts fix
@@ -1290,7 +1308,7 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     const turnId = '77777777-7777-4777-8777-777777777777'
     const events: RdChatEvent[] = []
     const posts: unknown[] = []
-    const ack = (daemon as any).handleRelayMsg(
+    const ack = await (daemon as any).handleRelayMsg(
       rd({ op: 'turn', text: 'anyone?', user: 'owner', turnId, post: { postId: turnId, at: 1_000 } }),
       (event: RdChatEvent) => events.push(event),
       (post: unknown) => posts.push(post)
@@ -1303,9 +1321,9 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     )
     expect(messages).toEqual([]) // the sentinel was held and dropped
     expect(posts).toEqual([]) // no canonical post fan-out
-    const replies = (daemon as any).store
-      .transcriptSince(`${CONV}`, `webchat:${CONV}`, null)
-      .filter((row: { sender: string }) => row.sender === AGENT_ID)
+    const replies = (await (daemon as any).store.transcriptSince(`${CONV}`, `webchat:${CONV}`, null)).filter(
+      (row: { sender: string }) => row.sender === AGENT_ID
+    )
     expect(replies).toEqual([]) // no transcript reply row
     await daemon.stop()
   }, 15_000)
@@ -1318,7 +1336,7 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
 
     const turnId = '77777777-7777-4777-8777-777777777777'
     const events: RdChatEvent[] = []
-    const ack = (daemon as any).handleRelayMsg(
+    const ack = await (daemon as any).handleRelayMsg(
       rd({ op: 'turn', text: 'anyone?', user: 'owner', turnId, post: { postId: turnId, at: 1_000 } }),
       (event: RdChatEvent) => events.push(event)
     )
@@ -1340,8 +1358,9 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
 
     const turnId = '77777777-7777-4777-8777-777777777777'
     const events: RdChatEvent[] = []
-    const ack = (daemon as any).handleRelayMsg(rd({ op: 'turn', text: 'go', user: 'ada', turnId }), (e: RdChatEvent) =>
-      events.push(e)
+    const ack = await (daemon as any).handleRelayMsg(
+      rd({ op: 'turn', text: 'go', user: 'ada', turnId }),
+      (e: RdChatEvent) => events.push(e)
     )
     expect(ack).toMatchObject({ msgId: 'm-1', accepted: true, turnId })
 
@@ -1371,14 +1390,14 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     const stream = (daemon as any).webchatTransport.createWebchatTurnStream(AGENT_ID, CONV, turnId, sink(first))
 
     stream.sink.output({ conversationId: CONV, turnId, index: 0, event: { kind: 'message', text: 'first' } })
-    const activeResume = (daemon as any).handleRelayMsg(
+    const activeResume = await (daemon as any).handleRelayMsg(
       rd({ op: 'resume', turnId, generation: 2, afterIndex: -1 }, { msgId: 'resume-active' }),
       (event: RdChatEvent) => second.push(event)
     )
     expect(activeResume).toMatchObject({ accepted: true, turnId })
     expect(second.filter((event) => event.kind === 'output')).toHaveLength(1)
 
-    const delayedResume = (daemon as any).handleRelayMsg(
+    const delayedResume = await (daemon as any).handleRelayMsg(
       rd({ op: 'resume', turnId, generation: 1, afterIndex: -1 }, { msgId: 'resume-delayed' }),
       (event: RdChatEvent) => stale.push(event)
     )
@@ -1393,7 +1412,7 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
       done: { conversationId: CONV, turnId, agentId: AGENT_ID, lastIndex: 1, stopReason: 'end_turn' }
     })
 
-    const terminalResume = (daemon as any).handleRelayMsg(
+    const terminalResume = await (daemon as any).handleRelayMsg(
       rd({ op: 'resume', turnId, generation: 3, afterIndex: 0 }, { msgId: 'resume-terminal' }),
       (event: RdChatEvent) => third.push(event)
     )
@@ -1425,7 +1444,7 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     const turnId = '77777777-7777-4777-8777-777777777777'
     const original: RdChatEvent[] = []
     const resumed: RdChatEvent[] = []
-    const beforeTurn = (daemon as any).handleRelayMsg(
+    const beforeTurn = await (daemon as any).handleRelayMsg(
       rd({ op: 'resume', turnId, generation: 1, afterIndex: -1 }, { msgId: 'resume-before-turn' }),
       (event: RdChatEvent) => resumed.push(event)
     )
@@ -1436,7 +1455,7 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
       done: (done: WebchatDone) => original.push({ kind: 'done', done })
     })
     stream.sink.output({ conversationId: CONV, turnId, index: 0, event: { kind: 'message', text: 'missed' } })
-    const retry = (daemon as any).handleRelayMsg(
+    const retry = await (daemon as any).handleRelayMsg(
       rd({ op: 'resume', turnId, generation: 2, afterIndex: -1 }, { msgId: 'resume-retry' }),
       (event: RdChatEvent) => resumed.push(event)
     )
@@ -1500,7 +1519,7 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     }
 
     expect(
-      (daemon as any).handleRelayMsg(
+      await (daemon as any).handleRelayMsg(
         rd({ op: 'resume', turnId, generation: 1, afterIndex: -1 }, { msgId: 'resume-overflow' }),
         () => {}
       )
@@ -1517,7 +1536,7 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
 
     const bytes = Buffer.from('image bytes')
     const events: RdChatEvent[] = []
-    const ack = (daemon as any).handleRelayMsg(
+    const ack = await (daemon as any).handleRelayMsg(
       rd({
         op: 'turn',
         text: 'What is shown?',
@@ -1535,7 +1554,7 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
         { type: 'image', data: bytes.toString('base64'), mimeType: 'image/webp' }
       ])
     )
-    const rows = (daemon as any).store.threadTranscript(CONV, `webchat:${CONV}`) as Array<{
+    const rows = (await (daemon as any).store.threadTranscript(CONV, `webchat:${CONV}`)) as Array<{
       sender: string
       text: string
       attachmentsJson?: string
@@ -1563,7 +1582,7 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     const bytes = Buffer.from('image bytes')
     const turnId = '88888888-8888-4888-8888-888888888888'
     const events: RdChatEvent[] = []
-    const ack = (daemon as any).handleRelayMsg(
+    const ack = await (daemon as any).handleRelayMsg(
       rd({
         op: 'turn',
         text: 'What is shown?',
@@ -1577,7 +1596,7 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     expect(ack).toMatchObject({ accepted: true })
     await vi.waitFor(() => expect(events.some((event) => event.kind === 'done')).toBe(true), WAIT)
 
-    const rows = (daemon as any).store.threadTranscript(CONV, `webchat:${CONV}`) as Array<{
+    const rows = (await (daemon as any).store.threadTranscript(CONV, `webchat:${CONV}`)) as Array<{
       sender: string
       text: string
       attachmentsJson?: string
@@ -1596,7 +1615,7 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     await daemon.start()
     ;(daemon as any).cpClient = fakeCpClient()
 
-    const ack = (daemon as any).handleRelayMsg(rd({ op: 'turn', text: 'go' }, { agentId: 'ghost' }), () => {})
+    const ack = await (daemon as any).handleRelayMsg(rd({ op: 'turn', text: 'go' }, { agentId: 'ghost' }), () => {})
     expect(ack).toMatchObject({ accepted: false, reason: 'no_agent' })
     await daemon.stop()
   })
@@ -1607,7 +1626,7 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     await daemon.start()
     ;(daemon as any).cpClient = fakeCpClient()
     const key = (daemon as any).webchatTransport.webchatSessionKey(CONV, AGENT_ID)
-    ;(daemon as any).store.upsertSession({
+    await (daemon as any).store.upsertSession({
       key,
       agentId: AGENT_ID,
       platform: 'webchat',
@@ -1626,18 +1645,18 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     const setFast = vi.spyOn((daemon as any).commands, 'setFastByKey')
 
     // Each op needs a distinct msgId — a repeated (sessionKey,msgId) is deduped by design.
-    expect((daemon as any).handleRelayMsg(rd({ op: 'set_model', model: 'b' }, { msgId: 'm-model' }), () => {})).toEqual(
-      {
-        msgId: 'm-model',
-        accepted: true
-      }
-    )
-    ;(daemon as any).handleRelayMsg(rd({ op: 'set_effort', effort: 'high' }, { msgId: 'm-effort' }), () => {})
-    ;(daemon as any).handleRelayMsg(
+    expect(
+      await (daemon as any).handleRelayMsg(rd({ op: 'set_model', model: 'b' }, { msgId: 'm-model' }), () => {})
+    ).toEqual({
+      msgId: 'm-model',
+      accepted: true
+    })
+    await (daemon as any).handleRelayMsg(rd({ op: 'set_effort', effort: 'high' }, { msgId: 'm-effort' }), () => {})
+    await (daemon as any).handleRelayMsg(
       rd({ op: 'set_permission_mode', permissionMode: 'plan' }, { msgId: 'm-perm' }),
       () => {}
     )
-    ;(daemon as any).handleRelayMsg(rd({ op: 'set_fast', fastMode: true }, { msgId: 'm-fast' }), () => {})
+    await (daemon as any).handleRelayMsg(rd({ op: 'set_fast', fastMode: true }, { msgId: 'm-fast' }), () => {})
 
     expect(setModel).toHaveBeenCalledWith(key, 'b')
     expect(setEffort).toHaveBeenCalledWith(key, 'high')
@@ -1651,7 +1670,7 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
     await daemon.start()
     const key = (daemon as any).webchatTransport.webchatSessionKey(CONV, AGENT_ID)
-    ;(daemon as any).store.upsertSession({
+    await (daemon as any).store.upsertSession({
       key,
       agentId: AGENT_ID,
       platform: 'webchat',
@@ -1670,17 +1689,17 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
       { op: 'set_fast', fastMode: true }
     ]
     for (const [index, payload] of ops.entries()) {
-      expect((daemon as any).handleRelayMsg(rd(payload, { msgId: `runtime-change-${index}` }), () => {})).toMatchObject(
-        {
-          accepted: false,
-          reason: 'runtime changes are disabled in chat'
-        }
-      )
+      expect(
+        await (daemon as any).handleRelayMsg(rd(payload, { msgId: `runtime-change-${index}` }), () => {})
+      ).toMatchObject({
+        accepted: false,
+        reason: 'runtime changes are disabled in chat'
+      })
     }
-    expect((daemon as any).store.getModelOverride(key)).toBeUndefined()
-    expect((daemon as any).store.getEffortOverride(key)).toBeUndefined()
-    expect((daemon as any).store.getPermissionModeOverride(key)).toBeUndefined()
-    expect((daemon as any).store.getFastModeOverride(key)).toBeUndefined()
+    expect(await (daemon as any).store.getModelOverride(key)).toBeUndefined()
+    expect(await (daemon as any).store.getEffortOverride(key)).toBeUndefined()
+    expect(await (daemon as any).store.getPermissionModeOverride(key)).toBeUndefined()
+    expect(await (daemon as any).store.getFastModeOverride(key)).toBeUndefined()
     await daemon.stop()
   })
 
@@ -1692,11 +1711,11 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     const cancel = vi.spyOn((daemon as any).webchatTransport, 'handleWebchatCancel')
     const close = vi.spyOn((daemon as any).webchatTransport, 'handleWebchatClose')
 
-    expect((daemon as any).handleRelayMsg(rd({ op: 'cancel' }, { msgId: 'm-cancel' }), () => {})).toEqual({
+    expect(await (daemon as any).handleRelayMsg(rd({ op: 'cancel' }, { msgId: 'm-cancel' }), () => {})).toEqual({
       msgId: 'm-cancel',
       accepted: true
     })
-    expect((daemon as any).handleRelayMsg(rd({ op: 'close' }, { msgId: 'm-close' }), () => {})).toEqual({
+    expect(await (daemon as any).handleRelayMsg(rd({ op: 'close' }, { msgId: 'm-close' }), () => {})).toEqual({
       msgId: 'm-close',
       accepted: true
     })
@@ -1716,8 +1735,8 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
 
     // The relay's at-least-once wire can re-send a byte-identical rd/msg on an ack stall.
     const frame = rd({ op: 'turn', text: 'go', user: 'ada' }, { msgId: 'dup-1' })
-    const a1 = (daemon as any).handleRelayMsg(frame, () => {})
-    const a2 = (daemon as any).handleRelayMsg(frame, () => {}) // retransmit — must NOT re-run the turn
+    const a1 = await (daemon as any).handleRelayMsg(frame, () => {})
+    const a2 = await (daemon as any).handleRelayMsg(frame, () => {}) // retransmit — must NOT re-run the turn
 
     expect(spy).toHaveBeenCalledTimes(1) // dispatched exactly once
     expect(a2).toEqual(a1) // same ack (same turnId) replayed so the relay settles
@@ -1732,7 +1751,7 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     ;(daemon as any).draining = true // whole-daemon drain (SIGTERM / scope:daemon)
     const dispatch = vi.spyOn(daemon as any, 'dispatch')
 
-    const ack = (daemon as any).handleRelayMsg(rd({ op: 'turn', text: 'go' }, { msgId: 'drn-1' }), () => {})
+    const ack = await (daemon as any).handleRelayMsg(rd({ op: 'turn', text: 'go' }, { msgId: 'drn-1' }), () => {})
     expect(ack).toMatchObject({ accepted: false, reason: 'draining' })
     expect(dispatch).not.toHaveBeenCalled() // no turn started — the browser gets a terminal ack
     await daemon.stop()

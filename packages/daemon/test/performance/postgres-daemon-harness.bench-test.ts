@@ -2,19 +2,20 @@ import { describe, expect, it } from 'vitest'
 import { DatabaseSync } from 'node:sqlite'
 import { existsSync } from 'node:fs'
 
-import { LocalStore, sqliteStoreDatabase } from '../../src/store/local-store.js'
+import { LocalStore } from '../../src/store/local-store.js'
+import { SqliteAsyncDatabase } from '../../src/store/sqlite-async-database.js'
 import { createPostgresDaemonHarness } from './postgres-daemon-harness.js'
 
-function localDataPlane(orgForAgent: (agentId: string) => string | undefined) {
-  const store = new LocalStore({
-    database: sqliteStoreDatabase(new DatabaseSync(':memory:')),
+async function localDataPlane(orgForAgent: (agentId: string) => string | undefined) {
+  const store = await LocalStore.open({
+    database: SqliteAsyncDatabase.adopt(new DatabaseSync(':memory:')),
     shared: true,
     ownerId: 'capacity-test-member',
     orgForAgent
   })
   return {
     store,
-    close: async () => store.close()
+    close: async () => await store.close()
   }
 }
 
@@ -71,7 +72,7 @@ describe('PostgreSQL daemon capacity harness', () => {
         expect(prompt.pauseCount).toBe(38)
       }
 
-      const verification = harness.verification()
+      const verification = await harness.verification()
       expect(verification.completedOutputs).toBe(4)
       expect(verification.terminalSessions).toBe(2)
       expect(verification.reasoningRows).toBe(4)

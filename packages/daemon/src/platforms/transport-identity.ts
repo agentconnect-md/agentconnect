@@ -79,29 +79,29 @@ export interface TenantScopeHost {
   liveWorkspaceId(integrationId: string): string | undefined
   /** A scope minted once per integration and persisted — the rotation-immune
    *  fallback when the platform exposes no tenant id. */
-  minted(integrationId: string): string | undefined
+  minted(integrationId: string): Promise<string | undefined>
 }
 
-const TENANT_SCOPE = new Map<string, (host: TenantScopeHost, integration: Integration) => string | undefined>([
+const TENANT_SCOPE = new Map<string, (host: TenantScopeHost, integration: Integration) => Promise<string | undefined>>([
   // The workspace id from auth.test, surfaced by the live connection. A
   // not-yet-authenticated (or test-substituted) connection may not expose it —
   // fall back to the minted scope rather than throw.
-  ['slack', (host, int) => host.liveWorkspaceId(int.id) || host.minted(int.id)],
+  ['slack', async (host, int) => host.liveWorkspaceId(int.id) || (await host.minted(int.id))],
   // The public bot id prefix survives a BotFather token rotation.
   [
     'telegram',
-    (host, int) => {
+    async (host, int) => {
       const token = platformIntegrationConfig('telegram', int)?.botToken
       const botId = token === undefined ? undefined : telegramBotId(token)
-      return botId ? `bot${botId}` : host.minted(int.id)
+      return botId ? `bot${botId}` : await host.minted(int.id)
     }
   ],
   // App id + region is the tenant anchor Feishu/Lark exposes to us.
   [
     'feishu',
-    (host, int) => {
+    async (host, int) => {
       const feishu = platformIntegrationConfig('feishu', int)
-      return feishu ? `${feishu.region}:${feishu.appId}` : host.minted(int.id)
+      return feishu ? `${feishu.region}:${feishu.appId}` : await host.minted(int.id)
     }
   ]
 ])
@@ -110,7 +110,7 @@ const TENANT_SCOPE = new Map<string, (host: TenantScopeHost, integration: Integr
  *  construction: a platform with no durable tenant id of its own — Discord, and
  *  anything unregistered — gets the minted per-integration scope. Undefined ⇒
  *  the CP records no owner (fail closed), never a guessed one. */
-export function tenantScopeFor(host: TenantScopeHost, integration: Integration): string | undefined {
+export async function tenantScopeFor(host: TenantScopeHost, integration: Integration): Promise<string | undefined> {
   const strategy = TENANT_SCOPE.get(integration.platform)
-  return strategy ? strategy(host, integration) : host.minted(integration.id)
+  return strategy ? await strategy(host, integration) : await host.minted(integration.id)
 }

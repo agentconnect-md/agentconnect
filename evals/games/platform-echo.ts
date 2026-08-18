@@ -43,8 +43,8 @@ export interface PlatformEchoOptions {
 }
 
 export class PlatformEcho {
-  private inject?: (event: EvaluationPlatformEvent) => DeliveryHandle
-  private readonly handles: DeliveryHandle[] = []
+  private inject?: (event: EvaluationPlatformEvent) => DeliveryHandle | Promise<DeliveryHandle>
+  private readonly handles: Promise<DeliveryHandle>[] = []
   /** Thread each delivered message lives in (root posts anchor themselves). */
   private readonly threadByMessageId = new Map<string, string>()
   private readonly onOutcome: PlatformEchoOptions['onOutcome']
@@ -57,12 +57,12 @@ export class PlatformEcho {
     this.onOutcome = options.onOutcome
   }
 
-  attach(inject: (event: EvaluationPlatformEvent) => DeliveryHandle): void {
+  attach(inject: (event: EvaluationPlatformEvent) => DeliveryHandle | Promise<DeliveryHandle>): void {
     this.inject = inject
     this.world.onDelivered((effect) => this.echo(effect))
   }
 
-  drainHandles(): DeliveryHandle[] {
+  drainHandles(): Promise<DeliveryHandle>[] {
     const drained = [...this.handles]
     this.handles.length = 0
     return drained
@@ -133,8 +133,11 @@ export class PlatformEcho {
         }
       })
       if (handle) {
-        this.handles.push(handle)
-        void handle.admission
+        // Test stubs still hand back a settled handle; the real harness injects a promise.
+        const pending = Promise.resolve(handle)
+        this.handles.push(pending)
+        void pending
+          .then((settled) => settled.admission)
           .then((admission) => {
             this.world.appendEvent({
               type: 'platform.echo.outcome',

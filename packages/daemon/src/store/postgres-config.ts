@@ -20,8 +20,8 @@ export const DataPlaneConfigSchema = z
   .object({
     version: z.literal(1),
     databaseUrl: PostgresUrl,
-    // Sizes the migration pool only. Runtime traffic goes through one worker-thread client, so
-    // this is not a concurrency knob and raising it buys the store no parallelism.
+    // Sizes the store's pg.Pool: since the async store runs on the main thread, this is the
+    // store's concurrency knob — how many statements the pool member can have in flight.
     maxConnections: z.number().int().min(1).max(32).default(4)
   })
   .strict()

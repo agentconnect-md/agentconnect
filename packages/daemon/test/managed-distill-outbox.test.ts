@@ -27,30 +27,32 @@ const noPlugins: MemoryCapturePumpRegistry = {
   markRecovered: vi.fn()
 }
 
-function store(): LocalStore {
-  return new LocalStore(join(mkdtempSync(join(tmpdir(), 'ac-managed-distill-')), 'local.sqlite'))
+async function store(): Promise<LocalStore> {
+  return await LocalStore.open(join(mkdtempSync(join(tmpdir(), 'ac-managed-distill-')), 'local.sqlite'))
 }
 
 describe('managed distillation through the capture outbox', () => {
   it('waits without spending attempts while the sandbox is down, then distills once it is bound', async () => {
     let bound = false
     const distill = vi.fn(async () => {})
-    const db = store()
+    const db = await store()
     const outbox = new MemoryCaptureOutbox(
       db,
       withManagedDistill(noPlugins, { agentIds: () => ['bot-a'], reachable: () => bound, distill }),
       { metrics, unavailableRetryMs: 5 }
     )
     outbox.start()
-    const queued = outbox.enqueue(
+    const queued = await outbox.enqueue(
       managedDistillCapture({ agentId: 'bot-a', turnId: 'turn-1', sessionId: 'sess-1', input: 'hi', output: 'hello' })
     )
     expect(queued.status).toBe('inserted')
     // Deferred, not attempted: the pump found no client for the tree and kept the row pending.
-    await vi.waitFor(() => expect(db.getMemoryCapture(queued.operationId)?.reasonCode).toBe('connection_unavailable'))
+    await vi.waitFor(async () =>
+      expect((await db.getMemoryCapture(queued.operationId))?.reasonCode).toBe('connection_unavailable')
+    )
     await new Promise((resolve) => setTimeout(resolve, 20))
     expect(distill).not.toHaveBeenCalled()
-    expect(db.getMemoryCapture(queued.operationId)).toMatchObject({
+    expect(await db.getMemoryCapture(queued.operationId)).toMatchObject({
       state: 'pending',
       attempts: 0,
       connectionId: managedDistillConnectionId('bot-a'),
@@ -60,7 +62,7 @@ describe('managed distillation through the capture outbox', () => {
     // The sandbox binds: the daemon wakes the pump, and the deferred turn is distilled exactly once.
     bound = true
     outbox.wake()
-    await vi.waitFor(() => expect(db.getMemoryCapture(queued.operationId)?.state).toBe('completed'))
+    await vi.waitFor(async () => expect((await db.getMemoryCapture(queued.operationId))?.state).toBe('completed'))
     expect(distill).toHaveBeenCalledTimes(1)
     expect(distill).toHaveBeenCalledWith('bot-a', {
       turnId: 'turn-1',
@@ -70,12 +72,20 @@ describe('managed distillation through the capture outbox', () => {
     })
     // The same turn enqueued again is the same operation.
     expect(
-      outbox.enqueue(
-        managedDistillCapture({ agentId: 'bot-a', turnId: 'turn-1', sessionId: 'sess-1', input: 'hi', output: 'hello' })
+      (
+        await outbox.enqueue(
+          managedDistillCapture({
+            agentId: 'bot-a',
+            turnId: 'turn-1',
+            sessionId: 'sess-1',
+            input: 'hi',
+            output: 'hello'
+          })
+        )
       ).status
     ).toBe('duplicate')
     await outbox.stop()
-    db.close()
+    await db.close()
   })
 
   it('leaves plugin connections to the plugin registry and drains only the agents this member holds', async () => {

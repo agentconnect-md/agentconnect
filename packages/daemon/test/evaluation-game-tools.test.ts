@@ -213,7 +213,7 @@ describe('evaluation tool registry (§6)', () => {
       [PLAYER_A, INTEGRATION_A],
       [PLAYER_B, INTEGRATION_B]
     ] as const) {
-      const handle = daemon.deliverRefereeEvent({
+      const handle = await daemon.deliverRefereeEvent({
         targetAgentId: agentId,
         platform: 'slack',
         integrationId,

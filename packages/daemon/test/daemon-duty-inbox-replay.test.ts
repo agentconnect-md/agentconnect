@@ -21,7 +21,7 @@ const INTEGRATION = 'int-a'
 const ORG = 'org-1'
 
 /** A member root; with `sharedStateOf`, its durable store IS that root's file — one shared inbox. */
-function scaffold(sharedStateOf?: string): string {
+async function scaffold(sharedStateOf?: string): Promise<string> {
   const root = mkdtempSync(join(tmpdir(), 'ac-duty-inbox-'))
   writeFileSync(
     join(root, 'config.json'),
@@ -36,7 +36,7 @@ function scaffold(sharedStateOf?: string): string {
     mkdirSync(join(root, 'state'), { recursive: true })
     symlinkSync(statePath(sharedStateOf), statePath(root))
   } else {
-    new LocalStore(statePath(root)).close()
+    await (await LocalStore.open(statePath(root))).close()
   }
   return root
 }
@@ -125,18 +125,18 @@ const settled = (d: Daemon) =>
     expect((d as any).reconcileRun).toBeUndefined()
   }, WAIT)
 
-function inbox(root: string): InboxRow[] {
-  const s = new LocalStore(statePath(root))
-  const rows = s.listInboxBySessionKeyFifo()
-  s.close()
+async function inbox(root: string): Promise<InboxRow[]> {
+  const s = await LocalStore.open(statePath(root))
+  const rows = await s.listInboxBySessionKeyFifo()
+  await s.close()
   return rows
 }
 
 describe('replaying the shared inbox on a duty gain', () => {
   it('a re-grant to a member whose replica is already installed replays the crashed holder’s backlog exactly once', async () => {
-    const rootA = scaffold()
+    const rootA = await scaffold()
     const a = await boot(rootA)
-    const b = await boot(scaffold(rootA))
+    const b = await boot(await scaffold(rootA))
     // B held the agent earlier and kept the replica; the duty then moved on.
     await admit(b.daemon)
     await settled(b.daemon)
@@ -152,7 +152,7 @@ describe('replaying the shared inbox on a duty gain', () => {
     void turnOnA.catch(() => {})
     await vi.waitFor(() => expect(a.started).toHaveLength(1), WAIT)
     expect(a.started[0]).toContain('finish the report')
-    expect(inbox(rootA).map((r) => r.id)).toEqual(['slack:C1:100'])
+    expect((await inbox(rootA)).map((r) => r.id)).toEqual(['slack:C1:100'])
 
     // The duty comes back to B at a later term. The replica is current, so nothing is fetched —
     // and that must not mean nothing is replayed.
@@ -171,7 +171,7 @@ describe('replaying the shared inbox on a duty gain', () => {
     expect(b.host.prompt).toHaveBeenCalledTimes(1)
 
     b.releaseAll()
-    await vi.waitFor(() => expect(inbox(rootA)).toHaveLength(0), WAIT)
+    await vi.waitFor(async () => expect(await inbox(rootA)).toHaveLength(0), WAIT)
     // The dead holder's process is only released here so its handles close; the row is long gone.
     a.releaseAll()
     await turnOnA.catch(() => {})
@@ -179,9 +179,9 @@ describe('replaying the shared inbox on a duty gain', () => {
   }, 20_000)
 
   it('a fresh install still replays the backlog exactly once', async () => {
-    const rootA = scaffold()
-    const seed = new LocalStore(statePath(rootA))
-    seed.appendInbox({
+    const rootA = await scaffold()
+    const seed = await LocalStore.open(statePath(rootA))
+    await seed.appendInbox({
       id: 'slack:C1:100',
       sessionKey: sessionKey('slack', 'C1', 'T1', AGENT),
       agentId: AGENT,
@@ -191,8 +191,8 @@ describe('replaying the shared inbox on a duty gain', () => {
       isQueueCmd: null,
       enqueuedAt: '100'
     })
-    seed.close()
-    const b = await boot(scaffold(rootA))
+    await seed.close()
+    const b = await boot(await scaffold(rootA))
     expect(b.started).toEqual([])
 
     await admit(b.daemon)
@@ -203,20 +203,20 @@ describe('replaying the shared inbox on a duty gain', () => {
     expect(b.host.prompt).toHaveBeenCalledTimes(1)
 
     b.releaseAll()
-    await vi.waitFor(() => expect(inbox(rootA)).toHaveLength(0), WAIT)
+    await vi.waitFor(async () => expect(await inbox(rootA)).toHaveLength(0), WAIT)
     await b.daemon.stop()
   }, 20_000)
 
   it('a member holding the replica but not the duty leaves the backlog for the holder', async () => {
-    const rootA = scaffold()
-    const b = await boot(scaffold(rootA))
+    const rootA = await scaffold()
+    const b = await boot(await scaffold(rootA))
     await admit(b.daemon)
     await settled(b.daemon)
     fence(b.daemon)
     await settled(b.daemon)
 
-    const seed = new LocalStore(statePath(rootA))
-    seed.appendInbox({
+    const seed = await LocalStore.open(statePath(rootA))
+    await seed.appendInbox({
       id: 'slack:C1:100',
       sessionKey: sessionKey('slack', 'C1', 'T1', AGENT),
       agentId: AGENT,
@@ -226,13 +226,13 @@ describe('replaying the shared inbox on a duty gain', () => {
       isQueueCmd: null,
       enqueuedAt: '100'
     })
-    seed.close()
+    await seed.close()
 
     // A replay for an agent this member has but does not serve must not run it here.
     ;(b.daemon as any).replayInbox(new Set([AGENT]))
     await new Promise((r) => setTimeout(r, 50))
     expect(b.host.prompt).not.toHaveBeenCalled()
-    expect(inbox(rootA).map((r) => r.id)).toEqual(['slack:C1:100'])
+    expect((await inbox(rootA)).map((r) => r.id)).toEqual(['slack:C1:100'])
     await b.daemon.stop()
   }, 20_000)
 })
@@ -244,9 +244,9 @@ describe('replaying the shared inbox on a duty gain', () => {
 // other caller of the same interrupt, still discards them. HOOK rows are the exception — fenced to
 // their accepted dispatch daemon, so a handoff reports them instead (daemon-hook.test.ts).
 describe('a duty handoff leaves the agent’s unrun inbox to its successor', () => {
-  const seedRow = (root: string, ts: string, text: string) => {
-    const s = new LocalStore(statePath(root))
-    s.appendInbox({
+  const seedRow = async (root: string, ts: string, text: string) => {
+    const s = await LocalStore.open(statePath(root))
+    await s.appendInbox({
       id: `slack:C1:${ts}`,
       sessionKey: sessionKey('slack', 'C1', 'T1', AGENT),
       agentId: AGENT,
@@ -256,11 +256,11 @@ describe('a duty handoff leaves the agent’s unrun inbox to its successor', () 
       isQueueCmd: null,
       enqueuedAt: ts
     })
-    s.close()
+    await s.close()
   }
 
   it('a graceful fence keeps the admitted row and the successor runs it exactly once', async () => {
-    const rootA = scaffold()
+    const rootA = await scaffold()
     const a = await boot(rootA)
     await admit(a.daemon)
     await settled(a.daemon)
@@ -272,9 +272,9 @@ describe('a duty handoff leaves the agent’s unrun inbox to its successor', () 
     expect(holds(a.daemon)).toBe(false)
     expect(a.host.prompt).not.toHaveBeenCalled()
     // On main the fence purged this row, so the successor below had nothing to replay.
-    expect(inbox(rootA).map((r) => r.id)).toEqual(['slack:C1:100'])
+    expect((await inbox(rootA)).map((r) => r.id)).toEqual(['slack:C1:100'])
 
-    const b = await boot(scaffold(rootA))
+    const b = await boot(await scaffold(rootA))
     await admit(b.daemon, '2')
     await vi.waitFor(() => expect(b.started).toHaveLength(1), WAIT)
     expect(b.started[0]).toContain('finish the report')
@@ -282,12 +282,12 @@ describe('a duty handoff leaves the agent’s unrun inbox to its successor', () 
     expect(b.host.prompt).toHaveBeenCalledTimes(1)
 
     b.releaseAll()
-    await vi.waitFor(() => expect(inbox(rootA)).toHaveLength(0), WAIT)
+    await vi.waitFor(async () => expect(await inbox(rootA)).toHaveLength(0), WAIT)
     await Promise.all([a.daemon.stop(), b.daemon.stop()])
   }, 20_000)
 
   it('the interrupted head and everything queued behind it survive the retiring member’s teardown', async () => {
-    const rootA = scaffold()
+    const rootA = await scaffold()
     const a = await boot(rootA)
     await admit(a.daemon)
     await settled(a.daemon)
@@ -296,32 +296,32 @@ describe('a duty handoff leaves the agent’s unrun inbox to its successor', () 
     await vi.waitFor(() => expect(a.started).toHaveLength(1), WAIT)
     const queued = (a.daemon as any).dispatch(AGENT, msg('200', 'second'), INTEGRATION)
     void queued.catch(() => {})
-    await vi.waitFor(() => expect(inbox(rootA)).toHaveLength(2), WAIT)
+    await vi.waitFor(async () => expect(await inbox(rootA)).toHaveLength(2), WAIT)
 
     fence(a.daemon)
     await settled(a.daemon)
-    expect(inbox(rootA).map((r) => r.id)).toEqual(['slack:C1:100', 'slack:C1:200'])
+    expect((await inbox(rootA)).map((r) => r.id)).toEqual(['slack:C1:100', 'slack:C1:200'])
     // The cancelled head settles through dispatch's own terminal paths afterwards; those must
     // not delete the row the handoff just kept.
     a.releaseAll()
     await head.catch(() => {})
     await queued.catch(() => {})
     await new Promise((r) => setTimeout(r, 50))
-    expect(inbox(rootA).map((r) => r.id)).toEqual(['slack:C1:100', 'slack:C1:200'])
+    expect((await inbox(rootA)).map((r) => r.id)).toEqual(['slack:C1:100', 'slack:C1:200'])
     await a.daemon.stop()
   }, 20_000)
 
   it('removing the agent still discards its unrun rows', async () => {
-    const rootA = scaffold()
+    const rootA = await scaffold()
     const a = await boot(rootA)
     await admit(a.daemon)
     await settled(a.daemon)
     seedRow(rootA, '100', 'work nobody will do')
-    expect(inbox(rootA)).toHaveLength(1)
+    expect(await inbox(rootA)).toHaveLength(1)
 
     // The destructive authority-release fence every agent removal runs.
     await (a.daemon as any).quiesceAgentWorkspaceAuthority(AGENT)
-    expect(inbox(rootA)).toHaveLength(0)
+    expect(await inbox(rootA)).toHaveLength(0)
     await a.daemon.stop()
   }, 20_000)
 })

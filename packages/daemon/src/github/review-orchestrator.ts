@@ -71,9 +71,9 @@ export interface GithubReviewHost {
   agents(): Map<string, LoadedAgent>
   cpClient(): CpClient | undefined
   orgForAgent(agentId: string): string | undefined
-  hasInbox(id: string): boolean
-  getSession(key: string): SessionRecord | undefined
-  displayNames(ids: string[]): Map<string, string>
+  hasInbox(id: string): Promise<boolean>
+  getSession(key: string): Promise<SessionRecord | undefined>
+  displayNames(ids: string[]): Promise<Map<string, string>>
   getPostToken(agentId: string, repo: string, hookId: string): Promise<{ token: string }>
   invalidatePost(agentId: string, repo: string, presentedToken?: string): void
   paused(agentId: string): boolean
@@ -85,14 +85,18 @@ export interface GithubReviewHost {
     entry: QueueEntry,
     key: string,
     options?: { required?: boolean; adoptExisting?: boolean; existingId?: string }
-  ): 'inserted' | 'adopted' | 'existing' | 'skipped' | 'failed'
-  persistHookState(entry: QueueEntry, posterPublishState?: QueueEntry['posterPublishState'], required?: boolean): void
+  ): Promise<'inserted' | 'adopted' | 'existing' | 'skipped' | 'failed'>
+  persistHookState(
+    entry: QueueEntry,
+    posterPublishState?: QueueEntry['posterPublishState'],
+    required?: boolean
+  ): Promise<void>
   emitHookCompletion(
     hook: HookDispatchContext,
     status: 'success' | 'failed',
     extra?: { sessionId?: string; reason?: string },
     owner?: HookCompletionOwner
-  ): void
+  ): Promise<void>
   /** The exact in-flight dispatch for one session key, so a lifecycle cleanup can let it settle. */
   activeDispatchDone(key: string): Promise<void> | undefined
   cleanupSessionWorktree(rec: SessionRecord): Promise<SessionWorktreeCleanupResult>
@@ -127,7 +131,7 @@ export interface GithubReviewHost {
   agentLink(agentId: string): string
   sessionLink(acpSessionId: string, source?: string): string
   runtimeNames(): Record<string, string>
-  hostForStoredSession(agentId: string, acpSessionId: string): AcpHost | undefined
+  hostForStoredSession(agentId: string, acpSessionId: string): Promise<AcpHost | undefined>
 }
 
 export class GithubReviewOrchestrator {
@@ -212,7 +216,7 @@ export class GithubReviewOrchestrator {
     // probe closes the restart window *before* anchorTrigger posts externally:
     // a retained live row will replay, and a terminal row is already complete.
     // In either case the original accepted admission owns this delivery.
-    if (this.host.hasInbox(nmsg.msgId)) {
+    if (await this.host.hasInbox(nmsg.msgId)) {
       this.log.debug(`hook: durable duplicate ${nmsg.msgId} — replaying accepted admission`)
       return { accepted: true }
     }
@@ -239,10 +243,10 @@ export class GithubReviewOrchestrator {
       // Keep the maintenance receipt outside the session's own inbox key so
       // retention's active-session predicate does not mistake this cleanup
       // obligation for a pending model turn.
-      const persistence = this.host.persistInbox(entry, `maintenance:${key}`, { required: true })
+      const persistence = await this.host.persistInbox(entry, `maintenance:${key}`, { required: true })
       if (persistence !== 'existing') {
         if (cleanup) void this.completeGithubThreadWorktreeCleanup(hookContext, key, cleanup, entry)
-        else this.host.emitHookCompletion(hookContext, 'success', { reason: 'deleted_event_ignored' }, entry)
+        else await this.host.emitHookCompletion(hookContext, 'success', { reason: 'deleted_event_ignored' }, entry)
       }
       return { accepted: true }
     }
@@ -308,29 +312,30 @@ export class GithubReviewOrchestrator {
         ]
       }
     }
-    let admission: { accepted: boolean; reason?: string; duplicate?: boolean } | undefined
+    let settleAdmission!: (result: { accepted: boolean; reason?: string; duplicate?: boolean }) => void
+    const admitted = new Promise<{ accepted: boolean; reason?: string; duplicate?: boolean }>((resolve) => {
+      settleAdmission = resolve
+    })
     const turn = this.host.dispatch(
       msg.agentId,
       anchored,
       msg.target?.integrationId,
       undefined,
       undefined,
-      {
-        requireDurable: true,
-        onAdmission: (result) => {
-          admission = result
-        }
-      },
+      { requireDurable: true, onAdmission: (result) => settleAdmission(result) },
       githubReply,
       hookContext
     )
-    // dispatch() performs admission synchronously inside its Promise executor.
-    // Consume the full-turn promise now, but never make rd/ack wait for the model.
+    // Await the admission barrier, but never make rd/ack wait for the model.
     // Every accepted terminal path is owned by runLoop/dispatchOne and emits its
     // durable receipt there; observing a null here as well used to double-report
     // queued entries that were gate-dropped before their turn began.
-    void turn.catch((err) => this.log.error(`hook turn failed for agent "${msg.agentId}": ${formatErr(err)}`))
-    if (!admission) throw new Error('hook admission barrier did not settle synchronously')
+    void turn.catch((err) => {
+      this.log.error(`hook turn failed for agent "${msg.agentId}": ${formatErr(err)}`)
+      // A dispatch that rejected before admission settled must still release this barrier.
+      settleAdmission({ accepted: false, reason: 'error' })
+    })
+    const admission = await admitted
     if (!admission.accepted) {
       return { accepted: false, reason: admission.reason ?? 'durability' }
     }
@@ -347,33 +352,38 @@ export class GithubReviewOrchestrator {
       // A merge/close can race the last review turn. Let that exact dispatch
       // settle before applying the same safety checks used by retention.
       await this.host.activeDispatchDone(key)?.catch(() => undefined)
-      const rec = this.host.getSession(key)
+      const rec = await this.host.getSession(key)
       if (!rec) {
         this.log.info(`github lifecycle: ${cleanup} has no session worktree for ${key}`)
-        this.host.emitHookCompletion(hook, 'success', { reason: 'worktree_cleanup_no_session' }, owner)
+        await this.host.emitHookCompletion(hook, 'success', { reason: 'worktree_cleanup_no_session' }, owner)
         return
       }
       const result = await this.host.cleanupSessionWorktree(rec)
       if (result.outcome === 'failed') {
         this.log.warn(`github lifecycle: ${cleanup} worktree cleanup failed for ${key} (${result.error})`)
-        this.host.emitHookCompletion(hook, 'failed', { reason: 'worktree_cleanup_failed' }, owner)
+        await this.host.emitHookCompletion(hook, 'failed', { reason: 'worktree_cleanup_failed' }, owner)
         return
       }
       if (result.outcome === 'retained') {
         this.log.info(`github lifecycle: ${cleanup} retained worktree for ${key} (${result.reason})`)
-        this.host.emitHookCompletion(hook, 'success', { reason: `worktree_cleanup_retained_${result.reason}` }, owner)
+        await this.host.emitHookCompletion(
+          hook,
+          'success',
+          { reason: `worktree_cleanup_retained_${result.reason}` },
+          owner
+        )
         return
       }
       if (result.outcome === 'active') {
         this.log.info(`github lifecycle: ${cleanup} deferred worktree cleanup for active session ${key}`)
-        this.host.emitHookCompletion(hook, 'success', { reason: 'worktree_cleanup_deferred_active' }, owner)
+        await this.host.emitHookCompletion(hook, 'success', { reason: 'worktree_cleanup_deferred_active' }, owner)
         return
       }
       this.log.info(`github lifecycle: ${cleanup} worktree cleanup ${result.outcome} for ${key}`)
-      this.host.emitHookCompletion(hook, 'success', undefined, owner)
+      await this.host.emitHookCompletion(hook, 'success', undefined, owner)
     } catch (err) {
       this.log.warn(`github lifecycle: ${cleanup} worktree cleanup failed for ${key} (${formatErr(err)})`)
-      this.host.emitHookCompletion(hook, 'failed', { reason: 'worktree_cleanup_failed' }, owner)
+      await this.host.emitHookCompletion(hook, 'failed', { reason: 'worktree_cleanup_failed' }, owner)
     }
   }
 
@@ -417,7 +427,7 @@ export class GithubReviewOrchestrator {
         ...(revision.mergeCommitSha ? { mergeCommitSha: revision.mergeCommitSha } : {}),
         isDraft: revision.draft
       }
-      this.host.persistHookState(entry, undefined, true)
+      await this.host.persistHookState(entry, undefined, true)
       return hook.github
     } catch (err) {
       this.log.warn(`github review: unable to resolve PR revision (${formatErr(err)})`)
@@ -453,11 +463,11 @@ export class GithubReviewOrchestrator {
 
   /** Display label of the user a session is opened by — it names the session
    * worktree's branch (`dev/<user>/<words>`). Presentation only. */
-  sessionInitiatorLabel(msg: NormalizedMessage): string {
+  async sessionInitiatorLabel(msg: NormalizedMessage): Promise<string> {
     // The routing identity a session is keyed by, which for a GitHub hook is the hook —
     // `initiatorLabel` then falls through to the actor who fired it.
     const initiator = msg.sessionTriggerId ?? msg.sender?.id ?? ''
-    return initiatorLabel(initiator, this.host.displayNames([initiator]).get(initiator), msg.sender)
+    return initiatorLabel(initiator, (await this.host.displayNames([initiator])).get(initiator), msg.sender)
   }
 
   /** Prepare an exact, isolated checkout before a formal review generation. A
@@ -490,7 +500,7 @@ export class GithubReviewOrchestrator {
         const preparedWorkspaceCwd = await this.host.prepareAgentWorkspace(agent, warmHost, {
           sessionKey: key,
           isolation: 'session',
-          initiatedBy: this.sessionInitiatorLabel(entry.msg),
+          initiatedBy: await this.sessionInitiatorLabel(entry.msg),
           githubReviewRevisionOnly: true
         })
         return { workspaceIsolation: 'session' as const, forceWorkspaceIsolation: true as const, preparedWorkspaceCwd }
@@ -513,7 +523,7 @@ export class GithubReviewOrchestrator {
       const preparedWorkspaceCwd = await this.host.prepareAgentWorkspace(agent, warmHost, {
         sessionKey: key,
         isolation: 'session',
-        initiatedBy: this.sessionInitiatorLabel(entry.msg),
+        initiatedBy: await this.sessionInitiatorLabel(entry.msg),
         review: {
           pullNumber: github.pullNumber,
           baseSha: github.baseSha,
@@ -618,17 +628,17 @@ export class GithubReviewOrchestrator {
 
   /** Store the immediate and terminal-report copies together so they cannot
    * drift across submit and restart-recovery paths. */
-  persistGithubReviewEffect(
+  async persistGithubReviewEffect(
     active: ActiveGithubTurnMeta,
     attemptId: string,
     effect: GithubReviewEffect,
     required = false
-  ): HookReviewResult {
+  ): Promise<HookReviewResult> {
     const result = reviewResultForWire(effect)
     active.hook.reviewResult = result
     active.hook.reviewReportAttemptId = attemptId
     active.hook.reviewReportResult = result
-    this.host.persistHookState(active.entry, undefined, required)
+    await this.host.persistHookState(active.entry, undefined, required)
     return result
   }
 
@@ -669,7 +679,7 @@ export class GithubReviewOrchestrator {
       // report both so restart completion carries the current attempt outcome
       // and the CP reservation converges to submitted or blocked.
       if (effect.state === 'not_submitted') return
-      const result = this.persistGithubReviewEffect(active, attemptId, effect, true)
+      const result = await this.persistGithubReviewEffect(active, attemptId, effect, true)
       const report: Parameters<CpClient['reportGithubReviewResult']>[0] = {
         hookId: active.hook.hookId,
         deliveryKey: active.hook.deliveryKey,
@@ -744,7 +754,7 @@ export class GithubReviewOrchestrator {
     try {
       // RECORD-FIRST: after this point a crash/replay knows it must reconcile
       // the marker before any possible second POST.
-      this.host.persistHookState(entry, undefined, true)
+      await this.host.persistHookState(entry, undefined, true)
     } catch (err) {
       if (!recovering) {
         Object.assign(active.hook, previousReviewState)
@@ -785,10 +795,10 @@ export class GithubReviewOrchestrator {
       authorizedReviewTarget(active, attemptId, authorized, recovering),
       req,
       this.agents.get(req.agentId)?.output.showFooter
-        ? this.githubCommentAttribution(req.agentId, active.sessionId)
+        ? await this.githubCommentAttribution(req.agentId, active.sessionId)
         : undefined
     )
-    const result = this.persistGithubReviewEffect(active, attemptId, effect)
+    const result = await this.persistGithubReviewEffect(active, attemptId, effect)
     try {
       const report: Parameters<CpClient['reportGithubReviewResult']>[0] = {
         hookId: active.hook.hookId,
@@ -808,7 +818,7 @@ export class GithubReviewOrchestrator {
         delete active.hook.reviewRequestedVerdict
         delete active.hook.reviewResult
         active.reviewState = 'idle'
-        this.host.persistHookState(entry)
+        await this.host.persistHookState(entry)
       } else if (effect.state === 'ambiguous') {
         // The reservation and semantic input stay fixed. A later tool call may
         // only reconcile that same marker (and, after a complete no-marker
@@ -863,13 +873,13 @@ export class GithubReviewOrchestrator {
         continue
       }
       item.publishState = 'in_flight'
-      this.host.persistHookState(active.entry, undefined, true)
+      await this.host.persistHookState(active.entry, undefined, true)
       const published = await this.makeGithubReply(req.agentId, item.reply, active.sessionId).poster.publish(
         supplied.get(root)!
       )
       if (published) item.publishedComment = published
       item.publishState = 'settled'
-      this.host.persistHookState(active.entry, undefined, true)
+      await this.host.persistHookState(active.entry, undefined, true)
       results.push({
         threadRootCommentId: root,
         state: published ? 'published' : 'settled',
@@ -904,7 +914,7 @@ export class GithubReviewOrchestrator {
     }
   }
 
-  githubCommentAttribution(agentId: string, sessionId: string): GithubCommentAttribution {
+  async githubCommentAttribution(agentId: string, sessionId: string): Promise<GithubCommentAttribution> {
     const agent = this.agents.get(agentId)
     const runtime = agent?.runtime
     return {
@@ -912,7 +922,7 @@ export class GithubReviewOrchestrator {
       agentUrl: this.host.agentLink(agentId),
       runtime: runtime ? (this.host.runtimeNames()[runtime] ?? runtime) : 'unknown',
       model:
-        this.host.hostForStoredSession(agentId, sessionId)?.modelOptions?.(sessionId)?.current ??
+        (await this.host.hostForStoredSession(agentId, sessionId))?.modelOptions?.(sessionId)?.current ??
         agent?.runtimeOverrides?.model ??
         'default',
       sessionUrl: this.host.sessionLink(sessionId, 'github'),

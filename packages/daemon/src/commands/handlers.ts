@@ -59,17 +59,17 @@ export interface CommandHost {
   /** True when this session runs on its own credential host rather than the shared static one. */
   hasModelSessionHost(key: string): boolean
   modelCrossesHostProvider(key: string, agentId: string, model: string): boolean
-  hostForStoredSession(agentId: string, acpSessionId: string): AcpHost | undefined
-  statusInfoFrom(agentId: string, sessionKey: string, acpSessionId?: string): StatusBarInfo
-  emitStatusBar(p: Pending): void
-  interruptTurn(agentId: string, key: string, reason: TurnInterruptReason, acpSessionId?: string): void
+  hostForStoredSession(agentId: string, acpSessionId: string): Promise<AcpHost | undefined>
+  statusInfoFrom(agentId: string, sessionKey: string, acpSessionId?: string): Promise<StatusBarInfo>
+  emitStatusBar(p: Pending): Promise<void>
+  interruptTurn(agentId: string, key: string, reason: TurnInterruptReason, acpSessionId?: string): Promise<void>
   /** `!queue` admission through the unified per-sessionKey gate — it decides run-now vs enqueue. */
   dispatchQueueCommand(agentId: string, msg: NormalizedMessage, integrationId: string): Promise<void>
   replyConnFor(agentId: string, integrationId?: string): PlatformConnection | undefined
   sessionLink(acpSessionId: string, source?: string): string
   sessionLinkSource(platform: string, integrationId?: string): string | undefined
   /** Thread affinity for the routing ladder a command reuses. */
-  threadOwner(channel: string, thread: string, transportScope?: string | null): string | null
+  threadOwner(channel: string, thread: string, transportScope?: string | null): Promise<string | null>
   mergedRulesForSource(srcIntegrationIds?: readonly string[]): RoutingRule[]
   transportScopeForIntegrationIds(integrationIds?: readonly string[]): string | undefined
   integrationBelongsToSource(integrationId: string, srcIntegrationIds?: readonly string[]): boolean
@@ -94,8 +94,8 @@ export class CommandHandlers {
   }
 
   /** Resolve a session only while its Agent explicitly permits chat-side runtime changes. */
-  chatRuntimeSession(key: string) {
-    const rec = this.host.store().getSession(key)
+  async chatRuntimeSession(key: string) {
+    const rec = await this.host.store().getSession(key)
     return rec && this.host.agents().get(rec.agentId)?.allowRuntimeChangesInChat === true ? rec : undefined
   }
 
@@ -103,8 +103,8 @@ export class CommandHandlers {
    *  `set-model` frame and the Slack status-bar select. Records the sticky per-session
    *  override (re-applied on every turn by dispatch) and, if the ACP session is warm,
    *  applies it live now and re-pushes the status bar. Never changes the agent default. */
-  setModelByKey(key: string, model: string): boolean {
-    const rec = this.chatRuntimeSession(key)
+  async setModelByKey(key: string, model: string): Promise<boolean> {
+    const rec = await this.chatRuntimeSession(key)
     if (!rec) return false
     const crossProvider = this.host.modelCrossesHostProvider(key, rec.agentId, model)
     // The shared static-credential host has no per-session restart to pick a new binding up,
@@ -114,7 +114,7 @@ export class CommandHandlers {
       this.host.log().warn(`session ${key}: cross-provider model switch rejected — the static credential host is bound`)
       return false
     }
-    this.host.store().setModelOverride(key, model)
+    await this.host.store().setModelOverride(key, model)
     this.host.log().info(`session ${key} model override → "${model}"`)
     // A running credential host keeps the provider it started with; the sticky override is
     // what the next start reads, so the switch lands there instead of live.
@@ -123,13 +123,13 @@ export class CommandHandlers {
       return true
     }
     const acpSessionId = rec.acpSessionId
-    const host = acpSessionId ? this.host.hostForStoredSession(rec.agentId, acpSessionId) : undefined
+    const host = acpSessionId ? await this.host.hostForStoredSession(rec.agentId, acpSessionId) : undefined
     if (!acpSessionId || !host?.hasSession(acpSessionId)) return true // no live session — applies next turn
     void host
       .setSessionModel(acpSessionId, model)
-      .then((applied) => {
+      .then(async (applied) => {
         const p = this.host.pending().get(pendingTurnKey(rec.agentId, acpSessionId))
-        if (applied && p) this.host.emitStatusBar(p) // reflect the new model on the status bar
+        if (applied && p) await this.host.emitStatusBar(p) // reflect the new model on the status bar
       })
       .catch((err) => this.host.log().warn(`set-model failed: ${(err as Error).message}`))
     return true
@@ -137,14 +137,14 @@ export class CommandHandlers {
 
   /** Cancel the in-flight turn for a local session key — the `!cancel` core (interrupt,
    *  NO mute) shared by the Slack status-bar Cancel button. No-op if nothing is running. */
-  cancelSessionByKey(key: string): boolean {
-    const rec = this.host.store().getSession(key)
+  async cancelSessionByKey(key: string): Promise<boolean> {
+    const rec = await this.host.store().getSession(key)
     // Cancel a gate-owned/queued session even if it has no live ACP turn yet (§6.9 #390):
     // interruptTurn drains the queue by key and cancels the ACP turn only if one exists.
     if (!this.host.inflight().has(key)) return false
     const agentId = rec?.agentId ?? this.host.serialQueue().get(key)?.[0]?.agentId
     if (!agentId) return false
-    this.host.interruptTurn(agentId, key, 'cancel', rec?.acpSessionId ?? undefined)
+    await this.host.interruptTurn(agentId, key, 'cancel', rec?.acpSessionId ?? undefined)
     return true // reports whether a turn was actually interrupted (nothing else reads it)
   }
 
@@ -153,15 +153,15 @@ export class CommandHandlers {
    *  applies it live via the `thought_level` select. `ultracode` can't ride the select
    *  (setSessionEffort returns false); it's honored via session `_meta` when the session
    *  is next (re)created or resumed, and the override still shows on the bar meanwhile. */
-  setEffortByKey(key: string, effort: string): boolean {
-    const rec = this.chatRuntimeSession(key)
+  async setEffortByKey(key: string, effort: string): Promise<boolean> {
+    const rec = await this.chatRuntimeSession(key)
     if (!rec) return false
-    this.host.store().setEffortOverride(key, effort)
+    await this.host.store().setEffortOverride(key, effort)
     this.host.log().info(`session ${key} effort override → "${effort}"`)
     const acpSessionId = rec.acpSessionId
-    const host = acpSessionId ? this.host.hostForStoredSession(rec.agentId, acpSessionId) : undefined
+    const host = acpSessionId ? await this.host.hostForStoredSession(rec.agentId, acpSessionId) : undefined
     if (!acpSessionId || !host?.hasSession(acpSessionId)) {
-      this.refreshStatusBarForKey(key)
+      await this.refreshStatusBarForKey(key)
       return true
     }
     void host
@@ -191,15 +191,15 @@ export class CommandHandlers {
   /** Every chat-side permission-preset change funnels through the same Agent-level
    * guard before a sticky override can be written, including stale callbacks and
    * relay frames. */
-  setPermissionModeByKey(key: string, permissionPreset: string): boolean {
-    const rec = this.chatRuntimeSession(key)
+  async setPermissionModeByKey(key: string, permissionPreset: string): Promise<boolean> {
+    const rec = await this.chatRuntimeSession(key)
     if (!rec) return false
-    this.host.store().setPermissionModeOverride(key, permissionPreset)
+    await this.host.store().setPermissionModeOverride(key, permissionPreset)
     this.host.log().info(`session ${key} permission preset override → "${permissionPreset}"`)
     const acpSessionId = rec.acpSessionId
-    const host = acpSessionId ? this.host.hostForStoredSession(rec.agentId, acpSessionId) : undefined
+    const host = acpSessionId ? await this.host.hostForStoredSession(rec.agentId, acpSessionId) : undefined
     if (!acpSessionId || !host?.hasSession(acpSessionId)) {
-      this.refreshStatusBarForKey(key)
+      await this.refreshStatusBarForKey(key)
       return true
     }
     void this.applySessionPermissionPreset(host, acpSessionId, permissionPreset)
@@ -211,15 +211,15 @@ export class CommandHandlers {
   /** Toggle a session's fast mode by its local key — the fast-mode counterpart of
    *  {@link setModelByKey}. Records the sticky override and applies it live when the
    *  current model offers a fast toggle. */
-  setFastByKey(key: string, fastMode: boolean): boolean {
-    const rec = this.chatRuntimeSession(key)
+  async setFastByKey(key: string, fastMode: boolean): Promise<boolean> {
+    const rec = await this.chatRuntimeSession(key)
     if (!rec) return false
-    this.host.store().setFastModeOverride(key, fastMode)
+    await this.host.store().setFastModeOverride(key, fastMode)
     this.host.log().info(`session ${key} fast-mode override → ${fastMode}`)
     const acpSessionId = rec.acpSessionId
-    const host = acpSessionId ? this.host.hostForStoredSession(rec.agentId, acpSessionId) : undefined
+    const host = acpSessionId ? await this.host.hostForStoredSession(rec.agentId, acpSessionId) : undefined
     if (!acpSessionId || !host?.hasSession(acpSessionId)) {
-      this.refreshStatusBarForKey(key)
+      await this.refreshStatusBarForKey(key)
       return true
     }
     void host
@@ -231,26 +231,26 @@ export class CommandHandlers {
 
   /** Re-emit the status bar for a session's in-flight turn (if any) so a config change
    *  (model / effort / fast) is reflected. No-op when the session is idle. */
-  refreshStatusBarForKey(key: string): void {
-    const rec = this.host.store().getSession(key)
+  async refreshStatusBarForKey(key: string): Promise<void> {
+    const rec = await this.host.store().getSession(key)
     const p = rec?.acpSessionId ? this.host.pending().get(pendingTurnKey(rec.agentId, rec.acpSessionId)) : undefined
-    if (p) this.host.emitStatusBar(p)
+    if (p) await this.host.emitStatusBar(p)
   }
 
   /** Set a session's Slack output verbosity by its local key. Purely daemon-side (no ACP):
    *  the next turn's OutputConverger reads this override, so an in-flight turn keeps its
    *  current verbosity and the change takes effect from the next turn. */
-  setOutputModeByKey(key: string, mode: 'none' | 'minimal' | 'low' | 'medium' | 'high'): boolean {
-    if (!this.host.store().getSession(key)) return false
-    this.host.store().setOutputModeOverride(key, mode)
+  async setOutputModeByKey(key: string, mode: 'none' | 'minimal' | 'low' | 'medium' | 'high'): Promise<boolean> {
+    if (!(await this.host.store().getSession(key))) return false
+    await this.host.store().setOutputModeOverride(key, mode)
     this.host.log().info(`session ${key} output-mode override → "${mode}"`)
-    this.refreshStatusBarForKey(key)
+    await this.refreshStatusBarForKey(key)
     return true // reports whether the override was recorded (nothing else reads it)
   }
   /** Route a Slack status-bar Block Kit interaction (model / effort / fast select or the
    *  Cancel button) to the shared key-based cores. `sessionKey` rides the block; no-op on
    *  an unknown key. */
-  handleStatusAction(a: {
+  async handleStatusAction(a: {
     kind: 'set-model' | 'set-effort' | 'set-permission-mode' | 'set-fast' | 'set-output' | 'cancel'
     sessionKey: string
     actor?: InteractionActor
@@ -259,23 +259,23 @@ export class CommandHandlers {
     permissionMode?: string
     fastMode?: boolean
     outputMode?: 'none' | 'minimal' | 'low' | 'medium' | 'high'
-  }): void {
+  }): Promise<void> {
     // A status-bar tap carries no author in the transcript, so the operator behind a
     // cancelled turn or a switched model is otherwise unrecoverable. Record it here,
     // at the one point every ingress funnels through — but only when the verb actually
     // applied, so a refused or no-op click never reads as a change someone made.
     let applied = false
-    if (a.kind === 'cancel') applied = this.cancelSessionByKey(a.sessionKey)
+    if (a.kind === 'cancel') applied = await this.cancelSessionByKey(a.sessionKey)
     else if (a.kind === 'set-model') {
-      if (a.model) applied = this.setModelByKey(a.sessionKey, a.model)
+      if (a.model) applied = await this.setModelByKey(a.sessionKey, a.model)
     } else if (a.kind === 'set-effort') {
-      if (a.effort) applied = this.setEffortByKey(a.sessionKey, a.effort)
+      if (a.effort) applied = await this.setEffortByKey(a.sessionKey, a.effort)
     } else if (a.kind === 'set-permission-mode') {
-      if (a.permissionMode) applied = this.setPermissionModeByKey(a.sessionKey, a.permissionMode)
+      if (a.permissionMode) applied = await this.setPermissionModeByKey(a.sessionKey, a.permissionMode)
     } else if (a.kind === 'set-fast') {
-      if (a.fastMode !== undefined) applied = this.setFastByKey(a.sessionKey, a.fastMode)
+      if (a.fastMode !== undefined) applied = await this.setFastByKey(a.sessionKey, a.fastMode)
     } else if (a.kind === 'set-output') {
-      if (a.outputMode) applied = this.setOutputModeByKey(a.sessionKey, a.outputMode)
+      if (a.outputMode) applied = await this.setOutputModeByKey(a.sessionKey, a.outputMode)
     }
     if (applied) this.logSessionAction(a.kind, a.sessionKey, a.actor)
   }
@@ -287,33 +287,33 @@ export class CommandHandlers {
    * when the session is gone or the option index is stale (options changed) — the
    * connection then leaves the card as-is. Mirrors handleTelegramCallback.
    */
-  handleDiscordSelect(a: {
+  async handleDiscordSelect(a: {
     kind: SelectKind
     index: number
     sessionKey: string
     actor?: InteractionActor
-  }): { text: string; components: DiscordComponents } | undefined {
-    const rec = this.host.store().getSession(a.sessionKey)
+  }): Promise<{ text: string; components: DiscordComponents } | undefined> {
+    const rec = await this.host.store().getSession(a.sessionKey)
     if (!rec) return undefined
-    const info = this.host.statusInfoFrom(rec.agentId, a.sessionKey, rec.acpSessionId ?? undefined)
+    const info = await this.host.statusInfoFrom(rec.agentId, a.sessionKey, rec.acpSessionId ?? undefined)
     const { options } = selectOptions(a.kind, info)
     const value = options[a.index]
     if (value === undefined) return undefined
     // Recorded only once the choice actually applied — a refused or stale select
     // changes nothing and must not read as though someone had changed it. The card is
     // still re-rendered either way, as before.
-    if (applySelect(a.kind, a.sessionKey, value, this.selectSetters))
+    if (await applySelect(a.kind, a.sessionKey, value, this.selectSetters))
       this.logSessionAction(`select:${a.kind}`, a.sessionKey, a.actor)
     const components = buildDiscordSelectComponents(a.kind, value, options)
     if (!components) return undefined
     return { text: selectCardText(a.kind, value), components }
   }
-  isSessionMuted(key: string): boolean {
-    return this.host.store().isSessionMuted(key)
+  async isSessionMuted(key: string): Promise<boolean> {
+    return await this.host.store().isSessionMuted(key)
   }
 
-  setSessionMuted(key: string, muted: boolean): void {
-    this.host.store().setSessionMuted(key, muted)
+  async setSessionMuted(key: string, muted: boolean): Promise<void> {
+    await this.host.store().setSessionMuted(key, muted)
   }
 
   /**
@@ -324,10 +324,10 @@ export class CommandHandlers {
    * applied. Null when there's no session, no matching integration, or the conversation
    * is not admitted.
    */
-  resolveCommandTargetFromLatest(
+  async resolveCommandTargetFromLatest(
     msg: NormalizedMessage,
     srcIntegrationIds?: readonly string[]
-  ): { agentId: string; integrationId: string; via: RouteVia } | null {
+  ): Promise<{ agentId: string; integrationId: string; via: RouteVia } | null> {
     const transportScope = msg.transportScope ?? this.host.transportScopeForIntegrationIds(srcIntegrationIds)
     // Only where the thread coordinate identifies the session (Slack/Discord) does it
     // participate in the lookup; reply-threading platforms mint a fresh thread per
@@ -346,7 +346,7 @@ export class CommandHandlers {
           !this.commandSenderAllowed(agentId, integration.id, msg)
         )
           continue
-        const latest = this.host.store().latestSessionForTransport(agentId, msg.channel, transportScope, thread)
+        const latest = await this.host.store().latestSessionForTransport(agentId, msg.channel, transportScope, thread)
         if (latest) candidates.push({ agentId, integrationId: integration.id, updatedAt: latest.updatedAt })
       }
     }
@@ -376,12 +376,12 @@ export class CommandHandlers {
    *  message itself was rejected, so its warning thread may have no thread owner or
    *  latest session to route a bare `!resume` through. Select only an integration
    *  that admits this conversation, preferring an explicitly mentioned bot. */
-  resolveTopLevelResumeTarget(
+  async resolveTopLevelResumeTarget(
     msg: NormalizedMessage,
     srcIntegrationIds?: readonly string[]
-  ): { agentId: string; integrationId: string; via: RouteVia } | null {
+  ): Promise<{ agentId: string; integrationId: string; via: RouteVia } | null> {
     const coarseScope = loopGuardScopesFor(msg).coarse
-    if (!coarseScope || !this.host.store().isLoopGuardOpen(coarseScope)) return null
+    if (!coarseScope || !(await this.host.store().isLoopGuardOpen(coarseScope))) return null
     const candidates: Array<{
       agentId: string
       integrationId: string
@@ -440,25 +440,26 @@ export class CommandHandlers {
    * admission apply), then acts on that agent's session in this
    * (channel, thread).
    */
-  handleCommand(
+  async handleCommand(
     command: AgentCommand,
     msg: NormalizedMessage,
     explicitTarget?: { agentId: string; integrationId: string; via: RouteVia },
     srcIntegrationIds?: readonly string[]
-  ): boolean {
-    let target =
-      explicitTarget ??
-      routeRules(msg, this.host.mergedRulesForSource(srcIntegrationIds), (c, t) =>
-        this.host.threadOwner(c, t, msg.transportScope)
-      )
+  ): Promise<boolean> {
+    let target: { agentId: string; integrationId: string; via: RouteVia } | null | undefined = explicitTarget
+    if (!target) {
+      // Prefetched for the ONE thread key `routeRules` can ask about — its own message's.
+      const threadOwner = msg.thread ? await this.host.threadOwner(msg.channel, msg.thread, msg.transportScope) : null
+      target = routeRules(msg, this.host.mergedRulesForSource(srcIntegrationIds), () => threadOwner)
+    }
     if (!target) {
       // Routing found no agent — the common group case: a bare `/status@bot` carries no
       // mention entity, no reply, and its fresh thread has no session. Resolve the agent
       // from the channel's latest session so the command still lands on it (subject to
       // that agent's conversation admission).
-      target = this.resolveCommandTargetFromLatest(msg, srcIntegrationIds)
+      target = await this.resolveCommandTargetFromLatest(msg, srcIntegrationIds)
     }
-    if (!target && command.kind === 'resume') target = this.resolveTopLevelResumeTarget(msg, srcIntegrationIds)
+    if (!target && command.kind === 'resume') target = await this.resolveTopLevelResumeTarget(msg, srcIntegrationIds)
     if (!target) {
       this.host.log().debug(`command: '${command.kind}' in ch=${msg.channel} — no agent resolved, ignoring`)
       return false
@@ -480,7 +481,7 @@ export class CommandHandlers {
     // `/queue` dispatch continues it and the sticky overrides land on the right key.
     let thread = replyThread
     let key = sessionKey(msg.platform, msg.channel, thread, target.agentId, msg.transportScope)
-    let rec = this.host.store().getSession(key)
+    let rec = await this.host.store().getSession(key)
     // A cold turn owns its logical key before SessionManager persists the session row.
     // Prefer that exact live gate over the channel's latest historical session; otherwise
     // a `!stop` sent in the cold thread can mute/cancel an older thread and leave the
@@ -490,7 +491,7 @@ export class CommandHandlers {
       this.host.activeGateEntries().has(candidateKey) || (this.host.serialQueue().get(candidateKey)?.length ?? 0) > 0
     let directGateActive = gateActiveFor(key)
     if (!rec && !directGateActive) {
-      const latest = this.host.store().latestSessionForTransport(target.agentId, msg.channel, msg.transportScope)
+      const latest = await this.host.store().latestSessionForTransport(target.agentId, msg.channel, msg.transportScope)
       if (latest) {
         rec = latest
         key = latest.key
@@ -526,7 +527,8 @@ export class CommandHandlers {
       // A top-level feedback loop posts its warning into the triggering root. A
       // trusted !resume from that warning thread (or elsewhere in the channel)
       // must reset the shared channel circuit, not a never-open per-thread key.
-      const scope = topLevelScope && this.host.store().isLoopGuardOpen(topLevelScope) ? topLevelScope : directScope
+      const scope =
+        topLevelScope && (await this.host.store().isLoopGuardOpen(topLevelScope)) ? topLevelScope : directScope
       const stillStopping =
         [...this.host.activeGateEntries().values()].some(
           (entry) => entry.cancelledReason === 'loop protection' && loopGuardScope(entry.msg) === scope
@@ -538,11 +540,11 @@ export class CommandHandlers {
         reply('Loop protection is still stopping the previous turn. Try `!resume` again in a moment.')
         return true
       }
-      const wasOpen = this.host.store().isLoopGuardOpen(scope)
-      this.host.store().resetLoopGuard(scope)
+      const wasOpen = await this.host.store().isLoopGuardOpen(scope)
+      await this.host.store().resetLoopGuard(scope)
       this.host.clearEnforcedLoopScope(scope)
-      const wasMuted = this.isSessionMuted(key)
-      if (wasMuted) this.setSessionMuted(key, false)
+      const wasMuted = await this.isSessionMuted(key)
+      if (wasMuted) await this.setSessionMuted(key, false)
       if (wasOpen || wasMuted) {
         this.host.log().info(`loop guard: explicitly reset ${scope} by ${msg.sender.id}`)
         reply('▶️ Resumed. Loop protection is reset; send a new message to continue.')
@@ -556,13 +558,13 @@ export class CommandHandlers {
       // Mute the session's thread whether or not a turn is in flight: `!stop` is an
       // explicit stand-down — implicit routing (thread affinity / keyword / auto)
       // stays off until the user @mentions the agent again (onInbound clears it).
-      if (rec || inflight) this.setSessionMuted(key, true)
+      if (rec || inflight) await this.setSessionMuted(key, true)
       const muteNote = 'Muted in this thread — @mention me to resume.'
       if (!inflight) {
         reply(rec ? `🔇 Nothing is running. ${muteNote}` : 'Nothing is running to stop.')
         return true
       }
-      this.host.interruptTurn(target.agentId, key, 'stop', acpSessionId ?? undefined)
+      await this.host.interruptTurn(target.agentId, key, 'stop', acpSessionId ?? undefined)
       reply(`🛑 Stopped. ${muteNote}`)
       return true
     }
@@ -574,7 +576,7 @@ export class CommandHandlers {
         reply('Nothing is running to cancel.')
         return true
       }
-      this.host.interruptTurn(target.agentId, key, 'cancel', acpSessionId ?? undefined)
+      await this.host.interruptTurn(target.agentId, key, 'cancel', acpSessionId ?? undefined)
       reply('🛑 Cancelled.')
       return true
     }
@@ -594,7 +596,7 @@ export class CommandHandlers {
       // Presentation is the platform's (§7.4): HTML chrome + View link on Telegram,
       // markdown + a real link button on Discord, plain text + a 🔗 line on Feishu,
       // the compact pipe-linked status line on Slack.
-      if (conn) chrome.status(conn, msg, chromeCtx, info, link)
+      if (conn) chrome.status(conn, msg, chromeCtx, await info, link)
       return true
     }
 
@@ -620,7 +622,7 @@ export class CommandHandlers {
         reply('Usage: `/fast on` or `/fast off`.')
         return true
       }
-      this.setFastByKey(key, command.enable)
+      await this.setFastByKey(key, command.enable)
       reply(command.enable ? '⚡ Fast mode on.' : '🐢 Fast mode off.')
       return true
     }
@@ -643,7 +645,7 @@ export class CommandHandlers {
           ? (kind: SelectKind, current: string | undefined, options: string[]) =>
               selectCard(conn, msg, chromeCtx, { kind, current, options, header: selectCardText(kind, current) })
           : undefined
-      this.handleSelectCommand(
+      await this.handleSelectCommand(
         command.kind,
         command.value,
         target.agentId,
@@ -690,9 +692,9 @@ export class CommandHandlers {
 
   /** Sticky-override setters handed to the pure select projections. */
   private readonly selectSetters: SelectSetters = {
-    model: (key, value) => this.setModelByKey(key, value),
-    effort: (key, value) => this.setEffortByKey(key, value),
-    permission: (key, value) => this.setPermissionModeByKey(key, value)
+    model: async (key, value) => await this.setModelByKey(key, value),
+    effort: async (key, value) => await this.setEffortByKey(key, value),
+    permission: async (key, value) => await this.setPermissionModeByKey(key, value)
   }
 
   /**
@@ -703,7 +705,7 @@ export class CommandHandlers {
    * live host's config selectors (statusInfoFrom); when the host is cold a given value is
    * accepted optimistically and takes effect on the next turn.
    */
-  handleSelectCommand(
+  async handleSelectCommand(
     kind: SelectKind,
     value: string | null,
     agentId: string,
@@ -711,10 +713,10 @@ export class CommandHandlers {
     acpSessionId: string | undefined,
     reply: (text: string) => void,
     renderCard?: (kind: SelectKind, current: string | undefined, options: string[]) => boolean
-  ): void {
+  ): Promise<void> {
     const label = selectLabel(kind)
     const info = this.host.statusInfoFrom(agentId, key, acpSessionId)
-    const { current, options } = selectOptions(kind, info)
+    const { current, options } = selectOptions(kind, await info)
     const cmd = kind === 'model' ? 'models' : kind
 
     const disp = (v: string) => selectDisplay(kind, v)
@@ -757,7 +759,7 @@ export class CommandHandlers {
       )
       return
     }
-    if (!applySelect(kind, key, resolved, this.selectSetters)) {
+    if (!(await applySelect(kind, key, resolved, this.selectSetters))) {
       reply('Runtime settings can only be changed by an Agent editor from the Agent page.')
       return
     }
@@ -775,7 +777,7 @@ export class CommandHandlers {
    * re-renders the card with the new current marked. Best-effort throughout — a tap
    * must never throw out of the update pump.
    */
-  handleTelegramCallback(cb: TelegramCallback, conn: TelegramConnection): void {
+  async handleTelegramCallback(cb: TelegramCallback, conn: TelegramConnection): Promise<void> {
     const tap = parseTelegramSelect(cb.data)
     if (!tap) {
       void conn.answerCallback(cb.id)
@@ -783,7 +785,7 @@ export class CommandHandlers {
     }
     const { kind, index: idx } = tap
     const srcIntegrationIds = this.host.srcIntegrationIds(conn)
-    const session = this.commandSessionForLatest(
+    const session = await this.commandSessionForLatest(
       cb.channel,
       srcIntegrationIds,
       this.host.transportScopeForIntegrationIds(srcIntegrationIds)
@@ -796,14 +798,14 @@ export class CommandHandlers {
       void conn.answerCallback(cb.id, 'Ask an Agent editor to change runtime settings.')
       return
     }
-    const info = this.host.statusInfoFrom(session.agentId, session.key, session.acpSessionId)
+    const info = await this.host.statusInfoFrom(session.agentId, session.key, session.acpSessionId)
     const { options } = selectOptions(kind, info)
     const value = options[idx]
     if (value === undefined) {
       void conn.answerCallback(cb.id, 'Options changed — reopen the menu.')
       return
     }
-    if (!applySelect(kind, session.key, value, this.selectSetters)) return
+    if (!(await applySelect(kind, session.key, value, this.selectSetters))) return
     // Telegram names the tapping user on the callback itself; record only the applied
     // change, matching the other funnels.
     this.logSessionAction(`select:${kind}`, session.key, { userId: cb.userId })
@@ -820,20 +822,20 @@ export class CommandHandlers {
    *  command/callback, a Slack message shortcut): scan the caller's own-platform
    *  integrations, retain conversation routing gates, newest first. The caller is
    *  already platform-specific — it names its platform as data, not as a branch. */
-  latestAdmittedSession(
+  async latestAdmittedSession(
     platform: string,
     channel: string,
     srcIntegrationIds: readonly string[],
     transportScope?: string,
     thread?: string
-  ): SessionRecord | null {
+  ): Promise<SessionRecord | null> {
     const candidates: SessionRecord[] = []
     for (const [agentId, agent] of this.host.agents()) {
       for (const integration of agent.integrations) {
         if (integration.platform !== platform || !srcIntegrationIds.includes(integration.id)) continue
         const routing = integrationRouting(integration)
         if (!conversationAdmitted(routing, channel)) continue
-        const session = this.host.store().latestSessionForTransport(agentId, channel, transportScope, thread)
+        const session = await this.host.store().latestSessionForTransport(agentId, channel, transportScope, thread)
         if (session) candidates.push(session)
       }
     }
@@ -842,23 +844,24 @@ export class CommandHandlers {
   }
 
   /** The channel's latest admitted session for a Telegram command/callback. */
-  commandSessionForLatest(
+  async commandSessionForLatest(
     channel: string,
     srcIntegrationIds: readonly string[],
     transportScope?: string
-  ): { agentId: string; key: string; acpSessionId?: string } | null {
-    const latest = this.latestAdmittedSession('telegram', channel, srcIntegrationIds, transportScope)
+  ): Promise<{ agentId: string; key: string; acpSessionId?: string } | null> {
+    const latest = await this.latestAdmittedSession('telegram', channel, srcIntegrationIds, transportScope)
     return latest ? { agentId: latest.agentId, key: latest.key, acpSessionId: latest.acpSessionId ?? undefined } : null
   }
 
   /** Resolve a direct Slack message shortcut to the newest addressable session in
    *  that exact bot-scoped conversation, retaining conversation routing gates. */
-  slackShortcutSession(
+  async slackShortcutSession(
     shortcut: { channel: string; thread: string },
     srcIntegrationIds: readonly string[]
-  ): string | undefined {
+  ): Promise<string | undefined> {
     const transportScope = this.host.transportScopeForIntegrationIds(srcIntegrationIds)
-    return this.latestAdmittedSession('slack', shortcut.channel, srcIntegrationIds, transportScope, shortcut.thread)
-      ?.key
+    return (
+      await this.latestAdmittedSession('slack', shortcut.channel, srcIntegrationIds, transportScope, shortcut.thread)
+    )?.key
   }
 }

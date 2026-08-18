@@ -1,15 +1,15 @@
 /**
  * Per-worker harness for the `store-postgres` project.
  *
- * One `PostgresSyncDatabase` per Vitest pool, on that pool's own database from
+ * One `PostgresAsyncDatabase` per Vitest pool, on that pool's own database from
  * `global-setup.ts`. The first `LocalStore` materializes the schema through the very
  * SQLite→PostgreSQL rewrite the daemon pool uses, then the advisory lock is released so
  * a suite may open its own `PostgresDataPlane` on the same database. Per-test isolation
  * is a schema-wide sweep, the way the control-plane integration project does it.
  */
 import { afterAll, beforeEach, inject } from 'vitest'
-import { PostgresSyncDatabase } from '../../src/store/postgres-sync-database.js'
-import { armPostgresStoreBackend, openPostgresLocalStore } from './backend.js'
+import { PostgresAsyncDatabase } from '../../src/store/postgres-async-database.js'
+import { armPostgresStoreBackend, openTestStore } from '../store-support.js'
 
 const poolId = Number(process.env.VITEST_POOL_ID ?? '1')
 const databaseUrl = inject('storeDatabaseUrls')[poolId - 1]
@@ -18,10 +18,10 @@ if (!databaseUrl) throw new Error(`No store database provisioned for Vitest pool
 // The gated pool-store suites read this; in this project they are no longer gated out.
 process.env.DATA_PLANE_TEST_DATABASE_URL = databaseUrl
 
-const database = new PostgresSyncDatabase({ version: 1, databaseUrl, maxConnections: 2 })
+const database = await PostgresAsyncDatabase.open({ version: 1, databaseUrl, maxConnections: 2 })
 armPostgresStoreBackend(database)
-openPostgresLocalStore().close()
-database.finishSchemaInitialization()
+await (await openTestStore()).close()
+await database.finishSchemaInitialization()
 
 // Empty every store table between tests and rewind the pool's revision sequence, so a
 // suite sees the same blank store SQLite hands it from a fresh temporary file.
@@ -35,10 +35,10 @@ BEGIN
   PERFORM setval('_transcript_revision_seq', 1, false);
 END $sweep$;`
 
-beforeEach(() => {
-  database.exec(SWEEP_SQL)
+beforeEach(async () => {
+  await database.exec(SWEEP_SQL)
 })
 
-afterAll(() => {
-  database.close()
+afterAll(async () => {
+  await database.close()
 })

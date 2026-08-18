@@ -7,7 +7,7 @@ import type {
   MemoryPluginOperationStatusInput
 } from '@agentconnect.md/protocol'
 import { canonicalAgentMemoryKey } from '../memory/keys.js'
-import type { LocalStore, MemoryCaptureOutboxRow } from '../store/local-store.js'
+import type { LocalStore, MemoryCaptureOutboxRow, MemoryCaptureOutboxStats } from '../store/local-store.js'
 import type { MemoryPluginClient } from './client.js'
 import { defaultMemoryPluginMetrics, type MemoryPluginMetrics } from './metrics.js'
 
@@ -171,6 +171,8 @@ export class MemoryCaptureOutbox {
   private readonly metrics: MemoryPluginMetrics
   private timer?: ReturnType<typeof setTimeout>
   private inFlight?: Promise<void>
+  /** The post-drain scheduling read. Tracked so `stop()` never leaves it running past close. */
+  private scheduling?: Promise<void>
   private running = false
   private wakeRequested = false
 
@@ -185,13 +187,13 @@ export class MemoryCaptureOutbox {
     this.metrics = options.metrics ?? defaultMemoryPluginMetrics
   }
 
-  start(): void {
+  async start(): Promise<void> {
     if (this.running) return
     this.running = true
     const now = this.now()
-    this.observeRecovery(this.store.recoverMemoryCaptures(now, false, this.registry.connectionIds()))
-    this.expire(now)
-    this.observe(now)
+    this.observeRecovery(await this.store.recoverMemoryCaptures(now, false, this.registry.connectionIds()))
+    await this.expire(now)
+    await this.observe(now)
     this.wake()
   }
 
@@ -202,13 +204,14 @@ export class MemoryCaptureOutbox {
       this.timer = undefined
     }
     await this.inFlight
+    await this.scheduling
   }
 
-  enqueue(input: EnqueueMemoryCapture): EnqueueMemoryCaptureResult {
+  async enqueue(input: EnqueueMemoryCapture): Promise<EnqueueMemoryCaptureResult> {
     const now = this.now()
-    this.expire(now)
+    await this.expire(now)
     const operationId = operationIdFor(input)
-    const existing = this.store.getMemoryCapture(operationId)
+    const existing = await this.store.getMemoryCapture(operationId)
     const boundedInput = boundedCaptureText(input.input, MEMORY_CAPTURE_INPUT_MAX_BYTES)
     const boundedOutput = boundedCaptureText(input.output, MEMORY_CAPTURE_OUTPUT_MAX_BYTES)
     const config = JSON.stringify(input.config)
@@ -251,22 +254,22 @@ export class MemoryCaptureOutbox {
       updatedAt: now
     }
     if (!existing) {
-      const stats = this.store.memoryCaptureStats(this.registry.connectionIds())
+      const stats = await this.store.memoryCaptureStats(this.registry.connectionIds())
       const maxItems = this.options.maxActiveItems ?? MEMORY_CAPTURE_MAX_ACTIVE_ITEMS
       const maxBytes = this.options.maxActiveBytes ?? MEMORY_CAPTURE_MAX_ACTIVE_BYTES
       if (stats.activeCount >= maxItems || stats.activeBytes + row.payloadBytes > maxBytes) {
-        this.observe(now)
+        await this.observe(now)
         return { status: 'full', operationId }
       }
     }
-    const status = this.store.appendMemoryCapture(row)
-    this.observe(now)
+    const status = await this.store.appendMemoryCapture(row)
+    await this.observe(now)
     if (status === 'inserted') this.wake()
     return { status, operationId }
   }
 
-  snapshot() {
-    return this.store.memoryCaptureStats(this.registry.connectionIds())
+  async snapshot(): Promise<MemoryCaptureOutboxStats> {
+    return await this.store.memoryCaptureStats(this.registry.connectionIds())
   }
 
   wake(): void {
@@ -281,13 +284,13 @@ export class MemoryCaptureOutbox {
     }
     this.timer = this.setTimer(() => {
       this.timer = undefined
-      this.inFlight = this.drain().finally(() => {
+      this.inFlight = this.drain().finally(async () => {
         this.inFlight = undefined
         if (this.wakeRequested) {
           this.wakeRequested = false
           this.wake()
         } else {
-          this.scheduleNext()
+          this.scheduling = this.scheduleNext().finally(() => (this.scheduling = undefined))
         }
       })
     }, 0)
@@ -297,26 +300,28 @@ export class MemoryCaptureOutbox {
   private async drain(): Promise<void> {
     for (let i = 0; this.running && i < DRAIN_BATCH; i += 1) {
       const now = this.now()
-      this.expire(now)
-      const row = this.store.nextDueMemoryCapture(now, this.registry.connectionIds())
+      await this.expire(now)
+      const row = await this.store.nextDueMemoryCapture(now, this.registry.connectionIds())
       if (!row) break
       if (row.state === 'accepted') await this.pollAccepted(row)
       else await this.sendPending(row)
     }
-    this.observe(this.now())
+    await this.observe(this.now())
   }
 
-  private scheduleNext(): void {
+  private async scheduleNext(): Promise<void> {
     if (!this.running || this.timer || this.inFlight) return
     const connectionIds = this.registry.connectionIds()
-    const dueAt = this.store.nextMemoryCaptureDueAt(connectionIds)
-    const maintenanceAt = this.store.nextMemoryCaptureMaintenanceAt(
+    const dueAt = await this.store.nextMemoryCaptureDueAt(connectionIds)
+    const maintenanceAt = await this.store.nextMemoryCaptureMaintenanceAt(
       this.options.maxAgeMs ?? MEMORY_CAPTURE_MAX_AGE_MS,
       connectionIds
     )
     const nextAt =
       dueAt === undefined ? maintenanceAt : maintenanceAt === undefined ? dueAt : Math.min(dueAt, maintenanceAt)
     if (nextAt === undefined) return
+    // Re-check after the awaited reads: a wake may have armed a drain meanwhile.
+    if (!this.running || this.timer || this.inFlight) return
     const delay = Math.max(0, nextAt - this.now())
     this.timer = this.setTimer(() => {
       this.timer = undefined
@@ -325,24 +330,24 @@ export class MemoryCaptureOutbox {
     this.timer.unref?.()
   }
 
-  private currentClient(row: MemoryCaptureOutboxRow): MemoryCaptureClient | undefined {
+  private async currentClient(row: MemoryCaptureOutboxRow): Promise<MemoryCaptureClient | undefined> {
     const spec = this.registry.specFor(row.connectionId)
     const client = this.registry.clientFor(row.connectionId)
     if (!spec || !client) return undefined
     const mismatch = definitionMismatch(row, spec, client)
     if (mismatch) {
-      this.finish(row, 'failed', mismatch)
+      await this.finish(row, 'failed', mismatch)
       return undefined
     }
     return client
   }
 
   private async sendPending(row: MemoryCaptureOutboxRow): Promise<void> {
-    const client = this.currentClient(row)
+    const client = await this.currentClient(row)
     if (!client) {
-      if (this.store.getMemoryCapture(row.operationId)?.state === 'pending') {
+      if ((await this.store.getMemoryCapture(row.operationId))?.state === 'pending') {
         const now = this.now()
-        this.store.deferPendingMemoryCapture(
+        await this.store.deferPendingMemoryCapture(
           row.operationId,
           now + (this.options.unavailableRetryMs ?? UNAVAILABLE_RETRY_MS),
           now,
@@ -352,17 +357,17 @@ export class MemoryCaptureOutbox {
       return
     }
     const now = this.now()
-    const claimed = this.store.claimMemoryCapture(row.operationId, now)
+    const claimed = await this.store.claimMemoryCapture(row.operationId, now)
     if (!claimed) return
     if (claimed.attempts > (this.options.maxCaptureAttempts ?? MAX_CAPTURE_ATTEMPTS)) {
-      this.finish(claimed, 'failed', 'retry_exhausted')
+      await this.finish(claimed, 'failed', 'retry_exhausted')
       return
     }
     let config: Record<string, unknown>
     try {
       config = JSON.parse(claimed.config) as Record<string, unknown>
     } catch {
-      this.finish(claimed, 'failed', 'invalid_persisted_config')
+      await this.finish(claimed, 'failed', 'invalid_persisted_config')
       return
     }
     try {
@@ -389,7 +394,7 @@ export class MemoryCaptureOutbox {
       } else {
         this.registry.markDegraded(claimed.connectionId, 'capture_failed')
       }
-      this.applyReceipt(claimed, receipt)
+      await this.applyReceipt(claimed, receipt)
     } catch {
       this.registry.markDegraded(claimed.connectionId, 'capture_unavailable')
       if (claimed.idempotency === 'operation-id') {
@@ -400,7 +405,7 @@ export class MemoryCaptureOutbox {
             this.options.retryBaseMs ?? RETRY_BASE_MS,
             this.options.retryMaxMs ?? RETRY_MAX_MS
           )
-        this.store.retryMemoryCapture(claimed.operationId, retryAt, this.now(), 'capture_retry')
+        await this.store.retryMemoryCapture(claimed.operationId, retryAt, this.now(), 'capture_retry')
         this.metrics.captureState('retry', {
           ageMs: Math.max(0, this.now() - claimed.createdAt),
           reason: 'capture_retry'
@@ -408,17 +413,17 @@ export class MemoryCaptureOutbox {
       } else {
         // Once the call begins, transport failure cannot prove that a
         // non-idempotent write had no effect. Never duplicate it automatically.
-        this.finish(claimed, 'ambiguous', 'capture_delivery_unknown')
+        await this.finish(claimed, 'ambiguous', 'capture_delivery_unknown')
       }
     }
   }
 
   private async pollAccepted(row: MemoryCaptureOutboxRow): Promise<void> {
-    const client = this.currentClient(row)
+    const client = await this.currentClient(row)
     if (!client) {
-      if (this.store.getMemoryCapture(row.operationId)?.state === 'accepted') {
+      if ((await this.store.getMemoryCapture(row.operationId))?.state === 'accepted') {
         const now = this.now()
-        this.store.rescheduleAcceptedMemoryCapture(
+        await this.store.rescheduleAcceptedMemoryCapture(
           row.operationId,
           now + (this.options.unavailableRetryMs ?? UNAVAILABLE_RETRY_MS),
           now
@@ -427,14 +432,14 @@ export class MemoryCaptureOutbox {
       return
     }
     if (!row.backendOperationId) {
-      this.finish(row, 'failed', 'accepted_without_backend_operation')
+      await this.finish(row, 'failed', 'accepted_without_backend_operation')
       return
     }
     let config: Record<string, unknown>
     try {
       config = JSON.parse(row.config) as Record<string, unknown>
     } catch {
-      this.finish(row, 'failed', 'invalid_persisted_config')
+      await this.finish(row, 'failed', 'invalid_persisted_config')
       return
     }
     try {
@@ -454,18 +459,18 @@ export class MemoryCaptureOutbox {
       }
       if (receipt.state === 'accepted') {
         const now = this.now()
-        this.store.rescheduleAcceptedMemoryCapture(
+        await this.store.rescheduleAcceptedMemoryCapture(
           row.operationId,
           now + (this.options.acceptedPollMs ?? ACCEPTED_POLL_MS),
           now
         )
       } else {
-        this.applyReceipt(row, receipt)
+        await this.applyReceipt(row, receipt)
       }
     } catch {
       this.registry.markDegraded(row.connectionId, 'capture_status_unavailable')
       const now = this.now()
-      this.store.rescheduleAcceptedMemoryCapture(
+      await this.store.rescheduleAcceptedMemoryCapture(
         row.operationId,
         now + (this.options.unavailableRetryMs ?? UNAVAILABLE_RETRY_MS),
         now
@@ -473,17 +478,17 @@ export class MemoryCaptureOutbox {
     }
   }
 
-  private applyReceipt(
+  private async applyReceipt(
     row: MemoryCaptureOutboxRow,
     receipt: { state: 'completed' | 'accepted' | 'failed' | 'ambiguous'; backendOperationId?: string }
-  ): void {
+  ): Promise<void> {
     if (receipt.state === 'accepted') {
       if (!receipt.backendOperationId) {
-        this.finish(row, 'failed', 'accepted_without_backend_operation')
+        await this.finish(row, 'failed', 'accepted_without_backend_operation')
         return
       }
       const now = this.now()
-      this.store.acceptMemoryCapture(
+      await this.store.acceptMemoryCapture(
         row.operationId,
         receipt.backendOperationId,
         now + (this.options.acceptedPollMs ?? ACCEPTED_POLL_MS),
@@ -492,10 +497,10 @@ export class MemoryCaptureOutbox {
       this.metrics.captureState('accepted', { ageMs: Math.max(0, now - row.createdAt) })
       return
     }
-    this.finish(row, receipt.state, `plugin_${receipt.state}`)
+    await this.finish(row, receipt.state, `plugin_${receipt.state}`)
   }
 
-  private finish(
+  private async finish(
     row: Pick<MemoryCaptureOutboxRow, 'operationId' | 'createdAt'>,
     state: 'completed' | 'failed' | 'ambiguous',
     reasonCode:
@@ -510,9 +515,9 @@ export class MemoryCaptureOutbox {
       | 'invalid_persisted_config'
       | 'capture_delivery_unknown'
       | 'accepted_without_backend_operation'
-  ): void {
+  ): Promise<void> {
     const now = this.now()
-    if (this.store.finishMemoryCapture(row.operationId, state, now, reasonCode)) {
+    if (await this.store.finishMemoryCapture(row.operationId, state, now, reasonCode)) {
       this.metrics.captureState(state, { ageMs: Math.max(0, now - row.createdAt), reason: reasonCode })
       if (state !== 'completed') {
         // Metadata only. Never include plugin errors, turn text, or config.
@@ -521,16 +526,16 @@ export class MemoryCaptureOutbox {
     }
   }
 
-  private observe(now: number): void {
-    this.metrics.outbox(this.store.memoryCaptureStats(this.registry.connectionIds()), now)
+  private async observe(now: number): Promise<void> {
+    this.metrics.outbox(await this.store.memoryCaptureStats(this.registry.connectionIds()), now)
   }
 
-  private expire(now: number): void {
+  private async expire(now: number): Promise<void> {
     const connectionIds = this.registry.connectionIds()
-    this.observeRecovery(this.store.recoverMemoryCaptures(now, true, connectionIds))
+    this.observeRecovery(await this.store.recoverMemoryCaptures(now, true, connectionIds))
     // Only the state change is this loop's; the terminal row it leaves is the retention
     // rule table's to collect (store/retention.ts).
-    const expired = this.store.expireMemoryCaptures(
+    const expired = await this.store.expireMemoryCaptures(
       now - (this.options.maxAgeMs ?? MEMORY_CAPTURE_MAX_AGE_MS),
       now,
       connectionIds

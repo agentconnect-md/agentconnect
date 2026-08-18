@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { Daemon } from '../src/daemon.js'
 import { LocalStore } from '../src/store/local-store.js'
+import { SqliteAsyncDatabase } from '../src/store/sqlite-async-database.js'
 import { statePath } from '../src/paths.js'
 import { FakeClock } from './cp/fake-clock.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
@@ -103,14 +104,14 @@ async function bootPool() {
   const b = await boot(root, 'daemon-b')
   const locals: LocalStore[] = [a.inner.store, b.inner.store]
   const path = statePath(root)
-  a.inner.store = new LocalStore({
-    database: new DatabaseSync(path),
+  a.inner.store = await LocalStore.open({
+    database: SqliteAsyncDatabase.adopt(new DatabaseSync(path)),
     shared: true,
     ownerId: 'daemon-a',
     orgForAgent: () => 'org-1'
   })
-  b.inner.store = new LocalStore({
-    database: new DatabaseSync(path),
+  b.inner.store = await LocalStore.open({
+    database: SqliteAsyncDatabase.adopt(new DatabaseSync(path)),
     shared: true,
     ownerId: 'daemon-b',
     orgForAgent: () => 'org-1'
@@ -122,7 +123,7 @@ async function bootPool() {
     shared,
     stop: async () => {
       await Promise.all([a.daemon.stop().catch(() => {}), b.daemon.stop().catch(() => {})])
-      for (const local of locals) local.close()
+      for (const local of locals) await local.close()
     }
   }
 }
@@ -136,7 +137,13 @@ const grant = (groupId: string, agentId: string) => ({
 const hold = (inner: any, groupId: string, agentId: string) => inner.duties.applyGrant([grant(groupId, agentId)])
 
 /** One unacknowledged terminal milestone, stamped to the member that produced it. */
-function seedSnapshot(store: LocalStore, agentId: string, sessionId: string, queuedAt: number, ownerId: string): void {
+async function seedSnapshot(
+  store: LocalStore,
+  agentId: string,
+  sessionId: string,
+  queuedAt: number,
+  ownerId: string
+): Promise<void> {
   const event = {
     sessionId,
     agentId,
@@ -145,7 +152,7 @@ function seedSnapshot(store: LocalStore, agentId: string, sessionId: string, que
     channel: 'C1',
     ts: new Date(queuedAt).toISOString()
   }
-  store.saveSessionMetadataSnapshot(agentId, sessionId, JSON.stringify(event), true, queuedAt, ownerId)
+  await store.saveSessionMetadataSnapshot(agentId, sessionId, JSON.stringify(event), true, queuedAt, ownerId)
 }
 
 const deferred = (member: Member) =>
@@ -156,18 +163,21 @@ describe('session-metadata outbox ownership on a daemon pool (#1023)', () => {
     const { a, b, shared, stop } = await bootPool()
     hold(a.inner, GROUP_A, AGENT_A)
     hold(b.inner, GROUP_B, AGENT_B)
-    seedSnapshot(shared, AGENT_A, 'acp-a-1', 1, 'daemon-a')
-    seedSnapshot(shared, AGENT_B, 'acp-b-1', 2, 'daemon-b')
+    await seedSnapshot(shared, AGENT_A, 'acp-a-1', 1, 'daemon-a')
+    await seedSnapshot(shared, AGENT_B, 'acp-b-1', 2, 'daemon-b')
 
     await b.inner.sessionMetadataOutbox.drainSessionMetadataSnapshots()
     expect(b.synced).toEqual([{ orgId: ORG, agentId: AGENT_B, sessionId: 'acp-b-1' }])
     // A's row is untouched: still pending, still unfailed, still A's to report.
-    expect(shared.pendingSessionMetadataSnapshot(AGENT_A, 'acp-a-1')).toMatchObject({ revision: 1, failedAttempts: 0 })
+    expect(await shared.pendingSessionMetadataSnapshot(AGENT_A, 'acp-a-1')).toMatchObject({
+      revision: 1,
+      failedAttempts: 0
+    })
     expect(deferred(b)).toEqual([])
 
     await a.inner.sessionMetadataOutbox.drainSessionMetadataSnapshots()
     expect(a.synced).toEqual([{ orgId: ORG, agentId: AGENT_A, sessionId: 'acp-a-1' }])
-    expect(shared.hasPendingSessionMetadata()).toBe(false)
+    expect(await shared.hasPendingSessionMetadata()).toBe(false)
     await stop()
   }, 15_000)
 
@@ -175,12 +185,12 @@ describe('session-metadata outbox ownership on a daemon pool (#1023)', () => {
     const { a, b, shared, stop } = await bootPool()
     // The duty for AGENT_A moved off this member after it wrote the snapshot.
     hold(b.inner, GROUP_B, AGENT_B)
-    seedSnapshot(shared, AGENT_A, 'acp-moved', 1, 'daemon-a')
+    await seedSnapshot(shared, AGENT_A, 'acp-moved', 1, 'daemon-a')
 
     await a.inner.sessionMetadataOutbox.drainSessionMetadataSnapshots()
     expect(a.syncEventSession).not.toHaveBeenCalled()
     // Claim released, body and failure count intact, backoff only keeps it out of this pass.
-    expect(shared.pendingSessionMetadataSnapshot(AGENT_A, 'acp-moved')).toMatchObject({
+    expect(await shared.pendingSessionMetadataSnapshot(AGENT_A, 'acp-moved')).toMatchObject({
       revision: 1,
       failedAttempts: 0,
       nextAttemptAt: PARK_MS
@@ -189,21 +199,21 @@ describe('session-metadata outbox ownership on a daemon pool (#1023)', () => {
     // The peer does not serve AGENT_A either, so it leaves the parked row alone.
     await b.inner.sessionMetadataOutbox.drainSessionMetadataSnapshots()
     expect(b.syncEventSession).not.toHaveBeenCalled()
-    expect(shared.pendingSessionMetadataSnapshot(AGENT_A, 'acp-moved')).toBeDefined()
+    expect(await shared.pendingSessionMetadataSnapshot(AGENT_A, 'acp-moved')).toBeDefined()
     await stop()
   }, 15_000)
 
   it('gaining the duty replays the parked row exactly once, scoped to the agent org', async () => {
     const { a, b, shared, stop } = await bootPool()
-    seedSnapshot(shared, AGENT_A, 'acp-moved', 1, 'daemon-a')
+    await seedSnapshot(shared, AGENT_A, 'acp-moved', 1, 'daemon-a')
     await a.inner.sessionMetadataOutbox.drainSessionMetadataSnapshots()
-    expect(shared.pendingSessionMetadataSnapshot(AGENT_A, 'acp-moved')?.nextAttemptAt).toBe(PARK_MS)
+    expect((await shared.pendingSessionMetadataSnapshot(AGENT_A, 'acp-moved'))?.nextAttemptAt).toBe(PARK_MS)
 
     // The grant lands on B well before the parked backoff would have expired.
     b.inner.dutyCoordinator.settleDutyChange(b.inner.duties.applyGrant([grant(GROUP_A, AGENT_A)]))
     await vi.waitFor(() => expect(b.syncEventSession).toHaveBeenCalledOnce())
     expect(b.synced).toEqual([{ orgId: ORG, agentId: AGENT_A, sessionId: 'acp-moved' }])
-    expect(shared.hasPendingSessionMetadata()).toBe(false)
+    expect(await shared.hasPendingSessionMetadata()).toBe(false)
     await b.inner.sessionMetadataOutbox.drainSessionMetadataSnapshots()
     expect(b.syncEventSession).toHaveBeenCalledOnce()
     await stop()
@@ -213,12 +223,12 @@ describe('session-metadata outbox ownership on a daemon pool (#1023)', () => {
     const { a, shared, stop } = await bootPool()
     hold(a.inner, GROUP_A, AGENT_A)
     a.scopeBlind.add(AGENT_A)
-    seedSnapshot(shared, AGENT_A, 'acp-cold', 1, 'daemon-a')
+    await seedSnapshot(shared, AGENT_A, 'acp-cold', 1, 'daemon-a')
 
     await a.inner.sessionMetadataOutbox.drainSessionMetadataSnapshots()
     expect(a.syncEventSession).toHaveBeenCalledOnce()
     // A local SCOPE_DENIED is not a rejection of the snapshot: no failure, no defer warning.
-    expect(shared.pendingSessionMetadataSnapshot(AGENT_A, 'acp-cold')).toMatchObject({
+    expect(await shared.pendingSessionMetadataSnapshot(AGENT_A, 'acp-cold')).toMatchObject({
       failedAttempts: 0,
       nextAttemptAt: PARK_MS
     })
@@ -228,7 +238,7 @@ describe('session-metadata outbox ownership on a daemon pool (#1023)', () => {
     a.clock.advance(PARK_MS + 1)
     await a.inner.sessionMetadataOutbox.drainSessionMetadataSnapshots()
     expect(a.synced).toEqual([{ orgId: ORG, agentId: AGENT_A, sessionId: 'acp-cold' }])
-    expect(shared.hasPendingSessionMetadata()).toBe(false)
+    expect(await shared.hasPendingSessionMetadata()).toBe(false)
     await stop()
   }, 15_000)
 
@@ -237,12 +247,12 @@ describe('session-metadata outbox ownership on a daemon pool (#1023)', () => {
     // A wrote the snapshot, then released the duty on a graceful shutdown before parking it:
     // the row still names A with a fresh claim, so nothing in the pool could touch it.
     hold(a.inner, GROUP_A, AGENT_A)
-    seedSnapshot(shared, AGENT_A, 'acp-handoff', 1, 'daemon-a')
+    await seedSnapshot(shared, AGENT_A, 'acp-handoff', 1, 'daemon-a')
 
     b.inner.dutyCoordinator.settleDutyChange(b.inner.duties.applyGrant([grant(GROUP_A, AGENT_A)]))
     await vi.waitFor(() => expect(b.syncEventSession).toHaveBeenCalledOnce())
     expect(b.synced).toEqual([{ orgId: ORG, agentId: AGENT_A, sessionId: 'acp-handoff' }])
-    expect(shared.hasPendingSessionMetadata()).toBe(false)
+    expect(await shared.hasPendingSessionMetadata()).toBe(false)
     await stop()
   }, 15_000)
 
@@ -252,7 +262,7 @@ describe('session-metadata outbox ownership on a daemon pool (#1023)', () => {
     // fires here, so only the armed wake can outlast A's claim.
     hold(a.inner, GROUP_A, AGENT_A)
     hold(b.inner, GROUP_A, AGENT_A)
-    seedSnapshot(a.inner.store, AGENT_A, 'acp-lease', 1, 'daemon-a')
+    await seedSnapshot(a.inner.store, AGENT_A, 'acp-lease', 1, 'daemon-a')
 
     await b.inner.sessionMetadataOutbox.drainSessionMetadataSnapshots()
     expect(b.syncEventSession).not.toHaveBeenCalled()
@@ -270,7 +280,7 @@ describe('session-metadata outbox ownership on a daemon pool (#1023)', () => {
     hold(b.inner, GROUP_A, AGENT_A)
     // Asserted through B's handle: stopping A closes the store handle A opened.
     const survivor: LocalStore = b.inner.store
-    seedSnapshot(survivor, AGENT_A, 'acp-exit', 1, 'daemon-a')
+    await seedSnapshot(survivor, AGENT_A, 'acp-exit', 1, 'daemon-a')
 
     await b.inner.sessionMetadataOutbox.drainSessionMetadataSnapshots()
     expect(b.syncEventSession).not.toHaveBeenCalled()
@@ -278,7 +288,7 @@ describe('session-metadata outbox ownership on a daemon pool (#1023)', () => {
     await a.daemon.stop()
     await b.inner.sessionMetadataOutbox.drainSessionMetadataSnapshots()
     expect(b.synced).toEqual([{ orgId: ORG, agentId: AGENT_A, sessionId: 'acp-exit' }])
-    expect(survivor.hasPendingSessionMetadata()).toBe(false)
+    expect(await survivor.hasPendingSessionMetadata()).toBe(false)
     await stop()
   }, 15_000)
 
@@ -286,12 +296,12 @@ describe('session-metadata outbox ownership on a daemon pool (#1023)', () => {
     const root = scaffold()
     const solo = await boot(root, 'daemon-solo', 'install')
     const store: LocalStore = solo.inner.store
-    seedSnapshot(store, AGENT_A, 'acp-1', 1, 'daemon-solo')
-    seedSnapshot(store, AGENT_B, 'acp-2', 2, 'daemon-solo')
+    await seedSnapshot(store, AGENT_A, 'acp-1', 1, 'daemon-solo')
+    await seedSnapshot(store, AGENT_B, 'acp-2', 2, 'daemon-solo')
 
     await solo.inner.sessionMetadataOutbox.drainSessionMetadataSnapshots()
     expect(solo.synced.map((entry) => entry.sessionId)).toEqual(['acp-1', 'acp-2'])
-    expect(store.hasPendingSessionMetadata()).toBe(false)
+    expect(await store.hasPendingSessionMetadata()).toBe(false)
     await solo.daemon.stop()
   }, 15_000)
 })

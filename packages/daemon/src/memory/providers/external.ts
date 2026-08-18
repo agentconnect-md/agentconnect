@@ -9,7 +9,11 @@ import type { ToolDescriptor } from '../../mcp/tool-descriptor.js'
 import { externalMemoryTools } from '../tools.js'
 import { MemoryConflictError, MemoryTooLargeError } from '../store.js'
 import { canonicalAgentMemoryKey } from '../keys.js'
-import type { MemoryCaptureConnectionRegistry, MemoryCaptureOutbox } from '../../memory-plugin/outbox.js'
+import type {
+  EnqueueMemoryCapture,
+  EnqueueMemoryCaptureResult,
+  MemoryCaptureConnectionRegistry
+} from '../../memory-plugin/outbox.js'
 import { defaultMemoryPluginMetrics, type MemoryPluginMetrics } from '../../memory-plugin/metrics.js'
 import {
   MemoryPluginConflictError,
@@ -29,9 +33,14 @@ import {
   type TurnRecord
 } from '../types.js'
 
+/** The durable capture sink. Promise-returning is allowed: the outbox writes to the store. */
+export interface MemoryCaptureEnqueueSink {
+  enqueue(input: EnqueueMemoryCapture): EnqueueMemoryCaptureResult | Promise<EnqueueMemoryCaptureResult>
+}
+
 export interface ExternalMemoryRuntimeDeps {
   registry: MemoryCaptureConnectionRegistry
-  outbox: Pick<MemoryCaptureOutbox, 'enqueue'>
+  outbox: MemoryCaptureEnqueueSink
   metrics?: MemoryPluginMetrics
   now?: () => number
 }
@@ -152,7 +161,7 @@ export class ExternalMemoryProvider implements MemoryProvider {
     if (!target || target.connectionId !== this.binding.connectionId) {
       throw new MemoryProviderUnavailableError('external memory capture target is unavailable')
     }
-    const result = this.deps.outbox.enqueue({
+    const result = await this.deps.outbox.enqueue({
       agentId: scope.agentId,
       ...target,
       turnId: turn.turnId,

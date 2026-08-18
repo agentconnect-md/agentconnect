@@ -59,12 +59,12 @@ export type WorkspaceFilesResolver = (agentId: string) => WorkspaceFiles | undef
 
 export function createWorkspaceReader(
   workspaces: WorkspaceManager,
-  workspaceByAgent: (agentId: string, sessionId?: string) => WorkspaceLocation | undefined,
+  workspaceByAgent: (agentId: string, sessionId?: string) => Promise<WorkspaceLocation | undefined>,
   coordinateWrite: WorkspaceWriteCoordinator,
   filesFor: WorkspaceFilesResolver = () => undefined
 ): WorkspaceReader {
-  function locationFor(agentId: string, sessionId?: string): WorkspaceLocation {
-    const location = workspaceByAgent(agentId, sessionId)
+  async function locationFor(agentId: string, sessionId?: string): Promise<WorkspaceLocation> {
+    const location = await workspaceByAgent(agentId, sessionId)
     if (!location) throw new WorkspaceViolationError(`unknown agent "${agentId}"`, 'unknown-agent')
     return location
   }
@@ -94,12 +94,12 @@ export function createWorkspaceReader(
 
   return {
     async list(req) {
-      const root = locationFor(req.agentId, req.sessionId).root
+      const root = (await locationFor(req.agentId, req.sessionId)).root
       return filesOf(req.agentId).list(root, req)
     },
 
     async read(req) {
-      const root = locationFor(req.agentId, req.sessionId).root
+      const root = (await locationFor(req.agentId, req.sessionId)).root
       return filesOf(req.agentId).read(root, req)
     },
 
@@ -107,7 +107,7 @@ export function createWorkspaceReader(
       // Gated BEFORE the coordinator so a read-only workspace is refused without first waiting for
       // the agent's runtime to go quiet, and the bytes are validated here so oversized or binary
       // content is refused without being shipped anywhere. Both checks run again where it lands.
-      if (!locationFor(req.agentId).scratch) {
+      if (!(await locationFor(req.agentId)).scratch) {
         throw new WorkspaceViolationError(
           'workspace files are editable only in scratch workspaces',
           'read-only-workspace'
@@ -118,13 +118,13 @@ export function createWorkspaceReader(
       return coordinateWrite(req.agentId, async () => {
         // Re-read inside the coordinator, as before: the agent's configuration can change while a
         // write waits for quiescence, and the mode that governs is the one at mutation time.
-        const location = locationFor(req.agentId)
+        const location = await locationFor(req.agentId)
         return filesOf(req.agentId).write(location.root, location.scratch, req)
       })
     },
 
     async delete(req) {
-      if (!locationFor(req.agentId).scratch) {
+      if (!(await locationFor(req.agentId)).scratch) {
         throw new WorkspaceViolationError(
           'workspace files are editable only in scratch workspaces',
           'read-only-workspace'
@@ -132,7 +132,7 @@ export function createWorkspaceReader(
       }
 
       return coordinateWrite(req.agentId, async () => {
-        const location = locationFor(req.agentId)
+        const location = await locationFor(req.agentId)
         return filesOf(req.agentId).delete(location.root, location.scratch, req)
       })
     }

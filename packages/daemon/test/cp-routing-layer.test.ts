@@ -63,10 +63,11 @@ describe('CpRoutingLayer', () => {
     expect(layer.routingEpoch).toBe(5)
   })
 
-  it('rehydrates from a persisted snapshot via load()', () => {
+  it('rehydrates from a persisted snapshot via load()', async () => {
     const io = memIo()
     new CpRoutingLayer(io).upsertAssign(assign('C1', 'a'))
-    const reloaded = new CpRoutingLayer(io) // load() returns the saved snapshot
+    const reloaded = new CpRoutingLayer(io)
+    await reloaded.hydrate() // load() returns the saved snapshot
     expect(reloaded.effectiveRules()).toHaveLength(1)
   })
 

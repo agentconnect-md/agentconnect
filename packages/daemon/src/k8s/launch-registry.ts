@@ -2,7 +2,7 @@ import type { Clock } from '@agentconnect.md/connection'
 
 /** Allocator for the per-agent shim-binding generation; the daemon store is the durable one. */
 export interface LaunchGenerations {
-  nextSandboxGeneration(agentId: string): number
+  nextSandboxGeneration(agentId: string): Promise<number>
 }
 
 /** Per-agent launch state the driver keeps: the Sandbox it bound and which launch it is. */
@@ -42,11 +42,14 @@ export class LaunchRegistry {
 
   constructor(private readonly deps: LaunchRegistryDeps) {}
 
-  // Allocation and record with no await between them: the last recorder holds the highest generation.
-  recordLaunch(agentId: string, sandboxName: string, sandboxUid: string): Launch {
+  // The allocation is a durable round trip, so a concurrent launch can resolve out of order — an
+  // older generation never overwrites a newer one, keeping the recorded launch the highest.
+  async recordLaunch(agentId: string, sandboxName: string, sandboxUid: string): Promise<Launch> {
     // Allocated from durable install-wide state, not from this process: the pod this launch is
     // about to dial may have been bound by a member that has since been rolled away.
-    const generation = this.deps.generations.nextSandboxGeneration(agentId)
+    const generation = await this.deps.generations.nextSandboxGeneration(agentId)
+    const current = this.launches.get(agentId)
+    if (current && current.generation > generation) return current
     const launch: Launch = { agentId, sandboxName, sandboxUid, generation, since: this.deps.clock.now() }
     this.launches.set(agentId, launch)
     return launch

@@ -210,7 +210,7 @@ describe('shutdown drain of a duty-holding member', () => {
       }),
       cancel: vi.fn(async () => {})
     })
-    ;(daemon as any).dutyCoordinator.applyDutyRevoke([{ groupId: GROUP, reason: 'superseded' }])
+    await (daemon as any).dutyCoordinator.applyDutyRevoke([{ groupId: GROUP, reason: 'superseded' }])
     await flush()
     const warn = vi.spyOn((daemon as any).log, 'warn')
 
@@ -227,7 +227,7 @@ describe('shutdown drain of a duty-holding member', () => {
     {
       const { daemon, calls } = await boot()
       // Only GROUP is held, so the loop has nothing to do once it is revoked.
-      ;(daemon as any).dutyCoordinator.applyDutyRevoke([{ groupId: GROUP_B, reason: 'gone' }])
+      await (daemon as any).dutyCoordinator.applyDutyRevoke([{ groupId: GROUP_B, reason: 'gone' }])
       await flush()
       let finishReconcile!: () => void
       const gate = new Promise<void>((resolve) => {
@@ -238,7 +238,7 @@ describe('shutdown drain of a duty-holding member', () => {
         await gate
         await runReconcile()
       }
-      ;(daemon as any).dutyCoordinator.applyDutyRevoke([{ groupId: GROUP, reason: 'superseded' }])
+      await (daemon as any).dutyCoordinator.applyDutyRevoke([{ groupId: GROUP, reason: 'superseded' }])
       expect(duties(daemon).size()).toBe(0)
 
       const stopping = daemon.stop()
@@ -255,10 +255,10 @@ describe('shutdown drain of a duty-holding member', () => {
     {
       const { daemon, clock, calls } = await boot()
       ;(daemon as any).cfg.limits.poolShutdownDrainMs = 1_500
-      ;(daemon as any).dutyCoordinator.applyDutyRevoke([{ groupId: GROUP_B, reason: 'gone' }])
+      await (daemon as any).dutyCoordinator.applyDutyRevoke([{ groupId: GROUP_B, reason: 'gone' }])
       await flush()
       ;(daemon as any).runReconcile = () => new Promise<void>(() => {})
-      ;(daemon as any).dutyCoordinator.applyDutyRevoke([{ groupId: GROUP, reason: 'superseded' }])
+      await (daemon as any).dutyCoordinator.applyDutyRevoke([{ groupId: GROUP, reason: 'superseded' }])
       const warn = vi.spyOn((daemon as any).log, 'warn')
 
       const stopping = daemon.stop()

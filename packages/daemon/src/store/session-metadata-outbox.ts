@@ -80,10 +80,10 @@ export class SessionMetadataOutbox {
     this.retryAt = undefined
   }
 
-  sessionListProjection(sessionId: string, agentId: string): SessionListItem | undefined {
-    return createSessionReader(this.host.store(), (session) => this.host.sessionThreadUrl(session))
-      .list({ agentId })
-      .sessions.find((s) => s.sessionId === sessionId)
+  async sessionListProjection(sessionId: string, agentId: string): Promise<SessionListItem | undefined> {
+    return (
+      await createSessionReader(this.host.store(), (session) => this.host.sessionThreadUrl(session)).list({ agentId })
+    ).sessions.find((s) => s.sessionId === sessionId)
   }
 
   /**
@@ -91,7 +91,7 @@ export class SessionMetadataOutbox {
    * local projection. This is still metadata-only: transcript rows and tool bodies
    * remain daemon-local and are fetched via the on-demand session read-back frames.
    */
-  emitSessionMetadataSnapshot(input: SessionMetadataSnapshotInput): void {
+  async emitSessionMetadataSnapshot(input: SessionMetadataSnapshotInput): Promise<void> {
     const store = this.host.store()
     const cpClient = this.host.cpClient()
     // Session work may begin during startup before startCpClient() runs. Persist
@@ -99,7 +99,7 @@ export class SessionMetadataOutbox {
     // live send still depends on a constructed client.
     if (!cpClient && !this.host.controlPlaneConfigured()) return
     const now = new Date(this.host.clock().now()).toISOString()
-    const row = this.sessionListProjection(input.sessionId, input.agentId)
+    const row = await this.sessionListProjection(input.sessionId, input.agentId)
     const key = row?.sessionKey
     const event: EventSession = {
       sessionId: input.sessionId,
@@ -115,7 +115,7 @@ export class SessionMetadataOutbox {
     // Visibility-classification inputs (session-visibility.md §4.1), read from
     // the session row so every re-emit carries them. Absent fields make the CP
     // fail closed (no owner) rather than guess — never send a placeholder.
-    const classification = store.getSessionClassification(input.agentId, input.sessionId)
+    const classification = await store.getSessionClassification(input.agentId, input.sessionId)
     if (classification?.conversationKind !== undefined) {
       event.conversationKind = classification.conversationKind as EventSession['conversationKind']
     }
@@ -163,14 +163,14 @@ export class SessionMetadataOutbox {
     const allowRuntimeChangesInChat = agent?.allowRuntimeChangesInChat === true
     if (input.runtime !== undefined) event.runtime = input.runtime
     else if (agent?.runtime) event.runtime = agent.runtime
-    const sessionRecord = store.getSessionByAcpIdForAgent(input.agentId, input.sessionId)
+    const sessionRecord = await store.getSessionByAcpIdForAgent(input.agentId, input.sessionId)
     if (sessionRecord?.workspaceIsolation) event.workspaceIsolation = sessionRecord.workspaceIsolation
     const storeKey = sessionRecord?.key
     const configuredModel =
-      (allowRuntimeChangesInChat && storeKey ? store.getModelOverride(storeKey) : undefined) ??
+      (allowRuntimeChangesInChat && storeKey ? await store.getModelOverride(storeKey) : undefined) ??
       agent?.runtimeOverrides?.model
     const observedModel =
-      input.model !== undefined ? input.model : storeKey ? store.getObservedModel(storeKey) : undefined
+      input.model !== undefined ? input.model : storeKey ? await store.getObservedModel(storeKey) : undefined
     if (observedModel !== undefined) {
       event.observedModel = observedModel
       if (observedModel !== null) event.model = observedModel
@@ -178,36 +178,37 @@ export class SessionMetadataOutbox {
       event.model = configuredModel
     }
     const effort =
-      (allowRuntimeChangesInChat && storeKey ? store.getEffortOverride(storeKey) : undefined) ?? agent?.reasoningEffort
+      (allowRuntimeChangesInChat && storeKey ? await store.getEffortOverride(storeKey) : undefined) ??
+      agent?.reasoningEffort
     if (effort !== undefined) event.effort = effort
     const fastMode =
-      (allowRuntimeChangesInChat && storeKey ? store.getFastModeOverride(storeKey) : undefined) ?? agent?.fastMode
+      (allowRuntimeChangesInChat && storeKey ? await store.getFastModeOverride(storeKey) : undefined) ?? agent?.fastMode
     if (fastMode !== undefined) event.fastMode = fastMode
     const permissionMode =
-      (allowRuntimeChangesInChat && storeKey ? store.getPermissionModeOverride(storeKey) : undefined) ??
+      (allowRuntimeChangesInChat && storeKey ? await store.getPermissionModeOverride(storeKey) : undefined) ??
       (agent?.permissionMode
         ? selectedPermissionPreset(agent.permissionMode, agent.approvalsReviewer ?? 'user')
         : undefined)
     if (input.permissionMode !== undefined) event.permissionMode = input.permissionMode
     else if (permissionMode !== undefined) event.permissionMode = permissionMode
-    const outputMode = (storeKey ? store.getOutputModeOverride(storeKey) : undefined) ?? agent?.output?.mode
+    const outputMode = (storeKey ? await store.getOutputModeOverride(storeKey) : undefined) ?? agent?.output?.mode
     if (outputMode !== undefined) event.outputMode = outputMode
 
-    const snapshot = this.convergedPendingSessionMetadataSnapshot(event)
+    const snapshot = await this.convergedPendingSessionMetadataSnapshot(event)
     let pending = false
     try {
       // A lifecycle milestone creates the durable obligation. `plan` is title /
       // display-name enrichment: it updates an already-pending snapshot but does
       // not turn a historical session into upgrade-time replay work.
       pending =
-        store.saveSessionMetadataSnapshot(
+        (await store.saveSessionMetadataSnapshot(
           input.agentId,
           input.sessionId,
           JSON.stringify(snapshot),
           input.phase !== 'plan',
           this.host.clock().now(),
           this.host.daemonId()
-        ) !== undefined
+        )) !== undefined
     } catch (err) {
       // Preserve the pre-outbox behavior if the local write fails: a live CP may
       // still accept the best-effort event, and the turn itself must not fail.
@@ -229,9 +230,9 @@ export class SessionMetadataOutbox {
   /** Keep a terminal milestone in an unacknowledged latest-wins snapshot while
    * title/name enrichment updates its remaining fields. Otherwise a post-turn
    * `plan` update could erase the only durable copy of the missing `end`. */
-  convergedPendingSessionMetadataSnapshot(next: EventSession): EventSession {
+  async convergedPendingSessionMetadataSnapshot(next: EventSession): Promise<EventSession> {
     if (next.phase !== 'plan') return next
-    const pending = this.host.store().pendingSessionMetadataSnapshot(next.agentId, next.sessionId)
+    const pending = await this.host.store().pendingSessionMetadataSnapshot(next.agentId, next.sessionId)
     if (!pending) return next
     try {
       const parsed = EventSessionSchema.safeParse(JSON.parse(pending.snapshot))
@@ -263,11 +264,11 @@ export class SessionMetadataOutbox {
     ) {
       return Promise.resolve()
     }
-    const drain = this.runSessionMetadataDrain(cp).finally(() => {
+    const drain = this.runSessionMetadataDrain(cp).finally(async () => {
       if (this.drain === drain) this.drain = undefined
       try {
         // Close the empty-read/new-write race and re-arm the earliest deferred snapshot.
-        this.schedulePendingSessionMetadataDrain()
+        await this.schedulePendingSessionMetadataDrain()
       } catch (err) {
         this.host.warn(`event/session outbox refill check failed (${formatErr(err)})`)
       }
@@ -283,27 +284,30 @@ export class SessionMetadataOutbox {
     while (!this.host.draining() && (cp.state === 'READY' || cp.state === 'DRAINING')) {
       let row: SessionMetadataOutboxRow | undefined
       try {
-        row = store.nextSessionMetadataSnapshot(clock.now(), daemonId, this.servedAgentIds())
+        row = await store.nextSessionMetadataSnapshot(clock.now(), daemonId, this.servedAgentIds())
         if (!row) return
         // Emit only under a live claim: on a pool this outbox is one shared table, so a
         // row a peer holds is that member's to report, never ours to duplicate or drop.
-        if (!store.claimSessionMetadataSnapshot(row.agentId, row.sessionId, row.revision, daemonId, clock.now())) {
+        if (
+          !(await store.claimSessionMetadataSnapshot(row.agentId, row.sessionId, row.revision, daemonId, clock.now()))
+        ) {
           continue
         }
         // The frame is scoped by the agent's organization, and only a member serving the
         // agent can resolve it — leave the row for that member instead of failing it here.
-        if (!this.host.servesAgent(row.agentId) && this.parkSessionMetadataRow(row, 'agent served elsewhere')) continue
+        if (!this.host.servesAgent(row.agentId) && (await this.parkSessionMetadataRow(row, 'agent served elsewhere')))
+          continue
         const parsed = EventSessionSchema.safeParse(JSON.parse(row.snapshot))
         if (!parsed.success || parsed.data.agentId !== row.agentId || parsed.data.sessionId !== row.sessionId) {
           this.host.warn(`event/session outbox dropped an invalid snapshot for session ${row.sessionId}`)
-          store.acknowledgeSessionMetadataSnapshot(row.agentId, row.sessionId, row.revision, daemonId)
+          await store.acknowledgeSessionMetadataSnapshot(row.agentId, row.sessionId, row.revision, daemonId)
           continue
         }
         const result = await cp.syncEventSession(parsed.data)
         if (result === 'unsupported') return
         // Revision fencing: an event produced while this request was in flight
         // remains pending instead of being cleared by the older ACK.
-        store.acknowledgeSessionMetadataSnapshot(row.agentId, row.sessionId, row.revision, daemonId)
+        await store.acknowledgeSessionMetadataSnapshot(row.agentId, row.sessionId, row.revision, daemonId)
       } catch (err) {
         if (!row) {
           this.host.warn(`event/session outbox read failed (${formatErr(err)})`)
@@ -317,7 +321,7 @@ export class SessionMetadataOutbox {
           err !== null &&
           'code' in err &&
           err.code === 'SCOPE_DENIED' &&
-          this.parkSessionMetadataRow(row, 'organization unresolvable here')
+          (await this.parkSessionMetadataRow(row, 'organization unresolvable here'))
         ) {
           continue
         }
@@ -327,7 +331,7 @@ export class SessionMetadataOutbox {
         const defer = explicitlyPermanent || nextFailure >= SESSION_METADATA_FAILURES_BEFORE_DEFER
         let failure
         try {
-          failure = store.recordSessionMetadataSnapshotFailure(
+          failure = await store.recordSessionMetadataSnapshotFailure(
             row.agentId,
             row.sessionId,
             row.revision,
@@ -364,10 +368,10 @@ export class SessionMetadataOutbox {
   /** Release a snapshot this member cannot scope, so the member serving the agent drains
    *  it. The body and the failure count survive; the backoff only keeps it out of this
    *  member's next pass. False on a local store, where there is no other member. */
-  parkSessionMetadataRow(row: SessionMetadataOutboxRow, why: string): boolean {
+  async parkSessionMetadataRow(row: SessionMetadataOutboxRow, why: string): Promise<boolean> {
     let parked = false
     try {
-      parked = this.host
+      parked = await this.host
         .store()
         .parkSessionMetadataSnapshot(
           row.agentId,
@@ -386,10 +390,10 @@ export class SessionMetadataOutbox {
   /** A duty newly held here owns that agent's snapshots: take the parked ones off their
    *  backoff and the previous holder's claim off the rest — it released the duty, so it
    *  will never emit them — then replay at once instead of waiting out the lease. */
-  replayGainedSessionMetadata(agentIds: readonly string[]): void {
+  async replayGainedSessionMetadata(agentIds: readonly string[]): Promise<void> {
     if (!agentIds.length) return
     try {
-      this.host.store().reclaimSessionMetadataSnapshots(agentIds, this.host.daemonId())
+      await this.host.store().reclaimSessionMetadataSnapshots(agentIds, this.host.daemonId())
     } catch (err) {
       this.host.warn(`event/session outbox reclaim failed (${formatErr(err)})`)
     }
@@ -398,22 +402,22 @@ export class SessionMetadataOutbox {
 
   /** Shutdown counterpart: this member will not emit again, so every claim it still holds
    *  goes back to the pool for its successor instead of blocking on the lease. */
-  releaseOwnedSessionMetadata(): void {
+  async releaseOwnedSessionMetadata(): Promise<void> {
     try {
-      const released = this.host.store().releaseOwnedSessionMetadataSnapshots(this.host.daemonId())
+      const released = await this.host.store().releaseOwnedSessionMetadataSnapshots(this.host.daemonId())
       if (released) this.host.debug(`event/session outbox released ${released} claim(s) for the pool`)
     } catch (err) {
       this.host.warn(`event/session outbox release failed (${formatErr(err)})`)
     }
   }
 
-  schedulePendingSessionMetadataDrain(): void {
+  async schedulePendingSessionMetadataDrain(): Promise<void> {
     if (this.host.draining() || !this.host.cpClient()?.supportsServerFeature?.(SESSION_METADATA_ACK_FEATURE)) return
     const store = this.host.store()
     const daemonId = this.host.daemonId()
     const served = this.servedAgentIds()
-    if (!store.hasPendingSessionMetadata(daemonId, served)) return
-    const attemptAt = store.nextSessionMetadataAttemptAt(daemonId, served)
+    if (!(await store.hasPendingSessionMetadata(daemonId, served))) return
+    const attemptAt = await store.nextSessionMetadataAttemptAt(daemonId, served)
     if (attemptAt !== undefined) {
       this.scheduleSessionMetadataRetry(Math.max(0, attemptAt - this.host.clock().now()))
     }
@@ -438,12 +442,12 @@ export class SessionMetadataOutbox {
     )
   }
 
-  emitSessionMetadataSnapshotsForDisplayName(id: string): void {
+  async emitSessionMetadataSnapshotsForDisplayName(id: string): Promise<void> {
     if (!this.host.cpClient()) return
-    for (const row of this.host.store().listSessions()) {
+    for (const row of await this.host.store().listSessions()) {
       if (!row.acpSessionId) continue
       if (row.channel !== id && row.triggeredBy !== id) continue
-      this.emitSessionMetadataSnapshot({
+      await this.emitSessionMetadataSnapshot({
         sessionId: row.acpSessionId,
         agentId: row.agentId,
         phase: 'plan',

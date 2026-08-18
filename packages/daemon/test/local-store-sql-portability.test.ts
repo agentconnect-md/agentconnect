@@ -1,14 +1,14 @@
 /**
- * The daemon pool runs every `local-store.ts` statement through `PostgresSyncDatabase`,
+ * The daemon pool runs every `local-store.ts` statement through `PostgresAsyncDatabase`,
  * so a SQLite-only construct there is a production fault on the pool, not a style issue.
  * `store-postgres` catches one the moment a suite covers the statement; this check is the
  * cheap half — it reads the SQL text itself, so an uncovered statement still fails fast.
  *
- * Only constructs the pool worker does NOT rewrite are listed. `INSERT OR IGNORE`,
+ * Only constructs the dialect layer does NOT rewrite are listed. `INSERT OR IGNORE`,
  * `BEGIN IMMEDIATE`, `INTEGER PRIMARY KEY AUTOINCREMENT`, `PRAGMA user_version`,
  * `sqlite_master`, `LIMIT -1 OFFSET` and `length(CAST(x AS BLOB))` are translated in
- * `postgres-store-worker.js#rewrite` and stay legal. Extend that list only by making a
- * construct portable in the SQL — never by teaching the worker another function name.
+ * `postgres-dialect.ts#rewrite` and stay legal. Extend that list only by making a
+ * construct portable in the SQL — never by teaching the dialect another function name.
  */
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'

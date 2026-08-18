@@ -38,7 +38,7 @@ function catalogOf(runtimes: Record<string, RuntimeDef>): ResolvedRuntimeCatalog
 }
 
 /** Pre-write last-good cache rows into the LocalStore the daemon will open. */
-function seedCache(
+async function seedCache(
   rootDir: string,
   rows: Array<{
     runtimeId: string
@@ -48,10 +48,10 @@ function seedCache(
     }>
     defaultModel?: string
   }>
-): void {
-  const store = new LocalStore(statePath(rootDir))
+): Promise<void> {
+  const store = await LocalStore.open(statePath(rootDir))
   for (const row of rows) {
-    store.recordRuntimeCatalogMeta({
+    await store.recordRuntimeCatalogMeta({
       runtimeId: row.runtimeId,
       fingerprint: 'fp-cache',
       source: 'acp',
@@ -60,7 +60,7 @@ function seedCache(
       observedAt: 1_000
     })
     for (const m of row.models)
-      store.upsertRuntimeModelCap({
+      await store.upsertRuntimeModelCap({
         runtimeId: row.runtimeId,
         modelId: m.id,
         fingerprint: 'fp-cache',
@@ -68,7 +68,7 @@ function seedCache(
         observedAt: 1_000
       })
   }
-  store.close()
+  await store.close()
 }
 
 /** Exactly the payload the CP client's `runtimeProfiles()` dep produces for the
@@ -123,7 +123,7 @@ const neverProbe = async (): Promise<RuntimeProbeResult[]> => []
 describe('daemon model-catalog cache hydrate', () => {
   it('serves last-good models + matrix in the first facts snapshot, ignoring uninstalled runtimes', async () => {
     const dir = root()
-    seedCache(dir, [
+    await seedCache(dir, [
       {
         runtimeId: 'fake',
         defaultModel: 'm-a',
@@ -164,7 +164,7 @@ describe('daemon model-catalog cache hydrate', () => {
       // (it may only be temporarily unresolved).
       expect((daemon as any).runtimeModels.has('ghost')).toBe(false)
       expect((daemon as any).runtimeCatalogs.has('ghost')).toBe(false)
-      expect(((daemon as any).store as LocalStore).getRuntimeCatalogMeta('ghost')).toBeDefined()
+      expect(await ((daemon as any).store as LocalStore).getRuntimeCatalogMeta('ghost')).toBeDefined()
     } finally {
       await daemon.stop()
     }
@@ -176,7 +176,9 @@ describe('daemon model-catalog cache hydrate', () => {
     // has not seen in over a month, and the cached provenance keeps the activation gate
     // permissive over them.
     const dir = root()
-    seedCache(dir, [{ runtimeId: 'fake', defaultModel: 'm-stale', models: [{ id: 'm-stale', caps: { efforts: [] } }] }])
+    await seedCache(dir, [
+      { runtimeId: 'fake', defaultModel: 'm-stale', models: [{ id: 'm-stale', caps: { efforts: [] } }] }
+    ])
     const clock = new FakeClock()
     clock.advance(1_000 + 31 * 24 * 3_600_000)
     const daemon = daemonWith({ root: dir, catalog: catalogOf({ fake: FAKE_RT }), clock, probe: neverProbe })
@@ -189,8 +191,8 @@ describe('daemon model-catalog cache hydrate', () => {
       expect(fake.modelCatalog).toBeUndefined()
       // Collected, not merely ignored: both catalog tables are empty afterwards.
       const store = (daemon as any).store as LocalStore
-      expect(store.listRuntimeCatalogMetas()).toEqual([])
-      expect(store.listRuntimeModelCaps()).toEqual([])
+      expect(await store.listRuntimeCatalogMetas()).toEqual([])
+      expect(await store.listRuntimeModelCaps()).toEqual([])
     } finally {
       await daemon.stop()
     }
@@ -200,7 +202,7 @@ describe('daemon model-catalog cache hydrate', () => {
 describe('daemon activation gate provenance rule', () => {
   it('is permissive for a cache-hydrated model list and turns strict after the first live probe', async () => {
     const dir = root()
-    seedCache(dir, [{ runtimeId: 'fake', models: [{ id: 'm-old', caps: {} }] }])
+    await seedCache(dir, [{ runtimeId: 'fake', models: [{ id: 'm-old', caps: {} }] }])
     const clock = new FakeClock()
     clock.advance(10_000)
     const probe = vi.fn(async (): Promise<RuntimeProbeResult[]> => [{ runtime: 'fake', ok: true, models: ['m-old'] }])
@@ -232,7 +234,7 @@ describe('daemon activation gate provenance rule', () => {
 describe('daemon last-good advertisement fallback', () => {
   it('a transient first probe failure keeps cached models + catalog; a later success replaces them without phase 2', async () => {
     const dir = root()
-    seedCache(dir, [
+    await seedCache(dir, [
       { runtimeId: 'fake', defaultModel: 'm-a', models: [{ id: 'm-a', caps: { efforts: [{ value: 'low' }] } }] }
     ])
     const clock = new FakeClock()
@@ -258,7 +260,9 @@ describe('daemon last-good advertisement fallback', () => {
       expect(failed.modelsSource).toBe('cached')
       // Capability knowledge also survives the failure, on the wire and on disk.
       expect(failed.modelCatalog).toEqual(cachedCatalog)
-      expect(((daemon as any).store as LocalStore).listRuntimeModelCaps('fake').map((r) => r.modelId)).toEqual(['m-a'])
+      expect((await ((daemon as any).store as LocalStore).listRuntimeModelCaps('fake')).map((r) => r.modelId)).toEqual([
+        'm-a'
+      ])
       expect(noteProbe).not.toHaveBeenCalled() // failures never reach phase 2
 
       // Runtime comes back: the next sweep restores the advertisement directly —
@@ -280,7 +284,7 @@ describe('daemon last-good advertisement fallback', () => {
 describe('daemon auth-required probe fold', () => {
   it('flags authRequired in the snapshot on an auth-rejected probe and clears it once a probe succeeds', async () => {
     const dir = root()
-    seedCache(dir, [{ runtimeId: 'fake', models: [{ id: 'm-cached', caps: {} }] }])
+    await seedCache(dir, [{ runtimeId: 'fake', models: [{ id: 'm-cached', caps: {} }] }])
     const clock = new FakeClock()
     clock.advance(10_000)
     let results: RuntimeProbeResult[] = [
@@ -413,7 +417,7 @@ describe('daemon sweep phase-1 catalog seeding', () => {
         // Store: phase-1 meta (fingerprint, resolved default model, permission
         // modes) with the discovery gate left OPEN (complete=false)...
         const store = (daemon as any).store as LocalStore
-        expect(store.getRuntimeCatalogMeta('probed')).toEqual({
+        expect(await store.getRuntimeCatalogMeta('probed')).toEqual({
           runtimeId: 'probed',
           fingerprint: catalogFingerprint('probed', '1.0', rt),
           source: 'acp',
@@ -429,7 +433,7 @@ describe('daemon sweep phase-1 catalog seeding', () => {
         })
         // ...and ONE model row for the default model, storing RAW advertised
         // efforts — augmentation is report-time only, never persisted.
-        const caps = store.listRuntimeModelCaps('probed')
+        const caps = await store.listRuntimeModelCaps('probed')
         expect(caps.map((r) => r.modelId)).toEqual(['a'])
         expect(caps[0]!.caps).toEqual({ efforts: rawEfforts, defaultEffort: 'high', fastMode: true })
 
@@ -492,8 +496,8 @@ describe('daemon sweep phase-1 catalog seeding', () => {
       // meta.defaultModel is never the literal "default" (feeds the concrete
       // preselection/hint) — but the caps row IS seeded under "default" so
       // selecting it surfaces the runtime's own effort/fast.
-      expect(store.getRuntimeCatalogMeta('probed')).not.toHaveProperty('defaultModel')
-      expect(store.listRuntimeModelCaps('probed').map((r) => r.modelId)).toEqual(['default'])
+      expect(await store.getRuntimeCatalogMeta('probed')).not.toHaveProperty('defaultModel')
+      expect((await store.listRuntimeModelCaps('probed')).map((r) => r.modelId)).toEqual(['default'])
     } finally {
       await daemon.stop()
     }

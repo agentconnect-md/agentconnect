@@ -235,7 +235,7 @@ export interface CpClientDeps {
   /** Answer a CP-forwarded child-session status probe for a child THIS daemon owns
    *  (session-concept §5.4). The daemon re-checks the lineage itself — the CP proves only that the
    *  asking daemon owns the claimed parent session, never that the child belongs to it. */
-  childSessionStatusProbe?: (probe: ChildSessionStatusProbe) => ChildSessionStatus
+  childSessionStatusProbe?: (probe: ChildSessionStatusProbe) => ChildSessionStatus | Promise<ChildSessionStatus>
   /** Live workspace file seam over the agents' workspace dirs (§1/§12). */
   workspaceRead: WorkspaceReader
   /** Git status/pull seam over the agents' git-repo workspace dirs (§1/§12). */
@@ -273,7 +273,7 @@ export interface CpClientDeps {
   /** Called once the daemon reaches READY on each (re)connect, after the initial
    *  runtime profiles are emitted. The daemon uses this to kick off background
    *  runtime probing and push the refreshed snapshot via `emitDaemonRuntimes`. */
-  onReady?: () => void
+  onReady?: () => void | Promise<void>
 }
 
 export class CpClient {
@@ -584,7 +584,11 @@ export class CpClient {
     // Let the daemon kick off background runtime probing; the probed models
     // arrive later as another `facts/daemon-runtimes` snapshot that replaces
     // the one just sent.
-    this.deps.onReady?.()
+    // The replay is async now; a failed channel/cron store read must be logged here rather
+    // than becoming a floating rejection that abandons the rest of this reconnect's replay.
+    void Promise.resolve(this.deps.onReady?.()).catch((err) =>
+      this.deps.log.error(`cp: ready replay failed: ${(err as Error).message}`)
+    )
   }
 
   private async reportBootstrapResult(
@@ -1411,7 +1415,7 @@ export class CpClient {
   }
 
   /** C→D control dispatch. The CP changes config, never live routing. */
-  private dispatchControl(frame: AnyFrame): void {
+  private async dispatchControl(frame: AnyFrame): Promise<void> {
     switch (frame.type) {
       case 'config/push':
         this.deps.configApply.applyConfigPush((frame.payload as { keys: Record<string, unknown> }).keys)
@@ -1455,7 +1459,7 @@ export class CpClient {
         // `superseded`, never an error frame — an error would reject the CP's
         // promise and drive its retransmit budget to exhaustion.
         const p = frame.payload as SessionVisibilityPush
-        const status = this.deps.configApply.applySessionVisibility(p)
+        const status = await this.deps.configApply.applySessionVisibility(p)
         this.reply(frame, 'session/visibility/ok', {
           sessionId: p.sessionId,
           visibilityRev: p.visibilityRev,
@@ -1467,7 +1471,7 @@ export class CpClient {
         // Register-time convergence: the full gate set, applied entry by entry
         // under the same revision rule. One ack for the whole chunk.
         const { entries } = frame.payload as { entries: SessionVisibilityPush[] }
-        for (const entry of entries) this.deps.configApply.applySessionVisibility(entry)
+        for (const entry of entries) await this.deps.configApply.applySessionVisibility(entry)
         this.reply(frame, 'ack', { ok: true })
         return
       }
@@ -1534,7 +1538,7 @@ export class CpClient {
           this.reply(
             frame,
             'agent/permission-requests/page',
-            this.deps.configApply.listAgentPermissionRequests(
+            await this.deps.configApply.listAgentPermissionRequests(
               frame.payload as Parameters<ConfigApply['listAgentPermissionRequests']>[0]
             )
           )
@@ -1547,7 +1551,7 @@ export class CpClient {
           this.reply(
             frame,
             'ack',
-            this.deps.configApply.decideAgentPermission(
+            await this.deps.configApply.decideAgentPermission(
               frame.payload as Parameters<ConfigApply['decideAgentPermission']>[0]
             )
           )
@@ -1655,11 +1659,10 @@ export class CpClient {
         return
       case 'session/list': {
         // Read-only — legal in READY/DRAINING (no epoch mutation). Body-locality §12.
-        try {
-          this.reply(frame, 'session/list/page', this.deps.sessionRead.list(frame.payload as SessionListReq))
-        } catch (err) {
-          this.sendError(frame.id, 'INTERNAL', `session/list failed: ${(err as Error).message}`, false)
-        }
+        Promise.resolve()
+          .then(() => this.deps.sessionRead.list(frame.payload as SessionListReq))
+          .then((page) => this.reply(frame, 'session/list/page', page))
+          .catch((err) => this.sendError(frame.id, 'INTERNAL', `session/list failed: ${(err as Error).message}`, false))
         return
       }
       case 'session/history': {
@@ -1679,7 +1682,7 @@ export class CpClient {
           const probe = frame.payload as ChildSessionStatusProbe
           // No handler wired (older/embedded daemon) ⇒ answer `found:false`, which the asking side
           // renders as "not your child" rather than a hard failure.
-          const answer = this.deps.childSessionStatusProbe?.(probe) ?? { found: false }
+          const answer = (await this.deps.childSessionStatusProbe?.(probe)) ?? { found: false }
           this.reply(frame, 'session/child-status/probe/ok', answer)
         } catch (err) {
           this.sendError(frame.id, 'INTERNAL', `session/child-status/probe failed: ${(err as Error).message}`, false)

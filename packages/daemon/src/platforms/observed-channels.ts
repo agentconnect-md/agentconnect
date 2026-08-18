@@ -56,17 +56,17 @@ export interface ObservedChannelRow {
 /** The store reads a strategy may perform — channel scopes (parent/space
  *  links) and resolved display names are core bookkeeping. */
 export interface ObservedChannelsHost {
-  channelScopes(ids: string[]): Map<string, { parentId?: string; spaceId?: string }>
-  displayNames(ids: string[]): Map<string, string>
+  channelScopes(ids: string[]): Promise<Map<string, { parentId?: string; spaceId?: string }>>
+  displayNames(ids: string[]): Promise<Map<string, string>>
 }
 
 export interface ObservedChannelsStrategy {
   readonly platform: string
   /** Fold raw observed rows onto the channel set the console should offer. */
-  collapse(host: ObservedChannelsHost, observed: { id: string; name?: string }[]): ObservedChannelRow[]
+  collapse(host: ObservedChannelsHost, observed: { id: string; name?: string }[]): Promise<ObservedChannelRow[]>
   /** The space a channel sits in — the id that keeps one bot's several
    *  same-named rows apart, plus its display name once resolved. */
-  spaceFor(host: ObservedChannelsHost, channelId: string): { id: string; name?: string } | undefined
+  spaceFor(host: ObservedChannelsHost, channelId: string): Promise<{ id: string; name?: string } | undefined>
 }
 
 const STRATEGIES = new Map<string, ObservedChannelsStrategy>()

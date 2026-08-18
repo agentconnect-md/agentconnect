@@ -80,14 +80,14 @@ export interface GithubTurnHost {
     sender: string
     kind: 'text'
     text: string
-  }): void
+  }): void | Promise<void | string>
   /** Monotonic transcript timestamp — core owns ordering across surfaces. */
   monotonicTs(): string
   /** Record the durable `in_flight` barrier. `false` means the write could not
    *  be made durable, and the caller must NOT perform the public POST. */
-  beginPublish(): boolean
+  beginPublish(): boolean | Promise<boolean>
   /** Record the durable `settled` state and any exact public comment identity. */
-  endPublish(publishedComment?: GithubPublishedComment): void
+  endPublish(publishedComment?: GithubPublishedComment): void | Promise<void>
   warn(message: string): void
 }
 
@@ -132,7 +132,7 @@ export async function finalizeGithubTurn<TTurn extends GithubTurn>(
   // logical final now instead of one row per idle/size flush.
   const final = !opts.suppressed && opts.atEnd ? state.collector.finalText(true) : undefined
   if (state.deferredFinalTranscript && final?.trim()) {
-    host.appendTranscript({
+    await host.appendTranscript({
       channel: turn.transcriptChannel,
       thread: turn.statusThread,
       ts: host.monotonicTs(),
@@ -145,12 +145,12 @@ export async function finalizeGithubTurn<TTurn extends GithubTurn>(
   // With no formal effect (or a proved not_submitted effect), the ordinary final
   // remains the fallback. A replay of `in_flight` suppresses another comment; if
   // that write cannot be made durable, fail closed and skip the POST entirely.
-  if (!host.beginPublish()) return
+  if (!(await host.beginPublish())) return
   // publish() is time-bounded and degrading — a failure here must not strand the
   // turn, so it is logged and the hook still settles.
   const publishedComment = await state.poster.publish(final).catch((err) => {
     host.warn(`github poster: final publish failed (${err instanceof Error ? err.message : String(err)})`)
     return undefined
   })
-  host.endPublish(publishedComment)
+  await host.endPublish(publishedComment)
 }

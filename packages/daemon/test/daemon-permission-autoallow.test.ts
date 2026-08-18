@@ -128,6 +128,42 @@ function installPending(daemon: Daemon): {
   return pending
 }
 
+describe('an approval publishes its resolver before the durable write', () => {
+  it('a cancellation during createPermissionRequest leaves no orphaned wait or pending row', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const pending = installPending(daemon) as Record<string, unknown>
+    pending.approvalSurfaceSuppressed = true
+
+    // Hold the durable write open so the cancellation sweep lands inside it — the window the
+    // async store opened, which the synchronous path never had.
+    let finishWrite!: () => void
+    const write = new Promise<void>((r) => (finishWrite = r))
+    const store = (daemon as any).store
+    store.createPermissionRequest = vi.fn(() => write)
+    store.resolvePermissionRequest = vi.fn(() => true)
+
+    const permissionResult = (daemon as any).permissions.onAcpPermission(
+      'agent-1',
+      's1',
+      req({ title: 'Bash', rawInput: { command: 'pnpm test' } })
+    )
+    // The resolver is reachable while the row is still being written.
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingEditorPermissions.size).toBe(1))
+    const [requestId] = (daemon as any).permissions.pendingEditorPermissions.keys()
+
+    // The sweep unpublishes immediately and settles the row once the write it is settling lands.
+    const released = (daemon as any).permissions.releaseEditorPermissions('agent-1', 's1')
+    expect((daemon as any).permissions.pendingEditorPermissions.size).toBe(0)
+    finishWrite()
+    await released
+    await expect(permissionResult).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
+    await vi.waitFor(() =>
+      expect(store.resolvePermissionRequest).toHaveBeenCalledWith('agent-1', requestId, 'expired', expect.any(Number))
+    )
+    expect((daemon as any).permissions.pendingEditorPermissions.size).toBe(0)
+  })
+})
+
 describe('built-in MCP approvals use one policy on both ACP paths', () => {
   it('uses structured MCP identity as authoritative over display text', () => {
     const event = {
@@ -176,10 +212,10 @@ describe('built-in MCP approvals use one policy on both ACP paths', () => {
       's1',
       req({ title: 'Bash', rawInput: { command: 'pnpm test' } })
     )
-    expect((daemon as any).permissions.pendingEditorPermissions.size).toBe(1)
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingEditorPermissions.size).toBe(1))
     const [permissionRequestId] = (daemon as any).permissions.pendingEditorPermissions.keys()
     expect(
-      (daemon as any).permissions.decideEditorPermission({
+      await (daemon as any).permissions.decideEditorPermission({
         agentId: 'agent-1',
         requestId: permissionRequestId,
         decision: 'deny'
@@ -190,10 +226,10 @@ describe('built-in MCP approvals use one policy on both ACP paths', () => {
     })
 
     const elicitationResult = (daemon as any).permissions.onAcpElicit('agent-1', 's1', elicitation('uncorrelated'))
-    expect((daemon as any).permissions.pendingEditorPermissions.size).toBe(1)
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingEditorPermissions.size).toBe(1))
     const [elicitationRequestId] = (daemon as any).permissions.pendingEditorPermissions.keys()
     expect(
-      (daemon as any).permissions.decideEditorPermission({
+      await (daemon as any).permissions.decideEditorPermission({
         agentId: 'agent-1',
         requestId: elicitationRequestId,
         decision: 'deny'
@@ -236,10 +272,10 @@ describe('built-in MCP approvals use one policy on both ACP paths', () => {
       pending.approvalSurfaceSuppressed = false
 
       const result = (daemon as any).permissions.onAcpPermission('agent-1', 's1', req({ title: 'Bash' }))
-      expect((daemon as any).permissions.pendingEditorPermissions.size).toBe(1)
+      await vi.waitFor(() => expect((daemon as any).permissions.pendingEditorPermissions.size).toBe(1))
       const [requestId] = (daemon as any).permissions.pendingEditorPermissions.keys()
       expect(
-        (daemon as any).permissions.decideEditorPermission({
+        await (daemon as any).permissions.decideEditorPermission({
           agentId: 'agent-1',
           requestId,
           decision: 'deny'
@@ -282,8 +318,9 @@ describe('built-in MCP approvals use one policy on both ACP paths', () => {
       's1',
       req({ toolCallId: 'other-server-call' })
     )
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingEditorPermissions.size).toBe(1))
     const [permissionRequestId] = (daemon as any).permissions.pendingEditorPermissions.keys()
-    ;(daemon as any).permissions.decideEditorPermission({
+    await (daemon as any).permissions.decideEditorPermission({
       agentId: 'agent-1',
       requestId: permissionRequestId,
       decision: 'deny'
@@ -293,8 +330,9 @@ describe('built-in MCP approvals use one policy on both ACP paths', () => {
     })
 
     const elicitationResult = (daemon as any).permissions.onAcpElicit('agent-1', 's1', elicitation('uncorrelated'))
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingEditorPermissions.size).toBe(1))
     const [elicitationRequestId] = (daemon as any).permissions.pendingEditorPermissions.keys()
-    ;(daemon as any).permissions.decideEditorPermission({
+    await (daemon as any).permissions.decideEditorPermission({
       agentId: 'agent-1',
       requestId: elicitationRequestId,
       decision: 'deny'

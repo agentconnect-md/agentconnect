@@ -84,7 +84,7 @@ export interface WebchatHost {
   pending(): Map<string, Pending>
   /** Accepted heads that own the logical gate but have not reached Pending yet. */
   activeGateEntries(): Map<string, QueueEntry>
-  interruptTurn(agentId: string, key: string, reason: 'cancel', acpSessionId?: string): void
+  interruptTurn(agentId: string, key: string, reason: 'cancel', acpSessionId?: string): Promise<void>
   dispatch(
     agentId: string,
     msg: NormalizedMessage,
@@ -123,7 +123,7 @@ export class WebchatTransport {
    * transcript, visible in session/list); only its transport differs. The op names its
    * target agent explicitly (no trigger matching). Fed by the relay path (`rd/msg`).
    */
-  dispatchWebchatTurn(
+  async dispatchWebchatTurn(
     agentId: string,
     chatId: string,
     text: string,
@@ -137,7 +137,7 @@ export class WebchatTransport {
     post?: { postId: string; at: number },
     postSink?: (p: RdWebchatPost) => void,
     requestedWorktree?: boolean
-  ): WebchatAck {
+  ): Promise<WebchatAck> {
     const turnId = requestedTurnId ?? randomUUID()
     // Route directly to the named agent (bypasses arbitration); null when it isn't a
     // servable agent on this daemon.
@@ -247,7 +247,7 @@ export class WebchatTransport {
       // session reader could neither strip the `[attached: …]` suffix nor hand
       // the console back the image.
       const observedAttachments = transcriptImageAttachments(msg.attachments)
-      const observedTs = appendWebchatTextRow(
+      const observedTs = await appendWebchatTextRow(
         this.host.store(),
         transcriptChannelKey(chatId, undefined),
         `webchat:${chatId}`,
@@ -302,7 +302,7 @@ export class WebchatTransport {
     // ACP ids are runtime-owned: resolve agent-scoped, and use ONLY the local
     // row's coordinates. A miss means the CP verdict is stale (retention GC /
     // metadata replacement) — fail closed.
-    const local = this.host.store().getSessionByAcpIdForAgent(agentId, targetSessionId)
+    const local = await this.host.store().getSessionByAcpIdForAgent(agentId, targetSessionId)
     if (!local || originKindOf(local.platform) !== 'chat') return { accepted: false, turnId, reason: 'not_found' }
     if (this.host.paused(agentId)) return { accepted: false, turnId, reason: 'paused' }
     if (this.host.safetyDraining(agentId)) return { accepted: false, turnId, reason: 'busy' }
@@ -349,19 +349,22 @@ export class WebchatTransport {
     const mirrorAdmission = new Promise<boolean>((resolve) => {
       settleMirror = resolve
     })
-    let admission: { accepted: boolean; reason?: string } | undefined
+    let settleAdmission!: (result: { accepted: boolean; reason?: string }) => void
+    const admitted = new Promise<{ accepted: boolean; reason?: string }>((resolve) => {
+      settleAdmission = resolve
+    })
     const turn = this.host.dispatch(agentId, msg, integrationId, stream, undefined, {
       admissionWait: mirrorAdmission,
       deferObservedInbound: true,
-      onAdmission: (result) => {
-        admission = result
-      }
+      onAdmission: (result) => settleAdmission(result)
     })
     void turn.catch((err) => {
       if (!(err instanceof LifecycleCleanupBlockedError))
         this.host.error(`webchat continuation dispatch failed for agent "${agentId}": ${formatErr(err)}`)
+      // A dispatch that rejected before admission settled must still release this barrier.
+      settleAdmission({ accepted: false, reason: 'error' })
     })
-    if (!admission) throw new Error('continuation admission barrier did not settle synchronously')
+    const admission = await admitted
     if (!admission.accepted) {
       settleMirror(false)
       this.removeWebchatStream(this.webchatStreamKey(turnId, agentId), stream)
@@ -643,21 +646,21 @@ export class WebchatTransport {
    *  `agentId` scopes the cancel to one participant's turn (multi-agent conversations —
    *  the relay addresses each participant daemon with its own agent); absent cancels
    *  every matching turn on this daemon. No-op when idle. */
-  handleWebchatCancel(conversationId: string, agentId?: string): void {
+  async handleWebchatCancel(conversationId: string, agentId?: string): Promise<void> {
     const matches = (a: string, convId?: string): boolean =>
       convId === conversationId && (agentId === undefined || a === agentId)
     const interrupted = new Set<string>()
     for (const p of this.host.pending().values()) {
       if (matches(p.agentId, p.webchat?.conversationId) && !interrupted.has(p.sessionKey)) {
         interrupted.add(p.sessionKey)
-        this.host.interruptTurn(p.agentId, p.sessionKey, 'cancel', p.acpSessionId)
+        await this.host.interruptTurn(p.agentId, p.sessionKey, 'cancel', p.acpSessionId)
       }
     }
     // Cold accepted head: it owns the logical gate but has not reached Pending yet.
     for (const [key, entry] of this.host.activeGateEntries()) {
       if (matches(entry.agentId, entry.webchat?.conversationId) && !interrupted.has(key)) {
         interrupted.add(key)
-        this.host.interruptTurn(entry.agentId, key, 'cancel')
+        await this.host.interruptTurn(entry.agentId, key, 'cancel')
       }
     }
     if (interrupted.size > 0) return
@@ -666,7 +669,7 @@ export class WebchatTransport {
     for (const [key, entries] of this.host.serialQueue()) {
       const hit = entries.find((e) => matches(e.agentId, e.webchat?.conversationId))
       if (hit) {
-        this.host.interruptTurn(hit.agentId, key, 'cancel')
+        await this.host.interruptTurn(hit.agentId, key, 'cancel')
         return
       }
     }
@@ -687,7 +690,11 @@ export class WebchatTransport {
    * landed ts this returns — `undefined` means nothing was recorded (self copy,
    * conversation mismatch, or an empty body) and nothing may activate either.
    */
-  recordWebchatContextPost(agentId: string, chatId: string, contextPost: WebchatPost): string | undefined {
+  async recordWebchatContextPost(
+    agentId: string,
+    chatId: string,
+    contextPost: WebchatPost
+  ): Promise<string | undefined> {
     if (contextPost.conversationId !== chatId) return undefined
     if (contextPost.author.kind === 'agent' && contextPost.author.agentId === agentId) return undefined
     if (!contextPost.text.trim() && !contextPost.attachments?.length) return undefined
@@ -758,12 +765,12 @@ export class WebchatTransport {
    * MULTI-AGENT webchat conversations — single-agent conversations, the platform
    * ladders, and playground sessions are structurally unreachable from here.
    */
-  maybeActivateWebchatContinuation(
+  async maybeActivateWebchatContinuation(
     targetAgentId: string,
     chatId: string,
     contextPost: WebchatPost,
     landedTs: string
-  ): void {
+  ): Promise<void> {
     // The PURE edge decision is package policy (`webchatContinuationDecision`):
     // user-post/self/fail-closed-depth exclusions and the §4.1 hop transition.
     // This adapter supplies the facts and owns the impure remainder below —
@@ -800,7 +807,7 @@ export class WebchatTransport {
       callFrom: authorAgentId,
       hopCount: deliveryHopCount
     })
-    const claimed = this.host
+    const claimed = await this.host
       .store()
       .attachActivationEnvelope(key, envelope, this.host.now() + ACTIVATION_PAIRING_TTL_MS, deliveryId)
     if (!claimed.dispatch) {

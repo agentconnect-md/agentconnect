@@ -790,8 +790,9 @@ the properties that matter to the pool:
 
 Shipped: all of it, by a cheaper route than the plan named. #958 put the
 **complete durable `LocalStore` surface** on Postgres behind a synchronous facade
-over a worker thread, so the async-store refactor D11 anticipated never happened
-and no call site became async; a `--k8s` daemon never opens SQLite. The
+over a worker thread, deferring the async-store refactor D11 anticipated; that
+refactor has since landed, so `LocalStore` is Promise-returning and the pool store
+is an awaited main-thread `pg.Pool`. A `--k8s` daemon never opens SQLite. The
 transcript fence landed last (#1075): the pool store's `transcript` /
 `transcript_recipient` rows carry `orgId`, and the data plane's separate
 transcript pair — declared but never read or written — is deleted, so exactly one
@@ -1197,5 +1198,5 @@ shrinking every actor's permissions.
 | Pod-bound member identity                                              | `packages/control-plane/src/cluster/daemon-identity.ts`                                                                                                                                    |
 | Member readiness (probe sinks)                                         | `packages/daemon/src/readiness.ts`, `src/daemon.ts` (`readinessState`)                                                                                                                     |
 | Rollout generation barrier                                             | `packages/protocol/src/frames/register.ts` (`generation`), `control-plane/src/persistence/repositories/duty-group.repo.ts` (`newerGenerationLive`)                                         |
-| Shared-store ownership (owner ids, outbox claims, holder gates)        | `packages/daemon/src/store/local-store.ts`, `src/store/postgres-sync-database.ts`, `src/daemon.ts` (`servesAgent`, `settleDutyChange`)                                                     |
+| Shared-store ownership (owner ids, outbox claims, holder gates)        | `packages/daemon/src/store/local-store.ts`, `src/store/postgres-async-database.ts`, `src/daemon.ts` (`servesAgent`, `settleDutyChange`)                                                    |
 | Orphan reconciler + store retention rules + `reconcile --once` job     | `packages/daemon/src/k8s/orphan-reconciler.ts`, `packages/daemon/src/store/retention.ts`, `packages/daemon/src/cli/reconcile.ts`, `packages/control-plane/src/ws/handlers/agent-exists.ts` |

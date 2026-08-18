@@ -1,162 +1,38 @@
+/**
+ * Frozen copy of `PostgresSyncDatabase`, the worker bridge the async store replaced.
+ *
+ * It lives under `test/performance/` and is loaded only by the capacity benchmark's
+ * `sync-worker` rung, which exists to measure the blocking bridge against the async pool.
+ * Production code no longer contains an `Atomics.wait`; do not import this from `src/`.
+ */
 import { MessageChannel, receiveMessageOnPort, Worker } from 'node:worker_threads'
-import type { DataPlaneConfig } from './postgres-config.js'
-import type {
-  StoreBatchResult,
-  StoreBatchStatement,
-  StoreDatabase,
-  StoreRunResult,
-  StoreStatement
-} from './local-store.js'
-
-// Stored schema name — the pool's data lives here, so the literal outlives the vocabulary rename.
-const POOL_STORE_SCHEMA = 'agentconnect_cloud_store'
+import type { DataPlaneConfig } from '../../src/store/postgres-config.js'
+import { POOL_STORE_SCHEMA } from '../../src/store/postgres-dialect.js'
+import type { StoreBatchResult, StoreBatchStatement } from '../../src/store/store-database.js'
 
 type WorkerReply = { id: number; ok: true; value?: unknown } | { id: number; ok: false; error: string }
 
-const canonicalColumns = [
-  'acpSessionId',
-  'activationKey',
-  'activeAt',
-  'activeBytes',
-  'activeCount',
-  'agentCallDeliveryId',
-  'agentId',
-  'attachmentsJson',
-  'attemptAt',
-  'authorityGeneration',
-  'authorityId',
-  'automaticCount',
-  'automaticWindowStartedAt',
-  'backendOperationId',
-  'callEnvelope',
-  'callMeta',
-  'capsJson',
-  'channelId',
-  'childSessionId',
-  'claimedAt',
-  'completedAt',
-  'connectionId',
-  'connectionRevision',
-  'conversationId',
-  'conversationKind',
-  'correlationId',
-  'cpPrivate',
-  'cpRev',
-  'createdAt',
-  'defaultModel',
-  'defaultPermissionMode',
-  'deliveryReason',
-  'dispatchId',
-  'dreamId',
-  'dueAt',
-  'effortOverride',
-  'endedAt',
-  'enqueuedAt',
-  'eventTimeUs',
-  'executionSessionId',
-  'expiresAt',
-  'externalIntegrationId',
-  'externalOriginJson',
-  'externalProvider',
-  'externalRealmKey',
-  'externalResourceKey',
-  'externalResourceKind',
-  'failedAttempts',
-  'fastModeOverride',
-  'globalRules',
-  'hookContext',
-  'integrationId',
-  'introducedAt',
-  'isIm',
-  'isQueueCmd',
-  'lastDeliveredTs',
-  'lastRunAt',
-  'lastTurnOutcome',
-  'launchCorrelationId',
-  'localExcluded',
-  'loopGuardCounted',
-  'mainAgentId',
-  'mainSessionKey',
-  'manifestDigest',
-  'memoryProvider',
-  'modelId',
-  'modelOverride',
-  'modelsHash',
-  'needsParentReply',
-  'nextAttemptAt',
-  'observedAt',
-  'observedModel',
-  'observedModelSet',
-  'oldestActiveAt',
-  'operationId',
-  'orchestrationId',
-  'organizationSuggestions',
-  'orgId',
-  'originSessionId',
-  'ownerId',
-  'outputModeOverride',
-  'parentId',
-  'payloadBytes',
-  'payloadHash',
-  'permissionModeOverride',
-  'permissionModes',
-  'platformMessageId',
-  'pluginId',
-  'postId',
-  'posterPublishState',
-  'profileId',
-  'providerCheckpoint',
-  'purgedAt',
-  'queuedAt',
-  'quoteJson',
-  'reasonCode',
-  'replyTarget',
-  'reportClaimedAt',
-  'reportOwnerId',
-  'requesterId',
-  'requesterName',
-  'recoveryAt',
-  'resolvedAt',
-  'retractedAt',
-  'revision',
-  'routingEpoch',
-  'runtimeId',
-  'scopeKey',
-  'sessionKey',
-  'sessionId',
-  'sessionIds',
-  'seededAt',
-  'snapshotDigest',
-  'snapshotWrites',
-  'sourceBindingKind',
-  'spaceId',
-  'statusBarTs',
-  'stopReason',
-  'terminalAt',
-  'terminalReport',
-  'tenantScope',
-  'threadUrl',
-  'toAgentId',
-  'toolCallId',
-  'touchedAt',
-  'totalCount',
-  'transportScope',
-  'transcriptCoordinates',
-  'trustedAgentBot',
-  'triggerKind',
-  'triggeredBy',
-  'trippedAt',
-  'turnId',
-  'updatedAt',
-  'windowStartedAt',
-  'workspaceIsolation'
-] as const
+/** The synchronous store seam this bridge was written against; the live seam is async now. */
+interface StoreRunResult {
+  changes: number | bigint
+}
 
-const columnNames = Object.fromEntries(canonicalColumns.map((name) => [name.toLowerCase(), name]))
+interface StoreStatement {
+  run(...params: unknown[]): StoreRunResult
+  get(...params: unknown[]): unknown
+  all(...params: unknown[]): unknown[]
+}
+
+interface StoreDatabase {
+  exec(sql: string): void
+  prepare(sql: string): StoreStatement
+  batch(statements: StoreBatchStatement[]): StoreBatchResult[]
+  close(): void
+}
 
 class PostgresStatement implements StoreStatement {
   constructor(
-    private readonly database: PostgresSyncDatabase,
+    private readonly database: FrozenSyncDatabase,
     private readonly sql: string
   ) {}
 
@@ -175,7 +51,7 @@ class PostgresStatement implements StoreStatement {
 }
 
 /** Synchronous facade over a dedicated PostgreSQL worker, preserving LocalStore's commit-before-return contract. */
-export class PostgresSyncDatabase implements StoreDatabase {
+export class FrozenSyncDatabase implements StoreDatabase {
   private readonly worker: Worker
   private readonly replies
   private nextId = 1
@@ -188,11 +64,10 @@ export class PostgresSyncDatabase implements StoreDatabase {
     const channel = new MessageChannel()
     const readySignal = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT))
     this.replies = channel.port1
-    this.worker = new Worker(new URL('./postgres-store-worker.js', import.meta.url), {
+    this.worker = new Worker(new URL('./frozen-sync-store-worker.js', import.meta.url), {
       workerData: {
         databaseUrl: config.databaseUrl,
         schema: POOL_STORE_SCHEMA,
-        columnNames,
         replyPort: channel.port2,
         readySignal
       },

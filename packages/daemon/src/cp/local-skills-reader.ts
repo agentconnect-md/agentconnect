@@ -20,14 +20,14 @@ export interface LocalSkillsReader {
 
 export function createLocalSkillsReader(
   workspaces: WorkspaceManager,
-  workspacePathFor: (agentId: string) => string | undefined,
+  workspacePathFor: (agentId: string) => Promise<string | undefined>,
   stateDir: string,
   /** The filesystem that agent's workspace lives on; undefined ⇒ this daemon's. */
   filesFor: (agentId: string) => WorkspaceFiles | undefined = () => undefined
 ): LocalSkillsReader {
   return {
     async list(req) {
-      const cwd = workspacePathFor(req.agentId)
+      const cwd = await workspacePathFor(req.agentId)
       if (!cwd) return { materialized: false, skills: [] }
       // Resolved once, so a channel dropping mid-request cannot answer about the pod's workspace with
       // a listing of this daemon's disk.

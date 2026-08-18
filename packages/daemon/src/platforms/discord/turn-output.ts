@@ -41,7 +41,7 @@ export interface DiscordTurn {
 
 /** The host capabilities this applier needs — the same two Telegram's does. */
 export interface DiscordTurnHost<TTurn> {
-  recordReplySegment(turn: TTurn, text: string): void
+  recordReplySegment(turn: TTurn, text: string): Promise<void>
   appendTranscript(row: {
     channel: string
     thread: string
@@ -49,7 +49,7 @@ export interface DiscordTurnHost<TTurn> {
     sender: string
     kind: 'text'
     text: string
-  }): void
+  }): Promise<void>
 }
 
 /** Apply one converger action against the turn's Discord connection. */
@@ -61,7 +61,7 @@ export async function applyDiscordAction<TTurn extends DiscordTurn>(
   // minimal mode records each reply segment WITHOUT sending it — the channel shows only the
   // single `live-reply` (see the Slack applier / recordReplySegment).
   if (action.kind === 'post' && action.recordOnly) {
-    host.recordReplySegment(turn, action.text)
+    await host.recordReplySegment(turn, action.text)
     return
   }
   // Routed here only for the discord platform (see the turn-output registry), so the
@@ -75,7 +75,7 @@ export async function applyDiscordAction<TTurn extends DiscordTurn>(
       return
     case 'post': {
       const id = await conn.postMessage(turn.channel, action.text, turn.thread)
-      host.appendTranscript({
+      await host.appendTranscript({
         channel: turn.transcriptChannel,
         thread: turn.statusThread,
         ts: id ?? `local-${Date.now()}`,

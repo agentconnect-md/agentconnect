@@ -66,6 +66,9 @@ export interface PermissionHost extends PermissionCoreHost, PermissionSurfaceHos
 
 export class PermissionCoordinator {
   // ── Permission requests (ACP session/request_permission) ─────────────────────
+  /** Durable rows still being written. Admission publishes its resolver first, so anything that
+   *  settles a request must wait for the row it settles to exist. */
+  private readonly recordedWrites = new Map<string, Promise<void>>()
   private pendingEditorPermissions = new Map<
     string,
     | {
@@ -122,19 +125,19 @@ export class PermissionCoordinator {
 
   constructor(private readonly host: PermissionHost) {}
 
-  private noteEditorPermissionRequest(
+  private async noteEditorPermissionRequest(
     id: string,
     agentId: string,
     sessionId: string,
     command: string,
     p: Pending,
     notifyChat = true
-  ): void {
+  ): Promise<void> {
     const store = this.host.store()
-    const session = store.getSessionByAcpIdForAgent(agentId, sessionId)
+    const session = await store.getSessionByAcpIdForAgent(agentId, sessionId)
     const requesterId = p.requesterId ?? session?.triggeredBy ?? null
-    const requesterName = requesterId ? (store.getDisplayNames([requesterId]).get(requesterId) ?? null) : null
-    store.createPermissionRequest({
+    const requesterName = requesterId ? ((await store.getDisplayNames([requesterId])).get(requesterId) ?? null) : null
+    await store.createPermissionRequest({
       id,
       agentId,
       sessionId,
@@ -168,13 +171,16 @@ export class PermissionCoordinator {
     }
   }
 
-  private resolveStoredPermissionRequest(
+  private async resolveStoredPermissionRequest(
     agentId: string,
     requestId: string,
     status: 'allowed' | 'denied' | 'expired'
-  ): boolean {
+  ): Promise<boolean> {
     try {
-      return this.host.store().resolvePermissionRequest(agentId, requestId, status, this.host.clock().now())
+      // The row may still be in flight — a decision or sweep in that window settles nothing
+      // unless it waits for the write it is settling.
+      await this.recordedWrites.get(requestId)?.catch(() => undefined)
+      return await this.host.store().resolvePermissionRequest(agentId, requestId, status, this.host.clock().now())
     } catch (err) {
       this.host.log().error(`permission request "${requestId}" could not be resolved locally: ${formatErr(err)}`)
       return false
@@ -199,7 +205,7 @@ export class PermissionCoordinator {
     }
   }
 
-  private awaitEditorPermission(
+  private async awaitEditorPermission(
     agentId: string,
     sessionId: string,
     params: RequestPermissionRequest,
@@ -209,7 +215,8 @@ export class PermissionCoordinator {
     const id = randomUUID()
     let resolveResult!: (res: RequestPermissionResponse) => void
     const result = new Promise<RequestPermissionResponse>((resolve) => (resolveResult = resolve))
-    this.noteEditorPermissionRequest(id, agentId, sessionId, permissionRequestSummary(params), p)
+    // Publish BEFORE the store write: the write awaits, and a cancellation sweep landing in
+    // that window must find this entry or the agent waits on a resolver nobody can reach.
     this.pendingEditorPermissions.set(id, {
       kind: 'permission',
       agentId,
@@ -218,10 +225,25 @@ export class PermissionCoordinator {
       evaluationParams,
       resolve: resolveResult
     })
-    return this.trackHumanApprovalWait(p, result)
+    // The human wait starts when the request becomes answerable, not when its row lands — the
+    // write used to be synchronous, and billing it to the turn's retry budget would shrink it.
+    const wait = this.trackHumanApprovalWait(p, result)
+    const recorded = this.noteEditorPermissionRequest(id, agentId, sessionId, permissionRequestSummary(params), p)
+    this.recordedWrites.set(id, recorded)
+    try {
+      await recorded
+    } catch (err) {
+      this.pendingEditorPermissions.delete(id)
+      this.recordedWrites.delete(id)
+      resolveResult({ outcome: { outcome: 'cancelled' } })
+      await wait
+      throw err
+    }
+    this.recordedWrites.delete(id)
+    return wait
   }
 
-  private awaitEditorElicitation(
+  private async awaitEditorElicitation(
     agentId: string,
     sessionId: string,
     params: CreateElicitationRequest,
@@ -230,14 +252,26 @@ export class PermissionCoordinator {
     const id = randomUUID()
     let resolveResult!: (res: CreateElicitationResponse) => void
     const result = new Promise<CreateElicitationResponse>((resolve) => (resolveResult = resolve))
-    this.noteEditorPermissionRequest(id, agentId, sessionId, elicitationApprovalSummary(params), p)
     this.pendingEditorPermissions.set(id, {
       kind: 'elicitation',
       agentId,
       sessionId,
       resolve: resolveResult
     })
-    return this.trackHumanApprovalWait(p, result)
+    const wait = this.trackHumanApprovalWait(p, result)
+    const recorded = this.noteEditorPermissionRequest(id, agentId, sessionId, elicitationApprovalSummary(params), p)
+    this.recordedWrites.set(id, recorded)
+    try {
+      await recorded
+    } catch (err) {
+      this.pendingEditorPermissions.delete(id)
+      this.recordedWrites.delete(id)
+      resolveResult({ action: 'cancel' })
+      await wait
+      throw err
+    }
+    this.recordedWrites.delete(id)
+    return wait
   }
 
   private async awaitChatPermission(
@@ -251,7 +285,6 @@ export class PermissionCoordinator {
     const conn = p.conn as SlackConnection
     let resolveResult!: (res: RequestPermissionResponse) => void
     const result = new Promise<RequestPermissionResponse>((resolve) => (resolveResult = resolve))
-    this.noteEditorPermissionRequest(requestId, agentId, sessionId, permissionRequestSummary(params), p, false)
     this.pendingChatPermissions.set(requestId, {
       agentId,
       sessionId,
@@ -261,6 +294,25 @@ export class PermissionCoordinator {
       channel: p.channel,
       resolve: resolveResult
     })
+    const recorded = this.noteEditorPermissionRequest(
+      requestId,
+      agentId,
+      sessionId,
+      permissionRequestSummary(params),
+      p,
+      false
+    )
+    this.recordedWrites.set(requestId, recorded)
+    try {
+      await recorded
+    } catch (err) {
+      this.pendingChatPermissions.delete(requestId)
+      this.recordedWrites.delete(requestId)
+      throw err
+    }
+    this.recordedWrites.delete(requestId)
+    // Settled while the row was being written: never post a card for a request already resolved.
+    if (!this.pendingChatPermissions.has(requestId)) return await result
     const blocks = buildPermissionCard(requestId, params, this.host.httpSlackSessionTarget(p))
     const fallback = `Permission requested: ${params.toolCall?.title ?? 'a tool call'}`
     const ts = await this.host.postCardSerialized(p, (slack) =>
@@ -286,7 +338,7 @@ export class PermissionCoordinator {
     }
     if (!ts) {
       this.pendingChatPermissions.delete(requestId)
-      this.resolveStoredPermissionRequest(agentId, requestId, 'expired')
+      await this.resolveStoredPermissionRequest(agentId, requestId, 'expired')
       this.permissionEvaluationDetails.set(evaluationParams, { reason: 'permission_card_failed' })
       live.resolve({ outcome: { outcome: 'cancelled' } })
       return await result
@@ -295,7 +347,7 @@ export class PermissionCoordinator {
     return await this.trackHumanApprovalWait(p, result)
   }
 
-  decideEditorPermission(req: AgentPermissionDecision): Ack {
+  async decideEditorPermission(req: AgentPermissionDecision): Promise<Ack> {
     const pending = this.pendingEditorPermissions.get(req.requestId)
     if (!pending || pending.agentId !== req.agentId) {
       const chat = this.pendingChatPermissions.get(req.requestId)
@@ -305,11 +357,11 @@ export class PermissionCoordinator {
           return { ok: false, reason: 'permission request is no longer pending' }
         }
         if (
-          !this.resolveStoredPermissionRequest(
+          !(await this.resolveStoredPermissionRequest(
             req.agentId,
             req.requestId,
             req.decision === 'allow' ? 'allowed' : 'denied'
-          )
+          ))
         ) {
           return { ok: false, reason: 'permission request is no longer pending' }
         }
@@ -340,11 +392,11 @@ export class PermissionCoordinator {
             chat.params.options.find((candidate) => candidate.kind === 'reject_always'))
       if (req.decision === 'allow' && !option) return { ok: false, reason: 'runtime did not offer an allow option' }
       if (
-        !this.resolveStoredPermissionRequest(
+        !(await this.resolveStoredPermissionRequest(
           req.agentId,
           req.requestId,
           req.decision === 'allow' ? 'allowed' : 'denied'
-        )
+        ))
       ) {
         return { ok: false, reason: 'permission request is no longer pending' }
       }
@@ -390,7 +442,11 @@ export class PermissionCoordinator {
     }
 
     if (
-      !this.resolveStoredPermissionRequest(req.agentId, req.requestId, req.decision === 'allow' ? 'allowed' : 'denied')
+      !(await this.resolveStoredPermissionRequest(
+        req.agentId,
+        req.requestId,
+        req.decision === 'allow' ? 'allowed' : 'denied'
+      ))
     ) {
       return { ok: false, reason: 'permission request is no longer pending' }
     }
@@ -400,7 +456,11 @@ export class PermissionCoordinator {
     return { ok: true }
   }
 
-  handlePermissionChoice(input: { requestId: string; optionId: string; actor?: InteractionActor }): void {
+  async handlePermissionChoice(input: {
+    requestId: string
+    optionId: string
+    actor?: InteractionActor
+  }): Promise<void> {
     const pending = this.pendingChatPermissions.get(input.requestId)
     if (!pending) return
     if (this.host.agents().get(pending.agentId)?.allowRuntimeChangesInChat !== true) {
@@ -422,7 +482,8 @@ export class PermissionCoordinator {
     const option = pending.params.options.find((candidate) => candidate.optionId === input.optionId)
     if (!option) return
     const allowed = option.kind === 'allow_once' || option.kind === 'allow_always'
-    if (!this.resolveStoredPermissionRequest(pending.agentId, input.requestId, allowed ? 'allowed' : 'denied')) return
+    if (!(await this.resolveStoredPermissionRequest(pending.agentId, input.requestId, allowed ? 'allowed' : 'denied')))
+      return
     // Only now is this click the decision: the guard passed, the option was real, and
     // the request resolved. Logging any earlier would attribute a tool call to someone
     // whose click changed nothing.
@@ -472,11 +533,11 @@ export class PermissionCoordinator {
     }
   }
 
-  releaseChatPermissions(agentId: string, sessionId: string): void {
+  async releaseChatPermissions(agentId: string, sessionId: string): Promise<void> {
     for (const [id, pending] of this.pendingChatPermissions) {
       if (pending.agentId !== agentId || pending.sessionId !== sessionId) continue
       this.pendingChatPermissions.delete(id)
-      this.resolveStoredPermissionRequest(agentId, id, 'expired')
+      await this.resolveStoredPermissionRequest(agentId, id, 'expired')
       this.permissionEvaluationDetails.set(pending.evaluationParams, { reason: 'turn_cancelled' })
       if (pending.ts) {
         void pending.conn
@@ -493,11 +554,11 @@ export class PermissionCoordinator {
     }
   }
 
-  releaseEditorPermissions(agentId: string, sessionId: string): void {
+  async releaseEditorPermissions(agentId: string, sessionId: string): Promise<void> {
     for (const [id, pending] of this.pendingEditorPermissions) {
       if (pending.agentId !== agentId || pending.sessionId !== sessionId) continue
       this.pendingEditorPermissions.delete(id)
-      this.resolveStoredPermissionRequest(agentId, id, 'expired')
+      await this.resolveStoredPermissionRequest(agentId, id, 'expired')
       if (pending.kind === 'permission') {
         this.permissionEvaluationDetails.set(pending.evaluationParams, { reason: 'turn_cancelled' })
         pending.resolve({ outcome: { outcome: 'cancelled' } })
@@ -673,9 +734,6 @@ export class PermissionCoordinator {
     const fallback = (params as { message?: string }).message ?? 'The agent needs your input'
     let resolveResult!: (res: CreateElicitationResponse) => void
     const result = new Promise<CreateElicitationResponse>((resolve) => (resolveResult = resolve))
-    if (isApproval) {
-      this.noteEditorPermissionRequest(requestId, agentId, sessionId, elicitationApprovalSummary(params), p, false)
-    }
     this.pendingElicits.set(requestId, {
       agentId,
       sessionId,
@@ -687,6 +745,26 @@ export class PermissionCoordinator {
       channel: p.channel,
       resolve: resolveResult
     })
+    if (isApproval) {
+      const recorded = this.noteEditorPermissionRequest(
+        requestId,
+        agentId,
+        sessionId,
+        elicitationApprovalSummary(params),
+        p,
+        false
+      )
+      this.recordedWrites.set(requestId, recorded)
+      try {
+        await recorded
+      } catch (err) {
+        this.pendingElicits.delete(requestId)
+        this.recordedWrites.delete(requestId)
+        throw err
+      }
+      this.recordedWrites.delete(requestId)
+      if (!this.pendingElicits.has(requestId)) return await result
+    }
     const ts = await this.host.postCardSerialized(p, (sc) =>
       sc.postBlocks(p.channel, blocks, fallback, p.statusThread, {
         ...(slackPostOptions(p) ?? {}),
@@ -703,7 +781,7 @@ export class PermissionCoordinator {
     }
     if (!ts) {
       this.pendingElicits.delete(requestId)
-      if (isApproval) this.resolveStoredPermissionRequest(agentId, requestId, 'expired')
+      if (isApproval) await this.resolveStoredPermissionRequest(agentId, requestId, 'expired')
       live.resolve({ action: 'cancel' })
       return await result
     }
@@ -714,7 +792,7 @@ export class PermissionCoordinator {
   /** A tapped elicitation-card button (SlackDeps.onElicitChoice): resolve the pending ACP
    *  request — `accept` with the chosen value (under the field name), or `decline` for the
    *  Dismiss button (value === null) — and edit the card in place. No-op if already gone. */
-  handleElicitChoice(a: { requestId: string; value: string | null }): void {
+  async handleElicitChoice(a: { requestId: string; value: string | null }): Promise<void> {
     const rec = this.pendingElicits.get(a.requestId)
     if (!rec) return
     if (rec.approval && this.host.agents().get(rec.agentId)?.allowRuntimeChangesInChat !== true) {
@@ -742,7 +820,9 @@ export class PermissionCoordinator {
       decision = `:white_check_mark: ${rec.kind === 'boolean' ? (value ? 'Yes' : 'No') : a.value}`
     }
     if (rec.approval) {
-      if (!this.resolveStoredPermissionRequest(rec.agentId, a.requestId, a.value === null ? 'denied' : 'allowed'))
+      if (
+        !(await this.resolveStoredPermissionRequest(rec.agentId, a.requestId, a.value === null ? 'denied' : 'allowed'))
+      )
         return
     }
     this.pendingElicits.delete(a.requestId)
@@ -755,11 +835,11 @@ export class PermissionCoordinator {
 
   /** Resolve every outstanding elicitation for a session as `cancel` — ACP's cancellation
    *  contract, and it unblocks a turn whose card the user abandoned. */
-  releaseElicits(agentId: string, sessionId: string): void {
+  async releaseElicits(agentId: string, sessionId: string): Promise<void> {
     for (const [id, rec] of this.pendingElicits) {
       if (rec.agentId !== agentId || rec.sessionId !== sessionId) continue
       this.pendingElicits.delete(id)
-      if (rec.approval) this.resolveStoredPermissionRequest(agentId, id, 'expired')
+      if (rec.approval) await this.resolveStoredPermissionRequest(agentId, id, 'expired')
       if (rec.ts)
         void rec.conn
           .updateBlocks(

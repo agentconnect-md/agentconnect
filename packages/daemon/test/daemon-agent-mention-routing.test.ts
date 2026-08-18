@@ -134,7 +134,7 @@ async function boot(
     async (agentId: string, msg: any, _i?: string, _w?: any, callMeta?: any, opts?: any) => {
       calls.push({ agentId, msg, callMeta })
       if (callMeta?.activationKey) {
-        ;(daemon as any).store.admitActivation(
+        await (daemon as any).store.admitActivation(
           callMeta.activationKey,
           sessionKey(msg.platform, msg.channel, msg.thread ?? msg.msgId, agentId, msg.transportScope)
         )
@@ -175,7 +175,8 @@ const agentMessage = (over: Record<string, unknown> = {}, claim: Record<string, 
  * rules in scope are that connection's. The author's own connection resolves to the
  * author, who is excluded — so observing there proves only that nobody self-wakes.
  */
-const route = (daemon: Daemon, msg: unknown, on: string[] = ['int-bot-b']) => (daemon as any).onInboundOutcome(msg, on)
+const route = async (daemon: Daemon, msg: unknown, on: string[] = ['int-bot-b']) =>
+  await (daemon as any).onInboundOutcome(msg, on)
 
 /**
  * The rendezvous key for the paired delivery these tests exercise, derived the way BOTH
@@ -201,7 +202,7 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
     // was said and judge for itself. It is still a genuine agent CALL, not anonymous
     // channel traffic: the hop advances and the edge is policy-checked.
     const { daemon, calls } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }, { id: 'bot-c' }])
-    const outcome = route(daemon, agentMessage({}, { hopCount: 2 }))
+    const outcome = await route(daemon, agentMessage({}, { hopCount: 2 }))
     expect(outcome.kind).toBe('dispatched')
     expect(calls.map((c) => c.agentId)).toEqual(['bot-b'])
     // §4.1: the delivery depth is the author's turn depth + 1, installed as trusted
@@ -223,12 +224,12 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
     const unaddressed = agentMessage({}, { mentionedAgentIds: [] })
 
     // The author's own connection: the only candidate is the author, so nothing happens.
-    expect((daemon as any).onInboundOutcome(unaddressed, ['int-bot-a']).kind).toBe('rejected')
+    expect((await (daemon as any).onInboundOutcome(unaddressed, ['int-bot-a'])).kind).toBe('rejected')
     expect(calls).toHaveLength(0)
 
     // bot-b's connection sees the same post and continues the conversation.
     const peerCopy = agentMessage({ msgId: 'slack:C1:1720000000.000201:final' }, { mentionedAgentIds: [] })
-    expect((daemon as any).onInboundOutcome(peerCopy, ['int-bot-b']).kind).toBe('dispatched')
+    expect((await (daemon as any).onInboundOutcome(peerCopy, ['int-bot-b'])).kind).toBe('dispatched')
     expect(calls.map((c) => c.agentId)).toEqual(['bot-b'])
     // Still a genuine agent CALL: the hop advances, so the chain stays budgeted.
     expect(calls[0]!.callMeta).toMatchObject({ callFrom: 'bot-a', hopCount: 1 })
@@ -254,7 +255,7 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
     msg.transportScope = (daemon as any).transportScopeForIntegrationIds(['int-bot-b'])
 
     // The audience this very message resolves to for the target…
-    const audience = (daemon as any).conversationExternalSource('bot-b', msg, false)
+    const audience = await (daemon as any).conversationExternalSource('bot-b', msg, false)
     expect(audience).toMatchObject({
       externalProvider: 'slack',
       externalResourceKind: 'conversation',
@@ -264,7 +265,7 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
 
     // …and a session already bound to it, which is what the human's mention created.
     const key = sessionKey('slack', 'C1', '1720000000.000100', 'bot-b', msg.transportScope)
-    ;(daemon as any).store.upsertSession({
+    await (daemon as any).store.upsertSession({
       key,
       agentId: 'bot-b',
       platform: 'slack',
@@ -275,14 +276,14 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
       lastDeliveredTs: null,
       updatedAt: Date.now()
     })
-    ;(daemon as any).store.setSessionClassification(key, { sourceBindingKind: 'external', ...audience })
+    await (daemon as any).store.setSessionClassification(key, { sourceBindingKind: 'external', ...audience })
 
     const platformWake = { callFrom: 'bot-a', platformOrigin: true, hopCount: 1, deliveryId: 'd-1' }
-    expect((daemon as any).bindSessionSource('bot-b', key, msg, platformWake, undefined)).toBe('unchanged')
+    expect(await (daemon as any).bindSessionSource('bot-b', key, msg, platformWake, undefined)).toBe('unchanged')
 
     // A postless call with no inherited lineage keeps failing closed against the same row.
     const postlessWake = { callFrom: 'bot-a', hopCount: 1, deliveryId: 'd-2' }
-    expect((daemon as any).bindSessionSource('bot-b', key, msg, postlessWake, undefined)).toBe('mismatch')
+    expect(await (daemon as any).bindSessionSource('bot-b', key, msg, postlessWake, undefined)).toBe('mismatch')
     await daemon.stop()
   })
 
@@ -296,8 +297,8 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
     ;(daemon as any).connByIntegration.set('int-bot-b', { workspaceId: () => 'T-TEST' })
     const msg = agentMessage()
     msg.transportScope = (daemon as any).transportScopeForIntegrationIds(['int-bot-b'])
-    const seedSession = (key: string) =>
-      (daemon as any).store.upsertSession({
+    const seedSession = async (key: string) =>
+      await (daemon as any).store.upsertSession({
         key,
         agentId: 'bot-b',
         platform: 'slack',
@@ -310,10 +311,10 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
       })
 
     const key = sessionKey('slack', 'C1', '1720000000.000100', 'bot-b', msg.transportScope)
-    seedSession(key)
+    await seedSession(key)
     const platformWake = { callFrom: 'bot-a', platformOrigin: true, hopCount: 1, deliveryId: 'd-1' }
-    ;(daemon as any).classifyNewSessionOrThrow('bot-b', key, 'acp-1', msg, platformWake, undefined, false)
-    expect((daemon as any).store.getSession(key)).toMatchObject({
+    await (daemon as any).classifyNewSessionOrThrow('bot-b', key, 'acp-1', msg, platformWake, undefined, false)
+    expect(await (daemon as any).store.getSession(key)).toMatchObject({
       sourceBindingKind: 'external',
       externalProvider: 'slack',
       externalRealmKey: 'T-TEST',
@@ -323,23 +324,23 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
     })
     // …so the next wake in the thread — this one human-shaped, no CallMeta — reuses the
     // row instead of mismatching.
-    expect((daemon as any).bindSessionSource('bot-b', key, msg, undefined, undefined)).toBe('unchanged')
+    expect(await (daemon as any).bindSessionSource('bot-b', key, msg, undefined, undefined)).toBe('unchanged')
 
     // A postless child still classifies local: its coordinates are model-influenced, so
     // the row it creates must not claim the shared conversation.
     const postlessKey = sessionKey('slack', 'C1', '1720000000.000900', 'bot-b', msg.transportScope)
-    seedSession(postlessKey)
+    await seedSession(postlessKey)
     const postlessWake = { callFrom: 'bot-a', hopCount: 1, deliveryId: 'd-2' }
-    ;(daemon as any).classifyNewSessionOrThrow('bot-b', postlessKey, 'acp-1', msg, postlessWake, undefined, false)
-    expect((daemon as any).store.getSession(postlessKey)).toMatchObject({ sourceBindingKind: 'local' })
+    await (daemon as any).classifyNewSessionOrThrow('bot-b', postlessKey, 'acp-1', msg, postlessWake, undefined, false)
+    expect(await (daemon as any).store.getSession(postlessKey)).toMatchObject({ sourceBindingKind: 'local' })
     await daemon.stop()
   })
 
   describe('thread fan-out: everyone in the room hears it', () => {
     /** Put `agentId` in the thread, which is what a mention would have done. */
-    const join = (daemon: Daemon, agentId: string) => {
+    const join = async (daemon: Daemon, agentId: string) => {
       const scope = (daemon as any).transportScopeForIntegrationIds([`int-${agentId}`])
-      ;(daemon as any).store.upsertSession({
+      await (daemon as any).store.upsertSession({
         key: sessionKey('slack', 'C1', '1720000000.000100', agentId, scope),
         agentId,
         platform: 'slack',
@@ -357,11 +358,11 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
       // Participation outlives the message that created it. bot-c joined earlier and is
       // not named here, so only the fan-out can reach it.
       const { daemon, calls } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }, { id: 'bot-c' }])
-      join(daemon, 'bot-b')
-      join(daemon, 'bot-c')
+      await join(daemon, 'bot-b')
+      await join(daemon, 'bot-c')
 
       const reply = agentMessage({}, { mentionedAgentIds: [], hopCount: 3 })
-      expect(route(daemon, reply, ['int-bot-b', 'int-bot-c']).kind).toBe('dispatched')
+      expect((await route(daemon, reply, ['int-bot-b', 'int-bot-c'])).kind).toBe('dispatched')
 
       expect(new Set(calls.map((c) => c.agentId))).toEqual(new Set(['bot-b', 'bot-c']))
       // Every peer is an EDGE of the same agent call, so each carries the advanced depth.
@@ -383,11 +384,11 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
         { id: 'bot-b', trigger: 'mention' },
         { id: 'bot-c', trigger: 'mention' }
       ])
-      join(daemon, 'bot-b')
-      join(daemon, 'bot-c')
+      await join(daemon, 'bot-b')
+      await join(daemon, 'bot-c')
 
       expect(
-        route(daemon, agentMessage({}, { mentionedAgentIds: [], hopCount: 2 }), ['int-bot-b', 'int-bot-c']).kind
+        (await route(daemon, agentMessage({}, { mentionedAgentIds: [], hopCount: 2 }), ['int-bot-b', 'int-bot-c'])).kind
       ).toBe('dispatched')
       expect(new Set(calls.map((call) => call.agentId))).toEqual(new Set(['bot-b', 'bot-c']))
       expect(calls.every((call) => call.callMeta?.hopCount === 3 && call.callMeta?.activationKey)).toBe(true)
@@ -406,7 +407,7 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
       ;(daemon as any).botUserIds['int-bot-b'] = 'UB'
       ;(daemon as any).botUserIds['int-bot-c'] = 'UC'
       for (const agentId of ['bot-b', 'bot-c']) {
-        ;(daemon as any).store.upsertSession({
+        await (daemon as any).store.upsertSession({
           key: sessionKey('slack', 'C1', '1720000000.000100', agentId, scope),
           agentId,
           platform: 'slack',
@@ -429,10 +430,10 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
         text: '<@UB> join us',
         mentionedBots: ['UB']
       })
-      expect(route(daemon, human, ['int-bot-b', 'int-bot-c']).kind).toBe('dispatched')
+      expect((await route(daemon, human, ['int-bot-b', 'int-bot-c'])).kind).toBe('dispatched')
       expect(calls.map((call) => [call.agentId, call.msg.trigger])).toEqual([['bot-b', 'mention']])
-      expect((daemon as any).commands.isSessionMuted(key('bot-b'))).toBe(false)
-      expect((daemon as any).commands.isSessionMuted(key('bot-c'))).toBe(true)
+      expect(await (daemon as any).commands.isSessionMuted(key('bot-b'))).toBe(false)
+      expect(await (daemon as any).commands.isSessionMuted(key('bot-c'))).toBe(true)
       await daemon.stop()
     })
 
@@ -453,7 +454,10 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
         text: '<@UB> please coordinate',
         mentionedBots: ['UB']
       })
-      expect(route(daemon, human, ['int-bot-b', 'int-bot-c']).kind).toBe('dispatched')
+      expect((await route(daemon, human, ['int-bot-b', 'int-bot-c'])).kind).toBe('dispatched')
+      // The durable rows are written while each fan-out copy is admitted, which the async
+      // store settles after the routing outcome resolves.
+      await vi.waitFor(() => expect(appendInbox).toHaveBeenCalledTimes(2))
 
       const rows = appendInbox.mock.calls.map(([row]) => row)
       expect(new Set(rows.map((row) => row.agentId))).toEqual(new Set(['bot-b', 'bot-c']))
@@ -471,10 +475,10 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
         { id: 'bot-b' },
         { id: 'bot-c', callPolicy: 'selected', allowedCallerAgentIds: ['somebody-else'] }
       ])
-      join(daemon, 'bot-b')
-      join(daemon, 'bot-c')
+      await join(daemon, 'bot-b')
+      await join(daemon, 'bot-c')
 
-      expect(route(daemon, agentMessage({}, { mentionedAgentIds: [] }), ['int-bot-b', 'int-bot-c']).kind).toBe(
+      expect((await route(daemon, agentMessage({}, { mentionedAgentIds: [] }), ['int-bot-b', 'int-bot-c'])).kind).toBe(
         'dispatched'
       )
       expect(calls.map((c) => c.agentId)).toEqual(['bot-b'])
@@ -483,12 +487,12 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
 
     it('keeps a `!stop` participant silent while still recording for catch-up', async () => {
       const { daemon, calls } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }, { id: 'bot-c' }])
-      join(daemon, 'bot-b')
-      join(daemon, 'bot-c')
+      await join(daemon, 'bot-b')
+      await join(daemon, 'bot-c')
       const scope = (daemon as any).transportScopeForIntegrationIds(['int-bot-c'])
       ;(daemon as any).commands.setSessionMuted(sessionKey('slack', 'C1', '1720000000.000100', 'bot-c', scope), true)
 
-      route(daemon, agentMessage({}, { mentionedAgentIds: [] }), ['int-bot-b', 'int-bot-c'])
+      await route(daemon, agentMessage({}, { mentionedAgentIds: [] }), ['int-bot-b', 'int-bot-c'])
       expect(calls.map((c) => c.agentId)).toEqual(['bot-b'])
       await daemon.stop()
     })
@@ -502,7 +506,7 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
     ;(daemon as any).commands.handleCommand = stopped
     // It still DELIVERS — an agent's words are words — but command interception sits
     // below the agent branch, so agent text can never act on a running turn.
-    route(daemon, agentMessage({ text: '!stop' }, { mentionedAgentIds: [] }))
+    await route(daemon, agentMessage({ text: '!stop' }, { mentionedAgentIds: [] }))
     expect(stopped).not.toHaveBeenCalled()
     await daemon.stop()
   })
@@ -512,11 +516,11 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
     // consulted for. Its own connection resolves to itself ⇒ excluded ⇒ nobody; a peer's
     // connection resolves to the peer. Neither can ever name the author.
     const { daemon, calls } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }])
-    expect(route(daemon, agentMessage(), ['int-bot-a']).kind).toBe('rejected')
+    expect((await route(daemon, agentMessage(), ['int-bot-a'])).kind).toBe('rejected')
     expect(calls).toHaveLength(0)
 
     const peerCopy = agentMessage({ msgId: 'slack:C1:1720000000.000209:final' })
-    expect(route(daemon, peerCopy, ['int-bot-b']).kind).toBe('dispatched')
+    expect((await route(daemon, peerCopy, ['int-bot-b'])).kind).toBe('dispatched')
     expect(calls.map((c) => c.agentId)).toEqual(['bot-b'])
     await daemon.stop()
   })
@@ -532,17 +536,17 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
     ;(daemon as any).commands.setSessionMuted(muteKey, true)
 
     const unaddressed = agentMessage({}, { mentionedAgentIds: [] })
-    expect((daemon as any).onInboundOutcome(unaddressed, ['int-bot-b']).kind).toBe('rejected')
+    expect((await (daemon as any).onInboundOutcome(unaddressed, ['int-bot-b'])).kind).toBe('rejected')
     expect(calls).toHaveLength(0)
-    expect((daemon as any).commands.isSessionMuted(muteKey)).toBe(true)
+    expect(await (daemon as any).commands.isSessionMuted(muteKey)).toBe(true)
 
     // A mention in the body is not an address this layer acts on, so it does not lift the
     // mute either: agent traffic can no longer reopen a conversation a human stopped.
     // Clearing it stays a HUMAN act (`@mention` on the ordinary ladder, or `!resume`).
     const mentioning = agentMessage({ msgId: 'slack:C1:1720000000.000202:final' }, { mentionedAgentIds: ['bot-b'] })
-    expect((daemon as any).onInboundOutcome(mentioning, ['int-bot-b']).kind).toBe('rejected')
+    expect((await (daemon as any).onInboundOutcome(mentioning, ['int-bot-b'])).kind).toBe('rejected')
     expect(calls).toHaveLength(0)
-    expect((daemon as any).commands.isSessionMuted(muteKey)).toBe(true)
+    expect(await (daemon as any).commands.isSessionMuted(muteKey)).toBe(true)
     await daemon.stop()
   })
 
@@ -566,7 +570,7 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
     )
 
     const unaddressed = agentMessage({}, { mentionedAgentIds: [] })
-    expect((daemon as any).onInboundOutcome(unaddressed, observed).kind).toBe('rejected')
+    expect((await (daemon as any).onInboundOutcome(unaddressed, observed)).kind).toBe('rejected')
     expect(calls).toHaveLength(0)
     await daemon.stop()
   })
@@ -577,7 +581,7 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
     // it on an implicitly selected target asserts an address the message does not contain.
     const { daemon, calls } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }])
     const unaddressed = agentMessage({}, { mentionedAgentIds: [] })
-    expect((daemon as any).onInboundOutcome(unaddressed, ['int-bot-b']).kind).toBe('dispatched')
+    expect((await (daemon as any).onInboundOutcome(unaddressed, ['int-bot-b'])).kind).toBe('dispatched')
     expect(calls[0]!.msg.trigger).toBeUndefined()
     await daemon.stop()
   })
@@ -589,7 +593,7 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
       { id: 'bot-a' },
       { id: 'bot-b', callPolicy: 'selected', allowedCallerAgentIds: ['somebody-else'] }
     ])
-    expect(route(daemon, agentMessage()).kind).toBe('rejected')
+    expect((await route(daemon, agentMessage())).kind).toBe('rejected')
     expect(calls).toHaveLength(0)
     await daemon.stop()
   })
@@ -598,7 +602,7 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
     // §10 case 11 / §5.4: an intermediate post may hold a prefix of the answer, so
     // routing it would prompt the peer with a half-written message.
     const { daemon, calls } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }])
-    expect(route(daemon, agentMessage({}, { deliveryState: 'streaming' })).kind).toBe('rejected')
+    expect((await route(daemon, agentMessage({}, { deliveryState: 'streaming' }))).kind).toBe('rejected')
     expect(calls).toHaveLength(0)
     await daemon.stop()
   })
@@ -607,11 +611,15 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
     // §4 condition 3. A shared app backs several agents; without the placement check one
     // of them could author messages as any co-tenant.
     const { daemon, calls } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }])
-    expect(route(daemon, agentMessage({}, { authorAgentId: 'not-an-agent-here' })).kind).toBe('rejected')
+    expect((await route(daemon, agentMessage({}, { authorAgentId: 'not-an-agent-here' }))).kind).toBe('rejected')
     // A foreign app is not an AgentConnect author at all.
     expect(
-      route(daemon, agentMessage({ msgId: 'slack:C1:3:final', sender: { id: 'UX', isBot: true, appId: 'AOTHER' } }))
-        .kind
+      (
+        await route(
+          daemon,
+          agentMessage({ msgId: 'slack:C1:3:final', sender: { id: 'UX', isBot: true, appId: 'AOTHER' } })
+        )
+      ).kind
     ).toBe('rejected')
     expect(calls).toHaveLength(0)
     await daemon.stop()
@@ -623,12 +631,14 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
     // on which transport carried it. Expressed against MAX_AGENT_CALL_HOPS rather than a
     // literal so retuning the budget cannot leave one transport pinned to the old number.
     const admitted = await boot([{ id: 'bot-a' }, { id: 'bot-b' }])
-    expect(route(admitted.daemon, agentMessage({}, { hopCount: MAX_AGENT_CALL_HOPS - 2 })).kind).toBe('dispatched')
+    expect((await route(admitted.daemon, agentMessage({}, { hopCount: MAX_AGENT_CALL_HOPS - 2 }))).kind).toBe(
+      'dispatched'
+    )
     expect(admitted.calls[0]!.callMeta).toMatchObject({ hopCount: MAX_AGENT_CALL_HOPS - 1 })
     await admitted.daemon.stop()
 
     const capped = await boot([{ id: 'bot-a' }, { id: 'bot-b' }])
-    expect(route(capped.daemon, agentMessage({}, { hopCount: MAX_AGENT_CALL_HOPS - 1 })).kind).toBe('rejected')
+    expect((await route(capped.daemon, agentMessage({}, { hopCount: MAX_AGENT_CALL_HOPS - 1 }))).kind).toBe('rejected')
     expect(capped.calls).toHaveLength(0)
     await capped.daemon.stop()
 
@@ -636,7 +646,7 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
     // runaway chain a fresh budget on every hop.
     for (const hopCount of [-1, 1.5, undefined]) {
       const bad = await boot([{ id: 'bot-a' }, { id: 'bot-b' }])
-      expect(route(bad.daemon, agentMessage({}, { hopCount })).kind).toBe('rejected')
+      expect((await route(bad.daemon, agentMessage({}, { hopCount }))).kind).toBe('rejected')
       expect(bad.calls).toHaveLength(0)
       await bad.daemon.stop()
     }
@@ -647,8 +657,10 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
     // platform event, a second bot connection seeing the same channel, and a restart.
     // Distinct msgIds here so per-connection dedup cannot be what stops the second one.
     const { daemon, calls } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }])
-    expect(route(daemon, agentMessage()).kind).toBe('dispatched')
-    expect(route(daemon, agentMessage({ msgId: 'slack:C1:1720000000.000200:final-retry' })).kind).toBe('rejected')
+    expect((await route(daemon, agentMessage())).kind).toBe('dispatched')
+    expect((await route(daemon, agentMessage({ msgId: 'slack:C1:1720000000.000200:final-retry' }))).kind).toBe(
+      'rejected'
+    )
     expect(calls).toHaveLength(1)
     await daemon.stop()
   })
@@ -664,7 +676,7 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
     const original = (daemon as any).mergedRules.bind(daemon)
     ;(daemon as any).mergedRules = () =>
       original().map((rule: any) => (rule.agentId === 'bot-b' ? { ...rule, mutedChannels: ['C1'] } : rule))
-    expect(route(daemon, agentMessage()).kind).toBe('rejected')
+    expect((await route(daemon, agentMessage())).kind).toBe('rejected')
     expect(calls).toHaveLength(0)
     await daemon.stop()
   })
@@ -679,21 +691,23 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
     // record itself. By the time any sweep runs the record is already terminal, and the
     // inbox row's fate stops mattering.
     const { daemon, calls } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }])
-    expect(route(daemon, agentMessage()).kind).toBe('dispatched')
+    expect((await route(daemon, agentMessage())).kind).toBe('dispatched')
     const callMeta = calls[0]!.callMeta
     expect(callMeta.activationKey).toBeTruthy()
 
     const store = (daemon as any).store
-    expect(store.getActivation(callMeta.activationKey)?.state).toBe('admitted')
+    expect((await store.getActivation(callMeta.activationKey))?.state).toBe('admitted')
 
     // Simulate the rest of the chain: the turn finishes and its inbox row is gone, then
     // the TTL passes. A terminal record is not a sweep candidate, so nothing is released…
-    store.expireActivations(Date.now() + 60 * 60 * 1000)
-    expect(store.getActivation(callMeta.activationKey)?.state).toBe('admitted')
+    await store.expireActivations(Date.now() + 60 * 60 * 1000)
+    expect((await store.getActivation(callMeta.activationKey))?.state).toBe('admitted')
 
     // …and a redelivery of the same logical event still finds the key taken.
     calls.length = 0
-    expect(route(daemon, agentMessage({ msgId: 'slack:C1:1720000000.000200:final-again' })).kind).toBe('rejected')
+    expect((await route(daemon, agentMessage({ msgId: 'slack:C1:1720000000.000200:final-again' }))).kind).toBe(
+      'rejected'
+    )
     expect(calls).toHaveLength(0)
     await daemon.stop()
   })
@@ -704,11 +718,11 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
     // internal wake, so dispatching from the platform observation alone would fabricate a
     // lineage-less child. It waits instead.
     const { daemon, calls } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }])
-    expect(route(daemon, agentMessage({}, { agentCallDeliveryId: 'd-1' })).kind).toBe('rejected')
+    expect((await route(daemon, agentMessage({}, { agentCallDeliveryId: 'd-1' }))).kind).toBe('rejected')
     expect(calls).toHaveLength(0)
     // The observation IS recorded, pending its other half — keyed by the visible post's ts
     // and the TARGET's own scope, which is exactly what the internal wake computes.
-    expect((daemon as any).store.getActivation(pairingKey(daemon))).toMatchObject({
+    expect(await (daemon as any).store.getActivation(pairingKey(daemon))).toMatchObject({
       state: 'pending',
       agentCallDeliveryId: 'd-1',
       platformMessageId: '1720000000.000200'
@@ -739,7 +753,7 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
 
     it('activates the pre-addressed target and INSTALLS the relay depth without re-incrementing', async () => {
       const { daemon, calls } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }])
-      const ack = (daemon as any).handleRelayIm(imFrame())
+      const ack = await (daemon as any).handleRelayIm(imFrame())
       expect(ack.accepted).toBe(true)
       expect(calls.map((c) => c.agentId)).toEqual(['bot-b'])
       // §4.1 step 4: the relay already spent the one `+1`. Adding another here would halve
@@ -753,7 +767,7 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
       const bare = imFrame()
       delete (bare as Record<string, unknown>).trustedFromAgentId
       delete (bare as Record<string, unknown>).trustedDeliveryHopCount
-      expect((daemon as any).handleRelayIm(bare).accepted).toBe(true)
+      expect((await (daemon as any).handleRelayIm(bare)).accepted).toBe(true)
       expect(calls).toHaveLength(0)
       await daemon.stop()
     })
@@ -762,14 +776,16 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
       const { daemon, calls } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }])
       // The relay fans one frame per recipient; a target absent from its own minted list
       // means the frame and the claim disagree, which is never something to act on.
-      expect((daemon as any).handleRelayIm(imFrame({ trustedRecipientAgentIds: ['someone-else'] })).accepted).toBe(true)
-      expect((daemon as any).handleRelayIm(imFrame({ trustedFromAgentId: 'bot-b' })).accepted).toBe(true)
+      expect(
+        (await (daemon as any).handleRelayIm(imFrame({ trustedRecipientAgentIds: ['someone-else'] }))).accepted
+      ).toBe(true)
+      expect((await (daemon as any).handleRelayIm(imFrame({ trustedFromAgentId: 'bot-b' }))).accepted).toBe(true)
       // Already-incremented depth at the cap, and a depth below 1 (which would mean the
       // relay never applied its transition).
-      expect((daemon as any).handleRelayIm(imFrame({ trustedDeliveryHopCount: MAX_AGENT_CALL_HOPS })).accepted).toBe(
-        true
-      )
-      expect((daemon as any).handleRelayIm(imFrame({ trustedDeliveryHopCount: 0 })).accepted).toBe(true)
+      expect(
+        (await (daemon as any).handleRelayIm(imFrame({ trustedDeliveryHopCount: MAX_AGENT_CALL_HOPS }))).accepted
+      ).toBe(true)
+      expect((await (daemon as any).handleRelayIm(imFrame({ trustedDeliveryHopCount: 0 }))).accepted).toBe(true)
       expect(calls).toHaveLength(0)
       await daemon.stop()
     })
@@ -785,14 +801,14 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
       const muteKey = sessionKey('slack', 'C1', '1720000000.000100', 'bot-b', scope)
       ;(daemon as any).commands.setSessionMuted(muteKey, true)
 
-      expect((daemon as any).handleRelayIm(imFrame({ trustedRouteVia: 'implicit' })).accepted).toBe(true)
+      expect((await (daemon as any).handleRelayIm(imFrame({ trustedRouteVia: 'implicit' }))).accepted).toBe(true)
       expect(calls).toHaveLength(0)
-      expect((daemon as any).commands.isSessionMuted(muteKey)).toBe(true)
+      expect(await (daemon as any).commands.isSessionMuted(muteKey)).toBe(true)
 
       // An explicit mention wakes it and lifts the mute, as a human's would.
-      expect((daemon as any).handleRelayIm(imFrame({ trustedRouteVia: 'mention' })).accepted).toBe(true)
+      expect((await (daemon as any).handleRelayIm(imFrame({ trustedRouteVia: 'mention' }))).accepted).toBe(true)
       expect(calls.map((c) => c.agentId)).toEqual(['bot-b'])
-      expect((daemon as any).commands.isSessionMuted(muteKey)).toBe(false)
+      expect(await (daemon as any).commands.isSessionMuted(muteKey)).toBe(false)
       await daemon.stop()
     })
 
@@ -801,7 +817,7 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
       // that is the reading which preserves its behavior rather than silently demoting
       // every one of its deliveries to mute-able implicit traffic.
       const { daemon, calls } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }])
-      expect((daemon as any).handleRelayIm(imFrame()).accepted).toBe(true)
+      expect((await (daemon as any).handleRelayIm(imFrame())).accepted).toBe(true)
       expect(calls[0]!.msg.trigger).toBe('mention')
       await daemon.stop()
     })
@@ -813,14 +829,14 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
         { id: 'bot-a' },
         { id: 'bot-b', callPolicy: 'selected', allowedCallerAgentIds: ['somebody-else'] }
       ])
-      expect((daemon as any).handleRelayIm(imFrame()).accepted).toBe(true)
+      expect((await (daemon as any).handleRelayIm(imFrame())).accepted).toBe(true)
       expect(calls).toHaveLength(0)
       await daemon.stop()
     })
 
     it('holds a paired relay delivery for its internal wake', async () => {
       const { daemon, calls } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }])
-      const ack = (daemon as any).handleRelayIm(imFrame({ trustedAgentCallDeliveryId: 'd-1' }))
+      const ack = await (daemon as any).handleRelayIm(imFrame({ trustedAgentCallDeliveryId: 'd-1' }))
       expect(ack.accepted).toBe(true)
       expect(calls).toHaveLength(0)
       await daemon.stop()
@@ -828,7 +844,7 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
 
     it('relay platform event first: a paired self observation survives until its internal wake', async () => {
       const { daemon, calls } = await boot([{ id: 'bot-a' }])
-      const ack = (daemon as any).handleRelayIm(
+      const ack = await (daemon as any).handleRelayIm(
         imFrame({
           agentId: 'bot-a',
           integrationId: 'int-bot-a',
@@ -841,7 +857,7 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
       )
       expect(ack.accepted).toBe(true)
       expect(calls).toHaveLength(0)
-      expect((daemon as any).store.getActivation(pairingKey(daemon, 'bot-a'))).toMatchObject({
+      expect(await (daemon as any).store.getActivation(pairingKey(daemon, 'bot-a'))).toMatchObject({
         state: 'pending',
         agentCallDeliveryId: 'd-self-relay'
       })
@@ -861,7 +877,7 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
       expect(res.delivered).toBe(true)
       expect(calls).toHaveLength(1)
       expect(calls[0]).toMatchObject({ agentId: 'bot-a', callMeta: { callFrom: 'bot-a' } })
-      expect((daemon as any).store.getActivation(pairingKey(daemon, 'bot-a'))).toMatchObject({
+      expect(await (daemon as any).store.getActivation(pairingKey(daemon, 'bot-a'))).toMatchObject({
         state: 'admitted',
         childSessionId: res.targetSession
       })
@@ -894,9 +910,9 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
       expect(calls).toHaveLength(1)
 
       // The visible echo of the SAME post now arrives through platform ingress.
-      expect(route(daemon, agentMessage({}, { agentCallDeliveryId: 'd-1' })).kind).toBe('rejected')
+      expect((await route(daemon, agentMessage({}, { agentCallDeliveryId: 'd-1' }))).kind).toBe('rejected')
       expect(calls).toHaveLength(1)
-      expect((daemon as any).store.getActivation(pairingKey(daemon))).toMatchObject({
+      expect(await (daemon as any).store.getActivation(pairingKey(daemon))).toMatchObject({
         state: 'admitted',
         childSessionId: res.targetSession
       })
@@ -907,13 +923,13 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
       const { daemon, calls } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }])
       // The echo beats the wake. Nothing dispatches: the observation carries none of the
       // trusted envelope, so admitting on it would fabricate the call it accompanies.
-      expect(route(daemon, agentMessage({}, { agentCallDeliveryId: 'd-1' })).kind).toBe('rejected')
+      expect((await route(daemon, agentMessage({}, { agentCallDeliveryId: 'd-1' }))).kind).toBe('rejected')
       expect(calls).toHaveLength(0)
-      expect((daemon as any).store.getActivation(pairingKey(daemon))?.state).toBe('pending')
+      expect((await (daemon as any).store.getActivation(pairingKey(daemon)))?.state).toBe('pending')
 
       // Seed the caller's origin so `needsReply` has a parent session to report into —
       // the lineage that would be LOST if the platform half had been allowed to dispatch.
-      ;(daemon as any).store.upsertSession({
+      await (daemon as any).store.upsertSession({
         key: 'slack:C1:1720000000.000100:bot-a',
         agentId: 'bot-a',
         platform: 'slack',
@@ -932,7 +948,7 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
         originSessionId: 'acp-parent-1',
         needsReply: true
       })
-      expect((daemon as any).store.getActivation(pairingKey(daemon))).toMatchObject({
+      expect(await (daemon as any).store.getActivation(pairingKey(daemon))).toMatchObject({
         state: 'admitted',
         // The visible observation survives the transition, so the two collapse onto one
         // transcript row instead of duplicating the hand-off.
@@ -952,9 +968,9 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
         }
       )
 
-      expect(route(daemon, visible, ['int-bot-a']).kind).toBe('rejected')
+      expect((await route(daemon, visible, ['int-bot-a'])).kind).toBe('rejected')
       expect(calls).toHaveLength(0)
-      expect((daemon as any).store.getActivation(pairingKey(daemon, 'bot-a'))).toMatchObject({
+      expect(await (daemon as any).store.getActivation(pairingKey(daemon, 'bot-a'))).toMatchObject({
         state: 'pending',
         agentCallDeliveryId: 'd-self-direct'
       })
@@ -966,7 +982,7 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
       expect(res.delivered).toBe(true)
       expect(calls).toHaveLength(1)
       expect(calls[0]).toMatchObject({ agentId: 'bot-a', callMeta: { callFrom: 'bot-a' } })
-      expect((daemon as any).store.getActivation(pairingKey(daemon, 'bot-a'))).toMatchObject({
+      expect(await (daemon as any).store.getActivation(pairingKey(daemon, 'bot-a'))).toMatchObject({
         state: 'admitted',
         childSessionId: res.targetSession
       })

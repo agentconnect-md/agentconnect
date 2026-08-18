@@ -9,7 +9,7 @@ import type { SelectKind } from '../platforms/command-chrome.js'
 import type { StatusBarInfo } from '../slack/render.js'
 
 /** Per-kind sticky-override setters, keyed by select kind. */
-export type SelectSetters = Record<SelectKind, (key: string, value: string) => boolean>
+export type SelectSetters = Record<SelectKind, (key: string, value: string) => Promise<boolean>>
 
 export function selectLabel(kind: SelectKind): string {
   return kind === 'model' ? 'Model' : kind === 'effort' ? 'Reasoning effort' : 'Permission mode'
@@ -23,7 +23,7 @@ export function selectOptions(kind: SelectKind, info: StatusBarInfo): { current?
 }
 
 /** Apply a resolved select value to a session key via the matching sticky-override setter. */
-export function applySelect(kind: SelectKind, key: string, value: string, setters: SelectSetters): boolean {
+export function applySelect(kind: SelectKind, key: string, value: string, setters: SelectSetters): Promise<boolean> {
   return setters[kind](key, value)
 }
 

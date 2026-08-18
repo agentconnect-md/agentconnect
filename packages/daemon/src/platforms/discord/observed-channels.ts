@@ -14,20 +14,20 @@ import type { ObservedChannelsHost, ObservedChannelsStrategy } from '../observed
 export const discordObservedChannels: ObservedChannelsStrategy = {
   platform: 'discord',
 
-  collapse(host: ObservedChannelsHost, observed: { id: string; name?: string }[]) {
+  async collapse(host: ObservedChannelsHost, observed: { id: string; name?: string }[]) {
     // Two-step: the observed (thread) ids first, then the channels they fold onto —
     // whose OWN scope carries the guild, which a thread row may never have recorded.
-    const scopes = host.channelScopes(observed.map((c) => c.id))
+    const scopes = await host.channelScopes(observed.map((c) => c.id))
     const parents = [...scopes.values()].map((s) => s.parentId).filter((id): id is string => !!id)
-    for (const [id, scope] of host.channelScopes(parents)) scopes.set(id, scope)
-    const names = host.displayNames(collapseNameLookupIds(observed, scopes))
+    for (const [id, scope] of await host.channelScopes(parents)) scopes.set(id, scope)
+    const names = await host.displayNames(collapseNameLookupIds(observed, scopes))
     return collapseDiscordChannels(observed, scopes, names)
   },
 
-  spaceFor(host: ObservedChannelsHost, channelId: string) {
-    const id = host.channelScopes([channelId]).get(channelId)?.spaceId
+  async spaceFor(host: ObservedChannelsHost, channelId: string) {
+    const id = (await host.channelScopes([channelId])).get(channelId)?.spaceId
     if (!id) return undefined
-    const name = host.displayNames([id]).get(id)
+    const name = (await host.displayNames([id])).get(id)
     return { id, ...(name ? { name } : {}) }
   }
 }

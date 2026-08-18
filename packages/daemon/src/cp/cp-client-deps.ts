@@ -99,8 +99,8 @@ export interface CpClientReadyHost {
   probeRuntimesAndEmit(): Promise<void>
   syncOrganizationSuggestions(): Promise<void>
   memoryConnections(): CpMemoryConnectionRegistry | undefined
-  replayHookTerminalReports(): void
-  replayChannelSnapshots(): void
+  replayHookTerminalReports(): Promise<void>
+  replayChannelSnapshots(): Promise<void>
   sessionMetadataOutbox(): SessionMetadataOutbox
   webchatMcpRevocations(): WebchatMcpRevocations
   drainSessionPurges(): Promise<void>
@@ -130,7 +130,7 @@ export interface CpClientSeamHost {
   memoryFsFor(agentId: string): MemoryFs | undefined
   gitCommitIdentity(): GitCommitIdentity | undefined
   sessionThreadUrl(session: SessionRecord): string | undefined
-  childSessionStatusProbe(probe: ChildSessionStatusProbe): ChildSessionStatus
+  childSessionStatusProbe(probe: ChildSessionStatusProbe): Promise<ChildSessionStatus>
   listBackgroundTasks(req: TaskListReq): TaskList
   withWorkspaceFileWrite<T>(agentId: string, write: () => Promise<T>): Promise<T>
   withWorkspaceIndexWrite<T>(agentId: string, write: () => Promise<T>): Promise<T>
@@ -148,13 +148,13 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
   const echoDaemonId = host.echoDaemonId()
 
   // This daemon's own coordinates: `agent.workspace.path` and the session worktrees beside it.
-  const daemonWorkspaceLocation = (id: string, sessionId?: string): WorkspaceLocation | undefined => {
+  const daemonWorkspaceLocation = async (id: string, sessionId?: string): Promise<WorkspaceLocation | undefined> => {
     const agent = host.agents().get(id)
     if (!agent) return undefined
     if (!sessionId) {
       return { root: agent.workspace.path, scratch: agent.workspace.mode === 'from-scratch' }
     }
-    const session = host.store().getSessionByAcpIdForAgent(id, sessionId)
+    const session = await host.store().getSessionByAcpIdForAgent(id, sessionId)
     if (agent.workspace.mode !== 'git-repo' || session?.workspaceIsolation !== 'session') return undefined
     return { root: host.workspaces().sessionWorktreePath(agent, session.key), scratch: false }
   }
@@ -164,9 +164,9 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
   // are the same directory, and describing them two different ways is what broke both panels.
   // A defined location for a sessionId means that session IS isolated, which --k8s refuses —
   // passed through so it is refused loudly rather than silently naming the shared checkout.
-  const workspaceLocation = (id: string, sessionId?: string): WorkspaceLocation | undefined => {
+  const workspaceLocation = async (id: string, sessionId?: string): Promise<WorkspaceLocation | undefined> => {
     const agent = host.agents().get(id)
-    const local = daemonWorkspaceLocation(id, sessionId)
+    const local = await daemonWorkspaceLocation(id, sessionId)
     if (!agent || !local) return undefined
     const root = host
       .workspaces()
@@ -179,8 +179,8 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
     return root === undefined ? undefined : { root, scratch: local.scratch }
   }
 
-  const workspaceGitRoot = (id: string, sessionId?: string): string | undefined =>
-    workspaceLocation(id, sessionId)?.root
+  const workspaceGitRoot = async (id: string, sessionId?: string): Promise<string | undefined> =>
+    (await workspaceLocation(id, sessionId))?.root
 
   const workspaceGit = createWorkspaceGit(
     host.workspaces(),
@@ -262,7 +262,7 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
     // On (re)connect, probe runtimes in the background and push refreshed profiles,
     // and re-assert each integration's cached channel-membership snapshot (the CP
     // may have missed emits while we were disconnected; latest-wins upsert).
-    onReady: () => {
+    onReady: async () => {
       host.resolveInitialRegistry()
       host.readiness()?.refresh()
       void host.probeRuntimesAndEmit()
@@ -272,8 +272,8 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
           host.log().warn(`cp: organization suggestion replay failed (${err instanceof Error ? err.name : 'unknown'})`)
         )
       host.cpClient()?.emitMemoryConnectionFacts(host.memoryConnections()?.facts() ?? [])
-      host.replayHookTerminalReports()
-      host.replayChannelSnapshots()
+      await host.replayHookTerminalReports()
+      await host.replayChannelSnapshots()
       // Only snapshots written to the durable outbox by this build are
       // replayed. Historical session rows are never scanned or backfilled.
       void host.sessionMetadataOutbox().drainSessionMetadataSnapshots()
@@ -290,7 +290,7 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
       for (const a of host.effectiveAgents())
         for (const c of a.crons) {
           if (c.origin !== 'cp') continue
-          const at = host.store().cronRun(`${a.id}:${c.id}`)?.lastRunAt
+          const at = (await host.store().cronRun(`${a.id}:${c.id}`))?.lastRunAt
           if (at !== undefined)
             host.cpClient()?.emitCronReport({ cronId: c.id, agentId: a.id, firedAt: new Date(at).toISOString() })
         }
@@ -373,7 +373,7 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
       host.workspaces(),
       // The workspace root in EXECUTION coordinates, like the file reader's: the skill roots the
       // console lists are the ones the agent's harness loads, and those are in the pod.
-      (id) => workspaceLocation(id)?.root,
+      async (id) => (await workspaceLocation(id))?.root,
       join(host.daemonRoot(), 'skill-installs'),
       (id) => host.k8sPlane()?.workspaceFilesFor(id)
     ),

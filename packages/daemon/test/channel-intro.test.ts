@@ -161,10 +161,12 @@ describe('Daemon.maybeIntroduceOnJoin: the intro turn carries its own discovery 
       calls.push({ agentId, msg, callMeta })
       return 'acp-1'
     }
-    const introduce = (channels: string[]): void =>
-      (
+    const introduce = async (channels: string[]): Promise<void> =>
+      await (
         daemon as never as {
-          connections: { maybeIntroduceOnJoin: (p: string, i: string, c: { id: string }[]) => void }
+          connections: {
+            maybeIntroduceOnJoin: (p: string, i: string, c: { id: string }[]) => Promise<void>
+          }
         }
       ).connections.maybeIntroduceOnJoin(
         // The caller (Slack's authoritative-snapshot refresh) names its platform as data.
@@ -173,9 +175,9 @@ describe('Daemon.maybeIntroduceOnJoin: the intro turn carries its own discovery 
         channels.map((id) => ({ id }))
       )
     // First snapshot seeds the baseline silently; only a LATER channel is a genuine join.
-    introduce(['C_OLD'])
+    await introduce(['C_OLD'])
     expect(calls).toHaveLength(0)
-    introduce(['C_OLD', 'C_JOINED'])
+    await introduce(['C_OLD', 'C_JOINED'])
     expect(calls).toHaveLength(1)
     expect(calls[0]!.msg.channel).toBe('C_JOINED')
     // THE bound: peer discovery in this turn is pinned to the joined channel in CODE.

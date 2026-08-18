@@ -135,7 +135,7 @@ async function runDaemonRung(
     })
     const measured = await harness.runRung(settings)
     await harness.waitUntilIdle(Math.max(30_000, settings.turnTimeoutMs * 2))
-    const verification = harness.verification()
+    const verification = await harness.verification()
     const healthy = measured.summary.errors === 0 && measured.summary.timeouts === 0
     assert.equal(verification.completedOutputs, measured.summary.completed)
     assert.equal(verification.terminalSessions, concurrency)

@@ -28,7 +28,7 @@ function daemon(opts: { k8s?: boolean; supervisor?: string; requestExit?: (code:
           // This suite tests k8s lifecycle policy; cluster and data-plane behavior have dedicated suites.
           openDataPlane: async () =>
             ({
-              store: new LocalStore(':memory:'),
+              store: await LocalStore.open(':memory:'),
               transcripts: {
                 appendTranscript: () => {},
                 insertToolCall: () => {},

@@ -113,7 +113,7 @@ describe('Daemon interrupt safety gates', () => {
 
     try {
       const key = (daemon as any).webchatTransport.webchatSessionKey(CONV_1, AGENT_ID)
-      ;(daemon as any).store.upsertSession({
+      await (daemon as any).store.upsertSession({
         key,
         agentId: AGENT_ID,
         platform: 'webchat',
@@ -124,12 +124,18 @@ describe('Daemon interrupt safety gates', () => {
         lastDeliveredTs: null,
         updatedAt: Date.now()
       })
-      ;(daemon as any).store.setModelOverride(key, 'blocked-model')
-      const ack = (daemon as any).webchatTransport.dispatchWebchatTurn(AGENT_ID, CONV_1, 'first', 'alice', stream.sink)
+      await (daemon as any).store.setModelOverride(key, 'blocked-model')
+      const ack = await (daemon as any).webchatTransport.dispatchWebchatTurn(
+        AGENT_ID,
+        CONV_1,
+        'first',
+        'alice',
+        stream.sink
+      )
       await vi.waitFor(() => expect(host.setSessionModel).toHaveBeenCalled(), WAIT)
       expect(hasPending(daemon, 'acp-pre-prompt')).toBe(true)
 
-      ;(daemon as any).webchatTransport.handleWebchatCancel(CONV_1)
+      await (daemon as any).webchatTransport.handleWebchatCancel(CONV_1)
       expect(stream.dones).toEqual([expect.objectContaining({ turnId: ack.turnId, error: 'cancel' })])
       releaseOverride()
 
@@ -168,7 +174,7 @@ describe('Daemon interrupt safety gates', () => {
     await daemon.start()
 
     try {
-      const first = (daemon as any).webchatTransport.dispatchWebchatTurn(
+      const first = await (daemon as any).webchatTransport.dispatchWebchatTurn(
         AGENT_ID,
         CONV_1,
         'first',
@@ -178,12 +184,12 @@ describe('Daemon interrupt safety gates', () => {
       expect(first.accepted).toBe(true)
       await vi.waitFor(() => expect(hasPending(daemon, 'acp-1')).toBe(true), WAIT)
 
-      ;(daemon as any).webchatTransport.handleWebchatCancel(CONV_1)
+      await (daemon as any).webchatTransport.handleWebchatCancel(CONV_1)
       expect(host.cancel).toHaveBeenCalledWith('acp-1')
 
       // The cancel backstop is host-wide. Until the old prompt has yielded, accepting
       // work even in another conversation could let that backstop kill the fresh turn.
-      const tooEarly = (daemon as any).webchatTransport.dispatchWebchatTurn(
+      const tooEarly = await (daemon as any).webchatTransport.dispatchWebchatTurn(
         AGENT_ID,
         CONV_2,
         'too early',
@@ -196,7 +202,7 @@ describe('Daemon interrupt safety gates', () => {
       releaseFirst()
       await vi.waitFor(() => expect((daemon as any).inflight.size).toBe(0), WAIT)
 
-      const fresh = (daemon as any).webchatTransport.dispatchWebchatTurn(
+      const fresh = await (daemon as any).webchatTransport.dispatchWebchatTurn(
         AGENT_ID,
         CONV_2,
         'fresh',
@@ -258,14 +264,14 @@ describe('Daemon interrupt safety gates', () => {
       await vi.waitFor(() => expect(hasPending(daemon, 'acp-2')).toBe(true), WAIT)
       // DMs start private. Model the CP publishing this unrelated session so
       // the memory assertion below tests cancellation isolation, not privacy.
-      expect((daemon as any).store.applyCpCaptureGate(AGENT_ID, 'acp-2', false, 1)).toBe('applied')
+      expect(await (daemon as any).store.applyCpCaptureGate(AGENT_ID, 'acp-2', false, 1)).toBe('applied')
       t2Queued = (daemon as any).dispatch(AGENT_ID, t2QueuedMsg)
       const t2Key = sessionKey('slack', 'C2', 'T2', AGENT_ID)
-      expect((daemon as any).serialQueue.get(t2Key)).toHaveLength(1)
+      await vi.waitFor(() => expect((daemon as any).serialQueue.get(t2Key)).toHaveLength(1), WAIT)
 
       const scope = 'slack:C1:dm'
-      ;(daemon as any).store.tripLoopGuard(scope, 1_000, 'automatic_turn_burst')
-      ;(daemon as any).onLoopGuardTripped(scope, 'automatic_turn_burst', { agentId: AGENT_ID, msg: t1Msg })
+      await (daemon as any).store.tripLoopGuard(scope, 1_000, 'automatic_turn_burst')
+      await (daemon as any).onLoopGuardTripped(scope, 'automatic_turn_burst', { agentId: AGENT_ID, msg: t1Msg })
       expect(host.cancel).toHaveBeenCalledWith('acp-1')
 
       // T1's conversation-scoped cancellation must not poison bridge tools in the
@@ -328,12 +334,18 @@ describe('Daemon interrupt safety gates', () => {
     await daemon.start()
 
     try {
-      const ack = (daemon as any).webchatTransport.dispatchWebchatTurn(AGENT_ID, CONV_1, 'cold', 'alice', stream.sink)
+      const ack = await (daemon as any).webchatTransport.dispatchWebchatTurn(
+        AGENT_ID,
+        CONV_1,
+        'cold',
+        'alice',
+        stream.sink
+      )
       expect(ack.accepted).toBe(true)
       await vi.waitFor(() => expect(host.newSession).toHaveBeenCalledTimes(1), WAIT)
       expect((daemon as any).pending.size).toBe(0)
 
-      ;(daemon as any).webchatTransport.handleWebchatCancel(CONV_1)
+      await (daemon as any).webchatTransport.handleWebchatCancel(CONV_1)
       expect(host.cancel).not.toHaveBeenCalled()
       expect(stream.dones).toEqual([expect.objectContaining({ turnId: ack.turnId, error: 'cancel' })])
 
@@ -372,7 +384,7 @@ describe('Daemon interrupt safety gates', () => {
     const standingContext = vi.fn(() => memoryBlocked)
     ;(daemon as any).memory.standingContextAtSessionStart = standingContext
     const key = (daemon as any).webchatTransport.webchatSessionKey(CONV_1, AGENT_ID)
-    ;(daemon as any).store.upsertSession({
+    await (daemon as any).store.upsertSession({
       key,
       agentId: AGENT_ID,
       platform: 'webchat',
@@ -383,9 +395,9 @@ describe('Daemon interrupt safety gates', () => {
       lastDeliveredTs: null,
       updatedAt: Date.now()
     })
-    expect((daemon as any).store.applyCpCaptureGate(AGENT_ID, 'acp-memory', false, 1)).toBe('applied')
+    expect(await (daemon as any).store.applyCpCaptureGate(AGENT_ID, 'acp-memory', false, 1)).toBe('applied')
 
-    const ack = (daemon as any).webchatTransport.dispatchWebchatTurn(
+    const ack = await (daemon as any).webchatTransport.dispatchWebchatTurn(
       AGENT_ID,
       CONV_1,
       'cold memory',
@@ -393,7 +405,7 @@ describe('Daemon interrupt safety gates', () => {
       stream.sink
     )
     await vi.waitFor(() => expect(standingContext).toHaveBeenCalled(), WAIT)
-    ;(daemon as any).webchatTransport.handleWebchatCancel(CONV_1)
+    await (daemon as any).webchatTransport.handleWebchatCancel(CONV_1)
     expect(stream.dones).toEqual([expect.objectContaining({ turnId: ack.turnId, error: 'cancel' })])
 
     clock.advance(30_000)
@@ -433,17 +445,23 @@ describe('Daemon interrupt safety gates', () => {
     await daemon.start()
 
     try {
-      const ack = (daemon as any).webchatTransport.dispatchWebchatTurn(AGENT_ID, CONV_1, 'cold', 'alice', stream.sink)
+      const ack = await (daemon as any).webchatTransport.dispatchWebchatTurn(
+        AGENT_ID,
+        CONV_1,
+        'cold',
+        'alice',
+        stream.sink
+      )
       expect(ack.accepted).toBe(true)
       await vi.waitFor(() => expect(host.newSession).toHaveBeenCalledTimes(1), WAIT)
 
-      ;(daemon as any).webchatTransport.handleWebchatCancel(CONV_1)
+      await (daemon as any).webchatTransport.handleWebchatCancel(CONV_1)
       clock.advance(30_000)
       await vi.waitFor(() => expect(host.stop).toHaveBeenCalledTimes(1), WAIT)
       expect((daemon as any).inflight.size).toBe(1)
 
       expect((daemon as any).safetyDrainingAgents.has(AGENT_ID)).toBe(true)
-      const retry = (daemon as any).webchatTransport.dispatchWebchatTurn(
+      const retry = await (daemon as any).webchatTransport.dispatchWebchatTurn(
         AGENT_ID,
         CONV_2,
         'must stay blocked',
@@ -714,7 +732,7 @@ describe('Daemon interrupt safety gates', () => {
       const ninth = topLevelMention(9)
       await expect((daemon as any).dispatch(ninth.targetAgent, ninth.msg)).resolves.toBeNull()
 
-      expect((daemon as any).store.isLoopGuardOpen('slack:C-loop:top-level')).toBe(true)
+      expect(await (daemon as any).store.isLoopGuardOpen('slack:C-loop:top-level')).toBe(true)
       expect(host.prompt).toHaveBeenCalledTimes(8)
 
       // A genuine reply remains scoped to its thread and is not blocked by the
@@ -742,7 +760,7 @@ describe('Daemon interrupt safety gates', () => {
       ]
       const conn = { postMessage: vi.fn(async () => {}), setStatus: vi.fn(async () => {}) }
       ;(daemon as any).connByIntegration.set('int-a', conn)
-      ;(daemon as any).commands.handleCommand(
+      await (daemon as any).commands.handleCommand(
         { kind: 'resume' },
         {
           ...ninth.msg,
@@ -754,7 +772,7 @@ describe('Daemon interrupt safety gates', () => {
         },
         { agentId: AGENT_ID, integrationId: 'int-a', via: 'mention' }
       )
-      expect((daemon as any).store.isLoopGuardOpen('slack:C-loop:top-level')).toBe(false)
+      expect(await (daemon as any).store.isLoopGuardOpen('slack:C-loop:top-level')).toBe(false)
       expect(conn.postMessage).toHaveBeenCalledWith('C-loop', expect.stringContaining('Resumed'), '9')
     } finally {
       await daemon.stop()
@@ -836,7 +854,7 @@ describe('Daemon interrupt safety gates', () => {
     const stream = webchatSink()
     await daemon.start()
 
-    const ack = (daemon as any).webchatTransport.dispatchWebchatTurn(
+    const ack = await (daemon as any).webchatTransport.dispatchWebchatTurn(
       AGENT_ID,
       CONV_1,
       'cold shutdown',

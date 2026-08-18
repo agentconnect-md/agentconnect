@@ -75,7 +75,7 @@ export interface DaemonEvaluationHost {
   onInboundOutcome(
     msg: NormalizedMessage,
     srcIntegrationIds?: string[]
-  ): { kind: 'rejected'; reason: DeliveryRejectionReason } | { kind: 'dispatched'; handle: DeliveryHandle }
+  ): Promise<{ kind: 'rejected'; reason: DeliveryRejectionReason } | { kind: 'dispatched'; handle: DeliveryHandle }>
   /** Live turn work: `pending` is non-zero while anything is queued or running. */
   inflightWork(): { pending: number; active: Promise<void>[] }
   memoryPostTurnChain(agentId: string): Promise<void> | undefined
@@ -253,7 +253,7 @@ export class DaemonEvaluationHooks {
    * agent is supplied; routing decides. Duplicate, reordered, and delayed
    * injections are legitimate inputs handled by the production ingress logic.
    */
-  injectPlatformEvent(event: EvaluationPlatformEvent): DeliveryHandle {
+  async injectPlatformEvent(event: EvaluationPlatformEvent): Promise<DeliveryHandle> {
     if (!this.enabled) throw new Error('daemon evaluation observer is not enabled')
     if (!this.integrationIds.has(event.integrationId)) {
       throw new Error(`injectPlatformEvent requires an evaluation integration (got ${event.integrationId})`)
@@ -282,7 +282,7 @@ export class DaemonEvaluationHooks {
     }
     // Same source resolution as a live connection callback: all integrations
     // consolidated onto this physical (virtual) connection.
-    const outcome = this.host.onInboundOutcome(msg, this.host.srcIntegrationIds(conn))
+    const outcome = await this.host.onInboundOutcome(msg, this.host.srcIntegrationIds(conn))
     if (outcome.kind === 'dispatched') return outcome.handle
     const admission: DeliveryAdmission = { admitted: false, reason: outcome.reason }
     return {
@@ -298,7 +298,7 @@ export class DaemonEvaluationHooks {
    * session-state invariants. Referee deliveries are environment machinery and
    * are excluded from ingress-invariant scoring by their producers.
    */
-  deliverRefereeEvent(event: RefereeEvent): DeliveryHandle {
+  async deliverRefereeEvent(event: RefereeEvent): Promise<DeliveryHandle> {
     if (!this.enabled) throw new Error('daemon evaluation observer is not enabled')
     if (!this.host.agents().has(event.targetAgentId)) throw new Error(`unknown evaluation agent ${event.targetAgentId}`)
     const msg: NormalizedMessage = {
@@ -314,7 +314,7 @@ export class DaemonEvaluationHooks {
       isDm: event.isDm,
       ...(event.isDm ? { trigger: 'dm' as const } : {})
     }
-    return this.dispatchHandle(event.targetAgentId, msg, event.integrationId).handle
+    return (await this.dispatchHandle(event.targetAgentId, msg, event.integrationId)).handle
   }
 
   /** Drive a real daemon turn through the same SessionManager, ACP host, memory,

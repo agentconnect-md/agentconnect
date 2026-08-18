@@ -61,9 +61,9 @@ export interface ConfigApply {
   /** Restore/reconcile an agent and verify it is servable (agent/activate REQ). */
   applyAgentActivate(activate: AgentActivate): Promise<Ack>
   /** Bounded daemon-local editor approval history (secret-masked summaries only). */
-  listAgentPermissionRequests(req: AgentPermissionRequestList): AgentPermissionRequestPage
+  listAgentPermissionRequests(req: AgentPermissionRequestList): Promise<AgentPermissionRequestPage>
   /** Resolve one live ACP request from the Agent editor. */
-  decideAgentPermission(req: AgentPermissionDecision): Ack
+  decideAgentPermission(req: AgentPermissionDecision): Ack | Promise<Ack>
   /** Add or replace a CP-owned platform integration in memory (integration/upsert EVT). */
   applyIntegrationUpsert(spec: IntegrationSpec): void
   /** Drop a CP-owned integration (integration/remove EVT). */
@@ -117,7 +117,7 @@ export interface ConfigApply {
    * below the stored one is reported `superseded` and NOT reapplied — but it is
    * still acknowledged, so a lost ack cannot make the CP retry forever.
    */
-  applySessionVisibility(p: SessionVisibilityPush): 'applied' | 'superseded'
+  applySessionVisibility(p: SessionVisibilityPush): Promise<'applied' | 'superseded'>
 }
 
 const LOG_LEVELS = new Set(['trace', 'debug', 'info', 'warn', 'error'])

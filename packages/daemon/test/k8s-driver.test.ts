@@ -713,7 +713,7 @@ describe('cluster launch generations', () => {
   }
 
   it('continues the sequence when a successor member takes an agent over', async () => {
-    const store = new LocalStore(storeFile())
+    const store = await LocalStore.open(storeFile())
     const { api } = fakeApi()
     const memberA = driver(api, { generations: store })
     expect((await memberA.instance.ensureSandbox('agent-a')).generation).toBe(1)
@@ -723,41 +723,41 @@ describe('cluster launch generations', () => {
     // The rollout: a different member process, the same sandbox pod, the same shared store.
     const memberB = driver(api, { generations: store })
     expect((await memberB.instance.ensureSandbox('agent-a')).generation).toBe(3)
-    store.close()
+    await store.close()
   })
 
   it('resumes the sequence from the store after the member process restarts', async () => {
     const path = storeFile()
-    const first = new LocalStore(path)
+    const first = await LocalStore.open(path)
     const before = driver(fakeApi().api, { generations: first })
     expect((await before.instance.ensureSandbox('agent-a')).generation).toBe(1)
-    first.close()
-    const reopened = new LocalStore(path)
+    await first.close()
+    const reopened = await LocalStore.open(path)
     const after = driver(fakeApi().api, { generations: reopened })
     expect((await after.instance.ensureSandbox('agent-a')).generation).toBe(2)
-    reopened.close()
+    await reopened.close()
   })
 
   it('counts each agent independently, so churn on one pod does not skip generations on another', async () => {
-    const store = new LocalStore(storeFile())
+    const store = await LocalStore.open(storeFile())
     const { api } = fakeApi()
     const { instance } = driver(api, { generations: store })
     expect((await instance.ensureSandbox('agent-a')).generation).toBe(1)
     instance.forgetLaunch('agent-a')
     expect((await instance.ensureSandbox('agent-a')).generation).toBe(2)
     expect((await instance.ensureSandbox('agent-b')).generation).toBe(1)
-    store.close()
+    await store.close()
   })
 
   it('does not consume a generation when the cached launch answers', async () => {
-    const store = new LocalStore(storeFile())
+    const store = await LocalStore.open(storeFile())
     const { api } = fakeApi()
     const { instance } = driver(api, { generations: store })
     await instance.ensureSandbox('agent-a')
     // Re-attach, not re-launch: the shim binding registry treats an equal generation from the
     // same pod as a reconnect, and burning a number here would fence out the live channel.
     expect((await instance.ensureSandbox('agent-a')).generation).toBe(1)
-    expect(store.nextSandboxGeneration('agent-a')).toBe(2)
-    store.close()
+    expect(await store.nextSandboxGeneration('agent-a')).toBe(2)
+    await store.close()
   })
 })

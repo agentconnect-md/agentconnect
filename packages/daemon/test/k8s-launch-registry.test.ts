@@ -8,17 +8,17 @@ function registry(clock = new FakeClock()) {
 }
 
 describe('launch registry records', () => {
-  it('records a launch at a fresh generation and forgets it on request', () => {
+  it('records a launch at a fresh generation and forgets it on request', async () => {
     const { subject, clock } = registry()
     clock.advance(1_000)
 
-    const first = subject.recordLaunch('agent-a', 'sb-1', 'sandbox-uid-1')
+    const first = await subject.recordLaunch('agent-a', 'sb-1', 'sandbox-uid-1')
     expect(first).toMatchObject({ agentId: 'agent-a', sandboxName: 'sb-1', generation: 1, since: clock.now() })
     expect(subject.currentLaunch('agent-a')).toBe(first)
     expect(subject.launchedAgents()).toEqual([{ agentId: 'agent-a', since: clock.now() }])
 
     // A replacement pod must never reuse the fence the departed incarnation was bound against.
-    const second = subject.recordLaunch('agent-a', 'sb-1', 'sandbox-uid-2')
+    const second = await subject.recordLaunch('agent-a', 'sb-1', 'sandbox-uid-2')
     expect(second.generation).toBe(2)
 
     expect(subject.forgetLaunch('agent-a')).toBe(second)
@@ -76,14 +76,14 @@ describe('launch registry takeover', () => {
     expect(subject.adoptInFlight('agent-a')).toBe(first)
     expect(derive).toHaveBeenCalledTimes(1)
 
-    finish?.(subject.recordLaunch('agent-a', 'sb-1', 'sandbox-uid-1'))
+    finish?.(await subject.recordLaunch('agent-a', 'sb-1', 'sandbox-uid-1'))
     expect(await first).toBe(subject.currentLaunch('agent-a'))
     expect(subject.adoptInFlight('agent-a')).toBeUndefined()
   })
 
   it('answers from the cached launch without reaching the cluster', async () => {
     const { subject } = registry()
-    const launch = subject.recordLaunch('agent-a', 'sb-1', 'sandbox-uid-1')
+    const launch = await subject.recordLaunch('agent-a', 'sb-1', 'sandbox-uid-1')
     const derive = vi.fn(async () => undefined)
 
     expect(await subject.adopt('agent-a', derive)).toBe(launch)

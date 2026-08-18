@@ -1,6 +1,6 @@
 import { Pool } from 'pg'
 
-import { PostgresSyncDatabase } from '../../src/store/postgres-sync-database.js'
+import { FrozenSyncDatabase } from './frozen-sync-database.js'
 
 export const TRACE_SCHEMA = 'agentconnect_capacity_bench'
 
@@ -262,6 +262,7 @@ function normalizeResult(result: {
   }
 }
 
+/** The retired bridge's rung: a frozen copy under `test/performance/`, not production code. */
 export class SyncWorkerTraceExecutor implements TraceExecutor {
   private initializationFinished = false
 
@@ -275,7 +276,7 @@ export class SyncWorkerTraceExecutor implements TraceExecutor {
   }
 
   static open(databaseUrl: string): SyncWorkerTraceExecutor {
-    return new SyncWorkerTraceExecutor(new PostgresSyncDatabase({ version: 1, databaseUrl, maxConnections: 1 }))
+    return new SyncWorkerTraceExecutor(new FrozenSyncDatabase({ version: 1, databaseUrl, maxConnections: 1 }))
   }
 
   finishSchemaInitialization(): void {

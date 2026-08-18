@@ -85,7 +85,7 @@ async function runTrial(trial: number): Promise<TrialRecord> {
   try {
     await preflightRealSubject(subject.root)
     await arena.start()
-    arena.postHost(NIGHT_START_TEXT)
+    await arena.postHost(NIGHT_START_TEXT)
     const settled = await arena.settleOrStall({ quietMs: 15_000, timeoutMs: TRIAL_BUDGET_MS })
     const latencyMs = Date.now() - startedAt
     const events = arena.events()

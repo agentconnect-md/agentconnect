@@ -49,7 +49,7 @@ export interface OpenRuntimeSessionInput {
   /** Current chat authority for runtime changes, re-read immediately before each request. */
   chatRuntimeChangesAllowed: () => boolean
   /** The sticky per-session effort override (chat-selected or turn-supplied). */
-  effortOverride: () => string | undefined
+  effortOverride: () => Promise<string | undefined>
   /** Standing context for a fresh session; `resumeSystemContext` for a native resume. */
   metaContext?: string
   resumeSystemContext?: string
@@ -82,9 +82,9 @@ export async function openRuntimeSession(input: OpenRuntimeSessionInput): Promis
   let additionalMcpAttached: boolean | undefined = input.additionalMcpServers?.length ? true : undefined
   let created = false
 
-  const sessionStartEffort = (): { value?: string; chatSelected: boolean } => {
+  const sessionStartEffort = async (): Promise<{ value?: string; chatSelected: boolean }> => {
     if (!input.chatRuntimeChangesAllowed()) return { chatSelected: false }
-    const value = input.effortOverride()
+    const value = await input.effortOverride()
     return { value, chatSelected: value !== undefined }
   }
   const withAdditionalMcpFallback = async <T>(
@@ -108,7 +108,7 @@ export async function openRuntimeSession(input: OpenRuntimeSessionInput): Promis
   ): Promise<string> => {
     const additionalDirectories = input.workspaceDirectories(cwd)
     while (true) {
-      const selected = sessionStartEffort()
+      const selected = await sessionStartEffort()
       const create = (servers: McpServer[]) =>
         abortable(() => host.newSession(cwd, servers, selected.value, systemAppend, additionalDirectories), signal)
       const sessionId = await withAdditionalMcpFallback(
@@ -126,7 +126,7 @@ export async function openRuntimeSession(input: OpenRuntimeSessionInput): Promis
     systemAppend?: string,
     fallbackMcpServers?: McpServer[]
   ): Promise<boolean> => {
-    const selected = sessionStartEffort()
+    const selected = await sessionStartEffort()
     const additionalDirectories = input.workspaceDirectories(cwd)
     const load = (servers: McpServer[]) =>
       abortable(
@@ -183,8 +183,8 @@ export async function openRuntimeSession(input: OpenRuntimeSessionInput): Promis
       ...(identity.originSessionId ? { originSessionId: identity.originSessionId } : {}),
       ...(identity.needsParentReply ? { needsParentReply: 1 } : {})
     }
-    store.upsertSession(rec)
-    if (identity.initialTitle) store.setSessionTitle(identity.key, identity.initialTitle)
+    await store.upsertSession(rec)
+    if (identity.initialTitle) await store.setSessionTitle(identity.key, identity.initialTitle)
   } else if (host.hasSession?.(rec.acpSessionId) === false) {
     const persistedSessionId = rec.acpSessionId
     // Persisted, but unknown to THIS agent process (daemon restart / host eviction):
@@ -203,7 +203,7 @@ export async function openRuntimeSession(input: OpenRuntimeSessionInput): Promis
     if (host.loadSupported?.()) {
       // §7.3 closed/evicted → resuming: mark the re-attach so a TTL-closed session
       // isn't seen as `closed` mid-load, then fall through to `prompting` later.
-      store.setSessionState(identity.key, 'resuming', Date.now())
+      await store.setSessionState(identity.key, 'resuming', Date.now())
       try {
         resumed = await loadRuntimeSession(
           persistedSessionId,
@@ -224,7 +224,7 @@ export async function openRuntimeSession(input: OpenRuntimeSessionInput): Promis
       // above) keeps its id — the CP already knows it — so `created` stays false there.
       created = true
       rec = { ...rec, acpSessionId, state: 'idle', lastDeliveredTs: null, updatedAt: Date.now() }
-      store.upsertSession(rec)
+      await store.upsertSession(rec)
     }
   }
 

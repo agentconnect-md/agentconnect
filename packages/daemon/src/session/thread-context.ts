@@ -47,8 +47,8 @@ export class ThreadContextCoordinator {
     private readonly onSnapshotFailure?: (error: unknown) => void
   ) {}
 
-  observeInbound(event: TranscriptEntry): void {
-    this.store.appendTranscript(event)
+  async observeInbound(event: TranscriptEntry): Promise<void> {
+    await this.store.appendTranscript(event)
   }
 
   async refresh(input: ThreadContextRefreshInput): Promise<ContextRefresh> {
@@ -77,7 +77,7 @@ export class ThreadContextCoordinator {
       if (snapshot) {
         // Provider history rows carry a platform author and no recipient: the refreshing
         // agent is what names the org that owns them on a shared store.
-        for (const event of snapshot.events) this.store.appendTranscript({ ...event, orgAgentId: input.agentId })
+        for (const event of snapshot.events) await this.store.appendTranscript({ ...event, orgAgentId: input.agentId })
         completeness = snapshot.completeness
         providerCheckpoint = snapshot.checkpoint ?? providerCheckpoint
       } else {
@@ -86,22 +86,27 @@ export class ThreadContextCoordinator {
       }
     }
 
-    // No await is allowed between these reads. One JavaScript turn therefore forms
-    // the daemon-local observation fence: an ingress callback runs either before both
-    // reads (and is included) or after both reads (and belongs to the next turn).
-    const rows = (
-      input.scopeReadsToAgent
-        ? this.store.transcriptSinceRevisionForAgent(
-            input.transcriptChannel,
-            input.thread,
-            input.afterRevision,
-            input.agentId
-          )
-        : this.store.transcriptSinceRevision(input.transcriptChannel, input.thread, input.afterRevision, input.agentId)
-    )
+    // The fence is read BEFORE the rows and only ever moved up to a revision this read
+    // actually returned, so a row appended between the two awaits is re-observed next
+    // refresh (a harmless duplicate) instead of being skipped (a permanent gap).
+    const fence = await this.store.threadTranscriptRevision(input.transcriptChannel, input.thread, input.agentId)
+    const observed = input.scopeReadsToAgent
+      ? await this.store.transcriptSinceRevisionForAgent(
+          input.transcriptChannel,
+          input.thread,
+          input.afterRevision,
+          input.agentId
+        )
+      : await this.store.transcriptSinceRevision(
+          input.transcriptChannel,
+          input.thread,
+          input.afterRevision,
+          input.agentId
+        )
+    const rows = observed
       .filter((row) => row.kind === 'text' && row.sender !== input.agentId)
       .sort((a, b) => a.eventTimeUs - b.eventTimeUs || a.seq - b.seq)
-    const revision = this.store.threadTranscriptRevision(input.transcriptChannel, input.thread, input.agentId)
+    const revision = observed.reduce((max, row) => Math.max(max, row.revision), fence)
 
     return {
       events: rows,

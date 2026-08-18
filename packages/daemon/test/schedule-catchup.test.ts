@@ -108,11 +108,11 @@ const drop = (inner: any) => inner.dutyCoordinator.applyDutyRevoke([{ groupId: G
 const agentOf = (inner: any) => inner.agents.get(AGENT)
 
 /** Backdate both stamps, fingerprinted under the definitions currently in force. */
-function stampsBefore(inner: any, msAgo: number): void {
+async function stampsBefore(inner: any, msAgo: number): Promise<void> {
   const at = inner.clock.now() - msAgo
   const agent = agentOf(inner)
-  inner.store.setCronLastRun(`${AGENT}:report`, at, scheduleFingerprint(inner.cronDefinition(agent.crons[0])))
-  inner.store.setDreamLastRun(AGENT, at, scheduleFingerprint(inner.dreamDefinition(agent)))
+  await inner.store.setCronLastRun(`${AGENT}:report`, at, scheduleFingerprint(inner.cronDefinition(agent.crons[0])))
+  await inner.store.setDreamLastRun(AGENT, at, scheduleFingerprint(inner.dreamDefinition(agent)))
 }
 
 /** Rewrite agent.json, then reconcile every listed member — the path a real definition change
@@ -137,13 +137,13 @@ const settle = () => new Promise((r) => setTimeout(r, 30))
 describe('missed-fire compensation across a duty handover', () => {
   it('replays a cron and a dream that fell inside the handover, on the member that gained the duty', async () => {
     const { a, b, stop } = await bootPool()
-    hold(a.inner)
+    await hold(a.inner)
     // The window: the old holder releases before the moment, the successor arms after it.
-    stampsBefore(a.inner, 2 * HOUR_MS)
-    drop(a.inner)
+    await stampsBefore(a.inner, 2 * HOUR_MS)
+    await drop(a.inner)
     a.crons.length = 0
     a.dreams.length = 0
-    hold(b.inner)
+    await hold(b.inner)
     await settle()
     expect(b.crons).toEqual([AGENT])
     expect(b.dreams).toEqual([AGENT])
@@ -155,10 +155,10 @@ describe('missed-fire compensation across a duty handover', () => {
 
   it('fires nothing when the schedules already ran — the stamp is newer than the missed moment', async () => {
     const { a, b, stop } = await bootPool()
-    hold(a.inner)
-    stampsBefore(a.inner, 0)
-    drop(a.inner)
-    hold(b.inner)
+    await hold(a.inner)
+    await stampsBefore(a.inner, 0)
+    await drop(a.inner)
+    await hold(b.inner)
     await settle()
     expect(b.crons).toEqual([])
     expect(b.dreams).toEqual([])
@@ -167,9 +167,9 @@ describe('missed-fire compensation across a duty handover', () => {
 
   it('fires nothing when a schedule has no stamp at all — nothing durable says a fire was due', async () => {
     const { a, b, stop } = await bootPool()
-    hold(a.inner)
-    drop(a.inner)
-    hold(b.inner)
+    await hold(a.inner)
+    await drop(a.inner)
+    await hold(b.inner)
     await settle()
     expect(b.crons).toEqual([])
     expect(b.dreams).toEqual([])
@@ -178,10 +178,10 @@ describe('missed-fire compensation across a duty handover', () => {
 
   it('two members racing the same handoff compensate the occurrence exactly once', async () => {
     const { a, b, stop } = await bootPool()
-    stampsBefore(a.inner, 2 * HOUR_MS)
+    await stampsBefore(a.inner, 2 * HOUR_MS)
     // Both claim the group — the overlap a handover leaves behind.
-    hold(a.inner)
-    hold(b.inner)
+    await hold(a.inner)
+    await hold(b.inner)
     await settle()
     expect(a.crons.length + b.crons.length).toBe(1)
     expect(a.dreams.length + b.dreams.length).toBe(1)
@@ -190,13 +190,13 @@ describe('missed-fire compensation across a duty handover', () => {
 
   it('a second grant of an agent already held replays nothing — a catch-up is per handover', async () => {
     const { a, stop } = await bootPool()
-    stampsBefore(a.inner, 2 * HOUR_MS)
-    hold(a.inner)
+    await stampsBefore(a.inner, 2 * HOUR_MS)
+    await hold(a.inner)
     await settle()
     expect(a.crons).toEqual([AGENT])
     a.crons.length = 0
     a.dreams.length = 0
-    hold(a.inner)
+    await hold(a.inner)
     await settle()
     expect(a.crons).toEqual([])
     expect(a.dreams).toEqual([])
@@ -205,10 +205,10 @@ describe('missed-fire compensation across a duty handover', () => {
 
   it('a real fire stamps the dream schedule, so the next handover sees the moment as served', async () => {
     const { a, stop } = await bootPool()
-    expect(a.inner.store.dreamRun(AGENT)).toBeUndefined()
-    a.inner.onDreamScheduleFire(AGENT)
+    expect(await a.inner.store.dreamRun(AGENT)).toBeUndefined()
+    await a.inner.onDreamScheduleFire(AGENT)
     await settle()
-    const run = a.inner.store.dreamRun(AGENT)
+    const run = await a.inner.store.dreamRun(AGENT)
     expect(run.lastRunAt).toBeGreaterThan(0)
     expect(run.definition).toBe(scheduleFingerprint(a.inner.dreamDefinition(agentOf(a.inner))))
     await stop()
@@ -216,13 +216,13 @@ describe('missed-fire compensation across a duty handover', () => {
 
   it('replays nothing when the definition was edited since the stamp', async () => {
     const { a, b, root, stop } = await bootPool()
-    hold(a.inner)
-    stampsBefore(a.inner, 2 * HOUR_MS)
-    drop(a.inner)
+    await hold(a.inner)
+    await stampsBefore(a.inner, 2 * HOUR_MS)
+    await drop(a.inner)
     // Same cadence, different moments: :30 past the hour is due on its own, but the stamp is
     // evidence about the :00 schedule that no longer exists.
     await editSchedules(root, [a, b], { schedule: '30 * * * *' })
-    hold(b.inner)
+    await hold(b.inner)
     await settle()
     expect(b.crons).toEqual([])
     expect(b.dreams).toEqual([])
@@ -231,35 +231,35 @@ describe('missed-fire compensation across a duty handover', () => {
 
   it('a member that does not serve the agent never rewrites the shared stamps', async () => {
     const { a, b, root, stop } = await bootPool()
-    hold(a.inner)
-    stampsBefore(a.inner, 2 * HOUR_MS)
-    const cron = a.inner.store.cronRun(`${AGENT}:report`)
-    const dream = a.inner.store.dreamRun(AGENT)
+    await hold(a.inner)
+    await stampsBefore(a.inner, 2 * HOUR_MS)
+    const cron = await a.inner.store.cronRun(`${AGENT}:report`)
+    const dream = await a.inner.store.dreamRun(AGENT)
     // b holds nothing. Its reconcile disarms its own jobs; the shared evidence is the holder's,
     // and a stale non-holder rewriting it would erase the very gap the holder must compensate.
     await editSchedules(root, [b], { schedule: '30 * * * *' })
-    expect(b.inner.store.cronRun(`${AGENT}:report`)).toEqual(cron)
-    expect(b.inner.store.dreamRun(AGENT)).toEqual(dream)
+    expect(await b.inner.store.cronRun(`${AGENT}:report`)).toEqual(cron)
+    expect(await b.inner.store.dreamRun(AGENT)).toEqual(dream)
     await stop()
   })
 
   it('a cron id deleted and recreated starts from no evidence', async () => {
     const { a, b, root, stop } = await bootPool()
-    hold(a.inner)
-    stampsBefore(a.inner, 2 * HOUR_MS)
+    await hold(a.inner)
+    await stampsBefore(a.inner, 2 * HOUR_MS)
     // Deleting drops the row outright — ids are re-mintable, so leaving one would let a later
     // schedule of the same name inherit a run it never had.
     await editAgent(root, [a], (agent) => {
       agent.crons = []
       delete agent.memory.dreaming
     })
-    expect(a.inner.store.cronRun(`${AGENT}:report`)).toBeUndefined()
+    expect(await a.inner.store.cronRun(`${AGENT}:report`)).toBeUndefined()
     await editAgent(root, [a, b], (agent) => {
       agent.crons = [CRON]
       agent.memory.dreaming = DREAMING
     })
-    drop(a.inner)
-    hold(b.inner)
+    await drop(a.inner)
+    await hold(b.inner)
     await settle()
     expect(b.crons).toEqual([])
     expect(b.dreams).toEqual([])
@@ -268,12 +268,12 @@ describe('missed-fire compensation across a duty handover', () => {
 
   it('replays nothing across a disable and re-enable', async () => {
     const { a, b, root, stop } = await bootPool()
-    hold(a.inner)
-    stampsBefore(a.inner, 2 * HOUR_MS)
+    await hold(a.inner)
+    await stampsBefore(a.inner, 2 * HOUR_MS)
     await editSchedules(root, [a, b], { enabled: false })
     await editSchedules(root, [a, b], { enabled: true })
-    drop(a.inner)
-    hold(b.inner)
+    await drop(a.inner)
+    await hold(b.inner)
     await settle()
     expect(b.crons).toEqual([])
     expect(b.dreams).toEqual([])

@@ -58,21 +58,21 @@ describe('Daemon ↔ CP integration', () => {
     // (resolveCpRule) → drives routeRules. It composes exactly what Daemon.routeFor() does.
     const root = freshRoot()
     // pre-seed the CP routing layer in the store (channel C1 → agentA, auto), epoch 1
-    const store = new LocalStore(statePath(root))
-    store.setCpRouting(
+    const store = await LocalStore.open(statePath(root))
+    await store.setCpRouting(
       1,
       JSON.stringify({
         'slack:C1:-': [{ agentId: 'agentA', scope: { channel: 'C1' }, match: { kind: 'auto' }, epoch: 1 }]
       }),
       JSON.stringify([])
     )
-    store.close()
+    await store.close()
 
     // "Restart": a fresh CpRoutingLayer rehydrates from the persisted store.
-    const store2 = new LocalStore(statePath(root))
+    const store2 = await LocalStore.open(statePath(root))
     const layer = new CpRoutingLayer({
-      load: () => {
-        const row = store2.getCpRouting()
+      load: async () => {
+        const row = await store2.getCpRouting()
         return row
           ? {
               routingEpoch: row.routingEpoch,
@@ -81,8 +81,10 @@ describe('Daemon ↔ CP integration', () => {
             }
           : undefined
       },
-      save: (s) => store2.setCpRouting(s.routingEpoch, JSON.stringify(s.assignments), JSON.stringify(s.globalRules))
+      save: async (s) =>
+        await store2.setCpRouting(s.routingEpoch, JSON.stringify(s.assignments), JSON.stringify(s.globalRules))
     })
+    await layer.hydrate()
     // The local agent with id == CP agentId and a Slack integration makes the rule servable.
     const resolveCpAgent = (agentId: string) =>
       agentId === 'agentA' ? { integrationId: 'int1', botUserId: 'B1' } : null
@@ -90,7 +92,7 @@ describe('Daemon ↔ CP integration', () => {
       .effectiveRules()
       .map((r) => resolveCpRule(r, resolveCpAgent))
       .filter((r): r is NonNullable<typeof r> => r !== null)
-    store2.close()
+    await store2.close()
 
     const msg: NormalizedMessage = {
       msgId: 'm1',

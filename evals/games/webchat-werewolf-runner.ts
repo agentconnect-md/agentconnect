@@ -221,7 +221,7 @@ export async function runWebchatWerewolf(options: WebchatWerewolfRunOptions): Pr
     if (brain.phase !== 'done' && terminalReason === 'stalled' && Date.now() >= deadline) {
       terminalReason = 'budget_exhausted'
     }
-    transcriptTexts = arena.transcriptRows().map((row) => row.text)
+    transcriptTexts = (await arena.transcriptRows()).map((row) => row.text)
   } finally {
     await arena.stop().catch(() => {})
     await driver?.stop().catch(() => {})

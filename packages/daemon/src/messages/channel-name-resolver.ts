@@ -62,9 +62,9 @@ export interface ResolvedChannelScope {
 
 export interface ChannelNameResolverOpts {
   /** Sink for the conversation's scope, saved next to its display name. */
-  saveScope?: (id: string, scope: ResolvedChannelScope) => void
+  saveScope?: (id: string, scope: ResolvedChannelScope) => void | Promise<void>
   /** Public provider-hosted user avatar cache sink. */
-  saveAvatar?: (source: ChannelInfoSource, id: string, avatarUrl: string) => void
+  saveAvatar?: (source: ChannelInfoSource, id: string, avatarUrl: string) => void | Promise<void>
   log?: Logger
   now?: () => number
 }
@@ -74,13 +74,13 @@ export class ChannelNameResolver {
   private nextAttemptAt = new Map<string, number>()
   /** Inline names use a separate TTL namespace because a channel and user may share an id. */
   private observedNameNextSaveAt = new Map<string, number>()
-  private saveScope?: (id: string, scope: ResolvedChannelScope) => void
-  private saveAvatar?: (source: ChannelInfoSource, id: string, avatarUrl: string) => void
+  private saveScope?: (id: string, scope: ResolvedChannelScope) => void | Promise<void>
+  private saveAvatar?: (source: ChannelInfoSource, id: string, avatarUrl: string) => void | Promise<void>
   private log?: Logger
   private now: () => number
 
   constructor(
-    private save: (id: string, name: string) => void,
+    private save: (id: string, name: string) => void | Promise<void>,
     opts: ChannelNameResolverOpts = {}
   ) {
     this.saveScope = opts.saveScope
@@ -112,12 +112,20 @@ export class ChannelNameResolver {
     void this.resolveChannel(src, msg.channel, msg.sender.id)
     if (!msg.sender.isBot) {
       if (msg.sender.name) {
-        if (this.claim(msg.sender.id, this.observedNameNextSaveAt)) this.save(msg.sender.id, msg.sender.name)
+        if (this.claim(msg.sender.id, this.observedNameNextSaveAt))
+          this.persist(this.save(msg.sender.id, msg.sender.name))
       } else {
         void this.resolveUser(src, msg.sender.id)
       }
     }
     for (const id of msg.mentionedUserIds ?? []) void this.resolveUser(src, id)
+  }
+
+  /** A cache sink may write asynchronously; a failed name cache write never fails a lookup. */
+  private persist(write: void | Promise<void>): void {
+    void Promise.resolve(write).catch((err: unknown) => {
+      this.log?.debug(`name cache write failed: ${(err as Error).message}`)
+    })
   }
 
   private claim(id: string, attempts = this.nextAttemptAt): boolean {
@@ -144,27 +152,29 @@ export class ChannelNameResolver {
       // channel discovery. Saved before the name so a nameless lookup still contributes
       // the scope.
       if (info.parentId || info.spaceId || info.isIm !== undefined)
-        this.saveScope?.(channel, {
-          ...(info.parentId ? { parentId: info.parentId } : {}),
-          ...(info.spaceId ? { spaceId: info.spaceId } : {}),
-          ...(info.isIm === undefined ? {} : { isIm: info.isIm })
-        })
+        this.persist(
+          this.saveScope?.(channel, {
+            ...(info.parentId ? { parentId: info.parentId } : {}),
+            ...(info.spaceId ? { spaceId: info.spaceId } : {}),
+            ...(info.isIm === undefined ? {} : { isIm: info.isIm })
+          })
+        )
       // The enclosing channel is a reportable conversation of its own (channel discovery
       // labels the folded row from it) — cache its name, and the space both of them sit
       // in, under THEIR ids too.
-      if (info.parentId && info.parentName) this.save(info.parentId, info.parentName)
-      if (info.parentId && info.spaceId) this.saveScope?.(info.parentId, { spaceId: info.spaceId })
+      if (info.parentId && info.parentName) this.persist(this.save(info.parentId, info.parentName))
+      if (info.parentId && info.spaceId) this.persist(this.saveScope?.(info.parentId, { spaceId: info.spaceId }))
       // The space's own name lands in the same id → name cache (a guild snowflake never
       // collides with a channel or user id), so a reported channel can be labelled with
       // the server it belongs to without a second live lookup.
-      if (info.spaceId && info.spaceName) this.save(info.spaceId, info.spaceName)
+      if (info.spaceId && info.spaceName) this.persist(this.save(info.spaceId, info.spaceName))
       // A named channel/group is saved bare (the console prefixes "#"); a DM that carries
       // its own handle (a Telegram @username) is saved "@name" so readers can tell it apart.
       // A legacy Discord session may still ask to resolve a thread id during upgrade.
       // Label it with the enclosing channel so its historical row reads "#general".
       const name = info.parentName ?? info.name
       if (name) {
-        this.save(channel, info.isIm ? `@${name}` : name)
+        this.persist(this.save(channel, info.isIm ? `@${name}` : name))
         return
       }
       // A DM with no name of its own (a Discord DM channel) — label it by the human on the
@@ -173,8 +183,8 @@ export class ChannelNameResolver {
       if (info.isIm && triggeredBy) {
         const p = await src.getUserProfile(triggeredBy)
         const name = p.realName || p.name
-        if (name) this.save(channel, `@${name}`)
-        if (p.avatarUrl) this.saveAvatar?.(src, triggeredBy, p.avatarUrl)
+        if (name) this.persist(this.save(channel, `@${name}`))
+        if (p.avatarUrl) this.persist(this.saveAvatar?.(src, triggeredBy, p.avatarUrl))
       }
     } catch (err) {
       this.nextAttemptAt.set(channel, this.now() + FAIL_TTL_MS)
@@ -190,8 +200,8 @@ export class ChannelNameResolver {
     try {
       const p = await src.getUserProfile(user)
       const name = p.realName || p.name
-      if (name) this.save(user, name)
-      if (p.avatarUrl) this.saveAvatar?.(src, user, p.avatarUrl)
+      if (name) this.persist(this.save(user, name))
+      if (p.avatarUrl) this.persist(this.saveAvatar?.(src, user, p.avatarUrl))
     } catch (err) {
       this.nextAttemptAt.set(user, this.now() + FAIL_TTL_MS)
       this.log?.debug(`name lookup failed for user ${user}: ${(err as Error).message}`)

@@ -10,6 +10,7 @@ import { EvaluationEventCollector } from '../../src/evaluation/artifacts.js'
 import type { K8sRuntimePlane } from '../../src/k8s/runtime-plane.js'
 import type { K8sDriver } from '../../src/k8s/driver.js'
 import type { ResolvedRuntimeCatalog } from '../../src/runtimes/registry.js'
+import type { TranscriptRow } from '../../src/store/local-store.js'
 import type { ShimDialer } from '../../src/shim/dialer.js'
 import {
   createEventLoopDriftSampler,
@@ -495,13 +496,13 @@ export async function createPostgresDaemonHarness(options: PostgresDaemonHarness
         sampler.stop()
       }
     },
-    verification: (): HarnessVerification => {
+    verification: async (): Promise<HarnessVerification> => {
       const measuredConversations = new Set(measuredTurns.map((turn) => turn.conversationId))
       const sessions =
-        dataPlane?.store.listSessions().filter((session) => measuredConversations.has(session.channel)) ?? []
-      const transcript = sessions.flatMap((session) =>
-        dataPlane!.store.threadTranscript(session.channel, session.thread, session.agentId)
-      )
+        (await dataPlane?.store.listSessions())?.filter((session) => measuredConversations.has(session.channel)) ?? []
+      const transcript: TranscriptRow[] = []
+      for (const session of sessions)
+        transcript.push(...(await dataPlane!.store.threadTranscript(session.channel, session.thread, session.agentId)))
       const reasoningRows = transcript.filter((row) => row.kind === 'reasoning' && !row.text.endsWith(':1')).length
       const toolRows = transcript.filter((row) => {
         if (row.kind !== 'tool' || !row.body) return false

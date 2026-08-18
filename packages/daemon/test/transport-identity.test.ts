@@ -4,7 +4,7 @@ import { conversationAudienceFor } from '../src/platforms/session-audience.js'
 
 const host = (live?: string, minted?: string): TenantScopeHost => ({
   liveWorkspaceId: () => live,
-  minted: () => minted
+  minted: async () => minted
 })
 
 describe('connection identity (transport scope)', () => {
@@ -70,21 +70,25 @@ describe('connection identity (transport scope)', () => {
 })
 
 describe('tenant scope (durable owner identity)', () => {
-  it('prefers the platform tenant id, falls back to the minted scope', () => {
-    expect(tenantScopeFor(host('T012', 'm1'), { id: 'i1', platform: 'slack' })).toBe('T012')
-    expect(tenantScopeFor(host(undefined, 'm1'), { id: 'i1', platform: 'slack' })).toBe('m1')
+  it('prefers the platform tenant id, falls back to the minted scope', async () => {
+    expect(await tenantScopeFor(host('T012', 'm1'), { id: 'i1', platform: 'slack' })).toBe('T012')
+    expect(await tenantScopeFor(host(undefined, 'm1'), { id: 'i1', platform: 'slack' })).toBe('m1')
     expect(
-      tenantScopeFor(host(undefined, 'm2'), { id: 'i2', platform: 'telegram', config: { botToken: '42:x' } } as never)
+      await tenantScopeFor(host(undefined, 'm2'), {
+        id: 'i2',
+        platform: 'telegram',
+        config: { botToken: '42:x' }
+      } as never)
     ).toBe('bot42')
     expect(
-      tenantScopeFor(host(undefined, 'm2'), {
+      await tenantScopeFor(host(undefined, 'm2'), {
         id: 'i2',
         platform: 'telegram',
         config: { botToken: 'weird' }
       } as never)
     ).toBe('m2')
     expect(
-      tenantScopeFor(host(undefined, 'm3'), {
+      await tenantScopeFor(host(undefined, 'm3'), {
         id: 'i4',
         platform: 'feishu',
         config: { region: 'lark', appId: 'c1', appSecret: 's' }
@@ -92,40 +96,42 @@ describe('tenant scope (durable owner identity)', () => {
     ).toBe('lark:c1')
   })
 
-  it('falls back to the minted scope on a payload the module schema refuses — never a throw', () => {
+  it('falls back to the minted scope on a payload the module schema refuses — never a throw', async () => {
     expect(
-      tenantScopeFor(host(undefined, 'm6'), { id: 'i2', platform: 'telegram', config: { botToken: 42 } } as never)
+      await tenantScopeFor(host(undefined, 'm6'), { id: 'i2', platform: 'telegram', config: { botToken: 42 } } as never)
     ).toBe('m6')
     expect(
-      tenantScopeFor(host(undefined, 'm7'), { id: 'i4', platform: 'feishu', config: { appId: 'c1' } } as never)
+      await tenantScopeFor(host(undefined, 'm7'), { id: 'i4', platform: 'feishu', config: { appId: 'c1' } } as never)
     ).toBe('m7')
   })
 
-  it('mints for platforms with no durable tenant id (Discord, unknown)', () => {
-    expect(tenantScopeFor(host(undefined, 'm4'), { id: 'i3', platform: 'discord' })).toBe('m4')
-    expect(tenantScopeFor(host(undefined, 'm5'), { id: 'i9', platform: 'some-future-platform' })).toBe('m5')
+  it('mints for platforms with no durable tenant id (Discord, unknown)', async () => {
+    expect(await tenantScopeFor(host(undefined, 'm4'), { id: 'i3', platform: 'discord' })).toBe('m4')
+    expect(await tenantScopeFor(host(undefined, 'm5'), { id: 'i9', platform: 'some-future-platform' })).toBe('m5')
     // No minted scope either ⇒ undefined ⇒ the CP records no owner (fail closed).
-    expect(tenantScopeFor(host(undefined, undefined), { id: 'i9', platform: 'x' })).toBeUndefined()
+    expect(await tenantScopeFor(host(undefined, undefined), { id: 'i9', platform: 'x' })).toBeUndefined()
   })
 })
 
 describe('conversation audience', () => {
-  it('binds Slack channels but not Slack DMs', () => {
+  it('binds Slack channels but not Slack DMs', async () => {
     const slack = conversationAudienceFor('slack')!
     expect(slack.applies({ isDm: false })).toBe(true)
     expect(slack.applies({ isDm: true })).toBe(false)
-    expect(slack.realmKey({ liveWorkspaceId: () => 'T01', tenantScope: () => 'x' }, 'i1', undefined)).toBe('T01')
+    expect(await slack.realmKey({ liveWorkspaceId: () => 'T01', tenantScope: async () => 'x' }, 'i1', undefined)).toBe(
+      'T01'
+    )
     // Unresolved integration ⇒ unattributable realm, not a guessed one.
     expect(
-      slack.realmKey({ liveWorkspaceId: () => 'T01', tenantScope: () => 'x' }, undefined, undefined)
+      await slack.realmKey({ liveWorkspaceId: () => 'T01', tenantScope: async () => 'x' }, undefined, undefined)
     ).toBeUndefined()
   })
 
-  it('binds every Feishu conversation through the tenant anchor', () => {
+  it('binds every Feishu conversation through the tenant anchor', async () => {
     const feishu = conversationAudienceFor('feishu')!
     expect(feishu.applies({ isDm: true })).toBe(true)
     expect(
-      feishu.realmKey({ liveWorkspaceId: () => undefined, tenantScope: () => 'lark:c1' }, 'i4', {
+      await feishu.realmKey({ liveWorkspaceId: () => undefined, tenantScope: async () => 'lark:c1' }, 'i4', {
         id: 'i4',
         platform: 'feishu'
       })

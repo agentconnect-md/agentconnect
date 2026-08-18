@@ -74,7 +74,7 @@ function injectTurn(
   options: { msgId: string; mentions?: string[]; postId?: string; at?: number; withPostSink?: boolean } = {
     msgId: 'turn-1'
   }
-): unknown {
+): Promise<unknown> {
   return (leg.daemon as any).handleRelayMsg(
     rd(
       {
@@ -98,16 +98,16 @@ function injectTurn(
  * target, and a transcript-only user `context` copy to every other roster
  * member — exactly what `RelayBrowserConnection.sendTurn` emits.
  */
-function playRelayUserTurn(
+async function playRelayUserTurn(
   leg: WebchatLeg,
   roster: readonly string[],
   targets: readonly string[],
   text: string,
   options: { mentions?: string[]; postId: string; at: number; msgPrefix: string }
-): void {
+): Promise<void> {
   for (const [index, agentId] of targets.entries()) {
     expect(
-      injectTurn(leg, agentId, text, {
+      await injectTurn(leg, agentId, text, {
         msgId: `${options.msgPrefix}-t${index}`,
         ...(options.mentions !== undefined ? { mentions: options.mentions } : {}),
         postId: options.postId,
@@ -116,7 +116,7 @@ function playRelayUserTurn(
     ).toMatchObject({ accepted: true })
   }
   for (const [index, peer] of roster.filter((agentId) => !targets.includes(agentId)).entries()) {
-    ;(leg.daemon as any).handleRelayMsg(
+    await (leg.daemon as any).handleRelayMsg(
       rd(
         { op: 'context', post: userPost(CONV, text, options.at, options.postId) },
         { agentId: peer, msgId: `${options.msgPrefix}-c${index}` }
@@ -127,10 +127,13 @@ function playRelayUserTurn(
 }
 
 /** Reply rows a given sender committed into the shared conversation log. */
-function transcriptRowsBy(leg: WebchatLeg, sender: string): unknown[] {
-  return (leg.daemon as any).store
-    .transcriptSince(transcriptChannelKey(CONV, undefined), `webchat:${CONV}`, null)
-    .filter((row: { sender: string }) => row.sender === sender)
+async function transcriptRowsBy(leg: WebchatLeg, sender: string): Promise<unknown[]> {
+  const rows = await (leg.daemon as any).store.transcriptSince(
+    transcriptChannelKey(CONV, undefined),
+    `webchat:${CONV}`,
+    null
+  )
+  return rows.filter((row: { sender: string }) => row.sender === sender)
 }
 
 const drivers: Record<string, (scenario: ParityScenario) => Promise<void>> = {
@@ -153,7 +156,7 @@ const drivers: Record<string, (scenario: ParityScenario) => Promise<void>> = {
       // picks the whole roster, so every member gets a `turn` frame.
       const unnarrowed = selectTurnTargets(roster, {})
       expect(unnarrowed).toEqual({ valid: roster, invalid: [] })
-      playRelayUserTurn(leg, roster, unnarrowed.valid, 'hello everyone', {
+      await playRelayUserTurn(leg, roster, unnarrowed.valid, 'hello everyone', {
         postId: KICKOFF_TURN,
         at: 1_000,
         msgPrefix: 'kick'
@@ -170,7 +173,7 @@ const drivers: Record<string, (scenario: ParityScenario) => Promise<void>> = {
       const narrowed = selectTurnTargets(roster, { mentions: [P1] })
       expect(narrowed).toEqual({ valid: [P1], invalid: [] })
       const narrowedId = '11111111-0000-4000-8000-000000000001'
-      playRelayUserTurn(leg, roster, narrowed.valid, 'just you, player one', {
+      await playRelayUserTurn(leg, roster, narrowed.valid, 'just you, player one', {
         mentions: [P1],
         postId: narrowedId,
         at: 2_000,
@@ -196,7 +199,7 @@ const drivers: Record<string, (scenario: ParityScenario) => Promise<void>> = {
       [REF]: () => NO_RESPONSE
     })
     try {
-      expect(injectTurn(leg, P1, 'kick off, please', { msgId: 't-1', mentions: [P1] })).toMatchObject({
+      expect(await injectTurn(leg, P1, 'kick off, please', { msgId: 't-1', mentions: [P1] })).toMatchObject({
         accepted: true
       })
       await vi.waitFor(() => expect(leg.posts.map((p) => p.post.text)).toEqual(['the one committed post']), WAIT)
@@ -208,10 +211,10 @@ const drivers: Record<string, (scenario: ParityScenario) => Promise<void>> = {
       // The author was activated by the human turn only — never by its own post.
       expect(leg.prompts.get(P1)).toHaveLength(1)
       const postId = leg.posts[0]!.post.postId
-      expect((leg.daemon as any).store.getActivation(rendezvousKey(postId, P1))).toBeUndefined()
+      expect(await (leg.daemon as any).store.getActivation(rendezvousKey(postId, P1))).toBeUndefined()
       // Each delivered edge is an admitted exactly-once record.
       for (const target of [P2, REF]) {
-        expect((leg.daemon as any).store.getActivation(rendezvousKey(postId, target))?.state).toBe('admitted')
+        expect((await (leg.daemon as any).store.getActivation(rendezvousKey(postId, target)))?.state).toBe('admitted')
       }
       // The woken peer's prompt names the author of the post that woke it.
       expect(leg.prompts.get(P2)![0]).toContain(`[${P1}] the one committed post`)
@@ -229,10 +232,10 @@ const drivers: Record<string, (scenario: ParityScenario) => Promise<void>> = {
     const leg = await startLeg([P1], { [P1]: () => 'should never run' })
     try {
       const post = agentPost(CONV, P1, 'my own words', 2_000, '00000003-0000-4000-8000-000000000003', 0)
-      ;(leg.daemon as any).handleRelayMsg(rd({ op: 'context', post }, { agentId: P1, msgId: 'c-1' }), () => {})
+      await (leg.daemon as any).handleRelayMsg(rd({ op: 'context', post }, { agentId: P1, msgId: 'c-1' }), () => {})
       await settle()
       expect(leg.prompts.get(P1)).toHaveLength(0)
-      expect((leg.daemon as any).store.getActivation(rendezvousKey(post.postId, P1))).toBeUndefined()
+      expect(await (leg.daemon as any).store.getActivation(rendezvousKey(post.postId, P1))).toBeUndefined()
     } finally {
       await leg.stop()
     }
@@ -250,8 +253,8 @@ const drivers: Record<string, (scenario: ParityScenario) => Promise<void>> = {
     try {
       seedCallPolicy(leg.daemon, [P1, P2]) // the author lives on another daemon — only the edge matters
       const post = agentPost(CONV, P2, 'peer says hi', 2_000, '00000001-0000-4000-8000-000000000001', 0)
-      ;(leg.daemon as any).handleRelayMsg(rd({ op: 'context', post }, { msgId: 'c-1' }), () => {})
-      ;(leg.daemon as any).handleRelayMsg(rd({ op: 'context', post }, { msgId: 'c-2' }), () => {})
+      await (leg.daemon as any).handleRelayMsg(rd({ op: 'context', post }, { msgId: 'c-1' }), () => {})
+      await (leg.daemon as any).handleRelayMsg(rd({ op: 'context', post }, { msgId: 'c-2' }), () => {})
       await vi.waitFor(() => expect(leg.prompts.get(P1)).toHaveLength(1), WAIT)
       await settle()
       expect(leg.prompts.get(P1)).toHaveLength(1)
@@ -279,7 +282,7 @@ const drivers: Record<string, (scenario: ParityScenario) => Promise<void>> = {
       [P2]: () => NO_RESPONSE
     })
     try {
-      injectTurn(leg, P1, 'go', { msgId: 't-1', mentions: [P1] })
+      await injectTurn(leg, P1, 'go', { msgId: 't-1', mentions: [P1] })
       await vi.waitFor(() => expect(leg.prompts.get(P1)).toHaveLength(1), WAIT)
       await settle()
       // Mid-generation: nothing committed, nothing fanned, peer untouched.
@@ -309,7 +312,7 @@ const drivers: Record<string, (scenario: ParityScenario) => Promise<void>> = {
     const leg = await startLeg([P1, P2], { [P1]: always, [P2]: always })
     try {
       const infoSpy = vi.spyOn((leg.daemon as any).log, 'info')
-      injectTurn(leg, P1, 'count forever, alternating', { msgId: 't-1' })
+      await injectTurn(leg, P1, 'count forever, alternating', { msgId: 't-1' })
       // Kickoff post at depth 0, one continuation per admitted edge at depths
       // 1..cap-1 — afterEdges + 1 posts in total, then the recorded refusal.
       await vi.waitFor(() => expect(leg.posts).toHaveLength(refusal.afterEdges + 1), { timeout: 25_000 })
@@ -346,7 +349,7 @@ const drivers: Record<string, (scenario: ParityScenario) => Promise<void>> = {
       // Woken, silent: no committed post by the decliner, no reply row, and
       // the exchange ends (nothing further woke the author).
       expect(leg.posts.map((p) => p.agentId)).toEqual([P1])
-      expect(transcriptRowsBy(leg, REF)).toEqual([])
+      expect(await transcriptRowsBy(leg, REF)).toEqual([])
       expect(leg.prompts.get(P1)).toHaveLength(1)
     } finally {
       await leg.stop()
@@ -364,10 +367,12 @@ const drivers: Record<string, (scenario: ParityScenario) => Promise<void>> = {
     try {
       seedCallPolicy(leg.daemon, [P1, P2])
       const post = agentPost(CONV, P2, 'legacy peer post', 2_000, '00000002-0000-4000-8000-000000000002')
-      ;(leg.daemon as any).handleRelayMsg(rd({ op: 'context', post }, { msgId: 'c-1' }), () => {})
+      await (leg.daemon as any).handleRelayMsg(rd({ op: 'context', post }, { msgId: 'c-1' }), () => {})
       await settle()
       // Recorded for §8.5 catch-up…
-      expect(transcriptRowsBy(leg, P2).map((row) => (row as { text: string }).text)).toEqual(['legacy peer post'])
+      expect((await transcriptRowsBy(leg, P2)).map((row) => (row as { text: string }).text)).toEqual([
+        'legacy peer post'
+      ])
       // …but no activation.
       expect(leg.prompts.get(P1)).toHaveLength(0)
     } finally {

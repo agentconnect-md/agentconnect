@@ -68,11 +68,11 @@ export interface PlatformActionSink {
   handlePermissionChoice: NonNullable<SlackDeps['onPermissionChoice']>
   handleElicitChoice: NonNullable<SlackDeps['onElicitChoice']>
   handleDiscordSelect: NonNullable<DiscordDeps['onSelectAction']>
-  handleTelegramCallback(cb: TelegramCallback, conn: TelegramConnection): void
+  handleTelegramCallback(cb: TelegramCallback, conn: TelegramConnection): Promise<void>
   slackShortcutSession(
     shortcut: { channel: string; thread: string },
     srcIntegrationIds: readonly string[]
-  ): string | undefined
+  ): Promise<string | undefined>
 }
 
 /** Exactly what the reconciler touches on the Daemon — nothing wider. */
@@ -122,13 +122,13 @@ export interface ConnectionReconcilerHost extends PlatformActionSink {
   srcIntegrationIds(conn: unknown): string[]
   /** Drain the in-flight turns holding `conn` before it is stopped. */
   waitForConnectionUses(conn: PlatformConnection): Promise<void>
-  observeTelegramChat(chat: TelegramObservedChat, integrationIds: readonly string[]): void
-  refreshObservedChannels(): void
-  retractChannels(integrationId: string, channelIds: readonly string[]): void
+  observeTelegramChat(chat: TelegramObservedChat, integrationIds: readonly string[]): Promise<void>
+  refreshObservedChannels(): Promise<void>
+  retractChannels(integrationId: string, channelIds: readonly string[]): Promise<void>
   integrationConfigById(integrationId: string): Integration | undefined
   integrationIdForTransportScope(agentId: string, platform: string, transportScope?: string | null): string | undefined
   connForIntegration(integrationId: string): PlatformConnection | undefined
-  emitSessionMetadataSnapshotsForDisplayName(id: string): void
+  emitSessionMetadataSnapshotsForDisplayName(id: string): Promise<void>
   dispatch(
     agentId: string,
     msg: NormalizedMessage,
@@ -518,10 +518,10 @@ export class ConnectionReconciler {
           this.host.channelNameResolver()?.noteMessage(conn, msg)
           this.host.onInbound(msg, this.host.srcIntegrationIds(conn))
         },
-        onBotAddedToChat: (chat) => {
+        onBotAddedToChat: async (chat) => {
           const integrationIds = new Set(group.integrations.map(({ integrationId }) => integrationId))
           for (const integrationId of this.host.srcIntegrationIds(conn)) integrationIds.add(integrationId)
-          this.host.observeTelegramChat(chat, [...integrationIds])
+          await this.host.observeTelegramChat(chat, [...integrationIds])
         },
         onCallback: (cb) => this.host.handleTelegramCallback(cb, conn),
         log: this.log
@@ -547,7 +547,7 @@ export class ConnectionReconciler {
     }
     // Label existing sessions' chats now that connections are up (per-message resolution
     // otherwise only fires on fresh traffic — see backfillChannelNames).
-    this.backfillChannelNames()
+    await this.backfillChannelNames()
   }
 
   /**
@@ -609,7 +609,7 @@ export class ConnectionReconciler {
     }
     // Label existing sessions' channels now that connections are up (per-message
     // resolution otherwise only fires on fresh traffic — see backfillChannelNames).
-    this.backfillChannelNames()
+    await this.backfillChannelNames()
   }
 
   /** The live desired gateway region for a Feishu appId, or undefined if no agent
@@ -696,7 +696,7 @@ export class ConnectionReconciler {
     }
     // Label existing sessions' channels now that connections are up (per-message
     // resolution otherwise only fires on fresh traffic — see backfillChannelNames).
-    this.backfillChannelNames()
+    await this.backfillChannelNames()
   }
 
   /**
@@ -708,10 +708,10 @@ export class ConnectionReconciler {
    * session's channel individually via its bot connection. Best-effort +
    * TTL-guarded by the resolver, so calling it on every reconcile is cheap.
    */
-  backfillChannelNames(): void {
+  async backfillChannelNames(): Promise<void> {
     const resolver = this.host.channelNameResolver()
     if (!resolver) return
-    for (const row of this.host.store().listSessions()) {
+    for (const row of await this.host.store().listSessions()) {
       // Only chat platforms without a bulk membership snapshot need per-session
       // channel resolution; Slack's analog is refreshChannels' bulk snapshot.
       if (originKindOf(row.platform) !== 'chat' || manifestFor(row.platform).membershipEnumeration !== 'observed')
@@ -734,7 +734,7 @@ export class ConnectionReconciler {
         resolver.noteChannel(conn, row.channel)
       }
     }
-    this.host.refreshObservedChannels()
+    await this.host.refreshObservedChannels()
   }
 
   /**
@@ -771,7 +771,7 @@ export class ConnectionReconciler {
         const gone = (this.host.channelSnapshots().get(leave.integrationId)?.channels ?? [])
           .filter((c) => c.spaceId === target.spaceId)
           .map((c) => c.id)
-        this.host.retractChannels(leave.integrationId, gone)
+        await this.host.retractChannels(leave.integrationId, gone)
         return { ok: true }
       }
       if (target.kind !== 'conversation') {
@@ -797,7 +797,7 @@ export class ConnectionReconciler {
           if (!isAlreadyOutOfChat(err)) throw err
           this.log.debug(`telegram: already out of ${target.channel} — retracting the row`)
         }
-        this.host.retractChannels(leave.integrationId, [target.channel])
+        await this.host.retractChannels(leave.integrationId, [target.channel])
         return { ok: true }
       }
       return { ok: false, error: 'leaving a conversation is not supported on this platform' }
@@ -824,8 +824,8 @@ export class ConnectionReconciler {
       // The snapshot already carries names — cache them for session read-back too.
       for (const c of channels) {
         if (!c.name) continue
-        this.host.store().setDisplayName(c.id, c.name, Date.now())
-        this.host.emitSessionMetadataSnapshotsForDisplayName(c.id)
+        await this.host.store().setDisplayName(c.id, c.name, Date.now())
+        await this.host.emitSessionMetadataSnapshotsForDisplayName(c.id)
       }
       const snapshots = this.host.channelSnapshots()
       for (const [integrationId, c] of this.host.bindings().slack) {
@@ -839,7 +839,7 @@ export class ConnectionReconciler {
         const merged = [...channels, ...direct]
         snapshots.set(integrationId, { channels: merged, authoritative: true })
         this.host.cpClient()?.emitIntegrationChannels({ integrationId, channels: merged })
-        this.maybeIntroduceOnJoin('slack', integrationId, channels)
+        await this.maybeIntroduceOnJoin('slack', integrationId, channels)
       }
       this.log.debug(`slack: channel snapshot for bot ${conn.botUserId}: ${channels.length} channel(s)`)
     } catch (err) {
@@ -859,22 +859,22 @@ export class ConnectionReconciler {
    * marked BEFORE dispatch, so a failed turn is simply skipped (never retried in a
    * loop). Not opted in ⇒ no seeding either, so enabling it later baselines cleanly.
    */
-  maybeIntroduceOnJoin(platform: string, integrationId: string, channels: { id: string }[]): void {
+  async maybeIntroduceOnJoin(platform: string, integrationId: string, channels: { id: string }[]): Promise<void> {
     const agent = [...this.host.agents().values()].find((a) => a.integrations.some((i) => i.id === integrationId))
     if (!agent?.introduceOnJoin) return
     const store = this.host.store()
     const plan = planChannelIntros(
       {
-        seeded: store.isChannelIntroSeeded(integrationId),
-        introduced: store.channelIntroSet(agent.id, platform)
+        seeded: await store.isChannelIntroSeeded(integrationId),
+        introduced: await store.channelIntroSet(agent.id, platform)
       },
       channels.map((c) => c.id)
     )
     const now = this.host.clock().now()
-    for (const ch of plan.adoptSilently) store.markChannelIntro(agent.id, platform, ch, null)
-    if (plan.markSeeded) store.markChannelIntroSeeded(integrationId, now)
+    for (const ch of plan.adoptSilently) await store.markChannelIntro(agent.id, platform, ch, null)
+    if (plan.markSeeded) await store.markChannelIntroSeeded(integrationId, now)
     for (const ch of plan.introduce) {
-      store.markChannelIntro(agent.id, platform, ch, now)
+      await store.markChannelIntro(agent.id, platform, ch, now)
       this.log.info(`intro: agent "${agent.id}" self-introducing in channel ${ch}`)
       const traceId = randomUUID()
       const msg = buildIntroMessage(agent.id, platform, ch, traceId)

@@ -160,7 +160,7 @@ describe('collaboration-arena ingress seams (§4/§5/§7)', () => {
   it('injectPlatformEvent enters real routing, admits via the bind rule, and the ordinary reply lands in the world sink', async () => {
     const world = new RecordingWorld()
     const d = await startDaemon(world)
-    const handle = d.injectPlatformEvent({
+    const handle = await d.injectPlatformEvent({
       integrationId: INTEGRATION_ID,
       payload: {
         channel: CHANNEL,
@@ -204,24 +204,24 @@ describe('collaboration-arena ingress seams (§4/§5/§7)', () => {
       d.injectPlatformEvent({ integrationId: INTEGRATION_ID, payload }),
       d.injectPlatformEvent({ integrationId: OTHER_INTEGRATION_ID, payload })
     ]
-    const admissions = await Promise.all(handles.map((handle) => handle.admission))
+    const admissions = await Promise.all(handles.map(async (handle) => (await handle).admission))
     // Same channel:ts, two transports — production per-connection dedup admits both.
     expect(admissions.map((admission) => admission.admitted)).toEqual([true, true])
     expect(new Set(admissions.map((admission) => (admission.admitted ? admission.agentId : '')))).toEqual(
       new Set([AGENT_ID, OTHER_AGENT_ID])
     )
     // A literal duplicate on the SAME transport is deduplicated by production ingress.
-    const duplicate = d.injectPlatformEvent({ integrationId: INTEGRATION_ID, payload })
+    const duplicate = await d.injectPlatformEvent({ integrationId: INTEGRATION_ID, payload })
     await expect(duplicate.admission).resolves.toEqual({ admitted: false, reason: 'deduplicated' })
     await expect(duplicate.completion).resolves.toEqual({ status: 'not_admitted' })
-    await Promise.all(handles.map((handle) => handle.completion))
+    await Promise.all(handles.map(async (handle) => (await handle).completion))
     await d.waitForEvaluationIdle()
   })
 
   it('rejects an event no routing rule serves as unrouted, and a managed-bot echo as suppressed', async () => {
     const world = new RecordingWorld()
     const d = await startDaemon(world)
-    const unrouted = d.injectPlatformEvent({
+    const unrouted = await d.injectPlatformEvent({
       integrationId: INTEGRATION_ID,
       payload: {
         channel: 'CUNBOUNDROOM',
@@ -233,7 +233,7 @@ describe('collaboration-arena ingress seams (§4/§5/§7)', () => {
     await expect(unrouted.admission).resolves.toEqual({ admitted: false, reason: 'unrouted' })
     // A message authored by one of the daemon's own (virtual) bot identities is
     // never an activation path (§4.1: no fabricated agent senders).
-    const suppressed = d.injectPlatformEvent({
+    const suppressed = await d.injectPlatformEvent({
       integrationId: INTEGRATION_ID,
       payload: {
         channel: CHANNEL,
@@ -249,7 +249,7 @@ describe('collaboration-arena ingress seams (§4/§5/§7)', () => {
   it('deliverRefereeEvent is pre-addressed: no routing rule needed, still a full real turn', async () => {
     const world = new RecordingWorld()
     const d = await startDaemon(world)
-    const handle = d.deliverRefereeEvent({
+    const handle = await d.deliverRefereeEvent({
       targetAgentId: AGENT_ID,
       platform: 'slack',
       integrationId: INTEGRATION_ID,

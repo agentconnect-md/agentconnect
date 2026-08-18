@@ -68,7 +68,7 @@ beforeEach(() => {
   mkdirSync(outside)
   reader = createWorkspaceReader(
     workspaces,
-    (id) => (id === AGENT ? { root: ws, scratch: true } : undefined),
+    async (id) => (id === AGENT ? { root: ws, scratch: true } : undefined),
     directWrite
   )
 })
@@ -85,7 +85,7 @@ describe('workspace list', () => {
     writeFileSync(join(worktree, 'session.txt'), 'session')
     const scoped = createWorkspaceReader(
       workspaces,
-      (id, sessionId) =>
+      async (id, sessionId) =>
         id === AGENT
           ? { root: sessionId === 'session-a' ? worktree : ws, scratch: sessionId === undefined }
           : undefined,
@@ -359,7 +359,7 @@ describe('workspace write', () => {
 
     const repoReader = createWorkspaceReader(
       workspaces,
-      (id) => (id === AGENT ? { root: ws, scratch: false } : undefined),
+      async (id) => (id === AGENT ? { root: ws, scratch: false } : undefined),
       directWrite
     )
     await expect(
@@ -388,7 +388,7 @@ describe('workspace delete', () => {
     writeFileSync(target, 'current')
     const repoReader = createWorkspaceReader(
       workspaces,
-      (id) => (id === AGENT ? { root: ws, scratch: false } : undefined),
+      async (id) => (id === AGENT ? { root: ws, scratch: false } : undefined),
       directWrite
     )
 

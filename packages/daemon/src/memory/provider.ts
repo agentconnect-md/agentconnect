@@ -53,6 +53,7 @@ export { NativeMemoryProvider } from './providers/native.js'
 export {
   ExternalMemoryProvider,
   type ExternalMemoryRuntimeDeps,
+  type MemoryCaptureEnqueueSink,
   type PreparedExternalMemoryCapture
 } from './providers/external.js'
 export { DispatchingMemoryProvider, type MemoryProviderDeps } from './providers/dispatching.js'

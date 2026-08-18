@@ -146,8 +146,8 @@ function parseUsage(raw: string | null): SessionUsage | undefined {
 
 /** Current CPs send the authorized owner. The unscoped branch preserves rolling
  * compatibility only while a newly upgraded daemon is still connected to an old CP. */
-function sessionForRead(store: LocalStore, agentId: string | undefined, sessionId: string) {
-  return agentId ? store.getSessionByAcpIdForAgent(agentId, sessionId) : store.getSessionByAcpId(sessionId)
+async function sessionForRead(store: LocalStore, agentId: string | undefined, sessionId: string) {
+  return agentId ? await store.getSessionByAcpIdForAgent(agentId, sessionId) : await store.getSessionByAcpId(sessionId)
 }
 
 /** Rough character budget to trim a free-form value to when shrinking a preview. A
@@ -186,21 +186,19 @@ function previewBody(full: ToolBody): ToolBody {
 }
 
 export interface SessionReader {
-  list(req: SessionListReq): SessionListPage
-  history(req: SessionHistoryReq): SessionHistoryPage | Promise<SessionHistoryPage>
-  toolBody(req: SessionToolBodyReq): SessionToolBodyChunk | Promise<SessionToolBodyChunk>
+  list(req: SessionListReq): Promise<SessionListPage>
+  history(req: SessionHistoryReq): Promise<SessionHistoryPage>
+  toolBody(req: SessionToolBodyReq): Promise<SessionToolBodyChunk>
 }
 
 type TranscriptReadStore = Pick<
   LocalStore,
-  'transcriptTailForAgent' | 'transcriptPageForAgentByEventTime' | 'transcriptPageForAgent' | 'getToolBodyForAgent'
-> & { currentTranscriptRevision(agentId: string): number }
-
-type AsyncTranscriptReadStore = {
-  [Method in keyof TranscriptReadStore]: (
-    ...args: Parameters<TranscriptReadStore[Method]>
-  ) => Promise<ReturnType<TranscriptReadStore[Method]>>
-}
+  | 'transcriptTailForAgent'
+  | 'transcriptPageForAgentByEventTime'
+  | 'transcriptPageForAgent'
+  | 'getToolBodyForAgent'
+  | 'currentTranscriptRevision'
+>
 
 function transcriptPageCursor(page: unknown): number | undefined {
   if (!page || typeof page !== 'object' || !('cursor' in page)) return undefined
@@ -216,24 +214,27 @@ function transcriptPageCursor(page: unknown): number | undefined {
 export function createSessionReader(
   store: LocalStore,
   threadUrlFor?: (session: SessionRecord) => string | undefined,
-  transcriptRead: TranscriptReadStore | AsyncTranscriptReadStore = store
+  transcriptRead: TranscriptReadStore = store
 ): SessionReader {
   return {
-    list(req) {
-      const rows = store.listSessions(req.agentId)
+    async list(req) {
+      const rows = await store.listSessions(req.agentId)
       // Title = the ingress/runtime/tool title, else a fallback derived from the
       // session's FIRST user message. Before the agent has a meaningful request to
       // name, this keeps the console better than "Session <id>".
       // firstMessageText only runs for untitled rows (`||` short-circuits).
-      const enriched = rows.map((r) => ({
-        r,
-        rawTitle:
+      const enriched = []
+      for (const r of rows) {
+        const rawTitle =
           r.title ||
-          deriveTitle(store.firstMessageText(transcriptChannelKey(r.channel, r.transportScope), r.thread, r.agentId))
-      }))
+          deriveTitle(
+            await store.firstMessageText(transcriptChannelKey(r.channel, r.transportScope), r.thread, r.agentId)
+          )
+        enriched.push({ r, rawTitle })
+      }
       // Display names for every channel + triggering sender + `<@U…>` mention in a
       // title we know one for (daemon-resolved + cached; absent ids just stay raw).
-      const names = store.getDisplayNames(
+      const names = await store.getDisplayNames(
         enriched.flatMap(({ r, rawTitle }) => [
           r.channel,
           ...(r.triggeredBy ? [r.triggeredBy] : []),
@@ -270,7 +271,7 @@ export function createSessionReader(
       return { sessions }
     },
     async history(req) {
-      const rec = sessionForRead(store, req.agentId, req.sessionId)
+      const rec = await sessionForRead(store, req.agentId, req.sessionId)
       if (!rec) return { sessionId: req.sessionId, messages: [] }
       const tailing = req.after !== undefined
       const afterRevision = tailing ? Number(req.after) : null
@@ -322,11 +323,11 @@ export function createSessionReader(
       // Display names (cached in the store) for both senders AND `<@U…>` mentions in
       // message bodies; agent-id senders and unresolved ids have no entry, so
       // `senderName` is omitted (UI falls back) and mentions stay as the raw token.
-      const names = store.getDisplayNames(
+      const names = await store.getDisplayNames(
         projected.flatMap(({ row, sender }) => [sender, ...mentionedUserIds(row.text)])
       )
       const avatars = rec.transportScope
-        ? store.getProfileAvatars(
+        ? await store.getProfileAvatars(
             rec.transportScope,
             projected.map(({ sender }) => sender)
           )
@@ -444,7 +445,7 @@ export function createSessionReader(
       }
     },
     async toolBody(req) {
-      const rec = sessionForRead(store, req.agentId, req.sessionId)
+      const rec = await sessionForRead(store, req.agentId, req.sessionId)
       const empty: SessionToolBodyChunk = {
         sessionId: req.sessionId,
         toolCallId: req.toolCallId,

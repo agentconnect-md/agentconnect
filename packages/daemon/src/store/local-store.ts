@@ -1,4 +1,4 @@
-import { DatabaseSync, type SQLInputValue } from 'node:sqlite'
+import type { SQLInputValue } from 'node:sqlite'
 import { chmodSync, mkdirSync, statSync } from 'node:fs'
 import { dirname } from 'node:path'
 import {
@@ -10,7 +10,10 @@ import {
 } from '@agentconnect.md/protocol'
 import { SESSION_TITLE_TOOL_TITLES } from '../mcp/session-title-tool.js'
 import type { ScheduleRun } from '../scheduler/scheduler.js'
+import { AsyncMutex } from './async-mutex.js'
 import type { StoreRetentionCandidate, StoreRetentionRule } from './retention.js'
+import { SqliteAsyncDatabase } from './sqlite-async-database.js'
+import type { StoreBatchResult, StoreBatchStatement, StoreDatabase, StoreTx } from './store-database.js'
 
 /** Per-tool-row rawInput budget in the mining prompt — enough for a command
  *  line or path, short enough that N tool rows can't crowd out the store. */
@@ -21,82 +24,63 @@ const DREAM_TOOL_INPUT_CHARS = 300
 // no index signature, so we widen at the DB boundary.
 type SqlParams = Record<string, SQLInputValue>
 
-export interface StoreRunResult {
-  changes: number | bigint
-}
+export type { StoreBatchResult, StoreBatchStatement, StoreDatabase } from './store-database.js'
 
+/** One statement bound to its SQL, over the async seam. A call-site convenience, not a cache:
+ *  `query` is the seam, and statement caching is an adapter's business. */
 export interface StoreStatement {
-  run(...params: unknown[]): StoreRunResult
-  get(...params: unknown[]): unknown
-  all(...params: unknown[]): unknown[]
+  run(...params: unknown[]): Promise<{ changes: number }>
+  get(...params: unknown[]): Promise<unknown>
+  all(...params: unknown[]): Promise<unknown[]>
 }
 
-/** One statement of a batch. `run` reports `changes`; `read` returns `rows`. */
-export interface StoreBatchStatement {
-  sql: string
-  params: unknown[]
-  kind: 'run' | 'read'
-}
-
-export interface StoreBatchResult {
-  changes: number
-  rows: unknown[]
-}
-
-export interface StoreDatabase {
-  exec(sql: string): void
+/** The statement surface every LocalStore method uses: the async seam plus `prepare`. */
+interface StoreAccess extends StoreTx {
   prepare(sql: string): StoreStatement
-  /** Run an ordered statement list and return its results in the same order. Each statement
-   *  commits on its own, exactly as the single-statement path does. */
-  batch(statements: StoreBatchStatement[]): StoreBatchResult[]
-  close(): void
 }
 
-/** The `node:sqlite` backend as a `StoreDatabase`. Its batch is a plain in-process sequence:
- *  an embedded database has no round trip for a batch to save. */
-export function sqliteStoreDatabase(database: DatabaseSync): StoreDatabase {
+/** Bind `prepare` onto a statement runner — the backend itself, or a transaction's pinned tx. */
+function accessOf(tx: StoreTx): StoreAccess {
   return {
-    exec: (sql) => database.exec(sql),
-    prepare: (sql) => database.prepare(sql) as unknown as StoreStatement,
-    close: () => database.close(),
-    batch: (statements) =>
-      statements.map(({ sql, params, kind }) => {
-        const statement = database.prepare(sql)
-        const bound = params as SQLInputValue[]
-        if (kind === 'read') return { changes: 0, rows: statement.all(...bound) }
-        return { changes: Number(statement.run(...bound).changes), rows: [] }
-      })
+    exec: (sql) => tx.exec(sql),
+    query: (sql, params) => tx.query(sql, params),
+    batch: (statements) => tx.batch(statements),
+    prepare: (sql) => ({
+      run: async (...params) => ({ changes: (await tx.query(sql, params)).changes }),
+      get: async (...params) => (await tx.query(sql, params)).rows[0],
+      all: async (...params) => (await tx.query(sql, params)).rows
+    })
+  }
+}
+
+/** Abandon a transaction without failing the call: `transaction()` rolls back on a throw, and
+ *  a site whose guard simply did not hold answers its caller instead of propagating. */
+class RollbackSignal extends Error {}
+
+async function rollbackAs<T>(run: Promise<T>, value: T): Promise<T> {
+  try {
+    return await run
+  } catch (error) {
+    if (error instanceof RollbackSignal) return value
+    throw error
   }
 }
 
 /** The facade every LocalStore method uses: draining the coalescing buffer before each
  *  statement is what makes it invisible — no read reaches the database without passing here. */
-function drainPendingWritesFirst(backend: StoreDatabase, drain: () => void): StoreDatabase {
+function drainPendingWritesFirst(backend: StoreDatabase, drain: () => Promise<void>): StoreAccess {
+  const access = accessOf(backend)
+  const drained = <T>(run: () => Promise<T>): Promise<T> => drain().then(run)
   return {
-    exec: (sql) => {
-      drain()
-      backend.exec(sql)
-    },
-    batch: (statements) => {
-      drain()
-      return backend.batch(statements)
-    },
-    close: () => backend.close(),
+    exec: (sql) => drained(() => access.exec(sql)),
+    query: (sql, params) => drained(() => access.query(sql, params)),
+    batch: (statements) => drained(() => access.batch(statements)),
     prepare: (sql) => {
-      const statement = backend.prepare(sql)
+      const statement = access.prepare(sql)
       return {
-        run: (...params) => {
-          drain()
-          return statement.run(...params)
-        },
-        get: (...params) => {
-          drain()
-          return statement.get(...params)
-        },
-        all: (...params) => {
-          drain()
-          return statement.all(...params)
-        }
+        run: (...params) => drained(() => statement.run(...params)),
+        get: (...params) => drained(() => statement.get(...params)),
+        all: (...params) => drained(() => statement.all(...params))
       }
     }
   }
@@ -117,6 +101,10 @@ interface PendingToolWrite {
 
 /** The partition a coalesced write lands in — its notification and revision scope. */
 const threadKeyOf = (write: PendingToolWrite): string => [write.orgId, write.channel, write.thread].join('\0')
+
+/** The buffer slot one tool call owns: latest-wins, one entry per call in flight. */
+const writeKeyOf = (write: PendingToolWrite): string =>
+  [write.orgId, write.channel, write.thread, write.agentId, write.toolCallId].join('\0')
 
 /** How long a streaming tool-call body may sit unwritten. Short enough that a crash loses at
  *  most this much of an in-flight tool body, long enough to swallow a chunk burst. */
@@ -763,20 +751,20 @@ const SCHEMA_VERSION = 11
  * in the `CREATE` block, which runs afterwards and is `IF NOT EXISTS`, so it
  * covers fresh and upgraded stores from the one description.
  */
-const SCHEMA_MIGRATIONS: ((db: StoreDatabase, store: { shared: boolean }) => void)[] = [
-  (db) => db.exec('ALTER TABLE permission_requests ADD COLUMN ownerId TEXT'),
-  (db) =>
-    db.exec(`
+const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean }) => Promise<void>)[] = [
+  async (db) => await db.exec('ALTER TABLE permission_requests ADD COLUMN ownerId TEXT'),
+  async (db) =>
+    await db.exec(`
       ALTER TABLE session_metadata_outbox ADD COLUMN failedAttempts INTEGER NOT NULL DEFAULT 0;
       ALTER TABLE session_metadata_outbox ADD COLUMN nextAttemptAt INTEGER;
     `),
-  (db) =>
-    db.exec(`
+  async (db) =>
+    await db.exec(`
       ALTER TABLE dreams ADD COLUMN ownerId TEXT;
       ALTER TABLE webchat_mcp_grant_ledger ADD COLUMN ownerId TEXT;
     `),
-  (db) =>
-    db.exec(`
+  async (db) =>
+    await db.exec(`
       ALTER TABLE inbox ADD COLUMN reportOwnerId TEXT;
       ALTER TABLE inbox ADD COLUMN reportClaimedAt INTEGER;
     `),
@@ -784,8 +772,8 @@ const SCHEMA_MIGRATIONS: ((db: StoreDatabase, store: { shared: boolean }) => voi
   // through the sessions row that holds the ACP id; a row no session claims is
   // dropped, and an id several agents claim is rewritten to the fail-closed state
   // because its stored verdict was never attributable to one of them.
-  (db) =>
-    db.exec(`
+  async (db) =>
+    await db.exec(`
       CREATE TABLE session_gates_keyed (
         agentId TEXT NOT NULL,
         acpSessionId TEXT NOT NULL,
@@ -809,21 +797,21 @@ const SCHEMA_MIGRATIONS: ((db: StoreDatabase, store: { shared: boolean }) => voi
       DROP TABLE session_gates;
       ALTER TABLE session_gates_keyed RENAME TO session_gates;
     `),
-  (db) => db.exec('ALTER TABLE cron_runs ADD COLUMN definition TEXT'),
+  async (db) => await db.exec('ALTER TABLE cron_runs ADD COLUMN definition TEXT'),
   // The catalog cache is re-keyed on its owning member (#1039): pre-owner rows name none, so
   // they are dropped rather than misattributed and the CREATE block rebuilds both tables.
-  (db) =>
-    db.exec(`
+  async (db) =>
+    await db.exec(`
       DROP TABLE IF EXISTS runtime_catalog_meta;
       DROP TABLE IF EXISTS runtime_model_catalog;
     `),
-  (db) =>
-    db.exec(`
+  async (db) =>
+    await db.exec(`
       ALTER TABLE session_purges ADD COLUMN ownerId TEXT;
       ALTER TABLE session_purges ADD COLUMN claimedAt INTEGER;
     `),
-  (db) =>
-    db.exec(`
+  async (db) =>
+    await db.exec(`
       ALTER TABLE session_metadata_outbox ADD COLUMN ownerId TEXT;
       ALTER TABLE session_metadata_outbox ADD COLUMN claimedAt INTEGER;
     `),
@@ -836,9 +824,9 @@ const SCHEMA_MIGRATIONS: ((db: StoreDatabase, store: { shared: boolean }) => voi
   // any shared store today, which is why dropping is the accepted price of the fence.
   // The recipient table is rebuilt rather than altered: its PRIMARY KEY gains the org, and
   // the transcript indexes are dropped so the CREATE block re-emits them org-first.
-  (db, store) => {
-    if (store.shared) db.exec('DELETE FROM transcript; DELETE FROM transcript_recipient;')
-    db.exec(`
+  async (db, store) => {
+    if (store.shared) await db.exec('DELETE FROM transcript; DELETE FROM transcript_recipient;')
+    await db.exec(`
       ALTER TABLE transcript ADD COLUMN orgId TEXT NOT NULL DEFAULT '';
       DROP INDEX IF EXISTS transcript_thread_seq;
       DROP INDEX IF EXISTS transcript_text_ts;
@@ -860,22 +848,44 @@ const SCHEMA_MIGRATIONS: ((db: StoreDatabase, store: { shared: boolean }) => voi
 export class LocalStore {
   /** The backend as given. Only the tool-write flush uses it directly; everything else goes
    *  through `db`, which drains that buffer first. */
-  private backend: StoreDatabase
-  private db: StoreDatabase
+  private readonly backend: StoreDatabase
+  private readonly db: StoreAccess
+  /** The backend without the drain, for the transcript write path: that path holds the mutex a
+   *  flush also needs, so a statement inside it must never try to flush. */
+  private readonly lockedDb: StoreAccess
   private readonly shared: boolean
-  private readonly ownerId?: string
+  private readonly ownerId: string | undefined
   /** Partition key for per-member cache rows; a single-daemon store owns one partition forever. */
   private readonly cacheOwnerId: string
   /** Set only on a shared store, where transcript rows of several orgs share one table. */
-  private readonly orgForAgent?: OrgForAgent
+  private readonly orgForAgent: OrgForAgent | undefined
   private transcriptRevision = 0
-  private transcriptMutationListener?: (mutation: TranscriptMutation) => void
+  private transcriptMutationListener?: (mutation: TranscriptMutation) => void | Promise<void>
   private readonly pendingToolWrites = new Map<string, PendingToolWrite>()
   private pendingToolWriteBytes = 0
   private toolWriteTimer?: ReturnType<typeof setTimeout>
-  private flushingToolWrites = false
+  /** Serializes the transcript write path. Async execution lets two turns interleave between a
+   *  method's statements, and these rows and the in-memory revision must stay in lockstep. */
+  private readonly transcriptMutex = new AsyncMutex()
 
-  constructor(source: LocalStoreSource) {
+  private constructor(
+    backend: StoreDatabase,
+    options: { shared: boolean; ownerId: string | undefined; orgForAgent: OrgForAgent | undefined }
+  ) {
+    this.backend = backend
+    this.db = drainPendingWritesFirst(backend, () => this.drainToolCallWrites())
+    this.lockedDb = accessOf(backend)
+    this.shared = options.shared
+    this.ownerId = options.ownerId
+    this.orgForAgent = options.orgForAgent
+    this.cacheOwnerId = this.ownerId ?? ''
+  }
+
+  /**
+   * Open a store and bring its schema to {@link SCHEMA_VERSION}. Two-phase construction because
+   * every step of that sequence is awaited now; the ordering it keeps is the load-bearing part.
+   */
+  static async open(source: LocalStoreSource): Promise<LocalStore> {
     // This database holds every platform message body, agent reply, tool payload and
     // durable inbox blob the daemon has seen — the same material the console serves
     // behind authorization. Every other secret-bearing artifact the daemon writes is
@@ -885,34 +895,42 @@ export class LocalStore {
     // systemd `StateDirectory=` (0755), an operator-created path — a second local
     // account could read the lot. Restrict the directory and the database explicitly,
     // and chmod after creation so a loose umask cannot widen either.
+    let store: LocalStore
     if (typeof source === 'string') {
-      this.shared = false
-      this.ownerId = undefined
       const dir = dirname(source)
       mkdirSync(dir, { recursive: true, mode: 0o700 })
       restrictPath(dir, 0o700)
-      this.backend = sqliteStoreDatabase(new DatabaseSync(source))
-      this.db = drainPendingWritesFirst(this.backend, () => this.flushToolCallWrites())
-      this.db.exec('PRAGMA journal_mode = WAL')
+      store = new LocalStore(SqliteAsyncDatabase.open(source), {
+        shared: false,
+        ownerId: undefined,
+        orgForAgent: undefined
+      })
+      await store.db.exec('PRAGMA journal_mode = WAL')
       // WAL mode publishes two siblings alongside the database; they carry the same
       // rows, so restricting only the main file would leave the content readable.
       for (const p of [source, `${source}-wal`, `${source}-shm`]) restrictPath(p, 0o600)
     } else {
-      this.backend = source.database
-      this.db = drainPendingWritesFirst(this.backend, () => this.flushToolCallWrites())
-      this.shared = source.shared === true
-      this.ownerId = source.ownerId
-      this.orgForAgent = source.orgForAgent
-      if (this.shared && !this.ownerId) throw new Error('shared LocalStore requires an ownerId')
-      if (this.shared && !this.orgForAgent) throw new Error('shared LocalStore requires an orgForAgent resolver')
+      const shared = source.shared === true
+      if (shared && !source.ownerId) throw new Error('shared LocalStore requires an ownerId')
+      if (shared && !source.orgForAgent) throw new Error('shared LocalStore requires an orgForAgent resolver')
+      store = new LocalStore(source.database, {
+        shared,
+        ownerId: source.ownerId,
+        orgForAgent: source.orgForAgent
+      })
     }
-    this.cacheOwnerId = this.ownerId ?? ''
+    await store.initializeSchema()
+    return store
+  }
+
+  private async initializeSchema(): Promise<void> {
     // Decided BEFORE the CREATE block, which is what makes an empty file
     // indistinguishable from an old one a moment later.
     const freshDatabase =
-      (this.db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table'").get() as { n: number }).n === 0
-    this.upgradeSchema(freshDatabase)
-    this.db.exec(`
+      ((await this.db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table'").get()) as { n: number })
+        .n === 0
+    await this.upgradeSchema(freshDatabase)
+    await this.db.exec(`
       CREATE TABLE IF NOT EXISTS sessions (
         key TEXT PRIMARY KEY, agentId TEXT, platform TEXT, channel TEXT, thread TEXT,
         transportScope TEXT, acpSessionId TEXT, state TEXT, lastDeliveredTs TEXT, updatedAt INTEGER,
@@ -1334,17 +1352,19 @@ export class LocalStore {
     `)
     // Stamped only once the CREATE block above has actually emitted that schema, so
     // a store that failed halfway through creation is not left claiming to be current.
-    if (freshDatabase) this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`)
+    if (freshDatabase) await this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`)
     // The revision counter is in-memory but the rows it numbers are durable, so it
     // must resume from the database on every open — starting a restarted daemon back
     // at 0 would hand already-issued revisions to new rows. Deliberately unfenced: it
     // allocates across every org partition, so it must clear the highest of them all.
     this.transcriptRevision = (
-      this.db.prepare('SELECT COALESCE(MAX(revision), 0) AS revision FROM transcript').get() as { revision: number }
+      (await this.db.prepare('SELECT COALESCE(MAX(revision), 0) AS revision FROM transcript').get()) as {
+        revision: number
+      }
     ).revision
     // Only an exclusively owned store proves that every old in-memory resolver died.
     if (!this.shared) {
-      this.db
+      await this.db
         .prepare(
           "UPDATE permission_requests SET status = 'expired', resolvedAt = COALESCE(resolvedAt, ?) WHERE status = 'pending'"
         )
@@ -1369,12 +1389,12 @@ export class LocalStore {
    * Each step commits with the version it produced, so an interrupted upgrade
    * resumes at the first unapplied step instead of replaying applied ones.
    */
-  private upgradeSchema(freshDatabase: boolean): void {
+  private async upgradeSchema(freshDatabase: boolean): Promise<void> {
     // Nothing to upgrade, and nothing to refuse: the caller stamps the version
     // once the `CREATE` block has emitted the current schema.
     if (freshDatabase) return
     // Databases created before versioning read 0; they carry the v1 schema.
-    let version = (this.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version || 1
+    let version = ((await this.db.prepare('PRAGMA user_version').get()) as { user_version: number }).user_version || 1
     if (version > SCHEMA_VERSION)
       throw new Error(
         `local store schema v${version} is newer than this daemon understands (v${SCHEMA_VERSION}) — upgrade the daemon`
@@ -1382,25 +1402,28 @@ export class LocalStore {
     while (version < SCHEMA_VERSION) {
       const step = SCHEMA_MIGRATIONS[version - 1]
       if (!step) throw new Error(`local store is missing a migration step for schema v${version}`)
-      this.db.exec('BEGIN')
-      try {
-        step(this.db, { shared: this.shared })
-        this.db.exec(`PRAGMA user_version = ${version + 1}`)
-        this.db.exec('COMMIT')
-      } catch (err) {
-        this.db.exec('ROLLBACK')
-        throw err
-      }
-      version += 1
+      const upgraded = version + 1
+      await this.transaction(async (tx) => {
+        await step(tx, { shared: this.shared })
+        await tx.exec(`PRAGMA user_version = ${upgraded}`)
+      })
+      version = upgraded
     }
   }
 
-  getSession(key: string): SessionRecord | undefined {
-    return this.db.prepare('SELECT * FROM sessions WHERE key = ?').get(key) as SessionRecord | undefined
+  /** One transaction on a pinned connection, with the tool-write buffer drained first: a flush
+   *  issued from inside the transaction would run on a different connection. */
+  private async transaction<T>(fn: (tx: StoreTx) => Promise<T>): Promise<T> {
+    await this.drainToolCallWrites()
+    return this.backend.transaction(fn)
   }
 
-  createPermissionRequest(record: PermissionRequestRecord): void {
-    this.db
+  async getSession(key: string): Promise<SessionRecord | undefined> {
+    return (await this.db.prepare('SELECT * FROM sessions WHERE key = ?').get(key)) as SessionRecord | undefined
+  }
+
+  async createPermissionRequest(record: PermissionRequestRecord): Promise<void> {
+    await this.db
       .prepare(
         `INSERT INTO permission_requests
            (id, agentId, sessionId, createdAt, requesterId, requesterName, command, status, resolvedAt, ownerId)
@@ -1408,14 +1431,14 @@ export class LocalStore {
            (@id, @agentId, @sessionId, @createdAt, @requesterId, @requesterName, @command, @status, @resolvedAt, @ownerId)`
       )
       .run({ ...record, ownerId: this.ownerId ?? null } as unknown as SqlParams)
-    this.prunePermissionRequestHistory(record.agentId)
+    await this.prunePermissionRequestHistory(record.agentId)
   }
 
-  private prunePermissionRequestHistory(agentId: string): void {
+  private async prunePermissionRequestHistory(agentId: string): Promise<void> {
     // Keep all live resolvers addressable; cap only terminal history. A burst of
     // concurrent requests must never disappear from the editor surface while the
     // corresponding ACP promise is still waiting.
-    this.db
+    await this.db
       .prepare(
         `DELETE FROM permission_requests
          WHERE agentId = ? AND status != 'pending' AND id NOT IN (
@@ -1427,59 +1450,61 @@ export class LocalStore {
       .run(agentId, agentId)
   }
 
-  listPermissionRequests(agentId: string, limit = 50): PermissionRequestRecord[] {
-    return this.db
+  async listPermissionRequests(agentId: string, limit = 50): Promise<PermissionRequestRecord[]> {
+    return (await this.db
       .prepare(
         `SELECT * FROM permission_requests
          WHERE agentId = ?
          ORDER BY CASE WHEN status = 'pending' THEN 0 ELSE 1 END, createdAt DESC
          LIMIT ?`
       )
-      .all(agentId, Math.max(1, Math.min(100, limit))) as unknown as PermissionRequestRecord[]
+      .all(agentId, Math.max(1, Math.min(100, limit)))) as unknown as PermissionRequestRecord[]
   }
 
-  resolvePermissionRequest(
+  async resolvePermissionRequest(
     agentId: string,
     id: string,
     status: Exclude<PermissionRequestStatus, 'pending'>,
     resolvedAt: number
-  ): boolean {
-    const result = this.db
+  ): Promise<boolean> {
+    const result = await this.db
       .prepare(
         "UPDATE permission_requests SET status = ?, resolvedAt = ? WHERE agentId = ? AND id = ? AND status = 'pending'"
       )
       .run(status, resolvedAt, agentId, id)
     const changed = Number(result.changes) === 1
-    if (changed) this.prunePermissionRequestHistory(agentId)
+    if (changed) await this.prunePermissionRequestHistory(agentId)
     return changed
   }
 
   /** Expire orphaned resolvers only after this process authoritatively takes ownership of their agents. */
-  recoverPermissionRequests(agentIds: readonly string[], resolvedAt: number): number {
+  async recoverPermissionRequests(agentIds: readonly string[], resolvedAt: number): Promise<number> {
     if (!this.shared || agentIds.length === 0) return 0
     const scope = idScope('agentId', agentIds)
     return Number(
-      this.db
-        .prepare(
-          `UPDATE permission_requests SET status = 'expired', resolvedAt = @resolvedAt
+      (
+        await this.db
+          .prepare(
+            `UPDATE permission_requests SET status = 'expired', resolvedAt = @resolvedAt
            WHERE status = 'pending' AND (ownerId IS NULL OR ownerId != @ownerId)${scope.sql}`
-        )
-        .run({ resolvedAt, ownerId: this.ownerId!, ...scope.params }).changes
+          )
+          .run({ resolvedAt, ownerId: this.ownerId!, ...scope.params })
+      ).changes
     )
   }
 
   /** All sessions that have an ACP id (i.e. are addressable by sessionId), newest
    *  first. Optionally scoped to one agent. Backs `session/list` read-back — the
    *  `usage` column comes back as raw JSON (parsed by the reader). */
-  listSessions(agentId?: string): SessionListRow[] {
+  async listSessions(agentId?: string): Promise<SessionListRow[]> {
     if (agentId !== undefined) {
-      return this.db
+      return (await this.db
         .prepare('SELECT * FROM sessions WHERE acpSessionId IS NOT NULL AND agentId = ? ORDER BY updatedAt DESC')
-        .all(agentId) as unknown as SessionListRow[]
+        .all(agentId)) as unknown as SessionListRow[]
     }
-    return this.db
+    return (await this.db
       .prepare('SELECT * FROM sessions WHERE acpSessionId IS NOT NULL ORDER BY updatedAt DESC')
-      .all() as unknown as SessionListRow[]
+      .all()) as unknown as SessionListRow[]
   }
 
   /**
@@ -1492,29 +1517,29 @@ export class LocalStore {
    * bot demonstrably left. Sessions and transcripts are untouched — this hides the
    * conversation from the console's channel list, it does not erase what happened.
    */
-  markRetractedConversations(integrationId: string, channelIds: readonly string[], now: number): void {
-    const stmt = this.db.prepare(
+  async markRetractedConversations(integrationId: string, channelIds: readonly string[], now: number): Promise<void> {
+    const stmt = await this.db.prepare(
       `INSERT INTO retracted_conversations (integrationId, channelId, retractedAt) VALUES (?, ?, ?)
        ON CONFLICT (integrationId, channelId) DO UPDATE SET retractedAt = excluded.retractedAt`
     )
-    for (const channelId of channelIds) stmt.run(integrationId, channelId, now)
+    for (const channelId of channelIds) await stmt.run(integrationId, channelId, now)
   }
 
   /** Integrations holding any suppression. The reconnect replay keys on this as well
    *  as its in-memory snapshots: a restart before the first reconnect leaves the
    *  tombstone on disk with no cached snapshot to replay it alongside. */
-  retractedIntegrations(): string[] {
-    const rows = this.db.prepare('SELECT DISTINCT integrationId FROM retracted_conversations').all() as {
+  async retractedIntegrations(): Promise<string[]> {
+    const rows = (await this.db.prepare('SELECT DISTINCT integrationId FROM retracted_conversations').all()) as {
       integrationId: string
     }[]
     return rows.map((r) => r.integrationId)
   }
 
   /** The conversations currently suppressed for one integration. */
-  retractedConversations(integrationId: string): Set<string> {
-    const rows = this.db
+  async retractedConversations(integrationId: string): Promise<Set<string>> {
+    const rows = (await this.db
       .prepare('SELECT channelId FROM retracted_conversations WHERE integrationId = ?')
-      .all(integrationId) as { channelId: string }[]
+      .all(integrationId)) as { channelId: string }[]
     return new Set(rows.map((r) => r.channelId))
   }
 
@@ -1526,8 +1551,8 @@ export class LocalStore {
    * undone (someone re-invited it). Self-healing, and it keeps a stale marker from
    * hiding a conversation forever.
    */
-  clearRetractedConversation(integrationId: string, channelId: string): void {
-    this.db
+  async clearRetractedConversation(integrationId: string, channelId: string): Promise<void> {
+    await this.db
       .prepare('DELETE FROM retracted_conversations WHERE integrationId = ? AND channelId = ?')
       .run(integrationId, channelId)
   }
@@ -1536,8 +1561,12 @@ export class LocalStore {
    *  physical bot, newest first, joined to their cached display name. Backs the
    *  `listChannels` fallback for platforms whose bot API can't enumerate chats
    *  (Telegram): only history from the current bot is reachable through it. */
-  observedChannels(agentId: string, platform: string, transportScope: string): { id: string; name?: string }[] {
-    return this.db
+  async observedChannels(
+    agentId: string,
+    platform: string,
+    transportScope: string
+  ): Promise<{ id: string; name?: string }[]> {
+    return (await this.db
       .prepare(
         `SELECT s.channel AS id, d.name AS name
          FROM (SELECT channel, MAX(updatedAt) AS updatedAt FROM sessions
@@ -1547,14 +1576,18 @@ export class LocalStore {
          LEFT JOIN display_names d ON d.id = s.channel
          ORDER BY s.updatedAt DESC`
       )
-      .all(agentId, platform, transportScope) as { id: string; name?: string }[]
+      .all(agentId, platform, transportScope)) as { id: string; name?: string }[]
   }
 
   /** Distinct users this agent has been triggered by through one physical bot,
    *  newest first, joined to their cached display name (present for Slack ids and
    *  Telegram DM chats where chat id == user id; group senders are id-only). */
-  observedUsers(agentId: string, platform: string, transportScope: string): { id: string; name?: string }[] {
-    return this.db
+  async observedUsers(
+    agentId: string,
+    platform: string,
+    transportScope: string
+  ): Promise<{ id: string; name?: string }[]> {
+    return (await this.db
       .prepare(
         `SELECT s.triggeredBy AS id, d.name AS name
          FROM (SELECT triggeredBy, MAX(updatedAt) AS updatedAt FROM sessions
@@ -1564,64 +1597,64 @@ export class LocalStore {
          LEFT JOIN display_names d ON d.id = s.triggeredBy
          ORDER BY s.updatedAt DESC`
       )
-      .all(agentId, platform, transportScope) as { id: string; name?: string }[]
+      .all(agentId, platform, transportScope)) as { id: string; name?: string }[]
   }
 
   /** The most recently active addressable session (has an ACP id) for an agent in a
    *  channel, or undefined. Backs `/status` when the command message itself doesn't fall
    *  in a session's thread (a bare Telegram `/status` keys to its own reply thread) — we
    *  then report the channel's latest session rather than "nothing here". */
-  latestSession(agentId: string, channel: string): SessionRecord | undefined {
-    return this.db
+  async latestSession(agentId: string, channel: string): Promise<SessionRecord | undefined> {
+    return (await this.db
       .prepare(
         'SELECT * FROM sessions WHERE agentId = ? AND channel = ? AND acpSessionId IS NOT NULL ORDER BY updatedAt DESC LIMIT 1'
       )
-      .get(agentId, channel) as SessionRecord | undefined
+      .get(agentId, channel)) as SessionRecord | undefined
   }
 
   /** Latest addressable session for one physical platform bot. The explicit
    * transport scope prevents equal Telegram chat ids on different bots from
    * stealing command/callback targeting from one another. */
-  latestSessionForTransport(
+  async latestSessionForTransport(
     agentId: string,
     channel: string,
     transportScope?: string,
     thread?: string
-  ): SessionRecord | undefined {
+  ): Promise<SessionRecord | undefined> {
     const args: SQLInputValue[] = [agentId, channel, transportScope ?? '']
     const threadClause = thread === undefined ? '' : ' AND thread = ?'
     if (thread !== undefined) args.push(thread)
-    return this.db
+    return (await this.db
       .prepare(
         `SELECT * FROM sessions
          WHERE agentId = ? AND channel = ? AND COALESCE(transportScope, '') = ?
            AND acpSessionId IS NOT NULL${threadClause}
          ORDER BY updatedAt DESC LIMIT 1`
       )
-      .get(...args) as SessionRecord | undefined
+      .get(...args)) as SessionRecord | undefined
   }
 
   /** The most recently active addressable session (has an ACP id) in a channel, across
    *  ALL agents — or undefined. Used to resolve which agent a bare command targets when
    *  routing can't (e.g. a group `/status@bot` with no mention entity / thread). */
-  latestSessionInChannel(channel: string): SessionRecord | undefined {
-    return this.db
+  async latestSessionInChannel(channel: string): Promise<SessionRecord | undefined> {
+    return (await this.db
       .prepare('SELECT * FROM sessions WHERE channel = ? AND acpSessionId IS NOT NULL ORDER BY updatedAt DESC LIMIT 1')
-      .get(channel) as SessionRecord | undefined
+      .get(channel)) as SessionRecord | undefined
   }
 
   /** Lookup by ACP session id (the protocol-facing `sessionId`), or undefined. */
-  getSessionByAcpId(acpSessionId: string): SessionRecord | undefined {
-    return this.db.prepare('SELECT * FROM sessions WHERE acpSessionId = ?').get(acpSessionId) as
+  async getSessionByAcpId(acpSessionId: string): Promise<SessionRecord | undefined> {
+    return (await this.db.prepare('SELECT * FROM sessions WHERE acpSessionId = ?').get(acpSessionId)) as
       SessionRecord | undefined
   }
 
   /** Agent-scoped ACP id lookup for callbacks from one runtime process. ACP ids
    *  are runtime-owned and need not be globally unique across agents. */
-  getSessionByAcpIdForAgent(agentId: string, acpSessionId: string): SessionRecord | undefined {
-    return this.db
+  async getSessionByAcpIdForAgent(agentId: string, acpSessionId: string): Promise<SessionRecord | undefined> {
+    return (await this.db
       .prepare('SELECT * FROM sessions WHERE agentId = ? AND acpSessionId = ?')
-      .get(agentId, acpSessionId) as SessionRecord | undefined
+      .get(agentId, acpSessionId)) as SessionRecord | undefined
   }
 
   /**
@@ -1641,50 +1674,54 @@ export class LocalStore {
    *  sender when either names one, else an agent already holding a session in the thread —
    *  an observed inbound is recorded before routing picks a recipient, and only a thread
    *  with live work is recorded at all. */
-  private transcriptOrg(channel: string, thread: string, ...candidates: Array<string | undefined>): string {
+  private async transcriptOrg(
+    channel: string,
+    thread: string,
+    ...candidates: Array<string | undefined>
+  ): Promise<string> {
     if (!this.shared) return LOCAL_TRANSCRIPT_ORG
     for (const candidate of candidates) {
       const orgId = candidate ? this.orgForAgent?.(candidate) : undefined
       if (orgId) return orgId
     }
-    return this.orgFor(this.threadSessionAgent(channel, thread))
+    return this.orgFor(await this.threadSessionAgent(channel, thread))
   }
 
   /** An agent holding a session in a transcript thread, for that fallback attribution. */
-  private threadSessionAgent(channel: string, thread: string): string | undefined {
-    const rows = this.db
+  private async threadSessionAgent(channel: string, thread: string): Promise<string | undefined> {
+    const rows = (await this.db
       .prepare(
         'SELECT DISTINCT agentId, channel, transportScope FROM sessions WHERE thread = ? AND agentId IS NOT NULL'
       )
-      .all(thread) as { agentId: string; channel: string; transportScope: string | null }[]
+      .all(thread)) as { agentId: string; channel: string; transportScope: string | null }[]
     return rows.find(
       (row) => transcriptChannelKey(row.channel, row.transportScope) === channel && this.orgForAgent?.(row.agentId)
     )?.agentId
   }
 
   /** Addressable session ids whose authorized transcript scope may have changed. */
-  sessionIdsForTranscript(agentId: string, channel: string, thread: string): string[] {
-    const rows = this.db
+  async sessionIdsForTranscript(agentId: string, channel: string, thread: string): Promise<string[]> {
+    const rows = (await this.db
       .prepare(
         `SELECT DISTINCT acpSessionId, channel, transportScope FROM sessions
          WHERE agentId = ? AND thread = ? AND acpSessionId IS NOT NULL`
       )
-      .all(agentId, thread) as { acpSessionId: string; channel: string; transportScope: string | null }[]
+      .all(agentId, thread)) as { acpSessionId: string; channel: string; transportScope: string | null }[]
     return rows
       .filter((row) => transcriptChannelKey(row.channel, row.transportScope) === channel)
       .map((row) => row.acpSessionId)
   }
 
-  currentTranscriptRevision(agentId?: string): number {
-    const row = this.db
+  async currentTranscriptRevision(agentId?: string): Promise<number> {
+    const row = (await this.db
       .prepare('SELECT COALESCE(MAX(revision), 0) AS revision FROM transcript WHERE orgId = ?')
-      .get(this.orgFor(agentId)) as { revision: number }
+      .get(this.orgFor(agentId))) as { revision: number }
     // The in-memory allocator spans every partition; only the answer is org-scoped.
     this.transcriptRevision = Math.max(this.transcriptRevision, row.revision)
     return row.revision
   }
 
-  setTranscriptMutationListener(listener?: (mutation: TranscriptMutation) => void): void {
+  setTranscriptMutationListener(listener?: (mutation: TranscriptMutation) => void | Promise<void>): void {
     this.transcriptMutationListener = listener
   }
 
@@ -1698,17 +1735,17 @@ export class LocalStore {
    * `agentId` names the org partition only, never a delivery scope, and may be omitted on
    * a store no pool shares — a shared store has no single partition to fall back on.
    */
-  transcriptPage(
+  async transcriptPage(
     channel: string,
     thread: string,
     beforeSeq: number | null,
     limit: number,
     agentId?: string
-  ): { rows: TranscriptRow[]; hasMore: boolean } {
+  ): Promise<{ rows: TranscriptRow[]; hasMore: boolean }> {
     const orgId = this.orgFor(agentId)
     const hiddenToolTitles = [...SESSION_TITLE_TOOL_TITLES]
     const rows = (beforeSeq !== null
-      ? this.db
+      ? await this.db
           .prepare(
             `SELECT * FROM transcript
              WHERE orgId = ? AND channel = ? AND thread = ? AND seq < ?
@@ -1716,7 +1753,7 @@ export class LocalStore {
              ORDER BY seq DESC LIMIT ?`
           )
           .all(orgId, channel, thread, beforeSeq, ...hiddenToolTitles, limit + 1)
-      : this.db
+      : await this.db
           .prepare(
             `SELECT * FROM transcript
              WHERE orgId = ? AND channel = ? AND thread = ?
@@ -1741,13 +1778,13 @@ export class LocalStore {
    *  catch-up (transcriptSince), which is unchanged. Slack's normal read path uses
    *  transcriptPageForAgentByEventTime; this method remains for non-Slack platform ids
    *  and numeric cursors issued by a pre-upgrade daemon. */
-  transcriptPageForAgent(
+  async transcriptPageForAgent(
     channel: string,
     thread: string,
     agentId: string,
     beforeSeq: number | null,
     limit: number
-  ): { rows: TranscriptRow[]; hasMore: boolean } {
+  ): Promise<{ rows: TranscriptRow[]; hasMore: boolean }> {
     // The delivery-table match is keyed by (channel, thread, ts), but internal rows
     // (reasoning/tool) are NOT deduped by ts and can share a ts with a delivered text row —
     // so gate the delivery match on `kind = 'text'`, else a peer's reasoning/tool row at the
@@ -1757,7 +1794,7 @@ export class LocalStore {
     const orgId = this.orgFor(agentId)
     const hiddenToolTitles = [...SESSION_TITLE_TOOL_TITLES]
     const rows = (beforeSeq !== null
-      ? this.db
+      ? await this.db
           .prepare(
             `SELECT * FROM transcript WHERE orgId = ? AND channel = ? AND thread = ? AND seq < ?
                AND ${scope}
@@ -1765,7 +1802,7 @@ export class LocalStore {
              ORDER BY seq DESC LIMIT ?`
           )
           .all(orgId, channel, thread, beforeSeq, agentId, agentId, agentId, ...hiddenToolTitles, limit + 1)
-      : this.db
+      : await this.db
           .prepare(
             `SELECT * FROM transcript WHERE orgId = ? AND channel = ? AND thread = ?
                AND ${scope}
@@ -1796,18 +1833,18 @@ export class LocalStore {
    * per-agent delivery scope as `transcriptPageForAgent` prevents peer-private activity
    * from leaking into the session view.
    */
-  transcriptPageForAgentByEventTime(
+  async transcriptPageForAgentByEventTime(
     channel: string,
     thread: string,
     agentId: string,
     before: TranscriptEventCursor | null,
     limit: number
-  ): { rows: TranscriptRow[]; hasMore: boolean } {
+  ): Promise<{ rows: TranscriptRow[]; hasMore: boolean }> {
     const scope = AGENT_DELIVERY_SCOPE_SQL
     const orgId = this.orgFor(agentId)
     const hiddenToolTitles = [...SESSION_TITLE_TOOL_TITLES]
     const rows = (before !== null
-      ? this.db
+      ? await this.db
           .prepare(
             `SELECT * FROM transcript WHERE orgId = ? AND channel = ? AND thread = ?
                AND (eventTimeUs < ? OR (eventTimeUs = ? AND seq < ?))
@@ -1828,7 +1865,7 @@ export class LocalStore {
             ...hiddenToolTitles,
             limit + 1
           )
-      : this.db
+      : await this.db
           .prepare(
             `SELECT * FROM transcript WHERE orgId = ? AND channel = ? AND thread = ?
                AND ${scope}
@@ -1854,15 +1891,15 @@ export class LocalStore {
    * so inserts and same-seq tool updates share one lossless cursor. The returned
    * cursor skips unrelated/global revisions only after this scope is fully drained.
    */
-  transcriptTailForAgent(
+  async transcriptTailForAgent(
     channel: string,
     thread: string,
     agentId: string,
     afterRevision: number,
     limit: number
-  ): { rows: TranscriptRow[]; hasMore: boolean; cursor: number } {
+  ): Promise<{ rows: TranscriptRow[]; hasMore: boolean; cursor: number }> {
     const scope = AGENT_DELIVERY_SCOPE_SQL
-    const rows = this.db
+    const rows = (await this.db
       .prepare(
         `SELECT * FROM transcript
          WHERE orgId = ? AND channel = ? AND thread = ? AND revision > ?
@@ -1880,17 +1917,17 @@ export class LocalStore {
         agentId,
         ...SESSION_TITLE_TOOL_TITLES,
         limit + 1
-      ) as unknown as TranscriptRow[]
+      )) as unknown as TranscriptRow[]
     const hasMore = rows.length > limit
     const kept = hasMore ? rows.slice(0, limit) : rows
     return {
       rows: kept,
       hasMore,
-      cursor: hasMore ? kept[kept.length - 1]!.revision : this.currentTranscriptRevision(agentId)
+      cursor: hasMore ? kept[kept.length - 1]!.revision : await this.currentTranscriptRevision(agentId)
     }
   }
 
-  upsertSession(rec: SessionRecord): void {
+  async upsertSession(rec: SessionRecord): Promise<void> {
     // Bind only the mutable session columns explicitly. `rec` may be a row read back
     // via `SELECT *` (e.g. from getSession/listSessions), which now also carries the
     // `usage` and `muted` columns — passing the whole object would trip node:sqlite's
@@ -1898,7 +1935,7 @@ export class LocalStore {
     // is only promoted from the durable tombstone and never cleared by a state upsert.
     // `triggeredBy` is first-wins: the sender that created the session keeps the
     // credit across later upserts.
-    this.db
+    await this.db
       .prepare(
         `INSERT INTO sessions
            (key, agentId, platform, channel, thread, transportScope, acpSessionId, state, lastDeliveredTs, updatedAt, muted, triggeredBy, threadUrl, memoryProvider, workspaceIsolation, originSessionId, needsParentReply,
@@ -1974,31 +2011,29 @@ export class LocalStore {
    *  'done' for a clean finish, 'failed' for a problem phase. Read back by
    *  `viewSessionStatus` so a parent session can tell a finished child from a broken one.
    *  No-op if the key is unknown (a turn that failed before the row existed). */
-  setSessionTurnOutcome(key: string, outcome: 'done' | 'failed', updatedAt: number): void {
-    this.db.prepare('UPDATE sessions SET lastTurnOutcome = ?, updatedAt = ? WHERE key = ?').run(outcome, updatedAt, key)
+  async setSessionTurnOutcome(key: string, outcome: 'done' | 'failed', updatedAt: number): Promise<void> {
+    await this.db
+      .prepare('UPDATE sessions SET lastTurnOutcome = ?, updatedAt = ? WHERE key = ?')
+      .run(outcome, updatedAt, key)
   }
 
   /** Targeted state transition for an existing session (§7.3), stamping `updatedAt`
    *  so the change counts as activity for the TTL/idle clocks. No-op if the key is
    *  unknown (the row is created by the SessionManager on first turn). */
-  setSessionState(key: string, state: SessionRecord['state'], updatedAt: number): void {
-    this.db.prepare('UPDATE sessions SET state = ?, updatedAt = ? WHERE key = ?').run(state, updatedAt, key)
+  async setSessionState(key: string, state: SessionRecord['state'], updatedAt: number): Promise<void> {
+    await this.db.prepare('UPDATE sessions SET state = ?, updatedAt = ? WHERE key = ?').run(state, updatedAt, key)
   }
 
   /** `!stop` thread mute: the tombstone is written even before a session row exists,
    *  then mirrored into sessions.muted for existing readers. An explicit @mention
    *  clears both atomically. */
-  setSessionMuted(key: string, muted: boolean): void {
-    this.db.exec('BEGIN')
-    try {
-      if (muted) this.db.prepare('INSERT OR IGNORE INTO session_mutes (key) VALUES (?)').run(key)
-      else this.db.prepare('DELETE FROM session_mutes WHERE key = ?').run(key)
-      this.db.prepare('UPDATE sessions SET muted = ? WHERE key = ?').run(muted ? 1 : 0, key)
-      this.db.exec('COMMIT')
-    } catch (err) {
-      this.db.exec('ROLLBACK')
-      throw err
-    }
+  async setSessionMuted(key: string, muted: boolean): Promise<void> {
+    await this.transaction(async (raw) => {
+      const tx = accessOf(raw)
+      if (muted) await tx.prepare('INSERT OR IGNORE INTO session_mutes (key) VALUES (?)').run(key)
+      else await tx.prepare('DELETE FROM session_mutes WHERE key = ?').run(key)
+      await tx.prepare('UPDATE sessions SET muted = ? WHERE key = ?').run(muted ? 1 : 0, key)
+    })
   }
 
   // ── memory-capture gate (session-visibility.md §5.1) ──────────────────────
@@ -2009,8 +2044,8 @@ export class LocalStore {
 
   /** Seed the local verdict for a session the daemon just created. Never lowers
    *  `cpRev`: a CP push that arrived first stays authoritative. */
-  setLocalCaptureGate(agentId: string, acpSessionId: string, localExcluded: boolean): void {
-    this.db
+  async setLocalCaptureGate(agentId: string, acpSessionId: string, localExcluded: boolean): Promise<void> {
+    await this.db
       .prepare(
         `INSERT INTO session_gates (agentId, acpSessionId, localExcluded, cpRev, updatedAt)
          VALUES (?, ?, ?, 0, ?)
@@ -2029,28 +2064,35 @@ export class LocalStore {
    * The revision test is the upsert's own `WHERE`, not a prior `SELECT`: two members
    * on the shared store otherwise interleave read and write and land the older rev last.
    */
-  applyCpCaptureGate(agentId: string, acpSessionId: string, isPrivate: boolean, rev: number): 'applied' | 'superseded' {
+  async applyCpCaptureGate(
+    agentId: string,
+    acpSessionId: string,
+    isPrivate: boolean,
+    rev: number
+  ): Promise<'applied' | 'superseded'> {
     // rev 0 is a legitimate first revision (a session ingested and never
     // changed), so it applies once — but only while we hold nothing newer.
-    const changes = this.db
-      .prepare(
-        `INSERT INTO session_gates (agentId, acpSessionId, localExcluded, cpPrivate, cpRev, updatedAt)
+    const changes = (
+      await this.db
+        .prepare(
+          `INSERT INTO session_gates (agentId, acpSessionId, localExcluded, cpPrivate, cpRev, updatedAt)
          VALUES (?, ?, ?, ?, ?, ?)
          ON CONFLICT(agentId, acpSessionId) DO UPDATE SET
            cpPrivate = excluded.cpPrivate, cpRev = excluded.cpRev, updatedAt = excluded.updatedAt
          WHERE session_gates.cpRev < excluded.cpRev
             OR (excluded.cpRev = 0 AND session_gates.cpRev = 0)`
-      )
-      .run(agentId, acpSessionId, isPrivate ? 1 : 0, isPrivate ? 1 : 0, rev, Date.now()).changes
+        )
+        .run(agentId, acpSessionId, isPrivate ? 1 : 0, isPrivate ? 1 : 0, rev, Date.now())
+    ).changes
     return Number(changes) > 0 ? 'applied' : 'superseded'
   }
 
   /** The one agent holding this ACP id locally, or undefined when none or several
    *  do — how a push from a CP too old to name the agent is attributed. */
-  soleAgentForAcpSession(acpSessionId: string): string | undefined {
-    const rows = this.db
+  async soleAgentForAcpSession(acpSessionId: string): Promise<string | undefined> {
+    const rows = (await this.db
       .prepare('SELECT DISTINCT agentId FROM sessions WHERE acpSessionId = ? AND agentId IS NOT NULL LIMIT 2')
-      .all(acpSessionId) as { agentId: string }[]
+      .all(acpSessionId)) as { agentId: string }[]
     return rows.length === 1 ? rows[0]!.agentId : undefined
   }
 
@@ -2059,7 +2101,7 @@ export class LocalStore {
    * we have one; otherwise the local verdict; otherwise excluded. An A2A child
    * therefore starts closed and only a CP-confirmed `org` state opens it.
    */
-  isCaptureExcluded(agentId: string, acpSessionId: string | undefined): boolean {
+  async isCaptureExcluded(agentId: string, acpSessionId: string | undefined): Promise<boolean> {
     if (!acpSessionId) return true
     // External-source binding (a Slack/Feishu channel = external identity domain)
     // no longer forces memory exclusion: such channels behave like any other
@@ -2067,9 +2109,9 @@ export class LocalStore {
     // the CP-confirmed visibility below (#653 follow-up; session-visibility.md
     // §5.1). DM / webchat / A2A / launch-correlated sessions stay private through
     // those same layers.
-    const row = this.db
+    const row = (await this.db
       .prepare('SELECT localExcluded, cpPrivate FROM session_gates WHERE agentId = ? AND acpSessionId = ?')
-      .get(agentId, acpSessionId) as { localExcluded: number; cpPrivate: number | null } | undefined
+      .get(agentId, acpSessionId)) as { localExcluded: number; cpPrivate: number | null } | undefined
     if (!row) return true
     if (row.cpPrivate !== null) return row.cpPrivate === 1
     return row.localExcluded === 1
@@ -2081,24 +2123,25 @@ export class LocalStore {
   // rotates with tokens, which would orphan historical identity matches.
 
   /** The minted tenant scope for an integration, or undefined if never minted. */
-  getMintedTenantScope(integrationId: string): string | undefined {
-    const row = this.db.prepare('SELECT value FROM tenant_scopes WHERE integrationId = ?').get(integrationId) as
-      { value: string } | undefined
+  async getMintedTenantScope(integrationId: string): Promise<string | undefined> {
+    const row = (await this.db
+      .prepare('SELECT value FROM tenant_scopes WHERE integrationId = ?')
+      .get(integrationId)) as { value: string } | undefined
     return row?.value
   }
 
   /** Mint-once: concurrent callers converge on the first stored value. */
-  mintTenantScope(integrationId: string, value: string): string {
-    this.db
+  async mintTenantScope(integrationId: string, value: string): Promise<string> {
+    await this.db
       .prepare('INSERT OR IGNORE INTO tenant_scopes (integrationId, value, createdAt) VALUES (?, ?, ?)')
       .run(integrationId, value, Date.now())
-    return this.getMintedTenantScope(integrationId) ?? value
+    return (await this.getMintedTenantScope(integrationId)) ?? value
   }
 
   /** Persist a session's visibility-classification inputs so EVERY later
    *  `event/session` re-emit carries them, not just the dispatch that knew the
    *  originating message (session-visibility.md §4.1). First non-null wins. */
-  setSessionClassification(
+  async setSessionClassification(
     key: string,
     c: {
       conversationKind?: string
@@ -2112,8 +2155,8 @@ export class LocalStore {
       externalOrigin?: ExternalSessionOrigin
       sourceBindingKind?: 'local' | 'external'
     }
-  ): void {
-    this.db
+  ): Promise<void> {
+    await this.db
       .prepare(
         `UPDATE sessions SET
            conversationKind = COALESCE(conversationKind, ?),
@@ -2145,10 +2188,10 @@ export class LocalStore {
   }
 
   /** Read them back by ACP session id, the key the telemetry emitter holds. */
-  getSessionClassification(
+  async getSessionClassification(
     agentId: string,
     acpSessionId: string
-  ):
+  ): Promise<
     | {
         conversationKind?: string
         tenantScope?: string
@@ -2161,8 +2204,9 @@ export class LocalStore {
         externalOrigin?: ExternalSessionOrigin
         sourceBindingKind?: 'local' | 'external'
       }
-    | undefined {
-    const row = this.db
+    | undefined
+  > {
+    const row = (await this.db
       .prepare(
         `SELECT conversationKind, tenantScope, launchCorrelationId,
                 externalProvider, externalRealmKey, externalResourceKind,
@@ -2170,7 +2214,7 @@ export class LocalStore {
                 sourceBindingKind
          FROM sessions WHERE agentId = ? AND acpSessionId = ?`
       )
-      .get(agentId, acpSessionId) as
+      .get(agentId, acpSessionId)) as
       | {
           conversationKind: string | null
           tenantScope: string | null
@@ -2203,29 +2247,29 @@ export class LocalStore {
 
   /** Human-facing session title from ingress, ACP, or the AgentConnect title
    *  tool (latest wins; null clears per ACP semantics). No-op on an unknown key. */
-  setSessionTitle(key: string, title: string | null): void {
-    this.db.prepare('UPDATE sessions SET title = ? WHERE key = ?').run(title, key)
+  async setSessionTitle(key: string, title: string | null): Promise<void> {
+    await this.db.prepare('UPDATE sessions SET title = ? WHERE key = ?').run(title, key)
   }
 
   /** Slack status-bar message ts for this session, if one has been posted already. */
-  getStatusBarTs(key: string): string | undefined {
-    const row = this.db.prepare('SELECT statusBarTs FROM sessions WHERE key = ?').get(key) as
+  async getStatusBarTs(key: string): Promise<string | undefined> {
+    const row = (await this.db.prepare('SELECT statusBarTs FROM sessions WHERE key = ?').get(key)) as
       { statusBarTs: string | null } | undefined
     return row?.statusBarTs ?? undefined
   }
 
   /** Remember the current Slack status-bar message so later turns edit it in place. */
-  setStatusBarTs(key: string, ts: string): void {
-    this.db.prepare('UPDATE sessions SET statusBarTs = ? WHERE key = ?').run(ts, key)
+  async setStatusBarTs(key: string, ts: string): Promise<void> {
+    await this.db.prepare('UPDATE sessions SET statusBarTs = ? WHERE key = ?').run(ts, key)
   }
 
   /** Forget a removed Slack status-bar message so a later enabled turn posts a fresh one. */
-  clearStatusBarTs(key: string): void {
-    this.db.prepare('UPDATE sessions SET statusBarTs = NULL WHERE key = ?').run(key)
+  async clearStatusBarTs(key: string): Promise<void> {
+    await this.db.prepare('UPDATE sessions SET statusBarTs = NULL WHERE key = ?').run(key)
   }
 
-  isSessionMuted(key: string): boolean {
-    const row = this.db
+  async isSessionMuted(key: string): Promise<boolean> {
+    const row = (await this.db
       .prepare(
         `SELECT CASE
            WHEN EXISTS (SELECT 1 FROM session_mutes WHERE key = ?)
@@ -2233,72 +2277,73 @@ export class LocalStore {
            THEN 1 ELSE 0
          END AS muted`
       )
-      .get(key, key) as { muted: number }
+      .get(key, key)) as { muted: number }
     return row.muted === 1
   }
 
   /** The session-scoped model override (set via the console's in-session model switch),
    *  or undefined if the session runs on the agent's default. Sticky across turns and
    *  restarts, re-applied to the ACP session on each dispatch. */
-  getModelOverride(key: string): string | undefined {
-    const row = this.db.prepare('SELECT modelOverride FROM sessions WHERE key = ?').get(key) as
+  async getModelOverride(key: string): Promise<string | undefined> {
+    const row = (await this.db.prepare('SELECT modelOverride FROM sessions WHERE key = ?').get(key)) as
       { modelOverride: string | null } | undefined
     return row?.modelOverride ?? undefined
   }
 
   /** Last model the runtime actually exposed for this session. `null` is an
    *  explicit opaque/default observation; undefined means no turn observed yet. */
-  getObservedModel(key: string): string | null | undefined {
-    const row = this.db.prepare('SELECT observedModel, observedModelSet FROM sessions WHERE key = ?').get(key) as
-      { observedModel: string | null; observedModelSet: number } | undefined
+  async getObservedModel(key: string): Promise<string | null | undefined> {
+    const row = (await this.db
+      .prepare('SELECT observedModel, observedModelSet FROM sessions WHERE key = ?')
+      .get(key)) as { observedModel: string | null; observedModelSet: number } | undefined
     if (!row || row.observedModelSet !== 1) return undefined
     return row.observedModel
   }
 
   /** Persist the runtime observation so late usage corrections and metadata
    *  re-emits retain a named model or an explicit unknown across turn teardown. */
-  setObservedModel(key: string, model: string | null): void {
-    this.db.prepare('UPDATE sessions SET observedModel = ?, observedModelSet = 1 WHERE key = ?').run(model, key)
+  async setObservedModel(key: string, model: string | null): Promise<void> {
+    await this.db.prepare('UPDATE sessions SET observedModel = ?, observedModelSet = 1 WHERE key = ?').run(model, key)
   }
 
   /** Persist the session-scoped model override. No-op on an unknown key. */
-  setModelOverride(key: string, model: string): void {
-    this.db.prepare('UPDATE sessions SET modelOverride = ? WHERE key = ?').run(model, key)
+  async setModelOverride(key: string, model: string): Promise<void> {
+    await this.db.prepare('UPDATE sessions SET modelOverride = ? WHERE key = ?').run(model, key)
   }
 
   /** The session-scoped reasoning-effort override (set via the status-bar effort picker),
    *  or undefined if the session runs on the agent's default. Sticky across turns and
    *  restarts, re-applied to the ACP session on each dispatch. */
-  getEffortOverride(key: string): string | undefined {
-    const row = this.db.prepare('SELECT effortOverride FROM sessions WHERE key = ?').get(key) as
+  async getEffortOverride(key: string): Promise<string | undefined> {
+    const row = (await this.db.prepare('SELECT effortOverride FROM sessions WHERE key = ?').get(key)) as
       { effortOverride: string | null } | undefined
     return row?.effortOverride ?? undefined
   }
 
   /** Persist the session-scoped reasoning-effort override. No-op on an unknown key. */
-  setEffortOverride(key: string, effort: string): void {
-    this.db.prepare('UPDATE sessions SET effortOverride = ? WHERE key = ?').run(effort, key)
+  async setEffortOverride(key: string, effort: string): Promise<void> {
+    await this.db.prepare('UPDATE sessions SET effortOverride = ? WHERE key = ?').run(effort, key)
   }
 
   /** The session-scoped permission preset (set via status bars), or undefined if the
    *  session runs on the agent's default. Codex Auto is stored as AgentConnect's
    *  composite preset and decomposed only when applied to ACP. Sticky across turns
    *  and restarts. */
-  getPermissionModeOverride(key: string): string | undefined {
-    const row = this.db.prepare('SELECT permissionModeOverride FROM sessions WHERE key = ?').get(key) as
+  async getPermissionModeOverride(key: string): Promise<string | undefined> {
+    const row = (await this.db.prepare('SELECT permissionModeOverride FROM sessions WHERE key = ?').get(key)) as
       { permissionModeOverride: string | null } | undefined
     return row?.permissionModeOverride ?? undefined
   }
 
   /** Persist the session-scoped permission preset. No-op on an unknown key. */
-  setPermissionModeOverride(key: string, preset: string): void {
-    this.db.prepare('UPDATE sessions SET permissionModeOverride = ? WHERE key = ?').run(preset, key)
+  async setPermissionModeOverride(key: string, preset: string): Promise<void> {
+    await this.db.prepare('UPDATE sessions SET permissionModeOverride = ? WHERE key = ?').run(preset, key)
   }
 
   /** Revoke every chat-authored runtime override for an Agent. Output mode is
    * delivery presentation, not a runtime setting, so it remains independent. */
-  clearRuntimeConfigOverrides(agentId: string): void {
-    this.db
+  async clearRuntimeConfigOverrides(agentId: string): Promise<void> {
+    await this.db
       .prepare(
         `UPDATE sessions
          SET modelOverride = NULL,
@@ -2313,8 +2358,8 @@ export class LocalStore {
   /** The session-scoped fast-mode override (set via the status-bar fast toggle), or
    *  undefined if the session runs on the agent's default. Stored as 0/1; sticky across
    *  turns and restarts, re-applied to the ACP session on each dispatch. */
-  getFastModeOverride(key: string): boolean | undefined {
-    const row = this.db.prepare('SELECT fastModeOverride FROM sessions WHERE key = ?').get(key) as
+  async getFastModeOverride(key: string): Promise<boolean | undefined> {
+    const row = (await this.db.prepare('SELECT fastModeOverride FROM sessions WHERE key = ?').get(key)) as
       { fastModeOverride: number | null } | undefined
     return row?.fastModeOverride === null || row?.fastModeOverride === undefined
       ? undefined
@@ -2322,30 +2367,30 @@ export class LocalStore {
   }
 
   /** Persist the session-scoped fast-mode override. No-op on an unknown key. */
-  setFastModeOverride(key: string, fastMode: boolean): void {
-    this.db.prepare('UPDATE sessions SET fastModeOverride = ? WHERE key = ?').run(fastMode ? 1 : 0, key)
+  async setFastModeOverride(key: string, fastMode: boolean): Promise<void> {
+    await this.db.prepare('UPDATE sessions SET fastModeOverride = ? WHERE key = ?').run(fastMode ? 1 : 0, key)
   }
 
   /** The session-scoped Slack output-mode override (set via the status-bar output picker),
    *  or undefined if the session uses the agent's default. Daemon-side rendering verbosity
    *  (minimal/low/medium/high) — NOT an ACP setting; picked up by the next turn's OutputConverger. */
-  getOutputModeOverride(key: string): 'none' | 'minimal' | 'low' | 'medium' | 'high' | undefined {
+  async getOutputModeOverride(key: string): Promise<'none' | 'minimal' | 'low' | 'medium' | 'high' | undefined> {
     if (!key) return undefined // defensive: never bind an undefined key into SQL
-    const row = this.db.prepare('SELECT outputModeOverride FROM sessions WHERE key = ?').get(key) as
+    const row = (await this.db.prepare('SELECT outputModeOverride FROM sessions WHERE key = ?').get(key)) as
       { outputModeOverride: string | null } | undefined
     const v = row?.outputModeOverride
     return v === 'none' || v === 'minimal' || v === 'low' || v === 'medium' || v === 'high' ? v : undefined
   }
 
   /** Persist the session-scoped Slack output-mode override. No-op on an unknown key. */
-  setOutputModeOverride(key: string, mode: 'none' | 'minimal' | 'low' | 'medium' | 'high'): void {
-    this.db.prepare('UPDATE sessions SET outputModeOverride = ? WHERE key = ?').run(mode, key)
+  async setOutputModeOverride(key: string, mode: 'none' | 'minimal' | 'low' | 'medium' | 'high'): Promise<void> {
+    await this.db.prepare('UPDATE sessions SET outputModeOverride = ? WHERE key = ?').run(mode, key)
   }
 
   /** Current token accounting for a session (parsed from the `usage` JSON column),
    *  or `{}` if none has been recorded / the JSON is unreadable. */
-  getUsage(key: string): StoredUsage {
-    const row = this.db.prepare('SELECT usage FROM sessions WHERE key = ?').get(key) as
+  async getUsage(key: string): Promise<StoredUsage> {
+    const row = (await this.db.prepare('SELECT usage FROM sessions WHERE key = ?').get(key)) as
       { usage: string | null } | undefined
     return parseUsage(row?.usage ?? null)
   }
@@ -2359,9 +2404,9 @@ export class LocalStore {
    *
    * `merge` runs again on every attempt, so it must be safe to repeat; returning undefined aborts.
    */
-  private mergeUsage(key: string, merge: (u: StoredUsage) => StoredUsage | undefined): void {
+  private async mergeUsage(key: string, merge: (u: StoredUsage) => StoredUsage | undefined): Promise<void> {
     for (let attempt = 1; attempt <= USAGE_MERGE_ATTEMPTS; attempt++) {
-      const row = this.db.prepare('SELECT usage FROM sessions WHERE key = ?').get(key) as
+      const row = (await this.db.prepare('SELECT usage FROM sessions WHERE key = ?').get(key)) as
         { usage: string | null } | undefined
       if (!row) return // unknown key: the row is created first (unchanged from the plain write)
       const merged = merge(parseUsage(row.usage))
@@ -2370,16 +2415,20 @@ export class LocalStore {
       // The last attempt writes unconditionally. Losing an increment is exactly the behavior this
       // replaces, so it is the floor to degrade to rather than dropping the write entirely.
       if (attempt === USAGE_MERGE_ATTEMPTS) {
-        this.db.prepare('UPDATE sessions SET usage = ? WHERE key = ?').run(next, key)
+        await this.db.prepare('UPDATE sessions SET usage = ? WHERE key = ?').run(next, key)
         return
       }
       // Two statements, not one NULL-safe comparison: `IS` / `IS NOT DISTINCT FROM` are spelled
       // differently by the two backends, and which case applies is already known here.
       const changes =
         row.usage === null
-          ? this.db.prepare('UPDATE sessions SET usage = ? WHERE key = ? AND usage IS NULL').run(next, key).changes
-          : this.db.prepare('UPDATE sessions SET usage = ? WHERE key = ? AND usage = ?').run(next, key, row.usage)
+          ? (await this.db.prepare('UPDATE sessions SET usage = ? WHERE key = ? AND usage IS NULL').run(next, key))
               .changes
+          : (
+              await this.db
+                .prepare('UPDATE sessions SET usage = ? WHERE key = ? AND usage = ?')
+                .run(next, key, row.usage)
+            ).changes
       if (changes > 0) return
     }
   }
@@ -2388,8 +2437,8 @@ export class LocalStore {
    *  running session total. This is latest-wins over the token fields — never
    *  additive. Only provided fields are updated; the context/cost snapshot is
    *  left intact. No-op on an unknown key (the row is created first). */
-  setTokenUsage(key: string, counts: TokenCounts): void {
-    this.mergeUsage(key, (u) => {
+  async setTokenUsage(key: string, counts: TokenCounts): Promise<void> {
+    await this.mergeUsage(key, (u) => {
       if (counts.totalTokens !== undefined) u.totalTokens = counts.totalTokens
       if (counts.inputTokens !== undefined) u.inputTokens = counts.inputTokens
       if (counts.outputTokens !== undefined) u.outputTokens = counts.outputTokens
@@ -2403,8 +2452,8 @@ export class LocalStore {
   /** Add one turn's token counts to the session total. codex-acp currently maps
    *  Codex's `last_token_usage` into PromptResponse.usage, so its values are a
    *  per-turn delta even though other ACP adapters return a session snapshot. */
-  addTokenUsage(key: string, counts: TokenCounts): void {
-    this.mergeUsage(key, (u) => {
+  async addTokenUsage(key: string, counts: TokenCounts): Promise<void> {
+    await this.mergeUsage(key, (u) => {
       const add = (field: keyof TokenCounts, value: number | undefined) => {
         if (value !== undefined) u[field] = (u[field] ?? 0) + value
       }
@@ -2420,8 +2469,8 @@ export class LocalStore {
 
   /** Overwrite the session's context-window + cost snapshot (latest `usage_update`
    *  wins). Only provided fields are updated. No-op on an unknown key. */
-  setUsageSnapshot(key: string, snap: UsageSnapshot): void {
-    this.mergeUsage(key, (u) => {
+  async setUsageSnapshot(key: string, snap: UsageSnapshot): Promise<void> {
+    await this.mergeUsage(key, (u) => {
       if (snap.contextUsed !== undefined) u.contextUsed = snap.contextUsed
       if (snap.contextSize !== undefined) u.contextSize = snap.contextSize
       if (snap.costAmount !== undefined) u.costAmount = snap.costAmount
@@ -2432,11 +2481,11 @@ export class LocalStore {
 
   /** Add one turn's fallback cost to the session running total. Refuse to mix
    *  currencies; a later ACP usage_update can still replace the total snapshot. */
-  addCost(key: string, amount: number, currency: string): boolean {
+  async addCost(key: string, amount: number, currency: string): Promise<boolean> {
     if (!Number.isFinite(amount) || amount <= 0 || !currency) return false
     // Set at most once and only by the refusal branch, so repeating the merge cannot change it.
     let mixedCurrency = false
-    this.mergeUsage(key, (u) => {
+    await this.mergeUsage(key, (u) => {
       if (u.costCurrency !== undefined && u.costCurrency !== currency) {
         mixedCurrency = true
         return undefined
@@ -2451,33 +2500,21 @@ export class LocalStore {
   /** Most-recent activity across an agent's non-closed sessions (epoch ms), or null
    *  if it has none. Drives idle-host reaping (#111): a host with no recent session
    *  activity AND no in-flight turn is past its idle window. */
-  agentLastActivityTs(agentId: string): number | null {
-    const row = this.db
+  async agentLastActivityTs(agentId: string): Promise<number | null> {
+    const row = (await this.db
       .prepare("SELECT MAX(updatedAt) AS ts FROM sessions WHERE agentId = ? AND state != 'closed'")
-      .get(agentId) as { ts: number | null } | undefined
+      .get(agentId)) as { ts: number | null } | undefined
     return row?.ts ?? null
   }
 
   /** Close expired idle sessions unless daemon-side work exempts them. */
-  closeIdleSessions(
+  async closeIdleSessions(
     now: number,
     ttlMs: number,
     // ACP ids need agent scope; the logical key also fences work admitted before durable prompting state.
-    isExempt?: (agentId: string, acpSessionId: string | null, key: string) => boolean
-  ): {
-    key: string
-    agentId: string
-    platform: string
-    channel: string
-    thread: string
-    acpSessionId: string | null
-  }[] {
-    const cutoff = now - ttlMs
-    const candidates = this.db
-      .prepare(
-        "SELECT key, agentId, platform, channel, thread, acpSessionId FROM sessions WHERE state = 'idle' AND updatedAt < ?"
-      )
-      .all(cutoff) as {
+    isExempt?: (agentId: string, acpSessionId: string | null, key: string) => boolean | Promise<boolean>
+  ): Promise<
+    {
       key: string
       agentId: string
       platform: string
@@ -2485,17 +2522,30 @@ export class LocalStore {
       thread: string
       acpSessionId: string | null
     }[]
-    const rows = isExempt ? candidates.filter((r) => !isExempt(r.agentId, r.acpSessionId, r.key)) : candidates
+  > {
+    const cutoff = now - ttlMs
+    const candidates = (await this.db
+      .prepare(
+        "SELECT key, agentId, platform, channel, thread, acpSessionId FROM sessions WHERE state = 'idle' AND updatedAt < ?"
+      )
+      .all(cutoff)) as {
+      key: string
+      agentId: string
+      platform: string
+      channel: string
+      thread: string
+      acpSessionId: string | null
+    }[]
+    // The exemption probe is awaited before the close transaction opens, never inside it.
+    const exempt = isExempt
+      ? await Promise.all(candidates.map((r) => isExempt(r.agentId, r.acpSessionId, r.key)))
+      : undefined
+    const rows = exempt ? candidates.filter((_, i) => !exempt[i]) : candidates
     if (rows.length) {
-      const close = this.db.prepare("UPDATE sessions SET state = 'closed' WHERE key = ? AND state = 'idle'")
-      this.db.exec('BEGIN')
-      try {
-        for (const r of rows) close.run(r.key)
-        this.db.exec('COMMIT')
-      } catch (err) {
-        this.db.exec('ROLLBACK')
-        throw err
-      }
+      await this.transaction(async (raw) => {
+        const close = accessOf(raw).prepare("UPDATE sessions SET state = 'closed' WHERE key = ? AND state = 'idle'")
+        for (const r of rows) await close.run(r.key)
+      })
     }
     return rows
   }
@@ -2506,10 +2556,10 @@ export class LocalStore {
    *  a worktree directory. Oldest first, so a bounded pass drains the backlog in
    *  eviction order. `resuming`/`prompting`/`cancelling` rows are live by
    *  definition and never candidates. */
-  listExpiredSessions(cutoff: number): SessionRecord[] {
-    return this.db
+  async listExpiredSessions(cutoff: number): Promise<SessionRecord[]> {
+    return (await this.db
       .prepare("SELECT * FROM sessions WHERE state IN ('idle', 'closed') AND updatedAt < ? ORDER BY updatedAt ASC")
-      .all(cutoff) as unknown as SessionRecord[]
+      .all(cutoff)) as unknown as SessionRecord[]
   }
 
   /** True when the session key still has PENDING durable inbox rows (admitted
@@ -2518,10 +2568,10 @@ export class LocalStore {
    *  unacknowledged terminal reports — do NOT pin the session: a hook session
    *  keeps its receipt forever, and counting it would exempt exactly the
    *  review-agent sessions #485 exists to collect. */
-  sessionHasPendingInboxRows(key: string): boolean {
-    const row = this.db
+  async sessionHasPendingInboxRows(key: string): Promise<boolean> {
+    const row = (await this.db
       .prepare('SELECT 1 AS present FROM inbox WHERE sessionKey = ? AND completedAt IS NULL LIMIT 1')
-      .get(key) as { present: number } | undefined
+      .get(key)) as { present: number } | undefined
     return row !== undefined
   }
 
@@ -2536,11 +2586,11 @@ export class LocalStore {
    *  permission_requests and the capture gate are both scoped by agentId, so a
    *  neighbour holding the same runtime-local `acp-1` keeps its own rows.
    *  Returns false when the row is already gone (idempotent). */
-  deleteSession(key: string, purge?: { reason: string; at: number; ownerId?: string }): boolean {
-    const rec = this.getSession(key)
+  async deleteSession(key: string, purge?: { reason: string; at: number; ownerId?: string }): Promise<boolean> {
+    const rec = await this.getSession(key)
     if (!rec) return false
-    this.db.exec('BEGIN')
-    try {
+    await this.transaction(async (raw) => {
+      const tx = accessOf(raw)
       // The CP-owed receipt is written in the SAME transaction as the delete: the
       // fact "this session's content is gone" must not be able to exist without
       // the report that carries it, in either direction. Only a session that bound
@@ -2550,35 +2600,31 @@ export class LocalStore {
       // actually went away, not when the daemon last retried.
       if (purge && rec.acpSessionId) {
         // Stamped to the deleting member on a shared store: its drain owns the receipt.
-        this.db
+        await tx
           .prepare(
             `INSERT OR IGNORE INTO session_purges (agentId, sessionId, reason, purgedAt, ownerId, claimedAt)
              VALUES (?, ?, ?, ?, ?, ?)`
           )
           .run(rec.agentId, rec.acpSessionId, purge.reason, purge.at, purge.ownerId ?? null, purge.at)
       }
-      this.db.prepare('DELETE FROM sessions WHERE key = ?').run(key)
-      this.db.prepare('DELETE FROM session_mutes WHERE key = ?').run(key)
-      this.db.prepare('DELETE FROM inbox WHERE sessionKey = ? AND terminalReport IS NULL').run(key)
+      await tx.prepare('DELETE FROM sessions WHERE key = ?').run(key)
+      await tx.prepare('DELETE FROM session_mutes WHERE key = ?').run(key)
+      await tx.prepare('DELETE FROM inbox WHERE sessionKey = ? AND terminalReport IS NULL').run(key)
       if (rec.acpSessionId) {
         // Once the local session content is gone, creating a new CP metadata row
         // from an unacknowledged snapshot would race its purge receipt. Drop the
         // obsolete snapshot; an existing CP row is handled by session_purges.
-        this.db
+        await tx
           .prepare('DELETE FROM session_metadata_outbox WHERE agentId = ? AND sessionId = ?')
           .run(rec.agentId, rec.acpSessionId)
-        this.db
+        await tx
           .prepare('DELETE FROM session_gates WHERE agentId = ? AND acpSessionId = ?')
           .run(rec.agentId, rec.acpSessionId)
-        this.db
+        await tx
           .prepare('DELETE FROM permission_requests WHERE agentId = ? AND sessionId = ?')
           .run(rec.agentId, rec.acpSessionId)
       }
-      this.db.exec('COMMIT')
-    } catch (err) {
-      this.db.exec('ROLLBACK')
-      throw err
-    }
+    })
     return true
   }
 
@@ -2588,19 +2634,19 @@ export class LocalStore {
    * pending, so startup name refreshes never backfill historical sessions.
    * Returns the revision when a durable row exists after the write.
    */
-  saveSessionMetadataSnapshot(
+  async saveSessionMetadataSnapshot(
     agentId: string,
     sessionId: string,
     snapshot: string,
     enqueue: boolean,
     queuedAt: number,
     ownerId?: string
-  ): number | undefined {
+  ): Promise<number | undefined> {
     // Stamped to the writing member: the daemon that produced the snapshot serves the
     // agent, so it is the one that can scope the frame's organization right now.
     const owner = ownerId ?? null
     const row = enqueue
-      ? (this.db
+      ? ((await this.db
           .prepare(
             `INSERT INTO session_metadata_outbox
                (agentId, sessionId, revision, snapshot, queuedAt, failedAttempts, nextAttemptAt, ownerId, claimedAt)
@@ -2615,8 +2661,8 @@ export class LocalStore {
                claimedAt = excluded.claimedAt
              RETURNING revision`
           )
-          .get(agentId, sessionId, snapshot, queuedAt, owner, queuedAt) as { revision: number } | undefined)
-      : (this.db
+          .get(agentId, sessionId, snapshot, queuedAt, owner, queuedAt)) as { revision: number } | undefined)
+      : ((await this.db
           .prepare(
             `UPDATE session_metadata_outbox
              SET revision = revision + 1, snapshot = ?, queuedAt = ?, failedAttempts = 0, nextAttemptAt = NULL,
@@ -2624,17 +2670,20 @@ export class LocalStore {
              WHERE agentId = ? AND sessionId = ?
              RETURNING revision`
           )
-          .get(snapshot, queuedAt, owner, queuedAt, agentId, sessionId) as { revision: number } | undefined)
+          .get(snapshot, queuedAt, owner, queuedAt, agentId, sessionId)) as { revision: number } | undefined)
     return row?.revision
   }
 
-  pendingSessionMetadataSnapshot(agentId: string, sessionId: string): SessionMetadataOutboxRow | undefined {
-    return this.db
+  async pendingSessionMetadataSnapshot(
+    agentId: string,
+    sessionId: string
+  ): Promise<SessionMetadataOutboxRow | undefined> {
+    return (await this.db
       .prepare(
         `SELECT agentId, sessionId, revision, snapshot, queuedAt, failedAttempts, nextAttemptAt
          FROM session_metadata_outbox WHERE agentId = ? AND sessionId = ?`
       )
-      .get(agentId, sessionId) as unknown as SessionMetadataOutboxRow | undefined
+      .get(agentId, sessionId)) as unknown as SessionMetadataOutboxRow | undefined
   }
 
   /** The scope of the outbox this member may work on. A local store owns every row
@@ -2669,48 +2718,50 @@ export class LocalStore {
     }
   }
 
-  nextSessionMetadataSnapshot(
+  async nextSessionMetadataSnapshot(
     now = Date.now(),
     ownerId?: string,
     agentIds?: readonly string[]
-  ): SessionMetadataOutboxRow | undefined {
+  ): Promise<SessionMetadataOutboxRow | undefined> {
     const scope = this.sessionMetadataScope(now, ownerId, agentIds)
-    return this.db
+    return (await this.db
       .prepare(
         `SELECT agentId, sessionId, revision, snapshot, queuedAt, failedAttempts, nextAttemptAt
          FROM session_metadata_outbox
          WHERE (nextAttemptAt IS NULL OR nextAttemptAt <= @now)${scope.sql}
          ORDER BY queuedAt ASC LIMIT 1`
       )
-      .get({ now, ...scope.params }) as unknown as SessionMetadataOutboxRow | undefined
+      .get({ now, ...scope.params })) as unknown as SessionMetadataOutboxRow | undefined
   }
 
   /** Take or renew this member's claim on one snapshot before emitting it. Local
    *  stores never lease: the single owner claims everything. */
-  claimSessionMetadataSnapshot(
+  async claimSessionMetadataSnapshot(
     agentId: string,
     sessionId: string,
     revision: number,
     ownerId: string | undefined,
     now: number
-  ): boolean {
+  ): Promise<boolean> {
     if (!this.shared) return true
     return (
-      this.db
-        .prepare(
-          `UPDATE session_metadata_outbox
+      (
+        await this.db
+          .prepare(
+            `UPDATE session_metadata_outbox
            SET ownerId = @ownerId, claimedAt = @now
            WHERE agentId = @agentId AND sessionId = @sessionId AND revision = @revision
              AND (ownerId IS NULL OR ownerId = @ownerId OR COALESCE(claimedAt, 0) <= @staleBefore)`
-        )
-        .run({
-          agentId,
-          sessionId,
-          revision,
-          ownerId: ownerId ?? null,
-          now,
-          staleBefore: now - SHARED_OUTBOX_LEASE_MS
-        }).changes === 1
+          )
+          .run({
+            agentId,
+            sessionId,
+            revision,
+            ownerId: ownerId ?? null,
+            now,
+            staleBefore: now - SHARED_OUTBOX_LEASE_MS
+          })
+      ).changes === 1
     )
   }
 
@@ -2718,16 +2769,23 @@ export class LocalStore {
    *  so the member serving the agent picks it up, the body and the failure count are
    *  untouched, and the backoff keeps it out of this member's next pass. Returns false
    *  on a local store, where there is no other member to park it for. */
-  parkSessionMetadataSnapshot(agentId: string, sessionId: string, revision: number, retryAt: number): boolean {
+  async parkSessionMetadataSnapshot(
+    agentId: string,
+    sessionId: string,
+    revision: number,
+    retryAt: number
+  ): Promise<boolean> {
     if (!this.shared) return false
     return (
-      this.db
-        .prepare(
-          `UPDATE session_metadata_outbox
+      (
+        await this.db
+          .prepare(
+            `UPDATE session_metadata_outbox
            SET ownerId = NULL, claimedAt = NULL, nextAttemptAt = @retryAt
            WHERE agentId = @agentId AND sessionId = @sessionId AND revision = @revision`
-        )
-        .run({ agentId, sessionId, revision, retryAt }).changes === 1
+          )
+          .run({ agentId, sessionId, revision, retryAt })
+      ).changes === 1
     )
   }
 
@@ -2735,32 +2793,36 @@ export class LocalStore {
    *  ones lose their backoff and a previous holder's claim — live or not — is released,
    *  because the duty ledger has already proved that member no longer serves the agent.
    *  This member's own claims are left alone; only it knows whether they are in flight. */
-  reclaimSessionMetadataSnapshots(agentIds: readonly string[], ownerId?: string): number {
+  async reclaimSessionMetadataSnapshots(agentIds: readonly string[], ownerId?: string): Promise<number> {
     if (!this.shared || agentIds.length === 0) return 0
     const scope = idScope('agentId', agentIds)
     return Number(
-      this.db
-        .prepare(
-          `UPDATE session_metadata_outbox
+      (
+        await this.db
+          .prepare(
+            `UPDATE session_metadata_outbox
            SET ownerId = NULL, claimedAt = NULL, nextAttemptAt = NULL
            WHERE (ownerId IS NULL OR ownerId <> @ownerId)${scope.sql}`
-        )
-        .run({ ownerId: ownerId ?? null, ...scope.params }).changes
+          )
+          .run({ ownerId: ownerId ?? null, ...scope.params })
+      ).changes
     )
   }
 
   /** Release every claim this member still holds, at shutdown: it will not emit again, so
    *  a successor must not wait out the lease. Bodies, revisions and backoffs survive. */
-  releaseOwnedSessionMetadataSnapshots(ownerId?: string): number {
+  async releaseOwnedSessionMetadataSnapshots(ownerId?: string): Promise<number> {
     if (!this.shared) return 0
     return Number(
-      this.db
-        .prepare(
-          `UPDATE session_metadata_outbox
+      (
+        await this.db
+          .prepare(
+            `UPDATE session_metadata_outbox
            SET ownerId = NULL, claimedAt = NULL, nextAttemptAt = NULL
            WHERE ownerId = @ownerId`
-        )
-        .run({ ownerId: ownerId ?? null }).changes
+          )
+          .run({ ownerId: ownerId ?? null })
+      ).changes
     )
   }
 
@@ -2769,54 +2831,59 @@ export class LocalStore {
    *  lapses. Without the second half a graceful handoff leaves a live foreign claim with
    *  nothing armed to outlast it. Written as one CASE rather than a two-argument `max()`: the
    *  same statement text runs on the pool's PostgreSQL, where `MAX` is only an aggregate. */
-  nextSessionMetadataAttemptAt(ownerId?: string, agentIds?: readonly string[]): number | undefined {
+  async nextSessionMetadataAttemptAt(ownerId?: string, agentIds?: readonly string[]): Promise<number | undefined> {
     const scope = this.sessionMetadataWorkScope(ownerId, agentIds)
     const workableAt = this.shared
       ? `CASE WHEN ownerId IS NOT NULL AND ownerId <> @ownerId
                 AND COALESCE(claimedAt, 0) + @lease > COALESCE(nextAttemptAt, 0)
            THEN COALESCE(claimedAt, 0) + @lease ELSE COALESCE(nextAttemptAt, 0) END`
       : 'COALESCE(nextAttemptAt, 0)'
-    const row = this.db
+    const row = (await this.db
       .prepare(`SELECT MIN(${workableAt}) AS attemptAt FROM session_metadata_outbox WHERE 1 = 1${scope.sql}`)
-      .get({ ...scope.params, ...(this.shared ? { lease: SHARED_OUTBOX_LEASE_MS } : {}) }) as
+      .get({ ...scope.params, ...(this.shared ? { lease: SHARED_OUTBOX_LEASE_MS } : {}) })) as
       { attemptAt: number | null } | undefined
     return row?.attemptAt === null || row?.attemptAt === undefined ? undefined : Number(row.attemptAt)
   }
 
-  recordSessionMetadataSnapshotFailure(
+  async recordSessionMetadataSnapshotFailure(
     agentId: string,
     sessionId: string,
     revision: number,
     nextAttemptAt: number | null,
     ownerId?: string
-  ): Pick<SessionMetadataOutboxRow, 'failedAttempts' | 'nextAttemptAt'> | undefined {
+  ): Promise<Pick<SessionMetadataOutboxRow, 'failedAttempts' | 'nextAttemptAt'> | undefined> {
     const fence = this.shared ? ' AND (ownerId IS NULL OR ownerId = @ownerId)' : ''
-    return this.db
+    return (await this.db
       .prepare(
         `UPDATE session_metadata_outbox
          SET failedAttempts = failedAttempts + 1, nextAttemptAt = @nextAttemptAt
          WHERE agentId = @agentId AND sessionId = @sessionId AND revision = @revision${fence}
          RETURNING failedAttempts, nextAttemptAt`
       )
-      .get({ agentId, sessionId, revision, nextAttemptAt, ...(fence ? { ownerId: ownerId ?? null } : {}) }) as
+      .get({ agentId, sessionId, revision, nextAttemptAt, ...(fence ? { ownerId: ownerId ?? null } : {}) })) as
       Pick<SessionMetadataOutboxRow, 'failedAttempts' | 'nextAttemptAt'> | undefined
   }
 
   /** Any row this member is answerable for, workable now or once a peer's claim lapses. */
-  hasPendingSessionMetadata(ownerId?: string, agentIds?: readonly string[]): boolean {
+  async hasPendingSessionMetadata(ownerId?: string, agentIds?: readonly string[]): Promise<boolean> {
     const scope = this.sessionMetadataWorkScope(ownerId, agentIds)
     return (
-      this.db
+      (await this.db
         .prepare(`SELECT 1 AS pending FROM session_metadata_outbox WHERE 1 = 1${scope.sql} LIMIT 1`)
-        .get(scope.params) !== undefined
+        .get(scope.params)) !== undefined
     )
   }
 
   /** Clear exactly the revision the CP ACKed. A newer coalesced snapshot wins. On a
    *  shared store only the claim holder may drop a row — never a peer's. */
-  acknowledgeSessionMetadataSnapshot(agentId: string, sessionId: string, revision: number, ownerId?: string): boolean {
+  async acknowledgeSessionMetadataSnapshot(
+    agentId: string,
+    sessionId: string,
+    revision: number,
+    ownerId?: string
+  ): Promise<boolean> {
     const fence = this.shared ? ' AND (ownerId IS NULL OR ownerId = @ownerId)' : ''
-    const result = this.db
+    const result = await this.db
       .prepare(
         `DELETE FROM session_metadata_outbox
          WHERE agentId = @agentId AND sessionId = @sessionId AND revision = @revision${fence}`
@@ -2832,12 +2899,18 @@ export class LocalStore {
    *  offered only when this member owns it, when it is unowned (pre-pool), or when
    *  its owner's claim lapsed AND this member serves the agent — the same lease
    *  the hook-completion outbox uses, so a live peer's receipt stays with its owner. */
-  listSessionPurges(limit: number, now: number, ownerId?: string, agentIds?: readonly string[]): SessionPurgeRow[] {
+  async listSessionPurges(
+    limit: number,
+    now: number,
+    ownerId?: string,
+    agentIds?: readonly string[]
+  ): Promise<SessionPurgeRow[]> {
     const columns = 'SELECT agentId, sessionId, reason, purgedAt FROM session_purges'
     const order = ' ORDER BY purgedAt ASC LIMIT @limit'
-    if (!this.shared) return this.db.prepare(`${columns}${order}`).all({ limit }) as unknown as SessionPurgeRow[]
+    if (!this.shared)
+      return (await this.db.prepare(`${columns}${order}`).all({ limit })) as unknown as SessionPurgeRow[]
     const scope = idScope('agentId', agentIds)
-    return this.db
+    return (await this.db
       .prepare(
         `${columns}
          WHERE (ownerId IS NULL OR ownerId = @ownerId
@@ -2848,60 +2921,50 @@ export class LocalStore {
         ownerId: ownerId ?? null,
         staleBefore: now - SHARED_OUTBOX_LEASE_MS,
         ...scope.params
-      }) as unknown as SessionPurgeRow[]
+      })) as unknown as SessionPurgeRow[]
   }
 
   /** Take or renew this member's claim on the receipts of one frame before emitting
    *  it, returning the session ids actually claimed — a row a peer took over between
    *  the list and this CAS is left out. Local stores never lease: everything is claimed. */
-  claimSessionPurges(
+  async claimSessionPurges(
     agentId: string,
     sessionIds: readonly string[],
     ownerId: string | undefined,
     now: number
-  ): string[] {
+  ): Promise<string[]> {
     if (!this.shared) return [...sessionIds]
-    const claim = this.db.prepare(
-      `UPDATE session_purges
+    const staleBefore = now - SHARED_OUTBOX_LEASE_MS
+    const claimed: string[] = []
+    await this.transaction(async (raw) => {
+      const claim = accessOf(raw).prepare(
+        `UPDATE session_purges
        SET ownerId = @ownerId, claimedAt = @now
        WHERE agentId = @agentId AND sessionId = @sessionId
          AND (ownerId IS NULL OR ownerId = @ownerId OR COALESCE(claimedAt, 0) <= @staleBefore)`
-    )
-    const staleBefore = now - SHARED_OUTBOX_LEASE_MS
-    const claimed: string[] = []
-    this.db.exec('BEGIN')
-    try {
+      )
       for (const sessionId of sessionIds) {
-        if (claim.run({ agentId, sessionId, ownerId: ownerId ?? null, now, staleBefore }).changes === 1)
+        if ((await claim.run({ agentId, sessionId, ownerId: ownerId ?? null, now, staleBefore })).changes === 1)
           claimed.push(sessionId)
       }
-      this.db.exec('COMMIT')
-    } catch (err) {
-      this.db.exec('ROLLBACK')
-      throw err
-    }
+    })
     return claimed
   }
 
   /** Settle receipts the CP has ACKed. Scoped by agent: the same ACP id may still
    *  be owed for a different agent (ids are runtime-local). On a shared store only
    *  the claim holder (or nobody) may release a row — never a peer. */
-  acknowledgeSessionPurges(agentId: string, sessionIds: string[], ownerId?: string): void {
+  async acknowledgeSessionPurges(agentId: string, sessionIds: string[], ownerId?: string): Promise<void> {
     if (sessionIds.length === 0) return
     const fence = this.shared ? ' AND (ownerId IS NULL OR ownerId = @ownerId)' : ''
-    const stmt = this.db.prepare(
-      `DELETE FROM session_purges WHERE agentId = @agentId AND sessionId = @sessionId${fence}`
-    )
-    this.db.exec('BEGIN')
-    try {
+    await this.transaction(async (raw) => {
+      const stmt = accessOf(raw).prepare(
+        `DELETE FROM session_purges WHERE agentId = @agentId AND sessionId = @sessionId${fence}`
+      )
       for (const sessionId of sessionIds) {
-        stmt.run({ agentId, sessionId, ...(fence ? { ownerId: ownerId ?? null } : {}) })
+        await stmt.run({ agentId, sessionId, ...(fence ? { ownerId: ownerId ?? null } : {}) })
       }
-      this.db.exec('COMMIT')
-    } catch (err) {
-      this.db.exec('ROLLBACK')
-      throw err
-    }
+    })
   }
 
   // ── retention (docs/designs/k8s-daemon-pool.md §4; the rule table in store/retention.ts) ──
@@ -2919,7 +2982,7 @@ export class LocalStore {
 
   /** Every row one retention rule is about, oldest first, with the clock it is judged by.
    *  Reads only: which of these are collectable is policy and lives in the rule table. */
-  listRetentionCandidates(rule: StoreRetentionRule, limit = 5_000): StoreRetentionCandidate[] {
+  async listRetentionCandidates(rule: StoreRetentionRule, limit = 5_000): Promise<StoreRetentionCandidate[]> {
     const columns = [
       ...new Set([
         ...rule.key,
@@ -2927,12 +2990,12 @@ export class LocalStore {
         ...(rule.ownerColumn ? [rule.ownerColumn] : [])
       ])
     ]
-    const rows = this.db
+    const rows = (await this.db
       .prepare(
         `SELECT ${columns.join(', ')}, ${rule.clock} AS touchedAt FROM ${rule.table}
          WHERE ${rule.where ?? '1 = 1'} ORDER BY ${rule.clock} ASC LIMIT @limit`
       )
-      .all({ limit }) as unknown as Record<string, string | number | null>[]
+      .all({ limit })) as unknown as Record<string, string | number | null>[]
     return rows.map((row) => ({
       key: Object.fromEntries(rule.key.map((column) => [column, row[column] as string | number])),
       ...(rule.agentColumn && row[rule.agentColumn] != null ? { agentId: String(row[rule.agentColumn]) } : {}),
@@ -2943,10 +3006,10 @@ export class LocalStore {
 
   /** Collect one row the sweeper decided is collectable. The clock it was judged on rides the
    *  DELETE, so a row anything wrote between the read and here is left alone. */
-  deleteRetentionRow(rule: StoreRetentionRule, candidate: StoreRetentionCandidate): boolean {
+  async deleteRetentionRow(rule: StoreRetentionRule, candidate: StoreRetentionCandidate): Promise<boolean> {
     const key = rule.key.map((column) => `${column} = @key_${column}`).join(' AND ')
     const params = Object.fromEntries(rule.key.map((column) => [`key_${column}`, candidate.key[column]!]))
-    const result = this.db
+    const result = await this.db
       .prepare(
         `DELETE FROM ${rule.table}
          WHERE ${key} AND ${rule.clock} <= @touchedAt${rule.where ? ` AND ${rule.where}` : ''}`
@@ -3012,8 +3075,8 @@ export class LocalStore {
     }
   }
 
-  insertDream(dream: DreamInfo): void {
-    this.db
+  async insertDream(dream: DreamInfo): Promise<void> {
+    await this.db
       .prepare(
         `INSERT INTO dreams (dreamId, agentId, status, triggerKind, sessionIds, snapshotDigest,
            executionSessionId, runtime, model, stopReason, snapshotWrites, instructions, skills, organizationSuggestions,
@@ -3027,50 +3090,53 @@ export class LocalStore {
 
   /** Whoever writes a dream row is the process running it, so every write re-stamps
    *  ownership — a reclaimed dream never reads as its former owner's. */
-  updateDream(dream: DreamInfo): void {
-    this.db
+  async updateDream(dream: DreamInfo): Promise<void> {
+    await this.db
       .prepare(`UPDATE dreams SET ${DREAM_UPDATE_SET} WHERE dreamId = @dreamId AND agentId = @agentId`)
       .run(this.dreamToRow(dream))
   }
 
   /** Crash-recovery write, CAS'd on the open statuses so a losing race can never overwrite
    *  the terminal outcome the dream's own runner recorded. */
-  failOpenDream(dream: DreamInfo): boolean {
+  async failOpenDream(dream: DreamInfo): Promise<boolean> {
     return (
       Number(
-        this.db
-          .prepare(
-            `UPDATE dreams SET ${DREAM_UPDATE_SET}
+        (
+          await this.db
+            .prepare(
+              `UPDATE dreams SET ${DREAM_UPDATE_SET}
              WHERE dreamId = @dreamId AND agentId = @agentId AND status IN ('pending', 'running')`
-          )
-          .run(this.dreamToRow(dream)).changes
+            )
+            .run(this.dreamToRow(dream))
+        ).changes
       ) === 1
     )
   }
 
-  getDream(agentId: string, dreamId: string): DreamInfo | undefined {
-    const row = this.db.prepare('SELECT * FROM dreams WHERE dreamId = ? AND agentId = ?').get(dreamId, agentId) as
-      Record<string, unknown> | undefined
+  async getDream(agentId: string, dreamId: string): Promise<DreamInfo | undefined> {
+    const row = (await this.db
+      .prepare('SELECT * FROM dreams WHERE dreamId = ? AND agentId = ?')
+      .get(dreamId, agentId)) as Record<string, unknown> | undefined
     return row ? this.dreamFromRow(row) : undefined
   }
 
-  listDreams(agentId: string, limit: number): DreamInfo[] {
+  async listDreams(agentId: string, limit: number): Promise<DreamInfo[]> {
     return (
-      this.db
+      (await this.db
         .prepare('SELECT * FROM dreams WHERE agentId = ? ORDER BY createdAt DESC, dreamId DESC LIMIT ?')
-        .all(agentId, limit) as Record<string, unknown>[]
+        .all(agentId, limit)) as Record<string, unknown>[]
     ).map((row) => this.dreamFromRow(row))
   }
 
-  organizationSuggestionDreams(limit: number): DreamInfo[] {
+  async organizationSuggestionDreams(limit: number): Promise<DreamInfo[]> {
     return (
       (
-        this.db
+        (await this.db
           .prepare(
             `SELECT * FROM dreams WHERE organizationSuggestions LIKE '%"state":"proposed"%'
              ORDER BY createdAt DESC, dreamId DESC LIMIT ?`
           )
-          .all(limit) as Record<string, unknown>[]
+          .all(limit)) as Record<string, unknown>[]
       )
         // The LIKE is only a bounded pre-filter. Decode and decide on the
         // structured value so terminal rows can never consume the inventory.
@@ -3082,15 +3148,15 @@ export class LocalStore {
   /** Dreams still holding an unreviewed skill candidate, newest first. Scanned
    *  independently of the public history page: a proposal survives adoption and
    *  discard until it is reviewed, so it must not age out behind newer runs. */
-  pendingSkillDreams(agentId: string, limit: number): DreamInfo[] {
+  async pendingSkillDreams(agentId: string, limit: number): Promise<DreamInfo[]> {
     return (
       (
-        this.db
+        (await this.db
           .prepare(
             `SELECT * FROM dreams WHERE agentId = ? AND skills LIKE '%"state":"proposed"%'
              ORDER BY createdAt DESC, dreamId DESC LIMIT ?`
           )
-          .all(agentId, limit) as Record<string, unknown>[]
+          .all(agentId, limit)) as Record<string, unknown>[]
       )
         // The LIKE is a cheap SUPERSET pre-filter pushed into the query so rows
         // with no pending candidate (empty, or only accepted/dismissed) never
@@ -3103,33 +3169,33 @@ export class LocalStore {
 
   /** Non-terminal dreams this process is answerable for — the boot-time crash-recovery sweep. On a
    *  shared store that is only what this incarnation started: a peer's in-flight dream is live work. */
-  openDreams(): DreamInfo[] {
+  async openDreams(): Promise<DreamInfo[]> {
     const owned = this.shared ? ' AND ownerId = @ownerId' : ''
     return (
-      this.db
+      (await this.db
         .prepare(`SELECT * FROM dreams WHERE status IN ('pending', 'running')${owned}`)
-        .all(...(this.shared ? [{ ownerId: this.ownerId! }] : [])) as Record<string, unknown>[]
+        .all(...(this.shared ? [{ ownerId: this.ownerId! }] : []))) as Record<string, unknown>[]
     ).map((row) => this.dreamFromRow(row))
   }
 
   /** Non-terminal dreams left behind by a FORMER owner of these agents. Only the CP handing
    *  this process the duty makes them recoverable — mirrors recoverPermissionRequests. */
-  strandedDreams(agentIds: readonly string[]): DreamInfo[] {
+  async strandedDreams(agentIds: readonly string[]): Promise<DreamInfo[]> {
     if (!this.shared || agentIds.length === 0) return []
     const scope = idScope('agentId', agentIds)
     return (
-      this.db
+      (await this.db
         .prepare(
           `SELECT * FROM dreams
            WHERE status IN ('pending', 'running') AND (ownerId IS NULL OR ownerId != @ownerId)${scope.sql}`
         )
-        .all({ ownerId: this.ownerId!, ...scope.params }) as Record<string, unknown>[]
+        .all({ ownerId: this.ownerId!, ...scope.params })) as Record<string, unknown>[]
     ).map((row) => this.dreamFromRow(row))
   }
 
-  completedDreams(agentId: string): DreamInfo[] {
+  async completedDreams(agentId: string): Promise<DreamInfo[]> {
     return (
-      this.db.prepare("SELECT * FROM dreams WHERE agentId = ? AND status = 'completed'").all(agentId) as Record<
+      (await this.db.prepare("SELECT * FROM dreams WHERE agentId = ? AND status = 'completed'").all(agentId)) as Record<
         string,
         unknown
       >[]
@@ -3138,24 +3204,26 @@ export class LocalStore {
 
   /** Store proposals reconciled as stale during upgrade. The runner removes
    *  their daemon-local staging once agent directories are available. */
-  supersededDreams(): DreamInfo[] {
-    return (this.db.prepare("SELECT * FROM dreams WHERE status = 'superseded'").all() as Record<string, unknown>[]).map(
-      (row) => this.dreamFromRow(row)
-    )
+  async supersededDreams(): Promise<DreamInfo[]> {
+    return (
+      (await this.db.prepare("SELECT * FROM dreams WHERE status = 'superseded'").all()) as Record<string, unknown>[]
+    ).map((row) => this.dreamFromRow(row))
   }
 
   /** Newest-first addressable sessions to mine as dream transcript sources. */
-  dreamSessionSources(
+  async dreamSessionSources(
     agentId: string,
     limit: number
-  ): { sessionId: string; channel: string; thread: string; transportScope?: string | null; updatedAt: number }[] {
-    const rows = this.db
+  ): Promise<
+    { sessionId: string; channel: string; thread: string; transportScope?: string | null; updatedAt: number }[]
+  > {
+    const rows = (await this.db
       .prepare(
         `SELECT acpSessionId AS sessionId, channel, thread, transportScope, updatedAt FROM sessions
          WHERE agentId = ? AND acpSessionId IS NOT NULL AND platform <> 'dream'
          ORDER BY updatedAt DESC LIMIT ?`
       )
-      .all(agentId, limit) as {
+      .all(agentId, limit)) as {
       sessionId: string
       channel: string
       thread: string
@@ -3195,16 +3263,16 @@ export class LocalStore {
     return flat.length > DREAM_TOOL_INPUT_CHARS ? `${flat.slice(0, DREAM_TOOL_INPUT_CHARS)}…` : flat
   }
 
-  dreamTranscriptText(
+  async dreamTranscriptText(
     channel: string,
     thread: string,
     agentId: string,
     limit: number,
     includeTools = false,
     transportScope?: string | null
-  ): { sender: string; text: string; kind?: string }[] {
+  ): Promise<{ sender: string; text: string; kind?: string }[]> {
     const transcriptChannel = transcriptChannelKey(channel, transportScope)
-    const rows = this.db
+    const rows = (await this.db
       .prepare(
         // SECURITY: gate the delivery-table match on `kind = 'text'`, exactly as
         // the session-history query does. Internal rows (tool/reasoning) are NOT
@@ -3231,7 +3299,7 @@ export class LocalStore {
         agentId,
         ...SESSION_TITLE_TOOL_TITLES,
         limit
-      ) as {
+      )) as {
       sender: string
       text: string
       kind?: string
@@ -3251,32 +3319,64 @@ export class LocalStore {
    *  `INSERT OR IGNORE` under the `transcript_text_ts` unique index would silently
    *  drop a DIFFERENT post landing on an occupied millisecond, so writers check
    *  the slot first and bump when it holds foreign content. */
-  transcriptTextAt(
+  async transcriptTextAt(
     channel: string,
     thread: string,
     ts: string,
     row: { sender: string; recipient?: string }
-  ): { sender: string; text: string; postId: string | null } | undefined {
+  ): Promise<{ sender: string; text: string; postId: string | null } | undefined> {
     // Attributed exactly like the append it guards, or the probe would read a partition
     // the write does not land in and every slot would look free.
-    const orgId = this.transcriptOrg(channel, thread, row.recipient, row.sender)
-    return this.db
+    const orgId = await this.transcriptOrg(channel, thread, row.recipient, row.sender)
+    return (await this.db
       .prepare(
         `SELECT sender, text, postId FROM transcript
          WHERE orgId = ? AND channel = ? AND thread = ? AND ts = ? AND kind = 'text'`
       )
-      .get(orgId, channel, thread, ts) as { sender: string; text: string; postId: string | null } | undefined
+      .get(orgId, channel, thread, ts)) as { sender: string; text: string; postId: string | null } | undefined
   }
 
-  appendTranscript(e: TranscriptEntry): void {
+  async appendTranscript(e: TranscriptEntry): Promise<void> {
     const { attachments, trustedAgentBot, quoted, quoteJson, authoritative, orgAgentId, ...entry } = e
     const durableQuoteJson = quoted?.text ? JSON.stringify(quoted) : (quoteJson ?? null)
-    const orgId = this.transcriptOrg(e.channel, e.thread, e.recipient, e.sender, orgAgentId)
+    // Attribution is a plain read, resolved before the lock the write path below holds.
+    const orgId = await this.transcriptOrg(e.channel, e.thread, e.recipient, e.sender, orgAgentId)
     // The row, its delivery record, and the thread revision the caller needs next, in one
     // round trip. `transcript_recipient` is a different table, so its insert moving ahead of
     // the in-place upgrades below changes nothing either statement can observe.
     const recordsDelivery = !!e.recipient && !!e.ts
-    const { changes, revision } = this.writeTranscriptRows(orgId, e.channel, e.thread, [
+    return this.transcriptMutex.run(() =>
+      this.appendTranscriptLocked(e, {
+        orgId,
+        recordsDelivery,
+        entry,
+        attachments,
+        trustedAgentBot,
+        durableQuoteJson,
+        authoritative
+      })
+    )
+  }
+
+  /** The transcript write itself, under {@link transcriptMutex}: its statements and the
+   *  in-memory revision they allocate from must not interleave with another turn's. */
+  private async appendTranscriptLocked(
+    e: TranscriptEntry,
+    ctx: {
+      orgId: string
+      recordsDelivery: boolean
+      entry: Omit<
+        TranscriptEntry,
+        'attachments' | 'trustedAgentBot' | 'quoted' | 'quoteJson' | 'authoritative' | 'orgAgentId'
+      >
+      attachments: SessionImageAttachment[] | undefined
+      trustedAgentBot: boolean | undefined
+      durableQuoteJson: string | null
+      authoritative: boolean | undefined
+    }
+  ): Promise<void> {
+    const { orgId, recordsDelivery, entry, attachments, trustedAgentBot, durableQuoteJson, authoritative } = ctx
+    const { changes, revision } = await this.writeTranscriptRows(orgId, e.channel, e.thread, [
       {
         kind: 'run',
         sql: `INSERT OR IGNORE INTO transcript
@@ -3317,7 +3417,7 @@ export class LocalStore {
     // text is refreshed in place rather than lost to INSERT OR IGNORE. Scoped to text
     // rows on identical coordinates, and only ever toward the authoritative version.
     if (inserted === 0 && authoritative && e.kind === 'text') {
-      const refreshed = this.writeTranscriptRows(orgId, e.channel, e.thread, [
+      const refreshed = await this.writeTranscriptRows(orgId, e.channel, e.thread, [
         {
           kind: 'run',
           sql: `UPDATE transcript SET text = ?, revision = ?
@@ -3335,7 +3435,7 @@ export class LocalStore {
     // manufacture provenance, and the stable text-row coordinates keep this scoped.
     const provenanceUpgraded =
       inserted === 0 && trustedAgentBot
-        ? this.db
+        ? await this.lockedDb
             .prepare(
               `UPDATE transcript SET trustedAgentBot = 1
                WHERE orgId = ? AND channel = ? AND thread = ? AND ts = ? AND kind = 'text'
@@ -3348,7 +3448,7 @@ export class LocalStore {
     // place; an identity can be added but never changed or cleared.
     const postIdUpgraded =
       inserted === 0 && e.postId
-        ? this.db
+        ? await this.lockedDb
             .prepare(
               `UPDATE transcript SET postId = ?
                WHERE orgId = ? AND channel = ? AND thread = ? AND ts = ? AND kind = 'text' AND postId IS NULL`
@@ -3360,7 +3460,7 @@ export class LocalStore {
     // axis). Explicit values only — two derived computations must never flap.
     const eventTimeUpgraded =
       inserted === 0 && e.eventTimeUs
-        ? this.db
+        ? await this.lockedDb
             .prepare(
               `UPDATE transcript SET eventTimeUs = ?
                WHERE orgId = ? AND channel = ? AND thread = ? AND ts = ? AND kind = 'text' AND eventTimeUs IS NOT ?`
@@ -3373,7 +3473,7 @@ export class LocalStore {
     // show only the `[attached: …]` label).
     const attachmentsUpgraded =
       inserted === 0 && attachments?.length
-        ? this.db
+        ? await this.lockedDb
             .prepare(
               `UPDATE transcript SET attachmentsJson = ?
                WHERE orgId = ? AND channel = ? AND thread = ? AND ts = ? AND kind = 'text' AND attachmentsJson IS NULL`
@@ -3385,7 +3485,7 @@ export class LocalStore {
     // a provider snapshot subsequently re-appends the same text row without metadata.
     const quoteUpgraded =
       inserted === 0 && durableQuoteJson !== null
-        ? this.db
+        ? await this.lockedDb
             .prepare(
               `UPDATE transcript SET quoteJson = ?
                WHERE orgId = ? AND channel = ? AND thread = ? AND ts = ? AND kind = 'text'
@@ -3407,7 +3507,7 @@ export class LocalStore {
       // view already contains it must be invalidated, not just this append's
       // sender/recipient — a co-hosted participant delivered earlier would
       // otherwise keep serving the stale copy until an unrelated mutation.
-      const bumped = this.db.batch([
+      const bumped = await this.lockedDb.batch([
         {
           kind: 'run',
           sql: "UPDATE transcript SET revision = ? WHERE orgId = ? AND channel = ? AND thread = ? AND ts = ? AND kind = 'text'",
@@ -3447,9 +3547,17 @@ export class LocalStore {
     toolCallId: string
     title: string
     body: string
-  }): void {
+  }): Promise<void> {
     const orgId = this.orgFor(e.sender)
-    const { changes, revision } = this.writeTranscriptRows(orgId, e.channel, e.thread, [
+    return this.transcriptMutex.run(() => this.insertToolCallLocked(e, orgId))
+  }
+
+  /** The insert itself, under {@link transcriptMutex} — see {@link appendTranscriptLocked}. */
+  private async insertToolCallLocked(
+    e: { channel: string; thread: string; ts: string; sender: string; toolCallId: string; title: string; body: string },
+    orgId: string
+  ): Promise<void> {
+    const { changes, revision } = await this.writeTranscriptRows(orgId, e.channel, e.thread, [
       {
         kind: 'run',
         sql: `INSERT OR IGNORE INTO transcript
@@ -3483,42 +3591,55 @@ export class LocalStore {
    *  append — so the burst is coalesced per row, and writing only its last state leaves exactly
    *  the row the per-chunk path left. Flushed before any other statement, on
    *  {@link TOOL_WRITE_FLUSH_MS}, at either buffer bound, at turn end, and on drain. */
-  updateToolCall(
+  async updateToolCall(
     channel: string,
     thread: string,
     agentId: string,
     toolCallId: string,
     patch: { title: string; body: string }
-  ): void {
+  ): Promise<void> {
     // Resolved here, not at flush time: the org fence must reject an unattributable agent at
     // the same call, with the same inputs, as the per-chunk write it replaces.
     const orgId = this.orgFor(agentId)
-    const key = [orgId, channel, thread, agentId, toolCallId].join('\0')
+    const write = { orgId, channel, thread, agentId, toolCallId, bytes: 0, ...patch }
+    const key = writeKeyOf(write)
     this.pendingToolWriteBytes -= this.pendingToolWrites.get(key)?.bytes ?? 0
     const bytes = patch.title.length + patch.body.length
-    this.pendingToolWrites.set(key, { orgId, channel, thread, agentId, toolCallId, bytes, ...patch })
+    this.pendingToolWrites.set(key, { ...write, bytes })
     this.pendingToolWriteBytes += bytes
-    if (this.pendingToolWrites.size >= MAX_PENDING_TOOL_WRITES) this.flushToolCallWrites()
-    else if (this.pendingToolWriteBytes >= MAX_PENDING_TOOL_WRITE_BYTES) this.flushToolCallWrites()
-    else this.armToolWriteFlush()
+    if (this.pendingToolWrites.size >= MAX_PENDING_TOOL_WRITES) return await this.flushToolCallWrites()
+    if (this.pendingToolWriteBytes >= MAX_PENDING_TOOL_WRITE_BYTES) return await this.flushToolCallWrites()
+    this.armToolWriteFlush()
   }
 
   /** Write every buffered streaming tool-call update, plus the post-write revision of each
    *  thread they touched, in one round trip — so buffered content is durable before a shutdown
    *  and never outlives the turn that produced it. Entries survive a failed flush, and the timer
    *  is re-armed, so a retry re-applies them. */
-  flushToolCallWrites(): void {
-    if (this.flushingToolWrites || this.pendingToolWrites.size === 0) return
+  async flushToolCallWrites(): Promise<void> {
+    if (this.pendingToolWrites.size === 0) return
+    // Queuing on the mutex is what awaits a flush already in flight; this pass then writes
+    // whatever was buffered while that one ran, so a joiner never returns ahead of its own entry.
+    return this.transcriptMutex.run(() => this.flushPendingToolCallWrites())
+  }
+
+  /** Drain before another statement runs. Taking the mutex only when there is something to
+   *  write keeps ordinary traffic off the transcript lock. */
+  private drainToolCallWrites(): Promise<void> {
+    return this.pendingToolWrites.size === 0 ? Promise.resolve() : this.flushToolCallWrites()
+  }
+
+  private async flushPendingToolCallWrites(): Promise<void> {
+    if (this.pendingToolWrites.size === 0) return
     this.clearToolWriteFlush()
     const pending = [...this.pendingToolWrites.values()]
     // Distinct threads in write order, so each one's revision read rides the same round trip.
     const threads = new Map<string, PendingToolWrite>()
     for (const write of pending) threads.set(threadKeyOf(write), write)
     const threadList = [...threads.values()]
-    this.flushingToolWrites = true
     let results: StoreBatchResult[]
     try {
-      results = this.backend.batch([
+      results = await this.backend.batch([
         ...pending.map((write, index) => ({
           kind: 'run' as const,
           sql: `UPDATE transcript SET text = ?, body = ?, revision = ?
@@ -3548,11 +3669,16 @@ export class LocalStore {
       // goes quiet after the failure still lands them instead of holding them until the next call.
       this.armToolWriteFlush()
       throw error
-    } finally {
-      this.flushingToolWrites = false
     }
-    this.pendingToolWrites.clear()
-    this.pendingToolWriteBytes = 0
+    // Only what this pass actually wrote is dropped: an update buffered while the batch was in
+    // flight is a NEWER state of the same row, and clearing the map would lose it outright.
+    for (const write of pending) {
+      const key = writeKeyOf(write)
+      if (this.pendingToolWrites.get(key) !== write) continue
+      this.pendingToolWrites.delete(key)
+      this.pendingToolWriteBytes -= write.bytes
+    }
+    this.armToolWriteFlush()
     const revisions = new Map<string, number>()
     for (const [index, write] of threadList.entries()) {
       const row = results[pending.length + index]?.rows[0] as { revision: number } | undefined
@@ -3584,11 +3710,7 @@ export class LocalStore {
       this.toolWriteTimer = undefined
       // The backend reported this through its own failure channel and the entries are still
       // buffered; an idempotent latest-wins overlay is always safe to re-apply.
-      try {
-        this.flushToolCallWrites()
-      } catch {
-        this.armToolWriteFlush()
-      }
+      void this.flushToolCallWrites().catch(() => this.armToolWriteFlush())
     }, TOOL_WRITE_FLUSH_MS)
     this.toolWriteTimer.unref?.()
   }
@@ -3601,14 +3723,14 @@ export class LocalStore {
 
   /** One round trip for a transcript mutation plus the thread revision the caller needs next.
    *  Each statement still commits on its own, so a failure leaves what the same sequence of
-   *  single-statement calls would have left. */
-  private writeTranscriptRows(
+   *  single-statement calls would have left. Callers hold {@link transcriptMutex}. */
+  private async writeTranscriptRows(
     orgId: string,
     channel: string,
     thread: string,
     statements: StoreBatchStatement[]
-  ): { changes: number[]; revision: number } {
-    const results = this.db.batch([
+  ): Promise<{ changes: number[]; revision: number }> {
+    const results = await this.lockedDb.batch([
       ...statements,
       {
         kind: 'read',
@@ -3630,20 +3752,34 @@ export class LocalStore {
   ): void {
     const agentIds = [...new Set(candidates.filter((candidate): candidate is string => !!candidate))]
     if (agentIds.length === 0) return
-    try {
-      this.transcriptMutationListener?.({ channel, thread, agentIds, revision })
-    } catch {
-      // Live-view invalidation is best-effort and must never fail a durable write.
-    }
+    if (!this.transcriptMutationListener) return
+    // Post-commit dispatch: the listener reads the store, so it must never run mid-write and
+    // observe a half-applied batch (or re-enter an open transaction). Re-read at dispatch so a
+    // listener detached during shutdown does not fire from a queued notice.
+    queueMicrotask(() => {
+      try {
+        // Listener may be async now; a rejected store read stays best-effort, never unhandled.
+        void Promise.resolve(this.transcriptMutationListener?.({ channel, thread, agentIds, revision })).catch(
+          () => undefined
+        )
+      } catch {
+        // Live-view invalidation is best-effort and must never fail a durable write.
+      }
+    })
   }
 
   /** One agent's full stored ToolBody JSON, or undefined if unknown/not owned. */
-  getToolBodyForAgent(channel: string, thread: string, agentId: string, toolCallId: string): string | undefined {
-    const row = this.db
+  async getToolBodyForAgent(
+    channel: string,
+    thread: string,
+    agentId: string,
+    toolCallId: string
+  ): Promise<string | undefined> {
+    const row = (await this.db
       .prepare(
         'SELECT body FROM transcript WHERE orgId = ? AND channel = ? AND thread = ? AND sender = ? AND tool_call_id = ?'
       )
-      .get(this.orgFor(agentId), channel, thread, agentId, toolCallId) as { body: string | null } | undefined
+      .get(this.orgFor(agentId), channel, thread, agentId, toolCallId)) as { body: string | null } | undefined
     return row?.body ?? undefined
   }
 
@@ -3652,21 +3788,26 @@ export class LocalStore {
    * are audit/UI data and must never be replayed back into an agent's prompt. Ordered by
    * platform `ts` (every text row carries one), compared against the session marker.
    */
-  transcriptSince(channel: string, thread: string, sinceTs: string | null, agentId: string): TranscriptEntry[] {
+  async transcriptSince(
+    channel: string,
+    thread: string,
+    sinceTs: string | null,
+    agentId: string
+  ): Promise<TranscriptEntry[]> {
     const orgId = this.orgFor(agentId)
     if (sinceTs === null) {
-      return this.db
+      return (await this.db
         .prepare(
           "SELECT * FROM transcript WHERE orgId = ? AND channel = ? AND thread = ? AND kind = 'text' ORDER BY ts ASC"
         )
-        .all(orgId, channel, thread) as unknown as TranscriptEntry[]
+        .all(orgId, channel, thread)) as unknown as TranscriptEntry[]
     }
-    return this.db
+    return (await this.db
       .prepare(
         `SELECT * FROM transcript WHERE orgId = ? AND channel = ? AND thread = ? AND kind = 'text' AND ts > ?
          ORDER BY ts ASC`
       )
-      .all(orgId, channel, thread, sinceTs) as unknown as TranscriptEntry[]
+      .all(orgId, channel, thread, sinceTs)) as unknown as TranscriptEntry[]
   }
 
   /**
@@ -3677,22 +3818,27 @@ export class LocalStore {
    * private pairwise delivery: the §8.5 model catch-up must read only this
    * pair's rows, or siblings see each other's private deliveries (#967).
    */
-  transcriptSinceForAgent(channel: string, thread: string, sinceTs: string | null, agentId: string): TranscriptEntry[] {
+  async transcriptSinceForAgent(
+    channel: string,
+    thread: string,
+    sinceTs: string | null,
+    agentId: string
+  ): Promise<TranscriptEntry[]> {
     const orgId = this.orgFor(agentId)
     if (sinceTs === null) {
-      return this.db
+      return (await this.db
         .prepare(
           `SELECT * FROM transcript WHERE orgId = ? AND channel = ? AND thread = ? AND kind = 'text'
              AND ${AGENT_DELIVERY_SCOPE_SQL} ORDER BY ts ASC`
         )
-        .all(orgId, channel, thread, agentId, agentId, agentId) as unknown as TranscriptEntry[]
+        .all(orgId, channel, thread, agentId, agentId, agentId)) as unknown as TranscriptEntry[]
     }
-    return this.db
+    return (await this.db
       .prepare(
         `SELECT * FROM transcript WHERE orgId = ? AND channel = ? AND thread = ? AND kind = 'text' AND ts > ?
            AND ${AGENT_DELIVERY_SCOPE_SQL} ORDER BY ts ASC`
       )
-      .all(orgId, channel, thread, sinceTs, agentId, agentId, agentId) as unknown as TranscriptEntry[]
+      .all(orgId, channel, thread, sinceTs, agentId, agentId, agentId)) as unknown as TranscriptEntry[]
   }
 
   /**
@@ -3700,41 +3846,46 @@ export class LocalStore {
    * `transcriptSince`, this never compares provider message ids from different
    * ordering domains; it follows the daemon's monotonic observation revision.
    */
-  threadTranscriptRevision(channel: string, thread: string, agentId?: string): number {
-    return this.threadRevisionInOrg(this.transcriptOrg(channel, thread, agentId), channel, thread)
+  async threadTranscriptRevision(channel: string, thread: string, agentId?: string): Promise<number> {
+    return await this.threadRevisionInOrg(await this.transcriptOrg(channel, thread, agentId), channel, thread)
   }
 
   /** {@link threadTranscriptRevision} for a partition already resolved by a write. */
-  private threadRevisionInOrg(orgId: string, channel: string, thread: string): number {
-    const row = this.db
+  private async threadRevisionInOrg(orgId: string, channel: string, thread: string): Promise<number> {
+    const row = (await this.db
       .prepare(
         'SELECT COALESCE(MAX(revision), 0) AS revision FROM transcript WHERE orgId = ? AND channel = ? AND thread = ?'
       )
-      .get(orgId, channel, thread) as { revision: number }
+      .get(orgId, channel, thread)) as { revision: number }
     return row.revision
   }
 
   /** Conversation and audit rows observed after a thread-local revision fence. */
-  transcriptSinceRevision(channel: string, thread: string, afterRevision: number, agentId: string): TranscriptRow[] {
-    return this.db
+  async transcriptSinceRevision(
+    channel: string,
+    thread: string,
+    afterRevision: number,
+    agentId: string
+  ): Promise<TranscriptRow[]> {
+    return (await this.db
       .prepare(
         `SELECT * FROM transcript
          WHERE orgId = ? AND channel = ? AND thread = ? AND revision > ?
          ORDER BY revision ASC, seq ASC`
       )
-      .all(this.orgFor(agentId), channel, thread, afterRevision) as unknown as TranscriptRow[]
+      .all(this.orgFor(agentId), channel, thread, afterRevision)) as unknown as TranscriptRow[]
   }
 
   /** `transcriptSinceRevision`, scoped to one agent's sent/received rows — the
    *  turn-context refresh's read on a synthetic pairwise `a2a:<caller>` thread,
    *  for the same reason as {@link transcriptSinceForAgent} (#967). */
-  transcriptSinceRevisionForAgent(
+  async transcriptSinceRevisionForAgent(
     channel: string,
     thread: string,
     afterRevision: number,
     agentId: string
-  ): TranscriptRow[] {
-    return this.db
+  ): Promise<TranscriptRow[]> {
+    return (await this.db
       .prepare(
         `SELECT * FROM transcript
          WHERE orgId = ? AND channel = ? AND thread = ? AND revision > ?
@@ -3749,7 +3900,7 @@ export class LocalStore {
         agentId,
         agentId,
         agentId
-      ) as unknown as TranscriptRow[]
+      )) as unknown as TranscriptRow[]
   }
 
   /** The earliest inbound (non-agent) `text` message in a thread — the triggering user
@@ -3757,22 +3908,22 @@ export class LocalStore {
    *  supplied one. Before the first meaningful request, this avoids showing only
    *  "Session <id>". Returns undefined when the thread holds no non-agent text row
    *  yet. Indexed by (channel, thread, seq). */
-  firstMessageText(channel: string, thread: string, agentId: string): string | undefined {
-    const row = this.db
+  async firstMessageText(channel: string, thread: string, agentId: string): Promise<string | undefined> {
+    const row = (await this.db
       .prepare(
         `SELECT text FROM transcript WHERE orgId = ? AND channel = ? AND thread = ? AND kind = 'text'
            AND sender != ? ORDER BY seq ASC LIMIT 1`
       )
-      .get(this.orgFor(agentId), channel, thread, agentId) as { text: string } | undefined
+      .get(this.orgFor(agentId), channel, thread, agentId)) as { text: string } | undefined
     return row?.text
   }
 
   /** Full activity log for a thread (all kinds), in insertion order — for the Web UI.
    *  `agentId` names the org partition only, and may be omitted on a store no pool shares. */
-  threadTranscript(channel: string, thread: string, agentId?: string): TranscriptRow[] {
-    return this.db
+  async threadTranscript(channel: string, thread: string, agentId?: string): Promise<TranscriptRow[]> {
+    return (await this.db
       .prepare('SELECT * FROM transcript WHERE orgId = ? AND channel = ? AND thread = ? ORDER BY seq ASC')
-      .all(this.orgFor(agentId), channel, thread) as unknown as TranscriptRow[]
+      .all(this.orgFor(agentId), channel, thread)) as unknown as TranscriptRow[]
   }
 
   /**
@@ -3788,20 +3939,20 @@ export class LocalStore {
    * integration owns that bot, one org owns that integration — and it returns a thread id,
    * never content.
    */
-  telegramThreadForMessage(channel: string, messageId: string): string | undefined {
-    const row = this.db
+  async telegramThreadForMessage(channel: string, messageId: string): Promise<string | undefined> {
+    const row = (await this.db
       .prepare("SELECT thread FROM transcript WHERE channel = ? AND ts = ? AND kind = 'text' ORDER BY seq DESC LIMIT 1")
-      .get(channel, messageId) as { thread: string } | undefined
+      .get(channel, messageId)) as { thread: string } | undefined
     return row?.thread
   }
 
-  openSessionAgents(channel: string, thread: string, transportScope?: string | null): string[] {
+  async openSessionAgents(channel: string, thread: string, transportScope?: string | null): Promise<string[]> {
     return (
-      this.db
+      (await this.db
         .prepare(
           "SELECT agentId FROM sessions WHERE channel = ? AND thread = ? AND COALESCE(transportScope, '') = ? AND state != 'closed'"
         )
-        .all(channel, thread, transportScope ?? '') as { agentId: string }[]
+        .all(channel, thread, transportScope ?? '')) as { agentId: string }[]
     ).map((r) => r.agentId)
   }
 
@@ -3810,34 +3961,39 @@ export class LocalStore {
    *  to the sole agent that previously owned it, and SessionManager.handle recreates/
    *  resumes the ACP session. Kept separate from `openSessionAgents` so the live
    *  multi-agent disambiguation (2+ open owners → mention-gated) is never perturbed. */
-  closedSessionAgents(channel: string, thread: string, transportScope?: string | null): string[] {
+  async closedSessionAgents(channel: string, thread: string, transportScope?: string | null): Promise<string[]> {
     return (
-      this.db
+      (await this.db
         .prepare(
           "SELECT agentId FROM sessions WHERE channel = ? AND thread = ? AND COALESCE(transportScope, '') = ? AND state = 'closed'"
         )
-        .all(channel, thread, transportScope ?? '') as { agentId: string }[]
+        .all(channel, thread, transportScope ?? '')) as { agentId: string }[]
     ).map((r) => r.agentId)
   }
 
   /** Count non-closed sessions in (channel, thread) touched at/after `sinceTs`
    *  (epoch ms). Used to bound unrouted-transcript growth to recently-active
    *  threads, since there is no session-`closed` lifecycle yet. */
-  activeSessionCountSince(channel: string, thread: string, sinceTs: number, transportScope?: string | null): number {
-    const row = this.db
+  async activeSessionCountSince(
+    channel: string,
+    thread: string,
+    sinceTs: number,
+    transportScope?: string | null
+  ): Promise<number> {
+    const row = (await this.db
       .prepare(
         `SELECT COUNT(*) AS n FROM sessions
          WHERE channel = ? AND thread = ? AND COALESCE(transportScope, '') = ?
            AND state != 'closed' AND updatedAt >= ?`
       )
-      .get(channel, thread, transportScope ?? '', sinceTs) as { n: number } | undefined
+      .get(channel, thread, transportScope ?? '', sinceTs)) as { n: number } | undefined
     return row?.n ?? 0
   }
 
   /** Cache a platform id's human display name (channel or user; Slack ids don't
    *  collide across the two). Latest-wins — renames overwrite. */
-  setDisplayName(id: string, name: string, updatedAt: number): void {
-    this.db
+  async setDisplayName(id: string, name: string, updatedAt: number): Promise<void> {
+    await this.db
       .prepare(
         `INSERT INTO display_names (id, name, updatedAt) VALUES (?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET name=excluded.name, updatedAt=excluded.updatedAt`
@@ -3847,19 +4003,19 @@ export class LocalStore {
 
   /** Display names for a set of platform ids — only the ids that have one.
    *  One batched `IN (…)` query, not a round-trip per id. */
-  getDisplayNames(ids: string[]): Map<string, string> {
+  async getDisplayNames(ids: string[]): Promise<Map<string, string>> {
     const out = new Map<string, string>()
     const unique = [...new Set(ids)]
     if (unique.length === 0) return out
-    const rows = this.db
+    const rows = (await this.db
       .prepare(`SELECT id, name FROM display_names WHERE id IN (${unique.map(() => '?').join(',')})`)
-      .all(...unique) as unknown as { id: string; name: string }[]
+      .all(...unique)) as unknown as { id: string; name: string }[]
     for (const r of rows) if (r.name) out.set(r.id, r.name)
     return out
   }
 
   /** Cache a public provider-hosted profile image. Latest-wins as users update avatars. */
-  setProfileAvatar(transportScope: string, id: string, url: string, updatedAt: number): void {
+  async setProfileAvatar(transportScope: string, id: string, url: string, updatedAt: number): Promise<void> {
     let parsed: URL
     try {
       parsed = new URL(url)
@@ -3867,7 +4023,7 @@ export class LocalStore {
       return
     }
     if ((parsed.protocol !== 'https:' && parsed.protocol !== 'http:') || parsed.username || parsed.password) return
-    this.db
+    await this.db
       .prepare(
         `INSERT INTO profile_avatars (transportScope, id, url, updatedAt) VALUES (?, ?, ?, ?)
          ON CONFLICT(transportScope, id) DO UPDATE SET url=excluded.url, updatedAt=excluded.updatedAt`
@@ -3876,16 +4032,16 @@ export class LocalStore {
   }
 
   /** Profile images for platform ids on one physical provider connection. */
-  getProfileAvatars(transportScope: string, ids: string[]): Map<string, string> {
+  async getProfileAvatars(transportScope: string, ids: string[]): Promise<Map<string, string>> {
     const out = new Map<string, string>()
     const unique = [...new Set(ids)]
     if (unique.length === 0) return out
-    const rows = this.db
+    const rows = (await this.db
       .prepare(
         `SELECT id, url FROM profile_avatars
          WHERE transportScope = ? AND id IN (${unique.map(() => '?').join(',')})`
       )
-      .all(transportScope, ...unique) as unknown as { id: string; url: string }[]
+      .all(transportScope, ...unique)) as unknown as { id: string; url: string }[]
     for (const row of rows) if (row.url) out.set(row.id, row.url)
     return out
   }
@@ -3894,9 +4050,13 @@ export class LocalStore {
    *  Latest-wins per supplied dimension; an empty note writes nothing, and a note that
    *  carries only one dimension leaves the other as it was (the message path knows the
    *  parent channel immediately, the space arrives with the later name lookup). */
-  setChannelScope(id: string, scope: { parentId?: string; spaceId?: string; isIm?: boolean }, updatedAt: number): void {
+  async setChannelScope(
+    id: string,
+    scope: { parentId?: string; spaceId?: string; isIm?: boolean },
+    updatedAt: number
+  ): Promise<void> {
     if (scope.parentId === undefined && scope.spaceId === undefined && scope.isIm === undefined) return
-    this.db
+    await this.db
       .prepare(
         `INSERT INTO channel_scopes (id, parentId, spaceId, isIm, updatedAt) VALUES (?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
@@ -3916,15 +4076,15 @@ export class LocalStore {
 
   /** Scopes for a set of conversation ids — only the ids that have one. One batched
    *  `IN (…)` query, not a round-trip per id (mirrors getDisplayNames). */
-  getChannelScopes(ids: string[]): Map<string, { parentId?: string; spaceId?: string; isIm?: boolean }> {
+  async getChannelScopes(ids: string[]): Promise<Map<string, { parentId?: string; spaceId?: string; isIm?: boolean }>> {
     const out = new Map<string, { parentId?: string; spaceId?: string; isIm?: boolean }>()
     const unique = [...new Set(ids)]
     if (unique.length === 0) return out
-    const rows = this.db
+    const rows = (await this.db
       .prepare(
         `SELECT id, parentId, spaceId, isIm FROM channel_scopes WHERE id IN (${unique.map(() => '?').join(',')})`
       )
-      .all(...unique) as unknown as {
+      .all(...unique)) as unknown as {
       id: string
       parentId: string | null
       spaceId: string | null
@@ -3955,15 +4115,16 @@ export class LocalStore {
    * accepts the first `route/update` it is pushed, and `converge()` restates assignments from the
    * CP snapshot on register/ok. An exclusively owned store keeps persisting exactly as before.
    */
-  getCpRouting(): { routingEpoch: number; assignments: string; globalRules: string } | undefined {
+  async getCpRouting(): Promise<{ routingEpoch: number; assignments: string; globalRules: string } | undefined> {
     if (this.shared) return undefined
-    return this.db.prepare('SELECT routingEpoch, assignments, globalRules FROM cp_routing WHERE id = 1').get() as
-      { routingEpoch: number; assignments: string; globalRules: string } | undefined
+    return (await this.db
+      .prepare('SELECT routingEpoch, assignments, globalRules FROM cp_routing WHERE id = 1')
+      .get()) as { routingEpoch: number; assignments: string; globalRules: string } | undefined
   }
 
-  setCpRouting(routingEpoch: number, assignments: string, globalRules: string): void {
+  async setCpRouting(routingEpoch: number, assignments: string, globalRules: string): Promise<void> {
     if (this.shared) return
-    this.db
+    await this.db
       .prepare(
         `INSERT INTO cp_routing (id, routingEpoch, assignments, globalRules) VALUES (1, @routingEpoch, @assignments, @globalRules)
          ON CONFLICT(id) DO UPDATE SET routingEpoch=excluded.routingEpoch, assignments=excluded.assignments, globalRules=excluded.globalRules`
@@ -3972,8 +4133,8 @@ export class LocalStore {
   }
 
   /** Stamp a cron fire (key = `<agentId>:<cronId>`). */
-  setCronLastRun(key: string, lastRunAt: number, definition: string): void {
-    this.db
+  async setCronLastRun(key: string, lastRunAt: number, definition: string): Promise<void> {
+    await this.db
       .prepare(
         `INSERT INTO cron_runs (key, lastRunAt, definition) VALUES (@key, @lastRunAt, @definition)
          ON CONFLICT(key) DO UPDATE SET lastRunAt=excluded.lastRunAt, definition=excluded.definition`
@@ -3981,32 +4142,32 @@ export class LocalStore {
       .run({ key, lastRunAt, definition })
   }
 
-  cronRun(key: string): ScheduleRun | undefined {
-    return this.db.prepare('SELECT lastRunAt, definition FROM cron_runs WHERE key = ?').get(key) as
+  async cronRun(key: string): Promise<ScheduleRun | undefined> {
+    return (await this.db.prepare('SELECT lastRunAt, definition FROM cron_runs WHERE key = ?').get(key)) as
       ScheduleRun | undefined
   }
 
   /** Every stamp key this agent still carries — the substring match is exact, so an agent id with
    *  LIKE metacharacters cannot widen it. */
-  cronRunKeys(agentId: string): string[] {
+  async cronRunKeys(agentId: string): Promise<string[]> {
     const prefix = `${agentId}:`
     return (
-      this.db.prepare('SELECT key FROM cron_runs WHERE substr(key, 1, @len) = @prefix').all({
+      (await this.db.prepare('SELECT key FROM cron_runs WHERE substr(key, 1, @len) = @prefix').all({
         len: prefix.length,
         prefix
-      }) as { key: string }[]
+      })) as { key: string }[]
     ).map((row) => row.key)
   }
 
   /** Drop a cron's stamp: the definition it fingerprints is gone, and a re-minted id of the same
    *  name must start from no evidence rather than inherit the deleted schedule's last run. */
-  deleteCronRun(key: string): void {
-    this.db.prepare('DELETE FROM cron_runs WHERE key = ?').run(key)
+  async deleteCronRun(key: string): Promise<void> {
+    await this.db.prepare('DELETE FROM cron_runs WHERE key = ?').run(key)
   }
 
   /** Stamp a dream-schedule fire (one row per agent), under the definition that fired. */
-  setDreamLastRun(agentId: string, lastRunAt: number, definition: string): void {
-    this.db
+  async setDreamLastRun(agentId: string, lastRunAt: number, definition: string): Promise<void> {
+    await this.db
       .prepare(
         `INSERT INTO dream_runs (agentId, lastRunAt, definition) VALUES (@agentId, @lastRunAt, @definition)
          ON CONFLICT(agentId) DO UPDATE SET lastRunAt=excluded.lastRunAt, definition=excluded.definition`
@@ -4014,8 +4175,8 @@ export class LocalStore {
       .run({ agentId, lastRunAt, definition })
   }
 
-  dreamRun(agentId: string): ScheduleRun | undefined {
-    return this.db.prepare('SELECT lastRunAt, definition FROM dream_runs WHERE agentId = ?').get(agentId) as
+  async dreamRun(agentId: string): Promise<ScheduleRun | undefined> {
+    return (await this.db.prepare('SELECT lastRunAt, definition FROM dream_runs WHERE agentId = ?').get(agentId)) as
       ScheduleRun | undefined
   }
 
@@ -4023,36 +4184,50 @@ export class LocalStore {
    *  than the occurrence AND was written under the definition asking for it, so two members racing
    *  one handoff compensate it exactly once and an edited schedule replays nothing. A row with no
    *  stamp, or one fingerprinted differently, is never claimed. */
-  claimCronCatchUp(key: string, occurrence: number, claimedAt: number, definition: string): boolean {
+  async claimCronCatchUp(key: string, occurrence: number, claimedAt: number, definition: string): Promise<boolean> {
     return (
-      this.db
-        .prepare('UPDATE cron_runs SET lastRunAt = ? WHERE key = ? AND lastRunAt < ? AND definition = ?')
-        .run(claimedAt, key, occurrence, definition).changes === 1
+      (
+        await this.db
+          .prepare('UPDATE cron_runs SET lastRunAt = ? WHERE key = ? AND lastRunAt < ? AND definition = ?')
+          .run(claimedAt, key, occurrence, definition)
+      ).changes === 1
     )
   }
 
   /** The dream twin of {@link claimCronCatchUp}, over the per-agent dream stamp. */
-  claimDreamCatchUp(agentId: string, occurrence: number, claimedAt: number, definition: string): boolean {
+  async claimDreamCatchUp(
+    agentId: string,
+    occurrence: number,
+    claimedAt: number,
+    definition: string
+  ): Promise<boolean> {
     return (
-      this.db
-        .prepare('UPDATE dream_runs SET lastRunAt = ? WHERE agentId = ? AND lastRunAt < ? AND definition = ?')
-        .run(claimedAt, agentId, occurrence, definition).changes === 1
+      (
+        await this.db
+          .prepare('UPDATE dream_runs SET lastRunAt = ? WHERE agentId = ? AND lastRunAt < ? AND definition = ?')
+          .run(claimedAt, agentId, occurrence, definition)
+      ).changes === 1
     )
   }
 
   /** Self-introduce-on-join (issue #536). The set of channels this agent has already
    *  introduced itself into (or adopted as the silent baseline) on `platform`. */
-  channelIntroSet(agentId: string, platform: string): Set<string> {
-    const rows = this.db
+  async channelIntroSet(agentId: string, platform: string): Promise<Set<string>> {
+    const rows = (await this.db
       .prepare('SELECT channel FROM channel_intro WHERE agentId = ? AND platform = ?')
-      .all(agentId, platform) as { channel: string }[]
+      .all(agentId, platform)) as { channel: string }[]
     return new Set(rows.map((r) => r.channel))
   }
 
   /** Record that the agent has introduced itself in a channel (idempotent). `introducedAt`
    *  is null when the channel was adopted as the silent baseline (never introduced-in). */
-  markChannelIntro(agentId: string, platform: string, channel: string, introducedAt: number | null): void {
-    this.db
+  async markChannelIntro(
+    agentId: string,
+    platform: string,
+    channel: string,
+    introducedAt: number | null
+  ): Promise<void> {
+    await this.db
       .prepare(
         `INSERT OR IGNORE INTO channel_intro (agentId, platform, channel, introducedAt)
          VALUES (@agentId, @platform, @channel, @introducedAt)`
@@ -4061,13 +4236,16 @@ export class LocalStore {
   }
 
   /** Whether an integration's first channel snapshot has been baselined (seeded). */
-  isChannelIntroSeeded(integrationId: string): boolean {
-    return this.db.prepare('SELECT 1 FROM channel_intro_seed WHERE integrationId = ?').get(integrationId) !== undefined
+  async isChannelIntroSeeded(integrationId: string): Promise<boolean> {
+    return (
+      (await this.db.prepare('SELECT 1 FROM channel_intro_seed WHERE integrationId = ?').get(integrationId)) !==
+      undefined
+    )
   }
 
   /** Mark an integration's channel baseline as seeded (idempotent). */
-  markChannelIntroSeeded(integrationId: string, seededAt: number): void {
-    this.db
+  async markChannelIntroSeeded(integrationId: string, seededAt: number): Promise<void> {
+    await this.db
       .prepare('INSERT OR IGNORE INTO channel_intro_seed (integrationId, seededAt) VALUES (?, ?)')
       .run(integrationId, seededAt)
   }
@@ -4076,8 +4254,8 @@ export class LocalStore {
    *  by the stable delivery id (agent deliveryId or bot-scoped platform message id).
    *  A re-append preserves the original payload/FIFO position and may only advance
    *  the durable loop-accounting marker from 0 to 1. */
-  appendInbox(row: InboxRow): boolean {
-    const inserted = this.db
+  async appendInbox(row: InboxRow): Promise<boolean> {
+    const inserted = await this.db
       .prepare(
         `INSERT OR IGNORE INTO inbox
           (id, sessionKey, agentId, msg, integrationId, callMeta, hookContext, posterPublishState,
@@ -4102,7 +4280,7 @@ export class LocalStore {
         enqueuedAt: row.enqueuedAt
       })
     if (inserted.changes === 0 && row.loopGuardCounted === 1) {
-      this.db
+      await this.db
         .prepare(
           'UPDATE inbox SET loopGuardCounted = CASE WHEN loopGuardCounted < 1 THEN 1 ELSE loopGuardCounted END WHERE id = ?'
         )
@@ -4114,16 +4292,16 @@ export class LocalStore {
   /** Stable-id admission probe used before any hook anchoring side effect. A
    * live row will be replayed (or is already running); a terminal row is the
    * durable receipt. Either way, redelivery must not post another anchor. */
-  hasInbox(id: string): boolean {
-    return this.db.prepare('SELECT 1 FROM inbox WHERE id = ?').get(id) !== undefined
+  async hasInbox(id: string): Promise<boolean> {
+    return (await this.db.prepare('SELECT 1 FROM inbox WHERE id = ?').get(id)) !== undefined
   }
 
-  updateInboxHookState(
+  async updateInboxHookState(
     id: string,
     hookContext: string,
     posterPublishState?: 'not_started' | 'in_flight' | 'settled'
-  ): boolean {
-    const result = this.db
+  ): Promise<boolean> {
+    const result = await this.db
       .prepare(
         `UPDATE inbox
          SET hookContext = @hookContext,
@@ -4135,8 +4313,8 @@ export class LocalStore {
   }
 
   /** Persist a hook prompt rewrite and its matching trusted context together. */
-  updateInboxHookPayload(id: string, msg: string, hookContext: string): boolean {
-    const result = this.db
+  async updateInboxHookPayload(id: string, msg: string, hookContext: string): Promise<boolean> {
+    const result = await this.db
       .prepare(
         `UPDATE inbox
          SET msg = @msg, hookContext = @hookContext
@@ -4147,7 +4325,7 @@ export class LocalStore {
   }
 
   /** Atomically fold one live hook delivery into another and retain the follower as a terminal receipt. */
-  coalesceHookInbox(input: {
+  async coalesceHookInbox(input: {
     leaderId: string
     leaderMsg: string
     leaderHookContext: string
@@ -4155,46 +4333,42 @@ export class LocalStore {
     followerTerminalReport: string
     followerOwnerId?: string
     completedAt: number
-  }): boolean {
+  }): Promise<boolean> {
     if (input.leaderId === input.followerId) return false
-    this.db.exec('BEGIN IMMEDIATE')
-    try {
-      const leader = this.db
-        .prepare(
-          `UPDATE inbox
+    return rollbackAs(
+      this.transaction(async (raw) => {
+        const tx = accessOf(raw)
+        const leader = await tx
+          .prepare(
+            `UPDATE inbox
            SET msg = @leaderMsg, hookContext = @leaderHookContext
            WHERE id = @leaderId AND hookContext IS NOT NULL AND completedAt IS NULL`
-        )
-        .run({
-          leaderId: input.leaderId,
-          leaderMsg: input.leaderMsg,
-          leaderHookContext: input.leaderHookContext
-        })
-      const follower = this.db
-        .prepare(
-          `UPDATE inbox
+          )
+          .run({
+            leaderId: input.leaderId,
+            leaderMsg: input.leaderMsg,
+            leaderHookContext: input.leaderHookContext
+          })
+        const follower = await tx
+          .prepare(
+            `UPDATE inbox
            SET msg = '{}', integrationId = NULL, callMeta = NULL, hookContext = NULL,
                posterPublishState = 'settled', terminalReport = @followerTerminalReport,
                reportOwnerId = @followerOwnerId, reportClaimedAt = @completedAt,
                completedAt = @completedAt, isQueueCmd = NULL
            WHERE id = @followerId AND hookContext IS NOT NULL AND completedAt IS NULL`
-        )
-        .run({
-          followerId: input.followerId,
-          followerTerminalReport: input.followerTerminalReport,
-          followerOwnerId: input.followerOwnerId ?? null,
-          completedAt: input.completedAt
-        })
-      if (leader.changes !== 1 || follower.changes !== 1) {
-        this.db.exec('ROLLBACK')
-        return false
-      }
-      this.db.exec('COMMIT')
-      return true
-    } catch (err) {
-      this.db.exec('ROLLBACK')
-      throw err
-    }
+          )
+          .run({
+            followerId: input.followerId,
+            followerTerminalReport: input.followerTerminalReport,
+            followerOwnerId: input.followerOwnerId ?? null,
+            completedAt: input.completedAt
+          })
+        if (leader.changes !== 1 || follower.changes !== 1) throw new RollbackSignal()
+        return true
+      }),
+      false
+    )
   }
 
   /** Atomically turn a live hook inbox row into a redacted terminal receipt.
@@ -4202,13 +4376,13 @@ export class LocalStore {
    * startup re-emits only the metadata report, never the model prompt. The CAS
    * result identifies the sole writer so a later terminal path cannot replace
    * the winning outbox body. */
-  completeHookInbox(
+  async completeHookInbox(
     id: string,
     terminalReport: string,
     completedAt: number,
     ownerId?: string
-  ): 'completed' | 'already-terminal' | 'missing' {
-    const result = this.db
+  ): Promise<'completed' | 'already-terminal' | 'missing'> {
+    const result = await this.db
       .prepare(
         `UPDATE inbox
          SET msg = '{}', integrationId = NULL, callMeta = NULL, hookContext = NULL,
@@ -4220,7 +4394,7 @@ export class LocalStore {
       .run({ id, terminalReport, completedAt, ownerId: ownerId ?? null })
     if (result.changes === 1) return 'completed'
 
-    const row = this.db.prepare('SELECT completedAt FROM inbox WHERE id = ?').get(id) as
+    const row = (await this.db.prepare('SELECT completedAt FROM inbox WHERE id = ?').get(id)) as
       { completedAt: number | null } | undefined
     return row?.completedAt !== null && row?.completedAt !== undefined ? 'already-terminal' : 'missing'
   }
@@ -4230,10 +4404,13 @@ export class LocalStore {
    * model; unacknowledged reports are never capacity-evicted. On a shared pool
    * store only the claim holder may release a body — a peer's verdict about its
    * own dispatch says nothing about this row. */
-  acknowledgeHookInbox(id: string, options: { ownerId?: string; maxAcknowledgedReceipts?: number } = {}): boolean {
+  async acknowledgeHookInbox(
+    id: string,
+    options: { ownerId?: string; maxAcknowledgedReceipts?: number } = {}
+  ): Promise<boolean> {
     const maxAcknowledgedReceipts = options.maxAcknowledgedReceipts ?? 10_000
     const fence = this.shared ? ' AND (reportOwnerId IS NULL OR reportOwnerId = @ownerId)' : ''
-    const result = this.db
+    const result = await this.db
       .prepare(
         `UPDATE inbox
          SET terminalReport = NULL, reportOwnerId = NULL, reportClaimedAt = NULL
@@ -4241,7 +4418,7 @@ export class LocalStore {
       )
       .run({ id, ...(fence ? { ownerId: options.ownerId ?? null } : {}) })
     if (result.changes === 1) {
-      this.db
+      await this.db
         .prepare(
           `DELETE FROM inbox
            WHERE id IN (
@@ -4264,15 +4441,15 @@ export class LocalStore {
    * or pre-pool), or when its owner's claim lapsed AND this member currently
    * serves the agent — draining a live peer's row would only earn a CONFLICT
    * for a dispatch that is not ours. */
-  listHookTerminalReports(now: number, ownerId?: string, agentIds?: readonly string[]): InboxRow[] {
+  async listHookTerminalReports(now: number, ownerId?: string, agentIds?: readonly string[]): Promise<InboxRow[]> {
     const order = ' ORDER BY sessionKey ASC, enqueuedAt ASC'
     if (!this.shared) {
-      return this.db
+      return (await this.db
         .prepare(`SELECT * FROM inbox WHERE terminalReport IS NOT NULL${order}`)
-        .all() as unknown as InboxRow[]
+        .all()) as unknown as InboxRow[]
     }
     const scope = idScope('agentId', agentIds)
-    return this.db
+    return (await this.db
       .prepare(
         `SELECT * FROM inbox
          WHERE terminalReport IS NOT NULL
@@ -4283,51 +4460,57 @@ export class LocalStore {
         ownerId: ownerId ?? null,
         staleBefore: now - SHARED_OUTBOX_LEASE_MS,
         ...scope.params
-      }) as unknown as InboxRow[]
+      })) as unknown as InboxRow[]
   }
 
   /** Take or renew this member's claim on one report before emitting it. */
-  claimHookTerminalReport(id: string, ownerId: string | undefined, now: number): boolean {
+  async claimHookTerminalReport(id: string, ownerId: string | undefined, now: number): Promise<boolean> {
     if (!this.shared) return true
     return (
-      this.db
-        .prepare(
-          `UPDATE inbox
+      (
+        await this.db
+          .prepare(
+            `UPDATE inbox
            SET reportOwnerId = @ownerId, reportClaimedAt = @now
            WHERE id = @id AND terminalReport IS NOT NULL
              AND (reportOwnerId IS NULL OR reportOwnerId = @ownerId
                   OR COALESCE(reportClaimedAt, 0) <= @staleBefore)`
-        )
-        .run({ id, ownerId: ownerId ?? null, now, staleBefore: now - SHARED_OUTBOX_LEASE_MS }).changes === 1
+          )
+          .run({ id, ownerId: ownerId ?? null, now, staleBefore: now - SHARED_OUTBOX_LEASE_MS })
+      ).changes === 1
     )
   }
 
   /** Hand a claimed report back to the daemon whose dispatch the CP accepts it
    * from. The body is never released here: a CONFLICT raised against a peer's
    * dispatch means "not mine to report", not "this can never be valid". */
-  releaseHookTerminalReport(id: string, ownerId: string, now: number): boolean {
+  async releaseHookTerminalReport(id: string, ownerId: string, now: number): Promise<boolean> {
     if (!this.shared) return false
     return (
-      this.db
-        .prepare(
-          `UPDATE inbox
+      (
+        await this.db
+          .prepare(
+            `UPDATE inbox
            SET reportOwnerId = @ownerId, reportClaimedAt = @now
            WHERE id = @id AND terminalReport IS NOT NULL`
-        )
-        .run({ id, ownerId, now }).changes === 1
+          )
+          .run({ id, ownerId, now })
+      ).changes === 1
     )
   }
 
   /** Remove an ordinary inbox row once its turn reaches a terminal state. Hook
    * rows are converted to bounded redacted receipts by completeHookInbox. */
-  removeInbox(id: string): void {
-    this.db.prepare('DELETE FROM inbox WHERE id = ?').run(id)
+  async removeInbox(id: string): Promise<void> {
+    await this.db.prepare('DELETE FROM inbox WHERE id = ?').run(id)
   }
 
   /** All pending inbox rows, ordered FIFO-by-sessionKey (sessionKey, then enqueuedAt) for
    *  startup replay (§6.9 #353). Order within a sessionKey is preserved by `enqueuedAt`. */
-  listInboxBySessionKeyFifo(): InboxRow[] {
-    return this.db.prepare('SELECT * FROM inbox ORDER BY sessionKey ASC, enqueuedAt ASC').all() as unknown as InboxRow[]
+  async listInboxBySessionKeyFifo(): Promise<InboxRow[]> {
+    return (await this.db
+      .prepare('SELECT * FROM inbox ORDER BY sessionKey ASC, enqueuedAt ASC')
+      .all()) as unknown as InboxRow[]
   }
 
   /** Remove ordinary durable turns owned by an agent. Live hook rows have their
@@ -4335,18 +4518,22 @@ export class LocalStore {
    *  redacts them into a terminal report. Unacknowledged terminal hook reports
    *  are an outbox and likewise must survive lifecycle purges. ACKed receipts
    *  may be discarded here because CP already durably converged them. */
-  removeInboxByAgentId(agentId: string): string[] {
+  async removeInboxByAgentId(agentId: string): Promise<string[]> {
     const removable = 'agentId = ? AND hookContext IS NULL AND terminalReport IS NULL'
-    const rows = this.db.prepare(`SELECT id FROM inbox WHERE ${removable}`).all(agentId) as Array<{ id: string }>
-    this.db.prepare(`DELETE FROM inbox WHERE ${removable}`).run(agentId)
+    const rows = (await this.db.prepare(`SELECT id FROM inbox WHERE ${removable}`).all(agentId)) as Array<{
+      id: string
+    }>
+    await this.db.prepare(`DELETE FROM inbox WHERE ${removable}`).run(agentId)
     return rows.map((row) => row.id)
   }
 
   /** Persist a bounded capture before any external side effect. Both the stable
    * operation id and the semantic (agent, connection, turn) key deduplicate
-   * redelivery. A conflicting duplicate fails closed instead of replacing body. */
-  appendMemoryCapture(row: MemoryCaptureOutboxRow): 'inserted' | 'duplicate' | 'conflict' {
-    const result = this.db
+   * redelivery. A conflicting duplicate fails closed instead of replacing body.
+   * Insert-then-classify, not a transaction: the INSERT is the CAS, and the read that
+   * follows only names why a duplicate lost — a writer interleaving there changes neither. */
+  async appendMemoryCapture(row: MemoryCaptureOutboxRow): Promise<'inserted' | 'duplicate' | 'conflict'> {
+    const result = await this.db
       .prepare(
         `INSERT OR IGNORE INTO memory_capture_outbox
           (operationId, turnId, agentId, connectionId, connectionRevision, pluginId, manifestDigest, config,
@@ -4365,7 +4552,7 @@ export class LocalStore {
         reasonCode: row.reasonCode ?? null
       })
     if (result.changes === 1) return 'inserted'
-    const existing = this.db
+    const existing = (await this.db
       .prepare(
         `SELECT operationId, turnId, agentId, connectionId, connectionRevision, pluginId, manifestDigest,
                 payloadHash, idempotency
@@ -4378,7 +4565,7 @@ export class LocalStore {
         agentId: row.agentId,
         connectionId: row.connectionId,
         turnId: row.turnId
-      }) as
+      })) as
       | Pick<
           MemoryCaptureOutboxRow,
           | 'operationId'
@@ -4409,45 +4596,51 @@ export class LocalStore {
     return 'conflict'
   }
 
-  getMemoryCapture(operationId: string): MemoryCaptureOutboxRow | undefined {
-    return this.db.prepare('SELECT * FROM memory_capture_outbox WHERE operationId = ?').get(operationId) as
+  async getMemoryCapture(operationId: string): Promise<MemoryCaptureOutboxRow | undefined> {
+    return (await this.db.prepare('SELECT * FROM memory_capture_outbox WHERE operationId = ?').get(operationId)) as
       MemoryCaptureOutboxRow | undefined
   }
 
-  listMemoryCaptures(): MemoryCaptureOutboxRow[] {
-    return this.db
+  async listMemoryCaptures(): Promise<MemoryCaptureOutboxRow[]> {
+    return (await this.db
       .prepare('SELECT * FROM memory_capture_outbox ORDER BY createdAt ASC, operationId ASC')
-      .all() as unknown as MemoryCaptureOutboxRow[]
+      .all()) as unknown as MemoryCaptureOutboxRow[]
   }
 
-  nextDueMemoryCapture(now: number, connectionIds?: readonly string[]): MemoryCaptureOutboxRow | undefined {
+  async nextDueMemoryCapture(
+    now: number,
+    connectionIds?: readonly string[]
+  ): Promise<MemoryCaptureOutboxRow | undefined> {
     const scope = idScope('connectionId', connectionIds)
-    return this.db
+    return (await this.db
       .prepare(
         `SELECT * FROM memory_capture_outbox
          WHERE state IN ('pending', 'accepted') AND nextAttemptAt <= @now${scope.sql}
          ORDER BY nextAttemptAt ASC, createdAt ASC, operationId ASC
          LIMIT 1`
       )
-      .get({ now, ...scope.params }) as MemoryCaptureOutboxRow | undefined
+      .get({ now, ...scope.params })) as MemoryCaptureOutboxRow | undefined
   }
 
-  nextMemoryCaptureDueAt(connectionIds?: readonly string[]): number | undefined {
+  async nextMemoryCaptureDueAt(connectionIds?: readonly string[]): Promise<number | undefined> {
     const scope = idScope('connectionId', connectionIds)
-    const row = this.db
+    const row = (await this.db
       .prepare(
         `SELECT MIN(nextAttemptAt) AS dueAt FROM memory_capture_outbox
          WHERE state IN ('pending', 'accepted')${scope.sql}`
       )
-      .get(scope.params) as { dueAt: number | null } | undefined
+      .get(scope.params)) as { dueAt: number | null } | undefined
     return row?.dueAt ?? undefined
   }
 
   /** Next age/retention deadline even when there is no due send. This keeps a
    * quiet daemon from retaining terminal dedup receipts indefinitely. */
-  nextMemoryCaptureMaintenanceAt(activeAgeMs: number, connectionIds?: readonly string[]): number | undefined {
+  async nextMemoryCaptureMaintenanceAt(
+    activeAgeMs: number,
+    connectionIds?: readonly string[]
+  ): Promise<number | undefined> {
     const scope = idScope('connectionId', connectionIds)
-    const row = this.db
+    const row = (await this.db
       .prepare(
         `SELECT
            MIN(CASE WHEN state IN ('pending', 'accepted') THEN createdAt + @activeAgeMs END) AS activeAt,
@@ -4459,154 +4652,192 @@ export class LocalStore {
         activeAgeMs,
         recoveryLeaseMs: this.shared ? SHARED_OUTBOX_LEASE_MS : 0,
         ...scope.params
-      }) as { activeAt: number | null; recoveryAt: number | null } | undefined
+      })) as { activeAt: number | null; recoveryAt: number | null } | undefined
     const deadlines = [row?.activeAt, row?.recoveryAt].filter(
       (value): value is number => value !== null && value !== undefined
     )
     return deadlines.length ? Math.min(...deadlines) : undefined
   }
 
-  claimMemoryCapture(operationId: string, now: number): MemoryCaptureOutboxRow | undefined {
-    const changed = this.db
-      .prepare(
-        `UPDATE memory_capture_outbox
-         SET state = 'sending', attempts = attempts + 1, updatedAt = @now
-         WHERE operationId = @operationId AND state = 'pending'`
-      )
-      .run({ operationId, now })
-    return changed.changes === 1 ? this.getMemoryCapture(operationId) : undefined
-  }
-
-  deferPendingMemoryCapture(operationId: string, nextAttemptAt: number, now: number, reasonCode: string): boolean {
-    return (
-      this.db
+  /** The claim and the read-back are one transaction: the row this call answers with must be the
+   *  one it just claimed, not whatever a peer's retry left behind between the two statements. */
+  async claimMemoryCapture(operationId: string, now: number): Promise<MemoryCaptureOutboxRow | undefined> {
+    return await this.transaction(async (raw) => {
+      const tx = accessOf(raw)
+      const changed = await tx
         .prepare(
           `UPDATE memory_capture_outbox
+         SET state = 'sending', attempts = attempts + 1, updatedAt = @now
+         WHERE operationId = @operationId AND state = 'pending'`
+        )
+        .run({ operationId, now })
+      if (changed.changes !== 1) return undefined
+      return (await tx.prepare('SELECT * FROM memory_capture_outbox WHERE operationId = ?').get(operationId)) as
+        MemoryCaptureOutboxRow | undefined
+    })
+  }
+
+  async deferPendingMemoryCapture(
+    operationId: string,
+    nextAttemptAt: number,
+    now: number,
+    reasonCode: string
+  ): Promise<boolean> {
+    return (
+      (
+        await this.db
+          .prepare(
+            `UPDATE memory_capture_outbox
            SET nextAttemptAt = @nextAttemptAt, updatedAt = @now, reasonCode = @reasonCode
            WHERE operationId = @operationId AND state = 'pending'`
-        )
-        .run({ operationId, nextAttemptAt, now, reasonCode }).changes === 1
+          )
+          .run({ operationId, nextAttemptAt, now, reasonCode })
+      ).changes === 1
     )
   }
 
-  retryMemoryCapture(operationId: string, nextAttemptAt: number, now: number, reasonCode: string): boolean {
+  async retryMemoryCapture(
+    operationId: string,
+    nextAttemptAt: number,
+    now: number,
+    reasonCode: string
+  ): Promise<boolean> {
     return (
-      this.db
-        .prepare(
-          `UPDATE memory_capture_outbox
+      (
+        await this.db
+          .prepare(
+            `UPDATE memory_capture_outbox
            SET state = 'pending', nextAttemptAt = @nextAttemptAt, updatedAt = @now,
                reasonCode = @reasonCode
            WHERE operationId = @operationId AND state = 'sending'`
-        )
-        .run({ operationId, nextAttemptAt, now, reasonCode }).changes === 1
+          )
+          .run({ operationId, nextAttemptAt, now, reasonCode })
+      ).changes === 1
     )
   }
 
-  acceptMemoryCapture(operationId: string, backendOperationId: string, nextAttemptAt: number, now: number): boolean {
+  async acceptMemoryCapture(
+    operationId: string,
+    backendOperationId: string,
+    nextAttemptAt: number,
+    now: number
+  ): Promise<boolean> {
     return (
-      this.db
-        .prepare(
-          `UPDATE memory_capture_outbox
+      (
+        await this.db
+          .prepare(
+            `UPDATE memory_capture_outbox
            SET state = 'accepted', backendOperationId = @backendOperationId,
                nextAttemptAt = @nextAttemptAt, updatedAt = @now, reasonCode = NULL,
                input = '', output = '', sessionId = NULL,
                payloadBytes = length(CAST(config AS BLOB))
            WHERE operationId = @operationId AND state = 'sending'`
-        )
-        .run({ operationId, backendOperationId, nextAttemptAt, now }).changes === 1
+          )
+          .run({ operationId, backendOperationId, nextAttemptAt, now })
+      ).changes === 1
     )
   }
 
-  rescheduleAcceptedMemoryCapture(operationId: string, nextAttemptAt: number, now: number): boolean {
+  async rescheduleAcceptedMemoryCapture(operationId: string, nextAttemptAt: number, now: number): Promise<boolean> {
     return (
-      this.db
-        .prepare(
-          `UPDATE memory_capture_outbox
+      (
+        await this.db
+          .prepare(
+            `UPDATE memory_capture_outbox
            SET nextAttemptAt = @nextAttemptAt, updatedAt = @now
            WHERE operationId = @operationId AND state = 'accepted'`
-        )
-        .run({ operationId, nextAttemptAt, now }).changes === 1
+          )
+          .run({ operationId, nextAttemptAt, now })
+      ).changes === 1
     )
   }
 
-  finishMemoryCapture(
+  async finishMemoryCapture(
     operationId: string,
     state: 'completed' | 'failed' | 'ambiguous',
     now: number,
     reasonCode?: string
-  ): boolean {
+  ): Promise<boolean> {
     return (
-      this.db
-        .prepare(
-          `UPDATE memory_capture_outbox
+      (
+        await this.db
+          .prepare(
+            `UPDATE memory_capture_outbox
            SET state = @state, updatedAt = @now, nextAttemptAt = @now,
                reasonCode = @reasonCode, config = '{}', input = '', output = '',
                sessionId = NULL, payloadBytes = 0
            WHERE operationId = @operationId AND state IN ('sending', 'accepted', 'pending')`
-        )
-        .run({ operationId, state, now, reasonCode: reasonCode ?? null }).changes === 1
+          )
+          .run({ operationId, state, now, reasonCode: reasonCode ?? null })
+      ).changes === 1
     )
   }
 
   /** Recover only abandoned shared claims; local stores remain exclusively owned across restart. */
-  recoverMemoryCaptures(
+  async recoverMemoryCaptures(
     now: number,
     staleOnly = false,
     connectionIds?: readonly string[]
-  ): { retried: number; ambiguous: number } {
+  ): Promise<{ retried: number; ambiguous: number }> {
     if (staleOnly && !this.shared) return { retried: 0, ambiguous: 0 }
     const scope = idScope('connectionId', !this.shared && !staleOnly ? undefined : connectionIds)
     const staleClause = this.shared ? ' AND updatedAt <= @staleBefore' : ''
     const params = this.shared
       ? { now, staleBefore: now - SHARED_OUTBOX_LEASE_MS, ...scope.params }
       : { now, ...scope.params }
-    const retried = this.db
-      .prepare(
-        `UPDATE memory_capture_outbox
+    const retried = (
+      await this.db
+        .prepare(
+          `UPDATE memory_capture_outbox
          SET state = 'pending', nextAttemptAt = @now, updatedAt = @now,
              reasonCode = 'restart_retry'
          WHERE state = 'sending' AND idempotency = 'operation-id'${staleClause}${scope.sql}`
-      )
-      .run(params).changes
-    const ambiguous = this.db
-      .prepare(
-        `UPDATE memory_capture_outbox
+        )
+        .run(params)
+    ).changes
+    const ambiguous = (
+      await this.db
+        .prepare(
+          `UPDATE memory_capture_outbox
          SET state = 'ambiguous', nextAttemptAt = @now, updatedAt = @now,
              reasonCode = 'restart_after_send', config = '{}', input = '', output = '',
              sessionId = NULL, payloadBytes = 0
          WHERE state = 'sending' AND idempotency = 'none'${staleClause}${scope.sql}`
-      )
-      .run(params).changes
+        )
+        .run(params)
+    ).changes
     return { retried: Number(retried), ambiguous: Number(ambiguous) }
   }
 
   /** Age out a capture that never settled: a state change with a redaction and a metric, so it
    *  stays here. Dropping the terminal row afterwards is retention and belongs to the rule table. */
-  expireMemoryCaptures(activeBefore: number, now: number, connectionIds?: readonly string[]): number {
+  async expireMemoryCaptures(activeBefore: number, now: number, connectionIds?: readonly string[]): Promise<number> {
     const scope = idScope('connectionId', connectionIds)
     return Number(
-      this.db
-        .prepare(
-          `UPDATE memory_capture_outbox
+      (
+        await this.db
+          .prepare(
+            `UPDATE memory_capture_outbox
            SET state = 'failed', nextAttemptAt = @now, updatedAt = @now,
                reasonCode = 'retention_expired', config = '{}', input = '', output = '',
                sessionId = NULL, payloadBytes = 0
            WHERE state IN ('pending', 'accepted') AND createdAt <= @activeBefore${scope.sql}`
-        )
-        .run({ now, activeBefore, ...scope.params }).changes
+          )
+          .run({ now, activeBefore, ...scope.params })
+      ).changes
     )
   }
 
-  memoryCaptureStats(connectionIds?: readonly string[]): MemoryCaptureOutboxStats {
+  async memoryCaptureStats(connectionIds?: readonly string[]): Promise<MemoryCaptureOutboxStats> {
     const scope = idScope('connectionId', connectionIds)
-    const row = this.db
+    const row = (await this.db
       .prepare(
         `SELECT COUNT(*) AS activeCount, COALESCE(SUM(payloadBytes), 0) AS activeBytes,
                 MIN(createdAt) AS oldestActiveAt
          FROM memory_capture_outbox
          WHERE state IN ('pending', 'sending', 'accepted')${scope.sql}`
       )
-      .get(scope.params) as { activeCount: number; activeBytes: number; oldestActiveAt: number | null }
+      .get(scope.params)) as { activeCount: number; activeBytes: number; oldestActiveAt: number | null }
     return {
       activeCount: row.activeCount,
       activeBytes: row.activeBytes,
@@ -4618,14 +4849,14 @@ export class LocalStore {
    *  Overwrites a pending revocation for the conversation: re-provisioning means
    *  the CP re-validated the authority and the stale queued revoke must not fire
    *  against the fresh grant. */
-  recordWebchatMcpGrant(input: {
+  async recordWebchatMcpGrant(input: {
     conversationId: string
     agentId: string
     authorityId: string
     authorityGeneration: number
     now: number
-  }): void {
-    this.db
+  }): Promise<void> {
+    await this.db
       .prepare(
         `INSERT INTO webchat_mcp_grant_ledger
            (conversationId, agentId, authorityId, authorityGeneration, state, reason, attempts, nextAttemptAt,
@@ -4644,15 +4875,15 @@ export class LocalStore {
   /** Queue a durable revocation for a grant authority whose remote revoke failed
    *  (or must outlive this process). Fenced to the exact authority tuple via the
    *  upsert so a concurrent re-provision (newer tuple) is not downgraded. */
-  markWebchatMcpGrantRevoking(input: {
+  async markWebchatMcpGrantRevoking(input: {
     conversationId: string
     agentId: string
     authorityId: string
     authorityGeneration: number
     reason: string
     now: number
-  }): void {
-    this.db
+  }): Promise<void> {
+    await this.db
       .prepare(
         `INSERT INTO webchat_mcp_grant_ledger
            (conversationId, agentId, authorityId, authorityGeneration, state, reason, attempts, nextAttemptAt,
@@ -4670,8 +4901,8 @@ export class LocalStore {
 
   /** Drop the ledger row after the CP confirmed revocation — only for the exact
    *  tuple, so a newer re-provisioned authority record survives a late confirm. */
-  clearWebchatMcpGrant(conversationId: string, authorityId: string, authorityGeneration: number): void {
-    this.db
+  async clearWebchatMcpGrant(conversationId: string, authorityId: string, authorityGeneration: number): Promise<void> {
+    await this.db
       .prepare(
         `DELETE FROM webchat_mcp_grant_ledger
          WHERE conversationId = ? AND authorityId = ? AND authorityGeneration = ?`
@@ -4682,59 +4913,63 @@ export class LocalStore {
   /** Startup orphan sweep over the grants THIS incarnation recorded: its descriptors and
    *  plaintext died with it. On a shared store an 'active' row may be a peer's live authority
    *  for a conversation in progress, so ownership — not process start — decides. */
-  markOwnedWebchatMcpGrantsRevoking(reason: string, now: number): number {
+  async markOwnedWebchatMcpGrantsRevoking(reason: string, now: number): Promise<number> {
     const owned = this.shared ? ' AND ownerId = @ownerId' : ''
     return Number(
-      this.db
-        .prepare(
-          `UPDATE webchat_mcp_grant_ledger
+      (
+        await this.db
+          .prepare(
+            `UPDATE webchat_mcp_grant_ledger
            SET state = 'revoking', reason = @reason, nextAttemptAt = @now, updatedAt = @now
            WHERE state = 'active'${owned}`
-        )
-        .run({ reason, now, ...(this.shared ? { ownerId: this.ownerId! } : {}) }).changes
+          )
+          .run({ reason, now, ...(this.shared ? { ownerId: this.ownerId! } : {}) })
+      ).changes
     )
   }
 
   /** Take over the grant rows of a former owner of these agents once the CP makes this process
    *  responsible for them: the plaintext went with the owner, so the authority must be revoked. */
-  reclaimWebchatMcpGrants(agentIds: readonly string[], reason: string, now: number): number {
+  async reclaimWebchatMcpGrants(agentIds: readonly string[], reason: string, now: number): Promise<number> {
     if (!this.shared || agentIds.length === 0) return 0
     const scope = idScope('agentId', agentIds)
     return Number(
-      this.db
-        .prepare(
-          `UPDATE webchat_mcp_grant_ledger
+      (
+        await this.db
+          .prepare(
+            `UPDATE webchat_mcp_grant_ledger
            SET state = 'revoking', reason = @reason, attempts = 0, nextAttemptAt = @now,
                updatedAt = @now, ownerId = @ownerId
            WHERE (ownerId IS NULL OR ownerId != @ownerId)${scope.sql}`
-        )
-        .run({ reason, now, ownerId: this.ownerId!, ...scope.params }).changes
+          )
+          .run({ reason, now, ownerId: this.ownerId!, ...scope.params })
+      ).changes
     )
   }
 
   /** The revocations this process must deliver: its own queue, plus rows written before ownership was
    *  recorded. A peer's queued revoke is the peer's to land — here it would duplicate the CP call. */
-  listDueWebchatMcpRevocations(now: number, limit = 50): WebchatMcpGrantLedgerRow[] {
+  async listDueWebchatMcpRevocations(now: number, limit = 50): Promise<WebchatMcpGrantLedgerRow[]> {
     const owned = this.shared ? ' AND (ownerId IS NULL OR ownerId = @ownerId)' : ''
-    return this.db
+    return (await this.db
       .prepare(
         `SELECT * FROM webchat_mcp_grant_ledger
          WHERE state = 'revoking' AND (nextAttemptAt IS NULL OR nextAttemptAt <= @now)${owned}
          ORDER BY nextAttemptAt ASC, conversationId ASC
          LIMIT @limit`
       )
-      .all({ now, limit, ...(this.shared ? { ownerId: this.ownerId! } : {}) }) as unknown as WebchatMcpGrantLedgerRow[]
+      .all({ now, limit, ...(this.shared ? { ownerId: this.ownerId! } : {}) })) as unknown as WebchatMcpGrantLedgerRow[]
   }
 
   /** Reschedule one failed revocation attempt (exact-tuple fenced). */
-  retryWebchatMcpRevocation(
+  async retryWebchatMcpRevocation(
     conversationId: string,
     authorityId: string,
     authorityGeneration: number,
     nextAttemptAt: number,
     now: number
-  ): void {
-    this.db
+  ): Promise<void> {
+    await this.db
       .prepare(
         `UPDATE webchat_mcp_grant_ledger
          SET attempts = attempts + 1, nextAttemptAt = @nextAttemptAt, updatedAt = @now
@@ -4748,15 +4983,27 @@ export class LocalStore {
    *  human boundary resets only the consecutive automatic counter; the total-rate
    *  backstop deliberately keeps counting so a platform bug that misclassifies its
    *  own events as human still eventually opens the circuit. */
-  recordLoopGuardTurn(
+  async recordLoopGuardTurn(
     scopeKey: string,
     now: number,
     automatic: boolean,
     limits: { windowMs: number; maxTotal: number; maxAutomatic: number }
-  ): LoopGuardVerdict {
+  ): Promise<LoopGuardVerdict> {
+    return await this.chargeLoopGuardTurn(this.db, scopeKey, now, automatic, limits)
+  }
+
+  /** The charge itself, on whichever statement runner the caller owns — the inbox variant runs
+   *  it inside its transaction, where a statement on the pooled facade would land outside. */
+  private async chargeLoopGuardTurn(
+    db: StoreAccess,
+    scopeKey: string,
+    now: number,
+    automatic: boolean,
+    limits: { windowMs: number; maxTotal: number; maxAutomatic: number }
+  ): Promise<LoopGuardVerdict> {
     // Keep only active-window counters plus intentionally-latched incidents. Without
     // this bounded cleanup, every one-off channel thread would leave a row forever.
-    this.db
+    await db
       .prepare(
         `DELETE FROM loop_guard
          WHERE trippedAt IS NULL AND windowStartedAt <= @cutoff AND automaticWindowStartedAt <= @cutoff`
@@ -4766,7 +5013,7 @@ export class LocalStore {
     // pool members sharing this store charge the same conversation concurrently, and an
     // absolute upsert would let the faster loop lose exactly the increments that matter.
     // The DO UPDATE guard makes a latched circuit skip the charge and return no row.
-    const charged = this.db
+    const charged = (await db
       .prepare(
         `INSERT INTO loop_guard
            (scopeKey, windowStartedAt, totalCount, automaticWindowStartedAt, automaticCount, trippedAt, reason)
@@ -4785,9 +5032,9 @@ export class LocalStore {
          WHERE loop_guard.trippedAt IS NULL
          RETURNING totalCount, automaticCount`
       )
-      .get({ scopeKey, now, automatic: automatic ? 1 : 0, windowMs: limits.windowMs }) as
+      .get({ scopeKey, now, automatic: automatic ? 1 : 0, windowMs: limits.windowMs })) as
       { totalCount: number; automaticCount: number } | undefined
-    if (!charged) return this.latchedLoopGuardVerdict(scopeKey)
+    if (!charged) return await this.latchedLoopGuardVerdict(db, scopeKey)
 
     const totalCount = Number(charged.totalCount)
     const automaticCount = Number(charged.automaticCount)
@@ -4801,15 +5048,19 @@ export class LocalStore {
     // The verdict is computed from what was actually stored, so the latch is a CAS: a
     // member that loses it still refuses the turn but runs no duplicate side effects.
     const latched =
-      this.db
-        .prepare('UPDATE loop_guard SET trippedAt=@now, reason=@reason WHERE scopeKey=@scopeKey AND trippedAt IS NULL')
-        .run({ scopeKey, now, reason }).changes === 1
+      (
+        await db
+          .prepare(
+            'UPDATE loop_guard SET trippedAt=@now, reason=@reason WHERE scopeKey=@scopeKey AND trippedAt IS NULL'
+          )
+          .run({ scopeKey, now, reason })
+      ).changes === 1
     return { allowed: false, trippedNow: latched, totalCount, automaticCount, reason }
   }
 
   /** The verdict for a scope another writer already latched: refuse, own no side effects. */
-  private latchedLoopGuardVerdict(scopeKey: string): LoopGuardVerdict {
-    const current = this.getLoopGuard(scopeKey)
+  private async latchedLoopGuardVerdict(db: StoreAccess, scopeKey: string): Promise<LoopGuardVerdict> {
+    const current = await this.loopGuardRow(db, scopeKey)
     return {
       allowed: false,
       trippedNow: false,
@@ -4825,32 +5076,28 @@ export class LocalStore {
    *  never depends on an exclusive writer, which a shared PostgreSQL store cannot give it.
    *  A tripping delivery is intentionally left at marker 0: the newly-open durable circuit
    *  makes its whole scope terminal and replay purges it. */
-  recordLoopGuardTurnForInbox(
+  async recordLoopGuardTurnForInbox(
     inboxId: string,
     scopeKey: string,
     now: number,
     automatic: boolean,
     limits: { windowMs: number; maxTotal: number; maxAutomatic: number }
-  ): LoopGuardVerdict {
-    this.db.exec('BEGIN')
-    try {
-      const verdict = this.recordLoopGuardTurn(scopeKey, now, automatic, limits)
+  ): Promise<LoopGuardVerdict> {
+    return await this.transaction(async (raw) => {
+      const tx = accessOf(raw)
+      const verdict = await this.chargeLoopGuardTurn(tx, scopeKey, now, automatic, limits)
       if (verdict.allowed) {
-        const marked = this.db.prepare('UPDATE inbox SET loopGuardCounted = 1 WHERE id = ?').run(inboxId)
+        const marked = await tx.prepare('UPDATE inbox SET loopGuardCounted = 1 WHERE id = ?').run(inboxId)
         if (marked.changes !== 1) throw new Error(`inbox delivery disappeared while charging loop guard: ${inboxId}`)
       }
-      this.db.exec('COMMIT')
       return verdict
-    } catch (err) {
-      this.db.exec('ROLLBACK')
-      throw err
-    }
+    })
   }
 
   /** Open a loop circuit immediately for a structurally-invalid platform event. The latch
    *  is a single guarded statement, so concurrent members elect exactly one side-effect owner. */
-  tripLoopGuard(scopeKey: string, now: number, reason: string): LoopGuardVerdict {
-    const latched = this.db
+  async tripLoopGuard(scopeKey: string, now: number, reason: string): Promise<LoopGuardVerdict> {
+    const latched = (await this.db
       .prepare(
         `INSERT INTO loop_guard
            (scopeKey, windowStartedAt, totalCount, automaticWindowStartedAt, automaticCount, trippedAt, reason)
@@ -4859,8 +5106,8 @@ export class LocalStore {
          WHERE loop_guard.trippedAt IS NULL
          RETURNING totalCount, automaticCount`
       )
-      .get({ scopeKey, now, reason }) as { totalCount: number; automaticCount: number } | undefined
-    if (!latched) return this.latchedLoopGuardVerdict(scopeKey)
+      .get({ scopeKey, now, reason })) as { totalCount: number; automaticCount: number } | undefined
+    if (!latched) return await this.latchedLoopGuardVerdict(this.db, scopeKey)
     return {
       allowed: false,
       trippedNow: true,
@@ -4870,25 +5117,29 @@ export class LocalStore {
     }
   }
 
-  getLoopGuard(scopeKey: string): LoopGuardRow | undefined {
-    return this.db.prepare('SELECT * FROM loop_guard WHERE scopeKey = ?').get(scopeKey) as LoopGuardRow | undefined
+  async getLoopGuard(scopeKey: string): Promise<LoopGuardRow | undefined> {
+    return await this.loopGuardRow(this.db, scopeKey)
   }
 
-  isLoopGuardOpen(scopeKey: string): boolean {
-    const row = this.getLoopGuard(scopeKey)
+  private async loopGuardRow(db: StoreAccess, scopeKey: string): Promise<LoopGuardRow | undefined> {
+    return (await db.prepare('SELECT * FROM loop_guard WHERE scopeKey = ?').get(scopeKey)) as LoopGuardRow | undefined
+  }
+
+  async isLoopGuardOpen(scopeKey: string): Promise<boolean> {
+    const row = await this.getLoopGuard(scopeKey)
     return row?.trippedAt !== null && row?.trippedAt !== undefined
   }
 
   /** Explicit operator/user reset. Purged inbox rows stay purged; reset only lets a
    *  future fresh message start a new window. Returns whether a guard existed. */
-  resetLoopGuard(scopeKey: string): boolean {
-    return this.db.prepare('DELETE FROM loop_guard WHERE scopeKey = ?').run(scopeKey).changes > 0
+  async resetLoopGuard(scopeKey: string): Promise<boolean> {
+    return (await this.db.prepare('DELETE FROM loop_guard WHERE scopeKey = ?').run(scopeKey)).changes > 0
   }
 
   // ── send-message-routing-rework.md §8.6: activation rendezvous ──
 
-  getActivation(activationKey: string): ActivationRecord | undefined {
-    return this.db.prepare('SELECT * FROM activation_rendezvous WHERE activationKey = ?').get(activationKey) as
+  async getActivation(activationKey: string): Promise<ActivationRecord | undefined> {
+    return (await this.db.prepare('SELECT * FROM activation_rendezvous WHERE activationKey = ?').get(activationKey)) as
       ActivationRecord | undefined
   }
 
@@ -4904,14 +5155,14 @@ export class LocalStore {
    * Idempotent: a redelivered platform event re-runs this and changes nothing about an
    * existing record's state or envelope.
    */
-  claimActivationObservation(
+  async claimActivationObservation(
     activationKey: string,
     observation: { agentCallDeliveryId?: string; platformMessageId: string; transcriptCoordinates: string },
     expiresAt: number
-  ): ActivationRecord {
-    this.db.exec('BEGIN')
-    try {
-      this.db
+  ): Promise<ActivationRecord> {
+    return await this.transaction(async (raw) => {
+      const tx = accessOf(raw)
+      await tx
         .prepare(
           `INSERT INTO activation_rendezvous
              (activationKey, agentCallDeliveryId, platformMessageId, transcriptCoordinates, state, expiresAt)
@@ -4928,25 +5179,24 @@ export class LocalStore {
           observation.transcriptCoordinates,
           expiresAt
         )
-      const row = this.getActivation(activationKey)!
-      this.db.exec('COMMIT')
-      return row
-    } catch (err) {
-      this.db.exec('ROLLBACK')
-      throw err
-    }
+      return (await tx
+        .prepare('SELECT * FROM activation_rendezvous WHERE activationKey = ?')
+        .get(activationKey)) as ActivationRecord
+    })
   }
 
-  /** Atomically attach the authoritative envelope; exactly one replica receives the dispatch claim. */
-  attachActivationEnvelope(
+  /** Atomically attach the authoritative envelope; exactly one replica receives the dispatch claim.
+   *  Left CAS-shaped rather than transactional: the guarded INSERT/UPDATE elects the claimer, and
+   *  the retry loop already answers the interleaving a peer's write can cause. */
+  async attachActivationEnvelope(
     activationKey: string,
     callEnvelope: string,
     expiresAt: number,
     /** Durable inbox id used to reconcile a crash between claim and admission. */
     dispatchId?: string
-  ): { dispatch: boolean; record: ActivationRecord } {
+  ): Promise<{ dispatch: boolean; record: ActivationRecord }> {
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      const inserted = this.db
+      const inserted = await this.db
         .prepare(
           `INSERT OR IGNORE INTO activation_rendezvous
              (activationKey, callEnvelope, dispatchId, state, expiresAt)
@@ -4957,15 +5207,17 @@ export class LocalStore {
         Number(inserted.changes) === 1
           ? true
           : Number(
-              this.db
-                .prepare(
-                  `UPDATE activation_rendezvous
+              (
+                await this.db
+                  .prepare(
+                    `UPDATE activation_rendezvous
                    SET callEnvelope = ?, dispatchId = ?, expiresAt = ?
                    WHERE activationKey = ? AND state = 'pending' AND callEnvelope IS NULL`
-                )
-                .run(callEnvelope, dispatchId ?? null, expiresAt, activationKey).changes
+                  )
+                  .run(callEnvelope, dispatchId ?? null, expiresAt, activationKey)
+              ).changes
             ) === 1
-      const record = this.getActivation(activationKey)
+      const record = await this.getActivation(activationKey)
       if (record) return { dispatch: claimed, record }
     }
     throw new Error(`activation claim for "${activationKey}" changed too often`)
@@ -4978,14 +5230,16 @@ export class LocalStore {
    * the CHECK the design states as "a platform-first paired record cannot become
    * `admitted` until `callEnvelope` is present".
    */
-  admitActivation(activationKey: string, childSessionId: string): boolean {
+  async admitActivation(activationKey: string, childSessionId: string): Promise<boolean> {
     return (
-      this.db
-        .prepare(
-          `UPDATE activation_rendezvous SET state = 'admitted', childSessionId = ?
+      (
+        await this.db
+          .prepare(
+            `UPDATE activation_rendezvous SET state = 'admitted', childSessionId = ?
            WHERE activationKey = ? AND state = 'pending' AND callEnvelope IS NOT NULL`
-        )
-        .run(childSessionId, activationKey).changes === 1
+          )
+          .run(childSessionId, activationKey)
+      ).changes === 1
     )
   }
 
@@ -5003,11 +5257,13 @@ export class LocalStore {
    * real child, and a `transcript-only` one was already reported as a delivery failure —
    * reopening either would undo a decision something downstream has acted on.
    */
-  releaseActivation(activationKey: string): boolean {
+  async releaseActivation(activationKey: string): Promise<boolean> {
     return (
-      this.db
-        .prepare(`DELETE FROM activation_rendezvous WHERE activationKey = ? AND state = 'pending'`)
-        .run(activationKey).changes === 1
+      (
+        await this.db
+          .prepare(`DELETE FROM activation_rendezvous WHERE activationKey = ? AND state = 'pending'`)
+          .run(activationKey)
+      ).changes === 1
     )
   }
 
@@ -5029,17 +5285,17 @@ export class LocalStore {
    * attempt is a first attempt. It is not reported as a delivery failure because, unlike
    * the envelope-less case, nothing here says the delivery was observed and lost.
    */
-  expireActivations(now: number): { transcriptOnly: ActivationRecord[]; released: number } {
-    this.db.exec('BEGIN')
-    try {
-      const transcriptOnly = this.db
+  async expireActivations(now: number): Promise<{ transcriptOnly: ActivationRecord[]; released: number }> {
+    return await this.transaction(async (raw) => {
+      const tx = accessOf(raw)
+      const transcriptOnly = (await tx
         .prepare(
           `SELECT * FROM activation_rendezvous
            WHERE state = 'pending' AND callEnvelope IS NULL AND expiresAt <= ?`
         )
-        .all(now) as unknown as ActivationRecord[]
+        .all(now)) as unknown as ActivationRecord[]
       if (transcriptOnly.length > 0) {
-        this.db
+        await tx
           .prepare(
             `UPDATE activation_rendezvous SET state = 'transcript-only'
              WHERE state = 'pending' AND callEnvelope IS NULL AND expiresAt <= ?`
@@ -5056,7 +5312,7 @@ export class LocalStore {
       //     first attempt; leaving it claimed is exactly-once becoming never.
       // A legacy row with no `dispatchId` is not reconcilable and takes the release arm —
       // the same answer as "never persisted".
-      this.db
+      await tx
         .prepare(
           `UPDATE activation_rendezvous SET state = 'admitted'
            WHERE state = 'pending' AND callEnvelope IS NOT NULL AND expiresAt <= ?
@@ -5064,18 +5320,16 @@ export class LocalStore {
              AND EXISTS (SELECT 1 FROM inbox WHERE inbox.id = activation_rendezvous.dispatchId)`
         )
         .run(now)
-      const released = this.db
-        .prepare(
-          `DELETE FROM activation_rendezvous
+      const released = (
+        await tx
+          .prepare(
+            `DELETE FROM activation_rendezvous
            WHERE state = 'pending' AND callEnvelope IS NOT NULL AND expiresAt <= ?`
-        )
-        .run(now).changes
-      this.db.exec('COMMIT')
+          )
+          .run(now)
+      ).changes
       return { transcriptOnly, released: Number(released) }
-    } catch (err) {
-      this.db.exec('ROLLBACK')
-      throw err
-    }
+    })
   }
 
   // ── §3.4/§6.8 main-agent orchestration ──
@@ -5087,22 +5341,22 @@ export class LocalStore {
    * this MUST complete before startOrchestration delivers anything. Idempotent via
    * INSERT OR IGNORE on the stable ids (replay-safe).
    */
-  createOrchestration(orch: OrchestrationRow, subtasks: SubtaskRow[]): void {
-    const insertOrch = this.db.prepare(
-      `INSERT OR IGNORE INTO orchestration
+  async createOrchestration(orch: OrchestrationRow, subtasks: SubtaskRow[]): Promise<void> {
+    await this.transaction(async (raw) => {
+      const tx = accessOf(raw)
+      const insertOrch = tx.prepare(
+        `INSERT OR IGNORE INTO orchestration
          (orchestrationId, mainSessionKey, mainAgentId, platform, channel, thread,
           integrationId, replyTarget, deadline, status, createdAt, updatedAt)
        VALUES (@orchestrationId, @mainSessionKey, @mainAgentId, @platform, @channel, @thread,
           @integrationId, @replyTarget, @deadline, @status, @createdAt, @updatedAt)`
-    )
-    const insertSub = this.db.prepare(
-      `INSERT OR IGNORE INTO orchestration_subtask
+      )
+      const insertSub = tx.prepare(
+        `INSERT OR IGNORE INTO orchestration_subtask
          (orchestrationId, correlationId, idx, toAgentId, text, status, result, deliveryReason, updatedAt)
        VALUES (@orchestrationId, @correlationId, @idx, @toAgentId, @text, @status, @result, @deliveryReason, @updatedAt)`
-    )
-    this.db.exec('BEGIN')
-    try {
-      insertOrch.run({
+      )
+      await insertOrch.run({
         orchestrationId: orch.orchestrationId,
         mainSessionKey: orch.mainSessionKey,
         mainAgentId: orch.mainAgentId,
@@ -5117,7 +5371,7 @@ export class LocalStore {
         updatedAt: orch.updatedAt
       })
       for (const s of subtasks) {
-        insertSub.run({
+        await insertSub.run({
           orchestrationId: s.orchestrationId,
           correlationId: s.correlationId,
           idx: s.idx,
@@ -5129,49 +5383,46 @@ export class LocalStore {
           updatedAt: s.updatedAt
         })
       }
-      this.db.exec('COMMIT')
-    } catch (err) {
-      this.db.exec('ROLLBACK')
-      throw err
-    }
+    })
   }
 
-  getOrchestration(orchestrationId: string): OrchestrationRow | undefined {
-    return this.db.prepare('SELECT * FROM orchestration WHERE orchestrationId = ?').get(orchestrationId) as unknown as
-      OrchestrationRow | undefined
+  async getOrchestration(orchestrationId: string): Promise<OrchestrationRow | undefined> {
+    return (await this.db
+      .prepare('SELECT * FROM orchestration WHERE orchestrationId = ?')
+      .get(orchestrationId)) as unknown as OrchestrationRow | undefined
   }
 
-  getSubtasks(orchestrationId: string): SubtaskRow[] {
-    return this.db
+  async getSubtasks(orchestrationId: string): Promise<SubtaskRow[]> {
+    return (await this.db
       .prepare('SELECT * FROM orchestration_subtask WHERE orchestrationId = ? ORDER BY idx ASC')
-      .all(orchestrationId) as unknown as SubtaskRow[]
+      .all(orchestrationId)) as unknown as SubtaskRow[]
   }
 
-  getSubtaskByCorrelation(orchestrationId: string, correlationId: string): SubtaskRow | undefined {
-    return this.db
+  async getSubtaskByCorrelation(orchestrationId: string, correlationId: string): Promise<SubtaskRow | undefined> {
+    return (await this.db
       .prepare('SELECT * FROM orchestration_subtask WHERE orchestrationId = ? AND correlationId = ?')
-      .get(orchestrationId, correlationId) as unknown as SubtaskRow | undefined
+      .get(orchestrationId, correlationId)) as unknown as SubtaskRow | undefined
   }
 
   /** All still-`active` orchestrations — for startup re-arm of deadlines + re-drive
    *  of non-terminal subtasks (§6.8). */
-  listActiveOrchestrations(): OrchestrationRow[] {
-    return this.db
+  async listActiveOrchestrations(): Promise<OrchestrationRow[]> {
+    return (await this.db
       .prepare("SELECT * FROM orchestration WHERE status = 'active' ORDER BY createdAt ASC")
-      .all() as unknown as OrchestrationRow[]
+      .all()) as unknown as OrchestrationRow[]
   }
 
   /** CAS subtask status — only advances when the current status is one of `from`.
    *  Idempotent + monotonic: a stale/duplicate transition (current status not in
    *  `from`) is a no-op and returns false. */
-  setSubtaskStatus(
+  async setSubtaskStatus(
     orchestrationId: string,
     correlationId: string,
     from: SubtaskRow['status'][],
     to: SubtaskRow['status'],
     updatedAt: string,
     extra?: { result?: string | null; deliveryReason?: string | null }
-  ): boolean {
+  ): Promise<boolean> {
     const placeholders = from.map((_, i) => `@from${i}`).join(', ')
     const params: SqlParams = { orchestrationId, correlationId, to, updatedAt }
     from.forEach((f, i) => (params[`from${i}`] = f))
@@ -5184,7 +5435,7 @@ export class LocalStore {
       setResult += ', deliveryReason=@deliveryReason'
       params.deliveryReason = extra.deliveryReason ?? null
     }
-    const info = this.db
+    const info = await this.db
       .prepare(
         `UPDATE orchestration_subtask SET status=@to, updatedAt=@updatedAt${setResult}
          WHERE orchestrationId=@orchestrationId AND correlationId=@correlationId AND status IN (${placeholders})`
@@ -5193,27 +5444,33 @@ export class LocalStore {
     return info.changes > 0
   }
 
-  setOrchestrationStatus(orchestrationId: string, status: OrchestrationRow['status'], updatedAt: number): void {
-    this.db
+  async setOrchestrationStatus(
+    orchestrationId: string,
+    status: OrchestrationRow['status'],
+    updatedAt: number
+  ): Promise<void> {
+    await this.db
       .prepare('UPDATE orchestration SET status=?, updatedAt=? WHERE orchestrationId=?')
       .run(status, updatedAt, orchestrationId)
   }
 
-  setOrchestrationDeadline(orchestrationId: string, deadline: number | null, updatedAt: number): void {
-    this.db
+  async setOrchestrationDeadline(orchestrationId: string, deadline: number | null, updatedAt: number): Promise<void> {
+    await this.db
       .prepare('UPDATE orchestration SET deadline=?, updatedAt=? WHERE orchestrationId=?')
       .run(deadline, updatedAt, orchestrationId)
   }
 
   /** CAS fire claim: clear the deadline iff it is still the armed one — every member sharing the
    *  store may hold a timer for it, and exactly one of them gets `true`. */
-  claimOrchestrationDeadline(orchestrationId: string, deadline: number, updatedAt: number): boolean {
+  async claimOrchestrationDeadline(orchestrationId: string, deadline: number, updatedAt: number): Promise<boolean> {
     return (
-      this.db
-        .prepare(
-          "UPDATE orchestration SET deadline=NULL, updatedAt=? WHERE orchestrationId=? AND status='active' AND deadline=?"
-        )
-        .run(updatedAt, orchestrationId, deadline).changes === 1
+      (
+        await this.db
+          .prepare(
+            "UPDATE orchestration SET deadline=NULL, updatedAt=? WHERE orchestrationId=? AND status='active' AND deadline=?"
+          )
+          .run(updatedAt, orchestrationId, deadline)
+      ).changes === 1
     )
   }
 
@@ -5223,17 +5480,17 @@ export class LocalStore {
    *  A same-fingerprint write PRESERVES the stored complete/modelsHash — a phase-1
    *  meta refresh must neither satisfy nor re-open the §3.3 discovery gate; a
    *  fingerprint change (adapter upgrade) resets both so the runtime is re-discovered. */
-  recordRuntimeCatalogMeta(meta: Omit<RuntimeCatalogMetaRecord, 'complete' | 'modelsHash'>): void {
-    this.db.exec('BEGIN')
-    try {
-      const existing = this.db
+  async recordRuntimeCatalogMeta(meta: Omit<RuntimeCatalogMetaRecord, 'complete' | 'modelsHash'>): Promise<void> {
+    await this.transaction(async (raw) => {
+      const tx = accessOf(raw)
+      const existing = (await tx
         .prepare(
           'SELECT fingerprint, complete, modelsHash FROM runtime_catalog_meta WHERE ownerId = ? AND runtimeId = ?'
         )
-        .get(this.cacheOwnerId, meta.runtimeId) as
+        .get(this.cacheOwnerId, meta.runtimeId)) as
         { fingerprint: string; complete: number; modelsHash: string | null } | undefined
       const sameGeneration = existing && existing.fingerprint === meta.fingerprint ? existing : undefined
-      this.db
+      await tx
         .prepare(
           `INSERT INTO runtime_catalog_meta
              (ownerId, runtimeId, fingerprint, source, defaultModel, permissionModes, defaultPermissionMode, complete, modelsHash, observedAt)
@@ -5256,18 +5513,19 @@ export class LocalStore {
           modelsHash: sameGeneration?.modelsHash ?? null,
           observedAt: meta.observedAt
         })
-      this.db.exec('COMMIT')
-    } catch (err) {
-      this.db.exec('ROLLBACK')
-      throw err
-    }
+    })
   }
 
   /** Close the discovery gate for ONE generation: complete=1 + the probed-models hash,
    *  only where the stored fingerprint still matches — a discovery finishing after the
    *  runtime was upgraded must not close the new generation's gate. */
-  markRuntimeCatalogComplete(runtimeId: string, fingerprint: string, modelsHash: string, observedAt: number): void {
-    this.db
+  async markRuntimeCatalogComplete(
+    runtimeId: string,
+    fingerprint: string,
+    modelsHash: string,
+    observedAt: number
+  ): Promise<void> {
+    await this.db
       .prepare(
         `UPDATE runtime_catalog_meta
          SET complete = 1, modelsHash = @modelsHash, observedAt = @observedAt
@@ -5278,8 +5536,8 @@ export class LocalStore {
 
   /** Upsert one model's capability row (latest-wins). Written incrementally as each
    *  model is discovered, so a single-model failure never discards the rest. */
-  upsertRuntimeModelCap(rec: RuntimeModelCapRecord): void {
-    this.db
+  async upsertRuntimeModelCap(rec: RuntimeModelCapRecord): Promise<void> {
+    await this.db
       .prepare(
         `INSERT INTO runtime_model_catalog (ownerId, runtimeId, modelId, fingerprint, capsJson, observedAt)
          VALUES (@ownerId, @runtimeId, @modelId, @fingerprint, @capsJson, @observedAt)
@@ -5298,11 +5556,11 @@ export class LocalStore {
 
   /** Drop models that vanished from a runtime's catalog. Called only after a COMPLETE
    *  successful discovery (prune-on-success) — failures must keep last-good rows. */
-  pruneRuntimeModelCaps(runtimeId: string, keepModelIds: string[]): void {
+  async pruneRuntimeModelCaps(runtimeId: string, keepModelIds: string[]): Promise<void> {
     // SQLite accepts an empty IN () list (always false), so an empty keep-set clears
     // the runtime's rows — correct for a runtime whose catalog came back empty.
     const placeholders = keepModelIds.map(() => '?').join(', ')
-    this.db
+    await this.db
       .prepare(
         `DELETE FROM runtime_model_catalog
          WHERE ownerId = ? AND runtimeId = ? AND modelId NOT IN (${placeholders})`
@@ -5310,26 +5568,26 @@ export class LocalStore {
       .run(this.cacheOwnerId, runtimeId, ...keepModelIds)
   }
 
-  getRuntimeCatalogMeta(runtimeId: string): RuntimeCatalogMetaRecord | undefined {
-    const row = this.db
+  async getRuntimeCatalogMeta(runtimeId: string): Promise<RuntimeCatalogMetaRecord | undefined> {
+    const row = (await this.db
       .prepare('SELECT * FROM runtime_catalog_meta WHERE ownerId = ? AND runtimeId = ?')
-      .get(this.cacheOwnerId, runtimeId) as RuntimeCatalogMetaRow | undefined
+      .get(this.cacheOwnerId, runtimeId)) as RuntimeCatalogMetaRow | undefined
     return row ? runtimeCatalogMetaFromRow(row) : undefined
   }
 
-  listRuntimeCatalogMetas(): RuntimeCatalogMetaRecord[] {
-    const rows = this.db
+  async listRuntimeCatalogMetas(): Promise<RuntimeCatalogMetaRecord[]> {
+    const rows = (await this.db
       .prepare('SELECT * FROM runtime_catalog_meta WHERE ownerId = ? ORDER BY runtimeId ASC')
-      .all(this.cacheOwnerId) as unknown as RuntimeCatalogMetaRow[]
+      .all(this.cacheOwnerId)) as unknown as RuntimeCatalogMetaRow[]
     return rows.map(runtimeCatalogMetaFromRow)
   }
 
-  listRuntimeModelCaps(runtimeId?: string): RuntimeModelCapRecord[] {
+  async listRuntimeModelCaps(runtimeId?: string): Promise<RuntimeModelCapRecord[]> {
     const rows = (runtimeId !== undefined
-      ? this.db
+      ? await this.db
           .prepare('SELECT * FROM runtime_model_catalog WHERE ownerId = ? AND runtimeId = ? ORDER BY modelId ASC')
           .all(this.cacheOwnerId, runtimeId)
-      : this.db
+      : await this.db
           .prepare('SELECT * FROM runtime_model_catalog WHERE ownerId = ? ORDER BY runtimeId ASC, modelId ASC')
           .all(this.cacheOwnerId)) as unknown as RuntimeModelCapRow[]
     return rows.map((row) => ({
@@ -5343,23 +5601,24 @@ export class LocalStore {
 
   /** Next shim-binding generation for an agent's sandbox: one atomic upsert, so two members cannot tie. */
   // The row outlives the claim on purpose — nothing here may hand out a number a pod has seen before.
-  nextSandboxGeneration(agentId: string): number {
-    const row = this.db
+  async nextSandboxGeneration(agentId: string): Promise<number> {
+    const row = (await this.db
       .prepare(
         `INSERT INTO sandbox_generations (agentId, generation) VALUES (?, 1)
          ON CONFLICT(agentId) DO UPDATE SET generation = sandbox_generations.generation + 1
          RETURNING generation`
       )
-      .get(agentId) as { generation: number } | undefined
+      .get(agentId)) as { generation: number } | undefined
     if (row === undefined) throw new Error(`could not allocate a sandbox generation for agent ${agentId}`)
     return Number(row.generation)
   }
 
-  close(): void {
+  async close(): Promise<void> {
     // Last chance for a buffered tool body: the backend is about to go away.
-    this.flushToolCallWrites()
+    await this.flushToolCallWrites()
     this.clearToolWriteFlush()
-    this.db.close()
+    // Closing under the mutex waits out a transcript write still in flight.
+    await this.transcriptMutex.run(() => this.backend.close())
   }
 }
 

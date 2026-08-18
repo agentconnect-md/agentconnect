@@ -3,6 +3,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { SqliteAsyncDatabase } from '../src/store/sqlite-async-database.js'
 import { LocalStore, sessionKey, type InboxRow } from '../src/store/local-store.js'
 import { statePath } from '../src/paths.js'
 import { Daemon } from '../src/daemon.js'
@@ -25,8 +26,8 @@ const WAIT = { timeout: 10_000 }
  */
 
 // ── store-level unit tests ──────────────────────────────────────────────────
-function store(): LocalStore {
-  return new LocalStore(join(mkdtempSync(join(tmpdir(), 'ac-inbox-')), 'local.sqlite'))
+async function store(): Promise<LocalStore> {
+  return await LocalStore.open(join(mkdtempSync(join(tmpdir(), 'ac-inbox-')), 'local.sqlite'))
 }
 
 const row = (id: string, key: string, enqueuedAt: string, agentId = 'bot-a'): InboxRow => ({
@@ -41,88 +42,88 @@ const row = (id: string, key: string, enqueuedAt: string, agentId = 'bot-a'): In
 })
 
 describe('LocalStore inbox', () => {
-  it('appends, lists FIFO-by-sessionKey, and removes', () => {
-    const s = store()
+  it('appends, lists FIFO-by-sessionKey, and removes', async () => {
+    const s = await store()
     const kA = sessionKey('slack', 'C1', 'T1', 'bot-a')
     const kB = sessionKey('slack', 'C1', 'T2', 'bot-a')
     // Interleaved insert order; listing must group by sessionKey then order by enqueuedAt.
-    s.appendInbox(row('a2', kA, '200'))
-    s.appendInbox(row('b1', kB, '150'))
-    s.appendInbox(row('a1', kA, '100'))
-    const listed = s.listInboxBySessionKeyFifo().map((r) => r.id)
+    await s.appendInbox(row('a2', kA, '200'))
+    await s.appendInbox(row('b1', kB, '150'))
+    await s.appendInbox(row('a1', kA, '100'))
+    const listed = (await s.listInboxBySessionKeyFifo()).map((r) => r.id)
     expect(listed).toEqual(['a1', 'a2', 'b1'])
 
-    s.removeInbox('a1')
-    expect(s.listInboxBySessionKeyFifo().map((r) => r.id)).toEqual(['a2', 'b1'])
-    s.close()
+    await s.removeInbox('a1')
+    expect((await s.listInboxBySessionKeyFifo()).map((r) => r.id)).toEqual(['a2', 'b1'])
+    await s.close()
   })
 
-  it('append preserves the first delivery payload while durably advancing its loop marker', () => {
-    const s = store()
+  it('append preserves the first delivery payload while durably advancing its loop marker', async () => {
+    const s = await store()
     const k = sessionKey('slack', 'C1', 'T1', 'bot-a')
-    expect(s.appendInbox(row('dup', k, '100'))).toBe(true)
-    expect(s.appendInbox({ ...row('dup', k, '999'), loopGuardCounted: 1 })).toBe(false)
-    const rows = s.listInboxBySessionKeyFifo()
+    expect(await s.appendInbox(row('dup', k, '100'))).toBe(true)
+    expect(await s.appendInbox({ ...row('dup', k, '999'), loopGuardCounted: 1 })).toBe(false)
+    const rows = await s.listInboxBySessionKeyFifo()
     expect(rows).toHaveLength(1)
     expect(rows[0].enqueuedAt).toBe('100')
     expect(rows[0].loopGuardCounted).toBe(1)
-    s.close()
+    await s.close()
   })
 
-  it('atomically charges and marks a migrated inbox delivery', () => {
-    const s = store()
+  it('atomically charges and marks a migrated inbox delivery', async () => {
+    const s = await store()
     const key = sessionKey('slack', 'C1', 'T1', 'bot-a')
-    s.appendInbox(row('legacy-count', key, '100'))
+    await s.appendInbox(row('legacy-count', key, '100'))
     expect(
-      s.recordLoopGuardTurnForInbox('legacy-count', 'slack:C1:dm', 100, true, {
+      await s.recordLoopGuardTurnForInbox('legacy-count', 'slack:C1:dm', 100, true, {
         windowMs: 60_000,
         maxTotal: 60,
         maxAutomatic: 8
       })
     ).toMatchObject({ allowed: true, automaticCount: 1 })
-    expect(s.listInboxBySessionKeyFifo()[0].loopGuardCounted).toBe(1)
-    expect(s.getLoopGuard('slack:C1:dm')).toMatchObject({ automaticCount: 1 })
-    s.close()
+    expect((await s.listInboxBySessionKeyFifo())[0].loopGuardCounted).toBe(1)
+    expect(await s.getLoopGuard('slack:C1:dm')).toMatchObject({ automaticCount: 1 })
+    await s.close()
   })
 
-  it('retains a redacted terminal hook receipt for restart-safe redelivery dedup', () => {
-    const s = store()
+  it('retains a redacted terminal hook receipt for restart-safe redelivery dedup', async () => {
+    const s = await store()
     const k = sessionKey('hook', 'hook-1', 'delivery-1', 'bot-a')
     expect(
-      s.appendInbox({
+      await s.appendInbox({
         ...row('hook-1:delivery-1', k, '100'),
         msg: JSON.stringify({ text: 'untrusted webhook body' }),
         hookContext: JSON.stringify({ hookId: 'hook-1', deliveryKey: 'delivery-1' })
       })
     ).toBe(true)
     const report = JSON.stringify({ hookId: 'hook-1', status: 'success' })
-    expect(s.completeHookInbox('hook-1:delivery-1', report, 123)).toBe('completed')
-    expect(s.completeHookInbox('hook-1:delivery-1', '{"status":"failed"}', 999)).toBe('already-terminal')
-    expect(s.completeHookInbox('missing', report, 123)).toBe('missing')
+    expect(await s.completeHookInbox('hook-1:delivery-1', report, 123)).toBe('completed')
+    expect(await s.completeHookInbox('hook-1:delivery-1', '{"status":"failed"}', 999)).toBe('already-terminal')
+    expect(await s.completeHookInbox('missing', report, 123)).toBe('missing')
 
-    const receipt = s.listInboxBySessionKeyFifo()[0]!
+    const receipt = (await s.listInboxBySessionKeyFifo())[0]!
     expect(receipt).toMatchObject({ id: 'hook-1:delivery-1', msg: '{}', terminalReport: report, completedAt: 123 })
     expect(receipt.hookContext).toBeNull()
-    expect(s.hasInbox('hook-1:delivery-1')).toBe(true)
-    expect(s.appendInbox(row('hook-1:delivery-1', k, '999'))).toBe(false)
-    expect(s.acknowledgeHookInbox('hook-1:delivery-1')).toBe(true)
-    expect(s.listInboxBySessionKeyFifo()[0]).toMatchObject({
+    expect(await s.hasInbox('hook-1:delivery-1')).toBe(true)
+    expect(await s.appendInbox(row('hook-1:delivery-1', k, '999'))).toBe(false)
+    expect(await s.acknowledgeHookInbox('hook-1:delivery-1')).toBe(true)
+    expect((await s.listInboxBySessionKeyFifo())[0]).toMatchObject({
       id: 'hook-1:delivery-1',
       terminalReport: null,
       completedAt: 123
     })
-    expect(s.hasInbox('hook-1:delivery-1')).toBe(true)
-    s.close()
+    expect(await s.hasInbox('hook-1:delivery-1')).toBe(true)
+    await s.close()
   })
 
-  it('atomically persists a coalesced hook leader and terminalizes its follower', () => {
-    const s = store()
+  it('atomically persists a coalesced hook leader and terminalizes its follower', async () => {
+    const s = await store()
     const key = sessionKey('hook', 'acme/repo', '42', 'bot-a')
-    expect(s.appendInbox({ ...row('leader', key, '100'), hookContext: '{"batch":["first"]}' })).toBe(true)
-    expect(s.appendInbox({ ...row('follower', key, '200'), hookContext: '{"batch":["second"]}' })).toBe(true)
+    expect(await s.appendInbox({ ...row('leader', key, '100'), hookContext: '{"batch":["first"]}' })).toBe(true)
+    expect(await s.appendInbox({ ...row('follower', key, '200'), hookContext: '{"batch":["second"]}' })).toBe(true)
 
     expect(
-      s.coalesceHookInbox({
+      await s.coalesceHookInbox({
         leaderId: 'leader',
         leaderMsg: '{"text":"first and second"}',
         leaderHookContext: '{"batch":["first","second"]}',
@@ -131,7 +132,7 @@ describe('LocalStore inbox', () => {
         completedAt: 123
       })
     ).toBe(true)
-    const rows = s.listInboxBySessionKeyFifo()
+    const rows = await s.listInboxBySessionKeyFifo()
     expect(rows.find((entry) => entry.id === 'leader')).toMatchObject({
       msg: '{"text":"first and second"}',
       hookContext: '{"batch":["first","second"]}',
@@ -145,7 +146,7 @@ describe('LocalStore inbox', () => {
     })
 
     expect(
-      s.coalesceHookInbox({
+      await s.coalesceHookInbox({
         leaderId: 'leader',
         leaderMsg: '{"text":"must roll back"}',
         leaderHookContext: '{"batch":["wrong"]}',
@@ -154,27 +155,29 @@ describe('LocalStore inbox', () => {
         completedAt: 999
       })
     ).toBe(false)
-    expect(s.listInboxBySessionKeyFifo().find((entry) => entry.id === 'leader')?.msg).toBe(
+    expect((await s.listInboxBySessionKeyFifo()).find((entry) => entry.id === 'leader')?.msg).toBe(
       '{"text":"first and second"}'
     )
-    s.close()
+    await s.close()
   })
 
-  it('capacity-prunes only CP-acknowledged receipts, never pending reports', () => {
-    const s = store()
+  it('capacity-prunes only CP-acknowledged receipts, never pending reports', async () => {
+    const s = await store()
     const k = sessionKey('hook', 'hook-1', 'delivery', 'bot-a')
     for (let i = 1; i <= 3; i++) {
       const id = `hook-1:delivery-${i}`
-      expect(s.appendInbox({ ...row(id, k, String(i)), hookContext: '{}' })).toBe(true)
-      expect(s.completeHookInbox(id, JSON.stringify({ hookId: 'hook-1', deliveryKey: String(i) }), i)).toBe('completed')
+      expect(await s.appendInbox({ ...row(id, k, String(i)), hookContext: '{}' })).toBe(true)
+      expect(await s.completeHookInbox(id, JSON.stringify({ hookId: 'hook-1', deliveryKey: String(i) }), i)).toBe(
+        'completed'
+      )
     }
 
-    expect(s.acknowledgeHookInbox('hook-1:delivery-1', { maxAcknowledgedReceipts: 1 })).toBe(true)
-    expect(s.acknowledgeHookInbox('hook-1:delivery-2', { maxAcknowledgedReceipts: 1 })).toBe(true)
-    const remaining = s.listInboxBySessionKeyFifo()
+    expect(await s.acknowledgeHookInbox('hook-1:delivery-1', { maxAcknowledgedReceipts: 1 })).toBe(true)
+    expect(await s.acknowledgeHookInbox('hook-1:delivery-2', { maxAcknowledgedReceipts: 1 })).toBe(true)
+    const remaining = await s.listInboxBySessionKeyFifo()
     expect(remaining.map((receipt) => receipt.id).sort()).toEqual(['hook-1:delivery-2', 'hook-1:delivery-3'])
     expect(remaining.find((receipt) => receipt.id.endsWith('-3'))?.terminalReport).not.toBeNull()
-    s.close()
+    await s.close()
   })
 
   // ── shared pool outbox (#1035) ────────────────────────────────────────────
@@ -184,103 +187,116 @@ describe('LocalStore inbox', () => {
   // dispatch named, and answers every other member a permanent CONFLICT.
   const LEASE_MS = 2 * 60 * 1_000
 
-  function poolMember(database: DatabaseSync, ownerId: string): LocalStore {
-    return new LocalStore({ database: database as never, shared: true, ownerId, orgForAgent: () => 'org-1' })
+  async function poolMember(database: DatabaseSync, ownerId: string): Promise<LocalStore> {
+    return await LocalStore.open({
+      database: SqliteAsyncDatabase.adopt(database),
+      shared: true,
+      ownerId,
+      orgForAgent: () => 'org-1'
+    })
   }
 
-  function pooledReport(s: LocalStore, id: string, agentId: string, ownerDaemonId: string, at: number): void {
+  async function pooledReport(
+    s: LocalStore,
+    id: string,
+    agentId: string,
+    ownerDaemonId: string,
+    at: number
+  ): Promise<void> {
     const key = sessionKey('hook', 'hook-1', id, agentId)
-    expect(s.appendInbox({ ...row(id, key, String(at), agentId), hookContext: '{}' })).toBe(true)
-    expect(s.completeHookInbox(id, JSON.stringify({ id }), at, ownerDaemonId)).toBe('completed')
+    expect(await s.appendInbox({ ...row(id, key, String(at), agentId), hookContext: '{}' })).toBe(true)
+    expect(await s.completeHookInbox(id, JSON.stringify({ id }), at, ownerDaemonId)).toBe('completed')
   }
 
-  it("offers a pool member only the reports it owns, never a live peer's", () => {
+  it("offers a pool member only the reports it owns, never a live peer's", async () => {
     const database = new DatabaseSync(':memory:')
-    const a = poolMember(database, 'store-a')
-    const b = poolMember(database, 'store-b')
-    pooledReport(a, 'from-a', 'agent-a', 'daemon-a', 1_000)
-    pooledReport(b, 'from-b', 'agent-b', 'daemon-b', 1_000)
+    const a = await poolMember(database, 'store-a')
+    const b = await poolMember(database, 'store-b')
+    await pooledReport(a, 'from-a', 'agent-a', 'daemon-a', 1_000)
+    await pooledReport(b, 'from-b', 'agent-b', 'daemon-b', 1_000)
 
-    const ids = (s: LocalStore, ownerId: string, agentIds: string[]) =>
-      s.listHookTerminalReports(1_500, ownerId, agentIds).map((entry) => entry.id)
-    expect(ids(a, 'daemon-a', ['agent-a'])).toEqual(['from-a'])
+    const ids = async (s: LocalStore, ownerId: string, agentIds: string[]) =>
+      (await s.listHookTerminalReports(1_500, ownerId, agentIds)).map((entry) => entry.id)
+    expect(await ids(a, 'daemon-a', ['agent-a'])).toEqual(['from-a'])
     // B serves both agents and still may not touch A's row: A's claim is live.
-    expect(ids(b, 'daemon-b', ['agent-a', 'agent-b'])).toEqual(['from-b'])
-    expect(b.claimHookTerminalReport('from-a', 'daemon-b', 1_500)).toBe(false)
+    expect(await ids(b, 'daemon-b', ['agent-a', 'agent-b'])).toEqual(['from-b'])
+    expect(await b.claimHookTerminalReport('from-a', 'daemon-b', 1_500)).toBe(false)
     // An owner drains its own row wherever the agent is placed now.
-    expect(ids(a, 'daemon-a', [])).toEqual(['from-a'])
-    a.close()
+    expect(await ids(a, 'daemon-a', [])).toEqual(['from-a'])
+    await a.close()
   })
 
-  it('lets the member that serves the agent take over after the owner claim lapses', () => {
+  it('lets the member that serves the agent take over after the owner claim lapses', async () => {
     const database = new DatabaseSync(':memory:')
-    const a = poolMember(database, 'store-a')
-    const b = poolMember(database, 'store-b')
-    pooledReport(a, 'from-a', 'agent-a', 'daemon-a', 1_000)
+    const a = await poolMember(database, 'store-a')
+    const b = await poolMember(database, 'store-b')
+    await pooledReport(a, 'from-a', 'agent-a', 'daemon-a', 1_000)
     const lapsed = 1_000 + LEASE_MS + 1
 
     // Still not B's to take while B does not serve the agent.
-    expect(b.listHookTerminalReports(lapsed, 'daemon-b', ['agent-b'])).toEqual([])
-    expect(b.listHookTerminalReports(lapsed, 'daemon-b', ['agent-a']).map((entry) => entry.id)).toEqual(['from-a'])
-    expect(b.claimHookTerminalReport('from-a', 'daemon-b', lapsed)).toBe(true)
+    expect(await b.listHookTerminalReports(lapsed, 'daemon-b', ['agent-b'])).toEqual([])
+    expect((await b.listHookTerminalReports(lapsed, 'daemon-b', ['agent-a'])).map((entry) => entry.id)).toEqual([
+      'from-a'
+    ])
+    expect(await b.claimHookTerminalReport('from-a', 'daemon-b', lapsed)).toBe(true)
     // The takeover is exclusive: the dead owner's id no longer holds the row.
-    expect(a.listHookTerminalReports(lapsed, 'daemon-a', [])).toEqual([])
-    expect(a.claimHookTerminalReport('from-a', 'daemon-a', lapsed)).toBe(false)
-    a.close()
+    expect(await a.listHookTerminalReports(lapsed, 'daemon-a', [])).toEqual([])
+    expect(await a.claimHookTerminalReport('from-a', 'daemon-a', lapsed)).toBe(false)
+    await a.close()
   })
 
-  it('keeps a peer report body out of reach of every member but its owner', () => {
+  it('keeps a peer report body out of reach of every member but its owner', async () => {
     const database = new DatabaseSync(':memory:')
-    const a = poolMember(database, 'store-a')
-    const b = poolMember(database, 'store-b')
-    pooledReport(a, 'from-a', 'agent-a', 'daemon-a', 1_000)
+    const a = await poolMember(database, 'store-a')
+    const b = await poolMember(database, 'store-b')
+    await pooledReport(a, 'from-a', 'agent-a', 'daemon-a', 1_000)
     const lapsed = 1_000 + LEASE_MS + 1
-    expect(b.claimHookTerminalReport('from-a', 'daemon-b', lapsed)).toBe(true)
+    expect(await b.claimHookTerminalReport('from-a', 'daemon-b', lapsed)).toBe(true)
 
     // The CP rejects B as the reporter — B returns the row instead of dead-lettering it.
-    expect(b.releaseHookTerminalReport('from-a', 'daemon-a', lapsed)).toBe(true)
-    expect(b.acknowledgeHookInbox('from-a', { ownerId: 'daemon-b' })).toBe(false)
-    const retained = a.listHookTerminalReports(lapsed, 'daemon-a', [])
+    expect(await b.releaseHookTerminalReport('from-a', 'daemon-a', lapsed)).toBe(true)
+    expect(await b.acknowledgeHookInbox('from-a', { ownerId: 'daemon-b' })).toBe(false)
+    const retained = await a.listHookTerminalReports(lapsed, 'daemon-a', [])
     expect(retained.map((entry) => entry.id)).toEqual(['from-a'])
     expect(retained[0]!.terminalReport).toBe('{"id":"from-a"}')
     // Its owner still releases it on a real ACK.
-    expect(a.acknowledgeHookInbox('from-a', { ownerId: 'daemon-a' })).toBe(true)
-    a.close()
+    expect(await a.acknowledgeHookInbox('from-a', { ownerId: 'daemon-a' })).toBe(true)
+    await a.close()
   })
 
-  it('leaves a local store single-owner: every report drains and ACKs unfenced', () => {
-    const s = store()
-    pooledReport(s, 'local-1', 'bot-a', 'daemon-a', 1)
-    pooledReport(s, 'local-2', 'bot-b', 'daemon-b', 2)
-    expect(s.listHookTerminalReports(Number.MAX_SAFE_INTEGER).map((entry) => entry.id)).toEqual(['local-1', 'local-2'])
-    expect(s.claimHookTerminalReport('local-2', undefined, 3)).toBe(true)
-    expect(s.releaseHookTerminalReport('local-2', 'daemon-b', 3)).toBe(false)
-    expect(s.acknowledgeHookInbox('local-2')).toBe(true)
-    s.close()
+  it('leaves a local store single-owner: every report drains and ACKs unfenced', async () => {
+    const s = await store()
+    await pooledReport(s, 'local-1', 'bot-a', 'daemon-a', 1)
+    await pooledReport(s, 'local-2', 'bot-b', 'daemon-b', 2)
+    expect((await s.listHookTerminalReports(Number.MAX_SAFE_INTEGER)).map((entry) => entry.id)).toEqual([
+      'local-1',
+      'local-2'
+    ])
+    expect(await s.claimHookTerminalReport('local-2', undefined, 3)).toBe(true)
+    expect(await s.releaseHookTerminalReport('local-2', 'daemon-b', 3)).toBe(false)
+    expect(await s.acknowledgeHookInbox('local-2')).toBe(true)
+    await s.close()
   })
 
-  it('agent lifecycle purge preserves live hook owners and unacknowledged reports', () => {
-    const s = store()
+  it('agent lifecycle purge preserves live hook owners and unacknowledged reports', async () => {
+    const s = await store()
     const key = sessionKey('hook', 'hook-1', 'shared', 'bot-a')
-    expect(s.appendInbox(row('ordinary', key, '1'))).toBe(true)
-    expect(s.appendInbox({ ...row('hook-live', key, '2'), hookContext: '{"hookId":"hook-1"}' })).toBe(true)
+    expect(await s.appendInbox(row('ordinary', key, '1'))).toBe(true)
+    expect(await s.appendInbox({ ...row('hook-live', key, '2'), hookContext: '{"hookId":"hook-1"}' })).toBe(true)
 
-    expect(s.appendInbox({ ...row('hook-pending', key, '3'), hookContext: '{}' })).toBe(true)
-    expect(s.completeHookInbox('hook-pending', '{"status":"failed"}', 3)).toBe('completed')
+    expect(await s.appendInbox({ ...row('hook-pending', key, '3'), hookContext: '{}' })).toBe(true)
+    expect(await s.completeHookInbox('hook-pending', '{"status":"failed"}', 3)).toBe('completed')
 
-    expect(s.appendInbox({ ...row('hook-acked', key, '4'), hookContext: '{}' })).toBe(true)
-    expect(s.completeHookInbox('hook-acked', '{"status":"success"}', 4)).toBe('completed')
-    expect(s.acknowledgeHookInbox('hook-acked')).toBe(true)
+    expect(await s.appendInbox({ ...row('hook-acked', key, '4'), hookContext: '{}' })).toBe(true)
+    expect(await s.completeHookInbox('hook-acked', '{"status":"success"}', 4)).toBe('completed')
+    expect(await s.acknowledgeHookInbox('hook-acked')).toBe(true)
 
-    expect(s.removeInboxByAgentId('bot-a').sort()).toEqual(['hook-acked', 'ordinary'])
+    expect((await s.removeInboxByAgentId('bot-a')).sort()).toEqual(['hook-acked', 'ordinary'])
+    expect((await s.listInboxBySessionKeyFifo()).map((entry) => entry.id).sort()).toEqual(['hook-live', 'hook-pending'])
     expect(
-      s
-        .listInboxBySessionKeyFifo()
-        .map((entry) => entry.id)
-        .sort()
-    ).toEqual(['hook-live', 'hook-pending'])
-    expect(s.listInboxBySessionKeyFifo().find((entry) => entry.id === 'hook-pending')?.terminalReport).not.toBeNull()
-    s.close()
+      (await s.listInboxBySessionKeyFifo()).find((entry) => entry.id === 'hook-pending')?.terminalReport
+    ).not.toBeNull()
+    await s.close()
   })
 })
 
@@ -437,17 +453,17 @@ async function boot(root: string, host: any) {
   return daemon
 }
 
-function inbox(root: string): InboxRow[] {
-  const s = new LocalStore(statePath(root))
-  const rows = s.listInboxBySessionKeyFifo()
-  s.close()
+async function inbox(root: string): Promise<InboxRow[]> {
+  const s = await LocalStore.open(statePath(root))
+  const rows = await s.listInboxBySessionKeyFifo()
+  await s.close()
   return rows
 }
 
-function loopGuard(root: string, scope = 'slack:C1:dm') {
-  const s = new LocalStore(statePath(root))
-  const row = s.getLoopGuard(scope)
-  s.close()
+async function loopGuard(root: string, scope = 'slack:C1:dm') {
+  const s = await LocalStore.open(statePath(root))
+  const row = await s.getLoopGuard(scope)
+  await s.close()
   return row
 }
 
@@ -461,20 +477,20 @@ describe('daemon durable inbox', () => {
     // Head admitted (runs immediately) → row written before it even starts.
     const p1 = (daemon as any).dispatch('bot-a', msg('100', 'first'), 'int-a')
     await vi.waitFor(() => expect(g.started.length).toBe(1), WAIT)
-    expect(inbox(root).map((r) => r.id)).toEqual(['slack:C1:100'])
+    expect((await inbox(root)).map((r) => r.id)).toEqual(['slack:C1:100'])
 
     // Fill the queue to the cap (10) — each queued entry persists a row.
     const queued: Promise<unknown>[] = []
     for (let i = 0; i < 10; i++)
       queued.push((daemon as any).dispatch('bot-a', msg(`${200 + i}`, `m${i}`), 'int-a').catch(() => 'rej'))
-    expect((daemon as any).serialQueue.get(key)).toHaveLength(10)
-    expect(inbox(root)).toHaveLength(11)
+    await vi.waitFor(() => expect((daemon as any).serialQueue.get(key)).toHaveLength(10), WAIT)
+    await vi.waitFor(async () => expect(await inbox(root)).toHaveLength(11), WAIT)
 
     // The 11th overflows the cap → rejected fast, NEVER admitted, NO accepted row written.
     const overflow = (daemon as any).dispatch('bot-a', msg('999', 'overflow'), 'int-a')
     await expect(overflow).rejects.toThrow(/queue_full|queue full/)
-    expect(inbox(root).some((r) => r.id === 'slack:C1:999')).toBe(false)
-    expect(inbox(root)).toHaveLength(11)
+    expect((await inbox(root)).some((r) => r.id === 'slack:C1:999')).toBe(false)
+    await vi.waitFor(async () => expect(await inbox(root)).toHaveLength(11), WAIT)
 
     // Drain: each queued turn gates only after the previous settles, so this
     // releases one turn per retry tick — 10 serial turns overflow waitFor's
@@ -499,12 +515,12 @@ describe('daemon durable inbox', () => {
 
     const p1 = (daemon as any).dispatch('bot-a', msg('100', 'first'), 'int-a')
     await vi.waitFor(() => expect(g.started.length).toBe(1), WAIT)
-    expect(inbox(root)).toHaveLength(1)
+    await vi.waitFor(async () => expect(await inbox(root)).toHaveLength(1), WAIT)
 
     g.releaseOne()
     await expect(p1).resolves.toBe('acp-1')
     // Terminal (success) → row deleted.
-    expect(inbox(root)).toHaveLength(0)
+    await vi.waitFor(async () => expect(await inbox(root)).toHaveLength(0), WAIT)
     await daemon.stop()
   }, 15_000)
 
@@ -522,18 +538,16 @@ describe('daemon durable inbox', () => {
     expect((daemon as any).evaluationTurnIdFor('bot-a', botA)).not.toBe(
       (daemon as any).evaluationTurnIdFor('bot-a', botB)
     )
-    expect(
-      inbox(root)
-        .map((row) => row.id)
-        .sort()
-    ).toEqual([stableMessageId(botA), stableMessageId(botB)].sort())
+    expect((await inbox(root)).map((row) => row.id).sort()).toEqual(
+      [stableMessageId(botA), stableMessageId(botB)].sort()
+    )
 
     await expect((daemon as any).dispatch('bot-a', { ...botA }, 'int-a')).resolves.toBeNull()
-    expect(inbox(root)).toHaveLength(2)
+    await vi.waitFor(async () => expect(await inbox(root)).toHaveLength(2), WAIT)
 
     g.releaseAll()
     await Promise.all([pA, pB])
-    expect(inbox(root)).toHaveLength(0)
+    await vi.waitFor(async () => expect(await inbox(root)).toHaveLength(0), WAIT)
     await daemon.stop()
   }, 15_000)
 
@@ -547,13 +561,13 @@ describe('daemon durable inbox', () => {
     const p1 = (daemon as any).dispatch('bot-a', msg('100', 'first'), 'int-a')
     await vi.waitFor(() => expect(g.started.length).toBe(1), WAIT)
     const p2 = (daemon as any).dispatch('bot-a', msg('200', 'second'), 'int-a')
-    expect(inbox(root)).toHaveLength(2)
+    await vi.waitFor(async () => expect(await inbox(root)).toHaveLength(2), WAIT)
 
     g.releaseOne()
     await expect(p1).rejects.toThrow('boom-1')
     await expect(p2).rejects.toThrow(/fail_stop|not auto-run/)
     // Both the failed head and the fail-stopped queued entry are removed.
-    expect(inbox(root)).toHaveLength(0)
+    await vi.waitFor(async () => expect(await inbox(root)).toHaveLength(0), WAIT)
     expect((daemon as any).serialQueue.has(key)).toBe(false)
     await daemon.stop()
   }, 15_000)
@@ -565,8 +579,8 @@ describe('daemon durable inbox', () => {
     const key = sessionKey('slack', 'C1', 'T1', 'bot-a', transportScope)
     const replayMsg = (ts: string, text: string) => ({ ...msg(ts, text), transportScope })
     // Pre-seed the durable inbox out of enqueuedAt order to prove FIFO ordering on replay.
-    const s = new LocalStore(statePath(root))
-    s.appendInbox({
+    const s = await LocalStore.open(statePath(root))
+    await s.appendInbox({
       id: 'slack:C1:300',
       sessionKey: key,
       agentId: 'bot-a',
@@ -576,7 +590,7 @@ describe('daemon durable inbox', () => {
       isQueueCmd: null,
       enqueuedAt: '300'
     })
-    s.appendInbox({
+    await s.appendInbox({
       id: 'slack:C1:100',
       sessionKey: key,
       agentId: 'bot-a',
@@ -586,7 +600,7 @@ describe('daemon durable inbox', () => {
       isQueueCmd: null,
       enqueuedAt: '100'
     })
-    s.appendInbox({
+    await s.appendInbox({
       id: 'slack:C1:200',
       sessionKey: key,
       agentId: 'bot-a',
@@ -596,17 +610,17 @@ describe('daemon durable inbox', () => {
       isQueueCmd: null,
       enqueuedAt: '200'
     })
-    s.close()
+    await s.close()
 
     const daemon = await boot(root, g.host)
     // The head runs immediately; the other two queue behind it — all in FIFO enqueuedAt order.
     await vi.waitFor(() => expect(g.started.length).toBe(1), WAIT)
     expect(g.started[0]).toContain('first')
-    expect((daemon as any).serialQueue.get(key)).toHaveLength(2)
+    await vi.waitFor(() => expect((daemon as any).serialQueue.get(key)).toHaveLength(2), WAIT)
     // Adopt the legacy raw ids instead of duplicating them under the new scoped identity.
-    expect(inbox(root).map((row) => row.id)).toEqual(['slack:C1:100', 'slack:C1:200', 'slack:C1:300'])
+    expect((await inbox(root)).map((row) => row.id)).toEqual(['slack:C1:100', 'slack:C1:200', 'slack:C1:300'])
     // Every migrated row is marked only after its replay admission was charged.
-    expect(inbox(root).every((row) => row.loopGuardCounted === 1)).toBe(true)
+    expect((await inbox(root)).every((row) => row.loopGuardCounted === 1)).toBe(true)
 
     g.releaseOne()
     await vi.waitFor(() => expect(g.started.length).toBe(2), WAIT)
@@ -617,7 +631,7 @@ describe('daemon durable inbox', () => {
     g.releaseAll()
     await vi.waitFor(() => expect((daemon as any).inflight.has(key)).toBe(false), WAIT)
     // All replayed rows removed once their turns completed.
-    expect(inbox(root)).toHaveLength(0)
+    await vi.waitFor(async () => expect(await inbox(root)).toHaveLength(0), WAIT)
     await daemon.stop()
   }, 15_000)
 
@@ -628,8 +642,8 @@ describe('daemon durable inbox', () => {
       ...msg('100', ''),
       sender: { id: 'unknown', isBot: false }
     }
-    const s = new LocalStore(statePath(root))
-    s.appendInbox({
+    const s = await LocalStore.open(statePath(root))
+    await s.appendInbox({
       id: poison.msgId,
       sessionKey: key,
       agentId: 'bot-a',
@@ -639,13 +653,13 @@ describe('daemon durable inbox', () => {
       isQueueCmd: null,
       enqueuedAt: '100'
     })
-    s.close()
+    await s.close()
 
     const firstHost = gatedHost()
     const first = await boot(root, firstHost.host)
     expect(firstHost.host.prompt).not.toHaveBeenCalled()
-    expect(inbox(root)).toHaveLength(0)
-    expect(loopGuard(root)).toMatchObject({ reason: 'malformed_platform_event' })
+    await vi.waitFor(async () => expect(await inbox(root)).toHaveLength(0), WAIT)
+    expect(await loopGuard(root)).toMatchObject({ reason: 'malformed_platform_event' })
     await first.stop()
 
     // A daemon restart must not reset the safety latch. Even a fresh, otherwise-valid
@@ -654,20 +668,20 @@ describe('daemon durable inbox', () => {
     const second = await boot(root, secondHost.host)
     await expect((second as any).dispatch('bot-a', msg('200', 'fresh'), 'int-a')).resolves.toBeNull()
     expect(secondHost.host.prompt).not.toHaveBeenCalled()
-    expect(loopGuard(root)).toMatchObject({ reason: 'malformed_platform_event' })
+    expect(await loopGuard(root)).toMatchObject({ reason: 'malformed_platform_event' })
     await second.stop()
   }, 15_000)
 
   it('bounds a legacy non-empty platform-echo backlog that predates loop counters', async () => {
     const root = scaffold()
     const key = sessionKey('slack', 'C1', 'T1', 'bot-a')
-    const s = new LocalStore(statePath(root))
+    const s = await LocalStore.open(statePath(root))
     for (let n = 1; n <= 9; n++) {
       const echo = {
         ...msg(String(n), `legacy echo ${n}`),
         sender: { id: 'unknown', isBot: false }
       }
-      s.appendInbox({
+      await s.appendInbox({
         id: echo.msgId,
         sessionKey: key,
         agentId: 'bot-a',
@@ -678,30 +692,30 @@ describe('daemon durable inbox', () => {
         enqueuedAt: String(n).padStart(3, '0')
       })
     }
-    s.close()
+    await s.close()
 
     const g = gatedHost()
     const daemon = await boot(root, g.host)
-    await vi.waitFor(() => expect(inbox(root)).toHaveLength(0), WAIT)
+    await vi.waitFor(async () => expect(await inbox(root)).toHaveLength(0), WAIT)
     await vi.waitFor(() => expect((daemon as any).inflight.size).toBe(0), WAIT)
     expect(g.host.prompt).not.toHaveBeenCalled()
-    expect(loopGuard(root)).toMatchObject({ reason: 'automatic_turn_burst' })
+    expect(await loopGuard(root)).toMatchObject({ reason: 'automatic_turn_burst' })
     await daemon.stop()
   }, 15_000)
 
   it('counts legacy marker-zero rows even when another owner already created the scope guard', async () => {
     const root = scaffold()
     const key = sessionKey('slack', 'C1', 'T1', 'bot-a')
-    const s = new LocalStore(statePath(root))
+    const s = await LocalStore.open(statePath(root))
     const now = Date.now()
     const limits = { windowMs: 60_000, maxTotal: 60, maxAutomatic: 8 }
-    for (let n = 0; n < 4; n++) s.recordLoopGuardTurn('slack:C1:dm', now + n, true, limits)
+    for (let n = 0; n < 4; n++) await s.recordLoopGuardTurn('slack:C1:dm', now + n, true, limits)
     for (let n = 1; n <= 5; n++) {
       const echo = {
         ...msg(String(n), `cross-owner echo ${n}`),
         sender: { id: 'unknown', isBot: false }
       }
-      s.appendInbox({
+      await s.appendInbox({
         id: echo.msgId,
         sessionKey: key,
         agentId: 'bot-a',
@@ -713,14 +727,14 @@ describe('daemon durable inbox', () => {
         enqueuedAt: String(n).padStart(3, '0')
       })
     }
-    s.close()
+    await s.close()
 
     const g = gatedHost()
     const daemon = await boot(root, g.host)
-    await vi.waitFor(() => expect(inbox(root)).toHaveLength(0), WAIT)
+    await vi.waitFor(async () => expect(await inbox(root)).toHaveLength(0), WAIT)
     await vi.waitFor(() => expect((daemon as any).inflight.size).toBe(0), WAIT)
     expect(g.host.prompt).not.toHaveBeenCalled()
-    expect(loopGuard(root)).toMatchObject({ automaticCount: 9, reason: 'automatic_turn_burst' })
+    expect(await loopGuard(root)).toMatchObject({ automaticCount: 9, reason: 'automatic_turn_burst' })
     await daemon.stop()
   }, 15_000)
 
@@ -728,13 +742,13 @@ describe('daemon durable inbox', () => {
     const root = scaffold()
     const noisyKey = sessionKey('slack', 'C1', 'T1', 'bot-a')
     const healthyKey = sessionKey('slack', 'C2', 'T2', 'bot-a')
-    const s = new LocalStore(statePath(root))
+    const s = await LocalStore.open(statePath(root))
     for (let n = 1; n <= 9; n++) {
       const echo = {
         ...msg(String(n), `legacy echo ${n}`),
         sender: { id: 'unknown', isBot: false }
       }
-      s.appendInbox({
+      await s.appendInbox({
         id: echo.msgId,
         sessionKey: noisyKey,
         agentId: 'bot-a',
@@ -751,7 +765,7 @@ describe('daemon durable inbox', () => {
       traceId: '100',
       channel: 'C2'
     }
-    s.appendInbox({
+    await s.appendInbox({
       id: healthy.msgId,
       sessionKey: healthyKey,
       agentId: 'bot-a',
@@ -761,34 +775,34 @@ describe('daemon durable inbox', () => {
       isQueueCmd: null,
       enqueuedAt: '100'
     })
-    s.close()
+    await s.close()
 
     const g = coldReplayHost()
     const daemon = await boot(root, g.host)
     await vi.waitFor(() => expect(g.host.newSession).toHaveBeenCalledTimes(1), WAIT)
     // The noisy scope is purged, but the other accepted row stays durable while
     // the host-wide cancel backstop makes new admission temporarily unsafe.
-    expect(inbox(root).map((row) => row.id)).toEqual([healthy.msgId])
+    expect((await inbox(root)).map((row) => row.id)).toEqual([healthy.msgId])
     expect(g.started).toHaveLength(0)
 
     g.releaseCold()
     await vi.waitFor(() => expect(g.started).toHaveLength(1), WAIT)
     expect(g.started[0]).toContain('healthy replay')
     g.releasePrompt()
-    await vi.waitFor(() => expect(inbox(root)).toHaveLength(0), WAIT)
+    await vi.waitFor(async () => expect(await inbox(root)).toHaveLength(0), WAIT)
 
     await daemon.stop()
   }, 15_000)
 
   it('does not resurrect a deferred replay that pause purged before a quick unpause', async () => {
     const root = scaffold()
-    const s = new LocalStore(statePath(root))
+    const s = await LocalStore.open(statePath(root))
     for (let n = 1; n <= 9; n++) {
       const echo = {
         ...msg(String(n), `legacy echo ${n}`),
         sender: { id: 'unknown', isBot: false }
       }
-      s.appendInbox({
+      await s.appendInbox({
         id: echo.msgId,
         sessionKey: sessionKey('slack', 'C1', 'T1', 'bot-a'),
         agentId: 'bot-a',
@@ -805,7 +819,7 @@ describe('daemon durable inbox', () => {
       traceId: '100',
       channel: 'C2'
     }
-    s.appendInbox({
+    await s.appendInbox({
       id: deferred.msgId,
       sessionKey: sessionKey('slack', 'C2', 'T2', 'bot-a'),
       agentId: 'bot-a',
@@ -815,16 +829,16 @@ describe('daemon durable inbox', () => {
       isQueueCmd: null,
       enqueuedAt: '100'
     })
-    s.close()
+    await s.close()
 
     const g = coldReplayHost()
     const daemon = await boot(root, g.host)
     await vi.waitFor(() => expect(g.host.newSession).toHaveBeenCalledTimes(1), WAIT)
-    expect(inbox(root).map((row) => row.id)).toEqual([deferred.msgId])
+    expect((await inbox(root)).map((row) => row.id)).toEqual([deferred.msgId])
 
     writePause(root, true)
     await daemon.reconcile()
-    expect(inbox(root)).toHaveLength(0)
+    await vi.waitFor(async () => expect(await inbox(root)).toHaveLength(0), WAIT)
     writePause(root, false)
     await daemon.reconcile()
 
@@ -848,8 +862,8 @@ describe('daemon durable inbox', () => {
   it('startup with a paused agent purges its inbox so unpause plus another restart cannot resurrect old work', async () => {
     const root = scaffold()
     const key = sessionKey('slack', 'C1', 'T1', 'bot-a')
-    const s = new LocalStore(statePath(root))
-    s.appendInbox({
+    const s = await LocalStore.open(statePath(root))
+    await s.appendInbox({
       id: 'slack:C1:100',
       sessionKey: key,
       agentId: 'bot-a',
@@ -859,13 +873,13 @@ describe('daemon durable inbox', () => {
       isQueueCmd: null,
       enqueuedAt: '100'
     })
-    s.close()
+    await s.close()
     writePause(root, true)
 
     const pausedHost = gatedHost()
     const paused = await boot(root, pausedHost.host)
     expect(pausedHost.host.prompt).not.toHaveBeenCalled()
-    expect(inbox(root)).toHaveLength(0)
+    await vi.waitFor(async () => expect(await inbox(root)).toHaveLength(0), WAIT)
     await paused.stop()
 
     writePause(root, false)
@@ -884,15 +898,15 @@ describe('daemon durable inbox', () => {
   it('startup pause terminalizes a retained hook instead of deleting or replaying its report', async () => {
     const root = scaffold([HOOK_AGENT_ID])
     const retained = retainedHook('paused-startup')
-    const s = new LocalStore(statePath(root))
-    expect(s.appendInbox(retained.row)).toBe(true)
-    s.close()
+    const s = await LocalStore.open(statePath(root))
+    expect(await s.appendInbox(retained.row)).toBe(true)
+    await s.close()
     writePause(root, true, HOOK_AGENT_ID)
 
     const pausedHost = gatedHost()
     const paused = await boot(root, pausedHost.host)
     expect(pausedHost.host.prompt).not.toHaveBeenCalled()
-    const [receipt] = inbox(root)
+    const [receipt] = await inbox(root)
     expect(receipt).toMatchObject({ id: retained.id, hookContext: null, terminalReport: expect.any(String) })
     expect(JSON.parse(receipt!.terminalReport!)).toMatchObject({
       hookId: HOOK_ID,
@@ -907,7 +921,7 @@ describe('daemon durable inbox', () => {
     const resumedHost = gatedHost()
     const resumed = await boot(root, resumedHost.host)
     expect(resumedHost.host.prompt).not.toHaveBeenCalled()
-    expect(inbox(root)[0]).toMatchObject({ id: retained.id, terminalReport: expect.any(String) })
+    expect((await inbox(root))[0]).toMatchObject({ id: retained.id, terminalReport: expect.any(String) })
     await resumed.stop()
   }, 15_000)
 
@@ -915,19 +929,19 @@ describe('daemon durable inbox', () => {
     const root = scaffold([HOOK_AGENT_ID])
     const retained = retainedHook('loop-startup')
     const pendingReport = retainedHook('loop-pending-report')
-    const s = new LocalStore(statePath(root))
+    const s = await LocalStore.open(statePath(root))
     const limits = { windowMs: 60_000, maxTotal: 60, maxAutomatic: 8 }
     const now = Date.now()
-    for (let n = 0; n < 9; n++) s.recordLoopGuardTurn('slack:C1:dm', now + n, true, limits)
+    for (let n = 0; n < 9; n++) await s.recordLoopGuardTurn('slack:C1:dm', now + n, true, limits)
     expect(
-      s.appendInbox({
+      await s.appendInbox({
         ...row('ordinary-loop-backlog', retained.row.sessionKey, '001', HOOK_AGENT_ID),
         msg: JSON.stringify({ ...msg('ordinary-loop-backlog', 'old automatic turn'), msgId: 'ordinary-loop-backlog' })
       })
     ).toBe(true)
-    expect(s.appendInbox({ ...pendingReport.row, enqueuedAt: '0015' })).toBe(true)
+    expect(await s.appendInbox({ ...pendingReport.row, enqueuedAt: '0015' })).toBe(true)
     expect(
-      s.completeHookInbox(
+      await s.completeHookInbox(
         pendingReport.id,
         JSON.stringify({
           hookId: HOOK_ID,
@@ -938,13 +952,13 @@ describe('daemon durable inbox', () => {
         now
       )
     ).toBe('completed')
-    expect(s.appendInbox({ ...retained.row, enqueuedAt: '002' })).toBe(true)
-    s.close()
+    expect(await s.appendInbox({ ...retained.row, enqueuedAt: '002' })).toBe(true)
+    await s.close()
 
     const host = gatedHost()
     const daemon = await boot(root, host.host)
     expect(host.host.prompt).not.toHaveBeenCalled()
-    const rows = inbox(root)
+    const rows = await inbox(root)
     expect(rows.map((row) => row.id).sort()).toEqual([pendingReport.id, retained.id].sort())
     const terminalized = rows.find((row) => row.id === retained.id)
     expect(terminalized).toMatchObject({ hookContext: null, terminalReport: expect.any(String) })
@@ -973,14 +987,14 @@ describe('daemon durable inbox', () => {
     // Eight automatic admissions are allowed. The ninth consecutive one opens the
     // circuit before admission and atomically discards the seven buffered turns.
     for (let n = 2; n <= 8; n++) queued.push((daemon as any).dispatch('bot-a', automatic(n), 'int-a'))
-    expect((daemon as any).serialQueue.get('slack:C1:T1:bot-a')).toHaveLength(7)
-    expect(inbox(root)).toHaveLength(8)
+    await vi.waitFor(() => expect((daemon as any).serialQueue.get('slack:C1:T1:bot-a')).toHaveLength(7), WAIT)
+    await vi.waitFor(async () => expect(await inbox(root)).toHaveLength(8), WAIT)
 
     await expect((daemon as any).dispatch('bot-a', automatic(9), 'int-a')).resolves.toBeNull()
     await expect(Promise.all(queued)).resolves.toEqual(Array(7).fill(null))
     expect((daemon as any).serialQueue.size).toBe(0)
-    expect(inbox(root)).toHaveLength(0)
-    expect(loopGuard(root)).toMatchObject({ reason: 'automatic_turn_burst' })
+    await vi.waitFor(async () => expect(await inbox(root)).toHaveLength(0), WAIT)
+    expect(await loopGuard(root)).toMatchObject({ reason: 'automatic_turn_burst' })
     expect(g.host.cancel).toHaveBeenCalledWith('acp-1')
 
     // An explicit resume cannot reopen the conversation while the cancelled old
@@ -996,16 +1010,16 @@ describe('daemon durable inbox', () => {
     ]
     const conn = { postMessage: vi.fn(async () => undefined), setStatus: vi.fn(async () => {}) }
     ;(daemon as any).connByIntegration.set('int-a', conn)
-    ;(daemon as any).onInbound(msg('10', '!resume'))
-    expect(loopGuard(root)).toMatchObject({ reason: 'automatic_turn_burst' })
+    await (daemon as any).onInboundOutcome(msg('10', '!resume'))
+    expect(await loopGuard(root)).toMatchObject({ reason: 'automatic_turn_burst' })
     expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('still stopping'), 'T1')
 
     g.releaseOne()
     await expect(head).resolves.toBeNull()
     await vi.waitFor(() => expect((daemon as any).inflight.size).toBe(0), WAIT)
     await vi.waitFor(() => expect((daemon as any).safetyDrainingAgents.size).toBe(0), WAIT)
-    ;(daemon as any).onInbound(msg('11', '!resume'))
-    expect(loopGuard(root)).toBeUndefined()
+    await (daemon as any).onInboundOutcome(msg('11', '!resume'))
+    expect(await loopGuard(root)).toBeUndefined()
     await daemon.stop()
   }, 15_000)
 
@@ -1056,13 +1070,13 @@ describe('daemon durable inbox', () => {
       (daemon as any).dispatch('bot-a', echo(7), 'int-a'),
       (daemon as any).dispatch('bot-b', echo(8), 'int-b')
     ]
-    expect(inbox(root)).toHaveLength(8)
+    await vi.waitFor(async () => expect(await inbox(root)).toHaveLength(8), WAIT)
 
     await expect((daemon as any).dispatch('bot-a', echo(9), 'int-a')).resolves.toBeNull()
     await expect(Promise.all(queued)).resolves.toEqual(Array(6).fill(null))
     expect(a.host.cancel).toHaveBeenCalledWith('acp-a')
     expect(b.host.cancel).toHaveBeenCalledWith('acp-b')
-    expect(inbox(root)).toHaveLength(0)
+    await vi.waitFor(async () => expect(await inbox(root)).toHaveLength(0), WAIT)
 
     a.releaseOne()
     b.releaseOne()
@@ -1090,7 +1104,7 @@ describe('daemon durable inbox', () => {
     // Admit a message (persists a live row) and freeze its turn in prompt.
     const p1 = (daemon as any).dispatch('bot-a', msg('100', 'first'), 'int-a')
     await vi.waitFor(() => expect(g.started.length).toBe(1), WAIT)
-    expect(inbox(root).map((r) => r.id)).toEqual(['slack:C1:100'])
+    expect((await inbox(root)).map((r) => r.id)).toEqual(['slack:C1:100'])
 
     // Replay while that id is still live → it must be skipped, not re-dispatched.
     ;(daemon as any).replayInbox()
@@ -1127,8 +1141,8 @@ describe('daemon durable inbox', () => {
     const g = gatedHost()
     const root = scaffold(['bot-a']) // only bot-a exists on this daemon
     const integrationId = '66666666-6666-4666-8666-666666666666'
-    const s = new LocalStore(statePath(root))
-    s.appendInbox({
+    const s = await LocalStore.open(statePath(root))
+    await s.appendInbox({
       id: 'slack:C1:100',
       sessionKey: sessionKey('slack', 'C1', 'T1', 'ghost'),
       agentId: 'ghost',
@@ -1138,13 +1152,13 @@ describe('daemon durable inbox', () => {
       isQueueCmd: null,
       enqueuedAt: '100'
     })
-    s.close()
+    await s.close()
 
     const daemon = await boot(root, g.host)
     await new Promise((r) => setTimeout(r, 30))
     // Never dispatched; the row is LEFT for another owner.
     expect(g.started.length).toBe(0)
-    expect(inbox(root).map((r) => r.id)).toEqual(['slack:C1:100'])
+    expect((await inbox(root)).map((r) => r.id)).toEqual(['slack:C1:100'])
 
     const conn = {
       workspaceId: vi.fn(() => 'T_READY'),
@@ -1179,14 +1193,14 @@ describe('daemon durable inbox', () => {
     expect(g.started[0]).toContain('orphan')
 
     g.releaseOne()
-    await vi.waitFor(() => expect(inbox(root)).toHaveLength(0), WAIT)
+    await vi.waitFor(async () => expect(await inbox(root)).toHaveLength(0), WAIT)
     await daemon.stop()
   }, 15_000)
 
   it('purges a retained unknown-agent row when that agent is later added already paused', async () => {
     const root = scaffold(['bot-a'])
-    const s = new LocalStore(statePath(root))
-    s.appendInbox({
+    const s = await LocalStore.open(statePath(root))
+    await s.appendInbox({
       id: 'slack:C9:100',
       sessionKey: sessionKey('slack', 'C9', 'T9', 'ghost'),
       agentId: 'ghost',
@@ -1196,11 +1210,11 @@ describe('daemon durable inbox', () => {
       isQueueCmd: null,
       enqueuedAt: '100'
     })
-    s.close()
+    await s.close()
 
     const g = gatedHost()
     const daemon = await boot(root, g.host)
-    expect(inbox(root)).toHaveLength(1)
+    await vi.waitFor(async () => expect(await inbox(root)).toHaveLength(1), WAIT)
 
     const agentDir = join(root, 'agents', 'ghost')
     mkdirSync(agentDir, { recursive: true })
@@ -1218,7 +1232,7 @@ describe('daemon durable inbox', () => {
       })
     )
     await daemon.reconcile()
-    expect(inbox(root)).toHaveLength(0)
+    await vi.waitFor(async () => expect(await inbox(root)).toHaveLength(0), WAIT)
     expect(g.host.prompt).not.toHaveBeenCalled()
     await daemon.stop()
   }, 15_000)
@@ -1257,12 +1271,8 @@ describe('daemon durable inbox', () => {
     await vi.waitFor(() => expect(started.length).toBe(1), WAIT)
     const p2 = (daemon as any).dispatch('bot-a', msg('200', 'second'), 'int-a')
     const p3 = (daemon as any).dispatch('bot-a', msg('300', 'third'), 'int-a')
-    expect((daemon as any).serialQueue.get(key)).toHaveLength(2)
-    expect(
-      inbox(root)
-        .map((r) => r.id)
-        .sort()
-    ).toEqual(['slack:C1:100', 'slack:C1:200', 'slack:C1:300'])
+    await vi.waitFor(() => expect((daemon as any).serialQueue.get(key)).toHaveLength(2), WAIT)
+    expect((await inbox(root)).map((r) => r.id).sort()).toEqual(['slack:C1:100', 'slack:C1:200', 'slack:C1:300'])
 
     // Observe the settlements so no unhandled rejection escapes.
     void p1.catch(() => {})
@@ -1274,11 +1284,7 @@ describe('daemon durable inbox', () => {
     await daemon.stop()
 
     // All three rows SURVIVE (head + queued rest) so a subsequent replayInbox would recover them.
-    expect(
-      inbox(root)
-        .map((r) => r.id)
-        .sort()
-    ).toEqual(['slack:C1:100', 'slack:C1:200', 'slack:C1:300'])
+    expect((await inbox(root)).map((r) => r.id).sort()).toEqual(['slack:C1:100', 'slack:C1:200', 'slack:C1:300'])
   }, 15_000)
 
   it('a webchat message is NOT durably persisted (live sink cannot be restored)', async () => {
@@ -1299,16 +1305,16 @@ describe('daemon durable inbox', () => {
       turnId,
       sink
     })
-    expect((daemon as any).serialQueue.get(key)).toHaveLength(1)
+    await vi.waitFor(() => expect((daemon as any).serialQueue.get(key)).toHaveLength(1), WAIT)
     // Only the non-webchat head has a row; the webchat entry is absent.
-    expect(inbox(root).map((r) => r.id)).toEqual(['slack:C1:100'])
+    expect((await inbox(root)).map((r) => r.id)).toEqual(['slack:C1:100'])
 
     void p2.catch(() => {})
     g.releaseAll()
     await p1
     await daemon.stop()
     // Still no webchat row after the head drained.
-    expect(inbox(root).some((r) => r.id === 'slack:C1:200')).toBe(false)
+    expect((await inbox(root)).some((r) => r.id === 'slack:C1:200')).toBe(false)
   }, 15_000)
 
   it('durably persists an agent-initiated post-only webchat wake', async () => {
@@ -1338,11 +1344,11 @@ describe('daemon durable inbox', () => {
     )
 
     await vi.waitFor(() => expect(g.started).toHaveLength(1), WAIT)
-    expect(inbox(root).map((row) => row.id)).toEqual([deliveryId])
+    expect((await inbox(root)).map((row) => row.id)).toEqual([deliveryId])
 
     g.releaseOne()
     await expect(turn).resolves.toBe('acp-1')
-    expect(inbox(root)).toHaveLength(0)
+    await vi.waitFor(async () => expect(await inbox(root)).toHaveLength(0), WAIT)
     await daemon.stop()
   }, 15_000)
 
@@ -1362,8 +1368,8 @@ describe('daemon durable inbox', () => {
       mentionedBots: [] as string[],
       isDm: false
     }
-    const persisted = new LocalStore(statePath(root))
-    persisted.appendInbox({
+    const persisted = await LocalStore.open(statePath(root))
+    await persisted.appendInbox({
       id: deliveryId,
       sessionKey: sessionKey('webchat', conversationId, `webchat:${conversationId}`, 'bot-a'),
       agentId: 'bot-a',
@@ -1373,7 +1379,7 @@ describe('daemon durable inbox', () => {
       isQueueCmd: null,
       enqueuedAt: '100'
     })
-    persisted.close()
+    await persisted.close()
 
     let onUpdate!: (sessionId: string, update: unknown) => void
     const host = {
@@ -1417,7 +1423,7 @@ describe('daemon durable inbox', () => {
       }),
       initiator: 'agent'
     })
-    expect(inbox(root)).toHaveLength(0)
+    await vi.waitFor(async () => expect(await inbox(root)).toHaveLength(0), WAIT)
     await daemon.stop()
   }, 15_000)
 })
