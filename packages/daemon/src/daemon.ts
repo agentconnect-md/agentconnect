@@ -213,7 +213,8 @@ import {
 } from './runtimes/model-provider-config.js'
 import { DEFAULT_MODEL_KEY_TTL_SECONDS, KeyServerClient, type KeyGrant } from './key-server/client.js'
 import { CuratedRuntimeAdmission } from './runtimes/curated-admission.js'
-import { composeRuntimeLaunch, runtimeSandboxReadRoots } from './launch/compose.js'
+import { runtimeSandboxReadRoots } from './launch/compose.js'
+import { assembleRuntimeLaunch } from './launch/assemble.js'
 import { resolveTrustedExecutable, trustedRuntimeReadRoots } from './runtimes/read-roots.js'
 import { nodeExecArgvModuleEntries } from './runtimes/node-exec-argv.js'
 import { makeLogger, type Logger } from './log.js'
@@ -2990,13 +2991,9 @@ export class Daemon {
           : sessionGitPolicyEnv()
         : {})
     }
-    // Config-file secrets (shim/config-file-env.ts): materialize `*_DATA`
-    // contents under the agent dir and point the tool-native env vars
-    // (KUBECONFIG / DOCKER_CONFIG) at the result; the raw values are stripped
-    // from the child env. Detection spans the runtime-def env too, so an
-    // explicit pointer var configured anywhere wins and skips materialization.
-    // The pre-strip merged env is snapshotted so the idle sweep can delete the
-    // files and rematerializeConfigFiles() can re-write them before a later turn.
+    // Config-file secrets are materialized by assembleRuntimeLaunch below; the pre-strip merged env
+    // is snapshotted so the idle sweep can delete the files and rematerializeConfigFiles() can
+    // re-write them before a later turn.
     if (excludeAgentToolCredentials) {
       // A dream host needs NONE of the agent's tool credentials. Do NOT
       // materialize config files (it has no cleanup path), and DELETE the raw
@@ -3020,18 +3017,6 @@ export class Daemon {
         delete env[secret.name]
         delete runtimeEnv[secret.name]
       }
-    } else {
-      const configFileSourceEnv = { ...runtimeEnv, ...env }
-      const configFiles = materializeConfigFiles(agent.dir, configFileSourceEnv)
-      for (const name of configFiles.strip) {
-        delete env[name]
-        delete runtimeEnv[name]
-      }
-      Object.assign(env, configFiles.env)
-      this.queueSpawnNotices(agentId, configFiles.notices)
-      if (Object.keys(configFiles.env).length > 0) {
-        configFileState = { childEnv: configFileSourceEnv, materialized: true }
-      }
     }
     const shimDirs = new Set<string>()
     if (githubAppCredentials && this.ghBinDir) {
@@ -3045,14 +3030,7 @@ export class Daemon {
     if (shimDirs.size > 0) {
       env.PATH = `${[...shimDirs].join(':')}:${env.PATH ?? process.env.PATH ?? ''}`
     }
-    const launchEnv = { ...runtimeEnv, ...env }
     const target = opts.modelCredential?.target ?? modelProviderTarget(agent, runtime)
-    if (this.k8s && target) {
-      if (opts.modelCredential) applyModelCredential(target, launchEnv, opts.modelCredential.credential)
-      else if (!this.keyServer && this.staticModelCredential) {
-        applyStaticModelConfig(target, launchEnv, this.staticModelCredential)
-      }
-    }
     // OS sandbox decision (issue #312). security.requireSandbox forces every agent
     // on; otherwise the per-agent preference is effective only when this host has a
     // mechanism. The writable set is derived from the TRUSTED agent dir
@@ -3064,7 +3042,7 @@ export class Daemon {
     let launch: ReturnType<typeof prepareRuntimeLaunch>
     let launchRuntime = runtime
     try {
-      const composed = composeRuntimeLaunch({
+      const assembled = assembleRuntimeLaunch({
         runtimeId: agent.runtime,
         runtime,
         provider: memoryKindOf(agent),
@@ -3073,14 +3051,24 @@ export class Daemon {
         runInSandbox,
         daemonRoot: this.root,
         agentsRoot: cfg.agentsDir,
+        runtimeEnv,
+        agentEnv: env,
+        // A dream host materializes nothing: it has no cleanup path and needs none of these secrets.
+        ...(excludeAgentToolCredentials ? {} : { configFileDir: agent.dir }),
+        finalizeLaunchEnv: (launchEnv) => {
+          if (!this.k8s || !target) return
+          if (opts.modelCredential) applyModelCredential(target, launchEnv, opts.modelCredential.credential)
+          else if (!this.keyServer && this.staticModelCredential) {
+            applyStaticModelConfig(target, launchEnv, this.staticModelCredential)
+          }
+        },
         runtimeReadRoots: runInSandbox
-          ? this.sandboxRuntimeReadRoots(agent, runtime, launchEnv, githubAppCredentials)
+          ? (launchEnv) => this.sandboxRuntimeReadRoots(agent, runtime, launchEnv, githubAppCredentials)
           : undefined,
         trustedWorkspaceWriteRoots:
           runInSandbox && agent.workspace.mode === 'git-repo'
             ? [this.workspaces.sessionWorktreeRoot(agent)]
             : undefined,
-        explicitEnv: launchEnv,
         sandboxMechanism: this.sandboxMechanism,
         mcpSocketPath: mcpSocketPath(this.root),
         allowModelToolUnixSockets: githubAppCredentials,
@@ -3088,8 +3076,14 @@ export class Daemon {
         // must not travel with the launch.
         ...(this.k8s ? { k8s: true as const } : {})
       })
-      launch = composed.launch
-      launchRuntime = composed.runtime
+      if (assembled.configFiles) {
+        this.queueSpawnNotices(agentId, assembled.configFiles.notices)
+        if (Object.keys(assembled.configFiles.env).length > 0) {
+          configFileState = { childEnv: assembled.configFiles.sourceEnv, materialized: true }
+        }
+      }
+      launch = assembled.launch
+      launchRuntime = assembled.runtime
     } catch (err) {
       if (err instanceof SandboxError) {
         throw new Error(

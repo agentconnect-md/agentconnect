@@ -5,7 +5,7 @@ import { loadConfig } from '../config/load-config.js'
 import { resolveRuntimeCatalog, type ResolvedRuntimeCatalog } from '../runtimes/registry.js'
 import { selectAgent } from '../agents/load-agents.js'
 import { agentChildEnv } from '../agents/agent-env.js'
-import { cleanupConfigFiles, materializeConfigFiles } from '../shim/config-file-env.js'
+import { cleanupConfigFiles } from '../shim/config-file-env.js'
 import { memoryKindOf, memoryProviderFor } from '../memory/provider.js'
 import { WorkspaceManager } from '../workspace/workspace-manager.js'
 import { configureWorkspaceGitOrigins } from '../workspace/git-origin-policy.js'
@@ -18,7 +18,7 @@ import { installedRuntimeCatalog } from '../runtimes/probe.js'
 import { probeAllRuntimes, type ProbeOptions, type RuntimeProbeResult } from '../runtimes/runtime-prober.js'
 import { defaultProbeHostFactory } from '../acp/probe-host-factory.js'
 import { CuratedRuntimeAdmission } from '../runtimes/curated-admission.js'
-import { composeRuntimeLaunch } from '../launch/compose.js'
+import { assembleRuntimeLaunch } from '../launch/assemble.js'
 import type { RuntimeDef } from '../config/config-schema.js'
 import { persistSkillSandboxRequirement } from '../skills/skill-sandbox-policy.js'
 
@@ -110,19 +110,15 @@ export async function runChat(opts: RunChatOpts): Promise<void> {
 
   const agentEnv = agentChildEnv(agent)
   const runtimeEnv = Object.fromEntries(runtime.env.map((entry) => [entry.name, entry.value]))
-  // Config-file secrets: same materialization the daemon performs at host spawn
-  // (shim/config-file-env.ts) — *_DATA content becomes a file, the pointer var
-  // replaces the raw value in the child env.
-  const configFiles = materializeConfigFiles(agent.dir, { ...runtimeEnv, ...agentEnv })
-  for (const name of configFiles.strip) {
-    delete agentEnv[name]
-    delete runtimeEnv[name]
-  }
-  Object.assign(agentEnv, configFiles.env)
-  for (const notice of configFiles.notices) out.write(`⚠️ ${notice}\n`)
   const memoryAgent =
     memoryKindOf(agent) === 'native' && runInSandbox ? { ...agent, dir: runtimeHomePath(agent.dir) } : agent
-  const composed = composeRuntimeLaunch({
+  // Memory backend env joins the agent env BEFORE materialization, as the daemon does, so
+  // config-file detection sees the same child env on both paths.
+  Object.assign(agentEnv, memoryProviderFor(memoryAgent, runtime, agentEnv).runtimeEnv())
+  // The standalone chat CLI runs one agent locally, so it owns a plane with nothing registered
+  // on it: git runs here and no path lives in a sandbox.
+  const workspaces = new WorkspaceManager()
+  const assembled = assembleRuntimeLaunch({
     runtimeId: agent.runtime,
     runtime,
     provider: memoryKindOf(agent),
@@ -131,20 +127,25 @@ export async function runChat(opts: RunChatOpts): Promise<void> {
     runInSandbox,
     daemonRoot: root,
     agentsRoot: cfg.agentsDir,
-    explicitEnv: {
-      ...runtimeEnv,
-      ...agentEnv,
-      ...memoryProviderFor(memoryAgent, runtime, agentEnv).runtimeEnv()
-    },
+    runtimeEnv,
+    agentEnv,
+    configFileDir: agent.dir,
+    // Same sandbox write carve-back the daemon grants: without it a sandboxed chat run against a
+    // git-repo agent cannot write its own session worktrees.
+    trustedWorkspaceWriteRoots:
+      runInSandbox && agent.workspace.mode === 'git-repo' ? [workspaces.sessionWorktreeRoot(agent)] : undefined,
+    // No daemon here, so there is no MCP bridge socket, gh wrapper, or git-credential shim to carve
+    // back: mcpSocketPath / allowModelToolUnixSockets / runtimeReadRoots stay genuinely unused.
     sandboxMechanism
   })
+  for (const notice of assembled.configFiles?.notices ?? []) out.write(`⚠️ ${notice}\n`)
   const hostOptions: ConstructorParameters<typeof AcpHost>[1] = {
     onUpdate: renderUpdate(out),
     runtimeId: agent.runtime,
     isolateAccountApps: cfg.security.isolateAccountApps,
-    env: composed.launch.env,
-    inheritProcessEnv: composed.launch.inheritProcessEnv,
-    sandbox: composed.launch.sandbox,
+    env: assembled.launch.env,
+    inheritProcessEnv: assembled.launch.inheritProcessEnv,
+    sandbox: assembled.launch.sandbox,
     configPrefs: {
       model: agent.runtimeOverrides?.model,
       permissionMode: agent.permissionMode,
@@ -154,8 +155,8 @@ export async function runChat(opts: RunChatOpts): Promise<void> {
     }
   }
   const host = opts.hostFactory
-    ? opts.hostFactory(composed.runtime, hostOptions)
-    : new AcpHost(composed.runtime, hostOptions)
+    ? opts.hostFactory(assembled.runtime, hostOptions)
+    : new AcpHost(assembled.runtime, hostOptions)
   // The adapter child runs in its own process group (see AcpHost.start), so a
   // terminal Ctrl-C no longer kills it as a side effect — Node's default SIGINT
   // exit would skip the finally below and leak it. Stop the host, then re-exit.
@@ -169,9 +170,6 @@ export async function runChat(opts: RunChatOpts): Promise<void> {
   }
   process.once('SIGINT', onSigint)
   try {
-    // The standalone chat CLI runs one agent locally, so it owns a plane with nothing registered
-    // on it: git runs here and no path lives in a sandbox.
-    const workspaces = new WorkspaceManager()
     const cwd = await workspaces.prepareWorkspace(agent, {
       skillsStateDir: join(root, 'skill-installs'),
       skillsAgentId: entry?.skillsAgentId ?? null
