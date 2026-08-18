@@ -7,6 +7,7 @@ import {
   readdirSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -474,16 +475,88 @@ describe('additionalWorkspaceDirectories with secondary roots', () => {
     ])
   })
 
-  it('leaves a session-isolated session exactly as it was', async () => {
-    const agent = agentFixture([{ repoFullName: 'acme/infra', repoId: '42' }])
-    serveAll(agent, { 'acme/infra': 'trunk' })
+  it('hands a session-isolated session each root at its own per-session worktree', async () => {
+    const agent = agentFixture([
+      { repoFullName: 'acme/infra', repoId: '42' },
+      { repoFullName: 'example-co/shared-library', repoId: '815' }
+    ])
+    serveAll(agent, { 'acme/infra': 'trunk', 'example-co/shared-library': 'release/v2' })
     const request = { sessionKey: 'session-a', isolation: 'session' as const }
+
     const cwd = await workspaces.prepareSessionWorkspace(agent, request)
 
+    // The SAME id across every root of one session, which is what makes the set removable as one.
+    const id = workspaces.sessionWorktreeId('session-a')
+    const subtree = (repoFullName: string) => join(workspaces.agentRootFor(agent), 'repos', ...repoFullName.split('/'))
+    const worktree = (repoFullName: string) => join(subtree(repoFullName), 'worktrees', id)
     expect(cwd).toBe(realpathSync(workspaces.sessionWorktreePath(agent, 'session-a')))
-    expect(workspaces.additionalWorkspaceDirectories(agent, cwd, request)).toEqual([])
-    expect(workspaces.readySecondaryRoots(agent, { isolation: 'session' })).toEqual([])
-    expect(workspaces.readySecondaryRoots(agent, { isolation: 'shared' })).toHaveLength(1)
+    expect(workspaces.additionalWorkspaceDirectories(agent, cwd, request)).toEqual([
+      realpathSync(worktree('acme/infra')),
+      realpathSync(worktree('example-co/shared-library'))
+    ])
+    // Each at its own default branch, and never the shared checkout a session-isolated agent asked
+    // not to be given.
+    expect(git(worktree('acme/infra'), ['rev-parse', 'HEAD']).trim()).toBe(
+      git(join(subtree('acme/infra'), 'checkout'), ['rev-parse', 'refs/remotes/origin/trunk']).trim()
+    )
+    expect(workspaces.readySecondaryRoots(agent, request).map((root) => [root.path, root.branch])).toEqual([
+      [realpathSync(worktree('acme/infra')), 'trunk'],
+      [realpathSync(worktree('example-co/shared-library')), 'release/v2']
+    ])
+    // The shared view of the same prepared set still names the checkouts.
+    expect(workspaces.readySecondaryRoots(agent, { isolation: 'shared' }).map((root) => root.path)).toEqual([
+      realpathSync(join(workspaces.agentRootFor(agent), 'repos', 'acme', 'infra', 'checkout')),
+      realpathSync(join(workspaces.agentRootFor(agent), 'repos', 'example-co', 'shared-library', 'checkout'))
+    ])
+  })
+
+  it('gives a from-scratch agent secondary worktrees while its scratch directory stays the cwd', async () => {
+    const agent = agentFixture([{ repoFullName: 'acme/infra', repoId: '42' }], { mode: 'from-scratch' })
+    serveAll(agent, { 'acme/infra': 'trunk' })
+    const request = { sessionKey: 'session-a', isolation: 'session' as const }
+
+    const cwd = await workspaces.prepareSessionWorkspace(agent, request)
+
+    expect(cwd).toBe(agent.workspace.path)
+    const worktree = join(
+      workspaces.agentRootFor(agent),
+      'repos',
+      'acme',
+      'infra',
+      'worktrees',
+      workspaces.sessionWorktreeId('session-a')
+    )
+    expect(existsSync(join(worktree, '.git'))).toBe(true)
+    expect(workspaces.additionalWorkspaceDirectories(agent, cwd, request)).toEqual([realpathSync(worktree)])
+  })
+
+  it('omits a root whose session worktree cannot be created and still prepares the session', async () => {
+    const agent = agentFixture([
+      { repoFullName: 'acme/infra', repoId: '42' },
+      { repoFullName: 'example-co/shared-library', repoId: '815' }
+    ])
+    serveAll(agent, { 'acme/infra': 'trunk', 'example-co/shared-library': 'main' })
+    await workspaces.prepareWorkspace(agent)
+    restoreAuthorizedOrigins(agent)
+    // A symlinked worktrees parent is refused for a secondary exactly as it is for the primary.
+    const subtree = join(workspaces.agentRootFor(agent), 'repos', 'acme', 'infra')
+    symlinkSync(tempRoot('ac-secondary-elsewhere-'), join(subtree, 'worktrees'), 'dir')
+    const request = { sessionKey: 'session-a', isolation: 'session' as const }
+
+    const cwd = await workspaces.prepareSessionWorkspace(agent, request)
+
+    expect(workspaces.additionalWorkspaceDirectories(agent, cwd, request)).toEqual([
+      realpathSync(
+        join(
+          workspaces.agentRootFor(agent),
+          'repos',
+          'example-co',
+          'shared-library',
+          'worktrees',
+          workspaces.sessionWorktreeId('session-a')
+        )
+      )
+    ])
   })
 
   it('hands the roots to a from-scratch agent, which has no checkout of its own', async () => {
@@ -505,6 +578,189 @@ describe('additionalWorkspaceDirectories with secondary roots', () => {
     expect(await workspaces.prepareSecondaryRoots(agent)).toEqual([])
     expect(workspaces.readySecondaryRoots(agent)).toEqual([])
     expect(existsSync(join(workspaces.agentRootFor(agent), 'repos'))).toBe(false)
+  })
+})
+
+describe('sandbox write roots', () => {
+  it('grants the secondary parent to every sandboxed agent, scratch workspaces included', () => {
+    const repo = agentFixture([{ repoFullName: 'acme/infra', repoId: '42' }])
+    const scratch = agentFixture([], { mode: 'from-scratch' })
+
+    // A row added under a long-lived host must already be inside the boundary, so the PARENT is
+    // granted rather than the roots that happen to exist right now.
+    expect(workspaces.trustedWorkspaceWriteRoots(repo)).toEqual([
+      join(workspaces.agentRootFor(repo), 'worktrees'),
+      join(workspaces.agentRootFor(repo), 'repos')
+    ])
+    expect(workspaces.trustedWorkspaceWriteRoots(scratch)).toEqual([join(workspaces.agentRootFor(scratch), 'repos')])
+  })
+})
+
+describe('removeSessionWorktree across every root (decision 4)', () => {
+  it('removes the primary and every secondary worktree of one session', async () => {
+    const agent = agentFixture([
+      { repoFullName: 'acme/infra', repoId: '42' },
+      { repoFullName: 'example-co/shared-library', repoId: '815' }
+    ])
+    serveAll(agent, { 'acme/infra': 'trunk', 'example-co/shared-library': 'main' })
+    await workspaces.prepareSessionWorkspace(agent, { sessionKey: 'session-a', isolation: 'session' })
+    const id = workspaces.sessionWorktreeId('session-a')
+    const secondary = (repoFullName: string) =>
+      join(workspaces.agentRootFor(agent), 'repos', ...repoFullName.split('/'), 'worktrees', id)
+
+    expect(await workspaces.removeSessionWorktree(agent, 'session-a')).toEqual({ outcome: 'removed' })
+
+    expect(existsSync(workspaces.sessionWorktreePath(agent, 'session-a'))).toBe(false)
+    expect(existsSync(secondary('acme/infra'))).toBe(false)
+    expect(existsSync(secondary('example-co/shared-library'))).toBe(false)
+  })
+
+  it('keeps every root when one secondary worktree is dirty', async () => {
+    const agent = agentFixture([{ repoFullName: 'acme/infra', repoId: '42' }])
+    serveAll(agent, { 'acme/infra': 'trunk' })
+    await workspaces.prepareSessionWorkspace(agent, { sessionKey: 'session-a', isolation: 'session' })
+    const secondary = join(
+      workspaces.agentRootFor(agent),
+      'repos',
+      'acme',
+      'infra',
+      'worktrees',
+      workspaces.sessionWorktreeId('session-a')
+    )
+    writeFileSync(join(secondary, 'scratch.txt'), 'unsaved\n')
+
+    expect(await workspaces.removeSessionWorktree(agent, 'session-a')).toEqual({
+      outcome: 'retained',
+      reason: 'dirty'
+    })
+    expect(existsSync(join(secondary, 'scratch.txt'))).toBe(true)
+  })
+
+  it('removes a scratch agent’s secondary worktrees, which have no primary beside them', async () => {
+    const agent = agentFixture([{ repoFullName: 'acme/infra', repoId: '42' }], { mode: 'from-scratch' })
+    serveAll(agent, { 'acme/infra': 'trunk' })
+    await workspaces.prepareSessionWorkspace(agent, { sessionKey: 'session-a', isolation: 'session' })
+
+    expect(await workspaces.removeSessionWorktree(agent, 'session-a')).toEqual({ outcome: 'removed' })
+    expect(workspaces.hasSessionWorktreeRoots(agent)).toBe(true)
+  })
+
+  it('reports absent when no root has a worktree for the session', async () => {
+    const agent = agentFixture([{ repoFullName: 'acme/infra', repoId: '42' }])
+    serveAll(agent, { 'acme/infra': 'trunk' })
+    await workspaces.prepareWorkspace(agent)
+
+    expect(await workspaces.removeSessionWorktree(agent, 'session-never-opened')).toEqual({ outcome: 'absent' })
+  })
+})
+
+describe('retire → sweep → remove (decision 12)', () => {
+  /** The agent again, with a different set of authorized rows over the SAME agent directory. */
+  function reauthorized(agent: Agent, rows: Array<{ repoFullName: string; repoId: string }>): Agent {
+    return { ...agent, workspace: { ...agent.workspace, additionalRepos: rows } } as Agent
+  }
+
+  it('retires a subtree whose repository id is no longer authorized', async () => {
+    const agent = agentFixture([
+      { repoFullName: 'acme/infra', repoId: '42' },
+      { repoFullName: 'example-co/shared-library', repoId: '815' }
+    ])
+    serveAll(agent, { 'acme/infra': 'trunk', 'example-co/shared-library': 'main' })
+    await workspaces.prepareWorkspace(agent)
+    restoreAuthorizedOrigins(agent)
+
+    const after = reauthorized(agent, [{ repoFullName: 'acme/infra', repoId: '42' }])
+    expect(workspaces.retiredSecondaryRoots(after).map((root) => root.repoFullName)).toEqual([
+      'example-co/shared-library'
+    ])
+    // Retirement alone removes nothing, and it drops out of the hand-out at once.
+    await workspaces.prepareWorkspace(after)
+    expect(workspaces.readySecondaryRoots(after).map((root) => root.repoFullName)).toEqual(['acme/infra'])
+    expect(
+      existsSync(join(workspaces.agentRootFor(agent), 'repos', 'example-co', 'shared-library', 'checkout', '.git'))
+    ).toBe(true)
+  })
+
+  it('retires the directory a rename moved the repository out of, and re-authorizing un-retires in place', async () => {
+    const agent = agentFixture([{ repoFullName: 'acme/infra', repoId: '42' }])
+    serveAll(agent, { 'acme/infra': 'trunk' })
+    await workspaces.prepareWorkspace(agent)
+
+    // Same repository id, new slug: the old directory is retired while the new one materializes.
+    const renamed = reauthorized(agent, [{ repoFullName: 'acme/infrastructure', repoId: '42' }])
+    expect(workspaces.retiredSecondaryRoots(renamed).map((root) => root.repoFullName)).toEqual(['acme/infra'])
+    // Re-authorizing the original slug un-retires it with nothing on disk having changed.
+    expect(workspaces.retiredSecondaryRoots(agent)).toEqual([])
+  })
+
+  it('leaves a subtree with no attestation alone rather than retiring it', async () => {
+    const agent = agentFixture([{ repoFullName: 'acme/infra', repoId: '42' }])
+    serveAll(agent, { 'acme/infra': 'trunk' })
+    await workspaces.prepareWorkspace(agent)
+    rmSync(join(workspaces.agentRootFor(agent), 'repos', 'acme', 'infra', '.materialization.json'))
+
+    expect(workspaces.retiredSecondaryRoots(reauthorized(agent, []))).toEqual([])
+  })
+
+  it('refuses a retired root while any worktree of it survives, and removes it once none does', async () => {
+    const agent = agentFixture([{ repoFullName: 'acme/infra', repoId: '42' }])
+    serveAll(agent, { 'acme/infra': 'trunk' })
+    await workspaces.prepareSessionWorkspace(agent, { sessionKey: 'session-a', isolation: 'session' })
+    const after = reauthorized(agent, [])
+    const [retired] = workspaces.retiredSecondaryRoots(after)
+
+    expect(await workspaces.removeRetiredSecondaryRoot(after, retired!)).toEqual({
+      outcome: 'retained',
+      reason: 'worktrees'
+    })
+    expect(existsSync(retired!.subtree)).toBe(true)
+
+    await workspaces.removeSessionWorktree(after, 'session-a')
+    expect(await workspaces.removeRetiredSecondaryRoot(after, retired!)).toEqual({ outcome: 'removed' })
+    expect(existsSync(retired!.subtree)).toBe(false)
+  })
+
+  it('refuses a retired root whose checkout is dirty or holds commits no remote has', async () => {
+    const agent = agentFixture([{ repoFullName: 'acme/infra', repoId: '42' }])
+    serveAll(agent, { 'acme/infra': 'trunk' })
+    await workspaces.prepareWorkspace(agent)
+    restoreAuthorizedOrigins(agent)
+    const after = reauthorized(agent, [])
+    const [retired] = workspaces.retiredSecondaryRoots(after)
+    writeFileSync(join(retired!.path, 'unsaved.txt'), 'work\n')
+
+    expect(await workspaces.removeRetiredSecondaryRoot(after, retired!)).toEqual({
+      outcome: 'retained',
+      reason: 'dirty'
+    })
+
+    git(retired!.path, ['add', '-A'])
+    git(retired!.path, ['commit', '-q', '-m', 'local only'])
+    expect(await workspaces.removeRetiredSecondaryRoot(after, retired!)).toEqual({
+      outcome: 'retained',
+      reason: 'unique-commits'
+    })
+    expect(existsSync(retired!.subtree)).toBe(true)
+  })
+
+  it('never follows a symlinked subtree', async () => {
+    const agent = agentFixture([{ repoFullName: 'acme/infra', repoId: '42' }])
+    serveAll(agent, { 'acme/infra': 'trunk' })
+    await workspaces.prepareWorkspace(agent)
+    const after = reauthorized(agent, [])
+    const [retired] = workspaces.retiredSecondaryRoots(after)
+    // A subtree that is itself a symlink is refused, so removal can never reach what it points at.
+    const elsewhere = tempRoot('ac-secondary-outside-')
+    writeFileSync(join(elsewhere, 'precious.txt'), 'not ours\n')
+    rmSync(retired!.subtree, { recursive: true, force: true })
+    symlinkSync(elsewhere, retired!.subtree, 'dir')
+
+    const result = await workspaces.removeRetiredSecondaryRoot(after, retired!)
+
+    expect(result.outcome).toBe('failed')
+    expect(existsSync(join(elsewhere, 'precious.txt'))).toBe(true)
+    // And a symlinked subtree is not even listed as a candidate on the next pass.
+    expect(workspaces.retiredSecondaryRoots(after)).toEqual([])
   })
 })
 

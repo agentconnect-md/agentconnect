@@ -1,0 +1,77 @@
+import { lstatSync, readdirSync } from 'node:fs'
+import { join } from 'node:path'
+
+// The on-disk shape of an agent's secondary roots (multi-repository-workspaces.md §"Directory
+// layout"), separate from the manager so the launch path can read it without the whole workspace
+// module: a sandboxed runtime's boundary is computed from these paths before any session exists.
+
+/** Secondary roots live under one agent-owned parent, one subtree per authorized repository. */
+export const SECONDARY_ROOTS_DIR = 'repos'
+/** What a secondary root's subtree records about the checkout beside it. */
+export const SECONDARY_MATERIALIZATION_FILE = '.materialization.json'
+/** GitHub's own owner/repository charset, which is also a plain path segment. */
+const REPO_SEGMENT = /^[A-Za-z0-9._-]+$/
+
+/** A plain path segment that is also a legal GitHub owner or repository name. */
+export function isRepoSegment(value: string | undefined): value is string {
+  return value !== undefined && value !== '.' && value !== '..' && REPO_SEGMENT.test(value)
+}
+
+/** `<agentRoot>/repos` — the parent every secondary root's subtree hangs off. */
+export function secondaryRootsDirIn(agentRoot: string): string {
+  return join(agentRoot, SECONDARY_ROOTS_DIR)
+}
+
+/** One secondary subtree's daemon-owned paths, in the shape a `WorkspaceRoot` needs. */
+export interface SecondarySubtree {
+  repoFullName: string
+  /** The whole `repos/<owner>/<repo>` subtree — what retirement removal deletes. */
+  subtree: string
+  /** The clone itself. */
+  path: string
+  /** Where this root's per-session worktrees live. */
+  worktreesPath: string
+}
+
+/**
+ * Every `repos/<owner>/<repo>` subtree ON DISK, authorized or retired, sorted by name.
+ *
+ * Reading the disk rather than the agent's rows is the point: a root that left the set still owns
+ * worktrees and a checkout, and nothing else would ever look at them again. A symlinked parent or
+ * entry is skipped rather than followed — no destructive caller may be redirected by one.
+ */
+export function secondarySubtreesIn(agentRoot: string): SecondarySubtree[] {
+  const parent = secondaryRootsDirIn(agentRoot)
+  const out: SecondarySubtree[] = []
+  for (const owner of realDirEntries(parent)) {
+    for (const repo of realDirEntries(join(parent, owner))) {
+      const subtree = join(parent, owner, repo)
+      out.push({
+        repoFullName: `${owner}/${repo}`,
+        subtree,
+        path: join(subtree, 'checkout'),
+        worktreesPath: join(subtree, 'worktrees')
+      })
+    }
+  }
+  return out
+}
+
+/** The materialized secondary checkouts under `<agentRoot>/repos`, for callers that only need those. */
+export function secondaryCheckoutsIn(agentRoot: string): string[] {
+  return secondarySubtreesIn(agentRoot).map((entry) => entry.path)
+}
+
+/** Real (never symlinked) child directories whose names are legal repository segments. */
+function realDirEntries(dir: string): string[] {
+  try {
+    if (lstatSync(dir).isSymbolicLink()) return []
+    return readdirSync(dir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && isRepoSegment(entry.name))
+      .map((entry) => entry.name)
+      .sort()
+  } catch {
+    // No `repos` parent, no owner directory, or one this process cannot read: no subtrees.
+    return []
+  }
+}

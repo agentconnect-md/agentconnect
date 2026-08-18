@@ -2575,6 +2575,15 @@ export class LocalStore {
     return row !== undefined
   }
 
+  /** The same question asked of a whole AGENT, for a decision about something every one of its
+   *  sessions shares — a retired workspace root. Completed rows are excluded for the same reason. */
+  async agentHasPendingInboxRows(agentId: string): Promise<boolean> {
+    const row = (await this.db
+      .prepare('SELECT 1 AS present FROM inbox WHERE agentId = ? AND completedAt IS NULL LIMIT 1')
+      .get(agentId)) as { present: number } | undefined
+    return row !== undefined
+  }
+
   /** Retention-GC delete (#485): remove one session row and its dependent rows —
    *  mute, memory-capture gate, durable inbox, permission-request history.
    *  Two deliberate survivors:

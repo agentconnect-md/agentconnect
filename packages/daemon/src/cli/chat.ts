@@ -130,10 +130,9 @@ export async function runChat(opts: RunChatOpts): Promise<void> {
     runtimeEnv,
     agentEnv,
     configFileDir: agent.dir,
-    // Same sandbox write carve-back the daemon grants: without it a sandboxed chat run against a
-    // git-repo agent cannot write its own session worktrees.
-    trustedWorkspaceWriteRoots:
-      runInSandbox && agent.workspace.mode === 'git-repo' ? [workspaces.sessionWorktreeRoot(agent)] : undefined,
+    // Same sandbox write carve-back the daemon grants: without it a sandboxed chat run cannot write
+    // its own session worktrees, nor read the secondary roots beside them.
+    trustedWorkspaceWriteRoots: runInSandbox ? workspaces.trustedWorkspaceWriteRoots(agent) : undefined,
     // No daemon here, so there is no MCP bridge socket, gh wrapper, or git-credential shim to carve
     // back: mcpSocketPath / allowModelToolUnixSockets / runtimeReadRoots stay genuinely unused.
     sandboxMechanism
