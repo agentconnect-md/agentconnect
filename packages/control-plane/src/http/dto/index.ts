@@ -2042,6 +2042,8 @@ export const AcceptedOrgInviteLinkDto = z.object({
  *  shadow them (`/{slug}/…` shares the segment with these). Grows with every
  *  new top-level console page. The default org's `-` is safe by regex. */
 const RESERVED_SLUGS = new Set([
+  'admin', // gateway-owned prefix (admin-server), not a console page
+  'billing',
   'agents',
   'sessions',
   'daemons',
