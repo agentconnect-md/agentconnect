@@ -862,7 +862,7 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
         agentCallDeliveryId: 'd-self-relay'
       })
 
-      const res = await (daemon as any).messageAgent({
+      const res = await (daemon as any).collab.messageAgent({
         callerAgentId: 'bot-a',
         platform: 'slack',
         callerChannel: 'C1',
@@ -890,7 +890,7 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
   // admit ONE child, built from the internal wake's complete envelope.
   describe('activation rendezvous, both arrival orders (§3.2)', () => {
     const wake = (daemon: Daemon, over: Record<string, unknown> = {}) =>
-      (daemon as any).messageAgent({
+      (daemon as any).collab.messageAgent({
         callerAgentId: 'bot-a',
         platform: 'slack',
         callerChannel: 'C1',

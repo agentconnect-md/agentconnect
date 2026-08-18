@@ -122,7 +122,7 @@ async function bootWithDispatchSpy(root: string) {
       return 'acp-1'
     }
   )
-  const call = (req: MessageAgentReq) => (daemon as any).messageAgent(req) as Promise<any>
+  const call = (req: MessageAgentReq) => (daemon as any).collab.messageAgent(req) as Promise<any>
   return { daemon, calls, call }
 }
 
@@ -302,7 +302,7 @@ describe('messageAgent: same-daemon delivery', () => {
       agentCallDeliveryId: 'paired-self-1'
     })
     expect(
-      (daemon as any).wakeRejectionReason({ ...req, transcriptTs: undefined, agentCallDeliveryId: undefined })
+      (daemon as any).collab.wakeRejectionReason({ ...req, transcriptTs: undefined, agentCallDeliveryId: undefined })
     ).toBeNull()
 
     const res = await call(req)
@@ -457,7 +457,7 @@ describe('messageAgent: same-daemon delivery', () => {
       ]
     })
 
-    expect((daemon as any).wakeRejectionReason(baseReq())).toBeNull()
+    expect((daemon as any).collab.wakeRejectionReason(baseReq())).toBeNull()
     const result = await call(baseReq())
     expect(result).toMatchObject({ delivered: true })
     expect(calls).toHaveLength(1)
@@ -494,7 +494,7 @@ describe('messageAgent: same-daemon delivery', () => {
     })
     const attack = baseReq({ channel: 'C_EXECS', thread: '900.1' })
     // The preflight must agree, or `sendMessage` leaves a visible post for a doomed wake.
-    expect((daemon as any).wakeRejectionReason(attack)).toBe('not_allowed')
+    expect((daemon as any).collab.wakeRejectionReason(attack)).toBe('not_allowed')
     expect(await call(attack)).toMatchObject({ delivered: false, reason: 'not_allowed' })
     expect(calls).toHaveLength(0)
     // The shared channel still delivers — policy, not membership, is the authorization.
@@ -514,7 +514,7 @@ describe('messageAgent: same-daemon delivery', () => {
     for (const platform of ['slack', 'telegram', 'discord', 'feishu']) {
       const attack = baseReq({ platform, channel: 'C_GHOST', thread: '900.1' })
       // The preflight must agree, or `sendMessage` leaves a visible post for a doomed wake.
-      expect((daemon as any).wakeRejectionReason(attack)).toBe('not_allowed')
+      expect((daemon as any).collab.wakeRejectionReason(attack)).toBe('not_allowed')
       expect(await call(attack)).toMatchObject({ delivered: false, reason: 'not_allowed' })
     }
     expect(calls).toHaveLength(0)
@@ -529,7 +529,7 @@ describe('messageAgent: same-daemon delivery', () => {
     const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
     const { daemon, calls, call } = await bootWithDispatchSpy(root)
     const req = baseReq({ platform: 'webchat', callerChannel: 'wc-1', channel: 'wc-1' })
-    expect((daemon as any).wakeRejectionReason(req)).toBeNull()
+    expect((daemon as any).collab.wakeRejectionReason(req)).toBeNull()
     const first = await call(req)
     // `a2a:bot-a`, NOT `webchat:wc-1:…` — the webchat conversation id is the caller's own
     // session coordinate and must not be able to name the woken peer's.
@@ -573,7 +573,7 @@ describe('messageAgent: same-daemon delivery', () => {
     const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
     const { daemon, call, calls } = await bootWithDispatchSpy(root)
     const dream = baseReq({ platform: 'dream', callerChannel: 'memory', channel: 'memory', thread: 'dream-1' })
-    expect((daemon as any).wakeRejectionReason(dream)).toBeNull()
+    expect((daemon as any).collab.wakeRejectionReason(dream)).toBeNull()
     // Raw platform prefix — and the CHANNEL is the caller-derived one, not 'memory'.
     expect(await call(dream)).toMatchObject({ delivered: true, targetSession: 'dream:a2a:bot-a:dream-1:bot-b' })
     // Post-fleet-gate: the origin coordinate carries the RAW platform too (no 'slack'
@@ -582,7 +582,7 @@ describe('messageAgent: same-daemon delivery', () => {
     expect(calls.at(-1)!.callMeta.originCoords).toEqual({ platform: 'dream', channel: 'memory', thread: '100.1' })
 
     const hook = baseReq({ platform: 'hook', callerChannel: 'hook-1', channel: 'hook-1', thread: 'delivery-1' })
-    expect((daemon as any).wakeRejectionReason(hook)).toBeNull()
+    expect((daemon as any).collab.wakeRejectionReason(hook)).toBeNull()
     expect(await call(hook)).toMatchObject({ delivered: true, targetSession: 'hook:a2a:bot-a:delivery-1:bot-b' })
     await daemon.stop()
   })
@@ -598,7 +598,7 @@ describe('messageAgent: same-daemon delivery', () => {
         throw new Error('an unknown target must never reach the relay')
       })
     }
-    expect((daemon as any).wakeRejectionReason(baseReq({ toAgentId: 'test2' }))).toBe('not_allowed')
+    expect((daemon as any).collab.wakeRejectionReason(baseReq({ toAgentId: 'test2' }))).toBe('not_allowed')
     const result = await call(baseReq({ toAgentId: 'test2' }))
     expect(result).toMatchObject({ delivered: false, reason: 'not_allowed' })
     expect(calls).toHaveLength(0)
@@ -610,7 +610,7 @@ describe('messageAgent: same-daemon delivery', () => {
     const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
     const { daemon, calls, call } = await bootWithDispatchSpy(root)
     ;(daemon as any).cpCollab.replace({ generation: 1, channels: [], agents: [] })
-    expect((daemon as any).wakeRejectionReason(baseReq())).toBe('not_allowed')
+    expect((daemon as any).collab.wakeRejectionReason(baseReq())).toBe('not_allowed')
     expect(await call(baseReq())).toMatchObject({ delivered: false, reason: 'not_allowed' })
     expect(calls).toHaveLength(0)
     await daemon.stop()
@@ -954,7 +954,7 @@ describe('messageAgent: cross-daemon routing (P2, source side)', () => {
     expect(sendAgentMsg).toHaveBeenCalledTimes(2)
     // Recorded like every other terminal verdict: the same deliveryId replays it, no re-send.
     const deliveryId = sendAgentMsg.mock.calls[0]![0].deliveryId
-    expect((daemon as any).agentCallDeliveries.get(deliveryId)).toMatchObject({ reason: 'not_ready' })
+    expect((daemon as any).collab.agentCallDeliveries.get(deliveryId)).toMatchObject({ reason: 'not_ready' })
     await daemon.stop()
   })
 
@@ -1652,7 +1652,7 @@ describe('replyToSession: SessionTarget delivery + origin-only authorization', (
   it('refuses (not_authorized) a root/human turn with no active call metadata', async () => {
     const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
     const { daemon, calls } = await bootWithDispatchSpy(root)
-    const res = await (daemon as any).replyToSession(replyReq())
+    const res = await (daemon as any).collab.replyToSession(replyReq())
     expect(res).toEqual({ delivered: false, reason: 'not_authorized' })
     expect(calls).toHaveLength(0) // nothing dispatched into any session
     await daemon.stop()
@@ -1669,7 +1669,7 @@ describe('replyToSession: SessionTarget delivery + origin-only authorization', (
       originSessionId: 'acp-parent-1',
       originCoords: { platform: 'slack', channel: 'C1', thread: '100.1' }
     })
-    const res = await (daemon as any).replyToSession(replyReq({ sessionId: 'some-other-session' }))
+    const res = await (daemon as any).collab.replyToSession(replyReq({ sessionId: 'some-other-session' }))
     expect(res).toEqual({ delivered: false, reason: 'not_authorized' })
     expect(calls).toHaveLength(0)
     await daemon.stop()
@@ -1713,7 +1713,7 @@ describe('replyToSession: SessionTarget delivery + origin-only authorization', (
       originCoords: { platform: 'slack', channel: 'C1', thread: '100.1' }
     })
 
-    const res = await (daemon as any).replyToSession(replyReq())
+    const res = await (daemon as any).collab.replyToSession(replyReq())
     expect(res.delivered).toBe(true)
     expect(res.targetSession).toBe('slack:C1:100.1:bot-a')
     expect(calls).toHaveLength(1)
@@ -1732,7 +1732,7 @@ describe('replyToSession: SessionTarget delivery + origin-only authorization', (
     // keeps its reply connection, so a delegated result can reach the humans waiting in the
     // parent's own thread. Muting it made every report-back silent there.
     expect(msg.headless).toBeUndefined()
-    const status = await (daemon as any).viewSessionStatus({
+    const status = await (daemon as any).collab.viewSessionStatus({
       callerAgentId: 'bot-a',
       platform: 'slack',
       callerChannel: 'C1',
@@ -1789,7 +1789,7 @@ describe('replyToSession: SessionTarget delivery + origin-only authorization', (
     const sendWebchatPost = vi.fn()
     ;(daemon as any).relays = { stop: vi.fn(async () => {}), sendWebchatPost }
 
-    const res = await (daemon as any).replyToSession(replyReq())
+    const res = await (daemon as any).collab.replyToSession(replyReq())
     expect(res.delivered).toBe(true)
     expect(calls).toHaveLength(1)
     const wc = calls[0]!.webchat
@@ -1844,7 +1844,7 @@ describe('replyToSession: SessionTarget delivery + origin-only authorization', (
       originCoords: { platform: 'webchat', channel: SYNTHETIC }
     })
 
-    const res = await (daemon as any).replyToSession(replyReq())
+    const res = await (daemon as any).collab.replyToSession(replyReq())
     expect(res.delivered).toBe(true)
     expect(calls).toHaveLength(1)
     expect(calls[0]!.webchat).toBeUndefined()
@@ -1893,9 +1893,9 @@ describe('replyToSession: SessionTarget delivery + origin-only authorization', (
       }
     )
 
-    const res = await (daemon as any).replyToSession(replyReq())
+    const res = await (daemon as any).collab.replyToSession(replyReq())
     expect(res).toEqual({ delivered: false, targetSession: 'slack:C1:100.1:bot-a', reason: 'queue_full' })
-    const status = await (daemon as any).viewSessionStatus({
+    const status = await (daemon as any).collab.viewSessionStatus({
       callerAgentId: 'bot-a',
       platform: 'slack',
       callerChannel: 'C1',
@@ -1950,7 +1950,7 @@ describe('replyToSession: SessionTarget delivery + origin-only authorization', (
       originSessionId: 'acp-parent-dream',
       originCoords: { platform: 'dream', channel: 'a2a:bot-x', thread: 'dream-1' }
     })
-    const res = await (daemon as any).replyToSession(replyReq({ sessionId: 'acp-parent-dream' }))
+    const res = await (daemon as any).collab.replyToSession(replyReq({ sessionId: 'acp-parent-dream' }))
     expect(res.delivered).toBe(true)
     expect(res.targetSession).toBe(dreamKey)
     expect(calls).toHaveLength(1)
@@ -1999,7 +1999,7 @@ describe('replyToSession: SessionTarget delivery + origin-only authorization', (
       originSessionId: 'acp-parent-dream-tg',
       originCoords: { platform: 'dream', channel: 'a2a:bot-x', thread: 'dream-2' }
     })
-    const res = await (daemon as any).replyToSession(replyReq({ sessionId: 'acp-parent-dream-tg' }))
+    const res = await (daemon as any).collab.replyToSession(replyReq({ sessionId: 'acp-parent-dream-tg' }))
     expect(res.delivered).toBe(true)
     expect(res.targetSession).toBe(dreamKey)
     expect(calls).toHaveLength(1)
@@ -2031,7 +2031,7 @@ describe('replyToSession: SessionTarget delivery + origin-only authorization', (
       originSessionId: 'acp-remote-dream',
       originCoords: { platform: 'dream', channel: 'memory', thread: 'dream-1' }
     })
-    const res = await (daemon as any).replyToSession(replyReq({ sessionId: 'acp-remote-dream' }))
+    const res = await (daemon as any).collab.replyToSession(replyReq({ sessionId: 'acp-remote-dream' }))
     expect(res.delivered).toBe(true)
     expect(res.targetSession).toBe('dream:memory:dream-1:bot-a')
     expect(sent).toHaveLength(1)
@@ -2074,7 +2074,7 @@ describe('replyToSession: SessionTarget delivery + origin-only authorization', (
       originSessionId: 'acp-parent-1'
     })
     // NO armTurn: activeTurnCallMeta is empty for the caller (a human-triggered follow-up turn).
-    const res = await (daemon as any).replyToSession(replyReq())
+    const res = await (daemon as any).collab.replyToSession(replyReq())
     expect(res.delivered).toBe(true)
     expect(res.targetSession).toBe('slack:C1:100.1:bot-a')
     expect(calls).toHaveLength(1)
@@ -2106,7 +2106,7 @@ describe('replyToSession: SessionTarget delivery + origin-only authorization', (
     }))
     ;(daemon as any).relays = { stop: vi.fn(async () => {}), sendAgentMsg }
 
-    const res = await (daemon as any).replyToSession(replyReq())
+    const res = await (daemon as any).collab.replyToSession(replyReq())
     expect(sendAgentMsg).toHaveBeenCalledTimes(1)
     expect(sendAgentMsg.mock.calls[0]![0]).toMatchObject({ deliveryKind: 'session-reply' })
     expect(res).toMatchObject({ delivered: false, reason: 'unsupported' })
@@ -2138,7 +2138,7 @@ describe('spawnChannelRootSession — case 2a new-session seed', () => {
       updatedAt: Date.now()
     })
 
-    await (daemon as any).spawnChannelRootSession({
+    await (daemon as any).collab.spawnChannelRootSession({
       agentId: 'bot-a',
       platform: 'slack',
       integrationId: 'int-a',
@@ -2176,7 +2176,7 @@ describe('spawnChannelRootSession — case 2a new-session seed', () => {
     await daemon.start()
     const targetKey = sessionKey('slack', 'C1', '1784297789.871789', 'bot-a')
 
-    await (daemon as any).spawnChannelRootSession({
+    await (daemon as any).collab.spawnChannelRootSession({
       agentId: 'bot-a',
       platform: 'slack',
       integrationId: 'int-a',
@@ -2209,7 +2209,7 @@ describe('spawnChannelRootSession — case 2a new-session seed', () => {
     // A Feishu DM root post, the shape where the key and the raw ts differ most: ops resolves the
     // thread key to the CHAT id (what Feishu ingress keys a p2p conversation under) while the
     // post's own message id stays the transcript ts.
-    await (daemon as any).spawnChannelRootSession({
+    await (daemon as any).collab.spawnChannelRootSession({
       agentId: 'bot-a',
       platform: 'feishu',
       channel: 'oc_42',
@@ -2251,7 +2251,7 @@ describe('spawnChannelRootSession — case 2a new-session seed', () => {
       updatedAt: Date.now()
     })
 
-    await (daemon as any).spawnChannelRootSession({
+    await (daemon as any).collab.spawnChannelRootSession({
       agentId: 'bot-a',
       platform: 'slack',
       integrationId: 'int-a',
@@ -2284,7 +2284,7 @@ describe('spawnChannelRootSession — case 2a new-session seed', () => {
     // A Slack turn posting into a Telegram group: postMessage returned the bare message id
     // '172', which ops.ts converts to the canonical `tg:172` (threadKeyForPost) before calling
     // here — the two are separate fields precisely because they differ on Telegram.
-    await (daemon as any).spawnChannelRootSession({
+    await (daemon as any).collab.spawnChannelRootSession({
       agentId: 'bot-a',
       platform: 'telegram',
       channel: '-100123',
@@ -2321,7 +2321,7 @@ describe('rootPostRelation: did this post fork a conversation we are already in'
       ...over
     })
   const ask = (daemon: any, over: Record<string, unknown> = {}) =>
-    daemon.rootPostRelation({
+    daemon.collab.rootPostRelation({
       callerAgentId: 'bot-b',
       platform: 'slack',
       callerChannel: 'C2',
@@ -2609,7 +2609,7 @@ describe('viewSessionStatus: child-only authorization + status collapse', () => 
       thread: '100.1'
     }
   ) =>
-    daemon.viewSessionStatus({
+    daemon.collab.viewSessionStatus({
       callerAgentId: caller.agentId,
       platform: 'slack',
       callerChannel: caller.channel,
@@ -2805,7 +2805,7 @@ describe('viewSessionStatus: cross-daemon children', () => {
     })
 
   const ask = (daemon: any, sessionId: string) =>
-    (daemon as any).viewSessionStatus({
+    (daemon as any).collab.viewSessionStatus({
       callerAgentId: 'bot-a',
       platform: 'slack',
       callerChannel: 'C1',
@@ -2913,7 +2913,7 @@ describe('viewSessionStatus: cross-daemon children', () => {
       lastDeliveredTs: null,
       updatedAt: 1_000
     })
-    const asOther = await (daemon as any).viewSessionStatus({
+    const asOther = await (daemon as any).collab.viewSessionStatus({
       callerAgentId: 'bot-b',
       platform: 'slack',
       callerChannel: 'C1',
@@ -2964,7 +2964,7 @@ describe('viewSessionStatus: remote child handle identity', () => {
     expect(res.targetSession).toBe(CANON)
     expect(
       (
-        await (daemon as any).viewSessionStatus({
+        await (daemon as any).collab.viewSessionStatus({
           callerAgentId: 'bot-a',
           platform: 'slack',
           callerChannel: 'C1',
@@ -3043,7 +3043,7 @@ describe('handleRelayAgentMsg: admission handle + pre-row probe window', () => {
     expect(ack.childSessionId).toBe('slack:C1:100.1:bot-b')
     expect(await (daemon as any).store.getSession(ack.childSessionId)).toBeUndefined()
     expect(
-      await (daemon as any).childSessionStatusProbe({
+      await (daemon as any).collab.childSessionStatusProbe({
         parentSessionId: 'acp-remote-parent',
         childSessionId: ack.childSessionId
       })
@@ -3058,7 +3058,7 @@ describe('handleRelayAgentMsg: admission handle + pre-row probe window', () => {
     })
     // …and only to the parent that actually woke it.
     expect(
-      await (daemon as any).childSessionStatusProbe({
+      await (daemon as any).collab.childSessionStatusProbe({
         parentSessionId: 'acp-someone-else',
         childSessionId: ack.childSessionId
       })
@@ -3092,7 +3092,7 @@ describe('childSessionStatusProbe: owning-daemon authorization', () => {
     await (daemon as any).store.setSessionTurnOutcome(CHILD_KEY, 'failed', 2_000)
 
     expect(
-      await (daemon as any).childSessionStatusProbe({
+      await (daemon as any).collab.childSessionStatusProbe({
         parentSessionId: 'acp-remote-parent',
         childSessionId: CHILD_KEY
       })
@@ -3106,7 +3106,7 @@ describe('childSessionStatusProbe: owning-daemon authorization', () => {
     await seedChild(daemon, { originSessionId: 'acp-remote-parent' })
 
     const probe = async (parentSessionId: string, childSessionId = CHILD_KEY) =>
-      await (daemon as any).childSessionStatusProbe({ parentSessionId, childSessionId })
+      await (daemon as any).collab.childSessionStatusProbe({ parentSessionId, childSessionId })
     // A CP that forwarded a wrong/forged parent still cannot read the child.
     expect(await probe('acp-someone-else')).toEqual({ found: false })
     expect(await probe('acp-remote-parent', 'slack:C1:999.9:nobody')).toEqual({ found: false })
@@ -3169,7 +3169,7 @@ describe('viewSessionStatus: a reused child is readable by the current waking pa
     expect(res.targetSession).toBe(CHILD)
 
     const askAs = (agentId: string, thread: string) =>
-      (daemon as any).viewSessionStatus({
+      (daemon as any).collab.viewSessionStatus({
         callerAgentId: agentId,
         platform: 'slack',
         callerChannel: 'C1',
@@ -3180,15 +3180,18 @@ describe('viewSessionStatus: a reused child is readable by the current waking pa
     expect((await askAs('bot-c', '300.3'))?.status).toBe('in-progress')
     // …and the owning-side probe agrees, so a cross-daemon C sees the same.
     expect(
-      (await (daemon as any).childSessionStatusProbe({ parentSessionId: 'acp-parent-c', childSessionId: CHILD })).found
+      (await (daemon as any).collab.childSessionStatusProbe({ parentSessionId: 'acp-parent-c', childSessionId: CHILD }))
+        .found
     ).toBe(true)
     // The durable first parent A keeps its access too.
     expect(
-      (await (daemon as any).childSessionStatusProbe({ parentSessionId: 'acp-parent-a', childSessionId: CHILD })).found
+      (await (daemon as any).collab.childSessionStatusProbe({ parentSessionId: 'acp-parent-a', childSessionId: CHILD }))
+        .found
     ).toBe(true)
     // An unrelated session still cannot read it.
     expect(
-      (await (daemon as any).childSessionStatusProbe({ parentSessionId: 'acp-stranger', childSessionId: CHILD })).found
+      (await (daemon as any).collab.childSessionStatusProbe({ parentSessionId: 'acp-stranger', childSessionId: CHILD }))
+        .found
     ).toBe(false)
     await daemon.stop()
   })
