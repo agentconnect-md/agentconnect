@@ -420,8 +420,8 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
         })
       }
       const key = (agentId: string) => sessionKey('slack', 'C1', '1720000000.000100', agentId, scope)
-      ;(daemon as any).setSessionMuted(key('bot-b'), true)
-      ;(daemon as any).setSessionMuted(key('bot-c'), true)
+      ;(daemon as any).commands.setSessionMuted(key('bot-b'), true)
+      ;(daemon as any).commands.setSessionMuted(key('bot-c'), true)
 
       const human = agentMessage({
         msgId: 'slack:C1:1720000000.000250',
@@ -431,8 +431,8 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
       })
       expect(route(daemon, human, ['int-bot-b', 'int-bot-c']).kind).toBe('dispatched')
       expect(calls.map((call) => [call.agentId, call.msg.trigger])).toEqual([['bot-b', 'mention']])
-      expect((daemon as any).isSessionMuted(key('bot-b'))).toBe(false)
-      expect((daemon as any).isSessionMuted(key('bot-c'))).toBe(true)
+      expect((daemon as any).commands.isSessionMuted(key('bot-b'))).toBe(false)
+      expect((daemon as any).commands.isSessionMuted(key('bot-c'))).toBe(true)
       await daemon.stop()
     })
 
@@ -486,7 +486,7 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
       join(daemon, 'bot-b')
       join(daemon, 'bot-c')
       const scope = (daemon as any).transportScopeForIntegrationIds(['int-bot-c'])
-      ;(daemon as any).setSessionMuted(sessionKey('slack', 'C1', '1720000000.000100', 'bot-c', scope), true)
+      ;(daemon as any).commands.setSessionMuted(sessionKey('slack', 'C1', '1720000000.000100', 'bot-c', scope), true)
 
       route(daemon, agentMessage({}, { mentionedAgentIds: [] }), ['int-bot-b', 'int-bot-c'])
       expect(calls.map((c) => c.agentId)).toEqual(['bot-b'])
@@ -499,7 +499,7 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
     // BELOW the agent branch, so agent text can never reach it.
     const { daemon, calls } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }])
     const stopped = vi.fn()
-    ;(daemon as any).handleCommand = stopped
+    ;(daemon as any).commands.handleCommand = stopped
     // It still DELIVERS — an agent's words are words — but command interception sits
     // below the agent branch, so agent text can never act on a running turn.
     route(daemon, agentMessage({ text: '!stop' }, { mentionedAgentIds: [] }))
@@ -529,12 +529,12 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
     const { daemon, calls } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }])
     const scope = (daemon as any).transportScopeForIntegrationIds(['int-bot-b'])
     const muteKey = sessionKey('slack', 'C1', '1720000000.000100', 'bot-b', scope)
-    ;(daemon as any).setSessionMuted(muteKey, true)
+    ;(daemon as any).commands.setSessionMuted(muteKey, true)
 
     const unaddressed = agentMessage({}, { mentionedAgentIds: [] })
     expect((daemon as any).onInboundOutcome(unaddressed, ['int-bot-b']).kind).toBe('rejected')
     expect(calls).toHaveLength(0)
-    expect((daemon as any).isSessionMuted(muteKey)).toBe(true)
+    expect((daemon as any).commands.isSessionMuted(muteKey)).toBe(true)
 
     // A mention in the body is not an address this layer acts on, so it does not lift the
     // mute either: agent traffic can no longer reopen a conversation a human stopped.
@@ -542,7 +542,7 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
     const mentioning = agentMessage({ msgId: 'slack:C1:1720000000.000202:final' }, { mentionedAgentIds: ['bot-b'] })
     expect((daemon as any).onInboundOutcome(mentioning, ['int-bot-b']).kind).toBe('rejected')
     expect(calls).toHaveLength(0)
-    expect((daemon as any).isSessionMuted(muteKey)).toBe(true)
+    expect((daemon as any).commands.isSessionMuted(muteKey)).toBe(true)
     await daemon.stop()
   })
 
@@ -560,7 +560,10 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
     const targetScope = (daemon as any).transportScopeForIntegrationIds(['int-bot-b'])
     const observerScope = (daemon as any).transportScopeForIntegrationIds(observed)
     expect(observerScope).not.toBe(targetScope)
-    ;(daemon as any).setSessionMuted(sessionKey('slack', 'C1', '1720000000.000100', 'bot-b', targetScope), true)
+    ;(daemon as any).commands.setSessionMuted(
+      sessionKey('slack', 'C1', '1720000000.000100', 'bot-b', targetScope),
+      true
+    )
 
     const unaddressed = agentMessage({}, { mentionedAgentIds: [] })
     expect((daemon as any).onInboundOutcome(unaddressed, observed).kind).toBe('rejected')
@@ -780,16 +783,16 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
       const { daemon, calls } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }])
       const scope = (daemon as any).transportScopeForIntegrationIds(['int-bot-b'])
       const muteKey = sessionKey('slack', 'C1', '1720000000.000100', 'bot-b', scope)
-      ;(daemon as any).setSessionMuted(muteKey, true)
+      ;(daemon as any).commands.setSessionMuted(muteKey, true)
 
       expect((daemon as any).handleRelayIm(imFrame({ trustedRouteVia: 'implicit' })).accepted).toBe(true)
       expect(calls).toHaveLength(0)
-      expect((daemon as any).isSessionMuted(muteKey)).toBe(true)
+      expect((daemon as any).commands.isSessionMuted(muteKey)).toBe(true)
 
       // An explicit mention wakes it and lifts the mute, as a human's would.
       expect((daemon as any).handleRelayIm(imFrame({ trustedRouteVia: 'mention' })).accepted).toBe(true)
       expect(calls.map((c) => c.agentId)).toEqual(['bot-b'])
-      expect((daemon as any).isSessionMuted(muteKey)).toBe(false)
+      expect((daemon as any).commands.isSessionMuted(muteKey)).toBe(false)
       await daemon.stop()
     })
 

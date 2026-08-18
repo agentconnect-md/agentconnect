@@ -617,7 +617,7 @@ describe('session-control cards (/models tappable buttons)', () => {
     injectHost(daemon)
     const key = seedSession(daemon, '-100', 'tg:100')
 
-    ;(daemon as any).handleTelegramCallback(
+    ;(daemon as any).commands.handleTelegramCallback(
       { id: 'cb1', data: 'm:1', channel: '-100', messageId: 55, userId: 'U1' },
       conn
     )
@@ -636,7 +636,7 @@ describe('session-control cards (/models tappable buttons)', () => {
     const lines: string[] = []
     ;(daemon as any).log = { info: (m: string) => lines.push(m), warn: () => {}, error: () => {}, debug: () => {} }
 
-    ;(daemon as any).handleTelegramCallback(
+    ;(daemon as any).commands.handleTelegramCallback(
       { id: 'cb-a', data: 'm:1', channel: '-100', messageId: 55, userId: 'U-DANA' },
       conn
     )
@@ -647,7 +647,7 @@ describe('session-control cards (/models tappable buttons)', () => {
     // Withdraw chat authority: the next tap changes nothing, so it records nothing.
     ;(daemon as any).agents.get('bot-a').allowRuntimeChangesInChat = false
     lines.length = 0
-    ;(daemon as any).handleTelegramCallback(
+    ;(daemon as any).commands.handleTelegramCallback(
       { id: 'cb-b', data: 'm:0', channel: '-100', messageId: 55, userId: 'U-DANA' },
       conn
     )
@@ -685,7 +685,7 @@ describe('session-control cards (/models tappable buttons)', () => {
       updatedAt: now - 1_000
     })
 
-    ;(daemon as any).handleTelegramCallback(
+    ;(daemon as any).commands.handleTelegramCallback(
       { id: 'cb-scoped', data: 'm:1', channel: '-100', messageId: 55, userId: 'U1' },
       connB
     )

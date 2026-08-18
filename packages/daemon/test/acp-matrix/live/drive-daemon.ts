@@ -223,12 +223,12 @@ export async function driveAgentThroughDaemon(id: string, rt: RuntimeDef, ctx: S
     if (models.length >= 2) {
       mFrom = cap?.model
       mTo = models.find((m) => m !== mFrom)
-      d.handleStatusAction({ kind: 'set-model', sessionKey: key, model: mTo })
+      d.commands.handleStatusAction({ kind: 'set-model', sessionKey: key, model: mTo })
     } else res.features['model-switch'] = { status: 'degrade', detail: `${models.length} model(s) — no selector` }
     if (modes.length >= 2) {
       pFrom = cap?.permissionMode
       pTo = modes.find((m) => m !== pFrom)
-      d.handleStatusAction({ kind: 'set-permission-mode', sessionKey: key, permissionMode: pTo })
+      d.commands.handleStatusAction({ kind: 'set-permission-mode', sessionKey: key, permissionMode: pTo })
     } else
       res.features['permission-mode-switch'] = { status: 'degrade', detail: `${modes.length} mode(s) — no selector` }
     if (mTo || pTo) {

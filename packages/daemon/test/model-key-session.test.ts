@@ -146,7 +146,7 @@ describe('daemon model-key session lifecycle', () => {
     })
     const setModelOverride = vi.fn()
     h.daemon.store.setModelOverride = setModelOverride
-    expect(h.daemon.setModelByKey('session-a', 'openai/gpt-5')).toBe(true)
+    expect(h.daemon.commands.setModelByKey('session-a', 'openai/gpt-5')).toBe(true)
     expect(setModelOverride).toHaveBeenCalledWith('session-a', 'openai/gpt-5')
 
     h.daemon.store.getModelOverride = () => 'openai/gpt-5'
@@ -176,9 +176,9 @@ describe('daemon model-key session lifecycle', () => {
     const setModelOverride = vi.fn()
     daemon.store = { getSession: () => ({ agentId: 'agent-a', acpSessionId: null }), setModelOverride }
 
-    expect(daemon.setModelByKey('session-a', 'anthropic/claude-opus-4')).toBe(false)
+    expect(daemon.commands.setModelByKey('session-a', 'anthropic/claude-opus-4')).toBe(false)
     expect(setModelOverride).not.toHaveBeenCalled()
-    expect(daemon.setModelByKey('session-a', 'openai/gpt-5-codex')).toBe(true)
+    expect(daemon.commands.setModelByKey('session-a', 'openai/gpt-5-codex')).toBe(true)
     expect(setModelOverride).toHaveBeenCalledWith('session-a', 'openai/gpt-5-codex')
   })
 

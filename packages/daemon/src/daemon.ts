@@ -115,10 +115,9 @@ import {
   conversationPeers,
   hopTransition,
   isUsableSourceDepth,
-  routeRules,
-  type RouteVia
+  routeRules
 } from './router/routing-table.js'
-import { parseCommand, type AgentCommand } from './commands/commands.js'
+import { parseCommand } from './commands/commands.js'
 import { CommandHandlers, type CommandHost } from './commands/handlers.js'
 import {
   rulesFromAgent,
@@ -135,7 +134,7 @@ import {
   type SlackAppFactory,
   type SlackStatusOptions
 } from './slack/connection.js'
-import { TelegramConnection, type TelegramCallback, type TelegramObservedChat } from './telegram/connection.js'
+import { TelegramConnection, type TelegramObservedChat } from './telegram/connection.js'
 import { DiscordConnection } from './discord/connection.js'
 import { FeishuConnection } from './feishu/connection.js'
 import { SlackNameResolver } from './slack/name-resolver.js'
@@ -160,7 +159,7 @@ import { discordObservedChannels } from './platforms/discord/observed-channels.j
 import { connectionIdentityFor, tenantScopeFor, type TenantScopeHost } from './platforms/transport-identity.js'
 import { conversationAudienceFor } from './platforms/session-audience.js'
 import { turnChromeFor } from './platforms/turn-chrome.js'
-import { CommandChromeRegistry, type SelectKind } from './platforms/command-chrome.js'
+import { CommandChromeRegistry } from './platforms/command-chrome.js'
 import { slackCommandChrome } from './platforms/slack/command-chrome.js'
 import { telegramCommandChrome } from './platforms/telegram/command-chrome.js'
 import { discordCommandChrome } from './platforms/discord/command-chrome.js'
@@ -199,7 +198,7 @@ import {
   type StatusModalIdentity
 } from './slack/render.js'
 import { TelegramConverger, type TelegramAction } from './telegram/render.js'
-import { DiscordConverger, type DiscordAction, type DiscordComponents } from './discord/render.js'
+import { DiscordConverger, type DiscordAction } from './discord/render.js'
 import { FeishuConverger, type FeishuAction } from './feishu/render.js'
 import {
   Scheduler,
@@ -1359,13 +1358,14 @@ export class Daemon {
       emitSessionMetadataSnapshotsForDisplayName: (id) => this.emitSessionMetadataSnapshotsForDisplayName(id),
       dispatch: (agentId, msg, integrationId, callMeta) =>
         this.dispatch(agentId, msg, integrationId, undefined, callMeta),
-      handleStatusAction: (a) => this.handleStatusAction(a),
+      handleStatusAction: (a) => this.commands.handleStatusAction(a),
       statusInfoForKey: (key) => this.statusInfoForKey(key),
       handlePermissionChoice: (a) => this.handlePermissionChoice(a),
       handleElicitChoice: (a) => this.handleElicitChoice(a),
-      handleDiscordSelect: (a) => this.handleDiscordSelect(a),
-      handleTelegramCallback: (cb, conn) => this.handleTelegramCallback(cb, conn),
-      slackShortcutSession: (shortcut, srcIntegrationIds) => this.slackShortcutSession(shortcut, srcIntegrationIds)
+      handleDiscordSelect: (a) => this.commands.handleDiscordSelect(a),
+      handleTelegramCallback: (cb, conn) => this.commands.handleTelegramCallback(cb, conn),
+      slackShortcutSession: (shortcut, srcIntegrationIds) =>
+        this.commands.slackShortcutSession(shortcut, srcIntegrationIds)
     }
   }
 
@@ -5011,7 +5011,7 @@ export class Daemon {
     // unrelated scope's mute, dispatch the target anyway, and leave the real tombstone
     // standing — after which the target's own copy deduplicates before it can clear it.
     const muteKey = sessionKey(msg.platform, msg.channel, msg.thread ?? msg.msgId, targetAgentId, targetScope)
-    if (via === 'implicit' && this.isSessionMuted(muteKey)) {
+    if (via === 'implicit' && this.commands.isSessionMuted(muteKey)) {
       this.recordUnrouted(msg)
       this.log.debug(
         `routing: agent-authored ${msg.msgId} → "${targetAgentId}" dropped (muted by !stop; awaiting @mention)`
@@ -5067,8 +5067,8 @@ export class Daemon {
       // mute means "stop reacting to this conversation implicitly", not "ignore anyone
       // who names me". Done only once the delivery is committed, so a deduplicated or
       // paired observation never lifts a mute without waking anyone.
-      if (this.isSessionMuted(muteKey)) {
-        this.setSessionMuted(muteKey, false)
+      if (this.commands.isSessionMuted(muteKey)) {
+        this.commands.setSessionMuted(muteKey, false)
         this.log.info(`routing: agent "${targetAgentId}" un-muted in ch=${msg.channel} (explicit agent mention)`)
       }
     }
@@ -5194,7 +5194,7 @@ export class Daemon {
       }
       // §14.3: a command that resolved no admitted target in an Off gated
       // conversation gets the same one-time notice as an unrouted message.
-      if (!this.handleCommand(command, msg, undefined, srcIntegrationIds))
+      if (!this.commands.handleCommand(command, msg, undefined, srcIntegrationIds))
         this.maybeGatedNotice(msg, srcIntegrationIds ?? [])
       return { kind: 'rejected', reason: 'suppressed' }
     }
@@ -5250,7 +5250,7 @@ export class Daemon {
       result.agentId,
       targetMsg.transportScope
     )
-    if (this.isSessionMuted(muteKey)) {
+    if (this.commands.isSessionMuted(muteKey)) {
       if (result.via !== 'mention') {
         this.recordUnrouted(targetMsg)
         this.log.debug(
@@ -5258,7 +5258,7 @@ export class Daemon {
         )
         return dispatchedPeer ?? { kind: 'rejected', reason: 'gated' }
       }
-      this.setSessionMuted(muteKey, false)
+      this.commands.setSessionMuted(muteKey, false)
       this.log.info(`routing: agent "${result.agentId}" un-muted in ch=${msg.channel} (explicit @mention)`)
     }
     this.log.info(`routing: ch=${msg.channel} → agent "${result.agentId}" (integration ${result.integrationId})`)
@@ -5372,13 +5372,13 @@ export class Daemon {
       if (this.cfg.features.turnFinalContextRefresh) this.recordObservedInbound(targetMsg, agentId)
       const targetThread = targetMsg.thread ?? targetMsg.msgId
       const muteKey = sessionKey(targetMsg.platform, targetMsg.channel, targetThread, agentId, targetMsg.transportScope)
-      if (this.isSessionMuted(muteKey)) {
+      if (this.commands.isSessionMuted(muteKey)) {
         if (via === 'implicit') {
           this.recordObservedInbound(targetMsg, agentId, this.cfg.features.turnFinalContextRefresh)
           outcomes.push({ kind: 'rejected', reason: 'gated' })
           continue
         }
-        this.setSessionMuted(muteKey, false)
+        this.commands.setSessionMuted(muteKey, false)
         this.log.info(`routing: agent "${agentId}" un-muted in ch=${msg.channel} (explicit @mention)`)
       }
       const { handle, turn } = this.evaluationDispatchHandle(
@@ -5546,94 +5546,6 @@ export class Daemon {
     this.webchatTransport.pruneWebchatStreams()
   }
 
-  // Command execution lives in commands/handlers.ts; these same-name delegates are what
-  // the ingress paths, the platform connection callbacks and the webchat frames call.
-  private logSessionAction(verb: string, sessionKey: string, actor?: InteractionActor): void {
-    this.commands.logSessionAction(verb, sessionKey, actor)
-  }
-
-  private setModelByKey(key: string, model: string): boolean {
-    return this.commands.setModelByKey(key, model)
-  }
-
-  private setEffortByKey(key: string, effort: string): boolean {
-    return this.commands.setEffortByKey(key, effort)
-  }
-
-  private setPermissionModeByKey(key: string, permissionPreset: string): boolean {
-    return this.commands.setPermissionModeByKey(key, permissionPreset)
-  }
-
-  private setFastByKey(key: string, fastMode: boolean): boolean {
-    return this.commands.setFastByKey(key, fastMode)
-  }
-
-  private applySessionPermissionPreset(host: AcpHost, sessionId: string, preset: string): Promise<void> {
-    return this.commands.applySessionPermissionPreset(host, sessionId, preset)
-  }
-
-  private refreshStatusBarForKey(key: string): void {
-    this.commands.refreshStatusBarForKey(key)
-  }
-
-  private isSessionMuted(key: string): boolean {
-    return this.commands.isSessionMuted(key)
-  }
-
-  private setSessionMuted(key: string, muted: boolean): void {
-    this.commands.setSessionMuted(key, muted)
-  }
-
-  private handleCommand(
-    command: AgentCommand,
-    msg: NormalizedMessage,
-    explicitTarget?: { agentId: string; integrationId: string; via: RouteVia },
-    srcIntegrationIds?: readonly string[]
-  ): boolean {
-    return this.commands.handleCommand(command, msg, explicitTarget, srcIntegrationIds)
-  }
-
-  private handleSelectCommand(
-    kind: SelectKind,
-    value: string | null,
-    agentId: string,
-    key: string,
-    acpSessionId: string | undefined,
-    reply: (text: string) => void,
-    renderCard?: (kind: SelectKind, current: string | undefined, options: string[]) => boolean
-  ): void {
-    this.commands.handleSelectCommand(kind, value, agentId, key, acpSessionId, reply, renderCard)
-  }
-
-  private resolveExplicitCommandTarget(
-    agentId: string,
-    integrationId: string,
-    msg: NormalizedMessage
-  ): { agentId: string; integrationId: string; via: RouteVia } | null {
-    return this.commands.resolveExplicitCommandTarget(agentId, integrationId, msg)
-  }
-
-  private handleStatusAction(a: Parameters<CommandHandlers['handleStatusAction']>[0]): void {
-    this.commands.handleStatusAction(a)
-  }
-
-  private handleDiscordSelect(
-    a: Parameters<CommandHandlers['handleDiscordSelect']>[0]
-  ): { text: string; components: DiscordComponents } | undefined {
-    return this.commands.handleDiscordSelect(a)
-  }
-
-  private handleTelegramCallback(cb: TelegramCallback, conn: TelegramConnection): void {
-    this.commands.handleTelegramCallback(cb, conn)
-  }
-
-  private slackShortcutSession(
-    shortcut: { channel: string; thread: string },
-    srcIntegrationIds: readonly string[]
-  ): string | undefined {
-    return this.commands.slackShortcutSession(shortcut, srcIntegrationIds)
-  }
-
   /** Apply the Agent's configured runtime policy to one live session. Callers that
    *  fence a pending prompt await this; reconciliation fans it out in the background. */
   private async applyConfiguredRuntimeSettings(agent: LoadedAgent, host: AcpHost, sessionId: string): Promise<void> {
@@ -5655,7 +5567,7 @@ export class Daemon {
     if (model) await host.setSessionModel(sessionId, model)
     if (effort) await host.setSessionEffort(sessionId, effort)
     if (permissionMode) {
-      await this.applySessionPermissionPreset(
+      await this.commands.applySessionPermissionPreset(
         host,
         sessionId,
         selectedPermissionPreset(permissionMode, agent.approvalsReviewer ?? 'user')
@@ -5676,7 +5588,7 @@ export class Daemon {
       const sessionId = session.acpSessionId
       void this.applyConfiguredRuntimeSettings(agent, host, sessionId)
         .then(() => {
-          this.refreshStatusBarForKey(session.key)
+          this.commands.refreshStatusBarForKey(session.key)
         })
         .catch((err) =>
           this.log.warn(`restore configured runtime settings failed for "${session.key}": ${formatErr(err)}`)
@@ -5897,7 +5809,7 @@ export class Daemon {
       msg.agentId,
       normalized.transportScope
     )
-    if (via === 'implicit' && this.isSessionMuted(muteKey)) {
+    if (via === 'implicit' && this.commands.isSessionMuted(muteKey)) {
       this.recordUnrouted(normalized)
       this.log.debug(`relay: dropping agent-authored ${msg.msgId} for "${msg.agentId}" (muted by !stop)`)
       return false
@@ -5931,8 +5843,8 @@ export class Daemon {
     // delivery is committed.
     if (via === 'mention') {
       normalized.trigger = 'mention'
-      if (this.isSessionMuted(muteKey)) {
-        this.setSessionMuted(muteKey, false)
+      if (this.commands.isSessionMuted(muteKey)) {
+        this.commands.setSessionMuted(muteKey, false)
         this.log.info(`relay: agent "${msg.agentId}" un-muted in ch=${normalized.channel} (explicit agent mention)`)
       }
     }
@@ -6022,12 +5934,12 @@ export class Daemon {
         this.log.warn(`loop guard: ignored unauthenticated relay resume for ${loopGuardScope(normalized)}`)
         return { msgId: msg.msgId, accepted: false, reason: 'unauthorized' }
       }
-      const target = this.resolveExplicitCommandTarget(msg.agentId, msg.integrationId, normalized)
+      const target = this.commands.resolveExplicitCommandTarget(msg.agentId, msg.integrationId, normalized)
       if (!target) {
         this.log.warn(`relay: unauthorized command from ${normalized.sender.id} for agent ${msg.agentId}`)
         return { msgId: msg.msgId, accepted: false, reason: 'unauthorized' }
       }
-      this.handleCommand(command, normalized, target)
+      this.commands.handleCommand(command, normalized, target)
       return { msgId: msg.msgId, accepted: true }
     }
     // HTTP-bot ingress bypasses onInbound(), so repeat its `!stop` thread-mute gate:
@@ -6041,13 +5953,13 @@ export class Daemon {
       msg.agentId,
       normalized.transportScope
     )
-    if (this.isSessionMuted(muteKey)) {
+    if (this.commands.isSessionMuted(muteKey)) {
       if (normalized.trigger !== 'mention') {
         this.recordUnrouted(normalized)
         this.log.debug(`relay: dropping ${msg.msgId} for agent "${msg.agentId}" (muted by !stop; awaiting @mention)`)
         return { msgId: msg.msgId, accepted: true }
       }
-      this.setSessionMuted(muteKey, false)
+      this.commands.setSessionMuted(muteKey, false)
       this.log.info(`relay: agent "${msg.agentId}" un-muted in ch=${normalized.channel} (explicit @mention)`)
     }
     void this.dispatch(msg.agentId, normalized, msg.integrationId).catch((err) =>
@@ -6196,26 +6108,41 @@ export class Daemon {
       // connection catches/logs Web API failures; rd/ack is only the relay receipt.
       void conn.openStatusModal(payload.triggerId, msg.sessionKey, privateMetadata)
     } else if (payload.kind === 'set-model') {
-      this.handleStatusAction({ kind: payload.kind, sessionKey: msg.sessionKey, model: payload.model, actor })
+      this.commands.handleStatusAction({ kind: payload.kind, sessionKey: msg.sessionKey, model: payload.model, actor })
     } else if (payload.kind === 'set-effort') {
-      this.handleStatusAction({ kind: payload.kind, sessionKey: msg.sessionKey, effort: payload.effort, actor })
+      this.commands.handleStatusAction({
+        kind: payload.kind,
+        sessionKey: msg.sessionKey,
+        effort: payload.effort,
+        actor
+      })
     } else if (payload.kind === 'set-permission-mode') {
-      this.handleStatusAction({
+      this.commands.handleStatusAction({
         kind: payload.kind,
         sessionKey: msg.sessionKey,
         permissionMode: payload.permissionMode,
         actor
       })
     } else if (payload.kind === 'set-fast') {
-      this.handleStatusAction({ kind: payload.kind, sessionKey: msg.sessionKey, fastMode: payload.fastMode, actor })
+      this.commands.handleStatusAction({
+        kind: payload.kind,
+        sessionKey: msg.sessionKey,
+        fastMode: payload.fastMode,
+        actor
+      })
     } else if (payload.kind === 'set-output') {
-      this.handleStatusAction({ kind: payload.kind, sessionKey: msg.sessionKey, outputMode: payload.outputMode, actor })
+      this.commands.handleStatusAction({
+        kind: payload.kind,
+        sessionKey: msg.sessionKey,
+        outputMode: payload.outputMode,
+        actor
+      })
     } else if (payload.kind === 'permission-choice') {
       this.handlePermissionChoice({ ...payload, actor })
     } else if (payload.kind === 'elicitation-choice') {
       this.handleElicitChoice({ requestId: payload.requestId, value: payload.value })
     } else {
-      this.handleStatusAction({ kind: 'cancel', sessionKey: msg.sessionKey, actor })
+      this.commands.handleStatusAction({ kind: 'cancel', sessionKey: msg.sessionKey, actor })
     }
     return { msgId: msg.msgId, accepted: true }
   }
@@ -8410,19 +8337,19 @@ export class Daemon {
         }
       }
       case 'set_model':
-        return this.setModelByKey(key(), op.model)
+        return this.commands.setModelByKey(key(), op.model)
           ? { msgId: msg.msgId, accepted: true }
           : { msgId: msg.msgId, accepted: false, reason: 'runtime changes are disabled in chat' }
       case 'set_effort':
-        return this.setEffortByKey(key(), op.effort)
+        return this.commands.setEffortByKey(key(), op.effort)
           ? { msgId: msg.msgId, accepted: true }
           : { msgId: msg.msgId, accepted: false, reason: 'runtime changes are disabled in chat' }
       case 'set_permission_mode':
-        return this.setPermissionModeByKey(key(), op.permissionMode)
+        return this.commands.setPermissionModeByKey(key(), op.permissionMode)
           ? { msgId: msg.msgId, accepted: true }
           : { msgId: msg.msgId, accepted: false, reason: 'runtime changes are disabled in chat' }
       case 'set_fast':
-        return this.setFastByKey(key(), op.fastMode)
+        return this.commands.setFastByKey(key(), op.fastMode)
           ? { msgId: msg.msgId, accepted: true }
           : { msgId: msg.msgId, accepted: false, reason: 'runtime changes are disabled in chat' }
       case 'cancel':
@@ -10912,9 +10839,11 @@ export class Daemon {
           ? selectedPermissionPreset(configuredPermissionMode, runtimeAgent?.approvalsReviewer ?? 'user')
           : undefined)
       if (effectivePermissionPreset) {
-        await this.applySessionPermissionPreset(host, sessionId, effectivePermissionPreset).catch((err) =>
-          this.log.debug(`permission preset "${effectivePermissionPreset}" not applied: ${(err as Error).message}`)
-        )
+        await this.commands
+          .applySessionPermissionPreset(host, sessionId, effectivePermissionPreset)
+          .catch((err) =>
+            this.log.debug(`permission preset "${effectivePermissionPreset}" not applied: ${(err as Error).message}`)
+          )
       }
       const fastOverride = allowRuntimeChangesInChat ? this.store.getFastModeOverride(key) : undefined
       if (fastOverride !== undefined) {
@@ -12898,7 +12827,7 @@ export class Daemon {
     if (!pending) return
     if (this.agents.get(pending.agentId)?.allowRuntimeChangesInChat !== true) {
       // Refused, so it decided nothing — recorded as an attempt, never as the decision.
-      this.logSessionAction(`permission:${input.optionId} (refused)`, pending.sessionId, input.actor)
+      this.commands.logSessionAction(`permission:${input.optionId} (refused)`, pending.sessionId, input.actor)
       if (pending.ts) {
         void pending.conn
           .updateBlocks(
@@ -12919,7 +12848,7 @@ export class Daemon {
     // Only now is this click the decision: the guard passed, the option was real, and
     // the request resolved. Logging any earlier would attribute a tool call to someone
     // whose click changed nothing.
-    this.logSessionAction(`permission:${allowed ? 'allowed' : 'denied'}`, pending.sessionId, input.actor)
+    this.commands.logSessionAction(`permission:${allowed ? 'allowed' : 'denied'}`, pending.sessionId, input.actor)
     this.pendingChatPermissions.delete(input.requestId)
     this.permissionEvaluationDetails.set(pending.evaluationParams, { reason: 'chat_user' })
     if (pending.ts) {

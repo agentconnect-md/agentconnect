@@ -586,7 +586,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     await vi.waitFor(() => expect(cp.dones).toHaveLength(1), WAIT)
 
     const key = (daemon as any).webchatSessionKey(CONV, AGENT_ID)
-    ;(daemon as any).setModelByKey(key, 'b')
+    ;(daemon as any).commands.setModelByKey(key, 'b')
     expect((daemon as any).store.getModelOverride(key)).toBe('b') // sticky
     expect(host.setSessionModel).toHaveBeenCalledWith('acp-wc-1', 'b') // applied live
     await daemon.stop()
@@ -742,10 +742,10 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     expect(host.newSession).toHaveBeenCalledTimes(1)
 
     const key = (daemon as any).webchatSessionKey(CONV, AGENT_ID)
-    expect((daemon as any).setModelByKey(key, 'b')).toBe(true)
-    expect((daemon as any).setEffortByKey(key, 'high')).toBe(true)
-    expect((daemon as any).setPermissionModeByKey(key, 'plan')).toBe(true)
-    expect((daemon as any).setFastByKey(key, true)).toBe(true)
+    expect((daemon as any).commands.setModelByKey(key, 'b')).toBe(true)
+    expect((daemon as any).commands.setEffortByKey(key, 'high')).toBe(true)
+    expect((daemon as any).commands.setPermissionModeByKey(key, 'plan')).toBe(true)
+    expect((daemon as any).commands.setFastByKey(key, true)).toBe(true)
     await vi.waitFor(() => {
       expect(host.setSessionModel).toHaveBeenCalledWith('acp-wc-1', 'b')
       expect(host.setSessionEffort).toHaveBeenCalledWith('acp-wc-1', 'high')
@@ -813,9 +813,9 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     expect((daemon as any).pending.size).toBe(0)
 
     const key = (daemon as any).webchatSessionKey(CONV, AGENT_ID)
-    expect((daemon as any).setModelByKey(key, 'b')).toBe(true)
-    expect((daemon as any).setEffortByKey(key, 'high')).toBe(true)
-    expect((daemon as any).setFastByKey(key, true)).toBe(true)
+    expect((daemon as any).commands.setModelByKey(key, 'b')).toBe(true)
+    expect((daemon as any).commands.setEffortByKey(key, 'high')).toBe(true)
+    expect((daemon as any).commands.setFastByKey(key, true)).toBe(true)
     await vi.waitFor(() => {
       expect(host.setSessionModel).toHaveBeenCalledWith('acp-wc-1', 'b')
       expect(host.setSessionEffort).toHaveBeenCalledWith('acp-wc-1', 'high')
@@ -1589,10 +1589,10 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     })
     ;(daemon as any).agents.get(AGENT_ID).allowRuntimeChangesInChat = true
 
-    const setModel = vi.spyOn(daemon as any, 'setModelByKey')
-    const setEffort = vi.spyOn(daemon as any, 'setEffortByKey')
-    const setPerm = vi.spyOn(daemon as any, 'setPermissionModeByKey')
-    const setFast = vi.spyOn(daemon as any, 'setFastByKey')
+    const setModel = vi.spyOn((daemon as any).commands, 'setModelByKey')
+    const setEffort = vi.spyOn((daemon as any).commands, 'setEffortByKey')
+    const setPerm = vi.spyOn((daemon as any).commands, 'setPermissionModeByKey')
+    const setFast = vi.spyOn((daemon as any).commands, 'setFastByKey')
 
     // Each op needs a distinct msgId — a repeated (sessionKey,msgId) is deduped by design.
     expect((daemon as any).handleRelayMsg(rd({ op: 'set_model', model: 'b' }, { msgId: 'm-model' }), () => {})).toEqual(

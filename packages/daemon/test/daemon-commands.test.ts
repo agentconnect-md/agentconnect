@@ -243,7 +243,7 @@ describe('Daemon in-conversation commands', () => {
     ;(daemon as any).agents.set('bot-a', {})
     ;(daemon as any).connByIntegration.set('int-a', conn)
     ;(daemon as any).nameResolver = { noteMessage }
-    ;(daemon as any).isSessionMuted = () => false
+    ;(daemon as any).commands.isSessionMuted = () => false
     ;(daemon as any).dispatch = dispatch
     const payload = dm('relay-names', 'hello')
     const msg: RdMsgIm = {
@@ -269,7 +269,7 @@ describe('Daemon in-conversation commands', () => {
     const dispatch = vi.fn(async () => {})
     ;(daemon as any).agents.set('bot-a', {})
     ;(daemon as any).connByIntegration.set('int-a', { botUserId: 'U-SELF' })
-    ;(daemon as any).isSessionMuted = () => false
+    ;(daemon as any).commands.isSessionMuted = () => false
     ;(daemon as any).dispatch = dispatch
     const { trigger: _t, ...bare } = dm('relay-mention', '<@U-SELF> hello')
     const msg: RdMsgIm = {
@@ -291,7 +291,7 @@ describe('Daemon in-conversation commands', () => {
     const dispatch = vi.fn(async () => {})
     ;(daemon as any).agents.set('bot-a', {})
     ;(daemon as any).connByIntegration.set('int-a', { botUserId: 'U-SELF' })
-    ;(daemon as any).isSessionMuted = () => false
+    ;(daemon as any).commands.isSessionMuted = () => false
     ;(daemon as any).dispatch = dispatch
     const { trigger: _t, ...bare } = dm('relay-no-mention', 'hello')
     const msg: RdMsgIm = {
@@ -316,8 +316,8 @@ describe('Daemon in-conversation commands', () => {
     const setSessionMuted = vi.fn()
     ;(daemon as any).agents.set('bot-a', {})
     ;(daemon as any).connByIntegration.set('int-a', { botUserId: 'U-SELF' })
-    ;(daemon as any).isSessionMuted = () => true
-    ;(daemon as any).setSessionMuted = setSessionMuted
+    ;(daemon as any).commands.isSessionMuted = () => true
+    ;(daemon as any).commands.setSessionMuted = setSessionMuted
     ;(daemon as any).recordUnrouted = vi.fn()
     ;(daemon as any).dispatch = dispatch
     const frame = (msgId: string, mentionedBots: string[]): RdMsgIm => {
@@ -345,7 +345,7 @@ describe('Daemon in-conversation commands', () => {
     const dispatch = vi.fn(async () => {})
     ;(daemon as any).agents.set('bot-a', {})
     ;(daemon as any).agents.set('bot-b', {})
-    ;(daemon as any).isSessionMuted = () => false
+    ;(daemon as any).commands.isSessionMuted = () => false
     ;(daemon as any).dispatch = dispatch
     const frame = (agentId: string, botId: string, integrationId: string): RdMsgIm => ({
       source: 'im',
@@ -580,7 +580,7 @@ describe('Daemon in-conversation commands', () => {
     await vi.waitFor(() => expect(host.newSession).toHaveBeenCalled(), WAIT)
     expect((daemon as any).store.getSession(key)).toBeUndefined()
     ;(daemon as any).onInbound(dm('200', '!stop'))
-    expect((daemon as any).isSessionMuted(key)).toBe(true)
+    expect((daemon as any).commands.isSessionMuted(key)).toBe(true)
     // The mute already exists outside the sessions table, so a daemon restart at
     // this exact cold point cannot forget the stop.
     const reopened = new LocalStore(statePath(root))
@@ -640,8 +640,8 @@ describe('Daemon in-conversation commands', () => {
     expect((daemon as any).store.getSession(coldKey)).toBeUndefined()
 
     ;(daemon as any).onInbound({ ...dm('200', '!stop'), thread: 'T2' })
-    expect((daemon as any).isSessionMuted(coldKey)).toBe(true)
-    expect((daemon as any).isSessionMuted(oldKey)).toBe(false)
+    expect((daemon as any).commands.isSessionMuted(coldKey)).toBe(true)
+    expect((daemon as any).commands.isSessionMuted(oldKey)).toBe(false)
 
     releaseSession()
     await expect(turn).resolves.toBeNull()
@@ -2289,12 +2289,12 @@ describe('Slack interactive status bar', () => {
     await vi.waitFor(() => expect(hasPending(daemon, 'acp-1')).toBe(true), WAIT)
 
     // set-model: sticky override persisted + applied live to the running session.
-    ;(daemon as any).handleStatusAction({ kind: 'set-model', sessionKey: key, model: 'sonnet-5' })
+    ;(daemon as any).commands.handleStatusAction({ kind: 'set-model', sessionKey: key, model: 'sonnet-5' })
     expect(store.getModelOverride(key)).toBe('sonnet-5')
     expect(host.setSessionModel).toHaveBeenCalledWith('acp-1', 'sonnet-5')
 
     // cancel: interrupts the in-flight turn WITHOUT muting.
-    ;(daemon as any).handleStatusAction({ kind: 'cancel', sessionKey: key })
+    ;(daemon as any).commands.handleStatusAction({ kind: 'cancel', sessionKey: key })
     expect(host.cancel).toHaveBeenCalledWith('acp-1')
     expect(store.isSessionMuted(key)).toBe(false)
     await vi.waitFor(() => {
