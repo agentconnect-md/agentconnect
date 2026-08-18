@@ -9,7 +9,7 @@
 // `Daemon.handleStatusAction` (the status-modal code) — visible in the status bar the
 // daemon posts — and are read back via `Daemon.statusInfoForKey`. Interactive-permission
 // is exercised on the real path: a tool-triggering turn makes the daemon post a real
-// Allow/Deny CARD, which we resolve via `Daemon.handlePermissionChoice`.
+// Allow/Deny CARD, which we resolve via `Daemon.permissions.handlePermissionChoice`.
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -326,7 +326,7 @@ async function resolvePermissionCard(
           ) {
             const dec = decodePermValue(el.value)
             if (dec) {
-              d.handlePermissionChoice(dec) // pick the first offered option (Allow is listed first)
+              d.permissions.handlePermissionChoice(dec) // pick the first offered option (Allow is listed first)
               return true
             }
           }

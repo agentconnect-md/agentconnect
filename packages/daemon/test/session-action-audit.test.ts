@@ -26,10 +26,10 @@ function daemonWithLog(): { daemon: Daemon; lines: string[] } {
 function seedPending(daemon: Daemon, allowRuntimeChangesInChat: boolean): void {
   const inner = daemon as never as {
     agents: Map<string, unknown>
-    pendingChatPermissions: Map<string, unknown>
+    permissions: { pendingChatPermissions: Map<string, unknown> }
   }
   inner.agents.set(AGENT, { id: AGENT, allowRuntimeChangesInChat })
-  inner.pendingChatPermissions.set(REQUEST, {
+  inner.permissions.pendingChatPermissions.set(REQUEST, {
     agentId: AGENT,
     sessionId: 'acp-1',
     params: { options: [{ optionId: 'allow_once', kind: 'allow_once', name: 'Allow' }] },
@@ -45,7 +45,9 @@ describe('chat-side session action audit', () => {
     const { daemon, lines } = daemonWithLog()
     seedPending(daemon, false) // chat authority withdrawn
 
-    ;(daemon as never as { handlePermissionChoice: (i: unknown) => void }).handlePermissionChoice({
+    ;(
+      daemon as never as { permissions: { handlePermissionChoice: (i: unknown) => void } }
+    ).permissions.handlePermissionChoice({
       requestId: REQUEST,
       optionId: 'allow_once',
       actor: { userId: 'U-MALLORY' }
@@ -58,7 +60,10 @@ describe('chat-side session action audit', () => {
     // The decision form is what a reader would take as "this user allowed the tool".
     expect(audit[0]).not.toContain('permission:allowed')
     // …and the request is genuinely still pending, so nothing was decided.
-    expect((daemon as never as { pendingChatPermissions: Map<string, unknown> }).pendingChatPermissions.size).toBe(1)
+    expect(
+      (daemon as never as { permissions: { pendingChatPermissions: Map<string, unknown> } }).permissions
+        .pendingChatPermissions.size
+    ).toBe(1)
   })
 
   it('does not record a cancel that had no turn to stop', () => {
