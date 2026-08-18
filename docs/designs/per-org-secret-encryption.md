@@ -335,10 +335,14 @@ encrypt/decrypt capability it has today, widened only to the org key prefix, and
 
 **Vault privileges for the shredder.** Two calls per key: `POST
 transit/keys/<name>/config` with `deletion_allowed=true`, then `DELETE
-transit/keys/<name>`, scoped to the org key prefix. No list capability is
-required. A deployment that never configures a shredder simply accumulates
-unreferenced keys, which is the right default for self-hosted and development
-installs.
+transit/keys/<name>`, scoped to the org key prefix. No list or read capability
+is required — Transit reports a missing key on both calls as HTTP 400 with a
+"no existing key" / "could not delete key; not found" error, and the shredder
+reads that as done. That case is ordinary, not a crash artefact: org keys are
+created lazily on first encrypt (§4), so an organization that never sealed a
+secret leaves a tombstone with no key behind it. A deployment that never
+configures a shredder simply accumulates unreferenced keys, which is the right
+default for self-hosted and development installs.
 
 **What the guarantee is.** After a successful shred, database backups taken
 before the deletion no longer decrypt that organization's secrets. This is a
