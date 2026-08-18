@@ -19,7 +19,6 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@agentconnect.md/billing-contract": "workspace:*",
     "@agentconnect.md/protocol": "workspace:*",
     "@iconify-icons/logos": "^1.2.36",
     "@iconify-icons/ph": "^1.2.5",

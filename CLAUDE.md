@@ -56,7 +56,6 @@ callback endpoint is required; the CP only orchestrates. Concretely:
 | `@agentconnect.md/web`                | Next.js 16 + React 19 + Tailwind 4 | Config / monitoring console.                                                                                                                                                                                 |
 | `@agentconnect.md/memory-plugin-mem0` | TypeScript                         | Memory-plugin profile wrappers for Mem0 Cloud and OSS.                                                                                                                                                       |
 | `@agentconnect.md/k8s-client`         | TypeScript                         | Thin bare-REST in-cluster Kubernetes client (config, HTTP verbs, resumable watch, Lease election) used by the daemon's K8sDriver; ships a fake API server under `./testing`.                                 |
-| `@agentconnect.md/billing-contract`   | zod                                | Billing wire contract (schemas + types, no implementation) shared with the closed-source billing service that lives in another repository. A field enters it when its feature ships. Not on npm yet.         |
 
 When you change a frame in `protocol`, both daemon and CP consume it — rebuild
 `protocol` (or rely on its `development` export → `./src/index.ts`) and check both sides.

@@ -8,16 +8,46 @@
 // payment channel, and the console's knowledge of it will stop at "redirect to
 // the URL the API returned".
 //
-// The DTOs come from `@agentconnect.md/billing-contract`, the one declaration the
-// service validates against. Imported as TYPES ONLY: the schemas are zod, and a
-// value import would pull zod into the browser bundle to re-check a response the
-// service already validated on the way out. Parse at this boundary when a real
-// version-skew bug asks for it, not before.
+// ── The wire contract is DUPLICATED, on purpose ──────────────────────────────
+// The types below are a copy. The authority is the billing service's own zod
+// schemas, which validate every response on the way out; this is the consuming
+// half, hand-kept in step.
+//
+// A shared npm package would make that mechanical, and it was tried: it costs a
+// published package, a release lane, a version to agree on, and a cross-repo
+// release ordering — for two object shapes on a read-only surface. Copying is
+// the smaller mistake, and it is honest about where the authority lives.
+//
+// What that buys, and what it demands:
+//   - the service rejects its own malformed responses, so drift shows up here as
+//     a field that is simply absent — never as silently wrong money
+//   - therefore: when the service's response shape changes, this file changes in
+//     the same change set. There is no compiler to remind you.
+//   - keep the surface small enough that copying stays cheap. If it grows past
+//     what a reviewer can diff by eye, that is the signal to revisit the package.
 
-import type { BillingAccount, BillingTransactionsPage } from '@agentconnect.md/billing-contract'
 import { getIdTokenRaw, getToken, getUser } from '@/lib/auth'
 
-export type { BillingAccount, BillingTransaction, BillingTransactionsPage } from '@agentconnect.md/billing-contract'
+/** Amounts are integer microUSD on the wire (1 USD = 1_000_000). */
+export interface BillingAccount {
+  orgId: string
+  /** Credit posted minus usage billed. One definition, settled facts only. */
+  balanceMicro: number
+}
+
+export interface BillingTransaction {
+  id: string
+  kind: 'purchase' | 'adjustment' | 'promo' | 'refund'
+  amountMicro: number
+  /** ISO 8601 instant. */
+  at: string
+}
+
+export interface BillingTransactionsPage {
+  items: BillingTransaction[]
+  /** Pass back as `?cursor=` for the next page; null ⇒ this is the last one. */
+  nextCursor: string | null
+}
 
 /** Billing base URL, or null when this deployment has no billing service. */
 export function billingBase(): string | null {

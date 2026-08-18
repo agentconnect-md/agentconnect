@@ -86,19 +86,6 @@ export default {
           'sh scripts/publish-setup-if-changed.sh "${lastRelease.gitTag}" "${nextRelease.version.includes("-") ? "rc" : "latest"}"'
       }
     ],
-    [
-      // Publish the billing wire contract. The one lane whose consumer lives in
-      // ANOTHER repository (the closed-source billing service), which is why the
-      // contract is a package at all. Also the only real library here: its script
-      // keeps `dependencies` instead of stripping them, since nothing is bundled.
-      '@semantic-release/exec',
-      {
-        prepareCmd:
-          'sh scripts/publish-billing-contract-if-changed.sh "${lastRelease.gitTag}" "${nextRelease.version}" prepare',
-        publishCmd:
-          'sh scripts/publish-billing-contract-if-changed.sh "${lastRelease.gitTag}" "${nextRelease.version.includes("-") ? "rc" : "latest"}"'
-      }
-    ],
     // Expose the published tag to release.yaml so image publication can run
     // next in the same workflow, and add the version + notes to the job summary.
     // Write through Node's file API so commit-derived notes are never evaluated
