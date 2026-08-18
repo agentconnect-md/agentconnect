@@ -744,6 +744,19 @@ describe('review of a secondary root (decisions 5, 6 and 11)', () => {
     expect(existsSync(workspaces.sessionWorktreePath(agent, 'session-unknown'))).toBe(false)
   })
 
+  it('refuses a secondary root’s review where workspaces live in sandboxes, leaving the fallback to the caller', async () => {
+    const agent = agentFixture([{ repoFullName: 'acme/infra', repoId: '42' }])
+    serveAll(agent, { 'acme/infra': 'trunk' })
+    workspaces.setSandboxMode(true)
+    const pull = { base: 'a'.repeat(40), head: 'b'.repeat(40) }
+
+    await expect(
+      workspaces.prepareSessionWorkspace(agent, reviewRequest('session-sandbox', 'acme/infra', 5, pull))
+    ).rejects.toThrow('needs a local workspace root')
+
+    expect(existsSync(join(workspaces.agentRootFor(agent), 'repos'))).toBe(false)
+  })
+
   it('keeps the primary the working directory when the review names it', async () => {
     const agent = agentFixture([{ repoFullName: 'acme/infra', repoId: '42' }])
     serveAll(agent, { 'acme/infra': 'trunk' })

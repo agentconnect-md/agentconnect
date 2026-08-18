@@ -349,7 +349,14 @@ export class WorkspaceManager {
     if (name === undefined) return undefined
     const wanted = repoKey(name)
     const root = this.secondaryRoots(agent).find((entry) => repoKey(entry.repoFullName) === wanted)
-    if (root) return root
+    if (root) {
+      // A sandboxed workspace materializes one checkout through the shim tunnel, so a secondary root
+      // has nowhere to live there — the review keeps the revision-only fallback, as it does today.
+      if (this.sandboxMode) {
+        throw new Error(`github review of ${root.repoFullName} needs a local workspace root (agent "${agent.id}")`)
+      }
+      return root
+    }
     const primary = this.primaryRepoFullName(agent)
     if (primary !== undefined && repoKey(primary) === wanted) return undefined
     throw new Error(`github review repository "${name}" is not a workspace root of agent "${agent.id}"`)
