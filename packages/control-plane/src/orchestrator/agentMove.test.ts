@@ -164,6 +164,8 @@ function make(
     readyDaemons?: string[]
     /** Placement columns merged over the initial record (e.g. a `set` placement). */
     placement?: Partial<AgentRecord>
+    /** A repository grant that commits inside the detach → workspace-CAS window. */
+    grantDuringWorkspaceCas?: { repoFullName: string; repoId: bigint }
   } = {}
 ) {
   let current: AgentRecord = {
@@ -173,6 +175,7 @@ function make(
       : {}),
     ...(opts.placement ?? {})
   }
+  let grants: Array<{ repoFullName: string; repoId: bigint }> = []
   let cronRows = [cron]
   const calls: string[] = []
   const activations: AgentActivate[] = []
@@ -193,6 +196,12 @@ function make(
       workspaceRepoId?: bigint
     ) => {
       if (opts.workspacePersistenceFailsBeforeCommit) throw new Error('database unavailable')
+      // A grant landing between the pre-detach snapshot and this CAS: it advances the same
+      // per-agent revision counter, so the CAS below commits on top of ITS revision.
+      if (opts.grantDuringWorkspaceCas) {
+        grants = [...grants, opts.grantDuringWorkspaceCas]
+        current = { ...current, configRevision: current.configRevision + 1n }
+      }
       current = {
         ...current,
         workspace,
@@ -289,11 +298,23 @@ function make(
     } as unknown as ConstructorParameters<typeof AgentMoveService>[0]['botSecrets'],
     platforms: PLATFORMS,
     // The real assembler over a fake store — exercises project()/secretsOf() as prod does.
-    specs: new AgentSpecAssembler({
-      get: async () => ({}),
-      merge: async () => {},
-      keys: async () => new Map()
-    } as unknown as ConstructorParameters<typeof AgentSpecAssembler>[0]),
+    specs: new AgentSpecAssembler(
+      {
+        get: async () => ({}),
+        merge: async () => {},
+        keys: async () => new Map()
+      } as unknown as ConstructorParameters<typeof AgentSpecAssembler>[0],
+      {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      // Reads `grants` on every call, so a mid-move write is observable to a re-read.
+      {
+        listForAgent: async () => grants.map((grant) => ({ ...grant, access: 'read' }))
+      } as unknown as ConstructorParameters<typeof AgentSpecAssembler>[7]
+    ),
     crons: { listForAgent: async () => cronRows } as unknown as ConstructorParameters<
       typeof AgentMoveService
     >[0]['crons'],
@@ -388,6 +409,20 @@ describe('AgentMoveService', () => {
     })
     expect(t.detaches[0]?.moveId).toBe(t.activations[0]?.moveId)
     expect(t.calls).toEqual([`detach:${SOURCE}`, `activate:${SOURCE}`, 'hooks', 'collab'])
+  })
+
+  it('re-reads the repository allowlist after the workspace CAS so the activation matches its revision', async () => {
+    const t = make({ grantDuringWorkspaceCas: { repoFullName: 'example-co/shared-library', repoId: 815n } })
+
+    await t.service.setWorkspace(t.current(), GITHUB_WORKSPACE, WORKSPACE_REPO_ID)
+
+    // The pre-detach snapshot saw no grant; shipping that list at the post-CAS revision
+    // would be the equal-revision/different-content violation the daemon refuses forever.
+    expect(t.activations).toHaveLength(1)
+    expect(t.activations[0]?.spec.workspace).toMatchObject({
+      additionalRepos: [{ repoFullName: 'example-co/shared-library', repoId: '815' }]
+    })
+    expect(t.activations[0]?.spec.configRevision).toBe(t.current().configRevision.toString())
   })
 
   it('reconciles an access edit so the daemon can preserve the matching checkout', async () => {

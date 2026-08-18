@@ -2473,8 +2473,9 @@ export interface HookRepo {
   recordDeliveryResult(hookId: HookId, input: HookDeliveryInput): Promise<HookDeliveryRecordResult>
   /** Refresh mutable GitHub endpoint/display names after a newly observed,
    * accepted delivery, but only while it remains the org/repo's newest
-   * observation. Returns changed hooks for relay convergence and changed
-   * App-backed workspaces for daemon config convergence. */
+   * observation. Returns changed hooks for relay convergence, plus every agent whose
+   * spec the rename edited — App-backed workspaces and additional-repository grant
+   * owners alike — for daemon config convergence. */
   refreshGithubRepoFullName(
     sourceHookId: HookId,
     repoId: bigint,

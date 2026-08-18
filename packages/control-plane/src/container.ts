@@ -1612,14 +1612,11 @@ export function buildContainer(
                   if (!agent) return
                   await agentDelivery.upsert(agent, (err, daemonId) => {
                     if (err instanceof NoConnection) {
-                      http.log.debug(
-                        { agentId, daemonId },
-                        'github rename: workspace agent/upsert skipped — daemon offline'
-                      )
+                      http.log.debug({ agentId, daemonId }, 'github rename: agent/upsert skipped — daemon offline')
                     } else {
                       http.log.warn(
                         { err, agentId, daemonId },
-                        'github rename: workspace agent/upsert failed (backstop: reconnect roster)'
+                        'github rename: agent/upsert failed (backstop: reconnect roster)'
                       )
                     }
                   })

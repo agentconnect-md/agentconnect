@@ -467,12 +467,27 @@ export class AgentMoveService {
       }
     }
 
+    // Everything sent from here on carries a POST-CAS `configRevision`, so the repository
+    // allowlist has to be read after the CAS too. Its writers — the grant routes and the
+    // asynchronous rename repair — advance the same per-agent counter without holding this
+    // section, so replaying the pre-detach list at the newer revision is exactly the
+    // equal-revision/different-content violation the daemon refuses on every reconnect.
+    let postCas: MoveBundle
+    try {
+      postCas = { ...bundle, additionalRepos: await this.deps.specs.additionalReposOf(converted) }
+    } catch (err) {
+      throw new AgentMoveFailed(
+        'workspace edit could not re-read the authorized repositories; retry the same edit',
+        err
+      )
+    }
+
     let activated: Ack
     try {
       activated = await this.deps.control.agentActivate(
         daemonId,
         {
-          ...this.activationDefinition(converted, bundle),
+          ...this.activationDefinition(converted, postCas),
           moveId,
           reconcileWorkspace: true
         },
@@ -484,7 +499,7 @@ export class AgentMoveService {
       throw new AgentMoveFailed('workspace edit outcome is uncertain; retry the same edit', err)
     }
     if (!activated.ok) {
-      await this.rollbackWorkspaceChange(agent, converted, bundle, moveId, activated.reason)
+      await this.rollbackWorkspaceChange(agent, converted, postCas, moveId, activated.reason)
     }
 
     await this.finalizeWorkspaceChange(converted, workspaceRepoId, bundle.httpBotIds)

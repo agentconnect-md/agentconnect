@@ -1024,9 +1024,9 @@ export class PgHookRepo implements HookRepo {
           data: { name: repoFullName }
         })
       }
-      // The grants carry the renamed display name into `workspace.additionalRepos`,
-      // so their owners join the same configuration-ordering domain as the workspace
-      // agents below — read the owners BEFORE the write erases the predicate.
+      // The grants carry the renamed display name into `workspace.additionalRepos`, so their
+      // owners join the same configuration-ordering domain — and the same convergence fan-out —
+      // as the workspace agents below. Read the owners BEFORE the write erases the predicate.
       const renamedGrantAgentIds = [
         ...new Set(
           (
@@ -1075,7 +1075,11 @@ export class PgHookRepo implements HookRepo {
                 include: withUsers
               })
             ).map(toRecord)
-      return { hooks, agentIds: changedAgents.map((agent) => AgentId(agent.id)) }
+      // Both kinds of renamed agent need the live push: the workspace URL and the grant's
+      // display name are two fields of the SAME spec, and an owner left out here keeps the
+      // stale name on every connected daemon until it reconnects.
+      const renamedAgentIds = [...new Set([...changedAgents.map((agent) => agent.id), ...renamedGrantAgentIds])].sort()
+      return { hooks, agentIds: renamedAgentIds.map((id) => AgentId(id)) }
     })
   }
 
