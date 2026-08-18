@@ -484,6 +484,15 @@ the authenticated WebSocket connection. CP accepts `event/session` and
 with placement moves excluded while the write runs. A `sessionId` is bound to
 the first accepted `agentId` and can never be reassigned by a later report.
 
+A usage report's `costAmount` is money, so it may be either a fixed-point
+decimal STRING (unsigned, non-exponential, up to 20 integer and 18 fractional
+digits) or a JSON number, and the CP's ingress normalizes it to the decimal
+string before anything accumulates. Storage is `NUMERIC(38,18)` and range
+aggregates diff and sum in decimal, so no cost passes through binary floating
+point after the edge. The number branch exists for daemons that predate the
+string; an amount that cannot be normalized drops the cost and keeps the
+session's token counts.
+
 Phase state machine: `start → (plan ↔ problem)* → end`. The daemon collapses
 ACP `session/update` streams into these milestones; CP persists the metadata,
 never the stream. `GET /sessions/:id` and `GET /sessions` read that stored

@@ -3326,7 +3326,9 @@ export interface UsageAgentDto {
   thoughtTokens: number
   cachedReadTokens: number
   cachedWriteTokens: number
-  costAmount: number
+  /** Exact decimal string — the CP never rounds a cost. Format it; add with
+   *  `sumAmounts` from `lib/amount` rather than as a float. */
+  costAmount: string
 }
 
 export interface UsageModelDto extends Omit<UsageAgentDto, 'agentId'> {
@@ -3337,7 +3339,7 @@ export interface UsageDto {
   range: UsageRange
   accessSyncDegraded?: boolean
   accessIssues?: SessionAccessIssue[]
-  totals: { sessions: number; totalTokens: number; costAmount: number; costCurrency: string | null }
+  totals: { sessions: number; totalTokens: number; costAmount: string; costCurrency: string | null }
   agents: UsageAgentDto[]
   models: UsageModelDto[]
   // Spend-over-time chart: cost bucketed by hour (d1) or day (longer ranges),
@@ -3348,9 +3350,9 @@ export interface UsageDto {
     bucket: 'hour' | 'day'
     points: {
       start: string
-      costAmount: number
-      byAgent?: Record<string, number>
-      byModel?: Record<string, number>
+      costAmount: string
+      byAgent?: Record<string, string>
+      byModel?: Record<string, string>
     }[]
   }
 }

@@ -5,6 +5,7 @@ import useSWR from 'swr'
 import { Bar, BarChart, Legend, ResponsiveContainer, Tooltip, XAxis } from 'recharts'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { fetchUsage, fmtCost, fmtCountCompact as fmtCompact, type UsageRange } from '@/lib/api'
+import { amountToNumber, sumAmounts } from '@/lib/amount'
 import { agentLabel, modelLabel, runtimeLabel } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { AgentIconView, ModelMark, Spinner } from '@/components/marks'
@@ -113,7 +114,9 @@ export default function UsageView() {
   // match the incoming chart and swapping skeleton→data causes no layout shift.
   const skelBars = range === 'd1' ? 24 : range === 'd7' ? 7 : range === 'd90' ? 90 : 30
   const totalTokens = data?.totals.totalTokens ?? 0
-  const totalSpend = data?.totals.costAmount ?? 0
+  // Amounts arrive as exact decimal strings; a number appears only where the value is
+  // being formatted or turned into pixels, never where two amounts are added.
+  const totalSpend = amountToNumber(data?.totals.costAmount ?? '0')
   const totalSessions = data?.totals.sessions ?? 0
   // Currency reported for this workspace's sessions (null when none/mixed → the
   // formatter falls back to USD). Amounts are summed as-is, so a mixed-currency
@@ -148,7 +151,7 @@ export default function UsageView() {
     model: string
     totalTokens: number
     sessions: number
-    costAmount: number
+    costAmount: string
   }
   let entries: Entry[]
   if (groupBy === 'model') {
@@ -174,11 +177,11 @@ export default function UsageView() {
         model: '',
         totalTokens: 0,
         sessions: 0,
-        costAmount: 0
+        costAmount: '0'
       }
       g.totalTokens += e.totalTokens
       g.sessions += e.sessions
-      g.costAmount += e.costAmount
+      g.costAmount = sumAmounts([g.costAmount, e.costAmount])
       byRuntime.set(rt, g)
     }
     entries = [...byRuntime.values()].sort((a, b) => b.totalTokens - a.totalTokens)
@@ -200,7 +203,7 @@ export default function UsageView() {
     model: e.model,
     sessions: e.sessions.toLocaleString('en-US'),
     tokens: fmtCompact(e.totalTokens),
-    spend: fmtCost(e.costAmount, currency),
+    spend: fmtCost(amountToNumber(e.costAmount), currency),
     pct: totalTokens > 0 ? Math.round((e.totalTokens / totalTokens) * 100) : 0,
     barPct: Math.round((e.totalTokens / maxTok) * 100)
   }))
@@ -326,12 +329,16 @@ export default function UsageView() {
           // console's agent list. Absent on an older CP → flat brand bars.
           const hasBreakdown = pts.some((p) => p.byAgent || p.byModel)
           const agentMeta = new Map(enriched.map((e) => [e.agentId, e]))
+          // Bar heights are geometry, so each amount becomes a number here — the one
+          // place in this view where a cost is allowed to be a float.
+          const plot = (by: Record<string, string>): Record<string, number> =>
+            Object.fromEntries(Object.entries(by).map(([k, v]) => [k, amountToNumber(v)]))
           const recs = pts.map((p) => {
-            if (!hasBreakdown) return { '': p.costAmount }
-            if (groupBy === 'model') return p.byModel ?? {}
-            if (groupBy === 'agent') return p.byAgent ?? {}
+            if (!hasBreakdown) return { '': amountToNumber(p.costAmount) }
+            if (groupBy === 'model') return plot(p.byModel ?? {})
+            if (groupBy === 'agent') return plot(p.byAgent ?? {})
             const rec: Record<string, number> = {}
-            for (const [id, v] of Object.entries(p.byAgent ?? {})) {
+            for (const [id, v] of Object.entries(plot(p.byAgent ?? {}))) {
               const rt = agentMeta.get(id)?.runtime || 'unknown'
               rec[rt] = (rec[rt] ?? 0) + v
             }
@@ -367,7 +374,7 @@ export default function UsageView() {
           const chartData = recs.map((rec, i) => {
             const row: Record<string, number | string> = {
               label: bucketLabel(pts[i]!.start, data.series!.bucket),
-              __total: pts[i]!.costAmount
+              __total: amountToNumber(pts[i]!.costAmount)
             }
             stackKeys.forEach((k, si) => {
               row[`s${si}`] =

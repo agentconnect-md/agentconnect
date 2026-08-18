@@ -146,3 +146,18 @@ export { MAX_REPO_SUBDIR_LENGTH, RepoSubdirError, normalizeRepoSubdir } from './
 // ── §5 platform manifest — pre-dispatch capability table, read by every host ──
 export { DEFAULT_MANIFEST, manifestFor } from './platform-manifest.js'
 export type { MembershipEnumeration, PlatformManifest } from './platform-manifest.js'
+
+// ── exact money — the decimal amount every reported/stored/served cost uses ──
+export {
+  DecimalAmount,
+  MAX_AMOUNT_INTEGER_DIGITS,
+  MAX_AMOUNT_PRECISION,
+  MAX_AMOUNT_SCALE,
+  ReportedCostAmount,
+  canonicalizeDecimalAmount,
+  decimalAmountFromNumber,
+  normalizeReportedCostAmount,
+  scaleAmount,
+  sumAmounts,
+  unscaleAmount
+} from './decimal-amount.js'

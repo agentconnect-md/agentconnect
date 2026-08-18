@@ -12,6 +12,7 @@ import {
   ApprovalsReviewer,
   AgentPermissionRequestRecord,
   CanonicalMemoryRecord,
+  DecimalAmount,
   FeishuRegion,
   MemoryFileHistoryEvent,
   MemoryPluginHistoryEvent,
@@ -3261,9 +3262,22 @@ export const AgentWakeDto = z.object({ state: z.enum(['running', 'starting', 'un
 /** The batch body of the service-authenticated usage endpoint. Its element IS the
  *  daemon EVT's payload schema, deliberately: one payload, two authenticated
  *  adapters, one writer — reusing the wire schema is what keeps them from drifting.
- *  The report never names its own source; the adapter stamps it. */
+ *  The report never names its own source; the adapter stamps it.
+ *
+ *  Two fields are narrowed for this ingress, because its reports are what gets
+ *  BILLED: the cost is the exact decimal string only (never a JSON number, so no
+ *  amount reaches billing through a float), and both the amount and its currency are
+ *  mandatory. A missing amount must not be read as zero spend, so one bad report
+ *  fails the whole batch — which the caller then retries in full. */
 export const UsageReportBatchBody = z.object({
-  reports: z.array(UsageReport).min(1).max(1000)
+  reports: z
+    .array(
+      UsageReport.extend({
+        usage: UsageReport.shape.usage.extend({ costAmount: DecimalAmount, costCurrency: z.string().min(1) })
+      })
+    )
+    .min(1)
+    .max(1000)
 })
 export type UsageReportBatchBodyT = z.infer<typeof UsageReportBatchBody>
 
@@ -3277,6 +3291,11 @@ export const UsageQueryDto = z.object({
   tz: z.coerce.number().int().min(-900).max(900).default(0)
 })
 
+/** An amount in an aggregate RESPONSE. A plain string, not `DecimalAmount`: these are
+ *  derived by subtraction, so a downward correction can still make one negative, and a
+ *  reader is better served by the real figure than by a schema that refuses to send it. */
+const AggregateAmountDto = z.string()
+
 /** Per-agent rollup over the selected range (summed tokens/cost + session count). */
 export const UsageAgentDto = z.object({
   agentId: z.string(),
@@ -3287,7 +3306,7 @@ export const UsageAgentDto = z.object({
   thoughtTokens: z.number(),
   cachedReadTokens: z.number(),
   cachedWriteTokens: z.number(),
-  costAmount: z.number()
+  costAmount: AggregateAmountDto
 })
 export const UsageModelDto = UsageAgentDto.omit({ agentId: true }).extend({
   model: z.string().nullable()
@@ -3296,10 +3315,12 @@ export const UsageDto = z.object({
   range: UsageRange,
   accessSyncDegraded: z.boolean().optional(),
   accessIssues: z.array(SessionAccessIssueDto).optional(),
+  // Every amount is an exact decimal string: this aggregate is what billing reads, so
+  // the roll-up never rounds and the console only formats what it is given.
   totals: z.object({
     sessions: z.number(),
     totalTokens: z.number(),
-    costAmount: z.number(),
+    costAmount: AggregateAmountDto,
     costCurrency: z.string().nullable()
   }),
   agents: z.array(UsageAgentDto),
@@ -3313,9 +3334,9 @@ export const UsageDto = z.object({
     points: z.array(
       z.object({
         start: z.string(),
-        costAmount: z.number(),
-        byAgent: z.record(z.string(), z.number()),
-        byModel: z.record(z.string(), z.number())
+        costAmount: AggregateAmountDto,
+        byAgent: z.record(z.string(), AggregateAmountDto),
+        byModel: z.record(z.string(), AggregateAmountDto)
       })
     )
   })

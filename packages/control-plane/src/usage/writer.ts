@@ -11,13 +11,20 @@
  * delta. Storage stays cumulative too (`SessionUsage` snapshot + `SessionSpend`
  * checkpoint), so a duplicate delivery is an idempotent no-op and range readers
  * derive spend by diffing consecutive checkpoints.
+ *
+ * Money is the one field the two adapters see differently. A report may carry
+ * `costAmount` as the exact decimal string OR — from any daemon shipped so far — as a
+ * JSON number, so an adapter NORMALIZES to the decimal string before it gets here.
+ * The writer itself only accepts the normalized shape: the money path below it has no
+ * float in it, and no future caller can add one back without changing this type.
  */
+import { type DecimalAmount, normalizeReportedCostAmount } from '@agentconnect.md/protocol'
 import { AgentId } from '../domain/ids.js'
 import type { SessionUsageRepo, UsageSource } from '../persistence/ports.js'
 
 export type { UsageSource }
 
-/** One session's cumulative usage snapshot, shared by both ingress adapters. */
+/** One session's cumulative usage snapshot as REPORTED — the shared wire payload. */
 export interface SessionUsageReport {
   sessionId: string // ACP session id (agent-assigned; NOT a wire UUID)
   agentId: string
@@ -35,21 +42,40 @@ export interface SessionUsageReport {
     cachedWriteTokens?: number
     contextUsed?: number
     contextSize?: number
-    costAmount?: number
+    costAmount?: number | DecimalAmount
     costCurrency?: string
   }
 }
 
+/** The same report with its cost normalized — what an adapter hands the writer. */
+export type NormalizedSessionUsageReport = Omit<SessionUsageReport, 'usage'> & {
+  usage: Omit<SessionUsageReport['usage'], 'costAmount'> & { costAmount?: DecimalAmount }
+}
+
+/**
+ * Normalize a reported cost to the canonical decimal string.
+ *
+ * An unusable amount (negative, non-finite, out of the column's range, or a malformed
+ * string) drops the cost and KEEPS the token counts: cost is best-effort telemetry on
+ * the daemon path, and losing a session's token history over a bad price is worse than
+ * losing the price. The gateway path does not use this leniency — it refuses the batch.
+ */
+export function normalizeUsageReport(report: SessionUsageReport): NormalizedSessionUsageReport {
+  const { costAmount, ...rest } = report.usage
+  const normalized = costAmount === undefined ? undefined : (normalizeReportedCostAmount(costAmount) ?? undefined)
+  return { ...report, usage: { ...rest, ...(normalized !== undefined ? { costAmount: normalized } : {}) } }
+}
+
 export interface UsageWriter {
-  record(source: UsageSource, report: SessionUsageReport): Promise<void>
-  recordBatch(source: UsageSource, reports: readonly SessionUsageReport[]): Promise<void>
+  record(source: UsageSource, report: NormalizedSessionUsageReport): Promise<void>
+  recordBatch(source: UsageSource, reports: readonly NormalizedSessionUsageReport[]): Promise<void>
 }
 
 /** The `UsageWriter` over the CP's own usage store. */
 export class SessionUsageWriter implements UsageWriter {
   constructor(private readonly usage: SessionUsageRepo) {}
 
-  async record(source: UsageSource, report: SessionUsageReport): Promise<void> {
+  async record(source: UsageSource, report: NormalizedSessionUsageReport): Promise<void> {
     await this.usage.record({
       sessionId: report.sessionId,
       agentId: AgentId(report.agentId),
@@ -66,7 +92,7 @@ export class SessionUsageWriter implements UsageWriter {
    *  and writing serially keeps a large batch from monopolizing the connection pool.
    *  Each write is independently idempotent, so a caller that retries the whole batch
    *  after a mid-batch failure re-applies the landed prefix harmlessly. */
-  async recordBatch(source: UsageSource, reports: readonly SessionUsageReport[]): Promise<void> {
+  async recordBatch(source: UsageSource, reports: readonly NormalizedSessionUsageReport[]): Promise<void> {
     for (const report of reports) await this.record(source, report)
   }
 }

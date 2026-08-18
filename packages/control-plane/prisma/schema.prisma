@@ -1377,7 +1377,9 @@ model SessionUsage {
   cachedWriteTokens Int         @default(0)
   contextUsed       Int?
   contextSize       Int?
-  costAmount        Float       @default(0)
+  // Exact money: an amount is metered by one party and billed by another, so it is
+  // NUMERIC end to end and never a binary float. Reports carry it as a decimal string.
+  costAmount        Decimal     @default(0) @db.Decimal(38, 18)
   costCurrency      String?
   startedAt         DateTime    @default(now()) @db.Timestamptz(6)
   lastActivityAt    DateTime    @db.Timestamptz(6)
@@ -1421,7 +1423,9 @@ model SessionSpend {
   cumulativeThoughtTokens     Int         @default(0)
   cumulativeCachedReadTokens  Int         @default(0)
   cumulativeCachedWriteTokens Int         @default(0)
-  cumulativeCost              Float // session's cumulative cost as of `at`; window spend = diff of consecutive cumulatives
+  // Session's cumulative cost as of `at`; window spend = diff of consecutive cumulatives.
+  // NUMERIC like the snapshot: the diffs feed billing, so no step may round.
+  cumulativeCost              Decimal     @db.Decimal(38, 18)
 
   agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
 
