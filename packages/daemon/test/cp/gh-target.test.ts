@@ -76,15 +76,28 @@ describe('resolveGhTargetRepo — the target the command already carries', () =>
     })
   })
 
-  it('ignores a URL that is a body or title value rather than the selector', () => {
+  it('reads the selector URL even after value flags and `--`', () => {
+    const url = 'https://github.com/acme/infra/pull/7'
+    expect(resolveGhTargetRepo(['pr', 'view', '--json', 'title', url], {}, noCwd)).toEqual({ repo: 'acme/infra' })
+    expect(resolveGhTargetRepo(['pr', 'checkout', '-b', 'feat', url], {}, noCwd)).toEqual({ repo: 'acme/infra' })
+    expect(resolveGhTargetRepo(['pr', 'close', '--comment=done', url], {}, noCwd)).toEqual({ repo: 'acme/infra' })
+    expect(resolveGhTargetRepo(['issue', 'transfer', url, 'acme/other'], {}, noCwd)).toEqual({ repo: 'acme/infra' })
+    expect(resolveGhTargetRepo(['pr', 'view', '--', url], {}, noCwd)).toEqual({ repo: 'acme/infra' })
+  })
+
+  it('ignores a URL that is a flag value or a later positional rather than the selector', () => {
     const env = { GH_REPO: 'example-co/shared-library' }
+    const current = { repo: 'example-co/shared-library' }
     const linked = 'https://github.com/acme/infra/pull/7'
-    expect(resolveGhTargetRepo(['issue', 'comment', '5', '--body', linked], env, noCwd)).toEqual({
-      repo: 'example-co/shared-library'
-    })
-    expect(resolveGhTargetRepo(['pr', 'create', '-t', linked, '--fill'], env, noCwd)).toEqual({
-      repo: 'example-co/shared-library'
-    })
+    expect(resolveGhTargetRepo(['issue', 'comment', '5', '--body', linked], env, noCwd)).toEqual(current)
+    expect(resolveGhTargetRepo(['pr', 'close', '--comment', linked, '5'], env, noCwd)).toEqual(current)
+    expect(resolveGhTargetRepo(['pr', 'edit', '5', '--add-label', linked], env, noCwd)).toEqual(current)
+    expect(resolveGhTargetRepo(['pr', 'create', '-t', linked, '--fill'], env, noCwd)).toEqual(current)
+    // `list`/`create`/`status` take no selector at all — a URL there is always text.
+    expect(resolveGhTargetRepo(['pr', 'list', '--search', linked], env, noCwd)).toEqual(current)
+    expect(resolveGhTargetRepo(['issue', 'list', '-S', linked], env, noCwd)).toEqual(current)
+    // A number selector followed by a URL positional is not a URL selector.
+    expect(resolveGhTargetRepo(['pr', 'comment', '5', linked], env, noCwd)).toEqual(current)
   })
 
   it('leaves a repo that does not exist yet alone', () => {

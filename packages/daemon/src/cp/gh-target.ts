@@ -64,11 +64,82 @@ const API_VALUE_FLAGS = new Set([
   '--preview'
 ])
 
-// A pull/issue web URL pins the repository as firmly as `-R` does.
+// A pull/issue web URL given as the SELECTOR pins the repository as firmly as `-R` does.
 const HTML_URL_RE = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/(?:pull|issues)\/\d+/
 
-// `gh pr`/`gh issue` flags whose value can itself be a URL — one there is body text, not the selector.
-const PR_ISSUE_VALUE_FLAGS = new Set(['-b', '--body', '-F', '--body-file', '-t', '--title', '--subject'])
+// `gh pr`/`gh issue` subcommands whose first positional is the selector (`<number> | <url> | <branch>`).
+const SELECTOR_SUBCOMMANDS = new Set([
+  'checkout',
+  'checks',
+  'close',
+  'comment',
+  'delete',
+  'develop',
+  'diff',
+  'edit',
+  'lock',
+  'merge',
+  'pin',
+  'ready',
+  'reopen',
+  'review',
+  'revert',
+  'transfer',
+  'unlock',
+  'unpin',
+  'update-branch',
+  'view'
+])
+
+// Per-subcommand `gh pr`/`gh issue` flags that consume the next argv entry (`-c` is a value on close, a boolean on review).
+const SELECTOR_VALUE_FLAGS: Record<string, ReadonlySet<string>> = {
+  checkout: new Set(['-b', '--branch']),
+  checks: new Set(['--json', '-q', '--jq', '-t', '--template', '-i', '--interval']),
+  close: new Set(['-c', '--comment', '-r', '--reason']),
+  comment: new Set(['-b', '--body', '-F', '--body-file']),
+  develop: new Set(['-b', '--branch-repo', '-n', '--name', '--base']),
+  diff: new Set(['--color']),
+  edit: new Set([
+    '-a',
+    '--add-assignee',
+    '--remove-assignee',
+    '-l',
+    '--add-label',
+    '--remove-label',
+    '-m',
+    '--milestone',
+    '-p',
+    '--add-project',
+    '--remove-project',
+    '-r',
+    '--add-reviewer',
+    '--remove-reviewer',
+    '-B',
+    '--base',
+    '-b',
+    '--body',
+    '-F',
+    '--body-file',
+    '-t',
+    '--title'
+  ]),
+  lock: new Set(['-r', '--reason']),
+  merge: new Set([
+    '-A',
+    '--author-email',
+    '-b',
+    '--body',
+    '-F',
+    '--body-file',
+    '-t',
+    '--subject',
+    '--match-head-commit'
+  ]),
+  reopen: new Set(['-c', '--comment']),
+  review: new Set(['-b', '--body', '-F', '--body-file']),
+  revert: new Set(['-b', '--body', '-F', '--body-file', '-t', '--title']),
+  view: new Set(['--json', '-q', '--jq', '-t', '--template'])
+}
 
 /** Resolve the repo a `gh` invocation targets; `cwdOrigin` is called only if nothing earlier answers. */
 export function resolveGhTargetRepo(
@@ -131,7 +202,7 @@ function commandRepo(argv: readonly string[]): string | undefined {
   const [cmd, sub] = argv
   if (cmd === 'repo' && sub && REPO_SUBCOMMANDS.has(sub)) return repoPositional(argv, sub)
   if (cmd === 'api') return apiEndpointRepo(argv)
-  if ((cmd === 'pr' || cmd === 'issue') && sub) return htmlUrlRepo(argv)
+  if ((cmd === 'pr' || cmd === 'issue') && sub && SELECTOR_SUBCOMMANDS.has(sub)) return selectorUrlRepo(argv, sub)
   return undefined
 }
 
@@ -200,19 +271,29 @@ function apiEndpoint(argv: readonly string[]): string | undefined {
   return undefined
 }
 
-/** The pull/issue URL the command selects; a URL handed to a body/title flag is text, not a target. */
-function htmlUrlRepo(argv: readonly string[]): string | undefined {
+/** The selector positional of a `gh pr`/`gh issue` command, only when it is a pull/issue URL; a URL in `--search`/`--body`/… is text. */
+function selectorUrlRepo(argv: readonly string[], sub: string): string | undefined {
+  const valueFlags = SELECTOR_VALUE_FLAGS[sub]
   let skipValue = false
+  let endOfFlags = false
   for (const a of argv.slice(2)) {
     if (skipValue) {
       skipValue = false
       continue
     }
-    if (PR_ISSUE_VALUE_FLAGS.has(a)) {
-      skipValue = true
-      continue
+    if (!endOfFlags && a.startsWith('-') && a !== '-') {
+      if (a === '--') {
+        endOfFlags = true
+        continue
+      }
+      if (a.includes('=')) continue // `--flag=value` is self-contained
+      if (valueFlags?.has(a)) {
+        skipValue = true
+        continue
+      }
+      continue // an unknown flag is treated as a boolean; a stray value then reads as a non-URL selector below
     }
-    if (HTML_URL_RE.test(a)) return a
+    return HTML_URL_RE.test(a) ? a : undefined
   }
   return undefined
 }
