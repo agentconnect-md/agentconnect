@@ -286,6 +286,7 @@ export function buildHttpApp(
   const hookRepo = new PgHookRepo(prisma)
   const hookSecretStore = new PgHookSecretStore(prisma, cipher)
   const githubInstallationRepo = new PgGithubInstallationRepo(prisma)
+  const agentRepoAuthRepo = new PgAgentRepoAuthorizationRepo(prisma)
   // An empty relay registry ⇒ multi-agent installs 409 (no relay) and hook broadcasts are
   // no-ops — exactly the prod graph with no relay dialed in, unless a test wires one up.
   const relayReg = new RelayRegistry()
@@ -327,7 +328,9 @@ export function buildHttpApp(
     skillSourceRepo,
     organizationKnowledgeRepo,
     undefined,
-    organizationEnvironmentResolver
+    organizationEnvironmentResolver,
+    undefined,
+    agentRepoAuthRepo
   )
   const agentDelivery = new AgentDelivery({ control: sender, specs: agentSpecs, placement: placementResolver })
 
@@ -397,7 +400,7 @@ export function buildHttpApp(
       org: orgRepo,
       waitlist: waitlistRepo,
       githubInstallation: githubInstallationRepo,
-      agentRepoAuth: new PgAgentRepoAuthorizationRepo(prisma),
+      agentRepoAuth: agentRepoAuthRepo,
       integration: integrationRepo,
       bot: botRepo,
       botSecret: botSecretStore,

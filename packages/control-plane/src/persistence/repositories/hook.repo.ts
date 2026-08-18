@@ -62,6 +62,7 @@ import {
 } from '../review-projection-lock.js'
 import { authoritativeHookProjectionState } from '../../github/projection-state.js'
 import { AgentWorkspaceIntegrationConflict, HookMissing } from '../errors.js'
+import { bumpAgentConfigRevisions } from './organization-environment-fence.js'
 
 type HookWithUsers = HookDef & {
   createdBy: User | null
@@ -1023,10 +1024,24 @@ export class PgHookRepo implements HookRepo {
           data: { name: repoFullName }
         })
       }
+      // The grants carry the renamed display name into `workspace.additionalRepos`,
+      // so their owners join the same configuration-ordering domain as the workspace
+      // agents below — read the owners BEFORE the write erases the predicate.
+      const renamedGrantAgentIds = [
+        ...new Set(
+          (
+            await tx.agentRepoAuthorization.findMany({
+              where: { repoId, agent: { orgId }, repoFullName: { not: repoFullName } },
+              select: { agentId: true }
+            })
+          ).map((row) => row.agentId)
+        )
+      ]
       await tx.agentRepoAuthorization.updateMany({
         where: { repoId, agent: { orgId }, repoFullName: { not: repoFullName } },
         data: { repoFullName }
       })
+      await bumpAgentConfigRevisions(tx, renamedGrantAgentIds)
       const gitRepo = normalizeGitUrl(repoFullName)
       const workspaceWhere = {
         orgId,

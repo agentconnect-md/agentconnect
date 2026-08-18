@@ -215,6 +215,11 @@ export const AgentSchema = z.object({
     // clone/fetch/push authenticate via the local credential helper backed by
     // CP-minted short-lived installation tokens — nothing durable on this host.
     gitCredential: z.enum(['github-app']).optional(),
+    // The agent's additional-repository allowlist, replicated from the CP
+    // (multi-repository-workspaces.md decision 2). A later phase materializes these
+    // as secondary workspace roots; nothing reads the list yet. `repoId` is GitHub's
+    // numeric repository id as a decimal string, so a rename cannot orphan an entry.
+    additionalRepos: z.array(z.object({ repoFullName: z.string(), repoId: z.string() })).default([]),
     pullOnNewSession: z.boolean().default(true),
     // DEPRECATED: superseded by the top-level `skills` field (AgentSkillEntry[]).
     // Kept so historical agent.json files still parse; nothing consumes it.

@@ -21,6 +21,7 @@ import { GithubApiError } from '../../github/api.js'
 import { UserAuthzDeniedError } from '../../github/user-authz.js'
 import { LogtoApiError } from '../../github/logto-identity.js'
 import { AgentId, OrgId } from '../../domain/ids.js'
+import { NoConnection } from '../../orchestrator/outbound.js'
 import { orgOf, denyViewerWrite, ctxOf } from '../rbac.js'
 import { canView } from '../../authorization/policy.js'
 import { Tag } from '../plugins/openapi.js'
@@ -75,6 +76,25 @@ export function agentRepoRoutes(deps: HttpDeps) {
     }
     const agentNotFound = (reply: FastifyReply) =>
       reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
+
+    // A grant rides `AgentSpec.workspace.additionalRepos`, so authorizing or revoking
+    // one is a spec edit. Re-read the agent (the repo advanced its configRevision in
+    // the same transaction) and push, exactly as the agents route's replicateUpsert.
+    // Best-effort: the register/ok reconcile roster is the backstop.
+    const replicateUpsert = async (agent: AgentRecord): Promise<void> => {
+      const fresh = await deps.repos.agent.get(agent.orgId, agent.id)
+      if (!fresh) return
+      await deps.agentDelivery.upsert(fresh, (err, daemonId) => {
+        if (err instanceof NoConnection) {
+          app.log.debug({ agentId: agent.id, daemonId }, 'agent/upsert skipped: daemon offline')
+        } else {
+          app.log.warn(
+            { err, agentId: agent.id, daemonId },
+            'agent/upsert live reconcile failed (backstop: reconnect roster)'
+          )
+        }
+      })
+    }
 
     r.get(
       '/agents/:agentId/repos',
@@ -216,6 +236,7 @@ export function agentRepoRoutes(deps: HttpDeps) {
               details: { repoAuthId: row.id, repoFullName: row.repoFullName, access: row.access }
             })
             .catch(() => {})
+          await replicateUpsert(agent)
           return toDto(row)
         } catch (e) {
           if (e instanceof UserAuthzDeniedError) {
@@ -400,6 +421,7 @@ export function agentRepoRoutes(deps: HttpDeps) {
             details: { repoAuthId: row.id, repoFullName: row.repoFullName, redundantWorkspaceGrant }
           })
           .catch(() => {})
+        await replicateUpsert(agent)
         return reply.code(204).send(null)
       }
     )

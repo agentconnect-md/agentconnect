@@ -227,4 +227,17 @@ describe('AgentSchema defaults', () => {
     })
     expect(parsed.permissionMode).toBe('default')
   })
+
+  it('round-trips the CP-replicated additional-repository allowlist, defaulting to none', () => {
+    const base = { id: 'x', name: 'x', status: 'active', runtime: 'claude', integrations: [] }
+    const additionalRepos = [{ repoFullName: 'example-co/shared-library', repoId: '815' }]
+
+    expect(
+      AgentSchema.parse({ ...base, workspace: { mode: 'from-scratch', path: './workspace' } }).workspace.additionalRepos
+    ).toEqual([])
+    expect(
+      AgentSchema.parse({ ...base, workspace: { mode: 'from-scratch', path: './workspace', additionalRepos } })
+        .workspace.additionalRepos
+    ).toEqual(additionalRepos)
+  })
 })

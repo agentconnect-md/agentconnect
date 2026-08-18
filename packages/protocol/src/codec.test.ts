@@ -401,6 +401,7 @@ describe('agent spec / CRUD frames (CP→daemon spec sync)', () => {
     expect(ws.agentDir).toBe('./services/api')
     expect(ws.branch).toBe('main') // zod default
     expect(ws.isolation).toBe('shared')
+    expect(ws.additionalRepos).toEqual([]) // zod default
   })
 
   it('spec.workspace accepts scratch with explicit-repo GitHub credentials', () => {
@@ -415,8 +416,36 @@ describe('agent spec / CRUD frames (CP→daemon spec sync)', () => {
     expect(r.frame.payload.spec.workspace).toEqual({
       mode: 'scratch',
       isolation: 'shared',
-      gitCredential: 'github-app'
+      gitCredential: 'github-app',
+      additionalRepos: []
     })
+  })
+
+  it('spec.workspace round-trips the additional-repository allowlist on both modes', () => {
+    const additionalRepos = [
+      { repoFullName: 'acme/infra', repoId: '4711' },
+      { repoFullName: 'example-co/shared-library', repoId: '815' }
+    ]
+    const scratch = decodeEnvelope(
+      envelope('agent/upsert', {
+        agentId: AGENT_ID,
+        spec: { name: 'fresh', workspace: { mode: 'scratch', gitCredential: 'github-app', additionalRepos } }
+      })
+    )
+    if (!scratch.ok || !isFrame('agent/upsert')(scratch.frame)) throw new Error('expected agent/upsert')
+    expect(scratch.frame.payload.spec.workspace?.additionalRepos).toEqual(additionalRepos)
+
+    const github = decodeEnvelope(
+      envelope('agent/upsert', {
+        agentId: AGENT_ID,
+        spec: {
+          name: 'deploy-bot',
+          workspace: { mode: 'github', gitRepo: 'https://github.com/acme/primary-service', additionalRepos }
+        }
+      })
+    )
+    if (!github.ok || !isFrame('agent/upsert')(github.frame)) throw new Error('expected agent/upsert')
+    expect(github.frame.payload.spec.workspace?.additionalRepos).toEqual(additionalRepos)
   })
 
   it('agent/upsert and agent/remove decode for live CRUD', () => {

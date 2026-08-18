@@ -444,7 +444,8 @@ describe('AgentMoveService', () => {
     expect(t.activations[1]?.spec.workspace).toEqual({
       mode: 'scratch',
       isolation: 'shared',
-      gitCredential: 'github-app'
+      gitCredential: 'github-app',
+      additionalRepos: []
     })
     expect(BigInt(t.activations[1]!.spec.configRevision!)).toBeGreaterThan(
       BigInt(t.activations[0]!.spec.configRevision!)

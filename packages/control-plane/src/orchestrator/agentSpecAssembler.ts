@@ -19,12 +19,14 @@ import {
   normalizeGitCloneUrl,
   normalizeGithubRepoUrl,
   redactGitUrlSecrets,
+  type AgentAdditionalRepo,
   type AgentSkillEntry,
   type ManagedSkillEntry,
   type AgentSpec
 } from '@agentconnect.md/protocol'
 import type {
   AgentRecord,
+  AgentRepoAuthorizationRepo,
   AgentSecretStore,
   OrganizationEnvironmentResolver,
   OrganizationKnowledgeRepo,
@@ -59,18 +61,23 @@ export class AgentSpecAssembler {
     // Reports a key that resolved to nothing — an organization variable colliding
     // with an agent secret, or an organization secret with no stored material (§9).
     // ID/key only: never a value.
-    private readonly onTombstonedEnvironmentKeys?: (agentId: string, keys: readonly string[]) => void
+    private readonly onTombstonedEnvironmentKeys?: (agentId: string, keys: readonly string[]) => void,
+    // Optional for minimal test graphs: the agent's additional-repository allowlist,
+    // projected onto the workspace (multi-repository-workspaces.md decision 2).
+    // Absent ⇒ [], exactly the pre-feature projection.
+    private readonly agentRepoAuth?: AgentRepoAuthorizationRepo
   ) {}
 
   /** Fetch the agent's secret values + resolve its skills, then project the spec. */
   async assemble(a: AgentRecord): Promise<AssembledAgentSpec> {
-    const [secrets, skillEntries, managedSkillEntries, organization] = await Promise.all([
+    const [secrets, skillEntries, managedSkillEntries, organization, additionalRepos] = await Promise.all([
       this.secrets.get(a.orgId, a.id),
       resolveAgentSkillEntries(a, this.skillSources, (invalid) => this.onInvalidSkillSource?.(a.id, invalid)),
       this.managedSkillsOf(a),
-      this.organizationEnvironmentOf(a)
+      this.organizationEnvironmentOf(a),
+      this.additionalReposOf(a)
     ])
-    return this.project(a, secrets, skillEntries, managedSkillEntries, organization)
+    return this.project(a, secrets, skillEntries, managedSkillEntries, organization, additionalRepos)
   }
 
   /** The organization contribution to one agent's effective environment. */
@@ -105,6 +112,16 @@ export class AgentSpecAssembler {
    *  exposed here so move code needs no separate secrets dependency. */
   secretsOf(a: Pick<AgentRecord, 'id' | 'orgId'>): Promise<Record<string, string>> {
     return this.secrets.get(a.orgId, a.id)
+  }
+
+  /** The agent's authorized additional repositories, sorted by full name so the
+   *  projection is stable (a reordered read must not change the spec digest).
+   *  Pinned into the move {@link MoveBundle} for the same reason as skills. */
+  async additionalReposOf(a: Pick<AgentRecord, 'id'>): Promise<AgentAdditionalRepo[]> {
+    const rows = (await this.agentRepoAuth?.listForAgent(a.id)) ?? []
+    return rows
+      .map((row) => ({ repoFullName: row.repoFullName, repoId: row.repoId.toString() }))
+      .sort((x, y) => (x.repoFullName < y.repoFullName ? -1 : x.repoFullName > y.repoFullName ? 1 : 0))
   }
 
   /** Resolve the agent's skill entries — pinned into the move {@link MoveBundle} so
@@ -154,14 +171,23 @@ export class AgentSpecAssembler {
     secrets: Record<string, string>,
     skillEntries: AgentSkillEntry[],
     managedSkillEntries: ManagedSkillEntry[] = [],
-    organization: OrganizationEnvironmentValues = emptyOrganizationEnvironmentValues()
+    organization: OrganizationEnvironmentValues = emptyOrganizationEnvironmentValues(),
+    additionalRepos: AgentAdditionalRepo[] = []
   ): AssembledAgentSpec {
     // Resolve by key across both sources BEFORE splitting into the two wire maps
     // (organization-secrets-and-variables.md §3.2), so the winner of a collision
     // is deterministic and a write-only key can never be declassified into `env`.
     const effective = resolveEffectiveEnvironment(a.env, secrets, organization)
     if (effective.tombstoned.length > 0) this.onTombstonedEnvironmentKeys?.(a.id, effective.tombstoned)
-    return agentRecordToSpec(a, effective.secrets, this.iconBases, skillEntries, managedSkillEntries, effective.env)
+    return agentRecordToSpec(
+      a,
+      effective.secrets,
+      this.iconBases,
+      skillEntries,
+      managedSkillEntries,
+      effective.env,
+      additionalRepos
+    )
   }
 }
 
@@ -182,7 +208,10 @@ export function agentRecordToSpec(
   // The RESOLVED variable map (agent-local merged with assigned organization
   // entries). Defaults to the agent's own env so a caller with no organization
   // context — hand-authored tests, minimal graphs — behaves exactly as before.
-  env: Record<string, string> = a.env
+  env: Record<string, string> = a.env,
+  // The agent's `AgentRepoAuthorization` rows, already sorted by full name.
+  // Defaults to [] so a caller with no allowlist context projects as before.
+  additionalRepos: AgentAdditionalRepo[] = []
 ): AssembledAgentSpec {
   // Domain AgentWorkspace uses `gitBranch`; the wire AgentWorkspace uses `branch`.
   // App-backed GitHub workspaces have one implicit repo. Scratch workspaces have
@@ -201,9 +230,10 @@ export function agentRecordToSpec(
               : normalizeGitCloneUrl(redactGitUrlSecrets(a.workspace.gitRepo)),
           branch: a.workspace.gitBranch ?? 'main',
           ...(a.workspace.agentDir !== undefined ? { agentDir: a.workspace.agentDir } : {}),
-          ...(a.workspace.installationId !== undefined ? { gitCredential: 'github-app' as const } : {})
+          ...(a.workspace.installationId !== undefined ? { gitCredential: 'github-app' as const } : {}),
+          additionalRepos
         }
-      : { mode: 'scratch', isolation: a.workspace.isolation ?? 'shared', gitCredential: 'github-app' }
+      : { mode: 'scratch', isolation: a.workspace.isolation ?? 'shared', gitCredential: 'github-app', additionalRepos }
   return {
     agentId: a.id,
     orgId: a.orgId,

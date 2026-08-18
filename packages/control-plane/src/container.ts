@@ -515,7 +515,9 @@ export function buildContainer(
       http.log.error(
         { agentId, keys },
         'organization environment keys resolved to nothing and were removed from the agent projection'
-      )
+      ),
+    // The additional-repository allowlist the workspace projection mirrors.
+    repos.agentRepoAuth
   )
 
   // Browser webchat token mint/verify (§10, A4): a short-lived HS256 JWT bound to
