@@ -1098,7 +1098,8 @@ export function agentRoutes(deps: HttpDeps) {
 
     // Reflect an enable-list edit onto every daemon serving the agent (a duty holder installed
     // the same list and needs the same defs): provision the newly-enabled registry providers,
-    // retire the disabled ones that nobody there still uses.
+    // retire the disabled ones that nobody there still uses. Never throws — its callers have
+    // already committed the row, and a failed sync converges on the daemon's next register.
     const syncMcpDefsForAgent = async (
       agent: AgentRecord,
       before: readonly string[],
@@ -1107,10 +1108,14 @@ export function agentRoutes(deps: HttpDeps) {
       const added = after.filter((n) => !before.includes(n))
       const removed = before.filter((n) => !after.includes(n))
       if (added.length === 0 && removed.length === 0) return
-      const targets = await deps.agentDelivery.daemonsFor(agent)
-      if (targets.length === 0) return
-      await pushMcpDefs(await registryProvidersOf(agent.orgId, added), targets)
-      await dropMcpDefsIfUnused(agent.orgId, await registryProvidersOf(agent.orgId, removed), targets)
+      try {
+        const targets = await deps.agentDelivery.daemonsFor(agent)
+        if (targets.length === 0) return
+        await pushMcpDefs(await registryProvidersOf(agent.orgId, added), targets)
+        await dropMcpDefsIfUnused(agent.orgId, await registryProvidersOf(agent.orgId, removed), targets)
+      } catch (err) {
+        app.log.warn({ agentId: agent.id, err }, 'mcp def sync failed (reconcile will converge)')
+      }
     }
 
     // A caller may DISABLE a registry MCP provider they can't see (one already on the
