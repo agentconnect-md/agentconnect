@@ -1,4 +1,5 @@
-import type { ToolDescriptor } from './tools.js'
+import type { ToolDescriptor } from './tool-descriptor.js'
+import { MEMORY_ACCESS_BLOCKED } from '../memory/tools.js'
 import type { MemoryProvider, MemoryScope } from '../memory/provider.js'
 import {
   rootPostNeedsThreadMaterialization,
@@ -378,12 +379,6 @@ export interface ReplyGithubReviewThreadsResult {
     commentId?: string
   }>
 }
-
-/** Refusal surfaced to the model when an isolated session tries to access
- *  agent memory shared with other users. Phrased so the agent stops retrying
- *  instead of attempting to reconstruct or persist the content another way. */
-export const MEMORY_ACCESS_BLOCKED =
-  'Shared agent memory is unavailable in this session. Keep the information in this conversation instead; do not retry.'
 
 /**
  * A peer-discovery request, i.e. `ChannelAgentsReq` plus the caller's own session

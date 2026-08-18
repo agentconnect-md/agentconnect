@@ -34,8 +34,8 @@ import type {
 } from '@agentconnect.md/protocol'
 import { randomUUID } from 'node:crypto'
 import type { RuntimeDef } from '../config/config-schema.js'
-import type { ToolDescriptor } from '../mcp/tools.js'
-import { MEMORY_TOOLS, externalMemoryTools } from '../mcp/tools.js'
+import type { ToolDescriptor } from '../mcp/tool-descriptor.js'
+import { MEMORY_TOOLS, externalMemoryTools } from './tools.js'
 import {
   ensureMemory,
   readIndex,
