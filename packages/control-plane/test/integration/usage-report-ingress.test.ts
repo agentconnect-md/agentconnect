@@ -311,15 +311,28 @@ describe('the shared store semantics both adapters get', () => {
         usage: { costCurrency: 'USD', ...usage }
       })
     const checkpoint = () => prisma.sessionSpend.findFirst({ where: { agentId: AGENT_A, sessionId: 'monotonic' } })
+    const snapshot = () =>
+      prisma.sessionUsage.findUnique({
+        where: { agentId_sessionId: { agentId: AGENT_A, sessionId: 'monotonic' } }
+      })
+    /** The snapshot and the checkpoint are read by different surfaces — `get()` and the
+     *  session views from one, the aggregate's cost breakdowns from the other — so a
+     *  decision that lands in only one of them is a bug even when each looks right. */
+    const expectBothAt = async (totalTokens: number, cost: string) => {
+      const [snap, row] = await Promise.all([snapshot(), checkpoint()])
+      expect({ totalTokens: snap!.totalTokens, cost: snap!.costAmount.toFixed(2) }).toEqual({ totalTokens, cost })
+      expect({ totalTokens: row!.cumulativeTotalTokens, cost: row!.cumulativeCost.toFixed(2) }).toEqual({
+        totalTokens,
+        cost
+      })
+    }
 
     it('ignores a straggler retry whose cumulative went backwards', async () => {
       await seedAgent(prisma, AGENT_A)
       await write({ totalTokens: 1000, costAmount: '12.75' })
       await write({ totalTokens: 400, costAmount: '5' }) // overtaken by the newer delivery
 
-      const row = await checkpoint()
-      expect(row!.cumulativeCost.toFixed(2)).toBe('12.75')
-      expect(row!.cumulativeTotalTokens).toBe(1000)
+      await expectBothAt(1000, '12.75')
       // One row either way: the straggler is dropped, not stored beside it.
       expect(await prisma.sessionSpend.count({ where: { agentId: AGENT_A, sessionId: 'monotonic' } })).toBe(1)
     })
@@ -329,9 +342,7 @@ describe('the shared store semantics both adapters get', () => {
       await write({ totalTokens: 1000, costAmount: '12.75' })
       await write({ totalTokens: 1000, costAmount: '12.75' })
 
-      const row = await checkpoint()
-      expect(row!.cumulativeCost.toFixed(2)).toBe('12.75')
-      expect(row!.cumulativeTotalTokens).toBe(1000)
+      await expectBothAt(1000, '12.75')
     })
 
     it('advances on a higher cumulative for the same instant', async () => {
@@ -339,9 +350,7 @@ describe('the shared store semantics both adapters get', () => {
       await write({ totalTokens: 1000, costAmount: '12.75' })
       await write({ totalTokens: 1200, costAmount: '13' })
 
-      const row = await checkpoint()
-      expect(row!.cumulativeCost.toFixed(2)).toBe('13.00')
-      expect(row!.cumulativeTotalTokens).toBe(1200)
+      await expectBothAt(1200, '13.00')
     })
 
     it('ignores a mixed report WHOLE rather than synthesizing a checkpoint', async () => {
@@ -350,9 +359,9 @@ describe('the shared store semantics both adapters get', () => {
       // Higher cost, lower tokens — no delivery ever reported this pair together.
       await write({ totalTokens: 400, costAmount: '20' })
 
-      const row = await checkpoint()
-      expect(row!.cumulativeCost.toFixed(2)).toBe('12.75')
-      expect(row!.cumulativeTotalTokens).toBe(1000)
+      // Both tables: the snapshot used to take this one while the checkpoint refused
+      // it, leaving the session detail and the billing rollup disagreeing.
+      await expectBothAt(1000, '12.75')
     })
 
     it('keeps a regressive retry from making the next window bill twice', async () => {

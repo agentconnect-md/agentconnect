@@ -54,6 +54,41 @@ function amounts(by: Map<string, bigint>): Record<string, DecimalAmount> {
   return Object.fromEntries([...by].map(([key, value]) => [key, unscaleAmount(value)]))
 }
 
+/** "This report does not move any counter backwards", for one table's column names.
+ *  The snapshot and the checkpoint carry the same counters under different names, and
+ *  they MUST agree on whether a report is accepted: gating only one of them lets a
+ *  rejected report half-land, leaving `get()` and the aggregate reading two different
+ *  stories about the same session. */
+function advancesSql(table: string, columns: Readonly<Record<string, string>>): Prisma.Sql {
+  const stored = (column: string) => Prisma.raw(`"${table}"."${column}"`)
+  const incoming = (column: string) => Prisma.raw(`EXCLUDED."${column}"`)
+  return Prisma.join(
+    Object.values(columns).map((column) => Prisma.sql`${stored(column)} <= ${incoming(column)}`),
+    ' AND '
+  )
+}
+
+/** The cumulative counters, per table. Same quantities, different column names. */
+const SNAPSHOT_COUNTERS = {
+  total: 'totalTokens',
+  input: 'inputTokens',
+  output: 'outputTokens',
+  thought: 'thoughtTokens',
+  cachedRead: 'cachedReadTokens',
+  cachedWrite: 'cachedWriteTokens',
+  cost: 'costAmount'
+} as const
+
+const CHECKPOINT_COUNTERS = {
+  total: 'cumulativeTotalTokens',
+  input: 'cumulativeInputTokens',
+  output: 'cumulativeOutputTokens',
+  thought: 'cumulativeThoughtTokens',
+  cachedRead: 'cumulativeCachedReadTokens',
+  cachedWrite: 'cumulativeCachedWriteTokens',
+  cost: 'cumulativeCost'
+} as const
+
 function agentViewerSql(orgId: OrgId, viewer?: ViewCtx): Prisma.Sql {
   const visible = viewer
     ? Prisma.sql`(
@@ -96,7 +131,9 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
     // touched on update. The trailing predicate is the anti-regression fence: a LATE
     // report (an out-of-order delivery, or a slow retry overtaken by a newer one)
     // must not roll the snapshot back, while re-sending the SAME cumulative is still
-    // an idempotent no-op write.
+    // an idempotent no-op write. At the SAME instant it applies exactly the rule the
+    // checkpoint applies below — a report the checkpoint refuses must not half-land
+    // here, or `get()` and the aggregate would tell two stories about one session.
     await this.db.$executeRaw(Prisma.sql`
       INSERT INTO "session_usage" (
         "agentId", "sessionId", "platform", "channel", "source",
@@ -125,7 +162,9 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
         "costCurrency" = EXCLUDED."costCurrency",
         "lastActivityAt" = EXCLUDED."lastActivityAt",
         "updatedAt" = NOW()
-      WHERE "session_usage"."lastActivityAt" <= EXCLUDED."lastActivityAt"
+      WHERE "session_usage"."lastActivityAt" < EXCLUDED."lastActivityAt"
+         OR ("session_usage"."lastActivityAt" = EXCLUDED."lastActivityAt"
+             AND ${advancesSql('session_usage', SNAPSHOT_COUNTERS)})
     `)
     // Usage timeline: each report carries cumulative counters plus the model for
     // the interval that just ended. Readers diff consecutive rows, so model
@@ -166,13 +205,7 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
         "cumulativeCachedReadTokens" = EXCLUDED."cumulativeCachedReadTokens",
         "cumulativeCachedWriteTokens" = EXCLUDED."cumulativeCachedWriteTokens",
         "cumulativeCost" = EXCLUDED."cumulativeCost"
-      WHERE "session_spend"."cumulativeTotalTokens" <= EXCLUDED."cumulativeTotalTokens"
-        AND "session_spend"."cumulativeInputTokens" <= EXCLUDED."cumulativeInputTokens"
-        AND "session_spend"."cumulativeOutputTokens" <= EXCLUDED."cumulativeOutputTokens"
-        AND "session_spend"."cumulativeThoughtTokens" <= EXCLUDED."cumulativeThoughtTokens"
-        AND "session_spend"."cumulativeCachedReadTokens" <= EXCLUDED."cumulativeCachedReadTokens"
-        AND "session_spend"."cumulativeCachedWriteTokens" <= EXCLUDED."cumulativeCachedWriteTokens"
-        AND "session_spend"."cumulativeCost" <= EXCLUDED."cumulativeCost"
+      WHERE ${advancesSql('session_spend', CHECKPOINT_COUNTERS)}
       RETURNING 1
       )
       SELECT (SELECT COUNT(*)::int FROM owner) AS owned,
