@@ -263,6 +263,11 @@ export const CP_IDENTITY_TOKEN_PATH = '/var/run/ac-cp-identity/token'
  *  has no config file to read it from, and a URL is not a secret. Same two-sided agreement as
  *  the token path: the deployment sets it, the daemon reads it. */
 export const CP_URL_ENV = 'AC_CP_URL'
+/** Env var switching an in-cluster daemon's usage reporting off, for a deployment that meters
+ *  upstream of the daemon and needs that plane to be the single writer. Same reason it is an
+ *  env and not a config key alone: an in-cluster daemon has no config file to carry one. Read
+ *  as a boolean — `false`/`0` disable, anything else leaves reporting on. */
+export const USAGE_REPORTING_ENV = 'AC_USAGE_REPORTING'
 /** A pool member's rollout generation (its pod-template hash), reported on register (frames/register.ts). */
 export const POD_TEMPLATE_HASH_ENV = 'AC_POD_TEMPLATE_HASH'
 
