@@ -29,8 +29,8 @@ describe('buildWorkspaceRootsAppend', () => {
     expect(buildWorkspaceRootsAppend(ROOTS)).toBe(
       [
         '# Additional repositories',
-        'Additional repositories checked out for this session (each at its default branch; the working ' +
-          'directory stays the primary workspace):',
+        'Additional repositories checked out for this session (each at its default branch, for reference ' +
+          'only; the working directory is none of them):',
         '- /srv/agents/bot-multi/repos/acme/infra/checkout — acme/infra (trunk)',
         '- /srv/agents/bot-multi/repos/example-co/shared-library/checkout — example-co/shared-library (main)'
       ].join('\n')

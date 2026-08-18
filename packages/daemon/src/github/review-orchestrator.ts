@@ -105,6 +105,8 @@ export interface GithubReviewHost {
     expectedWarmHost?: AcpHost,
     request?: PrepareSessionWorkspaceRequest
   ): Promise<string>
+  /** Whether a prepared session was handed reference directories beside its working directory. */
+  sessionHasReferenceDirectories(agent: Agent, request: PrepareSessionWorkspaceRequest): boolean
   /** The agent's warm ACP host, only once it is ready. */
   warmHostFor(agentId: string): AcpHost | undefined
   anchorTrigger(
@@ -440,7 +442,20 @@ export class GithubReviewOrchestrator {
     }
   }
 
-  githubWorkspaceMatches(agent: Agent, github: GithubHookMetadata): boolean {
+  /**
+   * The workspace root a hook's repository resolves to: the primary, one of the agent's authorized
+   * additional repositories, or none at all — which is what keeps the revision-only fallback a
+   * safety net rather than the ordinary path (multi-repository-workspaces.md decision 6).
+   */
+  reviewRootFor(agent: Agent, github: GithubHookMetadata): 'primary' | { repoFullName: string } | undefined {
+    if (this.githubWorkspaceMatches(agent, github)) return 'primary'
+    const hookRepo = githubRepoKey(github.repoFullName)
+    if (hookRepo === undefined) return undefined
+    const row = (agent.workspace.additionalRepos ?? []).find((entry) => githubRepoKey(entry.repoFullName) === hookRepo)
+    return row ? { repoFullName: row.repoFullName } : undefined
+  }
+
+  private githubWorkspaceMatches(agent: Agent, github: GithubHookMetadata): boolean {
     if (agent.workspace.mode !== 'git-repo' || !agent.workspace.gitRepo) return false
     try {
       const clone = normalizeGitCloneUrl(agent.workspace.gitRepo)
@@ -515,25 +530,34 @@ export class GithubReviewOrchestrator {
         return { workspaceIsolation: 'shared' as const, forceWorkspaceIsolation: true as const }
       }
     }
-    if (!this.githubWorkspaceMatches(agent, github)) {
+    // A secondary root reviews exactly like the primary, with the root swapped (decision 6); no root
+    // at all is what the revision-only fallback exists for.
+    const reviewRoot = this.reviewRootFor(agent, github)
+    if (reviewRoot === undefined) {
       return useRevisionOnlyWorkspace()
     }
 
     try {
-      const preparedWorkspaceCwd = await this.host.prepareAgentWorkspace(agent, warmHost, {
+      const request: PrepareSessionWorkspaceRequest = {
         sessionKey: key,
         isolation: 'session',
         initiatedBy: await this.sessionInitiatorLabel(entry.msg),
+        ...(reviewRoot === 'primary' ? {} : { reviewRepoFullName: reviewRoot.repoFullName }),
         review: {
           pullNumber: github.pullNumber,
           baseSha: github.baseSha,
           headSha: github.headSha,
           ...(github.mergeCommitSha ? { mergeCommitSha: github.mergeCommitSha } : {})
         }
-      })
+      }
+      const preparedWorkspaceCwd = await this.host.prepareAgentWorkspace(agent, warmHost, request)
       entry.msg.text +=
         `\n\nTrusted review workspace:\n${revisionLine}\n` +
-        'The daemon fetched and verified this isolated checkout at the exact head or a merge whose parents are exactly the base and head above. Before trusting local traces, verify `git rev-parse HEAD`; do not switch to or inspect another checkout.'
+        'The daemon fetched and verified this isolated checkout at the exact head or a merge whose parents are exactly the base and head above. Before trusting local traces, verify `git rev-parse HEAD`; do not switch to or inspect another checkout.' +
+        // Decision 10: the other roots stand at their default branches, so only the cwd is the revision.
+        (this.host.sessionHasReferenceDirectories(agent, request)
+          ? ' Additional repositories are available as separate directories at their default branches for reference only; the reviewed revision is the working directory.'
+          : '')
       return { workspaceIsolation: 'session', forceWorkspaceIsolation: true, preparedWorkspaceCwd }
     } catch (err) {
       this.log.warn(
@@ -930,5 +954,16 @@ export class GithubReviewOrchestrator {
       // inline ahead of the footer sentence.
       ...(agent?.iconUrl ? { iconUrl: agent.iconUrl } : {})
     }
+  }
+}
+
+/** A github.com `owner/repo` as roots are compared by it: case-insensitive, blind to `.git`. */
+function githubRepoKey(repoFullName: string): string | undefined {
+  try {
+    return normalizeGithubRepoUrl(repoFullName)
+      .replace(/\.git$/i, '')
+      .toLowerCase()
+  } catch {
+    return undefined
   }
 }

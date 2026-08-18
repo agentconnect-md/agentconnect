@@ -553,7 +553,7 @@ export class SessionManager {
         fileSecrets: fileSecrets.map((m) => ({ sourceVar: m.sourceVar, pointerVar: m.convention.pointerVar })),
         // The same list `additionalWorkspaceDirectories` hands the runtime, read from the same
         // accessor, so the prompt names exactly the directories the session got.
-        workspaceRoots: this.workspaces.readySecondaryRoots(agent, workspaceRequest),
+        workspaceRoots: this.workspaces.sessionAdditionalRoots(agent, workspaceRequest),
         usesSessionTitleTool,
         needsReplyToParent,
         memoryIndex,

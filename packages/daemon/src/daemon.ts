@@ -6201,6 +6201,8 @@ export class Daemon {
       cleanupSessionWorktree: (rec) => this.cleanupSessionWorktree(rec),
       prepareAgentWorkspace: (agent, expectedWarmHost, request) =>
         this.prepareAgentWorkspace(agent, expectedWarmHost, request),
+      sessionHasReferenceDirectories: (agent, request) =>
+        this.workspaces.sessionAdditionalRoots(agent, request).length > 0,
       warmHostFor: (agentId) => (this.readyHosts.has(agentId) ? this.hosts.get(agentId) : undefined),
       anchorTrigger: (agentId, msg, target, anchorText, label, safetyGithubLane) =>
         this.anchorTrigger(agentId, msg, target, anchorText, label, safetyGithubLane),
