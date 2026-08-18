@@ -404,14 +404,9 @@ import type {
   AgentPermissionDecision,
   Ack,
   DaemonControlAck,
-  WebchatAck,
-  WebchatPost,
-  WebchatRuntimeConfig,
   RdWebchatPost,
-  SessionImageAttachment,
   RdMsg,
   RdMsgWebchat,
-  WebchatImageAttachment,
   RdMsgIm,
   RdMsgPlatformAction,
   RdMsgHook,
@@ -426,7 +421,6 @@ import type {
   MemoryDreamingPolicy,
   ChildSessionStatus,
   ChildSessionStatusProbe,
-  WebchatRemoteMcpEntitlement,
   ExternalSessionAudience,
   ExternalSessionOrigin,
   ChannelAgentsOk,
@@ -496,7 +490,7 @@ import {
   type TurnInterruptReason,
   type TurnLifecycleCleanupOutcome
 } from './daemon/turn-types.js'
-import { UUID_RE, type WebchatSink, type WebchatTurnContext, type WebchatTurnStream } from './webchat/types.js'
+import { UUID_RE, type WebchatSink, type WebchatTurnContext } from './webchat/types.js'
 import { WebchatTransport, type WebchatHost } from './webchat/transport.js'
 import { WebchatMcpRevocations, type WebchatMcpRevocationHost } from './webchat/mcp-revocations.js'
 import * as webchatTurnOutput from './webchat/turn-output.js'
@@ -2607,7 +2601,7 @@ export class Daemon {
       // publishes hostStopping, and fences every older startup/retry generation.
       await this.stopHost(id)
       await this.releaseModelSessionHostsForAgent(id)
-      await this.revokeRemoteWebchatGrantsForAgent(id, 'agent_detached')
+      await this.webchatMcpRevocations.revokeRemoteWebchatGrantsForAgent(id, 'agent_detached')
       // Preserve lifecycle/move gates that predated this reconcile. A plain file/CP
       // removal needs no permanent gate once the host is proven stopped (the agent is
       // absent); a later toStart can then serve it normally. Safety-drain state is NOT
@@ -2689,7 +2683,7 @@ export class Daemon {
               `reconcile: model-session teardown failed for "${a.id}" — releasing admission gate anyway: ${formatErr(err)}`
             )
           }
-          await this.revokeRemoteWebchatGrantsForAgent(a.id, 'agent_detached')
+          await this.webchatMcpRevocations.revokeRemoteWebchatGrantsForAgent(a.id, 'agent_detached')
         } finally {
           if (!wasDraining && !this.agentDestructivePending(a.id)) this.drainingAgents.delete(a.id)
         }
@@ -5423,129 +5417,6 @@ export class Daemon {
     await this.dispatch(agentId, msg, integrationId)
   }
 
-  private dispatchWebchatTurn(
-    agentId: string,
-    chatId: string,
-    text: string,
-    user: string,
-    sink: WebchatSink,
-    requestedTurnId?: string,
-    inlineImages?: WebchatImageAttachment[],
-    requestedRuntime?: WebchatRuntimeConfig,
-    remoteMcp?: WebchatRemoteMcpEntitlement,
-    mentions?: string[],
-    post?: { postId: string; at: number },
-    postSink?: (p: RdWebchatPost) => void,
-    requestedWorktree?: boolean
-  ): WebchatAck {
-    return this.webchatTransport.dispatchWebchatTurn(
-      agentId,
-      chatId,
-      text,
-      user,
-      sink,
-      requestedTurnId,
-      inlineImages,
-      requestedRuntime,
-      remoteMcp,
-      mentions,
-      post,
-      postSink,
-      requestedWorktree
-    )
-  }
-
-  private dispatchWebchatContinuationTurn(
-    agentId: string,
-    chatId: string,
-    targetSessionId: string,
-    text: string,
-    user: string,
-    sink: WebchatSink,
-    requestedTurnId?: string
-  ): Promise<WebchatAck> {
-    return this.webchatTransport.dispatchWebchatContinuationTurn(
-      agentId,
-      chatId,
-      targetSessionId,
-      text,
-      user,
-      sink,
-      requestedTurnId
-    )
-  }
-
-  private handleWebchatClose(conversationId: string): void {
-    this.webchatTransport.handleWebchatClose(conversationId)
-  }
-
-  private webchatSessionKey(conversationId: string, agentId: string): string {
-    return this.webchatTransport.webchatSessionKey(conversationId, agentId)
-  }
-
-  private webchatStreamKey(turnId: string, agentId: string): string {
-    return this.webchatTransport.webchatStreamKey(turnId, agentId)
-  }
-
-  private createWebchatTurnStream(
-    agentId: string,
-    conversationId: string,
-    turnId: string,
-    transport: WebchatSink,
-    runtime?: WebchatRuntimeConfig,
-    remoteMcp?: WebchatRemoteMcpEntitlement,
-    worktree?: boolean
-  ): WebchatTurnStream {
-    return this.webchatTransport.createWebchatTurnStream(
-      agentId,
-      conversationId,
-      turnId,
-      transport,
-      runtime,
-      remoteMcp,
-      worktree
-    )
-  }
-
-  private webchatWakeContext(platform: string, conversationId: string): WebchatTurnContext | undefined {
-    return this.webchatTransport.webchatWakeContext(platform, conversationId)
-  }
-
-  private postAgentWakeInbound(webchat: WebchatTurnContext | undefined, msg: NormalizedMessage): void {
-    this.webchatTransport.postAgentWakeInbound(webchat, msg)
-  }
-
-  private publishWebchatStreamEvent(stream: WebchatTurnStream, event: RdChatEvent): void {
-    this.webchatTransport.publishWebchatStreamEvent(stream, event)
-  }
-
-  private bufferWebchatStreamEvent(stream: WebchatTurnStream, event: RdChatEvent): void {
-    this.webchatTransport.bufferWebchatStreamEvent(stream, event)
-  }
-
-  private deliverWebchatStreamEvent(sink: WebchatSink, event: RdChatEvent): void {
-    this.webchatTransport.deliverWebchatStreamEvent(sink, event)
-  }
-
-  private resumeWebchatStream(
-    agentId: string,
-    conversationId: string,
-    turnId: string,
-    generation: number,
-    afterIndex: number,
-    transport: WebchatSink
-  ): { accepted: boolean; turnId?: string; reason?: string } {
-    return this.webchatTransport.resumeWebchatStream(agentId, conversationId, turnId, generation, afterIndex, transport)
-  }
-
-  private removeWebchatStream(streamKey: string, stream: WebchatTurnStream): void {
-    this.webchatTransport.removeWebchatStream(streamKey, stream)
-  }
-
-  private pruneWebchatStreams(): void {
-    this.webchatTransport.pruneWebchatStreams()
-  }
-
   /** Apply the Agent's configured runtime policy to one live session. Callers that
    *  fence a pending prompt await this; reconciliation fans it out in the background. */
   private async applyConfiguredRuntimeSettings(agent: LoadedAgent, host: AcpHost, sessionId: string): Promise<void> {
@@ -5594,10 +5465,6 @@ export class Daemon {
           this.log.warn(`restore configured runtime settings failed for "${session.key}": ${formatErr(err)}`)
         )
     }
-  }
-
-  private handleWebchatCancel(conversationId: string, agentId?: string): void {
-    this.webchatTransport.handleWebchatCancel(conversationId, agentId)
   }
 
   // Idempotency cache for the at-least-once rd/* wire. IM deliveries additionally
@@ -6337,7 +6204,7 @@ export class Daemon {
         msg.toAgentId,
         reply,
         replyIntegrationId,
-        this.webchatWakeContext(origin.platform, origin.channel),
+        this.webchatTransport.webchatWakeContext(origin.platform, origin.channel),
         callMeta
       ).catch((err) =>
         this.log.error(`relay lineage-reply dispatch failed for agent "${msg.toAgentId}": ${formatErr(err)}`)
@@ -6462,7 +6329,7 @@ export class Daemon {
       msg.toAgentId,
       normalized,
       integrationId,
-      this.webchatWakeContext(platform, sessionChannel),
+      this.webchatTransport.webchatWakeContext(platform, sessionChannel),
       callMeta,
       { ...(pairingKey !== undefined ? { requireDurable: true } : {}) }
     ).catch((err) => {
@@ -6928,7 +6795,7 @@ export class Daemon {
       req.toAgentId,
       normalized,
       integrationId,
-      this.webchatWakeContext(platform, coordChannel),
+      this.webchatTransport.webchatWakeContext(platform, coordChannel),
       callMeta,
       { ...(pairingKey !== undefined ? { requireDurable: true } : {}) }
     ).catch((err) => {
@@ -7178,7 +7045,7 @@ export class Daemon {
         originOwner,
         normalized,
         integrationId,
-        this.webchatWakeContext(originPlatform, local.channel),
+        this.webchatTransport.webchatWakeContext(originPlatform, local.channel),
         callMeta,
         {
           onAdmission: (result) => {
@@ -8258,7 +8125,7 @@ export class Daemon {
       done: (d) => chat({ kind: 'done', done: d })
     }
     const op = msg.payload
-    const key = (): string => this.webchatSessionKey(msg.chatId, msg.agentId)
+    const key = (): string => this.webchatTransport.webchatSessionKey(msg.chatId, msg.agentId)
     // Session-targeted continuation: `turn` dispatches onto the target session's
     // own coordinates; runtime-set ops are refused (this ingress adds human
     // input, never session-global administration); a context copy is a no-op
@@ -8268,20 +8135,22 @@ export class Daemon {
     if (msg.targetSessionId !== undefined) {
       switch (op.op) {
         case 'turn':
-          return this.dispatchWebchatContinuationTurn(
-            msg.agentId,
-            msg.chatId,
-            msg.targetSessionId,
-            op.text,
-            op.user ?? 'webchat',
-            sink,
-            op.turnId
-          ).then((ack) => ({
-            msgId: msg.msgId,
-            accepted: ack.accepted,
-            turnId: ack.turnId,
-            ...(ack.reason ? { reason: ack.reason } : {})
-          }))
+          return this.webchatTransport
+            .dispatchWebchatContinuationTurn(
+              msg.agentId,
+              msg.chatId,
+              msg.targetSessionId,
+              op.text,
+              op.user ?? 'webchat',
+              sink,
+              op.turnId
+            )
+            .then((ack) => ({
+              msgId: msg.msgId,
+              accepted: ack.accepted,
+              turnId: ack.turnId,
+              ...(ack.reason ? { reason: ack.reason } : {})
+            }))
         case 'set_model':
         case 'set_effort':
         case 'set_permission_mode':
@@ -8295,7 +8164,7 @@ export class Daemon {
     }
     switch (op.op) {
       case 'turn': {
-        const ack = this.dispatchWebchatTurn(
+        const ack = this.webchatTransport.dispatchWebchatTurn(
           msg.agentId,
           msg.chatId,
           op.text,
@@ -8318,17 +8187,25 @@ export class Daemon {
         }
       }
       case 'context': {
-        const landedTs = this.recordWebchatContextPost(msg.agentId, msg.chatId, op.post)
+        const landedTs = this.webchatTransport.recordWebchatContextPost(msg.agentId, msg.chatId, op.post)
         // webchat-multi-agents.md §5.2a (#549 parity): an agent-authored peer post
         // does not stay transcript-only — it may continue the conversation for THIS
         // pre-addressed participant. Recording above is unconditional and the ack is
         // unchanged; the activation decision runs its own edge checks and is
         // fire-and-forget, exactly like the `turn` dispatch below it.
-        if (landedTs !== undefined) this.maybeActivateWebchatContinuation(msg.agentId, msg.chatId, op.post, landedTs)
+        if (landedTs !== undefined)
+          this.webchatTransport.maybeActivateWebchatContinuation(msg.agentId, msg.chatId, op.post, landedTs)
         return { msgId: msg.msgId, accepted: true }
       }
       case 'resume': {
-        const resumed = this.resumeWebchatStream(msg.agentId, msg.chatId, op.turnId, op.generation, op.afterIndex, sink)
+        const resumed = this.webchatTransport.resumeWebchatStream(
+          msg.agentId,
+          msg.chatId,
+          op.turnId,
+          op.generation,
+          op.afterIndex,
+          sink
+        )
         return {
           msgId: msg.msgId,
           accepted: resumed.accepted,
@@ -8353,45 +8230,12 @@ export class Daemon {
           ? { msgId: msg.msgId, accepted: true }
           : { msgId: msg.msgId, accepted: false, reason: 'runtime changes are disabled in chat' }
       case 'cancel':
-        this.handleWebchatCancel(msg.chatId, op.agentId ?? msg.agentId)
+        this.webchatTransport.handleWebchatCancel(msg.chatId, op.agentId ?? msg.agentId)
         return { msgId: msg.msgId, accepted: true }
       case 'close':
-        this.handleWebchatClose(msg.chatId)
+        this.webchatTransport.handleWebchatClose(msg.chatId)
         return { msgId: msg.msgId, accepted: true }
     }
-  }
-
-  private appendWebchatTextRow(
-    channel: string,
-    thread: string,
-    ts: string,
-    entry: {
-      sender: string
-      recipient?: string
-      text: string
-      postId?: string
-      trustedAgentBot?: boolean
-      attachments?: SessionImageAttachment[]
-    }
-  ): string {
-    return webchatTurnOutput.appendWebchatTextRow(this.store, channel, thread, ts, entry)
-  }
-
-  private flushHeldWebchatText(wc: NonNullable<Pending['webchat']>): void {
-    webchatTurnOutput.flushHeldWebchatText(wc)
-  }
-
-  private recordWebchatContextPost(agentId: string, chatId: string, contextPost: WebchatPost): string | undefined {
-    return this.webchatTransport.recordWebchatContextPost(agentId, chatId, contextPost)
-  }
-
-  private maybeActivateWebchatContinuation(
-    targetAgentId: string,
-    chatId: string,
-    contextPost: WebchatPost,
-    landedTs: string
-  ): void {
-    this.webchatTransport.maybeActivateWebchatContinuation(targetAgentId, chatId, contextPost, landedTs)
   }
 
   /** Record an unrouted inbound message into the transcript iff a session is
@@ -9676,7 +9520,7 @@ export class Daemon {
           })
           // NOT for §5.2a continuation wakes: their inbound IS a committed peer post the
           // browser already rendered — re-posting it would duplicate that reply.
-          if (callMeta?.conversationContinuation !== true) this.postAgentWakeInbound(webchat, msg)
+          if (callMeta?.conversationContinuation !== true) this.webchatTransport.postAgentWakeInbound(webchat, msg)
         }
         // §8.6, the ONE place every delivery path settles — live dispatch, queued
         // dispatch, and startup replay alike. Completing the rendezvous here rather than
@@ -11224,7 +11068,7 @@ export class Daemon {
         } else if (trimmedWebchatReply) {
           // A real reply that never diverged from the sentinel prefix mid-stream
           // (shorter than the sentinel) is still held — release it before commit.
-          this.flushHeldWebchatText(p.webchat)
+          webchatTurnOutput.flushHeldWebchatText(p.webchat)
           // A continuation turn records its reply at the platform post boundary instead
           // (appending here would duplicate the row), and its roster is fixed at one.
           if (!p.webchat.continuation) {
@@ -11234,11 +11078,17 @@ export class Daemon {
             // post's canonical `at` (minted ONCE here, the origin) carried to every other
             // participant's copy via rd/webchat-post.
             const replyPostId = randomUUID()
-            const replyTs = this.appendWebchatTextRow(p.transcriptChannel, statusThread, monotonicTs(), {
-              postId: replyPostId,
-              sender: agentId,
-              text: p.webchat.replyText
-            })
+            const replyTs = webchatTurnOutput.appendWebchatTextRow(
+              this.store,
+              p.transcriptChannel,
+              statusThread,
+              monotonicTs(),
+              {
+                postId: replyPostId,
+                sender: agentId,
+                text: p.webchat.replyText
+              }
+            )
             // Fan the completed reply out as a canonical conversation post so the
             // relay delivers it to the browser's message log and to the other
             // participants' daemons as context (webchat-multi-agents.md §5.2).
@@ -11399,7 +11249,7 @@ export class Daemon {
         // Continuation: release any held stream text; the platform branch below owns the
         // visible notice + transcript, and the terminal-error `done` waits behind its
         // apply-chain drain so the console cannot admit a next turn mid-flush.
-        this.flushHeldWebchatText(p.webchat)
+        webchatTurnOutput.flushHeldWebchatText(p.webchat)
       } else if (p.webchat) {
         // Reply text (including a runtime's mirrored error text) already streamed to
         // the client via onAcpUpdate; the terminal done frame carries the reason.
@@ -11420,13 +11270,19 @@ export class Daemon {
         })
         const trimmedPartialReply = p.webchat.replyText.trim()
         if (trimmedPartialReply && !isNoResponseBody(trimmedPartialReply)) {
-          this.flushHeldWebchatText(p.webchat)
+          webchatTurnOutput.flushHeldWebchatText(p.webchat)
           const partialPostId = randomUUID()
-          const replyTs = this.appendWebchatTextRow(p.transcriptChannel, statusThread, monotonicTs(), {
-            postId: partialPostId,
-            sender: agentId,
-            text: p.webchat.replyText
-          })
+          const replyTs = webchatTurnOutput.appendWebchatTextRow(
+            this.store,
+            p.transcriptChannel,
+            statusThread,
+            monotonicTs(),
+            {
+              postId: partialPostId,
+              sender: agentId,
+              text: p.webchat.replyText
+            }
+          )
           // A partial reply is still conversation content the other participants
           // should see — fan it out exactly like the success path. Deliberately
           // WITHOUT the author hopCount stamp: a failed turn's fragment must not
@@ -13341,7 +13197,7 @@ export class Daemon {
     const p = this.pending.get(pendingTurnKey(rec.agentId, rec.acpSessionId))
     if (p && p.sessionKey === key && !p.outputSuppressed) {
       if (p.webchat) {
-        this.emitWebchatUpdate(p, { sessionUpdate: 'session_info_update', title: req.title })
+        webchatTurnOutput.emitWebchatUpdate(p.webchat, { sessionUpdate: 'session_info_update', title: req.title })
       }
       if (turnChromeFor(p.platform).dmSessionTitle && p.isDm && p.conn) {
         this.enqueueApply(p, { kind: 'set-title', text: req.title })
@@ -13521,7 +13377,7 @@ export class Daemon {
     // per mapped chunk, instead of driving the Slack renderer — but still records the
     // full activity log below, so a webchat session reads back like any other.
     // A continuation turn drives BOTH: the browser sink and the platform renderer (§5.2).
-    if (p.webchat) this.emitWebchatUpdate(p, update)
+    if (p.webchat) webchatTurnOutput.emitWebchatUpdate(p.webchat, update)
     if ((!p.webchat || p.webchat.continuation) && !isHeadlessGithubFinal && !(p.stageAnswer && isAnswerChunk)) {
       for (const action of p.conv.onUpdate(update)) this.enqueueApply(p, action)
       this.armIdle(p)
@@ -13529,10 +13385,6 @@ export class Daemon {
     }
     // Full activity log (tool/reasoning), recorded regardless of output mode.
     for (const ev of p.rec.onUpdate(update)) this.recordEvent(p.agentId, p.transcriptChannel, p.statusThread, ev)
-  }
-
-  private emitWebchatUpdate(p: Pending, update: any): void {
-    webchatTurnOutput.emitWebchatUpdate(p.webchat!, update)
   }
 
   /** Persist one internal activity event (tool/reasoning). Ordered by row `seq`, so its
@@ -15198,7 +15050,7 @@ export class Daemon {
     if (closed.length) this.log.info(`idle: TTL-closed ${closed.length} session(s) (>${Math.round(ttl / 1000)}s)`)
     // A failed remote revoke is queued durably by the grant ledger; the periodic
     // drain below (and the CP READY replay) delivers it eventually.
-    void this.drainWebchatMcpRevocations()
+    void this.webchatMcpRevocations.drainWebchatMcpRevocations()
     for (const row of closed) {
       void this.releaseModelSessionHost(row.key).catch((error) =>
         this.log.warn(`key-server session cleanup failed for ${row.key} (${formatErr(error)})`)
@@ -15482,14 +15334,14 @@ export class Daemon {
       await this.stopSelectedTurnHosts(targets)
       for (const id of [...this.hosts.keys()]) await this.stopHost(id)
       for (const key of [...this.modelSessionHosts.keys()]) await this.releaseModelSessionHost(key)
-      await this.revokeAllRemoteWebchatGrants('agent_detached')
+      await this.webchatMcpRevocations.revokeAllRemoteWebchatGrants('agent_detached')
       this.draining = false
       released = matched
     } else if (drain.scope.kind === 'agent') {
       await this.stopSelectedTurnHosts(targets)
       await this.stopHost(drain.scope.agentId)
       await this.releaseModelSessionHostsForAgent(drain.scope.agentId)
-      await this.revokeRemoteWebchatGrantsForAgent(drain.scope.agentId, 'agent_detached')
+      await this.webchatMcpRevocations.revokeRemoteWebchatGrantsForAgent(drain.scope.agentId, 'agent_detached')
       if (!this.agentDestructivePending(drain.scope.agentId)) this.drainingAgents.delete(drain.scope.agentId)
       released = matched
     } else {
@@ -15516,24 +15368,9 @@ export class Daemon {
     // the authority fence below aborts and drains those too.
     await this.stopSelectedTurnHosts(targets)
     await this.quiesceAgentWorkspaceAuthority(agentId)
-    await this.revokeRemoteWebchatGrantsForAgent(agentId, 'agent_detached')
+    await this.webchatMcpRevocations.revokeRemoteWebchatGrantsForAgent(agentId, 'agent_detached')
     // gate intentionally left set (drainScope added it): a stopped agent must not
     // auto-respawn on the next message — agent/launch clears the gate.
-  }
-
-  private revokeAllRemoteWebchatGrants(reason: Parameters<RemoteWebchatGrantManager['revokeAll']>[0]): Promise<void> {
-    return this.webchatMcpRevocations.revokeAllRemoteWebchatGrants(reason)
-  }
-
-  private revokeRemoteWebchatGrantsForAgent(
-    agentId: string,
-    reason: Parameters<RemoteWebchatGrantManager['revokeAgent']>[1]
-  ): Promise<void> {
-    return this.webchatMcpRevocations.revokeRemoteWebchatGrantsForAgent(agentId, reason)
-  }
-
-  private drainWebchatMcpRevocations(): Promise<void> {
-    return this.webchatMcpRevocations.drainWebchatMcpRevocations()
   }
 
   /** Take over the durable work of agents this member has just been made responsible for. On a
@@ -15544,7 +15381,7 @@ export class Daemon {
     const grants = this.store.reclaimWebchatMcpGrants(agentIds, 'session_closed', this.clock.now())
     if (grants) {
       this.log.info(`remote MCP: reclaimed ${grants} grant(s) from a former owner`)
-      void this.drainWebchatMcpRevocations()
+      void this.webchatMcpRevocations.drainWebchatMcpRevocations()
     }
     this.dreamRunner().reclaimDreams(agentIds)
   }
@@ -16004,7 +15841,7 @@ export class Daemon {
         row.agentId,
         msg,
         row.integrationId ?? undefined,
-        msg.source === 'agent' ? this.webchatWakeContext(msg.platform, msg.channel) : undefined,
+        msg.source === 'agent' ? this.webchatTransport.webchatWakeContext(msg.platform, msg.channel) : undefined,
         callMeta,
         {
           ...(row.isQueueCmd ? { isQueueCmd: true } : {}),
@@ -16239,7 +16076,8 @@ export class Daemon {
       gitCredServer: () => this.gitCredServer,
       quiesceAgentWorkspaceAuthority: (agentId) => this.quiesceAgentWorkspaceAuthority(agentId),
       discardClusterSandbox: (agentId) => this.discardClusterSandbox(agentId),
-      revokeRemoteWebchatGrantsForAgent: (agentId, reason) => this.revokeRemoteWebchatGrantsForAgent(agentId, reason),
+      revokeRemoteWebchatGrantsForAgent: (agentId, reason) =>
+        this.webchatMcpRevocations.revokeRemoteWebchatGrantsForAgent(agentId, reason),
       stopAgent: (agentId) => this.stopAgent(agentId),
       stopHost: (agentId, deadlineMs) => this.stopHost(agentId, deadlineMs),
       ensureHostAsync: (agentId, opts) => this.ensureHostAsync(agentId, opts),
@@ -16786,7 +16624,7 @@ export class Daemon {
         void this.drainSessionMetadataSnapshots()
         // Replay remote MCP revocations that could not reach the CP (revokes
         // queued while disconnected or left over from a previous process).
-        void this.drainWebchatMcpRevocations()
+        void this.webchatMcpRevocations.drainWebchatMcpRevocations()
         // ...and the retention-GC receipts (#485). A sweep that ran while the CP
         // was unreachable (or before it advertised the feature) left the deleted
         // sessions' metadata rows unmarked; this is the only side that still knows.
@@ -17626,7 +17464,7 @@ export class Daemon {
     // already queued durably in the grant ledger (and any rows this pass could
     // not deliver are replayed by the next boot's orphan sweep), so shutdown
     // proceeds without losing the revocation obligation.
-    await this.revokeAllRemoteWebchatGrants('session_closed')
+    await this.webchatMcpRevocations.revokeAllRemoteWebchatGrants('session_closed')
     // A grant can land right up to the socket close; its release must be settled before that.
     if (this.shutdownDutyDrain) await this.dutyCoordinator.settleLateGrants(shutdownDrain)
     this.shutdownDutyDrain = undefined

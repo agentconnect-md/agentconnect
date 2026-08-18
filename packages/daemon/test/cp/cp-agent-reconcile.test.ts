@@ -316,10 +316,12 @@ describe('Daemon CP agent → memory + reconcile', () => {
     let markRevokeStarted!: () => void
     const revokeBlocked = new Promise<void>((resolve) => (releaseRevoke = resolve))
     const revokeStarted = new Promise<void>((resolve) => (markRevokeStarted = resolve))
-    vi.spyOn(daemon as any, 'revokeRemoteWebchatGrantsForAgent').mockImplementationOnce(async () => {
-      markRevokeStarted()
-      await revokeBlocked
-    })
+    vi.spyOn((daemon as any).webchatMcpRevocations, 'revokeRemoteWebchatGrantsForAgent').mockImplementationOnce(
+      async () => {
+        markRevokeStarted()
+        await revokeBlocked
+      }
+    )
 
     const detaching = seam(daemon).applyAgentDetach({
       agentId: 'bot-a',

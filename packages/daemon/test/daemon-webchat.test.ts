@@ -438,7 +438,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
       )
     }
 
-    const key = (daemon as any).webchatSessionKey(CONV, AGENT_ID)
+    const key = (daemon as any).webchatTransport.webchatSessionKey(CONV, AGENT_ID)
     const usage = (daemon as any).store.getUsage(key)
     expect(usage).toMatchObject({
       totalTokens: 500_000,
@@ -484,7 +484,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
       undefined,
       { conversationId: CONV, turnId, sink: cp.sink }
     )
-    const key = (daemon as any).webchatSessionKey(CONV, AGENT_ID)
+    const key = (daemon as any).webchatTransport.webchatSessionKey(CONV, AGENT_ID)
     expect((daemon as any).store.getUsage(key).costAmount).toBe(0)
 
     // The marker is per-turn, not sticky across the session: no native cost on
@@ -560,7 +560,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
       { conversationId: CONV, turnId, sink: cp.sink }
     )
 
-    const key = (daemon as any).webchatSessionKey(CONV, AGENT_ID)
+    const key = (daemon as any).webchatTransport.webchatSessionKey(CONV, AGENT_ID)
     expect((daemon as any).store.getUsage(key).costAmount).toBeCloseTo(0.21)
     expect(cp.usageReports).toHaveLength(2)
     expect((cp.usageReports.at(-1) as any).usage.costAmount).toBeCloseTo(0.21)
@@ -582,10 +582,10 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     ;(daemon as any).cpClient = cp
 
     // Run one full turn so a session row (with acpSessionId) exists for the conversation.
-    ;(daemon as any).dispatchWebchatTurn(AGENT_ID, CONV, 'go', 'webchat', cp.sink)
+    ;(daemon as any).webchatTransport.dispatchWebchatTurn(AGENT_ID, CONV, 'go', 'webchat', cp.sink)
     await vi.waitFor(() => expect(cp.dones).toHaveLength(1), WAIT)
 
-    const key = (daemon as any).webchatSessionKey(CONV, AGENT_ID)
+    const key = (daemon as any).webchatTransport.webchatSessionKey(CONV, AGENT_ID)
     ;(daemon as any).commands.setModelByKey(key, 'b')
     expect((daemon as any).store.getModelOverride(key)).toBe('b') // sticky
     expect(host.setSessionModel).toHaveBeenCalledWith('acp-wc-1', 'b') // applied live
@@ -607,10 +607,19 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
       await daemon.start()
       const cp = fakeCpClient()
 
-      ;(daemon as any).dispatchWebchatTurn(AGENT_ID, CONV, 'go', 'webchat', cp.sink, undefined, undefined, runtime)
+      ;(daemon as any).webchatTransport.dispatchWebchatTurn(
+        AGENT_ID,
+        CONV,
+        'go',
+        'webchat',
+        cp.sink,
+        undefined,
+        undefined,
+        runtime
+      )
       await vi.waitFor(() => expect(cp.dones).toHaveLength(1), WAIT)
 
-      const key = (daemon as any).webchatSessionKey(CONV, AGENT_ID)
+      const key = (daemon as any).webchatTransport.webchatSessionKey(CONV, AGENT_ID)
       expect({
         model: (daemon as any).store.getModelOverride(key),
         effort: (daemon as any).store.getEffortOverride(key),
@@ -681,7 +690,16 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     const cp = fakeCpClient()
     const runtime = { model: 'b', effort: 'ultracode', permissionMode: 'plan', fastMode: true }
 
-    ;(daemon as any).dispatchWebchatTurn(AGENT_ID, CONV, 'go', 'webchat', cp.sink, undefined, undefined, runtime)
+    ;(daemon as any).webchatTransport.dispatchWebchatTurn(
+      AGENT_ID,
+      CONV,
+      'go',
+      'webchat',
+      cp.sink,
+      undefined,
+      undefined,
+      runtime
+    )
     await vi.waitFor(() => expect(host.newSession).toHaveBeenCalledTimes(1), WAIT)
 
     writeAgent(root, { ...configured, allowRuntimeChangesInChat: false })
@@ -694,7 +712,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     releaseSecondSession()
     await vi.waitFor(() => expect(cp.dones).toHaveLength(1), WAIT)
 
-    const key = (daemon as any).webchatSessionKey(CONV, AGENT_ID)
+    const key = (daemon as any).webchatTransport.webchatSessionKey(CONV, AGENT_ID)
     expect((daemon as any).store.getModelOverride(key)).toBeUndefined()
     expect((daemon as any).store.getEffortOverride(key)).toBeUndefined()
     expect((daemon as any).store.getPermissionModeOverride(key)).toBeUndefined()
@@ -736,12 +754,12 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     ;(daemon as any).cpClient = cp
 
     // Finish a turn first: Pending is gone, but the ACP session remains warm.
-    ;(daemon as any).dispatchWebchatTurn(AGENT_ID, CONV, 'first', 'webchat', cp.sink)
+    ;(daemon as any).webchatTransport.dispatchWebchatTurn(AGENT_ID, CONV, 'first', 'webchat', cp.sink)
     await vi.waitFor(() => expect(cp.dones).toHaveLength(1), WAIT)
     expect((daemon as any).pending.size).toBe(0)
     expect(host.newSession).toHaveBeenCalledTimes(1)
 
-    const key = (daemon as any).webchatSessionKey(CONV, AGENT_ID)
+    const key = (daemon as any).webchatTransport.webchatSessionKey(CONV, AGENT_ID)
     expect((daemon as any).commands.setModelByKey(key, 'b')).toBe(true)
     expect((daemon as any).commands.setEffortByKey(key, 'high')).toBe(true)
     expect((daemon as any).commands.setPermissionModeByKey(key, 'plan')).toBe(true)
@@ -772,7 +790,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     expect((daemon as any).store.getFastModeOverride(key)).toBeUndefined()
 
     // The next turn reuses that same restored session while chat changes remain locked.
-    ;(daemon as any).dispatchWebchatTurn(AGENT_ID, CONV, 'second', 'webchat', cp.sink)
+    ;(daemon as any).webchatTransport.dispatchWebchatTurn(AGENT_ID, CONV, 'second', 'webchat', cp.sink)
     await vi.waitFor(() => expect(cp.dones).toHaveLength(2), WAIT)
     expect(host.newSession).toHaveBeenCalledTimes(1)
     expect((daemon as any).agents.get(AGENT_ID).allowRuntimeChangesInChat).toBe(false)
@@ -808,11 +826,11 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     const cp = fakeCpClient()
     ;(daemon as any).cpClient = cp
 
-    ;(daemon as any).dispatchWebchatTurn(AGENT_ID, CONV, 'first', 'webchat', cp.sink)
+    ;(daemon as any).webchatTransport.dispatchWebchatTurn(AGENT_ID, CONV, 'first', 'webchat', cp.sink)
     await vi.waitFor(() => expect(cp.dones).toHaveLength(1), WAIT)
     expect((daemon as any).pending.size).toBe(0)
 
-    const key = (daemon as any).webchatSessionKey(CONV, AGENT_ID)
+    const key = (daemon as any).webchatTransport.webchatSessionKey(CONV, AGENT_ID)
     expect((daemon as any).commands.setModelByKey(key, 'b')).toBe(true)
     expect((daemon as any).commands.setEffortByKey(key, 'high')).toBe(true)
     expect((daemon as any).commands.setFastByKey(key, true)).toBe(true)
@@ -833,7 +851,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
       expect(host.setSessionFastMode).toHaveBeenCalledWith('acp-wc-1', false)
     }, WAIT)
 
-    ;(daemon as any).dispatchWebchatTurn(AGENT_ID, CONV, 'second', 'webchat', cp.sink)
+    ;(daemon as any).webchatTransport.dispatchWebchatTurn(AGENT_ID, CONV, 'second', 'webchat', cp.sink)
     await vi.waitFor(() => expect(cp.dones).toHaveLength(2), WAIT)
     expect(host.newSession).toHaveBeenCalledTimes(1)
     await daemon.stop()
@@ -860,7 +878,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     const cp = fakeCpClient()
     ;(daemon as any).cpClient = cp
 
-    ;(daemon as any).dispatchWebchatTurn(AGENT_ID, CONV, 'go', 'webchat', cp.sink)
+    ;(daemon as any).webchatTransport.dispatchWebchatTurn(AGENT_ID, CONV, 'go', 'webchat', cp.sink)
     await vi.waitFor(
       () =>
         expect([...(daemon as any).pending.values()].some((p: any) => p.webchat?.conversationId === CONV)).toBe(true),
@@ -868,11 +886,11 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     )
 
     const outputsBeforeCancel = cp.outputs.length
-    ;(daemon as any).handleWebchatCancel(CONV)
+    ;(daemon as any).webchatTransport.handleWebchatCancel(CONV)
     expect(host.cancel).toHaveBeenCalledWith('acp-wc-1')
     expect(cp.dones).toEqual([expect.objectContaining({ conversationId: CONV, error: 'cancel' })])
     // NOT muted — a follow-up turn would still dispatch.
-    const key = (daemon as any).webchatSessionKey(CONV, AGENT_ID)
+    const key = (daemon as any).webchatTransport.webchatSessionKey(CONV, AGENT_ID)
     expect((daemon as any).store.isSessionMuted(key)).toBe(false)
 
     release()
@@ -901,12 +919,12 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     await daemon.start()
     const cp = fakeCpClient()
 
-    const ack = (daemon as any).dispatchWebchatTurn(AGENT_ID, CONV, 'go', 'webchat', cp.sink)
+    const ack = (daemon as any).webchatTransport.dispatchWebchatTurn(AGENT_ID, CONV, 'go', 'webchat', cp.sink)
     expect(ack.accepted).toBe(true)
     await vi.waitFor(() => expect(host.newSession).toHaveBeenCalledTimes(1), WAIT)
     expect((daemon as any).pending.size).toBe(0)
 
-    ;(daemon as any).handleWebchatCancel(CONV)
+    ;(daemon as any).webchatTransport.handleWebchatCancel(CONV)
     expect(cp.dones).toEqual([expect.objectContaining({ turnId: ack.turnId, error: 'cancel' })])
     expect(host.cancel).not.toHaveBeenCalled()
 
@@ -1056,7 +1074,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     const cp = fakeCpClient()
     ;(daemon as any).cpClient = cp
 
-    const ack = (daemon as any).dispatchWebchatTurn(AGENT_ID, CONV, 'go', 'webchat', cp.sink)
+    const ack = (daemon as any).webchatTransport.dispatchWebchatTurn(AGENT_ID, CONV, 'go', 'webchat', cp.sink)
 
     expect(ack).toMatchObject({ accepted: false, reason: 'paused' })
     expect(host.prompt).not.toHaveBeenCalled()
@@ -1083,20 +1101,28 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     await daemon.start()
     const cp = fakeCpClient()
 
-    const accepted = [(daemon as any).dispatchWebchatTurn(AGENT_ID, CONV, 'head', 'webchat', cp.sink)]
+    const accepted = [(daemon as any).webchatTransport.dispatchWebchatTurn(AGENT_ID, CONV, 'head', 'webchat', cp.sink)]
     await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(1), WAIT)
 
     for (let n = 1; n <= 10; n++) {
-      accepted.push((daemon as any).dispatchWebchatTurn(AGENT_ID, CONV, `queued-${n}`, 'webchat', cp.sink))
+      accepted.push(
+        (daemon as any).webchatTransport.dispatchWebchatTurn(AGENT_ID, CONV, `queued-${n}`, 'webchat', cp.sink)
+      )
     }
     expect(accepted.every((ack) => ack.accepted)).toBe(true)
-    const key = (daemon as any).webchatSessionKey(CONV, AGENT_ID)
+    const key = (daemon as any).webchatTransport.webchatSessionKey(CONV, AGENT_ID)
     expect((daemon as any).serialQueue.get(key)).toHaveLength(10)
 
     // The exact-key preflight must reject before returning an accepted ACK. A client
     // therefore never starts waiting for a `done` frame that this non-admitted turn
     // cannot produce.
-    const rejected = (daemon as any).dispatchWebchatTurn(AGENT_ID, CONV, 'queue-full', 'webchat', cp.sink)
+    const rejected = (daemon as any).webchatTransport.dispatchWebchatTurn(
+      AGENT_ID,
+      CONV,
+      'queue-full',
+      'webchat',
+      cp.sink
+    )
     expect(rejected).toMatchObject({ accepted: false, reason: 'busy' })
     expect(cp.dones).toEqual([])
 
@@ -1168,7 +1194,12 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
       mentionedBots: [] as string[],
       isDm: false
     }
-    await (daemon as any).dispatch(AGENT_ID, msg, undefined, (daemon as any).webchatWakeContext('webchat', CONV))
+    await (daemon as any).dispatch(
+      AGENT_ID,
+      msg,
+      undefined,
+      (daemon as any).webchatTransport.webchatWakeContext('webchat', CONV)
+    )
 
     // Two live posts: the inbound sender message first, then the woken reply.
     expect(posts).toHaveLength(2)
@@ -1337,7 +1368,7 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
       output: (output: WebchatOutput) => events.push({ kind: 'output', output }),
       done: (done: WebchatDone) => events.push({ kind: 'done', done })
     })
-    const stream = (daemon as any).createWebchatTurnStream(AGENT_ID, CONV, turnId, sink(first))
+    const stream = (daemon as any).webchatTransport.createWebchatTurnStream(AGENT_ID, CONV, turnId, sink(first))
 
     stream.sink.output({ conversationId: CONV, turnId, index: 0, event: { kind: 'message', text: 'first' } })
     const activeResume = (daemon as any).handleRelayMsg(
@@ -1400,7 +1431,7 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     )
     expect(beforeTurn).toMatchObject({ accepted: false, reason: 'stream_not_found' })
 
-    const stream = (daemon as any).createWebchatTurnStream(AGENT_ID, CONV, turnId, {
+    const stream = (daemon as any).webchatTransport.createWebchatTurnStream(AGENT_ID, CONV, turnId, {
       output: (output: WebchatOutput) => original.push({ kind: 'output', output }),
       done: (done: WebchatDone) => original.push({ kind: 'done', done })
     })
@@ -1455,7 +1486,7 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     await daemon.start()
 
     const turnId = '77777777-7777-4777-8777-777777777777'
-    const stream = (daemon as any).createWebchatTurnStream(AGENT_ID, CONV, turnId, {
+    const stream = (daemon as any).webchatTransport.createWebchatTurnStream(AGENT_ID, CONV, turnId, {
       output: () => {},
       done: () => {}
     })
@@ -1575,7 +1606,7 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
     await daemon.start()
     ;(daemon as any).cpClient = fakeCpClient()
-    const key = (daemon as any).webchatSessionKey(CONV, AGENT_ID)
+    const key = (daemon as any).webchatTransport.webchatSessionKey(CONV, AGENT_ID)
     ;(daemon as any).store.upsertSession({
       key,
       agentId: AGENT_ID,
@@ -1619,7 +1650,7 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     const { factory } = streamingHost([])
     const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
     await daemon.start()
-    const key = (daemon as any).webchatSessionKey(CONV, AGENT_ID)
+    const key = (daemon as any).webchatTransport.webchatSessionKey(CONV, AGENT_ID)
     ;(daemon as any).store.upsertSession({
       key,
       agentId: AGENT_ID,
@@ -1658,8 +1689,8 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
     await daemon.start()
     ;(daemon as any).cpClient = fakeCpClient()
-    const cancel = vi.spyOn(daemon as any, 'handleWebchatCancel')
-    const close = vi.spyOn(daemon as any, 'handleWebchatClose')
+    const cancel = vi.spyOn((daemon as any).webchatTransport, 'handleWebchatCancel')
+    const close = vi.spyOn((daemon as any).webchatTransport, 'handleWebchatClose')
 
     expect((daemon as any).handleRelayMsg(rd({ op: 'cancel' }, { msgId: 'm-cancel' }), () => {})).toEqual({
       msgId: 'm-cancel',
@@ -1681,7 +1712,7 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
     await daemon.start()
     ;(daemon as any).cpClient = fakeCpClient()
-    const spy = vi.spyOn(daemon as any, 'dispatchWebchatTurn')
+    const spy = vi.spyOn((daemon as any).webchatTransport, 'dispatchWebchatTurn')
 
     // The relay's at-least-once wire can re-send a byte-identical rd/msg on an ack stall.
     const frame = rd({ op: 'turn', text: 'go', user: 'ada' }, { msgId: 'dup-1' })

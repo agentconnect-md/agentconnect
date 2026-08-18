@@ -112,7 +112,7 @@ describe('Daemon interrupt safety gates', () => {
     ;(daemon as any).agents.get(AGENT_ID).allowRuntimeChangesInChat = true
 
     try {
-      const key = (daemon as any).webchatSessionKey(CONV_1, AGENT_ID)
+      const key = (daemon as any).webchatTransport.webchatSessionKey(CONV_1, AGENT_ID)
       ;(daemon as any).store.upsertSession({
         key,
         agentId: AGENT_ID,
@@ -125,11 +125,11 @@ describe('Daemon interrupt safety gates', () => {
         updatedAt: Date.now()
       })
       ;(daemon as any).store.setModelOverride(key, 'blocked-model')
-      const ack = (daemon as any).dispatchWebchatTurn(AGENT_ID, CONV_1, 'first', 'alice', stream.sink)
+      const ack = (daemon as any).webchatTransport.dispatchWebchatTurn(AGENT_ID, CONV_1, 'first', 'alice', stream.sink)
       await vi.waitFor(() => expect(host.setSessionModel).toHaveBeenCalled(), WAIT)
       expect(hasPending(daemon, 'acp-pre-prompt')).toBe(true)
 
-      ;(daemon as any).handleWebchatCancel(CONV_1)
+      ;(daemon as any).webchatTransport.handleWebchatCancel(CONV_1)
       expect(stream.dones).toEqual([expect.objectContaining({ turnId: ack.turnId, error: 'cancel' })])
       releaseOverride()
 
@@ -168,23 +168,41 @@ describe('Daemon interrupt safety gates', () => {
     await daemon.start()
 
     try {
-      const first = (daemon as any).dispatchWebchatTurn(AGENT_ID, CONV_1, 'first', 'alice', stream.sink)
+      const first = (daemon as any).webchatTransport.dispatchWebchatTurn(
+        AGENT_ID,
+        CONV_1,
+        'first',
+        'alice',
+        stream.sink
+      )
       expect(first.accepted).toBe(true)
       await vi.waitFor(() => expect(hasPending(daemon, 'acp-1')).toBe(true), WAIT)
 
-      ;(daemon as any).handleWebchatCancel(CONV_1)
+      ;(daemon as any).webchatTransport.handleWebchatCancel(CONV_1)
       expect(host.cancel).toHaveBeenCalledWith('acp-1')
 
       // The cancel backstop is host-wide. Until the old prompt has yielded, accepting
       // work even in another conversation could let that backstop kill the fresh turn.
-      const tooEarly = (daemon as any).dispatchWebchatTurn(AGENT_ID, CONV_2, 'too early', 'alice', stream.sink)
+      const tooEarly = (daemon as any).webchatTransport.dispatchWebchatTurn(
+        AGENT_ID,
+        CONV_2,
+        'too early',
+        'alice',
+        stream.sink
+      )
       expect(tooEarly).toMatchObject({ accepted: false, reason: 'busy' })
       expect(host.newSession).toHaveBeenCalledTimes(1)
 
       releaseFirst()
       await vi.waitFor(() => expect((daemon as any).inflight.size).toBe(0), WAIT)
 
-      const fresh = (daemon as any).dispatchWebchatTurn(AGENT_ID, CONV_2, 'fresh', 'alice', stream.sink)
+      const fresh = (daemon as any).webchatTransport.dispatchWebchatTurn(
+        AGENT_ID,
+        CONV_2,
+        'fresh',
+        'alice',
+        stream.sink
+      )
       expect(fresh.accepted).toBe(true)
       await vi.waitFor(
         () =>
@@ -310,12 +328,12 @@ describe('Daemon interrupt safety gates', () => {
     await daemon.start()
 
     try {
-      const ack = (daemon as any).dispatchWebchatTurn(AGENT_ID, CONV_1, 'cold', 'alice', stream.sink)
+      const ack = (daemon as any).webchatTransport.dispatchWebchatTurn(AGENT_ID, CONV_1, 'cold', 'alice', stream.sink)
       expect(ack.accepted).toBe(true)
       await vi.waitFor(() => expect(host.newSession).toHaveBeenCalledTimes(1), WAIT)
       expect((daemon as any).pending.size).toBe(0)
 
-      ;(daemon as any).handleWebchatCancel(CONV_1)
+      ;(daemon as any).webchatTransport.handleWebchatCancel(CONV_1)
       expect(host.cancel).not.toHaveBeenCalled()
       expect(stream.dones).toEqual([expect.objectContaining({ turnId: ack.turnId, error: 'cancel' })])
 
@@ -353,7 +371,7 @@ describe('Daemon interrupt safety gates', () => {
     await daemon.start()
     const standingContext = vi.fn(() => memoryBlocked)
     ;(daemon as any).memory.standingContextAtSessionStart = standingContext
-    const key = (daemon as any).webchatSessionKey(CONV_1, AGENT_ID)
+    const key = (daemon as any).webchatTransport.webchatSessionKey(CONV_1, AGENT_ID)
     ;(daemon as any).store.upsertSession({
       key,
       agentId: AGENT_ID,
@@ -367,9 +385,15 @@ describe('Daemon interrupt safety gates', () => {
     })
     expect((daemon as any).store.applyCpCaptureGate(AGENT_ID, 'acp-memory', false, 1)).toBe('applied')
 
-    const ack = (daemon as any).dispatchWebchatTurn(AGENT_ID, CONV_1, 'cold memory', 'alice', stream.sink)
+    const ack = (daemon as any).webchatTransport.dispatchWebchatTurn(
+      AGENT_ID,
+      CONV_1,
+      'cold memory',
+      'alice',
+      stream.sink
+    )
     await vi.waitFor(() => expect(standingContext).toHaveBeenCalled(), WAIT)
-    ;(daemon as any).handleWebchatCancel(CONV_1)
+    ;(daemon as any).webchatTransport.handleWebchatCancel(CONV_1)
     expect(stream.dones).toEqual([expect.objectContaining({ turnId: ack.turnId, error: 'cancel' })])
 
     clock.advance(30_000)
@@ -409,17 +433,23 @@ describe('Daemon interrupt safety gates', () => {
     await daemon.start()
 
     try {
-      const ack = (daemon as any).dispatchWebchatTurn(AGENT_ID, CONV_1, 'cold', 'alice', stream.sink)
+      const ack = (daemon as any).webchatTransport.dispatchWebchatTurn(AGENT_ID, CONV_1, 'cold', 'alice', stream.sink)
       expect(ack.accepted).toBe(true)
       await vi.waitFor(() => expect(host.newSession).toHaveBeenCalledTimes(1), WAIT)
 
-      ;(daemon as any).handleWebchatCancel(CONV_1)
+      ;(daemon as any).webchatTransport.handleWebchatCancel(CONV_1)
       clock.advance(30_000)
       await vi.waitFor(() => expect(host.stop).toHaveBeenCalledTimes(1), WAIT)
       expect((daemon as any).inflight.size).toBe(1)
 
       expect((daemon as any).safetyDrainingAgents.has(AGENT_ID)).toBe(true)
-      const retry = (daemon as any).dispatchWebchatTurn(AGENT_ID, CONV_2, 'must stay blocked', 'alice', stream.sink)
+      const retry = (daemon as any).webchatTransport.dispatchWebchatTurn(
+        AGENT_ID,
+        CONV_2,
+        'must stay blocked',
+        'alice',
+        stream.sink
+      )
       expect(retry).toMatchObject({ accepted: false, reason: 'busy' })
       expect(host.newSession).toHaveBeenCalledTimes(1)
     } finally {
@@ -806,7 +836,13 @@ describe('Daemon interrupt safety gates', () => {
     const stream = webchatSink()
     await daemon.start()
 
-    const ack = (daemon as any).dispatchWebchatTurn(AGENT_ID, CONV_1, 'cold shutdown', 'alice', stream.sink)
+    const ack = (daemon as any).webchatTransport.dispatchWebchatTurn(
+      AGENT_ID,
+      CONV_1,
+      'cold shutdown',
+      'alice',
+      stream.sink
+    )
     await vi.waitFor(() => expect(host.newSession).toHaveBeenCalledTimes(1), WAIT)
     await daemon.stop()
 
