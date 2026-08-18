@@ -38,7 +38,7 @@ describe('shared AnchoredFlyout', () => {
     ).toMatchObject({ left: 8, top: 55, width: 234 })
   })
 
-  it('portals its menu to body and dismisses through the backdrop', () => {
+  it('portals its menu to body and distinguishes internal from external scrolling', () => {
     act(() =>
       root.render(
         <div className="overflow-hidden">
@@ -61,6 +61,13 @@ describe('shared AnchoredFlyout', () => {
     expect(menu?.getAttribute('role')).toBe('menu')
     expect(host.contains(menu)).toBe(false)
 
+    act(() => menu?.dispatchEvent(new Event('scroll')))
+    expect(document.body.querySelector('[data-anchored-flyout]')).toBe(menu)
+
+    act(() => host.dispatchEvent(new Event('scroll')))
+    expect(document.body.querySelector('[data-anchored-flyout]')).toBeNull()
+
+    act(() => host.querySelector('button')?.click())
     act(() => document.body.querySelector<HTMLElement>('[data-anchored-flyout-backdrop]')?.click())
     expect(document.body.querySelector('[data-anchored-flyout]')).toBeNull()
   })

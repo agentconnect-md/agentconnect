@@ -69,6 +69,7 @@ export function AnchoredFlyout({
   triggerClassName = ''
 }: AnchoredFlyoutProps) {
   const triggerRef = useRef<HTMLSpanElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
   const [style, setStyle] = useState<AnchoredFlyoutStyle | null>(null)
   const menuId = useId()
   const open = style !== null
@@ -100,14 +101,18 @@ export function AnchoredFlyout({
       event.preventDefault()
       close(true)
     }
-    const onViewportChange = () => close()
+    const onScroll = (event: Event) => {
+      if (menuRef.current && event.composedPath().includes(menuRef.current)) return
+      close()
+    }
+    const onResize = () => close()
     document.addEventListener('keydown', onKeyDown, true)
-    window.addEventListener('scroll', onViewportChange, true)
-    window.addEventListener('resize', onViewportChange)
+    window.addEventListener('scroll', onScroll, true)
+    window.addEventListener('resize', onResize)
     return () => {
       document.removeEventListener('keydown', onKeyDown, true)
-      window.removeEventListener('scroll', onViewportChange, true)
-      window.removeEventListener('resize', onViewportChange)
+      window.removeEventListener('scroll', onScroll, true)
+      window.removeEventListener('resize', onResize)
     }
   }, [close, open])
 
@@ -127,6 +132,7 @@ export function AnchoredFlyout({
               onClick={() => close(true)}
             />
             <div
+              ref={menuRef}
               data-anchored-flyout
               id={menuId}
               role="menu"
