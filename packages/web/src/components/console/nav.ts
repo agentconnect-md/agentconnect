@@ -2,26 +2,21 @@
 // and GlobalSearch (the "Pages" and "Settings" result groups). One table per
 // surface, defined here so the nav and the search index can never drift apart.
 
+import { featureFlagEnabled, type FeatureFlagId } from '@/lib/feature-flags'
+
 export interface NavItem {
   href: string
   label: string
   icon: string
-  /** Deployment feature this destination needs. Absent ⇒ always shown. Every
-   *  consumer filters through `navVisible`, so the rail, the mobile sheet and the
-   *  search index can never disagree about what this deployment offers. */
-  requires?: NavFeature
+  /** Feature flag this destination needs. Absent ⇒ always shown. Every consumer
+   *  filters through `navVisible`, so the rail, the mobile sheet and the search
+   *  index can never disagree about what this deployment offers. */
+  requires?: FeatureFlagId
 }
 
-// The only feature so far. Billing exists only where a billing service is
-// deployed — self-hosted
-// consoles have nothing to point it at.
-export type NavFeature = 'billing'
-
 /** Is the destination's feature switched on for this deployment? */
-export function navVisible(item: { requires?: NavFeature }): boolean {
-  if (!item.requires) return true
-  const env = typeof window !== 'undefined' ? window.__AC_ENV : undefined
-  return Boolean(env?.BILLING_URL ?? process.env.BILLING_URL)
+export function navVisible(item: { requires?: FeatureFlagId }): boolean {
+  return item.requires ? featureFlagEnabled(item.requires) : true
 }
 
 // The rail's destinations, in groups separated by a rule: what the organization

@@ -1,8 +1,11 @@
-// Client for the billing service.
-// It is a separate origin from the Control Plane and exists only where a
-// deployment sets BILLING_URL, so it gets its own tiny client rather than a
-// branch inside lib/api.ts. Nothing here computes money — every number below is
-// rendered exactly as the service returned it.
+// Client for the billing service — a separate origin from the Control Plane, so
+// it gets its own tiny client rather than a branch inside lib/api.ts. Nothing here
+// computes money: every number below is rendered exactly as the service sent it.
+//
+// `BILLING_URL` says WHERE the service is. Whether the console offers billing at
+// all is the `billing` feature flag (lib/feature-flags.ts) — one variable per
+// question, so "flag on, endpoint missing" reports a broken deployment instead of
+// looking like billing was never enabled.
 //
 // The service currently exposes reads only; paying for credit arrives with its
 // payment channel, and the console's knowledge of it will stop at "redirect to

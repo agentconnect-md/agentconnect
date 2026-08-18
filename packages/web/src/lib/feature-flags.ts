@@ -27,6 +27,11 @@ export type FeatureFlagId =
    *  names it "AgentConnect Cloud" and quotes the plan's included usage. Off — a self-hosted
    *  install — the same pool is the operator's OWN cluster, named and metered as such. */
   | 'managed'
+  /** The billing page: its nav entry and its route. A standing switch, not an experiment —
+   *  billing belongs to deployments that run a billing service, and a self-hosted console has
+   *  nothing to point it at. `BILLING_URL` then says WHERE that service is; this says WHETHER to
+   *  offer the page, so a missing endpoint is a misconfiguration rather than a silent opt-out. */
+  | 'billing'
 
 function enabledIds(): ReadonlySet<string> {
   // The server must read the SAME value `PublicEnvScript` injects, in the same precedence, or a

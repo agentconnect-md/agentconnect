@@ -6,7 +6,8 @@
 // will be a redirect to the checkout URL the API hands back.
 
 import useSWR from 'swr'
-import { billingBase, fetchBillingAccount, fetchBillingTransactions, fmtMicroUsd } from '@/lib/billing-api'
+import { fetchBillingAccount, fetchBillingTransactions, fmtMicroUsd } from '@/lib/billing-api'
+import { featureFlagEnabled } from '@/lib/feature-flags'
 import { useOrgs } from '@/lib/org-context'
 import { consoleKeys } from '@/lib/swr-keys'
 import { LoadingState } from '@/components/marks'
@@ -58,9 +59,11 @@ export default function BillingView() {
     orgId ? () => fetchBillingTransactions(orgId) : null
   )
 
-  // Deep-link landing for a console without billing: the rail hides the
-  // entry, so anyone here typed the URL or followed an old bookmark.
-  if (!billingBase())
+  // Deep-link landing for a console that does not offer billing: the rail hides
+  // the entry, so anyone here typed the URL or followed an old bookmark. Gated on
+  // the flag, not on BILLING_URL — with the flag on and no endpoint configured the
+  // page must report a broken deployment, not quietly claim billing is elsewhere.
+  if (!featureFlagEnabled('billing'))
     return (
       <Notice
         title="Billing applies to AgentConnect Cloud"
