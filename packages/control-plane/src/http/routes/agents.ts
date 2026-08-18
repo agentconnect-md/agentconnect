@@ -1096,6 +1096,56 @@ export function agentRoutes(deps: HttpDeps) {
       }
     }
 
+    /** The org MCP-registry rows an enable-list names, by name. A name with no row
+     *  is a daemon-local def (the operator's `config.json`) and is absent here. */
+    const registryProvidersOf = async (orgId: OrgId, names: readonly string[]) => {
+      const wanted = new Set(names)
+      const rows = wanted.size === 0 ? [] : await deps.repos.mcpProvider.listForOrg(orgId)
+      return new Map(rows.filter((p) => wanted.has(p.name)).map((p) => [p.name, p] as const))
+    }
+
+    /** Registry-before-agent ordering, the MCP twin of `pushExternalMemoryToDaemon`: a daemon must
+     *  hold the proxy def of every registry provider the agent enables before it applies the spec
+     *  that only NAMES them. Best-effort — `mcpserver/upsert` is an unacknowledged EVT. */
+    const pushMcpDefsToDaemon = async (agent: AgentRecord, daemonId: string): Promise<void> => {
+      try {
+        const providers = await registryProvidersOf(agent.orgId, agent.mcpServers)
+        if (providers.size === 0) return
+        const base = await relayProxyBase()
+        if (!base) return
+        for (const provider of providers.values()) {
+          const grant = currentMcpGrant(await deps.repos.mcpGrant.activeForProvider(provider.orgId, provider.id))
+          if (grant) await deps.control.mcpServerUpsert(daemonId, mcpProxyDef(provider, grant, base))
+        }
+      } catch {
+        // The def is grant-bearing; log stable identifiers only.
+        app.log.warn({ agentId: agent.id, daemonId }, 'mcp def staging failed (backstop: reconnect roster)')
+      }
+    }
+
+    /** Drop those registry defs from a daemon serving no agent that still enables them — the move's
+     *  source-side and abort-side cleanup. Usage is delivery-set membership, not placement. */
+    const removeMcpDefsFromDaemonIfUnused = async (
+      orgId: OrgId,
+      daemonId: string,
+      names: readonly string[]
+    ): Promise<void> => {
+      try {
+        const providers = await registryProvidersOf(orgId, names)
+        if (providers.size === 0) return
+        const peers = await deps.repos.agent.list(orgId)
+        for (const name of providers.keys()) {
+          const stillOn = new Set(
+            await deps.agentDelivery.daemonsForAgents(peers.filter((a) => a.mcpServers.includes(name)))
+          )
+          if (!stillOn.has(daemonId)) await deps.control.mcpServerRemove(daemonId, orgId, name)
+        }
+      } catch (err) {
+        // Offline/version-skewed daemon converges the full def set on reconnect.
+        app.log.warn({ daemonId, err }, 'mcp def removal deferred')
+      }
+    }
+
     // A caller may DISABLE a registry MCP provider they can't see (one already on the
     // agent), but may not ADD one back — the enable-list surface mirrors provider
     // visibility. Returns a 403 message for any newly-added name that resolves to a
@@ -2378,6 +2428,10 @@ export function agentRoutes(deps: HttpDeps) {
           ? placement.kind === 'set' && placement.setId === targetSetId
           : placement.kind === 'daemon' && placement.daemonId === req.body.daemonId
 
+        // Resolved once for every candidate: which enable-list names are org registry
+        // providers rather than daemon-local defs. See the facts check in `admits`.
+        const registryProviders = await registryProvidersOf(existing.orgId, existing.mcpServers)
+
         /** Why this daemon cannot take the agent, or null when it can. */
         const admits = async (daemon: DaemonView): Promise<string | null> => {
           if (!moveReady(daemon.daemonId)) return 'target daemon is not ready'
@@ -2413,13 +2467,19 @@ export function agentRoutes(deps: HttpDeps) {
             return `target daemon does not support model ${existing.model} for runtime ${existing.runtime}`
           }
           for (const name of existing.mcpServers) {
-            const server = daemon.mcpServers.find((candidate) => candidate.name === name)
-            if (!server) return `target daemon cannot attach MCP server ${name}`
+            // The CP pushes a registry def only to daemons already serving an enabling agent, so
+            // "the target holds no such fact yet" is not "it cannot attach it" — reading that as a
+            // refusal pinned every connector-using agent to its daemon (#1192). The move stages the
+            // def below and its transport is always the relay-proxied `http`; only a daemon-LOCAL
+            // name (the operator's `config.json`) is genuinely host-bound.
+            const transport =
+              daemon.mcpServers.find((candidate) => candidate.name === name)?.transport ??
+              (registryProviders.has(name) ? 'http' : undefined)
+            if (!transport) return `target daemon cannot attach MCP server ${name}`
             const caps = targetRuntime?.mcpCapabilities
-            const transportSupported =
-              server.transport === 'stdio' || !caps || (server.transport === 'http' ? caps.http : caps.sse)
+            const transportSupported = transport === 'stdio' || !caps || (transport === 'http' ? caps.http : caps.sse)
             if (!transportSupported) {
-              return `target runtime ${existing.runtime} does not support MCP ${server.transport} transport for ${name}`
+              return `target runtime ${existing.runtime} does not support MCP ${transport} transport for ${name}`
             }
           }
           // Capacity is a per-member fact even on a set: "some member has headroom" is exactly
@@ -2486,7 +2546,14 @@ export function agentRoutes(deps: HttpDeps) {
         // DELETE stays impossible throughout because this agent's committed
         // binding keeps its "no agent bound" scan refusing (409).
         let targetStaged = false
+        let mcpStaged = false
         try {
+          // Same registry-before-agent ordering for the MCP proxy defs: without it the target
+          // installs a spec naming providers it has no definition for, and every session it starts
+          // before the next reconcile runs without those tools. The cleanup obligation is marked
+          // before the send, because an unacknowledged EVT that threw may still have applied.
+          mcpStaged = registryProviders.size > 0
+          await pushMcpDefsToDaemon(existing, target.daemonId)
           // The connection registry is a separate private wire. Stage it before
           // agent/activate so target admission cannot observe a dangling binding.
           // This also repairs a target that committed the move but lost the reply.
@@ -2561,6 +2628,10 @@ export function agentRoutes(deps: HttpDeps) {
               existing.memory.connectionId
             )
           }
+          // The source serves the agent no longer, so it must not keep a grant-bearing def unused.
+          if (existing.daemonId && mcpStaged) {
+            await removeMcpDefsFromDaemonIfUnused(existing.orgId, existing.daemonId, existing.mcpServers)
+          }
           return toDto(
             moved,
             ctxOf(req),
@@ -2584,6 +2655,11 @@ export function agentRoutes(deps: HttpDeps) {
           // removes a definition whose ACK may merely have been lost.
           if (targetStaged && existing.memory?.provider === 'external') {
             await removeExternalMemoryFromDaemonIfUnused(existing.orgId, target.daemonId, existing.memory.connectionId)
+          }
+          // Same re-read for the staged MCP defs: an authoritative target keeps them, and a move
+          // that never committed leaves none behind.
+          if (mcpStaged) {
+            await removeMcpDefsFromDaemonIfUnused(existing.orgId, target.daemonId, existing.mcpServers)
           }
         }
       }
