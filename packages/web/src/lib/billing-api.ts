@@ -7,9 +7,10 @@
 // question, so "flag on, endpoint missing" reports a broken deployment instead of
 // looking like billing was never enabled.
 //
-// The service currently exposes reads only; paying for credit arrives with its
-// payment channel, and the console's knowledge of it will stop at "redirect to
-// the URL the API returned".
+// Paying for credit: the console's whole knowledge of the payment channel is
+// "POST an amount, redirect to the URL the API returned, then poll the purchase
+// until the service says Stripe confirmed it". The return redirect is never
+// treated as proof of payment — only the polled status is.
 //
 // ── The wire contract is DUPLICATED, on purpose ──────────────────────────────
 // The types below are a copy. The authority is the billing service's own zod
@@ -53,6 +54,30 @@ export interface BillingTransactionsPage {
   nextCursor: string | null
 }
 
+/** `pending` until Stripe confirms settlement; a paid session may complete an
+ *  intent an expiry guess had already marked `expired`. */
+export type BillingPurchaseStatus = 'pending' | 'completed' | 'failed' | 'expired'
+const PURCHASE_STATUSES: readonly string[] = ['pending', 'completed', 'failed', 'expired']
+
+export interface BillingPurchase {
+  id: string
+  status: BillingPurchaseStatus
+  amountMicro: number
+  /** Stripe-hosted receipt for a completed purchase; may lag completion. */
+  receiptUrl: string | null
+}
+
+export interface BillingPurchaseCreated {
+  purchaseId: string
+  /** Stripe-hosted checkout page; the console full-page redirects to it. */
+  url: string
+}
+
+/** Design defaults ($5–$2,000), mirrored for inline validation copy only — the
+ *  service enforces its own (operator-tunable) bounds authoritatively. */
+export const PURCHASE_MIN_MICRO = 5_000_000
+export const PURCHASE_MAX_MICRO = 2_000_000_000
+
 /** Billing base URL, or null when this deployment has no billing service. */
 export function billingBase(): string | null {
   const runtime = typeof window !== 'undefined' ? window.__AC_ENV?.BILLING_URL : process.env.BILLING_URL
@@ -92,6 +117,28 @@ export function assertAccount(body: unknown): asserts body is BillingAccount {
   if (!b || typeof b.orgId !== 'string' || !isFiniteNumber(b.balanceMicro)) throw new BillingShapeError('account')
 }
 
+export function assertPurchase(body: unknown): asserts body is BillingPurchase {
+  const b = body as Partial<BillingPurchase> | null
+  // Status IS checked against the known set, unlike a ledger `kind`: polling
+  // branches on it, and an unknown status would spin forever — the error card
+  // ("console out of date with the service") is the better failure.
+  if (
+    !b ||
+    typeof b.id !== 'string' ||
+    typeof b.status !== 'string' ||
+    !PURCHASE_STATUSES.includes(b.status) ||
+    !isFiniteNumber(b.amountMicro) ||
+    !(b.receiptUrl === null || typeof b.receiptUrl === 'string')
+  ) {
+    throw new BillingShapeError('purchase')
+  }
+}
+
+export function assertPurchaseCreated(body: unknown): asserts body is BillingPurchaseCreated {
+  const b = body as Partial<BillingPurchaseCreated> | null
+  if (!b || typeof b.purchaseId !== 'string' || typeof b.url !== 'string') throw new BillingShapeError('purchase')
+}
+
 export function assertTransactionsPage(body: unknown): asserts body is BillingTransactionsPage {
   const b = body as Partial<BillingTransactionsPage> | null
   if (!b || !Array.isArray(b.items)) throw new BillingShapeError('transaction page')
@@ -107,11 +154,12 @@ export function assertTransactionsPage(body: unknown): asserts body is BillingTr
   }
 }
 
-async function request<T>(path: string): Promise<T> {
+async function request<T>(path: string, init?: { method: 'POST'; body: unknown }): Promise<T> {
   const base = billingBase()
   if (!base) throw new BillingError('billing is not configured for this deployment', 0)
 
   const headers: Record<string, string> = {}
+  if (init) headers['content-type'] = 'application/json'
   const token = await getToken()
   if (token) headers.authorization = `Bearer ${token}`
   const email = (await getUser())?.email
@@ -119,7 +167,11 @@ async function request<T>(path: string): Promise<T> {
   const idToken = await getIdTokenRaw()
   if (idToken) headers['x-ac-id-token'] = idToken
 
-  const res = await fetch(`${base}/api/v1${path}`, { cache: 'no-store', headers })
+  const res = await fetch(`${base}/api/v1${path}`, {
+    cache: 'no-store',
+    headers,
+    ...(init ? { method: init.method, body: JSON.stringify(init.body) } : {})
+  })
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { message?: string }
     throw new BillingError(body.message ?? `billing request failed (HTTP ${res.status})`, res.status)
@@ -139,6 +191,27 @@ export async function fetchBillingTransactions(orgId: string, cursor?: string): 
   const query = cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''
   const body = await request<unknown>(`${orgPath(orgId)}/transactions${query}`)
   assertTransactionsPage(body)
+  return body
+}
+
+/** Start a purchase: the service persists the intent, mints a Stripe Checkout
+ *  Session, and hands back the hosted URL. `idempotencyKey` makes the request
+ *  replay-safe (same key + same amount returns the same purchase; a different
+ *  amount under the same key is refused). `returnPath` is a console path — the
+ *  service pins the origin — that Stripe sends the browser back to with
+ *  `?checkout=success|cancel&purchase=<id>`. */
+export async function createBillingPurchase(
+  orgId: string,
+  args: { amountMicro: number; idempotencyKey: string; returnPath: string }
+): Promise<BillingPurchaseCreated> {
+  const body = await request<unknown>(`${orgPath(orgId)}/purchases`, { method: 'POST', body: args })
+  assertPurchaseCreated(body)
+  return body
+}
+
+export async function fetchBillingPurchase(orgId: string, id: string): Promise<BillingPurchase> {
+  const body = await request<unknown>(`${orgPath(orgId)}/purchases/${encodeURIComponent(id)}`)
+  assertPurchase(body)
   return body
 }
 
