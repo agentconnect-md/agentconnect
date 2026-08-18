@@ -16470,6 +16470,7 @@ export class Daemon {
 
     this.cpClient = new CpClient({
       url,
+      usageReporting: this.cfg.usageReporting.enabled,
       ...(cp.key ? { token: cp.key } : {}),
       ...(this.clusterIdentityToken ? { clusterIdentityToken: this.clusterIdentityToken } : {}),
       ...(echoDaemonId ? { daemonId: echoDaemonId } : {}),

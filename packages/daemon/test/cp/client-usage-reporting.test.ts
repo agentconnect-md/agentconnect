@@ -1,0 +1,136 @@
+/**
+ * `usageReporting.enabled` — which plane writes a session's usage to the CP.
+ *
+ * A daemon meters its own sessions and reports them; that is the default and the
+ * console's usage history depends on it. A deployment that meters UPSTREAM of the daemon
+ * turns this off so that plane is the single writer, because two writers on one session
+ * would fight over the same cumulative row.
+ *
+ * The switch silences the report and nothing else: usage is still recorded locally, which
+ * is where session status, `session/list` and compaction detection read it from. That half
+ * is structural — the gate is in the CP client, downstream of the local store — so what
+ * these tests pin is that the frame stops, that nothing else on the connection does, and
+ * that turning it off is a deliberate act rather than a default.
+ */
+import { describe, it, expect } from 'vitest'
+import { buildEnvelope } from '@agentconnect.md/protocol'
+import { CpClient, type CpClientDeps } from '../../src/cp/client.js'
+import { FakeTransport } from './fake-transport.js'
+import { FakeClock } from './fake-clock.js'
+import { ConfigSchema } from '../../src/config/config-schema.js'
+
+const DAEMON_ID = '22222222-2222-4222-8222-222222222222'
+const silent = { trace() {}, debug() {}, info() {}, warn() {}, error() {} }
+
+function makeDeps(transport: FakeTransport, over: Partial<CpClientDeps> = {}): CpClientDeps {
+  return {
+    url: 'wss://cp.example/daemon/ws',
+    token: 'tok_abc',
+    daemonId: DAEMON_ID,
+    agentVersion: '0.0.0',
+    host: 'host-1',
+    heartbeatDefaultMs: 15000,
+    maxAgents: 4,
+    capabilities: () => ({ platforms: ['slack'], runtimes: ['claude'], acp: true, features: [] }),
+    runtimeProfiles: () => [],
+    localState: () => ({ assignments: [], crons: [], leases: [], agents: [], integrations: [], stagedAgents: [] }),
+    loadSnapshot: () => ({ cpu: 0, mem: 0, agents: 0 }),
+    activeSessions: () => 0,
+    configApply: {
+      applyConfigPush() {},
+      applyReconcileSnapshot() {},
+      upsertCron() {},
+      removeCron() {},
+      applyRouteAssign() {},
+      applyRouteUpdate() {}
+    },
+    clock: new FakeClock(),
+    connect: async () => transport,
+    log: silent,
+    jitter: () => 0,
+    ...over
+  }
+}
+
+const tick = () => new Promise((r) => setImmediate(r))
+
+async function reachReady(t: FakeTransport, client: CpClient): Promise<void> {
+  client.start()
+  await tick()
+  const auth = t.lastSent()
+  t.pushInbound(
+    JSON.stringify(
+      buildEnvelope(
+        'auth/ok',
+        { daemonId: DAEMON_ID, sessionEpoch: 7, heartbeatSec: 20, serverTime: '2026-06-26T00:00:00.000Z' },
+        { corr: auth.id }
+      )
+    )
+  )
+  await tick()
+  const reg = t.lastSent()
+  t.pushInbound(
+    JSON.stringify(
+      buildEnvelope(
+        'register/ok',
+        { routingEpoch: 3, assignments: [], crons: [], leases: [], drop: { assignments: [], crons: [] } },
+        { corr: reg.id }
+      )
+    )
+  )
+  await tick()
+  expect(client.state).toBe('READY')
+}
+
+const report = {
+  sessionId: 'acp-1',
+  agentId: '11111111-1111-4111-8111-111111111111',
+  lastActivityAt: '2026-08-18T00:00:00.000Z',
+  usage: { totalTokens: 100, costAmount: 0.5, costCurrency: 'USD' }
+}
+const framesOf = (t: FakeTransport, type: string) =>
+  t.sent.map((s) => JSON.parse(s) as { type: string }).filter((f) => f.type === type)
+
+describe('usage reporting as a deployment choice', () => {
+  it('reports by default — the console’s history depends on it', async () => {
+    const t = new FakeTransport()
+    const client = new CpClient(makeDeps(t))
+    await reachReady(t, client)
+
+    client.emitUsageReport(report)
+    expect(framesOf(t, 'usage/report')).toHaveLength(1)
+  })
+
+  it('sends nothing once another plane is the writer', async () => {
+    const t = new FakeTransport()
+    const client = new CpClient(makeDeps(t, { usageReporting: false }))
+    await reachReady(t, client)
+
+    client.emitUsageReport(report)
+    client.emitUsageReport({ ...report, sessionId: 'acp-2' })
+    expect(framesOf(t, 'usage/report')).toEqual([])
+  })
+
+  it('silences ONLY the usage report, not the rest of the connection', async () => {
+    const t = new FakeTransport()
+    const client = new CpClient(makeDeps(t, { usageReporting: false }))
+    await reachReady(t, client)
+    const before = t.sent.length
+
+    client.emitUsageReport(report)
+    client.emitEventSession({ sessionId: 'acp-1', agentId: report.agentId, phase: 'start' })
+
+    expect(framesOf(t, 'usage/report')).toEqual([])
+    // The session milestone still goes: this switch is about who WRITES usage, not about
+    // muting a daemon that has been told to stop reporting it.
+    expect(t.sent.length).toBeGreaterThan(before)
+    expect(framesOf(t, 'event/session')).toHaveLength(1)
+  })
+
+  it('defaults to on in config, so turning it off is deliberate', () => {
+    const parsed = ConfigSchema.parse({ version: 1 })
+    expect(parsed.usageReporting.enabled).toBe(true)
+    expect(ConfigSchema.parse({ version: 1, usageReporting: {} }).usageReporting.enabled).toBe(true)
+    expect(ConfigSchema.parse({ version: 1, usageReporting: { enabled: false } }).usageReporting.enabled).toBe(false)
+  })
+})

@@ -206,6 +206,10 @@ export interface CpClientDeps {
   localState: () => RegisterReq['localState']
   loadSnapshot: () => Heartbeat['load']
   activeSessions: () => number
+  /** false ⇒ this daemon never reports session usage to the CP, because something
+   *  upstream of it is the single writer for these sessions. Local recording is
+   *  unaffected. Absent ⇒ reporting is on. */
+  usageReporting?: boolean
   /** Tenant lookup for agent-scoped frames on an install-wide connection. */
   orgForAgent?: (agentId: string) => string | undefined
   /** Tenant lookup for integration reports whose payload has no agent id. */
@@ -680,12 +684,16 @@ export class CpClient {
 
   /**
    * Report a session's cumulative token usage (D→C `usage/report` EVT,
-   * fire-and-forget). No-op unless READY/DRAINING — usage is dashboard telemetry,
+   * fire-and-forget). No-op when this daemon is not the usage writer, and no-op
+   * unless READY/DRAINING — usage is dashboard telemetry,
    * so a dropped report just means that turn's delta is absent from the CP's
    * historical aggregates until the next report (which re-sends the cumulative
    * snapshot, latest-wins). Never blocks the turn.
    */
   emitUsageReport(report: UsageReport): void {
+    // The gate lives HERE, at the one place a report leaves the daemon, so a future
+    // caller cannot reintroduce a second writer by forgetting to check.
+    if (this.deps.usageReporting === false) return
     if (this.state !== 'READY' && this.state !== 'DRAINING') return
     this.transport?.send(encode(this.scopedFrame('usage/report', report)))
   }

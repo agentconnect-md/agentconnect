@@ -131,6 +131,15 @@ export const ConfigSchema = z.object({
       heartbeatMs: z.number().int().default(15000)
     })
     .default({ enabled: false, heartbeatMs: 15000 }),
+  // Whether this daemon reports session usage to the control plane. On by default:
+  // a daemon meters its own sessions and the console's history depends on it.
+  //
+  // A deployment that meters upstream of the daemon turns it OFF so that plane is the
+  // single writer for those sessions — two writers on one session would fight over the
+  // same cumulative row. This ONLY silences the daemon→CP report: usage is still
+  // recorded locally, because session status, `session/list`, context/compaction
+  // detection and the daemon's own bookkeeping all read it from there.
+  usageReporting: z.object({ enabled: z.boolean().default(true) }).default({ enabled: true }),
   agentsDir: z.string().optional(), // resolved against root if absent
   runtimes: z.record(z.string(), RuntimeDefSchema).optional(),
   // MCP servers this daemon can attach to agent sessions (reported to the CP as
