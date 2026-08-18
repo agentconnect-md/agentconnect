@@ -32,14 +32,18 @@ class FakeResizeObserver {
 }
 
 let reArm: (() => void) | undefined
+let away = false
 
 function Probe({ resetKey }: { resetKey: string }) {
-  reArm = useStickToBottom(resetKey)
+  const { pin, awayFromBottom } = useStickToBottom(resetKey)
+  reArm = pin
+  away = awayFromBottom
   return null
 }
 
 let host: HTMLDivElement
-let scroller: HTMLDivElement
+let page: HTMLDivElement // `.content` — the stable page container the hook anchors on
+let scroller: HTMLDivElement // `[data-transcript-scroll]` — the transcript column that actually scrolls
 let root: Root
 
 /** Stub the layout the real transcript would have: `clientHeight` viewport over
@@ -54,10 +58,15 @@ const bottom = () => Math.max(0, scroller.scrollHeight - scroller.clientHeight)
 
 beforeEach(() => {
   Reflect.set(globalThis, 'ResizeObserver', FakeResizeObserver)
+  // `.content` (page) holds the transcript column (`[data-transcript-scroll]`), which holds the
+  // inner wrapper — the box that grows. The hook queries `.content`, then the column inside it.
+  page = document.createElement('div')
+  page.className = 'content'
   scroller = document.createElement('div')
-  scroller.className = 'content'
-  scroller.append(document.createElement('div')) // the view root — the box that grows
-  document.body.append(scroller)
+  scroller.setAttribute('data-transcript-scroll', '')
+  scroller.append(document.createElement('div')) // the inner wrapper — the box that grows
+  page.append(scroller)
+  document.body.append(page)
   // happy-dom stores `scrollTop` verbatim; a real scroller CLAMPS it. The clamp is
   // load-bearing here: the hook decides whether a pin actually moved the viewport
   // by reading the value back, and an unclamped stub makes a no-op pin look like a
@@ -78,9 +87,10 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount())
   host.remove()
-  scroller.remove()
+  page.remove()
   fireResize = undefined
   reArm = undefined
+  away = false
 })
 
 describe('nearBottom', () => {
@@ -272,21 +282,60 @@ describe('useStickToBottom re-arm on send', () => {
   })
 })
 
+describe('useStickToBottom awayFromBottom (jump-to-bottom button)', () => {
+  it('turns on when the reader pages back and off again at the bottom', () => {
+    setMetrics(2000)
+    scroller.scrollTop = bottom()
+    act(() => root.render(<Probe resetKey="s1" />))
+    act(() => scroller.dispatchEvent(new Event('scroll')))
+    expect(away).toBe(false)
+
+    scroller.scrollTop = 200 // reader pages back into history
+    act(() => scroller.dispatchEvent(new Event('scroll')))
+    expect(away).toBe(true)
+
+    scroller.scrollTop = bottom() // reader scrolls back down
+    act(() => scroller.dispatchEvent(new Event('scroll')))
+    expect(away).toBe(false)
+  })
+
+  it('stays off for a transcript that fits the viewport', () => {
+    setMetrics(300) // shorter than the 500px viewport
+    scroller.scrollTop = 0
+    act(() => root.render(<Probe resetKey="s1" />))
+    act(() => scroller.dispatchEvent(new Event('scroll')))
+    expect(away).toBe(false)
+  })
+
+  it('a re-arm pin clears it', () => {
+    setMetrics(2000)
+    scroller.scrollTop = 200
+    act(() => root.render(<Probe resetKey="s1" />))
+    act(() => scroller.dispatchEvent(new Event('scroll')))
+    expect(away).toBe(true)
+
+    act(() => reArm?.())
+    expect(away).toBe(false)
+  })
+})
+
 describe('useStickToBottom child swap', () => {
-  it('keeps following after the loading placeholder is replaced by the real root', async () => {
+  it('starts following once the transcript column mounts under a loading placeholder', async () => {
     setMetrics(400)
     scroller.scrollTop = 0
-    // A merged conversation keys on its URL, so resetKey is final from the first
-    // frame while the tree is still the LoadingState placeholder.
+    // Loading state: `.content` holds a placeholder with no transcript column yet. A merged
+    // conversation keys on its URL, so resetKey is final from the first frame while the tree
+    // is still the LoadingState placeholder — the effect will NOT re-run when the real view
+    // arrives, so the re-point has to come from the swap watcher on `.content`.
+    page.replaceChildren(document.createElement('div'))
     act(() => root.render(<Probe resetKey="/conversations/abc" />))
 
-    // The roster resolves and the real view root replaces the placeholder —
-    // same resetKey, so the effect does NOT re-run and the re-point has to come
-    // from the swap watcher. Its callback is a microtask (a real browser also
-    // runs it well before the next ResizeObserver delivery, which lands at the
-    // end of the frame), so yield once before growing the content.
+    // The roster resolves and the real transcript column replaces the placeholder. The swap
+    // watcher's callback is a microtask (a real browser also runs it well before the next
+    // ResizeObserver delivery, which lands at the end of the frame), so yield once before
+    // growing the content.
     await act(async () => {
-      scroller.replaceChildren(document.createElement('div'))
+      page.replaceChildren(scroller)
     })
     setMetrics(3000)
     act(() => fireResize?.())
