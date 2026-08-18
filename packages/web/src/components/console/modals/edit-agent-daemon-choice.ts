@@ -20,7 +20,7 @@ export function editAgentDaemonChoices<T extends DaemonChoiceRow>(
   daemons: T[],
   selectedDaemonId: string,
   initialDaemonId: string,
-  /** Is the `daemon-pool` experiment on for this deployment? */
+  /** Is the `daemon-pool` flag on for this deployment? */
   poolOffered: boolean
 ): EditAgentDaemonChoices<T> {
   const selected = daemons.find((daemon) => daemon.daemonId === selectedDaemonId)

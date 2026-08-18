@@ -92,9 +92,9 @@ function render(): string {
   return html
 }
 
-/** The console shows the pool only where the deployment asked for it (lib/experiments.ts). */
-const setExperiments = (value: string) => {
-  ;(window as unknown as { __AC_ENV?: Record<string, string> }).__AC_ENV = { EXPERIMENTS: value }
+/** The console shows the pool only where the deployment asked for it (lib/feature-flags.ts). */
+const setFlags = (value: string) => {
+  ;(window as unknown as { __AC_ENV?: Record<string, string> }).__AC_ENV = { FEATURE_FLAGS: value }
 }
 
 beforeEach(() => {
@@ -102,7 +102,7 @@ beforeEach(() => {
   mocks.agents = []
   mocks.memberSets = []
   mocks.push.mockClear()
-  setExperiments('daemon-pool')
+  setFlags('daemon-pool')
 })
 
 describe('DaemonsView pool', () => {
@@ -180,7 +180,7 @@ describe('DaemonsView pool', () => {
   })
 
   it('names nothing about the pool where the deployment did not ask for it', () => {
-    setExperiments('')
+    setFlags('')
     mocks.daemons = [member('p1'), daemon({ daemonId: 'own', name: 'pc.dev' })]
     mocks.agents = [onPool('a1', 'p1')]
 
@@ -192,9 +192,9 @@ describe('DaemonsView pool', () => {
   })
 
   it('keeps the groups an org already made when hiding the pool empties the fleet', () => {
-    // The two experiments are independent switches. Hiding Cloud must not take the group surface
+    // The two flags are independent switches. Hiding Cloud must not take the group surface
     // with it just because the pool rows were the only thing keeping the fleet non-empty.
-    setExperiments('daemon-groups')
+    setFlags('daemon-groups')
     mocks.daemons = [member('p1')]
     mocks.memberSets = [{ setId: 'g1', name: 'edge-eu', memberDaemonIds: [], agentCount: 0 }]
 
@@ -208,7 +208,7 @@ describe('DaemonsView pool', () => {
   it('reads as an empty fleet when the pool is all there is and it is hidden', () => {
     // Not "0 daemons of an unnamed kind": with the pool hidden the org connected nothing,
     // so the page has to say so — a blank fleet with no empty state is a page that broke.
-    setExperiments('')
+    setFlags('')
     mocks.daemons = [member('p1'), member('p2')]
 
     const html = render()
