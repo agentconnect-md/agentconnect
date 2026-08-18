@@ -124,12 +124,6 @@ export interface GithubReviewHost {
   /** Turn-finalization in dispatchOne reads these maps too, so they stay on the Daemon. */
   activeGithubTurn(key: string): ActiveGithubTurnMeta | undefined
   activeGithubReplyBatch(key: string): ActiveGithubReplyBatchMeta | undefined
-  /** Routed back through the Daemon delegate so a per-turn override is honored. */
-  makeGithubReply(
-    agentId: string,
-    ref: GithubReplyTarget,
-    sessionId: string
-  ): { poster: GithubFinalPoster; collector: GithubReplyCollector }
   agentLink(agentId: string): string
   sessionLink(acpSessionId: string, source?: string): string
   runtimeNames(): Record<string, string>
@@ -870,9 +864,9 @@ export class GithubReviewOrchestrator {
       }
       item.publishState = 'in_flight'
       this.host.persistHookState(active.entry, undefined, true)
-      const published = await this.host
-        .makeGithubReply(req.agentId, item.reply, active.sessionId)
-        .poster.publish(supplied.get(root)!)
+      const published = await this.makeGithubReply(req.agentId, item.reply, active.sessionId).poster.publish(
+        supplied.get(root)!
+      )
       if (published) item.publishedComment = published
       item.publishState = 'settled'
       this.host.persistHookState(active.entry, undefined, true)

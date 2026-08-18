@@ -72,10 +72,7 @@ import type {
   StartOrchestrationReq,
   StartOrchestrationResult,
   OrchestrationOwnerReq,
-  SetSessionTitleReq,
-  SubmitGithubReviewReq,
-  ReplyGithubReviewThreadsReq,
-  ReplyGithubReviewThreadsResult
+  SetSessionTitleReq
 } from './mcp/ops.js'
 import { GitCredentialCache } from './cp/git-credential.js'
 import {
@@ -208,9 +205,7 @@ import {
   type ScheduleDefinition
 } from './scheduler/scheduler.js'
 import { DreamScheduler } from './scheduler/dream-scheduler.js'
-import { GithubFinalPoster, GithubReplyCollector, type GithubCommentAttribution } from './github/poster.js'
 import { finalizeGithubTurn, isGithubFinalChunk, onGithubUpdate } from './platforms/github/turn-output.js'
-import { GithubReviewClient, type GithubReviewEffect } from './github/review.js'
 import { GithubReviewOrchestrator, type GithubReviewHost } from './github/review-orchestrator.js'
 import {
   collectGithubQueueCandidates,
@@ -406,15 +401,12 @@ import type {
   RdMsgWebchat,
   RdMsgIm,
   RdMsgPlatformAction,
-  RdMsgHook,
   RdAck,
   RdAgentMsgFwd,
   RdAgentMsgAck,
   RdAgentMsgDeliveryKind,
   RdChatEvent,
-  GithubHookMetadata,
   GitCommitIdentity,
-  HookReviewResult,
   MemoryDreamingPolicy,
   ChildSessionStatus,
   ChildSessionStatusProbe,
@@ -456,7 +448,6 @@ import {
   type GithubQueueCandidate,
   type GithubReplyTarget,
   type GithubRevisionAdmissionPlan,
-  type GithubThreadWorktreeCleanup,
   type HookCompletionOwner,
   type HookDispatchContext,
   type SessionWorktreeCleanupResult
@@ -2117,8 +2108,8 @@ export class Daemon {
       startOrchestration: (req) => this.startOrchestration(req),
       getOrchestration: (req) => Promise.resolve(this.getOrchestrationForOwner(req)),
       cancelOrchestration: (req) => Promise.resolve(this.cancelOrchestrationForOwner(req)),
-      submitGithubReview: (req) => this.submitGithubReview(req),
-      replyGithubReviewThreads: (req) => this.replyGithubReviewThreads(req),
+      submitGithubReview: (req) => this.githubReviews.submitGithubReview(req),
+      replyGithubReviewThreads: (req) => this.githubReviews.replyGithubReviewThreads(req),
       memory: this.memory,
       // Every session may READ shared agent memory; only a non-isolated session
       // may WRITE it, so a private DM/A2A turn can use existing memory but cannot
@@ -5479,7 +5470,8 @@ export class Daemon {
     }
 
     if (msg.source === 'hook') {
-      const task = this.dispatchRelayHook(msg)
+      const task = this.githubReviews
+        .dispatchRelayHook(msg)
         .catch((err): RdAck => {
           this.log.error(`hook admission failed for ${dedupKey}: ${formatErr(err)}`)
           return { msgId: msg.msgId, accepted: false, reason: 'durability' }
@@ -7911,11 +7903,6 @@ export class Daemon {
     if (armed || disarmed) this.log.info(`orchestration: armed ${armed} and disarmed ${disarmed} deadline(s)`)
   }
 
-  /** The GitHub review client owned by {@link GithubReviewOrchestrator}. */
-  private get githubReviewClient(): GithubReviewClient {
-    return this.githubReviews.githubReviewClient
-  }
-
   /** Everything the GitHub hook-dispatch and formal-review seam reaches back for. */
   private githubReviewHost(): GithubReviewHost {
     return {
@@ -7949,82 +7936,11 @@ export class Daemon {
         this.dispatch(agentId, msg, integrationId, webchat, callMeta, opts, githubReply, hookContext),
       activeGithubTurn: (key) => this.activeGithubTurnMeta.get(key),
       activeGithubReplyBatch: (key) => this.activeGithubReplyBatchMeta.get(key),
-      makeGithubReply: (agentId, ref, sessionId) => this.makeGithubReply(agentId, ref, sessionId),
       agentLink: (agentId) => this.agentLink(agentId),
       sessionLink: (acpSessionId, source) => this.sessionLink(acpSessionId, source),
       runtimeNames: () => this.runtimeNames,
       hostForStoredSession: (agentId, acpSessionId) => this.hostForStoredSession(agentId, acpSessionId)
     }
-  }
-
-  private dispatchRelayHook(msg: RdMsgHook): Promise<RdAck> {
-    return this.githubReviews.dispatchRelayHook(msg)
-  }
-
-  private onHookFire(msg: RdMsgHook): Promise<{ accepted: boolean; reason?: string }> {
-    return this.githubReviews.onHookFire(msg)
-  }
-
-  private completeGithubThreadWorktreeCleanup(
-    hook: HookDispatchContext,
-    key: string,
-    cleanup: GithubThreadWorktreeCleanup,
-    owner: HookCompletionOwner
-  ): Promise<void> {
-    return this.githubReviews.completeGithubThreadWorktreeCleanup(hook, key, cleanup, owner)
-  }
-
-  private githubFormalReviewEnabled(entry: QueueEntry): boolean {
-    return this.githubReviews.githubFormalReviewEnabled(entry)
-  }
-
-  private ensureGithubPullRevision(entry: QueueEntry, required: boolean): Promise<GithubHookMetadata | undefined> {
-    return this.githubReviews.ensureGithubPullRevision(entry, required)
-  }
-
-  private githubWorkspaceMatches(agent: Agent, github: GithubHookMetadata): boolean {
-    return this.githubReviews.githubWorkspaceMatches(agent, github)
-  }
-
-  private sessionInitiatorLabel(msg: NormalizedMessage): string {
-    return this.githubReviews.sessionInitiatorLabel(msg)
-  }
-
-  private prepareGithubReviewWorkspace(
-    entry: QueueEntry,
-    key: string,
-    agent: Agent
-  ): Promise<{
-    workspaceIsolation?: 'shared' | 'session'
-    forceWorkspaceIsolation?: true
-    preparedWorkspaceCwd?: string
-  }> {
-    return this.githubReviews.prepareGithubReviewWorkspace(entry, key, agent)
-  }
-
-  private prepareGithubTurn(entry: QueueEntry, sessionId: string): Promise<ActiveGithubTurnMeta | undefined> {
-    return this.githubReviews.prepareGithubTurn(entry, sessionId)
-  }
-
-  private persistGithubReviewEffect(
-    active: ActiveGithubTurnMeta,
-    attemptId: string,
-    effect: GithubReviewEffect,
-    required = false
-  ): HookReviewResult {
-    return this.githubReviews.persistGithubReviewEffect(active, attemptId, effect, required)
-  }
-
-  private reconcileGithubReviewAttempt(active: ActiveGithubTurnMeta): Promise<void> {
-    return this.githubReviews.reconcileGithubReviewAttempt(active)
-  }
-
-  private submitGithubReview(req: SubmitGithubReviewReq): Promise<GithubReviewEffect> {
-    return this.githubReviews.submitGithubReview(req)
-  }
-
-  private replyGithubReviewThreads(req: ReplyGithubReviewThreadsReq): Promise<ReplyGithubReviewThreadsResult> {
-    return this.githubReviews.replyGithubReviewThreads(req)
   }
 
   /** The op-switch behind {@link handleRelayMsg} (dedup handled by the caller). */
@@ -10203,7 +10119,7 @@ export class Daemon {
     const persistedSessionId = this.store.getSession(key)?.acpSessionId
     let remoteMcpServer: import('@agentclientprotocol/sdk').McpServer | undefined
     try {
-      const reviewWorkspace = await this.prepareGithubReviewWorkspace(entry, key, agent)
+      const reviewWorkspace = await this.githubReviews.prepareGithubReviewWorkspace(entry, key, agent)
       if (this.keyServer) {
         const firstTurnModel = agent.allowRuntimeChangesInChat ? webchat?.runtime?.model : undefined
         entry.selectedHost = await this.ensureModelSessionHost(agent, key, firstTurnModel)
@@ -10522,7 +10438,12 @@ export class Daemon {
       ...(callMeta ? { callMeta } : {}),
       ...(pendingWebchat ? { webchat: pendingWebchat } : {}),
       ...(githubReply && entry.posterPublishState !== 'in_flight' && entry.posterPublishState !== 'settled'
-        ? { github: { ...this.makeGithubReply(agentId, githubReply, sessionId), deferredFinalTranscript: false } }
+        ? {
+            github: {
+              ...this.githubReviews.makeGithubReply(agentId, githubReply, sessionId),
+              deferredFinalTranscript: false
+            }
+          }
         : {})
     }
     this.pending.set(pendingTurnKey(agentId, sessionId), p)
@@ -10533,7 +10454,7 @@ export class Daemon {
     // §6.7 active-turn context: expose THIS turn's trusted callMeta by logical sessionKey so
     // a nested messageAgent made during the turn can auto-inherit hop/origin + reply-correlation.
     if (callMeta) this.activeTurnCallMeta.set(key, callMeta)
-    const activeGithub = await this.prepareGithubTurn(entry, sessionId).catch((err) => {
+    const activeGithub = await this.githubReviews.prepareGithubTurn(entry, sessionId).catch((err) => {
       this.log.warn(`github review: turn setup failed (${formatErr(err)})`)
       return undefined
     })
@@ -15690,7 +15611,7 @@ export class Daemon {
         const key = sessionKey(msg.platform, msg.channel, msg.thread ?? msg.msgId, row.agentId, msg.transportScope)
         const owner: HookCompletionOwner = { inboxId: row.id }
         this.liveInboxIds.add(row.id)
-        if (cleanup) void this.completeGithubThreadWorktreeCleanup(hookContext, key, cleanup, owner)
+        if (cleanup) void this.githubReviews.completeGithubThreadWorktreeCleanup(hookContext, key, cleanup, owner)
         else this.emitHookCompletion(hookContext, 'success', { reason: 'deleted_event_ignored' }, owner)
         replayedMaintenance += 1
         continue
@@ -16166,18 +16087,6 @@ export class Daemon {
       undefined,
       onSessionReady ? { onSessionReady } : undefined
     )
-  }
-
-  private makeGithubReply(
-    agentId: string,
-    ref: GithubReplyTarget,
-    sessionId: string
-  ): { poster: GithubFinalPoster; collector: GithubReplyCollector } {
-    return this.githubReviews.makeGithubReply(agentId, ref, sessionId)
-  }
-
-  private githubCommentAttribution(agentId: string, sessionId: string): GithubCommentAttribution {
-    return this.githubReviews.githubCommentAttribution(agentId, sessionId)
   }
 
   /**
