@@ -488,6 +488,7 @@ import {
   ACTIVATION_PAIRING_TTL_MS
 } from './daemon/helpers.js'
 import {
+  ABSORBED_CONTEXT_TS_MEMORY,
   AGENT_CALL_HOP_LIMIT_NOTICE,
   BG_TASK_WAKE_GRACE_MS,
   CANCEL_FORCE_MS,
@@ -8333,7 +8334,7 @@ export class Daemon {
       .sort((a, b) => a.eventTimeUs - b.eventTimeUs || a.seq - b.seq)
   }
 
-  private queuedEntriesMatchingContext(key: string, eventTs: ReadonlySet<string>): QueueEntry[] {
+  private queuedEntriesMatchingContext(key: string, eventTs: ReadonlyMap<string, string | undefined>): QueueEntry[] {
     return (this.serialQueue.get(key) ?? []).filter((entry) => eventTs.has(transcriptCoords(entry.msg).ts))
   }
 
@@ -8342,10 +8343,67 @@ export class Daemon {
     return quoted ? quotedSourceBlock({ quoted }, { replayed }) : undefined
   }
 
+  /** An activation whose row a fence already folded into a prompt for this session: settle it
+   *  as coalesced instead of queueing it. Returns false when nothing absorbed this message. */
+  private async coalesceLateAdmission(key: string, entry: QueueEntry): Promise<boolean> {
+    if (!this.claimAbsorbedContext(key, transcriptCoords(entry.msg).ts)) return false
+    const sessionId = [...this.pending.values()].find((p) => p.sessionKey === key)?.acpSessionId
+    await this.coalesceEntryIntoTurn(entry, sessionId ?? null)
+    defaultTurnOutputMetrics.queueCoalesced(entry.msg.platform, 1)
+    this.log.info(`turn context: coalesced 1 late activation into ${key}`)
+    return true
+  }
+
+  /** Settle one activation whose message a live turn's prompt already carries: the row is
+   *  upgraded to a delivery for this agent, the durable row is released, and the turn is
+   *  reported cancelled rather than run a second time. */
+  private async coalesceEntryIntoTurn(entry: QueueEntry, sessionId: string | null): Promise<void> {
+    if (entry.webchat && !entry.webchat.doneSent) {
+      entry.webchat.doneSent = true
+      entry.webchat.sink.done({
+        conversationId: entry.webchat.conversationId,
+        turnId: entry.webchat.turnId,
+        stopReason: 'coalesced_into_turn'
+      })
+    }
+    const { thread, ts } = transcriptCoords(entry.msg)
+    const mention = attachmentMention(entry.msg.attachments)
+    await this.store.appendTranscript({
+      channel: transcriptChannelKey(entry.msg.channel, entry.msg.transportScope),
+      thread,
+      ts,
+      sender: entry.msg.sender.id,
+      // Carried so a live agent-wake post (postAgentWakeInbound) reconciles against
+      // this row even when its turn was coalesced into an in-flight generation.
+      ...(entry.msg.transcriptPostId ? { postId: entry.msg.transcriptPostId } : {}),
+      recipient: entry.agentId,
+      kind: 'text',
+      text: mention ? `${entry.msg.text}\n${mention}`.trim() : entry.msg.text
+    })
+    await this.removeInbox(entry)
+    entry.resolve(sessionId)
+    this.evalHooks.emit({
+      type: 'turn.cancelled',
+      agentId: entry.agentId,
+      ...(sessionId ? { sessionId } : {}),
+      turnId: this.evaluationTurnIdFor(entry.agentId, entry.msg),
+      platform: entry.msg.platform,
+      channel: entry.msg.channel,
+      data: { reason: 'coalesced_into_turn' }
+    })
+  }
+
   /** Start/regeneration fence queue mutation. The caller has already decided that
    * these exact provider events are represented in a prompt that will be initiated
    * synchronously before yielding back to ingress. */
-  private async coalesceQueuedContext(key: string, sessionId: string, eventTs: ReadonlySet<string>): Promise<number> {
+  private async coalesceQueuedContext(
+    key: string,
+    sessionId: string,
+    eventTs: ReadonlyMap<string, string | undefined>
+  ): Promise<number> {
+    // Recorded before the early return: an activation that has not reached the queue yet must
+    // still find its row accounted for when it gets there.
+    this.noteAbsorbedContext(key, eventTs)
     const queue = this.serialQueue.get(key)
     if (!queue?.length || eventTs.size === 0) return 0
     const kept: QueueEntry[] = []
@@ -8356,39 +8414,7 @@ export class Daemon {
         continue
       }
       count += 1
-      if (entry.webchat && !entry.webchat.doneSent) {
-        entry.webchat.doneSent = true
-        entry.webchat.sink.done({
-          conversationId: entry.webchat.conversationId,
-          turnId: entry.webchat.turnId,
-          stopReason: 'coalesced_into_turn'
-        })
-      }
-      const { thread, ts } = transcriptCoords(entry.msg)
-      const mention = attachmentMention(entry.msg.attachments)
-      await this.store.appendTranscript({
-        channel: transcriptChannelKey(entry.msg.channel, entry.msg.transportScope),
-        thread,
-        ts,
-        sender: entry.msg.sender.id,
-        // Carried so a live agent-wake post (postAgentWakeInbound) reconciles against
-        // this row even when its turn was coalesced into an in-flight generation.
-        ...(entry.msg.transcriptPostId ? { postId: entry.msg.transcriptPostId } : {}),
-        recipient: entry.agentId,
-        kind: 'text',
-        text: mention ? `${entry.msg.text}\n${mention}`.trim() : entry.msg.text
-      })
-      await this.removeInbox(entry)
-      entry.resolve(sessionId)
-      this.evalHooks.emit({
-        type: 'turn.cancelled',
-        agentId: entry.agentId,
-        sessionId,
-        turnId: this.evaluationTurnIdFor(entry.agentId, entry.msg),
-        platform: entry.msg.platform,
-        channel: entry.msg.channel,
-        data: { reason: 'coalesced_into_turn' }
-      })
+      await this.coalesceEntryIntoTurn(entry, sessionId)
     }
     if (kept.length > 0) this.serialQueue.set(key, kept)
     else this.serialQueue.delete(key)
@@ -8577,6 +8603,42 @@ export class Daemon {
    *  work. A peer owns the trip's warning and its own backlog, so each member stops its turns
    *  once per latch, on the first admission it refuses, not on every subsequent message. */
   private enforcedLoopScopes = new Map<string, number>()
+  /** Every transcript row a prompt of this session key already carried: its text as prompted,
+   *  and whether its own activation has been settled. Two invariants the sync store used to
+   *  give for free rest on it — an inbound whose activation had not reached the gate when a
+   *  fence absorbed it is coalesced rather than prompted twice, and a row whose revision a
+   *  later write bumps is not re-read as new context. FIFO-capped per key. */
+  private absorbedContextTs = new Map<string, Map<string, { text?: string; settled: boolean }>>()
+
+  /** Record the rows one prompt represents. FIFO-capped: an observation whose activation
+   *  never arrives is evicted rather than remembered forever. */
+  private noteAbsorbedContext(key: string, events: ReadonlyMap<string, string | undefined>): void {
+    if (events.size === 0) return
+    const absorbed = this.absorbedContextTs.get(key) ?? new Map<string, { text?: string; settled: boolean }>()
+    for (const [ts, text] of events) {
+      // Re-noting the same row must not un-settle it; only changed text opens a fresh claim.
+      const settled = absorbed.get(ts)?.text === text && absorbed.get(ts)?.settled === true
+      absorbed.set(ts, { ...(text !== undefined ? { text } : {}), settled })
+    }
+    while (absorbed.size > ABSORBED_CONTEXT_TS_MEMORY) absorbed.delete(absorbed.keys().next().value!)
+    this.absorbedContextTs.set(key, absorbed)
+  }
+
+  /** Only an UNCHANGED row is already represented: the closing edit of a streamed peer post
+   *  rewrites the same coordinates with the completed text, and that really is new context. */
+  private absorbedContext(key: string, event: TranscriptEntry): boolean {
+    const absorbed = this.absorbedContextTs.get(key)?.get(event.ts)
+    return absorbed !== undefined && (absorbed.text === undefined || absorbed.text === event.text)
+  }
+
+  /** Claim one recorded row for the activation that carries it — true only for the first
+   *  claimant, so the row stays remembered for the fences without being coalesced twice. */
+  private claimAbsorbedContext(key: string, ts: string): boolean {
+    const absorbed = this.absorbedContextTs.get(key)?.get(ts)
+    if (absorbed === undefined || absorbed.settled) return false
+    absorbed.settled = true
+    return true
+  }
 
   /** Local layer (agent.json) ∪ resolved CP layer; unservable CP rules are dropped + warn-logged. */
   private mergedRules(): RoutingRule[] {
@@ -9381,203 +9443,269 @@ export class Daemon {
     ) {
       await this.recordObservedInbound(msg, agentId)
     }
-    return new Promise<string | null>(async (resolve, reject) => {
-      const key = sessionKey(msg.platform, msg.channel, msg.thread ?? msg.msgId, agentId, msg.transportScope)
-      const githubLane = githubPullRequestLane(hookContext, githubHookCoordinates(agentId, msg, integrationId))
-      const safetyDrainByKey = this.safetyDrainAdmissionKeys.get(agentId)?.has(key) === true
-      let admissionSettled = false
-      const settleAdmission = async (result: {
-        accepted: boolean
-        reason?: string
-        duplicate?: boolean
-      }): Promise<void> => {
-        if (admissionSettled) return
-        admissionSettled = true
-        if (result.accepted && !result.duplicate && callMeta?.initializeOnly !== true) {
-          this.evalHooks.emit({
-            type: 'turn.accepted',
-            agentId,
-            turnId: this.evaluationTurnIdFor(agentId, msg),
-            platform: msg.platform,
-            channel: msg.channel,
-            data: { source: msg.source }
-          })
-          // NOT for §5.2a continuation wakes: their inbound IS a committed peer post the
-          // browser already rendered — re-posting it would duplicate that reply.
-          if (callMeta?.conversationContinuation !== true) this.webchatTransport.postAgentWakeInbound(webchat, msg)
-        }
-        // §8.6, the ONE place every delivery path settles — live dispatch, queued
-        // dispatch, and startup replay alike. Completing the rendezvous here rather than
-        // at each call site is what makes it survive a crash: the replayed turn carries
-        // the key on its persisted CallMeta, so the record is completed by the replay
-        // itself instead of being inferred later from an inbox row that completion has
-        // by then removed.
-        const activationKey = callMeta?.activationKey
-        if (activationKey !== undefined) {
-          if (result.accepted) {
-            await this.store.admitActivation(
-              activationKey,
-              sessionKey(msg.platform, msg.channel, msg.thread ?? msg.msgId, agentId, msg.transportScope)
-            )
-          } else {
-            // Never admitted ⇒ give the claim back, so a retry is a first attempt rather
-            // than being deduplicated against a child that was never opened.
-            await this.store.releaseActivation(activationKey)
-          }
-        }
-        opts?.onAdmission?.(result)
-      }
-      // Drain gate for the dispatch entry itself — covers cron fires and `!queue`
-      // that bypass onInbound's gate (§5.3: a draining unit starts no turn). Applied
-      // BEFORE claiming ownership so a queued entry is never admitted for a draining
-      // agent. Callers treat null as "gate-dropped, still admitted for P1".
-      if (this.draining || this.drainingAgents.has(agentId)) {
-        this.log.debug(`dispatch: skipped for agent "${agentId}" (draining)`)
-        await settleAdmission({ accepted: false, reason: 'draining' })
-        resolve(null)
-        return
-      }
-      // Pause gate (#288): a paused agent stays placed/connected but processes no
-      // turns — platform, webchat, and cron all funnel through here. Silent drop.
-      if (this.paused(agentId)) {
-        this.log.info(`dispatch: skipped for agent "${agentId}" (paused)`)
-        await settleAdmission({ accepted: false, reason: 'paused' })
-        resolve(null)
-        return
-      }
-      // An interrupt's force backstop is host-wide, so fresh work must wait until the
-      // selected old dispatches fully unwind. Live platform arrivals are intentionally
-      // dropped; a DURABLE startup replay cannot be lost/dormant, so retry that same row
-      // after the transient drain closes (its inbox id has not been adopted yet).
-      if (this.safetyDrainingAgents.has(agentId) && !this.safetyDrainAllows(agentId, key, githubLane)) {
-        if (opts?.fromInboxReplay) {
-          void this.waitForSafetyDrain(agentId)
-            .then(async () => {
-              if (this.draining || !this.agents.has(agentId)) {
-                await settleAdmission({ accepted: false, reason: 'draining' })
-                resolve(null) // durable row remains for next startup/eventual owner
-                return
-              }
-              if (opts.inboxReplayId !== undefined && !(await this.store.hasInbox(opts.inboxReplayId))) {
-                // Pause/loop protection purged it while deferred; it stays terminal.
-                await settleAdmission({ accepted: false, reason: 'dropped' })
-                resolve(null)
-                return
-              }
-              this.dispatch(
-                agentId,
-                msg,
-                integrationId,
-                webchat,
-                callMeta,
-                opts,
-                githubReply,
-                hookContext,
-                posterPublishState
-              ).then(resolve, reject)
-            })
-            .catch(reject)
-        } else {
-          this.log.info(`dispatch: skipped for agent "${agentId}" (stopping interrupted work)`)
-          await settleAdmission({ accepted: false, reason: 'busy' })
-          resolve(null)
-        }
-        return
-      }
-      const loopScope = loopGuardScope(msg)
-      // A latched circuit is checked at the common dispatch seam, so startup replay,
-      // cron/hook turns, webchat, and agent→agent calls cannot bypass it. Purging here
-      // also handles rows read from a pre-existing replay snapshot.
-      if ((usesLoopGuard(msg) || hookContext !== undefined) && (await this.store.isLoopGuardOpen(loopScope))) {
-        // First-open already purged the live backlog. Only a persisted startup row can
-        // predate that purge; fresh spam is not yet in inbox, so avoid an O(inbox) scan
-        // on every message while the durable latch is open.
-        if (opts?.fromInboxReplay) await this.purgeLoopScopeInbox(loopScope)
-        // The trip may have been owned by a peer, whose interrupts could not reach this
-        // member's turns. Stop them here once, or the loop keeps running on this member.
-        await this.enforceLatchedLoopScope(loopScope)
-        this.log.warn(`dispatch: skipped ${msg.msgId}; loop guard is open for ${loopScope}`)
-        await settleAdmission({ accepted: false, reason: 'loop_protection' })
-        resolve(null)
-        return
-      }
-      // Old buggy daemons may have persisted Slack edit/assistant wrappers in the
-      // durable inbox. Trip on the first poison row so patched startup is silent rather
-      // than replaying even one complete malformed backlog.
-      if (isMalformedPlatformTurn(msg)) {
-        if (msg.isDm) {
-          // A DM channel is one stable recovery scope even if the malformed wrapper
-          // lost its thread. Non-DM wrappers may each have a synthetic outer ts, so
-          // drop them without creating an unbounded set of permanent latches.
-          const verdict = await this.store.tripLoopGuard(loopScope, this.clock.now(), 'malformed_platform_event')
-          if (verdict.trippedNow) {
-            await this.onLoopGuardTripped(loopScope, verdict.reason ?? 'malformed_platform_event', {
+    // Not an async executor: a rejection from any awaited admission/store step must settle
+    // THIS promise, not vanish as an unhandled rejection while the caller waits forever.
+    return new Promise<string | null>((resolve, reject) => {
+      void (async () => {
+        const key = sessionKey(msg.platform, msg.channel, msg.thread ?? msg.msgId, agentId, msg.transportScope)
+        const githubLane = githubPullRequestLane(hookContext, githubHookCoordinates(agentId, msg, integrationId))
+        const safetyDrainByKey = this.safetyDrainAdmissionKeys.get(agentId)?.has(key) === true
+        let admissionSettled = false
+        const settleAdmission = async (result: {
+          accepted: boolean
+          reason?: string
+          duplicate?: boolean
+        }): Promise<void> => {
+          if (admissionSettled) return
+          admissionSettled = true
+          if (result.accepted && !result.duplicate && callMeta?.initializeOnly !== true) {
+            this.evalHooks.emit({
+              type: 'turn.accepted',
               agentId,
-              msg,
-              integrationId
+              turnId: this.evaluationTurnIdFor(agentId, msg),
+              platform: msg.platform,
+              channel: msg.channel,
+              data: { source: msg.source }
             })
-          } else {
-            // The CAS elected a peer (or the circuit was already open): this member still
-            // owns stopping its own turns, exactly like the counter-latch path below.
-            await this.purgeLoopScopeInbox(loopScope)
-            await this.enforceLatchedLoopScope(loopScope)
+            // NOT for §5.2a continuation wakes: their inbound IS a committed peer post the
+            // browser already rendered — re-posting it would duplicate that reply.
+            if (callMeta?.conversationContinuation !== true) this.webchatTransport.postAgentWakeInbound(webchat, msg)
           }
-        } else {
-          this.log.warn(`dispatch: dropped malformed Slack platform event ${msg.msgId}`)
+          // §8.6, the ONE place every delivery path settles — live dispatch, queued
+          // dispatch, and startup replay alike. Completing the rendezvous here rather than
+          // at each call site is what makes it survive a crash: the replayed turn carries
+          // the key on its persisted CallMeta, so the record is completed by the replay
+          // itself instead of being inferred later from an inbox row that completion has
+          // by then removed.
+          const activationKey = callMeta?.activationKey
+          if (activationKey !== undefined) {
+            if (result.accepted) {
+              await this.store.admitActivation(
+                activationKey,
+                sessionKey(msg.platform, msg.channel, msg.thread ?? msg.msgId, agentId, msg.transportScope)
+              )
+            } else {
+              // Never admitted ⇒ give the claim back, so a retry is a first attempt rather
+              // than being deduplicated against a child that was never opened.
+              await this.store.releaseActivation(activationKey)
+            }
+          }
+          opts?.onAdmission?.(result)
         }
-        await settleAdmission({ accepted: false, reason: 'malformed_platform_event' })
-        resolve(null)
-        return
-      }
-      const entry: QueueEntry = {
-        agentId,
-        msg,
-        initAbort: new AbortController(),
-        ...(integrationId !== undefined ? { integrationId } : {}),
-        ...(webchat ? { webchat } : {}),
-        ...(callMeta ? { callMeta } : {}),
-        ...(hookContext ? { hookContext } : {}),
-        ...(opts?.onSessionReady ? { onSessionReady: opts.onSessionReady } : {}),
-        ...(opts?.admissionWait ? { admissionWait: opts.admissionWait } : {}),
-        ...(opts?.deferObservedInbound ? { deferObservedInbound: true } : {}),
-        ...(opts?.isQueueCmd ? { isQueueCmd: true } : {}),
-        ...(githubReply ? { githubReply } : {}),
-        ...(posterPublishState ? { posterPublishState } : {}),
-        ...(this.safetyDrainingAgents.has(agentId) && !safetyDrainByKey
-          ? { coordinationWait: this.waitForSafetyDrain(agentId) }
-          : {}),
-        resolve,
-        reject
-      }
-      const batchLeader = this.githubReviewBatchLeader(entry)
-      const revisionPlan = this.githubRevisionAdmissionPlan(key, entry)
-      // ── atomic claim-or-enqueue (single synchronous tick, no await before add) ──
-      if (this.inflight.has(key)) {
-        const q = this.serialQueue.get(key) ?? []
-        const supersededQueued =
-          revisionPlan?.superseded.filter((candidate) => candidate.state === 'queued' && candidate.key === key)
-            .length ?? 0
-        const queueIncoming = revisionPlan === undefined || revisionPlan.winner.entry === entry
-        const projectedDepth = batchLeader ? q.length : q.length - supersededQueued + (queueIncoming ? 1 : 0)
-        // §4.4 backpressure: per-session queue-depth cap → queue_full fast-fail. The
-        // rejected entry settles its OWN promise; nothing is admitted or persisted.
-        if (projectedDepth > MAX_QUEUED_PER_SESSION) {
-          this.log.warn(`dispatch: queue full for session ${key} (${q.length}) — rejecting (queue_full)`)
-          await settleAdmission({ accepted: false, reason: 'queue_full' })
-          reject(new QueueFullError(key))
+        // Drain gate for the dispatch entry itself — covers cron fires and `!queue`
+        // that bypass onInbound's gate (§5.3: a draining unit starts no turn). Applied
+        // BEFORE claiming ownership so a queued entry is never admitted for a draining
+        // agent. Callers treat null as "gate-dropped, still admitted for P1".
+        if (this.draining || this.drainingAgents.has(agentId)) {
+          this.log.debug(`dispatch: skipped for agent "${agentId}" (draining)`)
+          await settleAdmission({ accepted: false, reason: 'draining' })
+          resolve(null)
           return
         }
-        // Replay is recovery of an admission already counted before shutdown, not a
-        // fresh turn signal. Counting it again would let repeated restarts trip the
-        // breaker on a valid backlog. Structurally malformed rows are still caught by
-        // the unconditional poison check above.
-        if (!opts?.replay && !(await this.admitLoopGuardTurn(agentId, msg, integrationId, opts?.inboxReplayId))) {
+        // Pause gate (#288): a paused agent stays placed/connected but processes no
+        // turns — platform, webchat, and cron all funnel through here. Silent drop.
+        if (this.paused(agentId)) {
+          this.log.info(`dispatch: skipped for agent "${agentId}" (paused)`)
+          await settleAdmission({ accepted: false, reason: 'paused' })
+          resolve(null)
+          return
+        }
+        // An interrupt's force backstop is host-wide, so fresh work must wait until the
+        // selected old dispatches fully unwind. Live platform arrivals are intentionally
+        // dropped; a DURABLE startup replay cannot be lost/dormant, so retry that same row
+        // after the transient drain closes (its inbox id has not been adopted yet).
+        if (this.safetyDrainingAgents.has(agentId) && !this.safetyDrainAllows(agentId, key, githubLane)) {
+          if (opts?.fromInboxReplay) {
+            void this.waitForSafetyDrain(agentId)
+              .then(async () => {
+                if (this.draining || !this.agents.has(agentId)) {
+                  await settleAdmission({ accepted: false, reason: 'draining' })
+                  resolve(null) // durable row remains for next startup/eventual owner
+                  return
+                }
+                if (opts.inboxReplayId !== undefined && !(await this.store.hasInbox(opts.inboxReplayId))) {
+                  // Pause/loop protection purged it while deferred; it stays terminal.
+                  await settleAdmission({ accepted: false, reason: 'dropped' })
+                  resolve(null)
+                  return
+                }
+                this.dispatch(
+                  agentId,
+                  msg,
+                  integrationId,
+                  webchat,
+                  callMeta,
+                  opts,
+                  githubReply,
+                  hookContext,
+                  posterPublishState
+                ).then(resolve, reject)
+              })
+              .catch(reject)
+          } else {
+            this.log.info(`dispatch: skipped for agent "${agentId}" (stopping interrupted work)`)
+            await settleAdmission({ accepted: false, reason: 'busy' })
+            resolve(null)
+          }
+          return
+        }
+        const loopScope = loopGuardScope(msg)
+        // A latched circuit is checked at the common dispatch seam, so startup replay,
+        // cron/hook turns, webchat, and agent→agent calls cannot bypass it. Purging here
+        // also handles rows read from a pre-existing replay snapshot.
+        if ((usesLoopGuard(msg) || hookContext !== undefined) && (await this.store.isLoopGuardOpen(loopScope))) {
+          // First-open already purged the live backlog. Only a persisted startup row can
+          // predate that purge; fresh spam is not yet in inbox, so avoid an O(inbox) scan
+          // on every message while the durable latch is open.
+          if (opts?.fromInboxReplay) await this.purgeLoopScopeInbox(loopScope)
+          // The trip may have been owned by a peer, whose interrupts could not reach this
+          // member's turns. Stop them here once, or the loop keeps running on this member.
+          await this.enforceLatchedLoopScope(loopScope)
+          this.log.warn(`dispatch: skipped ${msg.msgId}; loop guard is open for ${loopScope}`)
           await settleAdmission({ accepted: false, reason: 'loop_protection' })
           resolve(null)
           return
         }
-        // Genuinely admitted (queued behind an in-flight turn) → persist BEFORE returning,
-        // so the caller's delivered:true ACK is backed by a durable row (§6.9 #353).
+        // Old buggy daemons may have persisted Slack edit/assistant wrappers in the
+        // durable inbox. Trip on the first poison row so patched startup is silent rather
+        // than replaying even one complete malformed backlog.
+        if (isMalformedPlatformTurn(msg)) {
+          if (msg.isDm) {
+            // A DM channel is one stable recovery scope even if the malformed wrapper
+            // lost its thread. Non-DM wrappers may each have a synthetic outer ts, so
+            // drop them without creating an unbounded set of permanent latches.
+            const verdict = await this.store.tripLoopGuard(loopScope, this.clock.now(), 'malformed_platform_event')
+            if (verdict.trippedNow) {
+              await this.onLoopGuardTripped(loopScope, verdict.reason ?? 'malformed_platform_event', {
+                agentId,
+                msg,
+                integrationId
+              })
+            } else {
+              // The CAS elected a peer (or the circuit was already open): this member still
+              // owns stopping its own turns, exactly like the counter-latch path below.
+              await this.purgeLoopScopeInbox(loopScope)
+              await this.enforceLatchedLoopScope(loopScope)
+            }
+          } else {
+            this.log.warn(`dispatch: dropped malformed Slack platform event ${msg.msgId}`)
+          }
+          await settleAdmission({ accepted: false, reason: 'malformed_platform_event' })
+          resolve(null)
+          return
+        }
+        const entry: QueueEntry = {
+          agentId,
+          msg,
+          initAbort: new AbortController(),
+          ...(integrationId !== undefined ? { integrationId } : {}),
+          ...(webchat ? { webchat } : {}),
+          ...(callMeta ? { callMeta } : {}),
+          ...(hookContext ? { hookContext } : {}),
+          ...(opts?.onSessionReady ? { onSessionReady: opts.onSessionReady } : {}),
+          ...(opts?.admissionWait ? { admissionWait: opts.admissionWait } : {}),
+          ...(opts?.deferObservedInbound ? { deferObservedInbound: true } : {}),
+          ...(opts?.isQueueCmd ? { isQueueCmd: true } : {}),
+          ...(githubReply ? { githubReply } : {}),
+          ...(posterPublishState ? { posterPublishState } : {}),
+          ...(this.safetyDrainingAgents.has(agentId) && !safetyDrainByKey
+            ? { coordinationWait: this.waitForSafetyDrain(agentId) }
+            : {}),
+          resolve,
+          reject
+        }
+        const batchLeader = this.githubReviewBatchLeader(entry)
+        const revisionPlan = this.githubRevisionAdmissionPlan(key, entry)
+        // ── atomic claim-or-enqueue (single synchronous tick, no await before add) ──
+        if (this.inflight.has(key)) {
+          const q = this.serialQueue.get(key) ?? []
+          const supersededQueued =
+            revisionPlan?.superseded.filter((candidate) => candidate.state === 'queued' && candidate.key === key)
+              .length ?? 0
+          const queueIncoming = revisionPlan === undefined || revisionPlan.winner.entry === entry
+          const projectedDepth = batchLeader ? q.length : q.length - supersededQueued + (queueIncoming ? 1 : 0)
+          // §4.4 backpressure: per-session queue-depth cap → queue_full fast-fail. The
+          // rejected entry settles its OWN promise; nothing is admitted or persisted.
+          if (projectedDepth > MAX_QUEUED_PER_SESSION) {
+            this.log.warn(`dispatch: queue full for session ${key} (${q.length}) — rejecting (queue_full)`)
+            await settleAdmission({ accepted: false, reason: 'queue_full' })
+            reject(new QueueFullError(key))
+            return
+          }
+          // Replay is recovery of an admission already counted before shutdown, not a
+          // fresh turn signal. Counting it again would let repeated restarts trip the
+          // breaker on a valid backlog. Structurally malformed rows are still caught by
+          // the unconditional poison check above.
+          if (!opts?.replay && !(await this.admitLoopGuardTurn(agentId, msg, integrationId, opts?.inboxReplayId))) {
+            await settleAdmission({ accepted: false, reason: 'loop_protection' })
+            resolve(null)
+            return
+          }
+          // Genuinely admitted (queued behind an in-flight turn) → persist BEFORE returning,
+          // so the caller's delivered:true ACK is backed by a durable row (§6.9 #353).
+          let persistence: Awaited<ReturnType<Daemon['persistInbox']>>
+          try {
+            persistence = await this.persistInbox(entry, key, {
+              required: opts?.requireDurable,
+              adoptExisting: opts?.adoptExistingInbox,
+              existingId: opts?.inboxReplayId ?? opts?.deliveryId
+            })
+          } catch (err) {
+            await settleAdmission({ accepted: false, reason: 'durability' })
+            reject(err)
+            return
+          }
+          if (persistence === 'existing') {
+            // The same stable delivery survived a restart and is already being
+            // replayed (or awaits replay). Its original accepted ACK remains valid;
+            // never create a second in-memory QueueEntry.
+            await settleAdmission({ accepted: true, duplicate: true })
+            resolve(null)
+            return
+          }
+          // Admission settles only once the entry is on the queue (or coalesced away): the
+          // caller's accepted ACK has always meant "this delivery is placed", and awaiting a
+          // Promise-returning store must not let the ACK outrun the placement.
+          if (batchLeader && (await this.coalesceGithubReviewBatch(batchLeader, entry))) {
+            await settleAdmission({ accepted: true })
+            entry.resolve(null)
+            return
+          }
+          // A fence that ran while this delivery was still travelling here already folded its
+          // message into the live prompt — the placement it would have coalesced never existed
+          // yet, so settle it as coalesced now instead of prompting the same message twice.
+          if (await this.coalesceLateAdmission(key, entry)) {
+            await settleAdmission({ accepted: true })
+            return
+          }
+          // Place the entry BEFORE the revision plan's interrupts: those await, and a gate that
+          // drains meanwhile would otherwise run past this delivery instead of behind it. `q`
+          // predates this method's awaits, so re-read the queue a peer dispatch may have set.
+          const next = this.serialQueue.get(key) ?? []
+          next.push(entry)
+          this.serialQueue.set(key, next)
+          if (revisionPlan && !(await this.applyGithubRevisionAdmissionPlan(revisionPlan, entry))) {
+            this.removeQueuedEntry(key, entry)
+            await settleAdmission({ accepted: true })
+            return
+          }
+          await settleAdmission({ accepted: true })
+          this.log.debug(
+            `dispatch: queued behind in-flight turn for session ${key} (depth ${this.serialQueue.get(key)?.length ?? 0})`
+          )
+          return
+        }
+        // Claim ownership of the key in the SAME tick as the check, before any await — every
+        // path that then fails to reach runLoop gives the claim back.
+        this.inflight.add(key)
+        if (!opts?.replay && !(await this.admitLoopGuardTurn(agentId, msg, integrationId, opts?.inboxReplayId))) {
+          this.inflight.delete(key)
+          await settleAdmission({ accepted: false, reason: 'loop_protection' })
+          resolve(null)
+          return
+        }
+        // Genuinely admitted (claims the key, runs immediately) → persist BEFORE handing the
+        // turn to runLoop, so a hard kill mid-turn leaves a replayable row (§6.9 #353).
         let persistence: Awaited<ReturnType<Daemon['persistInbox']>>
         try {
           persistence = await this.persistInbox(entry, key, {
@@ -9586,88 +9714,40 @@ export class Daemon {
             existingId: opts?.inboxReplayId ?? opts?.deliveryId
           })
         } catch (err) {
+          this.inflight.delete(key)
           await settleAdmission({ accepted: false, reason: 'durability' })
           reject(err)
           return
         }
         if (persistence === 'existing') {
-          // The same stable delivery survived a restart and is already being
-          // replayed (or awaits replay). Its original accepted ACK remains valid;
-          // never create a second in-memory QueueEntry.
+          this.inflight.delete(key)
           await settleAdmission({ accepted: true, duplicate: true })
           resolve(null)
           return
         }
-        // Admission settles only once the entry is on the queue (or coalesced away): the
-        // caller's accepted ACK has always meant "this delivery is placed", and awaiting a
-        // Promise-returning store must not let the ACK outrun the placement.
+        // Admission settles only once the entry is placed (or coalesced away), exactly as in
+        // the queued branch: the accepted ACK must not outrun the batch this delivery joins.
         if (batchLeader && (await this.coalesceGithubReviewBatch(batchLeader, entry))) {
+          this.inflight.delete(key)
           await settleAdmission({ accepted: true })
           entry.resolve(null)
           return
         }
-        // Place the entry BEFORE the revision plan's interrupts: those await, and a gate that
-        // drains meanwhile would otherwise run past this delivery instead of behind it. `q`
-        // predates this method's awaits, so re-read the queue a peer dispatch may have set.
-        const next = this.serialQueue.get(key) ?? []
-        next.push(entry)
-        this.serialQueue.set(key, next)
         if (revisionPlan && !(await this.applyGithubRevisionAdmissionPlan(revisionPlan, entry))) {
-          this.removeQueuedEntry(key, entry)
+          this.inflight.delete(key)
+          await settleAdmission({ accepted: true })
+          return
+        }
+        // Same late-admission check as the queued branch: the gate may have been released
+        // between the fence that absorbed this message and this dispatch reaching the claim.
+        if (await this.coalesceLateAdmission(key, entry)) {
+          this.inflight.delete(key)
           await settleAdmission({ accepted: true })
           return
         }
         await settleAdmission({ accepted: true })
-        this.log.debug(
-          `dispatch: queued behind in-flight turn for session ${key} (depth ${this.serialQueue.get(key)?.length ?? 0})`
-        )
-        return
-      }
-      // Claim ownership of the key in the SAME tick as the check, before any await — every
-      // path that then fails to reach runLoop gives the claim back.
-      this.inflight.add(key)
-      if (!opts?.replay && !(await this.admitLoopGuardTurn(agentId, msg, integrationId, opts?.inboxReplayId))) {
-        this.inflight.delete(key)
-        await settleAdmission({ accepted: false, reason: 'loop_protection' })
-        resolve(null)
-        return
-      }
-      // Genuinely admitted (claims the key, runs immediately) → persist BEFORE handing the
-      // turn to runLoop, so a hard kill mid-turn leaves a replayable row (§6.9 #353).
-      let persistence: Awaited<ReturnType<Daemon['persistInbox']>>
-      try {
-        persistence = await this.persistInbox(entry, key, {
-          required: opts?.requireDurable,
-          adoptExisting: opts?.adoptExistingInbox,
-          existingId: opts?.inboxReplayId ?? opts?.deliveryId
-        })
-      } catch (err) {
-        this.inflight.delete(key)
-        await settleAdmission({ accepted: false, reason: 'durability' })
-        reject(err)
-        return
-      }
-      if (persistence === 'existing') {
-        this.inflight.delete(key)
-        await settleAdmission({ accepted: true, duplicate: true })
-        resolve(null)
-        return
-      }
-      // Admission settles only once the entry is placed (or coalesced away), exactly as in
-      // the queued branch: the accepted ACK must not outrun the batch this delivery joins.
-      if (batchLeader && (await this.coalesceGithubReviewBatch(batchLeader, entry))) {
-        this.inflight.delete(key)
-        await settleAdmission({ accepted: true })
-        entry.resolve(null)
-        return
-      }
-      if (revisionPlan && !(await this.applyGithubRevisionAdmissionPlan(revisionPlan, entry))) {
-        this.inflight.delete(key)
-        await settleAdmission({ accepted: true })
-        return
-      }
-      await settleAdmission({ accepted: true })
-      void this.runLoop(key, entry)
+        void this.runLoop(key, entry)
+      })().catch(reject)
     })
   }
 
@@ -10684,12 +10764,16 @@ export class Daemon {
         // Webchat: a co-hosted participant's recipient-delivery bump can re-surface
         // this agent's OWN trigger during the pre-prompt gates too — same exclusion
         // as the final fence (the trigger's canonical ts rides the message).
-        const initialEvents = p.webchatRefresh
-          ? initialRefresh.events.filter((event) => msg.transcriptTs === undefined || event.ts !== msg.transcriptTs)
-          : initialRefresh.events
-        const representedEventTs = new Set([
-          ...(handled.contextEventTs ?? []),
-          ...initialEvents.map((event) => event.ts)
+        // A row an earlier prompt for this session already carried is not new context — the
+        // async store lets a fence re-read it, and replaying it would prompt it twice.
+        const initialEvents = (
+          p.webchatRefresh
+            ? initialRefresh.events.filter((event) => msg.transcriptTs === undefined || event.ts !== msg.transcriptTs)
+            : initialRefresh.events
+        ).filter((event) => !this.absorbedContext(key, event))
+        const representedEventTs = new Map<string, string | undefined>([
+          ...(handled.contextEventTs ?? []).map((ts) => [ts, undefined] as const),
+          ...initialEvents.map((event) => [event.ts, event.text] as const)
         ])
         const deltaBlocks: import('@agentclientprotocol/sdk').ContentBlock[] = []
         if (initialEvents.length > 0) {
@@ -10822,6 +10906,9 @@ export class Daemon {
           // would re-surface this agent's OWN trigger as a "new" message. The
           // trigger's canonical ts is carried on the message — exclude it.
           .filter((event) => !p.webchatRefresh || msg.transcriptTs === undefined || event.ts !== msg.transcriptTs)
+          // A row an earlier prompt for this session already carried is not new context: the
+          // async store lets a later write bump its revision and re-surface it here.
+          .filter((event) => !this.absorbedContext(key, event))
           .sort((a, b) => a.eventTimeUs - b.eventTimeUs || a.seq - b.seq)
         const finalRevision = await this.store.threadTranscriptRevision(p.transcriptChannel, p.statusThread, p.agentId)
 
@@ -10859,7 +10946,7 @@ export class Daemon {
             completeness: refresh.completeness
           }
         })
-        const eventTs = new Set(invalidatingEvents.map((event) => event.ts))
+        const eventTs = new Map(invalidatingEvents.map((event) => [event.ts, event.text] as const))
         const queuedMatches = this.queuedEntriesMatchingContext(key, eventTs)
         const regenerationElapsedMs =
           regenerationStartedAt === undefined

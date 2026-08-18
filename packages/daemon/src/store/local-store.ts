@@ -860,7 +860,7 @@ export class LocalStore {
   /** Set only on a shared store, where transcript rows of several orgs share one table. */
   private readonly orgForAgent: OrgForAgent | undefined
   private transcriptRevision = 0
-  private transcriptMutationListener?: (mutation: TranscriptMutation) => void
+  private transcriptMutationListener?: (mutation: TranscriptMutation) => void | Promise<void>
   private readonly pendingToolWrites = new Map<string, PendingToolWrite>()
   private pendingToolWriteBytes = 0
   private toolWriteTimer?: ReturnType<typeof setTimeout>
@@ -1721,7 +1721,7 @@ export class LocalStore {
     return row.revision
   }
 
-  setTranscriptMutationListener(listener?: (mutation: TranscriptMutation) => void): void {
+  setTranscriptMutationListener(listener?: (mutation: TranscriptMutation) => void | Promise<void>): void {
     this.transcriptMutationListener = listener
   }
 
@@ -3758,7 +3758,10 @@ export class LocalStore {
     // listener detached during shutdown does not fire from a queued notice.
     queueMicrotask(() => {
       try {
-        this.transcriptMutationListener?.({ channel, thread, agentIds, revision })
+        // Listener may be async now; a rejected store read stays best-effort, never unhandled.
+        void Promise.resolve(this.transcriptMutationListener?.({ channel, thread, agentIds, revision })).catch(
+          () => undefined
+        )
       } catch {
         // Live-view invalidation is best-effort and must never fail a durable write.
       }

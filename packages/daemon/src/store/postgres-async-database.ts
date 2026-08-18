@@ -33,8 +33,8 @@ export class PostgresAsyncDatabase implements StoreDatabase {
   private constructor(
     private readonly pool: pg.Pool,
     private readonly schema: string,
-    /** Holds the schema advisory lock until `finishSchemaInitialization()`; one pinned client. */
-    private schemaClient: pg.PoolClient | undefined,
+    /** Holds the schema advisory lock until `finishSchemaInitialization()`; dedicated non-pool client so a max-1 pool keeps its slot. */
+    private schemaClient: pg.Client | undefined,
     private readonly onFailure: (error: Error) => void
   ) {}
 
@@ -52,12 +52,19 @@ export class PostgresAsyncDatabase implements StoreDatabase {
       // Every pooled connection needs the store's search_path, not just the bootstrap one.
       options: `-c search_path=${schema},pg_catalog`
     })
-    const client = await pool.connect()
+    // A dedicated client holds the advisory lock: parking it in the pool would deadlock a
+    // maxConnections: 1 configuration the moment LocalStore.open asks for a second slot.
+    const client = new pg.Client({
+      connectionString: config.databaseUrl,
+      application_name: 'agentconnect-cloud-store',
+      options: `-c search_path=${schema},pg_catalog`
+    })
     try {
+      await client.connect()
       await client.query('SELECT pg_advisory_lock(hashtext($1))', [SCHEMA_LOCK_KEY])
       for (const statement of schemaBootstrapStatements(schema)) await client.query(statement)
     } catch (error) {
-      client.release()
+      await client.end().catch(() => undefined)
       await pool.end()
       throw error
     }
@@ -124,14 +131,14 @@ export class PostgresAsyncDatabase implements StoreDatabase {
     try {
       await client.query('SELECT pg_advisory_unlock(hashtext($1))', [SCHEMA_LOCK_KEY])
     } finally {
-      client.release()
+      await client.end().catch(() => undefined)
     }
   }
 
   async close(): Promise<void> {
     if (this.closed) return
     this.closed = true
-    this.schemaClient?.release()
+    await this.schemaClient?.end().catch(() => undefined)
     this.schemaClient = undefined
     await this.pool.end()
   }
