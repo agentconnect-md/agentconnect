@@ -25,6 +25,7 @@
 import { withAmbientTx, type PrismaLike } from '../prisma.js'
 import { Prisma } from '../../generated/prisma/client.js'
 import { type DecimalAmount, scaleAmount, unscaleAmount } from '@agentconnect.md/protocol'
+import { MAX_USAGE_WINDOW_DAYS } from '../ports.js'
 import type {
   SessionUsageRepo,
   SessionUsageInput,
@@ -33,10 +34,12 @@ import type {
   AgentUsageAggregate,
   ModelUsageAggregate,
   SpendBucket,
+  SourceUsageAggregate,
+  UsageWindow,
+  UsageSource,
   ViewCtx,
   SessionFilterQuery
 } from '../ports.js'
-import { visibilityWhere } from '../../authorization/policy.js'
 import { countCheckpointRegression } from '../../observability/usage-ingest.js'
 import type { AgentId, OrgId } from '../../domain/ids.js'
 import { sessionViewerSql } from './session-access-sql.js'
@@ -47,6 +50,111 @@ interface ScaledBucket {
   costAmount: bigint
   byAgent: Map<string, bigint>
   byModel: Map<string, bigint>
+}
+
+/** One `session_spend` row as the walk reads it. */
+interface SpendRow {
+  agentId: string
+  sessionId: string
+  at: Date
+  source: UsageSource
+  model: string | null
+  cumulativeTotalTokens: number
+  cumulativeInputTokens: number
+  cumulativeOutputTokens: number
+  cumulativeThoughtTokens: number
+  cumulativeCachedReadTokens: number
+  cumulativeCachedWriteTokens: number
+  cumulativeCost: string
+}
+
+/** A session's cumulative counters at one instant. Tokens are numbers (a workspace's
+ *  totals stay far inside 2^53); cost is a scaled integer, because it is money. */
+interface Counters {
+  totalTokens: number
+  inputTokens: number
+  outputTokens: number
+  thoughtTokens: number
+  cachedReadTokens: number
+  cachedWriteTokens: number
+  cost: bigint
+}
+
+const ZERO_COUNTERS: Counters = {
+  totalTokens: 0,
+  inputTokens: 0,
+  outputTokens: 0,
+  thoughtTokens: 0,
+  cachedReadTokens: 0,
+  cachedWriteTokens: 0,
+  cost: 0n
+}
+
+/** One grouping's accumulated deltas. `sessions` is a set so a session spanning many
+ *  checkpoints counts once, however many reports it made. */
+interface Rollup extends Counters {
+  sessions: Set<string>
+}
+
+function countersOf(row: SpendRow): Counters {
+  return {
+    totalTokens: row.cumulativeTotalTokens,
+    inputTokens: row.cumulativeInputTokens,
+    outputTokens: row.cumulativeOutputTokens,
+    thoughtTokens: row.cumulativeThoughtTokens,
+    cachedReadTokens: row.cumulativeCachedReadTokens,
+    cachedWriteTokens: row.cumulativeCachedWriteTokens,
+    cost: scaleAmount(row.cumulativeCost)
+  }
+}
+
+function subtractCounters(current: Counters, previous: Counters): Counters {
+  return {
+    totalTokens: current.totalTokens - previous.totalTokens,
+    inputTokens: current.inputTokens - previous.inputTokens,
+    outputTokens: current.outputTokens - previous.outputTokens,
+    thoughtTokens: current.thoughtTokens - previous.thoughtTokens,
+    cachedReadTokens: current.cachedReadTokens - previous.cachedReadTokens,
+    cachedWriteTokens: current.cachedWriteTokens - previous.cachedWriteTokens,
+    cost: current.cost - previous.cost
+  }
+}
+
+function emptyRollup(): Rollup {
+  return { ...ZERO_COUNTERS, sessions: new Set() }
+}
+
+function rollupOf<K>(by: Map<K, Rollup>, k: K): Rollup {
+  const existing = by.get(k)
+  if (existing) return existing
+  const fresh = emptyRollup()
+  by.set(k, fresh)
+  return fresh
+}
+
+function addDelta(target: Rollup, delta: Counters, sessionKey: string): void {
+  target.totalTokens += delta.totalTokens
+  target.inputTokens += delta.inputTokens
+  target.outputTokens += delta.outputTokens
+  target.thoughtTokens += delta.thoughtTokens
+  target.cachedReadTokens += delta.cachedReadTokens
+  target.cachedWriteTokens += delta.cachedWriteTokens
+  target.cost += delta.cost
+  target.sessions.add(sessionKey)
+}
+
+/** A rollup as the response carries it. */
+function rollupDto(r: Rollup): Omit<AgentUsageAggregate, 'agentId'> {
+  return {
+    sessions: r.sessions.size,
+    totalTokens: r.totalTokens,
+    inputTokens: r.inputTokens,
+    outputTokens: r.outputTokens,
+    thoughtTokens: r.thoughtTokens,
+    cachedReadTokens: r.cachedReadTokens,
+    cachedWriteTokens: r.cachedWriteTokens,
+    costAmount: unscaleAmount(r.cost)
+  }
 }
 
 /** Serialize a keyed scaled-integer map for the response. */
@@ -254,142 +362,110 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
 
   async aggregate(
     orgId: OrgId,
-    since: Date,
+    window: UsageWindow,
     viewer?: ViewCtx,
     tzOffsetMin = 0,
-    sessionViewer?: SessionFilterQuery['viewer']
+    sessionViewer?: SessionFilterQuery['viewer'],
+    source?: UsageSource
   ): Promise<UsageAggregate> {
-    // Derived visibility: usage rows inherit their agent's visibility, so scope
-    // through the `agent` relation. A restricted agent the caller cannot see
-    // drops out of BOTH the per-agent breakdown and the totals. Organization
-    // roles never widen that resource-level visibility.
-    const agentScope = { orgId, ...visibilityWhere(viewer) }
-    // Tokens + session counts come from the lifetime snapshot (tokens aren't
-    // time-attributed). Cost is deliberately NOT summed here — every range-scoped
-    // cost figure (the total, each agent's spend, and the chart) is derived from
-    // the spend timeline below, so the cards and the chart can never disagree.
+    const { from, to } = window
+    // Derived visibility: usage rows inherit their agent's visibility, so scope through
+    // the `agent` relation (`agentViewerSql`). A restricted agent the caller cannot see
+    // drops out of BOTH the per-agent breakdown and the totals. Organization roles never
+    // widen that resource-level visibility.
+    //
+    // One ingress or both. Scoping the WHOLE answer (totals, breakdowns, series) is what
+    // lets billing ask for gateway spend alone through the console's own route.
+    const sourceScope = (alias: string) =>
+      source ? Prisma.sql`AND ${Prisma.raw(`${alias}."source"`)} = ${source}::"UsageSource"` : Prisma.empty
     const sessionScope = sessionViewerSql(sessionViewer)
-    const grouped = sessionScope
-      ? await this.db.$queryRaw<
-          Array<{
-            agentId: string
-            sessions: bigint
-            totalTokens: bigint
-            inputTokens: bigint
-            outputTokens: bigint
-            thoughtTokens: bigint
-            cachedReadTokens: bigint
-            cachedWriteTokens: bigint
-          }>
-        >(Prisma.sql`
-          SELECT u."agentId",
-                 COUNT(*)::bigint AS sessions,
-                 COALESCE(SUM(u."totalTokens"), 0)::bigint AS "totalTokens",
-                 COALESCE(SUM(u."inputTokens"), 0)::bigint AS "inputTokens",
-                 COALESCE(SUM(u."outputTokens"), 0)::bigint AS "outputTokens",
-                 COALESCE(SUM(u."thoughtTokens"), 0)::bigint AS "thoughtTokens",
-                 COALESCE(SUM(u."cachedReadTokens"), 0)::bigint AS "cachedReadTokens",
-                 COALESCE(SUM(u."cachedWriteTokens"), 0)::bigint AS "cachedWriteTokens"
-          FROM "session_usage" u
-          JOIN "agent" a ON a."id" = u."agentId"
-          JOIN "session_meta" s ON s."id" = u."sessionId" AND s."agentId" = u."agentId"
-          WHERE ${agentViewerSql(orgId, viewer)}
-            AND u."lastActivityAt" >= ${since}
-            AND ${sessionScope}
-          GROUP BY u."agentId"
-        `)
-      : (
-          await this.db.sessionUsage.groupBy({
-            by: ['agentId'],
-            where: { agent: agentScope, lastActivityAt: { gte: since } },
-            _sum: {
-              totalTokens: true,
-              inputTokens: true,
-              outputTokens: true,
-              thoughtTokens: true,
-              cachedReadTokens: true,
-              cachedWriteTokens: true
-            },
-            _count: { _all: true }
-          })
-        ).map((row) => ({
-          agentId: row.agentId,
-          sessions: BigInt(row._count._all),
-          totalTokens: BigInt(row._sum.totalTokens ?? 0),
-          inputTokens: BigInt(row._sum.inputTokens ?? 0),
-          outputTokens: BigInt(row._sum.outputTokens ?? 0),
-          thoughtTokens: BigInt(row._sum.thoughtTokens ?? 0),
-          cachedReadTokens: BigInt(row._sum.cachedReadTokens ?? 0),
-          cachedWriteTokens: BigInt(row._sum.cachedWriteTokens ?? 0)
-        }))
 
-    // Attribute lifetime token deltas to the model observed on each report. The
-    // outer session_usage filter preserves the dashboard's established semantics:
-    // a session active in the range contributes its lifetime token totals. One
-    // session can legitimately count under multiple models after a sticky switch.
-    const modelGrouped = await this.db.$queryRaw<
-      Array<{
-        model: string | null
-        sessions: bigint
-        totalTokens: bigint
-        inputTokens: bigint
-        outputTokens: bigint
-        thoughtTokens: bigint
-        cachedReadTokens: bigint
-        cachedWriteTokens: bigint
-      }>
-    >(Prisma.sql`
-      WITH ordered AS (
-        SELECT sp."agentId", sp."sessionId", NULLIF(sp."model", '') AS model,
-               sp."cumulativeTotalTokens"::bigint
-                 - LAG(sp."cumulativeTotalTokens", 1, 0) OVER sample_order AS "totalTokens",
-               sp."cumulativeInputTokens"::bigint
-                 - LAG(sp."cumulativeInputTokens", 1, 0) OVER sample_order AS "inputTokens",
-               sp."cumulativeOutputTokens"::bigint
-                 - LAG(sp."cumulativeOutputTokens", 1, 0) OVER sample_order AS "outputTokens",
-               sp."cumulativeThoughtTokens"::bigint
-                 - LAG(sp."cumulativeThoughtTokens", 1, 0) OVER sample_order AS "thoughtTokens",
-               sp."cumulativeCachedReadTokens"::bigint
-                 - LAG(sp."cumulativeCachedReadTokens", 1, 0) OVER sample_order AS "cachedReadTokens",
-               sp."cumulativeCachedWriteTokens"::bigint
-                 - LAG(sp."cumulativeCachedWriteTokens", 1, 0) OVER sample_order AS "cachedWriteTokens"
+    // EVERY figure in this answer comes from the spend timeline inside `[from, to)`,
+    // diffed against each session's last checkpoint before the window. Tokens too, not
+    // just cost: summing the session's CURRENT snapshot instead made an already-closed
+    // period keep changing — a session reporting again next week raised last month's
+    // token total, and a model first used after the window appeared inside it. A period
+    // is a statement about what happened during it, so it must be answerable from what
+    // was recorded during it and never move again.
+    //
+    // It also makes the response agree with itself by construction: totals, agents,
+    // models and sources are four groupings of ONE set of deltas, so they cannot drift
+    // the way three independent SQL rollups did.
+    const spendColumns = Prisma.sql`
+             sp."cumulativeTotalTokens", sp."cumulativeInputTokens", sp."cumulativeOutputTokens",
+             sp."cumulativeThoughtTokens", sp."cumulativeCachedReadTokens", sp."cumulativeCachedWriteTokens",
+             sp."cumulativeCost"::text`
+    const spendScope = Prisma.sql`
         FROM "session_spend" sp
-        JOIN "session_usage" u ON u."agentId" = sp."agentId" AND u."sessionId" = sp."sessionId"
         JOIN "agent" a ON a."id" = sp."agentId"
         LEFT JOIN "session_meta" s ON s."id" = sp."sessionId" AND s."agentId" = sp."agentId"
         WHERE ${agentViewerSql(orgId, viewer)}
-          AND u."lastActivityAt" >= ${since}
-          AND ${sessionScope ?? Prisma.sql`TRUE`}
-        WINDOW sample_order AS (PARTITION BY sp."agentId", sp."sessionId" ORDER BY sp."at")
-      )
-      SELECT model,
-             COUNT(DISTINCT ("agentId", "sessionId"))::bigint AS sessions,
-             COALESCE(SUM("totalTokens"), 0)::bigint AS "totalTokens",
-             COALESCE(SUM("inputTokens"), 0)::bigint AS "inputTokens",
-             COALESCE(SUM("outputTokens"), 0)::bigint AS "outputTokens",
-             COALESCE(SUM("thoughtTokens"), 0)::bigint AS "thoughtTokens",
-             COALESCE(SUM("cachedReadTokens"), 0)::bigint AS "cachedReadTokens",
-             COALESCE(SUM("cachedWriteTokens"), 0)::bigint AS "cachedWriteTokens"
-      FROM ordered
-      GROUP BY model
-    `)
+          ${sourceScope('sp')}
+          AND ${sessionScope ?? Prisma.sql`TRUE`}`
 
-    // Bucket geometry: d1 buckets hourly, longer ranges daily. Buckets align to the
-    // viewer's LOCAL day/hour: we shift into local time (subtract offMs), floor
-    // there, shift back — so `start` is the UTC instant of a local boundary and the
-    // client labels it in local tz. offMs is 0 ⇒ plain UTC.
-    // ponytail: one current offset applied across the whole window — a DST change
-    // mid-range misattributes the ~1h around the switch; acceptable for a spend
-    // chart, pass an IANA tz + date_trunc if hour-exact local days ever matter.
     const HOUR_MS = 60 * 60 * 1000
+    const spanMs = to.getTime() - from.getTime()
+    // The route refuses an over-wide window, so this is a guard for a direct caller
+    // rather than a reachable path: the bucket count sizes an eager allocation, so it
+    // must never be whatever arithmetic on two caller-supplied instants produces.
+    // Throwing beats clamping — a silently truncated series is a wrong answer that
+    // looks right.
+    if (spanMs > MAX_USAGE_WINDOW_DAYS * 24 * HOUR_MS) {
+      throw new Error(`usage window may span at most ${MAX_USAGE_WINDOW_DAYS} days`)
+    }
+
+    const [inRange, baselineRows, currencies] = await Promise.all([
+      this.db.$queryRaw<SpendRow[]>(Prisma.sql`
+        SELECT sp."agentId", sp."sessionId", sp."at", sp."source", NULLIF(sp."model", '') AS model,
+        ${spendColumns}
+        ${spendScope}
+          AND sp."at" >= ${from}
+          AND sp."at" < ${to}
+        ORDER BY sp."at" ASC
+      `),
+      // The baseline is the session's state entering the window, per source, so the
+      // first in-window delta counts only what the window itself consumed.
+      this.db.$queryRaw<SpendRow[]>(Prisma.sql`
+        SELECT DISTINCT ON (sp."agentId", sp."sessionId", sp."source")
+               sp."agentId", sp."sessionId", sp."at", sp."source", NULLIF(sp."model", '') AS model,
+        ${spendColumns}
+        ${spendScope}
+          AND sp."at" < ${from}
+        ORDER BY sp."agentId", sp."sessionId", sp."source", sp."at" DESC
+      `),
+      // Currency lives on the snapshot, not the timeline. Scope it to the sessions this
+      // window actually contains so a workspace's other currencies cannot label it.
+      this.db.$queryRaw<Array<{ costCurrency: string }>>(Prisma.sql`
+        SELECT DISTINCT u."costCurrency"
+        FROM "session_usage" u
+        JOIN "agent" a ON a."id" = u."agentId"
+        LEFT JOIN "session_meta" s ON s."id" = u."sessionId" AND s."agentId" = u."agentId"
+        WHERE ${agentViewerSql(orgId, viewer)}
+          AND u."costCurrency" IS NOT NULL
+          ${sourceScope('u')}
+          AND ${sessionScope ?? Prisma.sql`TRUE`}
+          AND EXISTS (
+            SELECT 1 FROM "session_spend" w
+            WHERE w."agentId" = u."agentId" AND w."sessionId" = u."sessionId"
+              AND w."at" >= ${from} AND w."at" < ${to}
+              ${sourceScope('w')}
+          )
+      `)
+    ])
+
+    // Bucket geometry: hourly for a window of two days or less, daily beyond. Buckets
+    // align to the viewer's LOCAL day/hour: we shift into local time (subtract offMs),
+    // floor there, shift back — so `start` is the UTC instant of a local boundary and
+    // the client labels it in local tz. offMs is 0 ⇒ plain UTC. Geometry follows the
+    // WINDOW, not the clock: a closed month returns that month's buckets.
+    // ponytail: one current offset applied across the whole window — a DST change
+    // mid-range misattributes the ~1h around the switch; acceptable for a spend chart,
+    // pass an IANA tz + date_trunc if hour-exact local days ever matter.
     const offMs = tzOffsetMin * 60 * 1000
-    const now = Date.now()
-    const bucket: 'hour' | 'day' = now - since.getTime() <= 2 * 24 * HOUR_MS ? 'hour' : 'day'
+    const bucket: 'hour' | 'day' = spanMs <= 2 * 24 * HOUR_MS ? 'hour' : 'day'
     const stepMs = bucket === 'hour' ? HOUR_MS : 24 * HOUR_MS
-    // Floor `since` to the start of its local bucket, expressed as a UTC instant.
-    const floorSince = Math.floor((since.getTime() - offMs) / stepMs) * stepMs + offMs
-    const n = Math.floor((now - floorSince) / stepMs) + 1
-    // Buckets accumulate as scaled integers and are serialized once, at the end.
+    const floorSince = Math.floor((from.getTime() - offMs) / stepMs) * stepMs + offMs
+    const n = Math.max(1, Math.ceil((to.getTime() - floorSince) / stepMs))
     const points: ScaledBucket[] = Array.from({ length: n }, (_, i) => ({
       start: new Date(floorSince + i * stepMs).toISOString(),
       costAmount: 0n,
@@ -397,128 +473,55 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
       byModel: new Map()
     }))
 
-    // Spend timeline → range spend by DIFFING consecutive cumulatives per session.
-    // A session's window spend is (its latest in-window cumulative) − (its cumulative
-    // just before the window), split across buckets by when each increase landed:
-    // for each in-window report, delta = cumulative − the session's previous
-    // cumulative (the pre-window baseline row for its first in-window report), and
-    // that delta feeds the bucket, the agent, and the total together. Pre-window
-    // spend is thus excluded, replays contribute 0 (cumulative unchanged), and a
-    // downward correction contributes negative spend that nets out — the same
-    // numbers the cards and the chart both show.
-    // ponytail: diff walked in JS over the window's rows plus one pre-window
-    // baseline row per session — fine for a workspace's report volume; move to a
-    // SQL window function (LAG over cumulative) if a range ever returns 100k+ rows.
+    // Per-session running state, seeded from the pre-window checkpoint. `inRange` is
+    // globally at-ascending, so each session's rows are visited chronologically —
+    // exactly what the running diff needs. A replay contributes 0 (nothing changed) and
+    // a downward correction contributes a negative delta that nets out, so the cards and
+    // the chart always show the same numbers.
     const SEP = '\0'
-    const [inRange, baselineRows] = await Promise.all([
-      this.db.$queryRaw<
-        Array<{ agentId: string; sessionId: string; at: Date; cumulativeCost: string; model: string | null }>
-      >(Prisma.sql`
-        SELECT sp."agentId", sp."sessionId", sp."at", sp."cumulativeCost"::text, NULLIF(sp."model", '') AS model
-        FROM "session_spend" sp
-        JOIN "agent" a ON a."id" = sp."agentId"
-        LEFT JOIN "session_meta" s ON s."id" = sp."sessionId" AND s."agentId" = sp."agentId"
-        WHERE ${agentViewerSql(orgId, viewer)}
-          AND sp."at" >= ${since}
-          AND ${sessionScope ?? Prisma.sql`TRUE`}
-        ORDER BY sp."at" ASC
-      `),
-      this.db.$queryRaw<Array<{ agentId: string; sessionId: string; cumulativeCost: string }>>(Prisma.sql`
-        SELECT DISTINCT ON (sp."agentId", sp."sessionId")
-               sp."agentId", sp."sessionId", sp."cumulativeCost"::text
-        FROM "session_spend" sp
-        JOIN "agent" a ON a."id" = sp."agentId"
-        LEFT JOIN "session_meta" s ON s."id" = sp."sessionId" AND s."agentId" = sp."agentId"
-        WHERE ${agentViewerSql(orgId, viewer)}
-          AND sp."at" < ${since}
-          AND ${sessionScope ?? Prisma.sql`TRUE`}
-        ORDER BY sp."agentId", sp."sessionId", sp."at" DESC
-      `)
-    ])
-    // Per-session running cumulative, seeded from the last pre-window report so the
-    // first in-window delta counts only spend incurred inside the window.
-    const prevCost = new Map<string, bigint>(
-      baselineRows.map((r) => [r.agentId + SEP + r.sessionId, scaleAmount(r.cumulativeCost)])
-    )
-    const perAgentCost = new Map<string, bigint>()
-    const perModelCost = new Map<string, bigint>()
-    let totalCost = 0n
-    // `inRange` is globally at-ascending, so each session's rows are visited in
-    // chronological order — exactly what the running diff needs.
+    const key = (row: SpendRow) => row.agentId + SEP + row.sessionId + SEP + row.source
+    const previous = new Map<string, Counters>(baselineRows.map((row) => [key(row), countersOf(row)]))
+    const totals = emptyRollup()
+    const byAgent = new Map<string, Rollup>()
+    const byModel = new Map<string, Rollup>()
+    const bySource = new Map<UsageSource, Rollup>()
+
     for (const row of inRange) {
-      const skey = row.agentId + SEP + row.sessionId
-      const cumulative = scaleAmount(row.cumulativeCost)
-      const delta = cumulative - (prevCost.get(skey) ?? 0n)
-      prevCost.set(skey, cumulative)
-      totalCost += delta
-      perAgentCost.set(row.agentId, (perAgentCost.get(row.agentId) ?? 0n) + delta)
+      const skey = key(row)
+      const current = countersOf(row)
+      const delta = subtractCounters(current, previous.get(skey) ?? ZERO_COUNTERS)
+      previous.set(skey, current)
       const modelKey = row.model ?? ''
-      perModelCost.set(modelKey, (perModelCost.get(modelKey) ?? 0n) + delta)
+      for (const target of [
+        totals,
+        rollupOf(byAgent, row.agentId),
+        rollupOf(byModel, modelKey),
+        rollupOf(bySource, row.source)
+      ]) {
+        addDelta(target, delta, skey)
+      }
       const idx = Math.floor((row.at.getTime() - floorSince) / stepMs)
       if (idx >= 0 && idx < n) {
         const pt = points[idx]!
-        pt.costAmount += delta
-        if (delta !== 0n) {
-          pt.byAgent.set(row.agentId, (pt.byAgent.get(row.agentId) ?? 0n) + delta)
-          pt.byModel.set(modelKey, (pt.byModel.get(modelKey) ?? 0n) + delta)
+        pt.costAmount += delta.cost
+        if (delta.cost !== 0n) {
+          pt.byAgent.set(row.agentId, (pt.byAgent.get(row.agentId) ?? 0n) + delta.cost)
+          pt.byModel.set(modelKey, (pt.byModel.get(modelKey) ?? 0n) + delta.cost)
         }
       }
     }
 
-    const agents: AgentUsageAggregate[] = grouped.map((g) => ({
-      agentId: g.agentId,
-      sessions: Number(g.sessions),
-      totalTokens: Number(g.totalTokens),
-      inputTokens: Number(g.inputTokens),
-      outputTokens: Number(g.outputTokens),
-      thoughtTokens: Number(g.thoughtTokens),
-      cachedReadTokens: Number(g.cachedReadTokens),
-      cachedWriteTokens: Number(g.cachedWriteTokens),
-      costAmount: unscaleAmount(perAgentCost.get(g.agentId) ?? 0n)
-    }))
+    const agents: AgentUsageAggregate[] = [...byAgent].map(([agentId, r]) => ({ agentId, ...rollupDto(r) }))
     // Sort by token spend so the console's "top agents" ordering is stable.
-    agents.sort((a, b) => b.totalTokens - a.totalTokens)
+    agents.sort((left, right) => right.totalTokens - left.totalTokens)
+    const models: ModelUsageAggregate[] = [...byModel].map(([model, r]) => ({ model: model || null, ...rollupDto(r) }))
+    models.sort((left, right) => right.totalTokens - left.totalTokens)
+    const sources: SourceUsageAggregate[] = [...bySource].map(([src, r]) => ({ source: src, ...rollupDto(r) }))
+    sources.sort((left, right) => right.totalTokens - left.totalTokens)
 
-    const models: ModelUsageAggregate[] = modelGrouped.map((g) => ({
-      model: g.model,
-      sessions: Number(g.sessions),
-      totalTokens: Number(g.totalTokens),
-      inputTokens: Number(g.inputTokens),
-      outputTokens: Number(g.outputTokens),
-      thoughtTokens: Number(g.thoughtTokens),
-      cachedReadTokens: Number(g.cachedReadTokens),
-      cachedWriteTokens: Number(g.cachedWriteTokens),
-      costAmount: unscaleAmount(perModelCost.get(g.model ?? '') ?? 0n)
-    }))
-    models.sort((a, b) => b.totalTokens - a.totalTokens)
-
-    const totals = agents.reduce(
-      (acc, a) => ({
-        sessions: acc.sessions + a.sessions,
-        totalTokens: acc.totalTokens + a.totalTokens
-      }),
-      { sessions: 0, totalTokens: 0 }
-    )
-
-    // Cost currency for the range: the single distinct currency reported. `null`
-    // when none or mixed — amounts are summed as-is, so a mixed-currency workspace
-    // surfaces an unlabeled total (a known limitation until per-currency rollups).
-    const currencies = sessionScope
-      ? await this.db.$queryRaw<Array<{ costCurrency: string }>>(Prisma.sql`
-          SELECT DISTINCT u."costCurrency"
-          FROM "session_usage" u
-          JOIN "agent" a ON a."id" = u."agentId"
-          JOIN "session_meta" s ON s."id" = u."sessionId" AND s."agentId" = u."agentId"
-          WHERE ${agentViewerSql(orgId, viewer)}
-            AND u."lastActivityAt" >= ${since}
-            AND u."costCurrency" IS NOT NULL
-            AND ${sessionScope}
-        `)
-      : await this.db.sessionUsage.findMany({
-          where: { agent: agentScope, lastActivityAt: { gte: since }, costCurrency: { not: null } },
-          distinct: ['costCurrency'],
-          select: { costCurrency: true }
-        })
+    // Cost currency for the window: the single distinct currency reported. `null` when
+    // none or mixed — amounts are summed as-is, so a mixed-currency workspace surfaces
+    // an unlabeled total (a known limitation until per-currency rollups).
     const costCurrency = currencies.length === 1 ? currencies[0]!.costCurrency : null
 
     const series: SpendBucket[] = points.map((pt) => ({
@@ -528,10 +531,17 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
       byModel: amounts(pt.byModel)
     }))
 
+    const overall = rollupDto(totals)
     return {
-      totals: { ...totals, costAmount: unscaleAmount(totalCost), costCurrency },
+      totals: {
+        sessions: overall.sessions,
+        totalTokens: overall.totalTokens,
+        costAmount: overall.costAmount,
+        costCurrency
+      },
       agents,
       models,
+      sources,
       series: { bucket, points: series }
     }
   }

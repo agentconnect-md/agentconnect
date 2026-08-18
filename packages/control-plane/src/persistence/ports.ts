@@ -1762,17 +1762,39 @@ export interface SpendBucket {
   byModel: Record<string, DecimalAmount>
 }
 
-/** Org-wide usage aggregate for a range: workspace totals + agent/model breakdowns.
+/** Per-ingress rollup over a window — the same shape as the agent rollup, keyed by
+ *  which authenticated ingress metered the sessions instead of by agent. */
+export interface SourceUsageAggregate extends Omit<AgentUsageAggregate, 'agentId'> {
+  source: UsageSource
+}
+
+/** A half-open window, `[from, to)`, in UTC. Both ends are the CALLER's choice: the
+ *  console turns its presets into one, and a billing period is another. */
+export interface UsageWindow {
+  from: Date
+  to: Date
+}
+
+/** How wide a usage window may be. The series allocates one bucket per day (or per hour
+ *  under two days), so an unbounded span is an unbounded allocation driven by a query
+ *  string — year 0 to year 9999 is ~3.65M buckets. 400 days covers a calendar year with
+ *  slack, which is what a billing period or a dashboard actually asks for; anything
+ *  larger is a paging concern, not a single response. */
+export const MAX_USAGE_WINDOW_DAYS = 400
+
+/** Org-wide usage aggregate for a window: workspace totals + agent/model/source
+ *  breakdowns.
  *  Every amount is an exact decimal string — the aggregate is what billing reads,
  *  so no step of the roll-up may go through a float.
- *  `costCurrency` is the single distinct currency across the range, or null when
+ *  `costCurrency` is the single distinct currency across the window, or null when
  *  none/mixed (amounts are summed as-is).
- *  `series` is the spend-over-time chart data: cost bucketed by hour (d1) or day
- *  (longer ranges), with empty buckets filled to 0 across the whole window. */
+ *  `series` is the spend-over-time chart data: cost bucketed by hour (a window of two
+ *  days or less) or day, with empty buckets filled to 0 across the whole window. */
 export interface UsageAggregate {
   totals: { sessions: number; totalTokens: number; costAmount: DecimalAmount; costCurrency: string | null }
   agents: AgentUsageAggregate[]
   models: ModelUsageAggregate[]
+  sources: SourceUsageAggregate[]
   series: { bucket: 'hour' | 'day'; points: SpendBucket[] }
 }
 
@@ -1783,7 +1805,9 @@ export interface SessionUsageRepo {
   record(input: SessionUsageInput): Promise<void>
   /** Read one session's latest cumulative usage snapshot. */
   get(agentId: AgentId, sessionId: string): Promise<SessionUsageCounts | null>
-  /** Aggregate usage for an org over sessions active at/after `since` (range window).
+  /** Aggregate usage for an org over the half-open window `[from, to)`.
+   *  `source` scopes the whole answer — totals, every breakdown, and the series — to
+   *  one ingress; omitted, it counts both.
    *  When a `viewer` is supplied, sessions of restricted agents they can't see are
    *  excluded from the totals and every breakdown (derived visibility,
    *  via the `agent` relation — undefined alone is unfiltered).
@@ -1791,10 +1815,11 @@ export interface SessionUsageRepo {
    *  `series` buckets to the viewer's local day/hour; 0 (default) ⇒ UTC. */
   aggregate(
     orgId: OrgId,
-    since: Date,
+    window: UsageWindow,
     viewer?: ViewCtx,
     tzOffsetMin?: number,
-    sessionViewer?: SessionFilterQuery['viewer']
+    sessionViewer?: SessionFilterQuery['viewer'],
+    source?: UsageSource
   ): Promise<UsageAggregate>
 }
 

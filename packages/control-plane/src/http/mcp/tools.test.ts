@@ -188,9 +188,22 @@ describe('MCP tool registry — §6.2 invariants', () => {
       path: `/orgs/${ORG_ID}/sessions`,
       query: { agentId: 'a1', platform: 'slack', channel: undefined, limit: 5 }
     })
+    // The tool still speaks day presets; the ROUTE takes an explicit window, so the
+    // tool resolves one — d7 by default, and `source` passes straight through.
     const usage = recordingCtx()
     await findTool('getUsage')!.call(usage.ctx, {})
-    expect(usage.calls[0]).toEqual({ method: 'GET', path: `/orgs/${ORG_ID}/usage`, query: { range: 'd7' } })
+    const call = usage.calls[0] as { method: string; path: string; query: Record<string, string> }
+    expect(call.method).toBe('GET')
+    expect(call.path).toBe(`/orgs/${ORG_ID}/usage`)
+    expect(call.query.source).toBeUndefined()
+    const span = Date.parse(call.query.to!) - Date.parse(call.query.from!)
+    expect(span).toBe(7 * 24 * 60 * 60 * 1000)
+
+    const scoped = recordingCtx()
+    await findTool('getUsage')!.call(scoped.ctx, { range: 'd30', source: 'gateway' })
+    const scopedCall = scoped.calls[0] as { query: Record<string, string> }
+    expect(scopedCall.query.source).toBe('gateway')
+    expect(Date.parse(scopedCall.query.to!) - Date.parse(scopedCall.query.from!)).toBe(30 * 24 * 60 * 60 * 1000)
   })
 
   it('listSessions filters by every canonical platform — the /sessions route accepts the same set', () => {

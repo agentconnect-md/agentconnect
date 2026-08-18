@@ -20,6 +20,9 @@ import { z } from 'zod'
 import { ApprovalsReviewer } from '@agentconnect.md/protocol'
 import { CP_PLATFORM_IDS } from '../../platforms/ids.js'
 
+/** The day presets `getUsage` accepts, which it converts to an explicit window. */
+type UsageToolRange = 'd1' | 'd7' | 'd30' | 'd90'
+
 /** What a tool needs to execute: the caller's org and credentialed requests
  *  against the versioned REST surface (`/api/v1`-relative paths). */
 export interface McpToolCtx {
@@ -222,14 +225,31 @@ export const MCP_TOOLS: McpToolDef[] = [
     call: (ctx, a) => ctx.get(org(ctx, `/sessions/${seg(a.sessionId)}`))
   },
   {
+    // The tool keeps asking in days because that is what an agent means by "this week",
+    // and turns it into the route's explicit window. The HTTP surface takes `[from, to)`
+    // so a billing period can be a caller's choice; a preset is this caller's.
     name: 'getUsage',
-    description: 'Token/cost usage aggregates over a time window, totals plus agent and model breakdowns.',
+    description:
+      'Token/cost usage aggregates over a time window, totals plus agent, model, and metering-source breakdowns.',
     schema: z
       .object({
-        range: z.enum(['d1', 'd7', 'd30', 'd90']).optional().describe('Window: 1/7/30/90 days (default d7)')
+        range: z.enum(['d1', 'd7', 'd30', 'd90']).optional().describe('Window: 1/7/30/90 days (default d7)'),
+        source: z
+          .enum(['daemon', 'gateway'])
+          .optional()
+          .describe('Only sessions metered by this ingress (default: both)')
       })
       .strict(),
-    call: (ctx, a) => ctx.get(org(ctx, '/usage'), { range: (a.range as string | undefined) ?? 'd7' })
+    call: (ctx, a) => {
+      const days = { d1: 1, d7: 7, d30: 30, d90: 90 }[(a.range as UsageToolRange | undefined) ?? 'd7']
+      const to = new Date()
+      const from = new Date(to.getTime() - days * 24 * 60 * 60 * 1000)
+      return ctx.get(org(ctx, '/usage'), {
+        from: from.toISOString(),
+        to: to.toISOString(),
+        ...(a.source ? { source: a.source as string } : {})
+      })
+    }
   },
   {
     name: 'listIntegrations',
