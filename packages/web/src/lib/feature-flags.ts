@@ -23,6 +23,10 @@ export type FeatureFlagId =
   /** The install-wide daemon pool: its fleet entry and the Cloud placement option. An agent
    *  ALREADY on the pool still names it — hiding a live placement is not hiding an entry point. */
   | 'daemon-pool'
+  /** This deployment IS AgentConnect's managed cloud: the pool is the product, so the Infra page
+   *  names it "AgentConnect Cloud" and quotes the plan's included usage. Off — a self-hosted
+   *  install — the same pool is the operator's OWN cluster, named and metered as such. */
+  | 'managed'
 
 function enabledIds(): ReadonlySet<string> {
   // The server must read the SAME value `PublicEnvScript` injects, in the same precedence, or a

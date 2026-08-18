@@ -1,6 +1,7 @@
 // Placement projection regressions for machine and set targets.
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, afterEach } from 'vitest'
 import {
+  CLUSTER_LABEL,
   POOL_LABEL,
   POOL_PLACEMENT,
   agentDaemonLabel,
@@ -9,7 +10,8 @@ import {
   groupPlacementValue,
   groupSetIdOf,
   isPoolPlacementKind,
-  placementValueOf
+  placementValueOf,
+  poolLabel
 } from '@/lib/data'
 import type { Agent, DaemonRow } from '@/lib/data'
 
@@ -62,7 +64,7 @@ describe('agentDaemonLabel', () => {
       )
     ).toBe('Renamed daemon')
     expect(agentDaemonLabel({ daemon: daemonId, placementKind: 'daemon' }, [], [])).toBe('—')
-    expect(agentDaemonLabel({ daemon: POOL_PLACEMENT, placementKind: 'set' }, [], [])).toBe(POOL_LABEL)
+    expect(agentDaemonLabel({ daemon: POOL_PLACEMENT, placementKind: 'set' }, [], [])).toBe(poolLabel())
   })
 })
 
@@ -119,19 +121,36 @@ describe('placementValueOf with the org’s own groups', () => {
     expect(groupSetIdOf(null)).toBeNull()
   })
 
-  it('labels a group by its name and everything else the pool by Cloud', () => {
+  it('labels a group by its name and everything else by whatever this deployment calls the pool', () => {
     const groups = [{ setId: 'set-lab', name: 'lab' }]
     expect(agentDaemonLabel({ daemon: POOL_PLACEMENT, placementKind: 'set', setId: 'set-lab' }, [], groups)).toBe('lab')
     expect(agentDaemonLabel({ daemon: POOL_PLACEMENT, placementKind: 'set', setId: 'set-pool' }, [], groups)).toBe(
-      POOL_LABEL
+      poolLabel()
     )
     // A group whose name has not loaded yet still reads as a placement, never as a raw set id.
     expect(agentDaemonLabel({ daemon: POOL_PLACEMENT, placementKind: 'set', setId: 'set-lab' }, [], [])).toBe(
-      POOL_LABEL
+      poolLabel()
     )
   })
 
   it('round-trips the value the picker submits', () => {
     expect(groupSetIdOf(groupPlacementValue('set-lab'))).toBe('set-lab')
+  })
+})
+
+describe('what the console calls the pool', () => {
+  // One name, resolved in one place: a deployment that shows "Kubernetes cluster" on its Infra
+  // page and offers "AgentConnect Cloud" in the placement picker has named two things.
+  afterEach(() => {
+    delete process.env.FEATURE_FLAGS
+  })
+
+  it('is the product on a managed install and the operator’s own cluster everywhere else', () => {
+    const pool = { daemon: POOL_PLACEMENT, placementKind: 'set' as const }
+    expect(poolLabel()).toBe(CLUSTER_LABEL)
+    expect(agentDaemonLabel(pool, [], [])).toBe(CLUSTER_LABEL)
+    process.env.FEATURE_FLAGS = 'managed'
+    expect(poolLabel()).toBe(POOL_LABEL)
+    expect(agentDaemonLabel(pool, [], [])).toBe(POOL_LABEL)
   })
 })

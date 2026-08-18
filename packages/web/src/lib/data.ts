@@ -3,6 +3,7 @@
 
 import type { AgentIcon } from '@/lib/agent-icon'
 import type { DaemonSessionRetention, ManagedMemoryScope, MemoryDreamingConfig } from '@/lib/api'
+import { featureFlagEnabled } from '@/lib/feature-flags'
 import { platformLabel } from '@/lib/platform-labels'
 
 export type LifecycleStatusKey = 'upgrading' | 'restarting'
@@ -55,10 +56,27 @@ export function presentedDaemonStatus(daemon: Pick<DaemonRow, 'status' | 'lifecy
   return daemon.lifecycleStatus ?? daemon.status
 }
 
-/** What every surface calls an install-wide pool member. The CP names those rows after the
- *  Pod they run in, which is churn nobody outside the cluster should read: the pool is one
- *  managed thing, so `daemonFromDto` labels each member with this instead. */
+/** What a MANAGED deployment calls the pool: it is AgentConnect's own infrastructure, so it is
+ *  named after the product. The CP names pool rows after the Pod they run in, which is churn
+ *  nobody outside the cluster should read — the pool is one thing wherever it is named. */
 export const POOL_LABEL = 'AgentConnect Cloud'
+/** What a SELF-HOSTED deployment calls the same pool: the operator's own cluster, not a product
+ *  they bought. No cluster identity reaches the console (the CP carries one bit, not a name —
+ *  k8s-daemon-pool.md §3), so this names what it is rather than inventing which one it is. */
+export const CLUSTER_LABEL = 'Kubernetes cluster'
+/** The pool's name for THIS deployment. Not a constant, because the same pool is a product on the
+ *  managed install and the operator's own cluster everywhere else (lib/feature-flags.ts `managed`).
+ *  Every surface that names the pool goes through here, so no two of them disagree. */
+export function poolLabel(): string {
+  return featureFlagEnabled('managed') ? POOL_LABEL : CLUSTER_LABEL
+}
+/** One line on what placing an agent there buys you — included model usage on the managed
+ *  install, the operator's own cluster everywhere else. */
+export function poolTagline(): string {
+  return featureFlagEnabled('managed')
+    ? 'Model usage included — no API key needed.'
+    : 'Runs your agents on your own cluster.'
+}
 /** `Agent.daemon` for a pool placement. It names the POOL, never a member: no member id survives
  *  a rollout, which is precisely why the placement stopped carrying one. */
 export const POOL_PLACEMENT = 'pool'
@@ -122,7 +140,7 @@ export function agentDaemonLabel(
 ): string {
   if (isSetPlacementKind(agent.placementKind)) {
     const group = agent.setId ? groups.find((candidate) => candidate.setId === agent.setId) : undefined
-    return group?.name ?? POOL_LABEL
+    return group?.name ?? poolLabel()
   }
   return daemons.find((daemon) => daemon.daemonId === agent.daemon)?.name ?? agent.daemonName ?? '—'
 }
@@ -1982,6 +2000,9 @@ export interface DaemonRow {
   host: string
   cpu: number // 0-100 CPU utilization
   mem: number // 0-100 memory utilization
+  /** Agents this daemon is currently running — the numerator the CP's own placement check
+   *  compares against `conns` (its `maxAgents` ceiling). 0 until it reports load. */
+  loadAgents: number
   caps: DaemonCaps
   /** Available models per runtime, observed from the daemon's runtime profiles.
    *  `version` is the runtime's own release (e.g. claude-agent-acp 0.54.1), '' when

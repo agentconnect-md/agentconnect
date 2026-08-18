@@ -9,7 +9,8 @@ import { useProfile } from '@/lib/profile'
 import { useOrgs } from '@/lib/org-context'
 import {
   FALLBACK_RUNTIME_IDS,
-  POOL_LABEL,
+  poolLabel,
+  poolTagline,
   groupPlacementValue,
   approvalsReviewerDefault,
   loginRequiredRuntimeIds,
@@ -356,8 +357,8 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
       ? [
           {
             value: '',
-            label: POOL_LABEL,
-            title: 'Model usage included — no API key needed.',
+            label: poolLabel(),
+            title: poolTagline(),
             kind: 'pool' as const
           }
         ]
