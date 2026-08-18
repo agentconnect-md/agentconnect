@@ -8,7 +8,7 @@ import type { SessionImageAttachment, WebchatEvent } from '@agentconnect.md/prot
 import type { LocalStore } from '../store/local-store.js'
 import { monotonicTs } from '../store/monotonic-ts.js'
 import { isNoResponsePrefix } from '../session/no-response.js'
-import { chunkText } from '../daemon/text.js'
+import { chunkText } from './chunk.js'
 import type { Pending } from '../daemon/turn-types.js'
 
 /** One turn's live webchat state — the sink, its output cursor, and the sentinel hold. */

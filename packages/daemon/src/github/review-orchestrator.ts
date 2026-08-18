@@ -47,7 +47,7 @@ import {
   type HookCompletionOwner,
   type HookDispatchContext,
   type SessionWorktreeCleanupResult
-} from '../daemon/github-hook-coords.js'
+} from './hook-coords.js'
 import type { CallMeta, QueueEntry } from '../daemon/turn-types.js'
 import type { WebchatTurnContext } from '../webchat/types.js'
 import { initiatorLabel } from '../workspace/session-branch.js'

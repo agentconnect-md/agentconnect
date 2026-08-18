@@ -5,20 +5,14 @@ import { mkdtemp } from 'node:fs/promises'
 import { watch as chokidarWatch, type FSWatcher } from 'chokidar'
 import { loadConfig, persistDaemonId, persistRelays, type FlatOverrides } from './config/load-config.js'
 import { readCliEntry, runCliUpgrade } from './lifecycle/cli-upgrade.js'
+import { FleetUpgradeCoordinator } from './lifecycle/fleet-upgrade.js'
 import { ReadinessGate, readinessSinksFromEnv, readinessState, type ReadinessState } from './readiness.js'
 import { sessionRetentionMs, type RuntimeDef } from './config/config-schema.js'
 import { discoverAgentsTolerant, type LoadedAgent } from './agents/load-agents.js'
 import { agentChildEnv } from './agents/agent-env.js'
 import { cpRuntimeEnv } from './agents/cp-overlay.js'
 import { diffAgents } from './reconciler/reconciler.js'
-import {
-  resolveRoot,
-  statePath,
-  agentRemovalObligationsDir,
-  mcpSocketPath,
-  daemonEntryForShims,
-  cliEntryPointer
-} from './paths.js'
+import { resolveRoot, statePath, agentRemovalObligationsDir, mcpSocketPath, daemonEntryForShims } from './paths.js'
 import {
   LocalStore,
   sessionKey,
@@ -223,7 +217,7 @@ import { composeRuntimeLaunch, runtimeSandboxReadRoots } from './launch/compose.
 import { resolveTrustedExecutable, trustedRuntimeReadRoots } from './runtimes/read-roots.js'
 import { nodeExecArgvModuleEntries } from './runtimes/node-exec-argv.js'
 import { makeLogger, type Logger } from './log.js'
-import { CpClient, type BootstrapUpgradeOutcome } from './cp/client.js'
+import { CpClient } from './cp/client.js'
 import { RelayManager } from './cp/relay-manager.js'
 import { CP_IDENTITY_TOKEN_PATH, readClusterIdentityToken } from './cp/cluster-identity.js'
 import { CpCollabRoutes, isSyntheticA2aChannel } from './cp/cp-collab-routes.js'
@@ -240,7 +234,6 @@ import {
   CP_URL_ENV,
   RELAY_DAEMON_SUBPROTOCOL,
   RELAY_DAEMON_WS_PATH,
-  RESERVED_RESTART_CODE,
   K8S_SUPERVISOR,
   AGENT_CONFIG_REVISION_FEATURE,
   DAEMON_BOOTSTRAP_UPGRADE_FEATURE,
@@ -282,7 +275,6 @@ import {
 } from './memory/provider.js'
 import { memoryChannelKey, MemorySandboxUnavailableError, type MemoryFs } from './memory/store.js'
 import { resolveMemoryFs } from './memory/fs.js'
-import { DAEMON_VERSION } from './version.js'
 import { CpCronRegistry } from './cp/cp-cron.js'
 import { DutyRegistry } from './cp/duty-registry.js'
 import { DutyCoordinator, type DutyHost } from './cp/duty-coordinator.js'
@@ -353,7 +345,6 @@ import type {
   EventSession,
   SessionActivity,
   Ack,
-  DaemonControlAck,
   RdWebchatPost,
   RdMsg,
   RdMsgWebchat,
@@ -398,7 +389,7 @@ import {
   type HookCompletionOwner,
   type HookDispatchContext,
   type SessionWorktreeCleanupResult
-} from './daemon/github-hook-coords.js'
+} from './github/hook-coords.js'
 import {
   FailStopError,
   LifecycleCleanupBlockedError,
@@ -920,11 +911,7 @@ export class Daemon {
   // ── lifecycle (§2.5/§5.3/§7.2/§7.3) ──
   private clock: Clock
   private requestExit: (code: number) => void
-  // Guards against a second CP lifecycle command (restart/upgrade) racing one
-  // already in flight (§7.1). Cleared only if an upgrade aborts before exiting.
-  private lifecycleInFlight = false
-  private fleetUpgradeInFlight?: { targetVersion: string; installation: Promise<boolean> }
-  private fleetExitStarted = false
+  private readonly fleetUpgrade: FleetUpgradeCoordinator
   // Whole-daemon drain gate: once set, no new turns are dispatched (SIGTERM, or a
   // scope:daemon drain). Agent-scoped drains gate just their agentId.
   private draining = false
@@ -1144,6 +1131,17 @@ export class Daemon {
       ttlMs: Daemon.PROBE_TTL_MS
     })
     this.requestExit = opts.requestExit ?? ((code) => process.exit(code))
+    this.fleetUpgrade = new FleetUpgradeCoordinator({
+      log: () => this.log,
+      clock: () => this.clock,
+      shutdownDrainMs: () => this.cfg.limits.shutdownDrainMs,
+      supervisor: () => this.opts.supervisor,
+      k8s: () => this.k8s,
+      root: () => this.opts.root,
+      upgradeInstaller: () => this.opts.upgradeInstaller,
+      stop: () => this.stop(),
+      requestExit: (code) => this.requestExit(code)
+    })
   }
 
   /** Say what the boot probe found: missing SRT dependencies silently run agents unconfined AND fail every managed-skill install (#956). */
@@ -13593,116 +13591,6 @@ export class Daemon {
     // negotiates ACK support; scheduling here would hammer legacy EVT delivery.
   }
 
-  private admitFleetExit(
-    kind: 'restart' | 'upgrade',
-    targetVersion?: string
-  ):
-    { accepted: false; reason: string } | { accepted: true; root: string; cliEntry?: string; willDrainUntil?: string } {
-    const refuse = (reason: string) => {
-      this.log.warn(`cp: ${kind} refused — ${reason}`)
-      return { accepted: false as const, reason }
-    }
-    const supervisor = this.opts.supervisor
-    const imageOwnsVersion = "the running version is this pod's image — roll the Deployment instead of self-installing"
-    // Refused on the MODE, not the marker: a live upgrade is delivered without consulting
-    // the advertised capability, so this is the last line of defence, and an inherited
-    // AGENTCONNECT_SUPERVISOR plus a stale cli-entry on the root volume must not reach the
-    // installer — the same invariant bootstrapUpgradeCapable() already holds.
-    if (kind === 'upgrade' && this.k8s) return refuse(imageOwnsVersion)
-    // The kubelet restarts the container in place after the reserved exit code, but never
-    // changes the image, so it supervises restart and not upgrade.
-    if (supervisor === K8S_SUPERVISOR) {
-      if (kind === 'upgrade') return refuse(imageOwnsVersion)
-    } else if (supervisor !== 'cli' && supervisor !== 'service') {
-      const reason = `no supervisor (AGENTCONNECT_SUPERVISOR=${supervisor ?? 'unset'}) — a bare \`run\` cannot ${kind}; use the CLI or an installed service`
-      return refuse(reason)
-    }
-    if (this.lifecycleInFlight) {
-      return refuse('another lifecycle operation is already in progress')
-    }
-
-    const root = resolveRoot(this.opts.root)
-    let cliEntry: string | undefined
-    if (kind === 'upgrade') {
-      cliEntry = readCliEntry(root)
-      if (!cliEntry) {
-        const reason = `cannot locate the CLI (${cliEntryPointer(root)} missing or invalid) to run the upgrade`
-        return refuse(reason)
-      }
-      if (!targetVersion) return refuse('upgrade requires a targetVersion')
-    }
-
-    this.lifecycleInFlight = true
-    const willDrainUntil =
-      kind === 'restart' ? new Date(this.clock.now() + this.cfg.limits.shutdownDrainMs).toISOString() : undefined
-    this.log.info(`cp: ${kind}${targetVersion ? ` → ${targetVersion}` : ''} accepted`)
-    return { accepted: true, root, ...(cliEntry ? { cliEntry } : {}), ...(willDrainUntil ? { willDrainUntil } : {}) }
-  }
-
-  private startFleetUpgrade(cliEntry: string, targetVersion: string, root: string): Promise<boolean> {
-    const installation = Promise.resolve()
-      .then(() => (this.opts.upgradeInstaller ?? runCliUpgrade)(cliEntry, targetVersion, root, this.log))
-      .catch((err) => {
-        this.log.error(`cp: could not install daemon ${targetVersion}: ${formatErr(err)}`)
-        return false
-      })
-      .then((ok) => {
-        if (!ok) {
-          this.log.error(`cp: upgrade to ${targetVersion} aborted — daemon continues on the current version`)
-          this.lifecycleInFlight = false
-          if (this.fleetUpgradeInFlight?.installation === installation) this.fleetUpgradeInFlight = undefined
-        }
-        return ok
-      })
-    this.fleetUpgradeInFlight = { targetVersion, installation }
-    return installation
-  }
-
-  private finishFleetExit(kind: 'restart' | 'upgrade'): void {
-    if (this.fleetExitStarted) return
-    this.fleetExitStarted = true
-    void (async () => {
-      try {
-        await this.stop()
-      } catch (err) {
-        this.log.error(`cp: ${kind} shutdown failed: ${formatErr(err)}`)
-      } finally {
-        this.requestExit(RESERVED_RESTART_CODE)
-      }
-    })()
-  }
-
-  /** Admit immediately, then install before the existing drain-and-relaunch path. */
-  private scheduleFleetExit(kind: 'restart' | 'upgrade', targetVersion?: string): DaemonControlAck {
-    const admission = this.admitFleetExit(kind, targetVersion)
-    if (!admission.accepted) return admission
-    void (async () => {
-      if (kind === 'upgrade' && !(await this.startFleetUpgrade(admission.cliEntry!, targetVersion!, admission.root))) {
-        return
-      }
-      this.finishFleetExit(kind)
-    })()
-
-    return { accepted: true, ...(admission.willDrainUntil ? { willDrainUntil: admission.willDrainUntil } : {}) }
-  }
-
-  private async runBootstrapFleetUpgrade(targetVersion: string): Promise<BootstrapUpgradeOutcome> {
-    if (targetVersion === DAEMON_VERSION) return { status: 'current' }
-    const existing = this.fleetUpgradeInFlight
-    if (existing?.targetVersion === targetVersion) {
-      const installed = await existing.installation
-      return installed
-        ? { status: 'installed', restart: () => this.finishFleetExit('upgrade') }
-        : { status: 'failed', reason: `failed to install ${targetVersion}` }
-    }
-    const admission = this.admitFleetExit('upgrade', targetVersion)
-    if (!admission.accepted) return { status: 'failed', reason: admission.reason }
-    if (!(await this.startFleetUpgrade(admission.cliEntry!, targetVersion, admission.root))) {
-      return { status: 'failed', reason: `failed to install ${targetVersion}` }
-    }
-    return { status: 'installed', restart: () => this.finishFleetExit('upgrade') }
-  }
-
   // ── ConfigApply seam (CP changes config, never live routing) ──
   private cpConfigApply(): ConfigApply {
     return buildConfigApply(this.configApplyHost())
@@ -13786,7 +13674,7 @@ export class Daemon {
         this.observedChannelsSync.retractChannels(integrationId, channelIds),
       runCronNow: (cronId) => this.runCronNow(cronId),
       runDrain: (drain, onProgress) => this.runDrain(drain, onProgress),
-      scheduleFleetExit: (kind, targetVersion) => this.scheduleFleetExit(kind, targetVersion)
+      scheduleFleetExit: (kind, targetVersion) => this.fleetUpgrade.scheduleFleetExit(kind, targetVersion)
     }
   }
 
@@ -13829,7 +13717,7 @@ export class Daemon {
       hostCount: () => this.hosts.size,
       activeSessions: () => this.pending.size,
       bootstrapUpgradeCapable: () => this.bootstrapUpgradeCapable(),
-      runBootstrapFleetUpgrade: (targetVersion) => this.runBootstrapFleetUpgrade(targetVersion),
+      runBootstrapFleetUpgrade: (targetVersion) => this.fleetUpgrade.runBootstrapFleetUpgrade(targetVersion),
       readiness: () => this.readiness,
       probeRuntimesAndEmit: () => this.probeRuntimesAndEmit(),
       syncOrganizationSuggestions: () => this.syncOrganizationSuggestions(),

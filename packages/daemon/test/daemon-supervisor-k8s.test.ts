@@ -61,7 +61,7 @@ describe('daemon lifecycle under the k8s supervisor', () => {
     const realStop = instance.stop.bind(instance)
     ;(instance as any).stop = vi.fn(async () => {})
     try {
-      const ack = (instance as any).scheduleFleetExit('restart')
+      const ack = (instance as any).fleetUpgrade.scheduleFleetExit('restart')
       expect(ack.accepted).toBe(true)
       // The drain window is advertised so the control plane knows how long to wait.
       expect(typeof ack.willDrainUntil).toBe('string')
@@ -76,14 +76,14 @@ describe('daemon lifecycle under the k8s supervisor', () => {
     const instance = daemon({ k8s: true, supervisor: K8S_SUPERVISOR })
     await instance.start()
     try {
-      const ack = (instance as any).admitFleetExit('upgrade', '9.9.9')
+      const ack = (instance as any).fleetUpgrade.admitFleetExit('upgrade', '9.9.9')
       expect(ack.accepted).toBe(false)
       // The reason has to describe the real situation: a cli-entry exists here, so the
       // generic "no supervisor" message would send an operator looking in the wrong place.
       expect(ack.reason).toMatch(/image/)
       expect(ack.reason).not.toMatch(/no supervisor/)
       // A refused admission must not latch the lifecycle, or later restarts wedge.
-      expect((instance as any).lifecycleInFlight).toBe(false)
+      expect((instance as any).fleetUpgrade.lifecycleInFlight).toBe(false)
     } finally {
       await instance.stop()
     }
@@ -98,10 +98,10 @@ describe('daemon lifecycle under the k8s supervisor', () => {
       const instance = daemon({ k8s: true, supervisor: marker })
       await instance.start()
       try {
-        const ack = (instance as any).admitFleetExit('upgrade', '9.9.9')
+        const ack = (instance as any).fleetUpgrade.admitFleetExit('upgrade', '9.9.9')
         expect(ack.accepted).toBe(false)
         expect(ack.reason).toMatch(/image/)
-        expect((instance as any).lifecycleInFlight).toBe(false)
+        expect((instance as any).fleetUpgrade.lifecycleInFlight).toBe(false)
       } finally {
         await instance.stop()
       }
@@ -115,7 +115,7 @@ describe('daemon lifecycle under the k8s supervisor', () => {
     const instance = daemon({ k8s: true, supervisor: 'service' })
     await instance.start()
     try {
-      expect((instance as any).admitFleetExit('restart').accepted).toBe(true)
+      expect((instance as any).fleetUpgrade.admitFleetExit('restart').accepted).toBe(true)
     } finally {
       await instance.stop()
     }
@@ -125,7 +125,7 @@ describe('daemon lifecycle under the k8s supervisor', () => {
     const instance = daemon({ k8s: true })
     await instance.start()
     try {
-      const ack = (instance as any).admitFleetExit('restart')
+      const ack = (instance as any).fleetUpgrade.admitFleetExit('restart')
       expect(ack.accepted).toBe(false)
       // Exiting without a supervisor leaves the daemon down, so the mode alone is not
       // enough — the launcher has to declare that something will bring it back.
@@ -139,7 +139,7 @@ describe('daemon lifecycle under the k8s supervisor', () => {
     const instance = daemon({ supervisor: 'service' })
     await instance.start()
     try {
-      expect((instance as any).admitFleetExit('upgrade', '9.9.9').accepted).toBe(true)
+      expect((instance as any).fleetUpgrade.admitFleetExit('upgrade', '9.9.9').accepted).toBe(true)
     } finally {
       await instance.stop()
     }
