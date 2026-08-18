@@ -42,4 +42,23 @@ describe('CompactToggleField', () => {
     expect(html).toContain('Sandboxing is not available for the current selection')
     expect(html).toContain('aria-label="Run in sandbox: Unavailable" disabled=""')
   })
+
+  it('says nothing about the OS sandbox on a cluster placement', () => {
+    // A cluster runtime is isolated by its own pod, so the in-process SRT mechanism is off
+    // there and the member advertises neither capability. Rendered literally the field said
+    // "Unavailable" about the placement whose isolation is strongest.
+    const html = renderToStaticMarkup(
+      <SandboxField checked={false} supported={false} required={false} clusterPlacement onChange={() => undefined} />
+    )
+
+    expect(html).toBe('')
+  })
+
+  it('still explains an unconfined MACHINE — there "Unavailable" is true and worth reading', () => {
+    const html = renderToStaticMarkup(
+      <SandboxField checked={false} supported={false} required={false} onChange={() => undefined} />
+    )
+
+    expect(html).toContain('Run in sandbox')
+  })
 })

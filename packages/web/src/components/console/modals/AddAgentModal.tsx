@@ -1172,6 +1172,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
                 checked={effectiveRunInSandbox}
                 supported={sandboxSupported}
                 required={sandboxRequired}
+                clusterPlacement={placement?.kind === 'pool'}
                 onChange={setRunInSandbox}
               />
               <OutputModeField
