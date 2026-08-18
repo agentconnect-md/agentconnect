@@ -243,6 +243,17 @@ export const CLOUD_DAEMON_SA_NAME = 'ac-cloud-daemon'
  */
 export const USAGE_COLLECTOR_SA_NAME = 'ac-usage-collector'
 
+/**
+ * ServiceAccount the org-usage READER runs as — the principal allowed to read an org's
+ * usage aggregate without a human's session visibility, so a settlement job can total a
+ * closed period. A third name beside {@link USAGE_COLLECTOR_SA_NAME} because the two
+ * capabilities are not the same risk: the collector's token can create spend records,
+ * this one can only disclose them, and no workload should hold both by accident. They
+ * are separate pods, so they are separate ServiceAccounts; if they ever merge, that is a
+ * deliberate deployment decision and not something a shared constant did quietly.
+ */
+export const USAGE_READER_SA_NAME = 'ac-usage-reader'
+
 /** Where the deployment projects that token into the daemon pod, and where the daemon reads it
  *  from. Not part of the verification, but the same two-sided agreement: the mounter and the
  *  reader are both in this repo, so one definition beats a comment asking them to match. */
