@@ -56,6 +56,7 @@ import {
   type AgentSkillSourceFence,
   type AgentWorkspace,
   type AssignedOrganizationMetadata,
+  type McpProviderRecord,
   isSyntheticEmail
 } from '../../persistence/ports.js'
 import type { DaemonView } from '../../ports.js'
@@ -1035,62 +1036,83 @@ export function agentRoutes(deps: HttpDeps) {
       return url ? relayHttpOrigin(url) : null
     }
 
-    // Reflect an agent's MCP enable-list change onto its daemon's proxy-def set: push
-    // the relay proxy def for each newly-enabled REGISTRY provider, and drop a def once
-    // no placed agent on that daemon still enables it. A registry provider's def (which
-    // carries the grant key + relay URL) reaches a daemon ONLY via provider CRUD or this
-    // transition — so without this, enabling an already-registered provider never
-    // provisions the def and the next session can't resolve the server (register/ok
-    // reconcile is the slow backstop). Names that aren't registry providers are
-    // daemon-local defs and left alone. Best-effort + never throws: an offline daemon
-    // (or transient error) is covered by the reconcile roster on its next register.
+    // A registry provider's def (grant key + relay proxy URL) reaches a daemon ONLY by CP push:
+    // provider CRUD, an enable-list edit, a move, or the register/ok reconcile as the slow
+    // backstop. The two primitives below are that push and its inverse; every caller is
+    // best-effort, because an offline daemon converges on its next register.
+    /** The org registry rows among these names. A name with no row is a daemon-local def
+     *  (the operator's `config.json`) — never pushed, never removed, and absent here. */
+    const registryProvidersOf = async (orgId: OrgId, names: readonly string[]) => {
+      const wanted = new Set(names)
+      const rows = wanted.size === 0 ? [] : await deps.repos.mcpProvider.listForOrg(orgId)
+      return rows.filter((p) => wanted.has(p.name))
+    }
+    // One daemon's send, never surfaced: offline is the reconcile backstop, and the error is not
+    // logged because a codec/transport error can retain the grant-bearing payload.
+    const sendMcp = async (daemonId: string, fn: () => Promise<void>) => {
+      try {
+        await fn()
+      } catch (err) {
+        if (!(err instanceof NoConnection)) app.log.warn({ daemonId }, 'mcp def send failed (reconcile will converge)')
+      }
+    }
+    /** Push each provider's proxy def to these daemons. Nothing to push without a live relay. */
+    const pushMcpDefs = async (providers: readonly McpProviderRecord[], daemonIds: readonly string[]) => {
+      if (providers.length === 0 || daemonIds.length === 0) return
+      try {
+        const base = await relayProxyBase()
+        if (!base) return
+        for (const provider of providers) {
+          const grant = currentMcpGrant(await deps.repos.mcpGrant.activeForProvider(provider.orgId, provider.id))
+          if (!grant) continue
+          const spec = mcpProxyDef(provider, grant, base)
+          for (const daemonId of daemonIds) await sendMcp(daemonId, () => deps.control.mcpServerUpsert(daemonId, spec))
+        }
+      } catch (err) {
+        app.log.warn({ err }, 'mcp def push failed (reconcile will converge)')
+      }
+    }
+    /** Drop each provider's def from those of these daemons that serve NO agent still enabling
+     *  it. "Still used" is delivery-set membership, not placement: a duty holder counts. */
+    const dropMcpDefsIfUnused = async (
+      orgId: OrgId,
+      providers: readonly McpProviderRecord[],
+      daemonIds: readonly string[]
+    ) => {
+      if (providers.length === 0 || daemonIds.length === 0) return
+      try {
+        const peers = await deps.repos.agent.list(orgId)
+        for (const { name } of providers) {
+          const stillOn = new Set(
+            await deps.agentDelivery.daemonsForAgents(peers.filter((a) => a.mcpServers.includes(name)))
+          )
+          for (const daemonId of daemonIds) {
+            if (!stillOn.has(daemonId))
+              await sendMcp(daemonId, () => deps.control.mcpServerRemove(daemonId, orgId, name))
+          }
+        }
+      } catch (err) {
+        app.log.warn({ err }, 'mcp def removal deferred (reconcile will converge)')
+      }
+    }
+
+    // Reflect an enable-list edit onto every daemon serving the agent (a duty holder installed
+    // the same list and needs the same defs): provision the newly-enabled registry providers,
+    // retire the disabled ones that nobody there still uses. Never throws — its callers have
+    // already committed the row, and a failed sync converges on the daemon's next register.
     const syncMcpDefsForAgent = async (
       agent: AgentRecord,
       before: readonly string[],
       after: readonly string[]
     ): Promise<void> => {
-      const orgId = agent.orgId
       const added = after.filter((n) => !before.includes(n))
       const removed = before.filter((n) => !after.includes(n))
       if (added.length === 0 && removed.length === 0) return
-      // Every daemon serving this agent, not just its placement: a duty holder
-      // installed the same enable-list and needs the same defs.
-      const targets = await deps.agentDelivery.daemonsFor(agent)
-      if (targets.length === 0) return
       try {
-        const byName = new Map((await deps.repos.mcpProvider.listForOrg(orgId)).map((p) => [p.name, p]))
-        const send = async (fn: () => Promise<void>) => {
-          try {
-            await fn()
-          } catch (err) {
-            if (!(err instanceof NoConnection)) throw err // offline ⇒ reconcile backstop
-          }
-        }
-        if (added.some((n) => byName.has(n))) {
-          const base = await relayProxyBase()
-          for (const name of added) {
-            const provider = base ? byName.get(name) : undefined
-            if (!provider) continue
-            const grant = currentMcpGrant(await deps.repos.mcpGrant.activeForProvider(provider.orgId, provider.id))
-            if (!grant) continue
-            const spec = mcpProxyDef(provider, grant, base!)
-            for (const daemonId of targets) await send(() => deps.control.mcpServerUpsert(daemonId, spec))
-          }
-        }
-        if (removed.some((n) => byName.has(n))) {
-          const peers = await deps.repos.agent.list(orgId)
-          for (const name of removed) {
-            if (!byName.has(name)) continue
-            // "Still used" is delivery-set membership, not placement: a target that
-            // serves any other agent enabling the name keeps the def.
-            const stillOn = new Set(
-              await deps.agentDelivery.daemonsForAgents(peers.filter((a) => a.mcpServers.includes(name)))
-            )
-            for (const daemonId of targets) {
-              if (!stillOn.has(daemonId)) await send(() => deps.control.mcpServerRemove(daemonId, orgId, name))
-            }
-          }
-        }
+        const targets = await deps.agentDelivery.daemonsFor(agent)
+        if (targets.length === 0) return
+        await pushMcpDefs(await registryProvidersOf(agent.orgId, added), targets)
+        await dropMcpDefsIfUnused(agent.orgId, await registryProvidersOf(agent.orgId, removed), targets)
       } catch (err) {
         app.log.warn({ agentId: agent.id, err }, 'mcp def sync failed (reconcile will converge)')
       }
@@ -2378,6 +2400,11 @@ export function agentRoutes(deps: HttpDeps) {
           ? placement.kind === 'set' && placement.setId === targetSetId
           : placement.kind === 'daemon' && placement.daemonId === req.body.daemonId
 
+        // The org registry rows the agent enables — read once for every candidate's facts check
+        // below, then staged on the target.
+        const registryProviders = await registryProvidersOf(existing.orgId, existing.mcpServers)
+        const registryTransport = new Map(registryProviders.map((p) => [p.name, p.transport] as const))
+
         /** Why this daemon cannot take the agent, or null when it can. */
         const admits = async (daemon: DaemonView): Promise<string | null> => {
           if (!moveReady(daemon.daemonId)) return 'target daemon is not ready'
@@ -2413,13 +2440,17 @@ export function agentRoutes(deps: HttpDeps) {
             return `target daemon does not support model ${existing.model} for runtime ${existing.runtime}`
           }
           for (const name of existing.mcpServers) {
-            const server = daemon.mcpServers.find((candidate) => candidate.name === name)
-            if (!server) return `target daemon cannot attach MCP server ${name}`
+            // The CP pushes a registry def only to daemons already serving an enabling agent, so
+            // "the target holds no such fact yet" is not "it cannot attach it" — reading that as a
+            // refusal pinned every connector-using agent to its daemon (#1192). The move stages the
+            // def; only a daemon-LOCAL name (the operator's `config.json`) is genuinely host-bound.
+            const transport =
+              daemon.mcpServers.find((candidate) => candidate.name === name)?.transport ?? registryTransport.get(name)
+            if (!transport) return `target daemon cannot attach MCP server ${name}`
             const caps = targetRuntime?.mcpCapabilities
-            const transportSupported =
-              server.transport === 'stdio' || !caps || (server.transport === 'http' ? caps.http : caps.sse)
+            const transportSupported = transport === 'stdio' || !caps || (transport === 'http' ? caps.http : caps.sse)
             if (!transportSupported) {
-              return `target runtime ${existing.runtime} does not support MCP ${server.transport} transport for ${name}`
+              return `target runtime ${existing.runtime} does not support MCP ${transport} transport for ${name}`
             }
           }
           // Capacity is a per-member fact even on a set: "some member has headroom" is exactly
@@ -2487,6 +2518,10 @@ export function agentRoutes(deps: HttpDeps) {
         // binding keeps its "no agent bound" scan refusing (409).
         let targetStaged = false
         try {
+          // Registry-before-agent for the MCP defs too: the target refuses `agent/activate` for a
+          // name it holds no def for, and a registry def reaches it only by CP push. An EVT with
+          // no ACK — if it did not land, that activation refusal is the failure.
+          await pushMcpDefs(registryProviders, [target.daemonId])
           // The connection registry is a separate private wire. Stage it before
           // agent/activate so target admission cannot observe a dangling binding.
           // This also repairs a target that committed the move but lost the reply.
@@ -2561,6 +2596,7 @@ export function agentRoutes(deps: HttpDeps) {
               existing.memory.connectionId
             )
           }
+          if (existing.daemonId) await dropMcpDefsIfUnused(existing.orgId, registryProviders, [existing.daemonId])
           return toDto(
             moved,
             ctxOf(req),
@@ -2585,6 +2621,8 @@ export function agentRoutes(deps: HttpDeps) {
           if (targetStaged && existing.memory?.provider === 'external') {
             await removeExternalMemoryFromDaemonIfUnused(existing.orgId, target.daemonId, existing.memory.connectionId)
           }
+          // Same usage re-read for the staged MCP defs: an authoritative target keeps them.
+          await dropMcpDefsIfUnused(existing.orgId, registryProviders, [target.daemonId])
         }
       }
     )

@@ -1,6 +1,6 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { randomUUID } from 'node:crypto'
-import type { Ack, AgentActivate, AgentDetach, MemoryConnectionSpec } from '@agentconnect.md/protocol'
+import type { Ack, AgentActivate, AgentDetach, McpServerSpec, MemoryConnectionSpec } from '@agentconnect.md/protocol'
 import { prisma } from '../setup.db.js'
 import { seedAgent, seedDaemon } from '../fixtures/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
@@ -40,6 +40,7 @@ class MoveControlSpy {
    *  that asserts it was RELEASED has to compare the tokens, not just the call order. */
   readonly detaches: { daemonId: string; value: AgentDetach }[] = []
   readonly activateCalls: { daemonId: string; value: AgentActivate }[] = []
+  readonly mcpUpserts: { daemonId: string; spec: McpServerSpec }[] = []
 
   async agentDetach(daemonId: string, value: AgentDetach): Promise<Ack> {
     this.calls.push(`detach:${daemonId}`)
@@ -59,6 +60,13 @@ class MoveControlSpy {
   }
   async memoryConnectionRemove(daemonId: string, connectionId: string): Promise<void> {
     this.calls.push(`memory-remove:${daemonId}:${connectionId}`)
+  }
+  async mcpServerUpsert(daemonId: string, spec: McpServerSpec): Promise<void> {
+    this.calls.push(`mcp-upsert:${daemonId}:${spec.name}`)
+    this.mcpUpserts.push({ daemonId, spec })
+  }
+  async mcpServerRemove(daemonId: string, _orgId: string, name: string): Promise<void> {
+    this.calls.push(`mcp-remove:${daemonId}:${name}`)
   }
 }
 
@@ -266,6 +274,73 @@ describe('PUT /agents/:id/daemon', () => {
       provider: 'external',
       connectionId: connection.id
     })
+  })
+
+  it('stages an org MCP provider on a target that never held its def, and cleans up either way', async () => {
+    await seedMoveDaemons()
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { daemonId: SOURCE })
+    const control = new MoveControlSpy()
+    running = buildHttpApp(prisma, { RELAY_STALE_MS: 60_000 }, live, control as unknown as ControlSender)
+    await running.deps.repos.relay.upsertByName('move-relay', 'wss://relay.example/rd', new Date())
+    const provider = await running.deps.repos.mcpProvider.create({
+      orgId: OrgId(DEFAULT_ORG_ID),
+      name: 'grafana-viewer',
+      url: 'https://grafana.example/mcp'
+    })
+    const grant = await running.deps.repos.mcpGrant.mintFor(OrgId(DEFAULT_ORG_ID), provider.id)
+    await prisma.agent.update({
+      where: { id: agentId },
+      data: { runtimeOverrides: { mcpServers: [provider.name] } }
+    })
+    // The target hosts no agent enabling the provider, so the CP has never pushed it
+    // the def — the state that used to make the move unreachable (#1192).
+    expect((await prisma.daemon.findUnique({ where: { id: TARGET } }))?.mcpServers).toEqual([])
+
+    // An aborted move leaves the target holding nothing it has no use for.
+    control.failSourceDetach = true
+    const failed = await running.app.inject({
+      method: 'PUT',
+      url: `${ORG}/agents/${agentId}/daemon`,
+      payload: { daemonId: TARGET }
+    })
+    expect(failed.statusCode).toBe(503)
+    // The revoke rides the handler's `finally`, which outlives the sent response.
+    await vi.waitFor(() =>
+      expect(control.calls).toEqual([
+        `mcp-upsert:${TARGET}:${provider.name}`,
+        `detach:${SOURCE}`,
+        `mcp-remove:${TARGET}:${provider.name}`
+      ])
+    )
+    expect((await prisma.agent.findUnique({ where: { id: agentId } }))?.daemonId).toBe(SOURCE)
+
+    control.failSourceDetach = false
+    control.calls.length = 0
+    const res = await running.app.inject({
+      method: 'PUT',
+      url: `${ORG}/agents/${agentId}/daemon`,
+      payload: { daemonId: TARGET }
+    })
+    expect(res.statusCode, res.body).toBe(200)
+    // Staged BEFORE activation, and the source loses a grant-bearing def it no
+    // longer serves any agent for — while the target, now authoritative, keeps
+    // the def the same post-response usage re-read looks at.
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(control.calls).toEqual([
+      `mcp-upsert:${TARGET}:${provider.name}`,
+      `detach:${SOURCE}`,
+      `detach:${TARGET}`,
+      `activate:${TARGET}`,
+      `mcp-remove:${SOURCE}:${provider.name}`
+    ])
+    expect(control.mcpUpserts[0]?.spec).toMatchObject({
+      name: provider.name,
+      transport: 'http',
+      url: `https://relay.example/mcp/${provider.id}`,
+      headers: [{ name: 'Authorization', value: `Bearer ${grant.key}` }]
+    })
+    expect(control.activations.at(-1)?.spec.mcpServers).toEqual([provider.name])
   })
 
   it('rejects an unready, unsupported, incompatible, or full target before detaching source', async () => {
