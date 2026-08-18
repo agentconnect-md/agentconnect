@@ -301,7 +301,7 @@ describe('TurnOutputWorkflow', () => {
           clarification.quoted = { messageId: '99.9', sender: 'U2', text: 'peer-only quoted source' }
           ;(context.daemon as any).recordObservedInbound(clarification, 'bot-a')
         } else if (generation === 2) {
-          const approval = (context.daemon as any).onAcpPermission('bot-a', sessionId, {
+          const approval = (context.daemon as any).permissions.onAcpPermission('bot-a', sessionId, {
             sessionId,
             options: [
               { optionId: 'allow', name: 'Allow', kind: 'allow_once' },
@@ -309,9 +309,13 @@ describe('TurnOutputWorkflow', () => {
             ],
             toolCall: { toolCallId: 'tc-1', title: 'Bash' }
           })
-          const [requestId] = (context.daemon as any).pendingEditorPermissions.keys()
+          const [requestId] = (context.daemon as any).permissions.pendingEditorPermissions.keys()
           clock.advance(120_001)
-          ;(context.daemon as any).decideEditorPermission({ agentId: 'bot-a', requestId, decision: 'allow' })
+          ;(context.daemon as any).permissions.decideEditorPermission({
+            agentId: 'bot-a',
+            requestId,
+            decision: 'allow'
+          })
           await approval
           const clarification = msg('100.3', 'clarification after approval')
           clarification.transportScope = context.firstMessage.transportScope
