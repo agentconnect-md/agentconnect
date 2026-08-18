@@ -4,6 +4,7 @@ import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve, sep } from 'node:path'
 import net from 'node:net'
+import { spawn, type ChildProcess } from 'node:child_process'
 import { Client } from '@modelcontextprotocol/client'
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio'
 import { McpControlServer } from '../src/mcp/control-server.js'
@@ -25,6 +26,7 @@ const tools = toolsForIntegrations(
 let server: McpControlServer | undefined
 let privateServer: net.Server | undefined
 const privateSockets = new Set<net.Socket>()
+const bridges = new Set<ChildProcess>()
 const tempRoots: string[] = []
 let client: Client | undefined
 function tempRoot(prefix: string): string {
@@ -37,6 +39,8 @@ function tempRoot(prefix: string): string {
 }
 
 afterEach(async () => {
+  for (const bridge of bridges) if (bridge.exitCode === null) bridge.kill('SIGKILL')
+  bridges.clear()
   await client?.close().catch(() => {})
   await server?.stop()
   for (const socket of privateSockets) socket.destroy()
@@ -264,4 +268,72 @@ describe('mcp-bridge end-to-end (real stdio MCP handshake)', () => {
       })
     )
   }, 20_000)
+
+  // A bridge that outlives its harness holds ~230 MB of RSS per session for the daemon's
+  // lifetime (#936), so both ends of its lifetime have to terminate the process.
+  describe('lifetime', () => {
+    // Answers listTools so the bridge reaches its serving state, and reports when it got there.
+    async function serveBridge(socketPath: string): Promise<{ listed: Promise<void> }> {
+      let observeList!: () => void
+      const listed = new Promise<void>((resolve) => (observeList = resolve))
+      privateServer = net.createServer((socket) => {
+        privateSockets.add(socket)
+        socket.setEncoding('utf8')
+        let buffer = ''
+        socket.on('close', () => privateSockets.delete(socket))
+        socket.on('data', (chunk: string) => {
+          buffer += chunk
+          const decoded = decodeFrames<IpcPrivateRequest>(buffer)
+          buffer = decoded.rest
+          for (const request of decoded.messages) {
+            socket.write(encodeFrame({ id: request.id, ok: true, result: { tools: [] } }))
+            observeList()
+          }
+        })
+      })
+      await new Promise<void>((resolve, reject) => {
+        privateServer!.once('error', reject)
+        privateServer!.listen(socketPath, resolve)
+      })
+      return { listed }
+    }
+
+    // Spawned the way an agent harness does — stdio pipes we own, so we can close stdin.
+    function spawnBridge(socketPath: string): ChildProcess {
+      const child = spawn(
+        process.execPath,
+        ['--conditions', 'development', '--import', 'tsx', cliEntry, 'mcp-bridge'],
+        {
+          stdio: ['pipe', 'pipe', 'pipe'],
+          env: { ...process.env, AC_MCP_ENDPOINT: socketPath, AC_MCP_TOKEN: 'lifetime-token' }
+        }
+      )
+      bridges.add(child)
+      return child
+    }
+
+    function exitOf(child: ChildProcess): Promise<number | null> {
+      return new Promise((resolve) => child.once('exit', (code) => resolve(code)))
+    }
+
+    it('exits when the harness closes its stdin', async () => {
+      const path = join(tempRoot('ac-bridge-stdin-'), 'mcp.sock')
+      const { listed } = await serveBridge(path)
+      const bridge = spawnBridge(path)
+      await listed
+      // What a dying harness does to the bridge: EOF on stdin, control socket still live.
+      bridge.stdin!.end()
+      await expect(exitOf(bridge)).resolves.toBe(0)
+    }, 20_000)
+
+    it('exits when the daemon control socket closes', async () => {
+      const path = join(tempRoot('ac-bridge-socket-'), 'mcp.sock')
+      const { listed } = await serveBridge(path)
+      const bridge = spawnBridge(path)
+      await listed
+      // stdin stays open here: only the daemon went away, as on a daemon restart.
+      for (const socket of privateSockets) socket.destroy()
+      await expect(exitOf(bridge)).resolves.toBe(1)
+    }, 20_000)
+  })
 })
