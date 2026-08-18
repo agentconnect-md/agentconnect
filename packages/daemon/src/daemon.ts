@@ -15868,6 +15868,7 @@ export class Daemon {
     return {
       cpUrl: () => url,
       cpApiKey: () => this.cfg.controlPlane.key,
+      usageReporting: () => this.cfg.usageReporting.enabled,
       clusterIdentityToken: () => this.clusterIdentityToken,
       echoDaemonId: () => this.opts.overrides?.daemonId,
       heartbeatDefaultMs: () => this.cfg.controlPlane.heartbeatMs,

@@ -52,6 +52,8 @@ export interface CpClientConnectionHost {
   /** The control-plane address, already checked by the caller's `configuredControlPlane` guard. */
   cpUrl(): string
   cpApiKey(): string | undefined
+  /** False ⇒ this daemon never emits `usage/report`; a deployment that meters upstream is the single writer. */
+  usageReporting(): boolean
   clusterIdentityToken(): (() => string | undefined) | undefined
   /** Echoed in the auth frame ONLY when the operator pinned one via `--daemon-id` — the token's `sub` is
    *  otherwise authoritative, and a config-persisted id would either be rejected (4401) or be redundant. */
@@ -206,6 +208,7 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
 
   return {
     url,
+    usageReporting: host.usageReporting(),
     ...(apiKey ? { token: apiKey } : {}),
     ...(clusterIdentityToken ? { clusterIdentityToken } : {}),
     ...(echoDaemonId ? { daemonId: echoDaemonId } : {}),
