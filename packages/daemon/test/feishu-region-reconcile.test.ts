@@ -77,29 +77,31 @@ describe('feishu reconcile — region change on the same appId', () => {
   it('evicts the stale per-integration mapping + stops the old-domain connection', async () => {
     const daemon = new Daemon({ root: configRoot(), hostFactory: () => ({ start: vi.fn(), stop: vi.fn() }) as never })
     const d = daemon as unknown as {
-      feishuPool: { add(c: FeishuConnection): void; all(): FeishuConnection[] }
+      connections: {
+        feishuPool: { add(c: FeishuConnection): void; all(): FeishuConnection[] }
+        closeUnusedPlatformConnections: () => Promise<void>
+      }
       fsConnByIntegration: Map<string, FeishuConnection>
       botUserIds: Record<string, string | undefined>
-      closeUnusedPlatformConnections: () => Promise<void>
     }
 
     const intId = 'int-1'
     const { conn: stale, closed } = fakeFeishuConn('cli_x', 'feishu', 'ou_old')
     // Existing state: the app is connected to the FEISHU gateway and routed there.
-    d.feishuPool.add(stale)
+    d.connections.feishuPool.add(stale)
     d.fsConnByIntegration.set(intId, stale)
     d.botUserIds[intId] = 'ou_old'
 
     // Desired state: the same appId now wants the LARK gateway.
     seedAgent(daemon, 'agent-1', intId, 'cli_x', 'lark')
 
-    await d.closeUnusedPlatformConnections()
+    await d.connections.closeUnusedPlatformConnections()
 
     // The stale old-domain connection is stopped and dropped from the live list, and its
     // routing mapping is evicted — so a failed replacement can never leave the integration
     // pointed at the wrong-region client (it re-binds only on a successful new connect).
     expect(closed).toHaveBeenCalled()
-    expect(d.feishuPool.all()).not.toContain(stale)
+    expect(d.connections.feishuPool.all()).not.toContain(stale)
     expect(d.fsConnByIntegration.has(intId)).toBe(false)
     expect(d.botUserIds[intId]).toBeUndefined()
 

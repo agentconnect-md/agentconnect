@@ -364,7 +364,7 @@ describe('Daemon.reconcileSlackConnections', () => {
     await daemon.start()
 
     const shared = { botToken: 'xoxb-shared', botUserId: 'U_SHARED', stop: vi.fn().mockResolvedValue(undefined) }
-    ;(daemon as any).slackSharedPool.add(shared)
+    ;(daemon as any).connections.slackSharedPool.add(shared)
     ;(daemon as any).agents = new Map([
       [
         'bot-shared',
@@ -376,16 +376,16 @@ describe('Daemon.reconcileSlackConnections', () => {
         }
       ]
     ])
-    const refresh = vi.spyOn(daemon as any, 'refreshChannels').mockResolvedValue(undefined)
+    const refresh = vi.spyOn((daemon as any).connections, 'refreshChannels').mockResolvedValue(undefined)
 
-    await (daemon as any).openHttpSlackConnections([...(daemon as any).agents.values()])
+    await (daemon as any).connections.openHttpSlackConnections([...(daemon as any).agents.values()])
 
     expect((daemon as any).connByIntegration.get('int-shared')).toBe(shared)
     expect(refresh).toHaveBeenCalledOnce()
     expect(refresh).toHaveBeenCalledWith(shared)
 
     // A normal reconcile of an unchanged binding should not re-list Slack channels.
-    await (daemon as any).openHttpSlackConnections([...(daemon as any).agents.values()])
+    await (daemon as any).connections.openHttpSlackConnections([...(daemon as any).agents.values()])
     expect(refresh).toHaveBeenCalledOnce()
     await daemon.stop()
   })
@@ -398,8 +398,8 @@ describe('Daemon.reconcileSlackConnections', () => {
     // Two live sockets: conn-A (appToken A) and conn-B (appToken B, shared/already open).
     const connA = fakeConn('xapp-A', 'xoxb-A', 'U_A')
     const connB = fakeConn('xapp-B', 'xoxb-B', 'U_B')
-    ;(daemon as any).slackPool.add(connA)
-    ;(daemon as any).slackPool.add(connB)
+    ;(daemon as any).connections.slackPool.add(connA)
+    ;(daemon as any).connections.slackPool.add(connB)
     ;(daemon as any).connByIntegration.set('int-1', connA)
     ;(daemon as any).connByIntegration.set('int-other', connB)
     ;(daemon as any).botUserIds = { 'int-1': 'U_A', 'int-other': 'U_B' }
@@ -422,7 +422,7 @@ describe('Daemon.reconcileSlackConnections', () => {
       ]
     ])
 
-    await (daemon as any).reconcileSlackConnections()
+    await (daemon as any).connections.reconcileSlackConnections()
 
     // int-1 must now resolve to conn-B (not the stale conn-A).
     expect((daemon as any).connByIntegration.get('int-1')).toBe(connB)
@@ -437,7 +437,7 @@ describe('Daemon.reconcileSlackConnections', () => {
 
     const conn = fakeConn('xapp-A', 'xoxb-A', 'U_A')
     const stop = vi.spyOn(conn, 'stop')
-    ;(daemon as any).slackPool.add(conn)
+    ;(daemon as any).connections.slackPool.add(conn)
     ;(daemon as any).connByIntegration.set('int-detached', conn)
     ;(daemon as any).connByIntegration.set('int-live', conn)
     ;(daemon as any).botUserIds = { 'int-detached': 'U_A', 'int-live': 'U_A' }
@@ -455,18 +455,18 @@ describe('Daemon.reconcileSlackConnections', () => {
       ]
     ])
 
-    await (daemon as any).closeUnusedPlatformConnections()
+    await (daemon as any).connections.closeUnusedPlatformConnections()
     expect(stop).not.toHaveBeenCalled()
-    expect((daemon as any).slackPool.all()).toEqual([conn])
+    expect((daemon as any).connections.slackPool.all()).toEqual([conn])
     expect((daemon as any).connByIntegration.has('int-detached')).toBe(false)
     expect((daemon as any).connByIntegration.get('int-live')).toBe(conn)
     expect((daemon as any).botUserIds['int-detached']).toBeUndefined()
     expect((daemon as any).channelSnapshots.has('int-detached')).toBe(false)
 
     ;(daemon as any).agents = new Map()
-    await (daemon as any).closeUnusedPlatformConnections()
+    await (daemon as any).connections.closeUnusedPlatformConnections()
     expect(stop).toHaveBeenCalledTimes(1)
-    expect((daemon as any).slackPool.all()).toEqual([])
+    expect((daemon as any).connections.slackPool.all()).toEqual([])
     await daemon.stop()
   })
 
@@ -486,9 +486,9 @@ describe('Daemon.reconcileSlackConnections', () => {
     const telegramOld = conn('tg-old')
     const discordLive = conn('dc-live')
     const discordOld = conn('dc-old')
-    for (const c of [sharedLive, sharedOld]) (daemon as any).slackSharedPool.add(c)
-    for (const c of [telegramLive, telegramOld]) (daemon as any).telegramPool.add(c)
-    for (const c of [discordLive, discordOld]) (daemon as any).discordPool.add(c)
+    for (const c of [sharedLive, sharedOld]) (daemon as any).connections.slackSharedPool.add(c)
+    for (const c of [telegramLive, telegramOld]) (daemon as any).connections.telegramPool.add(c)
+    for (const c of [discordLive, discordOld]) (daemon as any).connections.discordPool.add(c)
     ;(daemon as any).agents = new Map([
       [
         'bot-live',
@@ -503,7 +503,7 @@ describe('Daemon.reconcileSlackConnections', () => {
       ]
     ])
 
-    await (daemon as any).closeUnusedPlatformConnections()
+    await (daemon as any).connections.closeUnusedPlatformConnections()
     expect(sharedOld.stop).toHaveBeenCalledTimes(1)
     expect(telegramOld.stop).toHaveBeenCalledTimes(1)
     expect(discordOld.stop).toHaveBeenCalledTimes(1)
@@ -512,7 +512,7 @@ describe('Daemon.reconcileSlackConnections', () => {
     expect(discordLive.stop).not.toHaveBeenCalled()
 
     ;(daemon as any).agents = new Map()
-    await (daemon as any).closeUnusedPlatformConnections()
+    await (daemon as any).connections.closeUnusedPlatformConnections()
     expect(sharedLive.stop).toHaveBeenCalledTimes(1)
     expect(telegramLive.stop).toHaveBeenCalledTimes(1)
     expect(discordLive.stop).toHaveBeenCalledTimes(1)
@@ -526,12 +526,12 @@ describe('Daemon.reconcileSlackConnections', () => {
 
     const connection = fakeConn('xapp-final', 'xoxb-final', 'U_FINAL')
     const stop = vi.spyOn(connection, 'stop')
-    ;(daemon as any).slackPool.add(connection)
+    ;(daemon as any).connections.slackPool.add(connection)
     ;(daemon as any).agents = new Map()
     const release = (daemon as any).holdReplyConnection(connection) as () => void
 
     let settled = false
-    const close = (daemon as any).closeUnusedPlatformConnections().then(() => {
+    const close = (daemon as any).connections.closeUnusedPlatformConnections().then(() => {
       settled = true
     })
     await new Promise((resolve) => setImmediate(resolve))
@@ -541,7 +541,7 @@ describe('Daemon.reconcileSlackConnections', () => {
     release()
     await close
     expect(stop).toHaveBeenCalledTimes(1)
-    expect((daemon as any).slackPool.all()).toEqual([])
+    expect((daemon as any).connections.slackPool.all()).toEqual([])
     await daemon.stop()
   })
 })
@@ -572,7 +572,7 @@ describe('Daemon.refreshObservedChannels (Telegram/Discord/Feishu discovery)', (
       .spyOn((daemon as any).store, 'observedChannels')
       .mockReturnValue([{ id: '-100123', name: 'Team Chat' }, { id: '-100456' }])
 
-    ;(daemon as any).refreshObservedChannels()
+    ;(daemon as any).observedChannelsSync.refreshObservedChannels()
 
     // Only the Telegram integration is enumerated — Slack has its own membership snapshot.
     expect(observed).toHaveBeenCalledOnce()
@@ -611,7 +611,7 @@ describe('Daemon.refreshObservedChannels (Telegram/Discord/Feishu discovery)', (
       .spyOn((daemon as any).store, 'observedChannels')
       .mockReturnValue([{ id: '900123', name: 'general' }, { id: '900456' }])
 
-    ;(daemon as any).refreshObservedChannels()
+    ;(daemon as any).observedChannelsSync.refreshObservedChannels()
 
     expect(observed).toHaveBeenCalledWith(
       'bot-dc',
@@ -659,7 +659,7 @@ describe('Daemon.refreshObservedChannels (Telegram/Discord/Feishu discovery)', (
       .mockReturnValue([{ id: 'oc_group', name: 'Product Chat' }])
     const noteMessage = vi.spyOn((daemon as any).channelNameResolver, 'noteMessage').mockImplementation(() => {})
 
-    ;(daemon as any).backfillChannelNames()
+    ;(daemon as any).connections.backfillChannelNames()
 
     expect(noteMessage).toHaveBeenCalledWith(conn, {
       channel: 'oc_group',
@@ -708,7 +708,7 @@ describe('Daemon.refreshObservedChannels (Telegram/Discord/Feishu discovery)', (
     })
     store.setDisplayName('oc_old', 'Old chat', 1)
 
-    ;(daemon as any).refreshObservedChannels()
+    ;(daemon as any).observedChannelsSync.refreshObservedChannels()
     expect(emit).not.toHaveBeenCalled()
 
     store.upsertSession({
@@ -726,7 +726,7 @@ describe('Daemon.refreshObservedChannels (Telegram/Discord/Feishu discovery)', (
     })
     store.setDisplayName('oc_new', 'New chat', 2)
 
-    ;(daemon as any).refreshObservedChannels()
+    ;(daemon as any).observedChannelsSync.refreshObservedChannels()
     expect(emit).toHaveBeenCalledOnce()
     expect(emit).toHaveBeenCalledWith({
       integrationId: 'fs-new',
@@ -785,7 +785,7 @@ describe('Daemon.refreshObservedChannels (Telegram/Discord/Feishu discovery)', (
     // Model the Lark lookup finishing while cold ACP startup is still blocked: there
     // is a resolved name, but no session row for discovery to publish yet.
     ;(daemon as any).store.setDisplayName('oc_group', 'Product Chat', Date.now())
-    ;(daemon as any).refreshObservedChannels()
+    ;(daemon as any).observedChannelsSync.refreshObservedChannels()
     expect(emit).not.toHaveBeenCalled()
 
     releaseSession()
@@ -822,7 +822,7 @@ describe('Daemon.refreshObservedChannels (Telegram/Discord/Feishu discovery)', (
       { id: '900001', name: 'general' }
     ])
 
-    ;(daemon as any).refreshObservedChannels()
+    ;(daemon as any).observedChannelsSync.refreshObservedChannels()
 
     const channels = [{ id: '900123', name: 'general' }]
     expect(emit).toHaveBeenCalledWith({ integrationId: 'dc-int', channels, authoritative: false })
@@ -850,7 +850,7 @@ describe('Daemon.refreshObservedChannels (Telegram/Discord/Feishu discovery)', (
       { id: '900123', name: 'general' }
     ])
 
-    ;(daemon as any).refreshObservedChannels()
+    ;(daemon as any).observedChannelsSync.refreshObservedChannels()
 
     const channels = [
       { id: '900777', name: '@yulong', kind: 'im' },
@@ -886,7 +886,7 @@ describe('Daemon.refreshObservedChannels (Telegram/Discord/Feishu discovery)', (
         scope === scopeA ? [{ id: '-100', name: 'Team A' }] : [{ id: '-200', name: 'Team B' }]
       )
 
-    ;(daemon as any).refreshObservedChannels()
+    ;(daemon as any).observedChannelsSync.refreshObservedChannels()
 
     expect(observed).toHaveBeenCalledWith('bot-tg2', 'telegram', scopeA)
     expect(observed).toHaveBeenCalledWith('bot-tg2', 'telegram', scopeB)
@@ -927,7 +927,7 @@ describe('Daemon.refreshObservedChannels (Telegram/Discord/Feishu discovery)', (
     ;(daemon as any).store.setDisplayName('-100999', 'New private group', Date.now())
     vi.spyOn((daemon as any).store, 'observedChannels').mockReturnValue([])
 
-    ;(daemon as any).refreshObservedChannels()
+    ;(daemon as any).observedChannelsSync.refreshObservedChannels()
 
     const channels = [{ id: '-100999', kind: 'channel', name: 'New private group' }]
     expect((daemon as any).channelSnapshots.get('tg-int')).toEqual({ channels, authoritative: false })
@@ -983,7 +983,7 @@ describe('Daemon.leaveConversation', () => {
     ;(daemon as any).connForIntegration = () =>
       Object.assign(Object.create(TelegramConnection.prototype), { leaveChannel })
 
-    const verdict = await (daemon as any).leaveConversation({
+    const verdict = await (daemon as any).connections.leaveConversation({
       integrationId: 'tg-int',
       target: { kind: 'conversation', channel: '-100123' }
     })
@@ -1011,7 +1011,7 @@ describe('Daemon.leaveConversation', () => {
         leaveChannel: vi.fn().mockRejectedValue(new Error('CHAT_ADMIN_REQUIRED'))
       })
 
-    const verdict = await (daemon as any).leaveConversation({
+    const verdict = await (daemon as any).connections.leaveConversation({
       integrationId: 'tg-int',
       target: { kind: 'conversation', channel: '-100123' }
     })
@@ -1037,14 +1037,14 @@ describe('Daemon.leaveConversation', () => {
     ;(daemon as any).connForIntegration = () =>
       Object.assign(Object.create(TelegramConnection.prototype), { leaveChannel: vi.fn().mockResolvedValue(undefined) })
 
-    await (daemon as any).leaveConversation({
+    await (daemon as any).connections.leaveConversation({
       integrationId: 'tg-int',
       target: { kind: 'conversation', channel: '-100123' }
     })
     // The chat is still all over session history — nothing deletes sessions on leave.
     vi.spyOn((daemon as any).store, 'observedChannels').mockReturnValue([{ id: '-100123', name: 'Team Chat' }])
     emit.mockClear()
-    ;(daemon as any).refreshObservedChannels()
+    ;(daemon as any).observedChannelsSync.refreshObservedChannels()
 
     expect((daemon as any).channelSnapshots.get('tg-int').channels).toEqual([])
     expect(emit.mock.calls.flatMap((c: unknown[]) => (c[0] as { channels: unknown[] }).channels)).toEqual([])
@@ -1057,7 +1057,7 @@ describe('Daemon.leaveConversation', () => {
     telegramAgent(daemon)
     ;(daemon as any).connForIntegration = () =>
       Object.assign(Object.create(TelegramConnection.prototype), { leaveChannel: vi.fn().mockResolvedValue(undefined) })
-    await (daemon as any).leaveConversation({
+    await (daemon as any).connections.leaveConversation({
       integrationId: 'tg-int',
       target: { kind: 'conversation', channel: '-100123' }
     })
@@ -1065,7 +1065,7 @@ describe('Daemon.leaveConversation', () => {
 
     // A platform only delivers messages for a conversation the bot is IN, so traffic
     // is proof it was re-invited — otherwise "leave" would be irreversible from here.
-    ;(daemon as any).clearRetractionOnTraffic(
+    ;(daemon as any).observedChannelsSync.clearRetractionOnTraffic(
       { source: 'user', channel: '-100123', sender: { id: 'U1', isBot: false } },
       ['tg-int']
     )
@@ -1090,13 +1090,16 @@ describe('Daemon.leaveConversation', () => {
     })
     ;(daemon as any).connForIntegration = () =>
       Object.assign(Object.create(DiscordConnection.prototype), { leaveSpace: vi.fn().mockResolvedValue(undefined) })
-    await (daemon as any).leaveConversation({ integrationId: 'dc-int', target: { kind: 'space', spaceId: 'G1' } })
+    await (daemon as any).connections.leaveConversation({
+      integrationId: 'dc-int',
+      target: { kind: 'space', spaceId: 'G1' }
+    })
 
     // Session history holds the THREAD, which collapses onto the left channel C1.
     vi.spyOn((daemon as any).store, 'observedChannels').mockReturnValue([{ id: 'T-in-C1' }])
     vi.spyOn((daemon as any).observedChannelsSync, 'collapseObserved').mockReturnValue([{ id: 'C1', spaceId: 'G1' }])
     emit.mockClear()
-    ;(daemon as any).refreshObservedChannels()
+    ;(daemon as any).observedChannelsSync.refreshObservedChannels()
 
     expect((daemon as any).channelSnapshots.get('dc-int').channels).toEqual([])
   })
@@ -1108,7 +1111,7 @@ describe('Daemon.leaveConversation', () => {
     // Retract while the CP link is DOWN: the EVT is fire-and-forget and simply lost.
     ;(daemon as any).cpClient = undefined
     ;(daemon as any).channelSnapshots.set('tg-int', { channels: [{ id: '-100123' }], authoritative: false })
-    ;(daemon as any).retractChannels('tg-int', ['-100123'])
+    ;(daemon as any).observedChannelsSync.retractChannels('tg-int', ['-100123'])
 
     const emit = vi.fn()
     ;(daemon as any).cpClient = { emitIntegrationChannels: emit, stop: vi.fn().mockResolvedValue(undefined) }
@@ -1128,7 +1131,7 @@ describe('Daemon.leaveConversation', () => {
     ;(first as any).cpClient = undefined // CP unreachable: the retraction EVT is lost
     telegramAgent(first)
     ;(first as any).channelSnapshots.set('tg-int', { channels: [{ id: '-100123' }], authoritative: false })
-    ;(first as any).retractChannels('tg-int', ['-100123'])
+    ;(first as any).observedChannelsSync.retractChannels('tg-int', ['-100123'])
     await first.stop()
 
     // A fresh process over the SAME root: the tombstone survived, the snapshot did not.
@@ -1158,7 +1161,7 @@ describe('Daemon.leaveConversation', () => {
         leaveChannel: vi.fn().mockRejectedValue(new Error('Bad Request: chat not found'))
       })
 
-    const verdict = await (daemon as any).leaveConversation({
+    const verdict = await (daemon as any).connections.leaveConversation({
       integrationId: 'tg-int',
       target: { kind: 'conversation', channel: '-100123' }
     })
@@ -1178,7 +1181,7 @@ describe('Daemon.leaveConversation', () => {
         leaveChannel: vi.fn().mockRejectedValue(new Error('Too Many Requests: retry after 30'))
       })
 
-    const verdict = await (daemon as any).leaveConversation({
+    const verdict = await (daemon as any).connections.leaveConversation({
       integrationId: 'tg-int',
       target: { kind: 'conversation', channel: '-100123' }
     })
@@ -1197,7 +1200,7 @@ describe('Daemon.leaveConversation', () => {
     ;(daemon as any).connForIntegration = () =>
       Object.assign(Object.create(DiscordConnection.prototype), { leaveSpace })
 
-    const verdict = await (daemon as any).leaveConversation({
+    const verdict = await (daemon as any).connections.leaveConversation({
       integrationId: 'dc-int',
       target: { kind: 'conversation', channel: 'C9' }
     })
@@ -1226,7 +1229,7 @@ describe('Daemon.leaveConversation', () => {
     ;(daemon as any).connForIntegration = () =>
       Object.assign(Object.create(DiscordConnection.prototype), { leaveSpace: vi.fn().mockResolvedValue(undefined) })
 
-    const verdict = await (daemon as any).leaveConversation({
+    const verdict = await (daemon as any).connections.leaveConversation({
       integrationId: 'dc-int',
       target: { kind: 'space', spaceId: 'G1' }
     })

@@ -147,13 +147,13 @@ function liveSlackSocket(
   creds = { botToken: 'xoxb-test', appToken: 'xapp-test' }
 ) {
   const conn = { ...creds, botUserId: `U-${integrationId.slice(-1)}`, stop: vi.fn(async () => {}) }
-  ;(d as any).slackPool.add(conn)
+  ;(d as any).connections.slackPool.add(conn)
   ;(d as any).connByIntegration.set(integrationId, conn)
   ;(d as any).botUserIds[integrationId] = conn.botUserId
   return conn
 }
 
-const pooled = (d: Daemon): unknown[] => (d as any).slackPool.all()
+const pooled = (d: Daemon): unknown[] => (d as any).connections.slackPool.all()
 
 describe('the duty self-fence', () => {
   it('releases every held group and stops serving its agents, with no configuration asking for it', async () => {

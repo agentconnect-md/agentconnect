@@ -116,8 +116,7 @@ export interface ConnectionReconcilerHost extends PlatformActionSink {
   unbindIntegration(integrationId: string): void
   slackNameResolver(): SlackNameResolver | undefined
   channelNameResolver(): ChannelNameResolver | undefined
-  /** The Daemon's same-name delegate back into `ConnectionReconciler.refreshChannels` —
-   *  every internal re-list goes through it so the membership refresh stays one seam. */
+  /** Host hop back into `ConnectionReconciler.refreshChannels` — every internal re-list goes through it so the membership refresh stays one seam. */
   refreshChannels(conn: SlackConnection): Promise<void>
   onInbound(msg: NormalizedMessage, srcIntegrationIds?: string[]): void
   srcIntegrationIds(conn: unknown): string[]

@@ -310,11 +310,11 @@ describe('shutdown drain of a duty-holding member', () => {
     const { daemon, calls } = await boot()
     // A live direct socket for agent A's group, as reconcile would have opened it while held.
     const conn = { botToken: 'xoxb-test', appToken: 'xapp-test', botUserId: 'U1', stop: vi.fn(async () => {}) }
-    ;(daemon as any).slackPool.add(conn)
+    ;(daemon as any).connections.slackPool.add(conn)
     ;(daemon as any).connByIntegration.set('22222222-2222-4222-8222-222222222222', conn)
     let socketOpenAtRelease: boolean | undefined
     ;(daemon as any).cpClient.releaseDuties = vi.fn(async (groupIds: string[]) => {
-      if (groupIds[0] === GROUP) socketOpenAtRelease = (daemon as any).slackPool.all().includes(conn)
+      if (groupIds[0] === GROUP) socketOpenAtRelease = (daemon as any).connections.slackPool.all().includes(conn)
       calls.releases.push(groupIds)
     })
 

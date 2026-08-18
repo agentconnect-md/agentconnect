@@ -1151,7 +1151,7 @@ describe('daemon durable inbox', () => {
       setStatus: vi.fn(async () => {}),
       postMessage: vi.fn(async () => {})
     }
-    vi.spyOn(daemon as any, 'reconcileSlackConnections').mockImplementation(async () => {
+    vi.spyOn((daemon as any).connections, 'reconcileSlackConnections').mockImplementation(async () => {
       const integration = (daemon as any).agents
         .get('ghost')
         ?.integrations.find((candidate: { id: string }) => candidate.id === integrationId)

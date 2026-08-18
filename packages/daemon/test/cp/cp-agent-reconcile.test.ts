@@ -725,7 +725,7 @@ describe('Daemon CP agent → memory + reconcile', () => {
         config: { appToken: 'xapp-only', botToken: 'xoxb-only' }
       }
     ]
-    ;(daemon as any).slackPool.add(connection)
+    ;(daemon as any).connections.slackPool.add(connection)
     ;(daemon as any).connByIntegration.set('int-only', connection)
     const releaseDispatch = (daemon as any).beginActiveDispatch('bot-a') as () => void
 

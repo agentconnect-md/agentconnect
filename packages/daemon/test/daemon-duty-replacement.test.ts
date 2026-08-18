@@ -122,13 +122,13 @@ function liveSlackSocket(d: Daemon, agentId: string) {
     botUserId: `U-${NAMES[agentId]}`,
     stop: vi.fn(async () => {})
   }
-  ;(d as any).slackPool.add(conn)
+  ;(d as any).connections.slackPool.add(conn)
   ;(d as any).connByIntegration.set(integrationId, conn)
   ;(d as any).botUserIds[integrationId] = conn.botUserId
   return conn
 }
 
-const pooled = (d: Daemon): unknown[] => (d as any).slackPool.all()
+const pooled = (d: Daemon): unknown[] => (d as any).connections.slackPool.all()
 
 describe('a refused replacement still applies its removals', () => {
   it('drops the departed agent, keeps the group serving the rest, and stays at the old term', async () => {
