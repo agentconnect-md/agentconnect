@@ -38,7 +38,7 @@ import { NotificationProvider } from '@/lib/notifications'
 import { NotificationBell, NotificationToastContainer } from './NotificationCenter'
 import { useDaemonNotifier } from '@/lib/daemon-notifications'
 import { useSessionAccessNotifier } from '@/lib/session-access-notifier'
-import { MOBILE_NAV, MORE_ROWS, NAV_GROUPS, SECTIONS } from './nav'
+import { MOBILE_NAV, MORE_ROWS, NAV_GROUPS, SECTIONS, navVisible } from './nav'
 
 // Top-level routes own the tab-bar + list app bar (no back button, bottom nav shown);
 // every other route is a "push" screen (back-button app bar, no bottom nav) on mobile.
@@ -659,7 +659,7 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
                 <Icon name="search" size={18} />
                 <span>Search</span>
               </button>
-              {NAV_GROUPS.map((group, groupIndex) => (
+              {NAV_GROUPS.map((g) => g.filter(navVisible)).map((group, groupIndex) => (
                 <Fragment key={group[0]?.href ?? groupIndex}>
                   {groupIndex > 0 && <div className="navsep" />}
                   {group.map((item) => {
@@ -1164,7 +1164,7 @@ function MobileSheets({
                 <div className="msheet-divider" />
               </>
             )}
-            {MORE_ROWS.filter((r) => authOn || r.href !== '/settings').map((r) => (
+            {MORE_ROWS.filter((r) => navVisible(r) && (authOn || r.href !== '/settings')).map((r) => (
               <Link key={r.href} href={orgPath(r.href)} className="msheet-row" onClick={onClose}>
                 <Icon name={r.icon} size={20} color="var(--text-tertiary)" />
                 <span>{r.label}</span>

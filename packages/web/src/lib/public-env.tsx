@@ -25,6 +25,10 @@ const KEYS = [
   // Dedicated MCP origin (mirrors the CP's PUBLIC_MCP_URL). Unset ⇒ the console
   // renders the MCP endpoint as CP_URL + /mcp (ConnectAiCard).
   'MCP_URL',
+  // Billing service base URL. Only an address: whether the console offers billing
+  // is the `billing` feature flag in FEATURE_FLAGS. Both are PRESENTATION only —
+  // the billing service authenticates and authorizes every request itself.
+  'BILLING_URL',
   // Help-menu link targets — let an OSS fork point the rail-footer help menu at its
   // own docs / connector guide / releases / support channel without rebuilding.
   // Unset ⇒ the agentconnect.md defaults (see Shell.tsx HELP_LINK_DEFAULTS).

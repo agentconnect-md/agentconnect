@@ -24,7 +24,7 @@ import { consoleKeys } from '@/lib/swr-keys'
 import { Icon } from '@/components/ui'
 import { AgentIconView } from '@/components/marks'
 import type { AgentIcon } from '@/lib/agent-icon'
-import { SEARCH_PAGES, type ConsolePage } from './nav'
+import { SEARCH_PAGES, navVisible, type ConsolePage } from './nav'
 
 type SearchKind = 'agent' | 'daemon' | 'schedule' | 'session' | 'page' | 'setting'
 
@@ -205,7 +205,9 @@ export function GlobalSearch({
       iconName: p.icon,
       href: orgPath(p.href)
     })
-    const pageMatches = SEARCH_PAGES.filter((p) => p.kind === 'page' && pageHit(p))
+    // `navVisible` keeps search from offering a destination this deployment does
+    // not have — the rail hides those, and a result must not dead-end either.
+    const pageMatches = SEARCH_PAGES.filter((p) => p.kind === 'page' && navVisible(p) && pageHit(p))
     // Owner-only entries point at cards SettingsView doesn't render for other
     // roles — hide them so a result never navigates to a missing anchor. Same
     // for Session access when the whole card is absent on this deployment.

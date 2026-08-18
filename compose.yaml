@@ -251,6 +251,8 @@ services:
       # Console feature flags this deployment turns on (comma-separated ids; unset =>
       # none). Forwarded from the host so one image serves every deployment.
       - FEATURE_FLAGS
+      # Address of the billing service, when the `billing` feature flag is on.
+      - BILLING_URL
     healthcheck:
       test:
         - CMD

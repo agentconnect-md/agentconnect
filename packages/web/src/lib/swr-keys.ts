@@ -38,6 +38,10 @@ export const consoleKeys = {
   ) => consoleKey(orgId, 'session-access', provider),
   usage: <const Range extends string>(orgId: string | null | undefined, range: Range) =>
     consoleKey(orgId, 'usage', range),
+  /** Billing rows come from the separate billing service (lib/billing-api), but they
+   *  are org-scoped like everything else here, so they key the same way. */
+  billingAccount: (orgId: string | null | undefined) => consoleKey(orgId, 'billing-account'),
+  billingTransactions: (orgId: string | null | undefined) => consoleKey(orgId, 'billing-transactions'),
   sessions: (
     orgId: string | null | undefined,
     cursor: string,
