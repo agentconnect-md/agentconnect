@@ -110,14 +110,22 @@ export class VaultHttp {
   }
 }
 
-/** Status + Vault's `errors[]` only — NEVER the request/response payloads. */
-export async function describeVaultError(res: Response): Promise<string> {
-  let errors = ''
+/** Vault's `errors[]` strings — empty for a non-JSON or non-Vault body, which is never echoed. */
+export async function readVaultErrors(res: Response): Promise<string[]> {
   try {
-    const json = (await res.json()) as { errors?: string[] }
-    if (Array.isArray(json.errors) && json.errors.length > 0) errors = ` (${json.errors.join('; ')})`
+    const json = (await res.json()) as { errors?: unknown }
+    return Array.isArray(json.errors) ? json.errors.filter((e): e is string => typeof e === 'string') : []
   } catch {
-    // non-JSON error body — status alone is enough (and never echo the body)
+    return []
   }
-  return `HTTP ${res.status}${errors}`
+}
+
+/** Status + Vault's `errors[]` only — NEVER the request/response payloads. */
+export function formatVaultError(status: number, errors: string[]): string {
+  return `HTTP ${status}${errors.length > 0 ? ` (${errors.join('; ')})` : ''}`
+}
+
+/** {@link readVaultErrors} + {@link formatVaultError} for callers that only need the message. */
+export async function describeVaultError(res: Response): Promise<string> {
+  return formatVaultError(res.status, await readVaultErrors(res))
 }

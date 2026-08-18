@@ -24,7 +24,7 @@
  * discretion via `log`.
  */
 import type { PrismaClient } from '../generated/prisma/client.js'
-import { describeVaultError, VaultHttp } from './vault-http.js'
+import { formatVaultError, readVaultErrors, VaultHttp } from './vault-http.js'
 
 export interface KeyDestroyer {
   /** Destroy one transit key at its pinned mount. Absent ⇒ resolve (already shredded). */
@@ -72,8 +72,10 @@ export async function shredPendingKeys(
 
 /**
  * Vault Transit's two-step destroy: a key is undeletable until its config says
- * otherwise, so allow deletion and then delete. A missing key is success — the
- * previous run destroyed it and died before clearing the row.
+ * otherwise, so allow deletion and then delete. A missing key is success: either
+ * the previous run destroyed it and died before clearing the row, or the org
+ * never sealed a secret — org keys are created lazily on first encrypt, so an
+ * organization that stored nothing has a tombstone but no key at all.
  */
 export class VaultTransitKeyDestroyer implements KeyDestroyer {
   constructor(private readonly http: VaultHttp) {}
@@ -82,13 +84,23 @@ export class VaultTransitKeyDestroyer implements KeyDestroyer {
     const configured = await this.http.request('POST', `${mount}/keys/${keyName}/config`, {
       deletion_allowed: true
     })
-    if (configured.status === 404) return // already gone
     if (!configured.ok) {
-      throw new Error(`vault transit allow-deletion failed: ${await describeVaultError(configured)}`)
+      const errors = await readVaultErrors(configured)
+      if (isAbsentKey(configured.status, errors)) return // already gone (or never created)
+      throw new Error(`vault transit allow-deletion failed: ${formatVaultError(configured.status, errors)}`)
     }
     const deleted = await this.http.request('DELETE', `${mount}/keys/${keyName}`)
-    if (!deleted.ok && deleted.status !== 404) {
-      throw new Error(`vault transit key delete failed: ${await describeVaultError(deleted)}`)
+    if (!deleted.ok) {
+      const errors = await readVaultErrors(deleted)
+      if (isAbsentKey(deleted.status, errors)) return
+      throw new Error(`vault transit key delete failed: ${formatVaultError(deleted.status, errors)}`)
     }
   }
+}
+
+// Transit reports a missing key as HTTP 400 with one of these `errors[]`, never as a 404 (that is what a GET would say, and the shredder has no read capability).
+const ABSENT_KEY_ERROR = /no existing key named .* could be found|could not delete key; not found/
+
+function isAbsentKey(status: number, errors: string[]): boolean {
+  return status === 404 || (status === 400 && errors.some((e) => ABSENT_KEY_ERROR.test(e)))
 }

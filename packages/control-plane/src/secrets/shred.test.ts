@@ -114,12 +114,46 @@ describe('VaultTransitKeyDestroyer', () => {
     expect(vault.calls.some((c) => c.path.endsWith('keys') || c.method === 'LIST')).toBe(false)
   })
 
-  it('treats an already-absent key as done — the previous run died between destroy and clear', async () => {
+  it('treats an absent key as done — Transit answers the config write with 400, not 404', async () => {
+    // Real Vault wording. This is the org that never sealed a secret (keys are
+    // created lazily on first encrypt) — and the previous run that died between
+    // destroy and clear looks identical.
+    const vault = fakeVault(() => ({
+      status: 400,
+      body: { errors: ['no existing key named ac-cp-org-gone could be found'] }
+    }))
+    await expect(
+      new VaultTransitKeyDestroyer(http(vault.fetchImpl)).destroy('transit', 'ac-cp-org-gone')
+    ).resolves.toBeUndefined()
+    expect(vault.calls).toHaveLength(1) // stopped after the config call
+  })
+
+  it('treats a key that vanished between the config write and the delete as done', async () => {
+    const vault = fakeVault((method) =>
+      method === 'DELETE'
+        ? { status: 400, body: { errors: ['error deleting key ac-cp-org-gone: could not delete key; not found'] } }
+        : { status: 204 }
+    )
+    await expect(
+      new VaultTransitKeyDestroyer(http(vault.fetchImpl)).destroy('transit', 'ac-cp-org-gone')
+    ).resolves.toBeUndefined()
+    expect(vault.calls).toHaveLength(2)
+  })
+
+  it('still accepts a plain 404 as absent', async () => {
     const vault = fakeVault(() => ({ status: 404, body: { errors: [] } }))
     await expect(
       new VaultTransitKeyDestroyer(http(vault.fetchImpl)).destroy('transit', 'ac-cp-org-gone')
     ).resolves.toBeUndefined()
-    expect(vault.calls).toHaveLength(1) // stopped after the 404 config call
+  })
+
+  it('does NOT read every 400 as absent — a different refusal keeps the tombstone', async () => {
+    const vault = fakeVault(() => ({ status: 400, body: { errors: ['deletion is not allowed for this key'] } }))
+    const err = await new VaultTransitKeyDestroyer(http(vault.fetchImpl))
+      .destroy('transit', 'ac-cp-org-org-aaa')
+      .catch((e: unknown) => e as Error)
+    expect((err as Error).message).toContain('400')
+    expect((err as Error).message).toContain('deletion is not allowed')
   })
 
   it('surfaces a refusal as an error (status + Vault errors[], no payload) so the tombstone survives', async () => {
