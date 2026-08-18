@@ -300,6 +300,87 @@ describe('the shared store semantics both adapters get', () => {
     expect(checkpoints.map((row) => row.cumulativeCost.toFixed(0))).toEqual(['2', '5'])
   })
 
+  describe('a checkpoint only moves forward', () => {
+    const at = new Date('2026-08-18T00:00:00.000Z')
+    const write = (usage: { totalTokens?: number; costAmount?: string; costCurrency?: string }) =>
+      new PgSessionUsageRepo(prisma).record({
+        agentId: AgentId(AGENT_A),
+        sessionId: 'monotonic',
+        source: 'gateway',
+        lastActivityAt: at,
+        usage: { costCurrency: 'USD', ...usage }
+      })
+    const checkpoint = () => prisma.sessionSpend.findFirst({ where: { agentId: AGENT_A, sessionId: 'monotonic' } })
+
+    it('ignores a straggler retry whose cumulative went backwards', async () => {
+      await seedAgent(prisma, AGENT_A)
+      await write({ totalTokens: 1000, costAmount: '12.75' })
+      await write({ totalTokens: 400, costAmount: '5' }) // overtaken by the newer delivery
+
+      const row = await checkpoint()
+      expect(row!.cumulativeCost.toFixed(2)).toBe('12.75')
+      expect(row!.cumulativeTotalTokens).toBe(1000)
+      // One row either way: the straggler is dropped, not stored beside it.
+      expect(await prisma.sessionSpend.count({ where: { agentId: AGENT_A, sessionId: 'monotonic' } })).toBe(1)
+    })
+
+    it('lets an unchanged redelivery through as a no-op', async () => {
+      await seedAgent(prisma, AGENT_A)
+      await write({ totalTokens: 1000, costAmount: '12.75' })
+      await write({ totalTokens: 1000, costAmount: '12.75' })
+
+      const row = await checkpoint()
+      expect(row!.cumulativeCost.toFixed(2)).toBe('12.75')
+      expect(row!.cumulativeTotalTokens).toBe(1000)
+    })
+
+    it('advances on a higher cumulative for the same instant', async () => {
+      await seedAgent(prisma, AGENT_A)
+      await write({ totalTokens: 1000, costAmount: '12.75' })
+      await write({ totalTokens: 1200, costAmount: '13' })
+
+      const row = await checkpoint()
+      expect(row!.cumulativeCost.toFixed(2)).toBe('13.00')
+      expect(row!.cumulativeTotalTokens).toBe(1200)
+    })
+
+    it('ignores a mixed report WHOLE rather than synthesizing a checkpoint', async () => {
+      await seedAgent(prisma, AGENT_A)
+      await write({ totalTokens: 1000, costAmount: '12.75' })
+      // Higher cost, lower tokens — no delivery ever reported this pair together.
+      await write({ totalTokens: 400, costAmount: '20' })
+
+      const row = await checkpoint()
+      expect(row!.cumulativeCost.toFixed(2)).toBe('12.75')
+      expect(row!.cumulativeTotalTokens).toBe(1000)
+    })
+
+    it('keeps a regressive retry from making the next window bill twice', async () => {
+      await seedAgent(prisma, AGENT_A)
+      const repo = new PgSessionUsageRepo(prisma)
+      const earlier = new Date(at.getTime() - 60_000)
+      const spend = (when: Date, costAmount: string) =>
+        repo.record({
+          agentId: AgentId(AGENT_A),
+          sessionId: 'window',
+          source: 'gateway',
+          lastActivityAt: when,
+          usage: { totalTokens: 10, costAmount, costCurrency: 'USD' }
+        })
+      await spend(earlier, '10')
+      await spend(at, '12')
+      await spend(earlier, '4') // a stale replay of the first checkpoint
+
+      const rows = await prisma.sessionSpend.findMany({
+        where: { agentId: AGENT_A, sessionId: 'window' },
+        orderBy: { at: 'asc' }
+      })
+      // Had the replay landed, the second checkpoint's delta would read 12 − 4 = 8
+      // instead of 2, charging the 6 already billed in the earlier window a second time.
+      expect(rows.map((r) => r.cumulativeCost.toFixed(0))).toEqual(['10', '12'])
+    })
+  })
+
   it('re-applies an unchanged snapshot idempotently rather than skipping it', async () => {
     await seedAgent(prisma, AGENT_A)
     const repo = new PgSessionUsageRepo(prisma)

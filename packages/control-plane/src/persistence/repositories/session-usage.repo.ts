@@ -37,6 +37,7 @@ import type {
   SessionFilterQuery
 } from '../ports.js'
 import { visibilityWhere } from '../../authorization/policy.js'
+import { countCheckpointRegression } from '../../observability/usage-ingest.js'
 import type { AgentId, OrgId } from '../../domain/ids.js'
 import { sessionViewerSql } from './session-access-sql.js'
 
@@ -130,7 +131,19 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
     // the interval that just ended. Readers diff consecutive rows, so model
     // switches retain their own deltas while duplicate deliveries stay idempotent.
     // A late report DOES write its own checkpoint — it belongs at its own `at`.
-    await this.db.$executeRaw(Prisma.sql`
+    //
+    // A checkpoint only moves FORWARD. The trailing predicate ignores a retry whose
+    // cumulative is lower than what is already stored at that instant: re-sending the
+    // same numbers still lands (an idempotent rewrite), a higher cumulative advances
+    // the row, and a straggler overtaken by a newer delivery is dropped instead of
+    // rolling spend back — which would make the next window's diff negative and bill
+    // the difference twice once the real value returned. A report is accepted or
+    // ignored WHOLE: mixing a higher cost from one delivery with a lower token count
+    // from another would synthesize a checkpoint nobody reported, and readers
+    // attribute the interval's spend to this row's model.
+    const [merge] = await this.db.$queryRaw<Array<{ owned: number; applied: number }>>(Prisma.sql`
+      WITH owner AS (SELECT a."id" ${owner}),
+      merged AS (
       INSERT INTO "session_spend" (
         "agentId", "sessionId", "at", "model", "source",
         "cumulativeTotalTokens", "cumulativeInputTokens", "cumulativeOutputTokens",
@@ -142,7 +155,7 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
              ${f.totalTokens}::int, ${f.inputTokens}::int, ${f.outputTokens}::int,
              ${f.thoughtTokens}::int, ${f.cachedReadTokens}::int, ${f.cachedWriteTokens}::int,
              ${f.costAmount}::numeric
-      ${owner}
+      FROM owner
       ON CONFLICT ("agentId", "sessionId", "at") DO UPDATE SET
         "model" = EXCLUDED."model",
         "source" = EXCLUDED."source",
@@ -153,7 +166,21 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
         "cumulativeCachedReadTokens" = EXCLUDED."cumulativeCachedReadTokens",
         "cumulativeCachedWriteTokens" = EXCLUDED."cumulativeCachedWriteTokens",
         "cumulativeCost" = EXCLUDED."cumulativeCost"
+      WHERE "session_spend"."cumulativeTotalTokens" <= EXCLUDED."cumulativeTotalTokens"
+        AND "session_spend"."cumulativeInputTokens" <= EXCLUDED."cumulativeInputTokens"
+        AND "session_spend"."cumulativeOutputTokens" <= EXCLUDED."cumulativeOutputTokens"
+        AND "session_spend"."cumulativeThoughtTokens" <= EXCLUDED."cumulativeThoughtTokens"
+        AND "session_spend"."cumulativeCachedReadTokens" <= EXCLUDED."cumulativeCachedReadTokens"
+        AND "session_spend"."cumulativeCachedWriteTokens" <= EXCLUDED."cumulativeCachedWriteTokens"
+        AND "session_spend"."cumulativeCost" <= EXCLUDED."cumulativeCost"
+      RETURNING 1
+      )
+      SELECT (SELECT COUNT(*)::int FROM owner) AS owned,
+             (SELECT COUNT(*)::int FROM merged) AS applied
     `)
+    // Nothing written for an agent that DOES exist ⇒ the fence above rejected it.
+    // An unowned report is the other zero, and is a drop we already accept silently.
+    if (merge && merge.owned > 0 && merge.applied === 0) countCheckpointRegression(input.source)
   }
 
   async get(agentId: AgentId, sessionId: string): Promise<SessionUsageCounts | null> {
