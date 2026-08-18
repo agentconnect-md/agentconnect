@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { editAgentDaemonChoices } from './edit-agent-daemon-choice'
+import { editAgentCapabilitySource, editAgentDaemonChoices } from './edit-agent-daemon-choice'
 
 type Row = {
   caps: { features: string[] }
@@ -113,5 +113,31 @@ describe('editAgentDaemonChoices', () => {
     const choices = editAgentDaemonChoices([row('grouped', false, 'online', true, 'set-1'), row('free')], '', '', true)
 
     expect(choices.localChoices.map((d) => d.daemonId).sort()).toEqual(['free', 'grouped'])
+  })
+})
+
+describe('editAgentCapabilitySource', () => {
+  const group = { setId: 'g1', name: 'Group 1', memberDaemonIds: ['grouped-offline', 'grouped'], agentCount: 0 }
+
+  it('resolves the Cloud placement to a serving pool member', () => {
+    // `POOL_PLACEMENT` matches no daemon row. Resolving it to nothing is what fell the runtime and
+    // model pickers back to the static fallback list, hiding whatever the pool actually reports.
+    const daemons = [row('local-1'), row('pool-offline', true, 'offline'), row('pool-serving', true)]
+    const poolChoice = editAgentDaemonChoices(daemons, 'pool', 'pool', true).poolChoice
+
+    expect(editAgentCapabilitySource(daemons, 'pool', [], poolChoice)?.daemonId).toBe('pool-serving')
+  })
+
+  it('resolves a group placement to one live member, never the placement', () => {
+    const daemons = [row('grouped-offline', false, 'offline', true, 'g1'), row('grouped', false, 'online', true, 'g1')]
+
+    expect(editAgentCapabilitySource(daemons, 'set:g1', [group], undefined)?.daemonId).toBe('grouped')
+  })
+
+  it('reads a machine placement from that machine', () => {
+    const daemons = [row('local-1'), row('local-2')]
+
+    expect(editAgentCapabilitySource(daemons, 'local-2', [group], undefined)?.daemonId).toBe('local-2')
+    expect(editAgentCapabilitySource(daemons, 'gone', [group], undefined)).toBeUndefined()
   })
 })
