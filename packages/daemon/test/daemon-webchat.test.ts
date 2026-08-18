@@ -562,6 +562,8 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
       { conversationId: CONV, turnId, sink: cp.sink }
     )
 
+    await drainCorrection
+
     const key = (daemon as any).webchatTransport.webchatSessionKey(CONV, AGENT_ID)
     expect((await (daemon as any).store.getUsage(key)).costAmount).toBeCloseTo(0.21)
     expect(cp.usageReports).toHaveLength(2)
@@ -1119,7 +1121,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     }
     expect(accepted.every((ack) => ack.accepted)).toBe(true)
     const key = (daemon as any).webchatTransport.webchatSessionKey(CONV, AGENT_ID)
-    expect((daemon as any).serialQueue.get(key)).toHaveLength(10)
+    await vi.waitFor(() => expect((daemon as any).serialQueue.get(key)).toHaveLength(10), WAIT)
 
     // The exact-key preflight must reject before returning an accepted ACK. A client
     // therefore never starts waiting for a `done` frame that this non-admitted turn

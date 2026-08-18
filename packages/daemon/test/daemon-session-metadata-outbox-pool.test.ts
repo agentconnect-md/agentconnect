@@ -207,7 +207,7 @@ describe('session-metadata outbox ownership on a daemon pool (#1023)', () => {
     const { a, b, shared, stop } = await bootPool()
     await seedSnapshot(shared, AGENT_A, 'acp-moved', 1, 'daemon-a')
     await a.inner.sessionMetadataOutbox.drainSessionMetadataSnapshots()
-    expect(await shared.pendingSessionMetadataSnapshot(AGENT_A, 'acp-moved')?.nextAttemptAt).toBe(PARK_MS)
+    expect((await shared.pendingSessionMetadataSnapshot(AGENT_A, 'acp-moved'))?.nextAttemptAt).toBe(PARK_MS)
 
     // The grant lands on B well before the parked backoff would have expired.
     b.inner.dutyCoordinator.settleDutyChange(b.inner.duties.applyGrant([grant(GROUP_A, AGENT_A)]))
