@@ -2,8 +2,8 @@
  * The daemon's webchat transport surface: turn admission (ordinary and
  * session-targeted continuation), the bounded reconnectable reply streams, the
  * agent-wake post context, cancel/close, and the peer-post continuation ladder
- * (webchat-multi-agents.md §5). The Daemon keeps thin same-name delegates;
- * everything here reaches back through the narrow {@link WebchatHost} port.
+ * (webchat-multi-agents.md §5). Callers hold this class directly; everything here
+ * reaches back through the narrow {@link WebchatHost} port.
  */
 import { randomUUID } from 'node:crypto'
 import type {

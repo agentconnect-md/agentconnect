@@ -1,7 +1,7 @@
 /**
  * The remote-MCP grant revocation half of webchat: the lifecycle revoke calls and the
- * durable drain that replays whatever they could not deliver. The Daemon keeps thin
- * same-name delegates; everything here reaches back through {@link WebchatMcpRevocationHost}.
+ * durable drain that replays whatever they could not deliver. Callers hold this class
+ * directly; everything here reaches back through {@link WebchatMcpRevocationHost}.
  */
 import { WebchatMcpGrantRevoke } from '@agentconnect.md/protocol'
 import type { CpAgentRegistry } from '../cp/cp-agent-registry.js'

@@ -1333,7 +1333,7 @@ describe('daemon durable inbox', () => {
       'bot-a',
       wake,
       undefined,
-      (daemon as any).webchatWakeContext('webchat', conversationId),
+      (daemon as any).webchatTransport.webchatWakeContext('webchat', conversationId),
       { callFrom: 'bot-b', hopCount: 1, deliveryId }
     )
 
