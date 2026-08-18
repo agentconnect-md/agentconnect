@@ -52,18 +52,23 @@ function Notice({ title, body }: { title: string; body: string }) {
 export default function BillingView() {
   const { activeOrg, loading: orgLoading } = useOrgs()
   const orgId = activeOrg?.id ?? null
+  // Hooks run before any early return, so the flag has to gate the KEYS, not just
+  // the render: a null key is what stops SWR from fetching. Checking it only below
+  // would let a deep link on a console without billing still call the service —
+  // twice — before rendering the notice that says billing is elsewhere.
+  const offered = featureFlagEnabled('billing')
+  const fetching = offered && orgId !== null
 
-  const account = useSWR(consoleKeys.billingAccount(orgId), orgId ? () => fetchBillingAccount(orgId) : null)
-  const transactions = useSWR(
-    consoleKeys.billingTransactions(orgId),
-    orgId ? () => fetchBillingTransactions(orgId) : null
+  const account = useSWR(fetching ? consoleKeys.billingAccount(orgId) : null, () => fetchBillingAccount(orgId!))
+  const transactions = useSWR(fetching ? consoleKeys.billingTransactions(orgId) : null, () =>
+    fetchBillingTransactions(orgId!)
   )
 
   // Deep-link landing for a console that does not offer billing: the rail hides
   // the entry, so anyone here typed the URL or followed an old bookmark. Gated on
   // the flag, not on BILLING_URL — with the flag on and no endpoint configured the
   // page must report a broken deployment, not quietly claim billing is elsewhere.
-  if (!featureFlagEnabled('billing'))
+  if (!offered)
     return (
       <Notice
         title="Billing applies to AgentConnect Cloud"
