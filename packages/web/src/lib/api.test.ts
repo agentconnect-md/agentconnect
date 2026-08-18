@@ -36,7 +36,9 @@ import {
   updateGithubHook,
   updateMemoryRecord,
   uploadMyProfilePicture,
-  uploadOrgIcon
+  uploadOrgIcon,
+  usageWindow,
+  fetchUsage
 } from './api'
 
 describe('session facet Agent labels', () => {
@@ -863,5 +865,49 @@ describe('fetchConversationByKey degradation', () => {
     respond({ conversations: [], total: 0, nextCursor: null, accessSyncDegraded: true, accessIssues: issues })
 
     await expect(fetchConversationByKey('k', 'org-1')).resolves.toMatchObject({ accessIssues: issues })
+  })
+})
+
+describe('usage window', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('turns a console preset into the half-open window the route takes', () => {
+    const now = new Date('2026-08-18T12:00:00.000Z')
+    expect(usageWindow('d1', now)).toEqual({ from: '2026-08-17T12:00:00.000Z', to: '2026-08-18T12:00:00.000Z' })
+    expect(usageWindow('d30', now).from).toBe('2026-07-19T12:00:00.000Z')
+    expect(usageWindow('d90', now).from).toBe('2026-05-20T12:00:00.000Z')
+  })
+
+  it('sends from/to (and only sends source when scoped)', async () => {
+    const urls: string[] = []
+    const stub = () =>
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (url: string) => {
+          urls.push(url)
+          return new Response(
+            JSON.stringify({
+              from: 'x',
+              to: 'y',
+              totals: { sessions: 0, totalTokens: 0, costAmount: '0', costCurrency: null },
+              agents: [],
+              models: [],
+              sources: [],
+              series: { bucket: 'day', points: [] }
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } }
+          )
+        })
+      )
+    stub()
+    await fetchUsage('d7', 'org-1')
+    await fetchUsage('d7', 'org-1', 'gateway')
+
+    // The preset never reaches the wire — the window does.
+    expect(urls[0]).not.toContain('range=')
+    expect(urls[0]).toContain('from=')
+    expect(urls[0]).toContain('to=')
+    expect(urls[0]).not.toContain('source=')
+    expect(urls[1]).toContain('source=gateway')
   })
 })

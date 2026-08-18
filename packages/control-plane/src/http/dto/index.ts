@@ -3282,14 +3282,26 @@ export const UsageReportBatchBody = z.object({
 export type UsageReportBatchBodyT = z.infer<typeof UsageReportBatchBody>
 
 // ── usage dashboard (aggregated from the persisted per-session usage store) ──
-export const UsageRange = z.enum(['d1', 'd7', 'd30', 'd90'])
-export const UsageQueryDto = z.object({
-  range: UsageRange.default('d30'),
-  // Client timezone offset in minutes, as `Date.prototype.getTimezoneOffset()`
-  // reports it (UTC − local; e.g. UTC-8 ⇒ 480). Aligns the spend-over-time
-  // buckets to the viewer's local day/hour instead of UTC. Defaults to 0 (UTC).
-  tz: z.coerce.number().int().min(-900).max(900).default(0)
-})
+/** The window is the CALLER's to choose, as an explicit half-open `[from, to)` in UTC.
+ *  The console's 24h/7d/30d/90d buttons are presets it turns into one of these, and a
+ *  billing period is another — so one route serves both instead of the API owning a
+ *  fixed menu of windows. Both ends are required: an implied "until now" would quietly
+ *  give a closed accounting period a moving edge. */
+export const UsageQueryDto = z
+  .object({
+    from: z.string().datetime({ offset: true }),
+    to: z.string().datetime({ offset: true }),
+    /** One ingress, or both when omitted. Scopes totals, every breakdown, and the series. */
+    source: z.enum(['daemon', 'gateway']).optional(),
+    // Client timezone offset in minutes, as `Date.prototype.getTimezoneOffset()`
+    // reports it (UTC − local; e.g. UTC-8 ⇒ 480). Aligns the spend-over-time
+    // buckets to the viewer's local day/hour instead of UTC. Defaults to 0 (UTC).
+    tz: z.coerce.number().int().min(-900).max(900).default(0)
+  })
+  .refine((q) => Date.parse(q.from) < Date.parse(q.to), {
+    message: '`from` must be strictly before `to`',
+    path: ['from']
+  })
 
 /** An amount in an aggregate RESPONSE. A plain string, not `DecimalAmount`: these are
  *  derived by subtraction, so a downward correction can still make one negative, and a
@@ -3311,8 +3323,14 @@ export const UsageAgentDto = z.object({
 export const UsageModelDto = UsageAgentDto.omit({ agentId: true }).extend({
   model: z.string().nullable()
 })
+/** Per-ingress rollup — which authenticated ingress metered the sessions. */
+export const UsageSourceDto = UsageAgentDto.omit({ agentId: true }).extend({
+  source: z.enum(['daemon', 'gateway'])
+})
 export const UsageDto = z.object({
-  range: UsageRange,
+  /** The window actually aggregated, echoed back as the caller sent it. */
+  from: z.string(),
+  to: z.string(),
   accessSyncDegraded: z.boolean().optional(),
   accessIssues: z.array(SessionAccessIssueDto).optional(),
   // Every amount is an exact decimal string: this aggregate is what billing reads, so
@@ -3325,7 +3343,8 @@ export const UsageDto = z.object({
   }),
   agents: z.array(UsageAgentDto),
   models: z.array(UsageModelDto),
-  // Spend-over-time chart: cost bucketed by hour (d1) or day (longer ranges),
+  sources: z.array(UsageSourceDto),
+  // Spend-over-time chart: cost bucketed by hour (a window of two days or less) or day,
   // empty buckets filled to 0. `start` is a UTC-aligned ISO instant. `byAgent`/
   // `byModel` split each bucket's total for the grouped/stacked chart (model
   // key ''=unreported; only non-zero deltas get a key).

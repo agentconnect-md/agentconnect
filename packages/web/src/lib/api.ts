@@ -3314,8 +3314,14 @@ export async function setSessionPullRequestAutoMerge(sessionId: string, enabled:
 }
 
 // ── usage dashboard (GET /usage) — real historical aggregates from the CP's
-// persisted per-session usage store, summed over the selected range. ──
+// persisted per-session usage store, summed over a window this client computes. ──
+/** The console's window presets. The ROUTE takes an explicit `[from, to)`; these are
+ *  purely this client's shorthand, resolved at fetch time. */
 export type UsageRange = 'd1' | 'd7' | 'd30' | 'd90'
+const RANGE_DAYS: Record<UsageRange, number> = { d1: 1, d7: 7, d30: 30, d90: 90 }
+
+/** Which authenticated ingress metered a session. */
+export type UsageSource = 'daemon' | 'gateway'
 
 export interface UsageAgentDto {
   agentId: string
@@ -3335,14 +3341,21 @@ export interface UsageModelDto extends Omit<UsageAgentDto, 'agentId'> {
   model: string | null
 }
 
+export interface UsageSourceDto extends Omit<UsageAgentDto, 'agentId'> {
+  source: UsageSource
+}
+
 export interface UsageDto {
-  range: UsageRange
+  /** The window the CP aggregated, echoed back. */
+  from: string
+  to: string
   accessSyncDegraded?: boolean
   accessIssues?: SessionAccessIssue[]
   totals: { sessions: number; totalTokens: number; costAmount: string; costCurrency: string | null }
   agents: UsageAgentDto[]
   models: UsageModelDto[]
-  // Spend-over-time chart: cost bucketed by hour (d1) or day (longer ranges),
+  sources: UsageSourceDto[]
+  // Spend-over-time chart: cost bucketed by hour (a window of two days or less) or day,
   // empty buckets filled to 0. `start` is a UTC-aligned ISO instant. `byAgent`/
   // `byModel` split each bucket's total for the grouped/stacked view (model key
   // ''=unreported); optional so a CP predating them degrades to flat bars.
@@ -3357,11 +3370,21 @@ export interface UsageDto {
   }
 }
 
-export async function fetchUsage(range: UsageRange, orgId?: string): Promise<UsageDto> {
+/** Resolve a preset to the half-open window the route wants. Exported for the tests
+ *  that pin the preset → window arithmetic. */
+export function usageWindow(range: UsageRange, now: Date = new Date()): { from: string; to: string } {
+  const to = now
+  const from = new Date(to.getTime() - RANGE_DAYS[range] * 24 * 60 * 60 * 1000)
+  return { from: from.toISOString(), to: to.toISOString() }
+}
+
+export async function fetchUsage(range: UsageRange, orgId?: string, source?: UsageSource): Promise<UsageDto> {
   // Send the viewer's tz offset so the CP buckets the spend series to local
   // day/hour (getTimezoneOffset ⇒ UTC − local; stable per client, not in the key).
   const tz = new Date().getTimezoneOffset()
-  return apiGet<UsageDto>(`${orgBase(orgId)}/usage?range=${range}&tz=${tz}`)
+  const { from, to } = usageWindow(range)
+  const query = new URLSearchParams({ from, to, tz: String(tz), ...(source ? { source } : {}) })
+  return apiGet<UsageDto>(`${orgBase(orgId)}/usage?${query.toString()}`)
 }
 
 // Edit an agent's spec (PATCH /agents/:id). The CP persists it and hot-syncs the

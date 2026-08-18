@@ -33,6 +33,9 @@ import type {
   AgentUsageAggregate,
   ModelUsageAggregate,
   SpendBucket,
+  SourceUsageAggregate,
+  UsageWindow,
+  UsageSource,
   ViewCtx,
   SessionFilterQuery
 } from '../ports.js'
@@ -254,16 +257,24 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
 
   async aggregate(
     orgId: OrgId,
-    since: Date,
+    window: UsageWindow,
     viewer?: ViewCtx,
     tzOffsetMin = 0,
-    sessionViewer?: SessionFilterQuery['viewer']
+    sessionViewer?: SessionFilterQuery['viewer'],
+    source?: UsageSource
   ): Promise<UsageAggregate> {
+    const { from, to } = window
     // Derived visibility: usage rows inherit their agent's visibility, so scope
     // through the `agent` relation. A restricted agent the caller cannot see
     // drops out of BOTH the per-agent breakdown and the totals. Organization
     // roles never widen that resource-level visibility.
     const agentScope = { orgId, ...visibilityWhere(viewer) }
+    // One ingress or both. Scoping the WHOLE answer (totals, breakdowns, series) is
+    // what lets billing ask for gateway spend alone through the console's own route
+    // instead of a private one.
+    const sourceScope = (alias: string) =>
+      source ? Prisma.sql`AND ${Prisma.raw(`${alias}."source"`)} = ${source}::"UsageSource"` : Prisma.empty
+    const sourceWhere = source ? { source } : {}
     // Tokens + session counts come from the lifetime snapshot (tokens aren't
     // time-attributed). Cost is deliberately NOT summed here — every range-scoped
     // cost figure (the total, each agent's spend, and the chart) is derived from
@@ -294,14 +305,16 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
           JOIN "agent" a ON a."id" = u."agentId"
           JOIN "session_meta" s ON s."id" = u."sessionId" AND s."agentId" = u."agentId"
           WHERE ${agentViewerSql(orgId, viewer)}
-            AND u."lastActivityAt" >= ${since}
+            AND u."lastActivityAt" >= ${from}
+            AND u."lastActivityAt" < ${to}
+            ${sourceScope('u')}
             AND ${sessionScope}
           GROUP BY u."agentId"
         `)
       : (
           await this.db.sessionUsage.groupBy({
             by: ['agentId'],
-            where: { agent: agentScope, lastActivityAt: { gte: since } },
+            where: { agent: agentScope, lastActivityAt: { gte: from, lt: to }, ...sourceWhere },
             _sum: {
               totalTokens: true,
               inputTokens: true,
@@ -358,7 +371,9 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
         JOIN "agent" a ON a."id" = sp."agentId"
         LEFT JOIN "session_meta" s ON s."id" = sp."sessionId" AND s."agentId" = sp."agentId"
         WHERE ${agentViewerSql(orgId, viewer)}
-          AND u."lastActivityAt" >= ${since}
+          AND u."lastActivityAt" >= ${from}
+          AND u."lastActivityAt" < ${to}
+          ${sourceScope('sp')}
           AND ${sessionScope ?? Prisma.sql`TRUE`}
         WINDOW sample_order AS (PARTITION BY sp."agentId", sp."sessionId" ORDER BY sp."at")
       )
@@ -383,12 +398,14 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
     // chart, pass an IANA tz + date_trunc if hour-exact local days ever matter.
     const HOUR_MS = 60 * 60 * 1000
     const offMs = tzOffsetMin * 60 * 1000
-    const now = Date.now()
-    const bucket: 'hour' | 'day' = now - since.getTime() <= 2 * 24 * HOUR_MS ? 'hour' : 'day'
+    // Geometry follows the WINDOW, not the clock: a closed month asked for after the
+    // fact must return that month's buckets, not buckets running up to today.
+    const spanMs = to.getTime() - from.getTime()
+    const bucket: 'hour' | 'day' = spanMs <= 2 * 24 * HOUR_MS ? 'hour' : 'day'
     const stepMs = bucket === 'hour' ? HOUR_MS : 24 * HOUR_MS
-    // Floor `since` to the start of its local bucket, expressed as a UTC instant.
-    const floorSince = Math.floor((since.getTime() - offMs) / stepMs) * stepMs + offMs
-    const n = Math.floor((now - floorSince) / stepMs) + 1
+    // Floor `from` to the start of its local bucket, expressed as a UTC instant.
+    const floorSince = Math.floor((from.getTime() - offMs) / stepMs) * stepMs + offMs
+    const n = Math.max(1, Math.ceil((to.getTime() - floorSince) / stepMs))
     // Buckets accumulate as scaled integers and are serialized once, at the end.
     const points: ScaledBucket[] = Array.from({ length: n }, (_, i) => ({
       start: new Date(floorSince + i * stepMs).toISOString(),
@@ -412,41 +429,55 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
     const SEP = '\0'
     const [inRange, baselineRows] = await Promise.all([
       this.db.$queryRaw<
-        Array<{ agentId: string; sessionId: string; at: Date; cumulativeCost: string; model: string | null }>
+        Array<{
+          agentId: string
+          sessionId: string
+          at: Date
+          cumulativeCost: string
+          model: string | null
+          source: UsageSource
+        }>
       >(Prisma.sql`
-        SELECT sp."agentId", sp."sessionId", sp."at", sp."cumulativeCost"::text, NULLIF(sp."model", '') AS model
+        SELECT sp."agentId", sp."sessionId", sp."at", sp."cumulativeCost"::text,
+               NULLIF(sp."model", '') AS model, sp."source"
         FROM "session_spend" sp
         JOIN "agent" a ON a."id" = sp."agentId"
         LEFT JOIN "session_meta" s ON s."id" = sp."sessionId" AND s."agentId" = sp."agentId"
         WHERE ${agentViewerSql(orgId, viewer)}
-          AND sp."at" >= ${since}
+          AND sp."at" >= ${from}
+          AND sp."at" < ${to}
+          ${sourceScope('sp')}
           AND ${sessionScope ?? Prisma.sql`TRUE`}
         ORDER BY sp."at" ASC
       `),
-      this.db.$queryRaw<Array<{ agentId: string; sessionId: string; cumulativeCost: string }>>(Prisma.sql`
-        SELECT DISTINCT ON (sp."agentId", sp."sessionId")
-               sp."agentId", sp."sessionId", sp."cumulativeCost"::text
+      this.db.$queryRaw<Array<{ agentId: string; sessionId: string; source: UsageSource; cumulativeCost: string }>>(
+        Prisma.sql`
+        SELECT DISTINCT ON (sp."agentId", sp."sessionId", sp."source")
+               sp."agentId", sp."sessionId", sp."source", sp."cumulativeCost"::text
         FROM "session_spend" sp
         JOIN "agent" a ON a."id" = sp."agentId"
         LEFT JOIN "session_meta" s ON s."id" = sp."sessionId" AND s."agentId" = sp."agentId"
         WHERE ${agentViewerSql(orgId, viewer)}
-          AND sp."at" < ${since}
+          AND sp."at" < ${from}
+          ${sourceScope('sp')}
           AND ${sessionScope ?? Prisma.sql`TRUE`}
-        ORDER BY sp."agentId", sp."sessionId", sp."at" DESC
-      `)
+        ORDER BY sp."agentId", sp."sessionId", sp."source", sp."at" DESC
+      `
+      )
     ])
     // Per-session running cumulative, seeded from the last pre-window report so the
     // first in-window delta counts only spend incurred inside the window.
     const prevCost = new Map<string, bigint>(
-      baselineRows.map((r) => [r.agentId + SEP + r.sessionId, scaleAmount(r.cumulativeCost)])
+      baselineRows.map((r) => [r.agentId + SEP + r.sessionId + SEP + r.source, scaleAmount(r.cumulativeCost)])
     )
     const perAgentCost = new Map<string, bigint>()
     const perModelCost = new Map<string, bigint>()
+    const perSourceCost = new Map<string, bigint>()
     let totalCost = 0n
     // `inRange` is globally at-ascending, so each session's rows are visited in
     // chronological order — exactly what the running diff needs.
     for (const row of inRange) {
-      const skey = row.agentId + SEP + row.sessionId
+      const skey = row.agentId + SEP + row.sessionId + SEP + row.source
       const cumulative = scaleAmount(row.cumulativeCost)
       const delta = cumulative - (prevCost.get(skey) ?? 0n)
       prevCost.set(skey, cumulative)
@@ -454,6 +485,7 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
       perAgentCost.set(row.agentId, (perAgentCost.get(row.agentId) ?? 0n) + delta)
       const modelKey = row.model ?? ''
       perModelCost.set(modelKey, (perModelCost.get(modelKey) ?? 0n) + delta)
+      perSourceCost.set(row.source, (perSourceCost.get(row.source) ?? 0n) + delta)
       const idx = Math.floor((row.at.getTime() - floorSince) / stepMs)
       if (idx >= 0 && idx < n) {
         const pt = points[idx]!
@@ -464,6 +496,64 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
         }
       }
     }
+
+    // Per-ingress tokens/sessions, from the same snapshot rows the agent rollup uses,
+    // so `sources` and `agents` add up to the same totals.
+    const sourceGrouped = sessionScope
+      ? await this.db.$queryRaw<
+          Array<{
+            source: UsageSource
+            sessions: bigint
+            totalTokens: bigint
+            inputTokens: bigint
+            outputTokens: bigint
+            thoughtTokens: bigint
+            cachedReadTokens: bigint
+            cachedWriteTokens: bigint
+          }>
+        >(Prisma.sql`
+          SELECT u."source",
+                 COUNT(*)::bigint AS sessions,
+                 COALESCE(SUM(u."totalTokens"), 0)::bigint AS "totalTokens",
+                 COALESCE(SUM(u."inputTokens"), 0)::bigint AS "inputTokens",
+                 COALESCE(SUM(u."outputTokens"), 0)::bigint AS "outputTokens",
+                 COALESCE(SUM(u."thoughtTokens"), 0)::bigint AS "thoughtTokens",
+                 COALESCE(SUM(u."cachedReadTokens"), 0)::bigint AS "cachedReadTokens",
+                 COALESCE(SUM(u."cachedWriteTokens"), 0)::bigint AS "cachedWriteTokens"
+          FROM "session_usage" u
+          JOIN "agent" a ON a."id" = u."agentId"
+          JOIN "session_meta" s ON s."id" = u."sessionId" AND s."agentId" = u."agentId"
+          WHERE ${agentViewerSql(orgId, viewer)}
+            AND u."lastActivityAt" >= ${from}
+            AND u."lastActivityAt" < ${to}
+            ${sourceScope('u')}
+            AND ${sessionScope}
+          GROUP BY u."source"
+        `)
+      : (
+          await this.db.sessionUsage.groupBy({
+            by: ['source'],
+            where: { agent: agentScope, lastActivityAt: { gte: from, lt: to }, ...sourceWhere },
+            _sum: {
+              totalTokens: true,
+              inputTokens: true,
+              outputTokens: true,
+              thoughtTokens: true,
+              cachedReadTokens: true,
+              cachedWriteTokens: true
+            },
+            _count: { _all: true }
+          })
+        ).map((row) => ({
+          source: row.source,
+          sessions: BigInt(row._count._all),
+          totalTokens: BigInt(row._sum.totalTokens ?? 0),
+          inputTokens: BigInt(row._sum.inputTokens ?? 0),
+          outputTokens: BigInt(row._sum.outputTokens ?? 0),
+          thoughtTokens: BigInt(row._sum.thoughtTokens ?? 0),
+          cachedReadTokens: BigInt(row._sum.cachedReadTokens ?? 0),
+          cachedWriteTokens: BigInt(row._sum.cachedWriteTokens ?? 0)
+        }))
 
     const agents: AgentUsageAggregate[] = grouped.map((g) => ({
       agentId: g.agentId,
@@ -492,6 +582,19 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
     }))
     models.sort((a, b) => b.totalTokens - a.totalTokens)
 
+    const sources: SourceUsageAggregate[] = sourceGrouped.map((g) => ({
+      source: g.source,
+      sessions: Number(g.sessions),
+      totalTokens: Number(g.totalTokens),
+      inputTokens: Number(g.inputTokens),
+      outputTokens: Number(g.outputTokens),
+      thoughtTokens: Number(g.thoughtTokens),
+      cachedReadTokens: Number(g.cachedReadTokens),
+      cachedWriteTokens: Number(g.cachedWriteTokens),
+      costAmount: unscaleAmount(perSourceCost.get(g.source) ?? 0n)
+    }))
+    sources.sort((a, b) => b.totalTokens - a.totalTokens)
+
     const totals = agents.reduce(
       (acc, a) => ({
         sessions: acc.sessions + a.sessions,
@@ -510,12 +613,19 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
           JOIN "agent" a ON a."id" = u."agentId"
           JOIN "session_meta" s ON s."id" = u."sessionId" AND s."agentId" = u."agentId"
           WHERE ${agentViewerSql(orgId, viewer)}
-            AND u."lastActivityAt" >= ${since}
+            AND u."lastActivityAt" >= ${from}
+            AND u."lastActivityAt" < ${to}
+            ${sourceScope('u')}
             AND u."costCurrency" IS NOT NULL
             AND ${sessionScope}
         `)
       : await this.db.sessionUsage.findMany({
-          where: { agent: agentScope, lastActivityAt: { gte: since }, costCurrency: { not: null } },
+          where: {
+            agent: agentScope,
+            lastActivityAt: { gte: from, lt: to },
+            costCurrency: { not: null },
+            ...sourceWhere
+          },
           distinct: ['costCurrency'],
           select: { costCurrency: true }
         })
@@ -532,6 +642,7 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
       totals: { ...totals, costAmount: unscaleAmount(totalCost), costCurrency },
       agents,
       models,
+      sources,
       series: { bucket, points: series }
     }
   }

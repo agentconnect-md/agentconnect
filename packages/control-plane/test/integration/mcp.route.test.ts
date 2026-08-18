@@ -653,9 +653,17 @@ describe('POST /api/v1/mcp — tools act with the caller’s own authority', () 
     const { key } = await makeUserWithKey('viewer')
     const out = await callTool(app, key, 'getUsage', { range: 'd1' })
     expect(out.isError).toBeUndefined()
-    const parsed = JSON.parse(toolText(out)) as { range: string; totals: unknown; agents: unknown[] }
-    expect(parsed.range).toBe('d1')
+    // The tool asked in days; the route answered about the window it resolved to.
+    const parsed = JSON.parse(toolText(out)) as {
+      from: string
+      to: string
+      totals: unknown
+      agents: unknown[]
+      sources: unknown[]
+    }
+    expect(Date.parse(parsed.to) - Date.parse(parsed.from)).toBe(24 * 60 * 60 * 1000)
     expect(parsed.agents).toEqual([])
+    expect(parsed.sources).toEqual([])
   })
 
   it('a key of a user removed from the org stops granting MCP access (tenant boundary)', async () => {

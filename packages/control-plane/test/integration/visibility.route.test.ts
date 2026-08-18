@@ -15,6 +15,13 @@ import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 import type { OrgMemberRole } from '../../src/persistence/ports.js'
 
+/** A 30-day window, the shape `GET /usage` takes now that the caller picks it. */
+function usageWindow(): string {
+  const to = new Date()
+  const from = new Date(to.getTime() - 30 * 24 * 60 * 60 * 1000)
+  return new URLSearchParams({ from: from.toISOString(), to: to.toISOString() }).toString()
+}
+
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
 const users = () => new PgUserRepo(prisma)
 const opened: HttpApp[] = []
@@ -768,7 +775,7 @@ describe('derived visibility — session bodies, usage', () => {
     })
 
     const usageAgents = async (u: string): Promise<string[]> => {
-      const res = await appAs(u).app.inject({ method: 'GET', url: `${ORG}/usage?range=d30` })
+      const res = await appAs(u).app.inject({ method: 'GET', url: `${ORG}/usage?${usageWindow()}` })
       return (res.json() as { agents: Array<{ agentId: string }> }).agents.map((a) => a.agentId)
     }
     expect(await usageAgents(other)).not.toContain(R)

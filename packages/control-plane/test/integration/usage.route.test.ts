@@ -4,7 +4,7 @@
  * Two halves over the shared Testcontainers Postgres:
  *  - the `usage/report` handler persists a session's cumulative usage (latest-wins
  *    upsert on `(agentId, sessionId)`), a fire-and-forget EVT with no reply;
- *  - `GET /usage?range=…` sums the persisted store by agent over the time window,
+ *  - `GET /usage?from=…&to=…` sums the persisted store by agent over the window,
  *    excluding sessions whose last activity falls outside the range.
  */
 import { describe, it, expect, vi } from 'vitest'
@@ -21,6 +21,15 @@ import { AgentId } from '../../src/domain/ids.js'
  *  itself adds with, so the test cannot drift where the implementation does not. */
 function sum(points: Array<{ costAmount: string }>): string {
   return sumAmounts(points.map((p) => p.costAmount))
+}
+
+/** The window a console preset resolves to, so these tests read like the client that
+ *  sends them: the route itself has no notion of `d1`/`d30`, only `[from, to)`. */
+function preset(range: 'd1' | 'd7' | 'd30' | 'd90', extra: Record<string, string> = {}): string {
+  const days = { d1: 1, d7: 7, d30: 30, d90: 90 }[range]
+  const to = new Date()
+  const from = new Date(to.getTime() - days * 24 * 60 * 60 * 1000)
+  return new URLSearchParams({ from: from.toISOString(), to: to.toISOString(), ...extra }).toString()
 }
 
 // Console routes are org-scoped: /orgs/:orgId/… (devAuth = seeded owner of the default org).
@@ -146,7 +155,7 @@ describe('usage/report handler — persists per-session token usage', () => {
 
     const { app, close } = buildHttpApp(prisma)
     try {
-      const res = await app.inject({ method: 'GET', url: `${ORG}/usage?range=d30` })
+      const res = await app.inject({ method: 'GET', url: `${ORG}/usage?${preset('d30')}` })
       expect(res.statusCode).toBe(200)
       const body = res.json() as { series: { points: { costAmount: string }[] } }
       const points = body.series.points
@@ -187,7 +196,7 @@ describe('usage/report handler — persists per-session token usage', () => {
 
     const { app, close } = buildHttpApp(prisma)
     try {
-      const res = await app.inject({ method: 'GET', url: `${ORG}/usage?range=d1` })
+      const res = await app.inject({ method: 'GET', url: `${ORG}/usage?${preset('d1')}` })
       expect(res.statusCode).toBe(200)
       const models = (
         res.json() as {
@@ -370,17 +379,18 @@ describe('GET /usage — aggregates the persisted usage store by agent over a ra
 
     const { app, close } = buildHttpApp(prisma)
     try {
-      const res = await app.inject({ method: 'GET', url: `${ORG}/usage?range=d30` })
+      const res = await app.inject({ method: 'GET', url: `${ORG}/usage?${preset('d30')}` })
       expect(res.statusCode).toBe(200)
       const body = res.json() as {
-        range: string
+        from: string
+        to: string
         totals: { sessions: number; totalTokens: number; costAmount: string; costCurrency: string | null }
         agents: { agentId: string; sessions: number; totalTokens: number; costAmount: string }[]
         models: { model: string | null; sessions: number; totalTokens: number; costAmount: string }[]
         series: { bucket: 'hour' | 'day'; points: { start: string; costAmount: string }[] }
       }
 
-      expect(body.range).toBe('d30')
+      expect(Date.parse(body.to) - Date.parse(body.from)).toBe(30 * DAY_MS)
 
       // Spend-over-time series: d30 buckets daily; the three in-range sessions
       // (10/20/30 min ago) all land in the final (today) bucket, and the stale
@@ -393,7 +403,7 @@ describe('GET /usage — aggregates the persisted usage store by agent over a ra
       // A local-tz offset only shifts bucket boundaries — it must never drop or
       // double-count cost. Across extreme offsets the series still sums to 0.35.
       for (const tz of [-720, 780]) {
-        const r = await app.inject({ method: 'GET', url: `${ORG}/usage?range=d30&tz=${tz}` })
+        const r = await app.inject({ method: 'GET', url: `${ORG}/usage?${preset('d30', { tz: String(tz) })}` })
         expect(sum((r.json() as typeof body).series.points)).toBe('0.35')
       }
       // Stale a-old row excluded: 3 in-range sessions, 3500 tokens.
@@ -448,10 +458,10 @@ describe('GET /usage — aggregates the persisted usage store by agent over a ra
 
     const { app, close } = buildHttpApp(prisma)
     try {
-      const res = await app.inject({ method: 'GET', url: `${ORG}/usage?range=d1` })
+      const res = await app.inject({ method: 'GET', url: `${ORG}/usage?${preset('d1')}` })
       expect(res.statusCode).toBe(200)
-      const body = res.json() as { range: string; totals: { sessions: number; totalTokens: number } }
-      expect(body.range).toBe('d1')
+      const body = res.json() as { from: string; to: string; totals: { sessions: number; totalTokens: number } }
+      expect(Date.parse(body.to) - Date.parse(body.from)).toBe(DAY_MS)
       expect(body.totals.sessions).toBe(1)
       expect(body.totals.totalTokens).toBe(700)
     } finally {
@@ -479,7 +489,7 @@ describe('GET /usage — aggregates the persisted usage store by agent over a ra
 
     const { app, close } = buildHttpApp(prisma)
     try {
-      const res = await app.inject({ method: 'GET', url: `${ORG}/usage?range=d1` })
+      const res = await app.inject({ method: 'GET', url: `${ORG}/usage?${preset('d1')}` })
       const body = res.json() as {
         totals: { costAmount: string }
         series: { points: { costAmount: string }[] }
@@ -514,7 +524,7 @@ describe('GET /usage — aggregates the persisted usage store by agent over a ra
 
     const { app, close } = buildHttpApp(prisma)
     try {
-      const res = await app.inject({ method: 'GET', url: `${ORG}/usage?range=d1` })
+      const res = await app.inject({ method: 'GET', url: `${ORG}/usage?${preset('d1')}` })
       const body = res.json() as {
         totals: { costAmount: string }
         agents: { agentId: string; costAmount: string }[]
@@ -549,7 +559,7 @@ describe('GET /usage — aggregates the persisted usage store by agent over a ra
 
     const { app, close } = buildHttpApp(prisma)
     try {
-      const res = await app.inject({ method: 'GET', url: `${ORG}/usage?range=d1` })
+      const res = await app.inject({ method: 'GET', url: `${ORG}/usage?${preset('d1')}` })
       const body = res.json() as {
         totals: { costAmount: string }
         agents: { agentId: string; costAmount: string }[]
@@ -591,7 +601,7 @@ describe('GET /usage — aggregates the persisted usage store by agent over a ra
 
     const { app, close } = buildHttpApp(prisma)
     try {
-      const res = await app.inject({ method: 'GET', url: `${ORG}/usage?range=d30` })
+      const res = await app.inject({ method: 'GET', url: `${ORG}/usage?${preset('d30')}` })
       const body = res.json() as {
         totals: { costAmount: string }
         agents: { agentId: string; costAmount: string }[]
@@ -607,16 +617,153 @@ describe('GET /usage — aggregates the persisted usage store by agent over a ra
     }
   })
 
-  it('defaults the range to d30 and returns empty aggregates when nothing is recorded', async () => {
+  it('bounds the window at BOTH ends, and shapes the series to it rather than to now', async () => {
+    await seedAgent(prisma, AGENT_A)
+    const repo = new PgSessionUsageRepo(prisma)
+    // A closed historical window: three whole UTC days, ending five days ago. Aligned
+    // to midnight so the bucket count is exact — an unaligned window legitimately
+    // touches four days, and this test is about the bound, not the alignment.
+    const to = new Date(Math.floor((Date.now() - 5 * DAY_MS) / DAY_MS) * DAY_MS)
+    const from = new Date(to.getTime() - 3 * DAY_MS)
+    const inside = new Date(from.getTime() + DAY_MS)
+    const after = new Date(to.getTime() + DAY_MS)
+    const spend = async (sessionId: string, at: Date, costAmount: string) => {
+      await seedVisibleSession(AGENT_A, sessionId, at)
+      await repo.record({
+        agentId: AgentId(AGENT_A),
+        sessionId,
+        source: 'gateway',
+        lastActivityAt: at,
+        usage: { totalTokens: 10, costAmount, costCurrency: 'USD' }
+      })
+    }
+    await spend('before', new Date(from.getTime() - DAY_MS), '100')
+    await spend('inside', inside, '7')
+    await spend('after', after, '500')
+
     const { app, close } = buildHttpApp(prisma)
     try {
-      const res = await app.inject({ method: 'GET', url: `${ORG}/usage` })
+      const query = new URLSearchParams({ from: from.toISOString(), to: to.toISOString() })
+      const res = await app.inject({ method: 'GET', url: `${ORG}/usage?${query.toString()}` })
       expect(res.statusCode).toBe(200)
-      const body = res.json() as { range: string; totals: { sessions: number }; agents: unknown[]; models: unknown[] }
-      expect(body.range).toBe('d30')
+      const body = res.json() as {
+        totals: { sessions: number; costAmount: string }
+        series: { bucket: string; points: { start: string; costAmount: string }[] }
+      }
+      // Only the middle session counts: the upper bound is what the old open-ended
+      // `since` had no way to express.
+      expect(body.totals.sessions).toBe(1)
+      expect(body.totals.costAmount).toBe('7')
+      expect(sum(body.series.points)).toBe('7')
+      // The series stops at `to`, five days before now — not one bucket per day since.
+      expect(body.series.bucket).toBe('day')
+      const last = new Date(body.series.points.at(-1)!.start)
+      expect(last.getTime()).toBeLessThan(to.getTime())
+      expect(body.series.points.length).toBe(3)
+      expect(body.series.points[0]!.start).toBe(from.toISOString())
+    } finally {
+      await close()
+    }
+  })
+
+  it('scopes totals, breakdowns and series to one metering source', async () => {
+    await seedAgent(prisma, AGENT_A)
+    await seedAgent(prisma, AGENT_B)
+    const repo = new PgSessionUsageRepo(prisma)
+    const at = new Date(Date.now() - 60_000)
+    const spend = async (agentId: string, sessionId: string, source: 'daemon' | 'gateway', costAmount: string) => {
+      await seedVisibleSession(agentId, sessionId, at)
+      await repo.record({
+        agentId: AgentId(agentId),
+        sessionId,
+        source,
+        lastActivityAt: at,
+        usage: { totalTokens: 100, costAmount, costCurrency: 'USD' }
+      })
+    }
+    await spend(AGENT_A, 'gw', 'gateway', '12.75')
+    await spend(AGENT_B, 'dm', 'daemon', '3.25')
+
+    const { app, close } = buildHttpApp(prisma)
+    try {
+      const read = async (source?: string) => {
+        const res = await app.inject({ method: 'GET', url: `${ORG}/usage?${preset('d1', source ? { source } : {})}` })
+        expect(res.statusCode).toBe(200)
+        return res.json() as {
+          totals: { sessions: number; totalTokens: number; costAmount: string }
+          agents: { agentId: string; costAmount: string }[]
+          sources: { source: string; sessions: number; totalTokens: number; costAmount: string }[]
+          series: { points: { costAmount: string }[] }
+        }
+      }
+
+      const both = await read()
+      expect(both.totals.costAmount).toBe('16')
+      expect(both.totals.sessions).toBe(2)
+      // The breakdown splits the same total by ingress, so billing can read one line
+      // and the console can show the two side by side.
+      expect(both.sources.map((s) => [s.source, s.costAmount]).sort()).toEqual([
+        ['daemon', '3.25'],
+        ['gateway', '12.75']
+      ])
+      expect(sumAmounts(both.sources.map((s) => s.costAmount))).toBe(both.totals.costAmount)
+
+      const gateway = await read('gateway')
+      expect(gateway.totals.costAmount).toBe('12.75')
+      expect(gateway.totals.sessions).toBe(1)
+      expect(gateway.totals.totalTokens).toBe(100)
+      expect(gateway.agents.map((a) => a.agentId)).toEqual([AGENT_A])
+      expect(gateway.sources.map((s) => s.source)).toEqual(['gateway'])
+      expect(sum(gateway.series.points)).toBe('12.75')
+
+      const daemon = await read('daemon')
+      expect(daemon.totals.costAmount).toBe('3.25')
+      expect(daemon.agents.map((a) => a.agentId)).toEqual([AGENT_B])
+      expect(sum(daemon.series.points)).toBe('3.25')
+    } finally {
+      await close()
+    }
+  })
+
+  it('returns empty aggregates when nothing is recorded in the window', async () => {
+    const { app, close } = buildHttpApp(prisma)
+    try {
+      const res = await app.inject({ method: 'GET', url: `${ORG}/usage?${preset('d30')}` })
+      expect(res.statusCode).toBe(200)
+      const body = res.json() as {
+        totals: { sessions: number; costAmount: string }
+        agents: unknown[]
+        models: unknown[]
+        sources: unknown[]
+      }
       expect(body.totals.sessions).toBe(0)
+      expect(body.totals.costAmount).toBe('0')
       expect(body.agents).toEqual([])
       expect(body.models).toEqual([])
+      expect(body.sources).toEqual([])
+    } finally {
+      await close()
+    }
+  })
+
+  it('refuses a window it cannot aggregate rather than inventing one', async () => {
+    const { app, close } = buildHttpApp(prisma)
+    try {
+      const now = new Date().toISOString()
+      const earlier = new Date(Date.now() - DAY_MS).toISOString()
+      // No default window: an omitted end would give a closed accounting period a
+      // moving edge, so the caller must say what it is asking for.
+      for (const query of [
+        '',
+        `from=${now}`,
+        `to=${now}`,
+        `from=${now}&to=${earlier}`, // backwards
+        `from=${now}&to=${now}`, // empty, and `[from, to)` makes it meaningless
+        `from=not-a-date&to=${now}`
+      ]) {
+        const res = await app.inject({ method: 'GET', url: `${ORG}/usage?${query}` })
+        expect(res.statusCode, `query: ${query || '(none)'}`).toBe(400)
+      }
     } finally {
       await close()
     }
