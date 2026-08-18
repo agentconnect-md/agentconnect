@@ -64,6 +64,51 @@ describe('my social identities routes', () => {
     }
   })
 
+  it('maps "identity already in use" to a 409 the console can explain, never the 502 fallback', async () => {
+    // The 502 fallback is replaced by the edge (Cloudflare) with a CORS-less
+    // error page, so the browser reports a CORS failure instead of the conflict.
+    const identity = {
+      linkSocialIdentity: vi.fn(async () => {
+        throw new LogtoApiError('identity already in use', 422, false, 'user.identity_already_in_use')
+      })
+    }
+    const app = await slackApp({ logtoIdentity: identity } as unknown as HttpDeps)
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/me/social-identities',
+        payload: { connectorId: 'github-connector', connectorData: { code: 'c' } }
+      })
+      expect(res.statusCode).toBe(409)
+      expect(res.json()).toMatchObject({
+        code: 'user.identity_already_in_use',
+        message: 'this social account is already linked to another user'
+      })
+    } finally {
+      await app.close()
+    }
+  })
+
+  it('maps other Logto 422s to the 400 "authorization invalid" answer', async () => {
+    const identity = {
+      linkSocialIdentity: vi.fn(async () => {
+        throw new LogtoApiError('connector session not found', 422, false, 'session.verification_session_not_found')
+      })
+    }
+    const app = await slackApp({ logtoIdentity: identity } as unknown as HttpDeps)
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/me/social-identities',
+        payload: { connectorId: 'github-connector', connectorData: { code: 'c' } }
+      })
+      expect(res.statusCode).toBe(400)
+      expect(res.json()).toMatchObject({ code: 'SOCIAL_AUTHORIZATION_INVALID' })
+    } finally {
+      await app.close()
+    }
+  })
+
   it('accepts slack as a linkable target, matching the console provider list', async () => {
     // The console offers Slack, so this route must resolve it. It gates on shape
     // and on the tenant having the connector — never on its own provider list.

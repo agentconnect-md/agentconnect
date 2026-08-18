@@ -119,7 +119,20 @@ function logtoFailure(reply: FastifyReply, error: unknown, operation: Operation)
       message: 'connect another sign-in method before removing this one'
     })
   }
-  if (error.status === 400) {
+  // Logto says the just-authorized identity belongs to a different user. A real
+  // conflict the user must resolve — never the 502 fallback, which the edge
+  // (Cloudflare) replaces with its own CORS-less error page.
+  if (error.status === 422 && error.code === 'user.identity_already_in_use') {
+    return reply.code(409).send({
+      error: 'Conflict',
+      statusCode: 409,
+      code: error.code,
+      message: 'this social account is already linked to another user'
+    })
+  }
+  // Logto reports the other connector-response problems as 422s too — same
+  // remedy as a 400: the authorization is unusable, start over.
+  if (error.status === 400 || error.status === 422) {
     return reply.code(400).send({
       error: 'Bad Request',
       statusCode: 400,
