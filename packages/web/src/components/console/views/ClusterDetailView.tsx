@@ -15,6 +15,7 @@ import {
   agentLabel,
   agentModelDisplay,
   effectiveAgentStatus,
+  isPoolPlacementKind,
   platName,
   poolFleetStatus,
   poolLabel,
@@ -48,14 +49,28 @@ export default function ClusterDetailView() {
   const acpRegistry = useAcpRegistry()
   const { orgPath } = useOrgs()
   const router = useRouter()
-  const { daemons, agents, integrations, daemonsLoading } = useConsoleData()
-  const [openRuntime, setOpenRuntime] = useState<string | null>(null)
+  const { daemons, agents, integrations, orgSetIds, daemonsLoading } = useConsoleData()
+  // Independent disclosures — more than one runtime's models can be open at once, matching
+  // the daemon detail page's tap expansion.
+  const [openRuntimes, setOpenRuntimes] = useState<Set<string>>(new Set())
+  const toggleRuntime = (rid: string) =>
+    setOpenRuntimes((prev) => {
+      const next = new Set(prev)
+      if (next.has(rid)) next.delete(rid)
+      else next.add(rid)
+      return next
+    })
 
   const showPool = featureFlagEnabled('daemon-pool')
   const members = useMemo(() => (showPool ? daemons.filter((d) => d.pool) : []), [daemons, showPool])
   const serving = useMemo(() => members.filter((m) => m.status === 'online'), [members])
-  const memberIds = useMemo(() => new Set(members.map((m) => m.daemonId)), [members])
-  const hosted = useMemo(() => agents.filter((a) => memberIds.has(a.daemon)), [agents, memberIds])
+  // Pool agents carry the POOL sentinel, never a member id: the Pod holding the duty is
+  // ephemeral, so `agentFromDto` maps a set placement to `daemon: POOL_PLACEMENT`. Matching
+  // member ids here would report an empty cluster however many agents run on it.
+  const hosted = useMemo(
+    () => agents.filter((a) => isPoolPlacementKind(a.placementKind, a.setId, orgSetIds)),
+    [agents, orgSetIds]
+  )
 
   // The runtimes the cluster offers: a member that stopped answering can no longer serve
   // one, so the union is over the serving members only.
@@ -134,6 +149,9 @@ export default function ClusterDetailView() {
   // The serving members roll together, so they share a release; an idle cluster has no
   // version worth quoting rather than one belonging to a Pod that is gone.
   const version = online ? serving[0]!.version : '—'
+  // One serving member stands in for the set when reading what it can run — the same
+  // substitution Add-agent and Edit-agent make (edit-agent-daemon-choice.ts).
+  const capabilitySource = serving[0]
 
   const labeled = (label: string, value: string) => (
     <div className="row grid-cols-[1fr_auto]">
@@ -238,7 +256,7 @@ export default function ClusterDetailView() {
         <div className="cardhead">
           <span className="cardtitle">Runtimes</span>
           <span className="ml-auto font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-            Hover a runtime for its models
+            Open a runtime for its models
           </span>
         </div>
         {runtimes.length > 0 ? (
@@ -248,44 +266,56 @@ export default function ClusterDetailView() {
             // Id namespaces differ across daemon generations ('claude' vs 'claude-acp'),
             // so agents match on the display family rather than the raw id.
             const users = hosted.filter((a) => a.runtime === rt.runtime || runtimeLabel(a.runtime) === label)
-            const open = openRuntime === rt.runtime && rt.models.length > 0
+            const hasModels = rt.models.length > 0
+            const open = openRuntimes.has(rt.runtime) && hasModels
             return (
-              <div
-                key={rt.runtime}
-                onMouseEnter={() => setOpenRuntime(rt.runtime)}
-                onMouseLeave={() => setOpenRuntime(null)}
-                className="row relative grid-cols-[1.4fr_.7fr_.9fr_.9fr] gap-[14px]"
-              >
-                <span className="inline-flex min-w-0 items-center gap-[9px]">
-                  <span className="imark h-[22px] w-[22px]">
-                    <AgentMark model={rt.runtime} />
-                  </span>
-                  <span className="truncate font-sans text-[13px] font-semibold leading-normal">{label}</span>
-                  {rt.authRequired && (
-                    <span
-                      className="flex flex-none"
-                      title="A node's probe was rejected with 'authentication required' — sign in to the runtime on that node."
-                    >
-                      <Icon name="triangle-alert" size={13} color="var(--amber-500)" />
+              <div key={rt.runtime}>
+                {/* A real button, not a hover target: the model list is the only place the
+                    cluster's models are readable, and a pointer is not the only input. */}
+                <button
+                  type="button"
+                  aria-expanded={open}
+                  disabled={!hasModels}
+                  onClick={() => toggleRuntime(rt.runtime)}
+                  className="row grid w-full grid-cols-[1.4fr_.7fr_.9fr_.9fr_auto] gap-[14px] border-0 bg-transparent text-left enabled:cursor-pointer enabled:hover:bg-(--surface-hover)"
+                >
+                  <span className="inline-flex min-w-0 items-center gap-[9px]">
+                    <span className="imark h-[22px] w-[22px]">
+                      <AgentMark model={rt.runtime} />
                     </span>
-                  )}
-                </span>
-                <span className="mono text-[12px] text-(--text-secondary)">
-                  {rt.version ? `v${rt.version.replace(/^v/, '')}` : '—'}
-                </span>
-                <span className="font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary)">
-                  {users.length > 0 ? `${users.length} agent${users.length === 1 ? '' : 's'}` : 'no agents'}
-                </span>
-                <span className="mono text-[12px] text-(--text-tertiary)">
-                  {rt.models.length} model{rt.models.length === 1 ? '' : 's'}
-                </span>
+                    <span className="truncate font-sans text-[13px] font-semibold leading-normal">{label}</span>
+                    {rt.authRequired && (
+                      <span
+                        className="flex flex-none"
+                        title="A node's probe was rejected with 'authentication required' — sign in to the runtime on that node."
+                      >
+                        <Icon name="triangle-alert" size={13} color="var(--amber-500)" />
+                      </span>
+                    )}
+                  </span>
+                  <span className="mono text-[12px] text-(--text-secondary)">
+                    {rt.version ? `v${rt.version.replace(/^v/, '')}` : '—'}
+                  </span>
+                  <span className="font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary)">
+                    {users.length > 0 ? `${users.length} agent${users.length === 1 ? '' : 's'}` : 'no agents'}
+                  </span>
+                  <span className="mono text-[12px] text-(--text-tertiary)">
+                    {rt.models.length} model{rt.models.length === 1 ? '' : 's'}
+                  </span>
+                  <Icon
+                    name={open ? 'chevron-up' : 'chevron-down'}
+                    size={15}
+                    color="var(--text-tertiary)"
+                    className={hasModels ? '' : 'invisible'}
+                  />
+                </button>
                 {open && (
-                  <div className="absolute top-[calc(100%_-_4px)] left-4 z-40 w-[420px] max-w-[calc(100%_-_32px)] overflow-hidden rounded-[9px] border border-(--border-default) bg-(--surface-card) py-1 shadow-(--shadow-lg)">
-                    <div className="px-[13px] pt-[7px] pb-1 font-sans text-[10px] font-semibold tracking-[.05em] uppercase leading-normal text-(--text-tertiary)">
+                  <div className="border-b border-(--border-subtle) bg-(--surface-sunken) px-4 py-[10px]">
+                    <div className="pb-1 font-sans text-[10px] font-semibold tracking-[.05em] uppercase leading-normal text-(--text-tertiary)">
                       Models
                     </div>
                     {rt.models.map((m) => (
-                      <div key={m} className="mono truncate px-[13px] py-[5px] text-[11.5px]">
+                      <div key={m} className="mono truncate py-[3px] text-[11.5px]">
                         {m}
                       </div>
                     ))}
@@ -308,10 +338,10 @@ export default function ClusterDetailView() {
           </div>
           {hosted.length > 0 ? (
             hosted.map((a) => {
-              // A pool agent runs on the member holding its duty; its status is that
-              // member's, which is why the daemon row is looked up rather than assumed.
-              const home = members.find((m) => m.daemonId === a.daemon)
-              const as = status(effectiveAgentStatus(a, home))
+              // No member stands for the pool's agents individually — the Pod holding a duty
+              // is ephemeral. Status comes from the placement (effectiveAgentStatus reads the
+              // pool branch first), and the models a serving member reports name the cluster's.
+              const as = status(effectiveAgentStatus(a, undefined))
               return (
                 <div
                   key={a.id}
@@ -325,7 +355,7 @@ export default function ClusterDetailView() {
                     {agentLabel(a)}
                   </span>
                   <span className="min-w-0 truncate font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary)">
-                    {agentModelDisplay(home, a.runtime, a.model)}
+                    {agentModelDisplay(capabilitySource, a.runtime, a.model)}
                   </span>
                   <span className="badge" style={{ background: as.bg, color: as.text }}>
                     <span className="dot h-[6px] w-[6px]" style={{ background: as.dot }} />

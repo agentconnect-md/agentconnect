@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import {
   POOL_LABEL,
   groupFleetStatus,
+  isPoolPlacementKind,
   poolLabel,
   poolFleetStatus,
   presentedDaemonStatus,
@@ -22,7 +23,7 @@ import { Button, Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
 
 export default function DaemonsView() {
-  const { daemons, daemonsLoading, agents, memberSets } = useConsoleData()
+  const { daemons, daemonsLoading, agents, memberSets, orgSetIds } = useConsoleData()
   const { openModal } = useModal()
 
   // Hosted-agent count per daemon — agents assigned to it (mirrors the detail
@@ -44,10 +45,13 @@ export default function DaemonsView() {
   const managed = featureFlagEnabled('managed')
   const poolMembers = useMemo(() => (showPool ? daemons.filter((d) => d.pool) : []), [daemons, showPool])
   const ownDaemons = useMemo(() => daemons.filter((d) => !d.pool), [daemons])
-  const poolAgents = useMemo(() => {
-    const memberIds = new Set(poolMembers.map((m) => m.daemonId))
-    return agents.filter((a) => memberIds.has(a.daemon)).length
-  }, [agents, poolMembers])
+  // Pool agents carry the POOL sentinel, never a member id: the Pod holding the duty is
+  // ephemeral, so `agentFromDto` maps a set placement to `daemon: POOL_PLACEMENT`. Counting
+  // member ids reported an empty pool however many agents were placed on it.
+  const poolAgents = useMemo(
+    () => (showPool ? agents.filter((a) => isPoolPlacementKind(a.placementKind, a.setId, orgSetIds)).length : 0),
+    [agents, orgSetIds, showPool]
+  )
 
   // Fleet summary for the mobile-only strip below — counted over what the page SHOWS,
   // so the pool contributes one entry rather than one per member.

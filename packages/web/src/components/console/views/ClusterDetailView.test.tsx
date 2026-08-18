@@ -73,8 +73,22 @@ function member(id: string, over: Partial<DaemonRow> = {}): DaemonRow {
   } as DaemonRow
 }
 
-const onPool = (id: string, daemonId: string, over: Partial<Agent> = {}): Agent =>
-  ({ id, daemon: daemonId, name: id, status: 'online', runtime: 'claude', model: 'opus', ...over }) as Agent
+/** An agent placed on the POOL as the live console models it: `agentFromDto` maps a set
+ *  placement to the `pool` sentinel, never the ephemeral member id holding the duty. Getting
+ *  this wrong in a fixture is exactly how a page can report an empty cluster and still pass. */
+const onPool = (id: string, over: Partial<Agent> = {}): Agent =>
+  ({
+    id,
+    daemon: 'pool',
+    placementKind: 'set',
+    setId: null,
+    placementReady: true,
+    name: id,
+    status: 'online',
+    runtime: 'claude',
+    model: 'opus',
+    ...over
+  }) as Agent
 
 function render(): string {
   const host = document.createElement('div')
@@ -153,19 +167,21 @@ describe('ClusterDetailView', () => {
         ]
       })
     ] as unknown[]
-    mocks.agents = [onPool('a1', 'p1')]
+    mocks.agents = [onPool('a1')]
 
     const html = render()
 
     expect(html).toContain('2 models')
     expect(html).toContain('v0.54.1')
+    // The disclosure is operable, not hover-only: a real button carrying aria-expanded.
+    expect(html).toContain('aria-expanded')
     expect(html).toContain('1 agent')
     expect(html).toContain('no agents')
   })
 
   it('lists the agents on the cluster and the connections they hold', () => {
     mocks.daemons = [member('p1')]
-    mocks.agents = [onPool('a1', 'p1'), onPool('a2', 'p1')]
+    mocks.agents = [onPool('a1'), onPool('a2')]
     mocks.integrations = [
       {
         id: 'i1',
@@ -207,6 +223,31 @@ describe('ClusterDetailView', () => {
     expect(html).not.toContain('Mint')
     expect(html).not.toContain('Rotate')
     expect(html).not.toContain('tail · local time')
+  })
+
+  it('opens a runtime’s models from the keyboard, not a hover alone', () => {
+    mocks.daemons = [
+      member('p1', {
+        runtimeModels: [{ runtime: 'claude', version: '0.54.1', models: ['opus', 'sonnet'], acpProtocolVersion: 1 }]
+      })
+    ] as unknown[]
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root: Root = createRoot(host)
+    act(() => {
+      root.render(<ClusterDetailView />)
+    })
+    expect(host.innerHTML).not.toContain('sonnet')
+    act(() => {
+      host.querySelector<HTMLButtonElement>('button[aria-expanded]')?.click()
+    })
+    const opened = host.innerHTML
+    act(() => root.unmount())
+    host.remove()
+
+    expect(opened).toContain('sonnet')
+    expect(opened).toContain('aria-expanded="true"')
   })
 
   it('says so when no pool member has registered at all', () => {

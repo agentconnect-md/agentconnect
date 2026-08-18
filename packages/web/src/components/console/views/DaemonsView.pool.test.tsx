@@ -78,7 +78,9 @@ function daemon(over: Partial<DaemonRow>): DaemonRow {
 const member = (id: string, over: Partial<DaemonRow> = {}): DaemonRow =>
   daemon({ daemonId: id, pool: true, name: 'AgentConnect Cloud', host: `pool-member-${id}`, ...over })
 
-const onPool = (id: string, daemonId: string): Agent => ({ id, daemon: daemonId }) as Agent
+/** An agent placed on the POOL as the live console models it: `agentFromDto` maps a set
+ *  placement to the `pool` sentinel, never the ephemeral member id holding the duty. */
+const onPool = (id: string): Agent => ({ id, daemon: 'pool', placementKind: 'set', setId: null }) as Agent
 
 function render(): string {
   const host = document.createElement('div')
@@ -122,7 +124,7 @@ describe('DaemonsView pool', () => {
 
   it('counts the agents across every member, not just the one it links to', () => {
     mocks.daemons = [member('p1'), member('p2')]
-    mocks.agents = [onPool('a1', 'p1'), onPool('a2', 'p2'), onPool('a3', 'p2')]
+    mocks.agents = [onPool('a1'), onPool('a2'), onPool('a3')]
 
     const html = render()
 
@@ -184,7 +186,7 @@ describe('DaemonsView pool', () => {
   it('names nothing about the pool where the deployment did not ask for it', () => {
     setFlags('')
     mocks.daemons = [member('p1'), daemon({ daemonId: 'own', name: 'pc.dev' })]
-    mocks.agents = [onPool('a1', 'p1')]
+    mocks.agents = [onPool('a1')]
 
     const html = render()
 
@@ -238,7 +240,7 @@ describe('DaemonsView pool — self-hosted', () => {
 
   it('quotes the cluster’s own budget: agents running against the ceiling its members report', () => {
     mocks.daemons = [member('p1', { conns: '20', loadAgents: 7 }), member('p2', { conns: '40', loadAgents: 27 })]
-    mocks.agents = [onPool('a1', 'p1'), onPool('a2', 'p2')]
+    mocks.agents = [onPool('a1'), onPool('a2')]
 
     const html = render()
 
