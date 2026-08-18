@@ -9712,10 +9712,16 @@ export class Daemon {
           entry.admissionHold = new Promise((res) => (settleHold = res))
           next.push(entry)
           this.serialQueue.set(key, next)
+          // The claim this entry queued behind may have been given back during the awaits above
+          // (the owner drained, saw an empty queue, released). Reclaim it in the SAME tick as
+          // the push — a placement under no claim holder is a turn nobody ever starts.
+          const reclaimedGate = !this.inflight.has(key)
+          if (reclaimedGate) this.inflight.add(key)
           try {
             if (revisionPlan && !(await this.applyGithubRevisionAdmissionPlan(revisionPlan, entry))) {
               settleHold('drop')
               this.removeQueuedEntry(key, entry)
+              if (reclaimedGate) await this.releaseDispatchClaim(key)
               await settleAdmission({ accepted: true })
               return
             }
@@ -9726,8 +9732,12 @@ export class Daemon {
             settleHold('drop')
             this.removeQueuedEntry(key, entry)
             if (!this.draining) await this.removeInbox(entry).catch(() => undefined)
+            if (reclaimedGate) await this.releaseDispatchClaim(key)
             throw error
           }
+          // Hand the reclaimed gate to the queue head — this entry, or a peer stranded ahead
+          // of it by the same window. Never awaited: the turn outlives this dispatch call.
+          if (reclaimedGate) void this.releaseDispatchClaim(key)
           this.log.debug(
             `dispatch: queued behind in-flight turn for session ${key} (depth ${this.serialQueue.get(key)?.length ?? 0})`
           )
