@@ -679,7 +679,7 @@ describe('review of a secondary root (decisions 5, 6 and 11)', () => {
     const shared = realpathSync(worktreeOf(agent, 'example-co/shared-library', 'session-review'))
     expect(workspaces.additionalWorkspaceDirectories(agent, cwd, request)).toEqual([primaryWorktree, shared])
     // And the same answer without the request naming the review, which is how a session's later
-    // hand-outs ask: preparation remembered which root took the cwd.
+    // hand-outs ask: the reviewed root's own subtree attests that it took the cwd.
     expect(
       workspaces.additionalWorkspaceDirectories(agent, cwd, { sessionKey: 'session-review', isolation: 'session' })
     ).toEqual([primaryWorktree, shared])
@@ -698,6 +698,48 @@ describe('review of a secondary root (decisions 5, 6 and 11)', () => {
     expect(git(primaryWorktree, ['rev-parse', 'HEAD']).trim()).toBe(
       git(agent.workspace.path, ['rev-parse', 'refs/remotes/origin/main']).trim()
     )
+  })
+
+  it('keeps a resumed session in the reviewed root, in a process that never prepared it', async () => {
+    const agent = agentFixture([
+      { repoFullName: 'acme/infra', repoId: '42' },
+      { repoFullName: 'example-co/shared-library', repoId: '815' }
+    ])
+    serveAll(agent, { 'acme/infra': 'trunk', 'example-co/shared-library': 'main' })
+    const pull = seedPullRequest(remoteOf('acme/infra'), 'trunk', 17)
+    const cwd = await workspaces.prepareSessionWorkspace(agent, reviewRequest('session-resume', 'acme/infra', 17, pull))
+    restoreAuthorizedOrigins(agent)
+
+    // A daemon restart or a host eviction re-prepares the SAME session from a request carrying no
+    // review at all, in a manager that remembers nothing.
+    const restarted = new WorkspaceManager()
+    restarted.setGitRunnerResolver((_agentId, dir, abort) => new SeamRunner(dir, abort))
+    const resumed = { sessionKey: 'session-resume', isolation: 'session' as const }
+
+    const resumedCwd = await restarted.prepareSessionWorkspace(agent, resumed)
+
+    expect(resumedCwd).toBe(cwd)
+    expect(git(resumedCwd, ['rev-parse', 'HEAD']).trim()).toBe(pull.merge)
+    expect(restarted.additionalWorkspaceDirectories(agent, resumedCwd, resumed)).toEqual([
+      realpathSync(restarted.sessionWorktreePath(agent, 'session-resume')),
+      realpathSync(worktreeOf(agent, 'example-co/shared-library', 'session-resume'))
+    ])
+  })
+
+  it('lets a swept session fall back to the primary, so a stale attestation captures nothing', async () => {
+    const agent = agentFixture([{ repoFullName: 'acme/infra', repoId: '42' }])
+    serveAll(agent, { 'acme/infra': 'trunk' })
+    const pull = seedPullRequest(remoteOf('acme/infra'), 'trunk', 18)
+    await workspaces.prepareSessionWorkspace(agent, reviewRequest('session-swept', 'acme/infra', 18, pull))
+    expect(await workspaces.removeSessionWorktree(agent, 'session-swept')).toEqual({ outcome: 'removed' })
+    restoreAuthorizedOrigins(agent)
+
+    const cwd = await workspaces.prepareSessionWorkspace(agent, {
+      sessionKey: 'session-swept',
+      isolation: 'session'
+    })
+
+    expect(cwd).toBe(realpathSync(workspaces.sessionWorktreePath(agent, 'session-swept')))
   })
 
   it('checks the reviewed root out at the exact head when the pull request has no merge ref', async () => {
@@ -791,8 +833,8 @@ describe('review of a secondary root (decisions 5, 6 and 11)', () => {
     )
 
     expect(cwd).toBe(realpathSync(worktreeOf(agent, 'acme/infra', 'session-scratch')))
-    // A scratch workspace reports `shared` isolation of its own, having no clone to branch: the
-    // reviewed session's directories are still the ones preparation resolved.
+    // A scratch workspace reports `shared` isolation of its own, having no clone to branch: a
+    // session standing in a reviewed root is per-session whatever that report says.
     expect(
       workspaces.additionalWorkspaceDirectories(agent, cwd, { sessionKey: 'session-scratch', isolation: 'shared' })
     ).toEqual([realpathSync(worktreeOf(agent, 'example-co/shared-library', 'session-scratch'))])

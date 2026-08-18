@@ -9,6 +9,12 @@ import { join } from 'node:path'
 export const SECONDARY_ROOTS_DIR = 'repos'
 /** What a secondary root's subtree records about the checkout beside it. */
 export const SECONDARY_MATERIALIZATION_FILE = '.materialization.json'
+
+/** Where a root's subtree records that one session's working directory is ITS worktree, not the
+ *  primary's — durable, because a restart re-prepares the same session from the disk alone. */
+export function sessionCwdMarkerIn(subtree: string, sessionWorktreeId: string): string {
+  return join(subtree, `.session-cwd-${sessionWorktreeId}.json`)
+}
 /** GitHub's own owner/repository charset, which is also a plain path segment. */
 const REPO_SEGMENT = /^[A-Za-z0-9._-]+$/
 
