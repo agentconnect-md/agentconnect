@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { dirname, join } from 'node:path'
-import { hostname, tmpdir } from 'node:os'
+import { tmpdir } from 'node:os'
 import { mkdtemp } from 'node:fs/promises'
 import { watch as chokidarWatch, type FSWatcher } from 'chokidar'
 import { loadConfig, persistDaemonId, persistRelays, type FlatOverrides } from './config/load-config.js'
@@ -84,7 +84,6 @@ import { writeGhShim } from './cp/gh-shim.js'
 import { GitCredServer, gitcredShimPath, gitcredSocketPath, writeGitcredShim } from './cp/gitcred-server.js'
 import {
   daemonGitCredentialTarget,
-  gitCredentialEnv,
   initGitInjection,
   probeGitVersion,
   sandboxGitCredentialTarget,
@@ -104,8 +103,7 @@ import {
   type DreamLifecycleEvent,
   type DreamOperationPolicy
 } from './dream/runner.js'
-import { createDreamReader } from './cp/dream-reader.js'
-import { createLocalSkillsReader } from './cp/local-skills-reader.js'
+import { buildCpClientDeps, type CpClientDepsHost } from './cp/cp-client-deps.js'
 import {
   conversationAdmitsAgent,
   conversationPeers,
@@ -248,7 +246,7 @@ import { composeRuntimeLaunch, runtimeSandboxReadRoots } from './launch/compose.
 import { resolveTrustedExecutable, trustedRuntimeReadRoots } from './runtimes/read-roots.js'
 import { nodeExecArgvModuleEntries } from './runtimes/node-exec-argv.js'
 import { makeLogger, type Logger } from './log.js'
-import { CpClient, CP_SUBPROTOCOL, CP_WS_PATH, type BootstrapUpgradeOutcome } from './cp/client.js'
+import { CpClient, type BootstrapUpgradeOutcome } from './cp/client.js'
 import { RelayManager } from './cp/relay-manager.js'
 import { sendAgentMsgUntilReady } from './cp/agentmsg-retry.js'
 import { CP_IDENTITY_TOKEN_PATH, readClusterIdentityToken } from './cp/cluster-identity.js'
@@ -264,7 +262,6 @@ import {
   HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED,
   HookReport,
   CP_URL_ENV,
-  POD_TEMPLATE_HASH_ENV,
   RELAY_DAEMON_SUBPROTOCOL,
   RELAY_DAEMON_WS_PATH,
   RESERVED_RESTART_CODE,
@@ -296,11 +293,8 @@ import {
   RD_ACK_NOT_HOLDER
 } from '@agentconnect.md/protocol'
 import { isNoResponseBody } from './session/no-response.js'
-import { createSessionReader } from './cp/session-reader.js'
-import { createWorkspaceReader, WorkspaceConflictError, type WorkspaceLocation } from './cp/workspace-reader.js'
-import { createAgentWaker } from './cp/agent-wake.js'
+import { WorkspaceConflictError } from './cp/workspace-reader.js'
 import { TaskViolationError } from './cp/task-reader.js'
-import { createMemoryReader } from './cp/memory-reader.js'
 import {
   createMemoryProvider,
   memoryProviderFor,
@@ -312,7 +306,6 @@ import {
 } from './memory/provider.js'
 import { memoryChannelKey, MemorySandboxUnavailableError, type MemoryFs } from './memory/store.js'
 import { resolveMemoryFs } from './memory/fs.js'
-import { createWorkspaceGit } from './cp/workspace-git.js'
 import { DAEMON_VERSION } from './version.js'
 import { CpCronRegistry } from './cp/cp-cron.js'
 import { DutyRegistry } from './cp/duty-registry.js'
@@ -15868,6 +15861,83 @@ export class Daemon {
     }
   }
 
+  /** Exactly what the CP client's dependency literal touches on the Daemon. `url` is the
+   *  address `startCpClient`'s guard already narrowed; `resolveInitialRegistry` settles the
+   *  promise it returns. */
+  private cpClientDepsHost(root: string, url: string, resolveInitialRegistry: () => void): CpClientDepsHost {
+    return {
+      cpUrl: () => url,
+      cpApiKey: () => this.cfg.controlPlane.key,
+      clusterIdentityToken: () => this.clusterIdentityToken,
+      echoDaemonId: () => this.opts.overrides?.daemonId,
+      heartbeatDefaultMs: () => this.cfg.controlPlane.heartbeatMs,
+      maxAgents: () => this.cfg.limits.maxAgents,
+      configRoot: () => root,
+      configPath: () => this.opts.configPath,
+      daemonRoot: () => this.root,
+      log: () => this.log,
+      cpClient: () => this.cpClient,
+      setDaemonId: (daemonId) => {
+        this.cfg.daemonId = daemonId
+      },
+      setWebAppUrl: (webAppUrl) => {
+        this.cpWebAppUrl = webAppUrl
+      },
+      setOrgSlug: (orgSlug) => {
+        this.cpOrgSlug = orgSlug
+      },
+      resolveInitialRegistry,
+      registrationPlatforms: () => this.registrationPlatforms(),
+      registrationFeatures: () => this.registrationFeatures(),
+      admittedRuntimeIds: () => this.admittedRuntimeIds(),
+      reportedRuntimeIds: () => this.reportedRuntimeIds(),
+      runtimeNames: () => this.runtimeNames,
+      runtimeProfileFor: (id) => this.runtimeProfileFor(id),
+      mcpServerFactsFromDefs: () => this.mcpServerFactsFromDefs(),
+      cpLocalState: () => this.cpLocalState(),
+      metrics: () => this.metrics,
+      hostCount: () => this.hosts.size,
+      activeSessions: () => this.pending.size,
+      bootstrapUpgradeCapable: () => this.bootstrapUpgradeCapable(),
+      runBootstrapFleetUpgrade: (targetVersion) => this.runBootstrapFleetUpgrade(targetVersion),
+      readiness: () => this.readiness,
+      probeRuntimesAndEmit: () => this.probeRuntimesAndEmit(),
+      syncOrganizationSuggestions: () => this.syncOrganizationSuggestions(),
+      memoryConnections: () => this.memoryConnections,
+      replayHookTerminalReports: () => this.replayHookTerminalReports(),
+      replayChannelSnapshots: () => this.replayChannelSnapshots(),
+      sessionMetadataOutbox: () => this.sessionMetadataOutbox,
+      webchatMcpRevocations: () => this.webchatMcpRevocations,
+      drainSessionPurges: () => this.drainSessionPurges(),
+      effectiveAgents: () => this.effectiveAgents(),
+      cpAgents: () => this.cpAgents,
+      cpIntegrations: () => this.cpIntegrations,
+      cpCrons: () => this.cpCrons,
+      cpCollab: () => this.cpCollab,
+      cpDegradedScopes: () => this.cpDegradedScopes(),
+      dutyCoordinator: () => this.dutyCoordinator,
+      duties: () => this.duties,
+      configApply: () => this.cpConfigApply(),
+      store: () => this.store,
+      agents: () => this.agents,
+      workspaces: () => this.workspaces,
+      k8sPlane: () => this.k8sPlane,
+      memory: () => this.memory,
+      dreamRunner: () => this.dreamRunner(),
+      memoryFsFor: (agentId) => this.memoryFsFor(agentId),
+      gitCommitIdentity: () => this.gitCommitIdentity,
+      sessionThreadUrl: (session) => this.sessionThreadUrl(session),
+      childSessionStatusProbe: (probe) => this.childSessionStatusProbe(probe),
+      listBackgroundTasks: (req) => this.listBackgroundTasks(req),
+      withWorkspaceFileWrite: <T>(agentId: string, write: () => Promise<T>): Promise<T> =>
+        this.withWorkspaceFileWrite(agentId, write),
+      withWorkspaceIndexWrite: <T>(agentId: string, write: () => Promise<T>): Promise<T> =>
+        this.withWorkspaceIndexWrite(agentId, write),
+      runCommitMessagePass: (agentId, systemPrompt, prompt, signal) =>
+        this.runCommitMessagePass(agentId, systemPrompt, prompt, signal)
+    }
+  }
+
   /**
    * Converge the relay dial-out set AND persist the roster to config.json (whole-set,
    * CP-owned) so a boot with the CP unreachable can re-dial the same relays. The disk
@@ -16208,14 +16278,6 @@ export class Daemon {
     // heartbeat below (no CP ⇒ no sampler, so CP-less runs never probe the system).
     this.metrics = new SystemMetrics({ clock: this.clock, log: this.log })
     this.metrics.start()
-    // The token's `sub` is the authoritative daemonId: the CP returns it in
-    // auth/ok and we adopt + persist it (token-only onboarding). So we
-    // echo a daemonId in the auth frame ONLY when the operator explicitly pinned
-    // one via --daemon-id. A config-persisted id (e.g. a UUID minted by a prior
-    // flagless local `run`, or an id adopted from a previous CP) must NOT be
-    // echoed: if it differs from the token's `sub` the CP rejects auth (4401),
-    // and if it matches it is redundant anyway.
-    const echoDaemonId = this.opts.overrides?.daemonId
     const url = cp.url
     // Empty when this daemon has no key at all — then the projected token below is what it
     // presents to a relay, exactly as it does to the control plane.
@@ -16250,237 +16312,7 @@ export class Daemon {
       resolveInitialRegistry = resolve
     })
 
-    // This daemon's own coordinates: `agent.workspace.path` and the session worktrees beside it.
-    const daemonWorkspaceLocation = (id: string, sessionId?: string): WorkspaceLocation | undefined => {
-      const agent = this.agents.get(id)
-      if (!agent) return undefined
-      if (!sessionId) {
-        return { root: agent.workspace.path, scratch: agent.workspace.mode === 'from-scratch' }
-      }
-      const session = this.store.getSessionByAcpIdForAgent(id, sessionId)
-      if (agent.workspace.mode !== 'git-repo' || session?.workspaceIsolation !== 'session') return undefined
-      return { root: this.workspaces.sessionWorktreePath(agent, session.key), scratch: false }
-    }
-
-    // Where that workspace actually is, which under --k8s is the sandbox pod's volume. ONE resolver
-    // for the file reader and the git seam: the directory the console browses and the one it commits
-    // are the same directory, and describing them two different ways is what broke both panels.
-    // A defined location for a sessionId means that session IS isolated, which --k8s refuses —
-    // passed through so it is refused loudly rather than silently naming the shared checkout.
-    const workspaceLocation = (id: string, sessionId?: string): WorkspaceLocation | undefined => {
-      const agent = this.agents.get(id)
-      const local = daemonWorkspaceLocation(id, sessionId)
-      if (!agent || !local) return undefined
-      const root = this.workspaces.consoleWorkspaceRoot(
-        agent,
-        local.root,
-        this.k8sPlane?.workspaceRootFor(id),
-        sessionId ? { isolation: 'session' } : undefined
-      )
-      return root === undefined ? undefined : { root, scratch: local.scratch }
-    }
-
-    const workspaceGitRoot = (id: string, sessionId?: string): string | undefined =>
-      workspaceLocation(id, sessionId)?.root
-
-    const workspaceGit = createWorkspaceGit(
-      this.workspaces,
-      workspaceGitRoot,
-      (id) => {
-        const workspace = this.agents.get(id)?.workspace
-        return workspace?.mode === 'git-repo' && workspace.gitCredential === 'github-app' ? gitCredentialEnv(id) : {}
-      },
-      (id) => {
-        const workspace = this.agents.get(id)?.workspace
-        return workspace?.mode === 'git-repo' && workspace.gitRepo
-          ? {
-              repo: workspace.gitRepo,
-              branch: workspace.gitBranch,
-              githubApp: workspace.gitCredential === 'github-app'
-            }
-          : undefined
-      },
-      // Registered on `register/ok` only, and reset by every reconnect — a console commit is
-      // refused as data whenever it is absent (workspace-git.ts explains why).
-      () => this.gitCommitIdentity,
-      // The model pass runs HERE, on the agent's own runtime: the CP is never on the inference path.
-      (id, systemPrompt, prompt, signal) => this.runCommitMessagePass(id, systemPrompt, prompt, signal)
-    )
-
-    this.cpClient = new CpClient({
-      url,
-      usageReporting: this.cfg.usageReporting.enabled,
-      ...(cp.key ? { token: cp.key } : {}),
-      ...(this.clusterIdentityToken ? { clusterIdentityToken: this.clusterIdentityToken } : {}),
-      ...(echoDaemonId ? { daemonId: echoDaemonId } : {}),
-      onDaemonId: (id) => {
-        this.cfg.daemonId = id
-        // An in-cluster daemon persists nothing: its identity is re-derived from the
-        // projected token on every connect, so a stored id could only go stale.
-        if (!this.clusterIdentityToken) persistDaemonId(root, id, this.opts.configPath)
-        this.log.info(`cp: adopted daemonId ${id} from auth/ok`)
-      },
-      onWebAppUrl: (url) => {
-        this.cpWebAppUrl = url
-        if (url) this.log.debug(`cp: web app url ${url} (session deep links)`)
-      },
-      onOrgSlug: (slug) => {
-        this.cpOrgSlug = slug
-        if (slug) this.log.debug(`cp: org slug "${slug}" (session deep links)`)
-      },
-      ...(this.bootstrapUpgradeCapable()
-        ? {
-            onBootstrapUpgrade: (lifecycle: { targetVersion: string }) =>
-              this.runBootstrapFleetUpgrade(lifecycle.targetVersion)
-          }
-        : {}),
-      agentVersion: DAEMON_VERSION,
-      host: hostname(),
-      // The deployment side sets this from the pod-template-hash label; the ledger's rollout barrier
-      // lets only the newest live generation of the set claim vacated groups. Unset locally.
-      generation: process.env[POD_TEMPLATE_HASH_ENV]?.trim() || undefined,
-      heartbeatDefaultMs: cp.heartbeatMs,
-      maxAgents: this.cfg.limits.maxAgents,
-      capabilities: () => ({
-        platforms: this.registrationPlatforms(),
-        // Report the human-facing tool name (e.g. "Claude Agent"), not the
-        // registry id ("claude-acp"); fall back to the id for user-defined or
-        // unnamed runtimes.
-        runtimes: this.admittedRuntimeIds().map((id) => this.runtimeNames[id] ?? id),
-        acp: true,
-        features: this.registrationFeatures()
-      }),
-      // Observed runtime profiles, sent as one `facts/daemon-runtimes` snapshot on
-      // each register. Keyed by the registry id (the launch key), so the console can
-      // offer a runtime whose value round-trips back to `this.runtimes[agent.runtime]`
-      // at launch. `models` comes from the background probe sweep (empty until it
-      // completes on first connect); the picker falls back to "Runtime default" while
-      // empty. Includes auth-required curated candidates (reported, not admitted).
-      runtimeProfiles: (): FactsRuntimeProfile[] => this.reportedRuntimeIds().map((id) => this.runtimeProfileFor(id)),
-      // Daemon-configured MCP servers, derived from the effective def set (no
-      // probing), riding the same facts frame with replace-on-register semantics.
-      mcpServerFacts: (): FactsMcpServer[] => this.mcpServerFactsFromDefs(),
-      // On (re)connect, probe runtimes in the background and push refreshed profiles,
-      // and re-assert each integration's cached channel-membership snapshot (the CP
-      // may have missed emits while we were disconnected; latest-wins upsert).
-      onReady: () => {
-        resolveInitialRegistry()
-        this.readiness?.refresh()
-        void this.probeRuntimesAndEmit()
-        void this.syncOrganizationSuggestions().catch((err) =>
-          this.log.warn(`cp: organization suggestion replay failed (${err instanceof Error ? err.name : 'unknown'})`)
-        )
-        this.cpClient?.emitMemoryConnectionFacts(this.memoryConnections?.facts() ?? [])
-        this.replayHookTerminalReports()
-        this.replayChannelSnapshots()
-        // Only snapshots written to the durable outbox by this build are
-        // replayed. Historical session rows are never scanned or backfilled.
-        void this.sessionMetadataOutbox.drainSessionMetadataSnapshots()
-        // Replay remote MCP revocations that could not reach the CP (revokes
-        // queued while disconnected or left over from a previous process).
-        void this.webchatMcpRevocations.drainWebchatMcpRevocations()
-        // ...and the retention-GC receipts (#485). A sweep that ran while the CP
-        // was unreachable (or before it advertised the feature) left the deleted
-        // sessions' metadata rows unmarked; this is the only side that still knows.
-        void this.drainSessionPurges()
-        // ...and each CP cron's stored last-run stamp — fires while the CP was
-        // unreachable would otherwise never land (latest-wins upsert, so
-        // re-asserting an already-known stamp is a no-op).
-        for (const a of this.effectiveAgents())
-          for (const c of a.crons) {
-            if (c.origin !== 'cp') continue
-            const at = this.store.cronRun(`${a.id}:${c.id}`)?.lastRunAt
-            if (at !== undefined)
-              this.cpClient?.emitCronReport({ cronId: c.id, agentId: a.id, firedAt: new Date(at).toISOString() })
-          }
-      },
-      localState: () => this.cpLocalState(),
-      loadSnapshot: () => ({
-        // 0..1 utilization fractions sampled in the background by SystemMetrics
-        // (systeminformation): real busy-time CPU across cores + active memory,
-        // read synchronously here so the heartbeat send never blocks on a probe.
-        ...(this.metrics?.snapshot() ?? { cpu: 0, mem: 0 }),
-        agents: this.hosts.size
-      }),
-      activeSessions: () => this.pending.size,
-      orgForAgent: (agentId) => this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId),
-      orgForIntegration: (integrationId) => {
-        const agentId = this.cpIntegrations?.agentForIntegration(integrationId)
-        return agentId ? (this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId)) : undefined
-      },
-      orgForCron: (cronId) => {
-        const agentId = this.cpCrons?.agentForCron(cronId)
-        return agentId ? (this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId)) : undefined
-      },
-      degradedScopes: () => this.cpDegradedScopes(),
-      duties: () => this.dutyCoordinator.dutyDigest(),
-      dutyPending: () => this.dutyCoordinator.pendingDutyAdmissions(),
-      onDutyFence: (groupIds) => this.dutyCoordinator.fenceDuties(groupIds),
-      configApply: this.cpConfigApply(),
-      sessionRead: createSessionReader(this.store, (session) => this.sessionThreadUrl(session)),
-      // §5.4: serve a CP-forwarded status probe for a child session we own. Authorization is
-      // re-done here (the lineage rule lives where the session lives), not trusted from the CP.
-      childSessionStatusProbe: (probe) => this.childSessionStatusProbe(probe),
-      // The third argument is what makes a cluster agent's files reachable at all: the operations
-      // run inside its pod, on the volume the root above names.
-      workspaceRead: createWorkspaceReader(
-        this.workspaces,
-        workspaceLocation,
-        (id, write) => this.withWorkspaceFileWrite(id, write),
-        (id) => this.k8sPlane?.workspaceFilesFor(id)
-      ),
-      workspaceGit: {
-        status: (id, sessionId) => workspaceGit.status(id, sessionId),
-        // diff/log are read-only, so they skip the runtime-quiescence coordinator the pull needs.
-        diff: (req) => workspaceGit.diff(req),
-        log: (req) => workspaceGit.log(req),
-        pull: (id) => this.withWorkspaceFileWrite(id, () => workspaceGit.pull(id)),
-        // The four console git writes serialize against agent turns without evicting the warm host
-        // — they touch `.git`, never the working tree (see withWorkspaceIndexWrite).
-        stage: (req) => this.withWorkspaceIndexWrite(req.agentId, () => workspaceGit.stage(req)),
-        unstage: (req) => this.withWorkspaceIndexWrite(req.agentId, () => workspaceGit.unstage(req)),
-        commit: (req) => this.withWorkspaceIndexWrite(req.agentId, () => workspaceGit.commit(req)),
-        push: (req) => this.withWorkspaceIndexWrite(req.agentId, () => workspaceGit.push(req)),
-        // The wand writes nothing, so it skips both coordinators like the other reads. It does start
-        // the agent's host, which the admission fence blocks while a mutation holds it — reported as
-        // data, not an error, because a workspace write is exactly when the answer would be stale.
-        message: (req) => workspaceGit.message(req)
-      },
-      // A pure projection of the in-memory lease — no I/O, no runtime, and nothing it can do to a
-      // reclaim decision, so it needs neither of the workspace coordinators.
-      taskReader: { list: async (req) => this.listBackgroundTasks(req) },
-      // The console's "start this agent's sandbox": duty claim + channel bind, no host — the same
-      // condition the file reader serves on, reached without a turn. Local daemons have no plane.
-      agentWake: createAgentWaker({
-        ...(this.k8sPlane
-          ? {
-              sandbox: {
-                isRunning: (id) => this.k8sPlane!.runsInSandbox(id),
-                ensureChannel: (id) => this.k8sPlane!.ensureChannel(id)
-              }
-            }
-          : {}),
-        knowsAgent: (id) => this.agents.has(id) && (!this.dutyCoordinator.dutyEnforced() || this.duties.holdsAgent(id)),
-        claimDuty: async (id) =>
-          this.dutyCoordinator.dutyEnforced() && (await this.dutyCoordinator.claimDutyForTrigger(id)).granted,
-        log: this.log
-      }),
-      memoryReader: createMemoryReader((id) => this.memoryFsFor(id), this.memory),
-      dreamReader: createDreamReader(this.dreamRunner()),
-      localSkillsReader: createLocalSkillsReader(
-        this.workspaces,
-        // The workspace root in EXECUTION coordinates, like the file reader's: the skill roots the
-        // console lists are the ones the agent's harness loads, and those are in the pod.
-        (id) => workspaceLocation(id)?.root,
-        join(this.root, 'skill-installs'),
-        (id) => this.k8sPlane?.workspaceFilesFor(id)
-      ),
-      // webchat is no longer a CP control-WS integration (milestone A4) — it rides the
-      // relay's rd/* wire, wired through RelayManager.onRelayMsg below.
-      clock: systemClock,
-      connect: () => ClientTransport.dial(url, { subprotocol: CP_SUBPROTOCOL, path: CP_WS_PATH }),
-      log: this.log
-    })
+    this.cpClient = new CpClient(buildCpClientDeps(this.cpClientDepsHost(root, url, resolveInitialRegistry)))
     this.remoteWebchatGrants = new RemoteWebchatGrantManager(
       this.cpClient,
       {
