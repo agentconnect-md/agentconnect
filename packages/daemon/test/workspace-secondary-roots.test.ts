@@ -327,6 +327,57 @@ describe('secondary root materialization', () => {
     expect(workspaces.readySecondaryRoots(agent).map((root) => root.repoFullName)).toEqual(['acme/infra'])
   })
 
+  it('re-attests a checkout an interrupted materialization left with no marker', async () => {
+    const agent = agentFixture([{ repoFullName: 'acme/infra', repoId: '42' }])
+    serveAll(agent, { 'acme/infra': 'trunk' })
+    await workspaces.prepareWorkspace(agent)
+    restoreAuthorizedOrigins(agent)
+    const subtree = join(workspaces.agentRootFor(agent), 'repos', 'acme', 'infra')
+    // Exactly what a daemon exit between the clone and the marker write would leave behind.
+    writeFileSync(join(subtree, 'checkout', 'local-note.txt'), 'work in the checkout\n')
+    rmSync(join(subtree, '.materialization.json'))
+
+    await workspaces.prepareWorkspace(agent)
+
+    expect(materialization(agent, 'acme/infra')).toEqual({
+      repoId: '42',
+      repoFullName: 'acme/infra',
+      branch: 'trunk'
+    })
+    expect(workspaces.readySecondaryRoots(agent).map((root) => root.repoFullName)).toEqual(['acme/infra'])
+    // Re-attested, not re-cloned.
+    expect(existsSync(join(subtree, 'checkout', 'local-note.txt'))).toBe(true)
+  })
+
+  it('refuses to re-attest an unmarked checkout of a different repository, and removes nothing', async () => {
+    const agent = agentFixture([{ repoFullName: 'acme/infra', repoId: '42' }])
+    serveAll(agent, { 'acme/infra': 'trunk' })
+    await workspaces.prepareWorkspace(agent)
+    restoreAuthorizedOrigins(agent)
+    const subtree = join(workspaces.agentRootFor(agent), 'repos', 'acme', 'infra')
+    git(join(subtree, 'checkout'), ['remote', 'set-url', 'origin', 'https://github.com/acme/something-else.git'])
+    rmSync(join(subtree, '.materialization.json'))
+
+    await workspaces.prepareWorkspace(agent)
+
+    expect(workspaces.readySecondaryRoots(agent)).toEqual([])
+    expect(existsSync(join(subtree, '.materialization.json'))).toBe(false)
+    expect(existsSync(join(subtree, 'checkout', '.git'))).toBe(true)
+  })
+
+  it('leaves a half-staged clone from an interrupted attempt alone', async () => {
+    const agent = agentFixture([{ repoFullName: 'acme/infra', repoId: '42' }])
+    serveAll(agent, { 'acme/infra': 'trunk' })
+    const subtree = join(workspaces.agentRootFor(agent), 'repos', 'acme', 'infra')
+    mkdirSync(join(subtree, 'checkout.clone-8a1f9c02-0000-4000-8000-000000000000'), { recursive: true })
+    writeFileSync(join(subtree, 'checkout.clone-8a1f9c02-0000-4000-8000-000000000000', 'partial.txt'), 'half\n')
+
+    await workspaces.prepareWorkspace(agent)
+
+    expect(workspaces.readySecondaryRoots(agent).map((root) => root.repoFullName)).toEqual(['acme/infra'])
+    expect(existsSync(join(subtree, 'checkout.clone-8a1f9c02-0000-4000-8000-000000000000', 'partial.txt'))).toBe(true)
+  })
+
   it('skips a checkout that does not attest the row repository id, and removes nothing', async () => {
     const agent = agentFixture([{ repoFullName: 'acme/infra', repoId: '42' }])
     serveAll(agent, { 'acme/infra': 'trunk' })
