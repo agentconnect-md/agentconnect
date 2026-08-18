@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 const repositoryModal = vi.hoisted(() => ({ props: null as Record<string, unknown> | null }))
 
 vi.mock('@/lib/org-context', () => ({ useOrgs: () => ({ orgPath: (path: string) => path }) }))
+vi.mock('@/lib/data-context', () => ({ useConsoleData: () => ({ orgSetIds: new Set<string>() }) }))
 vi.mock('@/components/console/modals/AddAgentRepoModal', () => ({
   default: (props: Record<string, unknown>) => {
     repositoryModal.props = props

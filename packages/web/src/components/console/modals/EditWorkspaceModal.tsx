@@ -8,7 +8,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { GithubMark } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
-import { agentLabel, type Agent } from '@/lib/data'
+import { agentLabel, isPoolPlacementKind, type Agent } from '@/lib/data'
+import { useConsoleData } from '@/lib/data-context'
 import { useOrgs } from '@/lib/org-context'
 import {
   ApiError,
@@ -74,6 +75,9 @@ export default function EditWorkspaceModal({
   onChanged: () => void
 }) {
   const { orgPath } = useOrgs()
+  const { orgSetIds } = useConsoleData()
+  // Pool placements do not materialize secondary roots yet, so they keep the authorization-only wording.
+  const poolPlaced = isPoolPlacementKind(agent.placementKind, agent.setId, orgSetIds)
   const githubWorkspace = agent.workspace.mode === 'github' ? agent.workspace : null
   const currentWrite = githubWorkspace ? !!githubWorkspace.installationId && githubWorkspace.gitAccess !== 'read' : null
   const currentAgentDir = agentDirInputValue(githubWorkspace?.agentDir)
@@ -599,7 +603,9 @@ export default function EditWorkspaceModal({
                 <div className="mt-[3px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
                   {githubWorkspace && !githubWorkspace.installationId
                     ? 'This manual checkout can authorize only its workspace repository. Changes here apply immediately.'
-                    : 'Authorize repositories this agent can use in addition to its workspace. Changes here apply immediately.'}
+                    : poolPlaced
+                      ? 'Authorize repositories this agent can use in addition to its workspace. Changes here apply immediately.'
+                      : 'Authorize repositories this agent can use in addition to its workspace. Each one is checked out alongside the workspace and available in the agent’s sessions; a review of its pull requests runs on an exact checkout of it. Changes here apply immediately.'}
                 </div>
               </div>
               {!manualWorkspaceAuthorization && (

@@ -27,7 +27,7 @@ import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import useSWR from 'swr'
 import { GithubMark, LoadingState } from '@/components/marks'
 import { Icon } from '@/components/ui'
-import type { Agent, WorkspaceStatusInfo } from '@/lib/data'
+import { isPoolPlacementKind, type Agent, type WorkspaceStatusInfo } from '@/lib/data'
 import { creatorLabel, fetchAgentRepos } from '@/lib/api'
 import { useOrgs } from '@/lib/org-context'
 import { useProfile } from '@/lib/profile'
@@ -77,7 +77,9 @@ export function WorkspaceCard({
 }) {
   const { activeOrg } = useOrgs()
   const { me } = useProfile()
-  const { refresh } = useConsoleData()
+  const { refresh, orgSetIds } = useConsoleData()
+  // Pool placements do not materialize secondary roots yet, so their chips stay authorization-only.
+  const poolPlaced = isPoolPlacementKind(agent.placementKind, agent.setId, orgSetIds)
   // Non-null ⇒ the unified workspace editor is open. The authorization
   // shortcut starts it directly in its additional-repository subview.
   const [editState, setEditState] = useState<{
@@ -264,7 +266,7 @@ export function WorkspaceCard({
               <span
                 key={r.id}
                 className="inline-flex h-6 flex-none items-center gap-[6px] rounded-[5px] border border-(--border-subtle) bg-(--surface-card) py-0 pr-1 pl-2"
-                title={`${r.repoFullName} — ${r.access} access, added by ${creatorLabel(r.createdBy, me)}`}
+                title={`${r.repoFullName} — ${r.access} access${poolPlaced ? '' : ', checked out alongside the workspace'}; added by ${creatorLabel(r.createdBy, me)}`}
               >
                 <span className="imark h-[14px] w-[14px] border-0 bg-transparent">
                   <GithubMark />
