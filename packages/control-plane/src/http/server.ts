@@ -55,6 +55,7 @@ import { cronRoutes } from './routes/crons.js'
 import { hookRoutes } from './routes/hooks.js'
 import { sessionRoutes } from './routes/sessions.js'
 import { usageRoutes } from './routes/usage.js'
+import { usageServiceAuth, unlessUsageService } from './usage-service-auth.js'
 import { internalUsageRoutes } from './routes/internal-usage.js'
 import { streamRoutes } from './routes/stream.js'
 import { mcpRoutes } from './mcp/routes.js'
@@ -317,12 +318,27 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
           await scope.register(cronRoutes(deps))
           await scope.register(hookRoutes(deps))
           await scope.register(sessionRoutes(deps))
-          await scope.register(usageRoutes(deps))
           await scope.register(streamRoutes(deps))
           await scope.register(githubRoutes(deps))
           // Uploaded-icon write surface — mounted ONLY when the object store is
           // configured; absent ⇒ the routes don't exist and the console hides Upload.
           if (deps.iconStore) await scope.register(iconUploadRoutes(deps))
+        },
+        { prefix: '/orgs/:orgId' }
+      )
+      // The usage aggregate takes EITHER credential, so it gets its own scope rather
+      // than the shared human one: a settlement job authenticates as a workload and has
+      // no membership row, and widening the hooks every org route sits behind — to
+      // admit a service principal for the sake of one read — is how an auth change
+      // reaches routes nobody meant to open. Same path, same prefix, narrower blast
+      // radius. `humanAuth` and the org scope stand down only once the workload is
+      // verified; every other request reaches them exactly as before.
+      await api.register(
+        async (scope) => {
+          scope.addHook('preValidation', usageServiceAuth(deps))
+          scope.addHook('preValidation', unlessUsageService(scope.humanAuth))
+          scope.addHook('preValidation', unlessUsageService(makeOrgScope(deps.repos.org)))
+          await scope.register(usageRoutes(deps))
         },
         { prefix: '/orgs/:orgId' }
       )

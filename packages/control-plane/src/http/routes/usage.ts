@@ -9,10 +9,11 @@
  * sessions and daemon restarts.
  *
  * ONE route serves two callers. The console asks with a human credential and its
- * preset-derived window, and stays inside session visibility; a billing caller asks
- * with a service credential, `source=gateway`, and a closed accounting period. Both
- * get the same aggregation code, so a figure on the dashboard and a figure on an
- * invoice cannot come from two different implementations.
+ * preset-derived window, and stays inside session visibility; a settlement job asks
+ * with a workload credential (`usage-service-auth.ts`), `source=gateway`, and a closed
+ * accounting period, and reads the org whole. Both get the same aggregation code, so a
+ * figure on the dashboard and a figure on an invoice cannot come from two different
+ * implementations.
  */
 import type { FastifyInstance } from 'fastify'
 import type { ZodTypeProvider } from '../plugins/zod.js'
@@ -42,6 +43,31 @@ export function usageRoutes(deps: HttpDeps) {
       },
       async (req) => {
         const window = { from: new Date(req.query.from), to: new Date(req.query.to) }
+        // A verified usage-reader workload reads the org WHOLE: no viewer, so no agent
+        // visibility and no session predicate narrow it. That is the point of the
+        // second credential — an org's spend is a fact about the org, and a settlement
+        // total that silently omitted the sessions no human may read would be wrong in
+        // the direction that costs someone money. There is no human to attribute the
+        // read to, which is exactly why it takes an install-level principal to make it.
+        if (req.usageServiceOrgId) {
+          const agg = await deps.repos.sessionUsage.aggregate(
+            req.usageServiceOrgId,
+            window,
+            undefined,
+            req.query.tz,
+            undefined,
+            req.query.source
+          )
+          return {
+            from: req.query.from,
+            to: req.query.to,
+            totals: agg.totals,
+            agents: agg.agents,
+            models: agg.models,
+            sources: agg.sources,
+            series: agg.series
+          }
+        }
         // Viewer-scoped: both agent visibility and the request-time Session
         // predicate apply to counts, tokens, costs, and buckets. Roles do not
         // widen either resource boundary.
