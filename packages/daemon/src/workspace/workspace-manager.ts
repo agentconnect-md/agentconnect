@@ -385,9 +385,9 @@ export class WorkspaceManager {
       }
       // Identity is the numeric repo id, so a retired root whose owner/repo was later reused by a
       // DIFFERENT repository is refused rather than adopted — and nothing on disk is touched
-      // (decision 12: retirement, never deletion).
-      const recorded =
-        readSecondaryMaterialization(marker) ?? (await this.reattestSecondaryCheckout(agent, root, marker))
+      // (decision 12: retirement, never deletion). An origin URL cannot stand in for that id: it
+      // names the slug, which is exactly what a reuse keeps. No attestation ⇒ no root.
+      const recorded = readSecondaryMaterialization(marker)
       if (recorded === undefined || recorded.repoId !== root.repoId) {
         workspaceLog.warn(
           `workspace: the checkout at ${subtree} does not attest repository id ${root.repoId} ` +
@@ -419,38 +419,6 @@ export class WorkspaceManager {
       rmSync(path, { recursive: true, force: true })
     }
     renameSync(staged, path)
-  }
-
-  /**
-   * Re-attest a checkout an interrupted materialization left with no marker.
-   *
-   * Only when its `origin` is still this row's repository, and only by writing the marker a
-   * completed materialization would have left — the alternative is a checkout no later session can
-   * attribute and therefore skips forever, which the promised next-session retry rules out.
-   */
-  private async reattestSecondaryCheckout(
-    agent: Agent,
-    root: SecondaryWorkspaceRoot,
-    marker: string
-  ): Promise<SecondaryMaterialization | undefined> {
-    const origin = await this.runnerFor(agent.id, root.path)
-      .withEnv(workspaceGitLocalEnv())
-      .raw(['remote', 'get-url', 'origin'])
-      .catch(() => '')
-    const canonical = (url: string) => normalizeGitUrl(redactGitUrlSecrets(url.trim())).replace(/\.git$/i, '')
-    if (!origin.trim() || canonical(origin).toLowerCase() !== canonical(root.cloneUrl).toLowerCase()) return undefined
-    const branch = await this.resolveRemoteDefaultBranch(agent.id, root)
-    const materialization: SecondaryMaterialization = {
-      repoId: root.repoId,
-      repoFullName: root.repoFullName,
-      branch
-    }
-    writeSecondaryMaterialization(marker, materialization)
-    workspaceLog.warn(
-      `workspace: the checkout of ${root.repoFullName} for agent "${agent.id}" had no materialization ` +
-        `record — re-attested it at ${branch} from its own origin`
-    )
-    return materialization
   }
 
   /** The branch `origin/HEAD` points at, asked of the remote through the clone's own credentials. */

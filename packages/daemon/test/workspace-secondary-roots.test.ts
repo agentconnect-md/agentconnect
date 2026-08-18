@@ -327,35 +327,27 @@ describe('secondary root materialization', () => {
     expect(workspaces.readySecondaryRoots(agent).map((root) => root.repoFullName)).toEqual(['acme/infra'])
   })
 
-  it('re-attests a checkout an interrupted materialization left with no marker', async () => {
+  it('publishes the clone only after its attestation, so a checkout is never left unattributable', async () => {
     const agent = agentFixture([{ repoFullName: 'acme/infra', repoId: '42' }])
     serveAll(agent, { 'acme/infra': 'trunk' })
+
     await workspaces.prepareWorkspace(agent)
-    restoreAuthorizedOrigins(agent)
+
+    // Every state a crash can leave: no checkout, or a checkout WITH its record. The record is
+    // written before the staged clone is moved into place, so the pair cannot land the other way.
     const subtree = join(workspaces.agentRootFor(agent), 'repos', 'acme', 'infra')
-    // Exactly what a daemon exit between the clone and the marker write would leave behind.
-    writeFileSync(join(subtree, 'checkout', 'local-note.txt'), 'work in the checkout\n')
-    rmSync(join(subtree, '.materialization.json'))
-
-    await workspaces.prepareWorkspace(agent)
-
-    expect(materialization(agent, 'acme/infra')).toEqual({
-      repoId: '42',
-      repoFullName: 'acme/infra',
-      branch: 'trunk'
-    })
-    expect(workspaces.readySecondaryRoots(agent).map((root) => root.repoFullName)).toEqual(['acme/infra'])
-    // Re-attested, not re-cloned.
-    expect(existsSync(join(subtree, 'checkout', 'local-note.txt'))).toBe(true)
+    expect(existsSync(join(subtree, '.materialization.json'))).toBe(true)
+    expect(readdirSync(subtree).filter((entry) => entry.startsWith('checkout.clone-'))).toEqual([])
   })
 
-  it('refuses to re-attest an unmarked checkout of a different repository, and removes nothing', async () => {
+  it('withholds an unattributable checkout rather than re-attesting it from its origin', async () => {
     const agent = agentFixture([{ repoFullName: 'acme/infra', repoId: '42' }])
     serveAll(agent, { 'acme/infra': 'trunk' })
     await workspaces.prepareWorkspace(agent)
     restoreAuthorizedOrigins(agent)
     const subtree = join(workspaces.agentRootFor(agent), 'repos', 'acme', 'infra')
-    git(join(subtree, 'checkout'), ['remote', 'set-url', 'origin', 'https://github.com/acme/something-else.git'])
+    // An origin still names the SLUG, which is exactly what a reused name keeps — so a checkout
+    // with no record stays withheld even though its origin matches the row.
     rmSync(join(subtree, '.materialization.json'))
 
     await workspaces.prepareWorkspace(agent)
