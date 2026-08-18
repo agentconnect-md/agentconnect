@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { effectiveAgentId, repoFromPath } from '../../src/cli/git-credential.js'
-import { normalizeRepoArg } from '../../src/cli/gh-token.js'
+import { normalizeRepoArg } from '../../src/cp/gh-target.js'
 import { GITCRED_AGENT_ENV, GitCredServer } from '../../src/cp/gitcred-server.js'
 import type { GitCredentialCache } from '../../src/cp/git-credential.js'
 

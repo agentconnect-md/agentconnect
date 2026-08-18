@@ -194,16 +194,20 @@ program
 
 // gh token fetch (multi-repo authorization, issue #457): invoked BY the
 // run/bin/gh wrapper once per gh invocation — lazy import, positional args
-// (same tsx-shim reasoning as git-credential). Prints ONLY the token on
-// stdout; exit 2 = non-github target (wrapper runs the real gh untouched).
+// (same tsx-shim reasoning as git-credential). The wrapper forwards the agent's
+// whole gh argv after `--`; target-repo resolution lives in cp/gh-target.ts.
+// Prints ONLY the token on stdout; exit 2 = non-github target (wrapper runs the
+// real gh untouched).
 program
   .command('gh-token', { hidden: true })
   .description('Fetch a per-repo GH_TOKEN from the local daemon (gh wrapper backend)')
   .argument('<agentId>', 'agent whose credentials to serve')
-  .argument('[repo]', 'target repo (owner/repo, host/owner/repo, or URL); absent = workspace')
-  .action(async (agentId: string, repo?: string) => {
+  .argument('[ghArgs...]', "the agent's gh argv, forwarded verbatim after `--`")
+  // The wrapper's `--` already ends commander's option parsing; this covers a stray gh flag before it.
+  .allowUnknownOption()
+  .action(async (agentId: string, ghArgs: string[]) => {
     const { runGhToken } = await import('./cli/gh-token.js')
-    await runGhToken(agentId, repo)
+    await runGhToken(agentId, ghArgs)
   })
 
 // Agent business config (identity, status, bindings) is owned by the Control

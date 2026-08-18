@@ -5,11 +5,14 @@
  * `gh` has no credential-helper hook: it reads a STATIC `GH_TOKEN` fixed at
  * process spawn, which is why P2.5's injected token went stale after ≤1h and
  * could only ever name the workspace repo. The daemon prepends `run/bin` to
- * the agent runtime's PATH so every `gh …` the agent runs lands here first;
- * the wrapper resolves the TARGET repo (explicit argv → GH_REPO → cwd origin),
- * pulls that repo's fresh token through gitcred.sock (`agentconnect gh-token`,
- * same socket + cache as the git credential helper) and exec's the real gh
- * with GH_TOKEN set. Per-invocation fresh + per-repo correct.
+ * the agent runtime's PATH so every `gh …` the agent runs lands here first.
+ *
+ * The script itself is deliberately thin: it locates the real gh, forwards the
+ * agent's whole argv to `agentconnect gh-token <agentId> -- <argv…>`, and exec's
+ * the real gh with the returned GH_TOKEN. Which repo that token names is decided
+ * by the pure `cp/gh-target.ts` resolver on the Node side — sh has no business
+ * parsing `gh api` endpoints or pull-request URLs. Per-invocation fresh,
+ * per-repo correct.
  *
  * Precedence: a USER-supplied GH_TOKEN must win, so the wrapper defers whenever
  * one is already set. AgentConnect tokens are fetched only for this invocation;
@@ -77,65 +80,10 @@ if [ -z "$AC_AGENT_ID" ]; then
   exec "$REAL_GH" "$@"
 fi
 
-# Target repo: -R/--repo argv (all spellings, last wins — matches gh's pflag),
-# then a canonical positional repo on gh repo commands that target an existing
-# repository, GH_REPO env, and finally the cwd origin remote. Do not scan every
-# slash-bearing argument: jq/templates and read-file paths can look repo-like.
-_REPO=""
-_prev=""
-for _a in "$@"; do
-  case "$_prev" in
-    -R|--repo) _REPO="$_a" ;;
-  esac
-  case "$_a" in
-    --repo=*) _REPO="\${_a#--repo=}" ;;
-    -R=*) _REPO="\${_a#-R=}" ;;
-    -R?*) _REPO="\${_a#-R}" ;;
-  esac
-  _prev="$_a"
-done
-if [ -z "$_REPO" ]; then
-  case "\${1-}:\${2-}" in
-    repo:archive|repo:clone|repo:delete|repo:edit|repo:fork|repo:set-default|repo:sync|repo:unarchive|repo:view)
-      _REPO_COMMAND="\${2-}"
-      ;;
-  esac
-fi
-if [ -z "$_REPO" ] && [ -n "$_REPO_COMMAND" ]; then
-  _arg_index=0
-  _skip_value=""
-  for _a in "$@"; do
-    _arg_index=$((_arg_index + 1))
-    [ "$_arg_index" -le 2 ] && continue
-    if [ -n "$_skip_value" ]; then
-      _skip_value=""
-      continue
-    fi
-    [ "$_a" = "--" ] && break
-    case "$_REPO_COMMAND:$_a" in
-      clone:-u|clone:--upstream-remote-name|edit:--add-topic|edit:--default-branch|edit:-d|edit:--description|edit:-h|edit:--homepage|edit:--remove-topic|edit:--squash-merge-commit-message|edit:--visibility|fork:--fork-name|fork:--org|fork:--remote-name|sync:-b|sync:--branch|sync:-s|sync:--source|view:-b|view:--branch|view:-q|view:--jq|view:--json|view:-t|view:--template)
-        _skip_value=1
-        continue
-        ;;
-    esac
-    case "$_a" in
-      --*=*|-*) continue ;;
-    esac
-    case "$_a" in
-      */*) _REPO="$_a" ;;
-    esac
-    break
-  done
-fi
-if [ -z "$_REPO" ]; then _REPO="$GH_REPO"; fi
-if [ -z "$_REPO" ]; then
-  _REPO=$(git remote get-url origin 2>/dev/null || true)
-fi
-
-# Fresh token from the daemon (stdout = token only; stderr passes through so
-# the agent can read WHY a repo was refused). Exit 2 = "not ours" (non-github
-# host) — run the real gh untouched.
-_TOKEN=$(AGENTCONNECT_ROOT=${q(root)} ${cli} gh-token "$AC_AGENT_ID" "$_REPO")
+# Fresh token from the daemon; it resolves the target repo from the argv forwarded below
+# (stdout = token only; stderr passes through so the agent can read WHY a repo was refused).
+# Exit 2 = "not ours" (non-github host) — run the real gh untouched.
+_TOKEN=$(AGENTCONNECT_ROOT=${q(root)} ${cli} gh-token "$AC_AGENT_ID" -- "$@")
 _RC=$?
 if [ "$_RC" -eq 2 ]; then
   exec "$REAL_GH" "$@"
