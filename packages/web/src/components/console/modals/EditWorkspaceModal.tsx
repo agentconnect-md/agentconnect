@@ -599,7 +599,7 @@ export default function EditWorkspaceModal({
                 <div className="mt-[3px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
                   {githubWorkspace && !githubWorkspace.installationId
                     ? 'This manual checkout can authorize only its workspace repository. Changes here apply immediately.'
-                    : 'Authorize repositories this agent can use in addition to its workspace. Changes here apply immediately.'}
+                    : 'Authorize repositories this agent can use in addition to its workspace. Each one is checked out alongside the workspace and available in the agent’s sessions; a review of its pull requests runs on an exact checkout of it. Changes here apply immediately.'}
                 </div>
               </div>
               {!manualWorkspaceAuthorization && (
