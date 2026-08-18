@@ -264,7 +264,7 @@ export function WorkspaceCard({
               <span
                 key={r.id}
                 className="inline-flex h-6 flex-none items-center gap-[6px] rounded-[5px] border border-(--border-subtle) bg-(--surface-card) py-0 pr-1 pl-2"
-                title={`${r.repoFullName} — ${r.access} access, checked out alongside the workspace; added by ${creatorLabel(r.createdBy, me)}`}
+                title={`${r.repoFullName} — ${r.access} access${agent.placementKind === 'pool' ? '' : ', checked out alongside the workspace'}; added by ${creatorLabel(r.createdBy, me)}`}
               >
                 <span className="imark h-[14px] w-[14px] border-0 bg-transparent">
                   <GithubMark />
