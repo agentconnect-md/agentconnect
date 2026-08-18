@@ -158,6 +158,81 @@ describe('GithubSessionAccessService', () => {
     })
   })
 
+  describe('grace on an unverifiable check', () => {
+    it('re-serves an allow this viewer already earned, and does not call it degraded', async () => {
+      const h = make(true, vi.fn().mockResolvedValue('read'))
+
+      await h.service.resolve([scope], viewer)
+      // Past the allow lease, so the verdict is re-decided — and the provider is now unreachable.
+      h.clock.advance(120_001)
+      h.permissionForUser.mockRejectedValue(new Error('provider unavailable'))
+
+      // Nothing is hidden, so nothing is reported: the viewer sees what they saw a moment ago.
+      await expect(h.service.resolve([scope], viewer)).resolves.toEqual({
+        allowedScopes: [{ id: scope.id, aclRevision: scope.aclRevision }],
+        degraded: false
+      })
+    })
+
+    it('admits nobody who was never allowed', async () => {
+      const h = make(true, vi.fn().mockRejectedValue(new Error('provider unavailable')))
+
+      await expect(h.service.resolve([scope], viewer)).resolves.toEqual({ allowedScopes: [], degraded: true })
+    })
+
+    it('expires one lease past the verdict rather than renewing for as long as the provider is down', async () => {
+      const h = make(true, vi.fn().mockResolvedValue('read'))
+
+      await h.service.resolve([scope], viewer)
+      h.permissionForUser.mockRejectedValue(new Error('provider unavailable'))
+      // Inside the grace (allow lease + one more), the grant is still served.
+      h.clock.advance(239_999)
+      expect((await h.service.resolve([scope], viewer)).allowedScopes).toHaveLength(1)
+
+      // A graced serve does not re-arm the grace, so the boundary stays anchored to the real allow.
+      h.clock.advance(2)
+      await expect(h.service.resolve([scope], viewer)).resolves.toEqual({ allowedScopes: [], degraded: true })
+    })
+
+    it('lets a decided denial disarm the grace, so a later outage cannot resurrect the grant', async () => {
+      const h = make(true, vi.fn().mockResolvedValue('read'))
+
+      await h.service.resolve([scope], viewer)
+      h.clock.advance(120_001)
+      h.permissionForUser.mockResolvedValue('none')
+      await expect(h.service.resolve([scope], viewer)).resolves.toEqual({ allowedScopes: [], degraded: false })
+
+      // The deny is cached for 30 s; past it the check runs again and now cannot reach GitHub at all.
+      h.clock.advance(30_001)
+      h.permissionForUser.mockRejectedValue(new Error('provider unavailable'))
+      await expect(h.service.resolve([scope], viewer)).resolves.toEqual({ allowedScopes: [], degraded: true })
+    })
+
+    it('names the cause and whether the grant survived, so a blip leaves a trace', async () => {
+      const warn = vi.fn()
+      const clock = new FakeClock(EPOCH)
+      const permissionForUser = vi.fn().mockResolvedValue('read')
+      const service = new GithubSessionAccessService({
+        installations: { get: vi.fn().mockResolvedValue(installation) } as never,
+        github: { repoRefById: vi.fn().mockResolvedValue(PRIVATE_SHAPE) },
+        userAuthz: { permissionForUser },
+        clock,
+        log: { debug: vi.fn(), warn }
+      })
+
+      await service.resolve([scope], viewer)
+      clock.advance(120_001)
+      permissionForUser.mockRejectedValue(Object.assign(new Error('boom'), { code: 'ETIMEDOUT' }))
+      await service.resolve([scope], viewer)
+
+      // A CAUSE, never a TARGET — the error's code, never its message.
+      expect(warn).toHaveBeenCalledWith(
+        { provider: 'github', cause: 'ETIMEDOUT', graced: true },
+        expect.stringContaining('degraded')
+      )
+    })
+  })
+
   it('reads a repository shape once for every viewer that asks about it', async () => {
     const h = make(false)
 

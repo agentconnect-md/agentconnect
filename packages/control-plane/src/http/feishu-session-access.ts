@@ -70,6 +70,11 @@ export class FeishuSessionAccessService implements SessionAccessPlugin {
    *  this used to keep alongside. Entries carry their own TTL — see the
    *  fetchMethod, which sets it from the answer it got. */
   private readonly membership: LRUCache<string, MembershipResult, MembershipLookup>
+  /** (chat credential, viewer's union_ids) the audience really ADMITTED, armed for one member-list
+   *  lease past its own. Unlike `membership` this is per viewer — it is the only record that a
+   *  PERSON was inside, and it is what lets an unverifiable check re-serve that instead of hiding
+   *  the conversation. The decision itself stays derived; this caches no audience. */
+  private readonly gracedAllows: LRUCache<string, true>
   private readonly quotaBlockedUntil = new Map<string, number>()
 
   constructor(
@@ -79,8 +84,12 @@ export class FeishuSessionAccessService implements SessionAccessPlugin {
       clock: Clock
       fetchImpl?: FetchLike
       identity?: Pick<LogtoIdentityService, 'feishuIdentitiesFor'>
+      /** Optional so tests can omit it, but without one the grace leaves no trace and an app that
+       *  stays unreachable stops being visible at the moment it starts costing something. */
+      log?: { warn?: (obj: object, msg: string) => void }
     }
   ) {
+    this.gracedAllows = new LRUCache(cacheOptions(deps.clock, MAX_CACHE_ENTRIES))
     this.membership = new LRUCache({
       ...cacheOptions(deps.clock, MAX_CACHE_ENTRIES),
       // A per-entry TTL is always set below; this only stops lru-cache from
@@ -207,8 +216,10 @@ export class FeishuSessionAccessService implements SessionAccessPlugin {
     if (unionIds.length === 0) {
       return { decision: 'unknown', issue: { provider: 'feishu', region, reason: 'authorization' } }
     }
+    const chatKey = [bot.id, bot.credentialRevision, scope.resourceKey].join(':')
+    const graceKey = [scope.id, scope.aclRevision.toString(), chatKey, unionIds.join(',')].join(':')
     const membership = await this.membershipFor(
-      [bot.id, bot.credentialRevision, scope.resourceKey].join(':'),
+      chatKey,
       `${scope.orgId}:${region}`,
       region,
       scope.resourceKey,
@@ -217,9 +228,27 @@ export class FeishuSessionAccessService implements SessionAccessPlugin {
       signal
     )
     if (membership.status === 'members') {
-      return { decision: unionIds.some((unionId) => membership.unionIds.has(unionId)) ? 'allow' : 'deny' }
+      const admitted = unionIds.some((unionId) => membership.unionIds.has(unionId))
+      // Only a decided admission arms the grace — for ONE more member-list lease — and a graced serve
+      // never re-arms it, so an app that stays unreachable expires the grant on schedule. A decided
+      // exclusion disarms it: once the audience has answered "not a member", a later outage may not
+      // resurrect what that answer took away.
+      if (admitted) this.gracedAllows.set(graceKey, true, { ttl: MEMBER_LIST_TTL_MS * 2 })
+      else this.gracedAllows.delete(graceKey)
+      return { decision: admitted ? 'allow' : 'deny' }
     }
-    if (membership.status === 'deny') return { decision: 'deny' }
+    if (membership.status === 'deny') {
+      this.gracedAllows.delete(graceKey)
+      return { decision: 'deny' }
+    }
+    // An unverifiable check is not a denial: re-serve an admission this viewer already earned.
+    if (this.gracedAllows.has(graceKey)) {
+      this.deps.log?.warn?.(
+        { provider: 'feishu', region, reason: membership.issue.reason },
+        'feishu access check degraded — re-serving an admission this viewer already earned'
+      )
+      return { decision: 'allow' }
+    }
     return { decision: 'unknown', issue: membership.issue }
   }
 

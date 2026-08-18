@@ -80,7 +80,8 @@ type LocalReason =
   | `http_${number}`
 
 /** A verdict, plus — when it is `unknown` — why the check could not answer. */
-type Verdict = { decision: Decision; reason?: DegradedReason }
+/** `graced` marks an allow re-served over an unverifiable check, so `resolve` can count what the grace absorbed. */
+type Verdict = { decision: Decision; reason?: DegradedReason; graced?: true }
 /** Slack answered `ok: false`: a definitive denial, or a check that could not
  *  run and the code Slack gave for it. */
 type FailureVerdict = { decision: 'deny' } | { decision: 'unknown'; reason: DegradedReason }
@@ -253,6 +254,9 @@ export class SlackSessionAccessService implements SessionAccessPlugin {
    *  A cached `unknown` keeps the reason it was reached by, so a resolve that
    *  rides one is not the one degraded resolve that cannot say why. */
   private readonly cache: LRUCache<string, Verdict>
+  /** Keys a principal was really ALLOWED on, armed for one lease past the verdict's own.
+   *  Presence is what lets an unverifiable check re-serve a grant instead of hiding the session. */
+  private readonly gracedAllows: LRUCache<string, true>
   /** (realm, ANSWERING bot, its credential revision, principal) → standing.
    *  The bot id is load-bearing: bots in one workspace hold different grants,
    *  so a verdict is reusable only under the credential that produced it —
@@ -301,6 +305,7 @@ export class SlackSessionAccessService implements SessionAccessPlugin {
     this.recheckMs = deps.recheckMs ?? DEFAULT_RECHECK_MS
     this.publicTtlMs = deps.publicTtlMs ?? DEFAULT_PUBLIC_TTL_MS
     this.cache = new LRUCache(cacheOptions(deps.clock, MAX_CACHE_ENTRIES))
+    this.gracedAllows = new LRUCache(cacheOptions(deps.clock, MAX_CACHE_ENTRIES))
     this.workspaceAccessCache = new LRUCache(cacheOptions(deps.clock, MAX_CACHE_ENTRIES))
     this.audiences = new LRUCache({
       ...cacheOptions(deps.clock, MAX_CACHE_ENTRIES),
@@ -388,6 +393,16 @@ export class SlackSessionAccessService implements SessionAccessPlugin {
         'slack access check degraded — affected sessions are hidden until access can be verified'
       )
     }
+    // What the grace absorbed. Deliberately NOT `degraded`: no session is missing, so the console has
+    // nothing to tell the member — but the operator still needs the rate, or a Slack that stays down
+    // stops being visible here at exactly the moment it starts costing something.
+    const gracedScopes = decisions.filter(({ verdict }) => verdict.graced).length
+    if (gracedScopes > 0) {
+      this.deps.log?.warn(
+        { provider: 'slack', gracedScopes, totalScopes: decisions.length },
+        'slack access check degraded — re-serving grants these principals already earned'
+      )
+    }
     return {
       allowedScopes: decisions
         .filter(({ verdict }) => verdict.decision === 'allow')
@@ -414,9 +429,14 @@ export class SlackSessionAccessService implements SessionAccessPlugin {
         this.putCache(key, verdict)
       }
       if (verdict.decision === 'allow') return verdict
-      // The FIRST cause is kept, not the last, so one degraded scope reports
-      // one reason and the counts in `resolve` still sum to `unknownScopes`.
-      if (verdict.decision === 'unknown') unknownReason ??= verdict.reason ?? 'unreported'
+      if (verdict.decision === 'unknown') {
+        // An unverifiable check is not a denial: re-serve an allow this principal already earned
+        // rather than hiding the conversation behind a Slack-side blip.
+        if (this.gracedAllows.has(key)) return { decision: 'allow', graced: true }
+        // The FIRST cause is kept, not the last, so one degraded scope reports
+        // one reason and the counts in `resolve` still sum to `unknownScopes`.
+        unknownReason ??= verdict.reason ?? 'unreported'
+      }
     }
     return unknownReason ? { decision: 'unknown', reason: unknownReason } : { decision: 'deny' }
   }
@@ -839,6 +859,12 @@ export class SlackSessionAccessService implements SessionAccessPlugin {
     // What this relaxes is exactly the §2.1 conversion window, bounded by touch-revalidation.
     const ttl = decision === 'allow' ? this.recheckMs : decision === 'deny' ? DENY_TTL_MS : UNKNOWN_TTL_MS
     this.cache.set(key, verdict, { ttl })
+    // Only a decided `allow` arms the grace — for ONE more lease — and a graced serve never re-arms it,
+    // so a Slack that stays unreachable expires the grant on schedule instead of renewing it for as long
+    // as it is down. A decided `deny` disarms it outright: once Slack has answered "no", an outage after
+    // that may not resurrect what the answer took away.
+    if (decision === 'allow') this.gracedAllows.set(key, true, { ttl: this.recheckMs * 2 })
+    else if (decision === 'deny') this.gracedAllows.delete(key)
   }
 
   private putWorkspaceAccess(key: string, checked: CheckedWorkspaceAccess): void {
