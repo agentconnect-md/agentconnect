@@ -18,7 +18,7 @@ import { useParams, usePathname, useRouter, useSearchParams } from 'next/navigat
 import { ConsoleDataProvider, useConsoleData } from '@/lib/data-context'
 import { OrgProvider, useOrgs, orgColor, subPath } from '@/lib/org-context'
 import { ApiError, getMyAccess, type OrgDto } from '@/lib/api'
-import { agentLabel } from '@/lib/data'
+import { agentLabel, poolLabel } from '@/lib/data'
 import { detailCrumb, type CrumbSlot } from '@/lib/crumb'
 import { PlaygroundProvider } from './PlaygroundProvider'
 import { ModalProvider, useModal } from './ModalProvider'
@@ -565,7 +565,8 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
       const agent = agents.find((a) => a.id === id)
       return agent ? agentLabel(agent) : undefined
     }
-    if (section === 'daemons') return daemons.find((d) => d.daemonId === id)?.name
+    // `cluster` is the pool's own page, not a daemon id — no member id survives a rollout.
+    if (section === 'daemons') return id === 'cluster' ? poolLabel() : daemons.find((d) => d.daemonId === id)?.name
     if (section === 'sessions') return allSessions.find((s) => s.id === id)?.title
     if (section === 'crons') return crons.find((c) => c.id === id)?.name
     return undefined

@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import {
   POOL_LABEL,
   groupFleetStatus,
+  isPoolPlacementKind,
   poolLabel,
   poolFleetStatus,
   presentedDaemonStatus,
@@ -22,7 +23,7 @@ import { Button, Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
 
 export default function DaemonsView() {
-  const { daemons, daemonsLoading, agents, memberSets } = useConsoleData()
+  const { daemons, daemonsLoading, agents, memberSets, orgSetIds } = useConsoleData()
   const { openModal } = useModal()
 
   // Hosted-agent count per daemon — agents assigned to it (mirrors the detail
@@ -44,10 +45,13 @@ export default function DaemonsView() {
   const managed = featureFlagEnabled('managed')
   const poolMembers = useMemo(() => (showPool ? daemons.filter((d) => d.pool) : []), [daemons, showPool])
   const ownDaemons = useMemo(() => daemons.filter((d) => !d.pool), [daemons])
-  const poolAgents = useMemo(() => {
-    const memberIds = new Set(poolMembers.map((m) => m.daemonId))
-    return agents.filter((a) => memberIds.has(a.daemon)).length
-  }, [agents, poolMembers])
+  // Pool agents carry the POOL sentinel, never a member id: the Pod holding the duty is
+  // ephemeral, so `agentFromDto` maps a set placement to `daemon: POOL_PLACEMENT`. Counting
+  // member ids reported an empty pool however many agents were placed on it.
+  const poolAgents = useMemo(
+    () => (showPool ? agents.filter((a) => isPoolPlacementKind(a.placementKind, a.setId, orgSetIds)).length : 0),
+    [agents, orgSetIds, showPool]
+  )
 
   // Fleet summary for the mobile-only strip below — counted over what the page SHOWS,
   // so the pool contributes one entry rather than one per member.
@@ -367,17 +371,16 @@ function ClusterFleetCard({ members, hosted }: { members: DaemonRow[]; hosted: n
     : 'no nodes serving'
   // Capacity is the sum of what the serving members will run, matched against what they ARE
   // running — the same pair the CP's placement check uses. A member reporting `maxAgents <= 0`
-  // is UNBOUNDED, not a ceiling of zero: a cluster holding one has no finite budget, so the bar
-  // is withheld instead of quoting a total that says "full" about a pool that can never be.
+  // is UNBOUNDED, not a ceiling of zero: a cluster holding one has no finite budget, so the
+  // strip names that ∞ rather than quoting a total that says "full" about a pool that can never be.
   const caps = serving.map((m) => Number(m.conns))
-  const bounded = caps.length > 0 && caps.every((c) => Number.isFinite(c) && c > 0)
-  const capacity = bounded ? caps.reduce((sum, c) => sum + c, 0) : 0
+  const unbounded = caps.some((c) => !Number.isFinite(c) || c <= 0)
+  const capacity = unbounded ? 0 : caps.reduce((sum, c) => sum + c, 0)
   const used = serving.reduce((sum, m) => sum + m.loadAgents, 0)
   const pct = capacity > 0 ? Math.min(100, Math.round((used / capacity) * 100)) : 0
-  // Opens one member's detail for the runtimes, models and MCP servers the cluster offers —
-  // a serving one, since a member that stopped answering can no longer describe itself.
-  const target = serving[0] ?? members[members.length - 1]!
-  const open = () => router.push(orgPath(`/daemons/${target.daemonId}`))
+  // Opens the CLUSTER, not a member: no member id survives a rollout, so landing on one
+  // machine's page would name the cluster after a Pod that is already gone.
+  const open = () => router.push(orgPath('/daemons/cluster'))
 
   return (
     <div
@@ -411,16 +414,19 @@ function ClusterFleetCard({ members, hosted }: { members: DaemonRow[]; hosted: n
         </div>
       </div>
       <div className="hidden flex-none items-center gap-7 desktop:flex">
-        {capacity > 0 && (
+        {caps.length > 0 && (
           <div className="w-[184px]">
             <div className="mb-[5px] flex items-baseline justify-between gap-[10px]">
               <span className="mono text-[11.5px] text-(--text-secondary)">
-                {used} / {capacity}
+                {used} / {unbounded ? '∞' : capacity}
               </span>
-              <span className="mono text-[11px] text-(--text-tertiary)">{pct}%</span>
+              {/* An unbounded cluster has no fraction to be: the slot reads why, not "0%". */}
+              <span className="mono text-[11px] text-(--text-tertiary)">{unbounded ? 'no limit' : `${pct}%`}</span>
             </div>
             <span className="block h-1 overflow-hidden rounded-sm bg-(--surface-active)">
-              <span className="block h-full" style={{ width: `${pct}%`, background: loadBarColor(pct) }} />
+              {!unbounded && (
+                <span className="block h-full" style={{ width: `${pct}%`, background: loadBarColor(pct) }} />
+              )}
             </span>
             <div className="mt-[5px] font-sans text-[10.5px] font-normal leading-normal text-(--text-tertiary)">
               Sandbox capacity in use
@@ -433,11 +439,6 @@ function ClusterFleetCard({ members, hosted }: { members: DaemonRow[]; hosted: n
             agents on cluster
           </div>
         </div>
-        {/* Opens what the card opens: on a self-hosted install the cluster's runtimes, models and
-            MCP servers ARE what there is to manage — the console mints no cluster credentials. */}
-        <Button variant="secondary" size="sm" onClick={open}>
-          Manage
-        </Button>
       </div>
       <span
         className="badge flex-none max-desktop:px-[10px] max-desktop:py-[3px] max-desktop:text-[12px] desktop:hidden"

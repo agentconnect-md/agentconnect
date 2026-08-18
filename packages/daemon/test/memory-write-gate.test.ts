@@ -9,7 +9,8 @@
  * `write`); this suite mirrors the daemon wiring where reads are always allowed.
  */
 import { describe, it, expect, vi } from 'vitest'
-import { executeTool, MEMORY_ACCESS_BLOCKED, type OpsDeps, type SessionContext } from '../src/mcp/ops.js'
+import { executeTool, type OpsDeps, type SessionContext } from '../src/mcp/ops.js'
+import { MEMORY_ACCESS_BLOCKED } from '../src/memory/tools.js'
 
 const ctx = (): SessionContext => ({
   agentId: 'bot-a',

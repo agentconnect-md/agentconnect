@@ -78,7 +78,9 @@ function daemon(over: Partial<DaemonRow>): DaemonRow {
 const member = (id: string, over: Partial<DaemonRow> = {}): DaemonRow =>
   daemon({ daemonId: id, pool: true, name: 'AgentConnect Cloud', host: `pool-member-${id}`, ...over })
 
-const onPool = (id: string, daemonId: string): Agent => ({ id, daemon: daemonId }) as Agent
+/** An agent placed on the POOL as the live console models it: `agentFromDto` maps a set
+ *  placement to the `pool` sentinel, never the ephemeral member id holding the duty. */
+const onPool = (id: string): Agent => ({ id, daemon: 'pool', placementKind: 'set', setId: null }) as Agent
 
 function render(): string {
   const host = document.createElement('div')
@@ -122,7 +124,7 @@ describe('DaemonsView pool', () => {
 
   it('counts the agents across every member, not just the one it links to', () => {
     mocks.daemons = [member('p1'), member('p2')]
-    mocks.agents = [onPool('a1', 'p1'), onPool('a2', 'p2'), onPool('a3', 'p2')]
+    mocks.agents = [onPool('a1'), onPool('a2'), onPool('a3')]
 
     const html = render()
 
@@ -184,7 +186,7 @@ describe('DaemonsView pool', () => {
   it('names nothing about the pool where the deployment did not ask for it', () => {
     setFlags('')
     mocks.daemons = [member('p1'), daemon({ daemonId: 'own', name: 'pc.dev' })]
-    mocks.agents = [onPool('a1', 'p1')]
+    mocks.agents = [onPool('a1')]
 
     const html = render()
 
@@ -238,7 +240,7 @@ describe('DaemonsView pool — self-hosted', () => {
 
   it('quotes the cluster’s own budget: agents running against the ceiling its members report', () => {
     mocks.daemons = [member('p1', { conns: '20', loadAgents: 7 }), member('p2', { conns: '40', loadAgents: 27 })]
-    mocks.agents = [onPool('a1', 'p1'), onPool('a2', 'p2')]
+    mocks.agents = [onPool('a1'), onPool('a2')]
 
     const html = render()
 
@@ -258,15 +260,17 @@ describe('DaemonsView pool — self-hosted', () => {
     expect(html).toContain('5 / 10')
   })
 
-  it('withholds the bar when a member is unbounded — no ceiling is not a ceiling of zero', () => {
+  it('names an unbounded cluster ∞ — no ceiling is not a ceiling of zero', () => {
     // `maxAgents <= 0` is the daemon's UNBOUNDED sentinel (observability/pool-metrics.ts): a
     // cluster holding one has no finite budget, so quoting a total would advertise "full" about
-    // a pool that can never be.
+    // a pool that can never be. What it IS running is still worth reading.
     mocks.daemons = [member('p1', { conns: '20', loadAgents: 7 }), member('p2', { conns: '0', loadAgents: 3 })]
 
     const html = render()
 
-    expect(html).not.toContain('Sandbox capacity in use')
+    expect(html).toContain('10 / ∞')
+    expect(html).toContain('no limit')
+    expect(html).toContain('Sandbox capacity in use')
     expect(html).toContain('agents on cluster')
   })
 
@@ -277,6 +281,34 @@ describe('DaemonsView pool — self-hosted', () => {
 
     expect(html).toContain('no nodes serving')
     expect(html).not.toContain('Sandbox capacity in use')
+  })
+
+  it('offers no Manage button — the card already opens what it would open', () => {
+    mocks.daemons = [member('p1')]
+
+    const html = render()
+
+    expect(html).not.toContain('Manage')
+  })
+
+  it('opens the CLUSTER, never one of its Pods', () => {
+    // A member id does not survive a rollout, so landing on one machine's page would name
+    // the cluster after a Pod that is already gone.
+    mocks.daemons = [member('dead', { status: 'offline' }), member('serving')]
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root: Root = createRoot(host)
+    act(() => {
+      root.render(<DaemonsView />)
+    })
+    act(() => {
+      host.querySelector<HTMLElement>('.card.click')?.click()
+    })
+    act(() => root.unmount())
+    host.remove()
+
+    expect(mocks.push).toHaveBeenCalledWith('/acme/daemons/cluster')
   })
 
   it('still shows the whole cluster as ONE entry', () => {

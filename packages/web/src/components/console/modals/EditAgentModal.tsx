@@ -991,6 +991,7 @@ export default function EditAgentModal({
                   required={selectedSandboxRequired}
                   disabled={placementRequested}
                   disabledDetail="Save the computer change before adjusting sandboxing."
+                  clusterPlacement={daemonId === POOL_PLACEMENT}
                   onChange={setRunInSandbox}
                 />
                 <OutputModeField

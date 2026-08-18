@@ -4,9 +4,9 @@ import {
   ALL_TOOL_NAMES,
   COLLABORATION_TOOLS,
   GITHUB_REVIEW_TOOLS,
-  RETIRED_ORCHESTRATION_TOOLS,
-  externalMemoryTools
+  RETIRED_ORCHESTRATION_TOOLS
 } from '../src/mcp/tools.js'
+import { externalMemoryTools } from '../src/memory/tools.js'
 import type { Integration } from '../src/agents/agent-schema.js'
 
 const slackInt: Integration = {

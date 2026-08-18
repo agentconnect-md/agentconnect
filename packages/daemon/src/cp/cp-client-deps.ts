@@ -1,0 +1,386 @@
+// The `CpClientDeps` literal the daemon hands `CpClient`, hoisted out of `Daemon.startCpClient`.
+// Construction order is load-bearing (the workspace resolvers feed the file, git and skills seams),
+// so `buildCpClientDeps` is the single wiring site and keeps it verbatim.
+import { hostname } from 'node:os'
+import { join } from 'node:path'
+import type {
+  FactsMcpServer,
+  FactsRuntimeProfile,
+  GitCommitIdentity,
+  Heartbeat,
+  RegisterReq,
+  ChildSessionStatus,
+  ChildSessionStatusProbe,
+  TaskList,
+  TaskListReq
+} from '@agentconnect.md/protocol'
+import { POD_TEMPLATE_HASH_ENV } from '@agentconnect.md/protocol'
+import { ClientTransport, systemClock } from '@agentconnect.md/connection'
+import { CP_SUBPROTOCOL, CP_WS_PATH, type BootstrapUpgradeOutcome, type CpClient, type CpClientDeps } from './client.js'
+import type { ConfigApply } from './config-apply.js'
+import { createSessionReader } from './session-reader.js'
+import { createWorkspaceReader, type WorkspaceLocation } from './workspace-reader.js'
+import { createWorkspaceGit, type CommitMessagePass } from './workspace-git.js'
+import { createAgentWaker } from './agent-wake.js'
+import { createMemoryReader, type AgentMemoryAdminResolver } from './memory-reader.js'
+import { createDreamReader } from './dream-reader.js'
+import { createLocalSkillsReader } from './local-skills-reader.js'
+import { gitCredentialEnv } from '../workspace/git-injection.js'
+import type { CpAgentRegistry } from './cp-agent-registry.js'
+import type { CpIntegrationRegistry } from './cp-integration-registry.js'
+import type { CpCronRegistry } from './cp-cron.js'
+import type { CpCollabRoutes } from './cp-collab-routes.js'
+import type { CpMemoryConnectionRegistry } from './memory-connection-registry.js'
+import type { DutyCoordinator } from './duty-coordinator.js'
+import type { DutyRegistry } from './duty-registry.js'
+import { persistDaemonId } from '../config/load-config.js'
+import { DAEMON_VERSION } from '../version.js'
+import type { Logger } from '../log.js'
+import type { LoadedAgent } from '../agents/load-agents.js'
+import type { LocalStore, SessionRecord } from '../store/local-store.js'
+import type { SessionMetadataOutbox } from '../store/session-metadata-outbox.js'
+import type { WebchatMcpRevocations } from '../webchat/mcp-revocations.js'
+import type { WorkspaceManager } from '../workspace/workspace-manager.js'
+import type { K8sRuntimePlane } from '../k8s/runtime-plane.js'
+import type { SystemMetrics } from '../metrics/system-metrics.js'
+import type { ReadinessGate } from '../readiness.js'
+import type { MemoryFs } from '../memory/store.js'
+import type { DreamRunner } from '../dream/runner.js'
+
+/** The credentials, identity and logging this connection is built from, plus its single-point writes. */
+export interface CpClientConnectionHost {
+  /** The control-plane address, already checked by the caller's `configuredControlPlane` guard. */
+  cpUrl(): string
+  cpApiKey(): string | undefined
+  /** False ⇒ this daemon never emits `usage/report`; a deployment that meters upstream is the single writer. */
+  usageReporting(): boolean
+  clusterIdentityToken(): (() => string | undefined) | undefined
+  /** Echoed in the auth frame ONLY when the operator pinned one via `--daemon-id` — the token's `sub` is
+   *  otherwise authoritative, and a config-persisted id would either be rejected (4401) or be redundant. */
+  echoDaemonId(): string | undefined
+  heartbeatDefaultMs(): number
+  maxAgents(): number
+  /** The config root `startCpClient` was called with, and the explicit config path if any. */
+  configRoot(): string
+  configPath(): string | undefined
+  /** The daemon's own root dir (state that is not an agent's), e.g. `skill-installs/`. */
+  daemonRoot(): string
+  log(): Logger
+  /** Read lazily — the client is assigned only after these deps are built. */
+  cpClient(): CpClient | undefined
+  setDaemonId(daemonId: string): void
+  setWebAppUrl(webAppUrl: string | undefined): void
+  setOrgSlug(orgSlug: string | undefined): void
+  /** Settles the promise `startCpClient` returns, on the first register/ok. */
+  resolveInitialRegistry(): void
+}
+
+/** What the register frame, the runtime/MCP facts and the heartbeat report about this daemon. */
+export interface CpClientRegistrationHost {
+  registrationPlatforms(): string[]
+  registrationFeatures(): string[]
+  admittedRuntimeIds(): string[]
+  reportedRuntimeIds(): string[]
+  /** Registry id -> human-facing runtime name. */
+  runtimeNames(): Record<string, string>
+  runtimeProfileFor(id: string): FactsRuntimeProfile
+  mcpServerFactsFromDefs(): FactsMcpServer[]
+  cpLocalState(): RegisterReq['localState']
+  metrics(): SystemMetrics | undefined
+  hostCount(): number
+  activeSessions(): number
+  bootstrapUpgradeCapable(): boolean
+  runBootstrapFleetUpgrade(targetVersion: string): Promise<BootstrapUpgradeOutcome>
+}
+
+/** The replay batch that runs once this daemon reaches READY on each (re)connect. */
+export interface CpClientReadyHost {
+  readiness(): ReadinessGate | undefined
+  probeRuntimesAndEmit(): Promise<void>
+  syncOrganizationSuggestions(): Promise<void>
+  memoryConnections(): CpMemoryConnectionRegistry | undefined
+  replayHookTerminalReports(): Promise<void>
+  replayChannelSnapshots(): Promise<void>
+  sessionMetadataOutbox(): SessionMetadataOutbox
+  webchatMcpRevocations(): WebchatMcpRevocations
+  drainSessionPurges(): Promise<void>
+  effectiveAgents(): LoadedAgent[]
+}
+
+/** Tenant lookups for agent-scoped frames, plus the duty seam the heartbeat carries. */
+export interface CpClientOrgHost {
+  cpAgents(): CpAgentRegistry | undefined
+  cpIntegrations(): CpIntegrationRegistry | undefined
+  cpCrons(): CpCronRegistry | undefined
+  cpCollab(): CpCollabRoutes
+  cpDegradedScopes(): string[]
+  dutyCoordinator(): DutyCoordinator
+  duties(): DutyRegistry
+}
+
+/** The read/write seams the CP serves the console from — sessions, workspaces, memory, tasks. */
+export interface CpClientSeamHost {
+  configApply(): ConfigApply
+  store(): LocalStore
+  agents(): ReadonlyMap<string, LoadedAgent>
+  workspaces(): WorkspaceManager
+  k8sPlane(): K8sRuntimePlane | undefined
+  memory(): AgentMemoryAdminResolver
+  dreamRunner(): DreamRunner
+  memoryFsFor(agentId: string): MemoryFs | undefined
+  gitCommitIdentity(): GitCommitIdentity | undefined
+  sessionThreadUrl(session: SessionRecord): string | undefined
+  childSessionStatusProbe(probe: ChildSessionStatusProbe): Promise<ChildSessionStatus>
+  listBackgroundTasks(req: TaskListReq): TaskList
+  withWorkspaceFileWrite<T>(agentId: string, write: () => Promise<T>): Promise<T>
+  withWorkspaceIndexWrite<T>(agentId: string, write: () => Promise<T>): Promise<T>
+  runCommitMessagePass: CommitMessagePass
+}
+
+/** Everything the CP client's dependency literal touches on the `Daemon`. */
+export interface CpClientDepsHost
+  extends CpClientConnectionHost, CpClientRegistrationHost, CpClientReadyHost, CpClientOrgHost, CpClientSeamHost {}
+
+export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
+  const url = host.cpUrl()
+  const apiKey = host.cpApiKey()
+  const clusterIdentityToken = host.clusterIdentityToken()
+  const echoDaemonId = host.echoDaemonId()
+
+  // This daemon's own coordinates: `agent.workspace.path` and the session worktrees beside it.
+  const daemonWorkspaceLocation = async (id: string, sessionId?: string): Promise<WorkspaceLocation | undefined> => {
+    const agent = host.agents().get(id)
+    if (!agent) return undefined
+    if (!sessionId) {
+      return { root: agent.workspace.path, scratch: agent.workspace.mode === 'from-scratch' }
+    }
+    const session = await host.store().getSessionByAcpIdForAgent(id, sessionId)
+    if (agent.workspace.mode !== 'git-repo' || session?.workspaceIsolation !== 'session') return undefined
+    return { root: host.workspaces().sessionWorktreePath(agent, session.key), scratch: false }
+  }
+
+  // Where that workspace actually is, which under --k8s is the sandbox pod's volume. ONE resolver
+  // for the file reader and the git seam: the directory the console browses and the one it commits
+  // are the same directory, and describing them two different ways is what broke both panels.
+  // A defined location for a sessionId means that session IS isolated, which --k8s refuses —
+  // passed through so it is refused loudly rather than silently naming the shared checkout.
+  const workspaceLocation = async (id: string, sessionId?: string): Promise<WorkspaceLocation | undefined> => {
+    const agent = host.agents().get(id)
+    const local = await daemonWorkspaceLocation(id, sessionId)
+    if (!agent || !local) return undefined
+    const root = host
+      .workspaces()
+      .consoleWorkspaceRoot(
+        agent,
+        local.root,
+        host.k8sPlane()?.workspaceRootFor(id),
+        sessionId ? { isolation: 'session' } : undefined
+      )
+    return root === undefined ? undefined : { root, scratch: local.scratch }
+  }
+
+  const workspaceGitRoot = async (id: string, sessionId?: string): Promise<string | undefined> =>
+    (await workspaceLocation(id, sessionId))?.root
+
+  const workspaceGit = createWorkspaceGit(
+    host.workspaces(),
+    workspaceGitRoot,
+    (id) => {
+      const workspace = host.agents().get(id)?.workspace
+      return workspace?.mode === 'git-repo' && workspace.gitCredential === 'github-app' ? gitCredentialEnv(id) : {}
+    },
+    (id) => {
+      const workspace = host.agents().get(id)?.workspace
+      return workspace?.mode === 'git-repo' && workspace.gitRepo
+        ? {
+            repo: workspace.gitRepo,
+            branch: workspace.gitBranch,
+            githubApp: workspace.gitCredential === 'github-app'
+          }
+        : undefined
+    },
+    // Registered on `register/ok` only, and reset by every reconnect — a console commit is
+    // refused as data whenever it is absent (workspace-git.ts explains why).
+    () => host.gitCommitIdentity(),
+    // The model pass runs HERE, on the agent's own runtime: the CP is never on the inference path.
+    (id, systemPrompt, prompt, signal) => host.runCommitMessagePass(id, systemPrompt, prompt, signal)
+  )
+
+  return {
+    url,
+    usageReporting: host.usageReporting(),
+    ...(apiKey ? { token: apiKey } : {}),
+    ...(clusterIdentityToken ? { clusterIdentityToken } : {}),
+    ...(echoDaemonId ? { daemonId: echoDaemonId } : {}),
+    onDaemonId: (id) => {
+      host.setDaemonId(id)
+      // An in-cluster daemon persists nothing: its identity is re-derived from the
+      // projected token on every connect, so a stored id could only go stale.
+      if (!clusterIdentityToken) persistDaemonId(host.configRoot(), id, host.configPath())
+      host.log().info(`cp: adopted daemonId ${id} from auth/ok`)
+    },
+    onWebAppUrl: (webAppUrl) => {
+      host.setWebAppUrl(webAppUrl)
+      if (webAppUrl) host.log().debug(`cp: web app url ${webAppUrl} (session deep links)`)
+    },
+    onOrgSlug: (slug) => {
+      host.setOrgSlug(slug)
+      if (slug) host.log().debug(`cp: org slug "${slug}" (session deep links)`)
+    },
+    ...(host.bootstrapUpgradeCapable()
+      ? {
+          onBootstrapUpgrade: (lifecycle: { targetVersion: string }) =>
+            host.runBootstrapFleetUpgrade(lifecycle.targetVersion)
+        }
+      : {}),
+    agentVersion: DAEMON_VERSION,
+    host: hostname(),
+    // The deployment side sets this from the pod-template-hash label; the ledger's rollout barrier
+    // lets only the newest live generation of the set claim vacated groups. Unset locally.
+    generation: process.env[POD_TEMPLATE_HASH_ENV]?.trim() || undefined,
+    heartbeatDefaultMs: host.heartbeatDefaultMs(),
+    maxAgents: host.maxAgents(),
+    capabilities: () => ({
+      platforms: host.registrationPlatforms(),
+      // Report the human-facing tool name (e.g. "Claude Agent"), not the
+      // registry id ("claude-acp"); fall back to the id for user-defined or
+      // unnamed runtimes.
+      runtimes: host.admittedRuntimeIds().map((id) => host.runtimeNames()[id] ?? id),
+      acp: true,
+      features: host.registrationFeatures()
+    }),
+    // Observed runtime profiles, sent as one `facts/daemon-runtimes` snapshot on
+    // each register. Keyed by the registry id (the launch key), so the console can
+    // offer a runtime whose value round-trips back to `this.runtimes[agent.runtime]`
+    // at launch. `models` comes from the background probe sweep (empty until it
+    // completes on first connect); the picker falls back to "Runtime default" while
+    // empty. Includes auth-required curated candidates (reported, not admitted).
+    runtimeProfiles: (): FactsRuntimeProfile[] => host.reportedRuntimeIds().map((id) => host.runtimeProfileFor(id)),
+    // Daemon-configured MCP servers, derived from the effective def set (no
+    // probing), riding the same facts frame with replace-on-register semantics.
+    mcpServerFacts: (): FactsMcpServer[] => host.mcpServerFactsFromDefs(),
+    // On (re)connect, probe runtimes in the background and push refreshed profiles,
+    // and re-assert each integration's cached channel-membership snapshot (the CP
+    // may have missed emits while we were disconnected; latest-wins upsert).
+    onReady: async () => {
+      host.resolveInitialRegistry()
+      host.readiness()?.refresh()
+      void host.probeRuntimesAndEmit()
+      void host
+        .syncOrganizationSuggestions()
+        .catch((err) =>
+          host.log().warn(`cp: organization suggestion replay failed (${err instanceof Error ? err.name : 'unknown'})`)
+        )
+      host.cpClient()?.emitMemoryConnectionFacts(host.memoryConnections()?.facts() ?? [])
+      await host.replayHookTerminalReports()
+      await host.replayChannelSnapshots()
+      // Only snapshots written to the durable outbox by this build are
+      // replayed. Historical session rows are never scanned or backfilled.
+      void host.sessionMetadataOutbox().drainSessionMetadataSnapshots()
+      // Replay remote MCP revocations that could not reach the CP (revokes
+      // queued while disconnected or left over from a previous process).
+      void host.webchatMcpRevocations().drainWebchatMcpRevocations()
+      // ...and the retention-GC receipts (#485). A sweep that ran while the CP
+      // was unreachable (or before it advertised the feature) left the deleted
+      // sessions' metadata rows unmarked; this is the only side that still knows.
+      void host.drainSessionPurges()
+      // ...and each CP cron's stored last-run stamp — fires while the CP was
+      // unreachable would otherwise never land (latest-wins upsert, so
+      // re-asserting an already-known stamp is a no-op).
+      for (const a of host.effectiveAgents())
+        for (const c of a.crons) {
+          if (c.origin !== 'cp') continue
+          const at = (await host.store().cronRun(`${a.id}:${c.id}`))?.lastRunAt
+          if (at !== undefined)
+            host.cpClient()?.emitCronReport({ cronId: c.id, agentId: a.id, firedAt: new Date(at).toISOString() })
+        }
+    },
+    localState: () => host.cpLocalState(),
+    loadSnapshot: (): Heartbeat['load'] => ({
+      // 0..1 utilization fractions sampled in the background by SystemMetrics
+      // (systeminformation): real busy-time CPU across cores + active memory,
+      // read synchronously here so the heartbeat send never blocks on a probe.
+      ...(host.metrics()?.snapshot() ?? { cpu: 0, mem: 0 }),
+      agents: host.hostCount()
+    }),
+    activeSessions: () => host.activeSessions(),
+    orgForAgent: (agentId) => host.cpAgents()?.orgForAgent(agentId) ?? host.cpCollab().orgForAgent(agentId),
+    orgForIntegration: (integrationId) => {
+      const agentId = host.cpIntegrations()?.agentForIntegration(integrationId)
+      return agentId ? (host.cpAgents()?.orgForAgent(agentId) ?? host.cpCollab().orgForAgent(agentId)) : undefined
+    },
+    orgForCron: (cronId) => {
+      const agentId = host.cpCrons()?.agentForCron(cronId)
+      return agentId ? (host.cpAgents()?.orgForAgent(agentId) ?? host.cpCollab().orgForAgent(agentId)) : undefined
+    },
+    degradedScopes: () => host.cpDegradedScopes(),
+    duties: () => host.dutyCoordinator().dutyDigest(),
+    dutyPending: () => host.dutyCoordinator().pendingDutyAdmissions(),
+    onDutyFence: (groupIds) => host.dutyCoordinator().fenceDuties(groupIds),
+    configApply: host.configApply(),
+    sessionRead: createSessionReader(host.store(), (session) => host.sessionThreadUrl(session)),
+    // §5.4: serve a CP-forwarded status probe for a child session we own. Authorization is
+    // re-done here (the lineage rule lives where the session lives), not trusted from the CP.
+    childSessionStatusProbe: (probe) => host.childSessionStatusProbe(probe),
+    // The third argument is what makes a cluster agent's files reachable at all: the operations
+    // run inside its pod, on the volume the root above names.
+    workspaceRead: createWorkspaceReader(
+      host.workspaces(),
+      workspaceLocation,
+      (id, write) => host.withWorkspaceFileWrite(id, write),
+      (id) => host.k8sPlane()?.workspaceFilesFor(id)
+    ),
+    workspaceGit: {
+      status: (id, sessionId) => workspaceGit.status(id, sessionId),
+      // diff/log are read-only, so they skip the runtime-quiescence coordinator the pull needs.
+      diff: (req) => workspaceGit.diff(req),
+      log: (req) => workspaceGit.log(req),
+      pull: (id) => host.withWorkspaceFileWrite(id, () => workspaceGit.pull(id)),
+      // The four console git writes serialize against agent turns without evicting the warm host
+      // — they touch `.git`, never the working tree (see withWorkspaceIndexWrite).
+      stage: (req) => host.withWorkspaceIndexWrite(req.agentId, () => workspaceGit.stage(req)),
+      unstage: (req) => host.withWorkspaceIndexWrite(req.agentId, () => workspaceGit.unstage(req)),
+      commit: (req) => host.withWorkspaceIndexWrite(req.agentId, () => workspaceGit.commit(req)),
+      push: (req) => host.withWorkspaceIndexWrite(req.agentId, () => workspaceGit.push(req)),
+      // The wand writes nothing, so it skips both coordinators like the other reads. It does start
+      // the agent's host, which the admission fence blocks while a mutation holds it — reported as
+      // data, not an error, because a workspace write is exactly when the answer would be stale.
+      message: (req) => workspaceGit.message(req)
+    },
+    // A pure projection of the in-memory lease — no I/O, no runtime, and nothing it can do to a
+    // reclaim decision, so it needs neither of the workspace coordinators.
+    taskReader: { list: async (req) => host.listBackgroundTasks(req) },
+    // The console's "start this agent's sandbox": duty claim + channel bind, no host — the same
+    // condition the file reader serves on, reached without a turn. Local daemons have no plane.
+    agentWake: createAgentWaker({
+      ...(host.k8sPlane()
+        ? {
+            sandbox: {
+              isRunning: (id) => host.k8sPlane()!.runsInSandbox(id),
+              ensureChannel: (id) => host.k8sPlane()!.ensureChannel(id)
+            }
+          }
+        : {}),
+      knowsAgent: (id) =>
+        host.agents().has(id) && (!host.dutyCoordinator().dutyEnforced() || host.duties().holdsAgent(id)),
+      claimDuty: async (id) =>
+        host.dutyCoordinator().dutyEnforced() && (await host.dutyCoordinator().claimDutyForTrigger(id)).granted,
+      log: host.log()
+    }),
+    memoryReader: createMemoryReader((id) => host.memoryFsFor(id), host.memory()),
+    dreamReader: createDreamReader(host.dreamRunner()),
+    localSkillsReader: createLocalSkillsReader(
+      host.workspaces(),
+      // The workspace root in EXECUTION coordinates, like the file reader's: the skill roots the
+      // console lists are the ones the agent's harness loads, and those are in the pod.
+      async (id) => (await workspaceLocation(id))?.root,
+      join(host.daemonRoot(), 'skill-installs'),
+      (id) => host.k8sPlane()?.workspaceFilesFor(id)
+    ),
+    // webchat is no longer a CP control-WS integration (milestone A4) — it rides the
+    // relay's rd/* wire, wired through RelayManager.onRelayMsg.
+    clock: systemClock,
+    connect: () => ClientTransport.dial(url, { subprotocol: CP_SUBPROTOCOL, path: CP_WS_PATH }),
+    log: host.log()
+  }
+}
