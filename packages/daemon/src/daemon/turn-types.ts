@@ -13,7 +13,7 @@ import type { SlackConnection } from '../slack/connection.js'
 import type { TelegramConnection } from '../telegram/connection.js'
 import type { DiscordConnection } from '../discord/connection.js'
 import type { FeishuConnection } from '../feishu/connection.js'
-import type { GithubReplyTarget, HookDispatchContext } from './github-hook-coords.js'
+import type { GithubReplyTarget, HookDispatchContext } from '../github/hook-coords.js'
 import type { WebchatTurnContext } from '../webchat/types.js'
 
 /** Thrown to a `dispatch()` caller when the per-session admission queue is at its depth

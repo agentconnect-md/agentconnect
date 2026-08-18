@@ -22,7 +22,7 @@ import {
   type GithubRevisionAdmissionPlan,
   type GithubReviewBatch,
   type HookDispatchContext
-} from '../daemon/github-hook-coords.js'
+} from './hook-coords.js'
 import type { QueueEntry } from '../daemon/turn-types.js'
 
 /** Flatten the gate's live heads plus every queued entry into one candidate list. */

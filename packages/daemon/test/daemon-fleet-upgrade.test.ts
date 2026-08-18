@@ -36,10 +36,10 @@ describe('daemon fleet upgrade coordination', () => {
     const daemon = new Daemon({ root: scaffold(), supervisor: 'cli', upgradeInstaller, requestExit })
     ;(daemon as any).stop = vi.fn(async () => {})
 
-    expect((daemon as any).scheduleFleetExit('upgrade', '9.9.9')).toEqual({ accepted: true })
+    expect((daemon as any).fleetUpgrade.scheduleFleetExit('upgrade', '9.9.9')).toEqual({ accepted: true })
     await vi.waitFor(() => expect(upgradeInstaller).toHaveBeenCalledTimes(1))
 
-    const reconnectOutcome = (daemon as any).runBootstrapFleetUpgrade('9.9.9')
+    const reconnectOutcome = (daemon as any).fleetUpgrade.runBootstrapFleetUpgrade('9.9.9')
     finishInstall(true)
 
     const outcome = await reconnectOutcome

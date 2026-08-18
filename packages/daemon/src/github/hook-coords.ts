@@ -7,15 +7,10 @@ import type {
   HookReviewResult,
   RdMsgHook
 } from '@agentconnect.md/protocol'
-import type {
-  GithubReviewEffect,
-  GithubReviewEvent,
-  GithubReviewTarget,
-  GithubReviewVerdict
-} from '../github/review.js'
+import type { GithubReviewEffect, GithubReviewEvent, GithubReviewTarget, GithubReviewVerdict } from './review.js'
 import type { SessionWorktreeRemoval } from '../workspace/workspace-manager.js'
 import type { NormalizedMessage } from '../messages/normalized.js'
-import type { QueueEntry } from './turn-types.js'
+import type { QueueEntry } from '../daemon/turn-types.js'
 
 export function hookSnapshot(msg: RdMsgHook): HookConfigSnapshot | undefined {
   if (
