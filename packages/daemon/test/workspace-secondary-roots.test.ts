@@ -615,7 +615,7 @@ describe('removeSessionWorktree across every root (decision 4)', () => {
     expect(existsSync(secondary('example-co/shared-library'))).toBe(false)
   })
 
-  it('keeps every root when one secondary worktree is dirty', async () => {
+  it('keeps the session when one secondary worktree is dirty, and reports that another root went', async () => {
     const agent = agentFixture([{ repoFullName: 'acme/infra', repoId: '42' }])
     serveAll(agent, { 'acme/infra': 'trunk' })
     await workspaces.prepareSessionWorkspace(agent, { sessionKey: 'session-a', isolation: 'session' })
@@ -629,11 +629,26 @@ describe('removeSessionWorktree across every root (decision 4)', () => {
     )
     writeFileSync(join(secondary, 'scratch.txt'), 'unsaved\n')
 
+    // `partial` is what the caller needs: the clean primary is already gone, so a warm attachment
+    // pointed at it is stale even though the retained secondary keeps the session.
     expect(await workspaces.removeSessionWorktree(agent, 'session-a')).toEqual({
       outcome: 'retained',
-      reason: 'dirty'
+      reason: 'dirty',
+      partial: true
     })
     expect(existsSync(join(secondary, 'scratch.txt'))).toBe(true)
+    expect(existsSync(workspaces.sessionWorktreePath(agent, 'session-a'))).toBe(false)
+  })
+
+  it('ignores a subtree a failed clone left behind instead of failing the whole cleanup', async () => {
+    const agent = agentFixture([{ repoFullName: 'acme/infra', repoId: '42' }])
+    serveAll(agent, { 'acme/infra': 'trunk' })
+    await workspaces.prepareSessionWorkspace(agent, { sessionKey: 'session-a', isolation: 'session' })
+    // Exactly what a failed secondary preparation leaves: the subtree exists with no checkout and
+    // no worktrees, so there is no repository for Git to run in.
+    mkdirSync(join(workspaces.agentRootFor(agent), 'repos', 'example-co', 'shared-library'), { recursive: true })
+
+    expect(await workspaces.removeSessionWorktree(agent, 'session-a')).toEqual({ outcome: 'removed' })
   })
 
   it('removes a scratch agent’s secondary worktrees, which have no primary beside them', async () => {
@@ -736,6 +751,40 @@ describe('retire → sweep → remove (decision 12)', () => {
 
     git(retired!.path, ['add', '-A'])
     git(retired!.path, ['commit', '-q', '-m', 'local only'])
+    expect(await workspaces.removeRetiredSecondaryRoot(after, retired!)).toEqual({
+      outcome: 'retained',
+      reason: 'unique-commits'
+    })
+    expect(existsSync(retired!.subtree)).toBe(true)
+  })
+
+  it('refuses a retired root whose unique work is on another local ref, not the checked-out one', async () => {
+    const agent = agentFixture([{ repoFullName: 'acme/infra', repoId: '42' }])
+    serveAll(agent, { 'acme/infra': 'trunk' })
+    await workspaces.prepareWorkspace(agent)
+    restoreAuthorizedOrigins(agent)
+    const after = reauthorized(agent, [])
+    const [retired] = workspaces.retiredSecondaryRoots(after)
+    // Removing the clone destroys its whole object store, so what the CHECKED-OUT branch can reach
+    // does not speak for the work: a side branch and a stash are both invisible from `trunk`.
+    git(retired!.path, ['checkout', '-q', '-b', 'side'])
+    writeFileSync(join(retired!.path, 'sidework.txt'), 'work\n')
+    git(retired!.path, ['add', '-A'])
+    git(retired!.path, ['commit', '-q', '-m', 'side only'])
+    git(retired!.path, ['checkout', '-q', 'trunk'])
+    expect(git(retired!.path, ['status', '--porcelain']).trim()).toBe('')
+
+    expect(await workspaces.removeRetiredSecondaryRoot(after, retired!)).toEqual({
+      outcome: 'retained',
+      reason: 'unique-commits'
+    })
+
+    git(retired!.path, ['branch', '-q', '-D', 'side'])
+    writeFileSync(join(retired!.path, 'stashed.txt'), 'work\n')
+    git(retired!.path, ['add', '-A'])
+    git(retired!.path, ['stash', '-q'])
+    expect(git(retired!.path, ['status', '--porcelain']).trim()).toBe('')
+
     expect(await workspaces.removeRetiredSecondaryRoot(after, retired!)).toEqual({
       outcome: 'retained',
       reason: 'unique-commits'

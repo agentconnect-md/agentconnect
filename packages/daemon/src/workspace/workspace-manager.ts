@@ -838,13 +838,17 @@ export class WorkspaceManager {
   }
 
   /** Every root that can hold a per-session worktree: the primary when there is one, plus every
-   *  secondary subtree ON DISK — a retired root's worktrees are this session's too (decision 12). */
+   *  MATERIALIZED secondary subtree on disk — a retired root's worktrees are this session's too
+   *  (decision 12), while a subtree a failed clone left behind owns none and has no checkout for
+   *  Git to run in, which would fail the whole session's cleanup forever. */
   sessionWorktreeRoots(agent: Agent): Pick<WorkspaceRoot, 'path' | 'worktreesPath'>[] {
     return [
       ...(agent.workspace.mode === 'git-repo'
         ? [{ path: agent.workspace.path, worktreesPath: this.worktreesPathFor(agent) }]
         : []),
-      ...secondarySubtreesIn(this.agentRootFor(agent)).map(({ path, worktreesPath }) => ({ path, worktreesPath }))
+      ...secondarySubtreesIn(this.agentRootFor(agent))
+        .filter((entry) => existsSync(join(entry.path, '.git')))
+        .map(({ path, worktreesPath }) => ({ path, worktreesPath }))
     ]
   }
 
@@ -859,7 +863,10 @@ export class WorkspaceManager {
    * all of them uniformly (decision 4) and they share the session's id.
    *
    * Aggregated conservatively: one retained root keeps the session (its work is still there), a
-   * failure is reported as a failure, and `absent` means no root had anything to remove.
+   * failure is reported as a failure, and `absent` means no root had anything to remove. Removal is
+   * per root and cannot be made atomic — Git refuses a worktree that went dirty since it was judged
+   * — so a kept aggregate that nonetheless removed something is flagged `partial`, which is what
+   * tells the caller its warm attachment is stale even though the session survives.
    */
   async removeSessionWorktree(agent: Agent, sessionKey: string): Promise<SessionWorktreeRemoval> {
     const roots = this.sessionWorktreeRoots(agent)
@@ -874,7 +881,9 @@ export class WorkspaceManager {
       else if (result.outcome === 'failed') failed ??= result
       else if (result.outcome === 'removed') removed = true
     }
-    return retained ?? failed ?? (removed ? { outcome: 'removed' } : { outcome: 'absent' })
+    const kept = retained ?? failed
+    if (kept) return removed ? { ...kept, partial: true } : kept
+    return removed ? { outcome: 'removed' } : { outcome: 'absent' }
   }
 
   /** The agent's secondary subtrees whose `.materialization.json` no longer matches a current row —
@@ -910,9 +919,11 @@ export class WorkspaceManager {
       if (existsSync(join(root.path, '.git'))) {
         const git = this.runnerFor(agent.id, root.path).withEnv(workspaceGitLocalEnv())
         if ((await git.raw(['status', '--porcelain'])).trim() !== '') return { outcome: 'retained', reason: 'dirty' }
-        if ((await git.raw(['rev-list', '--count', 'HEAD', '--not', '--remotes'])).trim() !== '0') {
-          return { outcome: 'retained', reason: 'unique-commits' }
-        }
+        // EVERY local ref, not just HEAD: this removes the object store itself, so a side branch, a
+        // local tag or a stash entry is work the checked-out branch cannot speak for. Only this
+        // daemon's own review refs are disposable — they were fetched verbatim from the remote.
+        const unique = await git.raw(['rev-list', '--count', '--all', '--not', '--remotes', '--glob=refs/agentconnect'])
+        if (unique.trim() !== '0') return { outcome: 'retained', reason: 'unique-commits' }
       } else if (existsSync(root.path) && readdirSync(root.path).length > 0) {
         // No `.git` to interrogate, but a nonempty directory may be exactly the untracked work this
         // GC promises never to auto-delete — the same rule the worktree GC applies to a bare leftover.
@@ -1917,12 +1928,17 @@ export type WorkspacePathClearer = (agentId: string, root: string) => Promise<st
  * never stored — the id is a hex hash, so the path always sits under the agent's
  * worktrees root. */
 
-export type SessionWorktreeRemoval =
+export type SessionWorktreeRemoval = (
   | { outcome: 'removed' }
   | { outcome: 'absent' }
   /** The worktree holds work the daemon must not discard — the caller keeps the session. */
   | { outcome: 'retained'; reason: 'dirty' | 'unique-commits' }
   | { outcome: 'failed'; error: string }
+) & {
+  /** Another root's worktree DID go even though the aggregate keeps the session, so a warm runtime
+   *  attachment now names directories that are gone and the caller must evict it anyway. */
+  partial?: true
+}
 
 /** Retention GC (#485): remove one logical session's worktree, but only when it
  * is provably safe — no dirty/untracked files and no commit unreachable from

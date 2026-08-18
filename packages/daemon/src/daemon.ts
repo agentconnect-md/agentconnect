@@ -12475,7 +12475,10 @@ export class Daemon {
         return { outcome: 'not_applicable' }
       }
       const result = await this.workspaces.removeSessionWorktree(currentAgent, rec.key)
-      if ((result.outcome === 'removed' || result.outcome === 'absent') && rec.acpSessionId) {
+      // `partial` too: a kept aggregate can still have removed another root's worktree, and a warm
+      // attachment naming a directory that is gone would skip preparation on its next turn.
+      const changed = result.outcome === 'removed' || result.outcome === 'absent' || result.partial === true
+      if (changed && rec.acpSessionId) {
         // The session row intentionally survives lifecycle cleanup. Evict only
         // this stale warm binding so the next reopened/comment turn recreates
         // the worktree and runs session/load/new before prompting in its cwd.
