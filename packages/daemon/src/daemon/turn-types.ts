@@ -270,6 +270,10 @@ export interface QueueEntry {
    *  pause/loop state, this survives a quick pause→unpause or trip→!resume race while
    *  a cold sessions.handle() call is still initializing. */
   cancelledReason?: TurnInterruptReason
+  /** Settles when dispatch() finishes this placed entry's admission bookkeeping: 'run' to
+   *  start it, 'drop' when a late rejection withdrew it. The runner awaits this before
+   *  starting a shifted entry, so a rejected caller's turn can never already be running. */
+  admissionHold?: Promise<'run' | 'drop'>
   /** Cross-session GitHub coordination must settle before this durable entry can start. */
   coordinationWait?: Promise<void>
   /** An admitted continuation waits for its platform mirror; false skips only this entry. */

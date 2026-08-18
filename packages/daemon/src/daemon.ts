@@ -8441,6 +8441,29 @@ export class Daemon {
     else this.serialQueue.delete(key)
   }
 
+  /** Shift queued heads until one's admission bookkeeping wants it run — dispatch() may
+   *  withdraw an entry it placed when a later admission step rejects. */
+  private async nextRunnableEntry(key: string): Promise<QueueEntry | undefined> {
+    for (;;) {
+      const q = this.serialQueue.get(key)
+      const candidate = q?.shift()
+      if (q && q.length === 0) this.serialQueue.delete(key)
+      if (!candidate) return undefined
+      const verdict = candidate.admissionHold ? await candidate.admissionHold : 'run'
+      candidate.admissionHold = undefined
+      if (verdict === 'run') return candidate
+    }
+  }
+
+  /** Give the serial-gate claim back. Followers that queued behind the claim while it was
+   *  held get the gate handed to them — deleting the claim alone would strand them, since a
+   *  queued entry only ever starts under a claim holder. */
+  private async releaseDispatchClaim(key: string): Promise<void> {
+    const successor = await this.nextRunnableEntry(key)
+    if (successor) void this.runLoop(key, successor)
+    else this.inflight.delete(key)
+  }
+
   private removeQueuedGithubRevisions(candidates: readonly GithubQueueCandidate[]): void {
     for (const [key, next] of planQueuedGithubRevisionRemovals(candidates, this.serialQueue)) {
       if (next) this.serialQueue.set(key, next)
@@ -9682,18 +9705,27 @@ export class Daemon {
           // drains meanwhile would otherwise run past this delivery instead of behind it. `q`
           // predates this method's awaits, so re-read the queue a peer dispatch may have set.
           const next = this.serialQueue.get(key) ?? []
+          // The hold keeps the runner from starting this entry while its admission is still
+          // settling: a placed entry the awaits below then withdraw must never already be
+          // running when its caller is rejected.
+          let settleHold!: (verdict: 'run' | 'drop') => void
+          entry.admissionHold = new Promise((res) => (settleHold = res))
           next.push(entry)
           this.serialQueue.set(key, next)
           try {
             if (revisionPlan && !(await this.applyGithubRevisionAdmissionPlan(revisionPlan, entry))) {
+              settleHold('drop')
               this.removeQueuedEntry(key, entry)
               await settleAdmission({ accepted: true })
               return
             }
             await settleAdmission({ accepted: true })
+            settleHold('run')
           } catch (error) {
             // Rejecting the caller while its entry stays runnable would run a turn nobody owns.
+            settleHold('drop')
             this.removeQueuedEntry(key, entry)
+            if (!this.draining) await this.removeInbox(entry).catch(() => undefined)
             throw error
           }
           this.log.debug(
@@ -9707,7 +9739,7 @@ export class Daemon {
         this.inflight.add(key)
         try {
           if (!opts?.replay && !(await this.admitLoopGuardTurn(agentId, msg, integrationId, opts?.inboxReplayId))) {
-            this.inflight.delete(key)
+            await this.releaseDispatchClaim(key)
             await settleAdmission({ accepted: false, reason: 'loop_protection' })
             resolve(null)
             return
@@ -9722,13 +9754,13 @@ export class Daemon {
               existingId: opts?.inboxReplayId ?? opts?.deliveryId
             })
           } catch (err) {
-            this.inflight.delete(key)
+            await this.releaseDispatchClaim(key)
             await settleAdmission({ accepted: false, reason: 'durability' })
             reject(err)
             return
           }
           if (persistence === 'existing') {
-            this.inflight.delete(key)
+            await this.releaseDispatchClaim(key)
             await settleAdmission({ accepted: true, duplicate: true })
             resolve(null)
             return
@@ -9736,26 +9768,28 @@ export class Daemon {
           // Admission settles only once the entry is placed (or coalesced away), exactly as in
           // the queued branch: the accepted ACK must not outrun the batch this delivery joins.
           if (batchLeader && (await this.coalesceGithubReviewBatch(batchLeader, entry))) {
-            this.inflight.delete(key)
+            await this.releaseDispatchClaim(key)
             await settleAdmission({ accepted: true })
             entry.resolve(null)
             return
           }
           if (revisionPlan && !(await this.applyGithubRevisionAdmissionPlan(revisionPlan, entry))) {
-            this.inflight.delete(key)
+            await this.releaseDispatchClaim(key)
             await settleAdmission({ accepted: true })
             return
           }
           // Same late-admission check as the queued branch: the gate may have been released
           // between the fence that absorbed this message and this dispatch reaching the claim.
           if (await this.coalesceLateAdmission(key, entry)) {
-            this.inflight.delete(key)
+            await this.releaseDispatchClaim(key)
             await settleAdmission({ accepted: true })
             return
           }
           await settleAdmission({ accepted: true })
         } catch (error) {
-          this.inflight.delete(key)
+          // An unexpected rejection also hands the gate to any follower that queued behind
+          // this claim while the admission steps were awaiting — never strand the queue.
+          await this.releaseDispatchClaim(key)
           throw error
         }
         void this.runLoop(key, entry)
@@ -10083,9 +10117,8 @@ export class Daemon {
         }
         // Still holding ownership: take the next queued head (if any) before releasing,
         // so a message arriving in the release window can't jump ahead of the queued head.
-        const q = this.serialQueue.get(key)
-        entry = q?.shift()
-        if (q && q.length === 0) this.serialQueue.delete(key)
+        // Each head's admission hold is honored — a withdrawn placement is never started.
+        entry = await this.nextRunnableEntry(key)
       }
       // Queue confirmed empty in this tick → release ownership atomically. A message that
       // arrives after this sees the key idle in dispatch() and claims it itself (in order).
