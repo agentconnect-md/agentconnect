@@ -102,8 +102,8 @@ const grant = () => ({
   term: '1',
   members: [{ kind: 'agent' as const, refId: AGENT }]
 })
-const hold = (inner: any) => inner.settleDutyChange(inner.duties.applyGrant([grant()]))
-const drop = (inner: any) => inner.applyDutyRevoke([{ groupId: GROUP, reason: 'reassigned' }])
+const hold = (inner: any) => inner.dutyCoordinator.settleDutyChange(inner.duties.applyGrant([grant()]))
+const drop = (inner: any) => inner.dutyCoordinator.applyDutyRevoke([{ groupId: GROUP, reason: 'reassigned' }])
 
 const agentOf = (inner: any) => inner.agents.get(AGENT)
 

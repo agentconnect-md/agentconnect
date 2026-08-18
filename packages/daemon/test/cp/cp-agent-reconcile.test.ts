@@ -534,7 +534,7 @@ describe('Daemon CP agent → memory + reconcile', () => {
     expect((daemon as any).hosts.has('bot-a')).toBe(false)
 
     // The duty grant is what starts it, and the current replica makes that install a no-fetch.
-    await (daemon as any).admitDutyGrants([dutyGrant('bot-a')])
+    await (daemon as any).dutyCoordinator.admitDutyGrants([dutyGrant('bot-a')])
     expect(fetchDutyAgent).not.toHaveBeenCalled()
     expect((daemon as any).servesAgent('bot-a')).toBe(true)
     await (daemon as any).ensureHostAsync('bot-a')
@@ -584,7 +584,7 @@ describe('Daemon CP agent → memory + reconcile', () => {
       await reconcile()
       if (landed || (daemon as any).moveStagedAgents.has('bot-a')) return
       landed = true
-      ;(daemon as any).applyDutyRevoke([{ groupId: GROUP_ID, reason: 'superseded' }])
+      ;(daemon as any).dutyCoordinator.applyDutyRevoke([{ groupId: GROUP_ID, reason: 'superseded' }])
     }
 
     await expect(

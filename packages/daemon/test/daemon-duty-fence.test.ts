@@ -99,7 +99,7 @@ async function boot(scope: 'frame' | 'connection' = 'frame') {
     reportDutiesNow: vi.fn(() => {}),
     fetchDutyAgent
   }
-  await (daemon as any).admitDutyGrants([grant()])
+  await (daemon as any).dutyCoordinator.admitDutyGrants([grant()])
   return { daemon, root, clock, fetchDutyAgent }
 }
 
@@ -127,16 +127,16 @@ async function bootMidAdmission() {
     reportDutiesNow: vi.fn(() => {}),
     fetchDutyAgent
   }
-  const admitted = (daemon as any).admitDutyGrants([grant()]) as Promise<Set<string>>
+  const admitted = (daemon as any).dutyCoordinator.admitDutyGrants([grant()]) as Promise<Set<string>>
   await vi.waitFor(() => expect(fetchDutyAgent).toHaveBeenCalled())
   return { daemon, admitted, release }
 }
 
 const duties = (d: Daemon) => (d as any).duties as DutyRegistry
-const pending = (d: Daemon): string[] => (d as any).pendingDutyAdmissions()
+const pending = (d: Daemon): string[] => (d as any).dutyCoordinator.pendingDutyAdmissions()
 const served = (d: Daemon): string[] => (d as any).transportAgents().map((a: { id: string }) => a.id)
 /** Fence the given groups, as the client's per-group deadline does when one elapses. */
-const fence = (d: Daemon, groupIds: string[] = [GROUP]) => (d as any).fenceDuties(groupIds)
+const fence = (d: Daemon, groupIds: string[] = [GROUP]) => (d as any).dutyCoordinator.fenceDuties(groupIds)
 
 /** Put a live Slack socket in the pool under the granted agent's own credentials, exactly as a
  *  successful `reconcileSlackConnections` would. Its key is what consolidation asks for while the
@@ -271,7 +271,7 @@ describe('the duty self-fence', () => {
     ;(daemon as any).cpClient.fetchDutyAgent = vi.fn(async () => ({
       bundle: bundle(AGENT_B, 'ranger', INTEGRATION_B, { botToken: 'xoxb-b', appToken: 'xapp-b' })
     }))
-    await (daemon as any).admitDutyGrants([grant(GROUP_B, AGENT_B)])
+    await (daemon as any).dutyCoordinator.admitDutyGrants([grant(GROUP_B, AGENT_B)])
     expect(served(daemon).sort()).toEqual([AGENT, AGENT_B].sort())
     const socketA = liveSlackSocket(daemon)
     const socketB = liveSlackSocket(daemon, INTEGRATION_B, { botToken: 'xoxb-b', appToken: 'xapp-b' })
@@ -301,7 +301,7 @@ describe('the duty self-fence', () => {
     // `applyRevoke` reports an agent as lost only when it is in NO held group any more, and the
     // teardown follows that, not the group membership — so a shared agent keeps serving.
     const { daemon } = await boot()
-    await (daemon as any).admitDutyGrants([grant(GROUP_B, AGENT)])
+    await (daemon as any).dutyCoordinator.admitDutyGrants([grant(GROUP_B, AGENT)])
     expect(duties(daemon).digest()).toHaveLength(2)
 
     fence(daemon, [GROUP])
@@ -333,7 +333,7 @@ describe('the duty self-fence', () => {
   it('a revoke landing mid-admission refuses it the same way', async () => {
     const { daemon, admitted, release } = await bootMidAdmission()
 
-    ;(daemon as any).applyDutyRevoke([{ groupId: GROUP, reason: 'superseded' }])
+    ;(daemon as any).dutyCoordinator.applyDutyRevoke([{ groupId: GROUP, reason: 'superseded' }])
     release()
 
     expect([...(await admitted)]).toEqual([GROUP])
@@ -345,7 +345,7 @@ describe('the duty self-fence', () => {
   it('a drain release mid-admission refuses it, so nothing installs itself back after drain/done', async () => {
     const { daemon, admitted, release } = await bootMidAdmission()
 
-    await (daemon as any).releaseAllDuties()
+    await (daemon as any).dutyCoordinator.releaseAllDuties()
     release()
 
     expect([...(await admitted)]).toEqual([GROUP])
@@ -388,7 +388,7 @@ describe('the duty self-fence', () => {
 
     // What a reconnect looks like: the CP still leases the group to this member, sees a
     // digest that omits it, and reissues the grant.
-    await (daemon as any).admitDutyGrants([grant()])
+    await (daemon as any).dutyCoordinator.admitDutyGrants([grant()])
 
     expect(duties(daemon).digest()).toEqual([{ groupId: GROUP, term: '1' }])
     expect(served(daemon)).toContain(AGENT)

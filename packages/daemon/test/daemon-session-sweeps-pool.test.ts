@@ -290,7 +290,7 @@ describe('session sweeps on a daemon pool are holder-only (#1032)', () => {
     await b.inner.drainSessionPurges()
     expect(b.emitSessionPurged).not.toHaveBeenCalled()
     // The grant lands: the receipt is this member's to report now, and it is reported exactly once.
-    b.inner.settleDutyChange(b.inner.duties.applyGrant([grant(GROUP_A, AGENT_A)]))
+    b.inner.dutyCoordinator.settleDutyChange(b.inner.duties.applyGrant([grant(GROUP_A, AGENT_A)]))
     await vi.waitFor(() => expect(b.emitSessionPurged).toHaveBeenCalledOnce())
     expect(b.emitSessionPurged.mock.calls[0]![0]).toMatchObject({ agentId: AGENT_A, sessionIds: ['acp-left'] })
     await b.inner.drainSessionPurges()

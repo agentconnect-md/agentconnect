@@ -163,7 +163,7 @@ describe('installing an agent a duty grant covers', () => {
     const cp = registries(daemon)
     expect(cp.agents.has(AGENT)).toBe(false)
 
-    await (daemon as any).installGrantedAgents([grant()])
+    await (daemon as any).dutyCoordinator.installGrantedAgents([grant()])
 
     expect(fetchDutyAgent).toHaveBeenCalledWith(AGENT, ORG)
     expect(cp.agents.has(AGENT)).toBe(true)
@@ -182,7 +182,7 @@ describe('installing an agent a duty grant covers', () => {
     const fetchDutyAgent = vi.fn(async () => ({ bundle: bundleWithDefinitions() }))
     const daemon = await boot({ fetchDutyAgent })
 
-    await (daemon as any).installGrantedAgents([grant()])
+    await (daemon as any).dutyCoordinator.installGrantedAgents([grant()])
 
     // The proxy def is keyed (org, name) and must carry the bearer grant key —
     // presence of the NAME alone is exactly the broken state this fixes.
@@ -211,7 +211,7 @@ describe('installing an agent a duty grant covers', () => {
       return { bundle: bundleWithDefinitions('oct_retiring', 1_000) }
     })
     const daemon = await boot({ fetchDutyAgent })
-    const install = (daemon as any).installGrantedAgents([grant()])
+    const install = (daemon as any).dutyCoordinator.installGrantedAgents([grant()])
 
     // The rotation's live push lands first, through the real frame handler.
     ;(daemon as any).cpConfigApply().applyMcpServerUpsert(proxyDef('oct_fresh', 2_000))
@@ -228,7 +228,7 @@ describe('installing an agent a duty grant covers', () => {
     const fetchDutyAgent = vi.fn(async () => ({ bundle: bundleWithDefinitions('oct_retiring', 1_000) }))
     const daemon = await boot({ fetchDutyAgent })
 
-    await (daemon as any).installGrantedAgents([grant()])
+    await (daemon as any).dutyCoordinator.installGrantedAgents([grant()])
     expect(bearerOf(daemon)).toBe('Bearer oct_retiring')
     ;(daemon as any).cpConfigApply().applyMcpServerUpsert(proxyDef('oct_fresh', 2_000))
 
@@ -240,7 +240,7 @@ describe('installing an agent a duty grant covers', () => {
     const fetchDutyAgent = vi.fn(async () => ({ bundle: bundleWithDefinitions() }))
     const daemon = await boot({ fetchDutyAgent })
 
-    await (daemon as any).installGrantedAgents([grant()])
+    await (daemon as any).dutyCoordinator.installGrantedAgents([grant()])
 
     expect(JSON.stringify((daemon as any).cpMcpDefs.effective(ORG))).not.toContain('issuedAt')
     await daemon.stop()
@@ -250,7 +250,7 @@ describe('installing an agent a duty grant covers', () => {
     const fetchDutyAgent = vi.fn(async () => ({ bundle: bundle() }))
     const daemon = await boot({ fetchDutyAgent })
 
-    await (daemon as any).installGrantedAgents([grant()])
+    await (daemon as any).dutyCoordinator.installGrantedAgents([grant()])
 
     expect(registries(daemon).agents.has(AGENT)).toBe(true)
     expect((daemon as any).memoryConnections.connectionIds()).toEqual([])
@@ -274,7 +274,7 @@ describe('installing an agent a duty grant covers', () => {
       return realAgentUpsert(id, spec)
     }
 
-    await (daemon as any).installGrantedAgents([grant()])
+    await (daemon as any).dutyCoordinator.installGrantedAgents([grant()])
 
     // Registry-before-agent: static memory admission must never see the agent
     // before at least a probing (fail-closed) connection entry exists.
@@ -286,8 +286,8 @@ describe('installing an agent a duty grant covers', () => {
     const fetchDutyAgent = vi.fn(async () => ({ bundle: bundle() }))
     const daemon = await boot({ fetchDutyAgent })
 
-    await (daemon as any).installGrantedAgents([grant()])
-    await (daemon as any).installGrantedAgents([grant()])
+    await (daemon as any).dutyCoordinator.installGrantedAgents([grant()])
+    await (daemon as any).dutyCoordinator.installGrantedAgents([grant()])
 
     expect(fetchDutyAgent).toHaveBeenCalledTimes(1)
     await daemon.stop()
@@ -305,7 +305,7 @@ describe('installing an agent a duty grant covers', () => {
     cp.agents.upsert(AGENT, { ...bundle('3').spec })
     expect(cp.agents.appliedRevision(AGENT)).toBe(3n)
 
-    await (daemon as any).installGrantedAgents([grantAt('7')])
+    await (daemon as any).dutyCoordinator.installGrantedAgents([grantAt('7')])
 
     expect(fetchDutyAgent).toHaveBeenCalledWith(AGENT, ORG)
     expect(cp.agents.appliedRevision(AGENT)).toBe(7n)
@@ -319,7 +319,7 @@ describe('installing an agent a duty grant covers', () => {
 
     cp.agents.upsert(AGENT, { ...bundle('7').spec })
 
-    await (daemon as any).installGrantedAgents([grantAt('7')])
+    await (daemon as any).dutyCoordinator.installGrantedAgents([grantAt('7')])
 
     // The common path stays free: a regrant of a current replica costs no round trip.
     expect(fetchDutyAgent).not.toHaveBeenCalled()
@@ -334,7 +334,7 @@ describe('installing an agent a duty grant covers', () => {
     const daemon = await boot({ fetchDutyAgent })
     registries(daemon).agents.upsert(AGENT, { ...bundle('7').spec })
 
-    await (daemon as any).installGrantedAgents([grantAt('3')])
+    await (daemon as any).dutyCoordinator.installGrantedAgents([grantAt('3')])
 
     expect(fetchDutyAgent).not.toHaveBeenCalled()
     await daemon.stop()
@@ -354,9 +354,9 @@ describe('installing an agent a duty grant covers', () => {
     const daemon = await boot({ fetchDutyAgent })
     registries(daemon).agents.upsert(AGENT, { ...bundle('3').spec })
 
-    const admission = (daemon as any).admitDutyGrants([grantAt('7')])
+    const admission = (daemon as any).dutyCoordinator.admitDutyGrants([grantAt('7')])
     await vi.waitFor(() => expect(fetchDutyAgent).toHaveBeenCalled())
-    ;(daemon as any).applyDutyRevoke([{ groupId: GROUP, reason: 'gone' }])
+    ;(daemon as any).dutyCoordinator.applyDutyRevoke([{ groupId: GROUP, reason: 'gone' }])
     releaseFetch()
 
     await expect(admission).resolves.toEqual(new Set([GROUP]))
@@ -369,7 +369,7 @@ describe('installing an agent a duty grant covers', () => {
     const daemon = await boot({ fetchDutyAgent })
     ;(daemon as any).moveStagedAgents.add(AGENT)
 
-    await (daemon as any).installGrantedAgents([grant()])
+    await (daemon as any).dutyCoordinator.installGrantedAgents([grant()])
 
     expect(fetchDutyAgent).not.toHaveBeenCalled()
     expect(registries(daemon).agents.has(AGENT)).toBe(false)
@@ -381,7 +381,7 @@ describe('installing an agent a duty grant covers', () => {
     const daemon = await boot({ fetchDutyAgent })
     vi.spyOn(daemon as any, 'agentRemovalPending').mockReturnValue(true)
 
-    await (daemon as any).installGrantedAgents([grant()])
+    await (daemon as any).dutyCoordinator.installGrantedAgents([grant()])
 
     expect(fetchDutyAgent).not.toHaveBeenCalled()
     await daemon.stop()
@@ -394,7 +394,7 @@ describe('installing an agent a duty grant covers', () => {
       })
     })
 
-    await expect((daemon as any).installGrantedAgents([grant()])).resolves.toEqual(new Set([GROUP]))
+    await expect((daemon as any).dutyCoordinator.installGrantedAgents([grant()])).resolves.toEqual(new Set([GROUP]))
     expect(registries(daemon).agents.has(AGENT)).toBe(false)
     await daemon.stop()
   })
@@ -413,7 +413,7 @@ describe('a group is not held until it is servable', () => {
     const daemon = await boot({ fetchDutyAgent })
 
     // The EVT entry point, exactly as ConfigApply calls it — returns immediately.
-    ;(daemon as any).applyDutyGrant([grant()])
+    ;(daemon as any).dutyCoordinator.applyDutyGrant([grant()])
     await vi.waitFor(() => expect(fetchDutyAgent).toHaveBeenCalled())
 
     // Load-bearing: this is the routing window. A digest that already advertised
@@ -436,7 +436,7 @@ describe('a group is not held until it is servable', () => {
       })
     })
 
-    await (daemon as any).admitDutyGrants([grant()])
+    await (daemon as any).dutyCoordinator.admitDutyGrants([grant()])
 
     // Not held ⇒ absent from the digest ⇒ the CP sees a lease this member does
     // not report and reissues it through its missing-regrant path. Holding it
@@ -451,7 +451,7 @@ describe('a group is not held until it is servable', () => {
   it('an EMPTY reply refuses the group — the CP is saying we do not hold it', async () => {
     const daemon = await boot({ fetchDutyAgent: vi.fn(async () => ({})) })
 
-    await expect((daemon as any).admitDutyGrants([grant()])).resolves.toEqual(new Set([GROUP]))
+    await expect((daemon as any).dutyCoordinator.admitDutyGrants([grant()])).resolves.toEqual(new Set([GROUP]))
 
     expect(duties(daemon).digest()).toEqual([])
     expect(registries(daemon).agents.has(AGENT)).toBe(false)
@@ -464,7 +464,7 @@ describe('a group is not held until it is servable', () => {
       throw new Error('agent root is not writable')
     })
 
-    await (daemon as any).admitDutyGrants([grant()])
+    await (daemon as any).dutyCoordinator.admitDutyGrants([grant()])
 
     expect(duties(daemon).digest()).toEqual([])
     expect(registries(daemon).agents.has(AGENT)).toBe(false)
@@ -479,7 +479,7 @@ describe('a group is not held until it is servable', () => {
       )
     })
 
-    await (daemon as any).admitDutyGrants([grant([AGENT, other])])
+    await (daemon as any).dutyCoordinator.admitDutyGrants([grant([AGENT, other])])
 
     expect(duties(daemon).digest()).toEqual([])
     await daemon.stop()
@@ -494,18 +494,18 @@ describe('a group is not held until it is servable', () => {
     const daemon = await boot({ fetchDutyAgent })
     const advance = shiftClock(daemon)
 
-    await (daemon as any).admitDutyGrants([grant()])
+    await (daemon as any).dutyCoordinator.admitDutyGrants([grant()])
     expect(duties(daemon).digest()).toEqual([])
 
     // Inside the retry window a regrant is refused again WITHOUT another fetch —
     // a permanently failing agent cannot outpace the beat that regrants it.
     broken = false
-    await (daemon as any).admitDutyGrants([grant()])
+    await (daemon as any).dutyCoordinator.admitDutyGrants([grant()])
     expect(fetchDutyAgent).toHaveBeenCalledTimes(1)
     expect(duties(daemon).digest()).toEqual([])
 
     advance(20_000)
-    await (daemon as any).admitDutyGrants([grant()])
+    await (daemon as any).dutyCoordinator.admitDutyGrants([grant()])
 
     expect(fetchDutyAgent).toHaveBeenCalledTimes(2)
     expect(duties(daemon).digest()).toEqual([{ groupId: GROUP, term: '1' }])
@@ -517,8 +517,8 @@ describe('a group is not held until it is servable', () => {
     const fetchDutyAgent = vi.fn(async () => ({ bundle: bundle() }))
     const daemon = await boot({ fetchDutyAgent })
 
-    await (daemon as any).admitDutyGrants([grant()])
-    await (daemon as any).admitDutyGrants([{ ...grant(), term: '2' }])
+    await (daemon as any).dutyCoordinator.admitDutyGrants([grant()])
+    await (daemon as any).dutyCoordinator.admitDutyGrants([{ ...grant(), term: '2' }])
 
     // The common path is unchanged: only a genuinely new agent waits.
     expect(fetchDutyAgent).toHaveBeenCalledTimes(1)
@@ -544,7 +544,7 @@ describe('the rendezvous claim ordering', () => {
     const cp = registries(daemon)
 
     let settled = false
-    const claim = (daemon as any).claimDutyForTrigger(AGENT).then((result: unknown) => {
+    const claim = (daemon as any).dutyCoordinator.claimDutyForTrigger(AGENT).then((result: unknown) => {
       settled = true
       return result
     })
@@ -571,7 +571,7 @@ describe('the rendezvous claim ordering', () => {
       })
     })
 
-    await expect((daemon as any).claimDutyForTrigger(AGENT)).resolves.toEqual({ granted: false })
+    await expect((daemon as any).dutyCoordinator.claimDutyForTrigger(AGENT)).resolves.toEqual({ granted: false })
 
     // The grant was never applied, so the answer and the local state agree:
     // saying "not me" while still holding the lease is the split brain this
@@ -588,7 +588,7 @@ describe('the rendezvous claim ordering', () => {
       fetchDutyAgent: vi.fn(async () => ({}))
     })
 
-    await expect((daemon as any).claimDutyForTrigger(AGENT)).resolves.toEqual({ granted: false })
+    await expect((daemon as any).dutyCoordinator.claimDutyForTrigger(AGENT)).resolves.toEqual({ granted: false })
 
     expect(duties(daemon).digest()).toEqual([])
     expect(registries(daemon).agents.has(AGENT)).toBe(false)
@@ -602,7 +602,7 @@ describe('the rendezvous claim ordering', () => {
     const grants = vi.spyOn((daemon as any).store, 'reclaimWebchatMcpGrants')
     const dreams = vi.spyOn((daemon as any).dreamRunner(), 'reclaimDreams')
 
-    await (daemon as any).admitDutyGrants([grant()])
+    await (daemon as any).dutyCoordinator.admitDutyGrants([grant()])
 
     expect(duties(daemon).holdsAgent(AGENT)).toBe(true)
     expect(grants).toHaveBeenCalledWith([AGENT], 'session_closed', expect.any(Number))
@@ -611,7 +611,7 @@ describe('the rendezvous claim ordering', () => {
     // A re-grant of a group already held gains no agent, so it reclaims nothing.
     grants.mockClear()
     dreams.mockClear()
-    await (daemon as any).admitDutyGrants([grant()])
+    await (daemon as any).dutyCoordinator.admitDutyGrants([grant()])
     expect(grants).not.toHaveBeenCalled()
     expect(dreams).not.toHaveBeenCalled()
     await daemon.stop()

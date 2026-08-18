@@ -102,14 +102,15 @@ async function boot(broken = new Set<string>()) {
     reportDutiesNow: vi.fn(() => {}),
     fetchDutyAgent
   }
-  await (daemon as any).admitDutyGrants([grant(GROUP, '1', [AGENT_A, AGENT_C])])
+  await (daemon as any).dutyCoordinator.admitDutyGrants([grant(GROUP, '1', [AGENT_A, AGENT_C])])
   return { daemon, root, broken, fetchDutyAgent }
 }
 
 const duties = (d: Daemon) => (d as any).duties as DutyRegistry
 const served = (d: Daemon): string[] => (d as any).transportAgents().map((a: { id: string }) => a.id)
 const schedules = (d: Daemon, agentId: string): number => (d as any).scheduler.count(agentId)
-const admit = (d: Daemon, entries: DutyGrantEntry[]) => (d as any).admitDutyGrants(entries) as Promise<Set<string>>
+const admit = (d: Daemon, entries: DutyGrantEntry[]) =>
+  (d as any).dutyCoordinator.admitDutyGrants(entries) as Promise<Set<string>>
 
 /** Put a live Slack socket in the pool under this agent's own credentials, as a successful
  *  `reconcileSlackConnections` would — what consolidation must stop asking for once it is dropped. */
@@ -231,8 +232,8 @@ describe('a refused replacement still applies its removals', () => {
       throw new Error('control plane unreachable')
     })
     const admitted = admit(daemon, [grant(GROUP, '2', [AGENT_C, AGENT_B])])
-    await vi.waitFor(() => expect((daemon as any).pendingDutyAdmissions()).toEqual([GROUP]))
-    ;(daemon as any).applyDutyRevoke([{ groupId: GROUP, reason: 'superseded' }])
+    await vi.waitFor(() => expect((daemon as any).dutyCoordinator.pendingDutyAdmissions()).toEqual([GROUP]))
+    ;(daemon as any).dutyCoordinator.applyDutyRevoke([{ groupId: GROUP, reason: 'superseded' }])
     release()
 
     expect([...(await admitted)]).toEqual([GROUP])
@@ -256,7 +257,7 @@ describe('a refused replacement still applies its removals', () => {
       throw new Error('control plane unreachable')
     })
     const stale = admit(daemon, [grant(GROUP, '2', [AGENT_C, AGENT_B])])
-    await vi.waitFor(() => expect((daemon as any).pendingDutyAdmissions()).toEqual([GROUP]))
+    await vi.waitFor(() => expect((daemon as any).dutyCoordinator.pendingDutyAdmissions()).toEqual([GROUP]))
 
     // The newer grant lands and completes first — both its agents are already installed.
     await admit(daemon, [grant(GROUP, '3', [AGENT_A, AGENT_C])])

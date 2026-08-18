@@ -322,7 +322,7 @@ import { resolveMemoryFs } from './memory/fs.js'
 import { createWorkspaceGit } from './cp/workspace-git.js'
 import { DAEMON_VERSION } from './version.js'
 import { CpCronRegistry } from './cp/cp-cron.js'
-import { DutyRegistry, type DutyApplyResult } from './cp/duty-registry.js'
+import { DutyRegistry } from './cp/duty-registry.js'
 import { DutyCoordinator, type DutyHost } from './cp/duty-coordinator.js'
 import { CpAgentRegistry } from './cp/cp-agent-registry.js'
 import {
@@ -432,12 +432,7 @@ import type {
   ExternalSessionOrigin,
   ChannelAgentsOk,
   TaskList,
-  TaskListReq,
-  DutyAgentBundle,
-  DutyGrantEntry,
-  DutyMemberRef,
-  DutyRevoke,
-  HeartbeatDuties
+  TaskListReq
 } from '@agentconnect.md/protocol'
 import { formatErr } from './daemon/text.js'
 import {
@@ -1482,7 +1477,7 @@ export class Daemon {
     // Duty gate: on a pooled daemon only the agents whose group this member
     // holds get physical connections — every consolidator derives from here, so
     // opening and closing sockets on a grant/revoke needs no other change.
-    if (this.dutyEnforced()) {
+    if (this.dutyCoordinator.dutyEnforced()) {
       const held = this.duties.agents()
       agents = agents.filter((agent) => held.has(agent.id))
     }
@@ -1838,7 +1833,9 @@ export class Daemon {
         agentIds: () =>
           [...this.agents.values()]
             .filter(
-              (agent) => memoryKindOf(agent) === 'managed' && (!this.dutyEnforced() || this.duties.holdsAgent(agent.id))
+              (agent) =>
+                memoryKindOf(agent) === 'managed' &&
+                (!this.dutyCoordinator.dutyEnforced() || this.duties.holdsAgent(agent.id))
             )
             .map((agent) => agent.id),
         reachable: (agentId) => !this.k8sPlane || this.k8sPlane.runsInSandbox(agentId),
@@ -2515,17 +2512,6 @@ export class Daemon {
    */
   private reconcileRun?: Promise<void>
   private reconcilePending = false
-  // The duty-driven platform convergence counters live on the coordinator; the reconcile pass and
-  // the shutdown release read and publish them through these same-name accessors.
-  private get dutyConnectionsRequested(): number {
-    return this.dutyCoordinator.dutyConnectionsRequested
-  }
-  private get dutyConnectionsConverged(): number {
-    return this.dutyCoordinator.dutyConnectionsConverged
-  }
-  private set dutyConnectionsConverged(value: number) {
-    this.dutyCoordinator.dutyConnectionsConverged = value
-  }
   // Register snapshots publish agents before integrations. Carry newly-owned (installed or
   // duty-gained) inbox rows across coalesced passes and replay only after convergence is idle.
   private readonly pendingInboxReplayAgents = new Set<string>()
@@ -2555,8 +2541,8 @@ export class Daemon {
     // CLAIMED, not consumed: the request is marked satisfied only where the sockets actually
     // converge. This pass can throw at a dozen places before it reaches the platform layer, and a
     // fence whose sockets are still open must not be forgotten because one reconcile failed.
-    const dutyClaimed = this.dutyConnectionsRequested
-    const dutyDirty = dutyClaimed !== this.dutyConnectionsConverged
+    const dutyClaimed = this.dutyCoordinator.dutyConnectionsRequested
+    const dutyDirty = dutyClaimed !== this.dutyCoordinator.dutyConnectionsConverged
     const snapshot = this.loadAgentList(true)
     const files = snapshot.agents
     const nextFileAgents = new Map(files.map((a) => [a.id, a]))
@@ -2741,7 +2727,7 @@ export class Daemon {
       // Converged for real: the sockets a duty change invalidated are closed. Publishing the
       // CLAIMED value (not the current one) leaves a duty change that landed mid-pass outstanding,
       // so the trailing re-run still converges it.
-      if (dutyDirty) this.dutyConnectionsConverged = dutyClaimed
+      if (dutyDirty) this.dutyCoordinator.dutyConnectionsConverged = dutyClaimed
     }
     // The live roster just changed shape — re-announce any agent-derived register
     // capabilities. No-op when nothing changed. Optional call: tests inject
@@ -5785,8 +5771,8 @@ export class Daemon {
     // this member does not hold is claimed on receipt — winning serves it here,
     // losing answers `not_holder` so the router re-routes. The verdict is NOT
     // cached in relayMsgAcks: a later grant must not keep replaying a refusal.
-    if (this.dutyEnforced() && !this.duties.holdsAgent(msg.agentId)) {
-      const task = this.claimDutyForTrigger(msg.agentId).then((claimed) => {
+    if (this.dutyCoordinator.dutyEnforced() && !this.duties.holdsAgent(msg.agentId)) {
+      const task = this.dutyCoordinator.claimDutyForTrigger(msg.agentId).then((claimed) => {
         this.pendingRelayMsgAcks.delete(dedupKey)
         if (claimed.granted) return this.handleRelayMsg(msg, chat, post)
         return {
@@ -8011,7 +7997,7 @@ export class Daemon {
 
   /** Whether this member serves the agent's ingress edges and sweeps: the duty holder, or any local daemon. */
   private servesAgent(agentId: string): boolean {
-    return !this.dutyEnforced() || this.duties.holdsAgent(agentId)
+    return !this.dutyCoordinator.dutyEnforced() || this.duties.holdsAgent(agentId)
   }
 
   /** Deadline fired (§3.5): mark every still-open subtask timed_out, then WAKE the main's
@@ -9027,88 +9013,6 @@ export class Daemon {
     }
   }
 
-  // Duty grant admission, install, and convergence live in `cp/duty-coordinator.ts`; these are the
-  // thin same-name delegates the daemon's own paths (and the tests) still reach them through.
-  private dutyDigest(): HeartbeatDuties {
-    return this.dutyCoordinator.dutyDigest()
-  }
-
-  private dutyHeadroom(): number {
-    return this.dutyCoordinator.dutyHeadroom()
-  }
-
-  private dutyHeadroomForPendingClaim(): number {
-    return this.dutyCoordinator.dutyHeadroomForPendingClaim()
-  }
-
-  private dutyEnforced(): boolean {
-    return this.dutyCoordinator.dutyEnforced()
-  }
-
-  private applyDutyGrant(grants: DutyGrantEntry[]): void {
-    this.dutyCoordinator.applyDutyGrant(grants)
-  }
-
-  private admitDutyGrants(entries: DutyGrantEntry[]): Promise<Set<string>> {
-    return this.dutyCoordinator.admitDutyGrants(entries)
-  }
-
-  private settleDutyChange(result: DutyApplyResult): void {
-    this.dutyCoordinator.settleDutyChange(result)
-  }
-
-  private withdrawDutyGroups(groupIds: Iterable<string>): string[] {
-    return this.dutyCoordinator.withdrawDutyGroups(groupIds)
-  }
-
-  private pendingDutyAdmissions(): string[] {
-    return this.dutyCoordinator.pendingDutyAdmissions()
-  }
-
-  private installGrantedAgents(entries: DutyGrantEntry[]): Promise<Set<string>> {
-    return this.dutyCoordinator.installGrantedAgents(entries)
-  }
-
-  private dutyBundleIsStale(member: DutyMemberRef): boolean {
-    return this.dutyCoordinator.dutyBundleIsStale(member)
-  }
-
-  private installDutyAgent(agentId: string, orgId: string): Promise<void> {
-    return this.dutyCoordinator.installDutyAgent(agentId, orgId)
-  }
-
-  private runDutyAgentInstall(agentId: string, orgId: string): Promise<void> {
-    return this.dutyCoordinator.runDutyAgentInstall(agentId, orgId)
-  }
-
-  private applyDutyDefinitions(bundle: DutyAgentBundle): void {
-    this.dutyCoordinator.applyDutyDefinitions(bundle)
-  }
-
-  private applyDutyRevoke(revocations: DutyRevoke['revocations']): void {
-    this.dutyCoordinator.applyDutyRevoke(revocations)
-  }
-
-  private fenceDuties(groupIds: string[]): void {
-    this.dutyCoordinator.fenceDuties(groupIds)
-  }
-
-  private claimDutyForTrigger(agentId: string): Promise<{ granted: boolean; holder?: string }> {
-    return this.dutyCoordinator.claimDutyForTrigger(agentId)
-  }
-
-  private joinInFlightDutyClaims(): Promise<void> {
-    return this.dutyCoordinator.joinInFlightDutyClaims()
-  }
-
-  private onDutyChanged(): void {
-    this.dutyCoordinator.onDutyChanged()
-  }
-
-  private convergeDutyConnections(delayMs?: number): void {
-    this.dutyCoordinator.convergeDutyConnections(delayMs)
-  }
-
   /** Arm this agent's cron + dream schedules, or disarm them when its duty lives
    *  elsewhere — a cron is an ingress edge, so it fires only at the holder. */
   private syncAgentSchedules(a: { id: string; crons: CronDef[]; memory?: Agent['memory'] }): void {
@@ -9196,23 +9100,6 @@ export class Daemon {
       this.log.info(`dream schedule of agent "${agentId}": firing the occurrence a duty handover missed`)
       this.onDreamScheduleFire(agentId)
     }
-  }
-
-  private stopServingAgent(agentId: string): void {
-    this.dutyCoordinator.stopServingAgent(agentId)
-  }
-
-  private stopServingAgentSettled(agentId: string): Promise<void> {
-    return this.dutyCoordinator.stopServingAgentSettled(agentId)
-  }
-
-  /** The duty teardown still settling for this agent, if any. */
-  private dutyHostStop(agentId: string): Promise<void> | undefined {
-    return this.dutyCoordinator.dutyHostStop(agentId)
-  }
-
-  private confirmDutyTeardown(agentIds: string[], target: number, deadlineAt: number): Promise<string | undefined> {
-    return this.dutyCoordinator.confirmDutyTeardown(agentIds, target, deadlineAt)
   }
 
   private cpDegradedScopes(): string[] {
@@ -15495,7 +15382,7 @@ export class Daemon {
     if (!plane) return
     for (const { agentId, since } of plane.launchedAgents()) {
       // Suspend is the holder's decision (k8s-daemon-pool §4); an ex-holder must not touch its successor's pod.
-      if (this.dutyEnforced() && !this.duties.holdsAgent(agentId)) continue
+      if (this.dutyCoordinator.dutyEnforced() && !this.duties.holdsAgent(agentId)) continue
       // A live host owns the decision above; suspending under it would pull the pod out from
       // beneath a runtime that is merely between turns.
       if (
@@ -15527,11 +15414,11 @@ export class Daemon {
   private adoptClusterSandbox(agentId: string): void {
     const plane = this.k8sPlane
     if (!plane) return
-    const prior = this.dutyHostStop(agentId) ?? Promise.resolve()
+    const prior = this.dutyCoordinator.dutyHostStop(agentId) ?? Promise.resolve()
     void prior
       .catch(() => undefined)
       .then(async () => {
-        if (this.dutyEnforced() && !this.duties.holdsAgent(agentId)) return
+        if (this.dutyCoordinator.dutyEnforced() && !this.duties.holdsAgent(agentId)) return
         await plane.adoptAgent(agentId)
       })
       .catch((err) =>
@@ -15681,35 +15568,9 @@ export class Daemon {
     }
     // Whole-daemon drain surrenders the duty leases too: the CP can re-grant
     // them to a survivor immediately instead of waiting out the reassign window.
-    if (drain.scope.kind === 'daemon') await this.releaseAllDuties()
+    if (drain.scope.kind === 'daemon') await this.dutyCoordinator.releaseAllDuties()
     this.log.info(`drain[${drain.scope.kind}]: done — released ${released.length} session(s)`)
     return { released }
-  }
-
-  // The shutdown drain/converge cluster lives in `cp/duty-coordinator.ts`; these are the thin
-  // same-name delegates the drain orchestrators (and the tests) still reach it through.
-  private releaseAllDuties(): Promise<void> {
-    return this.dutyCoordinator.releaseAllDuties()
-  }
-
-  private dutyGroupBusy(groupId: string): boolean {
-    return this.dutyCoordinator.dutyGroupBusy(groupId)
-  }
-
-  private releaseDutiesForShutdown(drain: ShutdownDutyDrain): Promise<void> {
-    return this.dutyCoordinator.releaseDutiesForShutdown(drain)
-  }
-
-  private settleLateGrants(drain: ShutdownDutyDrain): Promise<void> {
-    return this.dutyCoordinator.settleLateGrants(drain)
-  }
-
-  private awaitDutyConvergence(target: number, deadlineAt: number): Promise<boolean> {
-    return this.dutyCoordinator.awaitDutyConvergence(target, deadlineAt)
-  }
-
-  private releaseDutyAcknowledged(groupId: string, deadlineAt: number): Promise<boolean> {
-    return this.dutyCoordinator.releaseDutyAcknowledged(groupId, deadlineAt)
   }
 
   private sleepUntil(at: number): Promise<void> {
@@ -16016,7 +15877,9 @@ export class Daemon {
   /** SIGTERM drain budget: a pool member holds duty leases and waits for turns instead of cutting
    *  them (`poolShutdownDrainMs`); a local daemon keeps the short window its service manager allows. */
   private shutdownDrainBudgetMs(): number {
-    return this.k8s || this.dutyEnforced() ? this.cfg.limits.poolShutdownDrainMs : this.cfg.limits.shutdownDrainMs
+    return this.k8s || this.dutyCoordinator.dutyEnforced()
+      ? this.cfg.limits.poolShutdownDrainMs
+      : this.cfg.limits.shutdownDrainMs
   }
 
   /** §2.5 SIGTERM / daemon shutdown: gate new turns, then await in-flight turns up
@@ -16462,8 +16325,8 @@ export class Daemon {
       activationCapabilityError: (agent) => this.activationCapabilityError(agent),
       servesAgent: (agentId) => this.servesAgent(agentId),
       closeUnusedPlatformConnections: () => this.closeUnusedPlatformConnections(),
-      applyDutyGrant: (grants) => this.applyDutyGrant(grants),
-      applyDutyRevoke: (revocations) => this.applyDutyRevoke(revocations),
+      applyDutyGrant: (grants) => this.dutyCoordinator.applyDutyGrant(grants),
+      applyDutyRevoke: (revocations) => this.dutyCoordinator.applyDutyRevoke(revocations),
       decideEditorPermission: (req) => this.decideEditorPermission(req),
       leaveConversation: (leave) => this.leaveConversation(leave),
       retractChannels: (integrationId, channelIds) => this.retractChannels(integrationId, channelIds),
@@ -17029,9 +16892,9 @@ export class Daemon {
         return agentId ? (this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId)) : undefined
       },
       degradedScopes: () => this.cpDegradedScopes(),
-      duties: () => this.dutyDigest(),
-      dutyPending: () => this.pendingDutyAdmissions(),
-      onDutyFence: (groupIds) => this.fenceDuties(groupIds),
+      duties: () => this.dutyCoordinator.dutyDigest(),
+      dutyPending: () => this.dutyCoordinator.pendingDutyAdmissions(),
+      onDutyFence: (groupIds) => this.dutyCoordinator.fenceDuties(groupIds),
       configApply: this.cpConfigApply(),
       sessionRead: createSessionReader(this.store, (session) => this.sessionThreadUrl(session)),
       // §5.4: serve a CP-forwarded status probe for a child session we own. Authorization is
@@ -17076,8 +16939,9 @@ export class Daemon {
               }
             }
           : {}),
-        knowsAgent: (id) => this.agents.has(id) && (!this.dutyEnforced() || this.duties.holdsAgent(id)),
-        claimDuty: async (id) => this.dutyEnforced() && (await this.claimDutyForTrigger(id)).granted,
+        knowsAgent: (id) => this.agents.has(id) && (!this.dutyCoordinator.dutyEnforced() || this.duties.holdsAgent(id)),
+        claimDuty: async (id) =>
+          this.dutyCoordinator.dutyEnforced() && (await this.dutyCoordinator.claimDutyForTrigger(id)).granted,
         log: this.log
       }),
       memoryReader: createMemoryReader((id) => this.memoryFsFor(id), this.memory),
@@ -17753,7 +17617,7 @@ export class Daemon {
       lapsedAgents: new Set(),
       loopDone: false
     }
-    if (this.dutyEnforced()) {
+    if (this.dutyCoordinator.dutyEnforced()) {
       this.shutdownDutyDrain = shutdownDrain
       this.cpClient?.reportDutiesNow?.()
     }
@@ -17797,9 +17661,9 @@ export class Daemon {
     // the moment its own turns are done — idle groups at once, busy ones as they settle — so a
     // successor takes them while this member is still waiting on the slowest turn. The turn wait
     // stops short of the budget by the release reserve, so the last releases still land inside it.
-    const dutyDrain = this.releaseDutiesForShutdown(shutdownDrain)
+    const dutyDrain = this.dutyCoordinator.releaseDutiesForShutdown(shutdownDrain)
     await this.drainForShutdown(
-      this.dutyEnforced()
+      this.dutyCoordinator.dutyEnforced()
         ? Math.max(0, drainDeadlineAt - Daemon.DUTY_RELEASE_RESERVE_MS - this.clock.now())
         : this.shutdownDrainBudgetMs()
     )
@@ -17835,7 +17699,7 @@ export class Daemon {
     // proceeds without losing the revocation obligation.
     await this.revokeAllRemoteWebchatGrants('session_closed')
     // A grant can land right up to the socket close; its release must be settled before that.
-    if (this.shutdownDutyDrain) await this.settleLateGrants(shutdownDrain)
+    if (this.shutdownDutyDrain) await this.dutyCoordinator.settleLateGrants(shutdownDrain)
     this.shutdownDutyDrain = undefined
     await Promise.resolve(this.cpClient?.stop()).catch((e) => errors.push(e))
     await Promise.resolve(this.sessionMetadataOutbox.inFlightDrain()).catch((e) => errors.push(e))

@@ -74,13 +74,14 @@ async function boot(opts: { releaseDuties?: (groupIds: string[]) => Promise<void
       bundle: bundle(agentId, agentId === AGENT ? 'scout' : 'ranger')
     }))
   }
-  await (daemon as any).admitDutyGrants([grant(GROUP, AGENT), grant(GROUP_B, AGENT_B)])
+  await (daemon as any).dutyCoordinator.admitDutyGrants([grant(GROUP, AGENT), grant(GROUP_B, AGENT_B)])
   expect(duties(daemon).groupIds().sort()).toEqual([GROUP, GROUP_B])
   return { daemon, clock, calls, releaseDuties, stop, reportDutiesNow }
 }
 
 const duties = (d: Daemon) => (d as any).duties as DutyRegistry
-const digest = (d: Daemon) => (d as any).dutyDigest() as { held: unknown[]; headroom: number; draining?: boolean }
+const digest = (d: Daemon) =>
+  (d as any).dutyCoordinator.dutyDigest() as { held: unknown[]; headroom: number; draining?: boolean }
 
 describe('shutdown drain of a duty-holding member', () => {
   it('declares draining and releases each idle group with an awaited ack before the socket closes', async () => {
@@ -124,7 +125,7 @@ describe('shutdown drain of a duty-holding member', () => {
 
     const stopping = daemon.stop()
     // An exchange that began before the SIGTERM commits its vacancy grant and delivers it now.
-    ;(daemon as any).applyDutyGrant([grant(LATE, 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3')])
+    ;(daemon as any).dutyCoordinator.applyDutyGrant([grant(LATE, 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3')])
     await stopping
 
     expect(fetchDutyAgent).not.toHaveBeenCalledWith(
@@ -148,7 +149,7 @@ describe('shutdown drain of a duty-holding member', () => {
 
     const stopping = daemon.stop()
     // A late grant for another agent, and a replacement of the busy group at a bumped term.
-    ;(daemon as any).applyDutyGrant([
+    ;(daemon as any).dutyCoordinator.applyDutyGrant([
       grant(LATE, 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3'),
       { ...grant(GROUP, AGENT), term: '2' }
     ])
@@ -188,7 +189,7 @@ describe('shutdown drain of a duty-holding member', () => {
 
     const stopping = daemon.stop()
     // A split: agent A re-homed under a NEW group id, delivered after the latch.
-    ;(daemon as any).applyDutyGrant([grant(LATE, AGENT)])
+    ;(daemon as any).dutyCoordinator.applyDutyGrant([grant(LATE, AGENT)])
     await stopping
 
     // GROUP lapses (its host would not stop), and so does the late grant that covers the same agent.
@@ -209,12 +210,12 @@ describe('shutdown drain of a duty-holding member', () => {
       }),
       cancel: vi.fn(async () => {})
     })
-    ;(daemon as any).applyDutyRevoke([{ groupId: GROUP, reason: 'superseded' }])
+    ;(daemon as any).dutyCoordinator.applyDutyRevoke([{ groupId: GROUP, reason: 'superseded' }])
     await flush()
     const warn = vi.spyOn((daemon as any).log, 'warn')
 
     const stopping = daemon.stop()
-    ;(daemon as any).applyDutyGrant([{ ...grant(GROUP, AGENT), term: '2' }])
+    ;(daemon as any).dutyCoordinator.applyDutyGrant([{ ...grant(GROUP, AGENT), term: '2' }])
     await stopping
 
     expect(calls.releases).toEqual([[GROUP_B]])
@@ -226,7 +227,7 @@ describe('shutdown drain of a duty-holding member', () => {
     {
       const { daemon, calls } = await boot()
       // Only GROUP is held, so the loop has nothing to do once it is revoked.
-      ;(daemon as any).applyDutyRevoke([{ groupId: GROUP_B, reason: 'gone' }])
+      ;(daemon as any).dutyCoordinator.applyDutyRevoke([{ groupId: GROUP_B, reason: 'gone' }])
       await flush()
       let finishReconcile!: () => void
       const gate = new Promise<void>((resolve) => {
@@ -237,11 +238,11 @@ describe('shutdown drain of a duty-holding member', () => {
         await gate
         await runReconcile()
       }
-      ;(daemon as any).applyDutyRevoke([{ groupId: GROUP, reason: 'superseded' }])
+      ;(daemon as any).dutyCoordinator.applyDutyRevoke([{ groupId: GROUP, reason: 'superseded' }])
       expect(duties(daemon).size()).toBe(0)
 
       const stopping = daemon.stop()
-      ;(daemon as any).applyDutyGrant([{ ...grant(GROUP, AGENT), term: '2' }])
+      ;(daemon as any).dutyCoordinator.applyDutyGrant([{ ...grant(GROUP, AGENT), term: '2' }])
       await flush()
       // Loop done at once (nothing held), host long gone — still no ack while the socket teardown pends.
       expect(calls.releases).toEqual([])
@@ -254,14 +255,14 @@ describe('shutdown drain of a duty-holding member', () => {
     {
       const { daemon, clock, calls } = await boot()
       ;(daemon as any).cfg.limits.poolShutdownDrainMs = 1_500
-      ;(daemon as any).applyDutyRevoke([{ groupId: GROUP_B, reason: 'gone' }])
+      ;(daemon as any).dutyCoordinator.applyDutyRevoke([{ groupId: GROUP_B, reason: 'gone' }])
       await flush()
       ;(daemon as any).runReconcile = () => new Promise<void>(() => {})
-      ;(daemon as any).applyDutyRevoke([{ groupId: GROUP, reason: 'superseded' }])
+      ;(daemon as any).dutyCoordinator.applyDutyRevoke([{ groupId: GROUP, reason: 'superseded' }])
       const warn = vi.spyOn((daemon as any).log, 'warn')
 
       const stopping = daemon.stop()
-      ;(daemon as any).applyDutyGrant([{ ...grant(GROUP, AGENT), term: '2' }])
+      ;(daemon as any).dutyCoordinator.applyDutyGrant([{ ...grant(GROUP, AGENT), term: '2' }])
       // The 1.5s budget is the thing under test, so it is elapsed in virtual time, not slept.
       await runVirtual(clock, stopping, 2_000)
 
@@ -272,9 +273,9 @@ describe('shutdown drain of a duty-holding member', () => {
 
   it('a CP-commanded rebalance drain still ignores grants that land while it is suspended', async () => {
     const { daemon, releaseDuties } = await boot()
-    const admit = vi.spyOn(daemon as any, 'admitDutyGrants')
+    const admit = vi.spyOn((daemon as any).dutyCoordinator, 'admitDutyGrants')
     ;(daemon as any).dutyClaimsSuspended = true
-    ;(daemon as any).applyDutyGrant([
+    ;(daemon as any).dutyCoordinator.applyDutyGrant([
       grant('11111111-1111-4111-8111-111111111114', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa4')
     ])
     await flush()
