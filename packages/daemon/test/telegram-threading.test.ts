@@ -148,7 +148,10 @@ describe('Telegram conversation discovery', () => {
     const emitIntegrationChannels = vi.fn()
     ;(daemon as any).cpClient = { emitIntegrationChannels, stop: vi.fn().mockResolvedValue(undefined) }
 
-    ;(daemon as any).observeTelegramChat({ id: '-200', name: 'new private group', isPrivate: true }, ['i-tg'])
+    ;(daemon as any).observedChannelsSync.observeTelegramChat(
+      { id: '-200', name: 'new private group', isPrivate: true },
+      ['i-tg']
+    )
 
     const channels = [{ id: '-200', name: 'new private group', isPrivate: true, kind: 'channel' }]
     expect(emitIntegrationChannels).toHaveBeenCalledWith({

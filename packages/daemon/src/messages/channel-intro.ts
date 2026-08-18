@@ -8,7 +8,7 @@ import type { NormalizedMessage } from './normalized.js'
  * wake) so those peers can record it in their memory and know who to delegate to later.
  * The filter is load-bearing: `listAgents` is org-wide by default. This module
  * is the pure decision layer + the synthetic-turn builder; the daemon wires the
- * durable state and dispatch around it (see Daemon.maybeIntroduceOnJoin).
+ * durable state and dispatch around it (see ConnectionReconciler.maybeIntroduceOnJoin).
  *
  * The whole feature is opt-in per agent (`agent.introduceOnJoin`, default off).
  */

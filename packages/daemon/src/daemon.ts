@@ -134,7 +134,7 @@ import {
   type SlackAppFactory,
   type SlackStatusOptions
 } from './slack/connection.js'
-import { TelegramConnection, type TelegramObservedChat } from './telegram/connection.js'
+import { TelegramConnection } from './telegram/connection.js'
 import { DiscordConnection } from './discord/connection.js'
 import { FeishuConnection } from './feishu/connection.js'
 import { SlackNameResolver } from './slack/name-resolver.js'
@@ -365,7 +365,6 @@ import type {
 } from '@agentclientprotocol/sdk'
 import type { Agent, CronDef, Integration } from './agents/agent-schema.js'
 import { fromPlatformMessage, stableMessageId, stableTurnId, type NormalizedMessage } from './messages/normalized.js'
-import { ConnectionPool } from './platforms/registry.js'
 import {
   ConnectionReconciler,
   type ConnectionReconcilerHost,
@@ -392,8 +391,6 @@ import type {
   McpTransportCapabilities,
   RuntimeModelCatalog,
   IntegrationChannel,
-  IntegrationLeave,
-  IntegrationLeaveOk,
   Drain,
   DrainProgress,
   DrainDone,
@@ -716,25 +713,8 @@ export class Daemon {
    *  daemon drain cannot leave a timer behind. The callback re-validates everything it
    *  needs, so a lease dropped by stopHost simply makes the wake a no-op. */
   private bgWakeTimers = new Set<TimerHandle>()
-  // §7.5 platform connection lifecycle — the pools, the openers, the prune pass and the
-  // Slack startup retries all live in the reconciler; the delegates below are what the
-  // rest of this class (and the tests) still reach it through.
+  // §7.5 platform connection lifecycle: pools, openers, the prune pass and the Slack startup retries.
   private readonly connections: ConnectionReconciler
-  private get slackPool(): ConnectionPool<SlackConnection> {
-    return this.connections.slackPool
-  }
-  private get slackSharedPool(): ConnectionPool<SlackConnection> {
-    return this.connections.slackSharedPool
-  }
-  private get telegramPool(): ConnectionPool<TelegramConnection> {
-    return this.connections.telegramPool
-  }
-  private get discordPool(): ConnectionPool<DiscordConnection> {
-    return this.connections.discordPool
-  }
-  private get feishuPool(): ConnectionPool<FeishuConnection> {
-    return this.connections.feishuPool
-  }
   /**
    * §7.3 turn-output surfaces — the converger factory, the applier, and the
    * opaque per-turn state slot, as ONE trio per platform. The bodies still live
@@ -1338,13 +1318,15 @@ export class Daemon {
       unbindIntegration: (integrationId) => this.unbindIntegration(integrationId),
       slackNameResolver: () => this.nameResolver,
       channelNameResolver: () => this.channelNameResolver,
-      refreshChannels: (conn) => this.refreshChannels(conn),
+      refreshChannels: (conn) => this.connections.refreshChannels(conn),
       onInbound: (msg, srcIntegrationIds) => this.onInbound(msg, srcIntegrationIds),
       srcIntegrationIds: (conn) => this.srcIntegrationIds(conn),
       waitForConnectionUses: (conn) => this.waitForConnectionUses(conn),
-      observeTelegramChat: (chat, integrationIds) => this.observeTelegramChat(chat, integrationIds),
-      refreshObservedChannels: () => this.refreshObservedChannels(),
-      retractChannels: (integrationId, channelIds) => this.retractChannels(integrationId, channelIds),
+      observeTelegramChat: (chat, integrationIds) =>
+        this.observedChannelsSync.observeTelegramChat(chat, integrationIds),
+      refreshObservedChannels: () => this.observedChannelsSync.refreshObservedChannels(),
+      retractChannels: (integrationId, channelIds) =>
+        this.observedChannelsSync.retractChannels(integrationId, channelIds),
       integrationConfigById: (integrationId) => this.integrationConfigById(integrationId),
       integrationIdForTransportScope: (agentId, platform, transportScope) =>
         this.integrationIdForTransportScope(agentId, platform, transportScope),
@@ -1919,14 +1901,14 @@ export class Daemon {
         // A freshly-resolved Telegram/Discord/Feishu channel name should also refresh that
         // integration's observed-channel snapshot (approach-A discovery) so the console
         // shows the human name rather than the raw chat/channel id.
-        this.refreshObservedChannels()
+        this.observedChannelsSync.refreshObservedChannels()
       },
       {
         // A newly-learnt scope changes which rows the observed set collapses onto (a
         // Discord thread folds into its channel), so re-emit the snapshot with it.
         saveScope: (id, scope) => {
           this.store.setChannelScope(id, scope, Date.now())
-          this.refreshObservedChannels()
+          this.observedChannelsSync.refreshObservedChannels()
         },
         saveAvatar: (source, id, avatarUrl) => {
           const scope = this.transportScopeForIntegrationIds(this.srcIntegrationIds(source))
@@ -2338,22 +2320,22 @@ export class Daemon {
     // open consolidated Slack connections, resolve bot user ids (merged rules are per-message)
     await this.connections.openInitialSlackConnections(agents)
     // Open send-only Slack clients for HTTP bots (inbound lives on the relay).
-    await this.openHttpSlackConnections(agents)
+    await this.connections.openHttpSlackConnections(agents)
     // Long-poll / gateway / WS platform connects (Telegram/Discord/Feishu) must NOT gate
     // boot: their start() awaits a bot-identity handshake (e.g. Telegram getMe) that can
     // HANG indefinitely when the platform API is unreachable — which would otherwise stall
     // the daemon before it ever reaches startCpClient() below, taking CP + Slack (via the
     // relay) down with it. Fire them in the background so the rest of boot proceeds; each
     // reconcile already catches its own per-token failures and leaves other tokens intact.
-    void this.reconcileTelegramConnections().catch((err) =>
-      this.log.error(`telegram: initial connect failed: ${formatErr(err)}`)
-    )
-    void this.reconcileDiscordConnections().catch((err) =>
-      this.log.error(`discord: initial connect failed: ${formatErr(err)}`)
-    )
-    void this.reconcileFeishuConnections().catch((err) =>
-      this.log.error(`feishu: initial connect failed: ${formatErr(err)}`)
-    )
+    void this.connections
+      .reconcileTelegramConnections()
+      .catch((err) => this.log.error(`telegram: initial connect failed: ${formatErr(err)}`))
+    void this.connections
+      .reconcileDiscordConnections()
+      .catch((err) => this.log.error(`discord: initial connect failed: ${formatErr(err)}`))
+    void this.connections
+      .reconcileFeishuConnections()
+      .catch((err) => this.log.error(`feishu: initial connect failed: ${formatErr(err)}`))
 
     // register crons (sync per agent — the same converge reconcile re-runs on change)
     for (const a of agents) this.syncAgentSchedules(a)
@@ -2713,11 +2695,11 @@ export class Daemon {
     // Reconcile exactly once from the final live roster. The close phase is strict:
     // detach ACKs only after last-reference connections have actually stopped.
     if (connectionsDirty) {
-      await this.closeUnusedPlatformConnections()
-      await this.reconcileSlackConnections()
-      await this.reconcileTelegramConnections()
-      await this.reconcileDiscordConnections()
-      await this.reconcileFeishuConnections()
+      await this.connections.closeUnusedPlatformConnections()
+      await this.connections.reconcileSlackConnections()
+      await this.connections.reconcileTelegramConnections()
+      await this.connections.reconcileDiscordConnections()
+      await this.connections.reconcileFeishuConnections()
       // Converged for real: the sockets a duty change invalidated are closed. Publishing the
       // CLAIMED value (not the current one) leaves a duty change that landed mid-pass outstanding,
       // so the trailing re-run still converges it.
@@ -2753,75 +2735,6 @@ export class Daemon {
         `workspace: prefetch clone for "${agent.id}" failed (will retry at first session): ${formatErr(err)}`
       )
     )
-  }
-
-  /** §7.5 platform lifecycle delegates — the bodies live in ConnectionReconciler; the
-   *  same-name methods stay here because callers (and tests) reach them through the class. */
-  private async closeUnusedPlatformConnections(): Promise<void> {
-    await this.connections.closeUnusedPlatformConnections()
-  }
-
-  private async reconcileSlackConnections(): Promise<void> {
-    await this.connections.reconcileSlackConnections()
-  }
-
-  private async openHttpSlackConnections(agents: LoadedAgent[]): Promise<void> {
-    await this.connections.openHttpSlackConnections(agents)
-  }
-
-  private async reconcileTelegramConnections(): Promise<void> {
-    await this.connections.reconcileTelegramConnections()
-  }
-
-  private async reconcileDiscordConnections(): Promise<void> {
-    await this.connections.reconcileDiscordConnections()
-  }
-
-  private async reconcileFeishuConnections(): Promise<void> {
-    await this.connections.reconcileFeishuConnections()
-  }
-
-  private backfillChannelNames(): void {
-    this.connections.backfillChannelNames()
-  }
-
-  private refreshObservedChannels(): void {
-    this.observedChannelsSync.refreshObservedChannels()
-  }
-
-  private async leaveConversation(leave: IntegrationLeave): Promise<IntegrationLeaveOk> {
-    return this.connections.leaveConversation(leave)
-  }
-
-  private clearRetractionOnTraffic(msg: NormalizedMessage, srcIntegrationIds?: string[]): void {
-    this.observedChannelsSync.clearRetractionOnTraffic(msg, srcIntegrationIds)
-  }
-
-  private retractChannels(integrationId: string, channelIds: readonly string[]): void {
-    this.observedChannelsSync.retractChannels(integrationId, channelIds)
-  }
-
-  private observeTelegramChat(chat: TelegramObservedChat, integrationIds: readonly string[]): void {
-    this.observedChannelsSync.observeTelegramChat(chat, integrationIds)
-  }
-
-  private spaceFor(platform: string, channelId: string): { id: string; name?: string } | undefined {
-    return this.observedChannelsSync.spaceFor(platform, channelId)
-  }
-
-  private collapseObserved(
-    observed: { id: string; name?: string }[],
-    platform: string
-  ): { id: string; name?: string; spaceId?: string; space?: string }[] {
-    return this.observedChannelsSync.collapseObserved(observed, platform)
-  }
-
-  private async refreshChannels(conn: SlackConnection): Promise<void> {
-    await this.connections.refreshChannels(conn)
-  }
-
-  private maybeIntroduceOnJoin(platform: string, integrationId: string, channels: { id: string }[]): void {
-    this.connections.maybeIntroduceOnJoin(platform, integrationId, channels)
   }
 
   /** Code/socket carve-backs below the denied host HOME/daemon root. Every input
@@ -5118,7 +5031,7 @@ export class Daemon {
       return { kind: 'rejected', reason: 'gated' }
     }
     const agentAuthored = this.isAgentBotMessage(msg)
-    this.clearRetractionOnTraffic(msg, srcIntegrationIds)
+    this.observedChannelsSync.clearRetractionOnTraffic(msg, srcIntegrationIds)
     msg.transportScope ??= this.transportScopeForIntegrationIds(srcIntegrationIds)
     if (msg.sender.avatarUrl && msg.transportScope)
       this.store.setProfileAvatar(msg.transportScope, msg.sender.id, msg.sender.avatarUrl, Date.now())
@@ -10523,7 +10436,7 @@ export class Daemon {
       // A first-seen chat widens the observed reachable set (approach-A discovery) —
       // report it after the session row exists so the console cannot miss a name
       // lookup that completed during cold session startup.
-      this.refreshObservedChannels()
+      this.observedChannelsSync.refreshObservedChannels()
     }
     try {
       onSessionReady?.(sessionId)
@@ -14059,7 +13972,7 @@ export class Daemon {
     const kind = observed === 'channel' && current?.kind === 'mpim' ? ('mpim' as const) : observed
     const known = this.store.getDisplayNames([channel]).get(channel)
     // Which Discord server the channel belongs to — see spaceFor. Direct rows have none.
-    const found = kind === 'channel' ? this.spaceFor(msg.platform, channel) : undefined
+    const found = kind === 'channel' ? this.observedChannelsSync.spaceFor(msg.platform, channel) : undefined
     const space = found ? { spaceId: found.id, ...(found.name ? { space: found.name } : {}) } : undefined
     // Compare against what a write would actually change — a partially resolved space
     // (id known, name not yet) must not re-emit the snapshot on every message.
@@ -16091,12 +16004,13 @@ export class Daemon {
       ): Promise<T> => this.enqueueAgentWorkspacePreparation(agent, operation, expectedWarmHost, allowAgentDrain),
       activationCapabilityError: (agent) => this.activationCapabilityError(agent),
       servesAgent: (agentId) => this.servesAgent(agentId),
-      closeUnusedPlatformConnections: () => this.closeUnusedPlatformConnections(),
+      closeUnusedPlatformConnections: () => this.connections.closeUnusedPlatformConnections(),
       applyDutyGrant: (grants) => this.dutyCoordinator.applyDutyGrant(grants),
       applyDutyRevoke: (revocations) => this.dutyCoordinator.applyDutyRevoke(revocations),
       decideEditorPermission: (req) => this.decideEditorPermission(req),
-      leaveConversation: (leave) => this.leaveConversation(leave),
-      retractChannels: (integrationId, channelIds) => this.retractChannels(integrationId, channelIds),
+      leaveConversation: (leave) => this.connections.leaveConversation(leave),
+      retractChannels: (integrationId, channelIds) =>
+        this.observedChannelsSync.retractChannels(integrationId, channelIds),
       runCronNow: (cronId) => this.runCronNow(cronId),
       runDrain: (drain, onProgress) => this.runDrain(drain, onProgress),
       scheduleFleetExit: (kind, targetVersion) => this.scheduleFleetExit(kind, targetVersion)
