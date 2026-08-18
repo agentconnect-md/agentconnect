@@ -43,7 +43,7 @@ import { Spinner } from '@/components/marks'
 import { Button, Icon, Toggle } from '@/components/ui'
 import { DaemonSelect, type DaemonSelectOption } from '@/components/console/DaemonSelect'
 import { RuntimeSelect } from '@/components/console/RuntimeSelect'
-import { editAgentDaemonChoices } from './edit-agent-daemon-choice'
+import { editAgentCapabilitySource, editAgentDaemonChoices } from './edit-agent-daemon-choice'
 import { VisibilityField, sameSharing, type SharingValue } from '@/components/console/VisibilityField'
 import { AgentCallVisibility } from '@/components/console/AgentCallVisibility'
 import {
@@ -340,10 +340,15 @@ export default function EditAgentModal({
   const memberOf = (group: MemberSetRow | undefined) =>
     group && daemons.find((d) => group.memberDaemonIds.includes(d.daemonId) && moveReady(d))
   const selectedGroupServing = memberOf(selectedGroup) !== undefined
-  // The daemon whose reported CAPABILITIES the form reads (runtimes, models, sandbox). For a group
-  // that is one live member standing in for the set — the same one the server would pick — exactly
-  // as the pool has always been probed. It is never the placement.
-  const daemon = selectedGroup ? memberOf(selectedGroup) : daemons.find((d) => d.daemonId === daemonId)
+  const daemonChoices = editAgentDaemonChoices(
+    daemons,
+    daemonId,
+    initialDaemonId.current,
+    featureFlagEnabled('daemon-pool')
+  )
+  // The daemon whose reported CAPABILITIES the form reads — one live member for a set target, and
+  // never the placement itself.
+  const daemon = editAgentCapabilitySource(daemons, daemonId, memberSets, daemonChoices.poolChoice)
   const sourceDaemon = daemons.find((d) => d.daemonId === initialDaemonId.current)
   const daemonChanged = daemonId !== initialDaemonId.current
   const initialPlacement = daemonChanged && !initialDaemonId.current
@@ -359,12 +364,6 @@ export default function EditAgentModal({
     ? selectedSandboxRequired || (daemon?.caps.features.includes('sandbox') ?? false)
     : sandboxSupported
   const effectiveRunInSandbox = selectedSandboxRequired || (selectedSandboxSupported && runInSandbox)
-  const daemonChoices = editAgentDaemonChoices(
-    daemons,
-    daemonId,
-    initialDaemonId.current,
-    featureFlagEnabled('daemon-pool')
-  )
   const poolServing = daemons.some((candidate) => candidate.pool && moveReady(candidate))
   const daemonOptions: DaemonSelectOption[] = [
     // With the flag off the picker offers Cloud only to an agent already ON it — same rule

@@ -1,4 +1,4 @@
-import { POOL_PLACEMENT, type DaemonRow } from '@/lib/data'
+import { groupSetIdOf, POOL_PLACEMENT, type DaemonRow, type MemberSetRow } from '@/lib/data'
 
 type DaemonChoiceRow = Pick<DaemonRow, 'pool' | 'daemonId' | 'status' | 'memberSetId'> & {
   caps: Pick<DaemonRow['caps'], 'features'>
@@ -52,4 +52,20 @@ export function editAgentDaemonChoices<T extends DaemonChoiceRow>(
     localChoices,
     offerPool: (poolOffered && poolChoice !== undefined) || alreadyOnPool
   }
+}
+
+/** The daemon whose reported CAPABILITIES the Edit form reads (runtimes, models, sandbox). A set
+ *  target — Cloud or a group — resolves to one live member standing in for the set, the same one the
+ *  server would pick; it is never the placement. `POOL_PLACEMENT` matches no row, and resolving it
+ *  to nothing is what fell the runtime picker back to the static list and hid the pool's runtimes. */
+export function editAgentCapabilitySource<T extends DaemonChoiceRow>(
+  daemons: T[],
+  selectedDaemonId: string,
+  groups: readonly MemberSetRow[],
+  poolChoice: T | undefined
+): T | undefined {
+  const group = groups.find((candidate) => candidate.setId === groupSetIdOf(selectedDaemonId))
+  if (group) return daemons.find((daemon) => group.memberDaemonIds.includes(daemon.daemonId) && moveReady(daemon))
+  if (selectedDaemonId === POOL_PLACEMENT) return poolChoice
+  return daemons.find((daemon) => daemon.daemonId === selectedDaemonId)
 }
