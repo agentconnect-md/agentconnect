@@ -9,7 +9,7 @@
 import type { AgentAuthorshipClaim, ChannelAgentsOk, CollabRoutesSnapshot } from '@agentconnect.md/protocol'
 import { IntegrationSchema, type BindRuleConfig, type Integration } from '../agents/agent-schema.js'
 import type { ChannelAgentsRequest, SessionContext } from '../mcp/ops.js'
-import type { ToolDescriptor } from '../mcp/tools.js'
+import type { ToolDescriptor } from '../mcp/tool-descriptor.js'
 import type { VirtualPlatform, VirtualPlatformConnection } from './virtual-connections.js'
 
 /** One synthetic integration, projected into both `agent.integrations` and the

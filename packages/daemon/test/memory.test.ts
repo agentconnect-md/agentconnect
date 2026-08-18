@@ -29,7 +29,7 @@ import {
 import { LocalMemoryFs } from '../src/memory/fs.js'
 import { createMemoryReader, MemoryViolationError } from '../src/cp/memory-reader.js'
 import { createManagedMemoryProvider } from '../src/memory/provider.js'
-import { MEMORY_TOOLS } from '../src/mcp/tools.js'
+import { MEMORY_TOOLS } from '../src/memory/tools.js'
 import { executeTool, type OpsDeps, type SessionContext } from '../src/mcp/ops.js'
 
 const local = (dir: string) => new LocalMemoryFs(dir)

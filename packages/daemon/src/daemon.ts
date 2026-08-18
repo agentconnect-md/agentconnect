@@ -94,7 +94,8 @@ import {
 import { configureWorkspaceGitOrigins } from './workspace/git-origin-policy.js'
 import { buildMcpServers } from './mcp/inject.js'
 import { resolveAgentMcpServers, RESERVED_MCP_SERVER_NAME } from './mcp/resolve-servers.js'
-import { toolsForIntegrations, MEMORY_TOOL_NAMES, GITHUB_REVIEW_TOOLS, KNOWLEDGE_TOOLS } from './mcp/tools.js'
+import { toolsForIntegrations, GITHUB_REVIEW_TOOLS, KNOWLEDGE_TOOLS } from './mcp/tools.js'
+import { MEMORY_TOOL_NAMES } from './memory/tools.js'
 import { isSessionTitleToolCall } from './mcp/session-title-tool.js'
 import { MEMORY_DISTILLATION_SYSTEM_PROMPT, readOnlyExtractionMode } from './memory/distill.js'
 import {

@@ -4,7 +4,7 @@ import { mkdirSync, rmSync, chmodSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { decodeFrames, encodeFrame, type IpcRequest, type IpcResponse } from './ipc.js'
 import { executeTool, type OpsDeps, type SessionContext } from './ops.js'
-import type { ToolDescriptor } from './tools.js'
+import type { ToolDescriptor } from './tool-descriptor.js'
 import type { Logger } from '../log.js'
 
 export interface McpControlDeps extends OpsDeps {
