@@ -16,7 +16,7 @@ import type {
   Workspace,
   PlacementKindValue
 } from '@/lib/data'
-import { POOL_LABEL, isSelfSender, lifecycleStatus, MOCK_MODE, placementValueOf } from '@/lib/data'
+import { isSelfSender, lifecycleStatus, MOCK_MODE, placementValueOf, poolLabel } from '@/lib/data'
 import type { AgentIcon } from '@/lib/agent-icon'
 import { withIconUrl } from '@/lib/agent-icon'
 import {
@@ -2064,7 +2064,7 @@ export function daemonFromDto(d: DaemonViewDto): DaemonRow {
     // provisioned-but-never-connected row. Never the raw hostname. A pool member's
     // name is its Pod, which is meaningless outside the cluster and changes on every
     // roll — the pool is one managed thing everywhere it is named, so use that label.
-    name: pool ? POOL_LABEL : d.name || d.daemonId.slice(0, 8),
+    name: pool ? poolLabel() : d.name || d.daemonId.slice(0, 8),
     version: d.agentVersion || PLACEHOLDER,
     latestVersion: d.latestVersion,
     releaseChannel: d.releaseChannel,
@@ -2081,6 +2081,7 @@ export function daemonFromDto(d: DaemonViewDto): DaemonRow {
     // `load.{cpu,mem}` are 0..1 fractions; surface them as percentages.
     cpu: d.load ? Math.round(d.load.cpu * 100) : 0,
     mem: d.load ? Math.round(d.load.mem * 100) : 0,
+    loadAgents: d.load?.agents ?? 0,
     caps: d.capabilities,
     // Per-runtime available models, observed from the daemon's runtime profiles.
     runtimeModels: (d.runtimeProfiles ?? []).map((p) => ({

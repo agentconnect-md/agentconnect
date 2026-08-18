@@ -17,6 +17,8 @@ describe('featureFlagEnabled', () => {
     setEnv()
     expect(featureFlagEnabled('daemon-groups')).toBe(false)
     expect(featureFlagEnabled('daemon-pool')).toBe(false)
+    // `managed` off is the SELF-HOSTED reading, which is what an unconfigured install is.
+    expect(featureFlagEnabled('managed')).toBe(false)
     setEnv('')
     expect(featureFlagEnabled('daemon-groups')).toBe(false)
     expect(featureFlagEnabled('daemon-pool')).toBe(false)
@@ -30,6 +32,10 @@ describe('featureFlagEnabled', () => {
     setEnv('daemon-groups,daemon-pool')
     expect(featureFlagEnabled('daemon-pool')).toBe(true)
     expect(featureFlagEnabled('daemon-groups')).toBe(true)
+    // The pool can be offered without being AgentConnect's: that pair is the self-hoster.
+    expect(featureFlagEnabled('managed')).toBe(false)
+    setEnv('daemon-pool,managed')
+    expect(featureFlagEnabled('managed')).toBe(true)
   })
 
   it('reads a comma-separated list, tolerating spacing and case', () => {

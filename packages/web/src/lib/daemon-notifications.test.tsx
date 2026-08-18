@@ -43,6 +43,7 @@ const mockDaemon = (id: string, name: string, op?: DaemonRow['lifecycleOp']): Da
   host: 'localhost',
   cpu: 10,
   mem: 20,
+  loadAgents: 0,
   caps: { platforms: [], runtimes: [], acp: true, features: [] },
   runtimeModels: [],
   mcpServers: [],

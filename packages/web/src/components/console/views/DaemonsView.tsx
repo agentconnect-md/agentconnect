@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import {
   POOL_LABEL,
   groupFleetStatus,
+  poolLabel,
   poolFleetStatus,
   presentedDaemonStatus,
   status,
@@ -38,6 +39,9 @@ export default function DaemonsView() {
   // Flagged: where the deployment did not ask for the pool, the page shows the
   // machines only — the CP still serves it, this is whether the console names it.
   const showPool = featureFlagEnabled('daemon-pool')
+  // Whose infrastructure the pool IS decides how it reads: the managed install sells it as
+  // AgentConnect Cloud, and a self-hosted one is looking at its own cluster.
+  const managed = featureFlagEnabled('managed')
   const poolMembers = useMemo(() => (showPool ? daemons.filter((d) => d.pool) : []), [daemons, showPool])
   const ownDaemons = useMemo(() => daemons.filter((d) => !d.pool), [daemons])
   const poolAgents = useMemo(() => {
@@ -101,7 +105,12 @@ export default function DaemonsView() {
                   {paused} paused
                 </span>
               </div>
-              {poolMembers.length > 0 && <PoolFleetCard members={poolMembers} hosted={poolAgents} />}
+              {poolMembers.length > 0 &&
+                (managed ? (
+                  <PoolFleetCard members={poolMembers} hosted={poolAgents} />
+                ) : (
+                  <ClusterFleetCard members={poolMembers} hosted={poolAgents} />
+                ))}
               {ownDaemons.length > 0 && (
                 <>
                   {/* The section label earns its place only next to the Cloud entry — without
@@ -263,15 +272,16 @@ function GroupRow({ group, daemons }: { group: MemberSetRow; daemons: DaemonRow[
 }
 
 /**
- * The whole pool as one entry (design: the Infra screen's `cloudSlot`).
+ * The whole pool as one entry on the MANAGED install (design: the Infra screen's `cloudSlot`).
  *
  * Deliberately nothing per-member: a member is a Pod, so its name, host, CPU and memory
  * are cluster churn no reader outside the cluster can act on, and a card each turned a
  * rolling deployment into a fleet of look-alike daemons. What is true of the pool is what
  * shows — is it serving, on what release, and how many agents run there.
  *
- * No utilization bar and no "Manage": the design's are a billing plan's included-usage and
- * upgrade path, and inventing either from load telemetry would read as a real quota.
+ * No utilization bar: the design's is a billing plan's included usage, and inventing that from
+ * load telemetry would read as a real quota. `ClusterFleetCard` has one because a self-hoster's
+ * ceiling is their cluster's own, which the members do report.
  */
 function PoolFleetCard({ members, hosted }: { members: DaemonRow[]; hosted: number }) {
   const { orgPath } = useOrgs()
@@ -331,6 +341,113 @@ function PoolFleetCard({ members, hosted }: { members: DaemonRow[]; hosted: numb
 // Bar colour tracks the hotter of the two utilizations (matches the design).
 function loadBarColor(load: number): string {
   return load >= 80 ? 'var(--status-paused)' : load >= 60 ? 'var(--amber-500)' : 'var(--brand)'
+}
+
+/**
+ * The same pool on a SELF-HOSTED install (design: the Infra screen's `clusterSlot`).
+ *
+ * Nothing here is a product the org bought: it is the operator's own cluster, so it is named as
+ * one, and the strip quotes the cluster's REAL budget — the agent ceiling its members report,
+ * against the agents they are running — rather than a plan's included usage. That is the one
+ * number a self-hoster can act on, and the reason the managed card has no bar: there the same
+ * pixels would have to mean billing, which no load telemetry can honestly say.
+ *
+ * Still one entry, never one card per member, and for the unchanged reason: a member is a Pod.
+ */
+function ClusterFleetCard({ members, hosted }: { members: DaemonRow[]; hosted: number }) {
+  const { orgPath } = useOrgs()
+  const router = useRouter()
+  const s = status(poolFleetStatus(members))
+  const serving = members.filter((m) => m.status === 'online')
+  const online = serving.length > 0
+  // The serving members share a release (they roll together); an idle cluster has no version
+  // worth quoting, so the strip drops it rather than naming a Pod that is gone.
+  const meta = online
+    ? `${serving.length} node${serving.length === 1 ? '' : 's'} · ${serving[0]!.version}`
+    : 'no nodes serving'
+  // Capacity is the sum of what the serving members will run, matched against what they ARE
+  // running — the same pair the CP's placement check uses. A member reporting `maxAgents <= 0`
+  // is UNBOUNDED, not a ceiling of zero: a cluster holding one has no finite budget, so the bar
+  // is withheld instead of quoting a total that says "full" about a pool that can never be.
+  const caps = serving.map((m) => Number(m.conns))
+  const bounded = caps.length > 0 && caps.every((c) => Number.isFinite(c) && c > 0)
+  const capacity = bounded ? caps.reduce((sum, c) => sum + c, 0) : 0
+  const used = serving.reduce((sum, m) => sum + m.loadAgents, 0)
+  const pct = capacity > 0 ? Math.min(100, Math.round((used / capacity) * 100)) : 0
+  // Opens one member's detail for the runtimes, models and MCP servers the cluster offers —
+  // a serving one, since a member that stopped answering can no longer describe itself.
+  const target = serving[0] ?? members[members.length - 1]!
+  const open = () => router.push(orgPath(`/daemons/${target.daemonId}`))
+
+  return (
+    <div
+      className="card click flex items-center gap-3 overflow-visible p-[14px] max-desktop:rounded-lg desktop:gap-[14px] desktop:px-4 desktop:py-[15px]"
+      onClick={open}
+    >
+      <span className="relative flex h-10 w-10 flex-none items-center justify-center rounded-md border border-(--border-subtle) bg-(--surface-sunken) desktop:h-9 desktop:w-9">
+        <Icon name="boxes" size={19} color={online ? 'var(--brand)' : 'var(--text-tertiary)'} />
+        {/* Mobile puts the status dot on the avatar corner; desktop shows it in the badge. */}
+        <span
+          className="absolute -right-[3px] -bottom-[3px] h-3 w-3 rounded-full border-2 border-(--surface-card) desktop:hidden"
+          style={{ background: s.dot }}
+        />
+      </span>
+      <div className="flex min-w-0 flex-1 flex-col gap-[2px] desktop:gap-0">
+        <div className="flex min-w-0 items-center gap-[6px] desktop:gap-2">
+          <span className="truncate font-sans text-[14px] font-semibold leading-normal desktop:text-[13.5px]">
+            {poolLabel()}
+          </span>
+          <span
+            className="badge hidden flex-none items-center gap-[6px] desktop:inline-flex"
+            style={{ background: s.bg, color: s.text }}
+          >
+            <span className="dot h-[6px] w-[6px]" style={{ background: s.dot }} />
+            {s.label}
+          </span>
+        </div>
+        <div className="truncate font-mono text-[12px] font-normal leading-normal text-(--text-tertiary) desktop:text-[11px] desktop:leading-[1.5]">
+          {meta}
+          <span className="desktop:hidden">{` · ${hosted} agent${hosted === 1 ? '' : 's'}`}</span>
+        </div>
+      </div>
+      <div className="hidden flex-none items-center gap-7 desktop:flex">
+        {capacity > 0 && (
+          <div className="w-[184px]">
+            <div className="mb-[5px] flex items-baseline justify-between gap-[10px]">
+              <span className="mono text-[11.5px] text-(--text-secondary)">
+                {used} / {capacity}
+              </span>
+              <span className="mono text-[11px] text-(--text-tertiary)">{pct}%</span>
+            </div>
+            <span className="block h-1 overflow-hidden rounded-sm bg-(--surface-active)">
+              <span className="block h-full" style={{ width: `${pct}%`, background: loadBarColor(pct) }} />
+            </span>
+            <div className="mt-[5px] font-sans text-[10.5px] font-normal leading-normal text-(--text-tertiary)">
+              Sandbox capacity in use
+            </div>
+          </div>
+        )}
+        <div className="text-right">
+          <div className="mono text-[14px] leading-normal font-semibold">{hosted}</div>
+          <div className="mt-[2px] font-sans text-[10.5px] font-normal leading-normal text-(--text-tertiary)">
+            agents on cluster
+          </div>
+        </div>
+        {/* Opens what the card opens: on a self-hosted install the cluster's runtimes, models and
+            MCP servers ARE what there is to manage — the console mints no cluster credentials. */}
+        <Button variant="secondary" size="sm" onClick={open}>
+          Manage
+        </Button>
+      </div>
+      <span
+        className="badge flex-none max-desktop:px-[10px] max-desktop:py-[3px] max-desktop:text-[12px] desktop:hidden"
+        style={{ background: s.bg, color: s.text }}
+      >
+        {s.label}
+      </span>
+      <Icon name="chevron-right" size={16} color="var(--text-tertiary)" className="desktop:hidden" />
+    </div>
+  )
 }
 
 function DaemonCard({ m, hosted }: { m: DaemonRow; hosted: number }) {

@@ -53,6 +53,7 @@ function daemon(over: Partial<DaemonRow>): DaemonRow {
     host: 'edge-1',
     cpu: 10,
     mem: 20,
+    loadAgents: 0,
     caps: { platforms: [], runtimes: [], acp: true, features: [] },
     runtimeModels: [],
     mcpServers: [],
@@ -92,7 +93,8 @@ function render(): string {
   return html
 }
 
-/** The console shows the pool only where the deployment asked for it (lib/feature-flags.ts). */
+/** The console shows the pool only where the deployment asked for it, and names it after the
+ *  product only on the managed install (lib/feature-flags.ts). */
 const setFlags = (value: string) => {
   ;(window as unknown as { __AC_ENV?: Record<string, string> }).__AC_ENV = { FEATURE_FLAGS: value }
 }
@@ -102,7 +104,7 @@ beforeEach(() => {
   mocks.agents = []
   mocks.memberSets = []
   mocks.push.mockClear()
-  setFlags('daemon-pool')
+  setFlags('daemon-pool,managed')
 })
 
 describe('DaemonsView pool', () => {
@@ -188,6 +190,7 @@ describe('DaemonsView pool', () => {
 
     expect(html).not.toContain('AgentConnect Cloud')
     expect(html).not.toContain('agents on Cloud')
+    expect(html).not.toContain('Kubernetes cluster')
     expect(html).toContain('pc.dev')
   })
 
@@ -214,5 +217,74 @@ describe('DaemonsView pool', () => {
     const html = render()
 
     expect(html).toContain('No daemons connected')
+  })
+})
+
+describe('DaemonsView pool — self-hosted', () => {
+  // Without `managed` the pool is not a product this org bought: it is the operator's own
+  // cluster, and the card has to say so or a self-hoster reads their own machines as a bill.
+  beforeEach(() => setFlags('daemon-pool'))
+
+  it('names the cluster rather than the product', () => {
+    mocks.daemons = [member('p1'), member('p2')]
+
+    const html = render()
+
+    expect(html).not.toContain('AgentConnect Cloud')
+    expect(html).not.toContain('Managed by AgentConnect')
+    expect(html.match(/Kubernetes cluster/g)).toHaveLength(1)
+    expect(html).toContain('2 nodes')
+  })
+
+  it('quotes the cluster’s own budget: agents running against the ceiling its members report', () => {
+    mocks.daemons = [member('p1', { conns: '20', loadAgents: 7 }), member('p2', { conns: '40', loadAgents: 27 })]
+    mocks.agents = [onPool('a1', 'p1'), onPool('a2', 'p2')]
+
+    const html = render()
+
+    expect(html).toContain('34 / 60')
+    expect(html).toContain('57%')
+    expect(html).toContain('Sandbox capacity in use')
+    // The org's OWN agents there — a different number from the slots every org's agents fill.
+    expect(html).toContain('agents on cluster')
+    expect(html).toContain('>2<')
+  })
+
+  it('counts only the serving members towards the ceiling', () => {
+    mocks.daemons = [member('p1', { conns: '10', loadAgents: 5 }), member('gone', { status: 'offline', conns: '10' })]
+
+    const html = render()
+
+    expect(html).toContain('5 / 10')
+  })
+
+  it('withholds the bar when a member is unbounded — no ceiling is not a ceiling of zero', () => {
+    // `maxAgents <= 0` is the daemon's UNBOUNDED sentinel (observability/pool-metrics.ts): a
+    // cluster holding one has no finite budget, so quoting a total would advertise "full" about
+    // a pool that can never be.
+    mocks.daemons = [member('p1', { conns: '20', loadAgents: 7 }), member('p2', { conns: '0', loadAgents: 3 })]
+
+    const html = render()
+
+    expect(html).not.toContain('Sandbox capacity in use')
+    expect(html).toContain('agents on cluster')
+  })
+
+  it('says nothing about capacity while nothing is serving', () => {
+    mocks.daemons = [member('p1', { status: 'offline', conns: '20' })]
+
+    const html = render()
+
+    expect(html).toContain('no nodes serving')
+    expect(html).not.toContain('Sandbox capacity in use')
+  })
+
+  it('still shows the whole cluster as ONE entry', () => {
+    mocks.daemons = [member('p1'), member('p2'), member('p3')]
+
+    const html = render()
+
+    expect(html.match(/agents on cluster/g)).toHaveLength(1)
+    expect(html).not.toContain('pool-member-p1')
   })
 })
