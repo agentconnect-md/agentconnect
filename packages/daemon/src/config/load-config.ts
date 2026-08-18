@@ -1,6 +1,6 @@
 import { chmodSync, readFileSync, existsSync, writeFileSync, mkdirSync, statSync } from 'node:fs'
 import { dirname } from 'node:path'
-import { CP_URL_ENV, type RelayRosterEntry } from '@agentconnect.md/protocol'
+import { CP_URL_ENV, USAGE_REPORTING_ENV, type RelayRosterEntry } from '@agentconnect.md/protocol'
 import { ConfigSchema, type Config } from './config-schema.js'
 import { resolveRoot, configPath, defaultAgentsDir } from '../paths.js'
 
@@ -82,6 +82,16 @@ export function loadConfig(
   if (envUrl && !cfg.controlPlane.url) {
     cfg.controlPlane.url = envUrl
     if (!o.noCp) cfg.controlPlane.enabled = true
+  }
+
+  // Same reason, same precedence: an in-cluster daemon has no config file to carry this, so
+  // the deployment that meters upstream of it says so through the environment. A file that
+  // states a preference still wins — this is read from the RAW document, before the schema
+  // fills its default, because after parsing "absent" and "explicitly true" look identical.
+  const declaredUsageReporting = (raw as { usageReporting?: { enabled?: unknown } } | null)?.usageReporting?.enabled
+  const envUsageReporting = process.env[USAGE_REPORTING_ENV]?.trim().toLowerCase()
+  if (declaredUsageReporting === undefined && (envUsageReporting === 'false' || envUsageReporting === '0')) {
+    cfg.usageReporting.enabled = false
   }
 
   cfg.agentsDir = o.agentsDir ?? cfg.agentsDir ?? defaultAgentsDir(root)

@@ -13,11 +13,15 @@
  * that turning it off is a deliberate act rather than a default.
  */
 import { describe, it, expect } from 'vitest'
-import { buildEnvelope } from '@agentconnect.md/protocol'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { buildEnvelope, USAGE_REPORTING_ENV } from '@agentconnect.md/protocol'
 import { CpClient, type CpClientDeps } from '../../src/cp/client.js'
 import { FakeTransport } from './fake-transport.js'
 import { FakeClock } from './fake-clock.js'
 import { ConfigSchema } from '../../src/config/config-schema.js'
+import { loadConfig } from '../../src/config/load-config.js'
 
 const DAEMON_ID = '22222222-2222-4222-8222-222222222222'
 const silent = { trace() {}, debug() {}, info() {}, warn() {}, error() {} }
@@ -125,6 +129,30 @@ describe('usage reporting as a deployment choice', () => {
     // muting a daemon that has been told to stop reporting it.
     expect(t.sent.length).toBeGreaterThan(before)
     expect(framesOf(t, 'event/session')).toHaveLength(1)
+  })
+
+  it('takes the switch from the environment, because an in-cluster daemon has no file', () => {
+    const root = mkdtempSync(join(tmpdir(), 'ac-usage-env-'))
+    const previous = process.env[USAGE_REPORTING_ENV]
+    try {
+      // `run` auto-creates `{version:1}` for a pod that ships no config, so the schema
+      // default is the ONLY thing a deployment could otherwise get.
+      process.env[USAGE_REPORTING_ENV] = 'false'
+      expect(loadConfig({ root, autoCreate: true }).usageReporting.enabled).toBe(false)
+
+      // A file that states a preference still wins — the env is the fallback for the pod
+      // that has none, not an override of an operator who wrote one down.
+      writeFileSync(join(root, 'config.json'), JSON.stringify({ version: 1, usageReporting: { enabled: true } }))
+      expect(loadConfig({ root }).usageReporting.enabled).toBe(true)
+
+      delete process.env[USAGE_REPORTING_ENV]
+      rmSync(join(root, 'config.json'))
+      expect(loadConfig({ root, autoCreate: true }).usageReporting.enabled).toBe(true)
+    } finally {
+      if (previous === undefined) delete process.env[USAGE_REPORTING_ENV]
+      else process.env[USAGE_REPORTING_ENV] = previous
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 
   it('defaults to on in config, so turning it off is deliberate', () => {
