@@ -17,6 +17,7 @@ LAST_TAG="${1:-}"
 VALUE="$2"
 MODE="${3:-publish}"
 REPO_ROOT=$(git rev-parse --show-toplevel)
+PKG="@agentconnect.md/billing-contract"
 
 restore_manifest() {
   git -C "$REPO_ROOT" restore --source=HEAD -- packages/billing-contract/package.json
@@ -50,6 +51,33 @@ if [ -n "$LAST_TAG" ] && git rev-parse -q --verify "${LAST_TAG}^{commit}" > /dev
       exit 0
     fi
   fi
+fi
+
+# Bootstrap guard, and it clears itself. npm will not let a trusted publisher be
+# configured for a package that does not exist yet, so the FIRST publish of this
+# name has to be a manual one; until it happens, OIDC authentication here fails.
+# That failure would land badly: this lane runs after the daemon / cli / setup
+# lanes, so the tag would be pushed and those three published before the run died
+# — half a release. Skipping until the name exists keeps the shared pipeline
+# green, and the moment someone publishes 0.1.0 by hand the guard stops firing
+# with nothing to remember to remove.
+#
+# A registry error that is NOT a 404 must never be swallowed: an unreachable
+# registry has to fail the release rather than quietly not publish.
+if ! NPM_VIEW=$(npm view "$PKG" version 2>&1); then
+  case "$NPM_VIEW" in
+    *E404*)
+      echo "${PKG} is not on npm yet — skipping ${SKIP_LABEL}."
+      echo "  npm requires the package to exist before a trusted publisher can be configured:"
+      echo "  publish the first version by hand, then set release.yaml as its trusted publisher."
+      exit 0
+      ;;
+    *)
+      echo "npm view ${PKG} failed for a reason other than 404 — refusing to guess:" >&2
+      echo "$NPM_VIEW" >&2
+      exit 1
+      ;;
+  esac
 fi
 
 if [ "$MODE" = prepare ]; then

@@ -27,6 +27,15 @@ It differs from the other three lanes in one way that matters: they are
 self-contained bundles whose manifests are stripped to zero runtime deps, while
 this is a real library, so its `zod` dependency stays declared.
 
+**First publish is manual.** npm will not let a trusted publisher be configured
+for a package that does not exist, so the name has to be claimed by hand once
+(`pnpm publish` from this directory), after which `release.yaml` is registered as
+the trusted publisher on npmjs and the lane takes over. Until that happens the
+lane skips itself with a log line rather than failing — it runs after the daemon,
+cli and setup lanes, and a hard failure there would leave a tag pushed and those
+three published from a run that then died. The guard clears itself the moment the
+name exists; a registry error that is not a 404 still fails the release.
+
 Version numbers therefore track the monorepo's release, and land sparsely — a
 release that does not touch the contract does not republish it.
 
