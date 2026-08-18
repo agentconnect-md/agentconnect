@@ -86,7 +86,7 @@ async function boot(childReply: (text: string, chunk: (t: string) => void) => Pr
     lastDeliveredTs: null,
     updatedAt: Date.now()
   })
-  const call = (req: MessageAgentReq) => (daemon as any).messageAgent(req) as Promise<{ delivered: boolean }>
+  const call = (req: MessageAgentReq) => (daemon as any).collab.messageAgent(req) as Promise<{ delivered: boolean }>
   const parentPrompts = () => prompts.get(CALLER)!
   return { daemon, prompts, bindings, call, parentPrompts }
 }
