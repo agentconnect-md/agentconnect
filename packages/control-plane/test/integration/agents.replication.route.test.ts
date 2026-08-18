@@ -195,7 +195,8 @@ describe('agent config replication CP→daemon (REST → agent/upsert·remove)',
         // A decimal STRING because the column is a bigint; "1" here because this
         // PATCH is the seeded agent's first configuration write.
         configRevision: '1',
-        workspace: { mode: 'scratch', isolation: 'shared', gitCredential: 'github-app' }
+        // The additional-repository allowlist rides the workspace; always shipped so a revoke replicates.
+        workspace: { mode: 'scratch', isolation: 'shared', gitCredential: 'github-app', additionalRepos: [] }
       }
     })
 
@@ -270,7 +271,8 @@ describe('agent config replication CP→daemon (REST → agent/upsert·remove)',
       mode: 'github',
       isolation: 'shared',
       gitRepo: 'https://github.com/acme/monorepo',
-      branch: 'main'
+      branch: 'main',
+      additionalRepos: []
     })
   })
 

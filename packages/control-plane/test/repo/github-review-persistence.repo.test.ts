@@ -1662,7 +1662,9 @@ describe('R1/R2a persistence foundation', () => {
       : { hooks: [], agentIds: [] }
 
     expect(changed.hooks.map((hook) => hook.id).sort()).toEqual([...hookIds].sort())
-    expect(changed.agentIds).toEqual([workspaceAgentId])
+    // Both kinds of renamed agent converge: the App-backed workspace and the grant owner,
+    // whose `workspace.additionalRepos` entry carries the same display name.
+    expect([...changed.agentIds].sort()).toEqual([agentId, workspaceAgentId].sort())
     expect(
       await prisma.hookDef.findMany({
         where: { id: { in: hookIds } },

@@ -865,6 +865,9 @@ export function applySpecFields(
     // workspaces with explicit repo grants. Mirror it exactly, including clear.
     if (ws.gitCredential !== undefined) existing.gitCredential = ws.gitCredential
     else delete existing.gitCredential
+    // The CP is the authority on the additional-repository allowlist and always ships
+    // the full set, so mirror it exactly — [] must replicate as a cleared list.
+    existing.additionalRepos = ws.additionalRepos
     if (opts.creating && existing.path === undefined) {
       existing.path = join(opts.agentDir, 'workspace')
     }

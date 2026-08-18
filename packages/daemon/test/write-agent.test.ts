@@ -463,6 +463,24 @@ describe('writeAgentSpec — merge (agent.json exists)', () => {
     })
   })
 
+  it('mirrors the CP additional-repository allowlist, including its removal', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
+    const file = seedAgent(dir, 'bot-a', {
+      id: 'bot-a',
+      name: 'bot-a',
+      status: 'active',
+      runtime: 'claude',
+      workspace: { mode: 'from-scratch', path: './workspace' }
+    })
+    const additionalRepos = [{ repoFullName: 'example-co/shared-library', repoId: '815' }]
+
+    writeAgentSpec(dir, 'bot-a', baseSpec({ workspace: { mode: 'scratch', additionalRepos } }), deps)
+    expect(readJson(file).workspace).toMatchObject({ additionalRepos })
+
+    writeAgentSpec(dir, 'bot-a', baseSpec({ workspace: { mode: 'scratch', additionalRepos: [] } }), deps)
+    expect(readJson(file).workspace).toMatchObject({ additionalRepos: [] })
+  })
+
   it('persists and normalizes a GitHub working subdirectory', () => {
     const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
     const file = seedAgent(dir, 'bot-a', {

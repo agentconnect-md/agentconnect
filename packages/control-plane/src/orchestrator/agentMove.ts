@@ -21,6 +21,7 @@ import {
   type Ack,
   type AgentActivate,
   type DutyAgentBundle,
+  type AgentAdditionalRepo,
   type AgentSkillEntry,
   type ManagedSkillEntry,
   type CronUpsert,
@@ -152,6 +153,9 @@ interface MoveBundle {
    * target daemon.
    */
   organizationEnvironment: OrganizationEnvironmentValues
+  /** The agent's authorized additional repositories — pinned for the same reason
+   *  as skills: a bare project() would ship [] and clear them on the target. */
+  additionalRepos: AgentAdditionalRepo[]
 }
 
 interface ActivationSnapshot {
@@ -463,12 +467,27 @@ export class AgentMoveService {
       }
     }
 
+    // Everything sent from here on carries a POST-CAS `configRevision`, so the repository
+    // allowlist has to be read after the CAS too. Its writers — the grant routes and the
+    // asynchronous rename repair — advance the same per-agent counter without holding this
+    // section, so replaying the pre-detach list at the newer revision is exactly the
+    // equal-revision/different-content violation the daemon refuses on every reconnect.
+    let postCas: MoveBundle
+    try {
+      postCas = { ...bundle, additionalRepos: await this.deps.specs.additionalReposOf(converted) }
+    } catch (err) {
+      throw new AgentMoveFailed(
+        'workspace edit could not re-read the authorized repositories; retry the same edit',
+        err
+      )
+    }
+
     let activated: Ack
     try {
       activated = await this.deps.control.agentActivate(
         daemonId,
         {
-          ...this.activationDefinition(converted, bundle),
+          ...this.activationDefinition(converted, postCas),
           moveId,
           reconcileWorkspace: true
         },
@@ -480,7 +499,7 @@ export class AgentMoveService {
       throw new AgentMoveFailed('workspace edit outcome is uncertain; retry the same edit', err)
     }
     if (!activated.ok) {
-      await this.rollbackWorkspaceChange(agent, converted, bundle, moveId, activated.reason)
+      await this.rollbackWorkspaceChange(agent, converted, postCas, moveId, activated.reason)
     }
 
     await this.finalizeWorkspaceChange(converted, workspaceRepoId, bundle.httpBotIds)
@@ -713,15 +732,28 @@ export class AgentMoveService {
     // edit's, and the daemon's fence refuses a bundle whose spec is not newer than the one it just
     // applied. Replaying `original` therefore could not restore anything the target had accepted —
     // every rejected edit ended fail-closed with the agent staged and offline.
+    //
+    // The list is read against THAT row for the same reason the forward activation reads it after
+    // its own CAS: a grant writer that committed while the rejected activation was in flight sits
+    // under this restore's revision, so the caller's copy would ship stale content at it.
+    let restoredBundle: MoveBundle
+    try {
+      restoredBundle = { ...bundle, additionalRepos: await this.deps.specs.additionalReposOf(restored) }
+    } catch (err) {
+      throw new AgentMoveFailClosed(
+        'workspace edit was rejected and the authorized repositories could not be re-read for its rollback',
+        err
+      )
+    }
     await this.restoreDetachedWorkspace(
       (await (this.deps.placement ?? PLACEMENT_ONLY).servingDaemon(converted))!,
       restored,
-      bundle,
+      restoredBundle,
       moveId,
       'workspace activation rejection',
       reason
     )
-    await this.convergeDerived(restored, bundle.httpBotIds)
+    await this.convergeDerived(restored, restoredBundle.httpBotIds)
     throw new AgentMoveFailed(`workspace edit rejected${reason ? `: ${reason}` : ''}`)
   }
 
@@ -737,7 +769,12 @@ export class AgentMoveService {
     try {
       // Classify the target as the implicit workspace repo and remove the now-
       // redundant explicit grant without tombstoning valid review projections.
-      if (!(await this.deps.agents.setWorkspaceRepoId(agent.id, workspaceRepoId))) {
+      if (await this.deps.agents.setWorkspaceRepoId(agent.id, workspaceRepoId)) {
+        // The cleanup runs AFTER the activation, and it both advances the revision and can drop a
+        // row the activation still listed in `workspace.additionalRepos` — so the daemon would
+        // otherwise carry the new primary repo as an additional one until it reconnected.
+        await this.pushPostCleanupSpec(agent)
+      } else {
         this.deps.log?.warn(
           { agentId: agent.id, workspaceRepoId: workspaceRepoId.toString() },
           'workspace edit: redundant repository grant cleanup deferred'
@@ -749,6 +786,23 @@ export class AgentMoveService {
       this.deps.log?.warn({ err, agentId: agent.id }, 'workspace edit: repository grant cleanup deferred')
     }
     await this.convergeDerived(agent, httpBotIds)
+  }
+
+  /** Best-effort: the reconnect roster is the backstop, and the edit itself already committed. */
+  private async pushPostCleanupSpec(agent: AgentRecord): Promise<void> {
+    const fresh = await this.deps.agents.getUnscoped(agent.id)
+    if (!fresh) return
+    const spec = await this.deps.specs.assemble(fresh)
+    for (const daemonId of await (this.deps.placement ?? PLACEMENT_ONLY).servingDaemons(fresh)) {
+      try {
+        await this.deps.control.agentUpsert(daemonId, { agentId: fresh.id, spec }, fresh.orgId)
+      } catch (err) {
+        this.deps.log?.warn(
+          { err, agentId: fresh.id, daemonId },
+          'workspace edit: post-cleanup agent/upsert failed (backstop: reconnect roster)'
+        )
+      }
+    }
   }
 
   /**
@@ -776,14 +830,16 @@ export class AgentMoveService {
 
   /** Read every placement-dependent wire definition. */
   private async snapshot(agent: AgentRecord): Promise<MoveBundle> {
-    const [integrations, cronRows, secrets, skills, managedSkills, organizationEnvironment] = await Promise.all([
-      this.deps.integrations.listForAgent(agent.id),
-      this.deps.crons.listForAgent(agent.id),
-      this.deps.specs.secretsOf(agent),
-      this.deps.specs.skillsOf(agent),
-      this.deps.specs.managedSkillsOf(agent),
-      this.deps.specs.organizationEnvironmentOf(agent)
-    ])
+    const [integrations, cronRows, secrets, skills, managedSkills, organizationEnvironment, additionalRepos] =
+      await Promise.all([
+        this.deps.integrations.listForAgent(agent.id),
+        this.deps.crons.listForAgent(agent.id),
+        this.deps.specs.secretsOf(agent),
+        this.deps.specs.skillsOf(agent),
+        this.deps.specs.managedSkillsOf(agent),
+        this.deps.specs.organizationEnvironmentOf(agent),
+        this.deps.specs.additionalReposOf(agent)
+      ])
     const specs = await Promise.all(
       integrations.map(async (integration) => {
         const [bot, secret, channels] = await Promise.all([
@@ -818,7 +874,8 @@ export class AgentMoveService {
       secrets,
       skills,
       managedSkills,
-      organizationEnvironment
+      organizationEnvironment,
+      additionalRepos
     }
   }
 
@@ -833,7 +890,8 @@ export class AgentMoveService {
         bundle.secrets,
         bundle.skills,
         bundle.managedSkills,
-        bundle.organizationEnvironment
+        bundle.organizationEnvironment,
+        bundle.additionalRepos
       ),
       integrations: bundle.integrations.map(({ spec }) => spec),
       crons: bundle.crons

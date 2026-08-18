@@ -13,6 +13,11 @@ import { normalizeGitHubSkillSource } from '../git-url.js'
  * with no live caller and has been removed.
  */
 
+// One repository of the agent's additional-repository allowlist (multi-repository-workspaces.md decision 2).
+// `repoId` is GitHub's numeric repository id as a decimal string — rename-immune, the identity minting matches on.
+export const AgentAdditionalRepo = z.object({ repoFullName: z.string(), repoId: z.string() })
+export type AgentAdditionalRepo = z.infer<typeof AgentAdditionalRepo>
+
 /**
  * Where the agent runs. Two modes; the **path is always daemon-generated** —
  * never specified by the caller (UX picks the mode, the machine owns the dir).
@@ -24,6 +29,11 @@ import { normalizeGitHubSkillSource } from '../git-url.js'
  *   `agentDir` (a subdir of the repo, repo-root if omitted). **Multiple agents
  *   may share one repo** — they differ by `agentDir`, so the repo is not an
  *   owned entity, just shared config on each agent.
+ *
+ * Both modes carry `additionalRepos`: the agent's additional-repository
+ * allowlist, projected by the CP so the daemon has the set before a session
+ * starts. A later phase materializes them as secondary workspace roots; today
+ * nothing on the daemon reads the list.
  */
 export const AgentWorkspace = z.discriminatedUnion('mode', [
   z.object({
@@ -33,7 +43,8 @@ export const AgentWorkspace = z.discriminatedUnion('mode', [
     isolation: z.enum(['shared', 'session']).default('shared'),
     // Scratch has no implicit/default repository. The credential helper still
     // lets git/gh request explicitly authorized repositories by name.
-    gitCredential: z.enum(['github-app']).optional()
+    gitCredential: z.enum(['github-app']).optional(),
+    additionalRepos: z.array(AgentAdditionalRepo).default([])
   }),
   z.object({
     mode: z.literal('github'),
@@ -45,7 +56,8 @@ export const AgentWorkspace = z.discriminatedUnion('mode', [
     // the pre-github-app behavior). 'github-app' ⇒ the daemon pulls short-lived
     // CP-minted installation tokens over gitcred/request and injects them via
     // the local credential helper — no durable git credential on the host.
-    gitCredential: z.enum(['github-app']).optional()
+    gitCredential: z.enum(['github-app']).optional(),
+    additionalRepos: z.array(AgentAdditionalRepo).default([])
   })
 ])
 export type AgentWorkspace = z.infer<typeof AgentWorkspace>

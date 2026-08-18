@@ -6,6 +6,12 @@
  * here. Rows are hard-deleted on revoke — unlike installations there is no
  * provenance pointer into this table, and an already-minted token surviving
  * to its ≤1h expiry is the documented revocation window.
+ *
+ * `repoId` + `repoFullName` are projected onto `AgentSpec.workspace.additionalRepos`
+ * (multi-repository-workspaces.md decision 2), so every writer that changes either
+ * bumps the owning agent's `configRevision` in the SAME transaction. Without it the
+ * daemon receives new spec content at the applied revision and refuses it as an
+ * invariant violation — permanently, on every reconnect.
  */
 import type { AgentRepoAuthorization, PrismaClient, User } from '../../generated/prisma/client.js'
 import { Prisma } from '../../generated/prisma/client.js'
@@ -15,6 +21,7 @@ import { AgentId } from '../../domain/ids.js'
 import { PgHookRepo } from './hook.repo.js'
 import { lockHookReviewAgentRepoScope } from '../review-projection-lock.js'
 import { AgentWorkspaceRepoConflict } from '../errors.js'
+import { bumpAgentConfigRevisions } from './organization-environment-fence.js'
 
 const withCreator = { createdBy: true } as const
 
@@ -66,6 +73,7 @@ export class PgAgentRepoAuthorizationRepo implements AgentRepoAuthorizationRepo 
         },
         include: withCreator
       })
+      await bumpAgentConfigRevisions(tx, [input.agentId])
       return toRecord(row)
     })
   }
@@ -91,12 +99,24 @@ export class PgAgentRepoAuthorizationRepo implements AgentRepoAuthorizationRepo 
   }
 
   async updateFullName(id: string, repoFullName: string): Promise<void> {
-    // updateMany (not update) so a concurrently-deleted row is a count of 0, not a throw.
-    await this.db.agentRepoAuthorization.updateMany({ where: { id }, data: { repoFullName } })
+    await this.transaction(async (tx) => {
+      // updateMany (not update) so a concurrently-deleted row is a count of 0, not a throw.
+      const changed = await tx.agentRepoAuthorization.updateMany({
+        where: { id, repoFullName: { not: repoFullName } },
+        data: { repoFullName }
+      })
+      if (changed.count === 0) return
+      const row = await tx.agentRepoAuthorization.findUnique({ where: { id }, select: { agentId: true } })
+      if (row) await bumpAgentConfigRevisions(tx, [row.agentId])
+    })
   }
 
   async remove(id: string): Promise<void> {
-    await this.db.agentRepoAuthorization.deleteMany({ where: { id } })
+    await this.transaction(async (tx) => {
+      const row = await tx.agentRepoAuthorization.findUnique({ where: { id }, select: { agentId: true } })
+      const removed = await tx.agentRepoAuthorization.deleteMany({ where: { id } })
+      if (removed.count > 0 && row) await bumpAgentConfigRevisions(tx, [row.agentId])
+    })
   }
 
   async removeWithReviewProjectionCleanup(
@@ -118,7 +138,8 @@ export class PgAgentRepoAuthorizationRepo implements AgentRepoAuthorizationRepo 
         // the shared lock order without opening a no-row race.
         await new PgHookRepo(tx).tombstoneReviewProjectionsForAgentRepo(agentId, repoId, at, desiredState)
       }
-      await tx.agentRepoAuthorization.deleteMany({ where: { id, agentId, repoId } })
+      const removed = await tx.agentRepoAuthorization.deleteMany({ where: { id, agentId, repoId } })
+      if (removed.count > 0) await bumpAgentConfigRevisions(tx, [agentId])
     })
   }
 }

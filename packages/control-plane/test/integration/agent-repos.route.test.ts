@@ -22,7 +22,7 @@
  */
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { generateKeyPairSync, randomUUID } from 'node:crypto'
-import type { Ack, AgentActivate, AgentDetach } from '@agentconnect.md/protocol'
+import type { Ack, AgentActivate, AgentDetach, AgentUpsert } from '@agentconnect.md/protocol'
 import { prisma } from '../setup.db.js'
 import { seedDaemon, seedAgent } from '../fixtures/seed.js'
 import { buildHttpApp, TEST_API_KEY_PEPPER, type HttpApp } from '../fakes/build-http.js'
@@ -132,6 +132,22 @@ class WorkspaceControlSpy {
     this.activations.push(value)
     return this.activations.length === 1 ? this.firstActivateAck : { ok: true }
   }
+}
+
+/** Records the `agent/upsert` pushes the grant routes make. */
+class UpsertSpy {
+  readonly upserts: AgentUpsert[] = []
+  async agentUpsert(_daemonId: string, u: AgentUpsert): Promise<void> {
+    this.upserts.push(u)
+  }
+}
+
+function replicatingApp(control: UpsertSpy): HttpApp {
+  const a = buildHttpApp(prisma, { PUBLIC_RELAY_URL: RELAY_URL }, undefined, control as unknown as ControlSender, {
+    github: stubbedGithub()
+  })
+  opened.push(a)
+  return a
 }
 
 function workspaceApp(control: WorkspaceControlSpy): HttpApp {
@@ -323,6 +339,33 @@ describe('agent repo authorizations REST — grant, list, revoke, gates', () => 
         'acme/tools'
       ])
     })
+  })
+
+  it('a grant and its revoke re-project workspace.additionalRepos at an advanced config revision', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const agentId = await workspaceAgent()
+    await seedInstallation()
+    const spy = new UpsertSpy()
+    const a = replicatingApp(spy)
+
+    const created = await post(a, agentId, { repoFullName: 'acme/tools', access: 'read' })
+    expect(created.statusCode).toBe(200)
+    expect(spy.upserts).toHaveLength(1)
+    expect(spy.upserts[0]!.spec.workspace).toMatchObject({
+      additionalRepos: [{ repoFullName: 'acme/tools', repoId: '111' }]
+    })
+
+    const repoAuthId = (created.json() as { id: string }).id
+    const revoked = await a.app.inject({
+      method: 'DELETE',
+      url: `${ORG}/agents/${agentId}/repos/${repoAuthId}`
+    })
+    expect(revoked.statusCode).toBe(204)
+    expect(spy.upserts).toHaveLength(2)
+    expect(spy.upserts[1]!.spec.workspace).toMatchObject({ additionalRepos: [] })
+    // Equal revision + changed content is refused daemon-side, so the row writes
+    // must advance the revision in the same transaction.
+    expect(BigInt(spy.upserts[1]!.spec.configRevision!)).toBeGreaterThan(BigInt(spy.upserts[0]!.spec.configRevision!))
   })
 
   it('POST lets a scratch workspace authorize covered repositories', async () => {

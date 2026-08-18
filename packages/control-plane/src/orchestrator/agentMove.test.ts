@@ -1,6 +1,6 @@
 import { onDaemon, onSet, placementTargetOf, samePlacement, type PlacementTarget } from '../domain/placement.js'
 import { describe, expect, it } from 'vitest'
-import type { Ack, AgentActivate, AgentDetach } from '@agentconnect.md/protocol'
+import type { Ack, AgentActivate, AgentDetach, AgentUpsert } from '@agentconnect.md/protocol'
 import { AgentId, BotId, CronId, DaemonId, IntegrationId, OrgId } from '../domain/ids.js'
 import type {
   AgentRecord,
@@ -164,6 +164,12 @@ function make(
     readyDaemons?: string[]
     /** Placement columns merged over the initial record (e.g. a `set` placement). */
     placement?: Partial<AgentRecord>
+    /** A repository grant that commits inside the detach → workspace-CAS window. */
+    grantDuringWorkspaceCas?: { repoFullName: string; repoId: bigint }
+    /** A repository grant that commits while the rejected workspace activation is in flight. */
+    grantDuringWorkspaceActivate?: { repoFullName: string; repoId: bigint }
+    /** The grant `setWorkspaceRepoId` finds redundant and deletes after the activation. */
+    redundantGrant?: { repoFullName: string; repoId: bigint }
   } = {}
 ) {
   let current: AgentRecord = {
@@ -173,9 +179,11 @@ function make(
       : {}),
     ...(opts.placement ?? {})
   }
+  let grants: Array<{ repoFullName: string; repoId: bigint }> = opts.redundantGrant ? [opts.redundantGrant] : []
   let cronRows = [cron]
   const calls: string[] = []
   const activations: AgentActivate[] = []
+  const upserts: AgentUpsert[] = []
   const detaches: AgentDetach[] = []
   // The org each control frame was scoped to — undefined is what an install-wide
   // member's connection rejects, so it is the interesting value here.
@@ -193,6 +201,12 @@ function make(
       workspaceRepoId?: bigint
     ) => {
       if (opts.workspacePersistenceFailsBeforeCommit) throw new Error('database unavailable')
+      // A grant landing between the pre-detach snapshot and this CAS: it advances the same
+      // per-agent revision counter, so the CAS below commits on top of ITS revision.
+      if (opts.grantDuringWorkspaceCas) {
+        grants = [...grants, opts.grantDuringWorkspaceCas]
+        current = { ...current, configRevision: current.configRevision + 1n }
+      }
       current = {
         ...current,
         workspace,
@@ -223,7 +237,13 @@ function make(
       }
       return current
     },
-    setWorkspaceRepoId: async () => true,
+    setWorkspaceRepoId: async (_id: string, repoId: bigint) => {
+      // Like the real cleanup: it drops the now-redundant grant AND advances the revision,
+      // both after the activation has already been sent.
+      grants = grants.filter((grant) => grant.repoId !== repoId)
+      current = { ...current, workspaceRepoId: repoId, configRevision: current.configRevision + 1n }
+      return true
+    },
     movePlacement: async (_id: string, expected: PlacementTarget, target: PlacementTarget) => {
       if (opts.casMiss || !samePlacement(placementTargetOf(current), expected)) return null
       current = agent(target.kind === 'daemon' ? target.daemonId : null)
@@ -262,6 +282,12 @@ function make(
       }
       appliedRevisions.set(daemonId, incoming)
       if (value.reconcileWorkspace && opts.rejectWorkspaceActivate && activations.length === 1) {
+        // A grant landing while the rejected activation was in flight: the rollback CAS below
+        // then commits on top of ITS revision.
+        if (opts.grantDuringWorkspaceActivate) {
+          grants = [...grants, opts.grantDuringWorkspaceActivate]
+          current = { ...current, configRevision: current.configRevision + 1n }
+        }
         return ack(false, 'clone failed')
       }
       if (value.reconcileWorkspace && opts.rejectWorkspaceRestore && activations.length === 2) {
@@ -273,6 +299,11 @@ function make(
       }
       if (daemonId === TARGET && opts.failTargetActivate) return ack(false, 'cannot start')
       return ack()
+    },
+    agentUpsert: async (daemonId: string, value: AgentUpsert, orgId?: string) => {
+      calls.push(`upsert:${daemonId}`)
+      upserts.push(value)
+      frameOrgs.push(orgId)
     }
   } as unknown as ControlSender
   const service = new AgentMoveService({
@@ -289,11 +320,23 @@ function make(
     } as unknown as ConstructorParameters<typeof AgentMoveService>[0]['botSecrets'],
     platforms: PLATFORMS,
     // The real assembler over a fake store — exercises project()/secretsOf() as prod does.
-    specs: new AgentSpecAssembler({
-      get: async () => ({}),
-      merge: async () => {},
-      keys: async () => new Map()
-    } as unknown as ConstructorParameters<typeof AgentSpecAssembler>[0]),
+    specs: new AgentSpecAssembler(
+      {
+        get: async () => ({}),
+        merge: async () => {},
+        keys: async () => new Map()
+      } as unknown as ConstructorParameters<typeof AgentSpecAssembler>[0],
+      {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      // Reads `grants` on every call, so a mid-move write is observable to a re-read.
+      {
+        listForAgent: async () => grants.map((grant) => ({ ...grant, access: 'read' }))
+      } as unknown as ConstructorParameters<typeof AgentSpecAssembler>[7]
+    ),
     crons: { listForAgent: async () => cronRows } as unknown as ConstructorParameters<
       typeof AgentMoveService
     >[0]['crons'],
@@ -326,7 +369,7 @@ function make(
         }
       : {})
   })
-  return { service, calls, activations, detaches, frameOrgs, mutations, releasedLive, current: () => current }
+  return { service, calls, activations, upserts, detaches, frameOrgs, mutations, releasedLive, current: () => current }
 }
 
 describe('AgentMoveService', () => {
@@ -387,7 +430,60 @@ describe('AgentMoveService', () => {
       spec: { workspace: { mode: 'github', gitRepo: GITHUB_WORKSPACE.gitRepo } }
     })
     expect(t.detaches[0]?.moveId).toBe(t.activations[0]?.moveId)
-    expect(t.calls).toEqual([`detach:${SOURCE}`, `activate:${SOURCE}`, 'hooks', 'collab'])
+    // The trailing upsert re-projects the spec after the redundant-grant cleanup, which
+    // runs (and advances the revision) only once the activation has been accepted.
+    expect(t.calls).toEqual([`detach:${SOURCE}`, `activate:${SOURCE}`, `upsert:${SOURCE}`, 'hooks', 'collab'])
+  })
+
+  it('re-reads the repository allowlist after the workspace CAS so the activation matches its revision', async () => {
+    const t = make({ grantDuringWorkspaceCas: { repoFullName: 'example-co/shared-library', repoId: 815n } })
+    const before = t.current().configRevision
+
+    await t.service.setWorkspace(t.current(), GITHUB_WORKSPACE, WORKSPACE_REPO_ID)
+
+    // The pre-detach snapshot saw no grant; shipping that list at the post-CAS revision
+    // would be the equal-revision/different-content violation the daemon refuses forever.
+    expect(t.activations).toHaveLength(1)
+    expect(t.activations[0]?.spec.workspace).toMatchObject({
+      additionalRepos: [{ repoFullName: 'example-co/shared-library', repoId: '815' }]
+    })
+    expect(BigInt(t.activations[0]!.spec.configRevision!)).toBeGreaterThan(before)
+  })
+
+  it('re-reads the repository allowlist after the rollback CAS as well', async () => {
+    const t = make({
+      rejectWorkspaceActivate: true,
+      grantDuringWorkspaceActivate: { repoFullName: 'example-co/shared-library', repoId: 815n }
+    })
+
+    await expect(t.service.setWorkspace(t.current(), GITHUB_WORKSPACE, WORKSPACE_REPO_ID)).rejects.toThrow(
+      'workspace edit rejected: clone failed'
+    )
+
+    // The restore activates the post-rollback revision, which sits above the grant's — so it
+    // has to carry the grant too, or the next roster repeats that revision with other content.
+    expect(t.activations).toHaveLength(2)
+    expect(t.activations[1]?.spec.workspace).toMatchObject({
+      additionalRepos: [{ repoFullName: 'example-co/shared-library', repoId: '815' }]
+    })
+    expect(t.activations[1]?.spec.configRevision).toBe(t.current().configRevision.toString())
+  })
+
+  it('re-projects the spec after the redundant-grant cleanup that follows the activation', async () => {
+    const redundantGrant = { repoFullName: 'acme/infra', repoId: WORKSPACE_REPO_ID }
+    const t = make({ redundantGrant })
+
+    await t.service.setWorkspace(t.current(), GITHUB_WORKSPACE, WORKSPACE_REPO_ID)
+
+    // The activation still listed the grant — cleanup runs after it — so without this push the
+    // daemon would keep the new PRIMARY repository as an additional one until it reconnected.
+    expect(t.activations[0]?.spec.workspace).toMatchObject({
+      additionalRepos: [redundantGrant.repoFullName].map((r) => ({ repoFullName: r }))
+    })
+    expect(t.upserts).toHaveLength(1)
+    expect(t.upserts[0]?.spec.workspace).toMatchObject({ additionalRepos: [] })
+    expect(t.upserts[0]?.spec.configRevision).toBe(t.current().configRevision.toString())
+    expect(BigInt(t.upserts[0]!.spec.configRevision!)).toBeGreaterThan(BigInt(t.activations[0]!.spec.configRevision!))
   })
 
   it('reconciles an access edit so the daemon can preserve the matching checkout', async () => {
@@ -444,7 +540,8 @@ describe('AgentMoveService', () => {
     expect(t.activations[1]?.spec.workspace).toEqual({
       mode: 'scratch',
       isolation: 'shared',
-      gitCredential: 'github-app'
+      gitCredential: 'github-app',
+      additionalRepos: []
     })
     expect(BigInt(t.activations[1]!.spec.configRevision!)).toBeGreaterThan(
       BigInt(t.activations[0]!.spec.configRevision!)

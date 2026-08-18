@@ -5,7 +5,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import { AgentSpecAssembler } from './agentSpecAssembler.js'
-import type { AgentRecord, AgentSecretStore } from '../persistence/ports.js'
+import type { AgentRepoAuthorizationRepo, AgentRecord, AgentSecretStore } from '../persistence/ports.js'
 import { AgentId, OrgId } from '../domain/ids.js'
 
 const AGENT: AgentRecord = {
@@ -51,6 +51,35 @@ function storeWith(values: Record<string, Record<string, string>>): AgentSecretS
     merge: async () => {},
     keys: async () => new Map()
   }
+}
+
+const unused = () => Promise.reject(new Error('not used by this test'))
+
+/** Only `listForAgent` participates in the projection; the writers stay inert. */
+function repoAuthWith(rows: Array<[fullName: string, repoId: bigint]>): AgentRepoAuthorizationRepo {
+  return {
+    listForAgent: async (agentId) =>
+      rows.map(([repoFullName, repoId], index) => ({
+        id: `auth-${index}`,
+        agentId,
+        repoId,
+        repoFullName,
+        access: 'read' as const,
+        createdAt: new Date('2026-01-01T00:00:00Z'),
+        createdBy: null
+      })),
+    create: unused,
+    get: unused,
+    updateAccess: unused,
+    updateFullName: unused,
+    remove: unused,
+    removeWithReviewProjectionCleanup: unused
+  }
+}
+
+/** The assembler's optional dependencies are positional; only the allowlist matters here. */
+function assemblerWith(agentRepoAuth: AgentRepoAuthorizationRepo): AgentSpecAssembler {
+  return new AgentSpecAssembler(storeWith({}), {}, undefined, undefined, undefined, undefined, undefined, agentRepoAuth)
 }
 
 describe('AgentSpecAssembler', () => {
@@ -157,6 +186,55 @@ describe('AgentSpecAssembler', () => {
         []
       )
     ).toThrow('git clone url must use https or ssh')
+  })
+
+  it('projects the agent’s authorized repositories onto a scratch workspace, sorted by full name', async () => {
+    const specs = assemblerWith(
+      repoAuthWith([
+        ['example-co/shared-library', 815n],
+        ['acme/infra', 4711n]
+      ])
+    )
+
+    const spec = await specs.assemble(AGENT)
+
+    expect(spec.workspace).toMatchObject({
+      mode: 'scratch',
+      additionalRepos: [
+        { repoFullName: 'acme/infra', repoId: '4711' },
+        { repoFullName: 'example-co/shared-library', repoId: '815' }
+      ]
+    })
+  })
+
+  it('projects the same list onto a github workspace', async () => {
+    const specs = assemblerWith(repoAuthWith([['example-co/shared-library', 815n]]))
+
+    const spec = await specs.assemble({
+      ...AGENT,
+      workspace: { mode: 'github', gitRepo: 'https://github.com/acme/primary-service' }
+    })
+
+    expect(spec.workspace).toMatchObject({
+      mode: 'github',
+      additionalRepos: [{ repoFullName: 'example-co/shared-library', repoId: '815' }]
+    })
+  })
+
+  it('projects an empty list for an agent with no grants, and with no allowlist dependency at all', async () => {
+    expect((await assemblerWith(repoAuthWith([])).assemble(AGENT)).workspace).toMatchObject({ additionalRepos: [] })
+    expect((await new AgentSpecAssembler(storeWith({})).assemble(AGENT)).workspace).toMatchObject({
+      additionalRepos: []
+    })
+  })
+
+  it('project trusts the caller-snapshotted allowlist (the move bundle pins it)', () => {
+    const specs = assemblerWith(repoAuthWith([['acme/infra', 4711n]]))
+    const pinned = [{ repoFullName: 'example-co/shared-library', repoId: '815' }]
+
+    const spec = specs.project(AGENT, {}, [], [], undefined, pinned)
+
+    expect(spec.workspace).toMatchObject({ additionalRepos: pinned })
   })
 
   it('applies the instance-owned icon bases to the spec iconUrl', async () => {

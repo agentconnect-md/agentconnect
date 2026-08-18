@@ -300,7 +300,8 @@ describe('agentRecordToSpec runtime overrides', () => {
     expect(agentRecordToSpec(agent, {}).workspace).toEqual({
       mode: 'scratch',
       isolation: 'shared',
-      gitCredential: 'github-app'
+      gitCredential: 'github-app',
+      additionalRepos: []
     })
     // The preset marker always ships (definite record field) so the daemon can
     // gate preset-only behavior such as `agentconnect-admin` attachment.
