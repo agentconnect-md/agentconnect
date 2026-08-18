@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { LocalStore, sessionKey, transcriptChannelKey } from '../src/store/local-store.js'
 import { SessionManager, isStandingContextTitleEcho } from '../src/session/session-manager.js'
+import { WorkspaceManager } from '../src/workspace/workspace-manager.js'
 import { createManagedMemoryProvider } from '../src/memory/provider.js'
 import { writeMemoryFile, MEMORY_INDEX, MAX_INDEX_INJECT_BYTES } from '../src/memory/store.js'
 import { LocalMemoryFs } from '../src/memory/fs.js'
@@ -158,6 +159,44 @@ describe('SessionManager', () => {
     await sm.handle('bot-a', msg({ ts: '100.3', thread: '100.3', text: 'update production' }))
 
     expect(host.newSession).toHaveBeenCalledWith(realpathSync(cwd), [], undefined, undefined, [realpathSync(repoRoot)])
+    await (await store).close()
+  })
+
+  it('names the workspace roots the runtime actually received, sampled after preparation', async () => {
+    const store = await newStore()
+    const host = { ...fakeHost(), usesMetaSystemPrompt: () => true } as any
+    const recovered = {
+      path: '/srv/agents/bot-a/repos/acme/infra/checkout',
+      repoFullName: 'acme/infra',
+      branch: 'trunk'
+    }
+    const ready: Array<typeof recovered> = []
+    // The real hand-out and the real prompt, over a ready list this session's preparation changes.
+    const workspaces = new (class extends WorkspaceManager {
+      override readySecondaryRoots() {
+        return ready
+      }
+    })()
+    // A warm host prepares INSIDE openRuntimeSession, which is where the root recovers.
+    const prepareWorkspace = vi.fn(async () => {
+      ready.push(recovered)
+      return agent.workspace.path
+    })
+    const sm = new SessionManager({
+      store,
+      hostFor: async () => host,
+      isHostRunning: () => true,
+      agentById: () => agent,
+      prepareWorkspace,
+      workspaces,
+      memory
+    })
+
+    await sm.handle('bot-a', msg({ ts: '100.4', thread: '100.4', text: 'read the shared library' }))
+
+    const [, , , systemAppend, additionalDirectories] = host.newSession.mock.calls[0]
+    expect(additionalDirectories).toEqual([recovered.path])
+    expect(systemAppend).toContain(`- ${recovered.path} — acme/infra (trunk)`)
     await (await store).close()
   })
 

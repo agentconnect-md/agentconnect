@@ -63,6 +63,8 @@ export type StandingContextInput = {
   envSecretNames: readonly string[]
   /** Secrets materialized to a private file instead of reaching the child env. */
   fileSecrets: readonly StandingContextFileSecret[]
+  /** Secondary workspace roots this session is handed as additional directories. */
+  workspaceRoots?: readonly { path: string; repoFullName: string; branch: string }[]
   usesSessionTitleTool: boolean
   needsReplyToParent: boolean
   /** The agent memory INDEX, already read and trimmed; '' for native/absent memory. */
@@ -75,6 +77,8 @@ export type StandingContextInput = {
 export type StandingContext = {
   memoryAppend: string
   agentMeta: string
+  /** The additional repositories block; '' when the session has no secondary root. */
+  workspaceRootsAppend: string
   collabAppend: string
   parentReplyAppend: string
   /** Durable standing rules re-asserted on session/load — no memory index. */
@@ -196,6 +200,21 @@ function buildAgentMeta(input: StandingContextInput): string {
   ].join('\n')
 }
 
+// The session's secondary workspace roots (multi-repository-workspaces.md decision 10). Standing
+// like the meta block: the set is fixed for the session, and the model must not mistake a root's
+// default branch for anything the current task is pinned to.
+export function buildWorkspaceRootsAppend(
+  roots: readonly { path: string; repoFullName: string; branch: string }[] | undefined
+): string {
+  if (!roots?.length) return ''
+  return [
+    '# Additional repositories',
+    'Additional repositories checked out for this session (each at its default branch; the working ' +
+      'directory stays the primary workspace):',
+    ...roots.map((root) => `- ${root.path} — ${root.repoFullName} (${root.branch})`)
+  ].join('\n')
+}
+
 // Standing guidance for agent↔agent collaboration. `sendMessage` can wake a peer, reach
 // humans, post at a channel root, or reply into a parent session. It has no visible
 // in-thread form: speaking in the current conversation is an ordinary reply. `toAgent`
@@ -273,15 +292,17 @@ export function buildParentReplyAppend(
 export function buildStandingContext(input: StandingContextInput): StandingContext {
   const memoryAppend = buildMemoryAppend(input.memoryIndex)
   const agentMeta = buildAgentMeta(input)
+  const workspaceRootsAppend = buildWorkspaceRootsAppend(input.workspaceRoots)
   const collabAppend = COLLAB_APPEND
   const parentReplyAppend = buildParentReplyAppend(input.needsReplyToParent, input.parentSessionId)
-  const resumeSystemContext = [agentMeta, collabAppend, parentReplyAppend, NO_RESPONSE_RULE]
+  const resumeSystemContext = [agentMeta, workspaceRootsAppend, collabAppend, parentReplyAppend, NO_RESPONSE_RULE]
     .filter(Boolean)
     .join('\n\n')
   const sessionContext = [resumeSystemContext, memoryAppend].filter(Boolean).join('\n\n')
   return {
     memoryAppend,
     agentMeta,
+    workspaceRootsAppend,
     collabAppend,
     parentReplyAppend,
     resumeSystemContext,

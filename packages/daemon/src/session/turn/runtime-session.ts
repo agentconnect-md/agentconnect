@@ -50,9 +50,11 @@ export interface OpenRuntimeSessionInput {
   chatRuntimeChangesAllowed: () => boolean
   /** The sticky per-session effort override (chat-selected or turn-supplied). */
   effortOverride: () => Promise<string | undefined>
-  /** Standing context for a fresh session; `resumeSystemContext` for a native resume. */
-  metaContext?: string
-  resumeSystemContext?: string
+  /** Standing context for a fresh session; `resumeSystemContext` for a native resume. Both are
+   *  resolved HERE, after workspace preparation, so what the prompt names and what
+   *  `workspaceDirectories` hands the runtime come from one snapshot. */
+  metaContext?: () => string | undefined
+  resumeSystemContext?: () => string | undefined
   usesMeta: boolean
   signal?: AbortSignal
   abortable: <T>(start: () => PromiseLike<T> | T, signal?: AbortSignal) => Promise<T>
@@ -158,7 +160,7 @@ export async function openRuntimeSession(input: OpenRuntimeSessionInput): Promis
     const acpSessionId = await newRuntimeSession(
       cwd,
       mcpServers,
-      input.metaContext,
+      input.metaContext?.(),
       input.additionalMcpServers?.length ? ordinaryMcpServers : undefined
     )
     created = true
@@ -209,7 +211,7 @@ export async function openRuntimeSession(input: OpenRuntimeSessionInput): Promis
           persistedSessionId,
           cwd,
           mcpServers,
-          input.usesMeta ? input.resumeSystemContext : undefined,
+          input.usesMeta ? input.resumeSystemContext?.() : undefined,
           fallbackMcpServers
         )
       } catch {
@@ -218,7 +220,7 @@ export async function openRuntimeSession(input: OpenRuntimeSessionInput): Promis
       }
     }
     if (!resumed) {
-      const acpSessionId = await newRuntimeSession(cwd, mcpServers, input.metaContext, fallbackMcpServers)
+      const acpSessionId = await newRuntimeSession(cwd, mcpServers, input.metaContext?.(), fallbackMcpServers)
       // A fresh ACP id the CP has never seen (the persisted one couldn't be resumed),
       // so this counts as a create for `event/session`. A resumed session (loadSession
       // above) keeps its id — the CP already knows it — so `created` stays false there.

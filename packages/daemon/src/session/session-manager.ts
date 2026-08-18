@@ -16,7 +16,7 @@ import { messageOrderingFor } from '../platforms/message-ordering.js'
 import { buildAttachmentBlocks } from './attachment-block.js'
 import { DIRECT_AGENT_CALL_REMINDER, EXPLICIT_MENTION_REMINDER, NO_RESPONSE_REMINDER } from './no-response.js'
 import { planReplay, renderReplayContext } from './turn/replay-plan.js'
-import { AGENT_META_OPENING, buildStandingContext } from './turn/standing-context.js'
+import { AGENT_META_OPENING, buildStandingContext, type StandingContext } from './turn/standing-context.js'
 import { backfillThreadHistory } from './turn/thread-backfill.js'
 import { RecallObserver, runTurnRecall, type MemoryRecallLifecycleEvent } from './turn/memory-recall.js'
 import { openRuntimeSession } from './turn/runtime-session.js'
@@ -532,24 +532,33 @@ export class SessionManager {
     }).materialize.filter((m) => secretNames.includes(m.sourceVar))
     const fileSecretNames = new Set(fileSecrets.map((m) => m.sourceVar))
     const usesMeta = host.usesMetaSystemPrompt?.() ?? false
-    const { memoryAppend, sessionContext, resumeSystemContext, metaContext, parentReplyAppend } = buildStandingContext({
-      agentName: agent.name,
-      agentId: agent.id,
-      agentDescription: agent.description,
-      platform: msg.platform,
-      channel: msg.channel,
-      channelName,
-      slackSelfId: msg.platform === 'slack' && integrationId ? this.deps.slackBotUserIdFor?.(integrationId) : undefined,
-      thread,
-      acpSessionId: rec?.acpSessionId,
-      parentSessionId: effectiveOriginSessionId,
-      envSecretNames: secretNames.filter((n) => !fileSecretNames.has(n)),
-      fileSecrets: fileSecrets.map((m) => ({ sourceVar: m.sourceVar, pointerVar: m.convention.pointerVar })),
-      usesSessionTitleTool,
-      needsReplyToParent,
-      memoryIndex,
-      usesMeta
-    })
+    // Composed lazily and memoized, because the workspace roots it names must be sampled where the
+    // additional directories are: on a warm host `openRuntimeSession` performs the preparation
+    // itself, so a context built before that could name a root the runtime never received.
+    let standing: StandingContext | undefined
+    const standingContext = (): StandingContext =>
+      (standing ??= buildStandingContext({
+        agentName: agent.name,
+        agentId: agent.id,
+        agentDescription: agent.description,
+        platform: msg.platform,
+        channel: msg.channel,
+        channelName,
+        slackSelfId:
+          msg.platform === 'slack' && integrationId ? this.deps.slackBotUserIdFor?.(integrationId) : undefined,
+        thread,
+        acpSessionId: rec?.acpSessionId,
+        parentSessionId: effectiveOriginSessionId,
+        envSecretNames: secretNames.filter((n) => !fileSecretNames.has(n)),
+        fileSecrets: fileSecrets.map((m) => ({ sourceVar: m.sourceVar, pointerVar: m.convention.pointerVar })),
+        // The same list `additionalWorkspaceDirectories` hands the runtime, read from the same
+        // accessor, so the prompt names exactly the directories the session got.
+        workspaceRoots: this.workspaces.readySecondaryRoots(agent, { isolation: workspaceIsolation }),
+        usesSessionTitleTool,
+        needsReplyToParent,
+        memoryIndex,
+        usesMeta
+      }))
 
     // Create or re-attach the runtime session (turn/runtime-session.ts). `created` drives the
     // daemon's one-shot `event/session` start emit; the additional-MCP outcome is reported back
@@ -605,8 +614,8 @@ export class SessionManager {
       // metadata-only settings cannot be reversed by a later live selector.
       chatRuntimeChangesAllowed: () => this.deps.agentById(agentId)?.allowRuntimeChangesInChat === true,
       effortOverride: async () => initialEffort ?? (await this.deps.store.getEffortOverride(key)),
-      ...(metaContext !== undefined ? { metaContext } : {}),
-      ...(resumeSystemContext !== undefined ? { resumeSystemContext } : {}),
+      metaContext: () => standingContext().metaContext,
+      resumeSystemContext: () => standingContext().resumeSystemContext,
       usesMeta,
       ...(signal ? { signal } : {}),
       abortable,
@@ -615,6 +624,9 @@ export class SessionManager {
     rec = opened.rec
     const created = opened.created
     const additionalMcpServersAttached = opened.additionalMcpAttached
+    // Resolves the memoized snapshot the runtime session already consumed, or composes it now for a
+    // session that was live and needed no preparation.
+    const { sessionContext, parentReplyAppend } = standingContext()
 
     // A channel-root message posted by this same agent creates the thread's session cursor
     // without running the model. Keep lastDeliveredTs at null: the first real reply must replay
