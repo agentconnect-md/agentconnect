@@ -300,6 +300,164 @@ describe('the shared store semantics both adapters get', () => {
     expect(checkpoints.map((row) => row.cumulativeCost.toFixed(0))).toEqual(['2', '5'])
   })
 
+  describe('a checkpoint only moves forward', () => {
+    const at = new Date('2026-08-18T00:00:00.000Z')
+    const write = (usage: { totalTokens?: number; costAmount?: string; costCurrency?: string }) =>
+      new PgSessionUsageRepo(prisma).record({
+        agentId: AgentId(AGENT_A),
+        sessionId: 'monotonic',
+        source: 'gateway',
+        lastActivityAt: at,
+        usage: { costCurrency: 'USD', ...usage }
+      })
+    const checkpoint = () => prisma.sessionSpend.findFirst({ where: { agentId: AGENT_A, sessionId: 'monotonic' } })
+    const snapshot = () =>
+      prisma.sessionUsage.findUnique({
+        where: { agentId_sessionId: { agentId: AGENT_A, sessionId: 'monotonic' } }
+      })
+    /** The snapshot and the checkpoint are read by different surfaces — `get()` and the
+     *  session views from one, the aggregate's cost breakdowns from the other — so a
+     *  decision that lands in only one of them is a bug even when each looks right. */
+    const expectBothAt = async (totalTokens: number, cost: string) => {
+      const [snap, row] = await Promise.all([snapshot(), checkpoint()])
+      expect({ totalTokens: snap!.totalTokens, cost: snap!.costAmount.toFixed(2) }).toEqual({ totalTokens, cost })
+      expect({ totalTokens: row!.cumulativeTotalTokens, cost: row!.cumulativeCost.toFixed(2) }).toEqual({
+        totalTokens,
+        cost
+      })
+    }
+
+    it('ignores a straggler retry whose cumulative went backwards', async () => {
+      await seedAgent(prisma, AGENT_A)
+      await write({ totalTokens: 1000, costAmount: '12.75' })
+      await write({ totalTokens: 400, costAmount: '5' }) // overtaken by the newer delivery
+
+      await expectBothAt(1000, '12.75')
+      // One row either way: the straggler is dropped, not stored beside it.
+      expect(await prisma.sessionSpend.count({ where: { agentId: AGENT_A, sessionId: 'monotonic' } })).toBe(1)
+    })
+
+    it('lets an unchanged redelivery through as a no-op', async () => {
+      await seedAgent(prisma, AGENT_A)
+      await write({ totalTokens: 1000, costAmount: '12.75' })
+      await write({ totalTokens: 1000, costAmount: '12.75' })
+
+      await expectBothAt(1000, '12.75')
+    })
+
+    it('advances on a higher cumulative for the same instant', async () => {
+      await seedAgent(prisma, AGENT_A)
+      await write({ totalTokens: 1000, costAmount: '12.75' })
+      await write({ totalTokens: 1200, costAmount: '13' })
+
+      await expectBothAt(1200, '13.00')
+    })
+
+    it('ignores a mixed report WHOLE rather than synthesizing a checkpoint', async () => {
+      await seedAgent(prisma, AGENT_A)
+      await write({ totalTokens: 1000, costAmount: '12.75' })
+      // Higher cost, lower tokens — no delivery ever reported this pair together.
+      await write({ totalTokens: 400, costAmount: '20' })
+
+      // Both tables: the snapshot used to take this one while the checkpoint refused
+      // it, leaving the session detail and the billing rollup disagreeing.
+      await expectBothAt(1000, '12.75')
+    })
+
+    it('keeps a regressive retry from making the next window bill twice', async () => {
+      await seedAgent(prisma, AGENT_A)
+      const repo = new PgSessionUsageRepo(prisma)
+      const earlier = new Date(at.getTime() - 60_000)
+      const spend = (when: Date, costAmount: string) =>
+        repo.record({
+          agentId: AgentId(AGENT_A),
+          sessionId: 'window',
+          source: 'gateway',
+          lastActivityAt: when,
+          usage: { totalTokens: 10, costAmount, costCurrency: 'USD' }
+        })
+      await spend(earlier, '10')
+      await spend(at, '12')
+      await spend(earlier, '4') // a stale replay of the first checkpoint
+
+      const rows = await prisma.sessionSpend.findMany({
+        where: { agentId: AGENT_A, sessionId: 'window' },
+        orderBy: { at: 'asc' }
+      })
+      // Had the replay landed, the second checkpoint's delta would read 12 − 4 = 8
+      // instead of 2, charging the 6 already billed in the earlier window a second time.
+      expect(rows.map((r) => r.cumulativeCost.toFixed(0))).toEqual(['10', '12'])
+    })
+  })
+
+  it('writes both tables inside ONE transaction, composing under a caller’s', async () => {
+    await seedAgent(prisma, AGENT_A)
+    const at = new Date('2026-08-18T00:00:00.000Z')
+    // The pair must be atomic for the two fences to be one decision: separate
+    // autocommit statements let concurrent incomparable reports win a table each,
+    // after which neither can repair the split. Rolling back a caller's transaction
+    // proves both writes sit inside it — and that `record` composed instead of
+    // opening a second one, which Prisma cannot nest.
+    await expect(
+      prisma.$transaction(async (tx) => {
+        await new PgSessionUsageRepo(tx).record({
+          agentId: AgentId(AGENT_A),
+          sessionId: 'atomic',
+          source: 'gateway',
+          lastActivityAt: at,
+          usage: { totalTokens: 10, costAmount: '1', costCurrency: 'USD' }
+        })
+        throw new Error('caller rolls back')
+      })
+    ).rejects.toThrow('caller rolls back')
+
+    expect(await prisma.sessionUsage.count({ where: { agentId: AGENT_A, sessionId: 'atomic' } })).toBe(0)
+    expect(await prisma.sessionSpend.count({ where: { agentId: AGENT_A, sessionId: 'atomic' } })).toBe(0)
+  })
+
+  it('does not publish the snapshot before the checkpoint has landed', async () => {
+    await seedAgent(prisma, AGENT_A)
+    const repo = new PgSessionUsageRepo(prisma)
+    const at = new Date('2026-08-18T00:00:00.000Z')
+    const write = (totalTokens: number, costAmount: string) =>
+      repo.record({
+        agentId: AgentId(AGENT_A),
+        sessionId: 'gated',
+        source: 'gateway',
+        lastActivityAt: at,
+        usage: { totalTokens, costAmount, costCurrency: 'USD' }
+      })
+    const snapshotTokens = async () =>
+      (await prisma.sessionUsage.findUnique({
+        where: { agentId_sessionId: { agentId: AGENT_A, sessionId: 'gated' } }
+      }))!.totalTokens
+    await write(10, '1')
+
+    // Hold the checkpoint row, so the next report's SECOND statement must wait, and
+    // watch whether its FIRST statement became visible to another connection while it
+    // waited. Two autocommit statements publish the snapshot mid-flight; one
+    // transaction cannot. This is the split the fences alone could not prevent.
+    let release!: () => void
+    const held = new Promise<void>((resolve) => (release = resolve))
+    const holding = prisma.$transaction(
+      async (tx) => {
+        await tx.$queryRaw`SELECT 1 FROM "session_spend"
+          WHERE "agentId" = ${AGENT_A}::uuid AND "sessionId" = 'gated' FOR UPDATE`
+        await held
+      },
+      { timeout: 20_000 }
+    )
+    const writing = write(999, '9')
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    const midFlight = await snapshotTokens()
+    release()
+    await holding
+    await writing
+
+    expect(midFlight).toBe(10)
+    expect(await snapshotTokens()).toBe(999)
+  })
+
   it('re-applies an unchanged snapshot idempotently rather than skipping it', async () => {
     await seedAgent(prisma, AGENT_A)
     const repo = new PgSessionUsageRepo(prisma)

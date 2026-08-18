@@ -22,7 +22,7 @@
  * turn an exact `123.123456789012345678` into `123.12345678901234568` on the first
  * subtraction. Scaled `bigint` has no precision setting to get wrong.
  */
-import type { PrismaLike } from '../prisma.js'
+import { withAmbientTx, type PrismaLike } from '../prisma.js'
 import { Prisma } from '../../generated/prisma/client.js'
 import { type DecimalAmount, scaleAmount, unscaleAmount } from '@agentconnect.md/protocol'
 import type {
@@ -37,6 +37,7 @@ import type {
   SessionFilterQuery
 } from '../ports.js'
 import { visibilityWhere } from '../../authorization/policy.js'
+import { countCheckpointRegression } from '../../observability/usage-ingest.js'
 import type { AgentId, OrgId } from '../../domain/ids.js'
 import { sessionViewerSql } from './session-access-sql.js'
 
@@ -53,6 +54,41 @@ function amounts(by: Map<string, bigint>): Record<string, DecimalAmount> {
   return Object.fromEntries([...by].map(([key, value]) => [key, unscaleAmount(value)]))
 }
 
+/** "This report does not move any counter backwards", for one table's column names.
+ *  The snapshot and the checkpoint carry the same counters under different names, and
+ *  they MUST agree on whether a report is accepted: gating only one of them lets a
+ *  rejected report half-land, leaving `get()` and the aggregate reading two different
+ *  stories about the same session. */
+function advancesSql(table: string, columns: Readonly<Record<string, string>>): Prisma.Sql {
+  const stored = (column: string) => Prisma.raw(`"${table}"."${column}"`)
+  const incoming = (column: string) => Prisma.raw(`EXCLUDED."${column}"`)
+  return Prisma.join(
+    Object.values(columns).map((column) => Prisma.sql`${stored(column)} <= ${incoming(column)}`),
+    ' AND '
+  )
+}
+
+/** The cumulative counters, per table. Same quantities, different column names. */
+const SNAPSHOT_COUNTERS = {
+  total: 'totalTokens',
+  input: 'inputTokens',
+  output: 'outputTokens',
+  thought: 'thoughtTokens',
+  cachedRead: 'cachedReadTokens',
+  cachedWrite: 'cachedWriteTokens',
+  cost: 'costAmount'
+} as const
+
+const CHECKPOINT_COUNTERS = {
+  total: 'cumulativeTotalTokens',
+  input: 'cumulativeInputTokens',
+  output: 'cumulativeOutputTokens',
+  thought: 'cumulativeThoughtTokens',
+  cachedRead: 'cumulativeCachedReadTokens',
+  cachedWrite: 'cumulativeCachedWriteTokens',
+  cost: 'cumulativeCost'
+} as const
+
 function agentViewerSql(orgId: OrgId, viewer?: ViewCtx): Prisma.Sql {
   const visible = viewer
     ? Prisma.sql`(
@@ -66,7 +102,21 @@ function agentViewerSql(orgId: OrgId, viewer?: ViewCtx): Prisma.Sql {
 export class PgSessionUsageRepo implements SessionUsageRepo {
   constructor(private readonly db: PrismaLike) {}
 
+  /** One report, one acceptance decision, both tables — atomically.
+   *
+   *  The two upserts share a transaction because matching predicates alone are not one
+   *  decision: as separate autocommit statements, two concurrent reports for the same
+   *  instant whose counters are INCOMPARABLE (A ahead on tokens, B ahead on cost) can
+   *  win one table each, and the fences then reject whichever report would repair the
+   *  split — the tables never converge, not even on replay. Inside a transaction the
+   *  first writer holds the snapshot row until commit, so the second evaluates its
+   *  fence against a committed predecessor and both tables agree on the same winner.
+   *  `withAmbientTx` composes under a caller's transaction rather than nesting. */
   async record(input: SessionUsageInput): Promise<void> {
+    await withAmbientTx(this.db, (tx) => this.write(tx, input))
+  }
+
+  private async write(db: Prisma.TransactionClient, input: SessionUsageInput): Promise<void> {
     const u = input.usage
     // Only-provided fields win; absent counts default to 0 (or null for the
     // context/cost snapshot), so a runtime that reports partial usage is fine.
@@ -95,8 +145,10 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
     // touched on update. The trailing predicate is the anti-regression fence: a LATE
     // report (an out-of-order delivery, or a slow retry overtaken by a newer one)
     // must not roll the snapshot back, while re-sending the SAME cumulative is still
-    // an idempotent no-op write.
-    await this.db.$executeRaw(Prisma.sql`
+    // an idempotent no-op write. At the SAME instant it applies exactly the rule the
+    // checkpoint applies below — a report the checkpoint refuses must not half-land
+    // here, or `get()` and the aggregate would tell two stories about one session.
+    await db.$executeRaw(Prisma.sql`
       INSERT INTO "session_usage" (
         "agentId", "sessionId", "platform", "channel", "source",
         "totalTokens", "inputTokens", "outputTokens", "thoughtTokens",
@@ -124,13 +176,27 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
         "costCurrency" = EXCLUDED."costCurrency",
         "lastActivityAt" = EXCLUDED."lastActivityAt",
         "updatedAt" = NOW()
-      WHERE "session_usage"."lastActivityAt" <= EXCLUDED."lastActivityAt"
+      WHERE "session_usage"."lastActivityAt" < EXCLUDED."lastActivityAt"
+         OR ("session_usage"."lastActivityAt" = EXCLUDED."lastActivityAt"
+             AND ${advancesSql('session_usage', SNAPSHOT_COUNTERS)})
     `)
     // Usage timeline: each report carries cumulative counters plus the model for
     // the interval that just ended. Readers diff consecutive rows, so model
     // switches retain their own deltas while duplicate deliveries stay idempotent.
     // A late report DOES write its own checkpoint — it belongs at its own `at`.
-    await this.db.$executeRaw(Prisma.sql`
+    //
+    // A checkpoint only moves FORWARD. The trailing predicate ignores a retry whose
+    // cumulative is lower than what is already stored at that instant: re-sending the
+    // same numbers still lands (an idempotent rewrite), a higher cumulative advances
+    // the row, and a straggler overtaken by a newer delivery is dropped instead of
+    // rolling spend back — which would make the next window's diff negative and bill
+    // the difference twice once the real value returned. A report is accepted or
+    // ignored WHOLE: mixing a higher cost from one delivery with a lower token count
+    // from another would synthesize a checkpoint nobody reported, and readers
+    // attribute the interval's spend to this row's model.
+    const [merge] = await db.$queryRaw<Array<{ owned: number; applied: number }>>(Prisma.sql`
+      WITH owner AS (SELECT a."id" ${owner}),
+      merged AS (
       INSERT INTO "session_spend" (
         "agentId", "sessionId", "at", "model", "source",
         "cumulativeTotalTokens", "cumulativeInputTokens", "cumulativeOutputTokens",
@@ -142,7 +208,7 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
              ${f.totalTokens}::int, ${f.inputTokens}::int, ${f.outputTokens}::int,
              ${f.thoughtTokens}::int, ${f.cachedReadTokens}::int, ${f.cachedWriteTokens}::int,
              ${f.costAmount}::numeric
-      ${owner}
+      FROM owner
       ON CONFLICT ("agentId", "sessionId", "at") DO UPDATE SET
         "model" = EXCLUDED."model",
         "source" = EXCLUDED."source",
@@ -153,7 +219,15 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
         "cumulativeCachedReadTokens" = EXCLUDED."cumulativeCachedReadTokens",
         "cumulativeCachedWriteTokens" = EXCLUDED."cumulativeCachedWriteTokens",
         "cumulativeCost" = EXCLUDED."cumulativeCost"
+      WHERE ${advancesSql('session_spend', CHECKPOINT_COUNTERS)}
+      RETURNING 1
+      )
+      SELECT (SELECT COUNT(*)::int FROM owner) AS owned,
+             (SELECT COUNT(*)::int FROM merged) AS applied
     `)
+    // Nothing written for an agent that DOES exist ⇒ the fence above rejected it.
+    // An unowned report is the other zero, and is a drop we already accept silently.
+    if (merge && merge.owned > 0 && merge.applied === 0) countCheckpointRegression(input.source)
   }
 
   async get(agentId: AgentId, sessionId: string): Promise<SessionUsageCounts | null> {
