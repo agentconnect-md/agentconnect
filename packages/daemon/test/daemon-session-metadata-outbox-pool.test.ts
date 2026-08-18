@@ -200,7 +200,7 @@ describe('session-metadata outbox ownership on a daemon pool (#1023)', () => {
     expect(shared.pendingSessionMetadataSnapshot(AGENT_A, 'acp-moved')?.nextAttemptAt).toBe(PARK_MS)
 
     // The grant lands on B well before the parked backoff would have expired.
-    b.inner.settleDutyChange(b.inner.duties.applyGrant([grant(GROUP_A, AGENT_A)]))
+    b.inner.dutyCoordinator.settleDutyChange(b.inner.duties.applyGrant([grant(GROUP_A, AGENT_A)]))
     await vi.waitFor(() => expect(b.syncEventSession).toHaveBeenCalledOnce())
     expect(b.synced).toEqual([{ orgId: ORG, agentId: AGENT_A, sessionId: 'acp-moved' }])
     expect(shared.hasPendingSessionMetadata()).toBe(false)
@@ -239,7 +239,7 @@ describe('session-metadata outbox ownership on a daemon pool (#1023)', () => {
     hold(a.inner, GROUP_A, AGENT_A)
     seedSnapshot(shared, AGENT_A, 'acp-handoff', 1, 'daemon-a')
 
-    b.inner.settleDutyChange(b.inner.duties.applyGrant([grant(GROUP_A, AGENT_A)]))
+    b.inner.dutyCoordinator.settleDutyChange(b.inner.duties.applyGrant([grant(GROUP_A, AGENT_A)]))
     await vi.waitFor(() => expect(b.syncEventSession).toHaveBeenCalledOnce())
     expect(b.synced).toEqual([{ orgId: ORG, agentId: AGENT_A, sessionId: 'acp-handoff' }])
     expect(shared.hasPendingSessionMetadata()).toBe(false)

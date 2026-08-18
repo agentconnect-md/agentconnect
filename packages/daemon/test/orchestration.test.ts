@@ -423,8 +423,8 @@ describe('pool duty gate on deadlines', () => {
       fetchDutyAgent: vi.fn()
     }
   }
-  const hold = (d: Daemon) => (d as any).settleDutyChange((d as any).duties.applyGrant([grant()]))
-  const drop = (d: Daemon) => (d as any).applyDutyRevoke([{ groupId: GROUP, reason: 'reassigned' }])
+  const hold = (d: Daemon) => (d as any).dutyCoordinator.settleDutyChange((d as any).duties.applyGrant([grant()]))
+  const drop = (d: Daemon) => (d as any).dutyCoordinator.applyDutyRevoke([{ groupId: GROUP, reason: 'reassigned' }])
 
   /** Two members over ONE store: the same root, so both LocalStores open the same database. */
   async function bootPool() {

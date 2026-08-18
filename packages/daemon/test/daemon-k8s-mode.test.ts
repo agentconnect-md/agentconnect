@@ -415,7 +415,7 @@ describe('daemon --k8s mode', () => {
         }))
       }
       const grant = { groupId: GROUP, orgId: 'org-1', term: '1', members: [{ kind: 'agent', refId: AGENT }] }
-      await (k8sDaemon as any).admitDutyGrants([grant])
+      await (k8sDaemon as any).dutyCoordinator.admitDutyGrants([grant])
       await vi.waitFor(() => expect(events).toEqual([`adopt:${AGENT}`]))
       // A stopped host stands in for the ex-holder's runtime; the release must wait for it to be down.
       let hostDown = false
@@ -425,7 +425,7 @@ describe('daemon --k8s mode', () => {
           hostDown = true
         }
       })
-      ;(k8sDaemon as any).applyDutyRevoke([{ groupId: GROUP, reason: 'superseded' }])
+      ;(k8sDaemon as any).dutyCoordinator.applyDutyRevoke([{ groupId: GROUP, reason: 'superseded' }])
       expect(events).toEqual([`adopt:${AGENT}`])
       await vi.waitFor(() => expect(events).toEqual([`adopt:${AGENT}`, `release:${AGENT}`]))
       expect(hostDown).toBe(true)

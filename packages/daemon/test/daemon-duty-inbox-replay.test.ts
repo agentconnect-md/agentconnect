@@ -112,13 +112,16 @@ async function boot(root: string) {
   return { daemon, ...g, fetchDutyAgent }
 }
 
-const admit = (d: Daemon, term = '1') => (d as any).admitDutyGrants([grant(term)]) as Promise<Set<string>>
-const fence = (d: Daemon) => (d as any).fenceDuties([GROUP])
+const admit = (d: Daemon, term = '1') =>
+  (d as any).dutyCoordinator.admitDutyGrants([grant(term)]) as Promise<Set<string>>
+const fence = (d: Daemon) => (d as any).dutyCoordinator.fenceDuties([GROUP])
 const holds = (d: Daemon): boolean => (d as any).duties.holdsAgent(AGENT)
 /** The reconcile a duty change requests has run to completion. */
 const settled = (d: Daemon) =>
   vi.waitFor(() => {
-    expect((d as any).dutyConnectionsConverged).toBe((d as any).dutyConnectionsRequested)
+    expect((d as any).dutyCoordinator.dutyConnectionsConverged).toBe(
+      (d as any).dutyCoordinator.dutyConnectionsRequested
+    )
     expect((d as any).reconcileRun).toBeUndefined()
   }, WAIT)
 
