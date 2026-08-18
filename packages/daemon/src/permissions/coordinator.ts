@@ -1,0 +1,794 @@
+// ACP permission + elicitation policy — the human-approval half of a turn, hoisted out of
+// `Daemon` verbatim. Resolution here is a race between the runtime request, the chat card, the
+// Agent-editor decision, and turn cancellation: every await order and map write is load-bearing.
+import { randomUUID } from 'node:crypto'
+import type {
+  CreateElicitationRequest,
+  CreateElicitationResponse,
+  RequestPermissionRequest,
+  RequestPermissionResponse
+} from '@agentclientprotocol/sdk'
+import type { Ack, AgentPermissionDecision } from '@agentconnect.md/protocol'
+import type { Clock } from '@agentconnect.md/connection'
+import type { Logger } from '../log.js'
+import type { LocalStore } from '../store/local-store.js'
+import type { LoadedAgent } from '../agents/load-agents.js'
+import type { AcpPermissionPolicyEvent } from '../acp/acp-host.js'
+import type { DaemonEvaluationHooks } from '../evaluation/daemon-hooks.js'
+import { SlackConnection, type InteractionActor } from '../slack/connection.js'
+import {
+  buildElicitationCard,
+  buildElicitationResolvedCard,
+  buildPermissionCard,
+  buildPermissionResolvedCard,
+  elicitTarget
+} from '../slack/render.js'
+import { slackPostOptions } from '../platforms/slack/turn-output.js'
+import { turnChromeFor } from '../platforms/turn-chrome.js'
+import { formatErr } from '../daemon/text.js'
+import {
+  elicitationApprovalSummary,
+  isBuiltinSystemTool,
+  isBuiltinSystemToolElicitation,
+  isMcpToolApprovalElicitation,
+  permissionRequestSummary
+} from '../daemon/tool-classification.js'
+import { pendingTurnKey, type DaemonRenderAction, type Pending } from '../daemon/turn-types.js'
+
+/** Process-wide daemon state the permission path reads. */
+export interface PermissionCoreHost {
+  log(): Logger
+  clock(): Clock
+  store(): LocalStore
+  agents(): ReadonlyMap<string, LoadedAgent>
+  /** Live turns keyed by `pendingTurnKey(agentId, acpSessionId)`. */
+  pending(): ReadonlyMap<string, Pending>
+  evalHooks(): DaemonEvaluationHooks
+  /** A silent background extraction turn: it may never gain side effects. */
+  memoryExtractionInFlight(turnKey: string): boolean
+}
+
+/** The turn's platform surfaces a permission or elicitation card renders through. */
+export interface PermissionSurfaceHost {
+  enqueueApply(p: Pending, action: DaemonRenderAction): void
+  /** Post a chronological boundary card serialized on the turn's apply chain. */
+  postCardSerialized(
+    p: Pending,
+    post: (conn: SlackConnection) => Promise<string | undefined>
+  ): Promise<string | undefined>
+  httpSlackSessionTarget(p: Pick<Pending, 'agentId' | 'integrationId' | 'sessionKey'>): string | undefined
+  maskAgentSecrets<T>(agentId: string, payload: T): T
+  logSessionAction(verb: string, sessionKey: string, actor?: InteractionActor): void
+}
+
+/** Everything the permission coordinator touches on the `Daemon`. */
+export interface PermissionHost extends PermissionCoreHost, PermissionSurfaceHost {}
+
+export class PermissionCoordinator {
+  // ── Permission requests (ACP session/request_permission) ─────────────────────
+  private pendingEditorPermissions = new Map<
+    string,
+    | {
+        kind: 'permission'
+        agentId: string
+        sessionId: string
+        params: RequestPermissionRequest
+        evaluationParams: RequestPermissionRequest
+        resolve: (res: RequestPermissionResponse) => void
+      }
+    | {
+        kind: 'elicitation'
+        agentId: string
+        sessionId: string
+        resolve: (res: CreateElicitationResponse) => void
+      }
+  >()
+
+  private pendingChatPermissions = new Map<
+    string,
+    {
+      agentId: string
+      sessionId: string
+      params: RequestPermissionRequest
+      /** Original ACP object used by the host's final policy observer. */
+      evaluationParams: RequestPermissionRequest
+      conn: SlackConnection
+      channel: string
+      ts?: string
+      resolve: (res: RequestPermissionResponse) => void
+    }
+  >()
+  /** Decision details discovered inside the platform policy and merged into the
+   * single terminal event emitted by AcpHost's policy observer. */
+  private readonly permissionEvaluationDetails = new WeakMap<RequestPermissionRequest, Record<string, unknown>>()
+
+  // ── Interactive elicitations (ACP elicitation/create, form mode) ─────────────
+  private elicitSeq = 0
+  private pendingElicits = new Map<
+    string,
+    {
+      agentId: string
+      sessionId: string
+      params: CreateElicitationRequest
+      propName: string
+      kind: 'enum' | 'boolean'
+      approval: boolean
+      conn: SlackConnection
+      channel: string
+      ts?: string
+      resolve: (res: CreateElicitationResponse) => void
+    }
+  >()
+
+  constructor(private readonly host: PermissionHost) {}
+
+  private async noteEditorPermissionRequest(
+    id: string,
+    agentId: string,
+    sessionId: string,
+    command: string,
+    p: Pending,
+    notifyChat = true
+  ): Promise<void> {
+    const store = this.host.store()
+    const session = await store.getSessionByAcpIdForAgent(agentId, sessionId)
+    const requesterId = p.requesterId ?? session?.triggeredBy ?? null
+    const requesterName = requesterId ? ((await store.getDisplayNames([requesterId])).get(requesterId) ?? null) : null
+    await store.createPermissionRequest({
+      id,
+      agentId,
+      sessionId,
+      createdAt: this.host.clock().now(),
+      requesterId,
+      requesterName,
+      command,
+      status: 'pending',
+      resolvedAt: null
+    })
+
+    if (!notifyChat) return
+    const text = '🔒 Permission requested. Ask an Agent editor to allow it from the Agent or Session page.'
+    try {
+      if (p.webchat) {
+        p.webchat.sink.output({
+          conversationId: p.webchat.conversationId,
+          turnId: p.webchat.turnId,
+          index: p.webchat.index++,
+          event: { kind: 'message', text }
+        })
+      }
+      // A continuation turn notifies the origin platform thread too (§5.2).
+      if ((!p.webchat || p.webchat.continuation) && p.conn) {
+        this.host.enqueueApply(p, { kind: 'notice', text })
+      }
+    } catch (err) {
+      // The durable editor request is authoritative. A best-effort chat notice
+      // must never discard the live resolver or silently fall back to auto-allow.
+      this.host.log().warn(`permission request notice failed for "${p.sessionKey}": ${formatErr(err)}`)
+    }
+  }
+
+  private async resolveStoredPermissionRequest(
+    agentId: string,
+    requestId: string,
+    status: 'allowed' | 'denied' | 'expired'
+  ): Promise<boolean> {
+    try {
+      return await this.host.store().resolvePermissionRequest(agentId, requestId, status, this.host.clock().now())
+    } catch (err) {
+      this.host.log().error(`permission request "${requestId}" could not be resolved locally: ${formatErr(err)}`)
+      return false
+    }
+  }
+
+  /** Exclude only explicit human decision latency from regeneration wall time.
+   * A depth counter measures the union of overlapping approval intervals. */
+  private async trackHumanApprovalWait<T>(p: Pending, result: Promise<T>): Promise<T> {
+    p.approvalWaitDepth ??= 0
+    p.approvalWaitMs ??= 0
+    if (p.approvalWaitDepth === 0) p.approvalWaitStartedAt = this.host.clock().now()
+    p.approvalWaitDepth += 1
+    try {
+      return await result
+    } finally {
+      p.approvalWaitDepth = Math.max(0, p.approvalWaitDepth - 1)
+      if (p.approvalWaitDepth === 0 && p.approvalWaitStartedAt !== undefined) {
+        p.approvalWaitMs += Math.max(0, this.host.clock().now() - p.approvalWaitStartedAt)
+        delete p.approvalWaitStartedAt
+      }
+    }
+  }
+
+  private async awaitEditorPermission(
+    agentId: string,
+    sessionId: string,
+    params: RequestPermissionRequest,
+    evaluationParams: RequestPermissionRequest,
+    p: Pending
+  ): Promise<RequestPermissionResponse> {
+    const id = randomUUID()
+    let resolveResult!: (res: RequestPermissionResponse) => void
+    const result = new Promise<RequestPermissionResponse>((resolve) => (resolveResult = resolve))
+    await this.noteEditorPermissionRequest(id, agentId, sessionId, permissionRequestSummary(params), p)
+    this.pendingEditorPermissions.set(id, {
+      kind: 'permission',
+      agentId,
+      sessionId,
+      params,
+      evaluationParams,
+      resolve: resolveResult
+    })
+    return this.trackHumanApprovalWait(p, result)
+  }
+
+  private async awaitEditorElicitation(
+    agentId: string,
+    sessionId: string,
+    params: CreateElicitationRequest,
+    p: Pending
+  ): Promise<CreateElicitationResponse> {
+    const id = randomUUID()
+    let resolveResult!: (res: CreateElicitationResponse) => void
+    const result = new Promise<CreateElicitationResponse>((resolve) => (resolveResult = resolve))
+    await this.noteEditorPermissionRequest(id, agentId, sessionId, elicitationApprovalSummary(params), p)
+    this.pendingEditorPermissions.set(id, {
+      kind: 'elicitation',
+      agentId,
+      sessionId,
+      resolve: resolveResult
+    })
+    return this.trackHumanApprovalWait(p, result)
+  }
+
+  private async awaitChatPermission(
+    agentId: string,
+    sessionId: string,
+    params: RequestPermissionRequest,
+    evaluationParams: RequestPermissionRequest,
+    p: Pending
+  ): Promise<RequestPermissionResponse> {
+    const requestId = randomUUID()
+    const conn = p.conn as SlackConnection
+    let resolveResult!: (res: RequestPermissionResponse) => void
+    const result = new Promise<RequestPermissionResponse>((resolve) => (resolveResult = resolve))
+    await this.noteEditorPermissionRequest(requestId, agentId, sessionId, permissionRequestSummary(params), p, false)
+    this.pendingChatPermissions.set(requestId, {
+      agentId,
+      sessionId,
+      params,
+      evaluationParams,
+      conn,
+      channel: p.channel,
+      resolve: resolveResult
+    })
+    const blocks = buildPermissionCard(requestId, params, this.host.httpSlackSessionTarget(p))
+    const fallback = `Permission requested: ${params.toolCall?.title ?? 'a tool call'}`
+    const ts = await this.host.postCardSerialized(p, (slack) =>
+      slack.postBlocks(p.channel, blocks, fallback, p.statusThread, {
+        ...(slackPostOptions(p) ?? {}),
+        chrome: true
+      })
+    )
+    const live = this.pendingChatPermissions.get(requestId)
+    if (!live) {
+      if (ts) {
+        void conn
+          .updateBlocks(
+            p.channel,
+            ts,
+            buildPermissionResolvedCard(params, 'Cancelled', undefined),
+            'Permission cancelled',
+            true
+          )
+          .catch(() => {})
+      }
+      return await result
+    }
+    if (!ts) {
+      this.pendingChatPermissions.delete(requestId)
+      await this.resolveStoredPermissionRequest(agentId, requestId, 'expired')
+      this.permissionEvaluationDetails.set(evaluationParams, { reason: 'permission_card_failed' })
+      live.resolve({ outcome: { outcome: 'cancelled' } })
+      return await result
+    }
+    live.ts = ts
+    return await this.trackHumanApprovalWait(p, result)
+  }
+
+  async decideEditorPermission(req: AgentPermissionDecision): Promise<Ack> {
+    const pending = this.pendingEditorPermissions.get(req.requestId)
+    if (!pending || pending.agentId !== req.agentId) {
+      const chat = this.pendingChatPermissions.get(req.requestId)
+      if (!chat || chat.agentId !== req.agentId) {
+        const elicitation = this.pendingElicits.get(req.requestId)
+        if (!elicitation?.approval || elicitation.agentId !== req.agentId) {
+          return { ok: false, reason: 'permission request is no longer pending' }
+        }
+        if (
+          !(await this.resolveStoredPermissionRequest(
+            req.agentId,
+            req.requestId,
+            req.decision === 'allow' ? 'allowed' : 'denied'
+          ))
+        ) {
+          return { ok: false, reason: 'permission request is no longer pending' }
+        }
+        this.pendingElicits.delete(req.requestId)
+        if (elicitation.ts) {
+          const decision =
+            req.decision === 'allow'
+              ? ':white_check_mark: Allowed by Agent editor'
+              : ':no_entry_sign: Denied by Agent editor'
+          void elicitation.conn
+            .updateBlocks(
+              elicitation.channel,
+              elicitation.ts,
+              buildElicitationResolvedCard(elicitation.params, decision),
+              'Permission resolved',
+              true
+            )
+            .catch(() => {})
+        }
+        elicitation.resolve(req.decision === 'allow' ? { action: 'accept' } : { action: 'cancel' })
+        return { ok: true }
+      }
+      const option =
+        req.decision === 'allow'
+          ? (chat.params.options.find((candidate) => candidate.kind === 'allow_once') ??
+            chat.params.options.find((candidate) => candidate.kind === 'allow_always'))
+          : (chat.params.options.find((candidate) => candidate.kind === 'reject_once') ??
+            chat.params.options.find((candidate) => candidate.kind === 'reject_always'))
+      if (req.decision === 'allow' && !option) return { ok: false, reason: 'runtime did not offer an allow option' }
+      if (
+        !(await this.resolveStoredPermissionRequest(
+          req.agentId,
+          req.requestId,
+          req.decision === 'allow' ? 'allowed' : 'denied'
+        ))
+      ) {
+        return { ok: false, reason: 'permission request is no longer pending' }
+      }
+      this.pendingChatPermissions.delete(req.requestId)
+      this.permissionEvaluationDetails.set(chat.evaluationParams, { reason: 'agent_editor' })
+      if (chat.ts) {
+        void chat.conn
+          .updateBlocks(
+            chat.channel,
+            chat.ts,
+            buildPermissionResolvedCard(
+              chat.params,
+              option?.name ?? 'Denied by Agent editor',
+              req.decision === 'allow'
+            ),
+            'Permission resolved',
+            true
+          )
+          .catch(() => {})
+      }
+      chat.resolve(
+        option ? { outcome: { outcome: 'selected', optionId: option.optionId } } : { outcome: { outcome: 'cancelled' } }
+      )
+      return { ok: true }
+    }
+
+    let permissionResponse: RequestPermissionResponse | undefined
+    let elicitationResponse: CreateElicitationResponse | undefined
+    if (pending.kind === 'permission') {
+      const option =
+        req.decision === 'allow'
+          ? (pending.params.options.find((o) => o.kind === 'allow_once') ??
+            pending.params.options.find((o) => o.kind === 'allow_always'))
+          : (pending.params.options.find((o) => o.kind === 'reject_once') ??
+            pending.params.options.find((o) => o.kind === 'reject_always'))
+      if (req.decision === 'allow' && !option) return { ok: false, reason: 'runtime did not offer an allow option' }
+      this.permissionEvaluationDetails.set(pending.evaluationParams, { reason: 'agent_editor' })
+      permissionResponse = option
+        ? { outcome: { outcome: 'selected', optionId: option.optionId } }
+        : { outcome: { outcome: 'cancelled' } }
+    } else {
+      elicitationResponse = req.decision === 'allow' ? { action: 'accept' } : { action: 'cancel' }
+    }
+
+    if (
+      !(await this.resolveStoredPermissionRequest(
+        req.agentId,
+        req.requestId,
+        req.decision === 'allow' ? 'allowed' : 'denied'
+      ))
+    ) {
+      return { ok: false, reason: 'permission request is no longer pending' }
+    }
+    this.pendingEditorPermissions.delete(req.requestId)
+    if (pending.kind === 'permission') pending.resolve(permissionResponse!)
+    else pending.resolve(elicitationResponse!)
+    return { ok: true }
+  }
+
+  async handlePermissionChoice(input: {
+    requestId: string
+    optionId: string
+    actor?: InteractionActor
+  }): Promise<void> {
+    const pending = this.pendingChatPermissions.get(input.requestId)
+    if (!pending) return
+    if (this.host.agents().get(pending.agentId)?.allowRuntimeChangesInChat !== true) {
+      // Refused, so it decided nothing — recorded as an attempt, never as the decision.
+      this.host.logSessionAction(`permission:${input.optionId} (refused)`, pending.sessionId, input.actor)
+      if (pending.ts) {
+        void pending.conn
+          .updateBlocks(
+            pending.channel,
+            pending.ts,
+            buildPermissionResolvedCard(pending.params, 'Ask an Agent editor to allow it', undefined),
+            'Permission requires an Agent editor',
+            true
+          )
+          .catch(() => {})
+      }
+      return
+    }
+    const option = pending.params.options.find((candidate) => candidate.optionId === input.optionId)
+    if (!option) return
+    const allowed = option.kind === 'allow_once' || option.kind === 'allow_always'
+    if (!(await this.resolveStoredPermissionRequest(pending.agentId, input.requestId, allowed ? 'allowed' : 'denied')))
+      return
+    // Only now is this click the decision: the guard passed, the option was real, and
+    // the request resolved. Logging any earlier would attribute a tool call to someone
+    // whose click changed nothing.
+    this.host.logSessionAction(`permission:${allowed ? 'allowed' : 'denied'}`, pending.sessionId, input.actor)
+    this.pendingChatPermissions.delete(input.requestId)
+    this.permissionEvaluationDetails.set(pending.evaluationParams, { reason: 'chat_user' })
+    if (pending.ts) {
+      void pending.conn
+        .updateBlocks(
+          pending.channel,
+          pending.ts,
+          buildPermissionResolvedCard(pending.params, option.name, allowed),
+          'Permission resolved',
+          true
+        )
+        .catch(() => {})
+    }
+    pending.resolve({ outcome: { outcome: 'selected', optionId: option.optionId } })
+  }
+
+  /** Remove stale Allow/Deny controls immediately when an editor disables chat-side
+   * runtime controls. The permission requests remain pending for the Agent-page queue. */
+  disableChatPermissionSurfaces(agentId: string): void {
+    for (const pending of this.pendingChatPermissions.values()) {
+      if (pending.agentId !== agentId || !pending.ts) continue
+      void pending.conn
+        .updateBlocks(
+          pending.channel,
+          pending.ts,
+          buildPermissionResolvedCard(pending.params, 'Ask an Agent editor to allow it', undefined),
+          'Permission requires an Agent editor',
+          true
+        )
+        .catch(() => {})
+    }
+    for (const pending of this.pendingElicits.values()) {
+      if (pending.agentId !== agentId || !pending.approval || !pending.ts) continue
+      void pending.conn
+        .updateBlocks(
+          pending.channel,
+          pending.ts,
+          buildElicitationResolvedCard(pending.params, ':lock: Ask an Agent editor to allow it'),
+          'Permission requires an Agent editor',
+          true
+        )
+        .catch(() => {})
+    }
+  }
+
+  async releaseChatPermissions(agentId: string, sessionId: string): Promise<void> {
+    for (const [id, pending] of this.pendingChatPermissions) {
+      if (pending.agentId !== agentId || pending.sessionId !== sessionId) continue
+      this.pendingChatPermissions.delete(id)
+      await this.resolveStoredPermissionRequest(agentId, id, 'expired')
+      this.permissionEvaluationDetails.set(pending.evaluationParams, { reason: 'turn_cancelled' })
+      if (pending.ts) {
+        void pending.conn
+          .updateBlocks(
+            pending.channel,
+            pending.ts,
+            buildPermissionResolvedCard(pending.params, 'Cancelled', undefined),
+            'Permission cancelled',
+            true
+          )
+          .catch(() => {})
+      }
+      pending.resolve({ outcome: { outcome: 'cancelled' } })
+    }
+  }
+
+  async releaseEditorPermissions(agentId: string, sessionId: string): Promise<void> {
+    for (const [id, pending] of this.pendingEditorPermissions) {
+      if (pending.agentId !== agentId || pending.sessionId !== sessionId) continue
+      this.pendingEditorPermissions.delete(id)
+      await this.resolveStoredPermissionRequest(agentId, id, 'expired')
+      if (pending.kind === 'permission') {
+        this.permissionEvaluationDetails.set(pending.evaluationParams, { reason: 'turn_cancelled' })
+        pending.resolve({ outcome: { outcome: 'cancelled' } })
+      } else {
+        pending.resolve({ action: 'cancel' })
+      }
+    }
+  }
+
+  onAcpPermissionEvent(
+    agentId: string,
+    sessionId: string,
+    params: RequestPermissionRequest,
+    event: AcpPermissionPolicyEvent
+  ): void {
+    const pending = this.host.pending().get(pendingTurnKey(agentId, sessionId))
+    const context = {
+      agentId,
+      sessionId,
+      ...(pending?.evaluationTurnId ? { turnId: pending.evaluationTurnId } : {})
+    }
+    const toolCallId = typeof params.toolCall?.toolCallId === 'string' ? params.toolCall.toolCallId : undefined
+    if (event.kind === 'requested') {
+      this.host.evalHooks().emit({
+        type: 'permission.requested',
+        ...context,
+        data: { ...(toolCallId ? { toolCallId } : {}), optionCount: params.options.length }
+      })
+      return
+    }
+
+    const outcome = event.response.outcome
+    const policyDetails = this.permissionEvaluationDetails.get(params)
+    this.permissionEvaluationDetails.delete(params)
+    const resultData = {
+      ...(policyDetails ?? {}),
+      source: event.source,
+      ...(event.fallbackReason ? { fallbackReason: event.fallbackReason } : {}),
+      outcome: outcome.outcome,
+      ...('optionId' in outcome ? { optionId: outcome.optionId } : {}),
+      ...(toolCallId ? { toolCallId } : {})
+    }
+    const selectedOption =
+      'optionId' in outcome ? params.options.find((option) => option.optionId === outcome.optionId) : undefined
+    if (
+      event.source === 'fallback' &&
+      outcome.outcome === 'selected' &&
+      (selectedOption?.kind === 'allow_once' || selectedOption?.kind === 'allow_always')
+    ) {
+      this.host.evalHooks().emit({ type: 'permission.auto_allowed', ...context, data: resultData })
+    }
+    this.host.evalHooks().emit({
+      type: outcome.outcome === 'cancelled' ? 'permission.cancelled' : 'permission.resolved',
+      ...context,
+      data: resultData
+    })
+  }
+
+  /**
+   * ACP `session/request_permission` policy (wired as AcpHost.onPermission). Built-in
+   * AgentConnect tools are trusted; every other live request waits for an Agent editor by
+   * default. An editor may explicitly opt an agent into Slack chat-side decisions.
+   */
+  async onAcpPermission(
+    agentId: string,
+    sessionId: string,
+    params: RequestPermissionRequest
+  ): Promise<RequestPermissionResponse> {
+    try {
+      return await this.resolveAcpPermission(agentId, sessionId, params)
+    } catch (err) {
+      this.permissionEvaluationDetails.set(params, { reason: 'permission_policy_error' })
+      this.host.log().error(`permission policy failed closed for agent "${agentId}": ${formatErr(err)}`)
+      return { outcome: { outcome: 'cancelled' } }
+    }
+  }
+
+  private async resolveAcpPermission(
+    agentId: string,
+    sessionId: string,
+    params: RequestPermissionRequest
+  ): Promise<RequestPermissionResponse> {
+    const evaluationParams = params
+    // The tool title/preview can embed a secret the agent interpolated into a command.
+    // Mask before anything renders it (Slack card now, resolved-card edit later via
+    // the pending request).
+    params = this.host.maskAgentSecrets(agentId, params)
+    // Extraction is a silent background operation: it may never gain side effects
+    // merely because the user agent normally runs in an auto-approval mode.
+    if (this.host.memoryExtractionInFlight(pendingTurnKey(agentId, sessionId))) {
+      this.permissionEvaluationDetails.set(evaluationParams, { reason: 'memory_extraction' })
+      return { outcome: { outcome: 'cancelled' } }
+    }
+    // Platform system tools (this daemon's OWN MCP tools — sendMessage, listAgents,
+    // orchestration, memory, …) are always granted: a human should never
+    // have to approve them per call. Auto-allow without rendering a card. Non-system tools
+    // (incl. the runtime's dangerous built-ins) fall through to the interactive policy below.
+    const p = this.host.pending().get(pendingTurnKey(agentId, sessionId))
+    if (isBuiltinSystemTool(params, p?.builtinSystemToolCallIds)) {
+      const allow = params.options.find((o) => o.kind === 'allow_always' || o.kind === 'allow_once')
+      if (allow) {
+        this.permissionEvaluationDetails.set(evaluationParams, { reason: 'agentconnect_system_tool' })
+        this.host.evalHooks().emit({
+          type: 'permission.auto_allowed',
+          agentId,
+          sessionId,
+          ...(p?.evaluationTurnId ? { turnId: p.evaluationTurnId } : {}),
+          data: { reason: 'agentconnect_system_tool', optionId: allow.optionId }
+        })
+        return { outcome: { outcome: 'selected', optionId: allow.optionId } }
+      }
+    }
+    if (!p || p.outputSuppressed) {
+      this.permissionEvaluationDetails.set(evaluationParams, {
+        reason: p?.outputSuppressed ?? 'permission_without_live_turn'
+      })
+      return { outcome: { outcome: 'cancelled' } }
+    }
+    const chatApprovalEnabled =
+      this.host.agents().get(agentId)?.allowRuntimeChangesInChat === true &&
+      turnChromeFor(p.platform).chatInputCards === true &&
+      p.conn instanceof SlackConnection &&
+      !p.approvalSurfaceSuppressed &&
+      params.options.length > 0
+    if (chatApprovalEnabled) {
+      return await this.awaitChatPermission(agentId, sessionId, params, evaluationParams, p)
+    }
+    // Default policy: hold the runtime request and surface only a neutral notice
+    // in chat. The bounded, masked request is decided by an Agent editor.
+    return await this.awaitEditorPermission(agentId, sessionId, params, evaluationParams, p)
+  }
+
+  /**
+   * ACP `elicitation/create` policy (wired as AcpHost.onElicit). Renders the form's first
+   * choice/boolean field as a Slack card and resolves with the user's pick. Returns
+   * `undefined` — so the host declines — when there's no live turn, the turn isn't on
+   * Slack, or the form has no field we can render inline. Stays pending until the user
+   * taps a button (handleElicitChoice) or the turn ends/cancels (releaseElicits).
+   */
+  async onAcpElicit(
+    agentId: string,
+    sessionId: string,
+    params: CreateElicitationRequest
+  ): Promise<CreateElicitationResponse | undefined> {
+    // Same reason as onAcpPermission: the elicitation message/labels are agent-authored
+    // text headed for a platform card — mask any embedded secret value first.
+    params = this.host.maskAgentSecrets(agentId, params)
+    const p = this.host.pending().get(pendingTurnKey(agentId, sessionId))
+    if (!p) return undefined
+    if (p.outputSuppressed) return { action: 'cancel' }
+    // Codex maps MCP approval to `elicitation/create` when form support is
+    // advertised. Correlate its opaque id with a preceding trusted tool event;
+    // never infer trust from the human-facing elicitation message.
+    if (isBuiltinSystemToolElicitation(params, p.builtinSystemToolCallIds)) return { action: 'accept' }
+    const isApproval = isMcpToolApprovalElicitation(params)
+    if (isApproval) {
+      const chatApprovalEnabled =
+        this.host.agents().get(agentId)?.allowRuntimeChangesInChat === true &&
+        turnChromeFor(p.platform).chatInputCards === true &&
+        p.conn instanceof SlackConnection &&
+        !p.approvalSurfaceSuppressed
+      if (!chatApprovalEnabled) return await this.awaitEditorElicitation(agentId, sessionId, params, p)
+    }
+    // A `none` Slack turn has no generic human-input card to answer this request.
+    if (p.approvalSurfaceSuppressed) return { action: 'cancel' }
+    const conn = p.conn
+    if (!turnChromeFor(p.platform).chatInputCards || !(conn instanceof SlackConnection)) return undefined
+    const target = elicitTarget(params)
+    if (!target) return undefined
+    const requestId = isApproval ? randomUUID() : `elicit-${++this.elicitSeq}`
+    const blocks = buildElicitationCard(requestId, params, this.host.httpSlackSessionTarget(p))
+    if (!blocks) return undefined
+    const fallback = (params as { message?: string }).message ?? 'The agent needs your input'
+    let resolveResult!: (res: CreateElicitationResponse) => void
+    const result = new Promise<CreateElicitationResponse>((resolve) => (resolveResult = resolve))
+    if (isApproval) {
+      await this.noteEditorPermissionRequest(
+        requestId,
+        agentId,
+        sessionId,
+        elicitationApprovalSummary(params),
+        p,
+        false
+      )
+    }
+    this.pendingElicits.set(requestId, {
+      agentId,
+      sessionId,
+      params,
+      propName: target.propName,
+      kind: target.kind,
+      approval: isApproval,
+      conn,
+      channel: p.channel,
+      resolve: resolveResult
+    })
+    const ts = await this.host.postCardSerialized(p, (sc) =>
+      sc.postBlocks(p.channel, blocks, fallback, p.statusThread, {
+        ...(slackPostOptions(p) ?? {}),
+        chrome: true
+      })
+    )
+    const live = this.pendingElicits.get(requestId)
+    if (!live) {
+      if (ts)
+        void conn
+          .updateBlocks(p.channel, ts, buildElicitationResolvedCard(params, ':hourglass: Cancelled'), 'Cancelled', true)
+          .catch(() => {})
+      return await result
+    }
+    if (!ts) {
+      this.pendingElicits.delete(requestId)
+      if (isApproval) await this.resolveStoredPermissionRequest(agentId, requestId, 'expired')
+      live.resolve({ action: 'cancel' })
+      return await result
+    }
+    live.ts = ts
+    return isApproval ? await this.trackHumanApprovalWait(p, result) : await result
+  }
+
+  /** A tapped elicitation-card button (SlackDeps.onElicitChoice): resolve the pending ACP
+   *  request — `accept` with the chosen value (under the field name), or `decline` for the
+   *  Dismiss button (value === null) — and edit the card in place. No-op if already gone. */
+  async handleElicitChoice(a: { requestId: string; value: string | null }): Promise<void> {
+    const rec = this.pendingElicits.get(a.requestId)
+    if (!rec) return
+    if (rec.approval && this.host.agents().get(rec.agentId)?.allowRuntimeChangesInChat !== true) {
+      if (rec.ts) {
+        void rec.conn
+          .updateBlocks(
+            rec.channel,
+            rec.ts,
+            buildElicitationResolvedCard(rec.params, ':lock: Ask an Agent editor to allow it'),
+            'Permission requires an Agent editor',
+            true
+          )
+          .catch(() => {})
+      }
+      return
+    }
+    let res: CreateElicitationResponse
+    let decision: string
+    if (a.value === null) {
+      res = { action: 'decline' }
+      decision = ':no_entry_sign: Dismissed'
+    } else {
+      const value = rec.kind === 'boolean' ? a.value === 'true' : a.value
+      res = { action: 'accept', content: { [rec.propName]: value } }
+      decision = `:white_check_mark: ${rec.kind === 'boolean' ? (value ? 'Yes' : 'No') : a.value}`
+    }
+    if (rec.approval) {
+      if (
+        !(await this.resolveStoredPermissionRequest(rec.agentId, a.requestId, a.value === null ? 'denied' : 'allowed'))
+      )
+        return
+    }
+    this.pendingElicits.delete(a.requestId)
+    if (rec.ts)
+      void rec.conn
+        .updateBlocks(rec.channel, rec.ts, buildElicitationResolvedCard(rec.params, decision), 'Input received', true)
+        .catch(() => {})
+    rec.resolve(res)
+  }
+
+  /** Resolve every outstanding elicitation for a session as `cancel` — ACP's cancellation
+   *  contract, and it unblocks a turn whose card the user abandoned. */
+  async releaseElicits(agentId: string, sessionId: string): Promise<void> {
+    for (const [id, rec] of this.pendingElicits) {
+      if (rec.agentId !== agentId || rec.sessionId !== sessionId) continue
+      this.pendingElicits.delete(id)
+      if (rec.approval) await this.resolveStoredPermissionRequest(agentId, id, 'expired')
+      if (rec.ts)
+        void rec.conn
+          .updateBlocks(
+            rec.channel,
+            rec.ts,
+            buildElicitationResolvedCard(rec.params, ':hourglass: Cancelled'),
+            'Cancelled',
+            true
+          )
+          .catch(() => {})
+      rec.resolve({ action: 'cancel' })
+    }
+  }
+}

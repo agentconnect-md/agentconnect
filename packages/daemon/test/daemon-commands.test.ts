@@ -1824,7 +1824,7 @@ describe('Slack interactive status bar', () => {
       status: 'pending',
       resolvedAt: null
     })
-    ;(daemon as any).pendingChatPermissions.set(permissionRequestId, {
+    ;(daemon as any).permissions.pendingChatPermissions.set(permissionRequestId, {
       agentId: 'bot-a',
       sessionId: 'acp-1',
       params: { options: [{ optionId: 'allow_once', name: 'Allow Once', kind: 'allow_once' }] },
@@ -1846,7 +1846,7 @@ describe('Slack interactive status bar', () => {
     expect(permissionResolved).toHaveBeenCalledWith({ outcome: { outcome: 'selected', optionId: 'allow_once' } })
 
     const elicitationResolved = vi.fn()
-    ;(daemon as any).pendingElicits.set('elicit-1', {
+    ;(daemon as any).permissions.pendingElicits.set('elicit-1', {
       agentId: 'bot-a',
       sessionId: 'acp-1',
       params: { message: 'Pick one' },

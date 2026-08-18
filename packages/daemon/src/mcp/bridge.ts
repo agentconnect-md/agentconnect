@@ -18,6 +18,8 @@ class IpcClient {
   private pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>()
   private buf = ''
   private ready: Promise<void>
+  /** Installed once the bridge serves stdio; a closed control socket then ends the process. */
+  onClose?: () => void
 
   constructor(
     endpoint: string,
@@ -44,6 +46,7 @@ class IpcClient {
     this.socket.on('close', () => {
       for (const p of this.pending.values()) p.reject(new Error('daemon connection closed'))
       this.pending.clear()
+      this.onClose?.()
     })
   }
 
@@ -121,6 +124,16 @@ export async function runBridge(opts: { lazyTools?: boolean } = {}): Promise<voi
       return { content: [{ type: 'text', text: (err as Error).message }], isError: true }
     }
   })
+
+  // Nothing else settles a request queued after the socket died, so a call would hang forever.
+  ipc.onClose = () => {
+    process.stderr.write('mcp-bridge: daemon control socket closed, exiting\n')
+    process.exit(1)
+  }
+  // stdin EOF means the harness is gone; the stdio transport never watches for it, so the live socket would strand us.
+  const exitWhenHarnessGone = (): void => process.exit(0)
+  process.stdin.on('end', exitWhenHarnessGone)
+  process.stdin.on('close', exitWhenHarnessGone)
 
   await server.connect(new StdioServerTransport())
 }
