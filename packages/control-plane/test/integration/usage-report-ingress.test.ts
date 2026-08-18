@@ -390,6 +390,74 @@ describe('the shared store semantics both adapters get', () => {
     })
   })
 
+  it('writes both tables inside ONE transaction, composing under a caller’s', async () => {
+    await seedAgent(prisma, AGENT_A)
+    const at = new Date('2026-08-18T00:00:00.000Z')
+    // The pair must be atomic for the two fences to be one decision: separate
+    // autocommit statements let concurrent incomparable reports win a table each,
+    // after which neither can repair the split. Rolling back a caller's transaction
+    // proves both writes sit inside it — and that `record` composed instead of
+    // opening a second one, which Prisma cannot nest.
+    await expect(
+      prisma.$transaction(async (tx) => {
+        await new PgSessionUsageRepo(tx).record({
+          agentId: AgentId(AGENT_A),
+          sessionId: 'atomic',
+          source: 'gateway',
+          lastActivityAt: at,
+          usage: { totalTokens: 10, costAmount: '1', costCurrency: 'USD' }
+        })
+        throw new Error('caller rolls back')
+      })
+    ).rejects.toThrow('caller rolls back')
+
+    expect(await prisma.sessionUsage.count({ where: { agentId: AGENT_A, sessionId: 'atomic' } })).toBe(0)
+    expect(await prisma.sessionSpend.count({ where: { agentId: AGENT_A, sessionId: 'atomic' } })).toBe(0)
+  })
+
+  it('does not publish the snapshot before the checkpoint has landed', async () => {
+    await seedAgent(prisma, AGENT_A)
+    const repo = new PgSessionUsageRepo(prisma)
+    const at = new Date('2026-08-18T00:00:00.000Z')
+    const write = (totalTokens: number, costAmount: string) =>
+      repo.record({
+        agentId: AgentId(AGENT_A),
+        sessionId: 'gated',
+        source: 'gateway',
+        lastActivityAt: at,
+        usage: { totalTokens, costAmount, costCurrency: 'USD' }
+      })
+    const snapshotTokens = async () =>
+      (await prisma.sessionUsage.findUnique({
+        where: { agentId_sessionId: { agentId: AGENT_A, sessionId: 'gated' } }
+      }))!.totalTokens
+    await write(10, '1')
+
+    // Hold the checkpoint row, so the next report's SECOND statement must wait, and
+    // watch whether its FIRST statement became visible to another connection while it
+    // waited. Two autocommit statements publish the snapshot mid-flight; one
+    // transaction cannot. This is the split the fences alone could not prevent.
+    let release!: () => void
+    const held = new Promise<void>((resolve) => (release = resolve))
+    const holding = prisma.$transaction(
+      async (tx) => {
+        await tx.$queryRaw`SELECT 1 FROM "session_spend"
+          WHERE "agentId" = ${AGENT_A}::uuid AND "sessionId" = 'gated' FOR UPDATE`
+        await held
+      },
+      { timeout: 20_000 }
+    )
+    const writing = write(999, '9')
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    const midFlight = await snapshotTokens()
+    release()
+    await holding
+    await writing
+
+    expect(midFlight).toBe(10)
+    expect(await snapshotTokens()).toBe(999)
+  })
+
   it('re-applies an unchanged snapshot idempotently rather than skipping it', async () => {
     await seedAgent(prisma, AGENT_A)
     const repo = new PgSessionUsageRepo(prisma)

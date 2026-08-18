@@ -22,7 +22,7 @@
  * turn an exact `123.123456789012345678` into `123.12345678901234568` on the first
  * subtraction. Scaled `bigint` has no precision setting to get wrong.
  */
-import type { PrismaLike } from '../prisma.js'
+import { withAmbientTx, type PrismaLike } from '../prisma.js'
 import { Prisma } from '../../generated/prisma/client.js'
 import { type DecimalAmount, scaleAmount, unscaleAmount } from '@agentconnect.md/protocol'
 import type {
@@ -102,7 +102,21 @@ function agentViewerSql(orgId: OrgId, viewer?: ViewCtx): Prisma.Sql {
 export class PgSessionUsageRepo implements SessionUsageRepo {
   constructor(private readonly db: PrismaLike) {}
 
+  /** One report, one acceptance decision, both tables — atomically.
+   *
+   *  The two upserts share a transaction because matching predicates alone are not one
+   *  decision: as separate autocommit statements, two concurrent reports for the same
+   *  instant whose counters are INCOMPARABLE (A ahead on tokens, B ahead on cost) can
+   *  win one table each, and the fences then reject whichever report would repair the
+   *  split — the tables never converge, not even on replay. Inside a transaction the
+   *  first writer holds the snapshot row until commit, so the second evaluates its
+   *  fence against a committed predecessor and both tables agree on the same winner.
+   *  `withAmbientTx` composes under a caller's transaction rather than nesting. */
   async record(input: SessionUsageInput): Promise<void> {
+    await withAmbientTx(this.db, (tx) => this.write(tx, input))
+  }
+
+  private async write(db: Prisma.TransactionClient, input: SessionUsageInput): Promise<void> {
     const u = input.usage
     // Only-provided fields win; absent counts default to 0 (or null for the
     // context/cost snapshot), so a runtime that reports partial usage is fine.
@@ -134,7 +148,7 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
     // an idempotent no-op write. At the SAME instant it applies exactly the rule the
     // checkpoint applies below — a report the checkpoint refuses must not half-land
     // here, or `get()` and the aggregate would tell two stories about one session.
-    await this.db.$executeRaw(Prisma.sql`
+    await db.$executeRaw(Prisma.sql`
       INSERT INTO "session_usage" (
         "agentId", "sessionId", "platform", "channel", "source",
         "totalTokens", "inputTokens", "outputTokens", "thoughtTokens",
@@ -180,7 +194,7 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
     // ignored WHOLE: mixing a higher cost from one delivery with a lower token count
     // from another would synthesize a checkpoint nobody reported, and readers
     // attribute the interval's spend to this row's model.
-    const [merge] = await this.db.$queryRaw<Array<{ owned: number; applied: number }>>(Prisma.sql`
+    const [merge] = await db.$queryRaw<Array<{ owned: number; applied: number }>>(Prisma.sql`
       WITH owner AS (SELECT a."id" ${owner}),
       merged AS (
       INSERT INTO "session_spend" (
