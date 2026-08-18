@@ -224,15 +224,18 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Generate Prisma client
         run: pnpm -r prisma:generate
+      # This is the only apt on the critical path, and a runner's mirror can black-hole a fetch
+      # for hours; the acquire timeouts fail one over in seconds and the step cap bounds the rest.
       - name: Install and enable the Linux kernel sandbox
+        timeout-minutes: 5
+        env:
+          APT_OPTS: -o Acquire::http::Timeout=10 -o Acquire::https::Timeout=10 -o Acquire::Retries=2
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends bubblewrap ripgrep socat
-          # Ubuntu 24.04 runners restrict unprivileged user namespaces via
-          # AppArmor; bwrap (and therefore the SRT sandbox) requires them.
+          sudo apt-get $APT_OPTS update
+          sudo apt-get $APT_OPTS install -y --no-install-recommends bubblewrap ripgrep socat
+          # Ubuntu 24.04 runners restrict unprivileged userns via AppArmor; bwrap (so the SRT sandbox) needs them.
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
-          # Fail loudly rather than letting sandbox-dependent suites silently
-          # skip if bwrap cannot start on this runner.
+          # Fail loudly rather than letting sandbox-dependent suites silently skip if bwrap cannot start.
           bwrap --unshare-user --unshare-pid --ro-bind / / --proc /proc /usr/bin/true
       - name: Core sandbox suite
         run: pnpm --filter @agentconnect.md/daemon exec vitest run test/sandbox.test.ts
