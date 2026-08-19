@@ -57,7 +57,9 @@ export interface TurnRecord extends DistillationTurn {
   turnId?: string
   sessionId?: string
 }
-export type MemoryExtractor = (agentId: string, prompt: string) => Promise<string>
+/** Runs one extraction turn. `scope` is the ORIGINATING conversation's memory scope,
+ *  so a channel-scoped agent's distillation writes land in that channel's folder. */
+export type MemoryExtractor = (agentId: string, prompt: string, scope?: MemoryScope) => Promise<string>
 
 export interface RecallRequest {
   turnId: string

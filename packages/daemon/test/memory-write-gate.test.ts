@@ -86,3 +86,47 @@ describe('record-memory mutations under the same gate', () => {
     await expect(executeTool(ctx(), 'searchMemory', { query: 'deploys' }, recordDeps(false))).resolves.toBeDefined()
   })
 })
+
+// The distillation session reaches memory through the SAME tool surface as a turn,
+// differing only by its binding (#41). These execute the tool end to end, which is
+// what the earlier attachment-only assertions failed to cover.
+describe('a distillation-bound session writing through the shared tools', () => {
+  const distillCtx = (): SessionContext => ({
+    agentId: 'bot-a',
+    platform: 'distill',
+    channel: 'memory',
+    thread: 'distill',
+    isDm: false,
+    tools: [],
+    memoryBinding: { source: 'distill', scope: { agentId: 'bot-a', channelKey: 'C1-abc123', channel: 'C1' } }
+  })
+
+  it('records the write as `distill`, not `tool`, so the dream rebase stays honest', async () => {
+    const d = deps(true)
+    await executeTool(distillCtx(), 'writeMemory', { path: 'prefs.md', content: '- likes tabs' }, d)
+    const [, , , , source] = (d.memory.write as unknown as { mock: { calls: unknown[][] } }).mock.calls[0]!
+    expect(source).toBe('distill')
+  })
+
+  it('writes into the ORIGINATING channel store, not one derived from its own coordinates', async () => {
+    // Its own coordinates are the synthetic `memory`/`distill` pair; resolving from
+    // those would send a channel-scoped agent's facts to the wrong folder.
+    const d = deps(true, { memoryScope: () => ({ agentId: 'bot-a', channelKey: 'WRONG' }) })
+    await executeTool(distillCtx(), 'writeMemory', { path: 'prefs.md', content: '- likes tabs' }, d)
+    const [scope] = (d.memory.write as unknown as { mock: { calls: unknown[][] } }).mock.calls[0]!
+    expect(scope).toMatchObject({ agentId: 'bot-a', channelKey: 'C1-abc123' })
+  })
+
+  it('still reads through the same surface', async () => {
+    const d = deps(true)
+    await executeTool(distillCtx(), 'readMemory', { path: 'prefs.md' }, d)
+    expect(d.memory.read).toHaveBeenCalled()
+  })
+
+  it('leaves an ordinary turn writing as `tool`', async () => {
+    const d = deps(true)
+    await executeTool(ctx(), 'writeMemory', { content: 'shared fact' }, d)
+    const [, , , , source] = (d.memory.write as unknown as { mock: { calls: unknown[][] } }).mock.calls[0]!
+    expect(source).toBe('tool')
+  })
+})

@@ -122,7 +122,7 @@ export class ManagedMemoryProvider implements MemoryProvider {
     // The extraction session holds the same memory tools as any other trigger and
     // writes through them itself (#41), so there is nothing to parse or apply here.
     // Its text answer is not the product; the writes are.
-    await this.extract(scope.agentId, await buildDistillationPrompt(dir, turn))
+    await this.extract(scope.agentId, await buildDistillationPrompt(dir, turn), scope)
   }
 
   tools(): ToolDescriptor[] {

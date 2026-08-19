@@ -1,4 +1,5 @@
 import type { MemoryWriteSource } from '../../memory/store.js'
+import type { MemoryScope } from '../../memory/types.js'
 import type { ToolDescriptor } from '../tool-descriptor.js'
 
 /**
@@ -100,6 +101,10 @@ export interface SessionContext {
     /** Provenance for the write ledger. Dream adoption's rebase classifies drift by
      *  this, so a distillation-triggered write must still say `distill`. */
     source: MemoryWriteSource
+    /** The store to act on. A synthetic session (distillation) has no real channel
+     *  coordinates, so it pins the ORIGINATING conversation's scope here — otherwise a
+     *  channel-scoped agent would distill into the wrong folder. */
+    scope?: MemoryScope
   }
   /** Snapshot of the agent's integrations (id + platform) at session/new. Lets the
    *  platform-neutral `sendMessage` tool route to ANY connected platform,

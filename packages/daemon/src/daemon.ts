@@ -542,7 +542,7 @@ export class Daemon {
       const memory = this.agents.get(id)?.memory
       return memory?.provider !== 'external' && memory?.autoDistill === true
     },
-    extract: (id, prompt) => this.runMemoryExtraction(id, prompt),
+    extract: (id, prompt, scope) => this.runMemoryExtraction(id, prompt, scope),
     externalBindingFor: (id) => {
       const binding = this.agents.get(id)?.memory
       return binding?.provider === 'external' ? binding : undefined
@@ -575,6 +575,15 @@ export class Daemon {
   private memoryExtractionSessions = new Map<string, string>()
   /** MCP token backing each agent's cached distillation session, released with it. */
   private memoryExtractionTokens = new Map<string, string>()
+
+  /** Drop the token behind a cached distillation session so a replaced or discarded
+   *  session cannot leave a live tool grant behind. */
+  private releaseMemoryExtractionToken(agentId: string): void {
+    const token = this.memoryExtractionTokens.get(agentId)
+    if (!token) return
+    this.memoryExtractionTokens.delete(agentId)
+    this.mcp.unregister(token)
+  }
   private memoryExtractionDirs = new Map<string, string>()
   /** Throwaway empty cwd per agent for the console's commit-message pass (never written to). */
   private commitMessageDirs = new Map<string, string>()
@@ -3723,7 +3732,7 @@ export class Daemon {
     this.memoryPostTurnChains.set(agentId, next)
   }
 
-  private async runMemoryExtraction(agentId: string, prompt: string): Promise<string> {
+  private async runMemoryExtraction(agentId: string, prompt: string, scope?: MemoryScope): Promise<string> {
     const agent = this.agents.get(agentId)
     if (!agent) throw new Error(`unknown agent ${agentId}`)
     const modelSessionKey = this.keyServer ? `internal:memory:${agentId}` : undefined
@@ -3766,6 +3775,9 @@ export class Daemon {
         // turn and a dream — only the binding differs (#41). The binding tags its
         // writes `distill`, which dream adoption's rebase relies on to tell
         // additive capture apart from a tool/console edit.
+        // The binding pins the ORIGINATING conversation's memory scope: a
+        // channel-scoped agent must distill into that channel's folder, not into a
+        // store derived from this synthetic session's coordinates.
         const mcpToken = this.mcp.register({
           agentId,
           platform: 'distill',
@@ -3773,8 +3785,9 @@ export class Daemon {
           channel: 'memory',
           thread: 'distill',
           tools: MEMORY_TOOLS,
-          memoryBinding: { source: 'distill' }
+          memoryBinding: { source: 'distill', scope }
         })
+        this.releaseMemoryExtractionToken(agentId)
         this.memoryExtractionTokens.set(agentId, mcpToken)
         const mcpServers = buildMcpServers({
           socketPath: mcpSocketPath(this.root),
@@ -3808,7 +3821,10 @@ export class Daemon {
         await this.acpUpdateChains.get(acpUpdateChainKey(agentId, sessionId))
         return chunks.join('')
       } catch (err) {
-        if (this.memoryExtractionSessions.get(agentId) === sessionId) this.memoryExtractionSessions.delete(agentId)
+        if (this.memoryExtractionSessions.get(agentId) === sessionId) {
+          this.memoryExtractionSessions.delete(agentId)
+          this.releaseMemoryExtractionToken(agentId)
+        }
         throw err
       } finally {
         this.memoryExtractionQuarantines.set(key, agentId)
@@ -3974,7 +3990,11 @@ export class Daemon {
     transportScope?: string
   }): boolean {
     if (this.paused(ctx.agentId)) return false
-    if (ctx.platform === 'dream') return true
+    // A dream and a per-turn distillation both run OFF the chat-turn queue, so they
+    // never populate `activeGateEntries`; without this every memory tool call they
+    // make would throw "this agent turn has been stopped". Their lifetime is bounded
+    // by their own session plus token unregistration instead.
+    if (ctx.platform === 'dream' || ctx.platform === 'distill') return true
     const active = this.activeGateEntries.get(
       sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
     )
