@@ -140,7 +140,7 @@ The daemon does not implement these, but interacts with them through the section
 | `--key-server-token-path <path>` | `KEY_SERVER_TOKEN_PATH`        | File re-read as the key-server bearer token on every request.                                                                                      |
 | `--dry-run`                      | n/a                            | Load and validate all configuration and print the reconcile plan without opening connections/processes.                                            |
 
-General environment equivalents use the `AGENTCONNECT_` prefix, such as `AGENTCONNECT_CP_URL`, `AGENTCONNECT_CP_KEY`, and `AGENTCONNECT_ROOT`. The cloud model seam uses `MODEL_TOKEN`, `MODEL_BASE_URL`, `KEY_SERVER`, and `KEY_SERVER_TOKEN_PATH` as documented above.
+General environment equivalents use the `AGENTCONNECT_` prefix, such as `AGENTCONNECT_CP_URL`, `AGENTCONNECT_CP_KEY`, and `AGENTCONNECT_ROOT`. The cloud model seam uses `MODEL_TOKEN`, `MODEL_BASE_URL`, their runtime-scoped replacements (`ANTHROPIC_MODEL_*`, `OPENAI_MODEL_*`, `DEEPSEEK_MODEL_*`), `KEY_SERVER`, and `KEY_SERVER_TOKEN_PATH` as documented above.
 
 ### 2.4 Mapping In-Process Responsibilities to CLI
 

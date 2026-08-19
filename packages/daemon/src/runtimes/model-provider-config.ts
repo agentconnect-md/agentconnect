@@ -10,15 +10,24 @@ export interface ModelCredential {
   baseUrl?: string
 }
 
+/** Which runtime's own provider-configuration surface a credential must be written onto. */
+export type ModelRuntimeKind = 'claude' | 'codex' | 'opencode' | 'deepseek'
+
 export interface ModelProviderTarget {
   provider: KeyProvider
-  runtime: 'claude' | 'codex' | 'opencode'
+  runtime: ModelRuntimeKind
   opencodeProvider?: string
 }
 
 function isOpenCodeRuntime(runtimeId: string, runtime: RuntimeDef): boolean {
   if (runtimeId === 'opencode') return true
   return [runtime.command, ...runtime.args].some((part) => /(?:^|[\/@])opencode(?:@[^\/]*)?$/.test(part.toLowerCase()))
+}
+
+// The bin, not the package: `dsh-acp` is the single bin of @openma/deepseek-harness-acp.
+function isDeepSeekRuntime(runtimeId: string, runtime: RuntimeDef): boolean {
+  if (runtimeId === 'dsh-acp') return true
+  return [runtime.command, ...runtime.args].some((part) => /(?:^|[\/@])dsh-acp(?:@[^\/]*)?$/.test(part.toLowerCase()))
 }
 
 function applyCodexBaseUrl(env: Record<string, string>, baseUrl: string): void {
@@ -33,6 +42,7 @@ export function modelProviderTarget(
 ): ModelProviderTarget | undefined {
   if (isClaudeRuntimeDef(runtime)) return { provider: 'anthropic', runtime: 'claude' }
   if (sharedCredentialProfile(agent.runtime, runtime) === 'codex') return { provider: 'openai', runtime: 'codex' }
+  if (isDeepSeekRuntime(agent.runtime, runtime)) return { provider: 'deepseek', runtime: 'deepseek' }
   if (!isOpenCodeRuntime(agent.runtime, runtime)) return undefined
 
   const configuredProvider = effectiveModel?.includes('/') ? effectiveModel.split('/', 1)[0]?.trim() : undefined
@@ -54,6 +64,12 @@ export function applyModelCredential(
     env.ANTHROPIC_AUTH_TOKEN = credential.key
     delete env.ANTHROPIC_API_KEY
     if (credential.baseUrl) env.ANTHROPIC_BASE_URL = credential.baseUrl
+    return
+  }
+
+  if (target.runtime === 'deepseek') {
+    env.DEEPSEEK_API_KEY = credential.key
+    if (credential.baseUrl) env.DEEPSEEK_BASE_URL = credential.baseUrl
     return
   }
 
@@ -87,15 +103,41 @@ export function applyModelCredential(
   })
 }
 
-export function configuredModelCredential(env: NodeJS.ProcessEnv): ModelCredential | undefined {
-  const key = env.MODEL_TOKEN?.trim()
-  const baseUrl = env.MODEL_BASE_URL?.trim()
+export type StaticModelCredentials = Partial<Record<ModelRuntimeKind, ModelCredential>>
+
+// One gateway, one variable per runtime: each runtime speaks its vendor's dialect at its own
+// path, so the deployment composes the exact base each one needs and the daemon never guesses.
+// OpenCode has no variable of its own — it selects a provider per model and takes the shared pair.
+const RUNTIME_ENV_PREFIX: Partial<Record<ModelRuntimeKind, string>> = {
+  claude: 'ANTHROPIC_',
+  codex: 'OPENAI_',
+  deepseek: 'DEEPSEEK_'
+}
+
+const RUNTIME_KINDS: readonly ModelRuntimeKind[] = ['claude', 'codex', 'opencode', 'deepseek']
+
+function staticPair(env: NodeJS.ProcessEnv, prefix: string): ModelCredential | undefined {
+  const key = env[`${prefix}MODEL_TOKEN`]?.trim()
+  const baseUrl = env[`${prefix}MODEL_BASE_URL`]?.trim()
   if (!key && !baseUrl) return undefined
   if (baseUrl && (!URL.canParse(baseUrl) || !['http:', 'https:'].includes(new URL(baseUrl).protocol))) {
-    throw new Error('MODEL_BASE_URL must be an http(s) URL')
+    throw new Error(`${prefix}MODEL_BASE_URL must be an http(s) URL`)
   }
   // A URL-only layer uses an internal empty sentinel; applyStaticModelConfig preserves the runtime key.
   return { key: key ?? '', ...(baseUrl ? { baseUrl } : {}) }
+}
+
+// A runtime-scoped pair replaces the shared one whole, never merges: splitting a pair aims a key
+// at an endpoint that never issued it.
+export function configuredModelCredentials(env: NodeJS.ProcessEnv): StaticModelCredentials | undefined {
+  const shared = staticPair(env, '')
+  const resolved: StaticModelCredentials = {}
+  for (const kind of RUNTIME_KINDS) {
+    const prefix = RUNTIME_ENV_PREFIX[kind]
+    const pair = (prefix ? staticPair(env, prefix) : undefined) ?? shared
+    if (pair) resolved[kind] = pair
+  }
+  return Object.keys(resolved).length > 0 ? resolved : undefined
 }
 
 export function applyStaticModelConfig(
@@ -109,6 +151,7 @@ export function applyStaticModelConfig(
   }
   if (!configured.baseUrl) return
   if (target.runtime === 'claude') env.ANTHROPIC_BASE_URL = configured.baseUrl
+  else if (target.runtime === 'deepseek') env.DEEPSEEK_BASE_URL = configured.baseUrl
   else if (target.runtime === 'codex') applyCodexBaseUrl(env, configured.baseUrl)
   else {
     const providerId = target.opencodeProvider ?? 'openai'

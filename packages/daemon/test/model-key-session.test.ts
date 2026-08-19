@@ -164,7 +164,7 @@ describe('daemon model-key session lifecycle', () => {
 
   it('refuses a cross-provider switch on the shared static-credential host', async () => {
     const daemon = new Daemon({ k8s: true, clock: new FakeClock(1_000) }) as any
-    daemon.staticModelCredential = { key: 'static-token' }
+    daemon.staticModelCredentials = { opencode: { key: 'static-token' } }
     const opencodeAgent = {
       id: 'agent-a',
       runtime: 'opencode',
@@ -180,6 +180,30 @@ describe('daemon model-key session lifecycle', () => {
     expect(setModelOverride).not.toHaveBeenCalled()
     expect(await daemon.commands.setModelByKey('session-a', 'openai/gpt-5-codex')).toBe(true)
     expect(setModelOverride).toHaveBeenCalledWith('session-a', 'openai/gpt-5-codex')
+  })
+
+  it('leaves a runtime the static map never configured switchable', async () => {
+    const daemon = new Daemon({ k8s: true, clock: new FakeClock(1_000) }) as any
+    daemon.staticModelCredentials = { claude: { key: 'static-token' } }
+    const opencodeAgent = {
+      id: 'agent-a',
+      runtime: 'opencode',
+      allowRuntimeChangesInChat: true,
+      runtimeOverrides: { model: 'openai/gpt-5', env: [], secrets: [] }
+    }
+    daemon.runtimes = { opencode: { command: 'opencode', args: ['acp'], env: [] } }
+    daemon.agents.set('agent-a', opencodeAgent)
+    const setModelOverride = vi.fn()
+    daemon.store = { getSession: () => ({ agentId: 'agent-a', acpSessionId: null }), setModelOverride }
+
+    // The map configures no opencode pair, so this host runs on runtime-owned auth and stays switchable.
+    expect(await daemon.commands.setModelByKey('session-a', 'anthropic/claude-opus-4')).toBe(true)
+    expect(setModelOverride).toHaveBeenCalledWith('session-a', 'anthropic/claude-opus-4')
+  })
+
+  it('keeps no static pair to fall back to when a key server is configured', () => {
+    const withServer = new Daemon({ k8s: true, keyServer: 'https://keys.test', clock: new FakeClock(1_000) }) as any
+    expect(withServer.staticModelCredentials).toBeUndefined()
   })
 
   it('revokes the fresh grant when replacing the superseded host fails', async () => {

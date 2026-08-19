@@ -4,7 +4,7 @@ import type { RuntimeDef } from '../src/config/config-schema.js'
 import {
   applyModelCredential,
   applyStaticModelConfig,
-  configuredModelCredential,
+  configuredModelCredentials,
   modelProviderTarget
 } from '../src/runtimes/model-provider-config.js'
 
@@ -108,6 +108,77 @@ describe('applyModelCredential', () => {
   })
 
   it('rejects a non-HTTP static gateway URL', () => {
-    expect(() => configuredModelCredential({ MODEL_BASE_URL: 'file:///tmp/provider' })).toThrow(/http\(s\)/)
+    expect(() => configuredModelCredentials({ MODEL_BASE_URL: 'file:///tmp/provider' })).toThrow(/http\(s\)/)
+    expect(() => configuredModelCredentials({ ANTHROPIC_MODEL_BASE_URL: 'file:///tmp/provider' })).toThrow(
+      /ANTHROPIC_MODEL_BASE_URL must be an http\(s\) URL/
+    )
+  })
+
+  it('reads the shared static pair for every runtime', () => {
+    expect(configuredModelCredentials({ MODEL_TOKEN: 'k', MODEL_BASE_URL: 'https://gw.example' })).toEqual({
+      claude: { key: 'k', baseUrl: 'https://gw.example' },
+      codex: { key: 'k', baseUrl: 'https://gw.example' },
+      opencode: { key: 'k', baseUrl: 'https://gw.example' },
+      deepseek: { key: 'k', baseUrl: 'https://gw.example' }
+    })
+  })
+
+  it('lets each runtime carry the base its own dialect needs', () => {
+    expect(
+      configuredModelCredentials({
+        MODEL_TOKEN: 'gw-token',
+        ANTHROPIC_MODEL_BASE_URL: 'https://gw.example',
+        ANTHROPIC_MODEL_TOKEN: 'gw-token',
+        OPENAI_MODEL_BASE_URL: 'https://gw.example/v1',
+        OPENAI_MODEL_TOKEN: 'gw-token',
+        DEEPSEEK_MODEL_BASE_URL: 'https://gw.example/deepseek/v1',
+        DEEPSEEK_MODEL_TOKEN: 'gw-token'
+      })
+    ).toEqual({
+      claude: { key: 'gw-token', baseUrl: 'https://gw.example' },
+      codex: { key: 'gw-token', baseUrl: 'https://gw.example/v1' },
+      opencode: { key: 'gw-token' },
+      deepseek: { key: 'gw-token', baseUrl: 'https://gw.example/deepseek/v1' }
+    })
+  })
+
+  it('replaces the shared pair whole rather than merging into it', () => {
+    expect(
+      configuredModelCredentials({
+        MODEL_TOKEN: 'shared',
+        MODEL_BASE_URL: 'https://shared.example',
+        ANTHROPIC_MODEL_BASE_URL: 'https://gw.example'
+      })
+    ).toMatchObject({
+      // The scoped pair carries no key, so nothing of the shared pair survives into it.
+      claude: { key: '', baseUrl: 'https://gw.example' },
+      codex: { key: 'shared', baseUrl: 'https://shared.example' }
+    })
+  })
+
+  it('is undefined when nothing is configured', () => {
+    expect(configuredModelCredentials({})).toBeUndefined()
+  })
+
+  it('aims a deepseek runtime at its own provider variables', () => {
+    const env: Record<string, string> = {}
+    applyModelCredential({ provider: 'deepseek', runtime: 'deepseek' }, env, {
+      key: 'dsh-key',
+      baseUrl: 'https://gw.example/deepseek/v1'
+    })
+    expect(env).toEqual({ DEEPSEEK_API_KEY: 'dsh-key', DEEPSEEK_BASE_URL: 'https://gw.example/deepseek/v1' })
+  })
+
+  it('targets the deepseek harness by its dsh-acp bin', () => {
+    expect(
+      modelProviderTarget(
+        { runtime: 'dsh-acp' } as never,
+        {
+          command: 'npx',
+          args: ['-y', '-p', '@openma/deepseek-harness-acp@^0.4', 'dsh-acp'],
+          env: []
+        } as never
+      )
+    ).toEqual({ provider: 'deepseek', runtime: 'deepseek' })
   })
 })

@@ -10,14 +10,17 @@ runtimeClass, admission policy, egress control, and a managed egress proxy so a 
 key never enters the sandbox — is a separate, later plan. Until it lands, the pod and the
 shared Sandbox namespace are the only isolation boundaries, and a provider key is present inside
 the sandbox, so this shape suits internal dogfooding and self-hosted
-bring-your-own-key. A cloud daemon accepts the runtime-neutral `MODEL_BASE_URL` and
-`MODEL_TOKEN` pair and translates it for Claude, Codex, or OpenCode at spawn; a configured
-key server replaces the static token with a session-scoped pair. The runtime image still
-accepts the legacy deployment-owned `AC_CLAUDE_BASE_URL`/`AC_CLAUDE_API_KEY`,
+bring-your-own-key. A cloud daemon accepts the shared `MODEL_BASE_URL`/`MODEL_TOKEN` pair,
+or a runtime-scoped one that replaces it whole (`ANTHROPIC_MODEL_*` for Claude,
+`OPENAI_MODEL_*` for Codex, `DEEPSEEK_MODEL_*` for the DeepSeek Harness — OpenCode takes the
+shared pair, having no single base of its own), and translates it for that runtime at spawn;
+a configured key server replaces the static token with a session-scoped pair. The runtime
+image still accepts the legacy deployment-owned `AC_CLAUDE_BASE_URL`/`AC_CLAUDE_API_KEY`,
 `AC_CODEX_BASE_URL`/`AC_CODEX_API_KEY` and `AC_DEEPSEEK_BASE_URL`/`AC_DEEPSEEK_API_KEY` pod
-variables as fill-ins, but a daemon-sent value wins. DeepSeek Harness has no neutral-pair
-translation yet — the pod variables are its whole configuration, since a sandbox seeds no
-`$DSH_HOME` credential store. See [key-server.md](key-server.md) for precedence and lifecycle.
+variables as fill-ins, but a daemon-sent value wins — including for DeepSeek Harness, whose
+`DEEPSEEK_BASE_URL`/`DEEPSEEK_API_KEY` the daemon now writes itself; the pod variables remain
+its floor, since a sandbox seeds no `$DSH_HOME` credential store. See
+[key-server.md](key-server.md) for precedence and lifecycle.
 
 ## 1. Why a seam at all
 

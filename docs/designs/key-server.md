@@ -62,7 +62,7 @@ hold to check it are decided together by the key server's own design and the
 deployment that installs both. This document stops at the header.
 
 `provider` names the API dialect the credential must speak (`anthropic` /
-`openai`) and selects which `(key, baseUrl)` pair comes back. There is
+`openai` / `deepseek`) and selects which `(key, baseUrl)` pair comes back. There is
 deliberately **no `model` parameter**: per-model usage attribution belongs to
 whatever observes actual requests (a gateway data path, or the runtime's own usage
 reports), and a spawn-time hint would invite implementations to treat it as truth
@@ -124,25 +124,39 @@ the first layer that yields a key, whole:
 3. the runtime's default public endpoint with whatever credential the runtime
    environment already carries.
 
-Within a layer, an absent `baseUrl` falls through to the next layer's URL — that
-is the one sanctioned mix, so a key-server that only rotates keys and fronts no
-gateway needs no URL opinion. A present one must be `http(s)`, since it becomes a
-runtime's API base; plain `http` is legal and is the normal choice for a loopback
-or in-pod gateway.
+The daemon contributes no half of a pair: configuring a key server retires its static
+pair, so a grant is never completed from deployment config the issuer never saw. What
+stays beneath a grant is layer 3 itself — the runtime's own environment, including the
+pod's `AC_*_BASE_URL` floor the shim fills in — so a grant that omits `baseUrl` leaves
+whatever base that environment already carries. A key server fronting a gateway must
+therefore name it; only one content with the runtime's existing endpoint may stay
+silent. A present one must be `http(s)`, since it becomes a runtime's API base; plain
+`http` is legal and is the normal choice for a loopback or in-pod gateway.
 
-The cloud daemon's static pair is `MODEL_TOKEN` plus optional `MODEL_BASE_URL`.
-`MODEL_BASE_URL` must be an HTTP(S) URL. The pair is translated at runtime launch:
+The cloud daemon's static pair is `MODEL_TOKEN` plus optional `MODEL_BASE_URL`, with a
+per-runtime pair that replaces it whole: `ANTHROPIC_MODEL_TOKEN`/`ANTHROPIC_MODEL_BASE_URL`
+for Claude, `OPENAI_MODEL_*` for Codex, `DEEPSEEK_MODEL_*` for the DeepSeek Harness.
+OpenCode has no pair of its own — it picks a provider per model and takes the shared one.
+
+One deployment gateway is still one address; the runtimes just do not agree on where their
+base ends. Claude Code appends `/v1/messages` to its base, while Codex appends `/responses`
+and OpenCode's providers append `/messages`, so the same gateway is `https://gw` for one and
+`https://gw/v1` for the others. The daemon injects each base verbatim and never derives a
+path: the gateway's own layout is the deployment's to know, so composing these variables from
+one address belongs where that layout is configured, not in a runtime guess. Every base URL
+must be an HTTP(S) URL. Each pair is translated at runtime launch:
 
 | Runtime  | Token                                                                                    | Base URL                                                                                                                             |
 | -------- | ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
 | Claude   | `ANTHROPIC_AUTH_TOKEN`                                                                   | `ANTHROPIC_BASE_URL`                                                                                                                 |
 | Codex    | `OPENAI_API_KEY`                                                                         | `CODEX_CONFIG` → `model_provider = "openai"` and `model_providers.openai.base_url`; `OPENAI_BASE_URL` is also set for older adapters |
 | OpenCode | `OPENCODE_CONFIG_CONTENT` → selected provider `options.apiKey` using `{env:MODEL_TOKEN}` | selected provider `options.baseURL`                                                                                                  |
+| DeepSeek | `DEEPSEEK_API_KEY`                                                                       | `DEEPSEEK_BASE_URL`                                                                                                                  |
 
-Dynamic grants use the same translation and override the static token. If IssueKey
-omits `baseUrl`, only the static `MODEL_BASE_URL` is inherited. With no key server,
-the static pair wins; with neither, the runtime's existing provider configuration is
-left unchanged.
+Dynamic grants use the same translation. Configuring a key server retires the static
+pair outright — the daemon reads none of these variables — so a grant needs no
+precedence against them. With no key server the static pair wins; with neither, the
+runtime's existing provider configuration is left unchanged.
 
 One logical AgentConnect session owns one ACP host when key-server mode is active.
 Provider credentials are process-level settings, so sharing a runtime would let
