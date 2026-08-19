@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { existsSync, realpathSync } from 'node:fs'
 import { Readable, Writable } from 'node:stream'
+import { LocalFileSink } from '../shim/file-sink.js'
 import { resolveCommandPath } from '../runtimes/probe.js'
 import { sandboxWrap, type SandboxMechanism } from './sandbox.js'
 import type { ClaudeProtectedSettings } from '../runtime-defs/claude-runtime.js'
@@ -37,12 +38,22 @@ export interface ExecutableHint {
   command: string
 }
 
+/** One daemon-decided file the driver must write in the TARGET filesystem before the runtime starts. */
+export interface SpawnFile {
+  root: string
+  relPath: string[]
+  content: string
+}
+
 export interface SpawnRequest {
   command: string
   args: string[]
   /** The complete child environment; the driver adds nothing but resolved hints. */
   env: Record<string, string>
   hints?: ExecutableHint[]
+  /** Files env pointers reference (session gitconfig): the daemon decides the content, but only the
+   *  driver knows whose filesystem the runtime reads, so the write travels with the launch. */
+  files?: SpawnFile[]
   /** Disposable probes suppress raw stderr so a harness cannot print credential
    *  material or host paths outside our sanitizer. */
   suppressChildStderr?: boolean
@@ -76,6 +87,8 @@ export class LocalDriver implements SpawnDriver {
   constructor(private opts: { log?: Logger } = {}) {}
 
   async launch(request: SpawnRequest): Promise<SpawnedRuntime> {
+    const sink = new LocalFileSink()
+    for (const file of request.files ?? []) await sink.write(file.root, file.relPath, file.content)
     const env = { ...request.env }
     for (const hint of request.hints ?? []) {
       if (env[hint.envVar]) continue

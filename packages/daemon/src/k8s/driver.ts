@@ -3,6 +3,7 @@ import { systemClock, type Clock } from '@agentconnect.md/connection'
 import type { SpawnDriver, SpawnRequest, SpawnedRuntime } from '../acp/spawn-driver.js'
 import type { ShimCapability } from '../shim/protocol.js'
 import type { ShimConnection } from '../shim/connection.js'
+import { ShimFileSink } from '../shim/channels.js'
 import { ShimSession } from '../shim/session.js'
 import { createRemoteRuntime } from './remote-runtime.js'
 import type { SpawnRecord } from '../shim/binding.js'
@@ -281,6 +282,10 @@ export class K8sDriver implements SpawnDriver {
       this.metrics.channel('bound')
       const session = this.binder.sessionFor(agentId)
       if (!session) throw new Error(`no shim session for agent ${agentId} after binding its channel`)
+      // Fail-closed and per-launch: the env below points at these files, and a resumed Sandbox is a
+      // NEW pod whose tmpfs starts empty — so the write belongs to every launch, not to the bind.
+      const sink = new ShimFileSink(session)
+      for (const file of request.files ?? []) await sink.write(file.root, file.relPath, file.content)
       const runtime = createRemoteRuntime({
         session,
         request,
