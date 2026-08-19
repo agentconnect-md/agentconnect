@@ -1484,6 +1484,7 @@ export function buildContainer(
       daemons: connReg,
       conversations: repos.webchatConversation,
       sessions: repos.session,
+      memberSets: repos.memberSet,
       orgs: repos.org,
       remoteMcp: webchatRemoteMcp,
       placement: placementResolver

@@ -20,8 +20,9 @@ import { AgentId, HookId, OrgId, SessionId } from '../../domain/ids.js'
 import { orgOf, ctxOf, denyNonOwner } from '../rbac.js'
 import { decodeConversationKey, encodeConversationKey } from '../conversation-key.js'
 import { canChangeSessionVisibility, canContinueSession, canView, canViewSession } from '../../authorization/policy.js'
-import { originKindOf, WEBCHAT_SESSION_CONTINUATION_FEATURE } from '@agentconnect.md/protocol'
+import { originKindOf } from '@agentconnect.md/protocol'
 import { makeSessionAccessResolver } from '../session-access.js'
+import { resolveContinuationHost } from '../session-continuation.js'
 import { Tag } from '../plugins/openapi.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
 import { ConnectionClosed } from '../../ws/registry.js'
@@ -815,18 +816,8 @@ export function sessionRoutes(deps: HttpDeps) {
           }
           if (s.contentPurgedAt) return 'content_purged' as const
           if (originKindOf(s.platform ?? '') !== 'chat') return 'unsupported_platform' as const
-          if (!s.daemonId || owningAgent.daemonId !== s.daemonId) return 'agent_moved' as const
-          const daemon = deps.daemonConns.get(s.daemonId)
-          if (daemon?.state !== 'READY') return 'daemon_offline' as const
-          if (!daemon.capabilities?.features?.includes(WEBCHAT_SESSION_CONTINUATION_FEATURE)) {
-            return 'unavailable' as const
-          }
-          if (!deps.config.PUBLIC_RELAY_URL) return 'unavailable' as const
-          const alive = await deps.repos.relay.listAlive(new Date(Date.now() - (deps.config.RELAY_STALE_MS ?? 45_000)))
-          if (alive.length === 0 || alive.some((r) => !r.features.includes(WEBCHAT_SESSION_CONTINUATION_FEATURE))) {
-            return 'unavailable' as const
-          }
-          return null
+          const host = await resolveContinuationHost(deps, s, owningAgent)
+          return host.ok ? null : host.reason
         })()
         const siblings = siblingCandidates.filter((candidate) => candidate.id !== s.id)
         const related = [...(parent ? [parent] : []), ...siblings, ...children]

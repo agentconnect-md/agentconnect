@@ -7,6 +7,7 @@ import {
   type RegisterReq
 } from '@agentconnect.md/protocol'
 import { AgentId, OrgId, SessionId } from '../domain/ids.js'
+import { servesSessionContent } from '../domain/session-content.js'
 import type { PlacementResolver, ResolvableAgent } from '../orchestrator/placementResolver.js'
 import type { WebchatRemoteMcpService } from './webchatRemoteMcpService.js'
 import type { WebchatTokenService } from './webchatToken.js'
@@ -32,11 +33,14 @@ export interface WebchatVerificationDeps {
       agentId: string
       platform: string | null
       daemonId: string | null
+      contentSetId: string | null
       visibility: string
       ownerIdentity: string | null
       contentPurgedAt: Date | null
     } | null>
   }
+  /** Who else holds the shared store a session was written to (`domain/session-content.ts`). */
+  memberSets: { sharedStoreMemberIdsOf(setId: string): Promise<string[]> }
   orgs: { roleOf(orgId: string, userId: string): Promise<string | null> }
   remoteMcp: Pick<WebchatRemoteMcpService, 'establish'>
   /** Resolves the daemon a webchat turn should reach — the holder, or any live member that can
@@ -57,8 +61,9 @@ export interface WebchatVerificationDeps {
  * A SESSION-TARGETED conversation (non-null `targetSessionId`) re-checks the
  * continuation gates on every dial: the target session must exist un-purged and
  * chat-origin, the signed user must still hold a non-viewer role (private
- * sessions: console ownership), and the owner agent must still be placed on the
- * session's content-owning daemon with the continuation capability. Any drift
+ * sessions: console ownership), and the owner agent's dispatch daemon must still
+ * serve the session's content (its recorder, or a holder of the shared store it
+ * was written to) with the continuation capability. Any drift
  * fails the token instead of degrading into a fresh webchat session. The full
  * provider-identity expansion ran at mint (≤ token TTL ago); verify re-checks
  * with the console identity, which fails closed for platform-identity owners.
@@ -112,9 +117,11 @@ export function createWebchatTokenVerifier(deps: WebchatVerificationDeps): (toke
       ) {
         return { ok: false, reason: 'continuation unavailable' }
       }
-      // Content ownership is daemon-local: the agent must still be on the
-      // session's recorded daemon, and that daemon continuation-capable.
-      if (session.daemonId === null || session.daemonId !== agentDaemonId) {
+      // The dispatch daemon must still reach the content: the recorder, or a holder of the shared store it wrote to.
+      const sharedStoreMembers = session.contentSetId
+        ? await deps.memberSets.sharedStoreMemberIdsOf(session.contentSetId)
+        : []
+      if (!servesSessionContent({ recordedDaemonId: session.daemonId, sharedStoreMembers }, agentDaemonId)) {
         return { ok: false, reason: 'continuation unavailable' }
       }
       if (!daemon.capabilities?.features.includes(WEBCHAT_SESSION_CONTINUATION_FEATURE)) {

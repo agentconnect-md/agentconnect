@@ -26,6 +26,7 @@ import {
 } from '@agentconnect.md/protocol'
 import { prisma } from '../setup.db.js'
 import { seedAgent, seedDutyGroup, seedSessionMeta } from '../fixtures/seed.js'
+import { joinPool } from '../fakes/member-set.js'
 import { buildApp, type App } from '../../src/app.js'
 import { AppConfigSchema, type AppConfig } from '../../src/config/env.js'
 import { systemClock } from '../../src/domain/clock.js'
@@ -1053,6 +1054,36 @@ describe('webchat session-continuation mint + verify', () => {
     await prisma.agent.update({ where: { id: AGENT }, data: { daemonId: DAEMON } })
 
     capable.close()
+    daemonWs.close()
+  })
+
+  // A pool member is replaced on every rollout and reaped once silent, which SetNulls the
+  // `daemonId` it recorded — but the rows live in the store its peers share, and the duty holder
+  // reads them like it wrote them. Keying the gate on the recorder alone read as "agent moved".
+  it('continues a pool-recorded session through the live duty holder once the recorder is gone', async () => {
+    const { app, base } = await start({ PUBLIC_RELAY_URL: RELAY_URL })
+    const daemonWs = await connectDaemonReady(base, CONTINUATION)
+    const { ws: relayWs } = await openRelay(base, 'pod-cont-3', 'wss://pod-cont-3.example.test', CONTINUATION)
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    const setId = await joinPool(prisma, DAEMON)
+    await prisma.agent.update({ where: { id: AGENT }, data: { placementKind: 'set', setId, daemonId: null } })
+    await seedDutyGroup(prisma, randomUUID(), DAEMON, [AGENT])
+    await seedSessionMeta(prisma, SESSION_ID, AGENT, { platform: 'slack', channel: 'C123', contentSetId: setId })
+
+    expect((await mintSessionToken(app, SESSION_ID)).statusCode).toBe(200)
+    const detail = await app.http.inject({
+      method: 'GET',
+      url: `/api/v1/orgs/${DEFAULT_ORG_ID}/sessions/${SESSION_ID}`
+    })
+    expect(detail.json()).toMatchObject({ canContinue: true, continuationUnavailableReason: null })
+
+    // Recorded on a private store before the agent joined the pool: no live member holds those rows.
+    await prisma.sessionMeta.update({ where: { id: SESSION_ID }, data: { contentSetId: null } })
+    expect((await mintSessionToken(app, SESSION_ID)).statusCode).toBe(409)
+    const moved = await app.http.inject({ method: 'GET', url: `/api/v1/orgs/${DEFAULT_ORG_ID}/sessions/${SESSION_ID}` })
+    expect(moved.json()).toMatchObject({ canContinue: false, continuationUnavailableReason: 'agent_moved' })
+
+    relayWs.close()
     daemonWs.close()
   })
 
