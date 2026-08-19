@@ -1,6 +1,10 @@
+import { z } from 'zod'
 import type { SessionContext } from './context.js'
-import { optionalString } from './validate.js'
+import { optionalString, parseArgs } from './args.js'
 import type { ChannelAgentsOk, ChannelAgentsReq, Platform } from '@agentconnect.md/protocol'
+
+/** `listAgents` (and its `listChannelAgents` alias) arguments: `channel` is an optional filter. */
+export const LIST_AGENTS_ARGS = z.object({ channel: optionalString('channel') })
 
 /**
  * A peer-discovery request, i.e. `ChannelAgentsReq` plus the caller's own session
@@ -48,7 +52,7 @@ export async function listAgents(
   args: Record<string, unknown>,
   deps: DirectoryDeps
 ): Promise<unknown> {
-  const channel = optionalString(args, 'channel')
+  const { channel } = parseArgs(LIST_AGENTS_ARGS, args)
   const res = await deps.channelAgents({
     platform: ctx.platform as Platform,
     ...(channel !== undefined ? { channel } : {}),

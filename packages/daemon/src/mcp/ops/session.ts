@@ -1,5 +1,17 @@
+import { z } from 'zod'
 import type { McpContentResult, SessionContext } from './context.js'
-import { requireString } from './validate.js'
+import { parseArgs, requiredString } from './args.js'
+
+/** `setSessionTitle` arguments: whitespace is collapsed before the 80-character cap is applied. */
+export const SET_SESSION_TITLE_ARGS = z.object({
+  title: requiredString('title')
+    .transform((title) => title.replace(/\s+/g, ' ').trim())
+    .refine((title) => title.length > 0, 'missing required string argument: title')
+    .refine((title) => [...title].length <= 80, 'session title must be at most 80 characters')
+})
+
+/** `viewSessionStatus` arguments: the child session id is the only model input. */
+export const VIEW_SESSION_STATUS_ARGS = z.object({ sessionId: requiredString('sessionId') })
 
 /** A trusted session-title update. Every coordinate comes from the registered
  *  session context; the model supplies only `title`. */
@@ -80,9 +92,7 @@ export async function setSessionTitle(
   args: Record<string, unknown>,
   deps: SessionOpsDeps
 ): Promise<unknown> {
-  const title = requireString(args, 'title').replace(/\s+/g, ' ').trim()
-  if (!title) throw new Error('missing required string argument: title')
-  if ([...title].length > 80) throw new Error('session title must be at most 80 characters')
+  const { title } = parseArgs(SET_SESSION_TITLE_ARGS, args)
   await deps.setSessionTitle({
     agentId: ctx.agentId,
     platform: ctx.platform,
@@ -108,7 +118,7 @@ export async function viewSessionStatus(
   args: Record<string, unknown>,
   deps: SessionOpsDeps
 ): Promise<unknown> {
-  const sessionId = requireString(args, 'sessionId')
+  const { sessionId } = parseArgs(VIEW_SESSION_STATUS_ARGS, args)
   if (!deps.viewSessionStatus) throw new Error('session status is unavailable on this daemon')
   const status = await deps.viewSessionStatus({
     callerAgentId: ctx.agentId,
