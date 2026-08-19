@@ -62,7 +62,7 @@ function fakeClusterIdentity(opts: { accepts?: string; throws?: boolean } = {}) 
 
 async function withClusterApp(
   identity: ReturnType<typeof fakeClusterIdentity>,
-  config: { USAGE_INGEST_TOKEN?: string },
+  config: { USAGE_INGEST_TOKEN?: string; USAGE_COLLECTOR_SERVICE_ACCOUNT?: string },
   run: (app: ReturnType<typeof buildHttpApp>['app']) => Promise<void>
 ): Promise<void> {
   const { app, close } = buildHttpApp(prisma, config, undefined, undefined, {
@@ -208,6 +208,24 @@ describe('POST /internal/usage/reports — the gateway-source usage adapter', ()
       where: { agentId_sessionId: { agentId: AGENT_A, sessionId: 's-projected' } }
     })
     expect(row?.source).toBe('gateway')
+  })
+
+  it('asks for the ServiceAccount the deployment configured, when it names one', async () => {
+    // The collector is not this codebase's pod: the deployment that runs it names it, and
+    // USAGE_COLLECTOR_SERVICE_ACCOUNT is how it tells the verifying side. The default above is
+    // only what an unconfigured control plane expects.
+    await seedAgent(prisma, AGENT_A)
+    const identity = fakeClusterIdentity({ accepts: PROJECTED })
+    await withClusterApp(identity, { USAGE_COLLECTOR_SERVICE_ACCOUNT: 'ac-example-collector' }, async (app) => {
+      const res = await app.inject({
+        method: 'POST',
+        url: URL,
+        headers: { authorization: `Bearer ${PROJECTED}` },
+        payload: { reports: [report('s-named', AGENT_A, '2', new Date())] }
+      })
+      expect(res.statusCode).toBe(204)
+    })
+    expect(identity.asked).toEqual(['ac-example-collector'])
   })
 
   it('refuses a token the cluster review rejects, with no shared secret to fall back to', async () => {

@@ -6,6 +6,7 @@
  * (`API_KEY_PEPPER`, `HEARTBEAT_SEC`).
  */
 import { z } from 'zod'
+import { USAGE_COLLECTOR_SA_NAME } from '@agentconnect.md/protocol'
 import { composeCpPlatformEnv } from '../platforms/env.js'
 import { effectiveOrgKeyPrefix, orgKeyPrefixConflict } from '../secrets/scope.js'
 
@@ -241,7 +242,15 @@ const CoreConfigShape = {
   DAEMON_POOL_ENABLED: z
     .enum(['true', 'false'])
     .default('false')
-    .transform((v) => v === 'true')
+    .transform((v) => v === 'true'),
+  // ServiceAccount the usage-report collector presents on the batch usage ingress. A knob, not
+  // a constant: the collector is not this codebase's pod — the deployment that runs it names
+  // it (e.g. after the component it lives in), and this is how that deployment tells the
+  // verifying side. The default matches the historical name; the check itself stays
+  // load-bearing either way, since collector and pool-member tokens share an audience and the
+  // ServiceAccount is what keeps a daemon's token from writing usage. Read only where the
+  // cluster surface is on (DAEMON_POOL_ENABLED); the shared-secret ingest path needs no identity.
+  USAGE_COLLECTOR_SERVICE_ACCOUNT: z.string().min(1).default(USAGE_COLLECTOR_SA_NAME)
 } as const
 
 /**

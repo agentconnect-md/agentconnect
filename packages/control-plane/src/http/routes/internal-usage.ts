@@ -34,8 +34,8 @@
  * prevents — the caller retries once its own metering is complete.
  */
 import { timingSafeEqual } from 'node:crypto'
-import { z } from 'zod'
 import { USAGE_COLLECTOR_SA_NAME } from '@agentconnect.md/protocol'
+import { z } from 'zod'
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
@@ -63,6 +63,8 @@ function matchesSecret(presented: string, expected: string): boolean {
 export function internalUsageRoutes(deps: HttpDeps) {
   return async function internalUsageRoutesPlugin(app: FastifyInstance): Promise<void> {
     const expected = deps.config.USAGE_INGEST_TOKEN
+    // The deployment names its collector workload; this is how it tells the verifying side.
+    const collectorSa = deps.config.USAGE_COLLECTOR_SERVICE_ACCOUNT ?? USAGE_COLLECTOR_SA_NAME
     const cluster = deps.clusterWorkloadIdentity
     if (!expected && !cluster) return
     const r = app.withTypeProvider<ZodTypeProvider>()
@@ -73,7 +75,7 @@ export function internalUsageRoutes(deps: HttpDeps) {
     const authenticate = async (credential: string): Promise<boolean> => {
       if (expected && matchesSecret(credential, expected)) return true
       if (!cluster) return false
-      return (await cluster.verify(credential, USAGE_COLLECTOR_SA_NAME)) !== null
+      return (await cluster.verify(credential, collectorSa)) !== null
     }
 
     r.post(
