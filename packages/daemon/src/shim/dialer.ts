@@ -24,11 +24,22 @@ export type ShimDialPhase = 'startup' | 'reconnect'
 /** Startup pacing: the pod was created moments ago, so a refusal means "not listening yet" and is met in ~100ms. */
 export const STARTUP_DIAL_BACKOFF: BackoffOpts = { baseMs: 100 }
 
+/** First startup attempt's opening-handshake budget; each later one doubles it, up to the caller's own.
+ *  The pacing above assumes a failure is a REFUSAL and costs nothing, which is true of a listener still
+ *  coming up and false of a dropped packet — a policy or route that has not converged swallows the SYN,
+ *  and the transport's own 10s handshake timeout is then the whole cost of learning that. Reaching the
+ *  ~100ms retry at all means bounding the attempt well under it; doubling keeps a genuinely slow-but-live
+ *  handshake from being retried forever. */
+export const STARTUP_HANDSHAKE_TIMEOUT_MS = 1_000
+
 export interface ShimDialerDeps {
   verifier: PodIdentityVerifier
   now?: () => number
   clock?: Clock
-  dial?: (url: string, opts: { subprotocol: string; path: string }) => Promise<ShimTransport>
+  dial?: (
+    url: string,
+    opts: { subprotocol: string; path: string; handshakeTimeoutMs?: number }
+  ) => Promise<ShimTransport>
   /** Per-phase backoff factory. Injected so tests dial and reconnect in milliseconds. */
   backoff?: (phase: ShimDialPhase) => Backoff
   credentialTtlMs?: number
@@ -129,9 +140,13 @@ export class ShimDialer {
     const startup = this.deps.backoff?.('startup') ?? new Backoff(STARTUP_DIAL_BACKOFF)
     const reconnect = this.deps.backoff?.('reconnect') ?? new Backoff()
     let everBound = false
+    let startupAttempt = 0
     while (!dial.stopped) {
       try {
-        const { connection, closed } = await this.dialAndBind(dial, timeoutMs)
+        const handshakeMs = everBound
+          ? undefined
+          : Math.min(STARTUP_HANDSHAKE_TIMEOUT_MS * 2 ** startupAttempt++, timeoutMs)
+        const { connection, closed } = await this.dialAndBind(dial, timeoutMs, handshakeMs)
         if (dial.stopped) {
           connection.close('dial no longer current')
           return
@@ -175,7 +190,10 @@ export class ShimDialer {
 
   private dialAndBind(
     dial: SupervisedDial,
-    timeoutMs: number
+    timeoutMs: number,
+    /** This attempt's opening-handshake budget; absent ⇒ the transport's own default. Bounds ONLY the
+     *  handshake: once the socket is open the path is proven and binding keeps the full budget below. */
+    handshakeTimeoutMs?: number
   ): Promise<{ connection: ShimConnection; closed: Promise<{ code: number; reason: string }> }> {
     const boundedMs = Math.max(1, timeoutMs)
     let transport: ShimTransport | undefined
@@ -191,7 +209,8 @@ export class ShimDialer {
     const attempt = (async () => {
       transport = await (this.deps.dial ?? defaultDial)(dial.endpoint, {
         subprotocol: SHIM_SUBPROTOCOL,
-        path: SHIM_WS_PATH
+        path: SHIM_WS_PATH,
+        ...(handshakeTimeoutMs === undefined ? {} : { handshakeTimeoutMs })
       })
       if (timedOut || dial.stopped) {
         transport.close(4408, timedOut ? 'binding timeout' : 'dial no longer current')
@@ -411,6 +430,9 @@ export class ShimDialer {
   }
 }
 
-function defaultDial(url: string, opts: { subprotocol: string; path: string }): Promise<ShimTransport> {
+function defaultDial(
+  url: string,
+  opts: { subprotocol: string; path: string; handshakeTimeoutMs?: number }
+): Promise<ShimTransport> {
   return ClientTransport.dial(url, opts) as Promise<ShimTransport>
 }
