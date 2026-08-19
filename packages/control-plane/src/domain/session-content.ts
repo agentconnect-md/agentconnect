@@ -47,3 +47,8 @@ export function sessionContentReaders(sources: SessionContentSources): string[] 
     ])
   ]
 }
+
+/** May `daemonId` serve this session's content — the recorder itself, or a holder of the store it wrote to? */
+export function servesSessionContent(sources: SessionContentSources, daemonId: string): boolean {
+  return sessionContentReaders(sources).includes(daemonId)
+}

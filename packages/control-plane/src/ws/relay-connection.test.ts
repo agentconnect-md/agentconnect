@@ -1,4 +1,5 @@
-import { PLACEMENT_ONLY } from '../orchestrator/placementResolver.js'
+import { PLACEMENT_ONLY, PlacementResolver } from '../orchestrator/placementResolver.js'
+import { systemClock } from '../domain/clock.js'
 import { describe, it, expect, vi } from 'vitest'
 import {
   buildRelayCpFrame,
@@ -182,7 +183,7 @@ function buildWebchatVerifier(
      *  pre-participant single-agent shape). */
     participants?: Awaited<ReturnType<WebchatVerificationDeps['conversations']['participants']>>
     /** Per-agent lookups for roster MEMBERS (the primary keeps the defaults). */
-    agentById?: Record<string, { orgId: string; daemonId: string | null } | null>
+    agentById?: Record<string, Awaited<ReturnType<WebchatVerificationDeps['agents']['getUnscoped']>>>
     /** Per-daemon connection state for member placements. */
     daemonById?: Record<string, { state: string; features?: string[] }>
     establish?: WebchatVerificationDeps['remoteMcp']['establish']
@@ -191,6 +192,10 @@ function buildWebchatVerifier(
     conversationRow?: { targetSessionId: string | null } | null
     /** Target session row for the continuation branch. */
     sessionById?: Record<string, Awaited<ReturnType<WebchatVerificationDeps['sessions']['getUnscoped']>>>
+    /** Members of a shared-store set, by set id (default: none). */
+    sharedStoreMembersBySet?: Record<string, string[]>
+    /** The placement resolver (default: placement alone — no duty ledger, no live members). */
+    placement?: WebchatVerificationDeps['placement']
     /** Signed user's role in the org (default collaborator). */
     role?: string | null
   } = {}
@@ -210,6 +215,8 @@ function buildWebchatVerifier(
     if (over.agentById && id in over.agentById) return over.agentById[id] ?? null
     return {
       orgId: 'org-1',
+      placementKind: 'daemon' as const,
+      setId: null,
       daemonId: over.daemonId === undefined ? WEBCHAT_DAEMON_ID : over.daemonId
     }
   })
@@ -254,8 +261,9 @@ function buildWebchatVerifier(
         target: async () => (over.conversationRow === undefined ? { targetSessionId: null } : over.conversationRow)
       },
       sessions: { getUnscoped: async (id) => over.sessionById?.[id] ?? null },
+      memberSets: { sharedStoreMemberIdsOf: async (setId) => over.sharedStoreMembersBySet?.[setId] ?? [] },
       orgs: { roleOf: async () => (over.role === undefined ? 'collaborator' : over.role) },
-      placement: PLACEMENT_ONLY,
+      placement: over.placement ?? PLACEMENT_ONLY,
       remoteMcp: { establish }
     })
   }
@@ -790,7 +798,9 @@ describe('webchat verification multi-agent roster (webchat-multi-agents.md §6.2
   it('returns the roster primary-first with member placements and suppresses remote-MCP', async () => {
     const h = buildWebchatVerifier({
       participants: ROSTER,
-      agentById: { [MEMBER_AGENT_ID]: { orgId: 'org-1', daemonId: MEMBER_DAEMON_ID } },
+      agentById: {
+        [MEMBER_AGENT_ID]: { orgId: 'org-1', placementKind: 'daemon', setId: null, daemonId: MEMBER_DAEMON_ID }
+      },
       daemonById: { [MEMBER_DAEMON_ID]: { state: 'READY' } }
     })
 
@@ -811,7 +821,9 @@ describe('webchat verification multi-agent roster (webchat-multi-agents.md §6.2
   it('lists a member WITHOUT a placement when its daemon is not READY', async () => {
     const h = buildWebchatVerifier({
       participants: ROSTER,
-      agentById: { [MEMBER_AGENT_ID]: { orgId: 'org-1', daemonId: MEMBER_DAEMON_ID } },
+      agentById: {
+        [MEMBER_AGENT_ID]: { orgId: 'org-1', placementKind: 'daemon', setId: null, daemonId: MEMBER_DAEMON_ID }
+      },
       daemonById: { [MEMBER_DAEMON_ID]: { state: 'DEGRADED' } }
     })
 
@@ -827,7 +839,9 @@ describe('webchat verification multi-agent roster (webchat-multi-agents.md §6.2
   it('lists a cross-org or vanished member WITHOUT a placement (fail-closed targeting)', async () => {
     const h = buildWebchatVerifier({
       participants: ROSTER,
-      agentById: { [MEMBER_AGENT_ID]: { orgId: 'org-OTHER', daemonId: MEMBER_DAEMON_ID } },
+      agentById: {
+        [MEMBER_AGENT_ID]: { orgId: 'org-OTHER', placementKind: 'daemon', setId: null, daemonId: MEMBER_DAEMON_ID }
+      },
       daemonById: { [MEMBER_DAEMON_ID]: { state: 'READY' } }
     })
 
@@ -862,6 +876,7 @@ describe('webchat verification — session-targeted continuation (webchat-cross-
       agentId: string
       platform: string | null
       daemonId: string | null
+      contentSetId: string | null
       visibility: string
       ownerIdentity: string | null
       contentPurgedAt: Date | null
@@ -871,6 +886,7 @@ describe('webchat verification — session-targeted continuation (webchat-cross-
     agentId: WEBCHAT_AGENT_ID,
     platform: 'slack',
     daemonId: WEBCHAT_DAEMON_ID,
+    contentSetId: null,
     visibility: 'org',
     ownerIdentity: null,
     contentPurgedAt: null,
@@ -963,5 +979,39 @@ describe('webchat verification — session-targeted continuation (webchat-cross-
     await expect(targeted({}, { daemonFeatures: [WEBCHAT_REMOTE_MCP_FEATURE] }).verifier('t')).resolves.toMatchObject({
       ok: false
     })
+  })
+
+  // A pool member is replaced on every rollout: the recorder is gone (or SetNulled), yet every live
+  // member reads the shared store it wrote to — so the dispatch member continues the session.
+  it('continues through any live pool member when the content sits in the shared store', async () => {
+    const POOL_SET = 'pool-set-1'
+    const RECORDER = '11111111-1111-4111-8111-111111111111'
+    const SUCCESSOR = '22222222-2222-4222-8222-222222222222'
+    const pooled = (session: Parameters<typeof targetSession>[0], members: string[]) =>
+      targeted(session, {
+        agentById: { [WEBCHAT_AGENT_ID]: { orgId: 'org-1', placementKind: 'set', setId: POOL_SET, daemonId: null } },
+        placement: new PlacementResolver({ clock: systemClock, liveMembers: async () => [SUCCESSOR] }),
+        sharedStoreMembersBySet: { [POOL_SET]: members },
+        daemonById: { [SUCCESSOR]: { state: 'READY', features: CONTINUATION_FEATURES } }
+      })
+    // Recorder rolled away; its row may even be reaped (daemonId SetNulled).
+    await expect(
+      pooled({ daemonId: RECORDER, contentSetId: POOL_SET }, [SUCCESSOR]).verifier('t')
+    ).resolves.toMatchObject({
+      ok: true,
+      targetSessionId: TARGET_SESSION_ID,
+      participants: [{ agentId: WEBCHAT_AGENT_ID, daemonId: SUCCESSOR }]
+    })
+    await expect(pooled({ daemonId: null, contentSetId: POOL_SET }, [SUCCESSOR]).verifier('t')).resolves.toMatchObject({
+      ok: true
+    })
+    // Recorded on a private store before the agent joined the pool: no member holds those rows.
+    await expect(pooled({ daemonId: RECORDER, contentSetId: null }, [SUCCESSOR]).verifier('t')).resolves.toMatchObject({
+      ok: false
+    })
+    // The dispatch member is not a holder of that store.
+    await expect(
+      pooled({ daemonId: RECORDER, contentSetId: POOL_SET }, [RECORDER]).verifier('t')
+    ).resolves.toMatchObject({ ok: false })
   })
 })

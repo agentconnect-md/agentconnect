@@ -14,17 +14,14 @@
 import type { FastifyInstance } from 'fastify'
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
-import {
-  originKindOf,
-  WEBCHAT_MULTI_AGENT_FEATURE,
-  WEBCHAT_SESSION_CONTINUATION_FEATURE
-} from '@agentconnect.md/protocol'
+import { originKindOf, WEBCHAT_MULTI_AGENT_FEATURE } from '@agentconnect.md/protocol'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
 import { AgentId, SessionId, type OrgId } from '../../domain/ids.js'
 import type { ResolvableAgent } from '../../orchestrator/placementResolver.js'
 import { canContinueSession, canView } from '../../authorization/policy.js'
 import { makeSessionAccessResolver } from '../session-access.js'
+import { resolveContinuationHost } from '../session-continuation.js'
 import { ctxOf, orgOf } from '../rbac.js'
 import { ErrorDto } from '../dto/index.js'
 import { Tag } from '../plugins/openapi.js'
@@ -163,7 +160,7 @@ export function webchatTokenRoutes(deps: HttpDeps) {
           tags: [Tag.Sessions],
           summary: 'Mint a session-continuation webchat token',
           description:
-            'Mints a short-lived token the browser presents to the relay pool to continue an existing chat-origin session from the console composer. Requires continuation authorization, un-purged content, the owning agent still placed on the session daemon, and continuation-capable daemon and relay pool.',
+            'Mints a short-lived token the browser presents to the relay pool to continue an existing chat-origin session from the console composer. Requires continuation authorization, un-purged content, a daemon that can still serve the session content (its recorder, or a live member of the shared store it was written to), and continuation-capable daemon and relay pool.',
           operationId: 'mintWebchatSessionToken',
           params: z.object({ orgId: z.string(), sessionId: z.string() }),
           response: { 200: WebchatTokenDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
@@ -200,17 +197,16 @@ export function webchatTokenRoutes(deps: HttpDeps) {
         if (originKindOf(s.platform ?? '') !== 'chat') return refuse(409, 'only chat sessions can be continued')
         const agent = await deps.repos.agent.get(orgOf(req), s.agentId)
         if (!agent || !canView(agent, ctx)) return refuse(404, 'session not found')
-        if (!s.daemonId || agent.daemonId !== s.daemonId) return refuse(409, 'the agent moved since this session ran')
-        const daemon = deps.daemonConns.get(s.daemonId)
-        if (daemon?.state !== 'READY') return refuse(409, 'the session host is offline')
-        if (!daemon.capabilities?.features?.includes(WEBCHAT_SESSION_CONTINUATION_FEATURE)) {
-          return refuse(409, 'session continuation is not available yet')
-        }
-        // Fail-closed rollout: EVERY live relay behind the public pool must
-        // preserve targetSessionId; one old member keeps the feature off.
-        const alive = await deps.repos.relay.listAlive(new Date(Date.now() - (deps.config.RELAY_STALE_MS ?? 45_000)))
-        if (alive.length === 0 || alive.some((r) => !r.features.includes(WEBCHAT_SESSION_CONTINUATION_FEATURE))) {
-          return refuse(409, 'session continuation is not available yet')
+        const host = await resolveContinuationHost(deps, s, agent)
+        if (!host.ok) {
+          return refuse(
+            409,
+            host.reason === 'agent_moved'
+              ? 'the agent moved since this session ran'
+              : host.reason === 'daemon_offline'
+                ? 'the session host is offline'
+                : 'session continuation is not available yet'
+          )
         }
         const userId = req.principal!.userId
         const { conversationId } = await deps.repos.webchatConversation.upsertSessionTargeted(

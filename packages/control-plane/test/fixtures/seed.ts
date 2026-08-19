@@ -125,6 +125,8 @@ export async function seedSessionMeta(
     visibility?: 'org' | 'private'
     ownerIdentity?: string
     daemonId?: string
+    /** The shared-store set the rows went to (a pool-recorded session); absent ⇒ private store. */
+    contentSetId?: string
     platform?: string
     channel?: string
     parentSessionId?: string
@@ -146,6 +148,7 @@ export async function seedSessionMeta(
       ...(opts.visibility ? { visibility: opts.visibility } : {}),
       ...(opts.ownerIdentity ? { ownerIdentity: opts.ownerIdentity } : {}),
       ...(opts.daemonId ? { daemonId: opts.daemonId } : {}),
+      ...(opts.contentSetId ? { contentSetId: opts.contentSetId } : {}),
       ...(opts.parentSessionId ? { parentSessionId: opts.parentSessionId } : {}),
       ...(opts.model ? { model: opts.model } : {})
     }
