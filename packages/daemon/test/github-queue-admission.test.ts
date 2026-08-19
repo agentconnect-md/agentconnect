@@ -56,10 +56,42 @@ describe('planGithubRevisionAdmission', () => {
     expect(effects.preemptableActiveLosers).toEqual([])
   })
 
-  it('leaves a re-request out of latest-wins, since it opens no new revision', () => {
+  it('re-runs the head a re-request names, preempting the review already generating it', () => {
     const opened = entry('opened', 'pull_request:opened', HEAD_A, '2026-08-19T01:24:44.000Z')
     const rerequested = entry('rerequested', 'check_run:rerequested', HEAD_A, '2026-08-19T01:26:00.000Z')
 
-    expect(planGithubRevisionAdmission(KEY, rerequested, active(opened))).toBeUndefined()
+    const plan = planGithubRevisionAdmission(KEY, rerequested, active(opened))
+
+    expect(plan?.winner.entry).toBe(rerequested)
+    const effects = planGithubRevisionAdmissionEffects(plan!, rerequested)
+    expect(effects.incomingWins).toBe(true)
+    expect(effects.preemptableActiveLosers.map((candidate) => candidate.entry)).toEqual([opened])
+  })
+
+  it('collapses a burst of re-requests for one head onto the newest delivery', () => {
+    const first = entry('first', 'check_suite:rerequested', HEAD_A, '2026-08-19T17:55:42.765Z')
+    const second = entry('second', 'check_suite:rerequested', HEAD_A, '2026-08-19T17:55:42.947Z')
+    const third = entry('third', 'check_suite:rerequested', HEAD_A, '2026-08-19T17:55:43.456Z')
+
+    const plan = planGithubRevisionAdmission(KEY, third, [
+      { key: KEY, entry: first, state: 'active' },
+      { key: KEY, entry: second, state: 'queued' }
+    ])
+
+    expect(plan?.winner.entry).toBe(third)
+    const effects = planGithubRevisionAdmissionEffects(plan!, third)
+    expect(effects.incomingWins).toBe(true)
+    expect(effects.terminalLosers.map((candidate) => candidate.entry)).toEqual([second])
+    expect(effects.preemptableActiveLosers.map((candidate) => candidate.entry)).toEqual([first])
+  })
+
+  it('leaves the head under review alone when a re-request names a stale one', () => {
+    const pushed = entry('pushed', 'pull_request:synchronize', HEAD_B, '2026-08-19T01:28:20.000Z')
+    const rerequested = entry('rerequested', 'check_suite:rerequested', HEAD_A, '2026-08-19T01:29:00.000Z')
+
+    const plan = planGithubRevisionAdmission(KEY, rerequested, active(pushed))
+
+    expect(plan?.winner.entry).toBe(rerequested)
+    expect(plan?.superseded).toEqual([])
   })
 })

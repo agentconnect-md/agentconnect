@@ -159,16 +159,45 @@ export function githubPullRequestLane(
   ])
 }
 
-/** Deliveries that establish a new head; a re-request only reopens the revision already current. */
+/** Deliveries that establish a new head. */
 const GITHUB_PULL_REVISION_EVENTS = new Set(['pull_request:opened', 'pull_request:synchronize'])
+
+/** Deliveries that re-run the head already current; a burst of them is one review asked for repeatedly. */
+const GITHUB_PULL_RERUN_EVENTS = new Set([
+  'pull_request:review_requested',
+  'check_run:rerequested',
+  'check_suite:rerequested',
+  'check_run:requested_action'
+])
+
+/** One lane's contest for the next generation; a re-run is `pinned` to its own head and contests that alone. */
+export interface GithubRevisionStream {
+  lane: string
+  headSha: string
+  pinned: boolean
+}
 
 export function githubPullRevisionStream(
   hook: GithubCoordinatedHook | undefined,
   coords: GithubHookCoordinates
-): string | undefined {
+): GithubRevisionStream | undefined {
   const lane = githubPullRequestLane(hook, coords)
-  if (!lane || !hook || !GITHUB_PULL_REVISION_EVENTS.has(hook.event ?? '') || !hook.github?.headSha) return undefined
-  return JSON.stringify(['revision', lane])
+  const headSha = hook?.github?.headSha
+  if (!lane || !headSha) return undefined
+  const event = hook?.event ?? ''
+  if (GITHUB_PULL_REVISION_EVENTS.has(event)) return { lane, headSha, pinned: false }
+  if (GITHUB_PULL_RERUN_EVENTS.has(event)) return { lane, headSha, pinned: true }
+  return undefined
+}
+
+/** Contenders share a lane, and share a head whenever either only re-runs its own. */
+export function githubRevisionStreamsContest(a: GithubRevisionStream, b: GithubRevisionStream): boolean {
+  return a.lane === b.lane && (!(a.pinned || b.pinned) || a.headSha === b.headSha)
+}
+
+/** A re-run means re-run: only the winner's generation is reported, so an older one is dead work. */
+export function githubRerunsCurrentHead(hook: Pick<HookDispatchContext, 'event'> | undefined): boolean {
+  return GITHUB_PULL_RERUN_EVENTS.has(hook?.event ?? '')
 }
 
 export function githubReviewBatchStream(
