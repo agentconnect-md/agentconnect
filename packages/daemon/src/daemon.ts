@@ -146,7 +146,6 @@ import {
   isSlackStatusBarText,
   slackAgentPostOptions,
   slackPostOptions,
-  slackStatusOptions,
   type SlackTurnState
 } from './platforms/slack/turn-output.js'
 import { ChannelNameResolver } from './messages/channel-name-resolver.js'
@@ -335,7 +334,7 @@ import {
   telegramMessageId as telegramMessageIdExternal,
   telegramReplyTarget as telegramReplyTargetExternal
 } from './platforms/telegram/threading.js'
-import { TurnOutputRegistry, type TurnOutputContext } from './platforms/turn-output.js'
+import { TurnOutputRegistry } from './platforms/turn-output.js'
 import type {
   RegisterReq,
   RelayRosterEntry,
@@ -370,7 +369,8 @@ import type {
   TaskListReq
 } from '@agentconnect.md/protocol'
 import { formatErr } from './daemon/text.js'
-import { isBuiltinSystemToolCall, noneSuppressedApprovalSurface } from './daemon/tool-classification.js'
+import { isBuiltinSystemToolCall } from './daemon/tool-classification.js'
+import { buildTurnPlan } from './daemon/turn-plan.js'
 import {
   isTrustedHumanTurn,
   loopGuardScope,
@@ -440,7 +440,6 @@ import {
 } from './daemon/helpers.js'
 import {
   ABSORBED_CONTEXT_TS_MEMORY,
-  AGENT_CALL_HOP_LIMIT_NOTICE,
   BG_TASK_WAKE_GRACE_MS,
   CANCEL_FORCE_MS,
   DEFAULT_WEB_APP_URL,
@@ -8587,61 +8586,30 @@ export class Daemon {
         )
       }
     }
-    const agentName = agent.displayName?.trim() || agent.name
-    const iconUrl = agent.iconUrl
+    // Every decision this turn can make before it touches a host, a row or a connection.
+    const plan = buildTurnPlan({
+      entry,
+      agent,
+      sessionKey: key,
+      evaluationTurnId,
+      // Read here, not in the planner: the sticky override is live daemon state.
+      stickyOutputMode: await this.store.getOutputModeOverride(key),
+      hostAlreadyRunning: this.hostStarts.has(agentId) || this.modelSessionHosts.get(key)?.host !== undefined,
+      protectedAddresses: this.compoundMentionAddresses(agentId, msg),
+      codexUsageIsPerPrompt: this.isCodexRuntime(agentId),
+      features: { turnFinalContextRefresh: this.cfg.features.turnFinalContextRefresh },
+      turnSurfaces: this.turnSurfaces
+    })
+    const { agentName, iconUrl, mode, showFooter, statusThread, transcriptChannel, statusOptions, turnCtx } = plan
     // The recorder captures the full activity log (tool/reasoning) independent of
     // output mode — `conv` (built below, once the session key is known) only decides
     // what reaches Slack, never the transcript.
     const rec = new TranscriptRecorder()
-    // Output verbosity for THIS turn: the sticky per-session override (status-bar picker)
-    // wins over the agent default. Resolved BEFORE replyConn because `none` is a session-only
-    // mode — the converger records the reply into the transcript (via `recordOnly` posts) but
-    // delivers nothing to the IM, so it takes the same null-connection seam as headless/webchat.
-    const mode = (await this.store.getOutputModeOverride(key)) ?? agent.output.mode
-    // Footer visibility is an agent-level delivery choice, snapshotted for this turn
-    // alongside output mode. Turning it off removes attribution and session-link chrome
-    // on every platform without changing the recorded transcript.
-    const showFooter = agent.output.showFooter
-    // A headless cron fire has no platform target — leave the connection unset so
-    // every apply/status action no-ops (the transcript still records everything).
-    // webchat likewise has no Slack connection: its reply streams through the relay
-    // reply sink as `rd/chat`, so `conv`'s Slack actions never apply.
-    // `none` output mode joins them: no status, status-bar, or reply reaches the channel;
-    // only the converger's `recordOnly` body posts land in the transcript.
-    // A continuation turn keeps its platform reply connection: its webchat stream is
-    // an additional sink, not a replacement (§5.2 dual sinks).
-    const replyConn =
-      msg.headless || (webchat && !webchat.continuation) || mode === 'none'
-        ? undefined
-        : this.replyConnFor(agentId, integrationId)
-    // Capture cold/warm BEFORE sessions.handle(), which boots the host via hostFor().
-    const wasRunning = this.hostStarts.has(agentId) || this.modelSessionHosts.get(key)?.host !== undefined
-    const statusThread = msg.thread ?? msg.msgId
-    const currentTranscriptChannel = () => transcriptChannelKey(msg.channel, msg.transportScope)
     // Daemon-side rendering only (not ACP); a fresh converger is built per turn, so a change
-    // applies from the next turn on, not mid-turn (see `mode`, resolved above before replyConn).
-    // §7.3: the platform's own production rules (chunk ceilings, parse mode, hint
-    // policy) and its opaque per-turn state both come from its output surface.
-    const turnSurface = this.turnSurfaces.for(msg.platform)
-    const turnCtx: TurnOutputContext<NormalizedMessage> = {
-      mode,
-      isDm: msg.isDm,
-      showFooter,
-      message: msg,
-      // send-message-routing-rework.md §5.3: compound shared-bot addresses this
-      // conversation can contain, so the splitter never cuts `<@U_SHARED> reviewer` in
-      // half. Only the Slack surface has such addresses; every other surface ignores it.
-      protectedAddresses: this.compoundMentionAddresses(agentId, msg)
-    }
-    const conv = turnSurface.createConverger(turnCtx)
-    const statusOptions = slackStatusOptions(msg.platform, agentName, iconUrl)
-    this.showActivity(
-      replyConn,
-      msg.channel,
-      statusThread,
-      wasRunning ? 'is thinking…' : 'is starting up…',
-      statusOptions
-    )
+    // applies from the next turn on, not mid-turn (see `mode`, resolved inside the plan).
+    const conv = plan.turnSurface.createConverger(turnCtx)
+    const replyConn = plan.suppressReplyConn ? undefined : this.replyConnFor(agentId, integrationId)
+    this.showActivity(replyConn, msg.channel, statusThread, plan.startupActivityLabel, statusOptions)
     // handle() writes the row to `prompting` before returning; if it throws after
     // that (workspace/attachment failure), the try/finally below is never entered,
     // so reset to `idle` here — otherwise the session stays `prompting` forever and
@@ -8650,12 +8618,7 @@ export class Daemon {
     // Install the exact route before session/new|load: adapters may emit metadata
     // (including a restored title) while SessionManager is still initializing.
     const previousDeliveryBinding = this.sessionDeliveryBindings.get(key)
-    const deliveryBinding: SessionDeliveryBinding = {
-      agentId,
-      platform: msg.platform,
-      ...(integrationId !== undefined ? { integrationId } : {}),
-      isDm: msg.isDm
-    }
+    const deliveryBinding = plan.deliveryBinding
     this.sessionDeliveryBindings.set(key, deliveryBinding)
     this.sessionInitializationsByAgent.set(agentId, (this.sessionInitializationsByAgent.get(agentId) ?? 0) + 1)
     const restoreDeliveryBinding = () => {
@@ -8733,7 +8696,7 @@ export class Daemon {
           // roster continuation carries CallMeta for its hop/rendezvous chain but is a
           // conversation post, not an address — it must not defeat the response-choice
           // rule (webchat-multi-agents.md §5.2a).
-          directAgentCall: callMeta !== undefined && callMeta.conversationContinuation !== true,
+          directAgentCall: plan.directAgentCall,
           // Memory READS (index injection + auto-recall) are no longer session-
           // gated — every session may use shared memory (#653). WRITES stay gated
           // (memory write tools via memoryAccessAllowed; post-turn distillation via
@@ -8779,7 +8742,7 @@ export class Daemon {
             webchat,
             replyConn,
             channel: msg.channel,
-            transcriptChannel: currentTranscriptChannel(),
+            transcriptChannel,
             thread: msg.thread,
             statusThread
           })
@@ -8801,7 +8764,6 @@ export class Daemon {
       throw err
     }
     const { sessionId, blocks, created } = handled
-    const transcriptChannel = currentTranscriptChannel()
     evaluationSessionId = sessionId
     if (handled.skipped) {
       finishEvaluation('turn.cancelled', { reason: 'already_delivered' })
@@ -8945,9 +8907,8 @@ export class Daemon {
       replyText: '',
       attemptReplyText: '',
       attemptAnswerUpdates: [],
-      stageAnswer:
-        this.cfg.features.turnFinalContextRefresh && !webchat && !githubReply && originKindOf(msg.platform) === 'chat',
-      webchatRefresh: this.cfg.features.turnFinalContextRefresh && !!webchat && msg.platform === 'webchat',
+      stageAnswer: plan.stageAnswer,
+      webchatRefresh: plan.webchatRefresh,
       builtinSystemToolCallIds: new Set(),
       hiddenSessionTitleToolCallIds: new Set(),
       // One id for this turn's complete logical response (§5.1), minted before any
@@ -8956,48 +8917,44 @@ export class Daemon {
       // §4.1: the author's OWN turn depth, stamped on every body it posts so the next
       // routing edge advances from it. A human/root turn carries none and is depth 0; the
       // model can neither read nor set this.
-      sourceHopCount: callMeta?.hopCount ?? 0,
+      sourceHopCount: plan.sourceHopCount,
       // §5.3: compound shared-bot addresses a split must never cut in half.
-      protectedAddresses: turnCtx.protectedAddresses ?? [],
+      protectedAddresses: plan.protectedAddresses,
       agentId,
       agentName,
-      requesterId: msg.sender.id,
+      requesterId: plan.requesterId,
       ...(integrationId !== undefined ? { integrationId } : {}),
       ...(iconUrl ? { iconUrl } : {}),
       platform: msg.platform,
       isDm: msg.isDm,
-      loopGuardScope: loopGuardScope(msg),
+      loopGuardScope: plan.loopGuardScope,
       sessionKey: key,
       acpSessionId: sessionId,
       ...(entry.selectedHost ? { selectedHost: entry.selectedHost } : {}),
       channel: msg.channel,
       transcriptChannel,
       thread: msg.thread,
-      turnState: turnSurface.initialTurnState(turnCtx),
+      turnState: plan.turnSurface.initialTurnState(turnCtx),
       statusThread,
       conn: replyConn,
       // Snapshot alongside `conn`: true only when `none` removed THIS turn's Slack permission
       // card surface (not Telegram/Discord/Feishu, webchat, or headless). Frozen for the turn
       // so a mid-turn mode flip can't desync the permission policy from the already-cleared
       // connection (auto-allow regression).
-      approvalSurfaceSuppressed: noneSuppressedApprovalSurface(mode, {
-        platform: msg.platform,
-        webchat,
-        headless: msg.headless
-      }),
+      approvalSurfaceSuppressed: plan.approvalSurfaceSuppressed,
       approvalWaitMs: 0,
       approvalWaitDepth: 0,
       runtimeCostReported: false,
       usageReportSent: false,
       evaluationTurnId,
-      showStatusBar: agent.output.showStatusBar,
+      showStatusBar: plan.showStatusBar,
       statusCancellable: true,
       applyChain: Promise.resolve(),
       done,
       resolveDone,
       ...(callMeta ? { callMeta } : {}),
       ...(pendingWebchat ? { webchat: pendingWebchat } : {}),
-      ...(githubReply && entry.posterPublishState !== 'in_flight' && entry.posterPublishState !== 'settled'
+      ...(plan.githubTurnEligible && githubReply
         ? {
             github: {
               ...this.githubReviews.makeGithubReply(agentId, githubReply, sessionId),
@@ -9019,15 +8976,12 @@ export class Daemon {
       return undefined
     })
     if (activeGithub) this.activeGithubTurnMeta.set(key, activeGithub)
-    const githubReplyBatch = hookContext?.githubReviewBatch
-    const activeGithubReplyBatch =
-      githubReplyBatch?.sealed && githubReplyBatch.items.length > 1 ? { entry, sessionId, called: false } : undefined
+    const activeGithubReplyBatch = plan.githubReplyBatchActive ? { entry, sessionId, called: false } : undefined
     if (activeGithubReplyBatch) this.activeGithubReplyBatchMeta.set(key, activeGithubReplyBatch)
     let finalPhase: EventSession['phase'] = 'end'
     let turnModel: string | undefined
     let propagatingTurnError = false
-    const hopLimitNotice =
-      callMeta && hasReachedAgentCallHopLimit(p.sourceHopCount + 1) ? AGENT_CALL_HOP_LIMIT_NOTICE : undefined
+    const hopLimitNotice = plan.hopLimitNotice
     const currentAttributionInfo = async (): Promise<SlackAttributionInfo> => ({
       botName: agent.name,
       botUrl: this.agentLink(agentId),
@@ -9135,7 +9089,7 @@ export class Daemon {
       // sections then include it in their initial chat.postMessage, where Slack's
       // unfurl controls are supported; onFinal normally observes the same footer and
       // becomes a no-op instead of introducing URLs later through chat.update.
-      if (showFooter && turnChromeFor(p.platform).attributionFooter) {
+      if (plan.attributionFooterEnabled) {
         const attribution = buildAttributionBlocks(await currentAttributionInfo())
         p.attribution = { blocks: attribution.blocks, key: JSON.stringify(attribution.blocks) }
       }
@@ -9145,7 +9099,8 @@ export class Daemon {
       if (conv instanceof FeishuConverger) {
         for (const action of conv.onStart()) this.enqueueApply(p, action)
       }
-      if (!wasRunning) this.showActivity(replyConn, msg.channel, statusThread, 'is thinking…', statusOptions)
+      if (!plan.hostAlreadyRunning)
+        this.showActivity(replyConn, msg.channel, statusThread, 'is thinking…', statusOptions)
       // Post/refresh the session status bar up front — with the model now known (session
       // created) plus any usage carried over from prior turns — so it sits at the top of
       // the thread before the reply streams in.
@@ -9221,7 +9176,7 @@ export class Daemon {
       let generation = 0
       let regenerationStartedAt: number | undefined
       let regenerationApprovalWaitBaseline = 0
-      const codexUsageIsPerPrompt = this.isCodexRuntime(agentId)
+      const codexUsageIsPerPrompt = plan.codexUsageIsPerPrompt
 
       while (true) {
         if (p.stageAnswer) this.discardStagedAttempt(p)
@@ -9537,7 +9492,7 @@ export class Daemon {
         // A runtime may only publish its final session-scoped model during prompt.
         // Refresh before enqueueing the final body so any not-yet-sent section is born
         // with the final metadata; an already-sent section is updated in place below.
-        if (showFooter && turnChromeFor(p.platform).attributionFooter && finalAttributionInfo) {
+        if (plan.attributionFooterEnabled && finalAttributionInfo) {
           const attribution = buildAttributionBlocks(finalAttributionInfo)
           p.attribution = { blocks: attribution.blocks, key: JSON.stringify(attribution.blocks) }
         }
