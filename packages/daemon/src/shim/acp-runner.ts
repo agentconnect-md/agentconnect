@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process'
+import { codexConfigWithBaseUrlFillIn } from '../runtimes/codex-config.js'
 import { AcpStreamPayloadSchema, type AcpOpen } from './acp-stream.js'
 import type { ShimEvent } from './protocol.js'
 
@@ -34,19 +35,21 @@ function podBaseEnv(podEnv: Record<string, string | undefined>): Record<string, 
   return env
 }
 
-/** Provider env for the REQUESTED command (its registry identity, not the resolved path). */
+/** Provider profile of the REQUESTED command (its registry identity, not the resolved path). */
+export function sandboxProfile(command: string): keyof typeof SANDBOX_PROVIDER_ENV | undefined {
+  const base = command.split(/[\\/]/).pop() ?? ''
+  if (/^claude(?:$|[-.@])/i.test(base)) return 'claude'
+  if (/^codex(?:$|[-.@])/i.test(base)) return 'codex'
+  if (/^dsh(?:$|[-.@])/i.test(base)) return 'deepseek'
+  return undefined
+}
+
+/** Provider env for the requested command's profile. */
 export function sandboxProviderEnv(
   command: string,
   podEnv: Record<string, string | undefined>
 ): Record<string, string> {
-  const base = command.split(/[\\/]/).pop() ?? ''
-  const profile = /^claude(?:$|[-.@])/i.test(base)
-    ? 'claude'
-    : /^codex(?:$|[-.@])/i.test(base)
-      ? 'codex'
-      : /^dsh(?:$|[-.@])/i.test(base)
-        ? 'deepseek'
-        : undefined
+  const profile = sandboxProfile(command)
   if (!profile) return {}
   const env: Record<string, string> = {}
   for (const [source, target] of Object.entries(SANDBOX_PROVIDER_ENV[profile])) {
@@ -54,6 +57,25 @@ export function sandboxProviderEnv(
     if (value) env[target] = value
   }
   return env
+}
+
+// Codex reads its base URL from CODEX_CONFIG (codex-acp projects it into the session config);
+// the OPENAI_BASE_URL env var is routing-inert to the pinned runtime, so a codex pod URL must
+// also land in the config. Fill-in like the env loop: a daemon-aimed config stays authoritative.
+export function fillInCodexBaseUrl(
+  env: Record<string, string>,
+  podEnv: Record<string, string | undefined>,
+  warn?: (message: string) => void
+): void {
+  const baseUrl = podEnv.AC_CODEX_BASE_URL?.trim()
+  if (!baseUrl) return
+  try {
+    const merged = codexConfigWithBaseUrlFillIn(env.CODEX_CONFIG, baseUrl)
+    if (merged !== undefined) env.CODEX_CONFIG = merged
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error)
+    warn?.(`acp: leaving the pod codex base URL unprojected — ${reason}`)
+  }
 }
 
 /**
@@ -109,8 +131,12 @@ export class AcpRunner {
       if (resolved) env[hint.envVar] = resolved
     }
     // Fill-in only, like hints: an env the daemon decided (per-agent key/gateway) stays authoritative.
-    for (const [name, value] of Object.entries(sandboxProviderEnv(payload.command, this.deps.podEnv ?? {}))) {
+    const podEnv = this.deps.podEnv ?? {}
+    for (const [name, value] of Object.entries(sandboxProviderEnv(payload.command, podEnv))) {
       if (!env[name]) env[name] = value
+    }
+    if (sandboxProfile(payload.command) === 'codex') {
+      fillInCodexBaseUrl(env, podEnv, (message) => this.deps.log?.warn(message))
     }
     const command = this.deps.resolveCommand?.(payload.command, env) ?? payload.command
     const child = spawn(command, payload.args, {
