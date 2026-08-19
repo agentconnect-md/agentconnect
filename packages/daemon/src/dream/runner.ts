@@ -20,10 +20,12 @@ import {
   OrganizationSuggestionContentBody,
   organizationSuggestionCanonical
 } from '@agentconnect.md/protocol'
-import { normalizeMemoryHeader } from '../memory/frontmatter.js'
+import { memoryNameForTopic, normalizeMemoryHeader, parseMemoryFrontmatter } from '../memory/frontmatter.js'
 import {
   MEMORY_INDEX,
+  renderMemoryIndex,
   regenerateMemoryIndexHoldingLock,
+  type MemoryIndexEntry,
   MEMORY_HISTORY_FILENAME,
   MAX_INDEX_INJECT_BYTES,
   MAX_MEMORY_FILE_BYTES,
@@ -796,7 +798,7 @@ export class DreamRunner {
     const out = join(base, 'output')
     await fs.rm(out)
     await fs.mkdir(out)
-    await fs.writeFile(join(out, MEMORY_INDEX), proposal.index)
+    const staged: MemoryIndexEntry[] = []
     for (const file of proposal.files) {
       // parseDreamProposal already enforced TOPIC_RE — belt and suspenders here
       // because these names become filesystem paths.
@@ -804,8 +806,19 @@ export class DreamRunner {
       // The dream writes frontmatter as free text, so re-render its known scalars through
       // the shared quoting rule before staging — a description holding `: ` or ` #` would
       // otherwise be invalid YAML, and auto-adopt would make that malformed topic live.
-      await fs.writeFile(join(out, file.path), normalizeMemoryHeader(file.content))
+      const content = normalizeMemoryHeader(file.content)
+      await fs.writeFile(join(out, file.path), content)
+      const { header } = parseMemoryFrontmatter(content)
+      staged.push({
+        topic: file.path,
+        name: header.name || memoryNameForTopic(file.path),
+        description: header.description ?? ''
+      })
     }
+    // Generate the staged index the same way adoption will, rather than staging the
+    // model's hand-written one: otherwise the index a human reviews is not the index
+    // that ends up installed.
+    await fs.writeFile(join(out, MEMORY_INDEX), renderMemoryIndex(staged))
     await this.stageSkills(fs, base, proposal)
     return this.stageOrganizationSuggestions(fs, base, proposal)
   }
