@@ -11,7 +11,7 @@ import type { AgentIcon } from '@agentconnect.md/protocol'
 import { OrgId } from '../../domain/ids.js'
 import { PgHookRepo } from './hook.repo.js'
 import { parseAgentIcon, randomGlyphIcon } from '../../agents/agent-icon.js'
-import { provisionPresetAgents } from '../preset-agents.js'
+import { provisionPresetAgents, type PresetCloudPlacement } from '../preset-agents.js'
 import { OrgCreationLimitReached } from '../errors.js'
 
 export class PgOrgRepo implements OrgRepo {
@@ -20,6 +20,9 @@ export class PgOrgRepo implements OrgRepo {
     /** Provision preset agents with each created org (preset-agents.md §3.2);
      *  deploy-time opt-out via PRESET_AGENTS_ENABLED. */
     private readonly presetAgents = true,
+    /** Exec config the preset is born with on a Cloud install (preset-agents.md
+     *  §3.2); null ⇒ born unplaced. Rides PRESET_AGENT_CLOUD_RUNTIME/_MODEL. */
+    private readonly presetCloud: PresetCloudPlacement | null = null,
     /** The transit target this deployment would seal THIS org's secrets under,
      *  pinned onto the shred tombstone at delete time so a later mount/prefix
      *  change cannot silently redirect the destroy
@@ -93,7 +96,11 @@ export class PgOrgRepo implements OrgRepo {
       })
       await tx.membership.create({ data: { orgId: created.id, userId: input.ownerUserId, role: 'owner' } })
       if (this.presetAgents) {
-        await provisionPresetAgents(tx, { orgId: created.id, createdByUserId: input.ownerUserId })
+        await provisionPresetAgents(tx, {
+          orgId: created.id,
+          createdByUserId: input.ownerUserId,
+          cloud: this.presetCloud
+        })
       }
       return created
     })

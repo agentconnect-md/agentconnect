@@ -65,6 +65,7 @@ export {
   PgPresetAgentStore,
   provisionPresetAgents
 } from './preset-agents.js'
+export type { PresetCloudPlacement } from './preset-agents.js'
 export { PresetAgentBackfill } from './preset-agent-backfill.js'
 export { PgCronRepo } from './repositories/cron.repo.js'
 export { PgDutyGroupRepo } from './repositories/duty-group.repo.js'

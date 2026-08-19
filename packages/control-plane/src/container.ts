@@ -96,6 +96,7 @@ import {
   PgOrgInviteLinkRepo,
   PgWaitlistRepo
 } from './persistence/index.js'
+import type { PresetCloudPlacement } from './persistence/index.js'
 
 import { EpochService } from './orchestrator/epoch.js'
 import { ControlSender, NoConnection } from './orchestrator/outbound.js'
@@ -310,6 +311,17 @@ export function buildContainer(
     ids: () => requirePlatforms().ids()
   }
 
+  // Cloud-born preset agents (preset-agents.md §3.2): on an install with a daemon
+  // pool, a new org's preset is placed on it at creation with the pool's runtime.
+  // An empty runtime is the opt-out, and an install with no pool ignores this.
+  const presetCloud: PresetCloudPlacement | null =
+    config.PRESET_AGENTS_ENABLED && config.PRESET_AGENT_CLOUD_RUNTIME
+      ? {
+          runtime: config.PRESET_AGENT_CLOUD_RUNTIME,
+          ...(config.PRESET_AGENT_CLOUD_MODEL ? { model: config.PRESET_AGENT_CLOUD_MODEL } : {})
+        }
+      : null
+
   // ── C6 repositories (the ONLY @prisma/client importers) ───────────────────
   const repos = {
     daemon: new PgDaemonRepo(prisma),
@@ -380,13 +392,13 @@ export function buildContainer(
     // only on join-link redemption (waitlist-and-login.md §6/§8), so "login ⇒ has
     // an org" can't bypass the admission gate. Every org-creating repo carries the
     // preset-agent seam flag (preset-agents.md §3.2).
-    user: new PgUserRepo(prisma, !config.WAITLIST_MODE, config.PRESET_AGENTS_ENABLED),
-    org: new PgOrgRepo(prisma, config.PRESET_AGENTS_ENABLED, (orgId) => ({
+    user: new PgUserRepo(prisma, !config.WAITLIST_MODE, config.PRESET_AGENTS_ENABLED, presetCloud),
+    org: new PgOrgRepo(prisma, config.PRESET_AGENTS_ENABLED, presetCloud, (orgId) => ({
       mount: config.VAULT_TRANSIT_MOUNT,
       keyName: `${effectiveOrgKeyPrefix(config.VAULT_TRANSIT_KEY, config.VAULT_TRANSIT_ORG_KEY_PREFIX)}${orgId}`
     })),
     orgInviteLink: new PgOrgInviteLinkRepo(prisma),
-    waitlist: new PgWaitlistRepo(prisma, config.PRESET_AGENTS_ENABLED),
+    waitlist: new PgWaitlistRepo(prisma, config.PRESET_AGENTS_ENABLED, presetCloud),
     githubInstallation: new PgGithubInstallationRepo(prisma),
     githubInstallState: new PgGithubInstallStateStore(prisma),
     agentRepoAuth: new PgAgentRepoAuthorizationRepo(prisma)
