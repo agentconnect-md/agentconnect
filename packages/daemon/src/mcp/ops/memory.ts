@@ -10,6 +10,7 @@ import {
   requiredStringAllowEmpty
 } from './args.js'
 import type { MemoryProvider, MemoryScope } from '../../memory/provider.js'
+import type { MemoryWriteSource } from '../../memory/store.js'
 import { MemoryPathError, MemoryTooLargeError } from '../../memory/store.js'
 
 /** The memory-tool deps. The access gate itself is enforced pre-dispatch in `executeTool`. */
@@ -83,6 +84,13 @@ function memoryScopeFor(ctx: SessionContext, deps: MemoryOpsDeps): MemoryScope {
   return deps.memoryScope?.(ctx) ?? { agentId: ctx.agentId }
 }
 
+/** Provenance for a write made through the shared tool surface. The ordinary
+ *  conversational case is `tool`; a distillation- or dream-bound session keeps its own
+ *  source so the write ledger — and dream adoption's distill-only rebase — stay honest. */
+function writeSource(ctx: SessionContext): MemoryWriteSource {
+  return ctx.memoryBinding?.source ?? 'tool'
+}
+
 /** Map the store's typed failures onto the tool-facing messages, verbatim for both file tools. */
 function toToolError(err: unknown): never {
   if (err instanceof MemoryPathError) throw new Error(`invalid memory path: ${err.message}`)
@@ -152,10 +160,10 @@ export async function writeMemory(
           'writeMemory: `oldString` occurs multiple times — include more surrounding context to make it unique'
         )
       const updated = current.replace(oldString, newString)
-      return await deps.memory.write(scope, path, updated, undefined, 'tool')
+      return await deps.memory.write(scope, path, updated, undefined, writeSource(ctx))
     }
     const full = parseArgs(requiredStringAllowEmpty('content'), content)
-    return await deps.memory.write(scope, path, full, undefined, 'tool')
+    return await deps.memory.write(scope, path, full, undefined, writeSource(ctx))
   } catch (err) {
     toToolError(err)
   }

@@ -1,3 +1,4 @@
+import type { MemoryWriteSource } from '../../memory/store.js'
 import type { ToolDescriptor } from '../tool-descriptor.js'
 
 /**
@@ -89,6 +90,17 @@ export interface SessionContext {
   channel: string
   thread: string
   tools: ToolDescriptor[]
+  /**
+   * Binds the shared memory tools to THIS trigger's store (#41). Every path that
+   * writes memory — an ordinary turn, per-turn distillation, a dream — uses the same
+   * tool surface; only this binding differs. Absent ⇒ the agent's live store, written
+   * as `tool`, which is the ordinary conversational case.
+   */
+  memoryBinding?: {
+    /** Provenance for the write ledger. Dream adoption's rebase classifies drift by
+     *  this, so a distillation-triggered write must still say `distill`. */
+    source: MemoryWriteSource
+  }
   /** Snapshot of the agent's integrations (id + platform) at session/new. Lets the
    *  platform-neutral `sendMessage` tool route to ANY connected platform,
    *  not just the one that triggered this session. Absent ⇒ fall back to the
