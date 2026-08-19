@@ -221,6 +221,10 @@ export class RelayBrowserConnection implements ChatSink {
 
   start(): void {
     this.deps.register(this.deps.chatId, this)
+    this.deps.log.info(
+      `webchat: browser joined conversation ${this.deps.chatId} (${this.byAgentId.size} participant(s)` +
+        `${this.deps.targetSessionId ? `, continuing session ${this.deps.targetSessionId}` : ''})`
+    )
     // The client correlates its session on this frame (matches the old gateway).
     // `participants` is the verified roster, primary first.
     this.send({
@@ -233,7 +237,7 @@ export class RelayBrowserConnection implements ChatSink {
       }))
     })
     this.transport.onMessage((t) => this.onText(t))
-    this.transport.onClose(() => this.onClose())
+    this.transport.onClose((code, reason) => this.onClose(code, reason))
   }
 
   /** A reply chunk arrived from the daemon (routed here by chatId) → forward to the browser. */
@@ -363,6 +367,7 @@ export class RelayBrowserConnection implements ChatSink {
           }
         })
       } else if (kind === 'resume') {
+        this.deps.log.warn(`webchat: resume for ${agentId} in ${this.deps.chatId} has no live daemon to reach`)
         this.send({ type: 'resumed', ack: { accepted: false, agentId, reason: 'no_agent' } })
       }
       return
@@ -402,6 +407,12 @@ export class RelayBrowserConnection implements ChatSink {
         agentId,
         ...(ack.reason ? { reason: ack.reason } : {})
       }
+      // A refusal is the whole story of a stream that "never came back" — name it, and who refused.
+      if (!ack.accepted && (op.op === 'turn' || op.op === 'resume')) {
+        this.deps.log.info(
+          `webchat: ${op.op} ${op.turnId ?? '?'} for ${agentId} in ${this.deps.chatId} refused by ${daemonId}: ${ack.reason ?? 'unspecified'}`
+        )
+      }
       if (kind === 'turn') {
         this.send({ type: 'ack', ack: browserAck })
       } else if (kind === 'resume') {
@@ -432,8 +443,12 @@ export class RelayBrowserConnection implements ChatSink {
     this.transport.send(JSON.stringify(obj))
   }
 
-  private onClose(): void {
+  private onClose(code?: number, reason?: string): void {
     this.closed = true
+    // The close code is the one fact a "my stream never came back" report needs and nothing else records.
+    this.deps.log.info(
+      `webchat: browser left conversation ${this.deps.chatId} (close ${code ?? '?'}${reason ? ` ${reason}` : ''})`
+    )
     this.deps.unregister(this.deps.chatId, this)
     // Best-effort: tell every participant's daemon that the browser conversation closed.
     for (const p of this.byAgentId.values()) {
