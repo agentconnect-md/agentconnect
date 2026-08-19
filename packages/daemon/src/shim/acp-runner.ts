@@ -1,6 +1,8 @@
 import { spawn, type ChildProcess } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { codexConfigWithBaseUrlFillIn } from '../runtimes/codex-config.js'
 import { AcpStreamPayloadSchema, type AcpOpen } from './acp-stream.js'
+import { SANDBOX_GH_WRAPPER_DIR } from './sandbox-paths.js'
 import type { ShimEvent } from './protocol.js'
 
 /** How the runner reports back: many events per opened stream, not one response. */
@@ -33,6 +35,19 @@ function podBaseEnv(podEnv: Record<string, string | undefined>): Record<string, 
     if (value) env[name] = value
   }
   return env
+}
+
+/** PATH with the image's gh wrapper first, or unchanged when this image ships none. */
+// Decided HERE, not sent by the daemon: the wrapper dir is the IMAGE's layout, and a daemon naming a path on a
+// machine it is not on is the class of bug sandbox-paths.ts exists to keep out.
+// Consulted rather than assumed, so an older runtime image keeps launching with exactly the PATH it always had.
+export function ghWrapperPath(
+  path: string | undefined,
+  exists: (dir: string) => boolean = existsSync
+): string | undefined {
+  if (!exists(SANDBOX_GH_WRAPPER_DIR)) return path
+  const entries = (path ?? '').split(':').filter((entry) => entry && entry !== SANDBOX_GH_WRAPPER_DIR)
+  return [SANDBOX_GH_WRAPPER_DIR, ...entries].join(':')
 }
 
 /** Provider profile of the REQUESTED command (its registry identity, not the resolved path). */
@@ -125,6 +140,9 @@ export class AcpRunner {
     // credentials from the SandboxTemplate, and those are forwarded deliberately by
     // sandboxProviderEnv, not in bulk.
     const env = { ...podBaseEnv(this.deps.podEnv ?? {}), ...payload.env }
+    // After the daemon's env, so an agent's `gh` reaches the image's per-repo wrapper even when a PATH travelled.
+    const ghPath = ghWrapperPath(env.PATH)
+    if (ghPath !== undefined) env.PATH = ghPath
     for (const hint of payload.hints ?? []) {
       if (env[hint.envVar]) continue
       const resolved = this.deps.resolveCommand?.(hint.command, env)

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { AcpRunner } from '../src/shim/acp-runner.js'
+import { AcpRunner, ghWrapperPath } from '../src/shim/acp-runner.js'
+import { SANDBOX_GH_WRAPPER_DIR } from '../src/shim/sandbox-paths.js'
 
 // The sandbox spawns with what the daemon sent PLUS the pod's own filesystem basics. The daemon
 // composes the agent's configuration but describes a different machine: it was sending its own
@@ -44,5 +45,22 @@ describe('sandbox spawn environment', () => {
       .catch(() => {})
     expect(seen.at(-1)?.HOME).toBe('/agent/private')
     await runner.close(1_000).catch(() => {})
+  })
+
+  // `gh` reads a static GH_TOKEN fixed at spawn, so a pod agent gets per-repo tokens only when the image's
+  // wrapper is what PATH resolves first. The dir is the IMAGE's, so the decision is made here rather than sent
+  // by a daemon that would be naming a path on a machine it is not on.
+  it('puts the image gh wrapper first on PATH when this image ships one', () => {
+    expect(ghWrapperPath('/usr/local/bin:/usr/bin', () => true)).toBe(
+      `${SANDBOX_GH_WRAPPER_DIR}:/usr/local/bin:/usr/bin`
+    )
+    // A PATH the daemon already sent may name it; the wrapper must still be first, and only once.
+    expect(ghWrapperPath(`/usr/bin:${SANDBOX_GH_WRAPPER_DIR}`, () => true)).toBe(`${SANDBOX_GH_WRAPPER_DIR}:/usr/bin`)
+    expect(ghWrapperPath(undefined, () => true)).toBe(SANDBOX_GH_WRAPPER_DIR)
+  })
+
+  it('leaves PATH exactly as it was on an image with no wrapper', () => {
+    expect(ghWrapperPath('/usr/local/bin:/usr/bin', () => false)).toBe('/usr/local/bin:/usr/bin')
+    expect(ghWrapperPath(undefined, () => false)).toBeUndefined()
   })
 })

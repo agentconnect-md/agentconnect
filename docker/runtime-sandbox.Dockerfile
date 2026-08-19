@@ -55,7 +55,34 @@ COPY packages/daemon packages/daemon
 # image has no node_modules to resolve. Building the daemon TARGET too would instead pull its
 # whole chunk graph into a layer this image has no use for.
 RUN pnpm --filter "@agentconnect.md/daemon^..." build \
-  && pnpm --filter @agentconnect.md/daemon exec tsdown --config tsdown.shim.config.ts
+  && pnpm --filter @agentconnect.md/daemon run build:shim
+
+# ───────────────────────────── gh CLI fetch ─────────────────────────────────
+# The real GitHub CLI, downloaded and checksum-verified in a stage that ships nothing of itself: the runtime
+# layer receives only the verified binary and never sees the curl this needs, so "the shim and nothing the shim
+# does not need" still holds. Pinned by version AND sha256 — an unpinned download would make the contents of an
+# image that runs half-trusted code a function of whatever a mirror served on build day.
+FROM node:24-bookworm-slim AS gh-cli
+ARG GH_CLI_VERSION=2.97.0
+ARG GH_CLI_SHA256_AMD64=a2c9b8497e1f85b1ad0dfcb78b5a622e098801b8e461e459e88e1ee12f018112
+ARG GH_CLI_SHA256_ARM64=73ea440ecad9c9e284429997ee6f93577bc6f7bc6fba357ef62c53ad8fb641a5
+ARG TARGETARCH
+RUN apt-get update \
+  && apt-get install --no-install-recommends -y ca-certificates curl \
+  && rm -rf /var/lib/apt/lists/*
+RUN set -eu; \
+  arch="${TARGETARCH:-amd64}"; \
+  case "$arch" in \
+  amd64) sha256="$GH_CLI_SHA256_AMD64" ;; \
+  arm64) sha256="$GH_CLI_SHA256_ARM64" ;; \
+  *) echo "no pinned gh checksum for TARGETARCH=$arch" >&2; exit 1 ;; \
+  esac; \
+  tarball="gh_${GH_CLI_VERSION}_linux_${arch}.tar.gz"; \
+  curl -fsSL -o "/tmp/${tarball}" "https://github.com/cli/cli/releases/download/v${GH_CLI_VERSION}/${tarball}"; \
+  printf '%s  /tmp/%s\n' "$sha256" "$tarball" | sha256sum -c -; \
+  tar -xzf "/tmp/${tarball}" -C /tmp; \
+  install -D -m 0555 "/tmp/gh_${GH_CLI_VERSION}_linux_${arch}/bin/gh" /out/gh; \
+  /out/gh --version
 
 # ─────────────────────────────── runtime ────────────────────────────────────
 FROM node:24-bookworm-slim AS runtime-sandbox
@@ -94,7 +121,11 @@ COPY --from=shim-builder --chown=0:0 /build/packages/daemon/dist/shim/index.js /
 # The credential helper is its own bundle with a disjoint graph, so it is its own single file. Git
 # spawns it once per operation; loading the channel's WebSocket client for that would be waste.
 COPY --from=shim-builder --chown=0:0 /build/packages/daemon/dist/shim/git-credential.js /opt/agentconnect/shim/git-credential.js
-RUN chmod 0444 /opt/agentconnect/shim/index.js /opt/agentconnect/shim/git-credential.js && chmod 0555 /opt/agentconnect/shim
+# The gh wrapper's token fetch, a third disjoint bundle for the same reason: the wrapper spawns it once per `gh`.
+# Path must match SANDBOX_GH_TOKEN_ENTRY in packages/daemon/src/shim/sandbox-paths.ts.
+COPY --from=shim-builder --chown=0:0 /build/packages/daemon/dist/shim/gh-token.js /opt/agentconnect/shim/gh-token.js
+RUN chmod 0444 /opt/agentconnect/shim/index.js /opt/agentconnect/shim/git-credential.js /opt/agentconnect/shim/gh-token.js \
+  && chmod 0555 /opt/agentconnect/shim
 
 # The executable git runs as its credential helper. A wrapper because git needs something
 # executable and the bundle is a .js, and root-owned/unwritable for the same reason the shim is: one
@@ -106,6 +137,20 @@ RUN mkdir -p /opt/agentconnect/bin \
     > /opt/agentconnect/bin/git-credential \
   && chown -R root:root /opt/agentconnect/bin \
   && chmod 0555 /opt/agentconnect/bin /opt/agentconnect/bin/git-credential
+
+# The real gh the wrapper execs, verified in the gh-cli stage. gh has no credential-helper hook — it reads a
+# STATIC GH_TOKEN fixed at spawn — so a pod agent gets per-repo, per-invocation tokens only through the wrapper.
+COPY --from=gh-cli --chown=0:0 /out/gh /usr/local/bin/gh
+
+# The ONLY directory this image prepends to the agent runtime's PATH (src/shim/acp-runner.ts), holding the gh
+# wrapper and nothing else: /opt/agentconnect/shim and /opt/agentconnect/bin stay off PATH so the credential
+# helper and the runtime-table generator never become commands an agent can run by name. Generated from the same
+# renderGhWrapper the daemon's own wrapper comes from, and root-owned/unwritable for the reason the shim is —
+# one the runtime could rewrite is one it could replace with a wrapper that asks the daemon in its name.
+# Path must match SANDBOX_GH_WRAPPER_DIR in packages/daemon/src/shim/sandbox-paths.ts.
+COPY --from=shim-builder --chown=0:0 /build/packages/daemon/dist/shim/gh /opt/agentconnect/pathbin/gh
+RUN chown -R root:root /opt/agentconnect/pathbin \
+  && chmod 0555 /opt/agentconnect/pathbin /opt/agentconnect/pathbin/gh
 
 # uid/gid are fixed rather than allocated, so a PersistentVolume written by one image version is
 # still readable by the next.

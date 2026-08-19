@@ -3,7 +3,7 @@ import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { ghShimDir, writeGhShim } from '../../src/cp/gh-shim.js'
+import { ghShimDir, renderGhWrapper, writeGhShim } from '../../src/cp/gh-shim.js'
 
 describe('gh wrapper shim', () => {
   let root: string | undefined
@@ -70,5 +70,68 @@ describe('gh wrapper shim', () => {
     run(['api', '-X', 'GET', 'repos/acme/infra/pulls/64', '--jq', '.title'])
 
     expect(captured().argv).toEqual(['--', 'api', '-X', 'GET', 'repos/acme/infra/pulls/64', '--jq', '.title'])
+  })
+})
+
+// The runtime image ships its OWN copy of this wrapper, generated from the same renderGhWrapper with the image's
+// paths — a second hand-written sh in the Dockerfile would drift the moment either side's contract moved. What is
+// asserted is that a wrapper built for a foreign layout still forwards the argv and exports the token it gets.
+describe('gh wrapper rendered for the sandbox runtime image', () => {
+  let root: string | undefined
+
+  afterEach(() => {
+    if (root) rmSync(root, { recursive: true, force: true })
+  })
+
+  it('forwards the agent argv to the configured token command and exports what it prints', () => {
+    root = mkdtempSync(join(tmpdir(), 'gh-pod-'))
+    const pathbin = join(root, 'pathbin')
+    const realBin = join(root, 'real-bin')
+    mkdirSync(pathbin)
+    mkdirSync(realBin)
+
+    const argvCapture = join(root, 'argv.json')
+    const tokenCapture = join(root, 'token.txt')
+    const tokenEntry = join(root, 'fake-token-entry.mjs')
+    writeFileSync(
+      tokenEntry,
+      `import { writeFileSync } from 'node:fs'\n` +
+        `writeFileSync(process.env.ARGV_CAPTURE, JSON.stringify(process.argv.slice(2)))\n` +
+        `process.stdout.write('ghs_pod')\n`
+    )
+    const realGh = join(realBin, 'gh')
+    writeFileSync(realGh, '#!/bin/sh\nprintf %s "$GH_TOKEN" > "$TOKEN_CAPTURE"\n')
+    chmodSync(realGh, 0o755)
+
+    const wrapper = join(pathbin, 'gh')
+    writeFileSync(
+      wrapper,
+      renderGhWrapper({
+        selfDir: pathbin,
+        tokenCommand: `${process.execPath} ${tokenEntry} "$AC_AGENT_ID" -- "$@"`
+      }),
+      { mode: 0o755 }
+    )
+
+    execFileSync(wrapper, ['pr', 'view', '64', '-R', 'acme/infra'], {
+      env: {
+        ...process.env,
+        PATH: `${pathbin}:${realBin}`,
+        AC_AGENT_ID: 'agent-1',
+        ARGV_CAPTURE: argvCapture,
+        TOKEN_CAPTURE: tokenCapture
+      }
+    })
+
+    expect(JSON.parse(readFileSync(argvCapture, 'utf8'))).toEqual([
+      'agent-1',
+      '--',
+      'pr',
+      'view',
+      '64',
+      '-R',
+      'acme/infra'
+    ])
+    expect(readFileSync(tokenCapture, 'utf8')).toBe('ghs_pod')
   })
 })
