@@ -1819,6 +1819,7 @@ export function httpServerConfigFrom(
     ...(config.PUBLIC_WEB_URL ? { PUBLIC_WEB_URL: config.PUBLIC_WEB_URL } : {}),
     ...(config.PUBLIC_RELAY_URL ? { PUBLIC_RELAY_URL: config.PUBLIC_RELAY_URL } : {}),
     ...(config.USAGE_INGEST_TOKEN ? { USAGE_INGEST_TOKEN: config.USAGE_INGEST_TOKEN } : {}),
+    USAGE_COLLECTOR_SERVICE_ACCOUNT: config.USAGE_COLLECTOR_SERVICE_ACCOUNT,
     ...(config.S3_PUBLIC_BASE_URL ? { S3_PUBLIC_BASE_URL: config.S3_PUBLIC_BASE_URL } : {}),
     RELAY_STALE_MS: relayStaleMs
   }

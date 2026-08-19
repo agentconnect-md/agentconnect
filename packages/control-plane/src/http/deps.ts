@@ -130,6 +130,9 @@ export interface HttpServerConfig extends HumanAuthConfig {
   /** Deployment-shared service secret for the batch usage ingress. Unset ⇒ that
    *  route is not registered and the daemon EVT is the only usage ingress. */
   USAGE_INGEST_TOKEN?: string
+  /** ServiceAccount the usage collector presents on that ingress — the deployment names its
+   *  collector workload and says so here. Unset ⇒ the protocol default. */
+  USAGE_COLLECTOR_SERVICE_ACCOUNT?: string
 }
 
 export interface HttpDeps {

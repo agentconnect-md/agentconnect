@@ -239,13 +239,14 @@ export const CP_TOKEN_AUDIENCE = 'ac-control-plane'
 export const CLOUD_DAEMON_SA_NAME = 'ac-cloud-daemon'
 
 /**
- * ServiceAccount the usage-report collector runs as — the principal allowed to post
- * `gateway`-source session usage to the control plane's batch ingress. A separate name
- * from {@link CLOUD_DAEMON_SA_NAME} on purpose: both tokens carry
+ * DEFAULT ServiceAccount name for the usage-report collector — the principal allowed to
+ * post `gateway`-source session usage to the control plane's batch ingress. A default, not
+ * a contract: the collector is not this codebase's pod, so the deployment that runs it
+ * names it and tells the control plane through `USAGE_COLLECTOR_SERVICE_ACCOUNT`; this
+ * value is what an unconfigured control plane expects. The name stays separate from
+ * {@link CLOUD_DAEMON_SA_NAME} on purpose whatever it is set to: both tokens carry
  * {@link CP_TOKEN_AUDIENCE}, so the ServiceAccount is what keeps a daemon's token from
- * writing usage and a collector's token from claiming a daemon identity. Like its two
- * siblings, it lives here so the side that stamps it and the side that checks it cannot
- * drift to two values.
+ * writing usage and a collector's token from claiming a daemon identity.
  */
 export const USAGE_COLLECTOR_SA_NAME = 'ac-usage-collector'
 
