@@ -731,22 +731,28 @@ const MAX_NEIGHBORS = 20
  * back. Descriptions come along so a link is actionable without a second read — the
  * whole point of the edges being there.
  */
-export async function memoryNeighbors(fs: MemoryFs, relPath: string): Promise<MemoryNeighbors> {
+export async function memoryNeighbors(roots: MemoryFs | MemoryFs[], relPath: string): Promise<MemoryNeighbors> {
   const topic = memoryTopicName(memoryRefToTopic(relPath))
   const self = memoryNameForTopic(topic)
 
   const described = new Map<string, { topic: string; description?: string }>()
   const outgoing = new Map<string, string[]>()
-  for (const file of await listMemory(fs)) {
-    const raw = await fs.readFile(`${MEMORY_DIRNAME}/${file.name}`)
-    if (raw === null) continue
-    const parsed = parseMemoryFrontmatter(raw.content)
-    const name = parsed.header.name || memoryNameForTopic(file.name)
-    described.set(name, {
-      topic: file.name,
-      ...(parsed.header.description ? { description: parsed.header.description } : {})
-    })
-    outgoing.set(name, memoryLinkTargets(parsed.body))
+  // Walk the read overlay in precedence order (channel first, then the shared base)
+  // and let the FIRST layer win, so a neighbour's metadata always describes the same
+  // file a later `readMemory` would actually open.
+  for (const fs of Array.isArray(roots) ? roots : [roots]) {
+    for (const file of await listMemory(fs)) {
+      const raw = await fs.readFile(`${MEMORY_DIRNAME}/${file.name}`)
+      if (raw === null) continue
+      const parsed = parseMemoryFrontmatter(raw.content)
+      const name = parsed.header.name || memoryNameForTopic(file.name)
+      if (described.has(name)) continue // shadowed by a higher-precedence layer
+      described.set(name, {
+        topic: file.name,
+        ...(parsed.header.description ? { description: parsed.header.description } : {})
+      })
+      outgoing.set(name, memoryLinkTargets(parsed.body))
+    }
   }
 
   const toNeighbor = (name: string): MemoryNeighbor => {
