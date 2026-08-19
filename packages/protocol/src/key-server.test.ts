@@ -14,7 +14,6 @@ describe('agentconnect.key-server/v1 schemas', () => {
     const bounded = {
       keyId: 'k-1',
       key: 'jwt…',
-      baseUrl: 'https://gateway.example.test',
       expiresInSeconds: 3600,
       refreshInSeconds: 2880
     }
@@ -26,16 +25,12 @@ describe('agentconnect.key-server/v1 schemas', () => {
     ).toThrow()
   })
 
-  it('takes an http(s) baseUrl and nothing else, since it becomes a runtime API base', () => {
-    // safeParse, not parse().toThrow(): a rejection must arrive as a zod result, and a
-    // predicate that threw natively would satisfy toThrow() while escaping validation.
-    const withUrl = (baseUrl: string) => IssueKeyResponse.safeParse({ keyId: 'k', key: 'x', baseUrl })
-    // Loopback http is the normal shape for an in-pod gateway, so it stays legal.
-    expect(withUrl('http://localhost:8080').success).toBe(true)
-    expect(withUrl('https://gateway.example.test').success).toBe(true)
-    expect(withUrl('file:///etc/passwd').success).toBe(false)
-    expect(withUrl('not a url').success).toBe(false)
-    expect(withUrl('').success).toBe(false)
+  it('strips unknown response fields instead of rejecting the issuance', () => {
+    // The retired `baseUrl` is the live case: an issuer still sending one must not
+    // fail every grant, and the daemon must not see it either — topology is config.
+    const grant = IssueKeyResponse.parse({ keyId: 'k', key: 'x', baseUrl: 'https://gateway.example.test' })
+    expect(grant).toEqual({ keyId: 'k', key: 'x' })
+    expect('baseUrl' in grant).toBe(false)
   })
 
   it('states validity as durations, so ordering never depends on timestamp spelling', () => {

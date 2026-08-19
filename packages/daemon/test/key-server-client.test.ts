@@ -32,12 +32,15 @@ describe('KeyServerClient', () => {
     )
     const client = new KeyServerClient('https://keys.example/root/', { tokenPath, fetch, now: () => 10_000 })
 
-    await expect(client.issue(request)).resolves.toMatchObject({
+    const grant = await client.issue(request)
+    expect(grant).toMatchObject({
       keyId: 'key-1',
       requestedAtMs: 10_000,
       refreshAtMs: 910_000,
       expiresAtMs: 1_810_000
     })
+    // The issuer above still sends the retired `baseUrl`; the grant must not carry it.
+    expect('baseUrl' in grant).toBe(false)
     expect(fetch).toHaveBeenCalledWith(
       new URL('https://keys.example/v1/issue-key'),
       expect.objectContaining({
