@@ -154,7 +154,16 @@ otherwise retained and reported. Re-adding the row un-retires the root in place.
 4. **Prompt** — root listing in the standing context; review text gains one
    sentence about additional directories being references only.
 5. **Web** — Workspace card wording ("Additional repositories … checked out
-   alongside the workspace") and, later, per-root status.
+   alongside the workspace"), plus the Workspace tab's root selection: the file
+   browser and the git panel read ONE root at a time, chosen by the repository
+   dropdown that replaced the breadcrumb's root label. The two scopes are
+   independent and both live in the URL — `?repo=owner/repo` names the root (absent
+   ⇒ the agent's own workspace) and `?worktree=<sessionId>` names the checkout
+   within it — so a link reproduces exactly what its author was looking at. A
+   `repo` the agent no longer authorizes falls back to the workspace, and a root
+   the agent has not materialized yet reads as an empty checkout rather than an
+   error. Editing stays scratch-workspace-only, so a secondary root is read-only
+   like any other repository checkout; the pull follows the selected root.
 6. **Tests** — workspace-manager multi-root (layout, isolation, GC),
    review-orchestrator cross-repository exact checkout and its fallback,
    spec-assembler projection, prompt snapshot.
@@ -212,5 +221,7 @@ on the daemon's PATH.
   shows up in practice.
 - Ordering of `additionalDirectories` when there are many roots — alphabetical
   by full name is the proposal.
-- Whether the console's session detail should render the root list; deferred
-  to the web phase.
+- Whether the console's session detail should render the root list. The AGENT's
+  Workspace tab now names its root explicitly (the repository dropdown above), so
+  what is left open is only the session surface, where a root list would have to
+  say which roots that session was actually handed.

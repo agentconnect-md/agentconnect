@@ -465,9 +465,10 @@ describe('FilesPanel session scope', () => {
 
     expect(vi.mocked(fetchWorkspaceFiles).mock.calls[0]?.[1]).toMatchObject({ path: '', sessionId: 'session-1' })
     expect(vi.mocked(fetchWorkspaceGitStatus).mock.calls).toEqual([
-      ['agent-a', 'session-1'],
-      // The second, sessionless read is the branch label: a session worktree is detached, so its own status names no branch.
-      ['agent-a']
+      // No repo scope: the dock's panel always reads the agent's own workspace.
+      ['agent-a', 'session-1', undefined],
+      // The second, sessionless read is the branch label: a session worktree sits on its own branch, so its status names that one instead of the base checkout's.
+      ['agent-a', undefined, undefined]
     ])
   })
 
@@ -518,7 +519,7 @@ describe('FilesPanel session scope', () => {
     await render({ sessionId: undefined })
 
     expect(vi.mocked(fetchWorkspaceFiles).mock.calls[0]?.[1]).not.toHaveProperty('sessionId')
-    expect(vi.mocked(fetchWorkspaceGitStatus).mock.calls).toEqual([['agent-a', undefined]])
+    expect(vi.mocked(fetchWorkspaceGitStatus).mock.calls).toEqual([['agent-a', undefined, undefined]])
   })
 
   it('shows the primary branch beside the workdir, and says whose branch it is', async () => {

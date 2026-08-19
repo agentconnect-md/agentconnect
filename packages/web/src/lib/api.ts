@@ -2428,12 +2428,15 @@ export const MAX_WORKSPACE_EDIT_BYTES = 180_000
 // One page of a workspace directory listing (GET /agents/:id/workspace/files),
 // proxied live from the agent's owning daemon — the CP never stores workspace
 // bytes (body-locality). 503 when that daemon is offline / the agent is unplaced.
+// `repo` names one of the agent's authorized additional repositories, browsing that
+// secondary root instead of the primary workspace; 404 when it authorizes no such repo.
 export async function fetchWorkspaceFiles(
   agentId: string,
-  opts: { path: string; cursor?: string; limit?: number; sessionId?: string }
+  opts: { path: string; cursor?: string; limit?: number; sessionId?: string; repo?: string }
 ): Promise<WorkspaceListingDto> {
   const q = new URLSearchParams({ path: opts.path })
   if (opts.sessionId) q.set('sessionId', opts.sessionId)
+  if (opts.repo) q.set('repo', opts.repo)
   if (opts.cursor) q.set('cursor', opts.cursor)
   if (opts.limit) q.set('limit', String(opts.limit))
   return apiGet<WorkspaceListingDto>(
@@ -2469,10 +2472,11 @@ export async function fetchAgentLocalSkills(agentId: string): Promise<LocalSkill
 // 503 when the daemon is offline / the agent is unplaced.
 export async function fetchWorkspaceFile(
   agentId: string,
-  opts: { path: string; offset?: number; limit?: number; sessionId?: string }
+  opts: { path: string; offset?: number; limit?: number; sessionId?: string; repo?: string }
 ): Promise<WorkspaceFileDto> {
   const q = new URLSearchParams({ path: opts.path })
   if (opts.sessionId) q.set('sessionId', opts.sessionId)
+  if (opts.repo) q.set('repo', opts.repo)
   if (opts.offset) q.set('offset', String(opts.offset))
   if (opts.limit) q.set('limit', String(opts.limit))
   return apiGet<WorkspaceFileDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/workspace/file?${q.toString()}`)
@@ -2480,12 +2484,16 @@ export async function fetchWorkspaceFile(
 
 /** Read one workspace text file whole before editing it. Every slice must describe
  * the same mtime so a multi-page load cannot assemble two agent revisions. */
-export async function fetchWorkspaceFileFull(agentId: string, path: string): Promise<WorkspaceFileDto> {
+export async function fetchWorkspaceFileFull(
+  agentId: string,
+  path: string,
+  opts: { repo?: string } = {}
+): Promise<WorkspaceFileDto> {
   let offset = 0
   let content = ''
   let mtime: string | null | undefined
   for (let page = 0; page < 16; page++) {
-    const slice = await fetchWorkspaceFile(agentId, { path, offset })
+    const slice = await fetchWorkspaceFile(agentId, { path, offset, ...(opts.repo ? { repo: opts.repo } : {}) })
     if (!slice.exists || slice.encoding !== 'utf8') return slice
     if ((slice.size ?? 0) > MAX_WORKSPACE_EDIT_BYTES) {
       throw new Error('Files larger than 180 KB cannot be edited here.')
@@ -2982,9 +2990,14 @@ export interface WorkspaceGitPullDto {
 
 // Report whether the agent's workspace checkout is clean. Read-only; proxied live
 // from the owning daemon (no CP storage). 503 when the daemon is offline.
-export async function fetchWorkspaceGitStatus(agentId: string, sessionId?: string): Promise<WorkspaceGitStatusDto> {
+export async function fetchWorkspaceGitStatus(
+  agentId: string,
+  sessionId?: string,
+  repo?: string
+): Promise<WorkspaceGitStatusDto> {
   const q = new URLSearchParams()
   if (sessionId) q.set('sessionId', sessionId)
+  if (repo) q.set('repo', repo)
   const query = q.size ? `?${q.toString()}` : ''
   return apiGet<WorkspaceGitStatusDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/workspace/gitstatus${query}`)
 }
@@ -3060,8 +3073,12 @@ export async function fetchWorkspaceGitLog(
 
 // Force the owning daemon to `git pull` (fast-forward only) the agent's workspace
 // now. A pull that can't fast-forward returns `ok:false`; 503 when daemon offline.
-export async function workspaceGitPull(agentId: string): Promise<WorkspaceGitPullDto> {
-  return apiPost<WorkspaceGitPullDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/workspace/gitpull`, {})
+export async function workspaceGitPull(agentId: string, opts: { repo?: string } = {}): Promise<WorkspaceGitPullDto> {
+  const query = opts.repo ? `?repo=${encodeURIComponent(opts.repo)}` : ''
+  return apiPost<WorkspaceGitPullDto>(
+    `${orgBase()}/agents/${encodeURIComponent(agentId)}/workspace/gitpull${query}`,
+    {}
+  )
 }
 
 // ── workspace git writes (executed only on the owning daemon; the CP stores nothing) ──

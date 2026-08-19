@@ -63,7 +63,8 @@ export interface WorkspaceTree {
 
 /** The tree half of the read model for one daemon-local checkout. `refreshTick` re-runs the root load, deliberately wiping the cache and the expand set with it. */
 // `sessionId` selects that session's isolated worktree; omit it for the primary checkout, and pass it only for a session whose `workspaceIsolation` is `'session'` — the daemon answers a shared-workspace sessionId with BAD_PAYLOAD, which the CP maps to a 503 that reads as "the daemon may be offline".
-export function useWorkspaceTree(agentId: string, sessionId?: string, refreshTick = 0): WorkspaceTree {
+// `repo` selects one of the agent's authorized additional repositories, browsing that secondary root; the two scopes compose, so a `repo` with a `sessionId` is that root's own worktree for the session.
+export function useWorkspaceTree(agentId: string, sessionId?: string, refreshTick = 0, repo?: string): WorkspaceTree {
   const [dirs, setDirs] = useState<Record<string, WorkspaceDirState>>({})
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
   // Which checkout+refresh a reply was asked for. The panel SURVIVES a scope change, so an in-flight directory read from the previous agent or worktree would otherwise splice its entries into the new one's cache — and worse, leave `dirs[path]` populated, so expanding that folder in the new scope skips the fetch that would have corrected it.
@@ -81,7 +82,7 @@ export function useWorkspaceTree(agentId: string, sessionId?: string, refreshTic
     (path: string) => {
       const gen = generation.current
       patchDir(path, { loading: true, err: null, errStatus: null, errCode: null })
-      fetchWorkspaceFiles(agentId, { path, ...(sessionId ? { sessionId } : {}) }).then(
+      fetchWorkspaceFiles(agentId, { path, ...(sessionId ? { sessionId } : {}), ...(repo ? { repo } : {}) }).then(
         (page) => {
           if (gen !== generation.current) return
           setDirs((prev) => ({
@@ -105,7 +106,7 @@ export function useWorkspaceTree(agentId: string, sessionId?: string, refreshTic
         }
       )
     },
-    [agentId, patchDir, sessionId]
+    [agentId, patchDir, repo, sessionId]
   )
 
   const loadMoreDir = useCallback(
@@ -114,7 +115,12 @@ export function useWorkspaceTree(agentId: string, sessionId?: string, refreshTic
       if (!d?.nextCursor || d.loadingMore) return
       const gen = generation.current
       patchDir(path, { loadingMore: true, moreErr: null })
-      fetchWorkspaceFiles(agentId, { path, cursor: d.nextCursor, ...(sessionId ? { sessionId } : {}) }).then(
+      fetchWorkspaceFiles(agentId, {
+        path,
+        cursor: d.nextCursor,
+        ...(sessionId ? { sessionId } : {}),
+        ...(repo ? { repo } : {})
+      }).then(
         (page) => {
           if (gen !== generation.current) return
           setDirs((prev) => {
@@ -137,7 +143,7 @@ export function useWorkspaceTree(agentId: string, sessionId?: string, refreshTic
         }
       )
     },
-    [agentId, dirs, patchDir, sessionId]
+    [agentId, dirs, patchDir, repo, sessionId]
   )
 
   const toggleDir = useCallback(
@@ -173,7 +179,7 @@ export function useWorkspaceTree(agentId: string, sessionId?: string, refreshTic
     const active = () => gen === generation.current
     setDirs({ '': { ...LOADING_DIR } })
     setExpanded(new Set())
-    fetchWorkspaceFiles(agentId, { path: '', ...(sessionId ? { sessionId } : {}) }).then(
+    fetchWorkspaceFiles(agentId, { path: '', ...(sessionId ? { sessionId } : {}), ...(repo ? { repo } : {}) }).then(
       (page) => {
         if (!active()) return
         setDirs({
@@ -199,7 +205,7 @@ export function useWorkspaceTree(agentId: string, sessionId?: string, refreshTic
       // A teardown is its own generation change: the next mount's reads must not be answered by this one's.
       generation.current += 1
     }
-  }, [agentId, refreshTick, sessionId])
+  }, [agentId, refreshTick, repo, sessionId])
 
   return { dirs, root: dirs[''], expanded, toggleDir, loadMoreDir, openPath }
 }
@@ -226,12 +232,18 @@ export interface WorkspaceGitRead {
   /** The live status, or null for a non-repo workspace, an offline daemon, and the window before the first answer. */
   git: WorkspaceGitStatusDto | null
   outcome: WorkspaceGitOutcome
-  /** The PRIMARY checkout's branch. Fetched separately in session scope, where the worktree is detached and its own `branch` names no branch. */
+  /** The branch of the SELECTED root's base checkout — the label the checkout picker's non-worktree entry carries. Fetched separately in session scope, where the worktree sits on its own branch and its status names that one instead. */
   primaryBranch: string | null
 }
 
 /** The git half of the read model: status for the badges and the footer, plus the branch label a session worktree cannot supply itself. */
-export function useWorkspaceGitStatus(agentId: string, sessionId?: string, refreshTick = 0): WorkspaceGitRead {
+// `repo` scopes BOTH reads to one authorized additional repository: the checkout picker beside the browser chooses a worktree of the selected root, so the branch it labels its non-worktree entry with is that root's, not the workspace's.
+export function useWorkspaceGitStatus(
+  agentId: string,
+  sessionId?: string,
+  refreshTick = 0,
+  repo?: string
+): WorkspaceGitRead {
   const [git, setGit] = useState<WorkspaceGitStatusDto | null>(null)
   const [outcome, setOutcome] = useState<WorkspaceGitOutcome>('pending')
   const [primaryBranch, setPrimaryBranch] = useState<string | null>(null)
@@ -239,7 +251,7 @@ export function useWorkspaceGitStatus(agentId: string, sessionId?: string, refre
   useEffect(() => {
     let active = true
     setOutcome('pending')
-    fetchWorkspaceGitStatus(agentId, sessionId).then(
+    fetchWorkspaceGitStatus(agentId, sessionId, repo).then(
       (s) => {
         if (!active) return
         setGit(s.isRepo ? s : null)
@@ -254,7 +266,7 @@ export function useWorkspaceGitStatus(agentId: string, sessionId?: string, refre
       }
     )
     if (sessionId) {
-      fetchWorkspaceGitStatus(agentId).then(
+      fetchWorkspaceGitStatus(agentId, undefined, repo).then(
         (s) => {
           if (active) setPrimaryBranch(s.isRepo ? s.branch : null)
         },
@@ -266,7 +278,7 @@ export function useWorkspaceGitStatus(agentId: string, sessionId?: string, refre
     return () => {
       active = false
     }
-  }, [agentId, refreshTick, sessionId])
+  }, [agentId, refreshTick, repo, sessionId])
 
   return { git, outcome, primaryBranch }
 }

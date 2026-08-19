@@ -13,6 +13,7 @@ import {
   fetchWorkspaceFileFull,
   writeWorkspaceFile,
   workspaceGitPull,
+  type AgentRepoAuthDto,
   type WorkspaceFileDto
 } from '@/lib/api'
 import { Spinner } from '@/components/marks'
@@ -44,6 +45,7 @@ import {
   workspaceEntryIcon,
   workspaceRootReadState
 } from '@/components/console/workspace-tree'
+import { WorkspaceRepoPicker } from '@/components/console/WorkspaceRepoPicker'
 import { useSandboxWake } from '@/components/console/sandbox-wake'
 import {
   SANDBOX_ASLEEP_NOTICE,
@@ -76,9 +78,15 @@ const msg = (e: unknown) => (e instanceof Error ? e.message : String(e))
  * and a GitHub → scratch conversion would additionally flip `canEdit` to true
  * over that stale GitHub preview. Pass this as the instance's React `key`.
  */
-export function workspaceReadModelKey(agent: Pick<Agent, 'id' | 'workspace' | 'workdir'>, sessionId?: string): string {
+export function workspaceReadModelKey(
+  agent: Pick<Agent, 'id' | 'workspace' | 'workdir'>,
+  sessionId?: string,
+  repo?: string
+): string {
   const ws = agent.workspace
-  const at = `${agent.id}:${agent.workdir}:${sessionId ?? 'primary'}`
+  // The repo scope is part of the identity for the same reason the session is: the cached tree,
+  // preview and git status belong to ONE root, and switching roots must remount rather than reuse.
+  const at = `${agent.id}:${agent.workdir}:${sessionId ?? 'primary'}:${repo ?? 'workspace'}`
   return ws.mode === 'github' ? `${at}:github:${ws.repo}@${ws.branch}:${ws.agentDir}` : `${at}:scratch`
 }
 
@@ -112,8 +120,12 @@ type DeleteDraft = {
 export function WorkspaceFiles({
   agentId,
   sessionId,
+  repo,
+  repoOptions,
+  primaryRepoLabel,
+  onRepoChange,
   workdir,
-  canEdit,
+  canEdit: workspaceCanEdit,
   sandboxed = false,
   renderWorkspacePicker,
   renderHeader
@@ -122,6 +134,14 @@ export function WorkspaceFiles({
   /** ACP session id selecting that session's isolated worktree. Omit for the
    * agent's primary checkout. */
   sessionId?: string
+  /** `owner/repo` of the authorized additional repository being browsed. Omit for the workspace. */
+  repo?: string
+  /** The agent's authorized additional repositories, offered beside the workspace in the root menu.
+   *  Empty ⇒ there is nothing to choose, so the breadcrumb keeps its plain root label. */
+  repoOptions?: AgentRepoAuthDto[]
+  /** `owner/repo` behind the agent's own workspace; absent ⇒ a scratch workspace, named as one. */
+  primaryRepoLabel?: string
+  onRepoChange?: (repo: string | null) => void
   workdir?: string
   canEdit: boolean
   /** The agent runs in a cluster sandbox: its files are readable only through a running pod, so opening the tab wakes it rather than waiting for the read to refuse. */
@@ -135,6 +155,9 @@ export function WorkspaceFiles({
    *  daemon round-trip. */
   renderHeader: (header: WorkspaceHeaderInfo) => ReactNode
 }) {
+  // The edit frames carry no repo scope, so a write while a secondary root is selected would land in
+  // the PRIMARY workspace under the wrong root's name. Editing is the workspace's own, always.
+  const canEdit = workspaceCanEdit && !repo
   const isMobile = useIsMobile()
   const [viewer, setViewer] = useState<Viewer | null>(null)
   const [editor, setEditor] = useState<FileBrowserEditorDraft | null>(null)
@@ -145,9 +168,9 @@ export function WorkspaceFiles({
   // Bumped after a pull to re-fetch both the git status and the tree.
   const [refreshTick, setRefreshTick] = useState(0)
   // The tree and git halves of the read model, shared with the dock's Files panel.
-  const { dirs, expanded, toggleDir, loadMoreDir, openPath } = useWorkspaceTree(agentId, sessionId, refreshTick)
+  const { dirs, expanded, toggleDir, loadMoreDir, openPath } = useWorkspaceTree(agentId, sessionId, refreshTick, repo)
   // `git` is null while loading, for a non-repo workspace, and when the owning daemon is offline — the workspace card falls back to the agent's configured source in all three.
-  const { git, primaryBranch } = useWorkspaceGitStatus(agentId, sessionId, refreshTick)
+  const { git, primaryBranch } = useWorkspaceGitStatus(agentId, sessionId, refreshTick, repo)
   // The sandbox wake: pressed once when the root read refuses with the asleep code (or on open for a sandboxed agent), then the read is polled through this same refresh until it answers.
   const retryRoot = useCallback(() => setRefreshTick((tick) => tick + 1), [])
   const wake = useSandboxWake(agentId, workspaceRootReadState(dirs['']), retryRoot, { sandboxed })
@@ -174,7 +197,11 @@ export function WorkspaceFiles({
       content: '',
       loadingMore: false
     })
-    fetchWorkspaceFile(agentId, { path: filePath, ...(sessionId ? { sessionId } : {}) }).then(
+    fetchWorkspaceFile(agentId, {
+      path: filePath,
+      ...(sessionId ? { sessionId } : {}),
+      ...(repo ? { repo } : {})
+    }).then(
       (f) =>
         setViewer((v) =>
           requestId === viewerRequestRef.current && v && v.path === filePath
@@ -206,7 +233,7 @@ export function WorkspaceFiles({
     return () => {
       viewerRequestRef.current += 1
     }
-  }, [agentId, sessionId])
+  }, [agentId, repo, sessionId])
 
   const editorTarget = editor?.target ?? null
 
@@ -215,7 +242,7 @@ export function WorkspaceFiles({
   useEffect(() => {
     if (!editorTarget) return
     let active = true
-    fetchWorkspaceFileFull(agentId, editorTarget).then(
+    fetchWorkspaceFileFull(agentId, editorTarget, repo ? { repo } : {}).then(
       (file) => {
         if (!active) return
         setEditor((current) => {
@@ -236,7 +263,7 @@ export function WorkspaceFiles({
     return () => {
       active = false
     }
-  }, [agentId, editorTarget])
+  }, [agentId, editorTarget, repo])
 
   useEffect(() => {
     if (!deleteDraft) return
@@ -266,7 +293,7 @@ export function WorkspaceFiles({
     if (gitPulling) return
     setGitPulling(true)
     setGitMsg(null)
-    workspaceGitPull(agentId).then(
+    workspaceGitPull(agentId, repo ? { repo } : {}).then(
       (r) => {
         setGitPulling(false)
         setGitMsg(r.detail ?? (r.ok ? 'Pulled.' : 'Pull failed.'))
@@ -288,7 +315,12 @@ export function WorkspaceFiles({
     const offset = v.file.nextOffset
     const requestId = ++viewerRequestRef.current
     setViewer({ ...v, loadingMore: true, moreErr: null })
-    fetchWorkspaceFile(agentId, { path: v.path, offset, ...(sessionId ? { sessionId } : {}) }).then(
+    fetchWorkspaceFile(agentId, {
+      path: v.path,
+      offset,
+      ...(sessionId ? { sessionId } : {}),
+      ...(repo ? { repo } : {})
+    }).then(
       (f) =>
         setViewer((cur) =>
           requestId === viewerRequestRef.current && cur && cur.path === v.path
@@ -316,6 +348,19 @@ export function WorkspaceFiles({
   const root = dirs['']
   const selectedDirectory = viewer ? viewer.path.split('/').slice(0, -1).join('/') : ''
   const workspaceRoot = workdir?.replace(/\/+$/, '').split('/').at(-1) || 'Workspace'
+  // The breadcrumb's root has always NAMED the root being browsed; with more than one to browse it
+  // becomes the control that chooses it. With nothing to choose it stays the plain label it was.
+  const repoChoices = repoOptions ?? []
+  const repoPicker =
+    repoChoices.length > 0 && onRepoChange ? (
+      <WorkspaceRepoPicker
+        primaryLabel={primaryRepoLabel || 'Scratch workspace'}
+        primaryIsRepo={Boolean(primaryRepoLabel)}
+        repos={repoChoices}
+        selectedRepo={repo ?? null}
+        onChange={onRepoChange}
+      />
+    ) : null
 
   const startCreate = () => {
     setDeleteDraft(null)
@@ -509,7 +554,13 @@ export function WorkspaceFiles({
   // Project the live git read model onto the workspace card. Nothing here is
   // required: an offline daemon (or a scratch workspace) simply leaves the
   // status/commit/pull half of the card empty.
-  const remote = git ? parseRemote(git.repo) : null
+  // A secondary root is always a github.com repository (grants exist only for App-covered repos), so
+  // its status names `owner/repo` where the primary's names a full clone address.
+  const remote = repo
+    ? { label: repo, host: 'github.com', url: `https://github.com/${repo}` }
+    : git
+      ? parseRemote(git.repo)
+      : null
   const header: WorkspaceHeaderInfo = {
     status: git
       ? git.clean
@@ -543,7 +594,8 @@ export function WorkspaceFiles({
       <FileBrowserShell
         title={
           <FileBrowserBreadcrumb
-            root={workspaceRoot}
+            root={repoPicker ?? workspaceRoot}
+            rootControl={repoPicker !== null}
             path={breadcrumbPath}
             creating={editor?.target === ''}
             draftName={editor?.name ?? ''}
@@ -649,9 +701,11 @@ export function WorkspaceFiles({
         {!editor && root && !root.loading && !root.err && !root.exists && (
           <EmptyNote
             text={
-              sessionId
-                ? "This session's workspace has been cleaned up — it will be recreated from the repository when the agent next works in this session."
-                : 'The workspace has no files yet — the agent creates them as it works.'
+              repo
+                ? 'Not checked out yet — this repository is materialized on the agent’s next session.'
+                : sessionId
+                  ? "This session's workspace has been cleaned up — it will be recreated from the repository when the agent next works in this session."
+                  : 'The workspace has no files yet — the agent creates them as it works.'
             }
           />
         )}
@@ -662,7 +716,7 @@ export function WorkspaceFiles({
 
         {(editor || (root?.entries && root.exists && root.entries.length > 0)) && (
           <FileBrowserLayout
-            resetKey={`${agentId}:${sessionId ?? 'primary'}:${mobileListSignal}`}
+            resetKey={`${agentId}:${sessionId ?? 'primary'}:${repo ?? 'workspace'}:${mobileListSignal}`}
             previewOpen={editor !== null || deleteDraft !== null}
             tree={(openPreview) =>
               root?.entries && root.exists && root.entries.length > 0 ? (

@@ -112,10 +112,11 @@ export function FileBrowserBreadcrumb({
   onBack,
   disabled,
   nested = true,
+  rootControl = false,
   ariaLabel = 'File path',
   inputAriaLabel = 'New file path'
 }: {
-  root: string
+  root: ReactNode
   path: string
   creating: boolean
   draftName: string
@@ -123,6 +124,8 @@ export function FileBrowserBreadcrumb({
   onBack?: () => void
   disabled?: boolean
   nested?: boolean
+  /** The root slot holds a CONTROL, not a label: it sizes itself and stays visible inside a path. */
+  rootControl?: boolean
   ariaLabel?: string
   inputAriaLabel?: string
 }) {
@@ -147,9 +150,13 @@ export function FileBrowserBreadcrumb({
         </button>
       ) : null}
       <span
-        className={`mono max-w-[120px] flex-none truncate text-[12px] font-semibold text-(--text-primary) ${
-          segments.length > 0 || creating ? 'max-desktop:hidden' : ''
-        }`}
+        className={
+          rootControl
+            ? 'flex min-w-0 flex-none items-center'
+            : `mono max-w-[120px] flex-none truncate text-[12px] font-semibold text-(--text-primary) ${
+                segments.length > 0 || creating ? 'max-desktop:hidden' : ''
+              }`
+        }
       >
         {root}
       </span>

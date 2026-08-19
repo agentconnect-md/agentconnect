@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import useSWR from 'swr'
 import Link from 'next/link'
 import { useParams, useRouter, useSearchParams } from 'next/navigation'
@@ -54,6 +54,7 @@ import { discordBotInviteUrl } from '@/components/console/platforms/discord/invi
 import { WorkspaceCard, type WorkspaceHeaderInfo } from '@/components/console/WorkspaceCard'
 import { WorkspaceFiles, workspaceReadModelKey } from '@/components/console/WorkspaceFiles'
 import { WorkspaceFilesMock } from '@/components/console/WorkspaceFilesMock'
+import { resolveWorkspaceRepoScope, workspaceRepoParamRewrite } from '@/components/console/WorkspaceRepoPicker'
 import { WorkspaceScopePicker } from '@/components/console/WorkspaceScopePicker'
 import { FileBrowserShell } from '@/components/console/FileBrowser'
 import { MemoryPanel } from '@/components/console/MemoryPanel'
@@ -146,7 +147,8 @@ export default function AgentDetailView() {
     agentsLoading,
     updateAgent,
     refresh,
-    memberSets
+    memberSets,
+    orgSetIds
   } = useConsoleData()
   const { openPlayground } = usePlayground()
   const { openModal } = useModal()
@@ -226,6 +228,31 @@ export default function AgentDetailView() {
   const wsForRepos = getAgent(id)?.workspace
   const reposKey = wsForRepos ? consoleKeys.agentRepos(activeOrg?.id, id) : null
   const { data: agentReposData } = useSWR(reposKey, ([, orgId, , agentId]) => fetchAgentRepos(agentId, orgId))
+  // Which ROOT the Workspace tab browses, beside `?worktree=` which chooses the checkout within it.
+  // Pool placements hold their grants as authorization only — no secondary root is materialized
+  // there yet — so the menu offers nothing to switch to and the browser stays on the workspace.
+  const poolPlacedForRepos = isPoolPlacementKind(getAgent(id)?.placementKind, getAgent(id)?.setId, orgSetIds)
+  const workspaceRepoOptions = poolPlacedForRepos ? [] : (agentReposData ?? [])
+  const selectedRepo = resolveWorkspaceRepoScope(params.get('repo'), poolPlacedForRepos ? [] : agentReposData)
+  const selectRepoScope = useCallback(
+    (repo: string | null) => {
+      const next = new URLSearchParams(params)
+      if (repo) next.set('repo', repo)
+      else next.delete('repo')
+      router.replace(`${orgPath(`/agents/${id}`)}?${next.toString()}`, { scroll: false })
+    },
+    [id, orgPath, params, router]
+  )
+  // ...and once the grants are definitive, make the URL say which root the browser is actually
+  // reading, so a hand-written or revoked link stops disagreeing with the picker beside it.
+  const repoParamRewrite = workspaceRepoParamRewrite(
+    params.get('repo'),
+    selectedRepo,
+    poolPlacedForRepos ? [] : agentReposData
+  )
+  useEffect(() => {
+    if (repoParamRewrite !== undefined) selectRepoScope(repoParamRewrite)
+  }, [repoParamRewrite, selectRepoScope])
   // Grandfathered out-of-set hooks keep firing; only the gh write-back is
   // credential-less — badge them once the grant list has actually loaded.
   const watchUnauthorized = (h: HookDto): boolean =>
@@ -1632,9 +1659,13 @@ export default function AgentDetailView() {
                 instead of leaving the previous tree/preview/git state beneath a
                 refreshed source card. */}
             <WorkspaceFiles
-              key={workspaceReadModelKey(da, selectedWorktreeSessionId ?? undefined)}
+              key={workspaceReadModelKey(da, selectedWorktreeSessionId ?? undefined, selectedRepo ?? undefined)}
               agentId={id}
               {...(selectedWorktreeSessionId ? { sessionId: selectedWorktreeSessionId } : {})}
+              {...(selectedRepo ? { repo: selectedRepo } : {})}
+              repoOptions={workspaceRepoOptions}
+              {...(da.workspace.mode === 'github' ? { primaryRepoLabel: da.workspace.repo } : {})}
+              onRepoChange={selectRepoScope}
               workdir={da.workdir}
               canEdit={selectedWorktreeSessionId === null && da.workspace.mode === 'scratch' && da.canEdit}
               sandboxed={isPoolPlacementKind(da.placementKind)}

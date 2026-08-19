@@ -188,8 +188,8 @@ it('uses the primary checkout live branch while browsing a worktree', async () =
   })
 
   expect(container.querySelector('[data-testid="primary-branch"]')?.textContent).toBe('primary-live-branch')
-  expect(fetchWorkspaceGitStatus).toHaveBeenCalledWith('agent-a', 'session-a')
-  expect(fetchWorkspaceGitStatus).toHaveBeenCalledWith('agent-a')
+  expect(fetchWorkspaceGitStatus).toHaveBeenCalledWith('agent-a', 'session-a', undefined)
+  expect(fetchWorkspaceGitStatus).toHaveBeenCalledWith('agent-a', undefined, undefined)
 })
 
 // The workspace editor lives in the card this browser renders, so a replacement
@@ -234,6 +234,161 @@ describe('workspaceReadModelKey', () => {
   it('separates the primary checkout from a session worktree', () => {
     expect(workspaceReadModelKey(github, 'session-a')).not.toBe(workspaceReadModelKey(github))
   })
+
+  it('separates the workspace from an additional repository, and two of those from each other', () => {
+    expect(workspaceReadModelKey(github, undefined, 'acme/infra')).not.toBe(workspaceReadModelKey(github))
+    expect(workspaceReadModelKey(github, undefined, 'acme/infra')).not.toBe(
+      workspaceReadModelKey(github, undefined, 'example-co/shared-library')
+    )
+  })
+})
+
+const REPO_GRANTS = [
+  {
+    id: 'g-1',
+    repoFullName: 'acme/infra',
+    access: 'write' as const,
+    createdBy: null,
+    createdAt: '2026-08-01T00:00:00.000Z'
+  }
+]
+
+async function renderRepoScoped(props: Record<string, unknown> = {}) {
+  container = document.createElement('div')
+  document.body.append(container)
+  root = createRoot(container)
+  await act(async () => {
+    root?.render(
+      <WorkspaceFiles
+        agentId="agent-a"
+        workdir="/workspace"
+        canEdit={false}
+        repoOptions={REPO_GRANTS}
+        primaryRepoLabel="acme/primary-service"
+        onRepoChange={(props.onRepoChange as (repo: string | null) => void) ?? (() => undefined)}
+        renderHeader={() => null}
+        {...props}
+      />
+    )
+    await Promise.resolve()
+  })
+}
+
+it('offers the workspace and every authorized repository from the browser root', async () => {
+  await renderRepoScoped()
+  const trigger = container?.querySelector<HTMLButtonElement>('button[aria-haspopup="menu"]')
+  expect(trigger?.textContent).toContain('acme/primary-service')
+  await act(async () => trigger?.click())
+
+  // The menu is body-portaled out of the breadcrumb's clipped overflow.
+  expect(Array.from(document.body.querySelectorAll('[data-repo-choice]')).map((n) => n.textContent)).toEqual([
+    'acme/primary-serviceworkspace',
+    'acme/infrawrite'
+  ])
+})
+
+it('keeps the plain root label when the agent has nothing else to browse', async () => {
+  container = document.createElement('div')
+  document.body.append(container)
+  root = createRoot(container)
+  await act(async () => {
+    root?.render(
+      <WorkspaceFiles
+        agentId="agent-a"
+        workdir="/workspace"
+        canEdit={false}
+        repoOptions={[]}
+        renderHeader={() => null}
+      />
+    )
+    await Promise.resolve()
+  })
+  expect(container?.querySelector('button[aria-haspopup="menu"]')).toBeNull()
+  expect(container?.querySelector('nav[aria-label="Workspace path"]')?.textContent).toContain('workspace')
+})
+
+it('reports the picked repository so the caller can put it in the URL', async () => {
+  const onRepoChange = vi.fn()
+  await renderRepoScoped({ onRepoChange })
+  await act(async () => container?.querySelector<HTMLButtonElement>('button[aria-haspopup="menu"]')?.click())
+  const infra = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[data-repo-choice]'))[1]
+  await act(async () => infra?.click())
+  expect(onRepoChange).toHaveBeenCalledWith('acme/infra')
+})
+
+it('scopes file and git reads to the selected repository, and keeps edits off it', async () => {
+  await renderRepoScoped({ repo: 'acme/infra', canEdit: true })
+
+  expect(fetchWorkspaceFiles).toHaveBeenCalledWith('agent-a', { path: '', repo: 'acme/infra' })
+  expect(fetchWorkspaceGitStatus).toHaveBeenCalledWith('agent-a', undefined, 'acme/infra')
+  // A secondary root is a repository checkout, so the scratch-only editor stays away from it.
+  expect(container?.textContent).not.toContain('Add file')
+})
+
+it('names a scratch workspace as one in the root menu', async () => {
+  await renderRepoScoped({ primaryRepoLabel: undefined })
+  await act(async () => container?.querySelector<HTMLButtonElement>('button[aria-haspopup="menu"]')?.click())
+  expect(Array.from(document.body.querySelectorAll('[data-repo-choice]'))[0]?.textContent).toBe(
+    'Scratch workspaceworkspace'
+  )
+})
+
+it('keeps the repository control visible on mobile, where a plain root label collapses', async () => {
+  mobile.value = true
+  await renderRepoScoped({ repo: 'acme/infra' })
+  const nav = container?.querySelector('nav[aria-label="Workspace path"]')
+  const trigger = nav?.querySelector('button[aria-haspopup="menu"]')
+  expect(trigger).not.toBeNull()
+  for (let node = trigger?.parentElement; node && node !== nav; node = node.parentElement) {
+    expect(node.className).not.toContain('max-desktop:hidden')
+  }
+})
+
+it('points the view-on-remote action at the selected repository', async () => {
+  const headers: Array<{ repoUrl?: string | null }> = []
+  await renderRepoScoped({
+    repo: 'acme/infra',
+    renderHeader: (header: { repoUrl?: string | null }) => {
+      headers.push(header)
+      return null
+    }
+  })
+  expect(headers.at(-1)?.repoUrl).toBe('https://github.com/acme/infra')
+})
+
+it('labels the checkout picker with the SELECTED root’s branch, not the workspace’s', async () => {
+  vi.mocked(fetchWorkspaceGitStatus).mockImplementation((_agentId, _sessionId, repo) =>
+    Promise.resolve({
+      isRepo: true,
+      clean: true,
+      repo: repo ?? 'https://github.com/acme/primary-service.git',
+      agentDir: null,
+      branch: repo ? 'trunk' : 'main',
+      tracking: null,
+      ahead: 0,
+      behind: 0,
+      files: [],
+      truncated: false,
+      lastCommit: null,
+      lastFetchAt: null
+    })
+  )
+  await renderRepoScoped({
+    repo: 'acme/infra',
+    renderWorkspacePicker: (branch: string | null) => <span data-testid="base-branch">{branch}</span>
+  })
+  // The worktree picker chooses a worktree OF the selected root, so its non-worktree entry is that
+  // root's checkout — labelling it with the workspace's branch would name a branch it is not on.
+  expect(container?.querySelector('[data-testid="base-branch"]')?.textContent).toBe('trunk')
+})
+
+it('explains an authorized repository the agent has not checked out yet', async () => {
+  workspace.exists = false
+  await renderRepoScoped({ repo: 'acme/infra' })
+
+  expect(container?.textContent).toContain('Not checked out yet')
+  expect(container?.textContent).toContain('materialized on the agent’s next session')
+  expect(container?.textContent).not.toContain('The workspace has no files yet')
 })
 
 it('scopes file and git reads to the selected session worktree', async () => {
@@ -254,7 +409,7 @@ it('scopes file and git reads to the selected session worktree', async () => {
   })
 
   expect(fetchWorkspaceFiles).toHaveBeenCalledWith('agent-a', { path: '', sessionId: 'session-a' })
-  expect(fetchWorkspaceGitStatus).toHaveBeenCalledWith('agent-a', 'session-a')
+  expect(fetchWorkspaceGitStatus).toHaveBeenCalledWith('agent-a', 'session-a', undefined)
   expect(container?.textContent).not.toContain('Add file')
 })
 
