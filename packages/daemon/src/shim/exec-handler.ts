@@ -17,6 +17,7 @@ import { applyMemoryFsPayload, isMemoryFsPayload } from './memory-fs-channel.js'
  * which through `-c`, hooks and `--upload-pack` reaches arbitrary execution.
  */
 export const ALLOWED_GIT_SUBCOMMANDS = new Set([
+  'branch',
   'check-ref-format',
   'clean',
   'clone',
@@ -24,12 +25,15 @@ export const ALLOWED_GIT_SUBCOMMANDS = new Set([
   'diff',
   'fetch',
   'log',
+  'ls-remote',
   'pull',
   'remote',
   'reset',
   'rev-list',
   'rev-parse',
+  'show-ref',
   'status',
+  'symbolic-ref',
   'update-ref',
   'worktree'
 ])
@@ -130,15 +134,16 @@ function canonical(path: string): string {
 }
 
 /**
- * Refuse an absolute path that escapes the workspace root, for a path that does not exist yet.
+ * Refuse an operand that escapes the workspace root, for a path that does not exist yet.
  *
  * Lexical rather than `realpath`, because a clone target is precisely a path that is not there:
  * containment is decided on the normalized form, and the ROOT is canonicalized so a symlinked mount
- * still compares correctly.
+ * still compares correctly. A RELATIVE operand is resolved against the fenced cwd first, the way git
+ * itself resolves it — checking only absolute ones let `../escaped` through the fence untouched.
  */
-function assertInsideRoot(root: string, requested: string): void {
+function assertInsideRoot(root: string, cwd: string, requested: string): void {
   const base = canonical(root)
-  const target = normalize(resolve(requested))
+  const target = normalize(isAbsolute(requested) ? resolve(requested) : resolve(cwd, requested))
   if (target !== base && !target.startsWith(base + sep)) {
     throw new ExecRefusedError(`path escapes the workspace root: ${requested}`)
   }
@@ -241,13 +246,14 @@ async function runGit(payload: unknown, deps: ExecHandlerDeps, abort?: AbortSign
     }
   }
   const cwd = resolveCwd(deps.workspaceRoot, parsed.cwd)
-  // A clone WRITES to a path in argv, which the cwd fence above never looks at. The daemon sends a
-  // relative target for exactly that reason, so an absolute one is either a mistake or an attempt to
-  // write outside the workspace — and this side is the one holding the filesystem.
-  if (subcommand === 'clone') {
+  // Both WRITE a path from argv, which the cwd fence never looks at: a clone's target, and the
+  // directory `worktree add`/`remove` creates or deletes. EVERY operand is checked, resolved as git
+  // would resolve it — an allowlist of "which operand is the path" is the thing that goes stale, and
+  // the others (a subcommand verb, a URL, a start-point ref) sit under the cwd and pass anyway.
+  if (subcommand === 'clone' || subcommand === 'worktree') {
     for (const argument of rest) {
-      if (argument.startsWith('-') || !isAbsolute(argument)) continue
-      assertInsideRoot(deps.workspaceRoot, argument)
+      if (argument.startsWith('-')) continue
+      assertInsideRoot(deps.workspaceRoot, cwd, argument)
     }
   }
   // The caller's deadline governs, bounded by this side's ceiling: a compromised daemon must not

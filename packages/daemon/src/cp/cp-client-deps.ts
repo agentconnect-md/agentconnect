@@ -147,8 +147,13 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
   const clusterIdentityToken = host.clusterIdentityToken()
   const echoDaemonId = host.echoDaemonId()
 
-  // This daemon's own coordinates: `agent.workspace.path` and the session worktrees beside it.
-  const daemonWorkspaceLocation = async (id: string, sessionId?: string): Promise<WorkspaceLocation | undefined> => {
+  // This daemon's own coordinates: `agent.workspace.path` and the session worktrees beside it. The
+  // session KEY travels with an isolated one, because the worktree is named by it in either
+  // filesystem and the pod's path is composed rather than translated.
+  const daemonWorkspaceLocation = async (
+    id: string,
+    sessionId?: string
+  ): Promise<(WorkspaceLocation & { sessionKey?: string }) | undefined> => {
     const agent = host.agents().get(id)
     if (!agent) return undefined
     if (!sessionId) {
@@ -156,14 +161,14 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
     }
     const session = await host.store().getSessionByAcpIdForAgent(id, sessionId)
     if (agent.workspace.mode !== 'git-repo' || session?.workspaceIsolation !== 'session') return undefined
-    return { root: host.workspaces().sessionWorktreePath(agent, session.key), scratch: false }
+    return { root: host.workspaces().sessionWorktreePath(agent, session.key), scratch: false, sessionKey: session.key }
   }
 
   // Where that workspace actually is, which under --k8s is the sandbox pod's volume. ONE resolver
   // for the file reader and the git seam: the directory the console browses and the one it commits
   // are the same directory, and describing them two different ways is what broke both panels.
-  // A defined location for a sessionId means that session IS isolated, which --k8s refuses —
-  // passed through so it is refused loudly rather than silently naming the shared checkout.
+  // A defined location for a sessionId means that session IS isolated, so on a cluster it names the
+  // per-session worktree on the pod's volume rather than the shared checkout.
   const workspaceLocation = async (id: string, sessionId?: string): Promise<WorkspaceLocation | undefined> => {
     const agent = host.agents().get(id)
     const local = await daemonWorkspaceLocation(id, sessionId)
@@ -174,7 +179,7 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
         agent,
         local.root,
         host.k8sPlane()?.workspaceRootFor(id),
-        sessionId ? { isolation: 'session' } : undefined
+        local.sessionKey === undefined ? undefined : { isolation: 'session', sessionKey: local.sessionKey }
       )
     return root === undefined ? undefined : { root, scratch: local.scratch }
   }

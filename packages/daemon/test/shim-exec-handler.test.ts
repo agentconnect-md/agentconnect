@@ -94,6 +94,79 @@ describe('sandbox exec handler', () => {
     }
   })
 
+  it('serves the worktree inventory the pod-side session paths need', async () => {
+    // Each of these is called by the worktree and secondary-root paths, which run in the pod once
+    // the workspace-fs seam lets them. A subcommand the daemon calls and this side refuses is a
+    // session that fails on a pool member and works self-hosted.
+    const root = repository()
+    for (const args of [
+      ['symbolic-ref', '--quiet', '--short', 'HEAD'],
+      ['show-ref', '--verify', '--quiet', 'refs/heads/main'],
+      ['branch', '--list']
+    ]) {
+      const result = (await handler(root)('exec', { tool: 'git', args })) as GitExecResult
+      expect(result.code).toBe(0)
+    }
+    for (const subcommand of ['branch', 'ls-remote', 'show-ref', 'symbolic-ref']) {
+      expect(ALLOWED_GIT_SUBCOMMANDS.has(subcommand)).toBe(true)
+    }
+  })
+
+  it('still refuses every execution option on the newly permitted subcommands', async () => {
+    // Widening the inventory must not widen what an argument may do: `-c` is refused as a PREFIX,
+    // in each of its accepted spellings, whatever subcommand carries it.
+    const root = repository()
+    const attacks = [
+      ['-c', 'core.pager=sh -c "id"', 'branch'],
+      ['branch', '-ccore.pager=EVIL'],
+      ['show-ref', '--config-env=core.pager=EVIL'],
+      ['symbolic-ref', '--config=core.pager=EVIL'],
+      ['ls-remote', '--upload-pack=sh -c "id"', 'origin'],
+      ['branch', '--exec-path=/tmp/evil']
+    ]
+    for (const args of attacks) {
+      await expect(handler(root)('exec', { tool: 'git', args })).rejects.toBeInstanceOf(ExecRefusedError)
+    }
+  })
+
+  it('refuses a worktree path outside the workspace root, which the cwd fence never sees', async () => {
+    // `worktree add`/`remove` name a directory in argv and create or delete it, exactly as a clone
+    // target does — so the same containment applies, on the side holding the filesystem.
+    const root = repository()
+    const outside = mkdtempSync(join(tmpdir(), 'ac-worktree-outside-'))
+    roots.push(outside)
+    await expect(
+      handler(root)('exec', {
+        tool: 'git',
+        args: ['worktree', 'add', '-b', 'dev/alice/quiet-harbor', join(outside, 'stolen'), 'HEAD'],
+        cwd: root
+      })
+    ).rejects.toBeInstanceOf(ExecRefusedError)
+    await expect(
+      handler(root)('exec', { tool: 'git', args: ['worktree', 'remove', join(root, '..', 'escaped')], cwd: root })
+    ).rejects.toBeInstanceOf(ExecRefusedError)
+  })
+
+  it('refuses a RELATIVE operand that escapes, which git resolves against the cwd', async () => {
+    // The trap an absolute-only check leaves open: git resolves `../escaped` against the cwd, so the
+    // fence passes it untouched and the write lands outside the root anyway.
+    const root = repository()
+    for (const args of [
+      ['worktree', 'add', '../escaped', 'HEAD'],
+      ['worktree', 'remove', '../escaped'],
+      ['clone', 'https://github.com/acme/repo.git', '../escaped']
+    ]) {
+      await expect(handler(root)('exec', { tool: 'git', args, cwd: root })).rejects.toBeInstanceOf(ExecRefusedError)
+    }
+    // A relative operand that stays inside is what the daemon actually sends, and it still runs.
+    const inside = (await handler(root)('exec', {
+      tool: 'git',
+      args: ['worktree', 'add', '--detach', 'worktrees/one', 'HEAD'],
+      cwd: root
+    })) as GitExecResult
+    expect(inside.code).toBe(0)
+  })
+
   it('refuses a cwd outside the workspace root, whatever the daemon asked for', async () => {
     const root = repository()
     const outside = mkdtempSync(join(tmpdir(), 'ac-outside-'))

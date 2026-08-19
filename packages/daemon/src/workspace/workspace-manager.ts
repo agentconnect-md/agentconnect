@@ -38,6 +38,7 @@ import {
   writeRepoHelperConfig
 } from './git-injection.js'
 import { LocalGitRunner, type GitRunner } from './git-runner.js'
+import { localWorkspaceFs, type WorkspaceFs, type WorkspacePlacement } from './workspace-fs.js'
 import { gitmoduleRepos } from './gitmodules.js'
 import {
   isRepoSegment,
@@ -128,6 +129,11 @@ export type SessionRootScope = Pick<PrepareSessionWorkspaceRequest, 'isolation' 
   sessionKey?: string
 }
 
+/** How one session addresses a CLUSTER agent's checkout: the isolation, plus the key that names its
+ *  worktree. Both are needed — the daemon composes the pod path itself, and an isolation with no key
+ *  names no worktree. */
+export type ClusterSessionScope = Pick<PrepareSessionWorkspaceRequest, 'isolation'> & { sessionKey?: string }
+
 /** What a secondary root's `.materialization.json` records about the checkout beside it. */
 interface SecondaryMaterialization {
   repoId: string
@@ -180,11 +186,16 @@ export class WorkspaceManager {
   /** Secondary roots prepared for an agent's current sessions — what the synchronous hand-out reads. */
   private readonly readyRoots = new Map<string, SecondaryWorkspaceRoot[]>()
   private gitRunnerResolver: WorkspaceGitRunnerResolver | undefined
+  private fsResolver: WorkspaceFsResolver | undefined
   private pathClearer: WorkspacePathClearer | undefined
   private workspacesLiveInSandboxes = false
 
   setGitRunnerResolver(resolver: WorkspaceGitRunnerResolver | undefined): void {
     this.gitRunnerResolver = resolver
+  }
+
+  setFsResolver(resolver: WorkspaceFsResolver | undefined): void {
+    this.fsResolver = resolver
   }
 
   setPathClearer(clearer: WorkspacePathClearer | undefined): void {
@@ -202,6 +213,16 @@ export class WorkspaceManager {
   /** The agent's own runner; undefined means its workspace is reachable locally. */
   resolveGitRunner(agentId: string, cwd?: string, abort?: AbortSignal): GitRunner | undefined {
     return this.gitRunnerResolver?.(agentId, cwd, abort)
+  }
+
+  /** The filesystem this agent's workspace files live in — this daemon's own when nothing claims it. */
+  fsFor(agentId: string): WorkspaceFs {
+    return this.fsResolver?.(agentId)?.fs ?? localWorkspaceFs
+  }
+
+  /** The mount this agent's workspace paths are composed in; undefined ⇒ this daemon's own disk. */
+  sandboxMountFor(agentId: string): string | undefined {
+    return this.fsResolver?.(agentId)?.mount
   }
 
   /** The clearer's error message, or undefined when it succeeded or none is registered. */
@@ -257,13 +278,21 @@ export class WorkspaceManager {
     )
   }
 
-  /** The agent's primary checkout as a root. Throws like `gitRepoOf` when the workspace is not a repository. */
+  /** The agent's primary checkout as a root, in the coordinates of whichever filesystem holds it.
+   *  Throws like `gitRepoOf` when the workspace is not a repository. */
   primaryRoot(agent: Agent): WorkspaceRoot {
+    return this.primaryRootAt(agent, this.sandboxMountFor(agent.id))
+  }
+
+  /** The same root addressed in one sandbox mount's coordinates; `mount` undefined means this disk.
+   *  The cluster path names the mount explicitly rather than asking the resolver, because it already
+   *  holds the one its own channel reported and must not depend on a second lookup agreeing. */
+  primaryRootAt(agent: Agent, mount: string | undefined): WorkspaceRoot {
     return {
       cloneUrl: this.gitRepoOf(agent),
       branch: agent.workspace.gitBranch,
-      path: agent.workspace.path,
-      worktreesPath: this.worktreesPathFor(agent),
+      path: mount === undefined ? agent.workspace.path : this.clusterWorkspaceCheckout(agent, mount),
+      worktreesPath: this.worktreesPathAt(agent, mount),
       githubApp: this.usesGithubApp(agent)
     }
   }
@@ -451,20 +480,19 @@ export class WorkspaceManager {
   }
 
   /** Attest that this session's working directory is one root's worktree, or drop that attestation. */
-  private recordSessionCwdRoot(subtree: string, sessionWorktreeId: string, repoFullName?: string): void {
+  private async recordSessionCwdRoot(
+    agentId: string,
+    subtree: string,
+    sessionWorktreeId: string,
+    repoFullName?: string
+  ): Promise<void> {
+    const fs = this.fsFor(agentId)
     const marker = sessionCwdMarkerIn(subtree, sessionWorktreeId)
     if (repoFullName === undefined) {
-      rmSync(marker, { force: true })
+      await fs.rmTree(marker)
       return
     }
-    const temp = `${marker}.tmp`
-    try {
-      writeFileSync(temp, JSON.stringify({ repoFullName }, null, 2) + '\n', { mode: 0o600 })
-      renameSync(temp, marker)
-    } catch (err) {
-      rmSync(temp, { force: true })
-      throw err
-    }
+    await fs.writeFile(marker, JSON.stringify({ repoFullName }, null, 2) + '\n', { mode: 0o600 })
   }
 
   /**
@@ -905,8 +933,20 @@ export class WorkspaceManager {
     return this.resolveAcpCwd(cwd, agentDir)
   }
 
-  /** The agent's worktrees parent. Total by construction — a from-scratch workspace has one too. */
+  /** The agent's worktrees parent, wherever its workspace lives. Total by construction — a
+   *  from-scratch workspace has one too. */
   worktreesPathFor(agent: Agent): string {
+    return this.worktreesPathAt(agent, this.sandboxMountFor(agent.id))
+  }
+
+  /** The same parent in one mount's coordinates: beside the pod's checkout, or under the agent
+   *  directory when there is no mount. */
+  worktreesPathAt(agent: Agent, mount: string | undefined): string {
+    return mount === undefined ? this.localWorktreesPathFor(agent) : join(mount, 'worktrees')
+  }
+
+  /** THIS daemon's disk, always — for the callers whose subject is this host's own filesystem. */
+  localWorktreesPathFor(agent: Agent): string {
     return join(this.agentRootFor(agent), 'worktrees')
   }
 
@@ -924,40 +964,54 @@ export class WorkspaceManager {
    * boundary or it stays invisible until the next spawn.
    */
   trustedWorkspaceWriteRoots(agent: Agent): string[] {
+    // This host's own sandbox boundary, so a pod path here would carve out nothing.
     return [
-      ...(agent.workspace.mode === 'git-repo' ? [this.sessionWorktreeRoot(agent)] : []),
+      ...(agent.workspace.mode === 'git-repo' ? [this.localWorktreesPathFor(agent)] : []),
       this.secondaryRootsDir(agent)
     ]
   }
 
-  // Containment is per AGENT, not per root: every root's worktrees parent must resolve inside the agent directory.
-  validateWorktreesRoot(agent: Agent, worktreesPath: string): string {
-    if (lstatSync(worktreesPath).isSymbolicLink()) {
+  /**
+   * Containment for a worktrees parent, per AGENT rather than per root.
+   *
+   * Locally that means resolving symlinks and proving the canonical path stays inside the agent
+   * directory. On a pod there is nothing here to resolve them with — and nothing to gain: the shim's
+   * fd-anchored descent IS the containment, and it is stronger than any name check this side can
+   * make. So the daemon only proves it composed the path under the mount it was given.
+   */
+  async validateWorktreesRoot(agent: Agent, worktreesPath: string): Promise<string> {
+    const mount = this.sandboxMountFor(agent.id)
+    if ((await this.fsFor(agent.id).stat(worktreesPath)) === 'other') {
       throw new Error('session worktree root must not be a symlink')
+    }
+    if (mount !== undefined) {
+      if (escapesRoot(mount, worktreesPath)) throw new Error('session worktree root resolves outside the mount')
+      return worktreesPath
     }
     const agentRoot = realpathSync(this.agentRootFor(agent))
     const canonicalRoot = realpathSync(worktreesPath)
-    const rel = relative(agentRoot, canonicalRoot)
-    if (isAbsolute(rel) || rel === '..' || rel.startsWith(`..${sep}`)) {
+    if (escapesRoot(agentRoot, canonicalRoot)) {
       throw new Error('session worktree root resolves outside the agent directory')
     }
     return canonicalRoot
   }
 
-  prepareSessionWorktreeRoot(agent: Agent): string {
-    return this.prepareWorktreesRoot(agent, this.worktreesPathFor(agent))
+  prepareSessionWorktreeRoot(agent: Agent, worktreesPath = this.worktreesPathFor(agent)): Promise<string> {
+    return this.prepareWorktreesRoot(agent, worktreesPath)
   }
 
-  prepareWorktreesRoot(agent: Agent, worktreesPath: string): string {
-    if (existsSync(worktreesPath) && lstatSync(worktreesPath).isSymbolicLink()) {
+  async prepareWorktreesRoot(agent: Agent, worktreesPath: string): Promise<string> {
+    const fs = this.fsFor(agent.id)
+    if ((await fs.stat(worktreesPath)) === 'other') {
       throw new Error('session worktree root must not be a symlink')
     }
-    mkdirSync(worktreesPath, { recursive: true, mode: 0o700 })
-    return this.validateWorktreesRoot(agent, worktreesPath)
+    await fs.mkdir(worktreesPath, 0o700)
+    return await this.validateWorktreesRoot(agent, worktreesPath)
   }
 
+  /** An `rmSync`, so its subject can only ever be this daemon's own disk. */
   clearSessionWorktrees(agent: Agent): void {
-    rmSync(this.sessionWorktreeRoot(agent), { recursive: true, force: true })
+    rmSync(this.localWorktreesPathFor(agent), { recursive: true, force: true })
   }
 
   sessionWorktreeId(sessionKey: string): string {
@@ -973,13 +1027,22 @@ export class WorkspaceManager {
    *  (decision 12), while a subtree a failed clone left behind owns none and has no checkout for
    *  Git to run in, which would fail the whole session's cleanup forever. */
   sessionWorktreeRoots(agent: Agent): Pick<WorkspaceRoot, 'path' | 'worktreesPath'>[] {
+    const mount = this.sandboxMountFor(agent.id)
     return [
       ...(agent.workspace.mode === 'git-repo'
-        ? [{ path: agent.workspace.path, worktreesPath: this.worktreesPathFor(agent) }]
+        ? [
+            {
+              path: mount === undefined ? agent.workspace.path : this.clusterWorkspaceCheckout(agent, mount),
+              worktreesPath: this.worktreesPathAt(agent, mount)
+            }
+          ]
         : []),
-      ...secondarySubtreesIn(this.agentRootFor(agent))
-        .filter((entry) => existsSync(join(entry.path, '.git')))
-        .map(({ path, worktreesPath }) => ({ path, worktreesPath }))
+      // A sandboxed workspace has only the primary checkout, so these subtrees would judge this disk.
+      ...(this.sandboxMode
+        ? []
+        : secondarySubtreesIn(this.agentRootFor(agent))
+            .filter((entry) => existsSync(join(entry.path, '.git')))
+            .map(({ path, worktreesPath }) => ({ path, worktreesPath })))
     ]
   }
 
@@ -1086,12 +1149,13 @@ export class WorkspaceManager {
     root: Pick<WorkspaceRoot, 'path' | 'worktreesPath'>,
     id: string
   ): Promise<SessionWorktreeRemoval> {
+    const fs = this.fsFor(agent.id)
     const rootGit = () => this.runnerFor(agent.id, root.path).withEnv(workspaceGitLocalEnv())
     // Drop the stale Git registration, this worktree's daemon-owned review refs, and the attestation
     // that it was a session's working directory. Ref deletion is best-effort: most worktrees never
     // had review refs.
     const cleanupRegistrations = async () => {
-      this.recordSessionCwdRoot(dirname(root.path), id)
+      await this.recordSessionCwdRoot(agent.id, dirname(root.path), id)
       await rootGit().raw(['worktree', 'prune'])
       for (const name of ['base', 'head', 'merge']) {
         await rootGit()
@@ -1101,7 +1165,7 @@ export class WorkspaceManager {
     }
     try {
       const rootPath = root.worktreesPath
-      if (!existsSync(rootPath)) {
+      if ((await fs.stat(rootPath)) === 'missing') {
         // No root ⇒ no worktree directory can exist; Git may still hold a stale
         // registration/review refs for it.
         await cleanupRegistrations()
@@ -1110,19 +1174,24 @@ export class WorkspaceManager {
       // Re-derive cwd from the CANONICAL root: a symlinked root (or symlinked
       // ancestor) must never redirect the destructive branches below outside the
       // agent directory.
-      const cwd = join(this.validateWorktreesRoot(agent, rootPath), id)
-      if (existsSync(cwd) && lstatSync(cwd).isSymbolicLink()) throw new Error('session worktree path is a symlink')
-      if (!existsSync(cwd)) {
+      const cwd = join(await this.validateWorktreesRoot(agent, rootPath), id)
+      const kind = await fs.stat(cwd)
+      if (kind === 'other') throw new Error('session worktree path is a symlink')
+      if (kind === 'missing') {
         await cleanupRegistrations()
         return { outcome: 'absent' }
       }
-      if (!existsSync(join(cwd, '.git'))) {
+      if ((await fs.stat(join(cwd, '.git'))) === 'missing') {
         // The `.git` marker is gone, so Git no longer considers this a worktree —
         // but a NONEMPTY directory may hold exactly the untracked work this GC
         // promises never to auto-delete (`status` can't run without the marker).
         // Reclaim only a provably empty leftover; report anything else.
-        if (readdirSync(cwd).length > 0) return { outcome: 'retained', reason: 'dirty' }
-        rmSync(cwd, { recursive: true, force: true })
+        //
+        // ONE operation, never a proof followed by a recursive delete: the runtime is still running
+        // on this tree, so anything written between the two would be destroyed by a removal that the
+        // emptiness proof licensed. `rmdir` refuses a non-empty directory itself, so a file that
+        // arrives first keeps the session instead of being deleted.
+        if (!(await fs.rmdir(cwd))) return { outcome: 'retained', reason: 'dirty' }
         await cleanupRegistrations()
         return { outcome: 'removed' }
       }
@@ -1164,6 +1233,13 @@ export class WorkspaceManager {
     } catch (err) {
       return { outcome: 'failed', error: (err as Error).message }
     }
+  }
+
+  /** The path a caller may hold onto. Locally that is the canonical one, since a symlinked ancestor
+   *  would otherwise let two names for one directory disagree; on a pod there is no symlink to
+   *  resolve from here, and the shim's own descent is what decides where the name lands. */
+  canonicalWorkspacePath(agentId: string, path: string): string {
+    return this.sandboxMountFor(agentId) === undefined ? realpathSync(path) : path
   }
 
   exactObjectId(value: string, label: string): string {
@@ -1261,22 +1337,27 @@ export class WorkspaceManager {
     }
   }
 
-  prepareGithubRevisionOnlyWorkspace(agent: Agent, id: string): string {
-    const root = this.prepareSessionWorktreeRoot(agent)
+  async prepareGithubRevisionOnlyWorkspace(
+    agent: Agent,
+    id: string,
+    worktreesPath = this.worktreesPathFor(agent)
+  ): Promise<string> {
+    const fs = this.fsFor(agent.id)
+    const root = await this.prepareSessionWorktreeRoot(agent, worktreesPath)
     const cwd = join(root, id)
-    if (existsSync(cwd) && lstatSync(cwd).isSymbolicLink()) {
+    if ((await fs.stat(cwd)) === 'other') {
       throw new Error('github review workspace path must not be a symlink')
     }
     const staged = `${cwd}.review-${randomUUID()}`
-    mkdirSync(staged, { recursive: true, mode: 0o700 })
+    await fs.mkdir(staged, 0o700)
     try {
-      rmSync(cwd, { recursive: true, force: true })
-      renameSync(staged, cwd)
+      await fs.rmTree(cwd)
+      await fs.rename(staged, cwd)
     } catch (err) {
-      rmSync(staged, { recursive: true, force: true })
+      await fs.rmTree(staged)
       throw err
     }
-    return realpathSync(cwd)
+    return this.canonicalWorkspacePath(agent.id, cwd)
   }
 
   async addRootSessionWorktree(
@@ -1316,8 +1397,8 @@ export class WorkspaceManager {
       const id = this.sessionWorktreeId(request.sessionKey)
       // The cwd becomes the primary's own empty directory, so no root may go on attesting that this
       // session stands in it — a surviving attestation would refuse the very fallback prepared here.
-      this.forgetSessionCwdRoots(agent, id)
-      return this.prepareGithubRevisionOnlyWorkspace(agent, id)
+      await this.forgetSessionCwdRoots(agent, id)
+      return await this.prepareGithubRevisionOnlyWorkspace(agent, id)
     }
     // Resolved before anything is materialized: a review naming a repository this agent has no root
     // for must leave no worktree behind for the caller's revision-only fallback to step around.
@@ -1375,14 +1456,19 @@ export class WorkspaceManager {
     // failed a post-step must leave the caller's revision-only fallback a primary cwd it can use,
     // while a later preparation of a placed session — in a fresh process, carrying no review —
     // resolves this same working directory.
-    this.recordSessionCwdRoot(dirname(prepared.path), this.sessionWorktreeId(request.sessionKey), prepared.repoFullName)
+    await this.recordSessionCwdRoot(
+      agent.id,
+      dirname(prepared.path),
+      this.sessionWorktreeId(request.sessionKey),
+      prepared.repoFullName
+    )
     return acpCwd
   }
 
   /** Drop every root's attestation that it holds one session's working directory. */
-  private forgetSessionCwdRoots(agent: Agent, sessionWorktreeId: string): void {
+  private async forgetSessionCwdRoots(agent: Agent, sessionWorktreeId: string): Promise<void> {
     for (const entry of secondarySubtreesIn(this.agentRootFor(agent))) {
-      this.recordSessionCwdRoot(entry.subtree, sessionWorktreeId)
+      await this.recordSessionCwdRoot(agent.id, entry.subtree, sessionWorktreeId)
     }
   }
 
@@ -1442,25 +1528,26 @@ export class WorkspaceManager {
     root: WorkspaceRoot,
     request: PrepareSessionWorkspaceRequest
   ): Promise<string> {
+    const fs = this.fsFor(agent.id)
     const id = this.sessionWorktreeId(request.sessionKey)
-    const worktreesRoot = this.prepareWorktreesRoot(agent, root.worktreesPath)
+    const worktreesRoot = await this.prepareWorktreesRoot(agent, root.worktreesPath)
     const cwd = join(worktreesRoot, id)
-    if (existsSync(cwd) && lstatSync(cwd).isSymbolicLink()) {
+    if ((await fs.stat(cwd)) === 'other') {
       throw new Error('session worktree path must not be a symlink')
     }
     const review = request.review ? await this.fetchReviewRevisionIn(agent.id, root, id, request.review) : undefined
     const target = review?.checkout ?? `refs/remotes/origin/${root.branch}`
-    let attached = existsSync(join(cwd, '.git'))
+    let attached = (await fs.stat(join(cwd, '.git'))) !== 'missing'
     if (attached) {
       try {
         await this.revParse(agent.id, cwd, 'HEAD')
       } catch {
         attached = false
-        rmSync(cwd, { recursive: true, force: true })
+        await fs.rmTree(cwd)
       }
     }
     if (!attached) {
-      rmSync(cwd, { recursive: true, force: true })
+      await fs.rmTree(cwd)
       await this.runnerFor(agent.id, root.path).withEnv(workspaceGitLocalEnv()).raw(['worktree', 'prune'])
       // prepareWorkspace's pull is best-effort (and may be disabled), but this
       // checkout runs in the daemon process. Unsafe executable config must gate
@@ -1481,25 +1568,24 @@ export class WorkspaceManager {
     return cwd
   }
 
-  clusterWorkspaceCwd(
-    agent: Agent,
-    runtimeRoot: string | undefined,
-    request?: Pick<PrepareSessionWorkspaceRequest, 'isolation'>
-  ): string {
-    this.refuseSessionIsolationInCluster(agent, request)
-    const checkout = this.clusterWorkspaceCheckout(agent, runtimeRoot)
-    if (agent.workspace.mode === 'from-scratch') return checkout
+  clusterWorkspaceCwd(agent: Agent, runtimeRoot: string | undefined, request?: ClusterSessionScope): string {
+    const root = this.clusterSessionRootAt(agent, runtimeRoot, request)
+    if (agent.workspace.mode === 'from-scratch') return root
     // The configured working subdirectory is applied LEXICALLY here: validating it means resolving
     // symlinks and stat-ing, which only means something in the filesystem that holds it — so the shim
     // does that when it refuses a cwd outside its own root.
     const agentDir = normalizeRepoSubdir(agent.workspace.agentDir)
-    return agentDir === undefined ? checkout : join(checkout, ...agentDir.split('/'))
+    return agentDir === undefined ? root : join(root, ...agentDir.split('/'))
   }
 
-  refuseSessionIsolationInCluster(agent: Agent, request?: Pick<PrepareSessionWorkspaceRequest, 'isolation'>): void {
-    if (request?.isolation === 'session') {
-      throw new Error(`session-isolated workspaces are not supported with --k8s yet (agent "${agent.id}")`)
+  /** The checkout root a cluster session stands in: its own worktree beside the checkout when the
+   *  session is isolated, the checkout itself when every session shares it. */
+  private clusterSessionRootAt(agent: Agent, runtimeRoot: string | undefined, request?: ClusterSessionScope): string {
+    const mount = runtimeRoot ?? DEFAULT_SHIM_WORKSPACE_ROOT
+    if (agent.workspace.mode !== 'git-repo' || request?.isolation !== 'session' || request.sessionKey === undefined) {
+      return this.clusterWorkspaceCheckout(agent, mount)
     }
+    return join(this.worktreesPathAt(agent, mount), this.sessionWorktreeId(request.sessionKey))
   }
 
   clusterWorkspaceCheckout(agent: Agent, runtimeRoot: string | undefined): string {
@@ -1511,19 +1597,17 @@ export class WorkspaceManager {
     agent: Agent,
     local: string | undefined,
     runtimeRoot: string | undefined,
-    request?: Pick<PrepareSessionWorkspaceRequest, 'isolation'>
+    request?: ClusterSessionScope
   ): string | undefined {
     if (local === undefined || !this.sandboxMode) return local
-    this.refuseSessionIsolationInCluster(agent, request)
-    return this.clusterWorkspaceCheckout(agent, runtimeRoot)
+    return this.clusterSessionRootAt(agent, runtimeRoot, request)
   }
 
   async prepareClusterWorkspace(
     agent: Agent,
     runtimeRoot: string | undefined,
-    request?: Pick<PrepareSessionWorkspaceRequest, 'isolation'>
+    request?: PrepareSessionWorkspaceRequest
   ): Promise<string> {
-    const acpCwd = this.clusterWorkspaceCwd(agent, runtimeRoot, request)
     const root = runtimeRoot ?? DEFAULT_SHIM_WORKSPACE_ROOT
     const checkout = join(root, SANDBOX_CHECKOUT_DIR)
     const targetMarker = this.materializationKey(agent)
@@ -1548,7 +1632,7 @@ export class WorkspaceManager {
       // Provable by construction: the checkout is gone, so the volume holds exactly the scratch
       // workspace the configuration asks for. Recording it is what ends the conversion.
       if (conversionDue) this.recordMaterializationBestEffort(agent)
-      return acpCwd
+      return await this.prepareClusterSessionCwd(agent, root, request)
     }
     // Validated at the execution boundary, exactly as the local path does: a hand-edited agent.json
     // must not turn daemon-managed git into a local-path or remote-helper launcher.
@@ -1618,15 +1702,42 @@ export class WorkspaceManager {
       const head = await this.clusterCheckoutBranch(agent.id, checkout)
       volumeMatchesConfig = head === agent.workspace.gitBranch && (repositoryAttested || pulled)
     }
-    if (!volumeMatchesConfig) {
+    if (volumeMatchesConfig) {
+      this.recordMaterializationBestEffort(agent)
+    } else {
       workspaceLog.warn(
         `workspace: the volume for agent "${agent.id}" does not provably hold ${repository} @ ` +
           `${agent.workspace.gitBranch} — leaving its materialization marker unchanged`
       )
-      return acpCwd
     }
-    this.recordMaterializationBestEffort(agent)
-    return acpCwd
+    return await this.prepareClusterSessionCwd(agent, root, request)
+  }
+
+  /**
+   * The pod cwd one session stands in, once its checkout is ready.
+   *
+   * The same three shapes the local path has, against the same portable code: a shared session gets
+   * the checkout, an isolated one its own `<mount>/worktrees/<sid>` (which is also what gives a pool
+   * agent an exact same-repository review checkout), and a review with no local checkout to trust
+   * gets an empty daemon-owned directory beside them.
+   */
+  private async prepareClusterSessionCwd(
+    agent: Agent,
+    mount: string,
+    request?: PrepareSessionWorkspaceRequest
+  ): Promise<string> {
+    if (request?.githubReviewRevisionOnly) {
+      if (agent.workspace.mode !== 'git-repo' || request.isolation !== 'session' || request.review) {
+        throw new Error('github revision-only workspace requires an isolated git-repo review session')
+      }
+      const id = this.sessionWorktreeId(request.sessionKey)
+      return await this.prepareGithubRevisionOnlyWorkspace(agent, id, this.worktreesPathAt(agent, mount))
+    }
+    // A from-scratch workspace keeps the mount: isolation has no clone to branch off, as locally.
+    if (request?.isolation === 'session' && agent.workspace.mode === 'git-repo') {
+      await this.prepareRootSessionWorktree(agent, this.primaryRootAt(agent, mount), request)
+    }
+    return this.clusterWorkspaceCwd(agent, mount, request)
   }
 
   recordMaterializationBestEffort(agent: Agent): void {
@@ -1984,6 +2095,12 @@ export class WorkspaceManager {
   }
 }
 
+/** Whether `path` sits outside `root`, on paths both already expressed in the same coordinates. */
+function escapesRoot(root: string, path: string): boolean {
+  const rel = relative(root, path)
+  return isAbsolute(rel) || rel === '..' || rel.startsWith(`..${sep}`)
+}
+
 /** The identity two `owner/repo` names are compared by: case-insensitive and blind to a `.git` suffix. */
 function repoKey(repoFullName: string): string {
   return repoFullName
@@ -2037,6 +2154,15 @@ class UntrustedGithubWorkspaceOriginError extends Error {
 // Resolves where one agent's git runs. Per-agent because a cluster workspace's runner is bound to
 // that agent's own sandbox channel; undefined means local, so self-hosting needs no registration.
 export type WorkspaceGitRunnerResolver = (agentId: string, cwd?: string, abort?: AbortSignal) => GitRunner | undefined
+
+/**
+ * Resolves WHERE one agent's workspace files are — the filesystem twin of the runner resolver above.
+ *
+ * Per agent for the same reason, and it answers with the mount as well as the filesystem because the
+ * two are one fact: a manager that knew which filesystem to ask but not which coordinates to ask in
+ * would compose this daemon's paths and send them to a pod that has none of them.
+ */
+export type WorkspaceFsResolver = (agentId: string) => WorkspacePlacement | undefined
 
 // Every git operation here routes through this: a direct gitFor still passes locally and then runs
 // a cluster agent's git on the wrong filesystem.
@@ -2210,10 +2336,6 @@ export type SessionWorktreeRemoval = (
  * can see. The root comes from the bound shim's hello; a legacy shim that reported none
  * gets the one mount layout such images ever had.
  */
-
-/** A logical-session worktree needs a daemon-owned parent beside the checkout, `worktree add` in the
- *  sandbox, and a retention GC that reads the pod's tree — a separate migration, and a clear error
- *  beats a mystery one from git inside the sandbox. */
 
 /** Where a CLUSTER agent's tree ROOT is in the pod's coordinates: the mounted volume for a
  *  from-scratch workspace, and the checkout one level down (away from the runtime's HOME) for a

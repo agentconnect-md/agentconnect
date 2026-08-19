@@ -12,6 +12,7 @@ import {
   sandboxGitCredentialTarget
 } from '../src/workspace/git-injection.js'
 import { SANDBOX_CHECKOUT_DIR } from '../src/shim/sandbox-paths.js'
+import { PodWorkspaceFs } from './fixtures/pod-workspace-fs.js'
 import type { GitRunner } from '../src/workspace/git-runner.js'
 import type { Agent } from '../src/agents/agent-schema.js'
 
@@ -30,6 +31,7 @@ import type { Agent } from '../src/agents/agent-schema.js'
 
 const POD_ROOT = '/agent'
 const CHECKOUT = `${POD_ROOT}/${SANDBOX_CHECKOUT_DIR}`
+const WORKTREES = `${POD_ROOT}/worktrees`
 
 interface Invocation {
   cwd: string | undefined
@@ -53,6 +55,23 @@ let clearFails = false
 /** The repo-local helper pin failing AFTER a successful clone — it runs outside the clone's own
  *  cleanup, so the checkout survives while nothing has proved it. */
 let helperWriteFails = false
+/** The pod's volume as this daemon can see it: only through the workspace-fs seam. */
+let pod = new PodWorkspaceFs(POD_ROOT)
+/** What `rev-parse --verify <ref>^{commit}` answers, so a review can be verified without a real git. */
+let revs: Record<string, string> = {}
+/** `rev-list --count` — anything but '0' is work the worktree GC must refuse to discard. */
+let uniqueCommits = '0'
+/** `status --porcelain` in a worktree; non-empty is a dirty tree. */
+let worktreeStatus = ''
+/** GitHub's merge ref is optional, and a conflicted PR simply has none. */
+let mergeRefAvailable = false
+/** What HEAD resolves to in whichever worktree is being asked; `worktree add` and `reset` move it. */
+let headRev: string | undefined
+
+/** A ref name as a commit id, the way `worktree add`/`reset` move HEAD onto their start point. */
+function resolve(ref: string): string {
+  return revs[ref] ?? ref
+}
 
 function recordingRunner(cwd: string | undefined, env: Record<string, string> = {}): GitRunner {
   const run = async (args: string[]): Promise<string> => {
@@ -64,6 +83,36 @@ function recordingRunner(cwd: string | undefined, env: Record<string, string> = 
     if (args[0] === 'config' && args.includes('--add') && helperWriteFails) throw new Error('helper pin refused')
     if (args[0] === 'remote' && args[1] === 'get-url') return originUrl
     if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') return headBranch
+    if (args[0] === 'rev-parse' && args[1] === '--verify') {
+      const ref = args[2]!.replace(/\^\{commit\}$/, '')
+      const sha = ref === 'HEAD' ? headRev : revs[ref]
+      if (sha === undefined) throw new Error(`unknown revision ${ref}`)
+      return sha
+    }
+    // No branch of that name yet, so the first drawn one is the one `worktree add` gets.
+    if (args[0] === 'show-ref') throw new Error('no such ref')
+    // `worktree add` is what CREATES the directory on the volume, so the fake pod learns about it here.
+    if (args[0] === 'worktree' && args[1] === 'add') {
+      const target = args.at(-2)!
+      void pod.mkdir(target)
+      void pod.writeFile(`${target}/.git`, 'gitdir: ...')
+      headRev = resolve(args.at(-1)!)
+      return ''
+    }
+    if (args[0] === 'worktree' && args[1] === 'remove') {
+      void pod.rmTree(args[2]!)
+      return ''
+    }
+    if (args[0] === 'reset' && args[1] === '--hard') {
+      headRev = resolve(args[2]!)
+      return ''
+    }
+    if (args[0] === 'fetch' && args.some((arg) => arg.includes('/merge:')) && !mergeRefAvailable) {
+      throw new Error('no merge ref for a conflicted pull request')
+    }
+    if (args[0] === 'status') return worktreeStatus
+    if (args[0] === 'rev-list' && args.includes('--count')) return uniqueCommits
+    if (args[0] === 'symbolic-ref') return 'dev/alice/quiet-harbor'
     return ''
   }
   const runner: GitRunner = {
@@ -122,8 +171,15 @@ beforeEach(() => {
   pullFails = false
   clearFails = false
   helperWriteFails = false
-  // Every agent here runs in a pod, so both seams resolve to the sandbox.
+  pod = new PodWorkspaceFs(POD_ROOT)
+  revs = {}
+  uniqueCommits = '0'
+  worktreeStatus = ''
+  mergeRefAvailable = false
+  headRev = undefined
+  // Every agent here runs in a pod, so all three seams resolve to the sandbox.
   workspaces.setGitRunnerResolver((_agentId, cwd) => recordingRunner(cwd))
+  workspaces.setFsResolver(() => ({ fs: pod, mount: POD_ROOT }))
   workspaces.setPathClearer(async (_agentId, root) => {
     cleared.push(root)
     // Emptying the checkout is precisely what makes the pod's probe stop finding one.
@@ -144,6 +200,7 @@ beforeEach(() => {
 
 afterEach(() => {
   workspaces.setGitRunnerResolver(undefined)
+  workspaces.setFsResolver(undefined)
   workspaces.setPathClearer(undefined)
   workspaces.setSandboxMode(false)
 })
@@ -176,12 +233,19 @@ describe('clusterWorkspaceCwd', () => {
     expect(workspaces.additionalWorkspaceDirectories(clusterAgent(), CHECKOUT)).toEqual([])
   })
 
-  it('still refuses session isolation rather than half-supporting it', () => {
-    // A logical-session worktree needs a daemon-owned parent, `worktree add` in the sandbox, and a
-    // retention GC that reads the pod's tree — none of which this change provides.
-    expect(() => workspaces.clusterWorkspaceCwd(clusterAgent(), POD_ROOT, { isolation: 'session' })).toThrow(
-      /session-isolated workspaces are not supported/
-    )
+  it('puts a session-isolated cwd in the worktree that session owns, beside the checkout', () => {
+    const id = workspaces.sessionWorktreeId('sess-1')
+    expect(
+      workspaces.clusterWorkspaceCwd(clusterAgent(), POD_ROOT, { isolation: 'session', sessionKey: 'sess-1' })
+    ).toBe(`${WORKTREES}/${id}`)
+    // And the configured working subdirectory still applies, one level inside THAT worktree.
+    const agent = clusterAgent({ agentDir: 'services/api' })
+    const scope = { isolation: 'session' as const, sessionKey: 'sess-1' }
+    const cwd = workspaces.clusterWorkspaceCwd(agent, POD_ROOT, scope)
+    expect(cwd).toBe(`${WORKTREES}/${id}/services/api`)
+    // The repository root handed alongside it is the WORKTREE, not the shared checkout — widened
+    // lexically, because the path exists on no filesystem this daemon could resolve it against.
+    expect(workspaces.additionalWorkspaceDirectories(agent, cwd, scope)).toEqual([`${WORKTREES}/${id}`])
   })
 })
 
@@ -575,5 +639,175 @@ describe('replacing a cluster workspace in place', () => {
       workspaces.prepareWorkspaceForActivation(clusterAgent({ mode: 'from-scratch', path }))
     ).resolves.toBeTypeOf('function')
     rmSync(dirname(path), { recursive: true, force: true })
+  })
+})
+
+/**
+ * Session isolation on a pool member, which `--k8s` refused outright until the workspace-fs seam
+ * existed. Everything here is the SAME code the self-hosted path runs — the only difference is which
+ * filesystem answers `stat`/`mkdir`/`rmTree` and which coordinates the paths are composed in.
+ */
+describe('per-session worktrees on the pod volume', () => {
+  const SESSION = { sessionKey: 'sess-1', isolation: 'session' as const, initiatedBy: 'alice' }
+
+  function worktreeOf(key: string): string {
+    return `${WORKTREES}/${workspaces.sessionWorktreeId(key)}`
+  }
+
+  it('creates the worktree beside the checkout, through `worktree add` in the pod', async () => {
+    const cwd = await workspaces.prepareClusterWorkspace(clusterAgent(), POD_ROOT, SESSION)
+    expect(cwd).toBe(worktreeOf('sess-1'))
+
+    // The parent is the pod's, created through the seam rather than with a daemon-side mkdir.
+    expect(await pod.stat(WORKTREES)).toBe('dir')
+    const add = calls.find((call) => call.args[0] === 'worktree' && call.args[1] === 'add')
+    // Run from the CHECKOUT (the object store the worktree hangs off), targeting the pod path.
+    expect(add).toMatchObject({ cwd: CHECKOUT })
+    expect(add!.args).toContain(worktreeOf('sess-1'))
+    expect(add!.args).toContain('refs/remotes/origin/main')
+    // Nothing about it names the daemon's own bookkeeping directory.
+    expect(JSON.stringify(add!.args)).not.toContain('/daemon/agents')
+    // And nothing was created on this daemon's disk — no `node:fs` ran on either path.
+    expect(existsSync(WORKTREES)).toBe(false)
+    expect(existsSync('/daemon/agents/agent-cluster/worktrees')).toBe(false)
+  })
+
+  it('reuses an attached worktree on the next turn instead of adding a second one', async () => {
+    await workspaces.prepareClusterWorkspace(clusterAgent(), POD_ROOT, SESSION)
+    checkoutExists = true
+    calls.length = 0
+
+    const cwd = await workspaces.prepareClusterWorkspace(clusterAgent(), POD_ROOT, SESSION)
+    expect(cwd).toBe(worktreeOf('sess-1'))
+    expect(calls.some((call) => call.args[0] === 'worktree' && call.args[1] === 'add')).toBe(false)
+    // And it was reused because the POD said the `.git` marker is there, not this daemon's disk.
+    expect(pod.files.has(`${worktreeOf('sess-1')}/.git`)).toBe(true)
+  })
+
+  it('gives a second session its own worktree', async () => {
+    await workspaces.prepareClusterWorkspace(clusterAgent(), POD_ROOT, SESSION)
+    checkoutExists = true
+    const other = await workspaces.prepareClusterWorkspace(clusterAgent(), POD_ROOT, {
+      ...SESSION,
+      sessionKey: 'sess-2'
+    })
+    expect(other).toBe(worktreeOf('sess-2'))
+    expect(other).not.toBe(worktreeOf('sess-1'))
+  })
+
+  it('fetches the reviewed refs and checks the exact head out, which pool agents never had', async () => {
+    const base = 'a'.repeat(40)
+    const head = 'b'.repeat(40)
+    const id = workspaces.sessionWorktreeId('sess-1')
+    revs[`refs/agentconnect/reviews/${id}/base`] = base
+    revs[`refs/agentconnect/reviews/${id}/head`] = head
+
+    const cwd = await workspaces.prepareClusterWorkspace(clusterAgent(), POD_ROOT, {
+      ...SESSION,
+      review: { pullNumber: 7, baseSha: base, headSha: head }
+    })
+    expect(cwd).toBe(worktreeOf('sess-1'))
+
+    const fetch = calls.find((call) => call.args[0] === 'fetch')
+    expect(fetch).toMatchObject({ cwd: CHECKOUT })
+    expect(fetch!.args).toContain(`+refs/pull/7/head:refs/agentconnect/reviews/${id}/head`)
+    // The exact head is the start point, and HEAD is re-verified against it after the checkout.
+    expect(calls.find((call) => call.args[0] === 'worktree' && call.args[1] === 'add')!.args.at(-1)).toBe(head)
+  })
+
+  it('refuses a review worktree whose head ref is not the verified revision', async () => {
+    const base = 'a'.repeat(40)
+    const head = 'b'.repeat(40)
+    const id = workspaces.sessionWorktreeId('sess-1')
+    revs[`refs/agentconnect/reviews/${id}/base`] = base
+    // The head ref resolving elsewhere is exactly the case the verification exists for.
+    revs[`refs/agentconnect/reviews/${id}/head`] = 'c'.repeat(40)
+    await expect(
+      workspaces.prepareClusterWorkspace(clusterAgent(), POD_ROOT, {
+        ...SESSION,
+        review: { pullNumber: 7, baseSha: base, headSha: head }
+      })
+    ).rejects.toThrow(/did not resolve to the requested SHA/)
+  })
+
+  it('hands a revision-only review an empty pod directory, with no checkout to trust', async () => {
+    const cwd = await workspaces.prepareClusterWorkspace(clusterAgent(), POD_ROOT, {
+      ...SESSION,
+      githubReviewRevisionOnly: true
+    })
+    expect(cwd).toBe(worktreeOf('sess-1'))
+    // Staged then published by a rename, on the volume — and empty, so no `worktree add` ran.
+    expect(await pod.stat(cwd)).toBe('dir')
+    expect(await pod.readdir(cwd)).toEqual([])
+    expect(calls.some((call) => call.args[0] === 'worktree' && call.args[1] === 'add')).toBe(false)
+  })
+
+  it('removes the worktree through the seam, in the pod coordinates it was created in', async () => {
+    await workspaces.prepareClusterWorkspace(clusterAgent(), POD_ROOT, SESSION)
+    checkoutExists = true
+    calls.length = 0
+
+    expect(await workspaces.removeSessionWorktree(clusterAgent(), 'sess-1')).toEqual({ outcome: 'removed' })
+    const flat = calls.map((call) => call.args.join(' '))
+    expect(flat).toContain(`worktree remove ${worktreeOf('sess-1')}`)
+    expect(flat).toContain('worktree prune')
+    expect(await pod.stat(worktreeOf('sess-1'))).toBe('missing')
+  })
+
+  it('keeps a dirty worktree, judged by the POD and not by an empty directory on this disk', async () => {
+    await workspaces.prepareClusterWorkspace(clusterAgent(), POD_ROOT, SESSION)
+    checkoutExists = true
+    worktreeStatus = ' M a.txt\n'
+
+    expect(await workspaces.removeSessionWorktree(clusterAgent(), 'sess-1')).toEqual({
+      outcome: 'retained',
+      reason: 'dirty'
+    })
+    expect(await pod.stat(worktreeOf('sess-1'))).toBe('dir')
+  })
+
+  it('keeps a leftover the runtime refilled, instead of deleting it recursively', async () => {
+    // The `.git` marker is gone, so this is the reclaim-a-provably-empty-leftover branch. On the pod
+    // the runtime is still writing to the volume, so emptiness cannot be proved in one round trip and
+    // acted on in another — the removal itself has to refuse a directory that is no longer empty.
+    await workspaces.prepareClusterWorkspace(clusterAgent(), POD_ROOT, SESSION)
+    checkoutExists = true
+    const cwd = worktreeOf('sess-1')
+    pod.files.delete(`${cwd}/.git`)
+    pod.files.set(`${cwd}/work.txt`, 'untracked work')
+
+    expect(await workspaces.removeSessionWorktree(clusterAgent(), 'sess-1')).toEqual({
+      outcome: 'retained',
+      reason: 'dirty'
+    })
+    expect(await pod.stat(`${cwd}/work.txt`)).toBe('file')
+  })
+
+  it('keeps a worktree holding commits no remote can reach', async () => {
+    await workspaces.prepareClusterWorkspace(clusterAgent(), POD_ROOT, SESSION)
+    checkoutExists = true
+    uniqueCommits = '2'
+
+    expect(await workspaces.removeSessionWorktree(clusterAgent(), 'sess-1')).toEqual({
+      outcome: 'retained',
+      reason: 'unique-commits'
+    })
+  })
+
+  it('refuses a worktrees parent the pod does not report as a directory', async () => {
+    // On the pod the fd-anchored descent is the containment; the daemon still refuses what it sees.
+    pod.links.add(WORKTREES)
+    await expect(workspaces.prepareClusterWorkspace(clusterAgent(), POD_ROOT, SESSION)).rejects.toThrow(
+      /must not be a symlink/
+    )
+  })
+
+  it('leaves a shared session on the checkout, with no worktree at all', async () => {
+    const cwd = await workspaces.prepareClusterWorkspace(clusterAgent(), POD_ROOT, {
+      sessionKey: 'sess-1',
+      isolation: 'shared'
+    })
+    expect(cwd).toBe(CHECKOUT)
+    expect(await pod.stat(WORKTREES)).toBe('missing')
   })
 })

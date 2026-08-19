@@ -1065,8 +1065,20 @@ describe('workspaces.clusterWorkspaceCwd(--k8s pod coordinates)', () => {
     expect(workspaces.clusterWorkspaceCwd(agent, '/agent')).not.toContain('/var/lib/agentconnect')
   })
 
-  it('refuses session isolation, whose worktrees still assume the daemon filesystem', () => {
+  it('puts a session-isolated cwd in its own worktree beside the checkout', () => {
+    // The worktrees parent is the pod's, not the agent directory's: the daemon composes it in the
+    // coordinates the runtime and the shim both read.
+    const agent = gitRepoAgent('/var/lib/agentconnect/agents/bot-git/workspace')
+    const id = workspaces.sessionWorktreeId('sess-1')
+    expect(workspaces.clusterWorkspaceCwd(agent, '/agent', { isolation: 'session', sessionKey: 'sess-1' })).toBe(
+      `/agent/worktrees/${id}`
+    )
+  })
+
+  it('keeps a from-scratch workspace on the mount, which has no clone to branch a worktree off', () => {
     const agent = fromScratchAgent('/var/lib/agentconnect/agents/bot-a/workspace')
-    expect(() => workspaces.clusterWorkspaceCwd(agent, '/agent', { isolation: 'session' })).toThrow(/session-isolated/)
+    expect(workspaces.clusterWorkspaceCwd(agent, '/agent', { isolation: 'session', sessionKey: 'sess-1' })).toBe(
+      '/agent'
+    )
   })
 })

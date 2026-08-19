@@ -10,7 +10,9 @@ import { ChannelLossWatcher } from './channel-loss-watcher.js'
 import { TunnelBinder } from './tunnel-binder.js'
 import { ShimWorkspaceFiles } from '../shim/workspace-files-channel.js'
 import { ShimMemoryFs } from '../shim/memory-fs-channel.js'
+import { ShimWorkspaceFs } from '../shim/workspace-fs-channel.js'
 import type { WorkspaceFiles } from '../workspace/workspace-files.js'
+import type { WorkspacePlacement } from '../workspace/workspace-fs.js'
 import type { MemoryFs } from '../memory/fs.js'
 import { DEFAULT_SHIM_LISTEN_PORT, DEFAULT_SHIM_WORKSPACE_ROOT } from '../shim/protocol.js'
 import type { TunnelName } from '../shim/tunnel.js'
@@ -125,6 +127,10 @@ export interface K8sRuntimePlane {
    *  git runner because they are separate capabilities (`read` vs `exec`) and a channel is not a
    *  blanket permission — not because the two ever disagree about which filesystem to use. */
   workspaceFilesFor: (agentId: string) => WorkspaceFiles | undefined
+  /** Where the agent's WORKSPACE files live and which coordinates they are addressed in — the
+   *  filesystem twin of `gitRunnerFor`, answering on the same condition. Undefined keeps the caller
+   *  on this daemon's own disk, which is what a self-hosted agent beside a cluster one needs. */
+  workspaceFsFor: (agentId: string) => WorkspacePlacement | undefined
   /** The agent's managed memory tree on that same volume, on the same condition: one root beside
    *  the checkout (`<mount>/.agentconnect/memory`), so it follows the agent across members and
    *  survives a rollout, and is reachable exactly when the sandbox is. */
@@ -291,6 +297,11 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
     workspaceFilesFor: (agentId) => {
       if (!runsInSandbox(agentId)) return undefined
       return new ShimWorkspaceFiles(driver.sessionFor(agentId)!)
+    },
+    workspaceFsFor: (agentId) => {
+      if (!runsInSandbox(agentId)) return undefined
+      const mount = driver.workspaceRootFor(agentId) ?? DEFAULT_SHIM_WORKSPACE_ROOT
+      return { fs: new ShimWorkspaceFs(driver.sessionFor(agentId)!, mount), mount }
     },
     memoryFsFor: (agentId) => {
       if (!runsInSandbox(agentId)) return undefined

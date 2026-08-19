@@ -66,6 +66,14 @@ export function pathExecutor(): MemoryFsExecutor {
       const st = await fsp.stat(target)
       return { size: st.size, mtime: st.mtime.toISOString() }
     },
+    async stat(root, rel) {
+      try {
+        const st = await fsp.lstat(abs(root, rel))
+        return st.isDirectory() ? 'dir' : st.isFile() ? 'file' : 'other'
+      } catch {
+        return 'missing'
+      }
+    },
     async readdir(root, rel) {
       let dirents
       try {
@@ -83,6 +91,17 @@ export function pathExecutor(): MemoryFsExecutor {
     },
     async mkdir(root, rel) {
       await fsp.mkdir(abs(root, rel), { recursive: true })
+    },
+    async rmdir(root, rel) {
+      try {
+        await fsp.rmdir(abs(root, rel))
+        return true
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code
+        if (code === 'ENOENT') return true
+        if (code === 'ENOTEMPTY' || code === 'EEXIST' || code === 'ENOTDIR') return false
+        throw err
+      }
     },
     async rename(root, from, to) {
       try {
