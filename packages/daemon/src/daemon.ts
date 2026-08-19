@@ -153,7 +153,8 @@ import { ChannelNameResolver } from './messages/channel-name-resolver.js'
 import {
   WorkspaceManager,
   type PrepareSessionWorkspaceRequest,
-  type RetiredRootRemoval
+  type RetiredRootRemoval,
+  type SessionWorktreeRemoval
 } from './workspace/workspace-manager.js'
 import { ManagedSkillCache } from './skills/managed-skill-cache.js'
 import {
@@ -1521,6 +1522,8 @@ export class Daemon {
       // resolver answers undefined for any without a bound channel, so an agent this daemon has
       // not launched into a sandbox keeps its local behaviour.
       this.workspaces.setGitRunnerResolver((agentId, cwd, abort) => this.k8sPlane?.gitRunnerFor(agentId, cwd, abort))
+      // And its filesystem twin, so the worktree paths ask the POD and compose the POD's coordinates.
+      this.workspaces.setFsResolver((agentId) => this.k8sPlane?.workspaceFsFor(agentId))
       // And the one destructive operation a cluster workspace needs, for the same reason: a
       // partial clone sits on a volume no `rmSync` here can reach.
       this.workspaces.setPathClearer((agentId, root) => this.k8sPlane!.clearPath(agentId, root))
@@ -2739,16 +2742,12 @@ export class Daemon {
     // git-repo checkouts for cluster agents arrive with the materialize/runner phases.
     if (this.k8sPlane) {
       const plane = this.k8sPlane
-      // One Sandbox lease around the WHOLE preparation, not just the bind: everything below runs
-      // in the pod, so a rollout's drain request landing mid-clone would otherwise suspend the pod
-      // underneath a turn this daemon already admitted.
-      return await plane.withSandbox(agent.id, async () => {
-        await plane.ensureChannel(agent.id)
-        // The pod's own preparation: clone and pull happen on its volume through the runner, and
-        // none of the local work below runs — its mkdir, `existsSync(.git)` and skills installation
-        // all land on this daemon's disk, describing a filesystem the runtime never reads.
-        return await this.workspaces.prepareClusterWorkspace(agent, plane.workspaceRootFor(agent.id), request)
-      })
+      // The pod's own preparation: clone and pull happen on its volume through the runner, and
+      // none of the local work below runs — its mkdir, `existsSync(.git)` and skills installation
+      // all land on this daemon's disk, describing a filesystem the runtime never reads.
+      return await this.withAgentVolume(agent.id, () =>
+        this.workspaces.prepareClusterWorkspace(agent, plane.workspaceRootFor(agent.id), request)
+      )
     }
     if (!this.opts.hostFactory) assertExclusiveAgentWorkspaces([agent as LoadedAgent])
     const opts = {
@@ -2759,6 +2758,23 @@ export class Daemon {
     return request
       ? this.workspaces.prepareSessionWorkspace(agent, request, opts)
       : this.workspaces.prepareWorkspace(agent, opts)
+  }
+
+  /**
+   * Run `work` with the agent's workspace volume reachable, whatever holds it.
+   *
+   * On a cluster that is one Sandbox lease around the WHOLE operation, not just the bind: everything
+   * inside runs in the pod, so a rollout's drain request landing mid-clone — or an idle sweep landing
+   * mid-removal — would otherwise suspend the pod underneath work this daemon already admitted, and a
+   * suspended pod serves neither exec nor fs. Locally there is nothing to hold.
+   */
+  private async withAgentVolume<T>(agentId: string, work: () => Promise<T>): Promise<T> {
+    const plane = this.k8sPlane
+    if (!plane) return await work()
+    return await plane.withSandbox(agentId, async () => {
+      await plane.ensureChannel(agentId)
+      return await work()
+    })
   }
 
   private runAgentWorkspacePrefetch(agent: Agent): Promise<void> {
@@ -12476,7 +12492,11 @@ export class Daemon {
       ) {
         return { outcome: 'not_applicable' }
       }
-      const result = await this.workspaces.removeSessionWorktree(currentAgent, rec.key)
+      // The volume has to be up and bound for the removal, as it was for the preparation. A pod that
+      // will not come up is THIS session's failure, never the whole sweep's — it retries next pass.
+      const result = await this.withAgentVolume(rec.agentId, () =>
+        this.workspaces.removeSessionWorktree(currentAgent, rec.key)
+      ).catch((err: unknown): SessionWorktreeRemoval => ({ outcome: 'failed', error: (err as Error).message }))
       // `partial` too: a kept aggregate can still have removed another root's worktree, and a warm
       // attachment naming a directory that is gone would skip preparation on its next turn.
       const changed = result.outcome === 'removed' || result.outcome === 'absent' || result.partial === true
@@ -14983,6 +15003,7 @@ export class Daemon {
     await this.readiness?.stop().catch(() => undefined)
     this.readiness = undefined
     this.workspaces.setGitRunnerResolver(undefined)
+    this.workspaces.setFsResolver(undefined)
     this.workspaces.setPathClearer(undefined)
     this.workspaces.setSandboxMode(false)
     await Promise.allSettled(hostStarts)

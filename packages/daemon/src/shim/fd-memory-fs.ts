@@ -174,6 +174,23 @@ export function createFdMemoryFsExecutor(anchor: string): MemoryFsExecutor {
       })
     },
 
+    async stat(root, rel) {
+      // The root itself has no leaf to lstat, so it is answered by whether the descent reaches it.
+      if (memoryRelSegments(rel).length === 0) {
+        return await withDir(root, rel, false, async () => 'dir' as const).catch((err: unknown) => {
+          if (err instanceof MissingPathError) return 'missing' as const
+          throw err
+        })
+      }
+      return await withParent(root, rel, false, async (parent, leaf) => {
+        const st = await parent.lstatChild(leaf)
+        return st.isDirectory() ? ('dir' as const) : st.isFile() ? ('file' as const) : ('other' as const)
+      }).catch((err: unknown) => {
+        if (err instanceof MissingPathError) return 'missing' as const
+        throw err
+      })
+    },
+
     async readdir(root, rel) {
       return await withDir(root, rel, false, async (dir) => {
         const entries: MemoryFsEntry[] = []

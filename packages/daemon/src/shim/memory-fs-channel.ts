@@ -11,6 +11,10 @@
  *
  * The pod side (`fd-memory-fs.ts`) works from open descriptors like the workspace's; the daemon
  * side (`ShimMemoryFs`) is a pass-through that reassembles slices and chunks into the port's calls.
+ *
+ * The primitives are not memory's alone — `shim/workspace-fs-channel.ts` is a second caller, for the
+ * worktree tree on the same mount. The `memory-` op names are the wire contract a running pod already
+ * speaks and are left as they are; the prefix is that contract's history, not the channel's scope.
  */
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
@@ -27,6 +31,7 @@ import {
   type MemoryFsWriteOptions
 } from '../memory/fs.js'
 import { createFdMemoryFsExecutor } from './fd-memory-fs.js'
+import type { WorkspaceFsKind } from '../workspace/workspace-fs.js'
 import type { ShimRequester } from './channels.js'
 
 /** Absolute because it is a path in the POD's coordinates, and the shim's fence compares absolutes. */
@@ -58,6 +63,7 @@ export const MemoryFsPayloadSchema = z.discriminatedUnion('op', [
     temp: RelSchema,
     ifMatchMtime: z.string().optional()
   }),
+  z.object({ op: z.literal('memory-stat'), root: RootSchema, rel: RelSchema }),
   z.object({ op: z.literal('memory-readdir'), root: RootSchema, rel: RelSchema }),
   z.object({ op: z.literal('memory-mkdir'), root: RootSchema, rel: RelSchema }),
   z.object({ op: z.literal('memory-rename'), root: RootSchema, from: RelSchema, to: RelSchema }),
@@ -85,6 +91,7 @@ const ReadReplySchema = z.discriminatedUnion('exists', [
 export type MemoryFsReadReply = z.infer<typeof ReadReplySchema>
 
 const StatReplySchema = z.object({ size: z.number().int().nonnegative(), mtime: z.string() })
+export const KindReplySchema = z.enum(['file', 'dir', 'missing', 'other'])
 const EntriesReplySchema = z.array(
   z.object({
     name: z.string(),
@@ -109,6 +116,8 @@ export interface MemoryFsExecutor {
   read(root: string, rel: string, offset: number, limit: number, encoding: MemoryFsEncoding): Promise<MemoryFsReadReply>
   append(root: string, rel: string, content: Buffer, create: boolean, mode?: number): Promise<{ size: number }>
   commit(root: string, rel: string, temp: string, ifMatchMtime?: string): Promise<MemoryFsFileStat>
+  /** What one path IS, never following a symlink; `other` covers a link and every non-regular entry. */
+  stat(root: string, rel: string): Promise<WorkspaceFsKind>
   readdir(root: string, rel: string): Promise<MemoryFsEntry[]>
   mkdir(root: string, rel: string): Promise<void>
   rename(root: string, from: string, to: string): Promise<boolean>
@@ -152,6 +161,8 @@ function run(parsed: MemoryFsPayload, executor: MemoryFsExecutor): Promise<unkno
       )
     case 'memory-commit':
       return executor.commit(parsed.root, parsed.rel, parsed.temp, parsed.ifMatchMtime)
+    case 'memory-stat':
+      return executor.stat(parsed.root, parsed.rel)
     case 'memory-readdir':
       return executor.readdir(parsed.root, parsed.rel)
     case 'memory-mkdir':
@@ -172,6 +183,23 @@ const READ_RESTARTS = 3
 
 /** A bound shim channel that knows which agent it serves (a `ShimSession`). */
 export type ShimMemoryChannel = ShimRequester & { readonly agentId: string }
+
+/** One channel round trip, with the two typed refusals rebuilt as the SAME classes the local port
+ *  throws, so callers cannot tell the two trees apart. */
+export async function requestMemoryFs<T>(
+  channel: ShimMemoryChannel,
+  payload: MemoryFsPayload,
+  schema: z.ZodType<T>,
+  timeoutMs: number
+): Promise<T> {
+  const raw = await channel.request('read', payload, { timeoutMs })
+  const reply = MemoryFsReplySchema.parse(raw)
+  if (!reply.ok) {
+    if (reply.refusal.kind === 'conflict') throw new MemoryConflictError(reply.refusal.message)
+    throw new MemoryPathError(reply.refusal.message)
+  }
+  return schema.parse(reply.value)
+}
 
 /**
  * The daemon's side: the port over an agent's bound shim channel. Every containment check and every
@@ -194,15 +222,8 @@ export class ShimMemoryFs implements MemoryFs {
     return new ShimMemoryFs(this.channel, joinRel(this.root, rel), this.timeoutMs)
   }
 
-  private async run<T>(payload: MemoryFsPayload, schema: z.ZodType<T>): Promise<T> {
-    const raw = await this.channel.request('read', payload, { timeoutMs: this.timeoutMs })
-    const reply = MemoryFsReplySchema.parse(raw)
-    // Rebuilt as the SAME classes the local port throws, so callers cannot tell the two trees apart.
-    if (!reply.ok) {
-      if (reply.refusal.kind === 'conflict') throw new MemoryConflictError(reply.refusal.message)
-      throw new MemoryPathError(reply.refusal.message)
-    }
-    return schema.parse(reply.value)
+  private run<T>(payload: MemoryFsPayload, schema: z.ZodType<T>): Promise<T> {
+    return requestMemoryFs(this.channel, payload, schema, this.timeoutMs)
   }
 
   async readFile(rel: string, encoding: MemoryFsEncoding = 'utf8'): Promise<MemoryFsFile | null> {

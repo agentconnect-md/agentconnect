@@ -323,12 +323,16 @@ describe('consoleWorkspaceRoot', () => {
     expect(workspaces.consoleWorkspaceRoot(agentAt('/local/ws'), undefined, '/agent')).toBeUndefined()
   })
 
-  it('refuses a session-isolated worktree loudly rather than naming the shared checkout', () => {
+  it('names the per-session worktree on the volume, never the shared checkout', () => {
     workspaces.setSandboxMode(true)
-    expect(() =>
+    // The console addresses the repository the session stands in, and for an isolated session that
+    // is its own worktree — naming the shared checkout would answer about a different tree.
+    const id = workspaces.sessionWorktreeId('sess-1')
+    expect(
       workspaces.consoleWorkspaceRoot(agentAt('/local/ws'), '/local/ws/.sessions/abc', '/agent', {
-        isolation: 'session'
+        isolation: 'session',
+        sessionKey: 'sess-1'
       })
-    ).toThrow(/session-isolated/)
+    ).toBe(`/agent/worktrees/${id}`)
   })
 })

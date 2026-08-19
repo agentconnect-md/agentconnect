@@ -17,6 +17,7 @@ import { applyMemoryFsPayload, isMemoryFsPayload } from './memory-fs-channel.js'
  * which through `-c`, hooks and `--upload-pack` reaches arbitrary execution.
  */
 export const ALLOWED_GIT_SUBCOMMANDS = new Set([
+  'branch',
   'check-ref-format',
   'clean',
   'clone',
@@ -24,12 +25,15 @@ export const ALLOWED_GIT_SUBCOMMANDS = new Set([
   'diff',
   'fetch',
   'log',
+  'ls-remote',
   'pull',
   'remote',
   'reset',
   'rev-list',
   'rev-parse',
+  'show-ref',
   'status',
+  'symbolic-ref',
   'update-ref',
   'worktree'
 ])
@@ -241,10 +245,9 @@ async function runGit(payload: unknown, deps: ExecHandlerDeps, abort?: AbortSign
     }
   }
   const cwd = resolveCwd(deps.workspaceRoot, parsed.cwd)
-  // A clone WRITES to a path in argv, which the cwd fence above never looks at. The daemon sends a
-  // relative target for exactly that reason, so an absolute one is either a mistake or an attempt to
-  // write outside the workspace — and this side is the one holding the filesystem.
-  if (subcommand === 'clone') {
+  // Both WRITE a path from argv, which the cwd fence never looks at: a clone's target, and the
+  // directory `worktree add`/`remove` creates or deletes. Checked on the side holding the filesystem.
+  if (subcommand === 'clone' || subcommand === 'worktree') {
     for (const argument of rest) {
       if (argument.startsWith('-') || !isAbsolute(argument)) continue
       assertInsideRoot(deps.workspaceRoot, argument)

@@ -66,6 +66,14 @@ export function pathExecutor(): MemoryFsExecutor {
       const st = await fsp.stat(target)
       return { size: st.size, mtime: st.mtime.toISOString() }
     },
+    async stat(root, rel) {
+      try {
+        const st = await fsp.lstat(abs(root, rel))
+        return st.isDirectory() ? 'dir' : st.isFile() ? 'file' : 'other'
+      } catch {
+        return 'missing'
+      }
+    },
     async readdir(root, rel) {
       let dirents
       try {
