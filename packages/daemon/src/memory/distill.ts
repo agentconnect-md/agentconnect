@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto'
 import {
-  MEMORY_INDEX,
   listMemory,
   readMemoryFile,
   withMemoryDirLock,
+  regenerateMemoryIndexHoldingLock,
   writeMemoryFileHoldingLock,
   type MemoryFs
 } from './store.js'
@@ -116,7 +116,6 @@ export async function appendDistilledMemories(agentDir: MemoryFs, memories: Dist
   // batch makes capture atomic with respect to adoption.
   return withMemoryDirLock(agentDir, async () => {
     let added = 0
-    let index = await readMemoryFile(agentDir, MEMORY_INDEX)
     const known = new Set<string>()
     for (const file of await listMemory(agentDir)) {
       const text = await readMemoryFile(agentDir, file.name)
@@ -133,11 +132,11 @@ export async function appendDistilledMemories(agentDir: MemoryFs, memories: Dist
       await writeMemoryFileHoldingLock(agentDir, memory.topic, next, undefined, 'distill')
       known.add(digest(normalized))
       added++
-      if (!index.includes(`](${memory.topic})`)) {
-        index = `${index.trimEnd()}\n- [${memory.topic.replace(/\.md$/, '')}](${memory.topic})\n`
-        await writeMemoryFileHoldingLock(agentDir, MEMORY_INDEX, index, undefined, 'distill')
-      }
     }
+    // The index is generated from the topic files, so distillation no longer appends
+    // its own link lines: doing both left the generated index unsorted, and appending
+    // near the size cap threw partway through a batch and dropped the remaining facts.
+    if (added > 0) await regenerateMemoryIndexHoldingLock(agentDir, 'distill', { force: true })
     return added
   })
 }

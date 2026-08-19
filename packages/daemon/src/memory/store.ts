@@ -614,7 +614,11 @@ const GENERATED_INDEX_MARKER = "<!-- generated from each topic's `description` h
  * to generate from, and a legacy hand-written index is left untouched. The previous
  * index is recorded in `.history` by the caller's own write path, and here on replace.
  */
-export async function regenerateMemoryIndexHoldingLock(fs: MemoryFs, source: MemoryWriteSource): Promise<void> {
+export async function regenerateMemoryIndexHoldingLock(
+  fs: MemoryFs,
+  source: MemoryWriteSource,
+  opts: { force?: boolean } = {}
+): Promise<void> {
   const entries: { topic: string; name: string; description: string }[] = []
   for (const file of await listMemory(fs)) {
     if (file.name === MEMORY_INDEX) continue
@@ -632,7 +636,9 @@ export async function regenerateMemoryIndexHoldingLock(fs: MemoryFs, source: Mem
   // step forever — including when the last description is removed, which must clear
   // the stale line rather than freeze it in the injected index.
   const owned = current?.content.includes(GENERATED_INDEX_MARKER) === true
-  if (!owned && !entries.some((entry) => entry.description)) return
+  // `force` is for a caller that just added topics and would otherwise hand-maintain
+  // the index itself (distillation): adopt it now so there is exactly one writer.
+  if (!owned && !opts.force && !entries.some((entry) => entry.description)) return
 
   const heading = /^#[ \t]+.*$/m.exec(current?.content ?? '')?.[0] ?? '# Memory'
   const prefix = `${heading}\n\n${GENERATED_INDEX_MARKER}\n\n`

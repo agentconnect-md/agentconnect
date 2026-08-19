@@ -15,6 +15,7 @@ import {
   stampMemoryHeader
 } from '../src/memory/frontmatter.js'
 import { ensureMemory, MAX_MEMORY_FILE_BYTES, readMemoryFile, writeMemoryFile } from '../src/memory/store.js'
+import { appendDistilledMemories } from '../src/memory/distill.js'
 
 const fs = () => new LocalMemoryFs(mkdtempSync(join(tmpdir(), 'ac-fm-')))
 
@@ -174,5 +175,42 @@ describe('generated memory index', () => {
     await writeMemoryFile(f, 'deploys.md', '---\ndescription: d\n---\nport 4242\n', undefined, 'tool')
     expect(await readMemoryFile(f, '[[deploys]]')).toContain('port 4242')
     expect(await readMemoryFile(f, 'deploys')).toContain('port 4242')
+  })
+})
+
+describe('distillation and the generated index', () => {
+  it('indexes distilled topics through the generator — sorted, once, no hand-appended lines', async () => {
+    const f = fs()
+    await ensureMemory(f, 'bot')
+    // Distilled topics carry no description, so generation has to be forced by the
+    // distiller itself; otherwise a distill-only agent would never get an index.
+    expect(
+      await appendDistilledMemories(f, [
+        { topic: 'zeta.md', content: 'z fact' },
+        { topic: 'alpha.md', content: 'a fact' }
+      ])
+    ).toBe(2)
+
+    const index = await readMemoryFile(f, 'MEMORY.md')
+    expect(index).toContain('- [alpha](alpha.md)')
+    expect(index).toContain('- [zeta](zeta.md)')
+    expect(index.indexOf('alpha')).toBeLessThan(index.indexOf('zeta')) // sorted, not append-ordered
+    expect(index.match(/\(alpha\.md\)/g)).toHaveLength(1) // no duplicate hand-appended line
+  })
+
+  it('does not throw mid-batch when the index is already near the size cap', async () => {
+    const f = fs()
+    await ensureMemory(f, 'bot')
+    // Fill the index close to the bound; the legacy hand-append would exceed it and
+    // abort the batch, dropping every remaining extracted fact.
+    const description = 'x'.repeat(4_000)
+    for (let i = 0; i < 70; i++) {
+      await writeMemoryFile(f, `t-${i}.md`, `---\ndescription: ${description}\n---\nbody\n`, undefined, 'tool')
+    }
+    const batch = Array.from({ length: 12 }, (_, i) => ({ topic: `d-${i}.md`, content: `fact ${i}` }))
+    await expect(appendDistilledMemories(f, batch)).resolves.toBe(12)
+    // Every fact landed in its topic file even though the index had to be truncated.
+    expect(await readMemoryFile(f, 'd-11.md')).toContain('fact 11')
+    expect(Buffer.byteLength(await readMemoryFile(f, 'MEMORY.md'))).toBeLessThanOrEqual(MAX_MEMORY_FILE_BYTES)
   })
 })
