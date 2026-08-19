@@ -13,6 +13,7 @@
  * here; anything that is not under the mount is refused before it reaches the wire.
  */
 import { isAbsolute, relative, sep } from 'node:path'
+import { MemoryPathError } from '../memory/fs.js'
 import type { WorkspaceFs, WorkspaceFsKind } from '../workspace/workspace-fs.js'
 import { KindReplySchema, ShimMemoryFs, requestMemoryFs, type ShimMemoryChannel } from './memory-fs-channel.js'
 
@@ -52,9 +53,11 @@ export class ShimWorkspaceFs implements WorkspaceFs {
   async readFile(path: string): Promise<string | undefined> {
     try {
       return (await this.files.readFile(this.rel(path)))?.content
-    } catch {
-      // Unreadable reads as absent, matching the local seam — every caller reads a marker it may not find.
-      return undefined
+    } catch (err) {
+      // A refusal reads as absent, like the local seam's catch. A transport failure must NOT: "the
+      // channel dropped" is not evidence that the marker is missing, and a caller would act on it.
+      if (err instanceof MemoryPathError) return undefined
+      throw err
     }
   }
 

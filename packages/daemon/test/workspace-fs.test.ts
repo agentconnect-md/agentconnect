@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { LocalWorkspaceFs, type WorkspaceFs } from '../src/workspace/workspace-fs.js'
 import { ShimWorkspaceFs } from '../src/shim/workspace-fs-channel.js'
+import { ShimChannelLostError } from '../src/shim/channels.js'
 import { pathExecutor, shimRequester } from './fixtures/memory-fs-pod.js'
 
 /**
@@ -130,6 +131,17 @@ describe('ShimWorkspaceFs (the pod side)', () => {
     // side, and the frame is never sent so the pod is never asked to judge it.
     await expect(fs.stat('/etc/passwd')).rejects.toThrow(/outside the sandbox mount/)
     expect(requester.frames).toEqual([])
+  })
+
+  it('reports a lost channel as a failure rather than as an absent marker', async () => {
+    const mount = tempRoot()
+    // A refusal is data ("not there"); a transport failure is not, and a caller that read it as one
+    // would treat a dropped channel as evidence about the volume.
+    const fs = new ShimWorkspaceFs(
+      { agentId: 'bot-a', request: async () => Promise.reject(new ShimChannelLostError('renewal')) },
+      mount
+    )
+    await expect(fs.readFile(join(mount, 'marker.json'))).rejects.toBeInstanceOf(ShimChannelLostError)
   })
 
   it('keeps the local seam untouched by the channel — the daemon disk is still node:fs', async () => {
