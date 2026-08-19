@@ -87,15 +87,31 @@ export function applyModelCredential(
   })
 }
 
-export function configuredModelCredential(env: NodeJS.ProcessEnv): ModelCredential | undefined {
-  const key = env.MODEL_TOKEN?.trim()
-  const baseUrl = env.MODEL_BASE_URL?.trim()
+export type StaticModelCredentials = Partial<Record<KeyProvider, ModelCredential>>
+
+const PROVIDER_ENV_SUFFIX: Record<KeyProvider, string> = { anthropic: '_ANTHROPIC', openai: '_OPENAI' }
+
+function staticPair(env: NodeJS.ProcessEnv, suffix: string): ModelCredential | undefined {
+  const key = env[`MODEL_TOKEN${suffix}`]?.trim()
+  const baseUrl = env[`MODEL_BASE_URL${suffix}`]?.trim()
   if (!key && !baseUrl) return undefined
   if (baseUrl && (!URL.canParse(baseUrl) || !['http:', 'https:'].includes(new URL(baseUrl).protocol))) {
-    throw new Error('MODEL_BASE_URL must be an http(s) URL')
+    throw new Error(`MODEL_BASE_URL${suffix} must be an http(s) URL`)
   }
   // A URL-only layer uses an internal empty sentinel; applyStaticModelConfig preserves the runtime key.
   return { key: key ?? '', ...(baseUrl ? { baseUrl } : {}) }
+}
+
+// A provider-scoped pair replaces the unscoped one whole, never merges: one gateway's Anthropic and
+// OpenAI paths differ, and splitting a pair aims a key at an endpoint that never issued it.
+export function configuredModelCredentials(env: NodeJS.ProcessEnv): StaticModelCredentials | undefined {
+  const shared = staticPair(env, '')
+  const resolved: StaticModelCredentials = {}
+  for (const provider of Object.keys(PROVIDER_ENV_SUFFIX) as KeyProvider[]) {
+    const pair = staticPair(env, PROVIDER_ENV_SUFFIX[provider]) ?? shared
+    if (pair) resolved[provider] = pair
+  }
+  return Object.keys(resolved).length > 0 ? resolved : undefined
 }
 
 export function applyStaticModelConfig(

@@ -210,10 +210,11 @@ import { runtimeHomePath } from './runtimes/runtime-home.js'
 import {
   applyModelCredential,
   applyStaticModelConfig,
-  configuredModelCredential,
+  configuredModelCredentials,
   modelProviderTarget,
   type ModelCredential,
-  type ModelProviderTarget
+  type ModelProviderTarget,
+  type StaticModelCredentials
 } from './runtimes/model-provider-config.js'
 import { DEFAULT_MODEL_KEY_TTL_SECONDS, KeyServerClient, type KeyGrant } from './key-server/client.js'
 import { CuratedRuntimeAdmission } from './runtimes/curated-admission.js'
@@ -833,7 +834,7 @@ export class Daemon {
   private readonly k8s: boolean
   private readonly keyServer?: KeyServerClient
   private readonly modelKeyNow: () => number
-  private readonly staticModelCredential?: ModelCredential
+  private readonly staticModelCredentials?: StaticModelCredentials
   /** Reads this pod's projected CP-audience token; undefined unless the daemon runs
    *  in-cluster AND the volume is actually mounted (decided once, at boot). */
   private readonly clusterIdentityToken?: () => string | undefined
@@ -1112,7 +1113,7 @@ export class Daemon {
     this.sandboxMechanism = this.sandboxProbe?.mechanism
     this.clock = opts.clock ?? systemClock
     this.modelKeyNow = opts.clock ? () => this.clock.now() : () => performance.timeOrigin + performance.now()
-    this.staticModelCredential = this.k8s ? configuredModelCredential(process.env) : undefined
+    this.staticModelCredentials = this.k8s ? configuredModelCredentials(process.env) : undefined
     const keyServerAddress = opts.keyServer?.trim() || process.env.KEY_SERVER?.trim()
     const keyServerTokenPath = opts.keyServerTokenPath?.trim() || process.env.KEY_SERVER_TOKEN_PATH?.trim()
     if ((keyServerAddress || opts.keyServerClient) && !this.k8s) {
@@ -3080,8 +3081,9 @@ export class Daemon {
         finalizeLaunchEnv: (launchEnv) => {
           if (!this.k8s || !target) return
           if (opts.modelCredential) applyModelCredential(target, launchEnv, opts.modelCredential.credential)
-          else if (!this.keyServer && this.staticModelCredential) {
-            applyStaticModelConfig(target, launchEnv, this.staticModelCredential)
+          else if (!this.keyServer) {
+            const configured = this.staticModelCredentials?.[target.provider]
+            if (configured) applyStaticModelConfig(target, launchEnv, configured)
           }
         },
         runtimeReadRoots: runInSandbox
@@ -3361,7 +3363,7 @@ export class Daemon {
   private boundModelTarget(sessionKey: string, agentId: string): ModelProviderTarget | undefined {
     const credentialHost = this.modelSessionHosts.get(sessionKey)
     if (credentialHost) return credentialHost.target
-    if (this.keyServer || !this.k8s || !this.staticModelCredential) return undefined
+    if (this.keyServer || !this.k8s || !this.staticModelCredentials) return undefined
     const agent = this.agents.get(agentId)
     const runtime = agent ? this.runtimes[agent.runtime] : undefined
     return agent && runtime ? modelProviderTarget(agent, runtime) : undefined
@@ -3414,8 +3416,8 @@ export class Daemon {
           target: entry.target,
           credential: {
             key: entry.grant.key,
-            ...((entry.grant.baseUrl ?? this.staticModelCredential?.baseUrl)
-              ? { baseUrl: entry.grant.baseUrl ?? this.staticModelCredential?.baseUrl }
+            ...((entry.grant.baseUrl ?? this.staticModelCredentials?.[entry.target.provider]?.baseUrl)
+              ? { baseUrl: entry.grant.baseUrl ?? this.staticModelCredentials?.[entry.target.provider]?.baseUrl }
               : {})
           }
         }
@@ -4010,8 +4012,8 @@ export class Daemon {
               target: issued.target,
               credential: {
                 key: issued.grant.key,
-                ...((issued.grant.baseUrl ?? this.staticModelCredential?.baseUrl)
-                  ? { baseUrl: issued.grant.baseUrl ?? this.staticModelCredential?.baseUrl }
+                ...((issued.grant.baseUrl ?? this.staticModelCredentials?.[issued.target.provider]?.baseUrl)
+                  ? { baseUrl: issued.grant.baseUrl ?? this.staticModelCredentials?.[issued.target.provider]?.baseUrl }
                   : {})
               }
             }

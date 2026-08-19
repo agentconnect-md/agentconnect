@@ -130,8 +130,13 @@ gateway needs no URL opinion. A present one must be `http(s)`, since it becomes 
 runtime's API base; plain `http` is legal and is the normal choice for a loopback
 or in-pod gateway.
 
-The cloud daemon's static pair is `MODEL_TOKEN` plus optional `MODEL_BASE_URL`.
-`MODEL_BASE_URL` must be an HTTP(S) URL. The pair is translated at runtime launch:
+The cloud daemon's static pair is `MODEL_TOKEN` plus optional `MODEL_BASE_URL`, with
+per-provider overrides `MODEL_TOKEN_ANTHROPIC`/`MODEL_BASE_URL_ANTHROPIC` and
+`MODEL_TOKEN_OPENAI`/`MODEL_BASE_URL_OPENAI`. A scoped pair replaces the unscoped one
+whole for that provider and never merges with it, so the atomicity rule above holds
+inside the static layer too — a gateway's Anthropic and OpenAI base paths differ, and
+`IssueKey` is provider-scoped, so the static layer needs the same dimension. Every
+base URL must be an HTTP(S) URL. The pair is translated at runtime launch:
 
 | Runtime  | Token                                                                                    | Base URL                                                                                                                             |
 | -------- | ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |

@@ -4,7 +4,7 @@ import type { RuntimeDef } from '../src/config/config-schema.js'
 import {
   applyModelCredential,
   applyStaticModelConfig,
-  configuredModelCredential,
+  configuredModelCredentials,
   modelProviderTarget
 } from '../src/runtimes/model-provider-config.js'
 
@@ -108,6 +108,43 @@ describe('applyModelCredential', () => {
   })
 
   it('rejects a non-HTTP static gateway URL', () => {
-    expect(() => configuredModelCredential({ MODEL_BASE_URL: 'file:///tmp/provider' })).toThrow(/http\(s\)/)
+    expect(() => configuredModelCredentials({ MODEL_BASE_URL: 'file:///tmp/provider' })).toThrow(/http\(s\)/)
+    expect(() => configuredModelCredentials({ MODEL_BASE_URL_ANTHROPIC: 'file:///tmp/provider' })).toThrow(
+      /MODEL_BASE_URL_ANTHROPIC must be an http\(s\) URL/
+    )
+  })
+
+  it('reads the unscoped static pair for both providers', () => {
+    expect(configuredModelCredentials({ MODEL_TOKEN: 'k', MODEL_BASE_URL: 'https://gw.example' })).toEqual({
+      anthropic: { key: 'k', baseUrl: 'https://gw.example' },
+      openai: { key: 'k', baseUrl: 'https://gw.example' }
+    })
+  })
+
+  it('lets a provider-scoped pair replace the unscoped one whole', () => {
+    expect(
+      configuredModelCredentials({
+        MODEL_TOKEN: 'shared',
+        MODEL_BASE_URL: 'https://gw.example/openai/v1',
+        MODEL_TOKEN_ANTHROPIC: 'anthropic-key',
+        MODEL_BASE_URL_ANTHROPIC: 'https://gw.example/anthropic'
+      })
+    ).toEqual({
+      anthropic: { key: 'anthropic-key', baseUrl: 'https://gw.example/anthropic' },
+      openai: { key: 'shared', baseUrl: 'https://gw.example/openai/v1' }
+    })
+  })
+
+  it('scopes a URL-only override without inheriting the unscoped URL', () => {
+    expect(
+      configuredModelCredentials({ MODEL_TOKEN: 'shared', MODEL_BASE_URL_ANTHROPIC: 'https://gw.example/anthropic' })
+    ).toEqual({
+      anthropic: { key: '', baseUrl: 'https://gw.example/anthropic' },
+      openai: { key: 'shared' }
+    })
+  })
+
+  it('is undefined when nothing is configured', () => {
+    expect(configuredModelCredentials({})).toBeUndefined()
   })
 })
