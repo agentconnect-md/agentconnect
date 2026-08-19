@@ -1013,6 +1013,10 @@ function ToolBodyDetail({
 type Turn =
   | {
       kind: 'user'
+      /** Stable identity across renders (assigned by assignTurnKeys after the build), NOT the
+       *  array index — so React reconciles a prepended page in place and `workOverride` never
+       *  mis-keys. Optional only during construction; always set before render. */
+      key?: string
       sp: ReturnType<typeof speaker>
       agent: Agent | null
       avatarUrl?: string | null
@@ -1028,7 +1032,36 @@ type Turn =
     }
   // `wake` marks a block opened by a background-task wake that no reply has
   // merged into yet — the run that follows binds to it, then clears the flag.
-  | { kind: 'bot'; agentName: string; agentId?: string; model: string; time: string; steps: FmtStep[]; wake?: boolean }
+  | {
+      kind: 'bot'
+      /** Stable identity across renders (assigned by assignTurnKeys after the build); keeps a
+       *  streaming turn from remounting as steps append. Optional only during construction. */
+      key?: string
+      agentName: string
+      agentId?: string
+      model: string
+      time: string
+      steps: FmtStep[]
+      wake?: boolean
+    }
+
+/** Assign each turn a stable, render-independent key derived from its own content, with a
+ *  dedup counter for the rare genuine collision. This replaces array-index identity: a
+ *  prepended "load earlier" page then reconciles in place instead of remounting every turn,
+ *  and `workOverride` (the per-turn work-panel toggle, keyed by this) never mis-targets after
+ *  a prepend. Deterministic from the turn list, so the same turn keeps its key across renders. */
+function assignTurnKeys(turns: Turn[]): void {
+  const seen = new Map<string, number>()
+  for (const turn of turns) {
+    const base =
+      turn.kind === 'user'
+        ? `u:${turn.time}|${turn.sp.name}|${turn.image ? 'img' : ''}|${turn.text.slice(0, 64)}`
+        : `b:${turn.agentId ?? turn.agentName}|${turn.wake ? 'w' : ''}|${turn.time}`
+    const n = seen.get(base) ?? 0
+    seen.set(base, n + 1)
+    turn.key = n === 0 ? base : `${base}#${n}`
+  }
+}
 
 type SessionParticipant = {
   id: string
@@ -1591,9 +1624,9 @@ export default function SessionDetailView() {
   // The visibility the user last chose for a bot turn's collapsed "work" panel (keyed
   // by turn index). Every panel starts collapsed — streaming included — see
   // workPanelOpen(). The toggle records the opposite of the EFFECTIVE on-screen state.
-  const [workOverride, setWorkOverride] = useState<ReadonlyMap<number, boolean>>(() => new Map())
-  const toggleWork = (ti: number, currentOpen: boolean) =>
-    setWorkOverride((prev) => toggleWorkPanel(prev, ti, currentOpen))
+  const [workOverride, setWorkOverride] = useState<ReadonlyMap<string, boolean>>(() => new Map())
+  const toggleWork = (key: string, currentOpen: boolean) =>
+    setWorkOverride((prev) => toggleWorkPanel(prev, key, currentOpen))
   const [imagePreparing, setImagePreparing] = useState(false)
   const [imageError, setImageError] = useState<string | null>(null)
   const [attachMenuOpen, setAttachMenuOpen] = useState(false)
@@ -3344,6 +3377,10 @@ export default function SessionDetailView() {
     }
   }
 
+  // Stamp stable per-turn identity now that the list is final — the render, the list key,
+  // and `workOverride` all key off `turn.key` instead of the array index.
+  assignTurnKeys(turns)
+
   // The last rendered turn of each tagged agent. A busy reply lane marks ONLY
   // that turn as streaming — every earlier turn from the same agent shares its
   // `agentId`, so matching on the lane alone would flip the agent's whole
@@ -4055,7 +4092,7 @@ export default function SessionDetailView() {
                     // The turn's clock time is its own centred line above the message —
                     // a shared separator for both sides, instead of a label-row tail
                     // that never lines up with the bubble edge on either side.
-                    <div key={`${session.id}:${ti}`} className="flex flex-col gap-[5px]">
+                    <div key={turn.key} className="flex flex-col gap-[5px]">
                       {turn.time && (
                         <div className="mono text-center text-[11px] leading-normal text-(--text-tertiary)">
                           {turn.time}
@@ -4064,7 +4101,7 @@ export default function SessionDetailView() {
                       {turn.kind === 'user' ? (
                         // 2b: user turns are right-aligned brand-soft bubbles. A sender label
                         // sits above the bubble only when it isn't you (platform user / cron).
-                        <div key={`${session.id}:${ti}`} className="group/turn flex items-start justify-end gap-[9px]">
+                        <div className="group/turn flex items-start justify-end gap-[9px]">
                           <div className="relative flex min-w-0 max-w-[86%] flex-col items-end gap-[3px]">
                             {showsSenderLabel(turn) && (
                               <span className="flex items-center gap-[6px] pr-1 font-sans text-[11px] font-medium leading-normal text-(--text-tertiary)">
@@ -4138,7 +4175,7 @@ export default function SessionDetailView() {
                             (turn.agentId && busyLanes.length > 0
                               ? busyLanes.includes(turn.agentId) && lastBotTurnIndexByAgent.get(turn.agentId) === ti
                               : ti === turns.length - 1)
-                          const openWork = workPanelOpen(workOverride.get(ti))
+                          const openWork = workPanelOpen(workOverride.get(turn.key ?? ''))
                           // Is the WORK itself still running? `streaming` alone is turn-level —
                           // it stays true while the spoken answer streams AFTER the last tool
                           // finished, which must not keep the live line alive. ACP tool calls
@@ -4229,7 +4266,7 @@ export default function SessionDetailView() {
                                     <div className="mt-2 flex min-w-0 items-center gap-[6px]">
                                       <button
                                         type="button"
-                                        onClick={() => toggleWork(ti, openWork)}
+                                        onClick={() => toggleWork(turn.key ?? '', openWork)}
                                         className="inline-flex min-w-0 items-center gap-[6px] border-0 bg-transparent p-0 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary) hover:text-(--text-secondary)"
                                         title={openWork ? 'Hide the agent’s work' : 'Show the agent’s work'}
                                       >

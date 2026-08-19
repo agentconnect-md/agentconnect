@@ -46,15 +46,16 @@ export function workPanelOpen(override: boolean | undefined): boolean {
   return override ?? false
 }
 
-/** Record the user's toggle of turn `ti`, as the state opposite to what they see
- *  now. `currentOpen` is the EFFECTIVE state on screen. */
+/** Record the user's toggle of the turn identified by `key`, as the state opposite to
+ *  what they see now. `currentOpen` is the EFFECTIVE state on screen. Keyed by stable turn
+ *  identity (not array index), so the toggle survives a "load earlier" prepend. */
 export function toggleWorkPanel(
-  prev: ReadonlyMap<number, boolean>,
-  ti: number,
+  prev: ReadonlyMap<string, boolean>,
+  key: string,
   currentOpen: boolean
-): Map<number, boolean> {
+): Map<string, boolean> {
   const next = new Map(prev)
-  next.set(ti, !currentOpen)
+  next.set(key, !currentOpen)
   return next
 }
 
