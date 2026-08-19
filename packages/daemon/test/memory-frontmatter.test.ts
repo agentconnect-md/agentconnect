@@ -22,7 +22,12 @@ import {
   regenerateMemoryIndexHoldingLock,
   writeMemoryFile
 } from '../src/memory/store.js'
-import { appendDistilledMemories } from '../src/memory/distill.js'
+import {
+  appendDistilledMemories,
+  MEMORY_DISTILLATION_SYSTEM_PROMPT,
+  parseDistilledMemories
+} from '../src/memory/distill.js'
+import { MEMORY_FORMAT_GUIDANCE } from '../src/memory/frontmatter.js'
 import { createMemoryProvider } from '../src/memory/providers/factory.js'
 import { memoryChannelKey } from '../src/memory/store.js'
 
@@ -342,5 +347,47 @@ describe('dream adoption and index ownership', () => {
 
     await regenerateMemoryIndexHoldingLock(f, 'dream')
     expect(await readMemoryFile(f, 'MEMORY.md')).toContain('curated by the dream')
+  })
+})
+
+describe('distilled memories carry a description', () => {
+  it("writes a header when creating a topic, and leaves an existing file's header alone", async () => {
+    const f = fs()
+    await ensureMemory(f, 'bot')
+    await appendDistilledMemories(f, [{ topic: 'deploys.md', description: 'how we ship', content: 'port 4242' }])
+
+    const created = await readMemoryFile(f, 'deploys.md')
+    expect(created).toContain('description: how we ship')
+    expect(created).toContain('- port 4242')
+    // The description reaches the generated index, which is the whole point.
+    expect(await readMemoryFile(f, 'MEMORY.md')).toContain('- [deploys](deploys.md) — how we ship')
+
+    // Appending later must not staple a second header on.
+    await appendDistilledMemories(f, [{ topic: 'deploys.md', description: 'ignored', content: 'also uses helm' }])
+    const appended = await readMemoryFile(f, 'deploys.md')
+    expect(appended.match(/^description:/gm)).toHaveLength(1)
+    expect(appended).toContain('description: how we ship')
+    expect(appended).toContain('also uses helm')
+  })
+
+  it('still works when the model omits a description', async () => {
+    const f = fs()
+    await ensureMemory(f, 'bot')
+    await appendDistilledMemories(f, [{ topic: 'plain.md', content: 'a fact' }])
+    const created = await readMemoryFile(f, 'plain.md')
+    expect(created).not.toContain('---')
+    expect(created).toContain('- a fact')
+  })
+
+  it('parses description out of the model JSON, bounded and single-line', () => {
+    const parsed = parseDistilledMemories(
+      '{"memories":[{"topic":"a.md","description":"  multi\\n  line  ","content":"fact"}]}'
+    )
+    expect(parsed[0]?.description).toBe('multi line')
+  })
+
+  it('teaches the SAME format text everywhere — the drift that caused this', () => {
+    // The distiller and the per-turn prompt must not restate the format separately.
+    expect(MEMORY_DISTILLATION_SYSTEM_PROMPT).toContain(MEMORY_FORMAT_GUIDANCE)
   })
 })
