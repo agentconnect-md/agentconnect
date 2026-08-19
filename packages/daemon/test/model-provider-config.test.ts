@@ -68,13 +68,7 @@ describe('applyModelCredential', () => {
     expect(JSON.parse(env.CODEX_CONFIG)).toEqual({
       features: { apps: false },
       model_provider: 'openai',
-      model_providers: {
-        openai: {
-          name: 'OpenAI',
-          base_url: 'https://gateway.example/openai/v1',
-          env_key: 'OPENAI_API_KEY'
-        }
-      }
+      openai_base_url: 'https://gateway.example/openai/v1'
     })
   })
 
@@ -109,7 +103,7 @@ describe('applyModelCredential', () => {
     expect(env.OPENAI_API_KEY).toBe('runtime-key')
     expect(JSON.parse(env.CODEX_CONFIG)).toMatchObject({
       model_provider: 'openai',
-      model_providers: { openai: { base_url: 'https://gateway.example/openai/v1' } }
+      openai_base_url: 'https://gateway.example/openai/v1'
     })
   })
 

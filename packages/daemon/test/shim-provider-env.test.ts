@@ -89,17 +89,12 @@ describe('AcpRunner provider env fill-in', () => {
 })
 
 describe('fillInCodexBaseUrl', () => {
-  const codexProviders = (config: string) =>
-    (JSON.parse(config) as { model_providers: { openai: Record<string, unknown> } }).model_providers.openai
-
   it('creates CODEX_CONFIG aiming the built-in openai provider at the pod URL', () => {
     const env: Record<string, string> = {}
     fillInCodexBaseUrl(env, POD_ENV)
     expect(JSON.parse(env.CODEX_CONFIG!)).toEqual({
       model_provider: 'openai',
-      model_providers: {
-        openai: { name: 'OpenAI', base_url: 'https://codex-egress.internal', env_key: 'OPENAI_API_KEY' }
-      }
+      openai_base_url: 'https://codex-egress.internal'
     })
   })
 
@@ -109,13 +104,11 @@ describe('fillInCodexBaseUrl', () => {
     const config = JSON.parse(env.CODEX_CONFIG) as Record<string, unknown>
     expect(config.features).toEqual({ apps: false })
     expect(config.model).toBe('gpt-5.3-codex')
-    expect(codexProviders(env.CODEX_CONFIG).base_url).toBe('https://codex-egress.internal')
+    expect(config.openai_base_url).toBe('https://codex-egress.internal')
   })
 
-  it('leaves a daemon-aimed base_url alone', () => {
-    const daemonConfig = JSON.stringify({
-      model_providers: { openai: { base_url: 'https://daemon-decided.internal' } }
-    })
+  it('leaves a daemon-aimed openai_base_url alone', () => {
+    const daemonConfig = JSON.stringify({ openai_base_url: 'https://daemon-decided.internal' })
     const env = { CODEX_CONFIG: daemonConfig }
     fillInCodexBaseUrl(env, POD_ENV)
     expect(env.CODEX_CONFIG).toBe(daemonConfig)
@@ -150,14 +143,12 @@ describe('AcpRunner codex config projection', () => {
     const config = JSON.parse(seen.C!) as Record<string, unknown>
     expect(config).toMatchObject({
       model_provider: 'openai',
-      model_providers: { openai: { base_url: 'https://codex-egress.internal', env_key: 'OPENAI_API_KEY' } }
+      openai_base_url: 'https://codex-egress.internal'
     })
   })
 
-  it('keeps a daemon-sent CODEX_CONFIG base_url authoritative over the pod value', async () => {
-    const daemonConfig = JSON.stringify({
-      model_providers: { openai: { base_url: 'https://daemon-decided.internal' } }
-    })
+  it('keeps a daemon-sent CODEX_CONFIG base URL authoritative over the pod value', async () => {
+    const daemonConfig = JSON.stringify({ openai_base_url: 'https://daemon-decided.internal' })
     const seen = await spawnAndReadEnv('codex-acp', { PATH: process.env.PATH ?? '', CODEX_CONFIG: daemonConfig })
     expect(seen.C).toBe(daemonConfig)
   })
