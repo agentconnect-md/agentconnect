@@ -421,6 +421,8 @@ export interface SessionDto {
   permissionMode: string | null // effective session preset; Codex Auto is composite
   outputMode: string | null
   daemonId: string | null
+  /** The shared-store pool set holding the rows; null ⇒ the recorder's private store. Absent on older CPs. */
+  contentSetId?: string | null
   /** Retention GC (#485): when the owning daemon deleted this session's local
    *  content. Non-null ⇒ the transcript is gone for good. Absent on a CP that
    *  predates the field. */
@@ -563,6 +565,8 @@ export interface SessionDetailDto {
   permissionMode: string | null // effective session preset; Codex Auto is composite
   outputMode: string | null
   daemonId: string | null
+  /** The shared-store pool set holding the rows; null ⇒ the recorder's private store. Absent on older CPs. */
+  contentSetId?: string | null
   workspaceIsolation?: 'shared' | 'session' | null
   // Session visibility (docs/designs/session-visibility.md §5/§6). All three are
   // absent on a CP that predates the feature. `visibilityState` is the §5.1

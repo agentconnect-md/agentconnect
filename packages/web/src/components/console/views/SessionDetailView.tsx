@@ -19,6 +19,7 @@ import {
   fastModeAvailableFor,
   fileColor,
   isSelfSender,
+  isSetPlacementKind,
   lane,
   modelCapability,
   modelLabel,
@@ -2827,8 +2828,14 @@ export default function SessionDetailView() {
       continuationReason === 'daemon_offline' ||
       continuationReason === 'unavailable')
   const isLive = isPg || isWebchat || isContinuable || continuationBlocked
-  const currentDaemonByAgent = new Map(
-    agents.map((agent) => [agent.id, agent.daemon === '—' ? undefined : agent.daemon])
+  // Where each agent runs NOW: a machine for a `daemon` placement, the set otherwise (matched to the session's `contentSetId`, never a member id).
+  const placementByAgent = new Map(
+    agents.map((agent) => [
+      agent.id,
+      isSetPlacementKind(agent.placementKind)
+        ? { setId: agent.setId }
+        : { daemonId: agent.daemon === '—' ? undefined : agent.daemon }
+    ])
   )
   const resumeConversationMembers = conversationKey ? conversationMembers : selfConversation?.sessions
   const resumeConversationLookupPending = conversationKey
@@ -2837,15 +2844,23 @@ export default function SessionDetailView() {
   const resumeConversationLookupRequired = Boolean(conversationKey || selfKey)
   const persistedResumeMembers = isWebchat
     ? sessionResumeMembers(
-        resumeConversationMembers?.map((member) => ({ agentId: member.agentId, daemonId: member.daemonId })),
+        resumeConversationMembers?.map((member) => ({
+          agentId: member.agentId,
+          daemonId: member.daemonId,
+          contentSetId: member.contentSetId
+        })),
         currentSessionDetail
-          ? { agentId: currentSessionDetail.agentId, daemonId: currentSessionDetail.daemonId }
+          ? {
+              agentId: currentSessionDetail.agentId,
+              daemonId: currentSessionDetail.daemonId,
+              contentSetId: currentSessionDetail.contentSetId
+            }
           : null,
         resumeConversationLookupRequired,
         resumeConversationLookupPending
       )
     : []
-  const resumeState = isPg ? 'available' : sessionResumeState(persistedResumeMembers, currentDaemonByAgent)
+  const resumeState = isPg ? 'available' : sessionResumeState(persistedResumeMembers, placementByAgent)
   const resumeDisabled = (isWebchat && resumeState !== 'available') || continuationBlocked
   // Composer state is per-session in the provider — bind it to THIS session's id so a
   // different live conversation streaming in the background can't disable or clear it.
