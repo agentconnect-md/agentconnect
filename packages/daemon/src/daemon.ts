@@ -3011,7 +3011,7 @@ export class Daemon {
     // is re-materialized on every spawn, because a resumed Sandbox is a new pod with an empty tmpfs.
     // The daemon-local write (sessionGitEnv) would land the file on this daemon's disk instead.
     const sandboxSessionGit =
-      this.k8sPlane && agent.workspace.mode === 'git-repo' && githubAppCredentials
+      this.k8sPlane && githubAppCredentials
         ? sessionGitConfig(agent.id, this.gitCommitIdentity, sandboxGitCredentialTarget())
         : undefined
     const env: Record<string, string> = {
@@ -3021,11 +3021,13 @@ export class Daemon {
       // MemoryProviderUnavailableError for an unbuildable provider (external, or
       // native on an unregistered runtime) — surfaced here at spawn.
       ...memoryProviderFor(memoryAgent, runtime, baseEnv, this.externalMemoryAdmission(agent.id)).runtimeEnv(),
-      ...(agent.workspace.mode === 'git-repo'
-        ? githubAppCredentials
-          ? (sandboxSessionGit?.env ?? sessionGitEnv(agent.id, this.gitCommitIdentity))
-          : sessionGitPolicyEnv()
-        : {})
+      // App identity rides with the CREDENTIAL mode, not the workspace mode: a scratch workspace with
+      // authorized repositories needs the capability for its git and gh exactly like a clone does.
+      ...(githubAppCredentials
+        ? (sandboxSessionGit?.env ?? sessionGitEnv(agent.id, this.gitCommitIdentity))
+        : agent.workspace.mode === 'git-repo'
+          ? sessionGitPolicyEnv()
+          : {})
     }
     // Config-file secrets are materialized by assembleRuntimeLaunch below; the pre-strip merged env
     // is snapshotted so the idle sweep can delete the files and rematerializeConfigFiles() can
