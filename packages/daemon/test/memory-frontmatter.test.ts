@@ -13,10 +13,10 @@ import {
   memoryRefToTopic,
   parseMemoryFrontmatter,
   stampMemoryHeader,
-  MEMORY_FORMAT_GUIDANCE
+  MEMORY_FORMAT_GUIDANCE,
+  normalizeMemoryHeader
 } from '../src/memory/frontmatter.js'
 import { dreamSystemPrompt } from '../src/dream/dreamer.js'
-import { normalizeMemoryHeader } from '../src/memory/frontmatter.js'
 import {
   ensureMemory,
   MAX_MEMORY_FILE_BYTES,
