@@ -201,9 +201,20 @@ describe('daemon model-key session lifecycle', () => {
     expect(setModelOverride).toHaveBeenCalledWith('session-a', 'anthropic/claude-opus-4')
   })
 
-  it('keeps no static pair to fall back to when a key server is configured', () => {
-    const withServer = new Daemon({ k8s: true, keyServer: 'https://keys.test', clock: new FakeClock(1_000) }) as any
-    expect(withServer.staticModelCredentials).toBeUndefined()
+  it('reads the deployment base URLs even when a key server is configured', () => {
+    const env = process.env.ANTHROPIC_MODEL_BASE_URL
+    process.env.ANTHROPIC_MODEL_BASE_URL = 'https://gw.example'
+    try {
+      const withServer = new Daemon({ k8s: true, keyServer: 'https://keys.test', clock: new FakeClock(1_000) }) as any
+      expect(withServer.staticModelCredentials.claude).toEqual({ key: '', baseUrl: 'https://gw.example' })
+      // The issuer owns the key; where it is sent is the deployment's, so a grant URL is not read.
+      expect(withServer.staticModelBaseUrl({ provider: 'anthropic', runtime: 'claude' })).toEqual({
+        baseUrl: 'https://gw.example'
+      })
+    } finally {
+      if (env === undefined) delete process.env.ANTHROPIC_MODEL_BASE_URL
+      else process.env.ANTHROPIC_MODEL_BASE_URL = env
+    }
   })
 
   it('revokes the fresh grant when replacing the superseded host fails', async () => {
