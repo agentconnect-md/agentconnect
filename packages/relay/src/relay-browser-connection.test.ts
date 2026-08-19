@@ -314,6 +314,26 @@ describe('RelayBrowserConnection', () => {
     })
   })
 
+  // A stream that "never came back" is diagnosed from these lines alone: who joined/left the
+  // conversation (with the close code), and which daemon refused a resume, and why.
+  it('logs the browser join/leave and every refused resume with the daemon and reason', async () => {
+    const turnId = '22222222-2222-4222-8222-222222222222'
+    const lines: string[] = []
+    const log: Logger = { debug: () => {}, info: (m) => lines.push(m), warn: (m) => lines.push(m), error: () => {} }
+    const { conn, transport } = build({
+      log,
+      ack: { msgId: 'resume-1', accepted: false, reason: 'stream_not_found' }
+    })
+    expect(lines[0]).toMatch(new RegExp(`browser joined conversation ${CHAT} \\(1 participant`))
+    transport.feed({ type: 'resume', turnId, generation: 4, afterIndex: 7 })
+    await tick()
+    expect(lines.at(-1)).toBe(
+      `webchat: resume ${turnId} for ${AGENT} in ${CHAT} refused by ${DAEMON}: stream_not_found`
+    )
+    conn['onClose'](1006, '')
+    expect(lines.at(-1)).toBe(`webchat: browser left conversation ${CHAT} (close 1006)`)
+  })
+
   it('translates an rd/chat output/done back to {type:output}/{type:done}', () => {
     const { conn, transport } = build()
     const outputPayload = { conversationId: CHAT, turnId: AGENT, index: 0, status: { model: 'claude' } }

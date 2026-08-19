@@ -6375,6 +6375,12 @@ export class Daemon {
           op.afterIndex,
           sink
         )
+        // The one place that knows WHY a browser's stream did not come back — keep it in the log.
+        if (!resumed.accepted) {
+          this.log.info(
+            `webchat: resume of turn ${op.turnId} (gen ${op.generation}, after ${op.afterIndex}) for agent ${msg.agentId} in ${msg.chatId} refused: ${resumed.reason ?? 'unspecified'}`
+          )
+        }
         return {
           msgId: msg.msgId,
           accepted: resumed.accepted,
