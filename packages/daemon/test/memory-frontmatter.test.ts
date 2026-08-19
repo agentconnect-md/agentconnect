@@ -14,8 +14,16 @@ import {
   parseMemoryFrontmatter,
   stampMemoryHeader
 } from '../src/memory/frontmatter.js'
-import { ensureMemory, MAX_MEMORY_FILE_BYTES, readMemoryFile, writeMemoryFile } from '../src/memory/store.js'
+import {
+  ensureMemory,
+  MAX_MEMORY_FILE_BYTES,
+  memoryNeighbors,
+  readMemoryFile,
+  writeMemoryFile
+} from '../src/memory/store.js'
 import { appendDistilledMemories } from '../src/memory/distill.js'
+import { createMemoryProvider } from '../src/memory/providers/factory.js'
+import { memoryChannelKey } from '../src/memory/store.js'
 
 const fs = () => new LocalMemoryFs(mkdtempSync(join(tmpdir(), 'ac-fm-')))
 
@@ -212,5 +220,99 @@ describe('distillation and the generated index', () => {
     // Every fact landed in its topic file even though the index had to be truncated.
     expect(await readMemoryFile(f, 'd-11.md')).toContain('fact 11')
     expect(Buffer.byteLength(await readMemoryFile(f, 'MEMORY.md'))).toBeLessThanOrEqual(MAX_MEMORY_FILE_BYTES)
+  })
+})
+
+describe('memory graph (one hop)', () => {
+  const write = (f: ReturnType<typeof fs>, topic: string, description: string, body: string) =>
+    writeMemoryFile(f, topic, `---\ndescription: ${description}\n---\n${body}\n`, undefined, 'tool')
+
+  it('reports outgoing links and backlinks, each with its description', async () => {
+    const f = fs()
+    await ensureMemory(f, 'bot')
+    await write(f, 'deploys.md', 'how we ship', 'pipeline owns it, see [[runtimes]]')
+    await write(f, 'runtimes.md', 'which runtimes we support', 'claude and codex')
+    await write(f, 'oncall.md', 'who to page', 'escalate per [[deploys]]')
+
+    const from = await memoryNeighbors(f, 'deploys.md')
+    expect(from.links).toEqual([
+      { name: 'runtimes', topic: 'runtimes.md', description: 'which runtimes we support', exists: true }
+    ])
+    // oncall links to deploys, so deploys sees it as a backlink.
+    expect(from.backlinks).toEqual([{ name: 'oncall', topic: 'oncall.md', description: 'who to page', exists: true }])
+
+    // The graph is symmetric from the other end.
+    expect((await memoryNeighbors(f, 'runtimes.md')).backlinks.map((n) => n.name)).toEqual(['deploys'])
+  })
+
+  it('keeps a link to a memory that does not exist yet, marked as such', async () => {
+    const f = fs()
+    await ensureMemory(f, 'bot')
+    await write(f, 'a.md', 'has a forward reference', 'todo: write [[not-yet]]')
+
+    const { links } = await memoryNeighbors(f, 'a.md')
+    expect(links).toEqual([{ name: 'not-yet', topic: 'not-yet.md', exists: false }])
+  })
+
+  it('accepts a [[link]] as the lookup and ignores a self-link', async () => {
+    const f = fs()
+    await ensureMemory(f, 'bot')
+    await write(f, 'solo.md', 'points at itself', 'see [[solo]] and [[other]]')
+    await write(f, 'other.md', 'the other one', 'x')
+
+    const { links } = await memoryNeighbors(f, '[[solo]]')
+    expect(links.map((n) => n.name)).toEqual(['other'])
+  })
+})
+
+describe('memory graph through the live provider path', () => {
+  const withHeader = (description: string, body: string) => `---\ndescription: ${description}\n---\n${body}\n`
+
+  // The tool layer only ever sees the DISPATCHER, so exercising the managed provider
+  // directly is not enough: this is the path production actually takes.
+  const dispatcher = (dir: string) =>
+    createMemoryProvider({
+      memoryFsFor: () => new LocalMemoryFs(dir),
+      providerKindFor: () => 'managed' as const
+    } as never)
+
+  it('returns links through the dispatcher, not just the managed provider', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-disp-'))
+    const provider = dispatcher(dir)
+    const scope = { agentId: 'bot-a' }
+    provider.ensure(scope, 'bot')
+    await provider.write(scope, 'a.md', withHeader('the a one', 'points at [[b]]'), undefined, 'tool')
+    await provider.write(scope, 'b.md', withHeader('the b one', 'leaf'), undefined, 'tool')
+
+    const related = await provider.neighbors?.(scope, 'a.md')
+    expect(related?.links).toEqual([{ name: 'b', topic: 'b.md', description: 'the b one', exists: true }])
+    expect((await provider.neighbors?.(scope, 'b.md'))?.backlinks.map((n) => n.name)).toEqual(['a'])
+  })
+
+  it('follows edges across the channel/base overlay, preferring the shadowing file', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-overlay-'))
+    const provider = dispatcher(dir)
+    const base = { agentId: 'bot-a' }
+    const chan = { agentId: 'bot-a', channelKey: memoryChannelKey('C1'), channel: 'C1' }
+    provider.ensure(base, 'bot')
+    provider.ensure(chan, 'bot')
+
+    // Shared base holds `policy`; the channel layer holds a note linking to it.
+    await provider.write(base, 'policy.md', withHeader('the shared policy', 'base text'), undefined, 'tool')
+    await provider.write(chan, 'note.md', withHeader('a channel note', 'per [[policy]]'), undefined, 'tool')
+
+    // The cross-layer edge resolves, using the base file's description.
+    const fromNote = await provider.neighbors?.(chan, 'note.md')
+    expect(fromNote?.links).toEqual([
+      { name: 'policy', topic: 'policy.md', description: 'the shared policy', exists: true }
+    ])
+    // …and the base memory sees the channel note linking back to it.
+    expect((await provider.neighbors?.(chan, 'policy.md'))?.backlinks.map((n) => n.name)).toEqual(['note'])
+
+    // When the channel shadows a base file, the neighbour describes the file that
+    // `readMemory` would actually open — the channel one.
+    await provider.write(chan, 'policy.md', withHeader('the channel override', 'chan text'), undefined, 'tool')
+    const shadowed = await provider.neighbors?.(chan, 'note.md')
+    expect(shadowed?.links[0]?.description).toBe('the channel override')
   })
 })

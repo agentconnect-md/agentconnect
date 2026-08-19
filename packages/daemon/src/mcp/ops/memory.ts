@@ -100,7 +100,16 @@ export async function readMemory(
   const scope = memoryScopeFor(ctx, deps)
   try {
     const path = parseArgs(READ_MEMORY_ARGS, args).path ?? 'MEMORY.md'
-    return await deps.memory.read(scope, path)
+    const result = await deps.memory.read(scope, path)
+    // One hop of the `[[name]]` graph, returned as its OWN fields — never spliced into
+    // `content`, which the agent may hand straight back to `writeMemory`.
+    const related = await deps.memory.neighbors?.(scope, path).catch(() => undefined)
+    if (!related || (related.links.length === 0 && related.backlinks.length === 0)) return result
+    return {
+      ...result,
+      ...(related.links.length > 0 ? { links: related.links } : {}),
+      ...(related.backlinks.length > 0 ? { backlinks: related.backlinks } : {})
+    }
   } catch (err) {
     toToolError(err)
   }

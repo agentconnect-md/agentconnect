@@ -5,6 +5,7 @@ import { MEMORY_TOOLS } from '../tools.js'
 import {
   ensureMemory,
   readIndex,
+  memoryNeighbors,
   readMemoryFileIfPresent,
   writeMemoryFile,
   listMemory,
@@ -22,6 +23,7 @@ import type {
   MemoryExtractor,
   MemoryProvider,
   MemoryRecord,
+  MemoryNeighborsResult,
   MemoryReadResult,
   MemoryScope,
   MemoryWriteResult,
@@ -162,6 +164,15 @@ export class ManagedMemoryProvider implements MemoryProvider {
       if (content !== null) return { path, content }
     }
     return { path, content: '' }
+  }
+
+  /** One hop of the `[[name]]` graph, from the layer that actually holds the file:
+   *  under channel scope that is the channel folder, with the shared base as fallback. */
+  async neighbors(scope: MemoryScope, path: string): Promise<MemoryNeighborsResult> {
+    // Pass the whole overlay: an edge may cross layers (a channel memory linking to a
+    // shared base one, or vice versa), so scanning only the file's own layer would
+    // drop those edges and could describe a shadowed file instead of the live one.
+    return memoryNeighbors(this.readRoots(scope), path)
   }
 
   async write(

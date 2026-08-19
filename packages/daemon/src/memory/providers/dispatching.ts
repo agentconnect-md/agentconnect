@@ -10,6 +10,7 @@ import {
   type MemoryProvider,
   type MemoryProviderKind,
   type MemoryRecord,
+  type MemoryNeighborsResult,
   type MemoryReadResult,
   type MemoryScope,
   type MemoryWriteResult,
@@ -132,6 +133,13 @@ export class DispatchingMemoryProvider implements MemoryProvider {
   }
   read(scope: MemoryScope, path: string): Promise<MemoryReadResult> {
     return this.forAgent(scope.agentId).read(scope, path)
+  }
+
+  /** Delegate the memory graph too — without this the tool layer only ever sees the
+   *  dispatcher, so `readMemory` would silently never return links or backlinks. */
+  async neighbors(scope: MemoryScope, path: string): Promise<MemoryNeighborsResult> {
+    const provider = this.forAgent(scope.agentId)
+    return (await provider.neighbors?.(scope, path)) ?? { links: [], backlinks: [] }
   }
   write(
     scope: MemoryScope,
