@@ -3366,7 +3366,9 @@ export class Daemon {
     if (this.keyServer || !this.k8s || !this.staticModelCredentials) return undefined
     const agent = this.agents.get(agentId)
     const runtime = agent ? this.runtimes[agent.runtime] : undefined
-    return agent && runtime ? modelProviderTarget(agent, runtime) : undefined
+    const target = agent && runtime ? modelProviderTarget(agent, runtime) : undefined
+    // A partial map binds only the providers it configures; the rest keep their runtime-owned auth.
+    return target && this.staticModelCredentials[target.provider] ? target : undefined
   }
 
   /** Whether a model resolves to a different provider than the one the session's host was
