@@ -187,9 +187,18 @@ function newPlaygroundSessionId(agentId: string): string {
   return `${PG_PREFIX}${agentId}_${randomUuid()}`
 }
 
-function stampStep(step: SessionStep, observedAtMs = Date.now()): SessionStep {
+// A step on its way in: a producer may omit `turnId` (a locally-pushed warning has no stream
+// turn) — `stampStep` mints one, so every step that reaches state carries a durable turn identity.
+type UnstampedStep = Omit<SessionStep, 'turnId'> & { turnId?: string }
+
+function stampStep(step: UnstampedStep, observedAtMs = Date.now()): SessionStep {
   return {
     ...step,
+    // The single choke point every live step passes through, so it is the one place that
+    // guarantees `turnId`: keep the wire/user turnId when present, else mint one. A minted id is
+    // per-step (a standalone warning is its own trivial turn); real multi-step agent turns always
+    // arrive with the wire turnId, so this never splits one.
+    turnId: step.turnId ?? `local:${randomUuid()}`,
     time: step.time ?? liveStepTime(),
     observedAtMs: step.observedAtMs ?? observedAtMs
   }
@@ -411,7 +420,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const pushStep = useCallback(
-    (id: string, step: SessionStep): void => mutateSteps(id, (steps) => [...steps, stampStep(step)]),
+    (id: string, step: UnstampedStep): void => mutateSteps(id, (steps) => [...steps, stampStep(step)]),
     [mutateSteps]
   )
 
@@ -452,7 +461,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
     (id: string, ev: WebchatEvent, agentId: string | undefined, turnId: string): void => {
       const observedAtMs = Date.now()
       const who = participantName(id, agentId)
-      const lane = (extra: Omit<SessionStep, 'text'> & { text: string }): SessionStep =>
+      const lane = (extra: Omit<SessionStep, 'text' | 'turnId'> & { text: string }): SessionStep =>
         stampStep({ ...extra, turnId, ...(agentId ? { agentId } : {}), ...(who ? { who } : {}) }, observedAtMs)
       mutateSteps(id, (steps) => {
         // Concurrent participant streams interleave: accumulate each chunk into
