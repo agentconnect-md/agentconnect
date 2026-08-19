@@ -1670,6 +1670,15 @@ export class LocalStore {
     return orgId
   }
 
+  /** The org partition a CP-addressed READ belongs to. The reading CP names the org in the
+   *  frame, and that is the authoritative one: a pool member serves the transcripts of every
+   *  member of its store, including agents it does not hold and therefore cannot resolve
+   *  locally. Only a shared store has more than one partition to choose between. */
+  private orgForRead(agentId: string | undefined, orgId: string | undefined): string {
+    if (!this.shared) return LOCAL_TRANSCRIPT_ORG
+    return orgId ?? this.orgFor(agentId)
+  }
+
   /** The org of a row written from a message rather than by an agent: its recipient or
    *  sender when either names one, else an agent already holding a session in the thread —
    *  an observed inbound is recorded before routing picks a recipient, and only a thread
@@ -1712,10 +1721,10 @@ export class LocalStore {
       .map((row) => row.acpSessionId)
   }
 
-  async currentTranscriptRevision(agentId?: string): Promise<number> {
+  async currentTranscriptRevision(agentId?: string, orgId?: string): Promise<number> {
     const row = (await this.db
       .prepare('SELECT COALESCE(MAX(revision), 0) AS revision FROM transcript WHERE orgId = ?')
-      .get(this.orgFor(agentId))) as { revision: number }
+      .get(this.orgForRead(agentId, orgId))) as { revision: number }
     // The in-memory allocator spans every partition; only the answer is org-scoped.
     this.transcriptRevision = Math.max(this.transcriptRevision, row.revision)
     return row.revision
@@ -1783,7 +1792,8 @@ export class LocalStore {
     thread: string,
     agentId: string,
     beforeSeq: number | null,
-    limit: number
+    limit: number,
+    orgId?: string
   ): Promise<{ rows: TranscriptRow[]; hasMore: boolean }> {
     // The delivery-table match is keyed by (channel, thread, ts), but internal rows
     // (reasoning/tool) are NOT deduped by ts and can share a ts with a delivered text row —
@@ -1791,7 +1801,7 @@ export class LocalStore {
     // same ts would be pulled back in. Deliveries only ever concern conversational messages;
     // own internal rows still surface via `sender`.
     const scope = AGENT_DELIVERY_SCOPE_SQL
-    const orgId = this.orgFor(agentId)
+    const partition = this.orgForRead(agentId, orgId)
     const hiddenToolTitles = [...SESSION_TITLE_TOOL_TITLES]
     const rows = (beforeSeq !== null
       ? await this.db
@@ -1801,7 +1811,7 @@ export class LocalStore {
                AND NOT (kind = 'tool' AND text IN (?, ?))
              ORDER BY seq DESC LIMIT ?`
           )
-          .all(orgId, channel, thread, beforeSeq, agentId, agentId, agentId, ...hiddenToolTitles, limit + 1)
+          .all(partition, channel, thread, beforeSeq, agentId, agentId, agentId, ...hiddenToolTitles, limit + 1)
       : await this.db
           .prepare(
             `SELECT * FROM transcript WHERE orgId = ? AND channel = ? AND thread = ?
@@ -1810,7 +1820,7 @@ export class LocalStore {
              ORDER BY seq DESC LIMIT ?`
           )
           .all(
-            orgId,
+            partition,
             channel,
             thread,
             agentId,
@@ -1838,10 +1848,11 @@ export class LocalStore {
     thread: string,
     agentId: string,
     before: TranscriptEventCursor | null,
-    limit: number
+    limit: number,
+    orgId?: string
   ): Promise<{ rows: TranscriptRow[]; hasMore: boolean }> {
     const scope = AGENT_DELIVERY_SCOPE_SQL
-    const orgId = this.orgFor(agentId)
+    const partition = this.orgForRead(agentId, orgId)
     const hiddenToolTitles = [...SESSION_TITLE_TOOL_TITLES]
     const rows = (before !== null
       ? await this.db
@@ -1853,7 +1864,7 @@ export class LocalStore {
              ORDER BY eventTimeUs DESC, seq DESC LIMIT ?`
           )
           .all(
-            orgId,
+            partition,
             channel,
             thread,
             before.eventTimeUs,
@@ -1873,7 +1884,7 @@ export class LocalStore {
              ORDER BY eventTimeUs DESC, seq DESC LIMIT ?`
           )
           .all(
-            orgId,
+            partition,
             channel,
             thread,
             agentId,
@@ -1896,7 +1907,8 @@ export class LocalStore {
     thread: string,
     agentId: string,
     afterRevision: number,
-    limit: number
+    limit: number,
+    orgId?: string
   ): Promise<{ rows: TranscriptRow[]; hasMore: boolean; cursor: number }> {
     const scope = AGENT_DELIVERY_SCOPE_SQL
     const rows = (await this.db
@@ -1908,7 +1920,7 @@ export class LocalStore {
          ORDER BY revision ASC LIMIT ?`
       )
       .all(
-        this.orgFor(agentId),
+        this.orgForRead(agentId, orgId),
         channel,
         thread,
         afterRevision,
@@ -1923,7 +1935,7 @@ export class LocalStore {
     return {
       rows: kept,
       hasMore,
-      cursor: hasMore ? kept[kept.length - 1]!.revision : await this.currentTranscriptRevision(agentId)
+      cursor: hasMore ? kept[kept.length - 1]!.revision : await this.currentTranscriptRevision(agentId, orgId)
     }
   }
 
@@ -3782,13 +3794,15 @@ export class LocalStore {
     channel: string,
     thread: string,
     agentId: string,
-    toolCallId: string
+    toolCallId: string,
+    orgId?: string
   ): Promise<string | undefined> {
     const row = (await this.db
       .prepare(
         'SELECT body FROM transcript WHERE orgId = ? AND channel = ? AND thread = ? AND sender = ? AND tool_call_id = ?'
       )
-      .get(this.orgFor(agentId), channel, thread, agentId, toolCallId)) as { body: string | null } | undefined
+      .get(this.orgForRead(agentId, orgId), channel, thread, agentId, toolCallId)) as
+      { body: string | null } | undefined
     return row?.body ?? undefined
   }
 
@@ -3917,13 +3931,18 @@ export class LocalStore {
    *  supplied one. Before the first meaningful request, this avoids showing only
    *  "Session <id>". Returns undefined when the thread holds no non-agent text row
    *  yet. Indexed by (channel, thread, seq). */
-  async firstMessageText(channel: string, thread: string, agentId: string): Promise<string | undefined> {
+  async firstMessageText(
+    channel: string,
+    thread: string,
+    agentId: string,
+    orgId?: string
+  ): Promise<string | undefined> {
     const row = (await this.db
       .prepare(
         `SELECT text FROM transcript WHERE orgId = ? AND channel = ? AND thread = ? AND kind = 'text'
            AND sender != ? ORDER BY seq ASC LIMIT 1`
       )
-      .get(this.orgFor(agentId), channel, thread, agentId)) as { text: string } | undefined
+      .get(this.orgForRead(agentId, orgId), channel, thread, agentId)) as { text: string } | undefined
     return row?.text
   }
 

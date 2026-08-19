@@ -428,6 +428,7 @@ export function sessionRoutes(deps: HttpDeps) {
     // false empty page from a machine that never held the session.
     type ContentRead<T> = { ok: true; value: T } | { ok: false; reason: 'unplaced' | 'offline' }
     const readSessionContent = async <T>(
+      req: FastifyRequest,
       session: { daemonId: string | null; contentSetId: string | null },
       read: (daemonId: string) => Promise<T>
     ): Promise<ContentRead<T>> => {
@@ -438,15 +439,23 @@ export function sessionRoutes(deps: HttpDeps) {
           : []
       })
       if (readers.length === 0) return { ok: false, reason: session.daemonId ? 'offline' : 'unplaced' }
+      // EVERY failure moves to the next holder of the same store, not just an unreachable socket:
+      // during a rollout the readers span two images, and one that answers an error is no more
+      // authoritative about rows its peers hold than one whose socket died. A read that no holder
+      // answered still fails LOUD on the last real error — only an unreachable set is a 503 —
+      // so a bug that breaks the read everywhere is never dressed up as unavailability.
+      let failure: unknown
       for (const daemonId of readers) {
         try {
           return { ok: true, value: await read(daemonId) }
         } catch (err) {
-          // Not reachable — try the next holder of the same store. A socket that dies between the
-          // registry lookup and the reply is ordinary during a rollout, and is unavailability too.
-          if (!(err instanceof NoConnection) && !(err instanceof ConnectionClosed)) throw err
+          if (!(err instanceof NoConnection) && !(err instanceof ConnectionClosed)) {
+            failure = err
+            req.log.warn({ err, daemonId }, 'session content read failed on a holder of the store; trying the next one')
+          }
         }
       }
+      if (failure !== undefined) throw failure
       return { ok: false, reason: 'offline' }
     }
 
@@ -938,7 +947,7 @@ export function sessionRoutes(deps: HttpDeps) {
         if (session.contentPurgedAt) {
           return { sessionId: session.id, messages: [], nextCursor: null, liveCursor: null, liveMore: false }
         }
-        const read = await readSessionContent(session, (daemonId) =>
+        const read = await readSessionContent(req, session, (daemonId) =>
           deps.control.sessionHistory(daemonId, session.orgId, {
             agentId: session.agentId,
             sessionId: session.id,
@@ -986,7 +995,7 @@ export function sessionRoutes(deps: HttpDeps) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'session not found' })
         }
         const { session } = owned
-        const read = await readSessionContent(session, (daemonId) =>
+        const read = await readSessionContent(req, session, (daemonId) =>
           deps.control.sessionToolBody(daemonId, session.orgId, {
             agentId: session.agentId,
             sessionId: session.id,

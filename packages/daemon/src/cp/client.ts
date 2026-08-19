@@ -1659,8 +1659,10 @@ export class CpClient {
         return
       case 'session/list': {
         // Read-only — legal in READY/DRAINING (no epoch mutation). Body-locality §12.
+        // The frame's org is the read's partition on a shared pool store: this member may hold
+        // none of the agents whose sessions it serves, so it cannot resolve one locally.
         Promise.resolve()
-          .then(() => this.deps.sessionRead.list(frame.payload as SessionListReq))
+          .then(() => this.deps.sessionRead.list(frame.payload as SessionListReq, { orgId: frame.orgId }))
           .then((page) => this.reply(frame, 'session/list/page', page))
           .catch((err) => this.sendError(frame.id, 'INTERNAL', `session/list failed: ${(err as Error).message}`, false))
         return
@@ -1670,7 +1672,7 @@ export class CpClient {
         if (!req.agentId)
           this.deps.log.warn('cp: legacy session/history request omitted agentId; owner binding is unavailable')
         Promise.resolve()
-          .then(() => this.deps.sessionRead.history(req))
+          .then(() => this.deps.sessionRead.history(req, { orgId: frame.orgId }))
           .then((page) => this.reply(frame, 'session/history/page', page))
           .catch((err) =>
             this.sendError(frame.id, 'INTERNAL', `session/history failed: ${(err as Error).message}`, false)
@@ -1694,7 +1696,7 @@ export class CpClient {
         if (!req.agentId)
           this.deps.log.warn('cp: legacy session/tool-body request omitted agentId; owner binding is unavailable')
         Promise.resolve()
-          .then(() => this.deps.sessionRead.toolBody(req))
+          .then(() => this.deps.sessionRead.toolBody(req, { orgId: frame.orgId }))
           .then((chunk) => this.reply(frame, 'session/tool-body/chunk', chunk))
           .catch((err) =>
             this.sendError(frame.id, 'INTERNAL', `session/tool-body failed: ${(err as Error).message}`, false)
