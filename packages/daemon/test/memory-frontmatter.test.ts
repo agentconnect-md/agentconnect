@@ -383,6 +383,25 @@ describe('distilled memories carry a description', () => {
     expect(await readMemoryFile(f, 'MEMORY.md')).toContain(nasty)
   })
 
+  it('round-trips a description containing quotes and backslashes', async () => {
+    const f = fs()
+    await ensureMemory(f, 'bot')
+    // Quoting escapes these on write; parsing must UNESCAPE them, or the stored value
+    // silently grows literal backslashes every time it is read back.
+    const nasty = 'he said "ship it", path C:\\tmp — see #2'
+    await appendDistilledMemories(f, [{ topic: 'quoted.md', description: nasty, content: 'fact' }])
+
+    const created = await readMemoryFile(f, 'quoted.md')
+    expect(parseMemoryFrontmatter(created).header.description).toBe(nasty)
+    // And a re-stamp (any ordinary write) must not corrupt it further.
+    const restamped = stampMemoryHeader('quoted.md', created, '2026-08-19T00:00:00.000Z')
+    expect(parseMemoryFrontmatter(restamped).header.description).toBe(nasty)
+  })
+
+  it('reads a single-quoted header value written by hand', () => {
+    expect(parseMemoryFrontmatter("---\ndescription: 'it''s fine'\n---\nbody\n").header.description).toBe("it's fine")
+  })
+
   it('records only the type the model actually chose, never a blanket project', async () => {
     const f = fs()
     await ensureMemory(f, 'bot')

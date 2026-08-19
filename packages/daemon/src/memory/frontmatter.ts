@@ -41,13 +41,24 @@ const FENCE = '---'
 const KEY_LINE = /^([A-Za-z][A-Za-z0-9_-]*):[ \t]*(.*)$/
 const KNOWN = new Set(['name', 'description', 'type', 'modified'])
 
+/** Inverse of {@link quoteIfNeeded}: a double-quoted scalar is UNESCAPED (YAML's
+ *  double-quoted style shares JSON's escapes, and that is what we emit); a
+ *  single-quoted one only collapses the doubled `''`. Stripping quotes without
+ *  unescaping would leave literal backslashes in any description that had to be
+ *  quoted, so the value would not survive a write/read round trip. */
 function unquote(raw: string): string {
   const value = raw.trim()
-  if (
-    value.length >= 2 &&
-    ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")))
-  ) {
+  if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
+    try {
+      const parsed: unknown = JSON.parse(value)
+      if (typeof parsed === 'string') return parsed
+    } catch {
+      // Not JSON-escapable after all — fall through to a plain strip.
+    }
     return value.slice(1, -1)
+  }
+  if (value.length >= 2 && value.startsWith("'") && value.endsWith("'")) {
+    return value.slice(1, -1).replace(/''/g, "'")
   }
   return value
 }
