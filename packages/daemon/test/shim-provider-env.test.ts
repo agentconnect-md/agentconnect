@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { AcpRunner, fillInCodexBaseUrl, sandboxProviderEnv, type EmitEvent } from '../src/shim/acp-runner.js'
+import {
+  AcpRunner,
+  fillInCodexBaseUrl,
+  fillInCodexConfigFloor,
+  sandboxProviderEnv,
+  type EmitEvent
+} from '../src/shim/acp-runner.js'
 import type { ShimEvent } from '../src/shim/protocol.js'
 
 const POD_ENV = {
@@ -136,6 +142,59 @@ describe('fillInCodexBaseUrl', () => {
   })
 })
 
+describe('fillInCodexConfigFloor', () => {
+  const FLOOR_ENV = { AC_CODEX_CONFIG: JSON.stringify({ features: { multi_agent: false } }) }
+
+  it('creates CODEX_CONFIG from the pod floor alone', () => {
+    const env: Record<string, string> = {}
+    fillInCodexConfigFloor(env, FLOOR_ENV)
+    expect(JSON.parse(env.CODEX_CONFIG!)).toEqual({ features: { multi_agent: false } })
+  })
+
+  it('keeps every daemon-sent top-level key over the floor and preserves the rest', () => {
+    const env = { CODEX_CONFIG: JSON.stringify({ features: { apps: false }, model: 'gpt-5.3-codex' }) }
+    fillInCodexConfigFloor(env, FLOOR_ENV)
+    const config = JSON.parse(env.CODEX_CONFIG) as Record<string, unknown>
+    expect(config.features).toEqual({ apps: false })
+    expect(config.model).toBe('gpt-5.3-codex')
+  })
+
+  it('composes with the base-url fill-in: floor config never blocks the pod aim', () => {
+    const env: Record<string, string> = {}
+    fillInCodexConfigFloor(env, { ...POD_ENV, ...FLOOR_ENV })
+    fillInCodexBaseUrl(env, { ...POD_ENV, ...FLOOR_ENV })
+    expect(JSON.parse(env.CODEX_CONFIG!)).toEqual({
+      features: { multi_agent: false },
+      model_provider: 'openai',
+      openai_base_url: 'https://codex-egress.internal'
+    })
+  })
+
+  it('warns and leaves a malformed floor unapplied instead of throwing', () => {
+    const env: Record<string, string> = {}
+    const warnings: string[] = []
+    fillInCodexConfigFloor(env, { AC_CODEX_CONFIG: 'not json' }, (message) => warnings.push(message))
+    expect(env.CODEX_CONFIG).toBeUndefined()
+    expect(warnings).toHaveLength(1)
+  })
+
+  it('warns and leaves a malformed daemon config untouched instead of throwing', () => {
+    const env = { CODEX_CONFIG: 'not json' }
+    const warnings: string[] = []
+    fillInCodexConfigFloor(env, FLOOR_ENV, (message) => warnings.push(message))
+    expect(env.CODEX_CONFIG).toBe('not json')
+    expect(warnings).toHaveLength(1)
+  })
+
+  it('does nothing on an absent, blank, or empty-object floor', () => {
+    for (const value of [undefined, '  ', '{}']) {
+      const env: Record<string, string> = {}
+      fillInCodexConfigFloor(env, { AC_CODEX_CONFIG: value })
+      expect(env.CODEX_CONFIG).toBeUndefined()
+    }
+  })
+})
+
 describe('AcpRunner codex config projection', () => {
   it('projects the pod codex base URL into CODEX_CONFIG on a codex spawn', async () => {
     const seen = await spawnAndReadEnv('codex-acp', { PATH: process.env.PATH ?? '' })
@@ -151,5 +210,31 @@ describe('AcpRunner codex config projection', () => {
     const daemonConfig = JSON.stringify({ openai_base_url: 'https://daemon-decided.internal' })
     const seen = await spawnAndReadEnv('codex-acp', { PATH: process.env.PATH ?? '', CODEX_CONFIG: daemonConfig })
     expect(seen.C).toBe(daemonConfig)
+  })
+
+  it('merges the pod config floor under the daemon aim on a codex spawn', async () => {
+    const chunks: string[] = []
+    let onExit: (() => void) | undefined
+    const exited = new Promise<void>((resolve) => (onExit = resolve))
+    const emit: EmitEvent = (event: ShimEvent['event']) => {
+      if (event.kind === 'chunk') chunks.push(Buffer.from(event.data, 'base64').toString('utf8'))
+      if (event.kind === 'exit') onExit?.()
+    }
+    const podEnv = { ...POD_ENV, AC_CODEX_CONFIG: JSON.stringify({ features: { multi_agent: false } }) }
+    const runner = new AcpRunner({ emit, resolveCommand: () => process.execPath, podEnv })
+    await runner.apply({
+      op: 'open',
+      command: 'codex-acp',
+      args: ['-e', 'process.stdout.write(process.env.CODEX_CONFIG ?? "")'],
+      env: {
+        PATH: process.env.PATH ?? '',
+        CODEX_CONFIG: JSON.stringify({ openai_base_url: 'https://daemon-decided.internal' })
+      }
+    })
+    await exited
+    expect(JSON.parse(chunks.join(''))).toEqual({
+      features: { multi_agent: false },
+      openai_base_url: 'https://daemon-decided.internal'
+    })
   })
 })

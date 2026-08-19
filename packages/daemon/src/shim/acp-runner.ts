@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { codexConfigWithBaseUrlFillIn } from '../runtimes/codex-config.js'
+import { codexConfigWithBaseUrlFillIn, codexConfigWithFloor } from '../runtimes/codex-config.js'
 import { AcpStreamPayloadSchema, type AcpOpen } from './acp-stream.js'
 import { SANDBOX_GH_WRAPPER_DIR } from './sandbox-paths.js'
 import type { ShimEvent } from './protocol.js'
@@ -93,6 +93,25 @@ export function fillInCodexBaseUrl(
   }
 }
 
+// Deployment-asserted codex session config (AC_CODEX_CONFIG, a JSON object) — endpoint knowledge
+// like "this gateway rejects a newer tool type", which only the deployment holds. Floor semantics
+// match the env loop: every top-level key the daemon sent stays authoritative.
+export function fillInCodexConfigFloor(
+  env: Record<string, string>,
+  podEnv: Record<string, string | undefined>,
+  warn?: (message: string) => void
+): void {
+  const floorRaw = podEnv.AC_CODEX_CONFIG?.trim()
+  if (!floorRaw) return
+  try {
+    const merged = codexConfigWithFloor(env.CODEX_CONFIG, floorRaw)
+    if (merged !== undefined) env.CODEX_CONFIG = merged
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error)
+    warn?.(`acp: leaving the pod codex config floor unapplied — ${reason}`)
+  }
+}
+
 /**
  * Runs the ACP runtime inside the sandbox and relays its stdio.
  *
@@ -154,6 +173,9 @@ export class AcpRunner {
       if (!env[name]) env[name] = value
     }
     if (sandboxProfile(payload.command) === 'codex') {
+      // Floor before URL: the daemon-sent config wins either way, and a floor that carries no
+      // aim never blocks the base-url fill-in below.
+      fillInCodexConfigFloor(env, podEnv, (message) => this.deps.log?.warn(message))
       fillInCodexBaseUrl(env, podEnv, (message) => this.deps.log?.warn(message))
     }
     const command = this.deps.resolveCommand?.(payload.command, env) ?? payload.command

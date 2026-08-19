@@ -32,6 +32,13 @@ export function codexConfigWithBaseUrl(raw: string | undefined, baseUrl: string)
   return JSON.stringify({ ...config, model_provider: 'openai', openai_base_url: baseUrl })
 }
 
+/** Deployment floor for the sandbox shim: pod-asserted config keys sit under any daemon-sent key. */
+export function codexConfigWithFloor(raw: string | undefined, floorRaw: string): string | undefined {
+  const floor = objectFromJson(floorRaw, 'AC_CODEX_CONFIG')
+  if (Object.keys(floor).length === 0) return undefined
+  return JSON.stringify({ ...floor, ...objectFromJson(raw, 'CODEX_CONFIG') })
+}
+
 /** Fill-in variant for the sandbox shim: undefined when the daemon already aimed codex somewhere. */
 export function codexConfigWithBaseUrlFillIn(raw: string | undefined, baseUrl: string): string | undefined {
   const config = objectFromJson(raw, 'CODEX_CONFIG')
