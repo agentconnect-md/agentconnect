@@ -115,7 +115,16 @@ interface CheckPresentation {
   requestReviewAction?: boolean
 }
 
-const ASSOCIATION_BLOCKED_STATE: ProjectionDesiredState = 'action_required'
+/** A head GitHub no longer presents was superseded; only an unreadable association needs a human. */
+function associationBlockedState(code: SubjectAssociationErrorCode): ProjectionDesiredState {
+  return code === 'stale_head' || code === 'no_current_pull_request' ? 'neutral' : 'action_required'
+}
+
+function associationCheckTitle(code: SubjectAssociationErrorCode): string {
+  return associationBlockedState(code) === 'neutral'
+    ? 'Revision is no longer current'
+    : 'Pull request association needs attention'
+}
 
 export interface GithubRunReporterLog {
   info(obj: unknown, msg?: string): void
@@ -471,7 +480,7 @@ export class GithubRunReporter {
         : null
     if (
       settledAssociationError &&
-      projection.observedState === ASSOCIATION_BLOCKED_STATE &&
+      projection.observedState === associationBlockedState(settledAssociationError) &&
       projection.writePhase === null &&
       projection.writeMarker === null
     ) {
@@ -544,7 +553,7 @@ export class GithubRunReporter {
       if (!association.synchronized) return
       associationError = association.errorCode
       if (associationError) {
-        effectiveState = ASSOCIATION_BLOCKED_STATE
+        effectiveState = associationBlockedState(associationError)
       }
     }
 
@@ -1104,7 +1113,7 @@ function checkOutputTitle(
   associationError: SubjectAssociationErrorCode | null,
   presentation: CheckPresentation
 ): string {
-  if (associationError) return 'Pull request association needs attention'
+  if (associationError) return associationCheckTitle(associationError)
   if (state === 'skipped' && presentation.skippedLabel) return presentation.skippedLabel
   return CHECK_OUTPUT_TITLE[state]
 }
