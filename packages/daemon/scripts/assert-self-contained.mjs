@@ -72,10 +72,10 @@ for (const arch of ['x64', 'arm64']) {
 // requirement than the daemon's: it ships in the runtime image, so a relative import here
 // means the image must also carry the daemon's chunk graph — its CP client, platform SDKs
 // and credential paths — into the half-trusted sandbox. One file, or the build fails.
-// Both entries the image ships, checked identically: the credential helper is a second bundle
-// precisely so its graph stays disjoint from the channel's, and a shared module would show up here
+// Every entry the image ships, checked identically: the credential helper and the gh token fetch are separate
+// bundles precisely so their graphs stay disjoint from the channel's, and a shared module would show up here
 // as a relative chunk import — a file the image never copies.
-for (const entry of ['index.js', 'git-credential.js']) {
+for (const entry of ['index.js', 'git-credential.js', 'gh-token.js']) {
   const shimPath = new URL(`../dist/shim/${entry}`, import.meta.url)
   if (!existsSync(shimPath)) {
     console.error(`✗ shim bundle ${entry} is missing — \`tsdown --config tsdown.shim.config.ts\` did not run`)
@@ -100,5 +100,17 @@ for (const entry of ['index.js', 'git-credential.js']) {
   }
 }
 
+// The sh wrapper the image puts on the agent's PATH is generated from the same renderGhWrapper the daemon uses,
+// so a build that skipped the emit step would ship an image whose `gh` is simply missing.
+const ghWrapper = new URL('../dist/shim/gh', import.meta.url)
+if (!existsSync(ghWrapper)) {
+  console.error('✗ the sandbox gh wrapper is missing — `node scripts/emit-shim-gh-wrapper.mjs` did not run')
+  process.exit(1)
+}
+if (!readFileSync(ghWrapper, 'utf8').includes('/opt/agentconnect/shim/gh-token.js')) {
+  console.error('✗ the sandbox gh wrapper does not call the in-image token entry')
+  process.exit(1)
+}
+
 console.log('✓ daemon bundle is self-contained (including skills CLI 1.5.21 and SRT seccomp helpers)')
-console.log('✓ shim bundles are self-contained (channel + credential helper, node: builtins only)')
+console.log('✓ shim bundles are self-contained (channel + credential helper + gh token, node: builtins only)')

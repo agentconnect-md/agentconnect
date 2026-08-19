@@ -49,6 +49,9 @@ const SHIM_PATH = '/opt/agentconnect/shim/index.js'
 /** Must match SANDBOX_GIT_CREDENTIAL_HELPER in packages/daemon/src/shim/sandbox-paths.ts: the
  *  daemon writes this path into git config, so a rename here is a silent auth failure there. */
 const CREDENTIAL_HELPER_PATH = '/opt/agentconnect/bin/git-credential'
+/** Must match SANDBOX_GH_WRAPPER_DIR in packages/daemon/src/shim/sandbox-paths.ts: the shim prepends exactly
+ *  this directory to the runtime's PATH, so a rename here silently drops every per-repo gh token. */
+const GH_WRAPPER_PATH = '/opt/agentconnect/pathbin/gh'
 const TABLE_PATH = '/opt/agentconnect/runtime/k8s-runtimes.json'
 
 // The runtime is the untrusted party in this image, so root would hand it the whole filesystem.
@@ -98,6 +101,30 @@ check('the git credential helper is present, executable and root-owned', () => {
     throw new Error('credential helper is not executable, so git cannot run it')
   }
   return owner
+})
+
+// gh reads a static GH_TOKEN fixed at spawn, so a pod agent gets per-repo tokens only through this wrapper —
+// and one the runtime can rewrite is one it can replace with a wrapper that asks the daemon in its name.
+check('the gh wrapper is present, executable and root-owned', () => {
+  const owner = inImage(`stat -c '%U:%G %a' ${GH_WRAPPER_PATH}`)
+  if (!owner.startsWith('root:root')) throw new Error(`gh wrapper is not root-owned (${owner})`)
+  const mode = owner.split(' ')[1]
+  if (/[2367]$/.test(mode) || /^.[2367]/.test(mode)) throw new Error(`gh wrapper is group/other writable (${mode})`)
+  const refused = inImage(`(echo x >> ${GH_WRAPPER_PATH} && echo WRITABLE) || echo refused`)
+  if (refused !== 'refused') throw new Error('the runtime user can modify the gh wrapper')
+  if (inImage(`test -x ${GH_WRAPPER_PATH} && echo yes || echo no`) !== 'yes') {
+    throw new Error('gh wrapper is not executable, so the runtime would resolve the real gh instead')
+  }
+  return owner
+})
+
+// The wrapper is only useful if it finds the real gh PAST itself: prepending its dir must not shadow the binary
+// it execs, and an agent with no AgentConnect identity must still get an ordinary, unauthenticated gh.
+check('the gh wrapper defers to the real gh when no agent identity is present', () => {
+  const dir = GH_WRAPPER_PATH.replace(/\/gh$/, '')
+  const out = inImage(`PATH=${dir}:$PATH gh --version 2>&1 | head -1`)
+  if (!/^gh version /.test(out)) throw new Error(`the wrapper did not reach the real gh: ${out}`)
+  return out
 })
 
 // A helper that cannot reach a socket must SAY so and fail, because the alternative is git
@@ -173,7 +200,7 @@ check('the published runtime table matches a fresh ACP probe of this image', () 
 // The workspace surface runs git INSIDE the sandbox over the shim's exec channel, so a missing
 // git is not a degraded feature — it is every workspace operation failing at the far end.
 check('provides the executables the shim must resolve', () => {
-  const required = ['git', 'node', 'claude-agent-acp', 'codex-acp', 'opencode', 'dsh-acp']
+  const required = ['git', 'gh', 'node', 'claude-agent-acp', 'codex-acp', 'opencode', 'dsh-acp']
   const missing = required.filter((bin) => inImage(`command -v ${bin} >/dev/null && echo y || echo n`) === 'n')
   if (missing.length > 0) throw new Error(`missing: ${missing.join(', ')}`)
   return required.join(' ')

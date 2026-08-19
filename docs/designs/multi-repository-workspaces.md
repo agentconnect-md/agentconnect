@@ -1,7 +1,7 @@
 # Multi-Repository Workspaces: Secondary Roots and Cross-Repository Review
 
 > **Status:** Implemented, on self-hosted daemons (phases 1–6) and on cluster
-> (pod) daemons (phase 7). `gh` inside the pod remains a separate item.
+> (pod) daemons (phase 7), `gh` in the pod included.
 >
 > Before this design an agent's workspace was exactly one repository.
 > Additional repositories existed only as an authorization allowlist
@@ -213,10 +213,13 @@ and the hand-out and GC entry points that used to answer from a synchronous
 `existsSync` are asynchronous so the pod can answer them. Shipped as two PRs:
 the seam plus session worktrees on the pod (which also gives pool agents an
 exact same-repository review checkout for the first time), then secondary roots
-and cross-repository review on the pod. `gh` inside the pod stays a separate
-item: the runtime image ships no `gh` and the wrapper is a file on the daemon's
-PATH. So does the console's own workspace browsing, which still answers with no
-root for a secondary repository on a cluster agent.
+and cross-repository review on the pod, then `gh` in the pod: the runtime image
+now carries the real `gh` and a wrapper rendered from the daemon's own generator
+with the image's paths, which the shim prepends to the runtime's PATH. The token
+still comes from the daemon — over the same tunnelled `gitcred` socket the
+in-pod Git helper uses, with the same per-repository authorization. The
+console's own workspace browsing stays a separate item, and still answers with
+no root for a secondary repository on a cluster agent.
 
 ## Open questions
 

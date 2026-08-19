@@ -11,6 +11,14 @@
 /** The credential helper git runs inside the pod. Root-owned and read-only, like the shim. */
 export const SANDBOX_GIT_CREDENTIAL_HELPER = '/opt/agentconnect/bin/git-credential'
 
+/** The gh wrapper's token fetch in the pod — the in-sandbox twin of the daemon's hidden `gh-token` subcommand. */
+export const SANDBOX_GH_TOKEN_ENTRY = '/opt/agentconnect/shim/gh-token.js'
+
+/** The ONLY image directory prepended to the runtime's PATH: the gh wrapper and nothing else. */
+// Its own dir rather than reusing bin/ or shim/: those hold the credential helper and the runtime-table
+// generator, and neither should become a command an agent can run by name.
+export const SANDBOX_GH_WRAPPER_DIR = '/opt/agentconnect/pathbin'
+
 /** Where daemon-written, per-agent git configuration is materialized in the pod. Under /run rather
  *  than the workspace volume: it is regenerated per launch and belongs to the POD, so a resumed
  *  workspace must not carry a previous incarnation's copy. */
