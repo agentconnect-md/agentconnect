@@ -3,6 +3,7 @@ import { posix } from 'node:path'
 import { parse as parseYaml } from 'yaml'
 import { MAX_ORGANIZATION_SUGGESTION_BODY_BYTES, type SkillBundleTextFile } from '@agentconnect.md/protocol'
 import { MEMORY_INDEX, MAX_INDEX_INJECT_BYTES, MAX_MEMORY_FILE_BYTES } from '../memory/store.js'
+import { MEMORY_FORMAT_GUIDANCE } from '../memory/frontmatter.js'
 
 /**
  * Pure dream-pipeline pieces (design: docs/designs/memory-dreaming.md §4–5):
@@ -144,7 +145,7 @@ Rebuild the memory store in four phases:
 1. Orient: read the existing store; understand its topics and index.
 2. Gather signal: mine the transcripts for corrections, preference shifts, decisions, and recurring patterns.
 3. Consolidate: merge duplicates; where entries contradict, keep the latest value; convert relative dates to absolute dates; drop transient task progress, pleasantries, and secrets.
-4. Prune and index: rebuild the index with one short line per topic; demote verbose entries into topic files.
+4. Prune and index: give every topic file a good \`description\` header — the index is GENERATED from those, so a weak description is what makes a memory unfindable later; demote verbose entries into topic files.
 
 Rules:
 - Unlike per-turn distillation, you MAY rewrite, merge, and delete entries — but only inside the returned proposal.
@@ -154,10 +155,13 @@ Rules:
 - Rename, merge, or split files only when a material content change makes the existing structure misleading. Prefer the smallest diff when multiple proposals are equally faithful.
 - Every memory must be self-contained and understandable without the conversation.
 - Topic filenames are lowercase kebab-case .md names.
+
+${MEMORY_FORMAT_GUIDANCE}
+
 - Never include credentials, tokens, or other secrets.
 - Return JSON only with four explicit categories:
   {"agentMemory":{"index":"<full MEMORY.md text>","files":[{"path":"topic.md","content":"full file text"}]},"agentSkills":[],"organizationKnowledge":[],"organizationSkills":[]}.
-- agentMemory.index is always the complete, non-empty MEMORY.md text. When there are no persistent agent memories, return "# Memory\n\n_No persistent memories yet._\n" rather than an empty string.
+- agentMemory.index is always the complete, non-empty MEMORY.md text. It is a review preview: once adopted, the index is regenerated from the topic descriptions, so spend your effort on those rather than on index prose. When there are no persistent agent memories, return "# Memory\n\n_No persistent memories yet._\n" rather than an empty string.
 - organizationKnowledge entries are owner-review proposals in exactly this shape: {"operation":"create|update","targetId":"uuid only for update","targetRevision":1,"title":"...","summary":"...","tags":["..."],"content":"Markdown","sessionIds":["..."]}. The citation property is named "sessionIds" (never "groundedSessionIds").
 - Propose organization knowledge only when it is reusable across multiple agents or represents a durable organization-wide convention. Agent-specific facts stay in agentMemory.
 - Before proposing organization knowledge, check what already exists with the listKnowledge / findKnowledge tools. If an existing entry covers the same subject, propose an "update" to its exact id/revision (never a near-duplicate "create").

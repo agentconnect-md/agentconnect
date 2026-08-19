@@ -15,6 +15,7 @@ import {
   stampMemoryHeader,
   MEMORY_FORMAT_GUIDANCE
 } from '../src/memory/frontmatter.js'
+import { dreamSystemPrompt } from '../src/dream/dreamer.js'
 import {
   ensureMemory,
   MAX_MEMORY_FILE_BYTES,
@@ -435,8 +436,11 @@ describe('distilled memories carry a description', () => {
     expect(parsed[0]?.description).toBe('multi line')
   })
 
-  it('teaches the SAME format text everywhere — the drift that caused this', () => {
-    // The distiller and the per-turn prompt must not restate the format separately.
+  it('teaches the SAME format text in every trigger — the drift that caused this', () => {
+    // Per-turn, distillation, and dreaming all write memory files. Each restating the
+    // format is exactly how they diverged, so all three embed the one shared text.
     expect(MEMORY_DISTILLATION_SYSTEM_PROMPT).toContain(MEMORY_FORMAT_GUIDANCE)
+    expect(dreamSystemPrompt(false)).toContain(MEMORY_FORMAT_GUIDANCE)
+    expect(dreamSystemPrompt(true)).toContain(MEMORY_FORMAT_GUIDANCE)
   })
 })
