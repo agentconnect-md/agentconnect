@@ -41,13 +41,24 @@ const FENCE = '---'
 const KEY_LINE = /^([A-Za-z][A-Za-z0-9_-]*):[ \t]*(.*)$/
 const KNOWN = new Set(['name', 'description', 'type', 'modified'])
 
+/** Inverse of {@link quoteIfNeeded}: a double-quoted scalar is UNESCAPED (YAML's
+ *  double-quoted style shares JSON's escapes, and that is what we emit); a
+ *  single-quoted one only collapses the doubled `''`. Stripping quotes without
+ *  unescaping would leave literal backslashes in any description that had to be
+ *  quoted, so the value would not survive a write/read round trip. */
 function unquote(raw: string): string {
   const value = raw.trim()
-  if (
-    value.length >= 2 &&
-    ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")))
-  ) {
+  if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
+    try {
+      const parsed: unknown = JSON.parse(value)
+      if (typeof parsed === 'string') return parsed
+    } catch {
+      // Not JSON-escapable after all — fall through to a plain strip.
+    }
     return value.slice(1, -1)
+  }
+  if (value.length >= 2 && value.startsWith("'") && value.endsWith("'")) {
+    return value.slice(1, -1).replace(/''/g, "'")
   }
   return value
 }
@@ -102,6 +113,25 @@ export function parseMemoryFrontmatter(text: string): ParsedMemory {
  *  whitespace. An ISO timestamp's colons are safe and stay unquoted. */
 function quoteIfNeeded(value: string): string {
   return /^[\s"'[{&*!|>%@`-]|: |:$| #|\s$/.test(value) ? JSON.stringify(value) : value
+}
+
+/**
+ * Render a frontmatter block for a file being created. Values go through the same
+ * scalar-quoting rule as a stamp, so a description containing `: `, ` #`, or a
+ * leading YAML indicator cannot produce invalid or truncated frontmatter.
+ */
+export function buildMemoryHeader(fields: { description?: string; type?: MemoryEntryType }): string {
+  const lines: string[] = []
+  if (fields.description) lines.push(`description: ${quoteIfNeeded(fields.description.replace(/\s+/g, ' ').trim())}`)
+  if (fields.type) lines.push(`type: ${fields.type}`)
+  return lines.length > 0 ? `${FENCE}\n${lines.join('\n')}\n${FENCE}\n\n` : ''
+}
+
+/** Coerce a model-supplied string to one of our types, or undefined if it is not one. */
+export function asMemoryEntryType(value: unknown): MemoryEntryType | undefined {
+  return typeof value === 'string' && (MEMORY_ENTRY_TYPES as readonly string[]).includes(value)
+    ? (value as MemoryEntryType)
+    : undefined
 }
 
 /** The `name` slug for a topic file (`deploys.md` → `deploys`). */
@@ -164,3 +194,24 @@ export function memoryLinkTargets(body: string): string[] {
   }
   return [...found]
 }
+
+/**
+ * The ONE description of the memory file format and its upkeep rules. Every trigger
+ * that writes memory — an ordinary turn, per-turn distillation, a dream — must teach
+ * the same shape, so this text is shared rather than restated. Restating it is how
+ * the three prompts drifted apart in the first place.
+ */
+export const MEMORY_FORMAT_GUIDANCE =
+  'ONE FILE = ONE FACT, named in short kebab-case. Start each topic file with a header, then the body:\n' +
+  '---\n' +
+  'description: one line saying what this holds — it is how a future session decides to open it\n' +
+  'type: user | feedback | project | reference\n' +
+  '---\n' +
+  '`user`: who the people here are — role, expertise, preferences. `feedback`: guidance about how to work, ' +
+  'corrections and confirmed approaches alike; include WHY and how to apply it. `project`: ongoing work, goals, ' +
+  'or constraints not derivable from the code or git history; write dates absolute, never "yesterday". ' +
+  '`reference`: pointers to external resources — URLs, dashboards, tickets.\n' +
+  'Link related memories inline as `[[topic-name]]` (no `.md`), and link liberally: a `[[name]]` with no file ' +
+  'behind it yet is a marker for something worth writing later, not an error.\n' +
+  'Never store what the repository already records — code structure, past fixes, git history, CLAUDE.md — or ' +
+  'what only matters to the conversation in front of you.'
