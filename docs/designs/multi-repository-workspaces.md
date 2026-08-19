@@ -3,14 +3,15 @@
 > **Status:** Implemented for self-hosted daemons (phases 1–6). Phase 7 — the
 > same roots on cluster (pod) daemons — is proposed below.
 >
-> Today an agent's workspace is exactly one repository. Additional repositories
-> exist only as an authorization allowlist
+> Before this design an agent's workspace was exactly one repository.
+> Additional repositories existed only as an authorization allowlist
 > ([agent-multi-repo-authorization.md](agent-multi-repo-authorization.md)) —
-> `git` and `gh` can reach them, but nothing is checked out locally. Two
-> consequences: a GitHub review of an authorized-but-secondary repository has no
-> trusted checkout and degrades to a "revision-only" empty directory, and an
-> ordinary session cannot read the secondary repositories at all except through
-> the network.
+> `git` and `gh` could reach them, but nothing was checked out locally. Two
+> consequences: a GitHub review of an authorized-but-secondary repository had no
+> trusted checkout and degraded to a "revision-only" empty directory, and an
+> ordinary session could not read the secondary repositories at all except
+> through the network. On self-hosted daemons that is no longer the case; on
+> cluster (pod) daemons it still is, which is what phase 7 addresses.
 >
 > This design turns the allowlist into **workspace roots**: one primary root
 > (today's workspace) plus zero or more secondary roots, materialized by the
@@ -173,24 +174,26 @@ tunnelled helper — a secondary repository authenticates today.
 
 What is missing is one seam, the filesystem twin of `GitRunner`:
 
-| Op                                                  | Used for                                                | Local         | Sandbox                                                                                         |
-| --------------------------------------------------- | ------------------------------------------------------- | ------------- | ----------------------------------------------------------------------------------------------- |
-| `stat` (no symlink follow) → `file / dir / missing` | is `.git` there, does the checkout exist, symlink guard | `lstatSync`   | the memory-fs channel (an added `stat` op; the channel is fd-anchored and already symlink-safe) |
-| `readdir`                                           | list `repos/*/*`, judge an empty leftover               | `readdirSync` | memory-fs `readdir`                                                                             |
-| `mkdir`                                             | worktrees root, `repos/<owner>/<repo>`                  | `mkdirSync`   | memory-fs `mkdir`                                                                               |
-| `readFile` / atomic `writeFile`                     | materialization marker, the session-cwd attestation     | `node:fs`     | memory-fs `read` / `commit`                                                                     |
-| `rename`                                            | publishing a staged clone                               | `renameSync`  | memory-fs `rename`                                                                              |
-| `rmTree`                                            | a broken worktree, a retired subtree                    | `rmSync`      | the existing `clearPath` sink                                                                   |
-
-The memory-fs channel already serves every one of those primitives except
-`stat`, anchored at the pod's mount and accepting any root below it — it is
-"memory" only by its current caller. It is renamed (or aliased) to a general
-workspace-fs channel rather than duplicated. Containment on the sandbox side is
-the shim's fd-anchored descent, which is stronger than the daemon's lexical
-checks; the daemon keeps only path composition in the pod's coordinates
-(`<mount>/worktrees/<sid>`, `<mount>/repos/<owner>/<repo>/{checkout,worktrees/<sid>}`).
-The exec allowlist gains `symbolic-ref`, `branch`, `show-ref`, `ls-remote` and
-`show`, which the worktree and secondary-root paths already use locally.
+| Op                                                                                               | Used for                                                | Local         | Sandbox                                                                                                                                     |
+| ------------------------------------------------------------------------------------------------ | ------------------------------------------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `stat` (no symlink follow) → `file / dir / missing`                                              | is `.git` there, does the checkout exist, symlink guard | `lstatSync`   | the memory-fs channel (an added `stat` op; the channel is fd-anchored and already symlink-safe)                                             |
+| `readdir`                                                                                        | list `repos/*/*`, judge an empty leftover               | `readdirSync` | memory-fs `readdir`                                                                                                                         |
+| `mkdir`                                                                                          | worktrees root, `repos/<owner>/<repo>`                  | `mkdirSync`   | memory-fs `mkdir`                                                                                                                           |
+| `readFile` / atomic `writeFile`                                                                  | materialization marker, the session-cwd attestation     | `node:fs`     | memory-fs `read` / `commit`                                                                                                                 |
+| `rename`                                                                                         | publishing a staged clone                               | `renameSync`  | memory-fs `rename`                                                                                                                          |
+| `rmTree`                                                                                         | a broken worktree, a retired subtree                    | `rmSync`      | memory-fs `rm` (fd-anchored, recursive; not the `clearPath` sink, which empties a directory's children by absolute path and keeps the root) |
+| The memory-fs channel already serves every one of those primitives except                        |
+| `stat` — including the recursive `rm` that `rmTree` needs — anchored at the                      |
+| pod's mount and accepting any root below it; it is "memory" only by its current                  |
+| caller. `clearPath` is not a substitute: it removes a directory's children by                    |
+| absolute path and keeps the directory, so it can neither retire a subtree nor                    |
+| leave a rename target absent, and it is not fd-anchored. It is renamed (or aliased) to a general |
+| workspace-fs channel rather than duplicated. Containment on the sandbox side is                  |
+| the shim's fd-anchored descent, which is stronger than the daemon's lexical                      |
+| checks; the daemon keeps only path composition in the pod's coordinates                          |
+| (`<mount>/worktrees/<sid>`, `<mount>/repos/<owner>/<repo>/{checkout,worktrees/<sid>}`).          |
+| The exec allowlist gains `symbolic-ref`, `branch`, `show-ref`, `ls-remote` and                   |
+| `show`, which the worktree and secondary-root paths already use locally.                         |
 
 With the seam in place the worktree, secondary-root, retirement and review-cwd
 code stops touching `node:fs` directly and runs unchanged on both drivers;
