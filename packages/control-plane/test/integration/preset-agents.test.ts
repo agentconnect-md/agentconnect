@@ -105,11 +105,11 @@ describe('org-creation seam (POST /orgs)', () => {
     expect(((agent.runtimeOverrides ?? {}) as { skills?: string[] }).skills ?? []).toEqual([])
   })
 
-  it('an install running a pool is born placed on Cloud, with the deployment’s runtime and model', async () => {
+  it('an install running a pool is born placed on it, with the deployment’s runtime and model', async () => {
     await seedPoolMember(prisma, randomUUID())
-    const org = await prisma.org.create({ data: { slug: `cloud-born-${randomUUID().slice(0, 8)}` } })
+    const org = await prisma.org.create({ data: { slug: `pool-born-${randomUUID().slice(0, 8)}` } })
 
-    await provisionPresetAgents(prisma, { orgId: org.id, cloud: { runtime: 'dsh-acp', model: 'deepseek-v4-flash' } })
+    await provisionPresetAgents(prisma, { orgId: org.id, pool: { runtime: 'dsh-acp', model: 'deepseek-v4-flash' } })
 
     const agent = await prisma.agent.findUniqueOrThrow({
       where: { orgId_name: { orgId: org.id, name: GENERAL_PRESET.name } }
@@ -128,12 +128,12 @@ describe('org-creation seam (POST /orgs)', () => {
     expect(row.placementSettledAt).not.toBeNull()
   })
 
-  it('an install with no pool member is born unplaced even with a Cloud runtime configured', async () => {
+  it('an install with no pool member is born unplaced even with a pool runtime configured', async () => {
     // The org-less set ROW exists on every install (the migration mints it) — only
-    // membership says whether this deployment actually runs Cloud.
-    const org = await prisma.org.create({ data: { slug: `no-cloud-${randomUUID().slice(0, 8)}` } })
+    // membership says whether this deployment actually runs a pool.
+    const org = await prisma.org.create({ data: { slug: `no-pool-${randomUUID().slice(0, 8)}` } })
 
-    await provisionPresetAgents(prisma, { orgId: org.id, cloud: { runtime: 'dsh-acp', model: 'deepseek-v4-flash' } })
+    await provisionPresetAgents(prisma, { orgId: org.id, pool: { runtime: 'dsh-acp', model: 'deepseek-v4-flash' } })
 
     const agent = await prisma.agent.findUniqueOrThrow({
       where: { orgId_name: { orgId: org.id, name: GENERAL_PRESET.name } }

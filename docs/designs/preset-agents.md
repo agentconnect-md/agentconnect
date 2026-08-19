@@ -2,7 +2,7 @@
 
 **Status:** M0 implemented (reserved slugs, nullable `Agent.runtime`, org-creation
 seam + one-time backfill + `preset_agent` state, the `agentconnect` general preset,
-console tolerance for unplaced agents, and Cloud birth — a new org's preset placed
+console tolerance for unplaced agents, and pool birth — a new org's preset placed
 on the daemon pool at creation with the deployment's runtime/model, §3.2), together
 with §5.3 Fulfillment B — the
 platform-published "Add to Slack" app (deployment credentials, state-bound install route,
@@ -81,7 +81,7 @@ a dedicated assistant agent — and where its successor lives instead.
 | Display name          | **AgentConnect** — fixed (2026-07-29, together with the icon): the console disables renaming and the CP refuses the PATCH                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | Kind                  | An ordinary agent row — no schema discriminator; the agent DTO carries a derived `builtin` flag (a `preset_agent` row references it) driving the console's lowercase `builtin` label and the delete refusal                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | Visibility            | `org`, editable                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| Runtime               | **Unset at creation** (deferred, §3.2); set at placement from the daemon's reported runtimes, preferring a `ready` one. On an install that runs a daemon pool the preset is born placed on it instead, carrying the deployment's configured pool runtime and model (§3.2 "Cloud birth")                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| Runtime               | **Unset at creation** (deferred, §3.2); set at placement from the daemon's reported runtimes, preferring a `ready` one. On an install that runs a daemon pool the preset is born placed on it instead, carrying the deployment's configured pool runtime and model (§3.2 "Pool birth")                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | Profile               | Ordinary agent profile                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | Workspace             | Scratch; attaching a repository is a checklist step                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | MCP                   | Daemon defaults, nothing extra. The planned successor to §4 adds the AgentConnect MCP admin toolset to its **webapp sessions only**, gated on the per-session delegated key                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
@@ -107,7 +107,7 @@ capacity, no runtime is needed:
   reserved-name collision there writes a `skipped` row (§3.3). New orgs cannot
   collide — they have no agents.
 
-**Cloud birth — placed at creation when the install runs a pool.** An unplaced
+**Pool birth — placed at creation when the install runs a pool.** An unplaced
 preset is a promise the install can only keep once a machine arrives; an install
 that already runs a daemon pool has one, so the preset is placed on the pool
 inside the same creation transaction and the org's first screen shows a working
@@ -115,13 +115,15 @@ agent. Three parts:
 
 - **The predicate is membership, not the set.** The org-less `member_set` row is
   minted by migration on every install, so its existence says nothing; the pool
-  having **at least one member** is what tells a Cloud deployment from a
-  self-hosted one. `PoolMemberReaper` retires a replaced Pod's membership inside
+  having **at least one member** is what tells a pool-backed deployment from a
+  pool-less one — a pool is an ordinary deployment shape, self-hosted installs
+  included, so this is not a hosted-only path. `PoolMemberReaper` retires a
+  replaced Pod's membership inside
   its window, so the signal does not go stale. No member ⇒ born unplaced, exactly
   as before, and a pool that arrives later never retro-places (creation has no
   later trigger; auto-placement below is the one that does).
 - **The exec config comes with the placement**, and is **deployment policy**:
-  `PRESET_AGENT_CLOUD_RUNTIME` (default `dsh-acp`) and `PRESET_AGENT_CLOUD_MODEL`
+  `PRESET_AGENT_POOL_RUNTIME` (default `dsh-acp`) and `PRESET_AGENT_POOL_MODEL`
   (default `deepseek-v4-flash`). One pool image is one runtime set shared by every
   org, so which runtime is installed and signed in there is the deployment's
   answer, not a per-org choice — and it must be a runtime the pool holds
@@ -131,7 +133,7 @@ agent. Three parts:
   `placementSettledAt` in the same transaction, so auto-placement never moves what
   the org already runs on and never fights a later unplacement.
 
-Only genuinely new orgs are born on Cloud. `ensurePresetAgentsProvisioned` — the
+Only genuinely new orgs are born on the pool. `ensurePresetAgentsProvisioned` — the
 backfill and the no-auth default tenant — deliberately provisions unplaced: it
 runs against orgs of unknown age that have already chosen where they run.
 
