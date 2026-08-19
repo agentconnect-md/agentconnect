@@ -232,12 +232,12 @@ export interface WorkspaceGitRead {
   /** The live status, or null for a non-repo workspace, an offline daemon, and the window before the first answer. */
   git: WorkspaceGitStatusDto | null
   outcome: WorkspaceGitOutcome
-  /** The PRIMARY checkout's branch. Fetched separately in session scope, where the worktree is detached and its own `branch` names no branch. */
+  /** The branch of the SELECTED root's base checkout — the label the checkout picker's non-worktree entry carries. Fetched separately in session scope, where the worktree sits on its own branch and its status names that one instead. */
   primaryBranch: string | null
 }
 
 /** The git half of the read model: status for the badges and the footer, plus the branch label a session worktree cannot supply itself. */
-// `repo` scopes the status to one authorized additional repository; `primaryBranch` stays the PRIMARY workspace's, because it labels the checkout picker beside the browser rather than the tree being read.
+// `repo` scopes BOTH reads to one authorized additional repository: the checkout picker beside the browser chooses a worktree of the selected root, so the branch it labels its non-worktree entry with is that root's, not the workspace's.
 export function useWorkspaceGitStatus(
   agentId: string,
   sessionId?: string,
@@ -256,17 +256,17 @@ export function useWorkspaceGitStatus(
         if (!active) return
         setGit(s.isRepo ? s : null)
         setOutcome(s.isRepo ? 'repo' : 'none')
-        if (!sessionId && !repo) setPrimaryBranch(s.isRepo ? s.branch : null)
+        if (!sessionId) setPrimaryBranch(s.isRepo ? s.branch : null)
       },
       (e: unknown) => {
         if (!active) return
         setGit(null)
         setOutcome(isSandboxAsleep(e) ? 'asleep' : 'unavailable')
-        if (!sessionId && !repo) setPrimaryBranch(null)
+        if (!sessionId) setPrimaryBranch(null)
       }
     )
-    if (sessionId || repo) {
-      fetchWorkspaceGitStatus(agentId).then(
+    if (sessionId) {
+      fetchWorkspaceGitStatus(agentId, undefined, repo).then(
         (s) => {
           if (active) setPrimaryBranch(s.isRepo ? s.branch : null)
         },

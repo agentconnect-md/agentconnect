@@ -467,8 +467,8 @@ describe('FilesPanel session scope', () => {
     expect(vi.mocked(fetchWorkspaceGitStatus).mock.calls).toEqual([
       // No repo scope: the dock's panel always reads the agent's own workspace.
       ['agent-a', 'session-1', undefined],
-      // The second, sessionless read is the branch label: a session worktree is detached, so its own status names no branch.
-      ['agent-a']
+      // The second, sessionless read is the branch label: a session worktree sits on its own branch, so its status names that one instead of the base checkout's.
+      ['agent-a', undefined, undefined]
     ])
   })
 

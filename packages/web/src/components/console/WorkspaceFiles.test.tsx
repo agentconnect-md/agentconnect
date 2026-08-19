@@ -189,7 +189,7 @@ it('uses the primary checkout live branch while browsing a worktree', async () =
 
   expect(container.querySelector('[data-testid="primary-branch"]')?.textContent).toBe('primary-live-branch')
   expect(fetchWorkspaceGitStatus).toHaveBeenCalledWith('agent-a', 'session-a', undefined)
-  expect(fetchWorkspaceGitStatus).toHaveBeenCalledWith('agent-a')
+  expect(fetchWorkspaceGitStatus).toHaveBeenCalledWith('agent-a', undefined, undefined)
 })
 
 // The workspace editor lives in the card this browser renders, so a replacement
@@ -354,6 +354,32 @@ it('points the view-on-remote action at the selected repository', async () => {
     }
   })
   expect(headers.at(-1)?.repoUrl).toBe('https://github.com/acme/infra')
+})
+
+it('labels the checkout picker with the SELECTED root’s branch, not the workspace’s', async () => {
+  vi.mocked(fetchWorkspaceGitStatus).mockImplementation((_agentId, _sessionId, repo) =>
+    Promise.resolve({
+      isRepo: true,
+      clean: true,
+      repo: repo ?? 'https://github.com/acme/primary-service.git',
+      agentDir: null,
+      branch: repo ? 'trunk' : 'main',
+      tracking: null,
+      ahead: 0,
+      behind: 0,
+      files: [],
+      truncated: false,
+      lastCommit: null,
+      lastFetchAt: null
+    })
+  )
+  await renderRepoScoped({
+    repo: 'acme/infra',
+    renderWorkspacePicker: (branch: string | null) => <span data-testid="base-branch">{branch}</span>
+  })
+  // The worktree picker chooses a worktree OF the selected root, so its non-worktree entry is that
+  // root's checkout — labelling it with the workspace's branch would name a branch it is not on.
+  expect(container?.querySelector('[data-testid="base-branch"]')?.textContent).toBe('trunk')
 })
 
 it('explains an authorized repository the agent has not checked out yet', async () => {
