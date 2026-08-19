@@ -63,6 +63,9 @@ interface RunResult {
 }
 
 /** Run the entry the way `/opt/agentconnect/pathbin/gh` does: `<agentId> -- <gh argv…>`. */
+// The image runs a bundle with everything inlined; a source checkout runs the same entry through tsx, which
+// resolves the workspace deps it imports. `--conditions=development` is what points those at their src/, the
+// way vitest does — without it the child needs a dist/ that these suites deliberately never build.
 function runEntry(
   ghArgv: string[],
   env: Record<string, string | undefined>,
@@ -73,7 +76,10 @@ function runEntry(
     execFile(
       process.execPath,
       [tsx, entry, agentId, '--', ...ghArgv],
-      { cwd, env: { PATH: process.env.PATH ?? '', ...env } as NodeJS.ProcessEnv },
+      {
+        cwd,
+        env: { PATH: process.env.PATH ?? '', NODE_OPTIONS: '--conditions=development', ...env } as NodeJS.ProcessEnv
+      },
       (error, stdout, stderr) => {
         const code = error && typeof (error as { code?: unknown }).code === 'number' ? (error.code as number) : 0
         resolve({ code, stdout, stderr })
