@@ -604,21 +604,23 @@ export class CollabCoordinator {
         replyState: 'awaiting'
       })
       if (req.needsReply === true && req.replyDeadlineMs !== undefined) {
-        // A retained REPLICA is local by map presence but may not hold the duty (review), and
-        // both the fire and the re-arm require current ownership — so arming here would be a
-        // silent no-op. Same rule as the cross-daemon case: refuse loudly instead.
-        if (!this.host.servesAgent(req.toAgentId)) {
+        // The deadline is PARENT-owned: the wake dispatches into the caller's session, so the
+        // caller's duty holder is the member that must fire it. If this member does not serve
+        // the caller, arming here would be a silent no-op — refuse loudly instead, exactly as
+        // the cross-daemon case does.
+        if (!this.host.servesAgent(req.callerAgentId)) {
           this.host
             .log()
             .warn(
-              `messageAgent: deadlineMs ignored for ${req.toAgentId} — its duty is held elsewhere, ` +
+              `messageAgent: deadlineMs ignored — the caller ${req.callerAgentId}'s duty is held elsewhere, ` +
                 `so this member cannot fire the wake`
             )
-          deadlineIgnored = 'target_duty_elsewhere'
+          deadlineIgnored = 'caller_duty_elsewhere'
         } else {
           await this.armParentReplyDeadline({
             childSessionKey: targetSession,
             parentSessionId: originSessionId,
+            parentAgentId: req.callerAgentId,
             childAgentId: req.toAgentId,
             platform,
             channel: coordChannel,
@@ -820,6 +822,7 @@ export class CollabCoordinator {
   private async armParentReplyDeadline(args: {
     childSessionKey: string
     parentSessionId: string
+    parentAgentId: string
     childAgentId: string
     platform: string
     channel: string
@@ -834,6 +837,7 @@ export class CollabCoordinator {
       await this.host.store().upsertParentReplyDeadline({
         childSessionKey: args.childSessionKey,
         parentSessionId: args.parentSessionId,
+        parentAgentId: args.parentAgentId,
         childAgentId: args.childAgentId,
         platform: args.platform,
         channel: args.channel,
@@ -894,7 +898,9 @@ export class CollabCoordinator {
       return
     }
     if (!row) return
-    if (!this.host.servesAgent(row.childAgentId)) return
+    // The wake dispatches into the PARENT session, so the PARENT's duty holder must be the one
+    // to fire it — a child-based gate would dispatch for an agent this member does not serve.
+    if (!this.host.servesAgent(row.parentAgentId)) return
     // `failed` still fires: the report never reached the parent, so the silence is real.
     const link = this.childSessionLinks.get(childSessionKey)
     if (link && (link.parentSessionId !== row.parentSessionId || link.replyState === 'queued-for-parent')) {
@@ -949,7 +955,7 @@ export class CollabCoordinator {
     let armed = 0
     let disarmed = 0
     for (const row of rows) {
-      const held = this.host.servesAgent(row.childAgentId)
+      const held = this.host.servesAgent(row.parentAgentId)
       const handle = this.parentReplyDeadlines.get(row.childSessionKey)
       if (held && handle === undefined) {
         this.scheduleParentReplyDeadline(row.childSessionKey, row.deadline)

@@ -269,6 +269,8 @@ export interface SessionRecord {
 export interface ParentReplyDeadlineRecord {
   childSessionKey: string
   parentSessionId: string
+  /** The AWAITING agent. The wake dispatches into ITS session, so its duty holder owns the timer. */
+  parentAgentId: string
   childAgentId: string
   /** Child coordinates, captured at arm time: the wake must work even when the child never
    *  started, so they cannot be read back off a `sessions` row that may not exist. */
@@ -978,6 +980,7 @@ export class LocalStore {
       CREATE TABLE IF NOT EXISTS parent_reply_deadline (
         childSessionKey TEXT PRIMARY KEY,
         parentSessionId TEXT NOT NULL,
+        parentAgentId TEXT NOT NULL,
         childAgentId TEXT NOT NULL,
         platform TEXT NOT NULL,
         channel TEXT NOT NULL,
@@ -5509,12 +5512,13 @@ export class LocalStore {
     await this.db
       .prepare(
         `INSERT INTO parent_reply_deadline
-           (childSessionKey, parentSessionId, childAgentId, platform, channel, thread, transportScope,
+           (childSessionKey, parentSessionId, parentAgentId, childAgentId, platform, channel, thread, transportScope,
             deliveryId, deadline, createdAt)
-         VALUES (@childSessionKey, @parentSessionId, @childAgentId, @platform, @channel, @thread, @transportScope,
+         VALUES (@childSessionKey, @parentSessionId, @parentAgentId, @childAgentId, @platform, @channel, @thread, @transportScope,
                  @deliveryId, @deadline, @createdAt)
          ON CONFLICT(childSessionKey) DO UPDATE SET
-           parentSessionId=excluded.parentSessionId, childAgentId=excluded.childAgentId,
+           parentSessionId=excluded.parentSessionId, parentAgentId=excluded.parentAgentId,
+           childAgentId=excluded.childAgentId,
            platform=excluded.platform, channel=excluded.channel, thread=excluded.thread,
            transportScope=excluded.transportScope,
            deliveryId=excluded.deliveryId, deadline=excluded.deadline, createdAt=excluded.createdAt`

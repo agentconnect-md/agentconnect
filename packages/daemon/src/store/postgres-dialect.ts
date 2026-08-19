@@ -100,6 +100,7 @@ export const canonicalColumns = [
   'originSessionId',
   'ownerId',
   'outputModeOverride',
+  'parentAgentId',
   'parentId',
   'parentSessionId',
   'payloadBytes',

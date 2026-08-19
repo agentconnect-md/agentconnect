@@ -244,9 +244,11 @@ a remote target is refused loudly, not silently ignored: the daemon logs it and 
 tool result carries `deadlineIgnored`, so the caller falls back to
 `viewSessionStatus` rather than waiting for a wake that will never come.
 
-The same refusal covers a retained local REPLICA whose duty is held by another pool
-member: it is local by map presence, but the fire and the re-arm both require current
-ownership, so arming there would be a silent no-op rather than a deadline.
+The deadline is **parent-owned**: the wake dispatches into the CALLER's session, so the
+caller's duty holder is the member that must arm and fire it, and the durable row carries
+`parentAgentId` for exactly that gate. Where the CHILD runs is irrelevant to ownership. If
+this member does not hold the caller's duty, the same loud refusal applies
+(`caller_duty_elsewhere`) rather than arming a timer nothing will fire.
 
 ### 3.2 Channel-root form
 

@@ -130,13 +130,13 @@ describe('needsReply deadline (#800)', () => {
       return result.ok ? 'reported.' : `report failed: ${result.error}`
     })
     try {
-      expect((await run.call(callReq({ replyDeadlineMs: 150 }))).delivered).toBe(true)
+      // Long enough that the deadline cannot fire on its own under load: cancellation is proved
+      // by the durable row and the live timer both being gone, not by outliving a short timer.
+      expect((await run.call(callReq({ replyDeadlineMs: 30_000 }))).delivered).toBe(true)
       await vi.waitFor(() => expect(run.parentPrompts().join('\n')).toContain('VOTE: player-3.'), WAIT)
-      // Disarmed the moment the report was queued.
-      expect(await run.store().listParentReplyDeadlines()).toHaveLength(0)
-      // Outlive the deadline: nothing further may arrive.
-      await new Promise((resolve) => setTimeout(resolve, 400))
       await settle()
+      expect(await run.store().listParentReplyDeadlines()).toHaveLength(0)
+      expect((run.daemon as any).collab.parentReplyDeadlines.size).toBe(0)
       expect(run.parentPrompts().join('\n')).not.toContain('[needsReply deadline]')
       expect(run.parentPrompts()).toHaveLength(1)
     } finally {
@@ -216,17 +216,33 @@ describe('needsReply deadline (#800)', () => {
     }
   }, 30_000)
 
-  it('a local REPLICA whose duty is held elsewhere refuses the deadline instead of arming a dud', async () => {
+  it('is PARENT-owned: a caller whose duty is held elsewhere refuses instead of arming a dud', async () => {
     const child = hangingChild()
     const run = await boot(child.behavior)
     try {
-      // The replica is still local by map presence, but this member no longer serves it — the
-      // fire and the re-arm both require ownership, so arming here would be a silent no-op.
-      ;(run.daemon as any).collab.host.servesAgent = (agentId: string) => agentId !== CHILD
+      // The wake dispatches into the CALLER's session, so the caller's duty holder must fire it.
+      // This member no longer serves the caller, so arming here would be a silent no-op.
+      ;(run.daemon as any).collab.host.servesAgent = (agentId: string) => agentId !== CALLER
       const res = (await run.call(callReq({ replyDeadlineMs: 60_000 }))) as Record<string, unknown>
       expect(res.delivered).toBe(true)
-      expect(res.deadlineIgnored).toBe('target_duty_elsewhere')
+      expect(res.deadlineIgnored).toBe('caller_duty_elsewhere')
       expect(await run.store().listParentReplyDeadlines()).toHaveLength(0)
+    } finally {
+      child.release()
+      await settle()
+      await run.daemon.stop()
+    }
+  }, 30_000)
+
+  it('a child served elsewhere still gets a deadline — only the caller must be held here', async () => {
+    const child = hangingChild()
+    const run = await boot(child.behavior)
+    try {
+      ;(run.daemon as any).collab.host.servesAgent = (agentId: string) => agentId !== CHILD
+      const res = (await run.call(callReq({ replyDeadlineMs: 120 }))) as Record<string, unknown>
+      expect(res.delivered).toBe(true)
+      expect(res.deadlineIgnored).toBeUndefined()
+      await vi.waitFor(() => expect(run.parentPrompts().join('\n')).toContain('[needsReply deadline]'), WAIT)
     } finally {
       child.release()
       await settle()

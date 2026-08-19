@@ -159,7 +159,7 @@ describe('webchat night collection (scripted)', () => {
   it('three concurrent needsReply calls: correct replies wake the referee exactly once each; the prose reply is LOST; the wolf relay round-trips', async () => {
     const run = await startNightRun()
     try {
-      run.arena.postHost(NIGHT_START_TEXT)
+      await run.arena.postHost(NIGHT_START_TEXT)
       await run.arena.settle({ quietMs: 900, timeoutMs: 90_000 })
 
       // The referee issued exactly four needsReply calls (three night calls +
@@ -239,7 +239,7 @@ describe('webchat night collection (scripted)', () => {
       return result
     }) as typeof run.log.push
     try {
-      run.arena.postHost(NIGHT_START_TEXT)
+      await run.arena.postHost(NIGHT_START_TEXT)
       await run.arena.settle({ quietMs: 900, timeoutMs: 90_000 })
       const score = run.score()
       const doctor = score.replies.find((reply) => reply.child === 'doctor')!
@@ -263,7 +263,7 @@ describe('webchat night collection (scripted)', () => {
     // human to say "the vote has gone quiet".
     const run = await startNightRun({ deadlineMs: 2_000, silent: ['seer'] })
     try {
-      run.arena.postHost(NIGHT_START_TEXT)
+      await run.arena.postHost(NIGHT_START_TEXT)
       // The silent child's turn never ends, so the arena never goes idle — poll for the
       // recovery instead of waiting for a quiet that cannot come.
       await waitUntil(() => run.referee.rePrompted.has('seer'), 60_000)
