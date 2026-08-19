@@ -401,7 +401,7 @@ misconfiguration warning.
 ### 5.3 Rate limiting
 
 Linear allows 5 000 requests/hour per OAuth app per workspace (per its
-published rate-limiting docs). The per-integration send queue (reuse `SlackSendQueue`) enforces FIFO plus a
+published rate-limiting docs). The per-integration send queue (reuse `PlatformSendQueue`) enforces FIFO plus a
 minimum interval (~1 s for activities), and the converger's coalescing keeps
 a busy turn to tens of activities, not hundreds. `plan` and `external-urls`
 updates are debounced (last-write-wins within the idle window).

@@ -957,7 +957,7 @@ Discord, and Lark / Feishu use the common platform-driver boundary.
 
 ### 9.1 Outbound: ACP `session/update` -> Slack (Convergence + Translation)
 
-Goal: **channel contains only start / plan / problem / finish + link**, while details remain in Web App. ACP Host converges streaming updates through the mode-aware `OutputConverger` in `packages/daemon/src/slack/render.ts`; outbound writes are serialized by `SlackSendQueue` in `packages/daemon/src/slack/send-queue.ts`.
+Goal: **channel contains only start / plan / problem / finish + link**, while details remain in Web App. ACP Host converges streaming updates through the mode-aware `OutputConverger` in `packages/daemon/src/slack/render.ts`; outbound writes are serialized by `PlatformSendQueue` in `packages/daemon/src/platforms/send-queue.ts`.
 
 **`medium` / `high` message-style progress:**
 
@@ -989,7 +989,7 @@ Goal: **channel contains only start / plan / problem / finish + link**, while de
 
 **`none` mode:** Full body still records in session transcript through a `recordOnly` post handled before checking platform connection, but send nothing to IM. Reuse headless/webchat's `replyConn = undefined`; activity/status/typing/reply/footer are all no-op. Background completion notifications gated at `≥ medium` do not fire.
 
-Thread semantics: main progress goes at the thread anchor or, for a subscribed thread, uses `thread_ts`; tool-output messages reply in the same thread. `SlackSendQueue` rate-limits API calls, including the `chat.postMessage` Tier3 limit of 50rpm. The effective output mode is the per-session override when present, otherwise `agent.output.mode`.
+Thread semantics: main progress goes at the thread anchor or, for a subscribed thread, uses `thread_ts`; tool-output messages reply in the same thread. `PlatformSendQueue` rate-limits API calls, including the `chat.postMessage` Tier3 limit of 50rpm. The effective output mode is the per-session override when present, otherwise `agent.output.mode`.
 
 ### 9.2 Inbound Attachments -> ACP `session/prompt` Content
 

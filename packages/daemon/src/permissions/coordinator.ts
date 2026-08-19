@@ -15,7 +15,8 @@ import type { LocalStore } from '../store/local-store.js'
 import type { LoadedAgent } from '../agents/load-agents.js'
 import type { AcpPermissionPolicyEvent } from '../acp/acp-host.js'
 import type { DaemonEvaluationHooks } from '../evaluation/daemon-hooks.js'
-import { SlackConnection, type InteractionActor } from '../slack/connection.js'
+import { SlackConnection } from '../slack/connection.js'
+import type { InteractionActor } from '../platforms/contract.js'
 import {
   buildElicitationCard,
   buildElicitationResolvedCard,

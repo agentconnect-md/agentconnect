@@ -29,7 +29,7 @@ import { loopGuardScope, loopGuardScopeFromCoords } from '../daemon/loop-guard-s
 import type { PlatformConnection } from '../platforms/connection-reconciler.js'
 import { parseTelegramSelect, telegramSelectButtons } from '../platforms/telegram/command-chrome.js'
 import type { TelegramCallback, TelegramConnection } from '../telegram/connection.js'
-import type { InteractionActor } from '../slack/connection.js'
+import type { InteractionActor } from '../platforms/contract.js'
 import type { StatusBarInfo } from '../slack/render.js'
 import { buildDiscordSelectComponents, type DiscordComponents } from '../discord/render.js'
 import { MAX_QUEUED_PER_SESSION } from '../daemon/constants.js'

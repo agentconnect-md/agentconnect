@@ -12,8 +12,7 @@ import type { Agent } from '../agents/agent-schema.js'
 import { platformIntegrationConfig } from '../platforms/integration-config.js'
 import type { NormalizedMessage } from '../messages/normalized.js'
 import type { Logger } from '../log.js'
-import { SlackSendQueue } from '../slack/send-queue.js'
-import type { InteractionActor } from '../slack/connection.js'
+import { PlatformSendQueue } from '../platforms/send-queue.js'
 import { normalizeDiscordMessage, type DiscordMessageLike } from './normalize.js'
 import { DISCORD_APP_COMMANDS } from './app-commands.js'
 import {
@@ -24,7 +23,7 @@ import {
   type DiscordComponents,
   type DiscordSelectKind
 } from './render.js'
-import type { PlatformConnection } from '../platforms/contract.js'
+import type { InteractionActor, PlatformConnection } from '../platforms/contract.js'
 
 /**
  * §Discord edge unit. Mirrors slack/connection.ts + telegram/connection.ts but over
@@ -163,7 +162,7 @@ export class DiscordConnection implements PlatformConnection {
   // All outbound writes funnel through one queue so streamed edits are FIFO-ordered
   // per connection (discord.js handles REST rate limits, but the queue keeps a
   // post-then-edit pair from racing on the same progress message).
-  private queue: SlackSendQueue
+  private queue: PlatformSendQueue
   // Status-component message → session key, so a button interaction (which carries
   // only channel+message id, not the session key) resolves back to its session.
   // Keyed `${channelId}:${messageId}`.
@@ -189,7 +188,7 @@ export class DiscordConnection implements PlatformConnection {
 
   constructor(private deps: DiscordDeps) {
     this.botToken = deps.group.botToken
-    this.queue = new SlackSendQueue(deps.sendIntervalMs ?? 350)
+    this.queue = new PlatformSendQueue(deps.sendIntervalMs ?? 350)
     this.client = new Client({
       intents: [
         GatewayIntentBits.Guilds,

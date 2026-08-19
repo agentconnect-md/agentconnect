@@ -272,7 +272,7 @@ IntegrationFeishuConfig }`.
     `listMembers` through `im.chatMembers.get`, `listChannels` through
     `im.chat.list`, and `getUserProfile` through `contact.user.get`. The latter
     needs additional permission and degrades when unavailable.
-  - Reuse `SlackSendQueue` from `src/slack/send-queue.ts` for FIFO outbound
+  - Reuse `PlatformSendQueue` from `src/platforms/send-queue.ts` for FIFO outbound
     delivery.
   - **Three-second constraint:** event callbacks must return within three
     seconds. A handler only normalizes and enqueues through `onMessage`; it

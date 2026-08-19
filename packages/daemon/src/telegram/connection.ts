@@ -3,7 +3,7 @@ import type { Agent } from '../agents/agent-schema.js'
 import { platformIntegrationConfig } from '../platforms/integration-config.js'
 import type { NormalizedMessage } from '../messages/normalized.js'
 import type { Logger } from '../log.js'
-import { SlackSendQueue } from '../slack/send-queue.js'
+import { PlatformSendQueue } from '../platforms/send-queue.js'
 import { isTelegramMembershipServiceMessage, normalizeTelegramMessage, type TelegramMessage } from './normalize.js'
 import type { PlatformConnection } from '../platforms/contract.js'
 
@@ -218,7 +218,7 @@ export class TelegramConnection implements PlatformConnection {
   private bot: TelegramBotHandle
   // All outbound writes funnel through one queue so streamed edits are FIFO-ordered
   // and rate-limited per bot connection (Telegram tolerates ~1 msg/s per chat).
-  private queue: SlackSendQueue
+  private queue: PlatformSendQueue
   /** The bot token this connection authenticated with (used to detect a swap). */
   readonly botToken: string
   /** The bot's numeric user id (as string), resolved at start() via getMe. */
@@ -235,7 +235,7 @@ export class TelegramConnection implements PlatformConnection {
   ) {
     this.botToken = deps.group.botToken
     this.bot = factory(deps.group.botToken)
-    this.queue = new SlackSendQueue(deps.sendIntervalMs ?? 350)
+    this.queue = new PlatformSendQueue(deps.sendIntervalMs ?? 350)
   }
 
   async start(): Promise<void> {

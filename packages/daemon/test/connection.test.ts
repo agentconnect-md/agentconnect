@@ -1096,7 +1096,7 @@ describe('SlackConnection.updateBlocks', () => {
     )
     ;(conn as any).queue = {
       enqueue: vi.fn(async () => {
-        throw new Error('SlackSendQueue: task exceeded 30000ms — abandoned')
+        throw new Error('PlatformSendQueue: task exceeded 30000ms — abandoned')
       })
     }
 

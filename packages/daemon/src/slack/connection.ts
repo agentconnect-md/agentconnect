@@ -12,7 +12,7 @@ import { integrationCore, platformIntegrationConfig } from '../platforms/integra
 import { normalizeSlackEvent, toAttachment, type SlackFile, type SlackMessageEvent } from './normalize.js'
 import type { Attachment, NormalizedMessage } from '../messages/normalized.js'
 import type { Logger } from '../log.js'
-import { SlackSendQueue } from './send-queue.js'
+import { PlatformSendQueue } from '../platforms/send-queue.js'
 import {
   STATUS_ACTION,
   ELICIT_ACTION_PREFIX,
@@ -26,7 +26,7 @@ import {
   type StatusBarInfo,
   type StatusModalIdentity
 } from './render.js'
-import type { PlatformConnection } from '../platforms/contract.js'
+import type { InteractionActor, PlatformConnection } from '../platforms/contract.js'
 
 export interface ConsolidatedGroup {
   appToken: string
@@ -230,16 +230,6 @@ export function consolidateShared(agents: Agent[]): Map<string, ConsolidatedGrou
   return groups
 }
 
-/** The human behind one interactive click (button / select / modal submit). Carried
- *  alongside the action so the daemon records WHO changed a session, which a bare
- *  `sessionKey` cannot say. */
-export interface InteractionActor {
-  userId: string
-  /** Only set where the platform reports it on the interaction (Discord does; a Slack
-   *  `block_actions` payload carries no bot flag on its `user`). */
-  isBot?: boolean
-}
-
 export interface SlackDeps {
   group: ConsolidatedGroup
   onMessage: (msg: NormalizedMessage) => void
@@ -282,7 +272,7 @@ export interface SlackDeps {
   log?: Logger
   /** When true, hand Bolt LogLevel.DEBUG so socket-mode internals are visible. */
   boltDebug?: boolean
-  /** Min spacing (ms) between outbound writes (§9.1 SlackSendQueue). Tests pass 0. */
+  /** Min spacing (ms) between outbound writes (serialized send-queue). Tests pass 0. */
   sendIntervalMs?: number
   /**
    * SEND-ONLY mode (shared-bot-relay.md §11): the bot's INBOUND lives on a relay,
@@ -572,7 +562,7 @@ export class SlackConnection implements PlatformConnection {
   private app: AppLike
   // §9.1: all outbound writes (post/update/setStatus/setTitle) funnel through one queue so
   // streamed edits are FIFO-ordered and rate-limited per Slack app connection.
-  private queue: SlackSendQueue
+  private queue: PlatformSendQueue
   /** Cooldown after Slack proves this installation lacks chat:write.customize. */
   private customUsernameRetryAt = 0
   /** Slack app/workspace ids are public metadata used only for the OAuth settings link. */
@@ -615,7 +605,7 @@ export class SlackConnection implements PlatformConnection {
       : deps.sendOnly
         ? sendOnlyApp(deps.group.botToken)
         : realSocketModeApp({ token: deps.group.botToken, appToken: deps.group.appToken }, deps.boltDebug)
-    this.queue = new SlackSendQueue(deps.sendIntervalMs ?? 350)
+    this.queue = new PlatformSendQueue(deps.sendIntervalMs ?? 350)
   }
 
   async start(): Promise<void> {
@@ -1118,7 +1108,7 @@ export class SlackConnection implements PlatformConnection {
         return true
       })
     } catch (err) {
-      // Catch both Slack API failures and SlackSendQueue's outer timeout rejection.
+      // Catch both Slack API failures and PlatformSendQueue's outer timeout rejection.
       this.deps.log?.debug(`slack: chat.update (blocks) failed (ch=${channel} ts=${ts}): ${(err as Error).message}`)
       return false
     }
