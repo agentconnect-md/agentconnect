@@ -124,11 +124,13 @@ the first layer that yields a key, whole:
 3. the runtime's default public endpoint with whatever credential the runtime
    environment already carries.
 
-Within a layer, an absent `baseUrl` falls through to the next layer's URL — that
-is the one sanctioned mix, so a key-server that only rotates keys and fronts no
-gateway needs no URL opinion. A present one must be `http(s)`, since it becomes a
-runtime's API base; plain `http` is legal and is the normal choice for a loopback
-or in-pod gateway.
+A layer answers with a whole pair or not at all — there is no mixing across layers.
+A key server is asked for both fields and its answer is the credential; a daemon
+configured with one keeps no static pair to fall back to, so a grant that omits
+`baseUrl` leaves the runtime on its own default rather than borrowing a URL the
+issuer never named. A present one must be `http(s)`, since it becomes a runtime's
+API base; plain `http` is legal and is the normal choice for a loopback or in-pod
+gateway.
 
 The cloud daemon's static pair is `MODEL_TOKEN` plus optional `MODEL_BASE_URL`, with a
 per-runtime pair that replaces it whole: `ANTHROPIC_MODEL_TOKEN`/`ANTHROPIC_MODEL_BASE_URL`
@@ -150,11 +152,10 @@ must be an HTTP(S) URL. Each pair is translated at runtime launch:
 | OpenCode | `OPENCODE_CONFIG_CONTENT` → selected provider `options.apiKey` using `{env:MODEL_TOKEN}` | selected provider `options.baseURL`                                                                                                  |
 | DeepSeek | `DEEPSEEK_API_KEY`                                                                       | `DEEPSEEK_BASE_URL`                                                                                                                  |
 
-Dynamic grants use the same translation and override the static token. If IssueKey
-omits `baseUrl`, the inherited one is the static base for the runtime being spawned —
-its own scoped pair when it has one, the shared `MODEL_BASE_URL` otherwise. With no key server,
-the static pair wins; with neither, the runtime's existing provider configuration is
-left unchanged.
+Dynamic grants use the same translation. Configuring a key server retires the static
+pair outright — the daemon reads none of these variables — so a grant is the whole
+credential and needs no precedence against them. With no key server the static pair
+wins; with neither, the runtime's existing provider configuration is left unchanged.
 
 One logical AgentConnect session owns one ACP host when key-server mode is active.
 Provider credentials are process-level settings, so sharing a runtime would let

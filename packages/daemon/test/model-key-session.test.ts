@@ -201,6 +201,11 @@ describe('daemon model-key session lifecycle', () => {
     expect(setModelOverride).toHaveBeenCalledWith('session-a', 'anthropic/claude-opus-4')
   })
 
+  it('keeps no static pair to fall back to when a key server is configured', () => {
+    const withServer = new Daemon({ k8s: true, keyServer: 'https://keys.test', clock: new FakeClock(1_000) }) as any
+    expect(withServer.staticModelCredentials).toBeUndefined()
+  })
+
   it('revokes the fresh grant when replacing the superseded host fails', async () => {
     const h = harness([
       { keyId: 'key-1', key: 'old', requestedAtMs: 1_000, refreshAtMs: 2_000 },

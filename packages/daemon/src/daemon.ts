@@ -1113,7 +1113,6 @@ export class Daemon {
     this.sandboxMechanism = this.sandboxProbe?.mechanism
     this.clock = opts.clock ?? systemClock
     this.modelKeyNow = opts.clock ? () => this.clock.now() : () => performance.timeOrigin + performance.now()
-    this.staticModelCredentials = this.k8s ? configuredModelCredentials(process.env) : undefined
     const keyServerAddress = opts.keyServer?.trim() || process.env.KEY_SERVER?.trim()
     const keyServerTokenPath = opts.keyServerTokenPath?.trim() || process.env.KEY_SERVER_TOKEN_PATH?.trim()
     if ((keyServerAddress || opts.keyServerClient) && !this.k8s) {
@@ -1127,6 +1126,8 @@ export class Daemon {
       (keyServerAddress
         ? new KeyServerClient(keyServerAddress, { tokenPath: keyServerTokenPath, now: this.modelKeyNow })
         : undefined)
+    // A key server answers with the whole pair, so the daemon's static one is not a layer under it.
+    this.staticModelCredentials = this.k8s && !this.keyServer ? configuredModelCredentials(process.env) : undefined
     this.evalHooks = new DaemonEvaluationHooks(this.evaluationHost(), opts.evaluation)
     this.sessionMetadataOutbox = new SessionMetadataOutbox(this.sessionMetadataHost())
     this.observedChannelsSync = new ObservedChannelsSync(this.observedChannelsSyncHost())
@@ -3081,7 +3082,7 @@ export class Daemon {
         finalizeLaunchEnv: (launchEnv) => {
           if (!this.k8s || !target) return
           if (opts.modelCredential) applyModelCredential(target, launchEnv, opts.modelCredential.credential)
-          else if (!this.keyServer) {
+          else {
             const configured = this.staticModelCredentials?.[target.runtime]
             if (configured) applyStaticModelConfig(target, launchEnv, configured)
           }
@@ -3363,7 +3364,7 @@ export class Daemon {
   private boundModelTarget(sessionKey: string, agentId: string): ModelProviderTarget | undefined {
     const credentialHost = this.modelSessionHosts.get(sessionKey)
     if (credentialHost) return credentialHost.target
-    if (this.keyServer || !this.k8s || !this.staticModelCredentials) return undefined
+    if (!this.k8s || !this.staticModelCredentials) return undefined
     const agent = this.agents.get(agentId)
     const runtime = agent ? this.runtimes[agent.runtime] : undefined
     const target = agent && runtime ? modelProviderTarget(agent, runtime) : undefined
@@ -3418,9 +3419,7 @@ export class Daemon {
           target: entry.target,
           credential: {
             key: entry.grant.key,
-            ...((entry.grant.baseUrl ?? this.staticModelCredentials?.[entry.target.runtime]?.baseUrl)
-              ? { baseUrl: entry.grant.baseUrl ?? this.staticModelCredentials?.[entry.target.runtime]?.baseUrl }
-              : {})
+            ...(entry.grant.baseUrl ? { baseUrl: entry.grant.baseUrl } : {})
           }
         }
       })
@@ -4014,9 +4013,7 @@ export class Daemon {
               target: issued.target,
               credential: {
                 key: issued.grant.key,
-                ...((issued.grant.baseUrl ?? this.staticModelCredentials?.[issued.target.runtime]?.baseUrl)
-                  ? { baseUrl: issued.grant.baseUrl ?? this.staticModelCredentials?.[issued.target.runtime]?.baseUrl }
-                  : {})
+                ...(issued.grant.baseUrl ? { baseUrl: issued.grant.baseUrl } : {})
               }
             }
           }
