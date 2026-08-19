@@ -24,12 +24,7 @@ export type ShimDialPhase = 'startup' | 'reconnect'
 /** Startup pacing: the pod was created moments ago, so a refusal means "not listening yet" and is met in ~100ms. */
 export const STARTUP_DIAL_BACKOFF: BackoffOpts = { baseMs: 100 }
 
-/** First startup attempt's opening-handshake budget; each later one doubles it, up to the caller's own.
- *  The pacing above assumes a failure is a REFUSAL and costs nothing, which is true of a listener still
- *  coming up and false of a dropped packet — a policy or route that has not converged swallows the SYN,
- *  and the transport's own 10s handshake timeout is then the whole cost of learning that. Reaching the
- *  ~100ms retry at all means bounding the attempt well under it; doubling keeps a genuinely slow-but-live
- *  handshake from being retried forever. */
+/** First startup handshake's budget, doubling after it: a dropped SYN reaches the pacing above, not the 10s default. */
 export const STARTUP_HANDSHAKE_TIMEOUT_MS = 1_000
 
 export interface ShimDialerDeps {
@@ -191,8 +186,7 @@ export class ShimDialer {
   private dialAndBind(
     dial: SupervisedDial,
     timeoutMs: number,
-    /** This attempt's opening-handshake budget; absent ⇒ the transport's own default. Bounds ONLY the
-     *  handshake: once the socket is open the path is proven and binding keeps the full budget below. */
+    /** This attempt's handshake budget, absent ⇒ the transport's default; binding keeps the full one either way. */
     handshakeTimeoutMs?: number
   ): Promise<{ connection: ShimConnection; closed: Promise<{ code: number; reason: string }> }> {
     const boundedMs = Math.max(1, timeoutMs)

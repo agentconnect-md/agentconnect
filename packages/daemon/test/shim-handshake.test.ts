@@ -392,8 +392,7 @@ describe('shim dial startup budget', () => {
       backoff: () => new Backoff({ baseMs: 10, jitter: () => 0 }),
       dial: async (_url, opts) => {
         handshakes.push(opts.handshakeTimeoutMs)
-        // What an unconverged network path actually produces: no refusal, just the transport
-        // giving up on an opening handshake nobody was ever going to answer.
+        // What an unconverged network path produces: no refusal, just a handshake nobody answers.
         if (attempts++ < failFirst) throw new Error('Opening handshake has timed out')
         return healthyTransport()
       },
@@ -404,17 +403,14 @@ describe('shim dial startup budget', () => {
   }
 
   it('bounds every pre-bind handshake and doubles it, rather than paying the transport default', async () => {
-    // A dropped SYN gives no refusal, so an unbounded attempt costs the transport's full 10s
-    // handshake timeout and the ~100ms startup pacing never gets to run. Bounding the attempt is
-    // what makes the retry the cheap thing it was written to be.
+    // Unbounded, a dropped SYN costs the transport's full 10s and the ~100ms startup pacing never runs.
     const clock = new VirtualClock()
     const handshakes: Array<number | undefined> = []
     const dialer = dialerRecordingHandshakes(clock, 2, handshakes)
 
     const connection = await runVirtual(clock, dialer.connect(SCRIPTED_ENDPOINT, record(), 60_000))
     expect(connection.binding.agentId).toBe('agent-a')
-    // Doubling, not a fixed floor: a handshake that is genuinely slow rather than dropped must
-    // still be allowed to finish instead of being retried out of existence.
+    // Doubling, not a fixed floor: a slow-but-live handshake must still be allowed to finish.
     expect(handshakes).toEqual([1_000, 2_000, 4_000])
   })
 
