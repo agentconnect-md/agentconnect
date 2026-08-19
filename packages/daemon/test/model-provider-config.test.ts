@@ -66,6 +66,9 @@ describe('applyModelCredential', () => {
       baseUrl: 'https://gateway.example/openai/v1'
     })
     expect(env.OPENAI_API_KEY).toBe('issued')
+    // With the key alone codex still refuses a fresh CODEX_HOME (-32000): this is what lets
+    // codex-acp answer its own authRequired by minting an account from the env key.
+    expect(JSON.parse(env.DEFAULT_AUTH_REQUEST)).toEqual({ methodId: 'api-key' })
     expect(env.OPENAI_BASE_URL).toBe('https://gateway.example/openai/v1')
     expect(JSON.parse(env.CODEX_CONFIG)).toEqual({
       features: { apps: false },

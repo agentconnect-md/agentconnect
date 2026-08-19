@@ -65,7 +65,7 @@ async function spawnAndReadEnv(command: string, requestEnv: Record<string, strin
     command,
     args: [
       '-e',
-      'process.stdout.write(JSON.stringify({A: process.env.ANTHROPIC_API_KEY ?? null, B: process.env.ANTHROPIC_BASE_URL ?? null, O: process.env.OPENAI_API_KEY ?? null, D: process.env.DEEPSEEK_API_KEY ?? null, C: process.env.CODEX_CONFIG ?? null}))'
+      'process.stdout.write(JSON.stringify({A: process.env.ANTHROPIC_API_KEY ?? null, B: process.env.ANTHROPIC_BASE_URL ?? null, O: process.env.OPENAI_API_KEY ?? null, D: process.env.DEEPSEEK_API_KEY ?? null, C: process.env.CODEX_CONFIG ?? null, R: process.env.DEFAULT_AUTH_REQUEST ?? null}))'
     ],
     env: requestEnv
   })
@@ -76,12 +76,32 @@ async function spawnAndReadEnv(command: string, requestEnv: Record<string, strin
 describe('AcpRunner provider env fill-in', () => {
   it('fills pod provider vars into a claude spawn and keeps codex vars out', async () => {
     const seen = await spawnAndReadEnv('claude-agent-acp', { PATH: process.env.PATH ?? '' })
-    expect(seen).toEqual({ A: 'sk-claude-pod', B: 'https://claude-egress.internal', O: null, D: null, C: null })
+    expect(seen).toEqual({
+      A: 'sk-claude-pod',
+      B: 'https://claude-egress.internal',
+      O: null,
+      D: null,
+      C: null,
+      R: null
+    })
   })
 
   it('fills the deepseek pod vars into a dsh-acp spawn', async () => {
     const seen = await spawnAndReadEnv('dsh-acp', { PATH: process.env.PATH ?? '' })
-    expect(seen).toEqual({ A: null, B: null, O: null, D: 'sk-deepseek-pod', C: null })
+    expect(seen).toEqual({ A: null, B: null, O: null, D: 'sk-deepseek-pod', C: null, R: null })
+  })
+
+  it('pairs a codex key with the api-key default auth request, and lets a daemon-sent one win', async () => {
+    const filled = await spawnAndReadEnv('codex-acp', { PATH: process.env.PATH ?? '' })
+    expect(filled.O).toBe('sk-codex-pod')
+    // Without this a fresh CODEX_HOME answers every session with -32000: the env key is not an
+    // account, and the auth request is what lets codex-acp mint one from it.
+    expect(JSON.parse(filled.R!)).toEqual({ methodId: 'api-key' })
+    const daemonSent = await spawnAndReadEnv('codex-acp', {
+      PATH: process.env.PATH ?? '',
+      DEFAULT_AUTH_REQUEST: '{"methodId":"chat-gpt"}'
+    })
+    expect(daemonSent.R).toBe('{"methodId":"chat-gpt"}')
   })
 
   it('lets a daemon-sent value win over the pod value', async () => {

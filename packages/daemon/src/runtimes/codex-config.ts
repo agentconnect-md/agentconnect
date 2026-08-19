@@ -6,6 +6,11 @@
 // This module is import-free on purpose: the sandbox shim bundle must not drag the daemon's
 // credential paths into the runtime image (see tsdown.shim.config.ts).
 
+// codex-acp's self-service auth order: with this set it answers its own authRequired by logging
+// in with the OPENAI_API_KEY env; without it a fresh CODEX_HOME (no auth.json) refuses every
+// session with -32000, because a bare env key is not an account to codex's account/read.
+export const CODEX_DEFAULT_AUTH_REQUEST = JSON.stringify({ methodId: 'api-key' })
+
 export function objectFromJson(raw: string | undefined, label: string): Record<string, unknown> {
   if (!raw?.trim()) return {}
   let parsed: unknown

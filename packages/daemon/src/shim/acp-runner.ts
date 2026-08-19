@@ -1,6 +1,10 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { codexConfigWithBaseUrlFillIn, codexConfigWithFloor } from '../runtimes/codex-config.js'
+import {
+  CODEX_DEFAULT_AUTH_REQUEST,
+  codexConfigWithBaseUrlFillIn,
+  codexConfigWithFloor
+} from '../runtimes/codex-config.js'
 import { AcpStreamPayloadSchema, type AcpOpen } from './acp-stream.js'
 import { SANDBOX_GH_WRAPPER_DIR } from './sandbox-paths.js'
 import type { ShimEvent } from './protocol.js'
@@ -178,6 +182,9 @@ export class AcpRunner {
       // aim never blocks the base-url fill-in below.
       fillInCodexConfigFloor(env, podEnv, (message) => this.deps.log?.warn(message))
       fillInCodexBaseUrl(env, podEnv, (message) => this.deps.log?.warn(message))
+      // A key without this is unusable on a fresh CODEX_HOME: codex-acp answers authRequired
+      // itself only when told which method — same fill-in rule, a daemon-sent value wins.
+      if (env.OPENAI_API_KEY && !env.DEFAULT_AUTH_REQUEST) env.DEFAULT_AUTH_REQUEST = CODEX_DEFAULT_AUTH_REQUEST
     }
     const command = this.deps.resolveCommand?.(payload.command, env) ?? payload.command
     const child = spawn(command, payload.args, {

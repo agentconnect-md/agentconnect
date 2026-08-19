@@ -3,7 +3,13 @@ import type { RuntimeDef } from '../config/config-schema.js'
 import type { Agent } from '../agents/agent-schema.js'
 import { isClaudeRuntimeDef } from '../runtime-defs/claude-runtime.js'
 import { sharedCredentialProfile } from './runtime-credentials.js'
-import { codexConfigWithBaseUrl, codexConfigWithFloor, objectFromJson, record } from './codex-config.js'
+import {
+  CODEX_DEFAULT_AUTH_REQUEST,
+  codexConfigWithBaseUrl,
+  codexConfigWithFloor,
+  objectFromJson,
+  record
+} from './codex-config.js'
 
 export interface ModelCredential {
   key: string
@@ -75,6 +81,9 @@ export function applyModelCredential(
 
   if (target.runtime === 'codex') {
     env.OPENAI_API_KEY = credential.key
+    // The key alone is not enough on a fresh CODEX_HOME: codex counts only an account (auth.json)
+    // as authentication, and this is what lets codex-acp mint one from the key on demand.
+    env.DEFAULT_AUTH_REQUEST = CODEX_DEFAULT_AUTH_REQUEST
     if (!credential.baseUrl) return
     // codex-acp projects CODEX_CONFIG into config.toml; OPENAI_BASE_URL preserves older-adapter compatibility.
     applyCodexBaseUrl(env, credential.baseUrl)
