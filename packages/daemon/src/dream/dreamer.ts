@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { posix } from 'node:path'
 import { parse as parseYaml } from 'yaml'
 import { MAX_ORGANIZATION_SUGGESTION_BODY_BYTES, type SkillBundleTextFile } from '@agentconnect.md/protocol'
-import { MEMORY_INDEX, MAX_INDEX_INJECT_BYTES, MAX_MEMORY_FILE_BYTES } from '../memory/store.js'
+import { MEMORY_INDEX, MAX_MEMORY_FILE_BYTES } from '../memory/store.js'
 import { MEMORY_FORMAT_GUIDANCE } from '../memory/frontmatter.js'
 
 /**
@@ -73,7 +73,6 @@ export interface TrustedOrganizationSkillTarget {
 
 export interface DreamProposal {
   files: DreamProposalFile[]
-  index: string
   /** Empty unless the agent enabled `mineSkills` AND the model proposed some. */
   skills: DreamProposalSkill[]
   organizationKnowledge: DreamOrganizationKnowledgeProposal[]
@@ -145,7 +144,7 @@ Rebuild the memory store in four phases:
 1. Orient: read the existing store; understand its topics and index.
 2. Gather signal: mine the transcripts for corrections, preference shifts, decisions, and recurring patterns.
 3. Consolidate: merge duplicates; where entries contradict, keep the latest value; convert relative dates to absolute dates; drop transient task progress, pleasantries, and secrets.
-4. Prune and index: give every topic file a good \`description\` header — the index is GENERATED from those, so a weak description is what makes a memory unfindable later; demote verbose entries into topic files.
+4. Prune: give every topic file a good \`description\` header — the index is GENERATED from those, so a weak description is what makes a memory unfindable later; demote verbose entries into topic files.
 
 Rules:
 - Unlike per-turn distillation, you MAY rewrite, merge, and delete entries — but only inside the returned proposal.
@@ -160,15 +159,14 @@ ${MEMORY_FORMAT_GUIDANCE}
 
 - Never include credentials, tokens, or other secrets.
 - Return JSON only with four explicit categories:
-  {"agentMemory":{"index":"<full MEMORY.md text>","files":[{"path":"topic.md","content":"full file text"}]},"agentSkills":[],"organizationKnowledge":[],"organizationSkills":[]}.
-- agentMemory.index is always the complete, non-empty MEMORY.md text. It is a review preview: once adopted, the index is regenerated from the topic descriptions, so spend your effort on those rather than on index prose. When there are no persistent agent memories, return "# Memory\n\n_No persistent memories yet._\n" rather than an empty string.
+  {"agentMemory":{"files":[{"path":"topic.md","content":"full file text"}]},"agentSkills":[],"organizationKnowledge":[],"organizationSkills":[]}.
+- Do NOT write MEMORY.md. The index is generated from your files' \`description\` headers, so a good description is what makes a memory findable — that is where the effort belongs.
 - organizationKnowledge entries are owner-review proposals in exactly this shape: {"operation":"create|update","targetId":"uuid only for update","targetRevision":1,"title":"...","summary":"...","tags":["..."],"content":"Markdown","sessionIds":["..."]}. The citation property is named "sessionIds" (never "groundedSessionIds").
 - Propose organization knowledge only when it is reusable across multiple agents or represents a durable organization-wide convention. Agent-specific facts stay in agentMemory.
 - Before proposing organization knowledge, check what already exists with the listKnowledge / findKnowledge tools. If an existing entry covers the same subject, propose an "update" to its exact id/revision (never a near-duplicate "create").
 - PRIVACY: transcripts may include private or one-to-one exchanges (DMs, webchat, external, or A2A). Agent memory is shared with everyone who can use this agent, and organization knowledge is shared more widely still — a later session with a DIFFERENT person can read what you write. So NEVER record a specific person's private or personal conversation content, nor anything attributable to one person's private exchange, in agentMemory OR organizationKnowledge. Distill only general, durable, non-personal operating knowledge: how this agent works, stable preferences, conventions, and reusable procedures — never one individual's private/personal exchange.
 - Cite organization knowledge in at least one mined session. Use only session ids taken from a session file's "session:" header line.
 - Return organizationSkills as [] unless the additional extract-procedures phase below is present.
-- The index must reference only files present in "files".
 - Return the smallest faithful store, not the largest possible one.`
 
 /** Appended only when the agent enabled `mineSkills`, so executable procedure
@@ -326,7 +324,7 @@ export function parseDreamProposal(text: string, minedSessionIds: readonly strin
     envelope.agentMemory && typeof envelope.agentMemory === 'object'
       ? (envelope.agentMemory as Record<string, unknown>)
       : envelope
-  if (typeof memory.index !== 'string' || !Array.isArray(memory.files)) return null
+  if (!Array.isArray(memory.files)) return null
 
   const seen = new Set<string>([MEMORY_INDEX])
   const files: DreamProposalFile[] = []
@@ -350,19 +348,10 @@ export function parseDreamProposal(text: string, minedSessionIds: readonly strin
     if (files.length >= MAX_DREAM_FILES) break
   }
 
-  const rawIndex = memory.index.trim()
-  // A brand-new managed store legitimately has no index yet. Models commonly
-  // represent that as an empty string even when they produced valid independent
-  // organization proposals. Keep a blank store adoptable with a daemon-owned,
-  // deterministic sentinel, but never paper over a blank index when topic files
-  // exist (that would orphan substantive memory content on auto-adopt).
-  if (!rawIndex && files.length > 0) return null
-  const index = rawIndex
-    ? clampToBytesOnBoundary(rawIndex, MAX_INDEX_INJECT_BYTES - 1)
-    : '# Memory\n\n_No persistent memories yet._'
+  // No index is read from the model: staging generates MEMORY.md from these files'
+  // descriptions, exactly as adoption will, so what a reviewer sees is what installs.
   return {
     files,
-    index: index + '\n',
     skills: parseDreamSkills(envelope.agentSkills ?? envelope.skills, minedSessionIds),
     organizationKnowledge: parseOrganizationKnowledge(envelope.organizationKnowledge, minedSessionIds),
     organizationSkills: parseOrganizationSkills(envelope.organizationSkills, minedSessionIds)

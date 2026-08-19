@@ -620,6 +620,43 @@ const GENERATED_INDEX_MARKER = "<!-- generated from each topic's `description` h
  * to generate from, and a legacy hand-written index is left untouched. The previous
  * index is recorded in `.history` by the caller's own write path, and here on replace.
  */
+/** One topic as the index sees it. */
+export interface MemoryIndexEntry {
+  topic: string
+  name: string
+  description: string
+}
+
+/**
+ * Render `MEMORY.md` from the topic descriptions. Pure, so the live store and a
+ * dream's STAGED store produce byte-identical indexes — a reviewer then sees exactly
+ * the index adoption will install, instead of a hand-written one that gets replaced.
+ * Entries are budgeted against the managed file bound and the overflow is stated
+ * in-file rather than silently dropped.
+ */
+export function renderMemoryIndex(entries: MemoryIndexEntry[], heading = '# Memory'): string {
+  const prefix = `${heading}\n\n${GENERATED_INDEX_MARKER}\n\n`
+  const lines: string[] = []
+  let budget = MAX_MEMORY_FILE_BYTES - Buffer.byteLength(prefix) - Buffer.byteLength(INDEX_OVERFLOW_NOTICE) - 1
+  let dropped = 0
+  // Tie-break on the topic filename, which is unique within a store: two entries can
+  // share a display `name`, and staging feeds proposal order while live regeneration
+  // feeds directory order — without this the reviewed index would not be byte-stable
+  // through adoption, which is the whole point of sharing this renderer.
+  const ordered = [...entries].sort((a, b) => a.name.localeCompare(b.name) || a.topic.localeCompare(b.topic))
+  for (const entry of ordered) {
+    const line = `- [${entry.name}](${entry.topic})${entry.description ? ` — ${entry.description}` : ''}`
+    const cost = Buffer.byteLength(line) + 1
+    if (cost > budget) {
+      dropped++
+      continue
+    }
+    budget -= cost
+    lines.push(line)
+  }
+  return `${prefix}${lines.join('\n')}\n${dropped > 0 ? INDEX_OVERFLOW_NOTICE : ''}`
+}
+
 export async function regenerateMemoryIndexHoldingLock(
   fs: MemoryFs,
   source: MemoryWriteSource,
@@ -647,22 +684,7 @@ export async function regenerateMemoryIndexHoldingLock(
   if (!owned && !opts.force && !entries.some((entry) => entry.description)) return
 
   const heading = /^#[ \t]+.*$/m.exec(current?.content ?? '')?.[0] ?? '# Memory'
-  const prefix = `${heading}\n\n${GENERATED_INDEX_MARKER}\n\n`
-  const lines: string[] = []
-  let budget = MAX_MEMORY_FILE_BYTES - Buffer.byteLength(prefix) - Buffer.byteLength(INDEX_OVERFLOW_NOTICE) - 1
-  let dropped = 0
-  for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
-    const line = `- [${entry.name}](${entry.topic})${entry.description ? ` — ${entry.description}` : ''}`
-    const cost = Buffer.byteLength(line) + 1
-    // The generated file is subject to the same managed bound as any other write.
-    if (cost > budget) {
-      dropped++
-      continue
-    }
-    budget -= cost
-    lines.push(line)
-  }
-  const next = `${prefix}${lines.join('\n')}\n${dropped > 0 ? INDEX_OVERFLOW_NOTICE : ''}`
+  const next = renderMemoryIndex(entries, heading)
   if (current?.content === next) return
 
   const st = await fs.writeFile(`${MEMORY_DIRNAME}/${MEMORY_INDEX}`, next, {})

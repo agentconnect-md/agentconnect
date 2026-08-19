@@ -106,7 +106,6 @@ describe('dream proposal parsing', () => {
       const proposal = parseDreamProposal(text)
       expect(proposal?.files).toHaveLength(1)
       expect(proposal?.files[0]).toMatchObject({ path: 'prefs.md' })
-      expect(proposal?.index.startsWith('# Memory')).toBe(true)
     }
   })
 
@@ -149,16 +148,14 @@ describe('dream proposal parsing', () => {
   it('parses a fenced proposal that trails prose after the JSON', () => {
     const proposal = parseDreamProposal(`\`\`\`json\n${good}\n\`\`\`\n\nThat covers it — nothing else stood out.`)
     expect(proposal?.files).toHaveLength(1)
-    expect(proposal?.index.startsWith('# Memory')).toBe(true)
   })
 
-  it('returns null for unparseable or index-less replies, but normalizes a genuinely empty store', () => {
+  it('returns null only for unparseable replies — an absent index is now expected', () => {
     expect(parseDreamProposal('no json at all')).toBeNull()
-    expect(parseDreamProposal('{"files": []}')).toBeNull()
-    expect(parseDreamProposal(JSON.stringify({ index: '   ', files: [] }))?.index).toBe(
-      '# Memory\n\n_No persistent memories yet._\n'
-    )
-    expect(parseDreamProposal(JSON.stringify({ index: '   ', files: [{ path: 'topic.md', content: 'x' }] }))).toBeNull()
+    // An empty store is valid and adoptable — staging renders an index for it.
+    expect(parseDreamProposal(JSON.stringify({ files: [] }))?.files).toEqual([])
+    // A proposal with files and no index is valid now: staging generates the index.
+    expect(parseDreamProposal(JSON.stringify({ files: [{ path: 'topic.md', content: 'x' }] }))?.files).toHaveLength(1)
   })
 
   it('drops traversal paths, bad names, duplicates, and the index masquerading as a file', () => {
@@ -201,10 +198,8 @@ describe('dream proposal parsing', () => {
     )
     expect(proposal).not.toBeNull()
     expect(Buffer.byteLength(proposal!.files[0]!.content)).toBeLessThanOrEqual(256_000)
-    expect(Buffer.byteLength(proposal!.index)).toBeLessThanOrEqual(25_000)
     // No replacement character introduced by a mid-codepoint cut.
     expect(proposal!.files[0]!.content).not.toContain('�')
-    expect(proposal!.index).not.toContain('�')
   })
 })
 
@@ -295,7 +290,8 @@ describe('structured organization proposals', () => {
       })
 
     const proposal = parseDreamProposal(reply, ['sess-1', 'sess-2'])
-    expect(proposal?.index).toBe('# Memory\n\n_No persistent memories yet._\n')
+    // The model no longer supplies an index at all; staging renders one.
+    expect(proposal?.files).toEqual([])
     expect(proposal?.organizationKnowledge).toMatchObject([{ sessionIds: ['sess-1'] }])
     expect(proposal?.organizationSkills).toMatchObject([
       { title: 'incident-rollback', sessionIds: ['sess-1', 'sess-2'] }
@@ -551,7 +547,8 @@ describe('mined skill candidates', () => {
     expect(dreamSystemPrompt(true)).toContain('complete Agent Skills file tree')
     expect(dreamSystemPrompt(true)).toContain('listOrgSkills')
     expect(dreamSystemPrompt(true)).toContain('never "groundedSessionIds"')
-    expect(dreamSystemPrompt(true)).toContain('agentMemory.index is always the complete, non-empty MEMORY.md text')
+    // The policy now tells it NOT to write the index — descriptions drive it.
+    expect(dreamSystemPrompt(true)).toContain('Do NOT write MEMORY.md')
     expect(dreamSystemPrompt(true).startsWith(MEMORY_DREAM_SYSTEM_PROMPT)).toBe(true)
   })
 })

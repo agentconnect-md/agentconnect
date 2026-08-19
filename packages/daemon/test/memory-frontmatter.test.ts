@@ -24,6 +24,7 @@ import {
   memoryNeighbors,
   readMemoryFile,
   regenerateMemoryIndexHoldingLock,
+  renderMemoryIndex,
   writeMemoryFile,
   memoryChannelKey
 } from '../src/memory/store.js'
@@ -398,5 +399,47 @@ describe('one format text, every trigger', () => {
     expect(MEMORY_DISTILLATION_SYSTEM_PROMPT).toContain(MEMORY_FORMAT_GUIDANCE)
     expect(dreamSystemPrompt(false)).toContain(MEMORY_FORMAT_GUIDANCE)
     expect(dreamSystemPrompt(true)).toContain(MEMORY_FORMAT_GUIDANCE)
+  })
+})
+
+describe('the reviewed index is the adopted index', () => {
+  it('is byte-stable when two topics share a display name, whatever order they arrive in', () => {
+    // `name` comes from the header and need not be unique; staging feeds proposal
+    // order while live regeneration feeds directory order. Without a filename
+    // tie-breaker the reviewed index would differ from the adopted one.
+    const a = { topic: 'a-notes.md', name: 'notes', description: 'from a' }
+    const b = { topic: 'b-notes.md', name: 'notes', description: 'from b' }
+    expect(renderMemoryIndex([a, b])).toBe(renderMemoryIndex([b, a]))
+    expect(renderMemoryIndex([b, a]).indexOf('a-notes.md')).toBeLessThan(
+      renderMemoryIndex([b, a]).indexOf('b-notes.md')
+    )
+  })
+
+  it('renders staged and live indexes identically from the same descriptions', async () => {
+    // A dream used to stage a hand-written MEMORY.md while adoption regenerated one,
+    // so a reviewer could approve an index that never installed. Both sides now go
+    // through the same renderer.
+    const entries = [
+      { topic: 'zeta.md', name: 'zeta', description: 'last one' },
+      { topic: 'alpha.md', name: 'alpha', description: 'first one' }
+    ]
+    const stagedIndex = renderMemoryIndex(entries)
+
+    // Build the same store for real and let the live path generate its index.
+    const f = fs()
+    await ensureMemory(f, 'bot')
+    for (const e of entries) {
+      await writeMemoryFile(f, e.topic, `---\ndescription: ${e.description}\n---\nbody\n`, undefined, 'dream')
+    }
+    const liveIndex = await readMemoryFile(f, 'MEMORY.md')
+
+    // Same entries, same order, same marker — only the heading differs, since the
+    // live store keeps the agent's own `# bot memory` title.
+    for (const line of ['- [alpha](alpha.md) — first one', '- [zeta](zeta.md) — last one']) {
+      expect(stagedIndex).toContain(line)
+      expect(liveIndex).toContain(line)
+    }
+    expect(stagedIndex.indexOf('alpha')).toBeLessThan(stagedIndex.indexOf('zeta'))
+    expect(liveIndex.replace(/^# .*$/m, '')).toBe(stagedIndex.replace(/^# .*$/m, ''))
   })
 })
