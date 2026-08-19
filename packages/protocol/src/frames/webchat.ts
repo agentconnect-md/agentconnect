@@ -73,7 +73,9 @@ export const WebchatPost = z.object({
   postId: z.string().uuid(),
   conversationId: z.string().uuid(),
   author: z.discriminatedUnion('kind', [
-    z.object({ kind: z.literal('user'), user: z.string().optional() }),
+    // `userId` is the stable CP principal and is what a recipient records as the
+    // transcript sender; `user` is the mutable display handle for the author line.
+    z.object({ kind: z.literal('user'), user: z.string().optional(), userId: z.string().optional() }),
     z.object({
       kind: z.literal('agent'),
       agentId: z.string().uuid(),

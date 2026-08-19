@@ -2187,17 +2187,26 @@ export function speaker(handle: string, name?: string): Speaker {
 }
 
 /** Is `sender` the signed-in viewer? Live Playground steps use the canonical local
- *  `@you` marker before a durable webchat sender id exists. Persisted webchat rows use
- *  the CP principal — the user's email in an OIDC deployment, the devAuth owner id
- *  locally — which is the same identity `/me` returns. Slack/Telegram/Discord senders
- *  are platform ids and never match. `me` is typed structurally to avoid an api ↔ data
- *  import cycle. */
+ *  `@you` marker before a durable webchat sender id exists. Persisted webchat rows record
+ *  the CP principal (`userId`); rows written between #912 and the fix that restored the
+ *  principal instead hold the viewer's DISPLAY NAME, so that is accepted as a last resort
+ *  to keep those sessions readable. Slack/Telegram/Discord senders are platform ids and
+ *  never match any of the three. `me` is typed structurally to avoid an api ↔ data import
+ *  cycle.
+ *
+ *  The display-name arm is deliberately last: a name is not an identity, so two members
+ *  sharing one — or a member renaming themselves to another's name — would read that
+ *  person's old rows as "You". Never reorder it ahead of the id/email match, and never
+ *  extend it to an authorization decision; this is a presentation-only affordance for
+ *  rows already written with the wrong key. */
 export function isSelfSender(
   sender: string | null | undefined,
-  me: { userId: string; email: string | null } | null | undefined
+  me: { userId: string; email: string | null; name?: string | null } | null | undefined
 ): boolean {
   if (sender === '@you') return true
-  return !!sender && !!me && (sender === me.userId || (!!me.email && sender === me.email))
+  if (!sender || !me) return false
+  if (sender === me.userId || (!!me.email && sender === me.email)) return true
+  return !!me.name && sender === me.name
 }
 
 // playground suggested prompts (the canned-reply mock is gone — replies now

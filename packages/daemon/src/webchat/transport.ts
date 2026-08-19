@@ -43,6 +43,23 @@ import {
   type WebchatTurnStream
 } from './types.js'
 
+/** Who authored a webchat turn. `id` is the caller's STABLE control-plane principal and is
+ *  what the durable transcript row records, so renaming a profile never re-identifies past
+ *  rows; `name` is the mutable display handle for the author line, the branch a session
+ *  worktree is cut under, and the console mirror. */
+export interface WebchatAuthor {
+  id: string
+  name: string
+}
+
+/** The author a webchat `turn` op names. A relay older than the stable-principal claim sends
+ *  only the display handle; falling back to it keeps that relay working, at the cost of the
+ *  handle-shaped sender this pairing exists to remove. */
+export function webchatAuthorOf(op: { user?: string; userId?: string }): WebchatAuthor {
+  const name = op.user ?? 'webchat'
+  return { id: op.userId ?? name, name }
+}
+
 /** Any platform connection a continuation mirror can post through. */
 export type WebchatReplyConnection = SlackConnection | TelegramConnection | DiscordConnection | FeishuConnection
 
@@ -117,6 +134,20 @@ export class WebchatTransport {
     for (const [streamKey, stream] of this.webchatStreams) this.removeWebchatStream(streamKey, stream)
   }
 
+  /** Cache the author's display handle under their stable principal, so session read-back
+   *  (`senderName`), the permission card's requester line, and a session worktree's branch
+   *  label all resolve a name from a row that stores only the id. Best-effort, like every
+   *  other name-cache write: a failed write costs a label, never a turn. Skipped when the
+   *  two are the same string — an older relay sent no principal to key on. */
+  private async rememberAuthorName(author: WebchatAuthor): Promise<void> {
+    if (!author.name || author.id === author.name) return
+    try {
+      await this.host.store().setDisplayName(author.id, author.name, Date.now())
+    } catch (err) {
+      this.host.debug(`webchat: author name cache write failed: ${formatErr(err)}`)
+    }
+  }
+
   /**
    * Dispatch one webchat turn onto the named agent and return the ack — transport-neutral:
    * the reply stream flows to `sink`. A webchat turn is a REAL session (recorded to the
@@ -127,7 +158,7 @@ export class WebchatTransport {
     agentId: string,
     chatId: string,
     text: string,
-    user: string,
+    author: WebchatAuthor,
     sink: WebchatSink,
     requestedTurnId?: string,
     inlineImages?: WebchatImageAttachment[],
@@ -169,6 +200,7 @@ export class WebchatTransport {
       this.host.info(`webchat: agent "${result.agentId}" is draining — rejecting turn`)
       return { accepted: false, turnId, reason: 'draining' }
     }
+    await this.rememberAuthorName(author)
     // platform:'webchat', channel:conversationId, no thread (the wire SessionKey omits
     // it — §5), source:'user'. The trigger is a direct address (dm-equivalent) — webchat
     // always targets one agent. msgId is stable per-conversation (NOT per-turn) so every
@@ -181,7 +213,7 @@ export class WebchatTransport {
       source: 'user',
       platform: 'webchat',
       channel: chatId,
-      sender: { id: user, isBot: false },
+      sender: { id: author.id, isBot: false, name: author.name },
       text,
       // Structured composer mentions (agent ids). This agent seeing ITSELF in
       // the list is the explicit-address fact (`trigger:'mention'` below); the
@@ -253,7 +285,7 @@ export class WebchatTransport {
         `webchat:${chatId}`,
         String(post.at),
         {
-          sender: user,
+          sender: author.id,
           recipient: result.agentId,
           // The canonical identity must ride the ADMISSION write too — without
           // it the probe falls back to (sender, text) and a distinct same-ms
@@ -293,7 +325,7 @@ export class WebchatTransport {
     chatId: string,
     targetSessionId: string,
     text: string,
-    user: string,
+    author: WebchatAuthor,
     sink: WebchatSink,
     requestedTurnId?: string
   ): Promise<WebchatAck> {
@@ -312,6 +344,7 @@ export class WebchatTransport {
     if (!integrationId || !conn) return { accepted: false, turnId, reason: 'integration_offline' }
     const botUserId =
       this.host.botUserIds()[integrationId] ?? this.host.resolveCpAgent(agentId, local.platform)?.botUserId
+    await this.rememberAuthorName(author)
     const msg: NormalizedMessage = {
       msgId: `webchat-cont:${chatId}:${turnId}`,
       traceId: turnId,
@@ -322,7 +355,7 @@ export class WebchatTransport {
       ...(local.transportScope ? { transportScope: local.transportScope } : {}),
       // Ordered as NEW content in the origin session (the replyToSession rule).
       transcriptTs: monotonicTs(),
-      sender: { id: user, isBot: false },
+      sender: { id: author.id, isBot: false, name: author.name },
       text,
       mentionedBots: botUserId ? [botUserId] : [],
       isDm: local.conversationKind === 'dm',
@@ -371,7 +404,7 @@ export class WebchatTransport {
       return { accepted: false, turnId, reason: admission.reason === 'draining' ? 'draining' : 'busy' }
     }
     // Admission owns a serial-queue slot before mirroring and waits for its result before execution.
-    const mirrorText = `[${user} via console] ${text}`
+    const mirrorText = `[${author.name} via console] ${text}`
     // The mirror takes the SAME two-step shape an ordinary agent reply does:
     // an attributed body post, then a finalizing chat.update stamping the
     // trusted routing claim (author = the target agent, root depth, unaddressed
@@ -417,7 +450,9 @@ export class WebchatTransport {
       if (!finalized)
         this.host.warn(`webchat continuation: mirror finalization failed for ${local.key} (peers unrouted)`)
     }
-    this.host.info(`webchat continuation: ${user} → session ${local.key} (conversation ${chatId}, turn ${turnId})`)
+    this.host.info(
+      `webchat continuation: ${author.name} → session ${local.key} (conversation ${chatId}, turn ${turnId})`
+    )
     return { accepted: true, turnId }
   }
 
@@ -699,7 +734,14 @@ export class WebchatTransport {
     if (contextPost.author.kind === 'agent' && contextPost.author.agentId === agentId) return undefined
     if (!contextPost.text.trim() && !contextPost.attachments?.length) return undefined
     const sender =
-      contextPost.author.kind === 'agent' ? contextPost.author.agentId : (contextPost.author.user ?? 'webchat')
+      contextPost.author.kind === 'agent'
+        ? contextPost.author.agentId
+        : (contextPost.author.userId ?? contextPost.author.user ?? 'webchat')
+    // Same display-name cache the targeted turn writes, so a fanned-out copy the
+    // recipient recorded FIRST still labels its author by name on read-back.
+    if (contextPost.author.kind === 'user' && contextPost.author.userId && contextPost.author.user) {
+      await this.rememberAuthorName({ id: contextPost.author.userId, name: contextPost.author.user })
+    }
     // The canonical origin-minted ts. A re-fanned identical copy dedups in place
     // (the recipient tag still records the delivery for THIS agent when the text
     // row was already written by a co-hosted participant's turn); a foreign post

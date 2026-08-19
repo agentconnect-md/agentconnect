@@ -122,6 +122,14 @@ describe('parseBrowserFrame', () => {
     })
     expect(parseBrowserFrame({ text: '', attachments: [{ ...attachment, data: 'invalid' }] }, USER)).toBeNull()
   })
+  it("carries the verified stable principal beside the display handle, never the browser's", () => {
+    expect(parseBrowserFrame({ text: 'hi', userId: 'spoofed' }, USER, 'user-1')).toEqual({
+      op: { op: 'turn', text: 'hi', user: USER, userId: 'user-1' }
+    })
+    // A CP that returns no principal leaves the claim off entirely, rather than
+    // inventing one from the handle — the daemon owns that fallback.
+    expect(parseBrowserFrame({ text: 'hi' }, USER)).toEqual({ op: { op: 'turn', text: 'hi', user: USER } })
+  })
   it('maps the session-control envelopes', () => {
     expect(parseBrowserFrame({ type: 'resume', turnId: AGENT, generation: 3, afterIndex: 4 }, USER)).toEqual({
       op: {
