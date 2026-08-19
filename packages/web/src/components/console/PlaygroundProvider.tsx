@@ -309,6 +309,10 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   // where the relay applied the all-participants default) create its stream
   // lane lazily instead of dropping the reply.
   const pendingTurnIds = useRef<Map<string, string>>(new Map())
+  // The in-flight turn's wire frame per session id: a socket that drops between `send` and the ack leaves it in limbo (it may never have reached a daemon), so the reconnect re-sends it once — same turnId, an already-admitted copy is refused `busy` and we attach to its stream — instead of only resuming a stream that may not exist.
+  const pendingTurnFrames = useRef<
+    Map<string, { turnId: string; frame: string; resentOn?: WebSocket; attaching?: Set<string> }>
+  >(new Map())
   // Lanes that already COMPLETED for the in-flight turn (done applied, cursor
   // removed), per session id. With done-before-ack ordering the trailing ack
   // must not re-admit an empty cursor for a finished participant — it would
@@ -800,25 +804,47 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
         if (conns.current.get(id) === conn) conns.current.delete(id)
       }
 
+      const sendLaneResume = (ws: WebSocket, key: string): void => {
+        const cursor = streamCursors.current.get(key)
+        const turnId = cursor?.turnId ?? cursor?.requestedTurnId
+        if (!cursor || !turnId || ws.readyState !== WebSocket.OPEN) return
+        cursor.resumeGeneration += 1
+        const agentId = laneAgentId(key)
+        ws.send(
+          JSON.stringify({
+            type: 'resume',
+            turnId,
+            ...(agentId ? { agentId } : {}),
+            generation: cursor.resumeGeneration,
+            afterIndex: cursor.nextIndex - 1
+          })
+        )
+      }
+
+      /** The turn nobody acked yet, if this reconnect should put it back on the wire (once per socket). */
+      const unackedTurn = (
+        ws: WebSocket
+      ): NonNullable<ReturnType<typeof pendingTurnFrames.current.get>> | undefined => {
+        const pending = pendingTurnFrames.current.get(id)
+        if (!pending || pending.resentOn === ws || ws.readyState !== WebSocket.OPEN) return undefined
+        const lanes = lanesOf(id).map((key) => streamCursors.current.get(key))
+        const unacked =
+          lanes.length > 0 &&
+          lanes.every((cursor) => cursor && cursor.turnId === undefined && cursor.requestedTurnId === pending.turnId)
+        return unacked ? pending : undefined
+      }
+
       const sendResume = (ws: WebSocket): void => {
+        // Nobody acked the in-flight turn: it may not exist anywhere, so re-send it (same turnId) rather than resume a stream never opened — the daemon answers an admitted copy `busy`, and that ack attaches us (see the ack handler).
+        const pending = unackedTurn(ws)
+        if (pending) {
+          pending.resentOn = ws
+          ws.send(pending.frame)
+          return
+        }
         // One resume per live lane — a multi-agent turn streams from several
         // participants, each with its own daemon-side replay window.
-        for (const key of lanesOf(id)) {
-          const cursor = streamCursors.current.get(key)
-          const turnId = cursor?.turnId ?? cursor?.requestedTurnId
-          if (!cursor || !turnId || ws.readyState !== WebSocket.OPEN) continue
-          cursor.resumeGeneration += 1
-          const agentId = laneAgentId(key)
-          ws.send(
-            JSON.stringify({
-              type: 'resume',
-              turnId,
-              ...(agentId ? { agentId } : {}),
-              generation: cursor.resumeGeneration,
-              afterIndex: cursor.nextIndex - 1
-            })
-          )
-        }
+        for (const key of lanesOf(id)) sendLaneResume(ws, key)
       }
 
       /** A reconnect can beat the original turn across different relay links.
@@ -880,6 +906,38 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
               dropSelf()
               if (busyRef.current[id]) scheduleReconnect()
               else setBusy(id, false)
+            }
+            /** A per-participant rejection: fail only that lane — the other targets of a multi-agent turn keep streaming. */
+            const rejectLane = (
+              agentId: string | undefined,
+              turnId: string | undefined,
+              reason: string | undefined
+            ) => {
+              const key = cursorKeyFor(id, agentId)
+              if (key) {
+                deltaBuffer.flush(key)
+                streamCursors.current.delete(key)
+                syncBusyLanes(id)
+              }
+              const name = participantName(id, agentId)
+              pushStep(id, {
+                kind: 'done',
+                ...(turnId ? { turnId } : {}),
+                ...(agentId ? { agentId } : {}),
+                ...(name ? { who: name } : {}),
+                text:
+                  reason === 'paused'
+                    ? `⚠️ ${name ?? 'Agent'} is paused — it is not processing messages.`
+                    : reason === 'busy'
+                      ? `⚠️ ${name ?? 'Agent'} is busy — try again shortly.`
+                      : reason === 'not_participant'
+                        ? `⚠️ ${name ?? 'That agent'} is not in this conversation.`
+                        : `⚠️ ${name ?? 'Agent'} unavailable (no live daemon).`
+              })
+              if (lanesOf(id).length === 0) {
+                reconnectAttempts.current.delete(id)
+                setBusy(id, false)
+              }
             }
             ws.onmessage = (e) => {
               let m: {
@@ -984,9 +1042,19 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                 const key = cursorKeyFor(id, m.ack?.agentId)
                 const cursor = key ? streamCursors.current.get(key) : undefined
                 if (cursor && m.ack?.turnId) bindWebchatTurn(cursor, m.ack.turnId)
+                if (key) pendingTurnFrames.current.get(id)?.attaching?.delete(key)
                 reconnectAttempts.current.delete(id)
               } else if (m.type === 'resumed' && m.ack?.accepted === false) {
                 const key = cursorKeyFor(id, m.ack?.agentId)
+                const pending = pendingTurnFrames.current.get(id)
+                if (key && pending?.resentOn === ws && pending.attaching?.has(key)) {
+                  pending.attaching.delete(key)
+                  // The attach after a `busy` copy found no stream: that `busy` was the daemon's real verdict (drain / queue full), not a duplicate — report it as such.
+                  if (m.ack.reason === 'stream_not_found') {
+                    rejectLane(m.ack.agentId, pending.turnId, 'busy')
+                    return
+                  }
+                }
                 const awaitingAdmission =
                   m.ack.reason === 'stream_not_found' && !(key ? streamCursors.current.get(key)?.turnId : undefined)
                 if (awaitingAdmission) scheduleResumeRetry(ws)
@@ -997,35 +1065,23 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                       ? 'Some response updates could not be recovered — refresh to load the complete response.'
                       : 'The response could not be resumed — refresh to load its latest state.'
                   )
-              } else if (m.type === 'ack' && m.ack?.accepted === false) {
-                // A per-participant rejection: fail only that lane — the other
-                // targets of a multi-agent turn keep streaming.
+              } else if (
+                m.type === 'ack' &&
+                m.ack?.accepted === false &&
+                m.ack.reason === 'busy' &&
+                m.ack.turnId !== undefined &&
+                pendingTurnFrames.current.get(id)?.resentOn === ws &&
+                pendingTurnFrames.current.get(id)?.turnId === m.ack.turnId
+              ) {
+                // `busy` for our re-sent copy is ambiguous — a stream this turn already opened (the original was admitted, its ack lost), or a real drain / queue-full refusal — so try to attach; the `resumed` verdict settles which it was.
                 const key = cursorKeyFor(id, m.ack.agentId)
-                if (key) {
-                  deltaBuffer.flush(key)
-                  streamCursors.current.delete(key)
-                  syncBusyLanes(id)
+                const pending = pendingTurnFrames.current.get(id)
+                if (key && pending) {
+                  ;(pending.attaching ??= new Set()).add(key)
+                  sendLaneResume(ws, key)
                 }
-                const agentId = m.ack.agentId
-                const name = participantName(id, agentId)
-                pushStep(id, {
-                  kind: 'done',
-                  ...(m.ack.turnId ? { turnId: m.ack.turnId } : {}),
-                  ...(agentId ? { agentId } : {}),
-                  ...(name ? { who: name } : {}),
-                  text:
-                    m.ack.reason === 'paused'
-                      ? `⚠️ ${name ?? 'Agent'} is paused — it is not processing messages.`
-                      : m.ack.reason === 'busy'
-                        ? `⚠️ ${name ?? 'Agent'} is busy — try again shortly.`
-                        : m.ack.reason === 'not_participant'
-                          ? `⚠️ ${name ?? 'That agent'} is not in this conversation.`
-                          : `⚠️ ${name ?? 'Agent'} unavailable (no live daemon).`
-                })
-                if (lanesOf(id).length === 0) {
-                  reconnectAttempts.current.delete(id)
-                  setBusy(id, false)
-                }
+              } else if (m.type === 'ack' && m.ack?.accepted === false) {
+                rejectLane(m.ack.agentId, m.ack.turnId, m.ack.reason)
               } else if (m.type === 'error') {
                 failStream(id, 'Connection error.')
               }
@@ -1234,22 +1290,22 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       const conn = connect(id, agentForId, conversationId)
       conn.ready
         .then((ws) => {
-          ws.send(
-            JSON.stringify({
-              text,
-              turnId: requestedTurnId,
-              ...(roster.length > 1 ? { mentions: sentMentions, targets } : {}),
-              ...(image ? { attachments: [image] } : {}),
-              // Runtime staging is a single-agent affordance — multi-agent
-              // conversations expose no runtime controls (§9.1/§9.3).
-              ...(roster.length <= 1 && stagedRuntime.current.get(id)
-                ? { runtime: stagedRuntime.current.get(id) }
-                : {}),
-              ...(roster.length <= 1 && stagedWorktree.current.has(id)
-                ? { worktree: stagedWorktree.current.get(id) }
-                : {})
-            })
-          )
+          const frame = JSON.stringify({
+            text,
+            turnId: requestedTurnId,
+            ...(roster.length > 1 ? { mentions: sentMentions, targets } : {}),
+            ...(image ? { attachments: [image] } : {}),
+            // Runtime staging is a single-agent affordance — multi-agent
+            // conversations expose no runtime controls (§9.1/§9.3).
+            ...(roster.length <= 1 && stagedRuntime.current.get(id) ? { runtime: stagedRuntime.current.get(id) } : {}),
+            ...(roster.length <= 1 && stagedWorktree.current.has(id)
+              ? { worktree: stagedWorktree.current.get(id) }
+              : {})
+          })
+          // Kept until the agent acks: a reconnect that finds it unacked re-sends it. Single-agent only — the relay mints the canonical post identity per received frame, so a re-sent multi-agent turn partially admitted the first time would land under a second postId on the rest of the roster (duplicate user messages in the merged transcript).
+          if (roster.length <= 1) pendingTurnFrames.current.set(id, { turnId: requestedTurnId, frame })
+          else pendingTurnFrames.current.delete(id)
+          ws.send(frame)
           if (isNewConversation) setTimeout(refreshSessions, 2500)
         })
         .catch((err) => {
@@ -1268,6 +1324,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                 ? `⚠️ ${conflict}`
                 : '⚠️ Could not reach the agent.'
           })
+          pendingTurnFrames.current.delete(id)
           dropLanes(id)
           setBusy(id, false)
         })
