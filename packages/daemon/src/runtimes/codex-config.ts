@@ -32,6 +32,25 @@ export function codexConfigWithBaseUrl(raw: string | undefined, baseUrl: string)
   return JSON.stringify({ ...config, model_provider: 'openai', openai_base_url: baseUrl })
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/** Deployment floor for the sandbox shim: pod-asserted config keys sit under any daemon-sent key.
+ *  A table both sides carry merges one level deep — the daemon always sends `features` (account
+ *  apps off), and replacing the whole table would silently drop the floor's other entries. */
+export function codexConfigWithFloor(raw: string | undefined, floorRaw: string): string | undefined {
+  const floor = objectFromJson(floorRaw, 'AC_CODEX_CONFIG')
+  if (Object.keys(floor).length === 0) return undefined
+  const config = objectFromJson(raw, 'CODEX_CONFIG')
+  const merged: Record<string, unknown> = { ...floor, ...config }
+  for (const [key, floorValue] of Object.entries(floor)) {
+    const configValue = config[key]
+    if (isPlainObject(floorValue) && isPlainObject(configValue)) merged[key] = { ...floorValue, ...configValue }
+  }
+  return JSON.stringify(merged)
+}
+
 /** Fill-in variant for the sandbox shim: undefined when the daemon already aimed codex somewhere. */
 export function codexConfigWithBaseUrlFillIn(raw: string | undefined, baseUrl: string): string | undefined {
   const config = objectFromJson(raw, 'CODEX_CONFIG')
