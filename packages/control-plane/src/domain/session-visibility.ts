@@ -35,7 +35,7 @@ export interface SessionClassificationInput {
   conversationKind?: SessionConversationKind
   /** Durable tenant scope for the IM identity tuple (§2); absent ⇒ no IM owner. */
   transportScope?: string
-  /** Platform sender id (webchat reports an unstable email — never used as a key). */
+  /** Platform sender id — never used as a key here; webchat owns its own `webchatOwnerUserId`. */
   triggeredBy?: string
   /** Present ⇒ an A2A child: it inherits from its parent under a row lock (§4.5). */
   parentSessionId?: string

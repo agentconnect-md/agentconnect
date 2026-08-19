@@ -129,7 +129,7 @@ describe('Daemon interrupt safety gates', () => {
         AGENT_ID,
         CONV_1,
         'first',
-        'alice',
+        { id: 'alice', name: 'alice' },
         stream.sink
       )
       await vi.waitFor(() => expect(host.setSessionModel).toHaveBeenCalled(), WAIT)
@@ -178,7 +178,7 @@ describe('Daemon interrupt safety gates', () => {
         AGENT_ID,
         CONV_1,
         'first',
-        'alice',
+        { id: 'alice', name: 'alice' },
         stream.sink
       )
       expect(first.accepted).toBe(true)
@@ -193,7 +193,7 @@ describe('Daemon interrupt safety gates', () => {
         AGENT_ID,
         CONV_2,
         'too early',
-        'alice',
+        { id: 'alice', name: 'alice' },
         stream.sink
       )
       expect(tooEarly).toMatchObject({ accepted: false, reason: 'busy' })
@@ -206,7 +206,7 @@ describe('Daemon interrupt safety gates', () => {
         AGENT_ID,
         CONV_2,
         'fresh',
-        'alice',
+        { id: 'alice', name: 'alice' },
         stream.sink
       )
       expect(fresh.accepted).toBe(true)
@@ -338,7 +338,7 @@ describe('Daemon interrupt safety gates', () => {
         AGENT_ID,
         CONV_1,
         'cold',
-        'alice',
+        { id: 'alice', name: 'alice' },
         stream.sink
       )
       expect(ack.accepted).toBe(true)
@@ -401,7 +401,7 @@ describe('Daemon interrupt safety gates', () => {
       AGENT_ID,
       CONV_1,
       'cold memory',
-      'alice',
+      { id: 'alice', name: 'alice' },
       stream.sink
     )
     await vi.waitFor(() => expect(standingContext).toHaveBeenCalled(), WAIT)
@@ -449,7 +449,7 @@ describe('Daemon interrupt safety gates', () => {
         AGENT_ID,
         CONV_1,
         'cold',
-        'alice',
+        { id: 'alice', name: 'alice' },
         stream.sink
       )
       expect(ack.accepted).toBe(true)
@@ -465,7 +465,7 @@ describe('Daemon interrupt safety gates', () => {
         AGENT_ID,
         CONV_2,
         'must stay blocked',
-        'alice',
+        { id: 'alice', name: 'alice' },
         stream.sink
       )
       expect(retry).toMatchObject({ accepted: false, reason: 'busy' })
@@ -510,7 +510,7 @@ describe('Daemon interrupt safety gates', () => {
           AGENT_ID,
           CONV_1,
           'cold',
-          'alice',
+          { id: 'alice', name: 'alice' },
           stream.sink
         )
         expect(ack.accepted).toBe(true)
@@ -936,7 +936,7 @@ describe('Daemon interrupt safety gates', () => {
       AGENT_ID,
       CONV_1,
       'cold shutdown',
-      'alice',
+      { id: 'alice', name: 'alice' },
       stream.sink
     )
     await vi.waitFor(() => expect(host.newSession).toHaveBeenCalledTimes(1), WAIT)

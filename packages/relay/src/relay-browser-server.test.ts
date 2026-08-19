@@ -241,6 +241,43 @@ describe('createRelayBrowserServer (browser webchat edge)', () => {
     ws.close()
   })
 
+  it("forwards the CP-verified stable principal to the daemon, never the browser's claim", async () => {
+    const verified: RcVerifyResult = {
+      ok: true,
+      agentId: AGENT,
+      daemonId: DAEMON,
+      user: 'Ada Lovelace',
+      userId: 'user-1',
+      conversationId: RESUME
+    }
+    const { base, sent } = await start({ verify: async () => verified })
+    const ws = await dial(base, '?token=good')
+    await nextFrame(ws, 'ready')
+
+    ws.send(JSON.stringify({ text: 'hi', userId: 'spoofed', user: 'spoofed' }))
+    await nextFrame(ws, 'ack')
+
+    expect(sent[0]?.payload).toMatchObject({ op: 'turn', user: 'Ada Lovelace', userId: 'user-1' })
+    ws.close()
+  })
+
+  it('omits the principal claim entirely when the CP verdict carries none', async () => {
+    const { base, sent } = await start({
+      verify: async () =>
+        ({ ok: true, agentId: AGENT, daemonId: DAEMON, user: 'Ada Lovelace', conversationId: RESUME }) as RcVerifyResult
+    })
+    const ws = await dial(base, '?token=good')
+    await nextFrame(ws, 'ready')
+
+    ws.send(JSON.stringify({ text: 'hi' }))
+    await nextFrame(ws, 'ack')
+
+    // Absent, not synthesized from the handle — the daemon owns that fallback.
+    expect(sent[0]?.payload).toMatchObject({ op: 'turn', user: 'Ada Lovelace' })
+    expect(sent[0]?.payload).not.toHaveProperty('userId')
+    ws.close()
+  })
+
   it('captures an immutable copy of verified server state for the browser connection', async () => {
     const verifiedEntitlement = { ...ENTITLEMENT }
     const verified: RcVerifyResult = {

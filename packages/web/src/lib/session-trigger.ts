@@ -96,7 +96,7 @@ export function sessionSenderLabel(
   fallback: string | undefined,
   agentNames: ReadonlyMap<string, string>,
   memberNames: ReadonlyMap<string, string>,
-  me: { userId: string; email: string | null } | null | undefined
+  me: { userId: string; email: string | null; name?: string | null } | null | undefined
 ): string {
   if (!sender) return fallback ?? '—'
   if (isSelfSender(sender, me)) return 'You'

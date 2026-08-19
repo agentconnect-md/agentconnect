@@ -436,7 +436,7 @@ import {
   type TurnSettlement
 } from './daemon/turn-types.js'
 import { UUID_RE, type WebchatSink, type WebchatTurnContext } from './webchat/types.js'
-import { WebchatTransport, type WebchatHost } from './webchat/transport.js'
+import { webchatAuthorOf, WebchatTransport, type WebchatHost } from './webchat/transport.js'
 import { WebchatMcpRevocations, type WebchatMcpRevocationHost } from './webchat/mcp-revocations.js'
 import * as webchatTurnOutput from './webchat/turn-output.js'
 import {
@@ -6374,7 +6374,7 @@ export class Daemon {
               msg.chatId,
               msg.targetSessionId,
               op.text,
-              op.user ?? 'webchat',
+              webchatAuthorOf(op),
               sink,
               op.turnId
             )
@@ -6401,7 +6401,7 @@ export class Daemon {
           msg.agentId,
           msg.chatId,
           op.text,
-          op.user ?? 'webchat',
+          webchatAuthorOf(op),
           sink,
           op.turnId,
           op.attachments,

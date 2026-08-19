@@ -234,6 +234,34 @@ describe('webchat multi-agent continuation (#549 parity)', () => {
     await daemon.stop()
   }, 15_000)
 
+  // The fan-out leg of the #912 regression: a user turn targeted at one participant
+  // reaches the rest as a `context` post, and that copy wrote the author's DISPLAY NAME
+  // as the transcript sender too. Both writers must agree on the stable principal, or a
+  // peer's copy of one post identifies its author differently from the target's copy.
+  it("records a user context post under the author's principal, and caches their handle", async () => {
+    const { factory } = scriptedHosts({ [P1]: () => NO_RESPONSE })
+    const daemon = new Daemon({ root: scaffold([P1]), hostFactory: factory })
+    await daemon.start()
+    ;(daemon as any).cpClient = fakeCpClient()
+    seedCallPolicy(daemon, [P1, P2])
+    const post: WebchatPost = {
+      ...userPost('a peer sees this', 2_000, '00000009-0000-4000-8000-000000000009'),
+      author: { kind: 'user', user: 'Ada Lovelace', userId: 'user-1' }
+    }
+    await (daemon as any).handleRelayMsg(rd({ op: 'context', post }, { msgId: 'c-1' }), () => {})
+    await settle()
+
+    const rows = (await (daemon as any).store.transcriptSince(
+      transcriptChannelKey(CONV, undefined),
+      `webchat:${CONV}`,
+      null
+    )) as { sender: string; text: string }[]
+    expect(rows.map((r) => r.text)).toEqual(['a peer sees this'])
+    expect(rows[0]!.sender).toBe('user-1')
+    expect((await (daemon as any).store.getDisplayNames(['user-1'])).get('user-1')).toBe('Ada Lovelace')
+    await daemon.stop()
+  }, 15_000)
+
   it('the author never self-activates: a context frame mis-addressed to the author is dropped', async () => {
     const { factory, prompts } = scriptedHosts({ [P1]: () => 'should never run' })
     const daemon = new Daemon({ root: scaffold([P1]), hostFactory: factory })

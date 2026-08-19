@@ -132,7 +132,13 @@ export const RelayWebchatOp = z.discriminatedUnion('op', [
   z.object({
     op: z.literal('turn'),
     text: z.string(),
+    // The author's mutable display handle — the transcript author line and the name a
+    // session worktree's branch is cut under.
     user: z.string().optional(),
+    // The author's STABLE CP principal, which is what the daemon records as the
+    // transcript sender so a display-name change never re-identifies past rows.
+    // Absent on frames from an older relay; the daemon then falls back to `user`.
+    userId: z.string().optional(),
     // New browsers allocate this before sending so a pre-ack reconnect can name
     // the exact turn. Optional for older clients; the daemon allocates a fallback.
     turnId: z.string().uuid().optional(),

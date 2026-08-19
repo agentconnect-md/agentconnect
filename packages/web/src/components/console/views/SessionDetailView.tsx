@@ -2280,6 +2280,16 @@ export default function SessionDetailView() {
       pictures.set(member.userId, member.picture)
       if (member.email) pictures.set(member.email, member.picture)
     }
+    // Last resort, for webchat rows written while the sender was the author's DISPLAY NAME
+    // rather than their CP principal: key by that name too, so those sessions still show a
+    // photo. Strictly after the identity keys — a name is not an identity, and two members
+    // sharing one would otherwise hand the second member's photo to the first's rows, so
+    // the first writer wins and nothing here ever gates access.
+    for (const member of members) {
+      if (!member.picture) continue
+      const label = memberDisplayName(member)
+      if (!pictures.has(label)) pictures.set(label, member.picture)
+    }
     return pictures
   }, [members])
   const attributedAgentIdBySender = useMemo(

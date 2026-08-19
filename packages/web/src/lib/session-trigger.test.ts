@@ -244,11 +244,40 @@ describe('sessionSenderLabel', () => {
     expect(sessionSenderLabel('member-id', 'member-id', agents, members, me)).toBe('Ada')
     expect(sessionSenderLabel('me', 'me', agents, members, me)).toBe('You')
   })
+
+  it('labels the viewer "You" on a legacy webchat row keyed by their display name', () => {
+    const agents = new Map([['agent-id', 'Release agent']])
+    const members = new Map([['member-id', 'Ada']])
+    const me = { userId: 'me', email: 'me@example.test', name: 'Phil Z' }
+
+    // The row a pre-fix daemon wrote records the handle, not the principal.
+    expect(sessionSenderLabel('Phil Z', 'Phil Z', agents, members, me)).toBe('You')
+    // Another member's row still resolves through the directory, never to "You".
+    expect(sessionSenderLabel('member-id', 'member-id', agents, members, me)).toBe('Ada')
+  })
 })
 
 describe('isSelfSender', () => {
   it('recognizes the live Playground viewer marker before /me is available', () => {
     expect(isSelfSender('@you', null)).toBe(true)
+  })
+
+  it('matches the CP principal a webchat row records, and the email an older row used', () => {
+    const me = { userId: 'user-1', email: 'ada@example.test', name: 'Ada Lovelace' }
+
+    expect(isSelfSender('user-1', me)).toBe(true)
+    expect(isSelfSender('ada@example.test', me)).toBe(true)
+    expect(isSelfSender('U0SLACK', me)).toBe(false)
+    expect(isSelfSender('other-user', me)).toBe(false)
+  })
+
+  it('falls back to the display name, for rows written before the principal was carried', () => {
+    const me = { userId: 'user-1', email: 'ada@example.test', name: 'Ada Lovelace' }
+
+    expect(isSelfSender('Ada Lovelace', me)).toBe(true)
+    // A viewer with no display name must not match on a null/absent name.
+    expect(isSelfSender('Ada Lovelace', { userId: 'user-1', email: 'ada@example.test', name: null })).toBe(false)
+    expect(isSelfSender('Ada Lovelace', { userId: 'user-1', email: 'ada@example.test' })).toBe(false)
   })
 })
 

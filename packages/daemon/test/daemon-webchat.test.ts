@@ -590,7 +590,13 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     ;(daemon as any).cpClient = cp
 
     // Run one full turn so a session row (with acpSessionId) exists for the conversation.
-    await (daemon as any).webchatTransport.dispatchWebchatTurn(AGENT_ID, CONV, 'go', 'webchat', cp.sink)
+    await (daemon as any).webchatTransport.dispatchWebchatTurn(
+      AGENT_ID,
+      CONV,
+      'go',
+      { id: 'webchat', name: 'webchat' },
+      cp.sink
+    )
     await vi.waitFor(() => expect(cp.dones).toHaveLength(1), WAIT)
 
     const key = (daemon as any).webchatTransport.webchatSessionKey(CONV, AGENT_ID)
@@ -619,7 +625,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
         AGENT_ID,
         CONV,
         'go',
-        'webchat',
+        { id: 'webchat', name: 'webchat' },
         cp.sink,
         undefined,
         undefined,
@@ -702,7 +708,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
       AGENT_ID,
       CONV,
       'go',
-      'webchat',
+      { id: 'webchat', name: 'webchat' },
       cp.sink,
       undefined,
       undefined,
@@ -762,7 +768,13 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     ;(daemon as any).cpClient = cp
 
     // Finish a turn first: Pending is gone, but the ACP session remains warm.
-    await (daemon as any).webchatTransport.dispatchWebchatTurn(AGENT_ID, CONV, 'first', 'webchat', cp.sink)
+    await (daemon as any).webchatTransport.dispatchWebchatTurn(
+      AGENT_ID,
+      CONV,
+      'first',
+      { id: 'webchat', name: 'webchat' },
+      cp.sink
+    )
     await vi.waitFor(() => expect(cp.dones).toHaveLength(1), WAIT)
     expect((daemon as any).pending.size).toBe(0)
     expect(host.newSession).toHaveBeenCalledTimes(1)
@@ -798,7 +810,13 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     expect(await (daemon as any).store.getFastModeOverride(key)).toBeUndefined()
 
     // The next turn reuses that same restored session while chat changes remain locked.
-    await (daemon as any).webchatTransport.dispatchWebchatTurn(AGENT_ID, CONV, 'second', 'webchat', cp.sink)
+    await (daemon as any).webchatTransport.dispatchWebchatTurn(
+      AGENT_ID,
+      CONV,
+      'second',
+      { id: 'webchat', name: 'webchat' },
+      cp.sink
+    )
     await vi.waitFor(() => expect(cp.dones).toHaveLength(2), WAIT)
     expect(host.newSession).toHaveBeenCalledTimes(1)
     expect((daemon as any).agents.get(AGENT_ID).allowRuntimeChangesInChat).toBe(false)
@@ -834,7 +852,13 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     const cp = fakeCpClient()
     ;(daemon as any).cpClient = cp
 
-    await (daemon as any).webchatTransport.dispatchWebchatTurn(AGENT_ID, CONV, 'first', 'webchat', cp.sink)
+    await (daemon as any).webchatTransport.dispatchWebchatTurn(
+      AGENT_ID,
+      CONV,
+      'first',
+      { id: 'webchat', name: 'webchat' },
+      cp.sink
+    )
     await vi.waitFor(() => expect(cp.dones).toHaveLength(1), WAIT)
     expect((daemon as any).pending.size).toBe(0)
 
@@ -859,7 +883,13 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
       expect(host.setSessionFastMode).toHaveBeenCalledWith('acp-wc-1', false)
     }, WAIT)
 
-    await (daemon as any).webchatTransport.dispatchWebchatTurn(AGENT_ID, CONV, 'second', 'webchat', cp.sink)
+    await (daemon as any).webchatTransport.dispatchWebchatTurn(
+      AGENT_ID,
+      CONV,
+      'second',
+      { id: 'webchat', name: 'webchat' },
+      cp.sink
+    )
     await vi.waitFor(() => expect(cp.dones).toHaveLength(2), WAIT)
     expect(host.newSession).toHaveBeenCalledTimes(1)
     await daemon.stop()
@@ -886,7 +916,13 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     const cp = fakeCpClient()
     ;(daemon as any).cpClient = cp
 
-    await (daemon as any).webchatTransport.dispatchWebchatTurn(AGENT_ID, CONV, 'go', 'webchat', cp.sink)
+    await (daemon as any).webchatTransport.dispatchWebchatTurn(
+      AGENT_ID,
+      CONV,
+      'go',
+      { id: 'webchat', name: 'webchat' },
+      cp.sink
+    )
     await vi.waitFor(
       () =>
         expect([...(daemon as any).pending.values()].some((p: any) => p.webchat?.conversationId === CONV)).toBe(true),
@@ -927,7 +963,13 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     await daemon.start()
     const cp = fakeCpClient()
 
-    const ack = await (daemon as any).webchatTransport.dispatchWebchatTurn(AGENT_ID, CONV, 'go', 'webchat', cp.sink)
+    const ack = await (daemon as any).webchatTransport.dispatchWebchatTurn(
+      AGENT_ID,
+      CONV,
+      'go',
+      { id: 'webchat', name: 'webchat' },
+      cp.sink
+    )
     expect(ack.accepted).toBe(true)
     await vi.waitFor(() => expect(host.newSession).toHaveBeenCalledTimes(1), WAIT)
     expect((daemon as any).pending.size).toBe(0)
@@ -1082,7 +1124,13 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     const cp = fakeCpClient()
     ;(daemon as any).cpClient = cp
 
-    const ack = await (daemon as any).webchatTransport.dispatchWebchatTurn(AGENT_ID, CONV, 'go', 'webchat', cp.sink)
+    const ack = await (daemon as any).webchatTransport.dispatchWebchatTurn(
+      AGENT_ID,
+      CONV,
+      'go',
+      { id: 'webchat', name: 'webchat' },
+      cp.sink
+    )
 
     expect(ack).toMatchObject({ accepted: false, reason: 'paused' })
     expect(host.prompt).not.toHaveBeenCalled()
@@ -1110,13 +1158,25 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     const cp = fakeCpClient()
 
     const accepted = [
-      await (daemon as any).webchatTransport.dispatchWebchatTurn(AGENT_ID, CONV, 'head', 'webchat', cp.sink)
+      await (daemon as any).webchatTransport.dispatchWebchatTurn(
+        AGENT_ID,
+        CONV,
+        'head',
+        { id: 'webchat', name: 'webchat' },
+        cp.sink
+      )
     ]
     await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(1), WAIT)
 
     for (let n = 1; n <= 10; n++) {
       accepted.push(
-        await (daemon as any).webchatTransport.dispatchWebchatTurn(AGENT_ID, CONV, `queued-${n}`, 'webchat', cp.sink)
+        await (daemon as any).webchatTransport.dispatchWebchatTurn(
+          AGENT_ID,
+          CONV,
+          `queued-${n}`,
+          { id: 'webchat', name: 'webchat' },
+          cp.sink
+        )
       )
     }
     expect(accepted.every((ack) => ack.accepted)).toBe(true)
@@ -1130,7 +1190,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
       AGENT_ID,
       CONV,
       'queue-full',
-      'webchat',
+      { id: 'webchat', name: 'webchat' },
       cp.sink
     )
     expect(rejected).toMatchObject({ accepted: false, reason: 'busy' })
@@ -1179,6 +1239,68 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     }[]
     const botText = rows.filter((r) => r.sender === AGENT_ID && r.kind === 'text').map((r) => r.text)
     expect(botText).toContain('the reply')
+    await daemon.stop()
+  }, 15_000)
+
+  // #912 regression: the token's `user` claim became the profile's display NAME, and the
+  // daemon stamped it as the transcript sender — so a re-read row identified the author by
+  // a mutable label the console could not match against /me, and the viewer's own messages
+  // came back as a stranger's. The row must record the stable principal instead.
+  it('records the stable principal as the transcript sender and caches the handle as a name', async () => {
+    const { factory } = streamingHost([text('ok')])
+    const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
+    await daemon.start()
+    const cp = fakeCpClient()
+    ;(daemon as any).cpClient = cp
+
+    await (daemon as any).webchatTransport.dispatchWebchatTurn(
+      AGENT_ID,
+      CONV,
+      'ask',
+      { id: 'user-1', name: 'Ada Lovelace' },
+      cp.sink
+    )
+    // The ack returns before the dispatch commits, so poll for the durable row.
+    await vi.waitFor(() => expect(cp.dones).toHaveLength(1), WAIT)
+
+    const rows = (await (daemon as any).store.threadTranscript(CONV, `webchat:${CONV}`)) as {
+      sender: string
+      kind: string
+    }[]
+    const humanSenders = rows.filter((r) => r.kind === 'text' && r.sender !== AGENT_ID).map((r) => r.sender)
+    expect(humanSenders.length).toBeGreaterThan(0)
+    expect(new Set(humanSenders)).toEqual(new Set(['user-1']))
+    // The handle is not lost — it moves to the name cache the session reader projects as
+    // `senderName`, and that `initiatorLabel` reads for a session worktree's branch.
+    expect((await (daemon as any).store.getDisplayNames(['user-1'])).get('user-1')).toBe('Ada Lovelace')
+    await daemon.stop()
+  }, 15_000)
+
+  // An older relay sends no principal. The turn must still work, and must not write a
+  // pointless self-referential name-cache row for the handle it fell back to.
+  it('falls back to the display handle when a pre-principal relay sends no id', async () => {
+    const { factory } = streamingHost([text('ok')])
+    const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
+    await daemon.start()
+    const cp = fakeCpClient()
+    ;(daemon as any).cpClient = cp
+
+    const ack = await (daemon as any).webchatTransport.dispatchWebchatTurn(
+      AGENT_ID,
+      CONV,
+      'ask',
+      { id: 'Ada Lovelace', name: 'Ada Lovelace' },
+      cp.sink
+    )
+    expect(ack.accepted).toBe(true)
+    await vi.waitFor(() => expect(cp.dones).toHaveLength(1), WAIT)
+
+    const rows = (await (daemon as any).store.threadTranscript(CONV, `webchat:${CONV}`)) as {
+      sender: string
+      kind: string
+    }[]
+    expect(rows.some((r) => r.kind === 'text' && r.sender === 'Ada Lovelace')).toBe(true)
+    expect((await (daemon as any).store.getDisplayNames(['Ada Lovelace'])).size).toBe(0)
     await daemon.stop()
   }, 15_000)
 
