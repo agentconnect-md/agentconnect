@@ -454,6 +454,57 @@ describe('reconnect after an unacked turn', () => {
     expect(getLiveSteps('s1').some((step) => /busy/.test(step.text ?? ''))).toBe(false)
   })
 
+  // `busy` for the copy is ambiguous: the attach's verdict tells a duplicate (stream exists → bound,
+  // streaming) from the daemon's real refusal (no stream → the agent IS busy; say so, stop retrying).
+  it('reports a real busy refusal when the attach after the copy finds no stream', async () => {
+    const { first, turn } = await sendAndOpen()
+    const second = await dropAndReconnect(first)
+    await act(async () => {
+      second.onmessage?.({
+        data: JSON.stringify({
+          type: 'ack',
+          ack: { accepted: false, reason: 'busy', turnId: turn.turnId, agentId: 'agent-1' }
+        })
+      })
+      second.onmessage?.({
+        data: JSON.stringify({
+          type: 'resumed',
+          ack: { accepted: false, reason: 'stream_not_found', agentId: 'agent-1' }
+        })
+      })
+      await vi.advanceTimersByTimeAsync(5_000)
+    })
+    expect(getLiveSteps('s1').filter((step) => /is busy/.test(step.text ?? ''))).toHaveLength(1)
+    // No resume ladder and no "could not be resumed": the busy verdict ended the turn.
+    expect(frames(second).filter((frame) => frame.type === 'resume')).toHaveLength(1)
+    expect(getLiveSteps('s1').some((step) => /could not be resumed/.test(step.text ?? ''))).toBe(false)
+  })
+
+  // The relay mints the canonical post identity per received frame, so a re-sent multi-agent turn
+  // partially admitted the first time would duplicate the user message on the rest of the roster.
+  it('never re-sends a multi-agent turn — those lanes resume as before', async () => {
+    ReconnectSocket.instances = []
+    Reflect.set(globalThis, 'WebSocket', ReconnectSocket)
+    const api = await import('@/lib/api')
+    vi.mocked(api.webchatWsUrl).mockResolvedValue('wss://relay.test/ws')
+    const roster = [
+      { agentId: 'agent-1', name: 'one', primary: true },
+      { agentId: 'agent-2', name: 'two' }
+    ]
+    await act(async () => {
+      pgSend('s1', 'agent-1', 'hello both', 'c1', roster)
+    })
+    const first = ReconnectSocket.instances[0]!
+    await act(async () => {
+      first.readyState = 1
+      first.onopen?.()
+    })
+    const turn = frames(first)[0] as { turnId: string }
+    const second = await dropAndReconnect(first)
+    expect(frames(second).map((frame) => frame.type)).toEqual(['resume', 'resume'])
+    expect(frames(second).every((frame) => frame.turnId === turn.turnId)).toBe(true)
+  })
+
   it('re-sends at most once per socket — a retry on the same socket falls back to resume', async () => {
     const { first, turn } = await sendAndOpen()
     const second = await dropAndReconnect(first)
