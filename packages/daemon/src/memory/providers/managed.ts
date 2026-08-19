@@ -17,7 +17,7 @@ import {
   type MemoryFs,
   type MemoryWriteSource
 } from '../store.js'
-import { appendDistilledMemories, buildDistillationPrompt, parseDistilledMemories } from '../distill.js'
+import { buildDistillationPrompt } from '../distill.js'
 import type {
   FileMemoryAdmin,
   MemoryExtractor,
@@ -119,9 +119,10 @@ export class ManagedMemoryProvider implements MemoryProvider {
     // Per-turn distillation is a WRITE: it goes to the active (channel) folder so a
     // channel's turns never distill into the shared base or another channel (#653).
     const dir = this.activeRoot(scope)
-    const prompt = await buildDistillationPrompt(dir, turn)
-    const output = await this.extract(scope.agentId, prompt)
-    await appendDistilledMemories(dir, parseDistilledMemories(output))
+    // The extraction session holds the same memory tools as any other trigger and
+    // writes through them itself (#41), so there is nothing to parse or apply here.
+    // Its text answer is not the product; the writes are.
+    await this.extract(scope.agentId, await buildDistillationPrompt(dir, turn))
   }
 
   tools(): ToolDescriptor[] {

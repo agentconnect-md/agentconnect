@@ -79,6 +79,7 @@ import { toolsForIntegrations, GITHUB_REVIEW_TOOLS, KNOWLEDGE_TOOLS } from './mc
 import { MEMORY_TOOL_NAMES } from './memory/tools.js'
 import { isSessionTitleToolCall } from './mcp/session-title-tool.js'
 import { MEMORY_DISTILLATION_SYSTEM_PROMPT, readOnlyExtractionMode } from './memory/distill.js'
+import { MEMORY_TOOLS } from './memory/tools.js'
 import {
   DREAM_MODEL_READABLE_CREDENTIALS_REASON,
   DreamRunner,
@@ -572,6 +573,8 @@ export class Daemon {
   private memoryExtractionQuarantines = new Map<string, string>()
   /** One isolated extractor session per agent/host lifetime (never shown to users). */
   private memoryExtractionSessions = new Map<string, string>()
+  /** MCP token backing each agent's cached distillation session, released with it. */
+  private memoryExtractionTokens = new Map<string, string>()
   private memoryExtractionDirs = new Map<string, string>()
   /** Throwaway empty cwd per agent for the console's commit-message pass (never written to). */
   private commitMessageDirs = new Map<string, string>()
@@ -3759,9 +3762,28 @@ export class Daemon {
           cwd = await mkdtemp(join(tmpdir(), 'agentconnect-memory-distill-'))
           this.memoryExtractionDirs.set(agentId, cwd)
         }
+        // Distillation writes memory through the SAME tool surface as an ordinary
+        // turn and a dream — only the binding differs (#41). The binding tags its
+        // writes `distill`, which dream adoption's rebase relies on to tell
+        // additive capture apart from a tool/console edit.
+        const mcpToken = this.mcp.register({
+          agentId,
+          platform: 'distill',
+          isDm: false,
+          channel: 'memory',
+          thread: 'distill',
+          tools: MEMORY_TOOLS,
+          memoryBinding: { source: 'distill' }
+        })
+        this.memoryExtractionTokens.set(agentId, mcpToken)
+        const mcpServers = buildMcpServers({
+          socketPath: mcpSocketPath(this.root),
+          token: mcpToken,
+          cliEntry: daemonEntryForShims(this.root)
+        })
         sessionId = trusted
-          ? await host.newSession(cwd, [], undefined, MEMORY_DISTILLATION_SYSTEM_PROMPT)
-          : await host.newSession(cwd, [])
+          ? await host.newSession(cwd, mcpServers, undefined, MEMORY_DISTILLATION_SYSTEM_PROMPT)
+          : await host.newSession(cwd, mcpServers)
         if (!(await host.setSessionPermissionMode(sessionId, readOnlyMode))) {
           host.discardSession(sessionId)
           this.memoryExtractionUnavailable.add(host)

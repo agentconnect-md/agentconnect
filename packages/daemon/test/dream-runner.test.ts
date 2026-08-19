@@ -15,7 +15,6 @@ import {
   type DreamStorePort
 } from '../src/dream/runner.js'
 import { LocalStore } from '../src/store/local-store.js'
-import { appendDistilledMemories } from '../src/memory/distill.js'
 import {
   ensureMemory,
   readMemoryFile,
@@ -1690,18 +1689,18 @@ describe('DreamRunner organization suggestions', () => {
 
 describe('capture/adoption serialization', () => {
   it('a distillation batch and an adoption cannot interleave (stale index never wins)', async () => {
-    // appendDistilledMemories reads the index once, then writes a topic and the
-    // index. If those were separate critical sections, an adoption landing
-    // between them would be clobbered by the batch's stale index. The batch now
-    // holds the memory-dir lock end to end, so the two serialize either way
-    // round — and the adopted index survives.
+    // A distilled write and an adoption must serialize on the memory-dir lock, or an
+    // adoption landing mid-write would be clobbered by a stale index. Distillation now
+    // goes through the ordinary write path (the shared memory tool, tagged `distill`),
+    // which regenerates the index INSIDE the same locked write — so the two can only
+    // interleave as whole operations, and the adopted index survives either order.
     const { dir, store, runner } = await setup({})
     const started = await runner.start('a1', { trigger: 'manual' })
     await settle(store, started.dreamId)
 
     // Fire capture and adoption concurrently at the same store.
     const [, adoptResult] = await Promise.allSettled([
-      appendDistilledMemories(local(dir), [{ topic: 'captured.md', content: 'a captured fact' }]),
+      writeMemoryFile(local(dir), 'captured.md', '- a captured fact\n', undefined, 'distill'),
       runner.adopt('a1', started.dreamId, false)
     ])
 
