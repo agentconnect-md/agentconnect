@@ -639,7 +639,12 @@ export function renderMemoryIndex(entries: MemoryIndexEntry[], heading = '# Memo
   const lines: string[] = []
   let budget = MAX_MEMORY_FILE_BYTES - Buffer.byteLength(prefix) - Buffer.byteLength(INDEX_OVERFLOW_NOTICE) - 1
   let dropped = 0
-  for (const entry of [...entries].sort((a, b) => a.name.localeCompare(b.name))) {
+  // Tie-break on the topic filename, which is unique within a store: two entries can
+  // share a display `name`, and staging feeds proposal order while live regeneration
+  // feeds directory order — without this the reviewed index would not be byte-stable
+  // through adoption, which is the whole point of sharing this renderer.
+  const ordered = [...entries].sort((a, b) => a.name.localeCompare(b.name) || a.topic.localeCompare(b.topic))
+  for (const entry of ordered) {
     const line = `- [${entry.name}](${entry.topic})${entry.description ? ` — ${entry.description}` : ''}`
     const cost = Buffer.byteLength(line) + 1
     if (cost > budget) {
