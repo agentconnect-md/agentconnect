@@ -2,11 +2,17 @@
  * Last-mile Slack formatting (§9.1 / §9.3). One pure helper:
  *  - splitIntoSections: break a message into <= maxLen sections.
  *
+ * The chunking algorithm itself is platform-neutral and lives in
+ * messages/split-sections.ts; this module supplies the Slack-specific parts — the block
+ * limit, which spans are indivisible, and the error raised when one cannot fit.
+ *
  * The daemon posts the agent's reply as a Block Kit `markdown` block (which renders
  * standard CommonMark natively), so NO markdown→mrkdwn conversion happens here — the
  * agent's text is sent verbatim. We only chunk it: a single `markdown` block caps at
  * 12000 chars, so a long body is split across blocks/messages on line boundaries.
  */
+
+import { splitIntoSections as splitTextIntoSections } from '../messages/split-sections.js'
 
 /** Slack `markdown` block hard cap (12000 chars per block). */
 export const SLACK_MARKDOWN_BLOCK_LIMIT = 12000
@@ -93,36 +99,8 @@ export function splitIntoSections(
   maxLen = SLACK_MARKDOWN_BLOCK_LIMIT,
   extraAddresses: readonly string[] = []
 ): string[] {
-  if (!text.trim()) return []
-  if (text.length <= maxLen) return [text]
-  const spans = protectedSpans(text, extraAddresses)
-  for (const span of spans) {
-    if (span.end - span.start > maxLen) throw new UnsplittableAddressError(text.slice(span.start, span.end))
-  }
-  const sections: string[] = []
-  let consumed = 0
-  while (text.length - consumed > maxLen) {
-    const remaining = text.slice(consumed)
-    // Prefer ending immediately after the last newline that fits. If none fits (an
-    // overlong line, or a newline exactly at maxLen), hard-cut at the limit. Slicing
-    // the original string rather than reconstructing lines guarantees join('') is
-    // byte-for-byte identical to the input, including boundary newlines.
-    const newline = remaining.lastIndexOf('\n', maxLen - 1)
-    let end = consumed + (newline >= 0 ? newline + 1 : maxLen)
-    // Absolute-offset spans and an absolute boundary, so the retreat below stays correct
-    // no matter how many sections have already been emitted.
-    const straddled = spans.find((span) => span.start < end && end < span.end)
-    if (straddled) {
-      end = straddled.start
-      // Retreating to an address that starts at (or before) this section's own start
-      // would emit an empty section and loop forever. It means the section begins inside
-      // the address — impossible, since the previous iteration ended at an address start
-      // and no address is longer than maxLen. Fail loudly instead of hanging.
-      if (end <= consumed) throw new UnsplittableAddressError(text.slice(straddled.start, straddled.end))
-    }
-    sections.push(text.slice(consumed, end))
-    consumed = end
-  }
-  if (consumed < text.length) sections.push(text.slice(consumed))
-  return sections
+  return splitTextIntoSections(text, maxLen, {
+    protectedSpans: protectedSpans(text, extraAddresses),
+    unsplittable: (address) => new UnsplittableAddressError(address)
+  })
 }

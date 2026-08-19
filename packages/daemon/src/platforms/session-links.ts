@@ -1,5 +1,5 @@
 import type { SessionRecord } from '../store/local-store.js'
-import { slackThreadUrl } from '../slack/permalink.js'
+import { slackThreadUrl } from './slack/permalink.js'
 import type { PlatformConnection } from './contract.js'
 
 type SessionLinkConnection = Pick<PlatformConnection, 'workspaceUrl'>

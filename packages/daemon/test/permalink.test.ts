@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { slackThreadUrl } from '../src/slack/permalink.js'
+import { slackThreadUrl } from '../src/platforms/slack/permalink.js'
 
 describe('slackThreadUrl', () => {
   it('builds the archives permalink, stripping the ts dot and trailing slash', () => {
