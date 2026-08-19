@@ -107,6 +107,8 @@ export function createRelayBrowserServer(app: FastifyInstance, deps: RelayBrowse
           ...(result.targetSessionId ? { targetSessionId: result.targetSessionId } : {}),
           ...(result.remoteMcp ? { remoteMcp: result.remoteMcp } : {}),
           daemonConnFor: (id) => deps.daemons.get(id),
+          // Org-scoped so a rendezvous can never carry one org's turn to another org's daemon.
+          ...(result.orgId ? { rendezvousDaemonConn: () => deps.daemons.anyFor(result.orgId!) } : {}),
           register: (c, sink) => deps.router.register(c, sink),
           unregister: (c, sink) => deps.router.unregister(c, sink),
           log: deps.log

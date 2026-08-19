@@ -72,6 +72,8 @@ export interface RelayDaemonConnDeps {
 export class RelayDaemonConnection {
   state: State = 'AUTHENTICATING'
   daemonId = ''
+  /** The org the CP resolved this daemon's credential to; scopes the webchat rendezvous fallback. */
+  orgId?: string
 
   /** Optional behaviors this daemon advertised at hello (§8.4). Populated only after a
    *  successful handshake, so a caller that reads it on a non-READY socket correctly
@@ -248,6 +250,7 @@ export class RelayDaemonConnection {
     }
 
     this.daemonId = result.daemonId
+    if (result.orgId) this.orgId = result.orgId
     this.capabilities = new Set(hello.capabilities ?? [])
     this.state = 'READY'
     this.reply(frame, 'rd/hello/ok', { relayId })

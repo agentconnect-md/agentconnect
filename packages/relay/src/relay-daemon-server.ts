@@ -42,6 +42,9 @@ export interface RelayDaemonServer {
   /** A live `rd/*` connection to `daemonId`, if this relay holds one — the browser
    *  gateway routes a webchat turn onto it. Returns any of the (normally one) sockets. */
   get(daemonId: string): RelayDaemonConnection | undefined
+  /** Any live same-org connection — the webchat rendezvous fallback when a recorded
+   *  member is gone (§4.4): the member either claims the duty or names the holder. */
+  anyFor(orgId: string): { daemonId: string; conn: RelayDaemonConnection } | undefined
   /** Number of authenticated daemon connections (observability / tests). */
   size(): number
 }
@@ -115,6 +118,12 @@ export function createRelayDaemonServer(app: FastifyInstance, deps: RelayDaemonS
     },
     get(daemonId: string): RelayDaemonConnection | undefined {
       return byDaemon.get(daemonId)?.values().next().value
+    },
+    anyFor(orgId: string): { daemonId: string; conn: RelayDaemonConnection } | undefined {
+      for (const [daemonId, set] of byDaemon) {
+        for (const conn of set) if (conn.orgId === orgId) return { daemonId, conn }
+      }
+      return undefined
     },
     size(): number {
       let n = 0

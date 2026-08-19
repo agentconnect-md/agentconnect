@@ -83,12 +83,18 @@ describe('createRelayDaemonServer (rd/* accept edge)', () => {
     await tick()
     expect(rd!.size()).toBe(1)
 
+    // The rendezvous fallback is org-scoped: only the verified org resolves a connection.
+    expect(rd!.anyFor('org-1')?.daemonId).toBe(DAEMON_ID)
+    expect(rd!.anyFor('org-1')?.conn.orgId).toBe('org-1')
+    expect(rd!.anyFor('org-2')).toBeUndefined()
+
     // CP-driven revoke: closes the daemon's rd/* socket and clears the map.
     const closed = closeCode(ws)
     rd!.revoke(DAEMON_ID)
     expect(await closed).toBe(4409)
     await tick()
     expect(rd!.size()).toBe(0)
+    expect(rd!.anyFor('org-1')).toBeUndefined()
   })
 
   it('rejects a client that does not offer the rd subprotocol', async () => {

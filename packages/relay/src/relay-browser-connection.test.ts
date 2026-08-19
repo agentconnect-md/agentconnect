@@ -471,3 +471,99 @@ describe('RelayBrowserConnection', () => {
     expect(transport.sent.length).toBe(before) // nothing appended post-close
   })
 })
+
+describe('webchat rendezvous fallback (rollout replaced the recorded daemon)', () => {
+  const DAEMON2 = '88888888-8888-4888-8888-888888888888'
+  const DAEMON3 = '77777777-7777-4777-8777-777777777777'
+
+  function buildRouted(opts: { conns: Record<string, RdAck | 'accept'>; rendezvous?: string }) {
+    const calls: Array<{ daemonId: string; msg: RdMsgWebchat }> = []
+    const connFor = (daemonId: string): RelayDaemonConnection | undefined => {
+      const verdict = opts.conns[daemonId]
+      if (!verdict) return undefined
+      return {
+        sendMsg: async (msg: RdMsgWebchat): Promise<RdAck> => {
+          calls.push({ daemonId, msg })
+          return verdict === 'accept' ? { msgId: msg.msgId, accepted: true } : verdict
+        }
+      } as unknown as RelayDaemonConnection
+    }
+    const rendezvous = vi.fn(() => {
+      const id = opts.rendezvous
+      const conn = id ? connFor(id) : undefined
+      return id && conn ? { daemonId: id, conn } : undefined
+    })
+    const transport = new FakeBrowserTransport()
+    new RelayBrowserConnection(transport, {
+      chatId: CHAT,
+      agentId: AGENT,
+      participants: [{ agentId: AGENT, daemonId: DAEMON, primary: true }],
+      user: USER,
+      daemonConnFor: connFor,
+      rendezvousDaemonConn: rendezvous,
+      register: vi.fn(),
+      unregister: vi.fn(),
+      log: silentLog
+    }).start()
+    return { transport, calls, rendezvous }
+  }
+
+  it('delivers through a live same-org member when the recorded daemon is gone', async () => {
+    const { transport, calls } = buildRouted({ conns: { [DAEMON2]: 'accept' }, rendezvous: DAEMON2 })
+    transport.feed({ text: 'hi' })
+    await tick()
+    expect(calls.map((c) => c.daemonId)).toEqual([DAEMON2])
+    expect(transport.last('ack')).toMatchObject({ ack: { accepted: true, agentId: AGENT } })
+    expect(transport.last('error')).toBeUndefined()
+  })
+
+  it('heals the roster: the next op goes direct instead of repeating the rendezvous', async () => {
+    const { transport, calls, rendezvous } = buildRouted({ conns: { [DAEMON2]: 'accept' }, rendezvous: DAEMON2 })
+    transport.feed({ text: 'hi' })
+    await tick()
+    transport.feed({ text: 'again' })
+    await tick()
+    expect(calls.map((c) => c.daemonId)).toEqual([DAEMON2, DAEMON2])
+    expect(rendezvous).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the offline error when no same-org member is connected', async () => {
+    const { transport, calls } = buildRouted({ conns: {} })
+    transport.feed({ text: 'hi' })
+    await tick()
+    expect(calls).toEqual([])
+    expect(transport.last('error')).toEqual({ type: 'error', message: 'agent daemon offline' })
+  })
+
+  it('follows a not_holder verdict from the rendezvous member to the named holder', async () => {
+    const { transport, calls } = buildRouted({
+      conns: {
+        [DAEMON2]: { msgId: 'x', accepted: false, reason: 'not_holder', holderDaemonId: DAEMON3 },
+        [DAEMON3]: 'accept'
+      },
+      rendezvous: DAEMON2
+    })
+    transport.feed({ text: 'hi' })
+    await tick()
+    expect(calls.map((c) => c.daemonId)).toEqual([DAEMON2, DAEMON3])
+    expect(transport.last('ack')).toMatchObject({ ack: { accepted: true, agentId: AGENT } })
+    // Healed to the holder: a second op goes straight to it.
+    transport.feed({ text: 'again' })
+    await tick()
+    expect(calls.map((c) => c.daemonId)).toEqual([DAEMON2, DAEMON3, DAEMON3])
+  })
+
+  it('heals after the ordinary holder re-route when the recorded daemon still answers', async () => {
+    const { transport, calls } = buildRouted({
+      conns: {
+        [DAEMON]: { msgId: 'x', accepted: false, reason: 'not_holder', holderDaemonId: DAEMON3 },
+        [DAEMON3]: 'accept'
+      }
+    })
+    transport.feed({ text: 'hi' })
+    await tick()
+    transport.feed({ text: 'again' })
+    await tick()
+    expect(calls.map((c) => c.daemonId)).toEqual([DAEMON, DAEMON3, DAEMON3])
+  })
+})
