@@ -69,6 +69,8 @@ export const WorkspaceListReq = z.object({
   /** ACP session id selecting that session's isolated Git worktree. Omit for the
    * agent's primary checkout. The CP authorizes the session before forwarding. */
   sessionId: z.string().min(1).optional(),
+  /** `owner/repo` of one authorized additional repository, selecting that secondary workspace root. Omit for the primary. */
+  repo: z.string().min(1).optional(),
   path: z.string().default(''), // workspace-relative POSIX path; '' ⇒ workspace root
   cursor: z.string().optional(), // opaque; omit ⇒ first page
   limit: z.number().int().positive().max(500).default(200)
@@ -90,6 +92,8 @@ export const WorkspaceReadReq = z.object({
   agentId: z.string().min(1), // local agent id (NOT a wire UUID)
   /** ACP session id selecting that session's isolated Git worktree. */
   sessionId: z.string().min(1).optional(),
+  /** `owner/repo` of one authorized additional repository, selecting that secondary workspace root. Omit for the primary. */
+  repo: z.string().min(1).optional(),
   path: z.string().min(1), // workspace-relative POSIX path to a file
   offset: z.number().int().nonnegative().default(0), // byte offset
   limit: z.number().int().positive().max(65536).default(65536) // byte count per slice (64 KiB, see docblock)
@@ -186,7 +190,9 @@ export type WorkspaceDeleteOk = z.infer<typeof WorkspaceDeleteOk>
 export const WorkspaceGitStatusReq = z.object({
   agentId: z.string().min(1), // local agent id (NOT a wire UUID)
   /** ACP session id selecting that session's isolated Git worktree. */
-  sessionId: z.string().min(1).optional()
+  sessionId: z.string().min(1).optional(),
+  /** `owner/repo` of one authorized additional repository, selecting that secondary workspace root. Omit for the primary. */
+  repo: z.string().min(1).optional()
 })
 export type WorkspaceGitStatusReq = z.infer<typeof WorkspaceGitStatusReq>
 
@@ -231,6 +237,8 @@ export const WorkspaceGitDiffReq = z.object({
   agentId: z.string().min(1), // local agent id (NOT a wire UUID)
   /** ACP session id selecting that session's isolated Git worktree. */
   sessionId: z.string().min(1).optional(),
+  /** `owner/repo` of one authorized additional repository, selecting that secondary workspace root. Omit for the primary. */
+  repo: z.string().min(1).optional(),
   path: z.string().min(1).max(4096), // workspace-relative POSIX path (a directory diffs its subtree)
   staged: z.boolean().default(false) // true ⇒ index vs HEAD (`--cached`); false ⇒ worktree vs index
 })
@@ -262,6 +270,8 @@ export const WorkspaceGitLogReq = z.object({
   agentId: z.string().min(1), // local agent id (NOT a wire UUID)
   /** ACP session id selecting that session's isolated Git worktree. */
   sessionId: z.string().min(1).optional(),
+  /** `owner/repo` of one authorized additional repository, selecting that secondary workspace root. Omit for the primary. */
+  repo: z.string().min(1).optional(),
   limit: z.number().int().positive().max(MAX_WORKSPACE_LOG_COMMITS).default(20) // commits per REP
 })
 export type WorkspaceGitLogReq = z.infer<typeof WorkspaceGitLogReq>
@@ -292,7 +302,9 @@ export type WorkspaceGitLog = z.infer<typeof WorkspaceGitLog>
 
 /** C→D REQ: force a fast-forward-only `git pull` in the agent's workspace now. */
 export const WorkspaceGitPullReq = z.object({
-  agentId: z.string().min(1) // local agent id (NOT a wire UUID)
+  agentId: z.string().min(1), // local agent id (NOT a wire UUID)
+  /** `owner/repo` of one authorized additional repository, selecting that secondary workspace root. Omit for the primary. */
+  repo: z.string().min(1).optional()
 })
 export type WorkspaceGitPullReq = z.infer<typeof WorkspaceGitPullReq>
 
@@ -334,6 +346,8 @@ export const WorkspaceGitStageReq = z.object({
   agentId: z.string().min(1), // local agent id (NOT a wire UUID)
   /** ACP session id selecting that session's isolated Git worktree. */
   sessionId: z.string().min(1).optional(),
+  /** `owner/repo` of one authorized additional repository, selecting that secondary workspace root. Omit for the primary. */
+  repo: z.string().min(1).optional(),
   paths: z
     .array(z.string().min(1).max(4096)) // workspace-relative POSIX paths, bounded like write/delete
     .max(MAX_WORKSPACE_STAGE_PATHS)
@@ -367,6 +381,8 @@ export const WorkspaceGitCommitReq = z.object({
   agentId: z.string().min(1), // local agent id (NOT a wire UUID)
   /** ACP session id selecting that session's isolated Git worktree. */
   sessionId: z.string().min(1).optional(),
+  /** `owner/repo` of one authorized additional repository, selecting that secondary workspace root. Omit for the primary. */
+  repo: z.string().min(1).optional(),
   message: z.string().min(1).max(MAX_WORKSPACE_COMMIT_MESSAGE) // subject + optional body, as git receives it
 })
 export type WorkspaceGitCommitReq = z.infer<typeof WorkspaceGitCommitReq>
@@ -388,7 +404,9 @@ export type WorkspaceGitCommitResult = z.infer<typeof WorkspaceGitCommitResult>
 export const WorkspaceGitPushReq = z.object({
   agentId: z.string().min(1), // local agent id (NOT a wire UUID)
   /** ACP session id selecting that session's isolated Git worktree. */
-  sessionId: z.string().min(1).optional()
+  sessionId: z.string().min(1).optional(),
+  /** `owner/repo` of one authorized additional repository, selecting that secondary workspace root. Omit for the primary. */
+  repo: z.string().min(1).optional()
 })
 export type WorkspaceGitPushReq = z.infer<typeof WorkspaceGitPushReq>
 
@@ -413,7 +431,9 @@ export type WorkspaceGitPushResult = z.infer<typeof WorkspaceGitPushResult>
 export const WorkspaceGitMessageReq = z.object({
   agentId: z.string().min(1), // local agent id (NOT a wire UUID)
   /** ACP session id selecting that session's isolated Git worktree. */
-  sessionId: z.string().min(1).optional()
+  sessionId: z.string().min(1).optional(),
+  /** `owner/repo` of one authorized additional repository, selecting that secondary workspace root. Omit for the primary. */
+  repo: z.string().min(1).optional()
 })
 export type WorkspaceGitMessageReq = z.infer<typeof WorkspaceGitMessageReq>
 

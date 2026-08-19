@@ -2713,8 +2713,16 @@ export const SessionToolBodyChunkDto = z.object({
 })
 
 // ── workspace files (pulled live from the owning daemon — the CP stores no bodies) ──
+/** Which of the agent's workspace roots a request addresses. Shared by every read that has no
+ *  session scope of its own (today: the pull). */
+export const WorkspaceRepoScopeQueryDto = z.object({
+  /** `owner/repo` of one of the agent's authorized additional repositories, selecting that
+   * secondary workspace root. Omit for the agent's primary workspace. */
+  repo: z.string().min(1).max(256).optional()
+})
+
 /** `GET /agents/:id/workspace/files` query — one page of a directory listing. */
-export const WorkspaceScopeQueryDto = z.object({
+export const WorkspaceScopeQueryDto = WorkspaceRepoScopeQueryDto.extend({
   /** ACP session id selecting an authorized isolated worktree. Omit for the
    * agent's primary checkout. */
   sessionId: z.string().min(1).optional()

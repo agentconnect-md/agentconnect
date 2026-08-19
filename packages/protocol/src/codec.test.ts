@@ -1063,6 +1063,37 @@ describe('workspace file access frames (console live proxy)', () => {
     expect(r.ext).toEqual({ epoch: 3 }) // fenced like session/list — epoch only
   })
 
+  it('every workspace REQ round-trips the secondary-root repo scope, and omits it by default', () => {
+    // One `owner/repo` names the secondary root each frame reads or writes; absent ⇒ the primary.
+    const scoped: [string, Record<string, unknown>][] = [
+      ['workspace/list', { agentId: 'a', path: 'src' }],
+      ['workspace/read', { agentId: 'a', path: 'README.md' }],
+      ['workspace/gitstatus', { agentId: 'a' }],
+      ['workspace/gitdiff', { agentId: 'a', path: 'README.md' }],
+      ['workspace/gitlog', { agentId: 'a' }],
+      ['workspace/gitpull', { agentId: 'a' }],
+      ['workspace/gitstage', { agentId: 'a', paths: ['README.md'] }],
+      ['workspace/gitunstage', { agentId: 'a', paths: ['README.md'] }],
+      ['workspace/gitcommit', { agentId: 'a', message: 'chore: touch' }],
+      ['workspace/gitpush', { agentId: 'a' }],
+      ['workspace/gitmessage', { agentId: 'a' }]
+    ]
+    for (const [type, payload] of scoped) {
+      const withRepo = decodeEnvelope(envelope(type, { ...payload, repo: 'acme/infra' }))
+      expect(withRepo.ok, type).toBe(true)
+      if (!withRepo.ok) throw new Error(`expected ${type}`)
+      expect((withRepo.frame.payload as { repo?: string }).repo, type).toBe('acme/infra')
+
+      const primary = decodeEnvelope(envelope(type, payload))
+      expect(primary.ok, type).toBe(true)
+      if (!primary.ok) throw new Error(`expected ${type}`)
+      expect((primary.frame.payload as { repo?: string }).repo, type).toBeUndefined()
+
+      // An empty scope is a bad request, not "the primary" — the caller must simply omit it.
+      expect(decodeEnvelope(envelope(type, { ...payload, repo: '' })).ok, type).toBe(false)
+    }
+  })
+
   it('workspace/list/page REP (corr = req id) round-trips entries + cursor and exists:false', () => {
     const page = decodeEnvelope(
       envelope(

@@ -255,6 +255,7 @@ import {
   WORKSPACE_GIT_MESSAGE_FEATURE,
   WORKSPACE_GIT_REVIEW_FEATURE,
   WORKSPACE_GIT_WRITE_FEATURE,
+  WORKSPACE_REPO_SCOPE_FEATURE,
   WORKSPACE_SESSION_READ_FEATURE,
   effectiveManagedMemoryScope,
   RdSlackAction,
@@ -3192,6 +3193,7 @@ export class Daemon {
       'workspace-file-edit-v1',
       'workspace-file-delete-v1',
       WORKSPACE_SESSION_READ_FEATURE,
+      WORKSPACE_REPO_SCOPE_FEATURE,
       TASK_LIST_FEATURE,
       // Only a cluster daemon has a sandbox to wake; elsewhere the CP answers `unsupported` unsent.
       ...(this.k8s ? [AGENT_WAKE_FEATURE] : []),
