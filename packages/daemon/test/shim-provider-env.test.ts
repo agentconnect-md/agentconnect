@@ -91,6 +91,31 @@ describe('AcpRunner provider env fill-in', () => {
     expect(seen).toEqual({ A: null, B: null, O: null, D: 'sk-deepseek-pod', C: null, R: null })
   })
 
+  it('removes an auth.json pinning an earlier injected key, and leaves a matching or human one', async () => {
+    const { mkdtempSync, mkdirSync, writeFileSync, existsSync } = await import('node:fs')
+    const { join } = await import('node:path')
+    const { tmpdir } = await import('node:os')
+    const codexHome = join(mkdtempSync(join(tmpdir(), 'codex-auth-')), '.codex')
+    mkdirSync(codexHome)
+    const authPath = join(codexHome, 'auth.json')
+    const base = { PATH: process.env.PATH ?? '', CODEX_HOME: codexHome }
+
+    // Stale grant: a file minted from an earlier key must not short-circuit this launch's auth.
+    writeFileSync(authPath, JSON.stringify({ OPENAI_API_KEY: 'sk-earlier-grant', tokens: null }))
+    await spawnAndReadEnv('codex-acp', base)
+    expect(existsSync(authPath)).toBe(false)
+
+    // Current grant: an account that already matches stays — no login round trip to re-mint it.
+    writeFileSync(authPath, JSON.stringify({ OPENAI_API_KEY: 'sk-codex-pod', tokens: null }))
+    await spawnAndReadEnv('codex-acp', base)
+    expect(existsSync(authPath)).toBe(true)
+
+    // Human ChatGPT login: tokens files are never the injection mechanism's to remove.
+    writeFileSync(authPath, JSON.stringify({ OPENAI_API_KEY: null, tokens: { id_token: 'x' } }))
+    await spawnAndReadEnv('codex-acp', base)
+    expect(existsSync(authPath)).toBe(true)
+  })
+
   it('pairs a codex key with the api-key default auth request, and lets a daemon-sent one win', async () => {
     const filled = await spawnAndReadEnv('codex-acp', { PATH: process.env.PATH ?? '' })
     expect(filled.O).toBe('sk-codex-pod')

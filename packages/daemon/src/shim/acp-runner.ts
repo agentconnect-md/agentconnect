@@ -1,7 +1,9 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync, unlinkSync } from 'node:fs'
+import { join } from 'node:path'
 import {
   CODEX_DEFAULT_AUTH_REQUEST,
+  codexAuthPinsAnotherKey,
   codexConfigWithBaseUrlFillIn,
   codexConfigWithFloor
 } from '../runtimes/codex-config.js'
@@ -185,8 +187,36 @@ export class AcpRunner {
       // A key without this is unusable on a fresh CODEX_HOME: codex-acp answers authRequired
       // itself only when told which method — same fill-in rule, a daemon-sent value wins.
       if (env.OPENAI_API_KEY && !env.DEFAULT_AUTH_REQUEST) env.DEFAULT_AUTH_REQUEST = CODEX_DEFAULT_AUTH_REQUEST
+      this.reconcileCodexApiKeyAuth(env)
     }
     const command = this.deps.resolveCommand?.(payload.command, env) ?? payload.command
+    return this.spawnChild(command, payload, env)
+  }
+
+  /** Codex persists an injected api-key grant as CODEX_HOME/auth.json, and an existing account
+   *  makes account/read report authentication present — so a persisted EARLIER grant would keep
+   *  every later launch on its key, unrevocable. Removing a file that pins another key returns
+   *  the launch to authRequired, and codex-acp re-mints from the key this launch carries. Human
+   *  ChatGPT logins (tokens files) are never touched, and neither is a file that already matches. */
+  private reconcileCodexApiKeyAuth(env: Record<string, string>): void {
+    if (env.DEFAULT_AUTH_REQUEST !== CODEX_DEFAULT_AUTH_REQUEST || !env.OPENAI_API_KEY) return
+    const home = env.CODEX_HOME || (env.HOME ? join(env.HOME, '.codex') : undefined)
+    if (!home) return
+    const authPath = join(home, 'auth.json')
+    try {
+      if (!existsSync(authPath)) return
+      if (!codexAuthPinsAnotherKey(readFileSync(authPath, 'utf8'), env.OPENAI_API_KEY)) return
+      unlinkSync(authPath)
+      this.deps.log?.info(
+        `acp: removed a codex auth.json pinning an earlier injected key — this launch's key takes over`
+      )
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      this.deps.log?.warn(`acp: leaving codex auth.json unreconciled — ${reason}`)
+    }
+  }
+
+  private spawnChild(command: string, payload: AcpOpen, env: Record<string, string>): void {
     const child = spawn(command, payload.args, {
       stdio: ['pipe', 'pipe', 'inherit'],
       env,

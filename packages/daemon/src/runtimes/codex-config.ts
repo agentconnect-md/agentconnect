@@ -11,6 +11,23 @@
 // session with -32000, because a bare env key is not an account to codex's account/read.
 export const CODEX_DEFAULT_AUTH_REQUEST = JSON.stringify({ methodId: 'api-key' })
 
+/** True when a persisted auth.json pins an API key other than the launch's own — the file codex
+ *  minted from an EARLIER injected grant, which would make account/read report authentication
+ *  present and the current key go unconsumed. A tokens-bearing file is a human ChatGPT login and
+ *  never stale on this rule; an unparseable file is stale (replacing it is the only recovery). */
+export function codexAuthPinsAnotherKey(raw: string, envKey: string): boolean {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return true
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return true
+  const auth = parsed as Record<string, unknown>
+  if (auth.tokens) return false
+  return typeof auth.OPENAI_API_KEY === 'string' ? auth.OPENAI_API_KEY !== envKey : false
+}
+
 export function objectFromJson(raw: string | undefined, label: string): Record<string, unknown> {
   if (!raw?.trim()) return {}
   let parsed: unknown
