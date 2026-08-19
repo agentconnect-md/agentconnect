@@ -19,6 +19,7 @@ import {
   fetchBillingAccount,
   fetchBillingPurchase,
   fetchBillingTransactions,
+  fmtDecimalUsd,
   fmtMicroUsd,
   type BillingPurchase
 } from '@/lib/billing-api'
@@ -516,13 +517,17 @@ export default function BillingView() {
                 <div key={t.id} className={`row ${TX_GRID}`}>
                   <span className="min-w-0">
                     <span className="block truncate font-sans text-[13px] font-medium leading-normal">
-                      {KIND_LABEL[t.kind] ?? t.kind}
+                      {t.type === 'debit' ? `Usage — ${t.period}` : (KIND_LABEL[t.kind] ?? t.kind)}
                     </span>
                     <span className="block font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
                       {fmtWhen(t.at)}
                     </span>
                   </span>
-                  <span className="mono text-right text-[13px]">{fmtMicroUsd(t.amountMicro)}</span>
+                  {/* A debit is recorded as a positive amount that was taken away, so
+                      the sign belongs here rather than in what the service sends. */}
+                  <span className="mono text-right text-[13px]">
+                    {t.type === 'debit' ? `-${fmtDecimalUsd(t.amount)}` : fmtMicroUsd(t.amountMicro)}
+                  </span>
                 </div>
               ))
             )}
