@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest'
 import type { Agent } from '../src/agents/agent-schema.js'
 import type { RuntimeDef } from '../src/config/config-schema.js'
 import {
+  applyCodexSessionFloor,
   applyModelCredential,
   applyStaticModelConfig,
+  configuredCodexSessionFloor,
   configuredModelCredentials,
   modelProviderTarget
 } from '../src/runtimes/model-provider-config.js'
@@ -180,5 +182,55 @@ describe('applyModelCredential', () => {
         } as never
       )
     ).toEqual({ provider: 'deepseek', runtime: 'deepseek' })
+  })
+})
+
+describe('applyCodexSessionFloor', () => {
+  const codex = { provider: 'openai', runtime: 'codex' } as const
+  const floor = JSON.stringify({ features: { multi_agent: false }, model: 'gpt-5.5' })
+
+  it('merges the floor under every key the daemon already authored', () => {
+    const env: Record<string, string> = {}
+    applyModelCredential(codex, env, { key: 'k', baseUrl: 'https://gw.example/v1' })
+    applyCodexSessionFloor(codex, env, floor)
+    expect(JSON.parse(env.CODEX_CONFIG)).toEqual({
+      model_provider: 'openai',
+      openai_base_url: 'https://gw.example/v1',
+      features: { multi_agent: false },
+      model: 'gpt-5.5'
+    })
+  })
+
+  it('keeps daemon-sent leaves authoritative, merging shared tables one level deep', () => {
+    const env: Record<string, string> = { CODEX_CONFIG: JSON.stringify({ model: 'o3-mini', features: { web: true } }) }
+    applyCodexSessionFloor(codex, env, floor)
+    expect(JSON.parse(env.CODEX_CONFIG)).toEqual({ model: 'o3-mini', features: { multi_agent: false, web: true } })
+  })
+
+  it('applies with no daemon-sent config at all — the stale-sandbox case the daemon channel exists for', () => {
+    const env: Record<string, string> = {}
+    applyCodexSessionFloor(codex, env, floor)
+    expect(JSON.parse(env.CODEX_CONFIG)).toEqual({ features: { multi_agent: false }, model: 'gpt-5.5' })
+  })
+
+  it('touches no runtime but codex', () => {
+    const env: Record<string, string> = {}
+    applyCodexSessionFloor({ provider: 'deepseek', runtime: 'deepseek' }, env, floor)
+    expect(env).toEqual({})
+  })
+})
+
+describe('configuredCodexSessionFloor', () => {
+  it('returns the raw value once it parses as an object', () => {
+    expect(configuredCodexSessionFloor({ AC_CODEX_CONFIG: ' {"model":"gpt-5.5"} ' })).toBe('{"model":"gpt-5.5"}')
+  })
+
+  it('is undefined when unset or blank', () => {
+    expect(configuredCodexSessionFloor({})).toBeUndefined()
+    expect(configuredCodexSessionFloor({ AC_CODEX_CONFIG: '  ' })).toBeUndefined()
+  })
+
+  it('fails loudly at boot on a malformed value', () => {
+    expect(() => configuredCodexSessionFloor({ AC_CODEX_CONFIG: '[1]' })).toThrow('AC_CODEX_CONFIG')
   })
 })

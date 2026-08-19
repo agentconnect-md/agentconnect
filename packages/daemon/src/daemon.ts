@@ -209,8 +209,10 @@ import { capsFromConfigOptions, augmentEffortOptions } from './runtimes/config-c
 import { isClaudeRuntimeDef } from './runtime-defs/claude-runtime.js'
 import { runtimeHomePath } from './runtimes/runtime-home.js'
 import {
+  applyCodexSessionFloor,
   applyModelCredential,
   applyStaticModelConfig,
+  configuredCodexSessionFloor,
   configuredModelCredentials,
   modelProviderTarget,
   type ModelCredential,
@@ -841,6 +843,9 @@ export class Daemon {
   private readonly keyServer?: KeyServerClient
   private readonly modelKeyNow: () => number
   private readonly staticModelCredentials?: StaticModelCredentials
+  /** Deployment codex session-config floor, daemon-applied at spawn so it also reaches agents
+   *  whose sandbox pod spec predates the value (the pod-env copy is a frozen snapshot). */
+  private readonly codexSessionFloor?: string
   /** Reads this pod's projected CP-audience token; undefined unless the daemon runs
    *  in-cluster AND the volume is actually mounted (decided once, at boot). */
   private readonly clusterIdentityToken?: () => string | undefined
@@ -1135,6 +1140,7 @@ export class Daemon {
     // Base URLs are deployment topology and always come from here, key server or not; an issuer
     // supplies the key alone.
     this.staticModelCredentials = this.k8s ? configuredModelCredentials(process.env) : undefined
+    this.codexSessionFloor = this.k8s ? configuredCodexSessionFloor(process.env) : undefined
     this.evalHooks = new DaemonEvaluationHooks(this.evaluationHost(), opts.evaluation)
     this.sessionMetadataOutbox = new SessionMetadataOutbox(this.sessionMetadataHost())
     this.observedChannelsSync = new ObservedChannelsSync(this.observedChannelsSyncHost())
@@ -3107,6 +3113,8 @@ export class Daemon {
             const configured = this.staticModelCredentials?.[target.runtime]
             if (configured) applyStaticModelConfig(target, launchEnv, configured)
           }
+          // Last, so every key the daemon authored above stays authoritative over the floor.
+          if (this.codexSessionFloor) applyCodexSessionFloor(target, launchEnv, this.codexSessionFloor)
         },
         runtimeReadRoots: runInSandbox
           ? (launchEnv) => this.sandboxRuntimeReadRoots(agent, runtime, launchEnv, githubAppCredentials)
