@@ -13,8 +13,10 @@ import {
   memoryRefToTopic,
   parseMemoryFrontmatter,
   stampMemoryHeader,
-  MEMORY_FORMAT_GUIDANCE
+  MEMORY_FORMAT_GUIDANCE,
+  normalizeMemoryHeader
 } from '../src/memory/frontmatter.js'
+import { dreamSystemPrompt } from '../src/dream/dreamer.js'
 import {
   ensureMemory,
   MAX_MEMORY_FILE_BYTES,
@@ -435,8 +437,71 @@ describe('distilled memories carry a description', () => {
     expect(parsed[0]?.description).toBe('multi line')
   })
 
-  it('teaches the SAME format text everywhere — the drift that caused this', () => {
-    // The distiller and the per-turn prompt must not restate the format separately.
+  it('teaches the SAME format text in every trigger — the drift that caused this', () => {
+    // Per-turn, distillation, and dreaming all write memory files. Each restating the
+    // format is exactly how they diverged, so all three embed the one shared text.
     expect(MEMORY_DISTILLATION_SYSTEM_PROMPT).toContain(MEMORY_FORMAT_GUIDANCE)
+    expect(dreamSystemPrompt(false)).toContain(MEMORY_FORMAT_GUIDANCE)
+    expect(dreamSystemPrompt(true)).toContain(MEMORY_FORMAT_GUIDANCE)
+  })
+})
+
+describe('normalizing model-written frontmatter', () => {
+  it('re-quotes an unsafe description the dream wrote as free text', () => {
+    // The dream emits frontmatter as opaque text; `ship: prod` would split the
+    // key/value and — with auto-adopt on — go live malformed.
+    const raw = '---\ndescription: ship: prod #now\ntype: project\n---\nbody\n'
+    const fixed = normalizeMemoryHeader(raw)
+    // Our own parser is lenient, so the point is the STORED bytes: the value is now a
+    // properly quoted scalar that a strict YAML reader accepts, matching what the
+    // distillation path already writes.
+    expect(fixed).toContain('description: "ship: prod #now"')
+    expect(parseMemoryFrontmatter(fixed).header.description).toBe('ship: prod #now')
+    expect(parseMemoryFrontmatter(fixed).header.type).toBe('project')
+    expect(fixed).toContain('body')
+  })
+
+  it('quotes EVERY YAML indicator a description can start with', () => {
+    // `#` would read as a comment (null value) and `?` is outright invalid; the rest
+    // are indicators too. Table-driven so a future edit cannot quietly drop one.
+    const leading = ['-', '?', ':', ',', '[', ']', '{', '}', '#', '&', '*', '!', '|', '>', "'", '"', '%', '@', '`']
+    for (const ch of leading) {
+      const value = `${ch} release policy`
+      const fixed = normalizeMemoryHeader(`---\ndescription: ${value}\n---\nbody\n`)
+      // Stored as a quoted scalar…
+      expect(fixed).toContain(`description: ${JSON.stringify(value)}`)
+      // …and still reads back as exactly what the model meant.
+      expect(parseMemoryFrontmatter(fixed).header.description).toBe(value)
+    }
+  })
+
+  it('leaves an ordinary description unquoted', () => {
+    const fixed = normalizeMemoryHeader('---\ndescription: how we ship to prod\n---\nbody\n')
+    expect(fixed).toContain('description: how we ship to prod')
+  })
+
+  it('is idempotent and leaves everything it does not own untouched', () => {
+    const raw = [
+      '---',
+      '# a comment',
+      'description: "already: quoted"',
+      'metadata:',
+      '  node_type: memory',
+      'custom: keep-me',
+      '---',
+      '',
+      'body',
+      ''
+    ].join('\n')
+    const once = normalizeMemoryHeader(raw)
+    expect(once).toBe(normalizeMemoryHeader(once))
+    for (const kept of ['# a comment', 'metadata:', '  node_type: memory', 'custom: keep-me']) {
+      expect(once).toContain(kept)
+    }
+    expect(parseMemoryFrontmatter(once).header.description).toBe('already: quoted')
+  })
+
+  it('leaves a headerless dream file alone', () => {
+    expect(normalizeMemoryHeader('just a note\n')).toBe('just a note\n')
   })
 })

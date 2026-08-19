@@ -108,11 +108,15 @@ export function parseMemoryFrontmatter(text: string): ParsedMemory {
   }
 }
 
-/** Quote only when a plain YAML scalar would be ambiguous: a `key: value` split
- *  (`: `), a trailing colon, an inline comment (` #`), a leading indicator, or edge
- *  whitespace. An ISO timestamp's colons are safe and stay unquoted. */
+/**
+ * Quote unless the value is unambiguously a plain YAML scalar. Conservative on
+ * purpose: a stored description must survive any strict YAML reader, so this covers
+ * every leading indicator character (`- ? : , [ ] { } # & * ! | > ' " % @ \``), a
+ * `key: value` split, a trailing colon, an inline ` #` comment, and edge whitespace.
+ * An ISO timestamp's interior colons are safe and stay unquoted.
+ */
 function quoteIfNeeded(value: string): string {
-  return /^[\s"'[{&*!|>%@`-]|: |:$| #|\s$/.test(value) ? JSON.stringify(value) : value
+  return /^[\s\-?:,[\]{}#&*!|>'"%@`]|: |:$| #|\s$/.test(value) ? JSON.stringify(value) : value
 }
 
 /**
@@ -125,6 +129,26 @@ export function buildMemoryHeader(fields: { description?: string; type?: MemoryE
   if (fields.description) lines.push(`description: ${quoteIfNeeded(fields.description.replace(/\s+/g, ' ').trim())}`)
   if (fields.type) lines.push(`type: ${fields.type}`)
   return lines.length > 0 ? `${FENCE}\n${lines.join('\n')}\n${FENCE}\n\n` : ''
+}
+
+/**
+ * Make a model-written header safe to store, without rewriting anything we do not
+ * own. Only the VALUE of a top-level known key is re-rendered through the shared
+ * quoting rule, so `description: ship: prod` becomes a properly quoted scalar while
+ * comments, nested blocks, and unknown keys survive byte-for-byte. Idempotent: a
+ * value that is already correctly quoted round-trips to itself.
+ */
+export function normalizeMemoryHeader(text: string): string {
+  const parsed = parseMemoryFrontmatter(text)
+  if (!parsed.hadHeader) return text
+  const lines = parsed.headerLines.map((line) => {
+    if (/^\s/.test(line)) return line
+    const match = KEY_LINE.exec(line)
+    if (!match || !KNOWN.has(match[1]!)) return line
+    const value = unquote(match[2]!)
+    return value ? `${match[1]}: ${quoteIfNeeded(value)}` : line
+  })
+  return `${FENCE}\n${lines.join('\n')}\n${FENCE}\n\n${parsed.body.replace(/^\n+/, '')}`
 }
 
 /** Coerce a model-supplied string to one of our types, or undefined if it is not one. */
