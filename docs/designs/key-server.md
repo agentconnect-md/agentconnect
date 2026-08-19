@@ -124,13 +124,14 @@ the first layer that yields a key, whole:
 3. the runtime's default public endpoint with whatever credential the runtime
    environment already carries.
 
-A layer answers with a whole pair or not at all — there is no mixing across layers.
-A key server is asked for both fields and its answer is the credential; a daemon
-configured with one keeps no static pair to fall back to, so a grant that omits
-`baseUrl` leaves the runtime on its own default rather than borrowing a URL the
-issuer never named. A present one must be `http(s)`, since it becomes a runtime's
-API base; plain `http` is legal and is the normal choice for a loopback or in-pod
-gateway.
+The daemon contributes no half of a pair: configuring a key server retires its static
+pair, so a grant is never completed from deployment config the issuer never saw. What
+stays beneath a grant is layer 3 itself — the runtime's own environment, including the
+pod's `AC_*_BASE_URL` floor the shim fills in — so a grant that omits `baseUrl` leaves
+whatever base that environment already carries. A key server fronting a gateway must
+therefore name it; only one content with the runtime's existing endpoint may stay
+silent. A present one must be `http(s)`, since it becomes a runtime's API base; plain
+`http` is legal and is the normal choice for a loopback or in-pod gateway.
 
 The cloud daemon's static pair is `MODEL_TOKEN` plus optional `MODEL_BASE_URL`, with a
 per-runtime pair that replaces it whole: `ANTHROPIC_MODEL_TOKEN`/`ANTHROPIC_MODEL_BASE_URL`
@@ -153,9 +154,9 @@ must be an HTTP(S) URL. Each pair is translated at runtime launch:
 | DeepSeek | `DEEPSEEK_API_KEY`                                                                       | `DEEPSEEK_BASE_URL`                                                                                                                  |
 
 Dynamic grants use the same translation. Configuring a key server retires the static
-pair outright — the daemon reads none of these variables — so a grant is the whole
-credential and needs no precedence against them. With no key server the static pair
-wins; with neither, the runtime's existing provider configuration is left unchanged.
+pair outright — the daemon reads none of these variables — so a grant needs no
+precedence against them. With no key server the static pair wins; with neither, the
+runtime's existing provider configuration is left unchanged.
 
 One logical AgentConnect session owns one ACP host when key-server mode is active.
 Provider credentials are process-level settings, so sharing a runtime would let
