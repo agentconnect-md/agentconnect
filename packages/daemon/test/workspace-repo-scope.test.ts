@@ -9,6 +9,7 @@ import { createWorkspaceReader, WorkspaceViolationError } from '../src/cp/worksp
 import { createWorkspaceScope, type WorkspaceScopeSession } from '../src/cp/workspace-scope.js'
 import { workspaceGitLocalEnv } from '../src/workspace/git-injection.js'
 import { WorkspaceManager } from '../src/workspace/workspace-manager.js'
+import { PodWorkspaceFs } from './fixtures/pod-workspace-fs.js'
 
 /**
  * The console's `repo` scope (multi-repository-workspaces.md): every workspace read and git
@@ -197,12 +198,12 @@ describe('workspace git follows the repo scope', () => {
     writeFileSync(join(secondaryCheckout, 'SECONDARY-ONLY.md'), 'the additional repository\n')
   })
 
-  it('targets the secondary repository’s own remote and attested branch, not the primary’s', () => {
-    const target = scope.target(AGENT, AUTHORIZED)
+  it('targets the secondary repository’s own remote and attested branch, not the primary’s', async () => {
+    const target = await scope.target(AGENT, AUTHORIZED)
     expect(target).toMatchObject({ branch: 'trunk', githubApp: true })
     expect(target?.repo).toContain(AUTHORIZED)
     // A scratch primary has no clone at all, which is exactly what a pull of it must keep answering.
-    expect(scope.target(AGENT)).toBeUndefined()
+    await expect(scope.target(AGENT)).resolves.toBeUndefined()
   })
 
   it('refuses to pull a checkout whose origin is not that repository’s', async () => {
@@ -221,7 +222,7 @@ describe('workspace git follows the repo scope', () => {
 })
 
 describe('a secondary root is App-covered whatever the primary workspace is', () => {
-  it('marks the root App-backed for a MANUAL GitHub primary, whose own clone is anonymous', () => {
+  it('marks the root App-backed for a MANUAL GitHub primary, whose own clone is anonymous', async () => {
     // A manual GitHub workspace may explicitly authorize its own App-covered repositories. Deriving
     // the credential decision from the PRIMARY's mode would leave those roots' private clones
     // anonymous; the scope's target is what says which credentials each root needs.
@@ -245,19 +246,45 @@ describe('a secondary root is App-covered whatever the primary workspace is', ()
       sessionOf: async () => undefined,
       runtimeRootOf: () => undefined
     })
-    expect(manualScope.target('bot-manual')).toMatchObject({ githubApp: false })
-    expect(manualScope.target('bot-manual', AUTHORIZED)).toMatchObject({ githubApp: true, branch: '' })
+    await expect(manualScope.target('bot-manual')).resolves.toMatchObject({ githubApp: false })
+    await expect(manualScope.target('bot-manual', AUTHORIZED)).resolves.toMatchObject({ githubApp: true, branch: '' })
+    expect(manualScope.usesGithubApp('bot-manual')).toBe(false)
+    expect(manualScope.usesGithubApp('bot-manual', AUTHORIZED)).toBe(true)
   })
 })
 
-describe('cluster daemons have nowhere to put a secondary root yet', () => {
-  it('answers no root for a repo scope in sandbox mode, instead of serving the primary', async () => {
+describe('a cluster daemon addresses a secondary root on the pod volume', () => {
+  const POD_ROOT = '/agent'
+  const POD_SECONDARY = `${POD_ROOT}/repos/${AUTHORIZED}`
+
+  it('resolves the checkout, its session worktree and the attested branch in pod coordinates', async () => {
+    const pod = new PodWorkspaceFs(POD_ROOT, `${POD_SECONDARY}/checkout`, `${POD_SECONDARY}/worktrees`)
+    pod.files.set(
+      `${POD_SECONDARY}/.materialization.json`,
+      JSON.stringify({ repoId: AUTHORIZED_ID, repoFullName: AUTHORIZED, branch: 'pod-trunk' })
+    )
     workspaces.setSandboxMode(true)
+    workspaces.setFsResolver(() => ({ fs: pod, mount: POD_ROOT }))
+    const podScope = createWorkspaceScope({
+      workspaces,
+      agentOf: (id) => (id === AGENT ? agent : undefined),
+      sessionOf: async (_agentId, acpSessionId) =>
+        acpSessionId === 'acp-iso' ? { key: 'iso-key', workspaceIsolation: 'session' } : undefined,
+      runtimeRootOf: () => POD_ROOT
+    })
     try {
-      await expect(scope.location(AGENT, undefined, AUTHORIZED)).resolves.toBeUndefined()
-      // The primary is unaffected: it still resolves to the sandbox checkout.
-      await expect(scope.location(AGENT)).resolves.toBeDefined()
+      await expect(podScope.location(AGENT, undefined, AUTHORIZED)).resolves.toMatchObject({
+        root: `${POD_SECONDARY}/checkout`,
+        scratch: false
+      })
+      const worktree = await podScope.location(AGENT, 'acp-iso', AUTHORIZED)
+      expect(worktree?.root).toBe(`${POD_SECONDARY}/worktrees/${workspaces.sessionWorktreeId('iso-key')}`)
+      // The branch comes from the marker ON THE VOLUME, read through the seam — never this disk.
+      await expect(podScope.target(AGENT, AUTHORIZED)).resolves.toMatchObject({ branch: 'pod-trunk', githubApp: true })
+      // The primary still resolves to the sandbox checkout, untouched by the repo scope.
+      await expect(podScope.location(AGENT)).resolves.toBeDefined()
     } finally {
+      workspaces.setFsResolver(undefined)
       workspaces.setSandboxMode(false)
     }
   })

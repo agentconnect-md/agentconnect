@@ -164,7 +164,7 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
     // Derived from the SCOPE's own target, not the primary workspace's credential mode: a manual
     // GitHub workspace may authorize an App-covered repository, whose secondary root then needs the
     // helper the primary does not. The helper itself is URL-routed, so it only answers for that root.
-    (id, repo) => (workspaceScope.target(id, repo)?.githubApp ? gitCredentialEnv(id) : {}),
+    (id, repo) => (workspaceScope.usesGithubApp(id, repo) ? gitCredentialEnv(id) : {}),
     workspaceScope.target,
     // Registered on `register/ok` only, and reset by every reconnect — a console commit is
     // refused as data whenever it is absent (workspace-git.ts explains why).

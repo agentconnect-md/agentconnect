@@ -217,7 +217,8 @@ export function createWorkspaceGit(
   credentialEnvByAgent: (agentId: string, repo?: string) => Record<string, string> = () => ({}),
   /** The origin and branch of the scope being operated on — the agent's primary workspace, or the
    *  secondary root `repo` names. A pull reaches THAT repository's remote, never the primary's. */
-  workspaceTargetByAgent: (agentId: string, repo?: string) => WorkspaceGitTarget | undefined = () => undefined,
+  workspaceTargetByAgent: (agentId: string, repo?: string) => Promise<WorkspaceGitTarget | undefined> = async () =>
+    undefined,
   /** The identity the CP registered on `register/ok`. Absent ⇒ a console commit is REFUSED as
    *  data: git would otherwise guess the host operator's passwd identity and attribute the
    *  commit to them, which is worse than not committing. */
@@ -281,7 +282,7 @@ export function createWorkspaceGit(
     git: GitRunner,
     repo?: string
   ): Promise<{ origin: string; branch: string } | undefined> {
-    const target = workspaceTargetByAgent(agentId, repo)
+    const target = await workspaceTargetByAgent(agentId, repo)
     let currentOrigin: string | undefined
     let expectedOrigin: string
     try {
@@ -491,7 +492,7 @@ export function createWorkspaceGit(
       // `dev/<user>/<words>` wants the commits it adds over the base branch, not the repository's
       // history — the base's newest commit is not this session's work. On the base branch itself
       // there is nothing to exclude, so the full history stands (the agent workspace page's view).
-      const baseRef = await logBaseRef(git, workspaceTargetByAgent(req.agentId, req.repo)?.branch)
+      const baseRef = await logBaseRef(git, (await workspaceTargetByAgent(req.agentId, req.repo))?.branch)
       const range = baseRef ? `${baseRef}..HEAD` : 'HEAD'
 
       // One extra row proves there are more commits than the caller asked for.
