@@ -4,7 +4,7 @@ import type { Agent } from '../agents/agent-schema.js'
 import { isClaudeRuntimeDef } from '../runtime-defs/claude-runtime.js'
 import { sharedCredentialProfile } from './runtime-credentials.js'
 import {
-  CODEX_DEFAULT_AUTH_REQUEST,
+  CODEX_DEFAULT_ENDPOINT,
   codexConfigWithBaseUrl,
   codexConfigWithFloor,
   codexGatewayAuthRequest,
@@ -84,12 +84,12 @@ export function applyModelCredential(
     env.OPENAI_API_KEY = credential.key
     // The key alone is not enough on a fresh CODEX_HOME: codex counts only an account (auth.json)
     // as authentication, and a default auth request is what lets codex-acp satisfy authRequired
-    // itself. A credential that names its endpoint rides the GATEWAY method — process-ephemeral,
-    // so no persisted account (any shape) can override this launch's grant and concurrent hosts
-    // share no credential state; only the endpoint-less shape still logs in as an account.
-    env.DEFAULT_AUTH_REQUEST = credential.baseUrl
-      ? codexGatewayAuthRequest(credential.baseUrl, credential.key)
-      : CODEX_DEFAULT_AUTH_REQUEST
+    // itself. Every injected credential rides the GATEWAY method — process-ephemeral, so no
+    // persisted account (any shape) can override this launch's grant and concurrent hosts share
+    // no credential state. An endpoint-less key (a vault rotating real provider keys) falls
+    // through to the runtime's own default endpoint, the injection precedence's third layer —
+    // the same URL the built-in provider would have used, never the shared account store.
+    env.DEFAULT_AUTH_REQUEST = codexGatewayAuthRequest(credential.baseUrl ?? CODEX_DEFAULT_ENDPOINT, credential.key)
     if (!credential.baseUrl) return
     // Kept beside the gateway method: an older codex-acp ignores an unknown methodId, and resumed
     // threads pinned to the built-in provider still route by CODEX_CONFIG's openai_base_url.

@@ -6,15 +6,15 @@
 // This module is import-free on purpose: the sandbox shim bundle must not drag the daemon's
 // credential paths into the runtime image (see tsdown.shim.config.ts).
 
-// codex-acp's self-service auth order: with this set it answers its own authRequired by logging
-// in with the OPENAI_API_KEY env; without it a fresh CODEX_HOME (no auth.json) refuses every
-// session with -32000, because a bare env key is not an account to codex's account/read.
-export const CODEX_DEFAULT_AUTH_REQUEST = JSON.stringify({ methodId: 'api-key' })
+/** The runtime's own default endpoint — the third layer of the sanctioned injection precedence
+ *  (issued base > deployment base > this), so an endpoint-less key still rides the gateway
+ *  method against exactly the URL codex's built-in provider would have used. */
+export const CODEX_DEFAULT_ENDPOINT = 'https://api.openai.com/v1'
 
-/** The gateway variant, for a credential that names its endpoint: codex-acp holds it as an
- *  in-process provider (base URL + auth header, responses wire), authRequired() short-circuits
- *  before account/read, and nothing touches the shared auth.json — so a persisted account of any
- *  shape cannot override the grant and concurrently launching hosts share no credential state. */
+/** The gateway auth request: codex-acp holds the grant as an in-process provider (base URL +
+ *  auth header, responses wire), authRequired() short-circuits before account/read, and nothing
+ *  touches the shared auth.json — so a persisted account of any shape cannot override the grant
+ *  and concurrently launching hosts share no credential state. */
 export function codexGatewayAuthRequest(baseUrl: string, key: string): string {
   return JSON.stringify({
     methodId: 'gateway',
@@ -26,23 +26,6 @@ export function codexGatewayAuthRequest(baseUrl: string, key: string): string {
       }
     }
   })
-}
-
-/** True when a persisted auth.json pins an API key other than the launch's own — the file codex
- *  minted from an EARLIER injected grant, which would make account/read report authentication
- *  present and the current key go unconsumed. A tokens-bearing file is a human ChatGPT login and
- *  never stale on this rule; an unparseable file is stale (replacing it is the only recovery). */
-export function codexAuthPinsAnotherKey(raw: string, envKey: string): boolean {
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(raw)
-  } catch {
-    return true
-  }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return true
-  const auth = parsed as Record<string, unknown>
-  if (auth.tokens) return false
-  return typeof auth.OPENAI_API_KEY === 'string' ? auth.OPENAI_API_KEY !== envKey : false
 }
 
 export function objectFromJson(raw: string | undefined, label: string): Record<string, unknown> {

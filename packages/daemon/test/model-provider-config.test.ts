@@ -198,11 +198,18 @@ describe('applyModelCredential', () => {
 })
 
 describe('applyModelCredential codex auth request', () => {
-  it('falls back to the api-key account login only for an endpoint-less credential', () => {
+  it('rides an endpoint-less key on the runtime default endpoint — never the account store', () => {
+    // The key-server contract supports a plain vault rotating real provider keys with no base
+    // URL; the grant still authenticates as a process-ephemeral gateway, against the same URL
+    // the built-in provider would have used.
     const env: Record<string, string> = {}
     applyModelCredential({ provider: 'openai', runtime: 'codex' }, env, { key: 'real-provider-key' })
     expect(env.OPENAI_API_KEY).toBe('real-provider-key')
-    expect(JSON.parse(env.DEFAULT_AUTH_REQUEST)).toEqual({ methodId: 'api-key' })
+    expect(JSON.parse(env.DEFAULT_AUTH_REQUEST)._meta.gateway).toEqual({
+      baseUrl: 'https://api.openai.com/v1',
+      headers: { Authorization: 'Bearer real-provider-key' },
+      providerName: 'AgentConnect model egress'
+    })
     expect(env.CODEX_CONFIG).toBeUndefined()
   })
 })
