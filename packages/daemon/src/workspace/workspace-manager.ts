@@ -372,11 +372,14 @@ export class WorkspaceManager {
    * A root the disk does not attest yet is still returned: its checkout simply does not exist, and
    * that reads as an empty workspace rather than an error (the browser's `exists:false`).
    */
-  consoleSecondaryRoot(agent: Agent, repoFullName: string): SecondaryWorkspaceRoot | undefined {
+  /** The secondary root the console browses, in the coordinates that hold it (a pod mount under --k8s). */
+  async consoleSecondaryRoot(agent: Agent, repoFullName: string): Promise<SecondaryWorkspaceRoot | undefined> {
     const wanted = repoKey(repoFullName)
-    const root = this.secondaryRoots(agent).find((entry) => repoKey(entry.repoFullName) === wanted)
+    const root = this.secondaryRootsFor(agent).find((entry) => repoKey(entry.repoFullName) === wanted)
     if (!root) return undefined
-    const recorded = readSecondaryMaterialization(join(dirname(root.path), SECONDARY_MATERIALIZATION_FILE))
+    const recorded = parseSecondaryMaterialization(
+      await this.fsFor(agent.id).readFile(join(dirname(root.path), SECONDARY_MATERIALIZATION_FILE))
+    )
     // Identity is the numeric repo id, exactly as materialization checks it: a subtree left by a
     // DIFFERENT repository that once held this slug attests nothing about this root's branch.
     return recorded?.repoId === root.repoId ? { ...root, branch: recorded.branch } : root
@@ -1713,9 +1716,8 @@ export class WorkspaceManager {
     repoScope?: string
   ): string | undefined {
     if (local === undefined || !this.sandboxMode) return local
-    // A cluster daemon materializes ONE checkout through the shim tunnel, so a secondary root has
-    // nowhere to live there yet — answer with no root rather than serving the primary's files.
-    if (repoScope !== undefined) return undefined
+    // A secondary root's location already came from the mount-aware roots, so it needs no translation.
+    if (repoScope !== undefined) return local
     return this.clusterSessionRootAt(agent, runtimeRoot, request)
   }
 
@@ -2264,16 +2266,6 @@ export function parseSymrefDefaultBranch(out: string): string | undefined {
     if (branch && !branch.startsWith('-')) return branch
   }
   return undefined
-}
-
-/** The same attestation off THIS disk, for the console seam, which answers synchronously and whose
- *  cluster branch discards the answer before it is used. */
-function readSecondaryMaterialization(file: string): SecondaryMaterialization | undefined {
-  try {
-    return parseSecondaryMaterialization(readFileSync(file, 'utf8'))
-  } catch {
-    return undefined
-  }
 }
 
 /** A secondary root's attestation as the seam read it; undefined for absent, unreadable or partial. */

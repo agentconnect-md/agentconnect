@@ -40,7 +40,9 @@ export interface WorkspaceScope {
   location(agentId: string, sessionId?: string, repo?: string): Promise<WorkspaceLocation | undefined>
   gitRoot(agentId: string, sessionId?: string, repo?: string): Promise<string | undefined>
   /** The origin and branch a network git operation on this scope may reach. */
-  target(agentId: string, repo?: string): WorkspaceGitTarget | undefined
+  target(agentId: string, repo?: string): Promise<WorkspaceGitTarget | undefined>
+  /** Whether git on this scope rides the daemon credential helper; answered without touching any volume. */
+  usesGithubApp(agentId: string, repo?: string): boolean
 }
 
 export function createWorkspaceScope(deps: WorkspaceScopeDeps): WorkspaceScope {
@@ -70,7 +72,7 @@ export function createWorkspaceScope(deps: WorkspaceScopeDeps): WorkspaceScope {
     repo: string,
     sessionId?: string
   ): Promise<LocalLocation | undefined> => {
-    const root = deps.workspaces.consoleSecondaryRoot(agent, repo)
+    const root = await deps.workspaces.consoleSecondaryRoot(agent, repo)
     if (!root) return undefined
     // A secondary root is a git checkout whatever the primary workspace mode is — never scratch.
     if (!sessionId) return { root: root.path, scratch: false }
@@ -106,11 +108,11 @@ export function createWorkspaceScope(deps: WorkspaceScopeDeps): WorkspaceScope {
   return {
     location,
     gitRoot: async (agentId, sessionId, repo) => (await location(agentId, sessionId, repo))?.root,
-    target: (agentId, repo) => {
+    target: async (agentId, repo) => {
       const agent = deps.agentOf(agentId)
       if (!agent) return undefined
       if (repo !== undefined) {
-        const root = deps.workspaces.consoleSecondaryRoot(agent, repo)
+        const root = await deps.workspaces.consoleSecondaryRoot(agent, repo)
         // Rows exist only for App-covered repositories, so a secondary root always rides the helper;
         // the branch is the one its `.materialization.json` attests, never the primary's.
         return root ? { repo: root.cloneUrl, branch: root.branch, githubApp: true } : undefined
@@ -119,6 +121,12 @@ export function createWorkspaceScope(deps: WorkspaceScopeDeps): WorkspaceScope {
       return workspace.mode === 'git-repo' && workspace.gitRepo
         ? { repo: workspace.gitRepo, branch: workspace.gitBranch, githubApp: workspace.gitCredential === 'github-app' }
         : undefined
+    },
+    usesGithubApp: (agentId, repo) => {
+      const workspace = deps.agentOf(agentId)?.workspace
+      // Rows exist only for App-covered repositories, so a secondary root always rides the helper.
+      if (repo !== undefined) return workspace !== undefined
+      return workspace?.mode === 'git-repo' && workspace.gitCredential === 'github-app'
     }
   }
 }
