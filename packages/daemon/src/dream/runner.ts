@@ -22,6 +22,7 @@ import {
 } from '@agentconnect.md/protocol'
 import {
   MEMORY_INDEX,
+  regenerateMemoryIndexHoldingLock,
   MEMORY_HISTORY_FILENAME,
   MAX_INDEX_INJECT_BYTES,
   MAX_MEMORY_FILE_BYTES,
@@ -1123,6 +1124,12 @@ export class DreamRunner {
           // snapshot must fence on this adoption rather than classify it as
           // distill-only drift and roll over it.
           recordExternalMemoryMutation(fs, 'dream')
+          // The adopted store has a hand-authored MEMORY.md while ordinary writes
+          // regenerate it from the topic descriptions — two writers with no defined
+          // precedence. Settle it here, inside the same lock: if the adopted topics
+          // give the generator anything to work with, it owns the index from now on
+          // instead of silently replacing the dream's copy at some later write.
+          await regenerateMemoryIndexHoldingLock(fs, 'dream').catch(() => {})
           // Dream adoption copies history as part of the atomic store swap, so
           // tighten that copied/appended sidecar before releasing the same lock.
           await enforceMemoryHistoryRetentionHoldingLock(fs).catch(() => {})

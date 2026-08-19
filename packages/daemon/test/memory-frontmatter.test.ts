@@ -19,6 +19,7 @@ import {
   MAX_MEMORY_FILE_BYTES,
   memoryNeighbors,
   readMemoryFile,
+  regenerateMemoryIndexHoldingLock,
   writeMemoryFile
 } from '../src/memory/store.js'
 import { appendDistilledMemories } from '../src/memory/distill.js'
@@ -314,5 +315,32 @@ describe('memory graph through the live provider path', () => {
     await provider.write(chan, 'policy.md', withHeader('the channel override', 'chan text'), undefined, 'tool')
     const shadowed = await provider.neighbors?.(chan, 'note.md')
     expect(shadowed?.links[0]?.description).toBe('the channel override')
+  })
+})
+
+describe('dream adoption and index ownership', () => {
+  it('hands the index to the generator at adopt, when the adopted topics support it', async () => {
+    // Simulates the adopt swap: a hand-authored MEMORY.md written straight to disk
+    // (as adopt does), alongside topics that DO carry descriptions.
+    const f = fs()
+    await ensureMemory(f, 'bot')
+    await f.writeFile('memory/MEMORY.md', '# bot memory\n\nthe dream wrote this by hand\n', {})
+    await f.writeFile('memory/a.md', '---\ndescription: from the dream\n---\na\n', {})
+
+    await regenerateMemoryIndexHoldingLock(f, 'dream')
+    const index = await readMemoryFile(f, 'MEMORY.md')
+    expect(index).toContain('- [a](a.md) — from the dream')
+    expect(index).not.toContain('the dream wrote this by hand')
+    expect(index).toContain('# bot memory') // the heading is still preserved
+  })
+
+  it('leaves a dream-authored index alone when nothing can be generated from it', async () => {
+    const f = fs()
+    await ensureMemory(f, 'bot')
+    await f.writeFile('memory/MEMORY.md', '# bot memory\n\ncurated by the dream\n', {})
+    await f.writeFile('memory/a.md', 'no header here\n', {})
+
+    await regenerateMemoryIndexHoldingLock(f, 'dream')
+    expect(await readMemoryFile(f, 'MEMORY.md')).toContain('curated by the dream')
   })
 })
