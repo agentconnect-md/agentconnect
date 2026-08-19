@@ -407,6 +407,8 @@ import {
   turnState,
   LIVE_CHROME_BOUNDARY_MESSAGE_TYPES,
   type CallMeta,
+  type ColdFenceContext,
+  type ColdFenceSite,
   type DaemonConverger,
   type DaemonRenderAction,
   type LiveChromeBoundaryMessageType,
@@ -8264,6 +8266,61 @@ export class Daemon {
     return undefined
   }
 
+  /** One named fence for the cold-session window: re-read the dispatch gate and, when it is open,
+   *  unwind exactly the state this call point owns. Returns the reason, or undefined to continue.
+   *  Throws LifecycleCleanupBlockedError instead of returning when cleanup stayed blocked. */
+  private async coldSessionFence(
+    entry: QueueEntry,
+    key: string,
+    site: ColdFenceSite,
+    ctx: ColdFenceContext
+  ): Promise<TurnInterruptReason | undefined> {
+    const gate = await this.dispatchGateReason(entry)
+    if (!gate) return undefined
+    ctx.finishEvaluation('turn.cancelled', { reason: gate })
+    let cleanupOutcome: TurnLifecycleCleanupOutcome | undefined
+    if (site === 'initialized') {
+      await this.finishSessionInitialization(entry.agentId)
+      ctx.restoreDeliveryBinding?.()
+      // session/new|load can return after host termination. Do not publish idle until cleanup settles.
+      cleanupOutcome = await this.waitForTurnLifecycleCleanup(entry, key, entry.selectedHost)
+      if (!cleanupOutcome.blocked) {
+        const interruptedSession = await this.store.getSession(key)
+        if (ctx.created === true && ctx.sessionId !== undefined && interruptedSession?.acpSessionId === ctx.sessionId) {
+          // The runtime created this ACP session after the turn was already terminal. Do not let a
+          // quick pause→unpause (or loop reset) revive that never-prompted session as valid state.
+          await this.store.upsertSession({
+            ...interruptedSession,
+            acpSessionId: null,
+            state: 'idle',
+            lastDeliveredTs: null,
+            updatedAt: this.clock.now()
+          })
+        } else {
+          await this.store.setSessionState(key, 'idle', this.clock.now())
+        }
+      }
+    }
+    if (site !== 'admitted') ctx.clearActivity?.()
+    this.terminateQueuedSink(entry)
+    if (site === 'initialized') ctx.releaseReplyConn?.()
+    if (entry.hookContext && this.reportsHookOutcome(entry)) {
+      // Only the ready fence has a session id to attribute the cancellation to.
+      const payload =
+        site === 'ready' && ctx.sessionId !== undefined ? { sessionId: ctx.sessionId, reason: gate } : { reason: gate }
+      await this.emitHookCompletion(entry.hookContext, 'failed', payload, entry)
+    }
+    this.log.info(`dispatch: skipped ${site} turn ${entry.msg.msgId} (${gate})`)
+    if (cleanupOutcome?.blocked) throw new LifecycleCleanupBlockedError(key, cleanupOutcome.error)
+    return gate
+  }
+
+  /** The cold-start catch: was this a cancel or a genuine start failure? Same predicate as the
+   *  fences, but the reaction is a classification inside a catch, not a state unwind. */
+  private async classifyColdStartFailure(entry: QueueEntry): Promise<TurnInterruptReason | undefined> {
+    return await this.dispatchGateReason(entry)
+  }
+
   private beginActiveDispatch(agentId: string, key: string): () => void {
     let resolveDone!: () => void
     const done = new Promise<void>((resolve) => (resolveDone = resolve))
@@ -8525,16 +8582,8 @@ export class Daemon {
     }
     // Pause/loop protection may race admission after dispatch() checked its gate but
     // before this loop starts. `cancelledReason` also remembers a quick reset.
-    const initialGate = await this.dispatchGateReason(entry)
-    if (initialGate) {
-      finishEvaluation('turn.cancelled', { reason: initialGate })
-      this.terminateQueuedSink(entry)
-      if (hookContext && this.reportsHookOutcome(entry)) {
-        await this.emitHookCompletion(hookContext, 'failed', { reason: initialGate }, entry)
-      }
-      this.log.info(`dispatch: skipped admitted turn ${msg.msgId} (${initialGate})`)
-      return null
-    }
+    const initialGate = await this.coldSessionFence(entry, key, 'admitted', { finishEvaluation })
+    if (initialGate) return null
     if (hookContext && !hookContext.turnStartedAt) {
       hookContext.turnStartedAt = new Date(this.clock.now()).toISOString()
       try {
@@ -8717,7 +8766,7 @@ export class Daemon {
       restoreDeliveryBinding()
       // handle() boots the host (hostFor → ensureHostAsync → host.start()), so a
       // failed agent start / ACP handshake surfaces HERE, before the prompt below.
-      const interrupted = await this.dispatchGateReason(entry)
+      const interrupted = await this.classifyColdStartFailure(entry)
       let cleanupOutcome!: TurnLifecycleCleanupOutcome
       try {
         // Keep this cold dispatch owned and non-idle until host cleanup settles.
@@ -8779,41 +8828,15 @@ export class Daemon {
     // pause landed in that window, no Pending existed for the transition hook to cancel.
     // Re-check before publishing metadata or prompting, restore the new row to idle, and
     // clear the transient Slack activity indicator.
-    const initializedGate = await this.dispatchGateReason(entry)
-    if (initializedGate) {
-      finishEvaluation('turn.cancelled', { reason: initializedGate })
-      await this.finishSessionInitialization(agentId)
-      restoreDeliveryBinding()
-      // session/new|load can return after host termination. Do not publish idle
-      // until cleanup has settled.
-      const cleanupOutcome = await this.waitForTurnLifecycleCleanup(entry, key, entry.selectedHost)
-      if (!cleanupOutcome.blocked) {
-        const interruptedSession = await this.store.getSession(key)
-        if (created && interruptedSession?.acpSessionId === sessionId) {
-          // The runtime created this ACP session after the turn was already terminal.
-          // Do not let a quick pause→unpause (or loop reset) revive that never-prompted
-          // session as if it were valid conversation state.
-          await this.store.upsertSession({
-            ...interruptedSession,
-            acpSessionId: null,
-            state: 'idle',
-            lastDeliveredTs: null,
-            updatedAt: this.clock.now()
-          })
-        } else {
-          await this.store.setSessionState(key, 'idle', this.clock.now())
-        }
-      }
-      this.showActivity(replyConn, msg.channel, statusThread, '')
-      this.terminateQueuedSink(entry)
-      releaseReplyConn()
-      if (hookContext && this.reportsHookOutcome(entry)) {
-        await this.emitHookCompletion(hookContext, 'failed', { reason: initializedGate }, entry)
-      }
-      this.log.info(`dispatch: skipped initialized turn ${msg.msgId} (${initializedGate})`)
-      if (cleanupOutcome.blocked) throw new LifecycleCleanupBlockedError(key, cleanupOutcome.error)
-      return null
-    }
+    const initializedGate = await this.coldSessionFence(entry, key, 'initialized', {
+      finishEvaluation,
+      clearActivity: () => this.showActivity(replyConn, msg.channel, statusThread, ''),
+      releaseReplyConn,
+      restoreDeliveryBinding,
+      sessionId,
+      created
+    })
+    if (initializedGate) return null
     // A cold session can await workspace/host/session initialization while the Agent is
     // reconciled. Persist staged first-turn choices only against the current authority,
     // never the Agent snapshot captured before sessions.handle().
@@ -9056,16 +9079,13 @@ export class Daemon {
       // Pause/loop protection may land while a slow host is starting or sticky
       // overrides are being restored. At this point Pending exists but no prompt has
       // begun; re-check so a cancel that had no live host cannot race into new work.
-      const readyGate = await this.dispatchGateReason(entry)
+      const readyGate = await this.coldSessionFence(entry, key, 'ready', {
+        finishEvaluation,
+        clearActivity: () => this.showActivity(replyConn, msg.channel, statusThread, ''),
+        sessionId
+      })
       if (readyGate) {
-        finishEvaluation('turn.cancelled', { reason: readyGate })
-        this.showActivity(replyConn, msg.channel, statusThread, '')
-        this.terminateQueuedSink(entry)
         if (readyGate === 'loop protection') finalPhase = 'problem'
-        if (hookContext && this.reportsHookOutcome(entry)) {
-          await this.emitHookCompletion(hookContext, 'failed', { sessionId, reason: readyGate }, entry)
-        }
-        this.log.info(`dispatch: skipped ready turn ${msg.msgId} (${readyGate})`)
         return null
       }
       // Capture the model for THIS session/turn after sticky overrides are applied.

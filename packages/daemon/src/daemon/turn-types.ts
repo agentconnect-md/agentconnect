@@ -289,6 +289,26 @@ export interface QueueEntry {
   inboxHandedOff?: boolean
 }
 
+/** Where in the cold-session window a fence sits. The site name is also the log label, and it
+ *  selects which unwind steps the call point owns — see `Daemon.coldSessionFence`. */
+export type ColdFenceSite = 'admitted' | 'initialized' | 'ready'
+
+/** The per-turn handles a cold fence needs to unwind its call point's state. Which fields are
+ *  read depends on the site: `admitted` runs before any host work and uses only the reporter. */
+export interface ColdFenceContext {
+  finishEvaluation: (type: 'turn.cancelled', data: Record<string, unknown>) => void
+  /** Clear the transient platform activity indicator. Unused at `admitted` — none is showing yet. */
+  clearActivity?: () => void
+  /** Release the reply-connection lease. Only `initialized` owns it; `ready` leaves it to the outer finally. */
+  releaseReplyConn?: () => void
+  /** Undo the delivery-binding install done before session/new|load. */
+  restoreDeliveryBinding?: () => void
+  /** The ACP session id, once known. `ready` reports it in the hook payload. */
+  sessionId?: string
+  /** sessions.handle() created this ACP session on this very turn. */
+  created?: boolean
+}
+
 export interface MemoryExtractionCollector {
   chunks: string[]
   sessionKey?: string

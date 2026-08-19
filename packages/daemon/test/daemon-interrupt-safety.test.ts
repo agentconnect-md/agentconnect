@@ -477,6 +477,84 @@ describe('Daemon interrupt safety gates', () => {
     }
   }, 15_000)
 
+  // The cold fence's 'initialized' site owns the created-session nulling: a session/new that
+  // lands after the turn went terminal must not survive as revivable conversation state.
+  it('nulls out an ACP session created after a cold cancel, and leaves a rebound row alone', async () => {
+    const runCase = async (rebind: boolean) => {
+      const clock = new FakeClock()
+      let releaseSession!: () => void
+      const sessionBlocked = new Promise<void>((resolve) => (releaseSession = resolve))
+      const host = {
+        start: vi.fn(async () => {}),
+        newSession: vi.fn(async () => {
+          await sessionBlocked
+          return 'late-session'
+        }),
+        hasSession: vi.fn(() => true),
+        modelOptions: vi.fn(() => null),
+        prompt: vi.fn(async () => ({ stopReason: 'end_turn' })),
+        cancel: vi.fn(async () => {}),
+        stop: vi.fn(async () => {})
+      }
+      const daemon = new Daemon({
+        slackAppFactory: fakeSlackAppFactory(),
+        root: scaffold(),
+        hostFactory: () => host as any,
+        clock
+      })
+      const stream = webchatSink()
+      await daemon.start()
+      const key = (daemon as any).webchatTransport.webchatSessionKey(CONV_1, AGENT_ID)
+      try {
+        const ack = await (daemon as any).webchatTransport.dispatchWebchatTurn(
+          AGENT_ID,
+          CONV_1,
+          'cold',
+          'alice',
+          stream.sink
+        )
+        expect(ack.accepted).toBe(true)
+        await vi.waitFor(() => expect(host.newSession).toHaveBeenCalledTimes(1), WAIT)
+
+        if (rebind) {
+          // Stand in for a later turn that rebound the row after session/new wrote it: the
+          // fence awaits cleanup before reading the row back, so land the rebind in there.
+          const original = (daemon as any).waitForTurnLifecycleCleanup.bind(daemon)
+          ;(daemon as any).waitForTurnLifecycleCleanup = async (...args: unknown[]) => {
+            const outcome = await original(...args)
+            const row = await (daemon as any).store.getSession(key)
+            await (daemon as any).store.upsertSession({
+              ...row,
+              acpSessionId: 'next-turn-session',
+              lastDeliveredTs: '999',
+              updatedAt: clock.now()
+            })
+            return outcome
+          }
+        }
+        await (daemon as any).webchatTransport.handleWebchatCancel(CONV_1)
+        releaseSession()
+        await vi.waitFor(() => expect((daemon as any).inflight.size).toBe(0), WAIT)
+        expect(host.prompt).not.toHaveBeenCalled()
+
+        const settled = await (daemon as any).store.getSession(key)
+        expect(settled.state).toBe('idle')
+        if (rebind) {
+          expect(settled.acpSessionId).toBe('next-turn-session')
+          expect(settled.lastDeliveredTs).toBe('999')
+        } else {
+          expect(settled.acpSessionId).toBeNull()
+          expect(settled.lastDeliveredTs).toBeNull()
+        }
+      } finally {
+        releaseSession()
+        await daemon.stop()
+      }
+    }
+    await runCase(false)
+    await runCase(true)
+  }, 30_000)
+
   it('keeps host respawn gated until an existing host teardown settles', async () => {
     let releaseStop!: () => void
     const stopBlocked = new Promise<void>((resolve) => (releaseStop = resolve))
