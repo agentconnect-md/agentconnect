@@ -11,6 +11,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import useSWR from 'swr'
 import {
+  BillingError,
+  BillingShapeError,
   PURCHASE_MAX_MICRO,
   PURCHASE_MIN_MICRO,
   createBillingPurchase,
@@ -74,15 +76,23 @@ function Notice({ title, body }: { title: string; body: string }) {
 // purchase settles when the service — fed by its webhook and its own Stripe
 // reconcile — reports `completed`. `cancel` means the user backed out of the
 // hosted page: nothing was charged and there is nothing to poll.
+//
+// `failed` is the only polled status this page treats as an authoritative
+// no-charge answer. `expired` is NOT one: the mirrored contract says a paid
+// session may complete an intent an expiry guess had already marked `expired`,
+// so an expired reading keeps reconciling for the full poll budget and the
+// banner it ends on never claims nothing was charged. Transient poll failures
+// don't abandon the confirmation either — the purchase id is kept, retried
+// within the same budget, and surfaced with a manual retry if it runs out.
 
 type CheckoutReturn =
   | { phase: 'confirming'; purchaseId: string; attempt: number }
   | { phase: 'still-pending'; purchaseId: string }
   | { phase: 'completed'; purchase: BillingPurchase }
   | { phase: 'failed' }
-  | { phase: 'expired' }
+  | { phase: 'expired'; purchaseId: string }
   | { phase: 'canceled' }
-  | { phase: 'error'; message: string }
+  | { phase: 'error'; purchaseId: string; message: string }
 
 const BANNER_TONE: Record<CheckoutReturn['phase'], { border: string; bg: string; icon: string }> = {
   confirming: { border: 'var(--status-info)', bg: 'var(--status-info-soft)', icon: 'clock' },
@@ -119,16 +129,27 @@ function checkoutCopy(state: CheckoutReturn): { title: string; body: string } {
     case 'expired':
       return {
         title: 'Checkout session expired',
-        body: "The Stripe session timed out before payment completed. Nothing was charged — start a new one when you're ready."
+        body: 'The Stripe session timed out and no payment confirmation has arrived. If you left without paying, nothing was charged. If you paid just as the session closed, the credits still post automatically once Stripe confirms — they will show in the transactions below.'
       }
     case 'canceled':
       return { title: 'Checkout canceled', body: 'You left the Stripe page before paying. Nothing was charged.' }
     case 'error':
-      return { title: 'Could not check the payment', body: state.message }
+      return {
+        title: 'Could not check the payment',
+        body: `${state.message} — if the payment went through, the credits still post automatically; you can also check again now.`
+      }
   }
 }
 
-function CheckoutBanner({ state, onDismiss }: { state: CheckoutReturn; onDismiss: () => void }) {
+function CheckoutBanner({
+  state,
+  onDismiss,
+  onRetry
+}: {
+  state: CheckoutReturn
+  onDismiss: () => void
+  onRetry: () => void
+}) {
   const tone = BANNER_TONE[state.phase]
   const copy = checkoutCopy(state)
   const busy = state.phase === 'confirming'
@@ -148,6 +169,13 @@ function CheckoutBanner({ state, onDismiss }: { state: CheckoutReturn; onDismiss
         {busy && (
           <div className="mono mt-2 text-[11.5px] text-(--text-tertiary)">
             checking payment status · attempt {state.phase === 'confirming' ? state.attempt : 0}
+          </div>
+        )}
+        {state.phase === 'error' && (
+          <div className="mt-2">
+            <Button size="xs" variant="secondary" onClick={onRetry}>
+              Check again
+            </Button>
           </div>
         )}
         {state.phase === 'completed' && state.purchase.receiptUrl && (
@@ -353,11 +381,25 @@ export default function BillingView() {
             setCheckout({ phase: 'completed', purchase })
             refreshMoney()
           } else if (purchase.status === 'failed') setCheckout({ phase: 'failed' })
-          else if (purchase.status === 'expired') setCheckout({ phase: 'expired' })
-          else if (attempt >= POLL_MAX_ATTEMPTS) setCheckout({ phase: 'still-pending', purchaseId })
+          // `expired` is not authoritative (see the contract note above): keep
+          // reconciling like `pending`; only which banner ends the budget differs.
+          else if (attempt >= POLL_MAX_ATTEMPTS)
+            setCheckout(
+              purchase.status === 'expired' ? { phase: 'expired', purchaseId } : { phase: 'still-pending', purchaseId }
+            )
           else setCheckout({ phase: 'confirming', purchaseId, attempt: attempt + 1 })
         } catch (e) {
-          if (!cancelled) setCheckout({ phase: 'error', message: (e as Error).message })
+          if (cancelled) return
+          // The URL was already cleaned, so giving up here would lose the
+          // purchase id for good. Retry transient failures (network, 5xx) inside
+          // the same budget; only a client-side refusal — shape drift or a 4xx —
+          // or an exhausted budget lands on the error banner, which keeps the id
+          // and offers a manual "Check again".
+          const permanent =
+            e instanceof BillingShapeError || (e instanceof BillingError && e.status >= 400 && e.status < 500)
+          if (!permanent && attempt < POLL_MAX_ATTEMPTS)
+            setCheckout({ phase: 'confirming', purchaseId, attempt: attempt + 1 })
+          else setCheckout({ phase: 'error', purchaseId, message: (e as Error).message })
         }
       },
       attempt === 1 ? 0 : POLL_INTERVAL_MS
@@ -401,7 +443,17 @@ export default function BillingView() {
         <p className="psub mt-0 flex-1">Prepaid balance for this organization, and what has been credited to it.</p>
       </div>
 
-      {checkout && <CheckoutBanner state={checkout} onDismiss={() => setCheckout(null)} />}
+      {checkout && (
+        <CheckoutBanner
+          state={checkout}
+          onDismiss={() => setCheckout(null)}
+          onRetry={() =>
+            setCheckout((c) =>
+              c && c.phase === 'error' ? { phase: 'confirming', purchaseId: c.purchaseId, attempt: 1 } : c
+            )
+          }
+        />
+      )}
 
       {account.error && (
         <div className="card mb-4 flex items-center gap-3 px-4 py-3">
@@ -417,7 +469,7 @@ export default function BillingView() {
 
       {acct && (
         <>
-          <div className="mb-4 grid items-stretch gap-4 md:grid-cols-2">
+          <div className="mb-4 grid items-stretch gap-4 desktop:grid-cols-2">
             {/* One figure, no in-flight caveat: v1 has no hold layer, so the balance
                 is every reconciliation fact there is. A suspended/low-balance badge
                 belongs here once the service can report a state at all. */}
