@@ -33,8 +33,6 @@ interface Channel {
 
 export interface ShimClientDeps {
   endpoint: string
-  /** Wait for a daemon hello on an accepted socket instead of initiating the handshake. */
-  acceptDialIn?: boolean
   /** Dial the daemon. Injected so tests need no real WebSocket. */
   dial: (url: string, opts: { subprotocol: string; path: string }) => Promise<ShimTransport>
   /** Reads the projected token. Injected for tests; defaults to the mounted path. */
@@ -195,9 +193,6 @@ export class ShimClient {
   }
 
   private async connectOnce(): Promise<{ bound: ShimBound; channel: Channel }> {
-    const legacyToken = this.deps.acceptDialIn
-      ? undefined
-      : (this.deps.readToken ?? (() => readFileSync(SHIM_IDENTITY_TOKEN_PATH, 'utf8').trim()))()
     const transport = await this.deps.dial(this.deps.endpoint, {
       subprotocol: SHIM_SUBPROTOCOL,
       path: SHIM_WS_PATH
@@ -254,8 +249,8 @@ export class ShimClient {
           transport.close(4400, 'malformed frame')
           return
         }
-        if (frame.type === 'shim/hello' && 'agentId' in frame) {
-          if (!this.deps.acceptDialIn || expected || this.bound) {
+        if (frame.type === 'shim/hello') {
+          if (expected || this.bound) {
             transport.close(4400, 'unexpected hello')
             return
           }
@@ -276,10 +271,7 @@ export class ShimClient {
           return
         }
         if (frame.type === 'shim/bound') {
-          if (
-            this.deps.acceptDialIn &&
-            (!expected || expected.agentId !== frame.agentId || expected.generation !== frame.generation)
-          ) {
+          if (!expected || expected.agentId !== frame.agentId || expected.generation !== frame.generation) {
             transport.close(4403, 'binding mismatch')
             fail('binding did not match the daemon hello')
             return
@@ -305,15 +297,6 @@ export class ShimClient {
         if (frame.type === 'shim/request') void this.serve(transport, frame)
         if (frame.type === 'shim/cancel') this.cancel(frame)
       })
-      if (!this.deps.acceptDialIn) {
-        transport.send(
-          JSON.stringify({
-            type: 'shim/hello',
-            token: legacyToken!,
-            ...(this.deps.workspaceRoot ? { workspaceRoot: this.deps.workspaceRoot } : {})
-          } satisfies Extract<ShimFrame, { type: 'shim/hello' }>)
-        )
-      }
     })
   }
 

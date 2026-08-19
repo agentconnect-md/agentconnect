@@ -13,9 +13,6 @@ export const SHIM_TOKEN_AUDIENCE = 'ac-daemon-callback'
 /** Where the pod template projects that token, and where the shim reads it from. */
 export const SHIM_IDENTITY_TOKEN_PATH = '/var/run/ac-identity/token'
 
-/** Legacy dial-out endpoint, retained only for compatibility while old images are tested. */
-export const SHIM_ENDPOINT_ENV = 'AC_SHIM_ENDPOINT'
-
 /** Port the in-sandbox shim listens on for daemon dial-in. */
 export const SHIM_LISTEN_PORT_ENV = 'AC_SHIM_PORT'
 export const DEFAULT_SHIM_LISTEN_PORT = 8085
@@ -68,9 +65,6 @@ export const ShimIdentitySchema = z.object({
   /** This pod's workspace mount; absent on legacy shims means {@link DEFAULT_SHIM_WORKSPACE_ROOT}. */
   workspaceRoot: z.string().min(1).max(4096).optional()
 })
-
-/** Legacy dial-out identity, accepted only by the old listener during the staged migration. */
-export const LegacyShimHelloSchema = ShimIdentitySchema.extend({ type: z.literal('shim/hello') })
 
 /** The daemon's answer once the token is verified and mapped to a spawn record. */
 export const ShimBoundSchema = z.object({
@@ -145,7 +139,6 @@ export const ShimEventSchema = z.object({
 export const ShimFrameSchema = z.union([
   ShimDialHelloSchema,
   ShimIdentitySchema,
-  LegacyShimHelloSchema,
   ShimBoundSchema,
   ShimRejectedSchema,
   ShimRequestSchema,
@@ -154,7 +147,6 @@ export const ShimFrameSchema = z.union([
   ShimEventSchema
 ])
 
-export type ShimHello = z.infer<typeof LegacyShimHelloSchema>
 export type ShimBound = z.infer<typeof ShimBoundSchema>
 export type ShimRejected = z.infer<typeof ShimRejectedSchema>
 export type ShimRequest = z.infer<typeof ShimRequestSchema>

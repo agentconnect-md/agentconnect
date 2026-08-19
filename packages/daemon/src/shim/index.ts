@@ -31,7 +31,6 @@ async function main(): Promise<number> {
   const tunnels = new TunnelHost({ emit: (streamId, event) => client.emit(streamId, event), log })
   const client = new ShimClient({
     endpoint: 'accepted-daemon-channel',
-    acceptDialIn: true,
     dial: () => server.nextTransport(),
     // Without this the runner skips executable hints entirely, so CLAUDE_CODE_EXECUTABLE and
     // path-qualified registry commands would never resolve in the sandbox.

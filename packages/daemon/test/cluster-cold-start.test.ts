@@ -148,7 +148,6 @@ async function clusterUnderTest(options: {
   const shim = (): ShimClient => {
     const client = new ShimClient({
       endpoint: 'accepted-daemon-channel',
-      acceptDialIn: true,
       // The pod answers a dial only while the gate is open; a closed gate is a pod that is
       // still coming up, which is what the daemon must not read as a lost channel.
       dial: async () => {

@@ -298,7 +298,7 @@ export class ShimDialer {
           fail(new Error(`rejected: ${frame.reason}`))
           return
         }
-        if (frame.type === 'shim/identity' || (frame.type === 'shim/hello' && 'token' in frame)) {
+        if (frame.type === 'shim/identity') {
           if (settled || binding) {
             transport.close(4400, 'already binding')
             return

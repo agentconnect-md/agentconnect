@@ -121,7 +121,6 @@ function shimAgainst(port: number, handlers: { probe?: unknown; workspaceRoot?: 
         }),
     ...(handlers.workspaceRoot === undefined ? {} : { workspaceRoot: handlers.workspaceRoot }),
     endpoint: 'accepted-daemon-channel',
-    acceptDialIn: true,
     dial: () => server.nextTransport() as Promise<ShimTransport>,
     readToken: () => 'projected-token',
     clock: new FakeClock(),

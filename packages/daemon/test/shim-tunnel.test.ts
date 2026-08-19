@@ -157,7 +157,6 @@ async function clusterWithTunnel(
   hosts.push(host)
   const client = new ShimClient({
     endpoint: 'accepted-daemon-channel',
-    acceptDialIn: true,
     dial: () => shimServer.nextTransport() as Promise<ShimTransport>,
     readToken: () => 'projected-token',
     handle: async (capability, payload) => {

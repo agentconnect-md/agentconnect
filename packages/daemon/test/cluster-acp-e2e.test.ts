@@ -146,7 +146,6 @@ async function clusterUnderTest(options: { credentialTtlMs?: number } = {}): Pro
 
   const client = new ShimClient({
     endpoint: 'accepted-daemon-channel',
-    acceptDialIn: true,
     dial: () => server.nextTransport() as Promise<ShimTransport>,
     readToken: () => 'projected-token',
     clock: shimClock,
