@@ -130,3 +130,58 @@ describe('a distillation-bound session writing through the shared tools', () => 
     expect(source).toBe('tool')
   })
 })
+
+describe('the distillation binding is its own authorization', () => {
+  it('permits the write even though the synthetic session has no persisted row', async () => {
+    // The real daemon derives this verdict from `isCaptureExcluded`, which fails
+    // CLOSED for coordinates with no session row — exactly what a synthetic
+    // distillation session has. Mocking the gate to `true` hid that, so model the
+    // real rule here: unknown session ⇒ excluded, unless a binding is present.
+    const realGate = async (ctx: SessionContext, mode: 'read' | 'write') =>
+      mode === 'read' || Boolean(ctx.memoryBinding) || false
+    const d = deps(false, { memoryAccessAllowed: realGate })
+
+    await executeTool(
+      {
+        agentId: 'bot-a',
+        platform: 'distill',
+        channel: 'memory',
+        thread: 'distill',
+        isDm: false,
+        tools: [],
+        memoryBinding: { source: 'distill', scope: { agentId: 'bot-a' } }
+      },
+      'writeMemory',
+      { path: 'prefs.md', content: '- a durable fact' },
+      d
+    )
+    expect(d.memory.write).toHaveBeenCalled()
+
+    // An ordinary session with no row is still refused — the binding is the only
+    // thing that grants this, and it is daemon-minted, never model-supplied.
+    const plain = deps(false, { memoryAccessAllowed: realGate })
+    await expect(executeTool(ctx(), 'writeMemory', { content: 'x' }, plain)).rejects.toThrow(MEMORY_ACCESS_BLOCKED)
+    expect(plain.memory.write).not.toHaveBeenCalled()
+  })
+
+  it('keeps two channels apart: each binding writes to its own store', async () => {
+    // One warm host serves every channel, so a per-agent cached session would reuse
+    // the FIRST channel's pinned scope for all later channels.
+    const d = deps(true)
+    const bind = (channelKey: string): SessionContext => ({
+      agentId: 'bot-a',
+      platform: 'distill',
+      channel: 'memory',
+      thread: 'distill',
+      isDm: false,
+      tools: [],
+      memoryBinding: { source: 'distill', scope: { agentId: 'bot-a', channelKey } }
+    })
+    await executeTool(bind('chan-A'), 'writeMemory', { path: 'a.md', content: '- from A' }, d)
+    await executeTool(bind('chan-B'), 'writeMemory', { path: 'b.md', content: '- from B' }, d)
+
+    const calls = (d.memory.write as unknown as { mock: { calls: unknown[][] } }).mock.calls
+    expect((calls[0]![0] as { channelKey?: string }).channelKey).toBe('chan-A')
+    expect((calls[1]![0] as { channelKey?: string }).channelKey).toBe('chan-B')
+  })
+})

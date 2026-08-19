@@ -578,11 +578,17 @@ export class Daemon {
 
   /** Drop the token behind a cached distillation session so a replaced or discarded
    *  session cannot leave a live tool grant behind. */
-  private releaseMemoryExtractionToken(agentId: string): void {
-    const token = this.memoryExtractionTokens.get(agentId)
+  private releaseMemoryExtractionToken(cacheKey: string): void {
+    const token = this.memoryExtractionTokens.get(cacheKey)
     if (!token) return
-    this.memoryExtractionTokens.delete(agentId)
+    this.memoryExtractionTokens.delete(cacheKey)
     this.mcp.unregister(token)
+  }
+
+  /** Release every distillation tool grant — the shutdown backstop for any session
+   *  retirement path that does not run the per-session cleanup. */
+  private releaseAllMemoryExtractionTokens(): void {
+    for (const key of [...this.memoryExtractionTokens.keys()]) this.releaseMemoryExtractionToken(key)
   }
   private memoryExtractionDirs = new Map<string, string>()
   /** Throwaway empty cwd per agent for the console's commit-message pass (never written to). */
@@ -2093,8 +2099,16 @@ export class Daemon {
       // push its own content into the cross-user store (#653; capture stays gated
       // like post-turn distillation). Resolved from trusted session coords at call
       // time so a policy change takes effect for an already-running ACP session.
-      memoryAccessAllowed: async (ctx, mode) =>
-        mode === 'read' || !(await this.store.isCaptureExcluded(ctx.agentId, await this.acpSessionIdForToolCall(ctx))),
+      memoryAccessAllowed: async (ctx, mode) => {
+        if (mode === 'read') return true
+        // A daemon-minted binding (distillation) carries its own authorization: it has
+        // no persisted session row, so the capture gate below would fail closed on it,
+        // and the privacy decision was already made upstream — queueMemoryPostTurn
+        // refuses to distill a capture-excluded turn at all. The binding is never
+        // model-supplied, so this cannot be forged from inside a session.
+        if (ctx.memoryBinding) return true
+        return !(await this.store.isCaptureExcluded(ctx.agentId, await this.acpSessionIdForToolCall(ctx)))
+      },
       memoryScope: (ctx) => this.memoryScope(ctx.agentId, ctx.channel, ctx.transportScope),
       recordOutbound: async (ctx, channel, thread, text, ts, integrationId) =>
         await this.store.appendTranscript({
@@ -3732,7 +3746,15 @@ export class Daemon {
     this.memoryPostTurnChains.set(agentId, next)
   }
 
+  /** Cache key for a distillation session: the agent AND the store it is bound to, so
+   *  a channel-scoped agent does not reuse the first channel's session (and its pinned
+   *  scope) for every later channel on the same warm host. */
+  private memoryExtractionKey(agentId: string, scope?: MemoryScope): string {
+    return `${agentId}\u0000${scope?.channelKey ?? ''}`
+  }
+
   private async runMemoryExtraction(agentId: string, prompt: string, scope?: MemoryScope): Promise<string> {
+    const cacheKey = this.memoryExtractionKey(agentId, scope)
     const agent = this.agents.get(agentId)
     if (!agent) throw new Error(`unknown agent ${agentId}`)
     const modelSessionKey = this.keyServer ? `internal:memory:${agentId}` : undefined
@@ -3758,7 +3780,7 @@ export class Daemon {
       // reads). #658 will move the untrusted-channel path onto a dedicated
       // excludeAgentToolCredentials host; the trusted-channel path is unchanged.
       const trusted = host.usesMetaSystemPrompt()
-      let sessionId = this.memoryExtractionSessions.get(agentId)
+      let sessionId = this.memoryExtractionSessions.get(cacheKey)
       if (!sessionId || !host.hasSession(sessionId)) {
         const modes = host.permissionModeOptions()?.modes ?? []
         const readOnlyMode = readOnlyExtractionMode(modes)
@@ -3766,10 +3788,10 @@ export class Daemon {
           this.memoryExtractionUnavailable.add(host)
           throw new Error('runtime lacks a verified read-only memory-extraction mode')
         }
-        let cwd = this.memoryExtractionDirs.get(agentId)
+        let cwd = this.memoryExtractionDirs.get(cacheKey)
         if (!cwd) {
           cwd = await mkdtemp(join(tmpdir(), 'agentconnect-memory-distill-'))
-          this.memoryExtractionDirs.set(agentId, cwd)
+          this.memoryExtractionDirs.set(cacheKey, cwd)
         }
         // Distillation writes memory through the SAME tool surface as an ordinary
         // turn and a dream — only the binding differs (#41). The binding tags its
@@ -3787,8 +3809,8 @@ export class Daemon {
           tools: MEMORY_TOOLS,
           memoryBinding: { source: 'distill', scope }
         })
-        this.releaseMemoryExtractionToken(agentId)
-        this.memoryExtractionTokens.set(agentId, mcpToken)
+        this.releaseMemoryExtractionToken(cacheKey)
+        this.memoryExtractionTokens.set(cacheKey, mcpToken)
         const mcpServers = buildMcpServers({
           socketPath: mcpSocketPath(this.root),
           token: mcpToken,
@@ -3802,7 +3824,7 @@ export class Daemon {
           this.memoryExtractionUnavailable.add(host)
           throw new Error('runtime lacks a verified read-only memory-extraction mode')
         }
-        this.memoryExtractionSessions.set(agentId, sessionId)
+        this.memoryExtractionSessions.set(cacheKey, sessionId)
       }
       const key = pendingTurnKey(agentId, sessionId)
       const chunks: string[] = []
@@ -3821,9 +3843,9 @@ export class Daemon {
         await this.acpUpdateChains.get(acpUpdateChainKey(agentId, sessionId))
         return chunks.join('')
       } catch (err) {
-        if (this.memoryExtractionSessions.get(agentId) === sessionId) {
-          this.memoryExtractionSessions.delete(agentId)
-          this.releaseMemoryExtractionToken(agentId)
+        if (this.memoryExtractionSessions.get(cacheKey) === sessionId) {
+          this.memoryExtractionSessions.delete(cacheKey)
+          this.releaseMemoryExtractionToken(cacheKey)
         }
         throw err
       } finally {
@@ -3832,11 +3854,11 @@ export class Daemon {
       }
     } finally {
       if (modelSessionKey) {
-        const extractionSessionId = this.memoryExtractionSessions.get(agentId)
+        const extractionSessionId = this.memoryExtractionSessions.get(cacheKey)
         if (extractionSessionId) {
           this.memoryExtractionQuarantines.delete(pendingTurnKey(agentId, extractionSessionId))
         }
-        this.memoryExtractionSessions.delete(agentId)
+        this.memoryExtractionSessions.delete(cacheKey)
         await this.releaseModelSessionHost(modelSessionKey)
       }
     }
@@ -15328,6 +15350,7 @@ export class Daemon {
     // dedicated host stops, and stopHost sweeps per-agent for warm hosts, but drop
     // anything still lingering here so nothing survives the process (task #36).
     this.memoryExtractionQuarantines.clear()
+    this.releaseAllMemoryExtractionTokens()
     // An aborted warm SessionManager caller can settle before its uncancellable
     // workspace I/O. Keep the trusted ledger/store boundary alive until every
     // registered preparation has quiesced; a hung mutation deliberately prevents
