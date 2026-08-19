@@ -72,6 +72,10 @@ export interface RelayDaemonConnDeps {
 export class RelayDaemonConnection {
   state: State = 'AUTHENTICATING'
   daemonId = ''
+  /** Which verified credential authenticated this socket. `daemon-token` is a TokenReviewed
+   *  install-wide pool identity — duty-governed, so it can rendezvous a webchat trigger.
+   *  `daemon-key` is an org-scoped standalone daemon that would answer `no_agent` instead. */
+  credentialKind?: 'daemon-key' | 'daemon-token'
 
   /** Optional behaviors this daemon advertised at hello (§8.4). Populated only after a
    *  successful handshake, so a caller that reads it on a non-READY socket correctly
@@ -248,6 +252,7 @@ export class RelayDaemonConnection {
     }
 
     this.daemonId = result.daemonId
+    this.credentialKind = presented.kind
     this.capabilities = new Set(hello.capabilities ?? [])
     this.state = 'READY'
     this.reply(frame, 'rd/hello/ok', { relayId })

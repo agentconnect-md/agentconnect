@@ -83,12 +83,36 @@ describe('createRelayDaemonServer (rd/* accept edge)', () => {
     await tick()
     expect(rd!.size()).toBe(1)
 
+    // An org-scoped key daemon is outside the duty plane — never a rendezvous candidate.
+    expect(rd!.get(DAEMON_ID)?.credentialKind).toBe('daemon-key')
+    expect(rd!.rendezvousCandidate()).toBeUndefined()
+
     // CP-driven revoke: closes the daemon's rd/* socket and clears the map.
     const closed = closeCode(ws)
     rd!.revoke(DAEMON_ID)
     expect(await closed).toBe(4409)
     await tick()
     expect(rd!.size()).toBe(0)
+  })
+
+  it('offers a projected-token pool member as the webchat rendezvous candidate', async () => {
+    const verify = vi.fn(async () => ({ ok: true, daemonId: DAEMON_ID }) as RcVerifyResult)
+    const base = await start(verify)
+    const ws = await dial(base, RELAY_DAEMON_SUBPROTOCOL)
+
+    ws.send(JSON.stringify(buildRelayDaemonFrame('rd/hello', { serviceAccountToken: 't', daemonId: DAEMON_ID })))
+    await nextFrame(ws, 'rd/hello/ok')
+    expect(verify).toHaveBeenCalledWith('daemon-token', 't', DAEMON_ID)
+    await tick()
+
+    const candidate = rd!.rendezvousCandidate()
+    expect(candidate?.daemonId).toBe(DAEMON_ID)
+    expect(candidate?.conn.credentialKind).toBe('daemon-token')
+
+    rd!.revoke(DAEMON_ID)
+    await tick()
+    expect(rd!.rendezvousCandidate()).toBeUndefined()
+    ws.close()
   })
 
   it('rejects a client that does not offer the rd subprotocol', async () => {

@@ -93,6 +93,9 @@ export interface RelayBrowserConnDeps {
   remoteMcp?: WebchatRemoteMcpEntitlement
   /** Resolve a live rd/* connection to a participant's daemon (absent if it dropped). */
   daemonConnFor: (daemonId: string) => RelayDaemonConnection | undefined
+  /** Any live duty-governed pool connection, tried when the recorded daemon is gone (a rollout
+   *  replaced it): the member claims the duty on receipt or names the holder (§4.4). */
+  rendezvousDaemonConn?: () => { daemonId: string; conn: RelayDaemonConnection } | undefined
   register: (chatId: string, sink: ChatSink) => void
   unregister: (chatId: string, sink: ChatSink) => void
   log: Logger
@@ -332,7 +335,18 @@ export class RelayBrowserConnection implements ChatSink {
   /** Send one op to one participant's daemon, translating the verdict for the browser. */
   private async sendToParticipant(agentId: string, op: RelayWebchatOp, kind: RelayWebchatOp['op']): Promise<void> {
     const participant = this.byAgentId.get(agentId)
-    const daemon = participant?.daemonId ? this.deps.daemonConnFor(participant.daemonId) : undefined
+    let daemonId = participant?.daemonId
+    let daemon = daemonId ? this.deps.daemonConnFor(daemonId) : undefined
+    if (!daemon) {
+      // A gone recorded member is not a gone agent: a rollout replaced the daemon under the
+      // conversation. Any live same-org member claims the duty on receipt or names the holder.
+      const fallback = this.deps.rendezvousDaemonConn?.()
+      if (fallback) {
+        this.deps.log.info(`webchat: recorded daemon for ${agentId} is gone — rendezvousing via ${fallback.daemonId}`)
+        daemonId = fallback.daemonId
+        daemon = fallback.conn
+      }
+    }
     if (!daemon) {
       // A single-participant conversation keeps the legacy error frame; a
       // multi-agent one degrades per agent so the other targets still run.
@@ -373,8 +387,14 @@ export class RelayBrowserConnection implements ChatSink {
         const holder = this.deps.daemonConnFor(ack.holderDaemonId)
         if (holder) {
           this.deps.log.info(`webchat: re-routing ${agentId} to duty holder ${ack.holderDaemonId}`)
+          daemonId = ack.holderDaemonId
           ack = await holder.sendMsg(rdMsg)
         }
+      }
+      // The member that answered the verdict is serving the agent now — heal the roster entry
+      // so the next op goes direct instead of repeating the rendezvous or the holder hop.
+      if (participant && daemonId && ack.reason !== RD_ACK_NOT_HOLDER && participant.daemonId !== daemonId) {
+        participant.daemonId = daemonId
       }
       const browserAck = {
         accepted: ack.accepted,
