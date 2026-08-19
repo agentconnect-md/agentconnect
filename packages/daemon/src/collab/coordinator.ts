@@ -587,6 +587,9 @@ export class CollabCoordinator {
     // the peer's reply. dispatch() drops the turn (returns null) if the target is paused/
     // draining; that still counts as admitted for P1 (a reason-typed NAK on those gates is
     // P2's admission protocol, §6.4).
+    // Set when a requested deadline could not be armed, so the caller is told rather than left
+    // waiting on a wake that will never come.
+    let deadlineIgnored: string | undefined
     // Record the lineage BEFORE the fire-and-forget dispatch, so a parent that polls
     // `viewSessionStatus` the instant sendMessage returns is already authorized.
     if (originSessionId !== undefined) {
@@ -601,17 +604,30 @@ export class CollabCoordinator {
         replyState: 'awaiting'
       })
       if (req.needsReply === true && req.replyDeadlineMs !== undefined) {
-        await this.armParentReplyDeadline({
-          childSessionKey: targetSession,
-          parentSessionId: originSessionId,
-          childAgentId: req.toAgentId,
-          platform,
-          channel: coordChannel,
-          thread: event.thread ?? '',
-          ...(targetTransportScope !== undefined ? { transportScope: targetTransportScope } : {}),
-          deliveryId,
-          deadlineMs: req.replyDeadlineMs
-        })
+        // A retained REPLICA is local by map presence but may not hold the duty (review), and
+        // both the fire and the re-arm require current ownership — so arming here would be a
+        // silent no-op. Same rule as the cross-daemon case: refuse loudly instead.
+        if (!this.host.servesAgent(req.toAgentId)) {
+          this.host
+            .log()
+            .warn(
+              `messageAgent: deadlineMs ignored for ${req.toAgentId} — its duty is held elsewhere, ` +
+                `so this member cannot fire the wake`
+            )
+          deadlineIgnored = 'target_duty_elsewhere'
+        } else {
+          await this.armParentReplyDeadline({
+            childSessionKey: targetSession,
+            parentSessionId: originSessionId,
+            childAgentId: req.toAgentId,
+            platform,
+            channel: coordChannel,
+            thread: event.thread ?? '',
+            ...(targetTransportScope !== undefined ? { transportScope: targetTransportScope } : {}),
+            deliveryId,
+            deadlineMs: req.replyDeadlineMs
+          })
+        }
       }
     }
     // send-message-routing-rework.md §3.2/§8.6 — the "internal wake first" arrival order
@@ -639,7 +655,11 @@ export class CollabCoordinator {
           .info(
             `messageAgent: paired delivery ${req.agentCallDeliveryId ?? deliveryId} already claimed — reusing the existing child`
           )
-        return record({ delivered: true, targetSession: claimed.record.childSessionId ?? targetSession })
+        return record({
+          delivered: true,
+          targetSession: claimed.record.childSessionId ?? targetSession,
+          ...(deadlineIgnored !== undefined ? { deadlineIgnored } : {})
+        })
       }
       this.host
         .log()
@@ -667,7 +687,7 @@ export class CollabCoordinator {
     this.host
       .log()
       .info(`messageAgent: ${req.callerAgentId} → ${req.toAgentId} (${targetSession}) delivery=${deliveryId}`)
-    return record({ delivered: true, targetSession })
+    return record({ delivered: true, targetSession, ...(deadlineIgnored !== undefined ? { deadlineIgnored } : {}) })
   }
 
   /**

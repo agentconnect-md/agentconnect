@@ -216,6 +216,24 @@ describe('needsReply deadline (#800)', () => {
     }
   }, 30_000)
 
+  it('a local REPLICA whose duty is held elsewhere refuses the deadline instead of arming a dud', async () => {
+    const child = hangingChild()
+    const run = await boot(child.behavior)
+    try {
+      // The replica is still local by map presence, but this member no longer serves it — the
+      // fire and the re-arm both require ownership, so arming here would be a silent no-op.
+      ;(run.daemon as any).collab.host.servesAgent = (agentId: string) => agentId !== CHILD
+      const res = (await run.call(callReq({ replyDeadlineMs: 60_000 }))) as Record<string, unknown>
+      expect(res.delivered).toBe(true)
+      expect(res.deadlineIgnored).toBe('target_duty_elsewhere')
+      expect(await run.store().listParentReplyDeadlines()).toHaveLength(0)
+    } finally {
+      child.release()
+      await settle()
+      await run.daemon.stop()
+    }
+  }, 30_000)
+
   it('a call without a deadline arms nothing', async () => {
     const child = hangingChild()
     const run = await boot(child.behavior)

@@ -235,7 +235,7 @@ by child session:
 - the wake carries the parent as a trusted internal origin, because the ordinary
   authorization reads the child's session row, which may not exist.
 
-**Local targets only, for now.** Every disarm path runs on the daemon that OWNS the
+**Only where this member can actually fire it.** Every disarm path runs on the daemon that OWNS the
 child, so a deadline armed on the caller for a cross-daemon target would never be
 cancelled by an accepted remote report and would later fire a false "no report
 arrived". Arming it on the child's daemon instead requires carrying the deadline and
@@ -243,6 +243,10 @@ durable parent routing through the relay — a wire change. Until then a `deadli
 a remote target is refused loudly, not silently ignored: the daemon logs it and the
 tool result carries `deadlineIgnored`, so the caller falls back to
 `viewSessionStatus` rather than waiting for a wake that will never come.
+
+The same refusal covers a retained local REPLICA whose duty is held by another pool
+member: it is local by map presence, but the fire and the re-arm both require current
+ownership, so arming there would be a silent no-op rather than a deadline.
 
 ### 3.2 Channel-root form
 
