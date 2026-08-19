@@ -14,8 +14,7 @@ import { integrationCore, platformIntegrationConfig } from '../platforms/integra
 import type { ReplyAttributionInfo } from '../messages/attribution.js'
 import type { NormalizedMessage } from '../messages/normalized.js'
 import type { Logger } from '../log.js'
-import { SlackSendQueue } from '../slack/send-queue.js'
-import type { InteractionActor } from '../slack/connection.js'
+import { PlatformSendQueue } from '../platforms/send-queue.js'
 import { feishuEventToMessageLike, normalizeFeishuMessage, type FeishuRawEvent } from './normalize.js'
 import {
   buildCompletedReplyCard,
@@ -26,7 +25,7 @@ import {
   FEISHU_REPLY_CANCEL_OPTION,
   FEISHU_STREAMING_ELEMENT_ID
 } from './render.js'
-import type { PlatformConnection } from '../platforms/contract.js'
+import type { InteractionActor, PlatformConnection } from '../platforms/contract.js'
 
 /**
  * §Feishu / Lark edge unit. Mirrors discord/connection.ts but over the official
@@ -563,7 +562,7 @@ export class FeishuConnection implements PlatformConnection {
   private handle: FeishuClientHandle
   // All outbound writes funnel through one queue so streamed edits are FIFO-ordered
   // per connection (keeps a post-then-edit pair from racing on the same progress msg).
-  private queue: SlackSendQueue
+  private queue: PlatformSendQueue
   /** CardKit sequence numbers are scoped to a card entity and must increase across
    * element, settings, and full-card updates. */
   private streamingCards = new Map<
@@ -608,7 +607,7 @@ export class FeishuConnection implements PlatformConnection {
     this.region = deps.group.region
     this.mode = deps.group.mode
     this.handle = factory(deps.group.appId, deps.group.appSecret, deps.group.region)
-    this.queue = new SlackSendQueue(deps.sendIntervalMs ?? 350)
+    this.queue = new PlatformSendQueue(deps.sendIntervalMs ?? 350)
   }
 
   async start(): Promise<void> {

@@ -35,6 +35,16 @@
  * the registry lands. This one is daemon-owned.
  */
 
+/** The human behind one interactive click (button / select / modal submit). Carried
+ *  alongside the action so the daemon records WHO changed a session, which a bare
+ *  `sessionKey` cannot say. */
+export interface InteractionActor {
+  userId: string
+  /** Only set where the platform reports it on the interaction (Discord does; a Slack
+   *  `block_actions` payload carries no bot flag on its `user`). */
+  isBot?: boolean
+}
+
 /** One conversation as the platform describes it. Members beyond `id` are
  *  optional because no platform reports all of them (`isMpim`/`user` are Slack's;
  *  `isIm` drives DM canonicalization and session classification on every
