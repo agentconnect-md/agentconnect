@@ -716,6 +716,17 @@ describe('pointers for an agent whose git runs in a sandbox pod', () => {
     expect(pod.content).not.toContain(homedir())
   })
 
+  it('computes pod coordinates for an EXPLICIT sandbox target, whatever targetFor answers', () => {
+    // The spawn path knows a --k8s launch lands in the pod before the shim channel is attached,
+    // so its env must not depend on binding order: 'agent-1' resolves to the daemon target here.
+    const pod = sessionGitConfig('agent-1', undefined, sandboxGitCredentialTarget())
+    expect(pod.path).toBe(`${SANDBOX_GIT_CONFIG_DIR}/agent-1.gitconfig`)
+    expect(pod.env.GIT_CONFIG_GLOBAL).toBe(pod.path)
+    expect(pod.env[GITCRED_SOCKET_ENV]).toBe(SANDBOX_TUNNEL_PATHS.gitcred)
+    expect(pod.content).toContain(`!'${SANDBOX_GIT_CREDENTIAL_HELPER}' agent-1`)
+    expect(pod.content).not.toContain(homedir())
+  })
+
   it('refuses to WRITE a pod gitconfig, rather than writing it here', () => {
     // The whole class of bug in one assertion: a synchronous write of `/run/agentconnect/...`
     // lands on the daemon's disk, creating the file a check would look for while the pod has none.

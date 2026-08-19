@@ -424,9 +424,11 @@ function targetOf(agentId: string): GitCredentialTarget {
  *  repo-local pin (previous agent generation) can never desync the two.
  *  The socket rides along for a target that is not this daemon's filesystem: the helper cannot
  *  derive a daemon root it does not have. */
-export function gitCredentialEnv(agentId: string): Record<string, string> {
+export function gitCredentialEnv(
+  agentId: string,
+  target: GitCredentialTarget = targetOf(agentId)
+): Record<string, string> {
   if (!capabilityFor) throw new Error('git credential injection is not initialized')
-  const target = targetOf(agentId)
   return {
     [GITCRED_CAPABILITY_ENV]: capabilityFor(agentId),
     [GITCRED_AGENT_ENV]: agentId,
@@ -434,8 +436,8 @@ export function gitCredentialEnv(agentId: string): Record<string, string> {
   }
 }
 
-function quotedHelper(agentId: string): string {
-  const { helper } = targetOf(agentId)
+function quotedHelper(agentId: string, target: GitCredentialTarget = targetOf(agentId)): string {
+  const { helper } = target
   return `!'${helper.replaceAll("'", "'\\''")}' ${agentId}`
 }
 
@@ -474,9 +476,11 @@ export function cloneGitEnv(agentId: string, repository?: string): Record<string
  */
 export function sessionGitConfig(
   agentId: string,
-  commitIdentity?: GitCommitIdentity
+  commitIdentity?: GitCommitIdentity,
+  // Explicit for a spawn that KNOWS where the runtime will run (a --k8s launch always lands in the
+  // pod), so the env cannot depend on whether the shim channel happens to be attached right now.
+  target: GitCredentialTarget = targetOf(agentId)
 ): { path: string; content: string; env: Record<string, string> } {
-  const target = targetOf(agentId)
   const file = join(target.configDir, `${agentId}.gitconfig`)
   const lines = [
     '# agentconnect session git config — regenerated on agent start; NO secrets.',
@@ -484,7 +488,7 @@ export function sessionGitConfig(
     ...(target.hostConfig ? ['[include]', `\tpath = ${target.hostConfig}`] : []),
     '[credential "https://github.com"]',
     '\thelper = ', // reset the accumulated helper list for github.com
-    `\thelper = ${quotedHelper(agentId)}`,
+    `\thelper = ${quotedHelper(agentId, target)}`,
     '\tuseHttpPath = true',
     ''
   ]
@@ -492,7 +496,7 @@ export function sessionGitConfig(
     path: file,
     content: lines.join('\n'),
     env: {
-      ...gitCredentialEnv(agentId),
+      ...gitCredentialEnv(agentId, target),
       ...sessionGitPolicyEnv(),
       GIT_CONFIG_GLOBAL: file,
       GIT_TERMINAL_PROMPT: '0',

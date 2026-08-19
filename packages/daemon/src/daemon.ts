@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { mkdtemp } from 'node:fs/promises'
 import { watch as chokidarWatch, type FSWatcher } from 'chokidar'
@@ -68,6 +68,7 @@ import {
   initGitInjection,
   probeGitVersion,
   sandboxGitCredentialTarget,
+  sessionGitConfig,
   sessionGitEnv,
   sessionGitPolicyEnv
 } from './workspace/git-injection.js'
@@ -2999,6 +3000,14 @@ export class Daemon {
     const memoryAgent =
       memoryKindOf(agent) === 'native' && runInSandbox ? { ...agent, dir: runtimeHomePath(agent.dir) } : agent
     const runtimeEnv = Object.fromEntries(runtime.env.map((entry) => [entry.name, entry.value]))
+    // On --k8s the runtime runs in the agent's pod, so the session gitconfig has to be COMPUTED in
+    // pod coordinates and WRITTEN there: the file travels with the launch (SpawnRequest.files) and
+    // is re-materialized on every spawn, because a resumed Sandbox is a new pod with an empty tmpfs.
+    // The daemon-local write (sessionGitEnv) would land the file on this daemon's disk instead.
+    const sandboxSessionGit =
+      this.k8sPlane && agent.workspace.mode === 'git-repo' && githubAppCredentials
+        ? sessionGitConfig(agent.id, this.gitCommitIdentity, sandboxGitCredentialTarget())
+        : undefined
     const env: Record<string, string> = {
       ...baseEnv,
       // Memory backend env: managed disables the runtime's own memory; native
@@ -3008,7 +3017,7 @@ export class Daemon {
       ...memoryProviderFor(memoryAgent, runtime, baseEnv, this.externalMemoryAdmission(agent.id)).runtimeEnv(),
       ...(agent.workspace.mode === 'git-repo'
         ? githubAppCredentials
-          ? sessionGitEnv(agent.id, this.gitCommitIdentity)
+          ? (sandboxSessionGit?.env ?? sessionGitEnv(agent.id, this.gitCommitIdentity))
           : sessionGitPolicyEnv()
         : {})
     }
@@ -3039,8 +3048,12 @@ export class Daemon {
         delete runtimeEnv[secret.name]
       }
     }
+    // The cluster driver routes every pod launch by AC_AGENT_ID, credentials or not.
+    if (this.k8sPlane) env.AC_AGENT_ID = agent.id
     const shimDirs = new Set<string>()
-    if (githubAppCredentials && this.ghBinDir) {
+    // The gh wrapper is a DAEMON path: prepending it to a pod launch would name a dir the pod
+    // never had, and the pod image ships no wrapper (gh there degrades to unauthenticated).
+    if (githubAppCredentials && this.ghBinDir && !this.k8sPlane) {
       // gh wrapper (multi-repo #457): PATH prepend + the agent identity the
       // wrapper hands to the hidden token helper. sessionGitEnv supplies the
       // matching runtime-only capability; a user PATH override must not
@@ -3131,6 +3144,17 @@ export class Daemon {
       // Pairs the runtime's terminal exit with the ordinary rebuild — see reapTerminalHost.
       onTerminal: () => this.reapTerminalHost(agentId, constructed.host),
       env: launch.env,
+      ...(sandboxSessionGit
+        ? {
+            files: [
+              {
+                root: dirname(sandboxSessionGit.path),
+                relPath: [basename(sandboxSessionGit.path)],
+                content: sandboxSessionGit.content
+              }
+            ]
+          }
+        : {}),
       inheritProcessEnv: launch.inheritProcessEnv,
       runtimeId: agent.runtime,
       isolateAccountApps: cfg.security.isolateAccountApps,

@@ -28,7 +28,13 @@ import {
   type ClaudeProtectedSettings,
   ULTRACODE_EFFORT
 } from '../runtime-defs/claude-runtime.js'
-import { LocalDriver, type AcpSandboxLaunch, type SpawnDriver, type SpawnedRuntime } from './spawn-driver.js'
+import {
+  LocalDriver,
+  type AcpSandboxLaunch,
+  type SpawnDriver,
+  type SpawnFile,
+  type SpawnedRuntime
+} from './spawn-driver.js'
 import type { Logger } from '../log.js'
 import { accountAppIsolation } from './account-apps.js'
 import { permissionPresetSettings, type SessionApprovalsReviewer } from './permission-modes.js'
@@ -576,6 +582,8 @@ export class AcpHost {
        */
       onSdkLifecycle?: (sessionId: string, message: unknown) => void
       env?: Record<string, string>
+      /** Files `env` points at, written by the driver in the runtime's own filesystem before start. */
+      files?: SpawnFile[]
       /** Disposable compatibility probes suppress raw child stderr so a harness
        * cannot print credential material or host paths outside our sanitizer. */
       suppressChildStderr?: boolean
@@ -660,6 +668,7 @@ export class AcpHost {
       // PATH, point at it so an out-of-the-box Claude Code install just works. The
       // lookup belongs to the driver: only it knows the filesystem the runtime sees.
       ...(this.isClaudeRuntime() ? { hints: [{ envVar: 'CLAUDE_CODE_EXECUTABLE', command: 'claude' }] } : {}),
+      ...(this.opts.files?.length ? { files: this.opts.files } : {}),
       ...(this.opts.suppressChildStderr !== undefined ? { suppressChildStderr: this.opts.suppressChildStderr } : {}),
       ...(this.opts.sandbox ? { sandbox: this.opts.sandbox } : {})
     })

@@ -698,6 +698,51 @@ describe('cluster spawn driver', () => {
     const { instance } = driver(api)
     await expect(instance.launch({ command: 'claude-code-acp', args: [], env: {} })).rejects.toThrow(/AC_AGENT_ID/)
   })
+
+  /** A connection whose pod side answers every shim/request, recording the order it served them. */
+  function answeringConnection(served: Array<{ capability: string; payload: unknown }>, refuse?: string) {
+    const listeners: Array<(text: string) => void> = []
+    return {
+      binding: { agentId: 'agent-a', generation: 1, grants: ['acp'], podName: 'p', podUid: 'u' },
+      issuedCredential: 'cred',
+      send: (frame: { type: string; id: string; capability?: string; payload?: unknown }) => {
+        if (frame.type !== 'shim/request') return
+        served.push({ capability: frame.capability!, payload: frame.payload })
+        const reply =
+          refuse && frame.capability === refuse
+            ? { type: 'shim/response', id: frame.id, ok: false, error: 'sink refused' }
+            : { type: 'shim/response', id: frame.id, ok: true, payload: { streamId: 's-1' } }
+        for (const listener of listeners) listener(JSON.stringify(reply))
+      },
+      onFrame: (listener: (text: string) => void) => listeners.push(listener),
+      close: () => {}
+    } as unknown as ShimConnection
+  }
+
+  it('materializes the launch files in the pod before opening the runtime', async () => {
+    const served: Array<{ capability: string; payload: unknown }> = []
+    const { api } = fakeApi()
+    const { instance } = driver(api, { connectChannel: async () => answeringConnection(served) })
+    const files = [{ root: '/run/agentconnect/git', relPath: ['agent-a.gitconfig'], content: '[credential]\n' }]
+    await instance.launch({ ...(launchRequest as object), files } as never)
+    expect(served.map((request) => request.capability)).toEqual(['materialize', 'acp'])
+    expect(served[0]!.payload).toEqual({
+      op: 'write',
+      root: '/run/agentconnect/git',
+      relPath: ['agent-a.gitconfig'],
+      content: '[credential]\n'
+    })
+  })
+
+  it('fails the launch when a file cannot be materialized, releasing the hold', async () => {
+    const served: Array<{ capability: string; payload: unknown }> = []
+    const { api } = fakeApi()
+    const { instance } = driver(api, { connectChannel: async () => answeringConnection(served, 'materialize') })
+    const files = [{ root: '/run/agentconnect/git', relPath: ['agent-a.gitconfig'], content: 'x' }]
+    await expect(instance.launch({ ...(launchRequest as object), files } as never)).rejects.toThrow(/sink refused/)
+    // Fail-closed: the runtime was never asked to open against env pointing at a file that is not there.
+    expect(served.map((request) => request.capability)).toEqual(['materialize'])
+  })
 })
 
 /**
