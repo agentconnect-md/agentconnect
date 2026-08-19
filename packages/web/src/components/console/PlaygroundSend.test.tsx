@@ -350,3 +350,125 @@ describe('stream text delta batching', () => {
     expect(getLiveSteps('s1').filter((step) => step.agentId === 'agent-1')).toHaveLength(1)
   })
 })
+
+// A socket that drops between `send` and the turn's ack leaves the turn in limbo — it may
+// never have reached a daemon. The reconnect must put that turn back on the wire (same
+// turnId) rather than only `resume` a stream that was never opened; once a participant
+// HAS acked, the reconnect resumes as before.
+describe('reconnect after an unacked turn', () => {
+  class ReconnectSocket extends StubSocket {
+    static OPEN = 1
+    static CLOSING = 2
+    static CLOSED = 3
+    static instances: ReconnectSocket[] = []
+    onopen?: () => void
+    onmessage?: (e: { data: string }) => void
+    onerror?: (e: unknown) => void
+    onclose?: () => void
+    constructor() {
+      super()
+      ReconnectSocket.instances.push(this)
+    }
+  }
+  const frames = (socket: ReconnectSocket): Array<Record<string, unknown>> =>
+    socket.send.mock.calls.map((call) => JSON.parse(String(call[0])) as Record<string, unknown>)
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  /** Send one turn, open its socket, and return the socket plus the turn frame it carried. */
+  async function sendAndOpen() {
+    ReconnectSocket.instances = []
+    Reflect.set(globalThis, 'WebSocket', ReconnectSocket)
+    const api = await import('@/lib/api')
+    vi.mocked(api.webchatWsUrl).mockResolvedValue('wss://relay.test/ws')
+    await act(async () => {
+      pgSend('s1', 'agent-1', 'hello', 'c1')
+    })
+    const first = ReconnectSocket.instances[0]!
+    await act(async () => {
+      first.readyState = 1
+      first.onopen?.()
+    })
+    const turn = frames(first)[0] as { turnId: string; text: string }
+    expect(turn).toMatchObject({ text: 'hello' })
+    return { first, turn }
+  }
+
+  /** Drop the socket and run the reconnect backoff until the replacement socket is open and `ready`. */
+  async function dropAndReconnect(first: ReconnectSocket) {
+    await act(async () => {
+      first.readyState = 3
+      first.onclose?.()
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000)
+    })
+    const second = ReconnectSocket.instances[1]!
+    expect(second).toBeDefined()
+    await act(async () => {
+      second.readyState = 1
+      second.onopen?.()
+      second.onmessage?.({ data: JSON.stringify({ type: 'ready', conversationId: 'c1' }) })
+    })
+    return second
+  }
+
+  it('re-sends the turn, not a resume, when no participant acked it before the drop', async () => {
+    const { first, turn } = await sendAndOpen()
+    const second = await dropAndReconnect(first)
+    expect(frames(second)).toEqual([expect.objectContaining({ text: 'hello', turnId: turn.turnId })])
+    expect(frames(second).some((frame) => frame.type === 'resume')).toBe(false)
+  })
+
+  it('resumes the stream once the turn was acked', async () => {
+    const { first, turn } = await sendAndOpen()
+    await act(async () => {
+      first.onmessage?.({
+        data: JSON.stringify({ type: 'ack', ack: { accepted: true, turnId: turn.turnId, agentId: 'agent-1' } })
+      })
+    })
+    const second = await dropAndReconnect(first)
+    expect(frames(second)).toEqual([
+      expect.objectContaining({ type: 'resume', turnId: turn.turnId, agentId: 'agent-1', afterIndex: -1 })
+    ])
+  })
+
+  // The copy met its own stream: the original was admitted and its ack lost with the socket.
+  it('attaches to the existing stream when the re-sent copy is refused as busy', async () => {
+    const { first, turn } = await sendAndOpen()
+    const second = await dropAndReconnect(first)
+    await act(async () => {
+      second.onmessage?.({
+        data: JSON.stringify({
+          type: 'ack',
+          ack: { accepted: false, reason: 'busy', turnId: turn.turnId, agentId: 'agent-1' }
+        })
+      })
+    })
+    expect(frames(second).at(-1)).toMatchObject({ type: 'resume', turnId: turn.turnId, agentId: 'agent-1' })
+    expect(getLiveSteps('s1').some((step) => /busy/.test(step.text ?? ''))).toBe(false)
+  })
+
+  it('re-sends at most once per socket — a retry on the same socket falls back to resume', async () => {
+    const { first, turn } = await sendAndOpen()
+    const second = await dropAndReconnect(first)
+    // The daemon never saw the turn AND refuses the copy outright: the retry ladder resumes, not re-sends.
+    await act(async () => {
+      second.onmessage?.({
+        data: JSON.stringify({
+          type: 'resumed',
+          ack: { accepted: false, reason: 'stream_not_found', agentId: 'agent-1' }
+        })
+      })
+      await vi.advanceTimersByTimeAsync(1_000)
+    })
+    const sent = frames(second)
+    expect(sent.filter((frame) => frame.text === 'hello')).toHaveLength(1)
+    expect(sent.at(-1)).toMatchObject({ type: 'resume', turnId: turn.turnId })
+  })
+})
