@@ -1045,9 +1045,11 @@ describe('secondary roots on the pod volume', () => {
       mode: 'from-scratch',
       additionalRepos: [{ repoFullName: 'acme/infra', repoId: '42' }]
     } as Partial<Agent['workspace']>)
-    // The spec-only prefilter says yes before any volume is bound; the roots themselves need one.
+    // The prefilter says yes before any volume is bound; the roots themselves need one. It says yes
+    // for a scratch agent with no rows LEFT too — a retired root keeps its worktrees (decision 12),
+    // and on a pod only the volume can say whether one is there.
     expect(workspaces.mayOwnSessionWorktrees(agent)).toBe(true)
-    expect(workspaces.mayOwnSessionWorktrees(clusterAgent({ mode: 'from-scratch' }))).toBe(false)
+    expect(workspaces.mayOwnSessionWorktrees(clusterAgent({ mode: 'from-scratch' }))).toBe(true)
 
     await workspaces.prepareClusterWorkspace(agent, POD_ROOT, { sessionKey: 'sess-1', isolation: 'session' })
 

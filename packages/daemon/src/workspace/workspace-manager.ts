@@ -42,6 +42,7 @@ import { gitmoduleRepos } from './gitmodules.js'
 import {
   isRepoSegment,
   secondaryRootsDirIn,
+  secondarySubtreesIn,
   secondarySubtreesUnder,
   sessionCwdMarkerIn,
   SECONDARY_MATERIALIZATION_FILE,
@@ -1113,16 +1114,23 @@ export class WorkspaceManager {
   }
 
   /**
-   * Whether the agent could own a per-session worktree AT ALL, from its spec rather than from a
-   * disk — the prefilter for a caller that has not bound the agent's volume yet.
+   * Whether the agent could own a per-session worktree AT ALL — the prefilter for a caller that has
+   * not bound the agent's volume yet, and which may only ever err towards `true`.
    *
    * Deliberately not {@link hasSessionWorktreeRoots}: that one reads the filesystem holding the
    * roots, which for a suspended sandbox is this daemon's own, where a scratch agent's pod-side
    * secondary worktrees are invisible. Answering "no" there is what would let the retention GC
    * delete a session row without ever applying the dirty/unique-commit rules to those worktrees.
+   *
+   * The rows are not the whole answer either: a retired root keeps its worktrees after its row
+   * disappears (decision 12), so a scratch agent whose last authorization was removed may still own
+   * one. Locally that is a cheap listing of `repos`; on a pod only the volume can say, so the answer
+   * is "maybe" and the bound predicate inside the fence decides.
    */
   mayOwnSessionWorktrees(agent: Agent): boolean {
-    return agent.workspace.mode === 'git-repo' || (agent.workspace.additionalRepos ?? []).length > 0
+    if (agent.workspace.mode === 'git-repo') return true
+    if ((agent.workspace.additionalRepos ?? []).length > 0) return true
+    return this.sandboxMode || secondarySubtreesIn(this.agentRootFor(agent)).length > 0
   }
 
   /**

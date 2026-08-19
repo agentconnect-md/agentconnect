@@ -959,6 +959,20 @@ describe('removeSessionWorktree across every root (decision 4)', () => {
     expect(await workspaces.hasSessionWorktreeRoots(agent)).toBe(true)
   })
 
+  it('keeps a scratch agent in scope once its last row is gone, because the root only retired', () => {
+    // The prefilter the retention GC applies before it binds anything. A retired root keeps its
+    // worktrees (decision 12), so the rows alone would let this session's worktree be purged
+    // without the dirty/unique-commit rules ever running against it.
+    const agent = agentFixture([{ repoFullName: 'acme/infra', repoId: '42' }], { mode: 'from-scratch' })
+    serveAll(agent, { 'acme/infra': 'trunk' })
+    mkdirSync(join(workspaces.agentRootFor(agent), 'repos', 'acme', 'infra', 'checkout'), { recursive: true })
+    const retired = { ...agent, workspace: { ...agent.workspace, additionalRepos: [] } } as Agent
+
+    expect(workspaces.mayOwnSessionWorktrees(retired)).toBe(true)
+    // A scratch agent that never had one is out of scope, and takes no admission fence for nothing.
+    expect(workspaces.mayOwnSessionWorktrees(agentFixture([], { mode: 'from-scratch' }))).toBe(false)
+  })
+
   it('reports absent when no root has a worktree for the session', async () => {
     const agent = agentFixture([{ repoFullName: 'acme/infra', repoId: '42' }])
     serveAll(agent, { 'acme/infra': 'trunk' })
