@@ -3,7 +3,7 @@ import type { RuntimeDef } from '../config/config-schema.js'
 import type { Agent } from '../agents/agent-schema.js'
 import { isClaudeRuntimeDef } from '../runtime-defs/claude-runtime.js'
 import { sharedCredentialProfile } from './runtime-credentials.js'
-import { codexConfigWithBaseUrl, objectFromJson, record } from './codex-config.js'
+import { codexConfigWithBaseUrl, codexConfigWithFloor, objectFromJson, record } from './codex-config.js'
 
 export interface ModelCredential {
   key: string
@@ -101,6 +101,29 @@ export function applyModelCredential(
       }
     }
   })
+}
+
+// The deployment's codex session-config floor, applied by the DAEMON at spawn — not only by the
+// sandbox shim. The shim's pod-env copy (AC_CODEX_CONFIG on the SandboxTemplate) never reaches an
+// agent whose sandbox was minted before the value changed: the pod spec is a frozen snapshot, and
+// daemon-written env is what wins over it. Same merge semantics as the shim's fill-in.
+export function applyCodexSessionFloor(
+  target: ModelProviderTarget,
+  env: Record<string, string>,
+  floorRaw: string
+): void {
+  if (target.runtime !== 'codex') return
+  const merged = codexConfigWithFloor(env.CODEX_CONFIG, floorRaw)
+  if (merged !== undefined) env.CODEX_CONFIG = merged
+}
+
+// Validated at daemon construction so a malformed value fails the member loudly at boot instead
+// of failing every codex spawn one at a time.
+export function configuredCodexSessionFloor(env: NodeJS.ProcessEnv): string | undefined {
+  const raw = env.AC_CODEX_CONFIG?.trim()
+  if (!raw) return undefined
+  objectFromJson(raw, 'AC_CODEX_CONFIG')
+  return raw
 }
 
 export type StaticModelCredentials = Partial<Record<ModelRuntimeKind, ModelCredential>>
