@@ -97,17 +97,24 @@ function buildMemoryAppend(memoryIndex: string): string {
   if (!memoryIndex) return ''
   return (
     `# Persistent memory\n` +
-    `You keep a persistent memory across sessions. Your context is periodically ` +
-    `compacted, and this index is re-read at the START of every session — it is your main way to recover ` +
-    `what you learned. Record durable facts PROACTIVELY, without being asked — conventions, decisions, ` +
-    `who to ask, project/channel context, and anything you had to re-learn: write a topic file with ` +
-    `\`writeMemory\` as you go, and read one with \`readMemory\` when it is relevant.\n\n` +
-    `Start each topic file with a header, then the body:\n` +
+    `You keep a persistent memory across sessions. Your context is periodically compacted, and this index is ` +
+    `re-read at the START of every session — it is your main way to recover what you learned. Record durable ` +
+    `facts PROACTIVELY, without being asked, with \`writeMemory\`; read one with \`readMemory\`.\n\n` +
+    `ONE FILE = ONE FACT. Give each a short kebab-case name and start it with a header:\n` +
     `\`\`\`\n---\ndescription: one line saying what this holds — it is how a future session decides to open it\n` +
     `type: user | feedback | project | reference\n---\n\`\`\`\n` +
-    `Link related memories inline as \`[[topic-name]]\` (no \`.md\`); \`readMemory\` accepts that form directly, ` +
-    `so a link you read is a reference you can follow. MEMORY.md below is GENERATED from those descriptions — ` +
-    `do not hand-edit it; to change how a topic appears in the index, change that topic's \`description\`.\n\n` +
+    `\`user\`: who the people here are — role, expertise, preferences. \`feedback\`: guidance you were given about ` +
+    `how to work, corrections and confirmed approaches alike; include WHY, and how to apply it. \`project\`: ` +
+    `ongoing work, goals, or constraints you could not derive from the code or git history; write dates absolute, ` +
+    `never "yesterday". \`reference\`: pointers to external resources — URLs, dashboards, tickets.\n\n` +
+    `Link related memories inline as \`[[topic-name]]\` (no \`.md\`), and link liberally: a \`[[name]]\` with no file ` +
+    `behind it yet is fine — it marks something worth writing later, not an error. \`readMemory\` takes that form ` +
+    `directly and reports each memory's links and backlinks, so following one is cheap.\n\n` +
+    `Before saving, check whether a file already covers it: UPDATE that file instead of creating a near-duplicate, ` +
+    `and delete a memory that turns out to be wrong. Do NOT save what the repository already records — code ` +
+    `structure, past fixes, git history, CLAUDE.md — or what only matters to the conversation you are in.\n\n` +
+    `MEMORY.md below is GENERATED from those descriptions — do not hand-edit it; to change how a topic appears, ` +
+    `change that topic's \`description\`.\n\n` +
     `Only text inside the memory-file boundary below belongs to \`MEMORY.md\`; everything outside it is ` +
     `session context and not a valid source for \`oldString\`. This injected index is a start-of-session ` +
     `snapshot. Its body uses one layer of XML character-reference encoding: \`&amp;\`, \`&lt;\`, and \`&gt;\` ` +

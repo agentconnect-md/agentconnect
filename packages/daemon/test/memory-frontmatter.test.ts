@@ -14,7 +14,13 @@ import {
   parseMemoryFrontmatter,
   stampMemoryHeader
 } from '../src/memory/frontmatter.js'
-import { ensureMemory, MAX_MEMORY_FILE_BYTES, readMemoryFile, writeMemoryFile } from '../src/memory/store.js'
+import {
+  ensureMemory,
+  MAX_MEMORY_FILE_BYTES,
+  memoryNeighbors,
+  readMemoryFile,
+  writeMemoryFile
+} from '../src/memory/store.js'
 import { appendDistilledMemories } from '../src/memory/distill.js'
 
 const fs = () => new LocalMemoryFs(mkdtempSync(join(tmpdir(), 'ac-fm-')))
@@ -212,5 +218,47 @@ describe('distillation and the generated index', () => {
     // Every fact landed in its topic file even though the index had to be truncated.
     expect(await readMemoryFile(f, 'd-11.md')).toContain('fact 11')
     expect(Buffer.byteLength(await readMemoryFile(f, 'MEMORY.md'))).toBeLessThanOrEqual(MAX_MEMORY_FILE_BYTES)
+  })
+})
+
+describe('memory graph (one hop)', () => {
+  const write = (f: ReturnType<typeof fs>, topic: string, description: string, body: string) =>
+    writeMemoryFile(f, topic, `---\ndescription: ${description}\n---\n${body}\n`, undefined, 'tool')
+
+  it('reports outgoing links and backlinks, each with its description', async () => {
+    const f = fs()
+    await ensureMemory(f, 'bot')
+    await write(f, 'deploys.md', 'how we ship', 'pipeline owns it, see [[runtimes]]')
+    await write(f, 'runtimes.md', 'which runtimes we support', 'claude and codex')
+    await write(f, 'oncall.md', 'who to page', 'escalate per [[deploys]]')
+
+    const from = await memoryNeighbors(f, 'deploys.md')
+    expect(from.links).toEqual([
+      { name: 'runtimes', topic: 'runtimes.md', description: 'which runtimes we support', exists: true }
+    ])
+    // oncall links to deploys, so deploys sees it as a backlink.
+    expect(from.backlinks).toEqual([{ name: 'oncall', topic: 'oncall.md', description: 'who to page', exists: true }])
+
+    // The graph is symmetric from the other end.
+    expect((await memoryNeighbors(f, 'runtimes.md')).backlinks.map((n) => n.name)).toEqual(['deploys'])
+  })
+
+  it('keeps a link to a memory that does not exist yet, marked as such', async () => {
+    const f = fs()
+    await ensureMemory(f, 'bot')
+    await write(f, 'a.md', 'has a forward reference', 'todo: write [[not-yet]]')
+
+    const { links } = await memoryNeighbors(f, 'a.md')
+    expect(links).toEqual([{ name: 'not-yet', topic: 'not-yet.md', exists: false }])
+  })
+
+  it('accepts a [[link]] as the lookup and ignores a self-link', async () => {
+    const f = fs()
+    await ensureMemory(f, 'bot')
+    await write(f, 'solo.md', 'points at itself', 'see [[solo]] and [[other]]')
+    await write(f, 'other.md', 'the other one', 'x')
+
+    const { links } = await memoryNeighbors(f, '[[solo]]')
+    expect(links.map((n) => n.name)).toEqual(['other'])
   })
 })

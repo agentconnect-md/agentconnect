@@ -44,7 +44,13 @@ export {
   type MemoryFs
 } from './fs.js'
 
-import { memoryNameForTopic, memoryRefToTopic, parseMemoryFrontmatter, stampMemoryHeader } from './frontmatter.js'
+import {
+  memoryLinkTargets,
+  memoryNameForTopic,
+  memoryRefToTopic,
+  parseMemoryFrontmatter,
+  stampMemoryHeader
+} from './frontmatter.js'
 
 export const MEMORY_DIRNAME = 'memory'
 export { MEMORY_INDEX }
@@ -698,4 +704,68 @@ export async function listMemory(fs: MemoryFs): Promise<MemoryFile[]> {
   }
   files.sort((a, b) => (a.name === MEMORY_INDEX ? -1 : b.name === MEMORY_INDEX ? 1 : a.name.localeCompare(b.name)))
   return files
+}
+
+/** One end of a `[[name]]` edge, with the description that makes it worth following. */
+export interface MemoryNeighbor {
+  name: string
+  topic: string
+  description?: string
+  /** False for a link to a memory that does not exist yet — a deliberate note-to-self. */
+  exists: boolean
+}
+
+export interface MemoryNeighbors {
+  /** Memories this one links out to. */
+  links: MemoryNeighbor[]
+  /** Memories that link to this one. */
+  backlinks: MemoryNeighbor[]
+}
+
+/** Cap on either side of the neighbour list, so a heavily linked memory cannot
+ *  balloon a tool result. */
+const MAX_NEIGHBORS = 20
+
+/**
+ * One hop of the memory graph around a topic (#41): what it links to, and what links
+ * back. Descriptions come along so a link is actionable without a second read — the
+ * whole point of the edges being there.
+ */
+export async function memoryNeighbors(fs: MemoryFs, relPath: string): Promise<MemoryNeighbors> {
+  const topic = memoryTopicName(memoryRefToTopic(relPath))
+  const self = memoryNameForTopic(topic)
+
+  const described = new Map<string, { topic: string; description?: string }>()
+  const outgoing = new Map<string, string[]>()
+  for (const file of await listMemory(fs)) {
+    const raw = await fs.readFile(`${MEMORY_DIRNAME}/${file.name}`)
+    if (raw === null) continue
+    const parsed = parseMemoryFrontmatter(raw.content)
+    const name = parsed.header.name || memoryNameForTopic(file.name)
+    described.set(name, {
+      topic: file.name,
+      ...(parsed.header.description ? { description: parsed.header.description } : {})
+    })
+    outgoing.set(name, memoryLinkTargets(parsed.body))
+  }
+
+  const toNeighbor = (name: string): MemoryNeighbor => {
+    const known = described.get(name)
+    return {
+      name,
+      topic: known?.topic ?? `${name}.md`,
+      ...(known?.description ? { description: known.description } : {}),
+      exists: known !== undefined
+    }
+  }
+
+  const links = (outgoing.get(self) ?? [])
+    .filter((name) => name !== self)
+    .slice(0, MAX_NEIGHBORS)
+    .map(toNeighbor)
+  const backlinks = [...outgoing.entries()]
+    .filter(([name, targets]) => name !== self && targets.includes(self))
+    .slice(0, MAX_NEIGHBORS)
+    .map(([name]) => toNeighbor(name))
+  return { links, backlinks }
 }

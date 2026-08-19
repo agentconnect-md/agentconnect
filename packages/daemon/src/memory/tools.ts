@@ -13,9 +13,14 @@ export const MEMORY_TOOLS: ToolDescriptor[] = [
       'Read one of your memory files. Omit `path` (or pass "MEMORY.md") to read the index; pass a topic file name ' +
       '(e.g. "deploys.md") to read that topic. The index is already shown to you at the start of each session (you ' +
       'do NOT need to read it first) — use this to pull the detail behind an index entry, or the current contents of ' +
-      'a file before editing it.',
+      'a file before editing it. Also accepts a `[[name]]` link exactly as it appears in a memory body. The result ' +
+      'carries `links` (memories this one points to) and `backlinks` (memories pointing at it), each with its ' +
+      'description — follow one by reading it. Those fields are NOT part of the file: never write them back.',
     inputSchema: obj({
-      path: { type: 'string', description: 'Memory file name (e.g. "deploys.md"). Defaults to the MEMORY.md index.' }
+      path: {
+        type: 'string',
+        description: 'Memory file name (e.g. "deploys.md"), or a "[[name]]" link. Defaults to the MEMORY.md index.'
+      }
     })
   },
   {

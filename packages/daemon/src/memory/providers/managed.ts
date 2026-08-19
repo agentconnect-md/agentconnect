@@ -5,6 +5,7 @@ import { MEMORY_TOOLS } from '../tools.js'
 import {
   ensureMemory,
   readIndex,
+  memoryNeighbors,
   readMemoryFileIfPresent,
   writeMemoryFile,
   listMemory,
@@ -22,6 +23,7 @@ import type {
   MemoryExtractor,
   MemoryProvider,
   MemoryRecord,
+  MemoryNeighborsResult,
   MemoryReadResult,
   MemoryScope,
   MemoryWriteResult,
@@ -162,6 +164,15 @@ export class ManagedMemoryProvider implements MemoryProvider {
       if (content !== null) return { path, content }
     }
     return { path, content: '' }
+  }
+
+  /** One hop of the `[[name]]` graph, from the layer that actually holds the file:
+   *  under channel scope that is the channel folder, with the shared base as fallback. */
+  async neighbors(scope: MemoryScope, path: string): Promise<MemoryNeighborsResult> {
+    for (const root of this.readRoots(scope)) {
+      if ((await readMemoryFileIfPresent(root, path)) !== null) return memoryNeighbors(root, path)
+    }
+    return { links: [], backlinks: [] }
   }
 
   async write(

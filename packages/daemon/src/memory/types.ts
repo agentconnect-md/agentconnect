@@ -71,6 +71,12 @@ export interface RecallRequest {
 
 export type RecallPolicy = MemoryRecallPolicy
 
+/** One hop of the `[[name]]` memory graph around a file (#41). */
+export interface MemoryNeighborsResult {
+  links: { name: string; topic: string; description?: string; exists: boolean }[]
+  backlinks: { name: string; topic: string; description?: string; exists: boolean }[]
+}
+
 export interface FileMemoryAdmin {
   shape: 'files'
   list(scope: MemoryScope): Promise<MemoryEntry[]>
@@ -166,6 +172,10 @@ export interface MemoryProvider {
   /** Agent-scoped variant implemented by the dispatcher. Tool/CP callers must
    * prefer this when their `MemoryProvider` can serve more than one agent. */
   adminSurfaceForAgent?(agentId: string): MemoryAdminSurface
+
+  /** One hop of the memory graph around a file. Only the managed file store has a
+   *  graph; other providers omit it and callers degrade to no related links. */
+  neighbors?(scope: MemoryScope, path: string): Promise<MemoryNeighborsResult>
 
   /** @deprecated migration alias; live injection uses toolsForAgent. */
   tools(): ToolDescriptor[]
