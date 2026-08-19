@@ -25,11 +25,14 @@ jobs:
   # Reuse the same quality gate as pull requests. The reusable workflow runs
   # Build, Check, Unit Test, and sharded Integration tests in parallel against
   # this exact SHA; the publishing job below waits for all of them.
+  # `skip_sandbox` drops the kernel-sandbox suite here — the PR already ran it, and its
+  # bwrap/apt setup is the leg whose failures would strand a merged commit unpublished.
   test:
     name: Test
     uses: ./.github/workflows/test.yaml
     with:
       defer_summaries: true
+      skip_sandbox: true
 
   release:
     needs: test

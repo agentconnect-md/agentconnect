@@ -16,6 +16,11 @@ on:
         required: false
         type: boolean
         default: false
+      skip_sandbox:
+        description: 'Skip the Linux kernel sandbox suite (PR runs always keep it)'
+        required: false
+        type: boolean
+        default: false
     outputs:
       build_test_summary:
         description: 'Unit test summary markdown'
@@ -205,8 +210,11 @@ jobs:
   # Exercise the daemon's core sandbox boundaries and confined skills pipeline
   # under the real Linux kernel sandbox. These cases self-skip in the bwrap-free
   # Unit Test job above and run for real here on a bwrap-capable runner.
+  # PR-only gate: release callers pass `skip_sandbox` so it cannot block publication.
+  # `inputs` is empty on `pull_request`, so the unset input reads falsy and PRs run it.
   sandbox-linux:
     name: Sandbox (Linux)
+    if: ${{ !inputs.skip_sandbox }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
