@@ -11,6 +11,23 @@
 // session with -32000, because a bare env key is not an account to codex's account/read.
 export const CODEX_DEFAULT_AUTH_REQUEST = JSON.stringify({ methodId: 'api-key' })
 
+/** The gateway variant, for a credential that names its endpoint: codex-acp holds it as an
+ *  in-process provider (base URL + auth header, responses wire), authRequired() short-circuits
+ *  before account/read, and nothing touches the shared auth.json — so a persisted account of any
+ *  shape cannot override the grant and concurrently launching hosts share no credential state. */
+export function codexGatewayAuthRequest(baseUrl: string, key: string): string {
+  return JSON.stringify({
+    methodId: 'gateway',
+    _meta: {
+      gateway: {
+        baseUrl,
+        headers: { Authorization: `Bearer ${key}` },
+        providerName: 'AgentConnect model egress'
+      }
+    }
+  })
+}
+
 /** True when a persisted auth.json pins an API key other than the launch's own — the file codex
  *  minted from an EARLIER injected grant, which would make account/read report authentication
  *  present and the current key go unconsumed. A tokens-bearing file is a human ChatGPT login and

@@ -66,9 +66,18 @@ describe('applyModelCredential', () => {
       baseUrl: 'https://gateway.example/openai/v1'
     })
     expect(env.OPENAI_API_KEY).toBe('issued')
-    // With the key alone codex still refuses a fresh CODEX_HOME (-32000): this is what lets
-    // codex-acp answer its own authRequired by minting an account from the env key.
-    expect(JSON.parse(env.DEFAULT_AUTH_REQUEST)).toEqual({ methodId: 'api-key' })
+    // An endpoint-carrying credential authenticates as a GATEWAY: process-ephemeral, so no
+    // persisted account can override this launch's grant and concurrent hosts share nothing.
+    expect(JSON.parse(env.DEFAULT_AUTH_REQUEST)).toEqual({
+      methodId: 'gateway',
+      _meta: {
+        gateway: {
+          baseUrl: 'https://gateway.example/openai/v1',
+          headers: { Authorization: 'Bearer issued' },
+          providerName: 'AgentConnect model egress'
+        }
+      }
+    })
     expect(env.OPENAI_BASE_URL).toBe('https://gateway.example/openai/v1')
     expect(JSON.parse(env.CODEX_CONFIG)).toEqual({
       features: { apps: false },
@@ -185,6 +194,16 @@ describe('applyModelCredential', () => {
         } as never
       )
     ).toEqual({ provider: 'deepseek', runtime: 'deepseek' })
+  })
+})
+
+describe('applyModelCredential codex auth request', () => {
+  it('falls back to the api-key account login only for an endpoint-less credential', () => {
+    const env: Record<string, string> = {}
+    applyModelCredential({ provider: 'openai', runtime: 'codex' }, env, { key: 'real-provider-key' })
+    expect(env.OPENAI_API_KEY).toBe('real-provider-key')
+    expect(JSON.parse(env.DEFAULT_AUTH_REQUEST)).toEqual({ methodId: 'api-key' })
+    expect(env.CODEX_CONFIG).toBeUndefined()
   })
 })
 

@@ -7,6 +7,7 @@ import {
   CODEX_DEFAULT_AUTH_REQUEST,
   codexConfigWithBaseUrl,
   codexConfigWithFloor,
+  codexGatewayAuthRequest,
   objectFromJson,
   record
 } from './codex-config.js'
@@ -82,10 +83,16 @@ export function applyModelCredential(
   if (target.runtime === 'codex') {
     env.OPENAI_API_KEY = credential.key
     // The key alone is not enough on a fresh CODEX_HOME: codex counts only an account (auth.json)
-    // as authentication, and this is what lets codex-acp mint one from the key on demand.
-    env.DEFAULT_AUTH_REQUEST = CODEX_DEFAULT_AUTH_REQUEST
+    // as authentication, and a default auth request is what lets codex-acp satisfy authRequired
+    // itself. A credential that names its endpoint rides the GATEWAY method — process-ephemeral,
+    // so no persisted account (any shape) can override this launch's grant and concurrent hosts
+    // share no credential state; only the endpoint-less shape still logs in as an account.
+    env.DEFAULT_AUTH_REQUEST = credential.baseUrl
+      ? codexGatewayAuthRequest(credential.baseUrl, credential.key)
+      : CODEX_DEFAULT_AUTH_REQUEST
     if (!credential.baseUrl) return
-    // codex-acp projects CODEX_CONFIG into config.toml; OPENAI_BASE_URL preserves older-adapter compatibility.
+    // Kept beside the gateway method: an older codex-acp ignores an unknown methodId, and resumed
+    // threads pinned to the built-in provider still route by CODEX_CONFIG's openai_base_url.
     applyCodexBaseUrl(env, credential.baseUrl)
     return
   }
