@@ -198,19 +198,14 @@ describe('applyModelCredential', () => {
 })
 
 describe('applyModelCredential codex auth request', () => {
-  it('rides an endpoint-less key on the runtime default endpoint — never the account store', () => {
+  it('sends no auth request for an endpoint-less key — the shim owns the effective endpoint', () => {
     // The key-server contract supports a plain vault rotating real provider keys with no base
-    // URL; the grant still authenticates as a process-ephemeral gateway, against the same URL
-    // the built-in provider would have used.
+    // URL, and the pod's AC_CODEX_BASE_URL floor outranks the runtime default endpoint. Only the
+    // shim can see that floor, so the daemon must not pre-compose a request that would send the
+    // issued key past it to public OpenAI.
     const env: Record<string, string> = {}
     applyModelCredential({ provider: 'openai', runtime: 'codex' }, env, { key: 'real-provider-key' })
-    expect(env.OPENAI_API_KEY).toBe('real-provider-key')
-    expect(JSON.parse(env.DEFAULT_AUTH_REQUEST)._meta.gateway).toEqual({
-      baseUrl: 'https://api.openai.com/v1',
-      headers: { Authorization: 'Bearer real-provider-key' },
-      providerName: 'AgentConnect model egress'
-    })
-    expect(env.CODEX_CONFIG).toBeUndefined()
+    expect(env).toEqual({ OPENAI_API_KEY: 'real-provider-key' })
   })
 })
 

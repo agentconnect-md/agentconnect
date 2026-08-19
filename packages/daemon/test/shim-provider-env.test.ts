@@ -51,7 +51,11 @@ describe('sandboxProviderEnv', () => {
 
 // Spawn through the real runner: resolveCommand maps the registry command to node so the
 // child can print the environment it actually received.
-async function spawnAndReadEnv(command: string, requestEnv: Record<string, string>): Promise<Record<string, string>> {
+async function spawnAndReadEnv(
+  command: string,
+  requestEnv: Record<string, string>,
+  podEnv: Record<string, string | undefined> = POD_ENV
+): Promise<Record<string, string>> {
   const chunks: string[] = []
   let onExit: (() => void) | undefined
   const exited = new Promise<void>((resolve) => (onExit = resolve))
@@ -59,7 +63,7 @@ async function spawnAndReadEnv(command: string, requestEnv: Record<string, strin
     if (event.kind === 'chunk') chunks.push(Buffer.from(event.data, 'base64').toString('utf8'))
     if (event.kind === 'exit') onExit?.()
   }
-  const runner = new AcpRunner({ emit, resolveCommand: () => process.execPath, podEnv: POD_ENV })
+  const runner = new AcpRunner({ emit, resolveCommand: () => process.execPath, podEnv })
   await runner.apply({
     op: 'open',
     command,
@@ -106,6 +110,35 @@ describe('AcpRunner provider env fill-in', () => {
       DEFAULT_AUTH_REQUEST: '{"methodId":"chat-gpt"}'
     })
     expect(daemonSent.R).toBe('{"methodId":"chat-gpt"}')
+  })
+
+  it('falls to the runtime default endpoint only when the pod floor carries no base either', async () => {
+    // A daemon-injected key with no daemon URL and no pod URL: the endpoint-less shape bottoms
+    // out at the injection precedence's last layer, still as a process-ephemeral gateway grant.
+    const seen = await spawnAndReadEnv(
+      'codex-acp',
+      { PATH: process.env.PATH ?? '', OPENAI_API_KEY: 'sk-issued' },
+      { AC_CODEX_API_KEY: 'sk-pod-unused' }
+    )
+    expect(seen.O).toBe('sk-issued')
+    expect(JSON.parse(seen.R!)._meta.gateway).toEqual({
+      baseUrl: 'https://api.openai.com/v1',
+      headers: { Authorization: 'Bearer sk-issued' },
+      providerName: 'AgentConnect model egress'
+    })
+  })
+
+  it('routes a daemon-injected key by the pod base-URL floor when the daemon named no endpoint', async () => {
+    // The reported cloud shape: issued key, base URL present only in the live pod. The request
+    // must aim at the pod's gateway — composing the public endpoint here would send the issued
+    // key straight past the floor.
+    const seen = await spawnAndReadEnv('codex-acp', { PATH: process.env.PATH ?? '', OPENAI_API_KEY: 'sk-issued' })
+    expect(seen.O).toBe('sk-issued')
+    expect(JSON.parse(seen.R!)._meta.gateway).toEqual({
+      baseUrl: 'https://codex-egress.internal',
+      headers: { Authorization: 'Bearer sk-issued' },
+      providerName: 'AgentConnect model egress'
+    })
   })
 
   it('lets a daemon-sent value win over the pod value', async () => {
