@@ -69,8 +69,10 @@ export function secondarySubtreesIn(agentRoot: string): SecondarySubtree[] {
  *
  * `parent` is already in that filesystem's coordinates — `<agentRoot>/repos` on this disk,
  * `<mount>/repos` on a sandbox volume — and `stat` never follows a symlink, so an entry that is not
- * a real directory is skipped exactly as the synchronous twin above skips it. That twin stays for
- * the launch path, which computes a sandbox boundary before any agent seam exists.
+ * a real directory is skipped exactly as the synchronous twin above skips it. Unlike that twin it
+ * RAISES when the filesystem cannot answer (see {@link realDirEntriesUnder}). The twin stays for the
+ * launch path, which computes a sandbox boundary before any agent seam exists, and where an
+ * unreadable directory means one less carve-back rather than one less safety check.
  */
 export async function secondarySubtreesUnder(fs: WorkspaceFs, parent: string): Promise<SecondarySubtree[]> {
   const out: SecondarySubtree[] = []
@@ -88,20 +90,23 @@ export async function secondarySubtreesUnder(fs: WorkspaceFs, parent: string): P
   return out
 }
 
-/** {@link realDirEntries} over a workspace filesystem; an unreadable parent reports no entries. */
+/**
+ * {@link realDirEntries} over a workspace filesystem.
+ *
+ * Absence is data and raises nothing; a filesystem that could not ANSWER is not, and must not read
+ * as an empty tree. An empty answer here licenses resuming a cross-repository session in the primary
+ * checkout and licenses judging only the primary worktree, so a dropped shim channel — or a
+ * directory this process cannot list — has to abort the operation instead.
+ */
 async function realDirEntriesUnder(fs: WorkspaceFs, dir: string): Promise<string[]> {
-  try {
-    if ((await fs.stat(dir)) !== 'dir') return []
-    const names: string[] = []
-    for (const name of await fs.readdir(dir)) {
-      if (!isRepoSegment(name)) continue
-      if ((await fs.stat(join(dir, name))) !== 'dir') continue
-      names.push(name)
-    }
-    return names.sort()
-  } catch {
-    return []
+  if ((await fs.stat(dir)) !== 'dir') return []
+  const names: string[] = []
+  for (const name of await fs.readdir(dir)) {
+    if (!isRepoSegment(name)) continue
+    if ((await fs.stat(join(dir, name))) !== 'dir') continue
+    names.push(name)
   }
+  return names.sort()
 }
 
 /** The materialized secondary checkouts under `<agentRoot>/repos`, for callers that only need those. */

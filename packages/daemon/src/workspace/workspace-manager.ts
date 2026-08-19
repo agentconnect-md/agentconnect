@@ -1106,9 +1106,23 @@ export class WorkspaceManager {
   }
 
   /** Whether the agent has any root a session worktree could live under — a scratch workspace with
-   *  secondary roots does, which is what makes it a candidate for the retention GC. */
+   *  secondary roots does, which is what makes it a candidate for the retention GC. Reads the
+   *  filesystem that holds the roots, so its caller must already hold that agent's volume. */
   async hasSessionWorktreeRoots(agent: Agent): Promise<boolean> {
     return (await this.sessionWorktreeRoots(agent)).length > 0
+  }
+
+  /**
+   * Whether the agent could own a per-session worktree AT ALL, from its spec rather than from a
+   * disk — the prefilter for a caller that has not bound the agent's volume yet.
+   *
+   * Deliberately not {@link hasSessionWorktreeRoots}: that one reads the filesystem holding the
+   * roots, which for a suspended sandbox is this daemon's own, where a scratch agent's pod-side
+   * secondary worktrees are invisible. Answering "no" there is what would let the retention GC
+   * delete a session row without ever applying the dirty/unique-commit rules to those worktrees.
+   */
+  mayOwnSessionWorktrees(agent: Agent): boolean {
+    return agent.workspace.mode === 'git-repo' || (agent.workspace.additionalRepos ?? []).length > 0
   }
 
   /**

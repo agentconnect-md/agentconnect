@@ -12478,8 +12478,9 @@ export class Daemon {
     if (await this.sessionRetentionActive(rec)) return { outcome: 'active' }
     const agent = this.agents.get(rec.agentId)
     // A scratch agent has no primary worktree but may still own one per secondary root, so the
-    // gate is "any root that can hold one" rather than "the primary is a repository".
-    if (!agent || rec.workspaceIsolation === 'shared' || !(await this.workspaces.hasSessionWorktreeRoots(agent))) {
+    // prefilter is "could this agent own one at all" rather than "the primary is a repository" —
+    // and it is answered from the spec, because the disk that holds the roots is not bound yet.
+    if (!agent || rec.workspaceIsolation === 'shared' || !this.workspaces.mayOwnSessionWorktrees(agent)) {
       return { outcome: 'not_applicable' }
     }
     return this.withWorkspaceAdmissionFence(rec.agentId, async () => {
@@ -12490,15 +12491,22 @@ export class Daemon {
       if (
         !currentAgent ||
         rec.workspaceIsolation === 'shared' ||
-        !(await this.workspaces.hasSessionWorktreeRoots(currentAgent))
+        !this.workspaces.mayOwnSessionWorktrees(currentAgent)
       ) {
         return { outcome: 'not_applicable' }
       }
-      // The volume has to be up and bound for the removal, as it was for the preparation. A pod that
-      // will not come up is THIS session's failure, never the whole sweep's — it retries next pass.
-      const result = await this.withAgentVolume(rec.agentId, () =>
-        this.workspaces.removeSessionWorktree(currentAgent, rec.key)
+      // The volume has to be up and bound for the removal, as it was for the preparation — and for
+      // the question of WHICH roots exist, which is asked of the filesystem that holds them: on a
+      // suspended sandbox this daemon's own disk would answer "none" for a scratch agent whose pod
+      // volume carries secondary worktrees, and the session row would be deleted without them ever
+      // being judged. A pod that will not come up is THIS session's failure, never the whole
+      // sweep's — it retries next pass.
+      const result = await this.withAgentVolume(rec.agentId, async () =>
+        (await this.workspaces.hasSessionWorktreeRoots(currentAgent))
+          ? await this.workspaces.removeSessionWorktree(currentAgent, rec.key)
+          : undefined
       ).catch((err: unknown): SessionWorktreeRemoval => ({ outcome: 'failed', error: (err as Error).message }))
+      if (result === undefined) return { outcome: 'not_applicable' }
       // `partial` too: a kept aggregate can still have removed another root's worktree, and a warm
       // attachment naming a directory that is gone would skip preparation on its next turn.
       const changed = result.outcome === 'removed' || result.outcome === 'absent' || result.partial === true

@@ -1017,4 +1017,48 @@ describe('secondary roots on the pod volume', () => {
     })
     expect(await pod.stat(`${INFRA}/checkout/.git`)).toBe('file')
   })
+
+  it('raises rather than reading a volume that cannot answer as a tree with no roots', async () => {
+    // An empty answer here licenses resuming a cross-repository session in the primary checkout and
+    // licenses judging only the primary worktree — so a channel that dropped must abort the
+    // operation, not degrade into "this agent has no secondary roots".
+    const agent = agentWithRoots()
+    const request = { sessionKey: 'sess-1', isolation: 'session' as const }
+    await workspaces.prepareClusterWorkspace(agent, POD_ROOT, request)
+    pod.unreadable.add(REPOS)
+
+    await expect(workspaces.retiredSecondaryRoots(clusterAgent())).rejects.toThrow(/cannot list/)
+    await expect(workspaces.sessionWorktreeRoots(agent)).rejects.toThrow(/cannot list/)
+    await expect(
+      workspaces.additionalWorkspaceDirectories(agent, `${WORKTREES}/${workspaces.sessionWorktreeId('sess-1')}`, {
+        sessionKey: 'sess-1',
+        isolation: 'session'
+      })
+    ).rejects.toThrow(/cannot list/)
+  })
+
+  it('finds a scratch agent’s secondary worktrees, which have no primary beside them', async () => {
+    // The case the retention GC must not answer from this daemon's own disk: a from-scratch agent
+    // owns no primary root at all, so its pod-side secondary worktrees are the ONLY thing the
+    // dirty/unique-commit rules have to judge.
+    const agent = clusterAgent({
+      mode: 'from-scratch',
+      additionalRepos: [{ repoFullName: 'acme/infra', repoId: '42' }]
+    } as Partial<Agent['workspace']>)
+    // The spec-only prefilter says yes before any volume is bound; the roots themselves need one.
+    expect(workspaces.mayOwnSessionWorktrees(agent)).toBe(true)
+    expect(workspaces.mayOwnSessionWorktrees(clusterAgent({ mode: 'from-scratch' }))).toBe(false)
+
+    await workspaces.prepareClusterWorkspace(agent, POD_ROOT, { sessionKey: 'sess-1', isolation: 'session' })
+
+    expect(await workspaces.hasSessionWorktreeRoots(agent)).toBe(true)
+    expect(await workspaces.sessionWorktreeRoots(agent)).toEqual([
+      { path: `${INFRA}/checkout`, worktreesPath: `${INFRA}/worktrees` }
+    ])
+    worktreeStatus = ' M a.txt\n'
+    expect(await workspaces.removeSessionWorktree(agent, 'sess-1')).toEqual({
+      outcome: 'retained',
+      reason: 'dirty'
+    })
+  })
 })

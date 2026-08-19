@@ -14,6 +14,8 @@ export class PodWorkspaceFs implements WorkspaceFs {
   /** Paths the pod reports as neither file nor directory — a symlink is the one that matters. */
   readonly links = new Set<string>()
   readonly removed: string[] = []
+  /** Paths whose listing the channel cannot answer — a dropped shim connection, not an empty tree. */
+  readonly unreadable = new Set<string>()
 
   constructor(...seedDirs: string[]) {
     for (const dir of seedDirs) this.dirs.add(dir)
@@ -27,6 +29,7 @@ export class PodWorkspaceFs implements WorkspaceFs {
   }
 
   async readdir(path: string): Promise<string[]> {
+    if (this.unreadable.has(path)) throw new Error(`workspace channel cannot list ${path}`)
     const prefix = `${path}/`
     const names = new Set<string>()
     for (const entry of [...this.dirs, ...this.files.keys()]) {
