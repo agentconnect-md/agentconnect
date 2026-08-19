@@ -185,10 +185,16 @@ function previewBody(full: ToolBody): ToolBody {
   return preview
 }
 
+/** The org the reading CP named in the frame — the authoritative partition for a shared pool
+ *  store, where a member serves sessions of agents it does not hold and cannot resolve itself. */
+export interface SessionReadScope {
+  orgId?: string
+}
+
 export interface SessionReader {
-  list(req: SessionListReq): Promise<SessionListPage>
-  history(req: SessionHistoryReq): Promise<SessionHistoryPage>
-  toolBody(req: SessionToolBodyReq): Promise<SessionToolBodyChunk>
+  list(req: SessionListReq, scope?: SessionReadScope): Promise<SessionListPage>
+  history(req: SessionHistoryReq, scope?: SessionReadScope): Promise<SessionHistoryPage>
+  toolBody(req: SessionToolBodyReq, scope?: SessionReadScope): Promise<SessionToolBodyChunk>
 }
 
 type TranscriptReadStore = Pick<
@@ -217,7 +223,7 @@ export function createSessionReader(
   transcriptRead: TranscriptReadStore = store
 ): SessionReader {
   return {
-    async list(req) {
+    async list(req, scope) {
       const rows = await store.listSessions(req.agentId)
       // Title = the ingress/runtime/tool title, else a fallback derived from the
       // session's FIRST user message. Before the agent has a meaningful request to
@@ -228,7 +234,12 @@ export function createSessionReader(
         const rawTitle =
           r.title ||
           deriveTitle(
-            await store.firstMessageText(transcriptChannelKey(r.channel, r.transportScope), r.thread, r.agentId)
+            await store.firstMessageText(
+              transcriptChannelKey(r.channel, r.transportScope),
+              r.thread,
+              r.agentId,
+              scope?.orgId
+            )
           )
         enriched.push({ r, rawTitle })
       }
@@ -270,7 +281,7 @@ export function createSessionReader(
       })
       return { sessions }
     },
-    async history(req) {
+    async history(req, scope) {
       const rec = await sessionForRead(store, req.agentId, req.sessionId)
       if (!rec) return { sessionId: req.sessionId, messages: [] }
       const tailing = req.after !== undefined
@@ -299,7 +310,8 @@ export function createSessionReader(
               rec.thread,
               rec.agentId,
               afterRevision,
-              req.limit
+              req.limit,
+              scope?.orgId
             )
           : chronological
             ? await transcriptRead.transcriptPageForAgentByEventTime(
@@ -307,14 +319,16 @@ export function createSessionReader(
                 rec.thread,
                 rec.agentId,
                 eventCursor,
-                req.limit
+                req.limit,
+                scope?.orgId
               )
             : await transcriptRead.transcriptPageForAgent(
                 transcriptChannel,
                 rec.thread,
                 rec.agentId,
                 legacyBefore,
-                req.limit
+                req.limit,
+                scope?.orgId
               )
       const { rows, hasMore } = page
       // rows are newest-first; the page itself is oldest→newest.
@@ -433,7 +447,9 @@ export function createSessionReader(
       return {
         sessionId: req.sessionId,
         messages: kept,
-        liveCursor: String(transcriptPageCursor(page) ?? (await transcriptRead.currentTranscriptRevision(rec.agentId))),
+        liveCursor: String(
+          transcriptPageCursor(page) ?? (await transcriptRead.currentTranscriptRevision(rec.agentId, scope?.orgId))
+        ),
         ...(hasOlder && oldestKept
           ? {
               nextCursor:
@@ -444,7 +460,7 @@ export function createSessionReader(
           : {})
       }
     },
-    async toolBody(req) {
+    async toolBody(req, scope) {
       const rec = await sessionForRead(store, req.agentId, req.sessionId)
       const empty: SessionToolBodyChunk = {
         sessionId: req.sessionId,
@@ -457,7 +473,8 @@ export function createSessionReader(
         transcriptChannelKey(rec.channel, rec.transportScope),
         rec.thread,
         rec.agentId,
-        req.toolCallId
+        req.toolCallId,
+        scope?.orgId
       )
       if (body === undefined) return empty
       const buf = Buffer.from(body, 'utf8')

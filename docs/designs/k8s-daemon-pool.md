@@ -796,7 +796,10 @@ is an awaited main-thread `pg.Pool`. A `--k8s` daemon never opens SQLite. The
 transcript fence landed last (#1075): the pool store's `transcript` /
 `transcript_recipient` rows carry `orgId`, and the data plane's separate
 transcript pair — declared but never read or written — is deleted, so exactly one
-store carries the fence. The cross-driver contract suite is real rather than
+store carries the fence. A CP-addressed READ takes its partition from the frame's
+`orgId`, not from the member's own agent registry: a member serves the transcripts of
+every session in its store, including agents it does not hold and therefore cannot
+attribute locally. The cross-driver contract suite is real rather than
 aspirational (#1080): the store suites re-run against a real `postgres:16` on their
 own CI job — which immediately found the activation rendezvous joining its keys with
 NUL, a byte Postgres `TEXT` rejects outright, so paired activation could not settle on

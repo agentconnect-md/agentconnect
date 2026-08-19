@@ -2,7 +2,9 @@ import { describe, it, expect, vi } from 'vitest'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import { LocalStore, sessionKey, transcriptChannelKey } from '../src/store/local-store.js'
+import { SqliteAsyncDatabase } from '../src/store/sqlite-async-database.js'
 import { createSessionReader } from '../src/cp/session-reader.js'
 import { sessionThreadUrlFor } from '../src/platforms/session-links.js'
 
@@ -853,5 +855,39 @@ describe('SessionReader', () => {
 
     expect(await tailFor('telegram')).toEqual(['observed first', 'older, backfilled after'])
     expect(await tailFor('slack')).toEqual(['older, backfilled after', 'observed first'])
+  })
+  // The pool's shared store is read by every member, and a member holds only the agents whose
+  // duty it took: an idle agent is installed nowhere, so no member can resolve its org locally.
+  // The reading CP names the org in the frame, and that is what the read is partitioned by —
+  // otherwise the transcript is one query away from a live member and answers a hard failure.
+  it('reads a pooled transcript through a member that does not hold the agent', async () => {
+    const database = SqliteAsyncDatabase.adopt(new DatabaseSync(':memory:'))
+    const holder = await LocalStore.open({
+      database,
+      shared: true,
+      ownerId: 'member-1',
+      orgForAgent: (id) => (id === AGENT ? 'org-a' : undefined)
+    })
+    // The peer holds nothing: every agent is unknown to it, as after a rollout.
+    const peer = await LocalStore.open({ database, shared: true, ownerId: 'member-2', orgForAgent: () => undefined })
+    await seedHistorySession(holder)
+    await holder.appendTranscript({
+      channel: transcriptChannelKey('C1', null),
+      thread: 'T1',
+      ts: '1',
+      sender: 'user-1',
+      recipient: AGENT,
+      kind: 'text',
+      text: 'still there'
+    })
+
+    const read = createSessionReader(peer)
+    const page = await read.history({ agentId: AGENT, sessionId: 'acp-1', limit: 20 }, { orgId: 'org-a' })
+    expect(page.messages.map((m) => m.text)).toEqual(['still there'])
+    // Without an org from the frame the peer has nothing to partition by, and says so.
+    await expect(read.history({ agentId: AGENT, sessionId: 'acp-1', limit: 20 })).rejects.toThrow(
+      /cannot resolve the transcript organization/
+    )
+    await holder.close() // one database behind both handles: closing it once is closing it
   })
 })

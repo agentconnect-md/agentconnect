@@ -786,6 +786,59 @@ describe('GET /sessions/:id/messages (history pull via the session daemon)', () 
     expect(spy.histCalls.map((c) => c.daemonId)).toEqual([OTHER_POOL_MEMBER])
   })
 
+  // A rollout spans two images, so one member can answer an error for rows every member holds.
+  // A member that FAILED a read is no more authoritative about its peers' rows than one whose
+  // socket died, so an error moves to the next holder too.
+  it('falls through a peer that answers an error, not only an unreachable one', async () => {
+    await seedAgent(prisma, AGENT)
+    await prisma.daemon.createMany({
+      data: [POOL_MEMBER, OTHER_POOL_MEMBER].map((id) => ({ id, orgId: null, status: 'ready' as const, maxAgents: 4 }))
+    })
+    const setId = await joinPool(prisma, POOL_MEMBER, OTHER_POOL_MEMBER)
+    await prisma.agent.update({ where: { id: AGENT }, data: { placementKind: 'set', setId, daemonId: null } })
+    await seedSession(AGENT, undefined, setId)
+    const spy = new SpyControl({ sessions: [] }, emptyHist)
+    const firstRefuses = {
+      ...spy,
+      sessionHistory: async (daemonId: string, orgId: string, req: SessionHistoryReq) => {
+        if (daemonId === POOL_MEMBER) throw new Error('cannot resolve the transcript organization')
+        return spy.sessionHistory(daemonId, orgId, req)
+      }
+    }
+    running = buildHttpApp(prisma, undefined, POOL_LIVE, firstRefuses as unknown as ControlSender)
+
+    const res = await running.app.inject({ method: 'GET', url: `${ORG}/sessions/${SESSION}/messages` })
+
+    expect(res.statusCode).toBe(200)
+    expect(spy.histCalls.map((c) => c.daemonId)).toEqual([OTHER_POOL_MEMBER])
+  })
+
+  // The other half of that rule: a read no holder answered must not be dressed up as a 503, or a
+  // bug that breaks the read on EVERY member reads as "the daemon is offline, try later".
+  it('surfaces the failure when every holder of the store answers an error', async () => {
+    await seedAgent(prisma, AGENT)
+    await prisma.daemon.createMany({
+      data: [POOL_MEMBER, OTHER_POOL_MEMBER].map((id) => ({ id, orgId: null, status: 'ready' as const, maxAgents: 4 }))
+    })
+    const setId = await joinPool(prisma, POOL_MEMBER, OTHER_POOL_MEMBER)
+    await prisma.agent.update({ where: { id: AGENT }, data: { placementKind: 'set', setId, daemonId: null } })
+    await seedSession(AGENT, undefined, setId)
+    const spy = new SpyControl({ sessions: [] }, emptyHist)
+    const allRefuse = {
+      ...spy,
+      sessionHistory: async (daemonId: string, orgId: string, req: SessionHistoryReq) => {
+        await spy.sessionHistory(daemonId, orgId, req)
+        throw new Error('cannot resolve the transcript organization')
+      }
+    }
+    running = buildHttpApp(prisma, undefined, POOL_LIVE, allRefuse as unknown as ControlSender)
+
+    const res = await running.app.inject({ method: 'GET', url: `${ORG}/sessions/${SESSION}/messages` })
+
+    expect(res.statusCode).toBe(500)
+    expect(spy.histCalls.map((c) => c.daemonId)).toEqual([POOL_MEMBER, OTHER_POOL_MEMBER])
+  })
+
   // Content does not follow an agent move, so neither does reader eligibility. A session recorded
   // on a private store gets no pool reader just because its agent has since moved onto the pool —
   // the pool would answer an EMPTY page, dressing a lost transcript up as an empty one.
