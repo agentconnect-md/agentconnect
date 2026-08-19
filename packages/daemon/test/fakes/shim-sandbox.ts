@@ -45,7 +45,6 @@ export function shimFixtures(): {
     const port = await server.start(0, '127.0.0.1')
     const client = new ShimClient({
       endpoint: 'accepted-daemon-channel',
-      acceptDialIn: true,
       dial: () => server.nextTransport() as Promise<ShimTransport>,
       readToken: () => 'projected-token',
       workspaceRoot: options.workspaceRoot ?? '/agent',
