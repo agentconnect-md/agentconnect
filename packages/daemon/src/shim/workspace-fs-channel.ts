@@ -13,6 +13,7 @@
  * here; anything that is not under the mount is refused before it reaches the wire.
  */
 import { isAbsolute, relative, sep } from 'node:path'
+import { z } from 'zod'
 import { MemoryPathError } from '../memory/fs.js'
 import type { WorkspaceFs, WorkspaceFsKind } from '../workspace/workspace-fs.js'
 import { KindReplySchema, ShimMemoryFs, requestMemoryFs, type ShimMemoryChannel } from './memory-fs-channel.js'
@@ -71,6 +72,15 @@ export class ShimWorkspaceFs implements WorkspaceFs {
     if (!(await this.files.rename(this.rel(from), this.rel(to)))) {
       throw new Error(`workspace rename source does not exist: ${from}`)
     }
+  }
+
+  async rmdir(path: string): Promise<boolean> {
+    return await requestMemoryFs(
+      this.channel,
+      { op: 'memory-rmdir', root: this.mount, rel: this.rel(path) },
+      z.boolean(),
+      this.timeoutMs
+    )
   }
 
   async rmTree(path: string): Promise<void> {

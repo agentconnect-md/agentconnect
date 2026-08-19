@@ -1186,8 +1186,12 @@ export class WorkspaceManager {
         // but a NONEMPTY directory may hold exactly the untracked work this GC
         // promises never to auto-delete (`status` can't run without the marker).
         // Reclaim only a provably empty leftover; report anything else.
-        if ((await fs.readdir(cwd)).length > 0) return { outcome: 'retained', reason: 'dirty' }
-        await fs.rmTree(cwd)
+        //
+        // ONE operation, never a proof followed by a recursive delete: the runtime is still running
+        // on this tree, so anything written between the two would be destroyed by a removal that the
+        // emptiness proof licensed. `rmdir` refuses a non-empty directory itself, so a file that
+        // arrives first keeps the session instead of being deleted.
+        if (!(await fs.rmdir(cwd))) return { outcome: 'retained', reason: 'dirty' }
         await cleanupRegistrations()
         return { outcome: 'removed' }
       }

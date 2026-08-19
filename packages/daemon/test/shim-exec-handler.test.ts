@@ -130,8 +130,8 @@ describe('sandbox exec handler', () => {
   })
 
   it('refuses a worktree path outside the workspace root, which the cwd fence never sees', async () => {
-    // `worktree add`/`remove` name an absolute directory in argv and create or delete it, exactly as
-    // a clone target does — so the same containment applies, on the side holding the filesystem.
+    // `worktree add`/`remove` name a directory in argv and create or delete it, exactly as a clone
+    // target does — so the same containment applies, on the side holding the filesystem.
     const root = repository()
     const outside = mkdtempSync(join(tmpdir(), 'ac-worktree-outside-'))
     roots.push(outside)
@@ -145,6 +145,26 @@ describe('sandbox exec handler', () => {
     await expect(
       handler(root)('exec', { tool: 'git', args: ['worktree', 'remove', join(root, '..', 'escaped')], cwd: root })
     ).rejects.toBeInstanceOf(ExecRefusedError)
+  })
+
+  it('refuses a RELATIVE operand that escapes, which git resolves against the cwd', async () => {
+    // The trap an absolute-only check leaves open: git resolves `../escaped` against the cwd, so the
+    // fence passes it untouched and the write lands outside the root anyway.
+    const root = repository()
+    for (const args of [
+      ['worktree', 'add', '../escaped', 'HEAD'],
+      ['worktree', 'remove', '../escaped'],
+      ['clone', 'https://github.com/acme/repo.git', '../escaped']
+    ]) {
+      await expect(handler(root)('exec', { tool: 'git', args, cwd: root })).rejects.toBeInstanceOf(ExecRefusedError)
+    }
+    // A relative operand that stays inside is what the daemon actually sends, and it still runs.
+    const inside = (await handler(root)('exec', {
+      tool: 'git',
+      args: ['worktree', 'add', '--detach', 'worktrees/one', 'HEAD'],
+      cwd: root
+    })) as GitExecResult
+    expect(inside.code).toBe(0)
   })
 
   it('refuses a cwd outside the workspace root, whatever the daemon asked for', async () => {

@@ -219,6 +219,23 @@ export function createFdMemoryFsExecutor(anchor: string): MemoryFsExecutor {
       await withDir(root, rel, true, async () => undefined)
     },
 
+    async rmdir(root, rel) {
+      return await withParent(root, rel, false, async (parent, leaf) => {
+        try {
+          await fs.rmdir(parent.childPath(leaf))
+          return true
+        } catch (err) {
+          // Non-empty (or not a directory at all) is kept, which is the whole point of the operation.
+          if (isErrno(err, 'ENOTEMPTY') || isErrno(err, 'EEXIST') || isErrno(err, 'ENOTDIR')) return false
+          if (isErrno(err, 'ENOENT')) return true
+          throw err
+        }
+      }).catch((err: unknown) => {
+        if (err instanceof MissingPathError) return true
+        throw err
+      })
+    },
+
     async rename(root, from, to) {
       return await withParent(root, from, false, async (source, sourceLeaf) => {
         try {

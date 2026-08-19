@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, rmdirSync, writeFileSync } from 'node:fs'
 
 /**
  * What one path IS, resolved WITHOUT following a symlink.
@@ -37,6 +37,15 @@ export interface WorkspaceFs {
   /** Atomic: staged beside the target, then published by one rename. */
   writeFile(path: string, content: string, options?: { mode?: number }): Promise<void>
   rename(from: string, to: string): Promise<void>
+  /**
+   * Remove a directory ONLY if it is empty, answering whether it went.
+   *
+   * Distinct from {@link rmTree} because "reclaim a provably empty leftover" is not a tree removal:
+   * proving emptiness and then deleting recursively are two operations, and on a volume the agent's
+   * runtime is writing to, anything that appears between them is deleted by a removal the proof
+   * licensed. Here the kernel decides both at once, so the race resolves as "kept", not as data loss.
+   */
+  rmdir(path: string): Promise<boolean>
   /** Recursive and forgiving, like `rm -rf`. */
   rmTree(path: string): Promise<void>
 }
@@ -98,6 +107,19 @@ export class LocalWorkspaceFs implements WorkspaceFs {
 
   async rename(from: string, to: string): Promise<void> {
     renameSync(from, to)
+  }
+
+  async rmdir(path: string): Promise<boolean> {
+    try {
+      rmdirSync(path)
+      return true
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code
+      // Already gone counts as removed; anything the kernel refuses to empty is kept, not forced.
+      if (code === 'ENOENT') return true
+      if (code === 'ENOTEMPTY' || code === 'EEXIST' || code === 'ENOTDIR') return false
+      throw err
+    }
   }
 
   async rmTree(path: string): Promise<void> {

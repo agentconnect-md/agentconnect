@@ -134,15 +134,16 @@ function canonical(path: string): string {
 }
 
 /**
- * Refuse an absolute path that escapes the workspace root, for a path that does not exist yet.
+ * Refuse an operand that escapes the workspace root, for a path that does not exist yet.
  *
  * Lexical rather than `realpath`, because a clone target is precisely a path that is not there:
  * containment is decided on the normalized form, and the ROOT is canonicalized so a symlinked mount
- * still compares correctly.
+ * still compares correctly. A RELATIVE operand is resolved against the fenced cwd first, the way git
+ * itself resolves it — checking only absolute ones let `../escaped` through the fence untouched.
  */
-function assertInsideRoot(root: string, requested: string): void {
+function assertInsideRoot(root: string, cwd: string, requested: string): void {
   const base = canonical(root)
-  const target = normalize(resolve(requested))
+  const target = normalize(isAbsolute(requested) ? resolve(requested) : resolve(cwd, requested))
   if (target !== base && !target.startsWith(base + sep)) {
     throw new ExecRefusedError(`path escapes the workspace root: ${requested}`)
   }
@@ -246,11 +247,13 @@ async function runGit(payload: unknown, deps: ExecHandlerDeps, abort?: AbortSign
   }
   const cwd = resolveCwd(deps.workspaceRoot, parsed.cwd)
   // Both WRITE a path from argv, which the cwd fence never looks at: a clone's target, and the
-  // directory `worktree add`/`remove` creates or deletes. Checked on the side holding the filesystem.
+  // directory `worktree add`/`remove` creates or deletes. EVERY operand is checked, resolved as git
+  // would resolve it — an allowlist of "which operand is the path" is the thing that goes stale, and
+  // the others (a subcommand verb, a URL, a start-point ref) sit under the cwd and pass anyway.
   if (subcommand === 'clone' || subcommand === 'worktree') {
     for (const argument of rest) {
-      if (argument.startsWith('-') || !isAbsolute(argument)) continue
-      assertInsideRoot(deps.workspaceRoot, argument)
+      if (argument.startsWith('-')) continue
+      assertInsideRoot(deps.workspaceRoot, cwd, argument)
     }
   }
   // The caller's deadline governs, bounded by this side's ceiling: a compromised daemon must not

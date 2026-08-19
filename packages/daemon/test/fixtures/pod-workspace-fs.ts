@@ -64,6 +64,13 @@ export class PodWorkspaceFs implements WorkspaceFs {
     }
   }
 
+  async rmdir(path: string): Promise<boolean> {
+    if ((await this.readdir(path)).length > 0) return false
+    this.dirs.delete(path)
+    this.removed.push(path)
+    return true
+  }
+
   async rmTree(path: string): Promise<void> {
     this.removed.push(path)
     for (const entry of [...this.dirs]) if (entry === path || entry.startsWith(`${path}/`)) this.dirs.delete(entry)

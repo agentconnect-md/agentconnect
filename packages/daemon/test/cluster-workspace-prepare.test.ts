@@ -766,6 +766,23 @@ describe('per-session worktrees on the pod volume', () => {
     expect(await pod.stat(worktreeOf('sess-1'))).toBe('dir')
   })
 
+  it('keeps a leftover the runtime refilled, instead of deleting it recursively', async () => {
+    // The `.git` marker is gone, so this is the reclaim-a-provably-empty-leftover branch. On the pod
+    // the runtime is still writing to the volume, so emptiness cannot be proved in one round trip and
+    // acted on in another — the removal itself has to refuse a directory that is no longer empty.
+    await workspaces.prepareClusterWorkspace(clusterAgent(), POD_ROOT, SESSION)
+    checkoutExists = true
+    const cwd = worktreeOf('sess-1')
+    pod.files.delete(`${cwd}/.git`)
+    pod.files.set(`${cwd}/work.txt`, 'untracked work')
+
+    expect(await workspaces.removeSessionWorktree(clusterAgent(), 'sess-1')).toEqual({
+      outcome: 'retained',
+      reason: 'dirty'
+    })
+    expect(await pod.stat(`${cwd}/work.txt`)).toBe('file')
+  })
+
   it('keeps a worktree holding commits no remote can reach', async () => {
     await workspaces.prepareClusterWorkspace(clusterAgent(), POD_ROOT, SESSION)
     checkoutExists = true

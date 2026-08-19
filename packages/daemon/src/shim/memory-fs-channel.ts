@@ -66,6 +66,7 @@ export const MemoryFsPayloadSchema = z.discriminatedUnion('op', [
   z.object({ op: z.literal('memory-stat'), root: RootSchema, rel: RelSchema }),
   z.object({ op: z.literal('memory-readdir'), root: RootSchema, rel: RelSchema }),
   z.object({ op: z.literal('memory-mkdir'), root: RootSchema, rel: RelSchema }),
+  z.object({ op: z.literal('memory-rmdir'), root: RootSchema, rel: RelSchema }),
   z.object({ op: z.literal('memory-rename'), root: RootSchema, from: RelSchema, to: RelSchema }),
   z.object({ op: z.literal('memory-rm'), root: RootSchema, rel: RelSchema }),
   z.object({ op: z.literal('memory-utimes'), root: RootSchema, rel: RelSchema, mtime: z.string() })
@@ -120,6 +121,8 @@ export interface MemoryFsExecutor {
   stat(root: string, rel: string): Promise<WorkspaceFsKind>
   readdir(root: string, rel: string): Promise<MemoryFsEntry[]>
   mkdir(root: string, rel: string): Promise<void>
+  /** Remove `rel` only if it is an empty directory, answering whether it went. */
+  rmdir(root: string, rel: string): Promise<boolean>
   rename(root: string, from: string, to: string): Promise<boolean>
   rm(root: string, rel: string): Promise<void>
   utimes(root: string, rel: string, mtime: string): Promise<void>
@@ -167,6 +170,8 @@ function run(parsed: MemoryFsPayload, executor: MemoryFsExecutor): Promise<unkno
       return executor.readdir(parsed.root, parsed.rel)
     case 'memory-mkdir':
       return executor.mkdir(parsed.root, parsed.rel).then(() => null)
+    case 'memory-rmdir':
+      return executor.rmdir(parsed.root, parsed.rel)
     case 'memory-rename':
       return executor.rename(parsed.root, parsed.from, parsed.to)
     case 'memory-rm':

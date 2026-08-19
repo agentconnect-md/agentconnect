@@ -111,6 +111,23 @@ for (const { name, fs, root } of subjects()) {
       await expect(fs.rename(join(root, 'rename', 'ghost'), published)).rejects.toThrow()
     })
 
+    it('reclaims an empty directory in ONE operation, and keeps one that is not', async () => {
+      // The removal itself decides, rather than a separate emptiness proof licensing a recursive
+      // delete: on a volume the runtime is writing to, whatever lands between the two would go.
+      const empty = join(root, 'rmdir', 'empty')
+      const held = join(root, 'rmdir', 'held')
+      await fs.mkdir(empty)
+      await fs.mkdir(held)
+      writeFileSync(join(held, 'work.txt'), 'untracked work')
+
+      expect(await fs.rmdir(empty)).toBe(true)
+      expect(await fs.stat(empty)).toBe('missing')
+      expect(await fs.rmdir(held)).toBe(false)
+      expect(await fs.stat(join(held, 'work.txt'))).toBe('file')
+      // Nothing to remove is not a failure — the caller already saw it there a moment ago.
+      expect(await fs.rmdir(join(root, 'rmdir', 'gone'))).toBe(true)
+    })
+
     it('removes a whole tree, and says nothing when there is none', async () => {
       const tree = join(root, 'rm', 'a', 'b')
       await fs.mkdir(tree)

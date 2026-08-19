@@ -92,6 +92,17 @@ export function pathExecutor(): MemoryFsExecutor {
     async mkdir(root, rel) {
       await fsp.mkdir(abs(root, rel), { recursive: true })
     },
+    async rmdir(root, rel) {
+      try {
+        await fsp.rmdir(abs(root, rel))
+        return true
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code
+        if (code === 'ENOENT') return true
+        if (code === 'ENOTEMPTY' || code === 'EEXIST' || code === 'ENOTDIR') return false
+        throw err
+      }
+    },
     async rename(root, from, to) {
       try {
         await fsp.lstat(abs(root, from))
