@@ -17,7 +17,7 @@ import {
   type WaitlistRepo
 } from '../ports.js'
 import { ensurePersonalOrg } from './user.repo.js'
-import type { PresetCloudPlacement } from '../preset-agents.js'
+import type { PresetPoolPlacement } from '../preset-agents.js'
 
 const isP2002 = (err: unknown): boolean => (err as { code?: string }).code === 'P2002'
 
@@ -27,9 +27,9 @@ export class PgWaitlistRepo implements WaitlistRepo {
     /** Provision preset agents with the activation-time personal org
      *  (preset-agents.md §3.2); deploy-time opt-out via PRESET_AGENTS_ENABLED. */
     private readonly presetAgents = true,
-    /** Exec config the preset is born with on a Cloud install (§3.2); null ⇒ born
-     *  unplaced. Rides PRESET_AGENT_CLOUD_RUNTIME/_MODEL. */
-    private readonly presetCloud: PresetCloudPlacement | null = null
+    /** Exec config the preset is born with on a pool-backed install (§3.2); null ⇒ born
+     *  unplaced. Rides PRESET_AGENT_POOL_RUNTIME/_MODEL. */
+    private readonly presetPool: PresetPoolPlacement | null = null
   ) {}
 
   private inTransaction<T>(run: (tx: PrismaLike) => Promise<T>): Promise<T> {
@@ -126,7 +126,7 @@ export class PgWaitlistRepo implements WaitlistRepo {
       if (entry.email === null && user.activatedAt) {
         await ensurePersonalOrg(tx, userId, user.displayName, realEmail, {
           presetAgents: this.presetAgents,
-          presetCloud: this.presetCloud
+          presetPool: this.presetPool
         }) // idempotent
         return { status: 'activated' }
       }
@@ -137,7 +137,7 @@ export class PgWaitlistRepo implements WaitlistRepo {
       if (!user.activatedAt) await tx.user.update({ where: { id: userId }, data: { activatedAt: now } })
       await ensurePersonalOrg(tx, userId, user.displayName, realEmail, {
         presetAgents: this.presetAgents,
-        presetCloud: this.presetCloud
+        presetPool: this.presetPool
       })
       await tx.waitlistEntry.update({
         where: { tokenHash },

@@ -25,7 +25,7 @@ import {
   SYNTHETIC_EMAIL_SUFFIX,
   isSyntheticEmail
 } from '../ports.js'
-import { provisionPresetAgents, type PresetCloudPlacement } from '../preset-agents.js'
+import { provisionPresetAgents, type PresetPoolPlacement } from '../preset-agents.js'
 import { OrgMembershipMissing, OrgOwnerRequired } from '../errors.js'
 
 const RESOURCE_AUDIENCE_TABLES = ['agent', 'daemon', 'cron_def', 'mcp_provider', 'skill_source'] as const
@@ -300,7 +300,7 @@ export async function ensurePersonalOrg(
   userId: string,
   displayName?: string | null,
   email?: string | null,
-  opts?: { presetAgents?: boolean; presetCloud?: PresetCloudPlacement | null }
+  opts?: { presetAgents?: boolean; presetPool?: PresetPoolPlacement | null }
 ): Promise<void> {
   await withAmbientTx(db, async (tx) => {
     await tx.$queryRaw(Prisma.sql`SELECT "id" FROM "app_user" WHERE "id" = ${userId} FOR UPDATE`)
@@ -328,7 +328,7 @@ export async function ensurePersonalOrg(
       // ambient transaction. A throw rolls the org + membership back with it (no
       // compensating delete needed, and none would be legal on an aborted tx).
       if (opts?.presetAgents !== false) {
-        await provisionPresetAgents(tx, { orgId: org.id, createdByUserId: userId, cloud: opts?.presetCloud ?? null })
+        await provisionPresetAgents(tx, { orgId: org.id, createdByUserId: userId, pool: opts?.presetPool ?? null })
       }
       return
     }
@@ -349,9 +349,9 @@ export class PgUserRepo implements UserRepo {
     /** Provision preset agents with each personal org (preset-agents.md §3.2).
      *  Deploy-time opt-out rides PRESET_AGENTS_ENABLED. */
     private readonly presetAgents = true,
-    /** Exec config the preset is born with on a Cloud install (§3.2); null ⇒ born
-     *  unplaced. Rides PRESET_AGENT_CLOUD_RUNTIME/_MODEL. */
-    private readonly presetCloud: PresetCloudPlacement | null = null
+    /** Exec config the preset is born with on a pool-backed install (§3.2); null ⇒ born
+     *  unplaced. Rides PRESET_AGENT_POOL_RUNTIME/_MODEL. */
+    private readonly presetPool: PresetPoolPlacement | null = null
   ) {}
 
   async provisionOidcUser(input: ProvisionOidcUserInput): Promise<{ userId: string }> {
@@ -598,7 +598,7 @@ export class PgUserRepo implements UserRepo {
     if (!this.provisionPersonalOrgOnSignup) return
     await ensurePersonalOrg(this.db, userId, displayName, email, {
       presetAgents: this.presetAgents,
-      presetCloud: this.presetCloud
+      presetPool: this.presetPool
     })
   }
 
@@ -646,7 +646,7 @@ export class PgUserRepo implements UserRepo {
     if (!user) return
     await ensurePersonalOrg(this.db, user.id, user.displayName, user.email, {
       presetAgents: this.presetAgents,
-      presetCloud: this.presetCloud
+      presetPool: this.presetPool
     })
   }
 

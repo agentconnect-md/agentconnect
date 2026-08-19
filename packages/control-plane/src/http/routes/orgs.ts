@@ -135,7 +135,7 @@ export function orgRoutes(deps: HttpDeps) {
           }
           throw error
         }
-        // A Cloud-born preset (preset-agents.md §3.2) is placed the moment the org
+        // A pool-born preset (preset-agents.md §3.2) is placed the moment the org
         // exists, so mint its duty group now — a pool member can claim it on its next
         // beat instead of waiting for the recompute sweep to rotate onto this org.
         deps.recomputeDuties?.(org.id)
