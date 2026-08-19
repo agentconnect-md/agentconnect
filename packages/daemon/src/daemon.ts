@@ -2313,6 +2313,7 @@ export class Daemon {
     this.log.info(`watching ${this.agentsDir} for agent changes`)
     await this.replayInbox()
     await this.collab.syncOrchestrationDeadlines()
+    await this.collab.syncParentReplyDeadlines()
     // #485 startup retention pass: reconcile what accumulated (or was orphaned by a
     // crash) while the daemon was down. Best-effort — never blocks readiness. Runs
     // AFTER replayInbox so replayed durable work is visible to its active-turn guard.
@@ -7104,6 +7105,7 @@ export class Daemon {
       reclaimInterruptedWork: (agentIds) => this.reclaimInterruptedWork(agentIds),
       syncAgentSchedules: (agent) => this.syncAgentSchedules(agent),
       syncOrchestrationDeadlines: () => this.collab.syncOrchestrationDeadlines(),
+      syncParentReplyDeadlines: () => this.collab.syncParentReplyDeadlines(),
       catchUpMissedSchedules: (agentIds) => this.catchUpMissedSchedules(agentIds),
       drainSessionPurges: () => this.drainSessionPurges(),
       replayGainedSessionMetadata: (agentIds) => this.sessionMetadataOutbox.replayGainedSessionMetadata(agentIds),
@@ -15190,6 +15192,8 @@ export class Daemon {
     // (the durable `orchestration.deadline` epoch re-arms them on the next startup).
     for (const t of this.collab.orchestrationDeadlines.values()) this.clock.clearTimeout(t)
     this.collab.orchestrationDeadlines.clear()
+    for (const t of this.collab.parentReplyDeadlines.values()) this.clock.clearTimeout(t)
+    this.collab.parentReplyDeadlines.clear()
     this.metrics?.stop()
     await this.watcher?.close()
     // §2.5: gate new turns and let in-flight ones finish (deadline-bounded) BEFORE
