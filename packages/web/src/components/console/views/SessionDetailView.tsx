@@ -4014,8 +4014,8 @@ export default function SessionDetailView() {
           data-transcript-scroll=""
           className={
             viewerOpen
-              ? 'flex min-h-0 min-w-0 flex-1 flex-col'
-              : 'flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto desktop:max-wide:-mr-[30px] desktop:max-wide:pr-[30px]'
+              ? 'flex min-h-0 min-w-0 flex-1 flex-col desktop:pt-[10px]'
+              : 'flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto desktop:max-wide:-mr-[30px] desktop:pt-[10px] desktop:max-wide:pr-[30px]'
           }
         >
           {/* One growing inner wrapper = the scroller's single child useStickToBottom watches; in
