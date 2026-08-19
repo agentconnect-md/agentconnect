@@ -13,6 +13,8 @@ import {
   githubHookCoordinates,
   githubPullRequestLane,
   githubPullRevisionStream,
+  githubRerunsCurrentHead,
+  githubRevisionStreamsContest,
   githubReviewBatchStream,
   renderGithubReviewBatchPrompt,
   GITHUB_REVIEW_BATCH_MAX_COMMENTS,
@@ -20,6 +22,7 @@ import {
   GITHUB_REVIEW_BATCH_QUIET_MS,
   type GithubQueueCandidate,
   type GithubRevisionAdmissionPlan,
+  type GithubRevisionStream,
   type GithubReviewBatch,
   type HookDispatchContext
 } from './hook-coords.js'
@@ -38,26 +41,28 @@ export function collectGithubQueueCandidates(
   return candidates
 }
 
+/** The generation stream one queue candidate belongs to, if any. */
+function candidateRevisionStream(candidate: QueueEntry): GithubRevisionStream | undefined {
+  return githubPullRevisionStream(
+    candidate.hookContext,
+    githubHookCoordinates(candidate.agentId, candidate.msg, candidate.integrationId)
+  )
+}
+
 /** Pick the newest relay-fired revision across every session key in one trusted GitHub lane. */
 export function planGithubRevisionAdmission(
   key: string,
   incoming: QueueEntry,
   candidates: readonly GithubQueueCandidate[]
 ): GithubRevisionAdmissionPlan | undefined {
-  const stream = githubPullRevisionStream(
-    incoming.hookContext,
-    githubHookCoordinates(incoming.agentId, incoming.msg, incoming.integrationId)
-  )
+  const stream = candidateRevisionStream(incoming)
   if (!stream) return undefined
   const revisions = [
-    ...candidates.filter(
-      (candidate) =>
-        !candidate.entry.cancelledReason &&
-        githubPullRevisionStream(
-          candidate.entry.hookContext,
-          githubHookCoordinates(candidate.entry.agentId, candidate.entry.msg, candidate.entry.integrationId)
-        ) === stream
-    ),
+    ...candidates.filter((candidate) => {
+      if (candidate.entry.cancelledReason) return false
+      const other = candidateRevisionStream(candidate.entry)
+      return other !== undefined && githubRevisionStreamsContest(stream, other)
+    }),
     { key, entry: incoming, state: 'incoming' as const }
   ]
   const winner = revisions.reduce((latest, candidate) =>
@@ -104,7 +109,7 @@ export interface GithubRevisionAdmissionEffects {
   terminalLosers: GithubQueueCandidate[]
   /** Losers already generating: their completion is awaited by the winner. */
   activeLosers: GithubQueueCandidate[]
-  /** Active losers reviewing a different head: only a genuinely newer revision preempts running work. */
+  /** Active losers a newer revision — or an explicit re-run of their own head — preempts. */
   preemptableActiveLosers: GithubQueueCandidate[]
   /** Lane the winner belongs to, so its own re-admission survives the interrupt. */
   winnerLane: string | undefined
@@ -119,12 +124,13 @@ export function planGithubRevisionAdmissionEffects(
   incoming: QueueEntry
 ): GithubRevisionAdmissionEffects {
   const winnerHead = plan.winner.entry.hookContext?.github?.headSha
+  const rerun = githubRerunsCurrentHead(plan.winner.entry.hookContext)
   const activeLosers = plan.superseded.filter((candidate) => candidate.state === 'active')
   return {
     terminalLosers: plan.superseded.filter((candidate) => candidate.state !== 'active'),
     activeLosers,
     preemptableActiveLosers: activeLosers.filter(
-      (candidate) => candidate.entry.hookContext?.github?.headSha !== winnerHead
+      (candidate) => rerun || candidate.entry.hookContext?.github?.headSha !== winnerHead
     ),
     winnerLane: githubPullRequestLane(
       plan.winner.entry.hookContext,

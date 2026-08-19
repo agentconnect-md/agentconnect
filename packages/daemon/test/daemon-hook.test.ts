@@ -2389,6 +2389,107 @@ describe('Daemon rd/msg hook fires', () => {
     await restarted.stop()
   }, 15_000)
 
+  it('collapses a burst of check re-requests for one head onto the newest delivery', async () => {
+    let onUpdate!: (sid: string, update: unknown) => void
+    const releases: Array<(error?: Error) => void> = []
+    const host = {
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => 'acp-pr-rerun'),
+      modelOptions: vi.fn(() => null),
+      hasSession: vi.fn(() => true),
+      prompt: vi.fn(async (sid: string) => {
+        await new Promise<void>((resolve, reject) => releases.push((error) => (error ? reject(error) : resolve())))
+        onUpdate(sid, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'done' } })
+        return { stopReason: 'end_turn' }
+      }),
+      cancel: vi.fn(async () => releases.shift()?.(new Error('cancelled by shutdown'))),
+      stop: vi.fn(async () => {})
+    }
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: (_agent, cb) => {
+        onUpdate = cb
+        return host as never
+      }
+    })
+    await daemon.start()
+    ;(daemon as any).cfg.limits.shutdownDrainMs = 0
+    const cp = fakeCpClient()
+    ;(daemon as never as { cpClient: unknown }).cpClient = cp
+    ;(daemon as any).githubReviews.makeGithubReply = vi.fn(() => ({
+      poster: { publish: vi.fn(async () => {}) },
+      collector: new GithubReplyCollector()
+    }))
+
+    // One head, one review: the checks page re-run button fired three deliveries in under a second.
+    const rerun = (deliveryKey: string, firedAt: string): RdMsgHook =>
+      fire({
+        sessionKey: 'acme/infra#42',
+        msgId: `${HOOK_ID}:${deliveryKey}`,
+        deliveryKey,
+        firedAt,
+        event: 'check_suite:rerequested',
+        github: {
+          repoId: '123',
+          repoFullName: 'acme/infra',
+          sourceInstallationId: '456',
+          subjectKind: 'pull_request',
+          pullNumber: 42,
+          headSha: 'a'.repeat(40),
+          baseSha: '0'.repeat(40),
+          reportSha: 'a'.repeat(40)
+        },
+        context: {
+          source: 'github',
+          event: 'check_suite',
+          action: 'rerequested',
+          repo: 'acme/infra',
+          number: 42,
+          title: 'Collapse re-request bursts',
+          senderLogin: 'alice',
+          truncated: false
+        }
+      })
+
+    await expect(
+      (daemon as any).handleRelayMsg(rerun('first', '2026-08-19T17:55:42.765Z'), () => {})
+    ).resolves.toMatchObject({ accepted: true })
+    await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledOnce(), WAIT)
+    await expect(
+      (daemon as any).handleRelayMsg(rerun('second', '2026-08-19T17:55:42.947Z'), () => {})
+    ).resolves.toMatchObject({ accepted: true })
+    await expect(
+      (daemon as any).handleRelayMsg(rerun('third', '2026-08-19T17:55:43.456Z'), () => {})
+    ).resolves.toMatchObject({ accepted: true })
+
+    await vi.waitFor(
+      () =>
+        expect(cp.hookReports.filter((report) => report.deliveryKey !== 'third')).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ deliveryKey: 'first', status: 'failed', reason: 'superseded' }),
+            expect.objectContaining({ deliveryKey: 'second', status: 'failed', reason: 'superseded' })
+          ])
+        ),
+      WAIT
+    )
+    expect(cp.hookReports.filter((report) => report.deliveryKey !== 'third')).toHaveLength(2)
+    expect(host.cancel).toHaveBeenCalled()
+    // The preempted head leaves the gate on its own teardown, so the lane settles on one review.
+    await vi.waitFor(
+      () =>
+        expect(
+          [
+            ...((daemon as any).activeGateEntries.values() as Iterable<{ hookContext?: { deliveryKey: string } }>),
+            ...([...(daemon as any).serialQueue.values()].flat() as Array<{ hookContext?: { deliveryKey: string } }>)
+          ].map((entry) => entry.hookContext?.deliveryKey)
+        ).toEqual(['third']),
+      WAIT
+    )
+
+    await daemon.stop()
+  }, 15_000)
+
   it('keeps targeted PR revision reviews latest-wins across distinct anchor session keys', async () => {
     let onUpdate!: (sid: string, update: unknown) => void
     let sessionNumber = 0
