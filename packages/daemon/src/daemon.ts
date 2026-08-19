@@ -6786,8 +6786,9 @@ export class Daemon {
     plan: GithubRevisionAdmissionPlan,
     incoming: QueueEntry
   ): Promise<boolean> {
-    const { terminalLosers, activeLosers, winnerLane, winnerNeedsWait, incomingWins } =
+    const { terminalLosers, activeLosers, preemptableActiveLosers, winnerLane, winnerNeedsWait, incomingWins } =
       planGithubRevisionAdmissionEffects(plan, incoming)
+    const preemptable = new Set(preemptableActiveLosers)
     this.removeQueuedGithubRevisions(terminalLosers)
     await this.settleSupersededGithubRevisions(
       terminalLosers.map((candidate) => candidate.entry),
@@ -6798,7 +6799,7 @@ export class Daemon {
       if (candidate.entry.coordinationWait) waits.push(candidate.entry.coordinationWait)
       const activeDone = this.activeDispatchDoneByKey.get(candidate.key)
       if (activeDone) waits.push(activeDone)
-      if (candidate.entry.cancelledReason) continue
+      if (candidate.entry.cancelledReason || !preemptable.has(candidate)) continue
       await this.interruptTurn(candidate.entry.agentId, candidate.key, 'superseded', undefined, {
         preserveQueued: true,
         allowSameKeyAdmissions: true,

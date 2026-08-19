@@ -643,6 +643,33 @@ describe('GithubRunReporter', () => {
     )
   })
 
+  it('keeps a superseded revision non-passing under a cleanup tombstone', async () => {
+    const p = projection({ desiredState: 'failure', tombstonedAt: new Date(NOW - 1_000) })
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.includes('/pulls?')) return Response.json([])
+      return Response.json(
+        { id: '90071992547409931', external_id: p.externalId, status: 'completed', conclusion: 'action_required' },
+        { status: 201 }
+      )
+    })
+    const { reporter, hooks } = worker(p, fetchImpl)
+
+    await reporter.tick()
+
+    const mutation = fetchImpl.mock.calls.find(([, init]) => init?.method === 'POST')
+    const body = JSON.parse(String(mutation?.[1]?.body)) as {
+      conclusion: string
+      output: { title: string }
+    }
+    // Organization deletion settles a tombstone only on `failure` or an association
+    // `action_required`; a neutral cleanup Check would leave the barrier pending forever.
+    expect(body.conclusion).toBe('action_required')
+    expect(body.output.title).toBe('Pull request association needs attention')
+    expect(hooks.completeProjectionWrite).toHaveBeenCalledWith(
+      expect.objectContaining({ observedState: 'action_required', settledErrorCode: 'no_current_pull_request' })
+    )
+  })
+
   it('keeps snapshotted attribution as plain text after the Agent has been deleted', async () => {
     const p = projection({ desiredState: 'failure', tombstonedAt: new Date(NOW - 1_000) })
     const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
@@ -1227,59 +1254,70 @@ describe('GithubRunReporter', () => {
   })
 
   it.each([
-    ['no current PR', [], 'no_current_pull_request'],
-    ['stale head', [{ pullNumber: 9, headSha: 'd'.repeat(40) }], 'stale_head'],
+    ['no current PR', [], 'no_current_pull_request', 'neutral', 'Revision is no longer current'],
+    [
+      'stale head',
+      [{ pullNumber: 9, headSha: 'd'.repeat(40) }],
+      'stale_head',
+      'neutral',
+      'Revision is no longer current'
+    ],
     [
       'shared head across open PRs',
       [
         { pullNumber: 9, headSha: 'c'.repeat(40) },
         { pullNumber: 10, headSha: 'c'.repeat(40) }
       ],
-      'shared_head_multiple_prs'
+      'shared_head_multiple_prs',
+      'action_required',
+      'Pull request association needs attention'
     ]
-  ] as const)('fails closed for %s without replacing canonical desired intent', async (_label, pulls, errorCode) => {
-    const p = projection({
-      desiredState: 'success',
-      observedState: 'in_progress',
-      checkRunId: '90071992547409931'
-    })
-    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
-      if (url.includes('/pulls?')) {
-        return Response.json(pulls.map((pull) => associatedPull(p, pull.pullNumber, pull.headSha)))
+  ] as const)(
+    'fails closed for %s without replacing canonical desired intent',
+    async (_label, pulls, errorCode, blockedState, blockedTitle) => {
+      const p = projection({
+        desiredState: 'success',
+        observedState: 'in_progress',
+        checkRunId: '90071992547409931'
+      })
+      const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+        if (url.includes('/pulls?')) {
+          return Response.json(pulls.map((pull) => associatedPull(p, pull.pullNumber, pull.headSha)))
+        }
+        return Response.json({
+          id: p.checkRunId,
+          external_id: p.externalId,
+          status: 'completed',
+          conclusion: blockedState,
+          output: { summary: JSON.parse(String(init?.body)).output.summary }
+        })
+      })
+      const { reporter, hooks } = worker(p, fetchImpl)
+
+      await reporter.tick()
+
+      const expectedSubjects =
+        errorCode === 'stale_head'
+          ? []
+          : pulls.map((pull) => ({ pullNumber: pull.pullNumber, headSha: pull.headSha, baseSha: 'b'.repeat(40) }))
+      expect(hooks.synchronizeReviewSubjects).toHaveBeenCalledWith(p.id, p.generation, expectedSubjects, errorCode)
+      const patchCall = fetchImpl.mock.calls.find(([, init]) => init?.method === 'PATCH')
+      const patchBody = JSON.parse(String(patchCall?.[1]?.body)) as {
+        conclusion: string
+        output: { title: string; summary: string }
       }
-      return Response.json({
-        id: p.checkRunId,
-        external_id: p.externalId,
-        status: 'completed',
-        conclusion: 'action_required',
-        output: { summary: JSON.parse(String(init?.body)).output.summary }
-      })
-    })
-    const { reporter, hooks } = worker(p, fetchImpl)
-
-    await reporter.tick()
-
-    const expectedSubjects =
-      errorCode === 'stale_head'
-        ? []
-        : pulls.map((pull) => ({ pullNumber: pull.pullNumber, headSha: pull.headSha, baseSha: 'b'.repeat(40) }))
-    expect(hooks.synchronizeReviewSubjects).toHaveBeenCalledWith(p.id, p.generation, expectedSubjects, errorCode)
-    const patchCall = fetchImpl.mock.calls.find(([, init]) => init?.method === 'PATCH')
-    const patchBody = JSON.parse(String(patchCall?.[1]?.body)) as {
-      conclusion: string
-      output: { title: string; summary: string }
+      expect(patchBody.conclusion).toBe(blockedState)
+      expect(patchBody.output.title).toBe(blockedTitle)
+      expect(patchBody.output.summary).toContain(`Association: ${errorCode}`)
+      expect(hooks.completeProjectionWrite).toHaveBeenCalledWith(
+        expect.objectContaining({
+          observedState: blockedState,
+          settledErrorCode: errorCode
+        })
+      )
+      expect(p.desiredState).toBe('success')
     }
-    expect(patchBody.conclusion).toBe('action_required')
-    expect(patchBody.output.title).toBe('Pull request association needs attention')
-    expect(patchBody.output.summary).toContain(`Association: ${errorCode}`)
-    expect(hooks.completeProjectionWrite).toHaveBeenCalledWith(
-      expect.objectContaining({
-        observedState: 'action_required',
-        settledErrorCode: errorCode
-      })
-    )
-    expect(p.desiredState).toBe('success')
-  })
+  )
 
   it('falls back to the base repository open-PR list for a fork head SHA', async () => {
     const p = projection({ desiredState: 'success', observedState: 'in_progress' })
@@ -1344,7 +1382,7 @@ describe('GithubRunReporter', () => {
   it('does not re-read or rewrite a settled association block in the same generation', async () => {
     const p = projection({
       desiredState: 'success',
-      observedState: 'action_required',
+      observedState: 'neutral',
       subjectSyncGeneration: 1n,
       subjectSyncErrorCode: 'stale_head',
       lastErrorCode: 'stale_head',

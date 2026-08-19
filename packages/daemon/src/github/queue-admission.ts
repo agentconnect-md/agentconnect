@@ -102,8 +102,10 @@ export function combineCoordinationWaits(
 export interface GithubRevisionAdmissionEffects {
   /** Queued or incoming losers: removed from the queue and settled outright. */
   terminalLosers: GithubQueueCandidate[]
-  /** Losers already generating: interrupted, and their completion awaited by the winner. */
+  /** Losers already generating: their completion is awaited by the winner. */
   activeLosers: GithubQueueCandidate[]
+  /** Active losers reviewing a different head: only a genuinely newer revision preempts running work. */
+  preemptableActiveLosers: GithubQueueCandidate[]
   /** Lane the winner belongs to, so its own re-admission survives the interrupt. */
   winnerLane: string | undefined
   /** The winner is not yet running, so it must absorb the losers' teardown waits. */
@@ -116,9 +118,14 @@ export function planGithubRevisionAdmissionEffects(
   plan: GithubRevisionAdmissionPlan,
   incoming: QueueEntry
 ): GithubRevisionAdmissionEffects {
+  const winnerHead = plan.winner.entry.hookContext?.github?.headSha
+  const activeLosers = plan.superseded.filter((candidate) => candidate.state === 'active')
   return {
     terminalLosers: plan.superseded.filter((candidate) => candidate.state !== 'active'),
-    activeLosers: plan.superseded.filter((candidate) => candidate.state === 'active'),
+    activeLosers,
+    preemptableActiveLosers: activeLosers.filter(
+      (candidate) => candidate.entry.hookContext?.github?.headSha !== winnerHead
+    ),
     winnerLane: githubPullRequestLane(
       plan.winner.entry.hookContext,
       githubHookCoordinates(plan.winner.entry.agentId, plan.winner.entry.msg, plan.winner.entry.integrationId)

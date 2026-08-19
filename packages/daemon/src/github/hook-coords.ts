@@ -159,12 +159,15 @@ export function githubPullRequestLane(
   ])
 }
 
+/** Deliveries that establish a new head; a re-request only reopens the revision already current. */
+const GITHUB_PULL_REVISION_EVENTS = new Set(['pull_request:opened', 'pull_request:synchronize'])
+
 export function githubPullRevisionStream(
   hook: GithubCoordinatedHook | undefined,
   coords: GithubHookCoordinates
 ): string | undefined {
   const lane = githubPullRequestLane(hook, coords)
-  if (!lane || hook?.event !== 'pull_request:synchronize' || !hook.github?.headSha) return undefined
+  if (!lane || !hook || !GITHUB_PULL_REVISION_EVENTS.has(hook.event ?? '') || !hook.github?.headSha) return undefined
   return JSON.stringify(['revision', lane])
 }
 
