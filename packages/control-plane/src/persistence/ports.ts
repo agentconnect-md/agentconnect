@@ -1443,8 +1443,9 @@ export interface WebchatParticipant {
 export interface WebchatResumeBinding {
   primaryAgentId: AgentId
   ownerUserId: string
-  /** Every participant's current session (the conversation's own pointer on a pre-roster row); empty before the first turn. */
-  currentSessionIds: SessionId[]
+  /** One slot per roster participant — null until that participant has a session (a partial roster is normal: a
+   *  targeted turn or a refused delivery leaves peers unmaterialized); the conversation's own pointer on a pre-roster row. */
+  currentSessionIds: Array<SessionId | null>
 }
 
 export interface WebchatConversationRepo {

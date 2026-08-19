@@ -98,9 +98,11 @@ export function webchatTokenRoutes(deps: HttpDeps) {
     }
 
     /** Who may RESUME a conversation: its owner always; anyone else under the same `session.continue` policy an
-     *  integration-origin session gets — every participant's current session visible to them and a non-viewer
-     *  role, private sessions owner-only. Before the first turn there is no session to judge, so it is the owner's.
-     *  Unknown and foreign ids read as null, exactly like a refusal. */
+     *  integration-origin session gets — EVERY participant's current session visible to them and a non-viewer
+     *  role, private sessions owner-only. A participant with no session yet (before the first turn, or a peer a
+     *  targeted turn skipped) has nothing to judge, and the socket would let the caller target it into a session
+     *  that is default-private to the owner — so any missing slot keeps the conversation the owner's. Unknown
+     *  and foreign ids read as null, exactly like a refusal. */
     const resumableBy = async (
       req: Parameters<typeof ctxOf>[0] & { principal?: { userId: string } },
       conversationId: string
@@ -109,8 +111,9 @@ export function webchatTokenRoutes(deps: HttpDeps) {
       if (!binding) return null
       const resumable = { primaryAgentId: binding.primaryAgentId }
       if (binding.ownerUserId === req.principal!.userId) return resumable
-      if (binding.currentSessionIds.length === 0) return null
-      const sessions = await Promise.all(binding.currentSessionIds.map((id) => deps.repos.session.get(orgOf(req), id)))
+      const ids = binding.currentSessionIds.filter((id): id is SessionId => id !== null)
+      if (ids.length === 0 || ids.length !== binding.currentSessionIds.length) return null
+      const sessions = await Promise.all(ids.map((id) => deps.repos.session.get(orgOf(req), id)))
       const rows = sessions.filter((s) => s !== null)
       if (rows.length !== sessions.length) return null
       const access = await sessionAccess.forSessions(req, rows)

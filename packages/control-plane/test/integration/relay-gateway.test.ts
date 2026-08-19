@@ -529,6 +529,31 @@ describe('relay control gateway — rc/* handshake over agentconnect.rc.v1', () 
     expect((await mintConversationToken(app, { conversationId: shared })).statusCode).toBe(200)
     expect((await mintWebchatToken(app, AGENT, { conversationId: kept })).statusCode).toBe(404)
     expect((await mintConversationToken(app, { conversationId: kept })).statusCode).toBe(404)
+
+    // A multi-agent roster is judged as a WHOLE. A peer with no session yet (a targeted turn skipped it,
+    // or its delivery was refused) has nothing visible to judge, and the minted socket could target it
+    // into a session that is default-private to the owner — so the conversation stays the owner's until
+    // every participant stands on a session the caller may continue.
+    await seedAgent(prisma, AGENT_B)
+    await prisma.webchatConversationAgent.create({
+      data: { conversationId: shared, agentId: AGENT_B, role: 'member', ord: 1, addedByUserId: otherUserId }
+    })
+    expect((await mintConversationToken(app, { conversationId: shared })).statusCode).toBe(404)
+    const peerSession = `acp-peer-${shared.slice(0, 8)}`
+    await seedSessionMeta(prisma, peerSession, AGENT_B, {
+      platform: 'webchat',
+      channel: shared,
+      visibility: 'org',
+      ownerIdentity: `user:${otherUserId}`
+    })
+    await prisma.webchatConversationAgent.update({
+      where: { conversationId_agentId: { conversationId: shared, agentId: AGENT_B } },
+      data: { currentSessionId: peerSession }
+    })
+    expect((await mintConversationToken(app, { conversationId: shared })).statusCode).toBe(200)
+    // …and one private peer session is enough to keep it the owner's.
+    await prisma.sessionMeta.update({ where: { id: peerSession }, data: { visibility: 'private' } })
+    expect((await mintConversationToken(app, { conversationId: shared })).statusCode).toBe(404)
   })
 
   it('POST …/webchat/token → 503 when no relay pool is configured (PUBLIC_RELAY_URL unset)', async () => {

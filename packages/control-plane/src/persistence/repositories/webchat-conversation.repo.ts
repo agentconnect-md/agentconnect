@@ -141,14 +141,13 @@ export class PgWebchatConversationRepo implements WebchatConversationRepo {
       }
     })
     if (!row) return null
-    // Every participant's own pointer, with the conversation's as the pre-roster fallback.
-    const sessionIds = row.participants.map((p) => p.currentSessionId).filter((id): id is string => id !== null)
-    if (sessionIds.length === 0 && row.currentSessionId) sessionIds.push(row.currentSessionId)
-    return {
-      primaryAgentId: AgentId(row.agentId),
-      ownerUserId: row.userId,
-      currentSessionIds: [...new Set(sessionIds)].map((id) => SessionId(id))
-    }
+    // One slot per roster participant, null where that participant has not materialized a session
+    // yet (a partial roster is a normal state); the conversation's own pointer only on a pre-roster row.
+    const currentSessionIds =
+      row.participants.length > 0
+        ? row.participants.map((p) => (p.currentSessionId === null ? null : SessionId(p.currentSessionId)))
+        : [row.currentSessionId === null ? null : SessionId(row.currentSessionId)]
+    return { primaryAgentId: AgentId(row.agentId), ownerUserId: row.userId, currentSessionIds }
   }
 
   async ownedBy(conversationId: string, orgId: OrgId, userId: string): Promise<{ primaryAgentId: AgentId } | null> {
