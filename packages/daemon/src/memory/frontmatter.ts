@@ -127,6 +127,26 @@ export function buildMemoryHeader(fields: { description?: string; type?: MemoryE
   return lines.length > 0 ? `${FENCE}\n${lines.join('\n')}\n${FENCE}\n\n` : ''
 }
 
+/**
+ * Make a model-written header safe to store, without rewriting anything we do not
+ * own. Only the VALUE of a top-level known key is re-rendered through the shared
+ * quoting rule, so `description: ship: prod` becomes a properly quoted scalar while
+ * comments, nested blocks, and unknown keys survive byte-for-byte. Idempotent: a
+ * value that is already correctly quoted round-trips to itself.
+ */
+export function normalizeMemoryHeader(text: string): string {
+  const parsed = parseMemoryFrontmatter(text)
+  if (!parsed.hadHeader) return text
+  const lines = parsed.headerLines.map((line) => {
+    if (/^\s/.test(line)) return line
+    const match = KEY_LINE.exec(line)
+    if (!match || !KNOWN.has(match[1]!)) return line
+    const value = unquote(match[2]!)
+    return value ? `${match[1]}: ${quoteIfNeeded(value)}` : line
+  })
+  return `${FENCE}\n${lines.join('\n')}\n${FENCE}\n\n${parsed.body.replace(/^\n+/, '')}`
+}
+
 /** Coerce a model-supplied string to one of our types, or undefined if it is not one. */
 export function asMemoryEntryType(value: unknown): MemoryEntryType | undefined {
   return typeof value === 'string' && (MEMORY_ENTRY_TYPES as readonly string[]).includes(value)

@@ -20,6 +20,7 @@ import {
   OrganizationSuggestionContentBody,
   organizationSuggestionCanonical
 } from '@agentconnect.md/protocol'
+import { normalizeMemoryHeader } from '../memory/frontmatter.js'
 import {
   MEMORY_INDEX,
   regenerateMemoryIndexHoldingLock,
@@ -800,7 +801,10 @@ export class DreamRunner {
       // parseDreamProposal already enforced TOPIC_RE — belt and suspenders here
       // because these names become filesystem paths.
       if (!stagedPathOk(file.path)) continue
-      await fs.writeFile(join(out, file.path), file.content)
+      // The dream writes frontmatter as free text, so re-render its known scalars through
+      // the shared quoting rule before staging — a description holding `: ` or ` #` would
+      // otherwise be invalid YAML, and auto-adopt would make that malformed topic live.
+      await fs.writeFile(join(out, file.path), normalizeMemoryHeader(file.content))
     }
     await this.stageSkills(fs, base, proposal)
     return this.stageOrganizationSuggestions(fs, base, proposal)
