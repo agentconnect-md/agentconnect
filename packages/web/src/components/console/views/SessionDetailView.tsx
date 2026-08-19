@@ -1013,10 +1013,10 @@ function ToolBodyDetail({
 type Turn =
   | {
       kind: 'user'
-      /** Stable identity across renders (assigned by assignTurnKeys after the build), NOT the
-       *  array index — so React reconciles a prepended page in place and `workOverride` never
-       *  mis-keys. Optional only during construction; always set before render. */
-      key?: string
+      /** Durable identity captured at creation from the raw row (`session:seq`), NOT the array
+       *  index or any mutable presentation field — so React reconciles a prepended page in place
+       *  and `workOverride` never mis-keys. */
+      key: string
       sp: ReturnType<typeof speaker>
       agent: Agent | null
       avatarUrl?: string | null
@@ -1034,9 +1034,10 @@ type Turn =
   // merged into yet — the run that follows binds to it, then clears the flag.
   | {
       kind: 'bot'
-      /** Stable identity across renders (assigned by assignTurnKeys after the build); keeps a
-       *  streaming turn from remounting as steps append. Optional only during construction. */
-      key?: string
+      /** Durable identity captured at creation (the turn key, or the first step's row/live
+       *  anchor) and NEVER recomputed — so a wake block keeps its identity when `wake` clears
+       *  and a streaming turn never remounts as steps append. */
+      key: string
       agentName: string
       agentId?: string
       model: string
@@ -1044,24 +1045,6 @@ type Turn =
       steps: FmtStep[]
       wake?: boolean
     }
-
-/** Assign each turn a stable, render-independent key derived from its own content, with a
- *  dedup counter for the rare genuine collision. This replaces array-index identity: a
- *  prepended "load earlier" page then reconciles in place instead of remounting every turn,
- *  and `workOverride` (the per-turn work-panel toggle, keyed by this) never mis-targets after
- *  a prepend. Deterministic from the turn list, so the same turn keeps its key across renders. */
-function assignTurnKeys(turns: Turn[]): void {
-  const seen = new Map<string, number>()
-  for (const turn of turns) {
-    const base =
-      turn.kind === 'user'
-        ? `u:${turn.time}|${turn.sp.name}|${turn.image ? 'img' : ''}|${turn.text.slice(0, 64)}`
-        : `b:${turn.agentId ?? turn.agentName}|${turn.wake ? 'w' : ''}|${turn.time}`
-    const n = seen.get(base) ?? 0
-    seen.set(base, n + 1)
-    turn.key = n === 0 ? base : `${base}#${n}`
-  }
-}
 
 type SessionParticipant = {
   id: string
@@ -3052,6 +3035,15 @@ export default function SessionDetailView() {
   }
 
   const turns: Turn[] = []
+  // Durable per-row anchor: the source session + the row's monotonic `seq`, immutable for the
+  // life of the row. Used as a turn's fallback identity when no turn key groups it, so a turn's
+  // `key` never depends on presentation fields (`time`, `wake`) that change as it grows.
+  const rowAnchor = (m: SessionMessageDto): string =>
+    `${conversationSourceSessionByMessageRef.current.get(m) ?? session.id}#${m.seq}`
+  // Live steps have no persisted `seq`; their turn identity is the stream `turnId`, and a bare
+  // step (a live user line) falls back to its authoring participant + observed time.
+  const liveAnchor = (stp: SessionStep): string =>
+    `live:${stp.turnId ?? `${stp.agentId ?? stp.who ?? ''}@${stp.observedAtMs ?? stp.time ?? ''}`}`
   const speakers = new Map<string, SessionParticipant>()
   const rememberParticipant = (id: string, participant: Omit<SessionParticipant, 'id'>): void => {
     const current = speakers.get(id)
@@ -3081,7 +3073,7 @@ export default function SessionDetailView() {
   // trusted a2a bot — renders as its own left-side agent block: the right side
   // is reserved for humans. Conversation rows retain their source-local turn;
   // live rows retain their stream turn; untagged legacy rows group by adjacency.
-  const pushAgentTurn = (agent: Agent, step: FmtStep, turnKey?: string): void => {
+  const pushAgentTurn = (agent: Agent, step: FmtStep, anchor: string, turnKey?: string): void => {
     const name = agentLabel(agent)
     rememberAgentParticipant(agent.id, name, agent)
     let last = turnKey ? botTurnByKey.get(turnKey) : turns[turns.length - 1]
@@ -3089,7 +3081,15 @@ export default function SessionDetailView() {
     if (!last || last.kind !== 'bot' || !sameBotSpeaker(last, { agentId: agent.id, agentName: name })) {
       // `model` is the icon-runtime fallback for turns whose agent is missing from
       // `agentById`; a peer turn's agent came FROM that map, so it stays empty.
-      last = { kind: 'bot', agentName: name, agentId: agent.id, model: '', time: '', steps: [] }
+      last = {
+        kind: 'bot',
+        key: `b:${turnKey ?? anchor}`,
+        agentName: name,
+        agentId: agent.id,
+        model: '',
+        time: '',
+        steps: []
+      }
       turns.push(last)
       if (turnKey) botTurnByKey.set(turnKey, last)
     }
@@ -3105,7 +3105,7 @@ export default function SessionDetailView() {
   // `ownerAgentId` is the merged-conversation source member — a wake from a
   // peer member is THAT agent's work, not the representative's; plain sessions
   // fall back to the session owner.
-  const pushOwnerWakeTurn = (step: FmtStep, turnKey?: string, ownerAgentId?: string): void => {
+  const pushOwnerWakeTurn = (step: FmtStep, anchor: string, turnKey?: string, ownerAgentId?: string): void => {
     const agentId = ownerAgentId ?? session.agentId
     const agent = agentId ? agentById.get(agentId) : undefined
     const name = agent ? agentLabel(agent) : agentId === session.agentId ? (session.agentName ?? '') : (agentId ?? '')
@@ -3115,6 +3115,9 @@ export default function SessionDetailView() {
     if (!last || last.kind !== 'bot') {
       last = {
         kind: 'bot',
+        // `wake` is deliberately OUT of the key: it flips to false when the reply binds, and
+        // this identity must survive that so the block does not remount and lose its work panel.
+        key: `b:${turnKey ?? anchor}`,
         wake: true,
         agentName: name,
         ...(agentId ? { agentId } : {}),
@@ -3161,6 +3164,7 @@ export default function SessionDetailView() {
         if (!last || last.kind !== 'bot' || !sameBotSpeaker(last, { agentId: m.sender, agentName: ownerName })) {
           last = {
             kind: 'bot',
+            key: `b:${sourceTurnKey ?? rowAnchor(m)}`,
             agentName: ownerName,
             agentId: m.sender,
             model: session.model ?? '',
@@ -3180,6 +3184,7 @@ export default function SessionDetailView() {
         if (isBgTaskWake(m.sender)) {
           pushOwnerWakeTurn(
             thinkStep(m.text, formatTranscriptRowTime(m), rowPlatform),
+            rowAnchor(m),
             sourceTurnKey,
             conversationSourceAgentByMessageRef.current.get(m)
           )
@@ -3198,6 +3203,7 @@ export default function SessionDetailView() {
               ...msgStep(m, toolSessionId, rowPlatform),
               ...(m.attachments?.[0] ? { image: m.attachments[0] } : {})
             },
+            rowAnchor(m),
             sourceTurnKey
           )
           continue
@@ -3210,6 +3216,7 @@ export default function SessionDetailView() {
             )
         pushUserTurn(senderAgent?.id ?? m.sender, {
           kind: 'user',
+          key: `u:${rowAnchor(m)}`,
           sp: participant,
           agent: senderAgent ?? null,
           avatarUrl: m.senderAvatarUrl ?? (self ? viewer.picture : memberPictureByIdentity.get(m.sender)),
@@ -3232,6 +3239,7 @@ export default function SessionDetailView() {
         if (isBgTaskWake(stp.who)) {
           pushOwnerWakeTurn(
             thinkStep(stp.text, stp.time, session.platform),
+            liveAnchor(stp),
             liveBotTurnKey(stp.turnId, session.agentId)
           )
           firstMsg = false
@@ -3245,6 +3253,7 @@ export default function SessionDetailView() {
           pushAgentTurn(
             senderAgent,
             plainStep(stp.text, stp.time ?? (firstMsg ? session.time : ''), stp.image, session.platform),
+            liveAnchor(stp),
             liveBotTurnKey(stp.turnId, senderAgent.id)
           )
           firstMsg = false
@@ -3255,6 +3264,7 @@ export default function SessionDetailView() {
           : speaker(senderAgentName ?? who, cron?.name ?? (cron ? 'Schedule' : senderAgentName))
         pushUserTurn(senderAgent?.id ?? who, {
           kind: 'user',
+          key: `u:${liveAnchor(stp)}`,
           sp: participant,
           agent: senderAgent ?? null,
           avatarUrl: self ? viewer.picture : memberPictureByIdentity.get(who),
@@ -3285,6 +3295,7 @@ export default function SessionDetailView() {
         if (!last || last.kind !== 'bot' || !sameBotSpeaker(last, { agentId: stp.agentId, agentName: stepAgentName })) {
           last = {
             kind: 'bot',
+            key: `b:${turnKey ?? liveAnchor(stp)}`,
             agentName: stepAgentName,
             ...(stp.agentId ? { agentId: stp.agentId } : {}),
             model: session.model ?? '',
@@ -3315,6 +3326,7 @@ export default function SessionDetailView() {
         if (isBgTaskWake(stp.who)) {
           pushOwnerWakeTurn(
             thinkStep(stp.text, stp.time, session.platform),
+            liveAnchor(stp),
             liveBotTurnKey(stp.turnId, session.agentId)
           )
           continue
@@ -3326,6 +3338,7 @@ export default function SessionDetailView() {
           pushAgentTurn(
             senderAgent,
             plainStep(stp.text, stp.time ?? '', stp.image, session.platform),
+            liveAnchor(stp),
             liveBotTurnKey(stp.turnId, senderAgent.id)
           )
           continue
@@ -3333,6 +3346,7 @@ export default function SessionDetailView() {
         const participant = self ? speaker('@you') : speaker(senderAgentName ?? who, senderAgentName)
         pushUserTurn(senderAgent?.id ?? who, {
           kind: 'user',
+          key: `u:${liveAnchor(stp)}`,
           sp: participant,
           agent: senderAgent ?? null,
           avatarUrl: self ? viewer.picture : memberPictureByIdentity.get(who),
@@ -3357,6 +3371,7 @@ export default function SessionDetailView() {
         if (!last || last.kind !== 'bot' || !sameBotSpeaker(last, { agentId: stp.agentId, agentName: stepAgentName })) {
           last = {
             kind: 'bot',
+            key: `b:${turnKey ?? liveAnchor(stp)}`,
             agentName: stepAgentName,
             ...(stp.agentId ? { agentId: stp.agentId } : {}),
             model: session.model ?? '',
@@ -3376,10 +3391,6 @@ export default function SessionDetailView() {
       }
     }
   }
-
-  // Stamp stable per-turn identity now that the list is final — the render, the list key,
-  // and `workOverride` all key off `turn.key` instead of the array index.
-  assignTurnKeys(turns)
 
   // The last rendered turn of each tagged agent. A busy reply lane marks ONLY
   // that turn as streaming — every earlier turn from the same agent shares its
