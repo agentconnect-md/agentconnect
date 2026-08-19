@@ -41,7 +41,7 @@ export interface OpenRuntimeSessionInput {
   expectedWarmHost?: AcpHost
   prepareWorkspace: (agent: Agent, expectedWarmHost?: AcpHost) => Promise<string>
   /** Extra roots the runtime may read beyond cwd, per workspace isolation. */
-  workspaceDirectories: (cwd: string) => string[]
+  workspaceDirectories: (cwd: string) => Promise<string[]>
   /** The default MCP servers for this turn's platform binding, resolved once. */
   mcpServersFor: () => McpServer[]
   /** Trusted descriptors bound to an overridden host; dropped if the runtime rejects them. */
@@ -53,8 +53,8 @@ export interface OpenRuntimeSessionInput {
   /** Standing context for a fresh session; `resumeSystemContext` for a native resume. Both are
    *  resolved HERE, after workspace preparation, so what the prompt names and what
    *  `workspaceDirectories` hands the runtime come from one snapshot. */
-  metaContext?: () => string | undefined
-  resumeSystemContext?: () => string | undefined
+  metaContext?: () => Promise<string | undefined>
+  resumeSystemContext?: () => Promise<string | undefined>
   usesMeta: boolean
   signal?: AbortSignal
   abortable: <T>(start: () => PromiseLike<T> | T, signal?: AbortSignal) => Promise<T>
@@ -108,7 +108,7 @@ export async function openRuntimeSession(input: OpenRuntimeSessionInput): Promis
     systemAppend?: string,
     fallbackMcpServers?: McpServer[]
   ): Promise<string> => {
-    const additionalDirectories = input.workspaceDirectories(cwd)
+    const additionalDirectories = await input.workspaceDirectories(cwd)
     while (true) {
       const selected = await sessionStartEffort()
       const create = (servers: McpServer[]) =>
@@ -129,7 +129,7 @@ export async function openRuntimeSession(input: OpenRuntimeSessionInput): Promis
     fallbackMcpServers?: McpServer[]
   ): Promise<boolean> => {
     const selected = await sessionStartEffort()
-    const additionalDirectories = input.workspaceDirectories(cwd)
+    const additionalDirectories = await input.workspaceDirectories(cwd)
     const load = (servers: McpServer[]) =>
       abortable(
         () => host.loadSession(sessionId, cwd, servers, selected.value, systemAppend, additionalDirectories),
@@ -160,7 +160,7 @@ export async function openRuntimeSession(input: OpenRuntimeSessionInput): Promis
     const acpSessionId = await newRuntimeSession(
       cwd,
       mcpServers,
-      input.metaContext?.(),
+      await input.metaContext?.(),
       input.additionalMcpServers?.length ? ordinaryMcpServers : undefined
     )
     created = true
@@ -211,7 +211,7 @@ export async function openRuntimeSession(input: OpenRuntimeSessionInput): Promis
           persistedSessionId,
           cwd,
           mcpServers,
-          input.usesMeta ? input.resumeSystemContext?.() : undefined,
+          input.usesMeta ? await input.resumeSystemContext?.() : undefined,
           fallbackMcpServers
         )
       } catch {
@@ -220,7 +220,7 @@ export async function openRuntimeSession(input: OpenRuntimeSessionInput): Promis
       }
     }
     if (!resumed) {
-      const acpSessionId = await newRuntimeSession(cwd, mcpServers, input.metaContext?.(), fallbackMcpServers)
+      const acpSessionId = await newRuntimeSession(cwd, mcpServers, await input.metaContext?.(), fallbackMcpServers)
       // A fresh ACP id the CP has never seen (the persisted one couldn't be resumed),
       // so this counts as a create for `event/session`. A resumed session (loadSession
       // above) keeps its id — the CP already knows it — so `created` stays false there.

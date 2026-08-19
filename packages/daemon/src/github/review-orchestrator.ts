@@ -106,7 +106,7 @@ export interface GithubReviewHost {
     request?: PrepareSessionWorkspaceRequest
   ): Promise<string>
   /** Whether a prepared session was handed reference directories beside its working directory. */
-  sessionHasReferenceDirectories(agent: Agent, request: PrepareSessionWorkspaceRequest): boolean
+  sessionHasReferenceDirectories(agent: Agent, request: PrepareSessionWorkspaceRequest): Promise<boolean>
   /** The agent's warm ACP host, only once it is ready. */
   warmHostFor(agentId: string): AcpHost | undefined
   anchorTrigger(
@@ -555,7 +555,7 @@ export class GithubReviewOrchestrator {
         `\n\nTrusted review workspace:\n${revisionLine}\n` +
         'The daemon fetched and verified this isolated checkout at the exact head or a merge whose parents are exactly the base and head above. Before trusting local traces, verify `git rev-parse HEAD`; do not switch to or inspect another checkout.' +
         // Decision 10: the other roots stand at their default branches, so only the cwd is the revision.
-        (this.host.sessionHasReferenceDirectories(agent, request)
+        ((await this.host.sessionHasReferenceDirectories(agent, request))
           ? ' Additional repositories are available as separate directories at their default branches for reference only; the reviewed revision is the working directory.'
           : '')
       return { workspaceIsolation: 'session', forceWorkspaceIsolation: true, preparedWorkspaceCwd }

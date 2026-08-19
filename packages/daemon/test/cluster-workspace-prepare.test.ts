@@ -67,10 +67,25 @@ let worktreeStatus = ''
 let mergeRefAvailable = false
 /** What HEAD resolves to in whichever worktree is being asked; `worktree add` and `reset` move it. */
 let headRev: string | undefined
+/** What each secondary remote's `ls-remote --symref` reports as its default branch. */
+let remoteDefaultBranch: Record<string, string> = {}
+/** Clone URLs the remote refuses, so one root can fail while the others materialize. */
+let cloneRefusals = new Set<string>()
 
 /** A ref name as a commit id, the way `worktree add`/`reset` move HEAD onto their start point. */
 function resolve(ref: string): string {
   return revs[ref] ?? ref
+}
+
+/** `owner/repo` for a github.com clone URL, which is how the fake remotes are keyed. */
+function repoOfUrl(url: string): string {
+  return url.replace(/^https:\/\/github\.com\//, '').replace(/\.git$/, '')
+}
+
+/** The origin a secondary root's own checkout (or worktree) reports, from its pod path. */
+function secondaryOriginOf(cwd: string | undefined): string | undefined {
+  const match = cwd?.match(/^\/agent\/repos\/([^/]+)\/([^/]+)\//)
+  return match ? `https://github.com/${match[1]}/${match[2]}` : undefined
 }
 
 function recordingRunner(cwd: string | undefined, env: Record<string, string> = {}): GitRunner {
@@ -81,7 +96,14 @@ function recordingRunner(cwd: string | undefined, env: Record<string, string> = 
       return '.git'
     }
     if (args[0] === 'config' && args.includes('--add') && helperWriteFails) throw new Error('helper pin refused')
-    if (args[0] === 'remote' && args[1] === 'get-url') return originUrl
+    // A secondary root's checkout carries its OWN origin; only the primary answers the volume's.
+    if (args[0] === 'remote' && args[1] === 'get-url') return secondaryOriginOf(cwd) ?? originUrl
+    if (args[0] === 'ls-remote') {
+      const url = args.at(-2)!
+      const branch = remoteDefaultBranch[repoOfUrl(url)]
+      if (branch === undefined) throw new Error(`no remote at ${url}`)
+      return `ref: refs/heads/${branch}\tHEAD\n${'a'.repeat(40)}\tHEAD\n`
+    }
     if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') return headBranch
     if (args[0] === 'rev-parse' && args[1] === '--verify') {
       const ref = args[2]!.replace(/\^\{commit\}$/, '')
@@ -120,7 +142,13 @@ function recordingRunner(cwd: string | undefined, env: Record<string, string> = 
     raw: run,
     clone: async (repo, target, options = []) => {
       calls.push({ cwd, args: ['clone', repo, target, ...options], env })
-      if (cloneFails) throw new Error('remote hung up')
+      if (cloneFails || cloneRefusals.has(repo)) throw new Error('remote hung up')
+      // A secondary root stages into an absolute path on the volume, and the seam has to SEE the
+      // checkout appear there; the primary's target is relative and is probed through git instead.
+      if (target.startsWith('/')) {
+        void pod.mkdir(target)
+        void pod.writeFile(`${target}/.git`, 'gitdir: ...')
+      }
     },
     pull: async (remote, branch, options = []) => {
       calls.push({ cwd, args: ['pull', remote, branch, ...options], env })
@@ -177,6 +205,8 @@ beforeEach(() => {
   worktreeStatus = ''
   mergeRefAvailable = false
   headRev = undefined
+  remoteDefaultBranch = {}
+  cloneRefusals = new Set()
   // Every agent here runs in a pod, so all three seams resolve to the sandbox.
   workspaces.setGitRunnerResolver((_agentId, cwd) => recordingRunner(cwd))
   workspaces.setFsResolver(() => ({ fs: pod, mount: POD_ROOT }))
@@ -221,19 +251,19 @@ describe('clusterWorkspaceCwd', () => {
     )
   })
 
-  it('names the enclosing checkout in the POD coordinates the cwd is in', () => {
+  it('names the enclosing checkout in the POD coordinates the cwd is in', async () => {
     // The runtime gets the repository root separately so repo-wide tools can reach `.git` and
     // siblings. Deriving it the local way means `realpathSync` on a path that exists on no
     // filesystem this daemon can see — which throws, and takes every cluster session with it.
     const agent = clusterAgent({ agentDir: 'services/api' })
-    expect(workspaces.additionalWorkspaceDirectories(agent, workspaces.clusterWorkspaceCwd(agent, POD_ROOT))).toEqual([
-      CHECKOUT
-    ])
+    expect(
+      await workspaces.additionalWorkspaceDirectories(agent, workspaces.clusterWorkspaceCwd(agent, POD_ROOT))
+    ).toEqual([CHECKOUT])
     // No subdirectory means the cwd already IS the root, and a second copy of it says nothing.
-    expect(workspaces.additionalWorkspaceDirectories(clusterAgent(), CHECKOUT)).toEqual([])
+    expect(await workspaces.additionalWorkspaceDirectories(clusterAgent(), CHECKOUT)).toEqual([])
   })
 
-  it('puts a session-isolated cwd in the worktree that session owns, beside the checkout', () => {
+  it('puts a session-isolated cwd in the worktree that session owns, beside the checkout', async () => {
     const id = workspaces.sessionWorktreeId('sess-1')
     expect(
       workspaces.clusterWorkspaceCwd(clusterAgent(), POD_ROOT, { isolation: 'session', sessionKey: 'sess-1' })
@@ -245,7 +275,7 @@ describe('clusterWorkspaceCwd', () => {
     expect(cwd).toBe(`${WORKTREES}/${id}/services/api`)
     // The repository root handed alongside it is the WORKTREE, not the shared checkout — widened
     // lexically, because the path exists on no filesystem this daemon could resolve it against.
-    expect(workspaces.additionalWorkspaceDirectories(agent, cwd, scope)).toEqual([`${WORKTREES}/${id}`])
+    expect(await workspaces.additionalWorkspaceDirectories(agent, cwd, scope)).toEqual([`${WORKTREES}/${id}`])
   })
 })
 
@@ -809,5 +839,182 @@ describe('per-session worktrees on the pod volume', () => {
     })
     expect(cwd).toBe(CHECKOUT)
     expect(await pod.stat(WORKTREES)).toBe('missing')
+  })
+})
+
+/**
+ * Secondary workspace roots on the pod volume (multi-repository-workspaces.md phase 7).
+ *
+ * Same code as the self-hosted path, same decisions — the only difference is which filesystem
+ * answers `stat`/`readdir`/`mkdir`/`rename`/`rmdir` and which coordinates the paths are composed in.
+ * So every assertion here is about the POD's `<mount>/repos/<owner>/<repo>` tree, and about nothing
+ * appearing on this daemon's own disk, where the runtime would never see it.
+ */
+describe('secondary roots on the pod volume', () => {
+  const REPOS = `${POD_ROOT}/repos`
+  const INFRA = `${REPOS}/acme/infra`
+  const SHARED = `${REPOS}/example-co/shared-library`
+
+  function agentWithRoots(rows = [{ repoFullName: 'acme/infra', repoId: '42' }]): Agent {
+    return clusterAgent({ additionalRepos: rows } as Partial<Agent['workspace']>)
+  }
+
+  function worktreeOf(subtree: string, key: string): string {
+    return `${subtree}/worktrees/${workspaces.sessionWorktreeId(key)}`
+  }
+
+  beforeEach(() => {
+    remoteDefaultBranch = { 'acme/infra': 'trunk', 'example-co/shared-library': 'release' }
+  })
+
+  it('materializes each root under the mount, attested through the seam', async () => {
+    await workspaces.prepareClusterWorkspace(agentWithRoots(), POD_ROOT)
+
+    // The clone stages beside the checkout and is published by a rename, on the volume.
+    const clone = calls.find((call) => call.args[0] === 'clone' && call.args[1].includes('acme/infra'))
+    expect(clone!.args[2]).toMatch(new RegExp(`^${INFRA}/checkout\\.clone-`))
+    // `--branch` carries what the REMOTE reported, since the CP projects no branch for a secondary.
+    expect(clone!.args).toContain('trunk')
+    expect(await pod.stat(`${INFRA}/checkout/.git`)).toBe('file')
+    expect(JSON.parse((await pod.readFile(`${INFRA}/.materialization.json`))!)).toEqual({
+      repoId: '42',
+      repoFullName: 'acme/infra',
+      branch: 'trunk'
+    })
+    // Nothing landed on the daemon's own disk, where the runtime would never see it.
+    expect(existsSync(REPOS)).toBe(false)
+    expect(existsSync('/daemon/agents/agent-cluster/repos')).toBe(false)
+  })
+
+  it('hands a shared session the checkouts and an isolated one the worktrees, in pod paths', async () => {
+    const agent = agentWithRoots([
+      { repoFullName: 'acme/infra', repoId: '42' },
+      { repoFullName: 'example-co/shared-library', repoId: '815' }
+    ])
+    const shared = { sessionKey: 'sess-1', isolation: 'shared' as const }
+    expect(await workspaces.prepareClusterWorkspace(agent, POD_ROOT, shared)).toBe(CHECKOUT)
+    expect(await workspaces.additionalWorkspaceDirectories(agent, CHECKOUT, shared)).toEqual([
+      `${INFRA}/checkout`,
+      `${SHARED}/checkout`
+    ])
+
+    checkoutExists = true
+    const isolated = { sessionKey: 'sess-2', isolation: 'session' as const, initiatedBy: 'alice' }
+    const cwd = await workspaces.prepareClusterWorkspace(agent, POD_ROOT, isolated)
+    expect(cwd).toBe(`${WORKTREES}/${workspaces.sessionWorktreeId('sess-2')}`)
+    expect(await workspaces.additionalWorkspaceDirectories(agent, cwd, isolated)).toEqual([
+      worktreeOf(INFRA, 'sess-2'),
+      worktreeOf(SHARED, 'sess-2')
+    ])
+    // Each root's worktree was added from ITS own checkout, at the branch that root's remote reported.
+    const add = calls.filter((call) => call.args[0] === 'worktree' && call.args[1] === 'add')
+    expect(add.find((call) => call.cwd === `${INFRA}/checkout`)!.args).toContain('refs/remotes/origin/trunk')
+    expect(add.find((call) => call.cwd === `${SHARED}/checkout`)!.args).toContain('refs/remotes/origin/release')
+  })
+
+  it('withholds a root the primary already carries as a submodule, read off the volume', async () => {
+    // Decision 11: two copies of one repository at two revisions is what this prevents, and the
+    // `.gitmodules` that says so is a file on the POD — the daemon has no local checkout to read.
+    pod.files.set(`${CHECKOUT}/.gitmodules`, '[submodule "infra"]\n\turl = https://github.com/acme/infra.git\n')
+    const agent = agentWithRoots()
+
+    const cwd = await workspaces.prepareClusterWorkspace(agent, POD_ROOT)
+
+    expect(calls.some((call) => call.args[0] === 'clone' && call.args[1].includes('acme/infra'))).toBe(false)
+    expect(await workspaces.additionalWorkspaceDirectories(agent, cwd)).toEqual([])
+  })
+
+  it('omits a root the remote refuses and still starts the session', async () => {
+    // Decision 7: degradation stays local to the root. The session comes up without it, and the
+    // next one retries.
+    cloneRefusals.add('https://github.com/example-co/shared-library')
+    const agent = agentWithRoots([
+      { repoFullName: 'acme/infra', repoId: '42' },
+      { repoFullName: 'example-co/shared-library', repoId: '815' }
+    ])
+    const request = { sessionKey: 'sess-1', isolation: 'session' as const }
+
+    const cwd = await workspaces.prepareClusterWorkspace(agent, POD_ROOT, request)
+
+    expect(cwd).toBe(`${WORKTREES}/${workspaces.sessionWorktreeId('sess-1')}`)
+    expect(await workspaces.additionalWorkspaceDirectories(agent, cwd, request)).toEqual([worktreeOf(INFRA, 'sess-1')])
+    expect(await pod.stat(`${SHARED}/checkout/.git`)).toBe('missing')
+  })
+
+  it('makes a reviewed secondary root the cwd at the exact head, with the primary alongside', async () => {
+    const base = 'a'.repeat(40)
+    const head = 'b'.repeat(40)
+    const id = workspaces.sessionWorktreeId('sess-review')
+    revs[`refs/agentconnect/reviews/${id}/base`] = base
+    revs[`refs/agentconnect/reviews/${id}/head`] = head
+    const agent = agentWithRoots()
+    const request = {
+      sessionKey: 'sess-review',
+      isolation: 'session' as const,
+      reviewRepoFullName: 'acme/infra',
+      review: { pullNumber: 9, baseSha: base, headSha: head }
+    }
+
+    const cwd = await workspaces.prepareClusterWorkspace(agent, POD_ROOT, request)
+
+    expect(cwd).toBe(worktreeOf(INFRA, 'sess-review'))
+    // The reviewed refs were fetched into the SECONDARY root's own object store, not the primary's.
+    const fetch = calls.find((call) => call.args[0] === 'fetch')
+    expect(fetch).toMatchObject({ cwd: `${INFRA}/checkout` })
+    expect(fetch!.args).toContain(`+refs/pull/9/head:refs/agentconnect/reviews/${id}/head`)
+    const reviewAdd = calls.find(
+      (call) => call.args[0] === 'worktree' && call.args[1] === 'add' && call.cwd === `${INFRA}/checkout`
+    )
+    expect(reviewAdd!.args.at(-1)).toBe(head)
+    // The primary rides along at its default branch, and the attestation holds the cwd across a
+    // restart — a later hand-out that carries no review resolves the same working directory.
+    expect(await workspaces.additionalWorkspaceDirectories(agent, cwd, request)).toEqual([`${WORKTREES}/${id}`])
+    expect(JSON.parse((await pod.readFile(`${INFRA}/.session-cwd-${id}.json`))!)).toEqual({
+      repoFullName: 'acme/infra'
+    })
+    expect(
+      await workspaces.additionalWorkspaceDirectories(agent, cwd, {
+        sessionKey: 'sess-review',
+        isolation: 'session'
+      })
+    ).toEqual([`${WORKTREES}/${id}`])
+  })
+
+  it('retires a root the rows no longer authorize, and removes it once nothing holds it', async () => {
+    const agent = agentWithRoots()
+    await workspaces.prepareClusterWorkspace(agent, POD_ROOT, {
+      sessionKey: 'sess-1',
+      isolation: 'session' as const
+    })
+    const retiredAgent = clusterAgent()
+    const [retired] = await workspaces.retiredSecondaryRoots(retiredAgent)
+    expect(retired).toMatchObject({ repoFullName: 'acme/infra', repoId: '42', subtree: INFRA })
+
+    // A worktree of it is a live session's directory, so the whole subtree stays — its clone is the
+    // object store that worktree reads.
+    expect(await workspaces.removeRetiredSecondaryRoot(retiredAgent, retired!)).toEqual({
+      outcome: 'retained',
+      reason: 'worktrees'
+    })
+    expect(await pod.stat(`${INFRA}/checkout/.git`)).toBe('file')
+
+    checkoutExists = true
+    expect(await workspaces.removeSessionWorktree(agent, 'sess-1')).toEqual({ outcome: 'removed' })
+    expect(await workspaces.removeRetiredSecondaryRoot(retiredAgent, retired!)).toEqual({ outcome: 'removed' })
+    expect(await pod.stat(INFRA)).toBe('missing')
+    expect(await workspaces.retiredSecondaryRoots(retiredAgent)).toEqual([])
+  })
+
+  it('keeps a retired root whose checkout holds commits no remote can reach', async () => {
+    await workspaces.prepareClusterWorkspace(agentWithRoots(), POD_ROOT)
+    const retiredAgent = clusterAgent()
+    const [retired] = await workspaces.retiredSecondaryRoots(retiredAgent)
+    uniqueCommits = '3'
+
+    expect(await workspaces.removeRetiredSecondaryRoot(retiredAgent, retired!)).toEqual({
+      outcome: 'retained',
+      reason: 'unique-commits'
+    })
+    expect(await pod.stat(`${INFRA}/checkout/.git`)).toBe('file')
   })
 })

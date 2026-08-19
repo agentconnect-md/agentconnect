@@ -718,7 +718,7 @@ describe('Daemon rd/msg hook fires', () => {
       .spyOn(daemon as any, 'prepareAgentWorkspace')
       .mockResolvedValue('/agent/repos/acme/infra/worktrees/review')
     // What preparation would have handed this session beside the reviewed root's own worktree.
-    vi.spyOn((daemon as any).workspaces, 'sessionAdditionalRoots').mockReturnValue([
+    vi.spyOn((daemon as any).workspaces, 'sessionAdditionalRoots').mockResolvedValue([
       { path: '/agent/worktrees/review', repoFullName: 'acme/primary-service', branch: 'main' }
     ])
     const headSha = 'a'.repeat(40)

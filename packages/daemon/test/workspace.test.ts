@@ -390,10 +390,10 @@ describe('prepareSessionWorkspace', () => {
     expect(again).toBe(first)
     expect(second).not.toBe(first)
     expect(
-      workspaces.additionalWorkspaceDirectories(agent, first, { sessionKey: 'session-a', isolation: 'session' })
+      await workspaces.additionalWorkspaceDirectories(agent, first, { sessionKey: 'session-a', isolation: 'session' })
     ).toEqual([realpathSync(workspaces.sessionWorktreePath(agent, 'session-a'))])
     expect(
-      workspaces.additionalWorkspaceDirectories(agent, second, { sessionKey: 'session-b', isolation: 'session' })
+      await workspaces.additionalWorkspaceDirectories(agent, second, { sessionKey: 'session-b', isolation: 'session' })
     ).toEqual([realpathSync(workspaces.sessionWorktreePath(agent, 'session-b'))])
   })
 

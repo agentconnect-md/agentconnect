@@ -173,7 +173,7 @@ describe('SessionManager', () => {
     const ready: Array<typeof recovered> = []
     // The real hand-out and the real prompt, over a ready list this session's preparation changes.
     const workspaces = new (class extends WorkspaceManager {
-      override readySecondaryRoots() {
+      override async readySecondaryRoots() {
         return ready
       }
     })()

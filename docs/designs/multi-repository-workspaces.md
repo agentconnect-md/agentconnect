@@ -1,7 +1,7 @@
 # Multi-Repository Workspaces: Secondary Roots and Cross-Repository Review
 
-> **Status:** Implemented for self-hosted daemons (phases 1–6). Phase 7 — the
-> same roots on cluster (pod) daemons — is proposed below.
+> **Status:** Implemented, on self-hosted daemons (phases 1–6) and on cluster
+> (pod) daemons (phase 7). `gh` inside the pod remains a separate item.
 >
 > Before this design an agent's workspace was exactly one repository.
 > Additional repositories existed only as an authorization allowlist
@@ -10,8 +10,7 @@
 > consequences: a GitHub review of an authorized-but-secondary repository had no
 > trusted checkout and degraded to a "revision-only" empty directory, and an
 > ordinary session could not read the secondary repositories at all except
-> through the network. On self-hosted daemons that is no longer the case; on
-> cluster (pod) daemons it still is, which is what phase 7 addresses.
+> through the network. Neither is the case any more, on either driver.
 >
 > This design turns the allowlist into **workspace roots**: one primary root
 > (today's workspace) plus zero or more secondary roots, materialized by the
@@ -173,15 +172,16 @@ otherwise retained and reported. Re-adding the row un-retires the root in place.
 On a cluster daemon the workspace lives on the sandbox pod's volume, mounted at
 the root the pod reports (`/agent` today), and the daemon process runs on
 another machine. Every `node:fs` call in `workspace-manager.ts` therefore
-inspects the daemon's own disk, which is why the session-worktree path is
+inspected the daemon's own disk, which is why the session-worktree path was
 refused there (`refuseSessionIsolationInCluster`, a migration guard from the
-cwd-coordinates fix, not a design choice) and why phases 3–5 skip `sandboxMode`.
+cwd-coordinates fix, not a design choice) and why phases 3–5 skipped
+`sandboxMode`.
 Nothing about the pod forbids any of it: the pod's ACP runtime already takes a
 per-session `cwd`, `git worktree` is in the exec allowlist, the volume survives
 suspend/resume, and git credentials in the pod are routed by URL through the
 tunnelled helper — a secondary repository authenticates today.
 
-What is missing is one seam, the filesystem twin of `GitRunner`:
+What was missing is one seam, the filesystem twin of `GitRunner`:
 
 | Op                                                  | Used for                                                | Local         | Sandbox                                                                                                                                     |
 | --------------------------------------------------- | ------------------------------------------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -202,17 +202,21 @@ workspace-fs channel rather than duplicated. Containment on the sandbox side is
 the shim's fd-anchored descent, which is stronger than the daemon's lexical
 checks; the daemon keeps only path composition in the pod's coordinates
 (`<mount>/worktrees/<sid>`, `<mount>/repos/<owner>/<repo>/{checkout,worktrees/<sid>}`).
-The exec allowlist gains `symbolic-ref`, `branch`, `show-ref`, `ls-remote` and
-`show`, which the worktree and secondary-root paths already use locally.
+The exec allowlist gains `symbolic-ref`, `branch`, `show-ref` and `ls-remote`,
+which the worktree and secondary-root paths already use locally (`show` has no
+caller and stays out).
 
 With the seam in place the worktree, secondary-root, retirement and review-cwd
-code stops touching `node:fs` directly and runs unchanged on both drivers;
-`refuseSessionIsolationInCluster` and the `sandboxMode` short-circuits go away.
-Two PRs: the seam plus session worktrees on the pod (which also gives pool
-agents an exact same-repository review checkout for the first time), then
-secondary roots and cross-repository review on the pod. `gh` inside the pod
-stays a separate item: the runtime image ships no `gh` and the wrapper is a file
-on the daemon's PATH.
+code no longer touches `node:fs` directly and runs unchanged on both drivers;
+`refuseSessionIsolationInCluster` and the `sandboxMode` short-circuits are gone,
+and the hand-out and GC entry points that used to answer from a synchronous
+`existsSync` are asynchronous so the pod can answer them. Shipped as two PRs:
+the seam plus session worktrees on the pod (which also gives pool agents an
+exact same-repository review checkout for the first time), then secondary roots
+and cross-repository review on the pod. `gh` inside the pod stays a separate
+item: the runtime image ships no `gh` and the wrapper is a file on the daemon's
+PATH. So does the console's own workspace browsing, which still answers with no
+root for a secondary repository on a cluster agent.
 
 ## Open questions
 

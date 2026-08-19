@@ -535,30 +535,31 @@ export class SessionManager {
     // Composed lazily and memoized, because the workspace roots it names must be sampled where the
     // additional directories are: on a warm host `openRuntimeSession` performs the preparation
     // itself, so a context built before that could name a root the runtime never received.
-    let standing: StandingContext | undefined
-    const standingContext = (): StandingContext =>
-      (standing ??= buildStandingContext({
-        agentName: agent.name,
-        agentId: agent.id,
-        agentDescription: agent.description,
-        platform: msg.platform,
-        channel: msg.channel,
-        channelName,
-        slackSelfId:
-          msg.platform === 'slack' && integrationId ? this.deps.slackBotUserIdFor?.(integrationId) : undefined,
-        thread,
-        acpSessionId: rec?.acpSessionId,
-        parentSessionId: effectiveOriginSessionId,
-        envSecretNames: secretNames.filter((n) => !fileSecretNames.has(n)),
-        fileSecrets: fileSecrets.map((m) => ({ sourceVar: m.sourceVar, pointerVar: m.convention.pointerVar })),
-        // The same list `additionalWorkspaceDirectories` hands the runtime, read from the same
-        // accessor, so the prompt names exactly the directories the session got.
-        workspaceRoots: this.workspaces.sessionAdditionalRoots(agent, workspaceRequest),
-        usesSessionTitleTool,
-        needsReplyToParent,
-        memoryIndex,
-        usesMeta
-      }))
+    let standing: Promise<StandingContext> | undefined
+    const standingContext = (): Promise<StandingContext> =>
+      (standing ??= (async () =>
+        buildStandingContext({
+          agentName: agent.name,
+          agentId: agent.id,
+          agentDescription: agent.description,
+          platform: msg.platform,
+          channel: msg.channel,
+          channelName,
+          slackSelfId:
+            msg.platform === 'slack' && integrationId ? this.deps.slackBotUserIdFor?.(integrationId) : undefined,
+          thread,
+          acpSessionId: rec?.acpSessionId,
+          parentSessionId: effectiveOriginSessionId,
+          envSecretNames: secretNames.filter((n) => !fileSecretNames.has(n)),
+          fileSecrets: fileSecrets.map((m) => ({ sourceVar: m.sourceVar, pointerVar: m.convention.pointerVar })),
+          // The same list `additionalWorkspaceDirectories` hands the runtime, read from the same
+          // accessor, so the prompt names exactly the directories the session got.
+          workspaceRoots: await this.workspaces.sessionAdditionalRoots(agent, workspaceRequest),
+          usesSessionTitleTool,
+          needsReplyToParent,
+          memoryIndex,
+          usesMeta
+        }))())
 
     // Create or re-attach the runtime session (turn/runtime-session.ts). `created` drives the
     // daemon's one-shot `event/session` start emit; the additional-MCP outcome is reported back
@@ -614,8 +615,8 @@ export class SessionManager {
       // metadata-only settings cannot be reversed by a later live selector.
       chatRuntimeChangesAllowed: () => this.deps.agentById(agentId)?.allowRuntimeChangesInChat === true,
       effortOverride: async () => initialEffort ?? (await this.deps.store.getEffortOverride(key)),
-      metaContext: () => standingContext().metaContext,
-      resumeSystemContext: () => standingContext().resumeSystemContext,
+      metaContext: async () => (await standingContext()).metaContext,
+      resumeSystemContext: async () => (await standingContext()).resumeSystemContext,
       usesMeta,
       ...(signal ? { signal } : {}),
       abortable,
@@ -626,7 +627,7 @@ export class SessionManager {
     const additionalMcpServersAttached = opened.additionalMcpAttached
     // Resolves the memoized snapshot the runtime session already consumed, or composes it now for a
     // session that was live and needed no preparation.
-    const { sessionContext, parentReplyAppend } = standingContext()
+    const { sessionContext, parentReplyAppend } = await standingContext()
 
     // A channel-root message posted by this same agent creates the thread's session cursor
     // without running the model. Keep lastDeliveredTs at null: the first real reply must replay
