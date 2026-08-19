@@ -108,11 +108,15 @@ export function parseMemoryFrontmatter(text: string): ParsedMemory {
   }
 }
 
-/** Quote only when a plain YAML scalar would be ambiguous: a `key: value` split
- *  (`: `), a trailing colon, an inline comment (` #`), a leading indicator, or edge
- *  whitespace. An ISO timestamp's colons are safe and stay unquoted. */
+/**
+ * Quote unless the value is unambiguously a plain YAML scalar. Conservative on
+ * purpose: a stored description must survive any strict YAML reader, so this covers
+ * every leading indicator character (`- ? : , [ ] { } # & * ! | > ' " % @ \``), a
+ * `key: value` split, a trailing colon, an inline ` #` comment, and edge whitespace.
+ * An ISO timestamp's interior colons are safe and stay unquoted.
+ */
 function quoteIfNeeded(value: string): string {
-  return /^[\s"'[{&*!|>%@`-]|: |:$| #|\s$/.test(value) ? JSON.stringify(value) : value
+  return /^[\s\-?:,[\]{}#&*!|>'"%@`]|: |:$| #|\s$/.test(value) ? JSON.stringify(value) : value
 }
 
 /**

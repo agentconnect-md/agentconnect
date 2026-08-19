@@ -461,6 +461,25 @@ describe('normalizing model-written frontmatter', () => {
     expect(fixed).toContain('body')
   })
 
+  it('quotes EVERY YAML indicator a description can start with', () => {
+    // `#` would read as a comment (null value) and `?` is outright invalid; the rest
+    // are indicators too. Table-driven so a future edit cannot quietly drop one.
+    const leading = ['-', '?', ':', ',', '[', ']', '{', '}', '#', '&', '*', '!', '|', '>', "'", '"', '%', '@', '`']
+    for (const ch of leading) {
+      const value = `${ch} release policy`
+      const fixed = normalizeMemoryHeader(`---\ndescription: ${value}\n---\nbody\n`)
+      // Stored as a quoted scalar…
+      expect(fixed).toContain(`description: ${JSON.stringify(value)}`)
+      // …and still reads back as exactly what the model meant.
+      expect(parseMemoryFrontmatter(fixed).header.description).toBe(value)
+    }
+  })
+
+  it('leaves an ordinary description unquoted', () => {
+    const fixed = normalizeMemoryHeader('---\ndescription: how we ship to prod\n---\nbody\n')
+    expect(fixed).toContain('description: how we ship to prod')
+  })
+
   it('is idempotent and leaves everything it does not own untouched', () => {
     const raw = [
       '---',
