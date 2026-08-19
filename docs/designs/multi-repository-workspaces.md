@@ -1,6 +1,7 @@
 # Multi-Repository Workspaces: Secondary Roots and Cross-Repository Review
 
-> **Status:** Proposal.
+> **Status:** Implemented for self-hosted daemons (phases 1–6). Phase 7 — the
+> same roots on cluster (pod) daemons — is proposed below.
 >
 > Today an agent's workspace is exactly one repository. Additional repositories
 > exist only as an authorization allowlist
@@ -47,8 +48,7 @@
   nothing the runtimes' own multi-root support does not already give.
 - Cluster (pod) daemons in the first phase. Their workspace layer materializes
   one checkout through the shim tunnel; secondary roots there follow once the
-  self-hosted shape is proven. Reviews on pool members keep the revision-only
-  fallback until then.
+  self-hosted shape is proven — see "Phase 7: cluster daemons" below.
 - Submodule nomination, daemon-managed submodule initialization, sparse or
   partial clones, and per-root `agentDir`.
 
@@ -157,6 +157,49 @@ otherwise retained and reported. Re-adding the row un-retires the root in place.
 6. **Tests** — workspace-manager multi-root (layout, isolation, GC),
    review-orchestrator cross-repository exact checkout and its fallback,
    spec-assembler projection, prompt snapshot.
+
+## Phase 7: cluster daemons
+
+On a cluster daemon the workspace lives on the sandbox pod's volume, mounted at
+the root the pod reports (`/agent` today), and the daemon process runs on
+another machine. Every `node:fs` call in `workspace-manager.ts` therefore
+inspects the daemon's own disk, which is why the session-worktree path is
+refused there (`refuseSessionIsolationInCluster`, a migration guard from the
+cwd-coordinates fix, not a design choice) and why phases 3–5 skip `sandboxMode`.
+Nothing about the pod forbids any of it: the pod's ACP runtime already takes a
+per-session `cwd`, `git worktree` is in the exec allowlist, the volume survives
+suspend/resume, and git credentials in the pod are routed by URL through the
+tunnelled helper — a secondary repository authenticates today.
+
+What is missing is one seam, the filesystem twin of `GitRunner`:
+
+| Op                                                  | Used for                                                | Local         | Sandbox                                                                                         |
+| --------------------------------------------------- | ------------------------------------------------------- | ------------- | ----------------------------------------------------------------------------------------------- |
+| `stat` (no symlink follow) → `file / dir / missing` | is `.git` there, does the checkout exist, symlink guard | `lstatSync`   | the memory-fs channel (an added `stat` op; the channel is fd-anchored and already symlink-safe) |
+| `readdir`                                           | list `repos/*/*`, judge an empty leftover               | `readdirSync` | memory-fs `readdir`                                                                             |
+| `mkdir`                                             | worktrees root, `repos/<owner>/<repo>`                  | `mkdirSync`   | memory-fs `mkdir`                                                                               |
+| `readFile` / atomic `writeFile`                     | materialization marker, the session-cwd attestation     | `node:fs`     | memory-fs `read` / `commit`                                                                     |
+| `rename`                                            | publishing a staged clone                               | `renameSync`  | memory-fs `rename`                                                                              |
+| `rmTree`                                            | a broken worktree, a retired subtree                    | `rmSync`      | the existing `clearPath` sink                                                                   |
+
+The memory-fs channel already serves every one of those primitives except
+`stat`, anchored at the pod's mount and accepting any root below it — it is
+"memory" only by its current caller. It is renamed (or aliased) to a general
+workspace-fs channel rather than duplicated. Containment on the sandbox side is
+the shim's fd-anchored descent, which is stronger than the daemon's lexical
+checks; the daemon keeps only path composition in the pod's coordinates
+(`<mount>/worktrees/<sid>`, `<mount>/repos/<owner>/<repo>/{checkout,worktrees/<sid>}`).
+The exec allowlist gains `symbolic-ref`, `branch`, `show-ref`, `ls-remote` and
+`show`, which the worktree and secondary-root paths already use locally.
+
+With the seam in place the worktree, secondary-root, retirement and review-cwd
+code stops touching `node:fs` directly and runs unchanged on both drivers;
+`refuseSessionIsolationInCluster` and the `sandboxMode` short-circuits go away.
+Two PRs: the seam plus session worktrees on the pod (which also gives pool
+agents an exact same-repository review checkout for the first time), then
+secondary roots and cross-repository review on the pod. `gh` inside the pod
+stays a separate item: the runtime image ships no `gh` and the wrapper is a file
+on the daemon's PATH.
 
 ## Open questions
 
