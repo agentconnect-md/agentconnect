@@ -99,10 +99,15 @@ function buildMemoryAppend(memoryIndex: string): string {
     `# Persistent memory\n` +
     `You keep a persistent memory across sessions. Your context is periodically ` +
     `compacted, and this index is re-read at the START of every session — it is your main way to recover ` +
-    `what you learned, so keep it current and self-sufficient. Record durable facts PROACTIVELY, without ` +
-    `being asked — conventions, decisions, who to ask, project/channel context, and anything you had to ` +
-    `re-learn: revise this index or a topic file with \`writeMemory\` as you go. Read a linked topic with ` +
-    `\`readMemory\` when it is relevant. Keep the index short — a scannable list that links to topic files.\n\n` +
+    `what you learned. Record durable facts PROACTIVELY, without being asked — conventions, decisions, ` +
+    `who to ask, project/channel context, and anything you had to re-learn: write a topic file with ` +
+    `\`writeMemory\` as you go, and read one with \`readMemory\` when it is relevant.\n\n` +
+    `Start each topic file with a header, then the body:\n` +
+    `\`\`\`\n---\ndescription: one line saying what this holds — it is how a future session decides to open it\n` +
+    `type: user | feedback | project | reference\n---\n\`\`\`\n` +
+    `Link related memories inline as \`[[topic-name]]\` (no \`.md\`); \`readMemory\` accepts that form directly, ` +
+    `so a link you read is a reference you can follow. MEMORY.md below is GENERATED from those descriptions — ` +
+    `do not hand-edit it; to change how a topic appears in the index, change that topic's \`description\`.\n\n` +
     `Only text inside the memory-file boundary below belongs to \`MEMORY.md\`; everything outside it is ` +
     `session context and not a valid source for \`oldString\`. This injected index is a start-of-session ` +
     `snapshot. Its body uses one layer of XML character-reference encoding: \`&amp;\`, \`&lt;\`, and \`&gt;\` ` +

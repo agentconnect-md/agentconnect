@@ -44,6 +44,8 @@ export {
   type MemoryFs
 } from './fs.js'
 
+import { memoryNameForTopic, memoryRefToTopic, parseMemoryFrontmatter, stampMemoryHeader } from './frontmatter.js'
+
 export const MEMORY_DIRNAME = 'memory'
 export { MEMORY_INDEX }
 
@@ -268,6 +270,7 @@ export async function readIndex(fs: MemoryFs): Promise<string> {
 
 /** Read a memory file's text; '' when it does not exist (never throws on absence). */
 export async function readMemoryFile(fs: MemoryFs, relPath: string): Promise<string> {
+  relPath = memoryRefToTopic(relPath)
   return (await readMemoryFileIfPresent(fs, relPath)) ?? ''
 }
 
@@ -275,6 +278,7 @@ export async function readMemoryFile(fs: MemoryFs, relPath: string): Promise<str
  *  empty (`''`). The channel/base overlay needs this so an intentionally-empty
  *  channel file still shadows a non-empty base file instead of falling through. */
 export async function readMemoryFileIfPresent(fs: MemoryFs, relPath: string): Promise<string | null> {
+  relPath = memoryRefToTopic(relPath)
   const file = await fs.readFile(topicPath(relPath))
   return file === null ? null : file.content
 }
@@ -560,6 +564,10 @@ export async function writeMemoryFileHoldingLock(
   ifMatchMtime: string | undefined,
   source: MemoryWriteSource
 ): Promise<{ size: number; mtime: string }> {
+  const topic = memoryTopicName(relPath)
+  // Keep a written header truthful (`name` from the filename, fresh `modified`).
+  // Headerless notes are left exactly as written — frontmatter is never forced on.
+  if (topic !== MEMORY_INDEX) content = stampMemoryHeader(topic, content, new Date().toISOString())
   if (Buffer.byteLength(content) > MAX_MEMORY_FILE_BYTES) {
     throw new MemoryTooLargeError(`memory file exceeds the ${MAX_MEMORY_FILE_BYTES}-byte limit`)
   }
@@ -588,7 +596,86 @@ export async function writeMemoryFileHoldingLock(
   } catch {
     // Provenance is best-effort — retry compaction on the next append/read.
   }
+  if (topic !== MEMORY_INDEX) await regenerateMemoryIndexHoldingLock(fs, source)
   return { size: st.size, mtime: st.mtime }
+}
+
+/** The marker that identifies an index this code owns (vs one an agent hand-wrote). */
+const INDEX_OVERFLOW_NOTICE = '\n[…more topics than fit the index — shorten some `description` headers]\n'
+
+const GENERATED_INDEX_MARKER = "<!-- generated from each topic's `description` header — edit that, not this file -->"
+
+/**
+ * Rebuild `MEMORY.md` from the topic headers, so the index can never drift from the
+ * files it points at (#41). The entry line carries each topic's `description`, which
+ * is what lets the agent pick a topic to open without reading them all.
+ *
+ * Only runs once at least one topic carries a description: until then there is nothing
+ * to generate from, and a legacy hand-written index is left untouched. The previous
+ * index is recorded in `.history` by the caller's own write path, and here on replace.
+ */
+export async function regenerateMemoryIndexHoldingLock(
+  fs: MemoryFs,
+  source: MemoryWriteSource,
+  opts: { force?: boolean } = {}
+): Promise<void> {
+  const entries: { topic: string; name: string; description: string }[] = []
+  for (const file of await listMemory(fs)) {
+    if (file.name === MEMORY_INDEX) continue
+    const raw = await fs.readFile(`${MEMORY_DIRNAME}/${file.name}`)
+    if (raw === null) continue
+    const { header } = parseMemoryFrontmatter(raw.content)
+    entries.push({
+      topic: file.name,
+      name: header.name || memoryNameForTopic(file.name),
+      description: header.description ?? ''
+    })
+  }
+  const current = await fs.readFile(`${MEMORY_DIRNAME}/${MEMORY_INDEX}`)
+  // Take ownership on the first described topic; once the index is ours, keep it in
+  // step forever — including when the last description is removed, which must clear
+  // the stale line rather than freeze it in the injected index.
+  const owned = current?.content.includes(GENERATED_INDEX_MARKER) === true
+  // `force` is for a caller that just added topics and would otherwise hand-maintain
+  // the index itself (distillation): adopt it now so there is exactly one writer.
+  if (!owned && !opts.force && !entries.some((entry) => entry.description)) return
+
+  const heading = /^#[ \t]+.*$/m.exec(current?.content ?? '')?.[0] ?? '# Memory'
+  const prefix = `${heading}\n\n${GENERATED_INDEX_MARKER}\n\n`
+  const lines: string[] = []
+  let budget = MAX_MEMORY_FILE_BYTES - Buffer.byteLength(prefix) - Buffer.byteLength(INDEX_OVERFLOW_NOTICE) - 1
+  let dropped = 0
+  for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+    const line = `- [${entry.name}](${entry.topic})${entry.description ? ` — ${entry.description}` : ''}`
+    const cost = Buffer.byteLength(line) + 1
+    // The generated file is subject to the same managed bound as any other write.
+    if (cost > budget) {
+      dropped++
+      continue
+    }
+    budget -= cost
+    lines.push(line)
+  }
+  const next = `${prefix}${lines.join('\n')}\n${dropped > 0 ? INDEX_OVERFLOW_NOTICE : ''}`
+  if (current?.content === next) return
+
+  const st = await fs.writeFile(`${MEMORY_DIRNAME}/${MEMORY_INDEX}`, next, {})
+  try {
+    const before = current ? clampMemoryHistoryValue(current.content) : undefined
+    const after = clampMemoryHistoryValue(next)
+    await appendHistoryHoldingLock(fs, {
+      path: MEMORY_INDEX,
+      event: current ? 'update' : 'add',
+      ...(before ? { before: before.value } : {}),
+      after: after.value,
+      at: st.mtime,
+      scope: 'agent',
+      source,
+      ...(after.truncated || before?.truncated ? { truncated: true } : {})
+    })
+  } catch {
+    // Provenance is best-effort, exactly as in the topic write above.
+  }
 }
 
 /** One file in the memory dir. */
