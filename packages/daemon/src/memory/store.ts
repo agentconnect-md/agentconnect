@@ -601,6 +601,8 @@ export async function writeMemoryFileHoldingLock(
 }
 
 /** The marker that identifies an index this code owns (vs one an agent hand-wrote). */
+const INDEX_OVERFLOW_NOTICE = '\n[…more topics than fit the index — shorten some `description` headers]\n'
+
 const GENERATED_INDEX_MARKER = "<!-- generated from each topic's `description` header — edit that, not this file -->"
 
 /**
@@ -625,15 +627,30 @@ export async function regenerateMemoryIndexHoldingLock(fs: MemoryFs, source: Mem
       description: header.description ?? ''
     })
   }
-  if (!entries.some((entry) => entry.description)) return
-
   const current = await fs.readFile(`${MEMORY_DIRNAME}/${MEMORY_INDEX}`)
+  // Take ownership on the first described topic; once the index is ours, keep it in
+  // step forever — including when the last description is removed, which must clear
+  // the stale line rather than freeze it in the injected index.
+  const owned = current?.content.includes(GENERATED_INDEX_MARKER) === true
+  if (!owned && !entries.some((entry) => entry.description)) return
+
   const heading = /^#[ \t]+.*$/m.exec(current?.content ?? '')?.[0] ?? '# Memory'
-  const body = entries
-    .sort((a, b) => a.name.localeCompare(b.name))
-    .map((entry) => `- [${entry.name}](${entry.topic})${entry.description ? ` — ${entry.description}` : ''}`)
-    .join('\n')
-  const next = `${heading}\n\n${GENERATED_INDEX_MARKER}\n\n${body}\n`
+  const prefix = `${heading}\n\n${GENERATED_INDEX_MARKER}\n\n`
+  const lines: string[] = []
+  let budget = MAX_MEMORY_FILE_BYTES - Buffer.byteLength(prefix) - Buffer.byteLength(INDEX_OVERFLOW_NOTICE) - 1
+  let dropped = 0
+  for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+    const line = `- [${entry.name}](${entry.topic})${entry.description ? ` — ${entry.description}` : ''}`
+    const cost = Buffer.byteLength(line) + 1
+    // The generated file is subject to the same managed bound as any other write.
+    if (cost > budget) {
+      dropped++
+      continue
+    }
+    budget -= cost
+    lines.push(line)
+  }
+  const next = `${prefix}${lines.join('\n')}\n${dropped > 0 ? INDEX_OVERFLOW_NOTICE : ''}`
   if (current?.content === next) return
 
   const st = await fs.writeFile(`${MEMORY_DIRNAME}/${MEMORY_INDEX}`, next, {})

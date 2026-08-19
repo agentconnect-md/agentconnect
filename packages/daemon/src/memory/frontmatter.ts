@@ -25,8 +25,6 @@ export interface MemoryHeader {
   description?: string
   type?: MemoryEntryType
   modified?: string
-  /** Any other key the agent wrote — preserved verbatim so a stamp never drops data. */
-  extra?: Record<string, string>
 }
 
 export interface ParsedMemory {
@@ -34,6 +32,9 @@ export interface ParsedMemory {
   body: string
   /** False when the file had no frontmatter at all (the legacy shape). */
   hadHeader: boolean
+  /** The header's raw lines, verbatim. Stamping patches these rather than
+   *  re-serializing, so nested blocks, comments, and quoting all survive. */
+  headerLines: string[]
 }
 
 const FENCE = '---'
@@ -55,7 +56,7 @@ function unquote(raw: string): string {
  *  absent header just yields an empty header and the original text as the body. */
 export function parseMemoryFrontmatter(text: string): ParsedMemory {
   if (!text.startsWith(`${FENCE}\n`) && !text.startsWith(`${FENCE}\r\n`)) {
-    return { header: {}, body: text, hadHeader: false }
+    return { header: {}, body: text, hadHeader: false, headerLines: [] }
   }
   const lines = text.split('\n')
   let end = -1
@@ -66,11 +67,11 @@ export function parseMemoryFrontmatter(text: string): ParsedMemory {
     }
   }
   // An unterminated fence is not a header — treat the whole file as body.
-  if (end === -1) return { header: {}, body: text, hadHeader: false }
+  if (end === -1) return { header: {}, body: text, hadHeader: false, headerLines: [] }
 
+  const headerLines = lines.slice(1, end)
   const header: MemoryHeader = {}
-  const extra: Record<string, string> = {}
-  for (const line of lines.slice(1, end)) {
+  for (const line of headerLines) {
     if (!line.trim() || line.trimStart().startsWith('#')) continue
     // Nested YAML (a `metadata:` block) is not part of our flat shape; skip its children.
     if (/^\s/.test(line)) continue
@@ -81,38 +82,26 @@ export function parseMemoryFrontmatter(text: string): ParsedMemory {
     if (!value) continue
     if (key === 'type') {
       if ((MEMORY_ENTRY_TYPES as readonly string[]).includes(value)) header.type = value as MemoryEntryType
-      else extra[key] = value
     } else if (KNOWN.has(key)) {
       header[key as 'name' | 'description' | 'modified'] = value
-    } else {
-      extra[key] = value
     }
   }
-  if (Object.keys(extra).length > 0) header.extra = extra
   return {
     header,
     body: lines
       .slice(end + 1)
       .join('\n')
       .replace(/^\n/, ''),
-    hadHeader: true
+    hadHeader: true,
+    headerLines
   }
 }
 
+/** Quote only when a plain YAML scalar would be ambiguous: a `key: value` split
+ *  (`: `), a trailing colon, an inline comment (` #`), a leading indicator, or edge
+ *  whitespace. An ISO timestamp's colons are safe and stay unquoted. */
 function quoteIfNeeded(value: string): string {
-  return /^[\s"']|[:#]|\s$/.test(value) ? JSON.stringify(value) : value
-}
-
-/** Render a header + body back into file text. An empty header emits no fence. */
-export function serializeMemoryFrontmatter(header: MemoryHeader, body: string): string {
-  const lines: string[] = []
-  if (header.name) lines.push(`name: ${quoteIfNeeded(header.name)}`)
-  if (header.description) lines.push(`description: ${quoteIfNeeded(header.description)}`)
-  if (header.type) lines.push(`type: ${header.type}`)
-  if (header.modified) lines.push(`modified: ${header.modified}`)
-  for (const [key, value] of Object.entries(header.extra ?? {})) lines.push(`${key}: ${quoteIfNeeded(value)}`)
-  if (lines.length === 0) return body
-  return `${FENCE}\n${lines.join('\n')}\n${FENCE}\n\n${body.replace(/^\n+/, '')}`
+  return /^[\s"'[{&*!|>%@`-]|: |:$| #|\s$/.test(value) ? JSON.stringify(value) : value
 }
 
 /** The `name` slug for a topic file (`deploys.md` → `deploys`). */
@@ -120,16 +109,33 @@ export function memoryNameForTopic(topicName: string): string {
   return topicName.replace(/\.md$/i, '')
 }
 
+/** Replace a top-level `key:` line in the raw header, or append one if absent. */
+function patchHeaderLine(lines: string[], key: string, value: string): string[] {
+  const rendered = `${key}: ${quoteIfNeeded(value)}`
+  const at = lines.findIndex((line) => !/^\s/.test(line) && new RegExp(`^${key}:`).test(line))
+  if (at === -1) return [...lines, rendered]
+  const next = [...lines]
+  next[at] = rendered
+  return next
+}
+
 /**
  * Keep a written file's header truthful: fill in `name` from the filename and stamp
- * `modified`. Only touches a file that ALREADY has a header, or one the writer gave
- * a description — we never force frontmatter onto a plain note the agent wrote by hand.
+ * `modified`. Only touches a file that ALREADY has a header — we never force
+ * frontmatter onto a plain note the agent wrote by hand.
+ *
+ * The patch is line-level on purpose. Re-serializing from the parsed model would
+ * silently drop anything the model does not represent — a nested `metadata:` block
+ * (which is exactly how Claude Code writes its own memories), comments, blank lines,
+ * or a key we chose not to interpret. Rewriting only the two lines we own keeps every
+ * ordinary write lossless.
  */
 export function stampMemoryHeader(topicName: string, text: string, modifiedIso: string): string {
   const parsed = parseMemoryFrontmatter(text)
   if (!parsed.hadHeader) return text
-  const header: MemoryHeader = { ...parsed.header, name: memoryNameForTopic(topicName), modified: modifiedIso }
-  return serializeMemoryFrontmatter(header, parsed.body)
+  let lines = patchHeaderLine(parsed.headerLines, 'name', memoryNameForTopic(topicName))
+  lines = patchHeaderLine(lines, 'modified', modifiedIso)
+  return `${FENCE}\n${lines.join('\n')}\n${FENCE}\n\n${parsed.body.replace(/^\n+/, '')}`
 }
 
 /**
