@@ -59,12 +59,12 @@ export type WorkspaceFilesResolver = (agentId: string) => WorkspaceFiles | undef
 
 export function createWorkspaceReader(
   workspaces: WorkspaceManager,
-  workspaceByAgent: (agentId: string, sessionId?: string) => Promise<WorkspaceLocation | undefined>,
+  workspaceByAgent: (agentId: string, sessionId?: string, repo?: string) => Promise<WorkspaceLocation | undefined>,
   coordinateWrite: WorkspaceWriteCoordinator,
   filesFor: WorkspaceFilesResolver = () => undefined
 ): WorkspaceReader {
-  async function locationFor(agentId: string, sessionId?: string): Promise<WorkspaceLocation> {
-    const location = await workspaceByAgent(agentId, sessionId)
+  async function locationFor(agentId: string, sessionId?: string, repo?: string): Promise<WorkspaceLocation> {
+    const location = await workspaceByAgent(agentId, sessionId, repo)
     if (!location) throw new WorkspaceViolationError(`unknown agent "${agentId}"`, 'unknown-agent')
     return location
   }
@@ -94,12 +94,12 @@ export function createWorkspaceReader(
 
   return {
     async list(req) {
-      const root = (await locationFor(req.agentId, req.sessionId)).root
+      const root = (await locationFor(req.agentId, req.sessionId, req.repo)).root
       return filesOf(req.agentId).list(root, req)
     },
 
     async read(req) {
-      const root = (await locationFor(req.agentId, req.sessionId)).root
+      const root = (await locationFor(req.agentId, req.sessionId, req.repo)).root
       return filesOf(req.agentId).read(root, req)
     },
 

@@ -1736,7 +1736,7 @@ export class CpClient {
         // git status of a git-repo workspace — a dirty tree / non-repo is DATA, not an error.
         const req = frame.payload as WorkspaceGitStatusReq
         this.deps.workspaceGit
-          .status(req.agentId, req.sessionId)
+          .status(req.agentId, req.sessionId, req.repo)
           .then((status) => this.reply(frame, 'workspace/gitstatus/result', status))
           .catch((err) => this.workspaceError(frame.id, 'workspace/gitstatus', err))
         return
@@ -1760,7 +1760,7 @@ export class CpClient {
       case 'workspace/gitpull': {
         // On-demand ff-only pull — a failed pull comes back as a result (ok:false), not an error.
         this.deps.workspaceGit
-          .pull((frame.payload as WorkspaceGitPullReq).agentId)
+          .pull((frame.payload as WorkspaceGitPullReq).agentId, (frame.payload as WorkspaceGitPullReq).repo)
           .then((result) => this.reply(frame, 'workspace/gitpull/result', result))
           .catch((err) => this.workspaceError(frame.id, 'workspace/gitpull', err))
         return

@@ -7,7 +7,8 @@ import {
   AGENT_WAKE_FEATURE,
   WORKSPACE_GIT_MESSAGE_FEATURE,
   WORKSPACE_GIT_REVIEW_FEATURE,
-  WORKSPACE_GIT_WRITE_FEATURE
+  WORKSPACE_GIT_WRITE_FEATURE,
+  WORKSPACE_REPO_SCOPE_FEATURE
 } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
 
@@ -64,6 +65,9 @@ describe('registrationFeatures — the console dock reads (git review + write + 
     // `task/list` is likewise unconditional daemon code — whether the agent's runtime actually
     // emits the SDK lifecycle feed is data the REP reports (`tracked`), not a register-time promise.
     expect(features).toContain(TASK_LIST_FEATURE)
+    // The console's repo scope is likewise unconditional daemon code: whether the agent HAS an
+    // additional repository is its spec's business, not something the handshake can promise.
+    expect(features).toContain(WORKSPACE_REPO_SCOPE_FEATURE)
     // The sandbox wake is the one dock read that is NOT unconditional: a local daemon has nothing to wake.
     expect(features).not.toContain(AGENT_WAKE_FEATURE)
   }, 20_000)

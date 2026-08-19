@@ -342,6 +342,24 @@ export class WorkspaceManager {
     return roots.sort((a, b) => (a.repoFullName < b.repoFullName ? -1 : a.repoFullName > b.repoFullName ? 1 : 0))
   }
 
+  /**
+   * One authorized secondary root as the CONSOLE addresses it, named case-insensitively.
+   *
+   * The branch comes off the root's own `.materialization.json` — the CP never projects it, so the
+   * checkout beside that attestation is the only thing that knows which branch a pull may reach.
+   * A root the disk does not attest yet is still returned: its checkout simply does not exist, and
+   * that reads as an empty workspace rather than an error (the browser's `exists:false`).
+   */
+  consoleSecondaryRoot(agent: Agent, repoFullName: string): SecondaryWorkspaceRoot | undefined {
+    const wanted = repoKey(repoFullName)
+    const root = this.secondaryRoots(agent).find((entry) => repoKey(entry.repoFullName) === wanted)
+    if (!root) return undefined
+    const recorded = readSecondaryMaterialization(join(dirname(root.path), SECONDARY_MATERIALIZATION_FILE))
+    // Identity is the numeric repo id, exactly as materialization checks it: a subtree left by a
+    // DIFFERENT repository that once held this slug attests nothing about this root's branch.
+    return recorded?.repoId === root.repoId ? { ...root, branch: recorded.branch } : root
+  }
+
   /** The primary clone's `owner/repo`, when it names github.com — an App-backed URL is canonicalized
    *  there by the daemon, an anonymous one must already say so. */
   private primaryRepoFullName(agent: Agent): string | undefined {
@@ -1597,9 +1615,13 @@ export class WorkspaceManager {
     agent: Agent,
     local: string | undefined,
     runtimeRoot: string | undefined,
-    request?: ClusterSessionScope
+    request?: ClusterSessionScope,
+    repoScope?: string
   ): string | undefined {
     if (local === undefined || !this.sandboxMode) return local
+    // A cluster daemon materializes ONE checkout through the shim tunnel, so a secondary root has
+    // nowhere to live there yet — answer with no root rather than serving the primary's files.
+    if (repoScope !== undefined) return undefined
     return this.clusterSessionRootAt(agent, runtimeRoot, request)
   }
 

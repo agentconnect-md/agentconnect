@@ -626,12 +626,26 @@ describe('CpClient dispatch', () => {
     const f = JSON.parse(frame('workspace/gitstatus', { agentId: 'a1' }, { epoch: 5 }))
     t.pushInbound(JSON.stringify(f))
     await tick()
-    expect(workspaceGit.status).toHaveBeenCalledWith('a1', undefined)
+    expect(workspaceGit.status).toHaveBeenCalledWith('a1', undefined, undefined)
     const rep = JSON.parse(t.sent[0]!)
     expect(rep.type).toBe('workspace/gitstatus/result')
     expect(rep.corr).toBe(f.id)
     expect(rep.payload.clean).toBe(false)
     expect(rep.payload.behind).toBe(2)
+  })
+
+  it('forwards the repo scope of a gitstatus / gitpull to the seam', async () => {
+    const status = vi.fn(async () => ({ agentId: 'a1', isRepo: true, clean: true }))
+    const scoped = await readyClient({ workspaceGit: { status } as any })
+    scoped.t.pushInbound(frame('workspace/gitstatus', { agentId: 'a1', repo: 'acme/infra' }, { epoch: 5 }))
+    await tick()
+    expect(scoped.workspaceGit.status).toHaveBeenCalledWith('a1', undefined, 'acme/infra')
+
+    const pull = vi.fn(async () => ({ agentId: 'a1', isRepo: true, ok: true }))
+    const pulled = await readyClient({ workspaceGit: { pull } as any })
+    pulled.t.pushInbound(frame('workspace/gitpull', { agentId: 'a1', repo: 'acme/infra' }, { epoch: 5 }))
+    await tick()
+    expect(pulled.workspaceGit.pull).toHaveBeenCalledWith('a1', 'acme/infra')
   })
 
   it('replies workspace/gitpull/result (a failed pull is data, not an error)', async () => {
@@ -640,7 +654,7 @@ describe('CpClient dispatch', () => {
     const f = JSON.parse(frame('workspace/gitpull', { agentId: 'a1' }, { epoch: 5 }))
     t.pushInbound(JSON.stringify(f))
     await tick()
-    expect(workspaceGit.pull).toHaveBeenCalledWith('a1')
+    expect(workspaceGit.pull).toHaveBeenCalledWith('a1', undefined)
     const rep = JSON.parse(t.sent[0]!)
     expect(rep.type).toBe('workspace/gitpull/result')
     expect(rep.corr).toBe(f.id)

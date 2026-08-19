@@ -19,7 +19,8 @@ import { ClientTransport, systemClock } from '@agentconnect.md/connection'
 import { CP_SUBPROTOCOL, CP_WS_PATH, type BootstrapUpgradeOutcome, type CpClient, type CpClientDeps } from './client.js'
 import type { ConfigApply } from './config-apply.js'
 import { createSessionReader } from './session-reader.js'
-import { createWorkspaceReader, type WorkspaceLocation } from './workspace-reader.js'
+import { createWorkspaceReader } from './workspace-reader.js'
+import { createWorkspaceScope } from './workspace-scope.js'
 import { createWorkspaceGit, type CommitMessagePass } from './workspace-git.js'
 import { createAgentWaker } from './agent-wake.js'
 import { createMemoryReader, type AgentMemoryAdminResolver } from './memory-reader.js'
@@ -147,63 +148,24 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
   const clusterIdentityToken = host.clusterIdentityToken()
   const echoDaemonId = host.echoDaemonId()
 
-  // This daemon's own coordinates: `agent.workspace.path` and the session worktrees beside it. The
-  // session KEY travels with an isolated one, because the worktree is named by it in either
-  // filesystem and the pod's path is composed rather than translated.
-  const daemonWorkspaceLocation = async (
-    id: string,
-    sessionId?: string
-  ): Promise<(WorkspaceLocation & { sessionKey?: string }) | undefined> => {
-    const agent = host.agents().get(id)
-    if (!agent) return undefined
-    if (!sessionId) {
-      return { root: agent.workspace.path, scratch: agent.workspace.mode === 'from-scratch' }
-    }
-    const session = await host.store().getSessionByAcpIdForAgent(id, sessionId)
-    if (agent.workspace.mode !== 'git-repo' || session?.workspaceIsolation !== 'session') return undefined
-    return { root: host.workspaces().sessionWorktreePath(agent, session.key), scratch: false, sessionKey: session.key }
-  }
-
-  // Where that workspace actually is, which under --k8s is the sandbox pod's volume. ONE resolver
-  // for the file reader and the git seam: the directory the console browses and the one it commits
-  // are the same directory, and describing them two different ways is what broke both panels.
-  // A defined location for a sessionId means that session IS isolated, so on a cluster it names the
-  // per-session worktree on the pod's volume rather than the shared checkout.
-  const workspaceLocation = async (id: string, sessionId?: string): Promise<WorkspaceLocation | undefined> => {
-    const agent = host.agents().get(id)
-    const local = await daemonWorkspaceLocation(id, sessionId)
-    if (!agent || !local) return undefined
-    const root = host
-      .workspaces()
-      .consoleWorkspaceRoot(
-        agent,
-        local.root,
-        host.k8sPlane()?.workspaceRootFor(id),
-        local.sessionKey === undefined ? undefined : { isolation: 'session', sessionKey: local.sessionKey }
-      )
-    return root === undefined ? undefined : { root, scratch: local.scratch }
-  }
-
-  const workspaceGitRoot = async (id: string, sessionId?: string): Promise<string | undefined> =>
-    (await workspaceLocation(id, sessionId))?.root
+  // Which root a console request addresses and where it IS — the sandbox pod's volume under --k8s.
+  // ONE resolver for the file reader and the git seam: the directory the console browses and the one
+  // it commits are the same directory, and describing them two different ways broke both panels.
+  const workspaceScope = createWorkspaceScope({
+    workspaces: host.workspaces(),
+    agentOf: (id) => host.agents().get(id),
+    sessionOf: (id, acpSessionId) => host.store().getSessionByAcpIdForAgent(id, acpSessionId),
+    runtimeRootOf: (id) => host.k8sPlane()?.workspaceRootFor(id)
+  })
 
   const workspaceGit = createWorkspaceGit(
     host.workspaces(),
-    workspaceGitRoot,
-    (id) => {
-      const workspace = host.agents().get(id)?.workspace
-      return workspace?.mode === 'git-repo' && workspace.gitCredential === 'github-app' ? gitCredentialEnv(id) : {}
-    },
-    (id) => {
-      const workspace = host.agents().get(id)?.workspace
-      return workspace?.mode === 'git-repo' && workspace.gitRepo
-        ? {
-            repo: workspace.gitRepo,
-            branch: workspace.gitBranch,
-            githubApp: workspace.gitCredential === 'github-app'
-          }
-        : undefined
-    },
+    workspaceScope.gitRoot,
+    // Derived from the SCOPE's own target, not the primary workspace's credential mode: a manual
+    // GitHub workspace may authorize an App-covered repository, whose secondary root then needs the
+    // helper the primary does not. The helper itself is URL-routed, so it only answers for that root.
+    (id, repo) => (workspaceScope.target(id, repo)?.githubApp ? gitCredentialEnv(id) : {}),
+    workspaceScope.target,
     // Registered on `register/ok` only, and reset by every reconnect — a console commit is
     // refused as data whenever it is absent (workspace-git.ts explains why).
     () => host.gitCommitIdentity(),
@@ -331,16 +293,16 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
     // run inside its pod, on the volume the root above names.
     workspaceRead: createWorkspaceReader(
       host.workspaces(),
-      workspaceLocation,
+      workspaceScope.location,
       (id, write) => host.withWorkspaceFileWrite(id, write),
       (id) => host.k8sPlane()?.workspaceFilesFor(id)
     ),
     workspaceGit: {
-      status: (id, sessionId) => workspaceGit.status(id, sessionId),
+      status: (id, sessionId, repo) => workspaceGit.status(id, sessionId, repo),
       // diff/log are read-only, so they skip the runtime-quiescence coordinator the pull needs.
       diff: (req) => workspaceGit.diff(req),
       log: (req) => workspaceGit.log(req),
-      pull: (id) => host.withWorkspaceFileWrite(id, () => workspaceGit.pull(id)),
+      pull: (id, repo) => host.withWorkspaceFileWrite(id, () => workspaceGit.pull(id, repo)),
       // The four console git writes serialize against agent turns without evicting the warm host
       // — they touch `.git`, never the working tree (see withWorkspaceIndexWrite).
       stage: (req) => host.withWorkspaceIndexWrite(req.agentId, () => workspaceGit.stage(req)),
@@ -378,7 +340,7 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
       host.workspaces(),
       // The workspace root in EXECUTION coordinates, like the file reader's: the skill roots the
       // console lists are the ones the agent's harness loads, and those are in the pod.
-      async (id) => (await workspaceLocation(id))?.root,
+      async (id) => (await workspaceScope.location(id))?.root,
       join(host.daemonRoot(), 'skill-installs'),
       (id) => host.k8sPlane()?.workspaceFilesFor(id)
     ),
