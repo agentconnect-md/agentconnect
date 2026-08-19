@@ -12,7 +12,8 @@ import {
   memoryLinkTargets,
   memoryRefToTopic,
   parseMemoryFrontmatter,
-  stampMemoryHeader
+  stampMemoryHeader,
+  MEMORY_FORMAT_GUIDANCE
 } from '../src/memory/frontmatter.js'
 import {
   ensureMemory,
@@ -20,16 +21,15 @@ import {
   memoryNeighbors,
   readMemoryFile,
   regenerateMemoryIndexHoldingLock,
-  writeMemoryFile
+  writeMemoryFile,
+  memoryChannelKey
 } from '../src/memory/store.js'
 import {
   appendDistilledMemories,
   MEMORY_DISTILLATION_SYSTEM_PROMPT,
   parseDistilledMemories
 } from '../src/memory/distill.js'
-import { MEMORY_FORMAT_GUIDANCE } from '../src/memory/frontmatter.js'
 import { createMemoryProvider } from '../src/memory/providers/factory.js'
-import { memoryChannelKey } from '../src/memory/store.js'
 
 const fs = () => new LocalMemoryFs(mkdtempSync(join(tmpdir(), 'ac-fm-')))
 
@@ -368,6 +368,36 @@ describe('distilled memories carry a description', () => {
     expect(appended.match(/^description:/gm)).toHaveLength(1)
     expect(appended).toContain('description: how we ship')
     expect(appended).toContain('also uses helm')
+  })
+
+  it('quotes a description that would otherwise break the YAML, and round-trips it', async () => {
+    const f = fs()
+    await ensureMemory(f, 'bot')
+    // `: ` would split the key/value; ` #` would start a comment; `- ` leads a list.
+    const nasty = 'ship: prod, tag #1 — see notes'
+    await appendDistilledMemories(f, [{ topic: 'risky.md', description: nasty, content: 'fact' }])
+
+    const created = await readMemoryFile(f, 'risky.md')
+    // Parsing it back yields the ORIGINAL text, not a truncated fragment.
+    expect(parseMemoryFrontmatter(created).header.description).toBe(nasty)
+    expect(await readMemoryFile(f, 'MEMORY.md')).toContain(nasty)
+  })
+
+  it('records only the type the model actually chose, never a blanket project', async () => {
+    const f = fs()
+    await ensureMemory(f, 'bot')
+    await appendDistilledMemories(f, [
+      { topic: 'who.md', description: 'about a person', type: 'user', content: 'alice owns billing' },
+      { topic: 'untyped.md', description: 'unclassified', content: 'a fact' }
+    ])
+    expect(parseMemoryFrontmatter(await readMemoryFile(f, 'who.md')).header.type).toBe('user')
+    // No type claimed when the model did not classify it — better absent than wrong.
+    expect(await readMemoryFile(f, 'untyped.md')).not.toContain('type:')
+  })
+
+  it('drops a type the model invented', () => {
+    const parsed = parseDistilledMemories('{"memories":[{"topic":"a.md","type":"bogus","content":"fact"}]}')
+    expect(parsed[0]?.type).toBeUndefined()
   })
 
   it('still works when the model omits a description', async () => {

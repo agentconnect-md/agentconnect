@@ -104,6 +104,25 @@ function quoteIfNeeded(value: string): string {
   return /^[\s"'[{&*!|>%@`-]|: |:$| #|\s$/.test(value) ? JSON.stringify(value) : value
 }
 
+/**
+ * Render a frontmatter block for a file being created. Values go through the same
+ * scalar-quoting rule as a stamp, so a description containing `: `, ` #`, or a
+ * leading YAML indicator cannot produce invalid or truncated frontmatter.
+ */
+export function buildMemoryHeader(fields: { description?: string; type?: MemoryEntryType }): string {
+  const lines: string[] = []
+  if (fields.description) lines.push(`description: ${quoteIfNeeded(fields.description.replace(/\s+/g, ' ').trim())}`)
+  if (fields.type) lines.push(`type: ${fields.type}`)
+  return lines.length > 0 ? `${FENCE}\n${lines.join('\n')}\n${FENCE}\n\n` : ''
+}
+
+/** Coerce a model-supplied string to one of our types, or undefined if it is not one. */
+export function asMemoryEntryType(value: unknown): MemoryEntryType | undefined {
+  return typeof value === 'string' && (MEMORY_ENTRY_TYPES as readonly string[]).includes(value)
+    ? (value as MemoryEntryType)
+    : undefined
+}
+
 /** The `name` slug for a topic file (`deploys.md` → `deploys`). */
 export function memoryNameForTopic(topicName: string): string {
   return topicName.replace(/\.md$/i, '')
