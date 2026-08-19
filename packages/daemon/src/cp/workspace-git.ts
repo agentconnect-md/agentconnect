@@ -211,7 +211,10 @@ export interface WorkspaceGitTarget {
 export function createWorkspaceGit(
   workspaces: WorkspaceManager,
   workspaceRootByAgent: (agentId: string, sessionId?: string, repo?: string) => Promise<string | undefined>,
-  credentialEnvByAgent: (agentId: string) => Record<string, string> = () => ({}),
+  /** The git-credential helper env for the scope being operated on. Scoped by `repo` for the same
+   *  reason the target is: a secondary root is App-covered even when the primary workspace is not,
+   *  so gating the helper on the primary's credential mode would leave its private clone anonymous. */
+  credentialEnvByAgent: (agentId: string, repo?: string) => Record<string, string> = () => ({}),
   /** The origin and branch of the scope being operated on — the agent's primary workspace, or the
    *  secondary root `repo` names. A pull reaches THAT repository's remote, never the primary's. */
   workspaceTargetByAgent: (agentId: string, repo?: string) => WorkspaceGitTarget | undefined = () => undefined,
@@ -555,7 +558,7 @@ export function createWorkspaceGit(
           git.withEnv({
             ...workspaceGitLocalEnv(),
             ...pullTarget.env,
-            ...credentialEnvByAgent(agentId),
+            ...credentialEnvByAgent(agentId, repo),
             GIT_TERMINAL_PROMPT: '0'
           }),
           pullTarget.remote,
@@ -722,7 +725,7 @@ export function createWorkspaceGit(
         await git.raw(['check-ref-format', '--branch', branch])
         // Only a workspace the daemon issues credentials for gets the helper; anything else pushes on
         // whatever ambient auth the host has, or fails as data.
-        const helperAgentId = Object.keys(credentialEnvByAgent(agentId)).length > 0 ? agentId : undefined
+        const helperAgentId = Object.keys(credentialEnvByAgent(agentId, req.repo)).length > 0 ? agentId : undefined
         const pushTarget = workspaceGitPushTarget(authorized.origin, helperAgentId)
         timer = setTimeout(() => abort.abort(), PUSH_TIMEOUT_MS)
         // NEVER --force / --force-with-lease: a console push must not drop a commit the remote has

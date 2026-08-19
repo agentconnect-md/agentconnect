@@ -220,6 +220,36 @@ describe('workspace git follows the repo scope', () => {
   })
 })
 
+describe('a secondary root is App-covered whatever the primary workspace is', () => {
+  it('marks the root App-backed for a MANUAL GitHub primary, whose own clone is anonymous', () => {
+    // A manual GitHub workspace may explicitly authorize its own App-covered repositories. Deriving
+    // the credential decision from the PRIMARY's mode would leave those roots' private clones
+    // anonymous; the scope's target is what says which credentials each root needs.
+    const manual = AgentSchema.parse({
+      id: 'bot-manual',
+      name: 'bot-manual',
+      status: 'active',
+      runtime: 'claude',
+      workspace: {
+        mode: 'git-repo',
+        path: join(base, 'agents', 'bot-manual', 'workspace'),
+        gitRepo: 'https://github.com/example-co/manual-checkout',
+        additionalRepos: [{ repoFullName: AUTHORIZED, repoId: AUTHORIZED_ID }]
+      },
+      integrations: [],
+      output: { mode: 'low' }
+    })
+    const manualScope = createWorkspaceScope({
+      workspaces,
+      agentOf: (id) => (id === 'bot-manual' ? manual : undefined),
+      sessionOf: async () => undefined,
+      runtimeRootOf: () => undefined
+    })
+    expect(manualScope.target('bot-manual')).toMatchObject({ githubApp: false })
+    expect(manualScope.target('bot-manual', AUTHORIZED)).toMatchObject({ githubApp: true, branch: '' })
+  })
+})
+
 describe('cluster daemons have nowhere to put a secondary root yet', () => {
   it('answers no root for a repo scope in sandbox mode, instead of serving the primary', async () => {
     workspaces.setSandboxMode(true)

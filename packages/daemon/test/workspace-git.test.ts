@@ -258,6 +258,41 @@ describe('createWorkspaceGit.pull', () => {
     }
   })
 
+  it('pulls the SCOPED root: its own target, its credentials, and no fallback to the primary', async () => {
+    const dir = ws(true)
+    rawImpl = vi.fn().mockResolvedValue('https://github.com/acme/infra.git\n')
+    pullImpl = vi.fn().mockResolvedValue({ files: [], summary: { insertions: 0, deletions: 0 } })
+    const roots: (string | undefined)[] = []
+    const credentialScopes: (string | undefined)[] = []
+    const git = createWorkspaceGit(
+      workspaces,
+      async (_id, _sessionId, repo) => {
+        roots.push(repo)
+        return dir
+      },
+      // A manual GitHub primary authorizes an App-covered repository: the SECONDARY root needs the
+      // helper the primary does not, so the decision must follow the scope rather than the workspace.
+      (_id, repo) => {
+        credentialScopes.push(repo)
+        return repo ? { AGENTCONNECT_GIT_CRED: 'helper' } : {}
+      },
+      (_id, repo) =>
+        repo
+          ? { repo: 'https://github.com/acme/infra.git', branch: 'trunk', githubApp: true }
+          : { repo: 'https://github.com/acme/repo.git', branch: 'main', githubApp: false }
+    )
+
+    expect(await git.pull('a', 'acme/infra')).toMatchObject({ ok: true })
+    expect(roots).toEqual(['acme/infra'])
+    expect(credentialScopes).toEqual(['acme/infra'])
+    // The refspec git was asked for names the secondary root's branch, never the primary's.
+    expect(pullImpl).toHaveBeenCalledWith(
+      expect.any(String),
+      '+refs/heads/trunk:refs/remotes/origin/trunk',
+      expect.anything()
+    )
+  })
+
   it('reports "Already up to date." when nothing changed', async () => {
     const dir = ws(true)
     pullImpl = vi.fn().mockResolvedValue({ files: [], summary: { insertions: 0, deletions: 0 } })
