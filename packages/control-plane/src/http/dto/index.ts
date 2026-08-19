@@ -2459,6 +2459,8 @@ export const SessionDto = z.object({
   permissionMode: z.string().nullable(),
   outputMode: z.string().nullable(),
   daemonId: z.string().nullable(),
+  /** The shared-store pool set holding this session's rows (`domain/session-content.ts`); null ⇒ the recorder's private store. */
+  contentSetId: z.string().nullable(),
   workspaceIsolation: z.enum(['shared', 'session']).nullable(),
   visibility: SessionVisibilityEnum,
   externalProvider: z.string().nullable(),
@@ -2585,6 +2587,8 @@ export const SessionDetailDto = z.object({
   permissionMode: z.string().nullable(),
   outputMode: z.string().nullable(),
   daemonId: z.string().nullable(),
+  /** The shared-store pool set holding this session's rows (`domain/session-content.ts`); null ⇒ the recorder's private store. */
+  contentSetId: z.string().nullable(),
   workspaceIsolation: z.enum(['shared', 'session']).nullable(),
   activityState: z.string(),
   // ── session visibility (docs/designs/session-visibility.md) ──

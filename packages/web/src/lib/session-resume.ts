@@ -2,8 +2,16 @@ export type SessionResumeState = 'available' | 'checking' | 'unavailable'
 
 export interface SessionResumeMember {
   agentId: string
-  /** Daemon that owns this session's local content. */
+  /** Daemon that recorded this session's content. */
   daemonId: string | null | undefined
+  /** The shared-store pool set the content went to; null/absent ⇒ the recorder's private store. */
+  contentSetId?: string | null
+}
+
+/** Where a participant agent is placed NOW — the one machine of a `daemon` placement, or the set. */
+export interface SessionResumePlacement {
+  daemonId?: string | null
+  setId?: string | null
 }
 
 /**
@@ -24,23 +32,19 @@ export function sessionResumeMembers(
   return currentSession ? [currentSession] : null
 }
 
-/**
- * A persisted conversation can resume only while every participating agent is
- * still placed on the daemon that owns its session. Agent moves do not copy ACP
- * state, transcripts, or worktrees to the new daemon.
- *
- * `null` members means session detail/roster metadata is still loading. Once the
- * metadata is present, missing ownership or placement fails closed.
- */
+/** Resumable only while every participant's CURRENT placement still reaches its content: a `daemon` placement must be the recorder (moves copy nothing), a pool placement needs the content in the pool's shared store (`contentSetId`) — no member id survives a rollout. `null` members = still loading; anything missing fails closed. */
 export function sessionResumeState(
   members: readonly SessionResumeMember[] | null,
-  currentDaemonByAgent: ReadonlyMap<string, string | undefined>
+  placementByAgent: ReadonlyMap<string, SessionResumePlacement | undefined>
 ): SessionResumeState {
   if (members === null) return 'checking'
   if (members.length === 0) return 'unavailable'
-  return members.every(
-    (member) => Boolean(member.daemonId) && currentDaemonByAgent.get(member.agentId) === member.daemonId
-  )
+  return members.every((member) => {
+    const placement = placementByAgent.get(member.agentId)
+    if (!placement) return false
+    if (member.daemonId && placement.daemonId === member.daemonId) return true
+    return Boolean(member.contentSetId) && placement.setId === member.contentSetId
+  })
     ? 'available'
     : 'unavailable'
 }

@@ -3,8 +3,9 @@ import { sessionResumeMembers, sessionResumeState } from './session-resume'
 
 describe('sessionResumeState', () => {
   const placements = new Map([
-    ['agent-a', 'daemon-1'],
-    ['agent-b', 'daemon-2']
+    ['agent-a', { daemonId: 'daemon-1' }],
+    ['agent-b', { daemonId: 'daemon-2' }],
+    ['agent-pool', { setId: 'pool-set' }]
   ])
 
   it('allows resume while every agent remains on its session daemon', () => {
@@ -30,6 +31,31 @@ describe('sessionResumeState', () => {
 
   it('reports checking while detail metadata is loading', () => {
     expect(sessionResumeState(null, placements)).toBe('checking')
+  })
+
+  it('allows resume on a pool agent whose content sits in the pool store, whatever member recorded it', () => {
+    expect(
+      sessionResumeState([{ agentId: 'agent-pool', daemonId: 'rolled-member', contentSetId: 'pool-set' }], placements)
+    ).toBe('available')
+    // The recorder was reaped and SetNulled — the store still holds the rows.
+    expect(sessionResumeState([{ agentId: 'agent-pool', daemonId: null, contentSetId: 'pool-set' }], placements)).toBe(
+      'available'
+    )
+  })
+
+  it('fails closed when a pool agent’s content is not in its current set', () => {
+    // Moved onto the pool after recording on a private store.
+    expect(sessionResumeState([{ agentId: 'agent-pool', daemonId: 'daemon-1', contentSetId: null }], placements)).toBe(
+      'unavailable'
+    )
+    // Moved between sets.
+    expect(
+      sessionResumeState([{ agentId: 'agent-pool', daemonId: 'daemon-1', contentSetId: 'other-set' }], placements)
+    ).toBe('unavailable')
+    // Pinned to a machine now; the pool store is not its placement.
+    expect(sessionResumeState([{ agentId: 'agent-a', daemonId: null, contentSetId: 'pool-set' }], placements)).toBe(
+      'unavailable'
+    )
   })
 
   it('checks every conversation member on a flat session route', () => {
