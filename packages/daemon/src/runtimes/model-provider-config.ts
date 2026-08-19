@@ -3,6 +3,7 @@ import type { RuntimeDef } from '../config/config-schema.js'
 import type { Agent } from '../agents/agent-schema.js'
 import { isClaudeRuntimeDef } from '../runtime-defs/claude-runtime.js'
 import { sharedCredentialProfile } from './runtime-credentials.js'
+import { codexConfigWithBaseUrl, objectFromJson, record } from './codex-config.js'
 
 export interface ModelCredential {
   key: string
@@ -15,43 +16,13 @@ export interface ModelProviderTarget {
   opencodeProvider?: string
 }
 
-function objectFromJson(raw: string | undefined, label: string): Record<string, unknown> {
-  if (!raw?.trim()) return {}
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(raw)
-  } catch {
-    throw new Error(`${label} must be a valid JSON object`)
-  }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new Error(`${label} must be a JSON object`)
-  }
-  return parsed as Record<string, unknown>
-}
-
-function record(value: unknown, label: string): Record<string, unknown> {
-  if (value === undefined) return {}
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label} must be a JSON object`)
-  return value as Record<string, unknown>
-}
-
 function isOpenCodeRuntime(runtimeId: string, runtime: RuntimeDef): boolean {
   if (runtimeId === 'opencode') return true
   return [runtime.command, ...runtime.args].some((part) => /(?:^|[\/@])opencode(?:@[^\/]*)?$/.test(part.toLowerCase()))
 }
 
 function applyCodexBaseUrl(env: Record<string, string>, baseUrl: string): void {
-  const config = objectFromJson(env.CODEX_CONFIG, 'CODEX_CONFIG')
-  const providers = record(config.model_providers, 'CODEX_CONFIG.model_providers')
-  const openai = record(providers.openai, 'CODEX_CONFIG.model_providers.openai')
-  env.CODEX_CONFIG = JSON.stringify({
-    ...config,
-    model_provider: 'openai',
-    model_providers: {
-      ...providers,
-      openai: { name: 'OpenAI', ...openai, base_url: baseUrl, env_key: 'OPENAI_API_KEY' }
-    }
-  })
+  env.CODEX_CONFIG = codexConfigWithBaseUrl(env.CODEX_CONFIG, baseUrl)
   env.OPENAI_BASE_URL = baseUrl
 }
 
