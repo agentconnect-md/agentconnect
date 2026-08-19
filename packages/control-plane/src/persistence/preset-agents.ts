@@ -4,9 +4,12 @@
  * `provisionPresetAgents` is THE org-creation seam: every path that mints an org
  * (`POST /orgs`, JIT personal orgs, the waitlist redeem, the no-auth default
  * tenant) calls it so the org is born with the `agentconnect` general preset —
- * unplaced, runtime deferred — plus its `preset_agent` state row, in the SAME
- * transaction as the org itself. The one-time backfill for pre-existing orgs
- * (`preset-agent-backfill.ts`) reuses the identical write.
+ * unplaced, runtime deferred, or placed on the pool when this install runs one
+ * (`cloud`, §3.2) — plus its `preset_agent` state row, in the SAME transaction as
+ * the org itself. The one-time backfill for pre-existing orgs
+ * (`preset-agent-backfill.ts`) reuses the identical write, without the pool
+ * placement: it runs against orgs of unknown age, which already chose where they
+ * run, and a Cloud birth is a decision only a brand-new org has not made yet.
  *
  * Idempotency lives in the `preset_agent` row, not in agent existence: a row —
  * `created` OR `skipped` — permanently stops re-provisioning, so a preset the
@@ -77,6 +80,28 @@ export const PRESET_AGENT_SKILLS: readonly string[] = PRESET_SKILL_SOURCE.skills
   (skill) => `${PRESET_SKILL_SOURCE.name}/${skill}`
 )
 
+/**
+ * Exec config the preset is born with when the install runs a daemon pool
+ * ("Cloud", §3.2). Absent/null ⇒ the preset is born unplaced with its runtime
+ * deferred, the shape every pool-less install keeps.
+ */
+export interface PresetCloudPlacement {
+  /** Runtime id the pool image ships and holds credentials for (e.g. `dsh-acp`). */
+  runtime: string
+  /** Model pinned on the agent; absent ⇒ the runtime's own default model. */
+  model?: string
+}
+
+/** The install-wide pool ("Cloud") when this install actually RUNS one: the
+ *  org-less member set with at least one member. The set ROW exists everywhere
+ *  (the migration mints it), so emptiness rather than absence is what tells a
+ *  self-hosted deployment from a Cloud one — and membership stays honest because
+ *  a retired Pod loses it inside `PoolMemberReaper`'s window. */
+async function cloudSetId(db: PrismaLike): Promise<string | null> {
+  const row = await db.memberSet.findFirst({ where: { orgId: null, members: { some: {} } }, select: { id: true } })
+  return row?.id ?? null
+}
+
 /** Read one org's provisioning state for a preset — false ⇒ never provisioned. */
 export async function presetAgentRowExists(db: PrismaLike, orgId: string, preset: PresetAgentKind): Promise<boolean> {
   const row = await db.presetAgent.findUnique({ where: { orgId_preset: { orgId, preset } }, select: { orgId: true } })
@@ -95,14 +120,20 @@ export async function presetAgentRowExists(db: PrismaLike, orgId: string, preset
  */
 export async function provisionPresetAgents(
   db: PrismaLike,
-  args: { orgId: string; createdByUserId?: string | null }
+  args: { orgId: string; createdByUserId?: string | null; cloud?: PresetCloudPlacement | null }
 ): Promise<void> {
   const agentId = AgentId(randomUUID())
   const skills = await providePresetSkillSource(db, args.orgId)
+  // Cloud birth (§3.2): with a pool on this install the preset is placed on it NOW
+  // rather than waiting for a machine that may never arrive, so a brand-new org has
+  // a working agent on its first screen. The exec config comes with the placement —
+  // the pool image is one shared runtime set, so which runtime is signed in there is
+  // a deployment decision, not a per-org one. No pool ⇒ unplaced, runtime deferred.
+  const poolSetId = args.cloud ? await cloudSetId(db) : null
+  const cloud = poolSetId && args.cloud ? { setId: poolSetId, ...args.cloud } : null
   // Same creation core as POST /agents (PgAgentRepo composes under the ambient
-  // tx via its PrismaLike constructor arg). Runtime stays UNSET — deferred exec
-  // config; placement (M1/manual) chooses it. Everything else is the ordinary
-  // agent default: org visibility, scratch workspace, status inactive.
+  // tx via its PrismaLike constructor arg). Everything the placement does not
+  // decide is the ordinary agent default: org visibility, scratch workspace.
   await new PgAgentRepo(db).create({
     id: agentId,
     orgId: OrgId(args.orgId),
@@ -110,11 +141,27 @@ export async function provisionPresetAgents(
     displayName: GENERAL_PRESET.displayName,
     description: GENERAL_PRESET.description,
     icon: GENERAL_PRESET.icon,
+    ...(cloud
+      ? {
+          placementKind: 'set' as const,
+          setId: cloud.setId,
+          runtime: cloud.runtime,
+          ...(cloud.model ? { model: cloud.model } : {})
+        }
+      : {}),
     ...(skills.length > 0 ? { skills } : {}),
     ...(args.createdByUserId ? { createdByUserId: args.createdByUserId } : {})
   })
   await db.presetAgent.create({
-    data: { orgId: args.orgId, preset: 'general', agentId, status: 'created' }
+    data: {
+      orgId: args.orgId,
+      preset: 'general',
+      agentId,
+      status: 'created',
+      // Born placed ⇒ born settled: the one-shot auto-placement must never move
+      // what the org already runs on, nor fight a user who unplaces it later.
+      ...(cloud ? { placementSettledAt: new Date() } : {})
+    }
   })
 }
 
@@ -161,6 +208,9 @@ export async function markPresetSkipped(db: PrismaLike, orgId: string, preset: P
  * permanent `skipped` (slug collision: never rename a user's agent, §3.3),
  * `false` ⇒ provisioned. The caller supplies the transaction: all three outcomes
  * must commit atomically with whatever else that caller is writing.
+ *
+ * Deliberately provisions UNPLACED, with no Cloud birth: both callers run against
+ * orgs of unknown age that have already chosen where they run.
  */
 export async function ensurePresetAgentsProvisioned(
   tx: PrismaLike,

@@ -10,6 +10,7 @@ import { prisma } from '../setup.db.js'
 import { buildHttpApp } from '../fakes/build-http.js'
 import type { IconStore } from '../../src/icons/icon-store.js'
 import { seedAgent, seedDaemon } from '../fixtures/seed.js'
+import { poolSetId, seedPoolMember } from '../fakes/member-set.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 import {
   GENERAL_PRESET,
@@ -102,6 +103,49 @@ describe('org-creation seam (POST /orgs)', () => {
       where: { orgId_name: { orgId: org.id, name: GENERAL_PRESET.name } }
     })
     expect(((agent.runtimeOverrides ?? {}) as { skills?: string[] }).skills ?? []).toEqual([])
+  })
+
+  it('an install running a pool is born placed on Cloud, with the deployment’s runtime and model', async () => {
+    await seedPoolMember(prisma, randomUUID())
+    const org = await prisma.org.create({ data: { slug: `cloud-born-${randomUUID().slice(0, 8)}` } })
+
+    await provisionPresetAgents(prisma, { orgId: org.id, cloud: { runtime: 'dsh-acp', model: 'deepseek-v4-flash' } })
+
+    const agent = await prisma.agent.findUniqueOrThrow({
+      where: { orgId_name: { orgId: org.id, name: GENERAL_PRESET.name } }
+    })
+    expect(agent.placementKind).toBe('set')
+    expect(agent.setId).toBe(await poolSetId(prisma))
+    expect(agent.daemonId).toBeNull() // a set names no machine
+    expect(agent.status).toBe('active') // a placed agent is active from row one
+    expect(agent.runtime).toBe('dsh-acp')
+    expect((agent.runtimeOverrides as { model?: string }).model).toBe('deepseek-v4-flash')
+
+    // Born placed ⇒ born settled: nothing may auto-place it again, or fight a later unplace.
+    const row = await prisma.presetAgent.findUniqueOrThrow({
+      where: { orgId_preset: { orgId: org.id, preset: 'general' } }
+    })
+    expect(row.placementSettledAt).not.toBeNull()
+  })
+
+  it('an install with no pool member is born unplaced even with a Cloud runtime configured', async () => {
+    // The org-less set ROW exists on every install (the migration mints it) — only
+    // membership says whether this deployment actually runs Cloud.
+    const org = await prisma.org.create({ data: { slug: `no-cloud-${randomUUID().slice(0, 8)}` } })
+
+    await provisionPresetAgents(prisma, { orgId: org.id, cloud: { runtime: 'dsh-acp', model: 'deepseek-v4-flash' } })
+
+    const agent = await prisma.agent.findUniqueOrThrow({
+      where: { orgId_name: { orgId: org.id, name: GENERAL_PRESET.name } }
+    })
+    expect(agent.placementKind).toBe('daemon')
+    expect(agent.setId).toBeNull()
+    expect(agent.daemonId).toBeNull()
+    expect(agent.runtime).toBeNull() // deferred exec config, as before
+    const row = await prisma.presetAgent.findUniqueOrThrow({
+      where: { orgId_preset: { orgId: org.id, preset: 'general' } }
+    })
+    expect(row.placementSettledAt).toBeNull()
   })
 
   it('DELETE refuses the built-in preset (403) but still deletes ordinary agents', async () => {

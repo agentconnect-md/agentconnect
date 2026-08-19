@@ -153,6 +153,16 @@ const CoreConfigShape = {
     .enum(['true', 'false'])
     .default('true')
     .transform((v) => v === 'true'),
+  // Exec config the preset is BORN with on an install that runs a daemon pool
+  // ("Cloud"): a new org's preset is placed on the pool at creation instead of
+  // waiting for a machine, so its builtin agent can answer immediately. Deployment
+  // policy rather than a product constant — the pool image decides which runtime is
+  // installed and signed in for every org, so the deployment names it. Empty
+  // runtime ⇒ never place on Cloud (the preset is born unplaced, as before); an
+  // install with no pool ignores both keys.
+  PRESET_AGENT_CLOUD_RUNTIME: z.string().default('dsh-acp'),
+  // Model pinned on that placement; empty ⇒ leave it to the runtime's own default.
+  PRESET_AGENT_CLOUD_MODEL: z.string().default('deepseek-v4-flash'),
   // (SLACK_PLATFORM_* and FEISHU/LARK_PLATFORM_* moved into the provider env
   // shapes spread above.)
   // The MCP endpoint's dedicated public origin (agent-assistant.md §6.1), e.g.
