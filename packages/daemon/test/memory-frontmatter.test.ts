@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { LocalMemoryFs } from '../src/memory/fs.js'
 import {
+  buildMemoryHeader,
   memoryLinkTargets,
   memoryRefToTopic,
   parseMemoryFrontmatter,
@@ -26,11 +27,7 @@ import {
   writeMemoryFile,
   memoryChannelKey
 } from '../src/memory/store.js'
-import {
-  appendDistilledMemories,
-  MEMORY_DISTILLATION_SYSTEM_PROMPT,
-  parseDistilledMemories
-} from '../src/memory/distill.js'
+import { MEMORY_DISTILLATION_SYSTEM_PROMPT } from '../src/memory/distill.js'
 import { createMemoryProvider } from '../src/memory/providers/factory.js'
 
 const fs = () => new LocalMemoryFs(mkdtempSync(join(tmpdir(), 'ac-fm-')))
@@ -194,43 +191,6 @@ describe('generated memory index', () => {
   })
 })
 
-describe('distillation and the generated index', () => {
-  it('indexes distilled topics through the generator — sorted, once, no hand-appended lines', async () => {
-    const f = fs()
-    await ensureMemory(f, 'bot')
-    // Distilled topics carry no description, so generation has to be forced by the
-    // distiller itself; otherwise a distill-only agent would never get an index.
-    expect(
-      await appendDistilledMemories(f, [
-        { topic: 'zeta.md', content: 'z fact' },
-        { topic: 'alpha.md', content: 'a fact' }
-      ])
-    ).toBe(2)
-
-    const index = await readMemoryFile(f, 'MEMORY.md')
-    expect(index).toContain('- [alpha](alpha.md)')
-    expect(index).toContain('- [zeta](zeta.md)')
-    expect(index.indexOf('alpha')).toBeLessThan(index.indexOf('zeta')) // sorted, not append-ordered
-    expect(index.match(/\(alpha\.md\)/g)).toHaveLength(1) // no duplicate hand-appended line
-  })
-
-  it('does not throw mid-batch when the index is already near the size cap', async () => {
-    const f = fs()
-    await ensureMemory(f, 'bot')
-    // Fill the index close to the bound; the legacy hand-append would exceed it and
-    // abort the batch, dropping every remaining extracted fact.
-    const description = 'x'.repeat(4_000)
-    for (let i = 0; i < 70; i++) {
-      await writeMemoryFile(f, `t-${i}.md`, `---\ndescription: ${description}\n---\nbody\n`, undefined, 'tool')
-    }
-    const batch = Array.from({ length: 12 }, (_, i) => ({ topic: `d-${i}.md`, content: `fact ${i}` }))
-    await expect(appendDistilledMemories(f, batch)).resolves.toBe(12)
-    // Every fact landed in its topic file even though the index had to be truncated.
-    expect(await readMemoryFile(f, 'd-11.md')).toContain('fact 11')
-    expect(Buffer.byteLength(await readMemoryFile(f, 'MEMORY.md'))).toBeLessThanOrEqual(MAX_MEMORY_FILE_BYTES)
-  })
-})
-
 describe('memory graph (one hop)', () => {
   const write = (f: ReturnType<typeof fs>, topic: string, description: string, body: string) =>
     writeMemoryFile(f, topic, `---\ndescription: ${description}\n---\n${body}\n`, undefined, 'tool')
@@ -352,100 +312,6 @@ describe('dream adoption and index ownership', () => {
   })
 })
 
-describe('distilled memories carry a description', () => {
-  it("writes a header when creating a topic, and leaves an existing file's header alone", async () => {
-    const f = fs()
-    await ensureMemory(f, 'bot')
-    await appendDistilledMemories(f, [{ topic: 'deploys.md', description: 'how we ship', content: 'port 4242' }])
-
-    const created = await readMemoryFile(f, 'deploys.md')
-    expect(created).toContain('description: how we ship')
-    expect(created).toContain('- port 4242')
-    // The description reaches the generated index, which is the whole point.
-    expect(await readMemoryFile(f, 'MEMORY.md')).toContain('- [deploys](deploys.md) — how we ship')
-
-    // Appending later must not staple a second header on.
-    await appendDistilledMemories(f, [{ topic: 'deploys.md', description: 'ignored', content: 'also uses helm' }])
-    const appended = await readMemoryFile(f, 'deploys.md')
-    expect(appended.match(/^description:/gm)).toHaveLength(1)
-    expect(appended).toContain('description: how we ship')
-    expect(appended).toContain('also uses helm')
-  })
-
-  it('quotes a description that would otherwise break the YAML, and round-trips it', async () => {
-    const f = fs()
-    await ensureMemory(f, 'bot')
-    // `: ` would split the key/value; ` #` would start a comment; `- ` leads a list.
-    const nasty = 'ship: prod, tag #1 — see notes'
-    await appendDistilledMemories(f, [{ topic: 'risky.md', description: nasty, content: 'fact' }])
-
-    const created = await readMemoryFile(f, 'risky.md')
-    // Parsing it back yields the ORIGINAL text, not a truncated fragment.
-    expect(parseMemoryFrontmatter(created).header.description).toBe(nasty)
-    expect(await readMemoryFile(f, 'MEMORY.md')).toContain(nasty)
-  })
-
-  it('round-trips a description containing quotes and backslashes', async () => {
-    const f = fs()
-    await ensureMemory(f, 'bot')
-    // Quoting escapes these on write; parsing must UNESCAPE them, or the stored value
-    // silently grows literal backslashes every time it is read back.
-    const nasty = 'he said "ship it", path C:\\tmp — see #2'
-    await appendDistilledMemories(f, [{ topic: 'quoted.md', description: nasty, content: 'fact' }])
-
-    const created = await readMemoryFile(f, 'quoted.md')
-    expect(parseMemoryFrontmatter(created).header.description).toBe(nasty)
-    // And a re-stamp (any ordinary write) must not corrupt it further.
-    const restamped = stampMemoryHeader('quoted.md', created, '2026-08-19T00:00:00.000Z')
-    expect(parseMemoryFrontmatter(restamped).header.description).toBe(nasty)
-  })
-
-  it('reads a single-quoted header value written by hand', () => {
-    expect(parseMemoryFrontmatter("---\ndescription: 'it''s fine'\n---\nbody\n").header.description).toBe("it's fine")
-  })
-
-  it('records only the type the model actually chose, never a blanket project', async () => {
-    const f = fs()
-    await ensureMemory(f, 'bot')
-    await appendDistilledMemories(f, [
-      { topic: 'who.md', description: 'about a person', type: 'user', content: 'alice owns billing' },
-      { topic: 'untyped.md', description: 'unclassified', content: 'a fact' }
-    ])
-    expect(parseMemoryFrontmatter(await readMemoryFile(f, 'who.md')).header.type).toBe('user')
-    // No type claimed when the model did not classify it — better absent than wrong.
-    expect(await readMemoryFile(f, 'untyped.md')).not.toContain('type:')
-  })
-
-  it('drops a type the model invented', () => {
-    const parsed = parseDistilledMemories('{"memories":[{"topic":"a.md","type":"bogus","content":"fact"}]}')
-    expect(parsed[0]?.type).toBeUndefined()
-  })
-
-  it('still works when the model omits a description', async () => {
-    const f = fs()
-    await ensureMemory(f, 'bot')
-    await appendDistilledMemories(f, [{ topic: 'plain.md', content: 'a fact' }])
-    const created = await readMemoryFile(f, 'plain.md')
-    expect(created).not.toContain('---')
-    expect(created).toContain('- a fact')
-  })
-
-  it('parses description out of the model JSON, bounded and single-line', () => {
-    const parsed = parseDistilledMemories(
-      '{"memories":[{"topic":"a.md","description":"  multi\\n  line  ","content":"fact"}]}'
-    )
-    expect(parsed[0]?.description).toBe('multi line')
-  })
-
-  it('teaches the SAME format text in every trigger — the drift that caused this', () => {
-    // Per-turn, distillation, and dreaming all write memory files. Each restating the
-    // format is exactly how they diverged, so all three embed the one shared text.
-    expect(MEMORY_DISTILLATION_SYSTEM_PROMPT).toContain(MEMORY_FORMAT_GUIDANCE)
-    expect(dreamSystemPrompt(false)).toContain(MEMORY_FORMAT_GUIDANCE)
-    expect(dreamSystemPrompt(true)).toContain(MEMORY_FORMAT_GUIDANCE)
-  })
-})
-
 describe('normalizing model-written frontmatter', () => {
   it('re-quotes an unsafe description the dream wrote as free text', () => {
     // The dream emits frontmatter as opaque text; `ship: prod` would split the
@@ -503,5 +369,34 @@ describe('normalizing model-written frontmatter', () => {
 
   it('leaves a headerless dream file alone', () => {
     expect(normalizeMemoryHeader('just a note\n')).toBe('just a note\n')
+  })
+})
+
+describe('a description survives the real write path', () => {
+  it('round-trips quotes and backslashes, and reaches the generated index', async () => {
+    const f = fs()
+    await ensureMemory(f, 'bot')
+    const nasty = 'he said "ship it", path C:\\tmp — see #2'
+    // Exactly what a model writes through the shared tool surface: a header it wrote,
+    // stored by the ordinary write path.
+    await writeMemoryFile(f, 'quoted.md', `${buildMemoryHeader({ description: nasty })}fact\n`, undefined, 'distill')
+
+    const created = await readMemoryFile(f, 'quoted.md')
+    expect(parseMemoryFrontmatter(created).header.description).toBe(nasty)
+    // A later ordinary write re-stamps the file; the value must not degrade.
+    const restamped = stampMemoryHeader('quoted.md', created, '2026-08-19T00:00:00.000Z')
+    expect(parseMemoryFrontmatter(restamped).header.description).toBe(nasty)
+    expect(await readMemoryFile(f, 'MEMORY.md')).toContain(nasty)
+  })
+})
+
+describe('one format text, every trigger', () => {
+  it('embeds the SAME shared guidance in all three prompts — the drift that caused this', () => {
+    // A turn, per-turn distillation, and a dream all write memory files. Each
+    // restating the format in its own words is exactly how they diverged, so the
+    // single shared text must appear verbatim in every one of them.
+    expect(MEMORY_DISTILLATION_SYSTEM_PROMPT).toContain(MEMORY_FORMAT_GUIDANCE)
+    expect(dreamSystemPrompt(false)).toContain(MEMORY_FORMAT_GUIDANCE)
+    expect(dreamSystemPrompt(true)).toContain(MEMORY_FORMAT_GUIDANCE)
   })
 })

@@ -86,3 +86,102 @@ describe('record-memory mutations under the same gate', () => {
     await expect(executeTool(ctx(), 'searchMemory', { query: 'deploys' }, recordDeps(false))).resolves.toBeDefined()
   })
 })
+
+// The distillation session reaches memory through the SAME tool surface as a turn,
+// differing only by its binding (#41). These execute the tool end to end, which is
+// what the earlier attachment-only assertions failed to cover.
+describe('a distillation-bound session writing through the shared tools', () => {
+  const distillCtx = (): SessionContext => ({
+    agentId: 'bot-a',
+    platform: 'distill',
+    channel: 'memory',
+    thread: 'distill',
+    isDm: false,
+    tools: [],
+    memoryBinding: { source: 'distill', scope: { agentId: 'bot-a', channelKey: 'C1-abc123', channel: 'C1' } }
+  })
+
+  it('records the write as `distill`, not `tool`, so the dream rebase stays honest', async () => {
+    const d = deps(true)
+    await executeTool(distillCtx(), 'writeMemory', { path: 'prefs.md', content: '- likes tabs' }, d)
+    const [, , , , source] = (d.memory.write as unknown as { mock: { calls: unknown[][] } }).mock.calls[0]!
+    expect(source).toBe('distill')
+  })
+
+  it('writes into the ORIGINATING channel store, not one derived from its own coordinates', async () => {
+    // Its own coordinates are the synthetic `memory`/`distill` pair; resolving from
+    // those would send a channel-scoped agent's facts to the wrong folder.
+    const d = deps(true, { memoryScope: () => ({ agentId: 'bot-a', channelKey: 'WRONG' }) })
+    await executeTool(distillCtx(), 'writeMemory', { path: 'prefs.md', content: '- likes tabs' }, d)
+    const [scope] = (d.memory.write as unknown as { mock: { calls: unknown[][] } }).mock.calls[0]!
+    expect(scope).toMatchObject({ agentId: 'bot-a', channelKey: 'C1-abc123' })
+  })
+
+  it('still reads through the same surface', async () => {
+    const d = deps(true)
+    await executeTool(distillCtx(), 'readMemory', { path: 'prefs.md' }, d)
+    expect(d.memory.read).toHaveBeenCalled()
+  })
+
+  it('leaves an ordinary turn writing as `tool`', async () => {
+    const d = deps(true)
+    await executeTool(ctx(), 'writeMemory', { content: 'shared fact' }, d)
+    const [, , , , source] = (d.memory.write as unknown as { mock: { calls: unknown[][] } }).mock.calls[0]!
+    expect(source).toBe('tool')
+  })
+})
+
+describe('the distillation binding is its own authorization', () => {
+  it('permits the write even though the synthetic session has no persisted row', async () => {
+    // The real daemon derives this verdict from `isCaptureExcluded`, which fails
+    // CLOSED for coordinates with no session row — exactly what a synthetic
+    // distillation session has. Mocking the gate to `true` hid that, so model the
+    // real rule here: unknown session ⇒ excluded, unless a binding is present.
+    const realGate = async (ctx: SessionContext, mode: 'read' | 'write') =>
+      mode === 'read' || Boolean(ctx.memoryBinding) || false
+    const d = deps(false, { memoryAccessAllowed: realGate })
+
+    await executeTool(
+      {
+        agentId: 'bot-a',
+        platform: 'distill',
+        channel: 'memory',
+        thread: 'distill',
+        isDm: false,
+        tools: [],
+        memoryBinding: { source: 'distill', scope: { agentId: 'bot-a' } }
+      },
+      'writeMemory',
+      { path: 'prefs.md', content: '- a durable fact' },
+      d
+    )
+    expect(d.memory.write).toHaveBeenCalled()
+
+    // An ordinary session with no row is still refused — the binding is the only
+    // thing that grants this, and it is daemon-minted, never model-supplied.
+    const plain = deps(false, { memoryAccessAllowed: realGate })
+    await expect(executeTool(ctx(), 'writeMemory', { content: 'x' }, plain)).rejects.toThrow(MEMORY_ACCESS_BLOCKED)
+    expect(plain.memory.write).not.toHaveBeenCalled()
+  })
+
+  it('keeps two channels apart: each binding writes to its own store', async () => {
+    // One warm host serves every channel, so a per-agent cached session would reuse
+    // the FIRST channel's pinned scope for all later channels.
+    const d = deps(true)
+    const bind = (channelKey: string): SessionContext => ({
+      agentId: 'bot-a',
+      platform: 'distill',
+      channel: 'memory',
+      thread: 'distill',
+      isDm: false,
+      tools: [],
+      memoryBinding: { source: 'distill', scope: { agentId: 'bot-a', channelKey } }
+    })
+    await executeTool(bind('chan-A'), 'writeMemory', { path: 'a.md', content: '- from A' }, d)
+    await executeTool(bind('chan-B'), 'writeMemory', { path: 'b.md', content: '- from B' }, d)
+
+    const calls = (d.memory.write as unknown as { mock: { calls: unknown[][] } }).mock.calls
+    expect((calls[0]![0] as { channelKey?: string }).channelKey).toBe('chan-A')
+    expect((calls[1]![0] as { channelKey?: string }).channelKey).toBe('chan-B')
+  })
+})

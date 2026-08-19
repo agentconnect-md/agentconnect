@@ -639,7 +639,9 @@ describe('managed memory auto-distillation runtime support (#653)', () => {
     const out = await (daemon as any).runMemoryExtraction(AGENT_ID, 'DISTILL THIS')
     expect(out).toBe('{"memories":[]}')
     // Untrusted system-prompt channel: no system prompt at session creation…
-    expect(host.newSession).toHaveBeenCalledWith(expect.any(String), [])
+    // Distillation now carries the shared memory tools (#41), so the session is
+    // created WITH an MCP server rather than the old tool-less shape.
+    expect(host.newSession).toHaveBeenCalledWith(expect.any(String), expect.arrayContaining([expect.anything()]))
     // …the policy is prepended inline to the prompt instead, still leading the turn.
     const text = host.prompt.mock.calls[0][1][0].text as string
     expect(text.startsWith(MEMORY_DISTILLATION_SYSTEM_PROMPT)).toBe(true)
@@ -651,7 +653,12 @@ describe('managed memory auto-distillation runtime support (#653)', () => {
     const { host, daemon } = distillHost({ usesMetaSystemPrompt: true })
     await daemon.start()
     await (daemon as any).runMemoryExtraction(AGENT_ID, 'DISTILL THIS')
-    expect(host.newSession).toHaveBeenCalledWith(expect.any(String), [], undefined, MEMORY_DISTILLATION_SYSTEM_PROMPT)
+    expect(host.newSession).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.arrayContaining([expect.anything()]),
+      undefined,
+      MEMORY_DISTILLATION_SYSTEM_PROMPT
+    )
     // Trusted: the prompt carries only the turn data, not the inline policy.
     expect(host.prompt.mock.calls[0][1][0].text).toBe('DISTILL THIS')
     await daemon.stop()
