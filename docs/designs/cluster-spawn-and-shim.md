@@ -23,8 +23,9 @@ its floor, since a sandbox seeds no `$DSH_HOME` credential store. See
 [key-server.md](key-server.md) for precedence and lifecycle. The pod may also carry
 `AC_CODEX_CONFIG`, a JSON object of codex session config the deployment asserts about its
 endpoint (for example, disabling a feature whose request shape the endpoint's gateway
-rejects); the shim merges it under any daemon-sent `CODEX_CONFIG`, so every top-level key the
-daemon decided stays authoritative.
+rejects); the shim merges it under any daemon-sent `CODEX_CONFIG`, one level deep for a table
+both carry (the daemon always sends `features`), so every leaf the daemon decided stays
+authoritative.
 
 ## 1. Why a seam at all
 

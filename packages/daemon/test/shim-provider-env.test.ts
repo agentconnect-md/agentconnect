@@ -151,12 +151,27 @@ describe('fillInCodexConfigFloor', () => {
     expect(JSON.parse(env.CODEX_CONFIG!)).toEqual({ features: { multi_agent: false } })
   })
 
-  it('keeps every daemon-sent top-level key over the floor and preserves the rest', () => {
+  it('merges a shared table one level deep — the daemon features never evict the floor entries', () => {
+    // The daemon's default codex launch always sends `features` (account apps off), so a
+    // whole-table replacement would silently drop the floor. Regression: this exact pair once
+    // produced only `{"features":{"apps":false}}`.
     const env = { CODEX_CONFIG: JSON.stringify({ features: { apps: false }, model: 'gpt-5.3-codex' }) }
     fillInCodexConfigFloor(env, FLOOR_ENV)
     const config = JSON.parse(env.CODEX_CONFIG) as Record<string, unknown>
-    expect(config.features).toEqual({ apps: false })
+    expect(config.features).toEqual({ apps: false, multi_agent: false })
     expect(config.model).toBe('gpt-5.3-codex')
+  })
+
+  it('keeps a daemon-sent leaf authoritative over the same floor leaf', () => {
+    const env = { CODEX_CONFIG: JSON.stringify({ features: { multi_agent: true } }) }
+    fillInCodexConfigFloor(env, FLOOR_ENV)
+    expect(JSON.parse(env.CODEX_CONFIG)).toEqual({ features: { multi_agent: true } })
+  })
+
+  it('lets a daemon non-table value replace a floor table outright', () => {
+    const env = { CODEX_CONFIG: JSON.stringify({ features: 'inherit' }) }
+    fillInCodexConfigFloor(env, FLOOR_ENV)
+    expect(JSON.parse(env.CODEX_CONFIG)).toEqual({ features: 'inherit' })
   })
 
   it('composes with the base-url fill-in: floor config never blocks the pod aim', () => {
@@ -228,12 +243,13 @@ describe('AcpRunner codex config projection', () => {
       args: ['-e', 'process.stdout.write(process.env.CODEX_CONFIG ?? "")'],
       env: {
         PATH: process.env.PATH ?? '',
-        CODEX_CONFIG: JSON.stringify({ openai_base_url: 'https://daemon-decided.internal' })
+        // The default launch shape: the daemon aims codex and disables account apps.
+        CODEX_CONFIG: JSON.stringify({ features: { apps: false }, openai_base_url: 'https://daemon-decided.internal' })
       }
     })
     await exited
     expect(JSON.parse(chunks.join(''))).toEqual({
-      features: { multi_agent: false },
+      features: { apps: false, multi_agent: false },
       openai_base_url: 'https://daemon-decided.internal'
     })
   })

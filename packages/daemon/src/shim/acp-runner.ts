@@ -95,7 +95,8 @@ export function fillInCodexBaseUrl(
 
 // Deployment-asserted codex session config (AC_CODEX_CONFIG, a JSON object) — endpoint knowledge
 // like "this gateway rejects a newer tool type", which only the deployment holds. Floor semantics
-// match the env loop: every top-level key the daemon sent stays authoritative.
+// match the env loop — every leaf the daemon sent stays authoritative — with shared tables merged
+// one level deep, because the daemon always sends `features` (account apps off).
 export function fillInCodexConfigFloor(
   env: Record<string, string>,
   podEnv: Record<string, string | undefined>,
