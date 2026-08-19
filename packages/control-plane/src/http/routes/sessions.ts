@@ -893,7 +893,7 @@ export function sessionRoutes(deps: HttpDeps) {
           permissionMode: s.permissionMode,
           outputMode: s.outputMode,
           daemonId: s.daemonId,
-          contentSetId: s.contentSetId,
+          contentSetId: s.contentSetId ?? null,
           workspaceIsolation: s.workspaceIsolation,
           activityState: s.activityState,
           visibility: s.visibility,
