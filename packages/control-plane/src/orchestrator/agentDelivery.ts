@@ -66,6 +66,28 @@ export class AgentDelivery {
     return [...targets]
   }
 
+  /**
+   * Removal of every agent an organization owns, for the one caller whose delete takes the
+   * delivery set with it: `DutyGroup` cascades from `Org`, so after the cascade the ledger that
+   * names a pool member holding these agents no longer exists and {@link remove}'s "delete first,
+   * resolve after" order — the order that makes a single deleted agent's holder still findable —
+   * would resolve nothing at all. Resolve here, and hand back the send so the caller fires it once
+   * its own delete has committed rather than announcing a removal that may still be refused.
+   */
+  async planRemoval(
+    agents: readonly ResolvableAgent[],
+    orgId: string
+  ): Promise<(onError: DeliveryErrorHandler) => Promise<void>> {
+    const planned = await Promise.all(
+      agents.map(async (agent) => ({ agentId: agent.id, targets: await this.daemonsFor(agent) }))
+    )
+    return async (onError) => {
+      for (const { agentId, targets } of planned) {
+        await this.fanOut(targets, onError, (daemonId) => this.deps.control.agentRemove(daemonId, { agentId }, orgId))
+      }
+    }
+  }
+
   /** Push an edited spec to every delivery target. The spec is assembled ONCE:
    *  the targets replicate the same agent, and two assemblies could disagree. */
   async upsert(agent: AgentRecord, onError: DeliveryErrorHandler): Promise<void> {

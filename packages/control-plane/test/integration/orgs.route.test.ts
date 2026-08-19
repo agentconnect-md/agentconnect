@@ -12,6 +12,8 @@ import { prisma } from '../setup.db.js'
 import { buildHttpApp } from '../fakes/build-http.js'
 import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
 import { PgDaemonRepo } from '../../src/persistence/repositories/daemon.repo.js'
+import { seedDutyGroup } from '../fixtures/seed.js'
+import type { ControlSender } from '../../src/orchestrator/outbound.js'
 import { Prisma } from '../../src/generated/prisma/client.js'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 
@@ -361,6 +363,59 @@ describe('DELETE /orgs/:orgId', () => {
       expect((await app.inject({ method: 'DELETE', url: `/api/v1/orgs/${created.id}` })).statusCode).toBe(204)
       expect(await prisma.org.findUnique({ where: { id: created.id } })).toBeNull()
       expect(await prisma.daemon.findUnique({ where: { id: poolMember.id } })).not.toBeNull()
+    } finally {
+      await close()
+    }
+  })
+
+  it('tells the pool member holding the org\u2019s agents that they are gone', async () => {
+    // Nothing else can: DutyGroup cascades from Org, so the moment the delete lands there is no
+    // row left saying which member serves these agents. A member never told keeps their sandbox
+    // claims \u2014 and the pods and workspace volumes those claims own \u2014 for good. Per-agent
+    // DELETE sends this already; an org's built-in agent cannot be deleted that way at all.
+    const poolMember = await new PgDaemonRepo(prisma).resolvePoolClusterIdentity(
+      'system:serviceaccount:agentconnect:ac-cloud-daemon',
+      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    )
+    const removes: Array<{ daemonId: string; agentId: string }> = []
+    const control = {
+      agentUpsert: async () => {},
+      agentRemove: async (daemonId: string, r: { agentId: string }) => void removes.push({ daemonId, ...r })
+    } as unknown as ControlSender
+    const { app, close } = buildHttpApp(prisma, undefined, undefined, control)
+    try {
+      const created = (await (
+        await app.inject({ method: 'POST', url: '/api/v1/orgs', payload: { name: 'Doomed', slug: 'doomed' } })
+      ).json()) as OrgBody
+      const agentId = '77777777-7777-4777-8777-777777777777'
+      await prisma.agent.create({
+        data: { id: agentId, orgId: created.id, name: 'pool-agent', runtime: 'claude', placementKind: 'set' }
+      })
+      await seedDutyGroup(prisma, '66666666-6666-4666-8666-666666666666', poolMember.id, [agentId], {
+        orgId: created.id
+      })
+
+      expect((await app.inject({ method: 'DELETE', url: `/api/v1/orgs/${created.id}` })).statusCode).toBe(204)
+      expect(removes).toEqual([{ daemonId: poolMember.id, agentId }])
+    } finally {
+      await close()
+    }
+  })
+
+  it('announces nothing when the deletion is refused', async () => {
+    // The rows are still there, so a member told to drop them would stop serving a LIVE org.
+    await prisma.daemon.create({
+      data: { id: 'ffffffff-ffff-4fff-8fff-ffffffffffff', orgId: DEFAULT_ORG_ID, sessionEpoch: 1n, status: 'ready' }
+    })
+    const removes: string[] = []
+    const control = {
+      agentUpsert: async () => {},
+      agentRemove: async (_d: string, r: { agentId: string }) => void removes.push(r.agentId)
+    } as unknown as ControlSender
+    const { app, close } = buildHttpApp(prisma, undefined, undefined, control)
+    try {
+      expect((await app.inject({ method: 'DELETE', url: ORG })).statusCode).toBe(409)
+      expect(removes).toEqual([])
     } finally {
       await close()
     }

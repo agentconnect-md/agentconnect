@@ -28,6 +28,7 @@ import { Tag } from '../plugins/openapi.js'
 import { resolveOrgIconUrl, type IconUrlBases } from '../../agents/agent-icon.js'
 import { OrgDto, OrgListDto, CreateOrgBody, UpdateOrgBody, ErrorDto, type OrgDtoT } from '../dto/index.js'
 import { OrgCreationLimitReached } from '../../persistence/errors.js'
+import { NoConnection } from '../../orchestrator/outbound.js'
 
 function toDto(o: OrgRecord, deps: HttpDeps): OrgDtoT {
   const bases: IconUrlBases = {
@@ -243,6 +244,11 @@ export function orgScopedRoutes(deps: HttpDeps) {
             message: 'the organization still has daemons — remove them first'
           })
         }
+        // Resolved BEFORE the cascade and sent after it: the duty ledger cascades from the org, so
+        // once the delete lands there is nothing left to say which pool member serves these agents.
+        // Without this an agent placed on a pool keeps its sandbox claim — and the pod and workspace
+        // volume the claim owns — with no row left anywhere to reap it from.
+        const announceRemovals = await deps.agentDelivery.planRemoval(await deps.repos.agent.list(orgId), orgId)
         const deleted = await deps.repos.org.delete(req.orgCtx!.orgId)
         for (const hookId of deleted.removedHookIds) deps.hooks.remove(hookId)
         if (deleted.status === 'daemons_present') {
@@ -260,6 +266,15 @@ export function orgScopedRoutes(deps: HttpDeps) {
             message: 'GitHub Check cleanup is pending — retry organization deletion after cleanup converges'
           })
         }
+        // Best-effort, like the agent delete's own removal push: the rows are gone either way, and a
+        // member that missed this drops the agents on its next register roster.
+        await announceRemovals((err, daemonId) => {
+          if (err instanceof NoConnection) {
+            app.log.debug({ orgId, daemonId }, 'agent/remove skipped on org delete: daemon offline')
+          } else {
+            app.log.warn({ err, orgId, daemonId }, 'agent/remove failed on org delete (backstop: reconnect roster)')
+          }
+        })
         return reply.code(204).send(null)
       }
     )
