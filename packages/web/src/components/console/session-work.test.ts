@@ -58,16 +58,18 @@ describe('work panel visibility', () => {
   })
 
   it('opens on click and collapses again on the next one', () => {
-    const base = new Map<number, boolean>()
-    const shown = toggleWorkPanel(base, 0, workPanelOpen(base.get(0)))
-    expect(workPanelOpen(shown.get(0))).toBe(true)
-    expect(workPanelOpen(toggleWorkPanel(shown, 0, workPanelOpen(shown.get(0))).get(0))).toBe(false)
+    const base = new Map<string, boolean>()
+    const shown = toggleWorkPanel(base, 'turn-a', workPanelOpen(base.get('turn-a')))
+    expect(workPanelOpen(shown.get('turn-a'))).toBe(true)
+    expect(workPanelOpen(toggleWorkPanel(shown, 'turn-a', workPanelOpen(shown.get('turn-a'))).get('turn-a'))).toBe(
+      false
+    )
   })
 
   it('toggles only the clicked turn', () => {
-    const shown = toggleWorkPanel(new Map(), 3, false)
-    expect(workPanelOpen(shown.get(3))).toBe(true)
-    expect(workPanelOpen(shown.get(4))).toBe(false)
+    const shown = toggleWorkPanel(new Map(), 'turn-a', false)
+    expect(workPanelOpen(shown.get('turn-a'))).toBe(true)
+    expect(workPanelOpen(shown.get('turn-b'))).toBe(false)
   })
 
   it('stays collapsed by default while the turn is streaming', () => {
@@ -91,7 +93,7 @@ describe('work panel visibility', () => {
   })
 
   it('an explicit open during streaming survives the turn completing', () => {
-    const opened = toggleWorkPanel(new Map(), 0, workPanelOpen(undefined))
-    expect(workPanelOpen(opened.get(0))).toBe(true)
+    const opened = toggleWorkPanel(new Map(), 'turn-a', workPanelOpen(undefined))
+    expect(workPanelOpen(opened.get('turn-a'))).toBe(true)
   })
 })

@@ -1013,6 +1013,10 @@ function ToolBodyDetail({
 type Turn =
   | {
       kind: 'user'
+      /** Durable identity captured at creation from the raw row (`session:seq`), NOT the array
+       *  index or any mutable presentation field — so React reconciles a prepended page in place
+       *  and `workOverride` never mis-keys. */
+      key: string
       sp: ReturnType<typeof speaker>
       agent: Agent | null
       avatarUrl?: string | null
@@ -1028,7 +1032,19 @@ type Turn =
     }
   // `wake` marks a block opened by a background-task wake that no reply has
   // merged into yet — the run that follows binds to it, then clears the flag.
-  | { kind: 'bot'; agentName: string; agentId?: string; model: string; time: string; steps: FmtStep[]; wake?: boolean }
+  | {
+      kind: 'bot'
+      /** Durable identity captured at creation (the turn key, or the first step's row/live
+       *  anchor) and NEVER recomputed — so a wake block keeps its identity when `wake` clears
+       *  and a streaming turn never remounts as steps append. */
+      key: string
+      agentName: string
+      agentId?: string
+      model: string
+      time: string
+      steps: FmtStep[]
+      wake?: boolean
+    }
 
 type SessionParticipant = {
   id: string
@@ -1591,9 +1607,9 @@ export default function SessionDetailView() {
   // The visibility the user last chose for a bot turn's collapsed "work" panel (keyed
   // by turn index). Every panel starts collapsed — streaming included — see
   // workPanelOpen(). The toggle records the opposite of the EFFECTIVE on-screen state.
-  const [workOverride, setWorkOverride] = useState<ReadonlyMap<number, boolean>>(() => new Map())
-  const toggleWork = (ti: number, currentOpen: boolean) =>
-    setWorkOverride((prev) => toggleWorkPanel(prev, ti, currentOpen))
+  const [workOverride, setWorkOverride] = useState<ReadonlyMap<string, boolean>>(() => new Map())
+  const toggleWork = (key: string, currentOpen: boolean) =>
+    setWorkOverride((prev) => toggleWorkPanel(prev, key, currentOpen))
   const [imagePreparing, setImagePreparing] = useState(false)
   const [imageError, setImageError] = useState<string | null>(null)
   const [attachMenuOpen, setAttachMenuOpen] = useState(false)
@@ -3019,6 +3035,15 @@ export default function SessionDetailView() {
   }
 
   const turns: Turn[] = []
+  // Durable per-row anchor: the source session + the row's monotonic `seq`, immutable for the
+  // life of the row. Used as a turn's fallback identity when no turn key groups it, so a turn's
+  // `key` never depends on presentation fields (`time`, `wake`) that change as it grows.
+  const rowAnchor = (m: SessionMessageDto): string =>
+    `${conversationSourceSessionByMessageRef.current.get(m) ?? session.id}#${m.seq}`
+  // Live steps have no persisted `seq`; their turn identity is the stream `turnId`, and a bare
+  // step (a live user line) falls back to its authoring participant + observed time.
+  const liveAnchor = (stp: SessionStep): string =>
+    `live:${stp.turnId ?? `${stp.agentId ?? stp.who ?? ''}@${stp.observedAtMs ?? stp.time ?? ''}`}`
   const speakers = new Map<string, SessionParticipant>()
   const rememberParticipant = (id: string, participant: Omit<SessionParticipant, 'id'>): void => {
     const current = speakers.get(id)
@@ -3048,7 +3073,7 @@ export default function SessionDetailView() {
   // trusted a2a bot — renders as its own left-side agent block: the right side
   // is reserved for humans. Conversation rows retain their source-local turn;
   // live rows retain their stream turn; untagged legacy rows group by adjacency.
-  const pushAgentTurn = (agent: Agent, step: FmtStep, turnKey?: string): void => {
+  const pushAgentTurn = (agent: Agent, step: FmtStep, anchor: string, turnKey?: string): void => {
     const name = agentLabel(agent)
     rememberAgentParticipant(agent.id, name, agent)
     let last = turnKey ? botTurnByKey.get(turnKey) : turns[turns.length - 1]
@@ -3056,7 +3081,15 @@ export default function SessionDetailView() {
     if (!last || last.kind !== 'bot' || !sameBotSpeaker(last, { agentId: agent.id, agentName: name })) {
       // `model` is the icon-runtime fallback for turns whose agent is missing from
       // `agentById`; a peer turn's agent came FROM that map, so it stays empty.
-      last = { kind: 'bot', agentName: name, agentId: agent.id, model: '', time: '', steps: [] }
+      last = {
+        kind: 'bot',
+        key: `b:${turnKey ?? anchor}`,
+        agentName: name,
+        agentId: agent.id,
+        model: '',
+        time: '',
+        steps: []
+      }
       turns.push(last)
       if (turnKey) botTurnByKey.set(turnKey, last)
     }
@@ -3072,7 +3105,7 @@ export default function SessionDetailView() {
   // `ownerAgentId` is the merged-conversation source member — a wake from a
   // peer member is THAT agent's work, not the representative's; plain sessions
   // fall back to the session owner.
-  const pushOwnerWakeTurn = (step: FmtStep, turnKey?: string, ownerAgentId?: string): void => {
+  const pushOwnerWakeTurn = (step: FmtStep, anchor: string, turnKey?: string, ownerAgentId?: string): void => {
     const agentId = ownerAgentId ?? session.agentId
     const agent = agentId ? agentById.get(agentId) : undefined
     const name = agent ? agentLabel(agent) : agentId === session.agentId ? (session.agentName ?? '') : (agentId ?? '')
@@ -3082,6 +3115,9 @@ export default function SessionDetailView() {
     if (!last || last.kind !== 'bot') {
       last = {
         kind: 'bot',
+        // `wake` is deliberately OUT of the key: it flips to false when the reply binds, and
+        // this identity must survive that so the block does not remount and lose its work panel.
+        key: `b:${turnKey ?? anchor}`,
         wake: true,
         agentName: name,
         ...(agentId ? { agentId } : {}),
@@ -3128,6 +3164,7 @@ export default function SessionDetailView() {
         if (!last || last.kind !== 'bot' || !sameBotSpeaker(last, { agentId: m.sender, agentName: ownerName })) {
           last = {
             kind: 'bot',
+            key: `b:${sourceTurnKey ?? rowAnchor(m)}`,
             agentName: ownerName,
             agentId: m.sender,
             model: session.model ?? '',
@@ -3147,6 +3184,7 @@ export default function SessionDetailView() {
         if (isBgTaskWake(m.sender)) {
           pushOwnerWakeTurn(
             thinkStep(m.text, formatTranscriptRowTime(m), rowPlatform),
+            rowAnchor(m),
             sourceTurnKey,
             conversationSourceAgentByMessageRef.current.get(m)
           )
@@ -3165,6 +3203,7 @@ export default function SessionDetailView() {
               ...msgStep(m, toolSessionId, rowPlatform),
               ...(m.attachments?.[0] ? { image: m.attachments[0] } : {})
             },
+            rowAnchor(m),
             sourceTurnKey
           )
           continue
@@ -3177,6 +3216,7 @@ export default function SessionDetailView() {
             )
         pushUserTurn(senderAgent?.id ?? m.sender, {
           kind: 'user',
+          key: `u:${rowAnchor(m)}`,
           sp: participant,
           agent: senderAgent ?? null,
           avatarUrl: m.senderAvatarUrl ?? (self ? viewer.picture : memberPictureByIdentity.get(m.sender)),
@@ -3199,6 +3239,7 @@ export default function SessionDetailView() {
         if (isBgTaskWake(stp.who)) {
           pushOwnerWakeTurn(
             thinkStep(stp.text, stp.time, session.platform),
+            liveAnchor(stp),
             liveBotTurnKey(stp.turnId, session.agentId)
           )
           firstMsg = false
@@ -3212,6 +3253,7 @@ export default function SessionDetailView() {
           pushAgentTurn(
             senderAgent,
             plainStep(stp.text, stp.time ?? (firstMsg ? session.time : ''), stp.image, session.platform),
+            liveAnchor(stp),
             liveBotTurnKey(stp.turnId, senderAgent.id)
           )
           firstMsg = false
@@ -3222,6 +3264,7 @@ export default function SessionDetailView() {
           : speaker(senderAgentName ?? who, cron?.name ?? (cron ? 'Schedule' : senderAgentName))
         pushUserTurn(senderAgent?.id ?? who, {
           kind: 'user',
+          key: `u:${liveAnchor(stp)}`,
           sp: participant,
           agent: senderAgent ?? null,
           avatarUrl: self ? viewer.picture : memberPictureByIdentity.get(who),
@@ -3252,6 +3295,7 @@ export default function SessionDetailView() {
         if (!last || last.kind !== 'bot' || !sameBotSpeaker(last, { agentId: stp.agentId, agentName: stepAgentName })) {
           last = {
             kind: 'bot',
+            key: `b:${turnKey ?? liveAnchor(stp)}`,
             agentName: stepAgentName,
             ...(stp.agentId ? { agentId: stp.agentId } : {}),
             model: session.model ?? '',
@@ -3282,6 +3326,7 @@ export default function SessionDetailView() {
         if (isBgTaskWake(stp.who)) {
           pushOwnerWakeTurn(
             thinkStep(stp.text, stp.time, session.platform),
+            liveAnchor(stp),
             liveBotTurnKey(stp.turnId, session.agentId)
           )
           continue
@@ -3293,6 +3338,7 @@ export default function SessionDetailView() {
           pushAgentTurn(
             senderAgent,
             plainStep(stp.text, stp.time ?? '', stp.image, session.platform),
+            liveAnchor(stp),
             liveBotTurnKey(stp.turnId, senderAgent.id)
           )
           continue
@@ -3300,6 +3346,7 @@ export default function SessionDetailView() {
         const participant = self ? speaker('@you') : speaker(senderAgentName ?? who, senderAgentName)
         pushUserTurn(senderAgent?.id ?? who, {
           kind: 'user',
+          key: `u:${liveAnchor(stp)}`,
           sp: participant,
           agent: senderAgent ?? null,
           avatarUrl: self ? viewer.picture : memberPictureByIdentity.get(who),
@@ -3324,6 +3371,7 @@ export default function SessionDetailView() {
         if (!last || last.kind !== 'bot' || !sameBotSpeaker(last, { agentId: stp.agentId, agentName: stepAgentName })) {
           last = {
             kind: 'bot',
+            key: `b:${turnKey ?? liveAnchor(stp)}`,
             agentName: stepAgentName,
             ...(stp.agentId ? { agentId: stp.agentId } : {}),
             model: session.model ?? '',
@@ -4055,7 +4103,7 @@ export default function SessionDetailView() {
                     // The turn's clock time is its own centred line above the message —
                     // a shared separator for both sides, instead of a label-row tail
                     // that never lines up with the bubble edge on either side.
-                    <div key={`${session.id}:${ti}`} className="flex flex-col gap-[5px]">
+                    <div key={turn.key} className="flex flex-col gap-[5px]">
                       {turn.time && (
                         <div className="mono text-center text-[11px] leading-normal text-(--text-tertiary)">
                           {turn.time}
@@ -4064,7 +4112,7 @@ export default function SessionDetailView() {
                       {turn.kind === 'user' ? (
                         // 2b: user turns are right-aligned brand-soft bubbles. A sender label
                         // sits above the bubble only when it isn't you (platform user / cron).
-                        <div key={`${session.id}:${ti}`} className="group/turn flex items-start justify-end gap-[9px]">
+                        <div className="group/turn flex items-start justify-end gap-[9px]">
                           <div className="relative flex min-w-0 max-w-[86%] flex-col items-end gap-[3px]">
                             {showsSenderLabel(turn) && (
                               <span className="flex items-center gap-[6px] pr-1 font-sans text-[11px] font-medium leading-normal text-(--text-tertiary)">
@@ -4138,7 +4186,7 @@ export default function SessionDetailView() {
                             (turn.agentId && busyLanes.length > 0
                               ? busyLanes.includes(turn.agentId) && lastBotTurnIndexByAgent.get(turn.agentId) === ti
                               : ti === turns.length - 1)
-                          const openWork = workPanelOpen(workOverride.get(ti))
+                          const openWork = workPanelOpen(workOverride.get(turn.key ?? ''))
                           // Is the WORK itself still running? `streaming` alone is turn-level —
                           // it stays true while the spoken answer streams AFTER the last tool
                           // finished, which must not keep the live line alive. ACP tool calls
@@ -4229,7 +4277,7 @@ export default function SessionDetailView() {
                                     <div className="mt-2 flex min-w-0 items-center gap-[6px]">
                                       <button
                                         type="button"
-                                        onClick={() => toggleWork(ti, openWork)}
+                                        onClick={() => toggleWork(turn.key ?? '', openWork)}
                                         className="inline-flex min-w-0 items-center gap-[6px] border-0 bg-transparent p-0 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary) hover:text-(--text-secondary)"
                                         title={openWork ? 'Hide the agent’s work' : 'Show the agent’s work'}
                                       >
