@@ -1,5 +1,8 @@
-import type { DutyGrantEntry, ExternalSessionAudience, SessionKey } from '@agentconnect.md/protocol'
+import type { DutyGrantEntry, EventSession, ExternalSessionAudience, SessionKey } from '@agentconnect.md/protocol'
 import type { AcpHost } from '../acp/acp-host.js'
+import type { LoadedAgent } from '../agents/load-agents.js'
+import type { TurnPlan } from './turn-plan.js'
+import type { TurnEvaluationReporter } from './turn-evaluation.js'
 import type { KeyGrant } from '../key-server/client.js'
 import type { NormalizedMessage } from '../messages/normalized.js'
 import type { GithubTurnState } from '../platforms/github/turn-output.js'
@@ -287,6 +290,57 @@ export interface QueueEntry {
   /** A duty handoff released this row to the successor holder instead of ending it, so the
    *  entry's later terminal settle must not delete it either (#1050). */
   inboxHandedOff?: boolean
+}
+
+/** The platform transport a turn's ordinary output posts through. */
+export type ReplyConnection = SlackConnection | TelegramConnection | DiscordConnection | FeishuConnection
+
+/** What `SessionManager.handle()` hands back to a dispatched turn. */
+export interface HandledTurnSession {
+  sessionId: string
+  blocks: import('@agentclientprotocol/sdk').ContentBlock[]
+  created: boolean
+  skipped?: boolean
+  captureInput?: string
+  turnId?: string
+  initializedOnly?: boolean
+  contextRevision?: number
+  contextEvents?: { ts: string; text?: string }[]
+  providerCheckpoint?: string
+  additionalMcpServersAttached?: boolean
+}
+
+/** The handles every `dispatchOne` phase shares: the entry being run, the pure plan for it,
+ *  the agent snapshot the turn was planned against, and the reporters bound before host work. */
+export interface TurnRun {
+  readonly entry: QueueEntry
+  /** Logical session key. */
+  readonly key: string
+  readonly plan: TurnPlan
+  readonly agent: LoadedAgent
+  readonly replyConn: ReplyConnection | undefined
+  readonly evaluation: TurnEvaluationReporter
+}
+
+/** A turn whose answer may be committed: the prompt loop settled on one accepted generation. */
+export interface AnsweredTurn {
+  kind: 'answered'
+  stopReason: Awaited<ReturnType<AcpHost['prompt']>>['stopReason']
+  usage: Awaited<ReturnType<AcpHost['prompt']>>['usage']
+  /** The recall query the accepted generation was actually prompted with. */
+  finalCaptureInput: string
+}
+
+/** `cancelled` covers every prompt-loop exit that commits no answer (operator interrupt,
+ *  context churn). The caller re-issues its own `return null` so settlement still runs. */
+export type TurnPromptOutcome = AnsweredTurn | { kind: 'cancelled' }
+
+/** The two try-scoped facts `dispatchOne`'s phases hand to its settlement. `finalPhase`
+ *  becomes the session outcome + CP snapshot phase; `propagatingTurnError` keeps a genuine
+ *  prompt failure the outward error even when cleanup also fails. */
+export interface TurnSettlement {
+  finalPhase: EventSession['phase']
+  propagatingTurnError: boolean
 }
 
 /** Where in the cold-session window a fence sits. The site name is also the log label, and it
