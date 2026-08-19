@@ -93,9 +93,8 @@ export interface RelayBrowserConnDeps {
   remoteMcp?: WebchatRemoteMcpEntitlement
   /** Resolve a live rd/* connection to a participant's daemon (absent if it dropped). */
   daemonConnFor: (daemonId: string) => RelayDaemonConnection | undefined
-  /** Any live same-org connection, tried when the recorded daemon is gone (a rollout replaced
-   *  it): the member claims the duty on receipt or names the holder (§4.4). Absent on an older
-   *  CP whose verify result carries no orgId — the recorded placement then stays load-bearing. */
+  /** Any live duty-governed pool connection, tried when the recorded daemon is gone (a rollout
+   *  replaced it): the member claims the duty on receipt or names the holder (§4.4). */
   rendezvousDaemonConn?: () => { daemonId: string; conn: RelayDaemonConnection } | undefined
   register: (chatId: string, sink: ChatSink) => void
   unregister: (chatId: string, sink: ChatSink) => void

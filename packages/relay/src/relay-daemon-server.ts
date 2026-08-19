@@ -42,9 +42,11 @@ export interface RelayDaemonServer {
   /** A live `rd/*` connection to `daemonId`, if this relay holds one — the browser
    *  gateway routes a webchat turn onto it. Returns any of the (normally one) sockets. */
   get(daemonId: string): RelayDaemonConnection | undefined
-  /** Any live same-org connection — the webchat rendezvous fallback when a recorded
-   *  member is gone (§4.4): the member either claims the duty or names the holder. */
-  anyFor(orgId: string): { daemonId: string; conn: RelayDaemonConnection } | undefined
+  /** Any live duty-governed pool connection — the webchat rendezvous fallback when a recorded
+   *  member is gone (§4.4): a pool member claims the duty on receipt or names the holder, and
+   *  a wrong-pool pick self-corrects the same way. Org-scoped `daemon-key` daemons are never
+   *  candidates: they are outside the install's duty plane and must not see other orgs' turns. */
+  rendezvousCandidate(): { daemonId: string; conn: RelayDaemonConnection } | undefined
   /** Number of authenticated daemon connections (observability / tests). */
   size(): number
 }
@@ -119,9 +121,9 @@ export function createRelayDaemonServer(app: FastifyInstance, deps: RelayDaemonS
     get(daemonId: string): RelayDaemonConnection | undefined {
       return byDaemon.get(daemonId)?.values().next().value
     },
-    anyFor(orgId: string): { daemonId: string; conn: RelayDaemonConnection } | undefined {
+    rendezvousCandidate(): { daemonId: string; conn: RelayDaemonConnection } | undefined {
       for (const [daemonId, set] of byDaemon) {
-        for (const conn of set) if (conn.orgId === orgId) return { daemonId, conn }
+        for (const conn of set) if (conn.credentialKind === 'daemon-token') return { daemonId, conn }
       }
       return undefined
     },
