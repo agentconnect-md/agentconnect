@@ -348,7 +348,6 @@ import type {
   DrainProgress,
   DrainDone,
   SessionKey,
-  EventSession,
   SessionActivity,
   Ack,
   RdWebchatPost,
@@ -371,6 +370,7 @@ import type {
 import { formatErr } from './daemon/text.js'
 import { isBuiltinSystemToolCall } from './daemon/tool-classification.js'
 import { buildTurnPlan } from './daemon/turn-plan.js'
+import { turnEvaluationReporter, type TurnEvaluationReporter } from './daemon/turn-evaluation.js'
 import {
   isTrustedHumanTurn,
   loopGuardScope,
@@ -406,11 +406,13 @@ import {
   sdkLeaseKey,
   turnState,
   LIVE_CHROME_BOUNDARY_MESSAGE_TYPES,
+  type AnsweredTurn,
   type CallMeta,
   type ColdFenceContext,
   type ColdFenceSite,
   type DaemonConverger,
   type DaemonRenderAction,
+  type HandledTurnSession,
   type LiveChromeBoundaryMessageType,
   type LiveSdkTask,
   type MemoryExtractionCollector,
@@ -423,7 +425,10 @@ import {
   type ShutdownDutyDrain,
   type TurnInterruptDisposition,
   type TurnInterruptReason,
-  type TurnLifecycleCleanupOutcome
+  type TurnLifecycleCleanupOutcome,
+  type TurnPromptOutcome,
+  type TurnRun,
+  type TurnSettlement
 } from './daemon/turn-types.js'
 import { UUID_RE, type WebchatSink, type WebchatTurnContext } from './webchat/types.js'
 import { WebchatTransport, type WebchatHost } from './webchat/transport.js'
@@ -8551,39 +8556,21 @@ export class Daemon {
   // is returned. The initialization-only channel-root path returns after session metadata,
   // before Pending/prompt. runLoop awaits either path so queued work cannot overtake it.
   private async dispatchOne(entry: QueueEntry, key: string): Promise<string | null> {
-    const { agentId, msg, integrationId, webchat, callMeta, githubReply, hookContext, onSessionReady } = entry
-    const initializeOnly = callMeta?.initializeOnly === true
+    const { agentId, msg, integrationId, webchat, callMeta, hookContext } = entry
     const evaluationTurnId = this.evaluationTurnIdFor(agentId, msg)
-    let evaluationSessionId: string | undefined = undefined
-    let evaluationTerminal = false
-    const finishEvaluation = (
-      type: 'turn.completed' | 'turn.failed' | 'turn.cancelled' | 'turn.timed_out',
-      data: Record<string, unknown> = {}
-    ): void => {
-      if (initializeOnly) return
-      if (evaluationTerminal) return
-      evaluationTerminal = true
-      this.evalHooks.emit({
-        type,
-        agentId,
-        ...(evaluationSessionId ? { sessionId: evaluationSessionId } : {}),
-        turnId: evaluationTurnId,
-        platform: msg.platform,
-        channel: msg.channel,
-        data
-      })
-    }
-    const failEvaluation = (error: unknown): void => {
-      const code = turnFailureCode(error)
-      const timedOut = /tim(?:e|ed)[-_ ]?out/i.test(`${code} ${error instanceof Error ? error.name : ''}`)
-      finishEvaluation(timedOut ? 'turn.timed_out' : 'turn.failed', {
-        code,
-        errorName: error instanceof Error ? error.name : 'UnknownError'
-      })
-    }
+    const evaluation = turnEvaluationReporter({
+      emit: (event) => this.evalHooks.emit(event),
+      agentId,
+      platform: msg.platform,
+      channel: msg.channel,
+      turnId: evaluationTurnId,
+      initializeOnly: callMeta?.initializeOnly === true
+    })
     // Pause/loop protection may race admission after dispatch() checked its gate but
     // before this loop starts. `cancelledReason` also remembers a quick reset.
-    const initialGate = await this.coldSessionFence(entry, key, 'admitted', { finishEvaluation })
+    const initialGate = await this.coldSessionFence(entry, key, 'admitted', {
+      finishEvaluation: evaluation.finishEvaluation
+    })
     if (initialGate) return null
     if (hookContext && !hookContext.turnStartedAt) {
       hookContext.turnStartedAt = new Date(this.clock.now()).toISOString()
@@ -8594,35 +8581,7 @@ export class Daemon {
         throw err
       }
     }
-    const sourceBinding = await this.bindSessionSource(agentId, key, msg, callMeta, hookContext)
-    if (sourceBinding !== 'unchanged') {
-      finishEvaluation('turn.cancelled', { reason: 'session_source_mismatch' })
-      const conn = this.replyConnFor(agentId, integrationId)
-      const reason =
-        sourceBinding === 'unavailable'
-          ? 'This Slack conversation could not be assigned a stable workspace audience. Reconnect the Slack integration and try again.'
-          : 'This thread already belongs to a session created from another source. Start a new Slack thread and mention the agent there.'
-      // Only a human ingress gets a visible repair instruction. A2A delivery is
-      // intentionally postless; turning a rejected internal wake into a Slack
-      // message would leak workflow state and create unsolicited channel noise.
-      if (!callMeta && msg.source === 'user') {
-        try {
-          await conn?.postMessage(msg.channel, reason, msg.thread ?? msg.msgId)
-        } catch (err) {
-          this.log.warn(`session source: could not post rejection (${formatErr(err)})`)
-        }
-      }
-      this.log.warn(`session source: rejected external audience binding for ${key} (${sourceBinding})`)
-      return null
-    }
-    // §3.3 correlation-recording hook: if this turn is an agent→agent delivery carrying a
-    // correlationId, it MAY be a worker reporting back to a main that owns an orchestration.
-    // Run only after the source gate: a rejected cross-audience envelope must not
-    // copy its body into orchestration state even though no ACP prompt will run.
-    // The result is owner-checked, trusted-callFrom, and idempotent.
-    if (callMeta?.correlationId !== undefined) {
-      await this.collab.recordWorkerReport(key, callMeta, msg.text)
-    }
+    if ((await this.bindTurnSource(entry, key, evaluation)) === 'rejected') return null
     const agent = this.agents.get(agentId)!
     let memoryCaptureTarget: PreparedExternalMemoryCapture | undefined
     if (this.evaluationProfile.memory === 'configured') {
@@ -8650,21 +8609,165 @@ export class Daemon {
       features: { turnFinalContextRefresh: this.cfg.features.turnFinalContextRefresh },
       turnSurfaces: this.turnSurfaces
     })
-    const { agentName, iconUrl, mode, showFooter, statusThread, transcriptChannel, statusOptions, turnCtx } = plan
     // The recorder captures the full activity log (tool/reasoning) independent of
     // output mode — `conv` (built below, once the session key is known) only decides
     // what reaches Slack, never the transcript.
     const rec = new TranscriptRecorder()
     // Daemon-side rendering only (not ACP); a fresh converger is built per turn, so a change
     // applies from the next turn on, not mid-turn (see `mode`, resolved inside the plan).
-    const conv = plan.turnSurface.createConverger(turnCtx)
+    const conv = plan.turnSurface.createConverger(plan.turnCtx)
     const replyConn = plan.suppressReplyConn ? undefined : this.replyConnFor(agentId, integrationId)
-    this.showActivity(replyConn, msg.channel, statusThread, plan.startupActivityLabel, statusOptions)
-    // handle() writes the row to `prompting` before returning; if it throws after
-    // that (workspace/attachment failure), the try/finally below is never entered,
-    // so reset to `idle` here — otherwise the session stays `prompting` forever and
-    // never TTL-closes (the row no-ops if handle threw before creating it).
+    const run: TurnRun = { entry, key, plan, agent, replyConn, evaluation }
+    this.showActivity(replyConn, msg.channel, plan.statusThread, plan.startupActivityLabel, plan.statusOptions)
     const releaseReplyConn = this.holdReplyConnection(replyConn)
+    const opened = await this.openSession(run, releaseReplyConn)
+    if (opened.kind === 'cancelled') return null
+    const { handled, restoreDeliveryBinding } = opened
+    const { sessionId, created } = handled
+    evaluation.bindSessionId(sessionId)
+    if (handled.skipped) {
+      evaluation.finishEvaluation('turn.cancelled', { reason: 'already_delivered' })
+      await this.finishSessionInitialization(agentId)
+      restoreDeliveryBinding()
+      this.clearTurnActivity(run)
+      this.terminateQueuedSink(entry)
+      releaseReplyConn()
+      this.log.debug(`dispatch: skipped already-delivered Slack event ${msg.msgId}`)
+      return null
+    }
+    // A cold session can spend time booting/materializing inside sessions.handle(). If
+    // pause landed in that window, no Pending existed for the transition hook to cancel.
+    // Re-check before publishing metadata or prompting, restore the new row to idle, and
+    // clear the transient Slack activity indicator.
+    const initializedGate = await this.coldSessionFence(entry, key, 'initialized', {
+      finishEvaluation: evaluation.finishEvaluation,
+      clearActivity: () => this.clearTurnActivity(run),
+      releaseReplyConn,
+      restoreDeliveryBinding,
+      sessionId,
+      created
+    })
+    if (initializedGate) return null
+    await this.applyStagedRuntime(run)
+    await this.announceTurnStart(run, sessionId, created)
+    if (handled.initializedOnly) {
+      await this.finishSessionInitialization(agentId, sessionId)
+      this.clearTurnActivity(run)
+      releaseReplyConn()
+      this.log.info(`dispatch: initialized session ${key} from self-authored channel root without a model turn`)
+      return sessionId
+    }
+    // Add the streaming fields onto the SAME webchat object held by QueueEntry. Sharing
+    // `doneSent` closes a Pending-vs-gate race where cancel could otherwise terminally
+    // signal each copy once.
+    const pendingWebchat = webchat
+      ? Object.assign(webchat, { index: 0, replyText: '', heldText: '', messageEmitted: false })
+      : undefined
+    const p = this.buildPending(run, { conv, rec, sessionId, webchat: pendingWebchat })
+    const activeTurn = await this.installActiveTurnContext(run, sessionId)
+    const settlement: TurnSettlement = { finalPhase: 'end', propagatingTurnError: false }
+    let turnModel: string | undefined
+    const currentAttributionInfo = async (): Promise<SlackAttributionInfo> =>
+      await this.turnAttributionInfo(p, run, sessionId, turnModel)
+    try {
+      const { host, modelOverride } = await this.reapplyStickyControls(p, run, sessionId)
+      // Pause/loop protection may land while a slow host is starting or sticky
+      // overrides are being restored. At this point Pending exists but no prompt has
+      // begun; re-check so a cancel that had no live host cannot race into new work.
+      const readyGate = await this.coldSessionFence(entry, key, 'ready', {
+        finishEvaluation: evaluation.finishEvaluation,
+        clearActivity: () => this.clearTurnActivity(run),
+        sessionId
+      })
+      if (readyGate) {
+        if (readyGate === 'loop protection') settlement.finalPhase = 'problem'
+        return null
+      }
+      turnModel = await this.captureTurnModel(run, host, sessionId, modelOverride)
+      await this.openTurnChrome(p, run, currentAttributionInfo)
+      const prompt = await this.prePromptContextRefresh(p, run, sessionId, handled)
+      this.emitTurnStarted(run, host, sessionId, created, prompt.finalCaptureInput, turnModel)
+      const outcome = await this.runPromptLoop(p, run, { ...prompt, host, sessionId, turnModel, settlement })
+      if (outcome.kind === 'cancelled') return null
+      await this.settleUsage(p, run, sessionId)
+      await this.commitWebchatReply(p, run, outcome)
+      await this.flushPlatformFinals(p, run, sessionId, currentAttributionInfo)
+      await this.finalizeDelivery(p, run, { rec, sessionId, handled, outcome, memoryCaptureTarget })
+    } catch (err) {
+      const caught = await this.surfaceTurnCatch(err, p, run, sessionId, settlement, currentAttributionInfo)
+      if (caught === 'suppressed') return null
+      throw err
+    } finally {
+      await this.settleTurn(p, run, sessionId, settlement, releaseReplyConn, activeTurn)
+    }
+    // Turn finished cleanly. Draining the next queued message for this sessionKey is
+    // runLoop's job (it holds ownership across turns) — NOT here. On a throw, the catch
+    // above rethrows and runLoop applies fail-stop (§6.9 #378).
+    await this.completeHookOutcome(entry, sessionId)
+    return sessionId
+  }
+
+  // ── dispatchOne phases, in execution order ──────────────────────────────────
+
+  /** Clear this turn's transient platform activity indicator ("is thinking…"). */
+  private clearTurnActivity(run: TurnRun): void {
+    this.showActivity(run.replyConn, run.plan.channel, run.plan.statusThread, '')
+  }
+
+  /** §3.3 source gate: bind this session to the inbound envelope's external audience, then — only
+   *  once the gate passed — record a correlated worker report into orchestration state. */
+  private async bindTurnSource(
+    entry: QueueEntry,
+    key: string,
+    evaluation: TurnEvaluationReporter
+  ): Promise<'ok' | 'rejected'> {
+    const { agentId, msg, integrationId, callMeta, hookContext } = entry
+    const sourceBinding = await this.bindSessionSource(agentId, key, msg, callMeta, hookContext)
+    if (sourceBinding !== 'unchanged') {
+      evaluation.finishEvaluation('turn.cancelled', { reason: 'session_source_mismatch' })
+      const conn = this.replyConnFor(agentId, integrationId)
+      const reason =
+        sourceBinding === 'unavailable'
+          ? 'This Slack conversation could not be assigned a stable workspace audience. Reconnect the Slack integration and try again.'
+          : 'This thread already belongs to a session created from another source. Start a new Slack thread and mention the agent there.'
+      // Only a human ingress gets a visible repair instruction. A2A delivery is
+      // intentionally postless; turning a rejected internal wake into a Slack
+      // message would leak workflow state and create unsolicited channel noise.
+      if (!callMeta && msg.source === 'user') {
+        try {
+          await conn?.postMessage(msg.channel, reason, msg.thread ?? msg.msgId)
+        } catch (err) {
+          this.log.warn(`session source: could not post rejection (${formatErr(err)})`)
+        }
+      }
+      this.log.warn(`session source: rejected external audience binding for ${key} (${sourceBinding})`)
+      return 'rejected'
+    }
+    // §3.3 correlation-recording hook: if this turn is an agent→agent delivery carrying a
+    // correlationId, it MAY be a worker reporting back to a main that owns an orchestration.
+    // Run only after the source gate: a rejected cross-audience envelope must not
+    // copy its body into orchestration state even though no ACP prompt will run.
+    // The result is owner-checked, trusted-callFrom, and idempotent.
+    if (callMeta?.correlationId !== undefined) {
+      await this.collab.recordWorkerReport(key, callMeta, msg.text)
+    }
+    return 'ok'
+  }
+
+  /** Open (or reuse) this turn's ACP session: install the delivery route, prepare the review
+   *  workspace / model host / remote MCP descriptor, then run `sessions.handle()`.
+   *
+   *  handle() writes the row to `prompting` before returning; a throw after that never enters
+   *  dispatchOne's main try/finally, so the catch here is the only repair — it resets the row to
+   *  `idle` (a no-op if handle threw before creating it) and settles the cold window. */
+  private async openSession(
+    run: TurnRun,
+    releaseReplyConn: () => void
+  ): Promise<
+    { kind: 'opened'; handled: HandledTurnSession; restoreDeliveryBinding: () => void } | { kind: 'cancelled' }
+  > {
+    const { entry, key, plan, agent, replyConn, evaluation } = run
+    const { agentId, msg, integrationId, webchat, callMeta, hookContext } = entry
     // Install the exact route before session/new|load: adapters may emit metadata
     // (including a restored title) while SessionManager is still initializing.
     const previousDeliveryBinding = this.sessionDeliveryBindings.get(key)
@@ -8676,19 +8779,7 @@ export class Daemon {
       if (previousDeliveryBinding) this.sessionDeliveryBindings.set(key, previousDeliveryBinding)
       else this.sessionDeliveryBindings.delete(key)
     }
-    let handled: {
-      sessionId: string
-      blocks: import('@agentclientprotocol/sdk').ContentBlock[]
-      created: boolean
-      skipped?: boolean
-      captureInput?: string
-      turnId?: string
-      initializedOnly?: boolean
-      contextRevision?: number
-      contextEvents?: { ts: string; text?: string }[]
-      providerCheckpoint?: string
-      additionalMcpServersAttached?: boolean
-    }
+    let handled: HandledTurnSession
     const persistedSessionId = (await this.store.getSession(key))?.acpSessionId
     let remoteMcpServer: import('@agentclientprotocol/sdk').McpServer | undefined
     try {
@@ -8740,7 +8831,7 @@ export class Daemon {
         // a standing directive naming the origin as the reply target.
         callMeta?.needsReply,
         {
-          initializeOnly,
+          initializeOnly: plan.initializeOnly,
           // CallMeta is the trusted distinction between a real A2A delivery and
           // synthetic `source: agent` wakes (background task/orchestration). A webchat
           // roster continuation carries CallMeta for its hop/rendezvous chain but is a
@@ -8781,66 +8872,47 @@ export class Daemon {
         }
         if (interrupted) {
           this.terminateQueuedSink(entry, interrupted)
-          this.showActivity(replyConn, msg.channel, statusThread, '')
+          this.clearTurnActivity(run)
         } else
           await this.surfaceTurnFailure(err, {
             agentId,
-            agentName,
-            ...(iconUrl ? { iconUrl } : {}),
+            agentName: plan.agentName,
+            ...(plan.iconUrl ? { iconUrl: plan.iconUrl } : {}),
             platform: msg.platform,
             isDm: msg.isDm,
             webchat,
             replyConn,
             channel: msg.channel,
-            transcriptChannel,
+            transcriptChannel: plan.transcriptChannel,
             thread: msg.thread,
-            statusThread
+            statusThread: plan.statusThread
           })
       } finally {
         releaseReplyConn()
       }
       if (interrupted) {
-        finishEvaluation('turn.cancelled', { reason: interrupted })
+        evaluation.finishEvaluation('turn.cancelled', { reason: interrupted })
         if (hookContext && this.reportsHookOutcome(entry)) {
           await this.emitHookCompletion(hookContext, 'failed', { reason: interrupted }, entry)
         }
         if (cleanupOutcome.blocked) throw new LifecycleCleanupBlockedError(key, cleanupOutcome.error)
-        return null
+        return { kind: 'cancelled' }
       }
-      failEvaluation(err)
+      evaluation.failEvaluation(err)
       if (hookContext && this.reportsHookOutcome(entry)) {
         await this.emitHookCompletion(hookContext, 'failed', { reason: 'session_start_failed' }, entry)
       }
       throw err
     }
-    const { sessionId, blocks, created } = handled
-    evaluationSessionId = sessionId
-    if (handled.skipped) {
-      finishEvaluation('turn.cancelled', { reason: 'already_delivered' })
-      await this.finishSessionInitialization(agentId)
-      restoreDeliveryBinding()
-      this.showActivity(replyConn, msg.channel, statusThread, '')
-      this.terminateQueuedSink(entry)
-      releaseReplyConn()
-      this.log.debug(`dispatch: skipped already-delivered Slack event ${msg.msgId}`)
-      return null
-    }
-    // A cold session can spend time booting/materializing inside sessions.handle(). If
-    // pause landed in that window, no Pending existed for the transition hook to cancel.
-    // Re-check before publishing metadata or prompting, restore the new row to idle, and
-    // clear the transient Slack activity indicator.
-    const initializedGate = await this.coldSessionFence(entry, key, 'initialized', {
-      finishEvaluation,
-      clearActivity: () => this.showActivity(replyConn, msg.channel, statusThread, ''),
-      releaseReplyConn,
-      restoreDeliveryBinding,
-      sessionId,
-      created
-    })
-    if (initializedGate) return null
-    // A cold session can await workspace/host/session initialization while the Agent is
-    // reconciled. Persist staged first-turn choices only against the current authority,
-    // never the Agent snapshot captured before sessions.handle().
+    return { kind: 'opened', handled, restoreDeliveryBinding }
+  }
+
+  /** Persist the staged first-turn runtime choices a webchat composer sent with this message.
+   *  A cold session can await workspace/host/session initialization while the Agent is
+   *  reconciled, so this re-reads the current authority — never the pre-handle() snapshot. */
+  private async applyStagedRuntime(run: TurnRun): Promise<void> {
+    const { key, entry } = run
+    const { agentId, webchat } = entry
     const initializedAgent = this.agents.get(agentId)
     const stagedRuntime =
       initializedAgent?.allowRuntimeChangesInChat === true && webchat?.runtime ? webchat.runtime : undefined
@@ -8859,14 +8931,21 @@ export class Daemon {
       await this.store.setPermissionModeOverride(key, stagedRuntime.permissionMode)
     }
     if (stagedRuntime?.fastMode !== undefined) await this.store.setFastModeOverride(key, stagedRuntime.fastMode)
+  }
+
+  /** Publish that this turn has started: spawn notices, first-turn classification, the turn-start
+   *  metadata snapshot, observed-channel discovery, and the caller's session-ready callback. */
+  private async announceTurnStart(run: TurnRun, sessionId: string, created: boolean): Promise<void> {
+    const { entry, key, plan, replyConn } = run
+    const { agentId, msg, callMeta, hookContext, webchat, onSessionReady } = entry
     // sessions.handle() booted the host — surface any spawn-time config warnings
     // (config-file secret conflicts / write failures) into this session.
     await this.flushSpawnNotices(agentId, {
       replyConn,
       channel: msg.channel,
-      transcriptChannel,
+      transcriptChannel: plan.transcriptChannel,
       thread: msg.thread,
-      statusThread
+      statusThread: plan.statusThread
     })
     if (created) {
       // Classify for session visibility BEFORE the first milestone: the CP's
@@ -8888,7 +8967,7 @@ export class Daemon {
       phase: 'start',
       platform: msg.platform,
       channel: msg.channel,
-      thread: statusThread
+      thread: plan.statusThread
     })
     if (
       created &&
@@ -8905,21 +8984,18 @@ export class Daemon {
     } catch (err) {
       this.log.warn(`dispatch: session-ready notification failed (${formatErr(err)})`)
     }
-    if (handled.initializedOnly) {
-      await this.finishSessionInitialization(agentId, sessionId)
-      this.showActivity(replyConn, msg.channel, statusThread, '')
-      releaseReplyConn()
-      this.log.info(`dispatch: initialized session ${key} from self-authored channel root without a model turn`)
-      return sessionId
-    }
+  }
+
+  /** Build this turn's live record from its plan and register it as the session's Pending turn. */
+  private buildPending(
+    run: TurnRun,
+    turn: { conv: DaemonConverger; rec: TranscriptRecorder; sessionId: string; webchat: Pending['webchat'] }
+  ): Pending {
+    const { entry, key, plan } = run
+    const { agentId, msg, integrationId, callMeta, githubReply } = entry
+    const { conv, rec, sessionId } = turn
     let resolveDone!: () => void
     const done = new Promise<void>((r) => (resolveDone = r))
-    // Add the streaming fields onto the SAME webchat object held by QueueEntry. Sharing
-    // `doneSent` closes a Pending-vs-gate race where cancel could otherwise terminally
-    // signal each copy once.
-    const pendingWebchat = webchat
-      ? Object.assign(webchat, { index: 0, replyText: '', heldText: '', messageEmitted: false })
-      : undefined
     if (!entry.selectedHost) {
       const ordinaryHost = this.hosts.get(agentId)
       if (ordinaryHost) entry.selectedHost = this.selectedOrdinaryTurnHost(agentId, ordinaryHost)
@@ -8945,10 +9021,10 @@ export class Daemon {
       // §5.3: compound shared-bot addresses a split must never cut in half.
       protectedAddresses: plan.protectedAddresses,
       agentId,
-      agentName,
+      agentName: plan.agentName,
       requesterId: plan.requesterId,
       ...(integrationId !== undefined ? { integrationId } : {}),
-      ...(iconUrl ? { iconUrl } : {}),
+      ...(plan.iconUrl ? { iconUrl: plan.iconUrl } : {}),
       platform: msg.platform,
       isDm: msg.isDm,
       loopGuardScope: plan.loopGuardScope,
@@ -8956,11 +9032,11 @@ export class Daemon {
       acpSessionId: sessionId,
       ...(entry.selectedHost ? { selectedHost: entry.selectedHost } : {}),
       channel: msg.channel,
-      transcriptChannel,
+      transcriptChannel: plan.transcriptChannel,
       thread: msg.thread,
-      turnState: plan.turnSurface.initialTurnState(turnCtx),
-      statusThread,
-      conn: replyConn,
+      turnState: plan.turnSurface.initialTurnState(plan.turnCtx),
+      statusThread: plan.statusThread,
+      conn: run.replyConn,
       // Snapshot alongside `conn`: true only when `none` removed THIS turn's Slack permission
       // card surface (not Telegram/Discord/Feishu, webchat, or headless). Frozen for the turn
       // so a mid-turn mode flip can't desync the permission policy from the already-cleared
@@ -8970,14 +9046,14 @@ export class Daemon {
       approvalWaitDepth: 0,
       runtimeCostReported: false,
       usageReportSent: false,
-      evaluationTurnId,
+      evaluationTurnId: plan.evaluationTurnId,
       showStatusBar: plan.showStatusBar,
       statusCancellable: true,
       applyChain: Promise.resolve(),
       done,
       resolveDone,
       ...(callMeta ? { callMeta } : {}),
-      ...(pendingWebchat ? { webchat: pendingWebchat } : {}),
+      ...(turn.webchat ? { webchat: turn.webchat } : {}),
       ...(plan.githubTurnEligible && githubReply
         ? {
             github: {
@@ -8988,6 +9064,17 @@ export class Daemon {
         : {})
     }
     this.pending.set(pendingTurnKey(agentId, sessionId), p)
+    return p
+  }
+
+  /** Replay the metadata session/new|load emitted before Pending existed, then install the
+   *  per-key active-turn context (§6.7 callMeta, GitHub turn + reply batch) for this turn. */
+  private async installActiveTurnContext(
+    run: TurnRun,
+    sessionId: string
+  ): Promise<{ github?: ActiveGithubTurnMeta; githubReplyBatch?: ActiveGithubReplyBatchMeta }> {
+    const { entry, key, plan } = run
+    const { agentId, callMeta } = entry
     // session/new|load may emit title/usage metadata before the local row exists.
     // Replay only after Pending owns the live sink so persisted and streamed state
     // converge in the same turn instead of requiring a browser refresh.
@@ -9002,867 +9089,1013 @@ export class Daemon {
     if (activeGithub) this.activeGithubTurnMeta.set(key, activeGithub)
     const activeGithubReplyBatch = plan.githubReplyBatchActive ? { entry, sessionId, called: false } : undefined
     if (activeGithubReplyBatch) this.activeGithubReplyBatchMeta.set(key, activeGithubReplyBatch)
-    let finalPhase: EventSession['phase'] = 'end'
-    let turnModel: string | undefined
-    let propagatingTurnError = false
-    const hopLimitNotice = plan.hopLimitNotice
-    const currentAttributionInfo = async (): Promise<SlackAttributionInfo> => ({
-      botName: agent.name,
-      botUrl: this.agentLink(agentId),
-      runtime: this.runtimeNames[agent.runtime] ?? agent.runtime,
-      model: (await this.buildStatusInfo(p)).model ?? turnModel ?? 'default',
-      sessionUrl: this.sessionLink(sessionId, this.sessionLinkSource(msg.platform, integrationId)),
-      ...(hopLimitNotice ? { notice: hopLimitNotice } : {})
+    return {
+      ...(activeGithub ? { github: activeGithub } : {}),
+      ...(activeGithubReplyBatch ? { githubReplyBatch: activeGithubReplyBatch } : {})
+    }
+  }
+
+  /** Resolve the exact host this turn runs on and re-apply the session's sticky runtime controls
+   *  (model → effort → permission preset → fast mode), then fence a revoked in-chat grant. */
+  private async reapplyStickyControls(
+    p: Pending,
+    run: TurnRun,
+    sessionId: string
+  ): Promise<{ host: AcpHost; modelOverride: string | undefined }> {
+    const { entry, key, agent } = run
+    const { agentId, webchat } = entry
+    if (!p.selectedHost) {
+      const ordinaryHost = await this.ensureHostAsync(agentId)
+      p.selectedHost = this.selectedOrdinaryTurnHost(agentId, ordinaryHost)
+      entry.selectedHost = p.selectedHost
+    }
+    const host = p.selectedHost.host
+    const runtimeAgent = this.agents.get(agentId)
+    const allowRuntimeChangesInChat = runtimeAgent?.allowRuntimeChangesInChat === true
+    // Re-apply a sticky session model override (set via the console's in-session model
+    // switch) before the turn runs — the agent's default model was applied at
+    // session/new, so this layers the per-session choice on top each turn. Best-effort.
+    const override = allowRuntimeChangesInChat ? await this.store.getModelOverride(key) : undefined
+    if (override && this.modelCrossesHostProvider(key, agentId, override)) {
+      // The host is bound to the provider it was started for — pushing a foreign one live
+      // would run the turn against options that never received a key or base URL.
+      this.log.debug(`model override "${override}" deferred — host is bound to its start-time provider`)
+    } else if (override) {
+      await host
+        .setSessionModel(sessionId, override)
+        .catch((err) => this.log.debug(`model override "${override}" not applied: ${(err as Error).message}`))
+    }
+    // Re-apply the remaining sticky controls. Effort is applied AFTER the model
+    // because the offered levels depend on it; `ultracode` rides session `_meta`
+    // at new/load instead (setSessionEffort returns false for it). Best-effort.
+    const effortOverride = allowRuntimeChangesInChat ? await this.store.getEffortOverride(key) : undefined
+    if (effortOverride) {
+      await host
+        .setSessionEffort(sessionId, effortOverride)
+        .catch((err) => this.log.debug(`effort override "${effortOverride}" not applied: ${(err as Error).message}`))
+    }
+    const permissionPresetOverride = allowRuntimeChangesInChat
+      ? await this.store.getPermissionModeOverride(key)
+      : undefined
+    const configuredPermissionMode =
+      runtimeAgent?.permissionMode ??
+      this.runtimeCatalogs.get(runtimeAgent?.runtime ?? agent.runtime)?.defaultPermissionMode
+    const effectivePermissionPreset =
+      permissionPresetOverride ??
+      (configuredPermissionMode
+        ? selectedPermissionPreset(configuredPermissionMode, runtimeAgent?.approvalsReviewer ?? 'user')
+        : undefined)
+    if (effectivePermissionPreset) {
+      await this.commands
+        .applySessionPermissionPreset(host, sessionId, effectivePermissionPreset)
+        .catch((err) =>
+          this.log.debug(`permission preset "${effectivePermissionPreset}" not applied: ${(err as Error).message}`)
+        )
+    }
+    const fastOverride = allowRuntimeChangesInChat ? await this.store.getFastModeOverride(key) : undefined
+    if (fastOverride !== undefined) {
+      await host
+        .setSessionFastMode(sessionId, fastOverride)
+        .catch((err) => this.log.debug(`fast-mode override ${fastOverride} not applied: ${(err as Error).message}`))
+    }
+    // Runtime setters above await the adapter and can race another reconciliation.
+    // Fence immediately before prompt; a revoked permission must be restored
+    // synchronously here, not by reconcile's fire-and-forget live-session sweep.
+    const promptAgent = this.agents.get(agentId)
+    if (webchat?.runtime && promptAgent?.allowRuntimeChangesInChat !== true) {
+      await this.store.clearRuntimeConfigOverrides(agentId)
+      await this.applyConfiguredRuntimeSettings(promptAgent ?? agent, host, sessionId)
+    }
+    return { host, modelOverride: override }
+  }
+
+  /** Capture the model for THIS session/turn after sticky overrides are applied, and observe it
+   *  on the session row. AcpHost owns multiple sessions, so its no-arg selector may describe
+   *  another conversation; the session-scoped lookup avoids pricing with that stale model.
+   *  The optional call keeps older/test host stubs compatible. */
+  private async captureTurnModel(
+    run: TurnRun,
+    host: AcpHost,
+    sessionId: string,
+    modelOverride: string | undefined
+  ): Promise<string | undefined> {
+    const modelOptions = host.modelOptions?.(sessionId) ?? null
+    const advertisedModel = modelOptions?.current
+    // A runtime-owned "default" is not a public billable model id. Only fall
+    // back to config when no selector exists at all; otherwise a failed override
+    // could make us price a model that did not actually run.
+    const turnModel =
+      modelOptions === null
+        ? (modelOverride ?? run.agent.runtimeOverrides?.model)
+        : advertisedModel === 'default'
+          ? undefined
+          : advertisedModel
+    await this.store.setObservedModel(run.key, turnModel ?? null)
+    return turnModel
+  }
+
+  /** Open this turn's chrome before the first ACP token can arrive: the linked footer, Feishu's
+   *  answer card, the activity indicator and the session status bar. */
+  private async openTurnChrome(
+    p: Pending,
+    run: TurnRun,
+    currentAttributionInfo: () => Promise<SlackAttributionInfo>
+  ): Promise<void> {
+    const { plan, replyConn, entry } = run
+    // Prepare the linked footer before host.prompt can emit its first chunk. Reply
+    // sections then include it in their initial chat.postMessage, where Slack's
+    // unfurl controls are supported; onFinal normally observes the same footer and
+    // becomes a no-op instead of introducing URLs later through chat.update.
+    if (plan.attributionFooterEnabled) {
+      const attribution = buildAttributionBlocks(await currentAttributionInfo())
+      p.attribution = { blocks: attribution.blocks, key: JSON.stringify(attribution.blocks) }
+    }
+    // Feishu's answer surface exists before the first ACP token: one CardKit entity
+    // starts in a generic Thinking state, then all body updates and the final footer
+    // replace that same card. `none` mode returns no start action.
+    if (p.conv instanceof FeishuConverger) {
+      for (const action of p.conv.onStart()) this.enqueueApply(p, action)
+    }
+    if (!plan.hostAlreadyRunning)
+      this.showActivity(replyConn, plan.channel, plan.statusThread, 'is thinking…', plan.statusOptions)
+    // Post/refresh the session status bar up front — with the model now known (session
+    // created) plus any usage carried over from prior turns — so it sits at the top of
+    // the thread before the reply streams in.
+    await this.emitStatusBar(p)
+    // Config-file secrets deleted by the idle sweep come back BEFORE the turn
+    // reaches the child — synchronous, so the guarantee is ordering, not timing.
+    this.rematerializeConfigFiles(entry.agentId)
+  }
+
+  /** Recheck the observations that landed while attachments, memory recall, or runtime ready
+   *  gates were awaiting, and fold them into the prompt this turn will send. */
+  private async prePromptContextRefresh(
+    p: Pending,
+    run: TurnRun,
+    sessionId: string,
+    handled: HandledTurnSession
+  ): Promise<{
+    promptBlocks: import('@agentclientprotocol/sdk').ContentBlock[]
+    finalCaptureInput: string
+    baseRevision: number
+    providerCheckpoint: string | undefined
+  }> {
+    const { key, entry } = run
+    const { msg } = entry
+    const promptBlocks = [...handled.blocks]
+    let finalCaptureInput = handled.captureInput ?? msg.text
+    let baseRevision =
+      handled.contextRevision ??
+      (await this.store.threadTranscriptRevision(p.transcriptChannel, p.statusThread, p.agentId))
+    let providerCheckpoint = handled.providerCheckpoint
+    if (p.stageAnswer || p.webchatRefresh) {
+      // Queue entries remain untouched until every gate above has succeeded.
+      const initialRefresh = await this.refreshTurnContext(p, baseRevision, providerCheckpoint, false)
+      // Webchat: a co-hosted participant's recipient-delivery bump can re-surface
+      // this agent's OWN trigger during the pre-prompt gates too — same exclusion
+      // as the final fence (the trigger's canonical ts rides the message).
+      // A row an earlier prompt for this session already carried is not new context — the
+      // async store lets a fence re-read it, and replaying it would prompt it twice.
+      const initialEvents = (
+        p.webchatRefresh
+          ? initialRefresh.events.filter((event) => msg.transcriptTs === undefined || event.ts !== msg.transcriptTs)
+          : initialRefresh.events
+      ).filter((event) => !this.absorbedContext(key, event))
+      const representedEventTs = new Map<string, string | undefined>([
+        ...(handled.contextEvents ?? []).map((event) => [event.ts, event.text] as const),
+        ...initialEvents.map((event) => [event.ts, event.text] as const)
+      ])
+      const deltaBlocks: import('@agentclientprotocol/sdk').ContentBlock[] = []
+      if (initialEvents.length > 0) {
+        deltaBlocks.push({
+          type: 'text',
+          text: initialContextDeltaText(initialEvents, (event) => this.observedQuoteBlock(event, initialEvents))
+        })
+      }
+      promptBlocks.push(...deltaBlocks)
+      if (deltaBlocks.length > 0) {
+        finalCaptureInput = recallQueryFromBlocks([{ type: 'text', text: finalCaptureInput }, ...deltaBlocks])
+      }
+      await this.coalesceQueuedContext(key, sessionId, representedEventTs)
+      baseRevision = await this.store.threadTranscriptRevision(p.transcriptChannel, p.statusThread, p.agentId)
+      providerCheckpoint = initialRefresh.providerCheckpoint ?? providerCheckpoint
+    }
+    return { promptBlocks, finalCaptureInput, baseRevision, providerCheckpoint }
+  }
+
+  /** Announce the turn to the evaluation harness, with the runtime facts only the live host knows. */
+  private emitTurnStarted(
+    run: TurnRun,
+    host: AcpHost,
+    sessionId: string,
+    created: boolean,
+    input: string,
+    turnModel: string | undefined
+  ): void {
+    const { plan, agent, entry } = run
+    const runtimeAgentInfo = host.acpAgentInfo?.()
+    const acpVersion = host.acpProtocolVersion?.()
+    this.evalHooks.emit({
+      type: 'turn.started',
+      agentId: entry.agentId,
+      sessionId,
+      turnId: plan.evaluationTurnId,
+      platform: plan.platform,
+      channel: plan.channel,
+      data: {
+        input,
+        created,
+        runtime: agent.runtime,
+        ...(turnModel ? { model: turnModel } : {}),
+        ...(runtimeAgentInfo?.name ? { runtimeProvider: runtimeAgentInfo.name } : {}),
+        ...(runtimeAgentInfo?.version ? { runtimeVersion: runtimeAgentInfo.version } : {}),
+        ...(acpVersion ? { acpVersion } : {})
+      }
     })
-    try {
-      if (!p.selectedHost) {
-        const ordinaryHost = await this.ensureHostAsync(agentId)
-        p.selectedHost = this.selectedOrdinaryTurnHost(agentId, ordinaryHost)
-        entry.selectedHost = p.selectedHost
-      }
-      const host = p.selectedHost.host
-      const runtimeAgent = this.agents.get(agentId)
-      const allowRuntimeChangesInChat = runtimeAgent?.allowRuntimeChangesInChat === true
-      // Re-apply a sticky session model override (set via the console's in-session model
-      // switch) before the turn runs — the agent's default model was applied at
-      // session/new, so this layers the per-session choice on top each turn. Best-effort.
-      const override = allowRuntimeChangesInChat ? await this.store.getModelOverride(key) : undefined
-      if (override && this.modelCrossesHostProvider(key, agentId, override)) {
-        // The host is bound to the provider it was started for — pushing a foreign one live
-        // would run the turn against options that never received a key or base URL.
-        this.log.debug(`model override "${override}" deferred — host is bound to its start-time provider`)
-      } else if (override) {
-        await host
-          .setSessionModel(sessionId, override)
-          .catch((err) => this.log.debug(`model override "${override}" not applied: ${(err as Error).message}`))
-      }
-      // Re-apply the remaining sticky controls. Effort is applied AFTER the model
-      // because the offered levels depend on it; `ultracode` rides session `_meta`
-      // at new/load instead (setSessionEffort returns false for it). Best-effort.
-      const effortOverride = allowRuntimeChangesInChat ? await this.store.getEffortOverride(key) : undefined
-      if (effortOverride) {
-        await host
-          .setSessionEffort(sessionId, effortOverride)
-          .catch((err) => this.log.debug(`effort override "${effortOverride}" not applied: ${(err as Error).message}`))
-      }
-      const permissionPresetOverride = allowRuntimeChangesInChat
-        ? await this.store.getPermissionModeOverride(key)
-        : undefined
-      const configuredPermissionMode =
-        runtimeAgent?.permissionMode ??
-        this.runtimeCatalogs.get(runtimeAgent?.runtime ?? agent.runtime)?.defaultPermissionMode
-      const effectivePermissionPreset =
-        permissionPresetOverride ??
-        (configuredPermissionMode
-          ? selectedPermissionPreset(configuredPermissionMode, runtimeAgent?.approvalsReviewer ?? 'user')
-          : undefined)
-      if (effectivePermissionPreset) {
-        await this.commands
-          .applySessionPermissionPreset(host, sessionId, effectivePermissionPreset)
-          .catch((err) =>
-            this.log.debug(`permission preset "${effectivePermissionPreset}" not applied: ${(err as Error).message}`)
-          )
-      }
-      const fastOverride = allowRuntimeChangesInChat ? await this.store.getFastModeOverride(key) : undefined
-      if (fastOverride !== undefined) {
-        await host
-          .setSessionFastMode(sessionId, fastOverride)
-          .catch((err) => this.log.debug(`fast-mode override ${fastOverride} not applied: ${(err as Error).message}`))
-      }
-      // Runtime setters above await the adapter and can race another reconciliation.
-      // Fence immediately before prompt; a revoked permission must be restored
-      // synchronously here, not by reconcile's fire-and-forget live-session sweep.
-      const promptAgent = this.agents.get(agentId)
-      if (webchat?.runtime && promptAgent?.allowRuntimeChangesInChat !== true) {
-        await this.store.clearRuntimeConfigOverrides(agentId)
-        await this.applyConfiguredRuntimeSettings(promptAgent ?? agent, host, sessionId)
-      }
-      // Pause/loop protection may land while a slow host is starting or sticky
-      // overrides are being restored. At this point Pending exists but no prompt has
-      // begun; re-check so a cancel that had no live host cannot race into new work.
-      const readyGate = await this.coldSessionFence(entry, key, 'ready', {
-        finishEvaluation,
-        clearActivity: () => this.showActivity(replyConn, msg.channel, statusThread, ''),
-        sessionId
-      })
-      if (readyGate) {
-        if (readyGate === 'loop protection') finalPhase = 'problem'
-        return null
-      }
-      // Capture the model for THIS session/turn after sticky overrides are applied.
-      // AcpHost owns multiple sessions, so its no-arg selector may describe another
-      // conversation; the session-scoped lookup avoids pricing with that stale model.
-      // Optional call keeps older/test host stubs compatible; real AcpHost always
-      // implements the session-scoped selector.
-      const modelOptions = host.modelOptions?.(sessionId) ?? null
-      const advertisedModel = modelOptions?.current
-      // A runtime-owned "default" is not a public billable model id. Only fall
-      // back to config when no selector exists at all; otherwise a failed override
-      // could make us price a model that did not actually run.
-      turnModel =
-        modelOptions === null
-          ? (override ?? agent.runtimeOverrides?.model)
-          : advertisedModel === 'default'
-            ? undefined
-            : advertisedModel
-      await this.store.setObservedModel(key, turnModel ?? null)
-      // Prepare the linked footer before host.prompt can emit its first chunk. Reply
-      // sections then include it in their initial chat.postMessage, where Slack's
-      // unfurl controls are supported; onFinal normally observes the same footer and
-      // becomes a no-op instead of introducing URLs later through chat.update.
-      if (plan.attributionFooterEnabled) {
-        const attribution = buildAttributionBlocks(await currentAttributionInfo())
-        p.attribution = { blocks: attribution.blocks, key: JSON.stringify(attribution.blocks) }
-      }
-      // Feishu's answer surface exists before the first ACP token: one CardKit entity
-      // starts in a generic Thinking state, then all body updates and the final footer
-      // replace that same card. `none` mode returns no start action.
-      if (conv instanceof FeishuConverger) {
-        for (const action of conv.onStart()) this.enqueueApply(p, action)
-      }
-      if (!plan.hostAlreadyRunning)
-        this.showActivity(replyConn, msg.channel, statusThread, 'is thinking…', statusOptions)
-      // Post/refresh the session status bar up front — with the model now known (session
-      // created) plus any usage carried over from prior turns — so it sits at the top of
-      // the thread before the reply streams in.
-      await this.emitStatusBar(p)
-      // Config-file secrets deleted by the idle sweep come back BEFORE the turn
-      // reaches the child — synchronous, so the guarantee is ordering, not timing.
-      this.rematerializeConfigFiles(agentId)
-      const runtimeAgentInfo = host.acpAgentInfo?.()
-      const acpVersion = host.acpProtocolVersion?.()
+  }
 
-      let promptBlocks = [...blocks]
-      let finalCaptureInput = handled.captureInput ?? msg.text
-      let baseRevision =
-        handled.contextRevision ??
-        (await this.store.threadTranscriptRevision(p.transcriptChannel, p.statusThread, p.agentId))
-      let providerCheckpoint = handled.providerCheckpoint
-      if (p.stageAnswer || p.webchatRefresh) {
-        // Recheck observations that landed while attachments, memory recall, or
-        // runtime ready gates were awaiting. Queue entries remain untouched until
-        // every gate above has succeeded.
-        const initialRefresh = await this.refreshTurnContext(p, baseRevision, providerCheckpoint, false)
-        // Webchat: a co-hosted participant's recipient-delivery bump can re-surface
-        // this agent's OWN trigger during the pre-prompt gates too — same exclusion
-        // as the final fence (the trigger's canonical ts rides the message).
-        // A row an earlier prompt for this session already carried is not new context — the
-        // async store lets a fence re-read it, and replaying it would prompt it twice.
-        const initialEvents = (
-          p.webchatRefresh
-            ? initialRefresh.events.filter((event) => msg.transcriptTs === undefined || event.ts !== msg.transcriptTs)
-            : initialRefresh.events
-        ).filter((event) => !this.absorbedContext(key, event))
-        const representedEventTs = new Map<string, string | undefined>([
-          ...(handled.contextEvents ?? []).map((event) => [event.ts, event.text] as const),
-          ...initialEvents.map((event) => [event.ts, event.text] as const)
-        ])
-        const deltaBlocks: import('@agentclientprotocol/sdk').ContentBlock[] = []
-        if (initialEvents.length > 0) {
-          deltaBlocks.push({
-            type: 'text',
-            text: initialContextDeltaText(initialEvents, (event) => this.observedQuoteBlock(event, initialEvents))
-          })
+  /** Prompt the runtime, then decide whether the answer may be committed: a turn whose context
+   *  changed underneath it regenerates against the new observations until the retry budget runs
+   *  out. Returns 'cancelled' for every path that ends the turn without a committed answer —
+   *  dispatchOne re-issues the `return null` so its settlement still runs. */
+  private async runPromptLoop(
+    p: Pending,
+    run: TurnRun,
+    turn: {
+      host: AcpHost
+      sessionId: string
+      turnModel: string | undefined
+      settlement: TurnSettlement
+      promptBlocks: import('@agentclientprotocol/sdk').ContentBlock[]
+      finalCaptureInput: string
+      baseRevision: number
+      providerCheckpoint: string | undefined
+    }
+  ): Promise<TurnPromptOutcome> {
+    const { entry, key, plan, agent, evaluation } = run
+    const { agentId, msg, hookContext } = entry
+    const { host, sessionId, turnModel, settlement } = turn
+    type PromptResult = Awaited<ReturnType<typeof host.prompt>>
+    let stopReason!: PromptResult['stopReason']
+    let usage: PromptResult['usage']
+    let evaluationUsage: PromptResult['usage']
+    let generation = 0
+    let regenerationStartedAt: number | undefined
+    let regenerationApprovalWaitBaseline = 0
+    let { promptBlocks, finalCaptureInput, baseRevision, providerCheckpoint } = turn
+    const codexUsageIsPerPrompt = plan.codexUsageIsPerPrompt
+
+    while (true) {
+      if (p.stageAnswer) this.discardStagedAttempt(p)
+
+      // Start-fence linearization: no await occurs between queue coalescing above
+      // (or the prior regeneration decision) and initiating this ACP request.
+      const promptPromise = host.prompt(sessionId, promptBlocks)
+      const result = await promptPromise
+      // The runtime's notifications are handled off the prompt call, so drain this
+      // session's update chain before the turn reads what they wrote.
+      await this.acpUpdateChains.get(acpUpdateChainKey(agent.id, sessionId))
+      stopReason = result.stopReason
+      usage = result.usage
+
+      // A completed prompt proves the runtime's credentials work — drop any
+      // login-required mark (no-op emit unless the flag actually flips).
+      this.noteRuntimeAuthFromTurn(agent.runtime, false)
+      if (p.outputSuppressed) {
+        evaluation.finishEvaluation('turn.cancelled', { reason: p.outputSuppressed })
+        if (p.outputSuppressed === 'loop protection') settlement.finalPhase = 'problem'
+        if (hookContext && this.reportsHookOutcome(entry)) {
+          await this.emitHookCompletion(hookContext, 'failed', { sessionId, reason: p.outputSuppressed }, entry)
         }
-        promptBlocks.push(...deltaBlocks)
-        if (deltaBlocks.length > 0) {
-          finalCaptureInput = recallQueryFromBlocks([{ type: 'text', text: finalCaptureInput }, ...deltaBlocks])
+        return { kind: 'cancelled' }
+      }
+      if (usage) {
+        const counts = {
+          totalTokens: usage.totalTokens,
+          inputTokens: usage.inputTokens,
+          outputTokens: usage.outputTokens,
+          thoughtTokens: usage.thoughtTokens ?? undefined,
+          cachedReadTokens: usage.cachedReadTokens ?? undefined,
+          cachedWriteTokens: usage.cachedWriteTokens ?? undefined
         }
-        await this.coalesceQueuedContext(key, sessionId, representedEventTs)
-        baseRevision = await this.store.threadTranscriptRevision(p.transcriptChannel, p.statusThread, p.agentId)
-        providerCheckpoint = initialRefresh.providerCheckpoint ?? providerCheckpoint
+        // codex-acp reports one prompt delta, so every discarded generation is
+        // additive. Other established adapters report a session snapshot and keep
+        // their existing latest-wins fold.
+        if (codexUsageIsPerPrompt) {
+          await this.store.addTokenUsage(key, counts)
+          evaluationUsage = {
+            totalTokens: (evaluationUsage?.totalTokens ?? 0) + (usage.totalTokens ?? 0),
+            inputTokens: (evaluationUsage?.inputTokens ?? 0) + (usage.inputTokens ?? 0),
+            outputTokens: (evaluationUsage?.outputTokens ?? 0) + (usage.outputTokens ?? 0),
+            thoughtTokens: (evaluationUsage?.thoughtTokens ?? 0) + (usage.thoughtTokens ?? 0),
+            cachedReadTokens: (evaluationUsage?.cachedReadTokens ?? 0) + (usage.cachedReadTokens ?? 0),
+            cachedWriteTokens: (evaluationUsage?.cachedWriteTokens ?? 0) + (usage.cachedWriteTokens ?? 0)
+          }
+          if (!p.runtimeCostReported) {
+            const estimate = estimateOpenAiTurnCost(turnModel, counts)
+            if (estimate.ok) {
+              if (!(await this.store.addCost(key, estimate.amount, estimate.currency))) {
+                this.log.debug(`cost fallback skipped for session ${sessionId}: existing currency differs from USD`)
+              }
+            } else {
+              this.log.debug(
+                `cost fallback unavailable for session ${sessionId} model=${turnModel ?? '(unknown)'}: ${estimate.reason}`
+              )
+            }
+          }
+        } else {
+          await this.store.setTokenUsage(key, counts)
+          evaluationUsage = usage
+        }
       }
 
+      if (!p.stageAnswer && !p.webchatRefresh) break
+
+      const refresh = await this.refreshTurnContext(p, baseRevision, providerCheckpoint, true)
+      providerCheckpoint = refresh.providerCheckpoint ?? providerCheckpoint
+      // An operator interrupt can arrive after the ACP request resolves while the
+      // provider snapshot is still in flight. Re-fence the commit here: the normal
+      // prompt-result check above is no longer sufficient once finalization awaits.
+      if (p.outputSuppressed) {
+        this.discardStagedAttempt(p)
+        evaluation.finishEvaluation('turn.cancelled', { reason: p.outputSuppressed })
+        if (p.outputSuppressed === 'loop protection') settlement.finalPhase = 'problem'
+        if (hookContext && this.reportsHookOutcome(entry)) {
+          await this.emitHookCompletion(hookContext, 'failed', { sessionId, reason: p.outputSuppressed }, entry)
+        }
+        return { kind: 'cancelled' }
+      }
+      // Recheck once more after provider I/O reconciliation returned. This is the
+      // local commit fence that catches gateway events arriving during that read.
+      const lateEvents = await this.localInvalidatingEvents(p, refresh.revision)
+      const invalidatingEvents = [...refresh.events, ...lateEvents]
+        // Webchat: a co-hosted participant dispatching the SAME user turn bumps
+        // the shared trigger row's revision (recipient-delivery write), which
+        // would re-surface this agent's OWN trigger as a "new" message. The
+        // trigger's canonical ts is carried on the message — exclude it.
+        .filter((event) => !p.webchatRefresh || msg.transcriptTs === undefined || event.ts !== msg.transcriptTs)
+        // A row an earlier prompt for this session already carried is not new context: the
+        // async store lets a later write bump its revision and re-surface it here.
+        .filter((event) => !this.absorbedContext(key, event))
+        .sort((a, b) => a.eventTimeUs - b.eventTimeUs || a.seq - b.seq)
+      const finalRevision = await this.store.threadTranscriptRevision(p.transcriptChannel, p.statusThread, p.agentId)
+
+      if (invalidatingEvents.length === 0) {
+        if (p.stageAnswer) this.acceptStagedAttempt(p)
+        if (generation > 0) defaultTurnOutputMetrics.regeneration(p.platform, 'accepted')
+        defaultTurnOutputMetrics.generations(generation + 1)
+        baseRevision = finalRevision
+        break
+      }
+
+      this.discardStagedAttempt(p)
+      if (p.webchatRefresh && p.webchat) {
+        // The canonical post — and post-turn memory / turn.completed.output —
+        // must carry only the accepted generation. Webchat chunks accumulate
+        // into BOTH buffers (the stream is never staged), so clear both — and
+        // reset the sentinel hold so the replacement gets its own check.
+        p.webchat.replyText = ''
+        p.webchat.heldText = ''
+        p.webchat.messageEmitted = false
+        p.replyText = ''
+      }
       this.evalHooks.emit({
-        type: 'turn.started',
+        type: 'turn.context_changed',
         agentId,
         sessionId,
-        turnId: evaluationTurnId,
+        turnId: plan.evaluationTurnId,
         platform: msg.platform,
         channel: msg.channel,
         data: {
-          input: finalCaptureInput,
-          created,
-          runtime: agent.runtime,
-          ...(turnModel ? { model: turnModel } : {}),
-          ...(runtimeAgentInfo?.name ? { runtimeProvider: runtimeAgentInfo.name } : {}),
-          ...(runtimeAgentInfo?.version ? { runtimeVersion: runtimeAgentInfo.version } : {}),
-          ...(acpVersion ? { acpVersion } : {})
+          generation,
+          fromRevision: baseRevision,
+          toRevision: finalRevision,
+          eventCount: invalidatingEvents.length,
+          completeness: refresh.completeness
         }
       })
-      type PromptResult = Awaited<ReturnType<typeof host.prompt>>
-      let stopReason!: PromptResult['stopReason']
-      let usage: PromptResult['usage']
-      let evaluationUsage: PromptResult['usage']
-      let generation = 0
-      let regenerationStartedAt: number | undefined
-      let regenerationApprovalWaitBaseline = 0
-      const codexUsageIsPerPrompt = plan.codexUsageIsPerPrompt
-
-      while (true) {
-        if (p.stageAnswer) this.discardStagedAttempt(p)
-
-        // Start-fence linearization: no await occurs between queue coalescing above
-        // (or the prior regeneration decision) and initiating this ACP request.
-        const promptPromise = host.prompt(sessionId, promptBlocks)
-        const result = await promptPromise
-        // The runtime's notifications are handled off the prompt call, so drain this
-        // session's update chain before the turn reads what they wrote.
-        await this.acpUpdateChains.get(acpUpdateChainKey(agent.id, sessionId))
-        stopReason = result.stopReason
-        usage = result.usage
-
-        // A completed prompt proves the runtime's credentials work — drop any
-        // login-required mark (no-op emit unless the flag actually flips).
-        this.noteRuntimeAuthFromTurn(agent.runtime, false)
-        if (p.outputSuppressed) {
-          finishEvaluation('turn.cancelled', { reason: p.outputSuppressed })
-          if (p.outputSuppressed === 'loop protection') finalPhase = 'problem'
-          if (hookContext && this.reportsHookOutcome(entry)) {
-            await this.emitHookCompletion(hookContext, 'failed', { sessionId, reason: p.outputSuppressed }, entry)
-          }
-          return null
-        }
-        if (usage) {
-          const counts = {
-            totalTokens: usage.totalTokens,
-            inputTokens: usage.inputTokens,
-            outputTokens: usage.outputTokens,
-            thoughtTokens: usage.thoughtTokens ?? undefined,
-            cachedReadTokens: usage.cachedReadTokens ?? undefined,
-            cachedWriteTokens: usage.cachedWriteTokens ?? undefined
-          }
-          // codex-acp reports one prompt delta, so every discarded generation is
-          // additive. Other established adapters report a session snapshot and keep
-          // their existing latest-wins fold.
-          if (codexUsageIsPerPrompt) {
-            await this.store.addTokenUsage(key, counts)
-            evaluationUsage = {
-              totalTokens: (evaluationUsage?.totalTokens ?? 0) + (usage.totalTokens ?? 0),
-              inputTokens: (evaluationUsage?.inputTokens ?? 0) + (usage.inputTokens ?? 0),
-              outputTokens: (evaluationUsage?.outputTokens ?? 0) + (usage.outputTokens ?? 0),
-              thoughtTokens: (evaluationUsage?.thoughtTokens ?? 0) + (usage.thoughtTokens ?? 0),
-              cachedReadTokens: (evaluationUsage?.cachedReadTokens ?? 0) + (usage.cachedReadTokens ?? 0),
-              cachedWriteTokens: (evaluationUsage?.cachedWriteTokens ?? 0) + (usage.cachedWriteTokens ?? 0)
-            }
-            if (!p.runtimeCostReported) {
-              const estimate = estimateOpenAiTurnCost(turnModel, counts)
-              if (estimate.ok) {
-                if (!(await this.store.addCost(key, estimate.amount, estimate.currency))) {
-                  this.log.debug(`cost fallback skipped for session ${sessionId}: existing currency differs from USD`)
-                }
-              } else {
-                this.log.debug(
-                  `cost fallback unavailable for session ${sessionId} model=${turnModel ?? '(unknown)'}: ${estimate.reason}`
-                )
-              }
-            }
-          } else {
-            await this.store.setTokenUsage(key, counts)
-            evaluationUsage = usage
-          }
-        }
-
-        if (!p.stageAnswer && !p.webchatRefresh) break
-
-        const refresh = await this.refreshTurnContext(p, baseRevision, providerCheckpoint, true)
-        providerCheckpoint = refresh.providerCheckpoint ?? providerCheckpoint
-        // An operator interrupt can arrive after the ACP request resolves while the
-        // provider snapshot is still in flight. Re-fence the commit here: the normal
-        // prompt-result check above is no longer sufficient once finalization awaits.
-        if (p.outputSuppressed) {
-          this.discardStagedAttempt(p)
-          finishEvaluation('turn.cancelled', { reason: p.outputSuppressed })
-          if (p.outputSuppressed === 'loop protection') finalPhase = 'problem'
-          if (hookContext && this.reportsHookOutcome(entry)) {
-            await this.emitHookCompletion(hookContext, 'failed', { sessionId, reason: p.outputSuppressed }, entry)
-          }
-          return null
-        }
-        // Recheck once more after provider I/O reconciliation returned. This is the
-        // local commit fence that catches gateway events arriving during that read.
-        const lateEvents = await this.localInvalidatingEvents(p, refresh.revision)
-        const invalidatingEvents = [...refresh.events, ...lateEvents]
-          // Webchat: a co-hosted participant dispatching the SAME user turn bumps
-          // the shared trigger row's revision (recipient-delivery write), which
-          // would re-surface this agent's OWN trigger as a "new" message. The
-          // trigger's canonical ts is carried on the message — exclude it.
-          .filter((event) => !p.webchatRefresh || msg.transcriptTs === undefined || event.ts !== msg.transcriptTs)
-          // A row an earlier prompt for this session already carried is not new context: the
-          // async store lets a later write bump its revision and re-surface it here.
-          .filter((event) => !this.absorbedContext(key, event))
-          .sort((a, b) => a.eventTimeUs - b.eventTimeUs || a.seq - b.seq)
-        const finalRevision = await this.store.threadTranscriptRevision(p.transcriptChannel, p.statusThread, p.agentId)
-
-        if (invalidatingEvents.length === 0) {
-          if (p.stageAnswer) this.acceptStagedAttempt(p)
-          if (generation > 0) defaultTurnOutputMetrics.regeneration(p.platform, 'accepted')
-          defaultTurnOutputMetrics.generations(generation + 1)
-          baseRevision = finalRevision
-          break
-        }
-
-        this.discardStagedAttempt(p)
-        if (p.webchatRefresh && p.webchat) {
-          // The canonical post — and post-turn memory / turn.completed.output —
-          // must carry only the accepted generation. Webchat chunks accumulate
-          // into BOTH buffers (the stream is never staged), so clear both — and
-          // reset the sentinel hold so the replacement gets its own check.
+      const eventTs = new Map(invalidatingEvents.map((event) => [event.ts, event.text] as const))
+      const queuedMatches = this.queuedEntriesMatchingContext(key, eventTs)
+      const regenerationElapsedMs =
+        regenerationStartedAt === undefined
+          ? 0
+          : this.clock.now() - regenerationStartedAt - Math.max(0, p.approvalWaitMs - regenerationApprovalWaitBaseline)
+      const retryAvailable =
+        generation < MAX_TURN_CONTEXT_REGENERATIONS &&
+        (regenerationStartedAt === undefined || regenerationElapsedMs < MAX_TURN_CONTEXT_REGENERATION_MS)
+      if (!retryAvailable) {
+        defaultTurnOutputMetrics.candidateDiscarded('context_churn')
+        defaultTurnOutputMetrics.contextChurnExhausted(p.platform)
+        defaultTurnOutputMetrics.generations(generation + 1)
+        evaluation.finishEvaluation('turn.cancelled', { reason: 'context_churn', generations: generation + 1 })
+        if (p.webchat) {
+          // No canonical post: the churned candidate is never committed or
+          // fanned out. Close the browser turn explicitly — a bare return
+          // would leave the stream open and the composer stuck busy.
           p.webchat.replyText = ''
           p.webchat.heldText = ''
-          p.webchat.messageEmitted = false
-          p.replyText = ''
-        }
-        this.evalHooks.emit({
-          type: 'turn.context_changed',
-          agentId,
-          sessionId,
-          turnId: evaluationTurnId,
-          platform: msg.platform,
-          channel: msg.channel,
-          data: {
-            generation,
-            fromRevision: baseRevision,
-            toRevision: finalRevision,
-            eventCount: invalidatingEvents.length,
-            completeness: refresh.completeness
-          }
-        })
-        const eventTs = new Map(invalidatingEvents.map((event) => [event.ts, event.text] as const))
-        const queuedMatches = this.queuedEntriesMatchingContext(key, eventTs)
-        const regenerationElapsedMs =
-          regenerationStartedAt === undefined
-            ? 0
-            : this.clock.now() -
-              regenerationStartedAt -
-              Math.max(0, p.approvalWaitMs - regenerationApprovalWaitBaseline)
-        const retryAvailable =
-          generation < MAX_TURN_CONTEXT_REGENERATIONS &&
-          (regenerationStartedAt === undefined || regenerationElapsedMs < MAX_TURN_CONTEXT_REGENERATION_MS)
-        if (!retryAvailable) {
-          defaultTurnOutputMetrics.candidateDiscarded('context_churn')
-          defaultTurnOutputMetrics.contextChurnExhausted(p.platform)
-          defaultTurnOutputMetrics.generations(generation + 1)
-          finishEvaluation('turn.cancelled', { reason: 'context_churn', generations: generation + 1 })
-          if (p.webchat) {
-            // No canonical post: the churned candidate is never committed or
-            // fanned out. Close the browser turn explicitly — a bare return
-            // would leave the stream open and the composer stuck busy.
-            p.webchat.replyText = ''
-            p.webchat.heldText = ''
-            if (!p.webchat.doneSent) {
-              p.webchat.doneSent = true
-              p.webchat.sink.output({
-                conversationId: p.webchat.conversationId,
-                turnId: p.webchat.turnId,
-                index: p.webchat.index++,
-                event: {
-                  kind: 'message',
-                  text: '⚠️ The conversation kept changing while I was answering, so I stopped this reply. Ask again when it settles.'
-                }
-              })
-              p.webchat.sink.done({
-                conversationId: p.webchat.conversationId,
-                turnId: p.webchat.turnId,
-                stopReason: 'context_churn'
-              })
-            }
-            return null
-          }
-          this.showActivity(replyConn, msg.channel, statusThread, '')
-          if (p.conv instanceof FeishuConverger) this.enqueueApply(p, { kind: 'card-cancel' })
-          if (queuedMatches.length === 0 && mode !== 'none') {
-            const notice =
-              'The conversation kept changing while I was answering, so I stopped this reply. Mention me again when the thread settles.'
-            this.enqueueApply(p, { kind: 'notice', text: notice })
-          }
-          return null
-        }
-
-        // Retry-budget decision precedes queue mutation. Only activations whose
-        // provider ids are present in this exact replacement prompt are absorbed.
-        // The browser supersession marker fires HERE — after the budget check —
-        // so it is only ever followed by a real replacement generation, never by
-        // the context-churn terminal (§5.4: "the replacement streams next").
-        if (p.webchatRefresh && p.webchat && !p.webchat.doneSent) {
-          p.webchat.sink.output({
-            conversationId: p.webchat.conversationId,
-            turnId: p.webchat.turnId,
-            index: p.webchat.index++,
-            event: { kind: 'superseded', generation: generation + 1 }
-          })
-        }
-        defaultTurnOutputMetrics.candidateDiscarded('context_changed')
-        await this.coalesceQueuedContext(key, sessionId, eventTs)
-        baseRevision = await this.store.threadTranscriptRevision(p.transcriptChannel, p.statusThread, p.agentId)
-        generation += 1
-        promptBlocks = [
-          {
-            type: 'text',
-            text: contextUpdateText(invalidatingEvents, (event) => this.observedQuoteBlock(event, invalidatingEvents))
-          }
-        ]
-        finalCaptureInput = recallQueryFromBlocks([{ type: 'text', text: finalCaptureInput }, ...promptBlocks])
-        // The wall-clock budget covers replacement work only. A slow original
-        // generation (including approval waits) must never consume the first retry.
-        if (regenerationStartedAt === undefined) {
-          regenerationStartedAt = this.clock.now()
-          regenerationApprovalWaitBaseline = p.approvalWaitMs
-        }
-        defaultTurnOutputMetrics.regeneration(p.platform, 'started')
-        this.evalHooks.emit({
-          type: 'turn.regeneration_started',
-          agentId,
-          sessionId,
-          turnId: evaluationTurnId,
-          platform: msg.platform,
-          channel: msg.channel,
-          data: { generation, eventCount: invalidatingEvents.length }
-        })
-      }
-
-      usage = evaluationUsage ?? usage
-      // Turn-end refresh: the token totals only arrive here (the prompt response), so
-      // fold them into the bar now.
-      await this.emitStatusBar(p)
-      // Report the session's merged cumulative usage (tokens + the latest cost/
-      // context snapshot folded in from usage_update) to the CP for the console's
-      // historical dashboard. Fire-and-forget; no-op if the CP is down. Wrapped so
-      // a transport hiccup can never abort the turn before the final reply flush.
-      await this.emitStoredUsageReport(sessionId, agentId, msg.platform, msg.channel, key)
-      p.usageReportSent = true
-      // turn finished: stop any pending idle-flush, then drain the final actions
-      // (remaining body + status clear + optional Web App detail link). A webchat
-      // turn skips the Slack renderer entirely — its reply already streamed through
-      // the relay reply sink — and closes that `rd/chat` stream with a done event.
-      this.clearIdle(p)
-      this.clearFeishuStream(p)
-      if (p.webchat) {
-        // Record the agent's reply as a transcript text row (sender = agentId), so a
-        // webchat session reads back with its reply like any Slack session does — the
-        // Slack path records this at its `post` boundary, which webchat never hits.
-        const trimmedWebchatReply = p.webchat.replyText.trim()
-        if (trimmedWebchatReply && isNoResponseBody(trimmedWebchatReply)) {
-          // Silent decline (the conversation-wide activation was not for this
-          // agent): drop the held stream text — nothing was ever streamed — and
-          // commit no canonical post or transcript reply row.
-          p.webchat.heldText = ''
-          p.replyText = ''
-        } else if (trimmedWebchatReply) {
-          // A real reply that never diverged from the sentinel prefix mid-stream
-          // (shorter than the sentinel) is still held — release it before commit.
-          webchatTurnOutput.flushHeldWebchatText(p.webchat)
-          // A continuation turn records its reply at the platform post boundary instead
-          // (appending here would duplicate the row), and its roster is fixed at one.
-          if (!p.webchat.continuation) {
-            // Shares the strictly-monotonic clock with the inbound user message so a fast
-            // turn can't stamp both with the same ms and lose the reply to the unique index.
-            // The ts the row actually lands on (post-collision-bump) doubles as the reply
-            // post's canonical `at` (minted ONCE here, the origin) carried to every other
-            // participant's copy via rd/webchat-post.
-            const replyPostId = randomUUID()
-            const replyTs = await webchatTurnOutput.appendWebchatTextRow(
-              this.store,
-              p.transcriptChannel,
-              statusThread,
-              monotonicTs(),
-              {
-                postId: replyPostId,
-                sender: agentId,
-                text: p.webchat.replyText
-              }
-            )
-            // Fan the completed reply out as a canonical conversation post so the
-            // relay delivers it to the browser's message log and to the other
-            // participants' daemons as context (webchat-multi-agents.md §5.2).
-            // `hopCount` is this turn's own chain depth (§4.1: stamped on every body
-            // the author posts), which is what lets a receiving participant charge
-            // the ONE +1 continuation transition (§5.2a) — the same stamp the
-            // platform paths put on their outbound authorship metadata.
-            p.webchat.postSink?.({
+          if (!p.webchat.doneSent) {
+            p.webchat.doneSent = true
+            p.webchat.sink.output({
               conversationId: p.webchat.conversationId,
-              agentId,
-              post: {
-                postId: replyPostId,
-                conversationId: p.webchat.conversationId,
-                author: { kind: 'agent', agentId, hopCount: p.sourceHopCount },
-                text: p.webchat.replyText,
-                at: Number(replyTs)
-              },
-              ...(p.webchat.initiator ? { initiator: p.webchat.initiator } : {})
+              turnId: p.webchat.turnId,
+              index: p.webchat.index++,
+              event: {
+                kind: 'message',
+                text: '⚠️ The conversation kept changing while I was answering, so I stopped this reply. Ask again when it settles.'
+              }
+            })
+            p.webchat.sink.done({
+              conversationId: p.webchat.conversationId,
+              turnId: p.webchat.turnId,
+              stopReason: 'context_churn'
             })
           }
+          return { kind: 'cancelled' }
         }
-        // Continuation defers `done` until the platform apply chain settles below —
-        // the browser must not unlock its composer while the reply is still flushing.
-        if (!p.webchat.continuation && !p.webchat.doneSent) {
+        this.clearTurnActivity(run)
+        if (p.conv instanceof FeishuConverger) this.enqueueApply(p, { kind: 'card-cancel' })
+        if (queuedMatches.length === 0 && plan.mode !== 'none') {
+          const notice =
+            'The conversation kept changing while I was answering, so I stopped this reply. Mention me again when the thread settles.'
+          this.enqueueApply(p, { kind: 'notice', text: notice })
+        }
+        return { kind: 'cancelled' }
+      }
+
+      // Retry-budget decision precedes queue mutation. Only activations whose
+      // provider ids are present in this exact replacement prompt are absorbed.
+      // The browser supersession marker fires HERE — after the budget check —
+      // so it is only ever followed by a real replacement generation, never by
+      // the context-churn terminal (§5.4: "the replacement streams next").
+      if (p.webchatRefresh && p.webchat && !p.webchat.doneSent) {
+        p.webchat.sink.output({
+          conversationId: p.webchat.conversationId,
+          turnId: p.webchat.turnId,
+          index: p.webchat.index++,
+          event: { kind: 'superseded', generation: generation + 1 }
+        })
+      }
+      defaultTurnOutputMetrics.candidateDiscarded('context_changed')
+      await this.coalesceQueuedContext(key, sessionId, eventTs)
+      baseRevision = await this.store.threadTranscriptRevision(p.transcriptChannel, p.statusThread, p.agentId)
+      generation += 1
+      promptBlocks = [
+        {
+          type: 'text',
+          text: contextUpdateText(invalidatingEvents, (event) => this.observedQuoteBlock(event, invalidatingEvents))
+        }
+      ]
+      finalCaptureInput = recallQueryFromBlocks([{ type: 'text', text: finalCaptureInput }, ...promptBlocks])
+      // The wall-clock budget covers replacement work only. A slow original
+      // generation (including approval waits) must never consume the first retry.
+      if (regenerationStartedAt === undefined) {
+        regenerationStartedAt = this.clock.now()
+        regenerationApprovalWaitBaseline = p.approvalWaitMs
+      }
+      defaultTurnOutputMetrics.regeneration(p.platform, 'started')
+      this.evalHooks.emit({
+        type: 'turn.regeneration_started',
+        agentId,
+        sessionId,
+        turnId: plan.evaluationTurnId,
+        platform: msg.platform,
+        channel: msg.channel,
+        data: { generation, eventCount: invalidatingEvents.length }
+      })
+    }
+
+    return { kind: 'answered', stopReason, usage: evaluationUsage ?? usage, finalCaptureInput }
+  }
+
+  /** Fold the turn's token totals into the status bar and report the session's merged
+   *  cumulative usage to the CP, then stop the streaming timers. */
+  private async settleUsage(p: Pending, run: TurnRun, sessionId: string): Promise<void> {
+    const { entry, key, plan } = run
+    // Turn-end refresh: the token totals only arrive here (the prompt response), so
+    // fold them into the bar now.
+    await this.emitStatusBar(p)
+    // Report the session's merged cumulative usage (tokens + the latest cost/
+    // context snapshot folded in from usage_update) to the CP for the console's
+    // historical dashboard. Fire-and-forget; no-op if the CP is down. Wrapped so
+    // a transport hiccup can never abort the turn before the final reply flush.
+    await this.emitStoredUsageReport(sessionId, entry.agentId, plan.platform, plan.channel, key)
+    p.usageReportSent = true
+    // turn finished: stop any pending idle-flush, then drain the final actions
+    // (remaining body + status clear + optional Web App detail link). A webchat
+    // turn skips the Slack renderer entirely — its reply already streamed through
+    // the relay reply sink — and closes that `rd/chat` stream with a done event.
+    this.clearIdle(p)
+    this.clearFeishuStream(p)
+  }
+
+  /** Commit a webchat turn's reply: record it as a transcript row, fan it out as the canonical
+   *  conversation post, and close the browser stream unless a continuation defers that. */
+  private async commitWebchatReply(p: Pending, run: TurnRun, outcome: AnsweredTurn): Promise<void> {
+    if (!p.webchat) return
+    const { plan, entry } = run
+    const { agentId } = entry
+    const { stopReason, usage } = outcome
+    // Record the agent's reply as a transcript text row (sender = agentId), so a
+    // webchat session reads back with its reply like any Slack session does — the
+    // Slack path records this at its `post` boundary, which webchat never hits.
+    const trimmedWebchatReply = p.webchat.replyText.trim()
+    if (trimmedWebchatReply && isNoResponseBody(trimmedWebchatReply)) {
+      // Silent decline (the conversation-wide activation was not for this
+      // agent): drop the held stream text — nothing was ever streamed — and
+      // commit no canonical post or transcript reply row.
+      p.webchat.heldText = ''
+      p.replyText = ''
+    } else if (trimmedWebchatReply) {
+      // A real reply that never diverged from the sentinel prefix mid-stream
+      // (shorter than the sentinel) is still held — release it before commit.
+      webchatTurnOutput.flushHeldWebchatText(p.webchat)
+      // A continuation turn records its reply at the platform post boundary instead
+      // (appending here would duplicate the row), and its roster is fixed at one.
+      if (!p.webchat.continuation) {
+        // Shares the strictly-monotonic clock with the inbound user message so a fast
+        // turn can't stamp both with the same ms and lose the reply to the unique index.
+        // The ts the row actually lands on (post-collision-bump) doubles as the reply
+        // post's canonical `at` (minted ONCE here, the origin) carried to every other
+        // participant's copy via rd/webchat-post.
+        const replyPostId = randomUUID()
+        const replyTs = await webchatTurnOutput.appendWebchatTextRow(
+          this.store,
+          p.transcriptChannel,
+          plan.statusThread,
+          monotonicTs(),
+          {
+            postId: replyPostId,
+            sender: agentId,
+            text: p.webchat.replyText
+          }
+        )
+        // Fan the completed reply out as a canonical conversation post so the
+        // relay delivers it to the browser's message log and to the other
+        // participants' daemons as context (webchat-multi-agents.md §5.2).
+        // `hopCount` is this turn's own chain depth (§4.1: stamped on every body
+        // the author posts), which is what lets a receiving participant charge
+        // the ONE +1 continuation transition (§5.2a) — the same stamp the
+        // platform paths put on their outbound authorship metadata.
+        p.webchat.postSink?.({
+          conversationId: p.webchat.conversationId,
+          agentId,
+          post: {
+            postId: replyPostId,
+            conversationId: p.webchat.conversationId,
+            author: { kind: 'agent', agentId, hopCount: p.sourceHopCount },
+            text: p.webchat.replyText,
+            at: Number(replyTs)
+          },
+          ...(p.webchat.initiator ? { initiator: p.webchat.initiator } : {})
+        })
+      }
+    }
+    // Continuation defers `done` until the platform apply chain settles below —
+    // the browser must not unlock its composer while the reply is still flushing.
+    if (!p.webchat.continuation && !p.webchat.doneSent) {
+      p.webchat.doneSent = true
+      p.webchat.sink.done({
+        conversationId: p.webchat.conversationId,
+        turnId: p.webchat.turnId,
+        ...(stopReason ? { stopReason } : {}),
+        ...(usage?.totalTokens !== undefined ? { usage: { used: usage.totalTokens } } : {})
+      })
+    }
+  }
+
+  /** Enqueue the platform's final render actions. A continuation turn ALSO flushes them — its
+   *  reply posts to the origin thread under the ordinary output rules (§5.2 dual sinks). */
+  private async flushPlatformFinals(
+    p: Pending,
+    run: TurnRun,
+    sessionId: string,
+    currentAttributionInfo: () => Promise<SlackAttributionInfo>
+  ): Promise<void> {
+    if (p.webchat && !p.webchat.continuation) return
+    const { plan } = run
+    const link = plan.showFooter ? this.sessionLink(sessionId) : undefined
+    const finalAttributionInfo = plan.showFooter ? await currentAttributionInfo() : undefined
+    // A runtime may only publish its final session-scoped model during prompt.
+    // Refresh before enqueueing the final body so any not-yet-sent section is born
+    // with the final metadata; an already-sent section is updated in place below.
+    if (plan.attributionFooterEnabled && finalAttributionInfo) {
+      const attribution = buildAttributionBlocks(finalAttributionInfo)
+      p.attribution = { blocks: attribution.blocks, key: JSON.stringify(attribution.blocks) }
+    }
+    // Telegram/Discord keep their existing session-link footer. Slack closes the
+    // lifecycle for the compact context already included in the latest reply's
+    // initial post and retries any stale-section cleanup.
+    const finals =
+      p.conv instanceof FeishuConverger
+        ? p.conv.onFinal(finalAttributionInfo)
+        : p.conv instanceof TelegramConverger || p.conv instanceof DiscordConverger
+          ? p.conv.onFinal(link, plan.hopLimitNotice)
+          : p.conv.onFinal(finalAttributionInfo)
+    for (const action of finals) this.enqueueApply(p, action)
+  }
+
+  /** Deliver everything the completed turn still owes: trailing transcript rows, the drained
+   *  apply chain, the response closure, the continuation `done`, post-turn memory, the terminal
+   *  evaluation event, and #800's inferred parent reply. */
+  private async finalizeDelivery(
+    p: Pending,
+    run: TurnRun,
+    turn: {
+      rec: TranscriptRecorder
+      sessionId: string
+      handled: HandledTurnSession
+      outcome: AnsweredTurn
+      memoryCaptureTarget: PreparedExternalMemoryCapture | undefined
+    }
+  ): Promise<void> {
+    const { entry, key, plan, agent, evaluation } = run
+    const { agentId, msg, callMeta } = entry
+    const { rec, sessionId, handled, memoryCaptureTarget } = turn
+    const { stopReason, usage, finalCaptureInput } = turn.outcome
+    // …and any trailing reasoning the agent emitted after its last reply.
+    for (const ev of rec.onFinal()) await this.recordEvent(agentId, plan.transcriptChannel, plan.statusThread, ev)
+    // The turn is over, so nothing more will supersede a coalesced tool body: make the last
+    // state of every streamed tool call durable now rather than on the buffer's own timer.
+    await this.store.flushToolCallWrites()
+    await p.applyChain
+    // Every section has now been delivered, so the complete logical response exists and
+    // exactly one of its messages can be marked final (§5.5). Must run AFTER applyChain:
+    // before it, the message being closed might not be the last one posted.
+    //
+    // §7.3 `closeResponse`: exact lookup, so a webchat / hook / dream turn rendering
+    // through the core surface does not inherit its platform's closure, and a platform
+    // that cannot amend a sent message simply registers none.
+    await this.turnSurfaces.exact(p.platform)?.closeResponse?.(p)
+    // Continuation `done` fires only now, behind the platform apply/finalization
+    // boundary, so both sinks settle as ONE ordered turn: the console cannot admit
+    // a next turn (whose mirror posts immediately) ahead of this reply's flush.
+    if (p.webchat?.continuation && !p.webchat.doneSent) {
+      p.webchat.doneSent = true
+      p.webchat.sink.done({
+        conversationId: p.webchat.conversationId,
+        turnId: p.webchat.turnId,
+        ...(stopReason ? { stopReason } : {}),
+        ...(usage?.totalTokens !== undefined ? { usage: { used: usage.totalTokens } } : {})
+      })
+    }
+    // The user-visible reply is now delivered. Enqueue provider work without
+    // awaiting it: managed may distill, while external only commits its durable
+    // capture outbox. Webchat carries the canonical per-turn id separately from
+    // its conversation-stable message id.
+    await this.queueMemoryPostTurn(
+      agentId,
+      sessionId,
+      p.webchat?.turnId ?? handled.turnId ?? stableTurnId(agentId, msg),
+      finalCaptureInput,
+      p.replyText,
+      agent.memory,
+      memoryCaptureTarget,
+      plan.evaluationTurnId
+    )
+    evaluation.finishEvaluation('turn.completed', {
+      ...(stopReason ? { stopReason } : {}),
+      output: p.replyText,
+      ...(usage
+        ? {
+            usage: {
+              totalTokens: usage.totalTokens,
+              inputTokens: usage.inputTokens,
+              outputTokens: usage.outputTokens,
+              thoughtTokens: usage.thoughtTokens,
+              cachedReadTokens: usage.cachedReadTokens,
+              cachedWriteTokens: usage.cachedWriteTokens
+            }
+          }
+        : {})
+    })
+    // #800 mechanism fix, the inferred reply: a needsReply delegation turn that
+    // ends WITHOUT a `sendMessage {sessionId}` report no longer drops the
+    // child's answer on the floor — the child's final ordinary output is
+    // delivered to the parent as the report, explicitly marked inferred.
+    // Must run while this turn's activeTurnCallMeta is still installed (the
+    // reply authorizes and hop-charges off it); contained so it can never
+    // fail the completed turn.
+    try {
+      await this.collab.maybeInferParentReply(key, agentId, msg, callMeta, p)
+    } catch (err) {
+      this.log.error(`inferred parent reply failed for ${key}: ${formatErr(err)}`)
+    }
+  }
+
+  /** Surface a turn that failed before yielding a clean stop — the agent couldn't start (spawn
+   *  failure / ACP handshake), or the prompt itself rejected. Without surfacing it here the
+   *  failure is invisible: Slack keeps its "is thinking…" status with no message, and a webchat
+   *  client never gets a relay `done` item so it spins forever. Returns 'suppressed' when an
+   *  operator interrupt owns the turn; 'failed' means dispatchOne rethrows, which propagates to
+   *  runLoop and applies fail-stop (§6.9 #378): buffered messages don't chain onto a failure. */
+  private async surfaceTurnCatch(
+    err: unknown,
+    p: Pending,
+    run: TurnRun,
+    sessionId: string,
+    settlement: TurnSettlement,
+    currentAttributionInfo: () => Promise<SlackAttributionInfo>
+  ): Promise<'suppressed' | 'failed'> {
+    const { entry, plan, agent, replyConn, evaluation } = run
+    const { agentId, msg, webchat, hookContext } = entry
+    this.clearIdle(p)
+    this.clearFeishuStream(p)
+    // A live turn can reveal a login problem the probe sweep can't see
+    // (claude-agent-acp initializes and opens sessions fine while logged out):
+    // ACP -32000 = fresh logged-out credential; a provider_auth_required
+    // classification catches the expired/revoked-credential family that
+    // adapters surface as -32603 internal errors with auth wording.
+    if (isAuthRequiredError(err) || turnFailureCode(err) === HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED)
+      this.noteRuntimeAuthFromTurn(agent.runtime, true)
+    if (p.outputSuppressed) {
+      evaluation.finishEvaluation('turn.cancelled', { reason: p.outputSuppressed })
+      if (p.outputSuppressed === 'loop protection') settlement.finalPhase = 'problem'
+      if (hookContext && this.reportsHookOutcome(entry)) {
+        await this.emitHookCompletion(hookContext, 'failed', { sessionId, reason: p.outputSuppressed }, entry)
+      }
+      return 'suppressed'
+    }
+    // From here this catch owns a genuine turn failure that must remain the
+    // outward dispatch error even if the selected host's cleanup also fails.
+    // Set this before failure surfacing so finally cannot replace any error
+    // raised while preserving/reporting the original failure.
+    settlement.propagatingTurnError = true
+    evaluation.failEvaluation(err)
+    settlement.finalPhase = 'problem'
+    if (p.webchat?.continuation) {
+      // Continuation: release any held stream text; the platform branch below owns the
+      // visible notice + transcript, and the terminal-error `done` waits behind its
+      // apply-chain drain so the console cannot admit a next turn mid-flush.
+      webchatTurnOutput.flushHeldWebchatText(p.webchat)
+    } else if (p.webchat) {
+      // Reply text (including a runtime's mirrored error text) already streamed to
+      // the client via onAcpUpdate; the terminal done frame carries the reason.
+      // Record what streamed so the session reads back with it, like the success
+      // path does — the sink is a live transport with no post boundary of its own.
+      await this.surfaceTurnFailure(err, {
+        agentId,
+        agentName: plan.agentName,
+        ...(plan.iconUrl ? { iconUrl: plan.iconUrl } : {}),
+        platform: msg.platform,
+        isDm: msg.isDm,
+        webchat,
+        replyConn,
+        channel: msg.channel,
+        transcriptChannel: plan.transcriptChannel,
+        thread: msg.thread,
+        statusThread: plan.statusThread
+      })
+      const trimmedPartialReply = p.webchat.replyText.trim()
+      if (trimmedPartialReply && !isNoResponseBody(trimmedPartialReply)) {
+        webchatTurnOutput.flushHeldWebchatText(p.webchat)
+        const partialPostId = randomUUID()
+        const replyTs = await webchatTurnOutput.appendWebchatTextRow(
+          this.store,
+          p.transcriptChannel,
+          plan.statusThread,
+          monotonicTs(),
+          {
+            postId: partialPostId,
+            sender: agentId,
+            text: p.webchat.replyText
+          }
+        )
+        // A partial reply is still conversation content the other participants
+        // should see — fan it out exactly like the success path. Deliberately
+        // WITHOUT the author hopCount stamp: a failed turn's fragment must not
+        // continue the conversation (§5.2a activates only on a committed reply
+        // carrying a usable depth), or a crash-looping agent would keep waking
+        // its peers with broken half-answers.
+        p.webchat.postSink?.({
+          conversationId: p.webchat.conversationId,
+          agentId,
+          post: {
+            postId: partialPostId,
+            conversationId: p.webchat.conversationId,
+            author: { kind: 'agent', agentId },
+            text: p.webchat.replyText,
+            at: Number(replyTs)
+          },
+          ...(p.webchat.initiator ? { initiator: p.webchat.initiator } : {})
+        })
+      }
+    }
+    if (!p.webchat || p.webchat.continuation) {
+      // Some runtimes narrate their terminal error into the message stream just
+      // before rejecting the prompt — codex-acp mirrors quota exhaustion / auth
+      // expiry as an agent_message_chunk — and that text is still sitting in the
+      // converger buffer (the idle flush never fired, or held a partial paragraph
+      // back). `flushTerminal` takes the WHOLE buffer — this turn has no later flush
+      // and never reaches onFinal — so the runtime's text isn't dropped with it, and
+      // the ⚠️ notice is skipped when the flushed text already carries the same
+      // message (posting both would say it twice). The notice rides the apply chain
+      // as a `post` so it lands after the flushed body and is recorded into the
+      // transcript either way.
+      const reason = turnFailureReason(err)
+      if (p.conv instanceof FeishuConverger) {
+        const attribution = plan.showFooter ? await currentAttributionInfo() : undefined
+        for (const action of p.conv.onFailure(reason, attribution)) this.enqueueApply(p, action)
+      } else {
+        let covered = false
+        for (const action of p.conv.flushTerminal()) {
+          covered ||= action.kind === 'post' && action.text.includes(reason)
+          this.enqueueApply(p, action)
+        }
+        if (!covered)
+          this.enqueueApply(p, {
+            kind: 'post',
+            text: `⚠️ Agent failed to respond: ${reason}`,
+            attributed: false
+          })
+      }
+      this.clearTurnActivity(run) // clear "is thinking…"
+      try {
+        await p.applyChain
+      } finally {
+        // Continuation closes the browser stream only after the platform failure
+        // actions drain (or terminally fail) — never before, so the sinks stay ordered.
+        if (p.webchat?.continuation && !p.webchat.doneSent) {
           p.webchat.doneSent = true
           p.webchat.sink.done({
             conversationId: p.webchat.conversationId,
             turnId: p.webchat.turnId,
-            ...(stopReason ? { stopReason } : {}),
-            ...(usage?.totalTokens !== undefined ? { usage: { used: usage.totalTokens } } : {})
+            error: turnFailureReason(err)
           })
         }
       }
-      // A continuation turn ALSO flushes the platform finals — its reply posts to the
-      // origin thread under the ordinary output rules (§5.2 dual sinks).
-      if (!p.webchat || p.webchat.continuation) {
-        const link = showFooter ? this.sessionLink(sessionId) : undefined
-        const finalAttributionInfo = showFooter ? await currentAttributionInfo() : undefined
-        // A runtime may only publish its final session-scoped model during prompt.
-        // Refresh before enqueueing the final body so any not-yet-sent section is born
-        // with the final metadata; an already-sent section is updated in place below.
-        if (plan.attributionFooterEnabled && finalAttributionInfo) {
-          const attribution = buildAttributionBlocks(finalAttributionInfo)
-          p.attribution = { blocks: attribution.blocks, key: JSON.stringify(attribution.blocks) }
-        }
-        // Telegram/Discord keep their existing session-link footer. Slack closes the
-        // lifecycle for the compact context already included in the latest reply's
-        // initial post and retries any stale-section cleanup.
-        const finals =
-          conv instanceof FeishuConverger
-            ? conv.onFinal(finalAttributionInfo)
-            : conv instanceof TelegramConverger || conv instanceof DiscordConverger
-              ? conv.onFinal(link, hopLimitNotice)
-              : conv.onFinal(finalAttributionInfo)
-        for (const action of finals) this.enqueueApply(p, action)
-      }
-      // …and any trailing reasoning the agent emitted after its last reply.
-      for (const ev of rec.onFinal()) await this.recordEvent(agentId, transcriptChannel, statusThread, ev)
-      // The turn is over, so nothing more will supersede a coalesced tool body: make the last
-      // state of every streamed tool call durable now rather than on the buffer's own timer.
-      await this.store.flushToolCallWrites()
-      await p.applyChain
-      // Every section has now been delivered, so the complete logical response exists and
-      // exactly one of its messages can be marked final (§5.5). Must run AFTER applyChain:
-      // before it, the message being closed might not be the last one posted.
-      //
-      // §7.3 `closeResponse`: exact lookup, so a webchat / hook / dream turn rendering
-      // through the core surface does not inherit its platform's closure, and a platform
-      // that cannot amend a sent message simply registers none.
-      await this.turnSurfaces.exact(p.platform)?.closeResponse?.(p)
-      // Continuation `done` fires only now, behind the platform apply/finalization
-      // boundary, so both sinks settle as ONE ordered turn: the console cannot admit
-      // a next turn (whose mirror posts immediately) ahead of this reply's flush.
-      if (p.webchat?.continuation && !p.webchat.doneSent) {
-        p.webchat.doneSent = true
-        p.webchat.sink.done({
-          conversationId: p.webchat.conversationId,
-          turnId: p.webchat.turnId,
-          ...(stopReason ? { stopReason } : {}),
-          ...(usage?.totalTokens !== undefined ? { usage: { used: usage.totalTokens } } : {})
-        })
-      }
-      // The user-visible reply is now delivered. Enqueue provider work without
-      // awaiting it: managed may distill, while external only commits its durable
-      // capture outbox. Webchat carries the canonical per-turn id separately from
-      // its conversation-stable message id.
-      await this.queueMemoryPostTurn(
-        agentId,
-        sessionId,
-        p.webchat?.turnId ?? handled.turnId ?? stableTurnId(agentId, msg),
-        finalCaptureInput,
-        p.replyText,
-        agent.memory,
-        memoryCaptureTarget,
-        evaluationTurnId
-      )
-      finishEvaluation('turn.completed', {
-        ...(stopReason ? { stopReason } : {}),
-        output: p.replyText,
-        ...(usage
-          ? {
-              usage: {
-                totalTokens: usage.totalTokens,
-                inputTokens: usage.inputTokens,
-                outputTokens: usage.outputTokens,
-                thoughtTokens: usage.thoughtTokens,
-                cachedReadTokens: usage.cachedReadTokens,
-                cachedWriteTokens: usage.cachedWriteTokens
-              }
-            }
-          : {})
-      })
-      // #800 mechanism fix, the inferred reply: a needsReply delegation turn that
-      // ends WITHOUT a `sendMessage {sessionId}` report no longer drops the
-      // child's answer on the floor — the child's final ordinary output is
-      // delivered to the parent as the report, explicitly marked inferred.
-      // Must run while this turn's activeTurnCallMeta is still installed (the
-      // reply authorizes and hop-charges off it); contained so it can never
-      // fail the completed turn.
+    }
+    if (hookContext && this.reportsHookOutcome(entry)) {
+      await this.emitHookCompletion(hookContext, 'failed', { sessionId, reason: turnFailureCode(err) }, entry)
+    }
+    return 'failed'
+  }
+
+  /** Settle the turn however it ended: chrome, transport lease, unanswered cards, the §6.7
+   *  active-turn context, GitHub's turn-final surface, and finally Pending + the session row. */
+  private async settleTurn(
+    p: Pending,
+    run: TurnRun,
+    sessionId: string,
+    settlement: TurnSettlement,
+    releaseReplyConn: () => void,
+    activeTurn: { github?: ActiveGithubTurnMeta; githubReplyBatch?: ActiveGithubReplyBatchMeta }
+  ): Promise<void> {
+    const { entry, key, plan } = run
+    const { agentId, msg, callMeta, githubReply, hookContext } = entry
+    // The ACP prompt is no longer capable of ignoring session/cancel once control
+    // reaches cleanup. Clear its host-kill backstop BEFORE awaiting renderer I/O;
+    // renderer drain is tracked separately by this dispatch/safety lease.
+    this.clearCancelBackstop(agentId, sessionId)
+    // Remove Cancel run before releasing the Slack transport. Suppressed turns still
+    // allow this one terminal chrome update; ordinary queued output remains blocked.
+    await this.settleStatusBar(p)
+    await p.applyChain.catch(() => {})
+    // Platform turn settlement (§7.3 teardown hook): cleanup the ordinary final
+    // action may have bypassed on failure/suppression — Slack retries stale
+    // footer removals. Exact lookup: a webchat/hook turn rendering through the
+    // core surface must not inherit its platform's teardown.
+    await this.turnSurfaces.exact(p.platform)?.onSettle?.(p)
+    // The reply transport is no longer used after the final apply chain / failure
+    // notice. Release before local metadata cleanup so even a cleanup exception
+    // cannot strand the connection lease forever.
+    releaseReplyConn()
+    this.clearIdle(p)
+    this.clearFeishuStream(p)
+    // Backstop: settle any permission / elicitation card still awaiting a tap.
+    await this.permissions.releaseElicits(agentId, sessionId)
+    await this.permissions.releaseChatPermissions(agentId, sessionId)
+    await this.permissions.releaseEditorPermissions(agentId, sessionId)
+    // §6.7: this turn's active call context ends with the turn (a nested messageAgent can
+    // only inherit while the turn is in flight). Only clear if THIS turn owns the entry —
+    // the map is keyed by sessionKey and the gate guarantees one active turn per key.
+    if (callMeta) this.activeTurnCallMeta.delete(key)
+    const activeGithub = activeTurn.github
+    const activeGithubReplyBatch = activeTurn.githubReplyBatch
+    if (activeGithub && this.activeGithubTurnMeta.get(key) === activeGithub) this.activeGithubTurnMeta.delete(key)
+    if (activeGithubReplyBatch && this.activeGithubReplyBatchMeta.get(key) === activeGithubReplyBatch) {
+      this.activeGithubReplyBatchMeta.delete(key)
+    }
+    // Anything other than no attempt or a correlated definite no-effect
+    // result is fail-closed: GitHub may already own the public response.
+    const formalReviewOwnsResponse = githubReply !== undefined && !githubFallbackAllowed(hookContext)
+    if (formalReviewOwnsResponse) {
       try {
-        await this.collab.maybeInferParentReply(key, agentId, msg, callMeta, p)
+        await this.persistHookState(entry, 'settled', true)
       } catch (err) {
-        this.log.error(`inferred parent reply failed for ${key}: ${formatErr(err)}`)
-      }
-    } catch (err) {
-      // The turn failed before yielding a clean stop — the agent couldn't start (spawn
-      // failure / ACP handshake), or the prompt itself rejected. Without surfacing
-      // it here the failure is invisible: Slack keeps its "is thinking…" status with
-      // no message, and a webchat client never gets a relay `done` item so it
-      // spins forever. Emit a terminal error to whichever transport owns this turn. The
-      // rethrow below propagates to runLoop, which rejects THIS entry's promise and
-      // applies fail-stop (§6.9 #378): buffered messages don't chain onto a failure.
-      this.clearIdle(p)
-      this.clearFeishuStream(p)
-      // A live turn can reveal a login problem the probe sweep can't see
-      // (claude-agent-acp initializes and opens sessions fine while logged out):
-      // ACP -32000 = fresh logged-out credential; a provider_auth_required
-      // classification catches the expired/revoked-credential family that
-      // adapters surface as -32603 internal errors with auth wording.
-      if (isAuthRequiredError(err) || turnFailureCode(err) === HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED)
-        this.noteRuntimeAuthFromTurn(agent.runtime, true)
-      if (p.outputSuppressed) {
-        finishEvaluation('turn.cancelled', { reason: p.outputSuppressed })
-        if (p.outputSuppressed === 'loop protection') finalPhase = 'problem'
-        if (hookContext && this.reportsHookOutcome(entry)) {
-          await this.emitHookCompletion(hookContext, 'failed', { sessionId, reason: p.outputSuppressed }, entry)
-        }
-        return null
-      }
-      // From here this catch owns a genuine turn failure that must remain the
-      // outward dispatch error even if the selected host's cleanup also fails.
-      // Set this before failure surfacing so finally cannot replace any error
-      // raised while preserving/reporting the original failure.
-      propagatingTurnError = true
-      failEvaluation(err)
-      finalPhase = 'problem'
-      if (p.webchat?.continuation) {
-        // Continuation: release any held stream text; the platform branch below owns the
-        // visible notice + transcript, and the terminal-error `done` waits behind its
-        // apply-chain drain so the console cannot admit a next turn mid-flush.
-        webchatTurnOutput.flushHeldWebchatText(p.webchat)
-      } else if (p.webchat) {
-        // Reply text (including a runtime's mirrored error text) already streamed to
-        // the client via onAcpUpdate; the terminal done frame carries the reason.
-        // Record what streamed so the session reads back with it, like the success
-        // path does — the sink is a live transport with no post boundary of its own.
-        await this.surfaceTurnFailure(err, {
-          agentId,
-          agentName,
-          ...(iconUrl ? { iconUrl } : {}),
-          platform: msg.platform,
-          isDm: msg.isDm,
-          webchat,
-          replyConn,
-          channel: msg.channel,
-          transcriptChannel,
-          thread: msg.thread,
-          statusThread
-        })
-        const trimmedPartialReply = p.webchat.replyText.trim()
-        if (trimmedPartialReply && !isNoResponseBody(trimmedPartialReply)) {
-          webchatTurnOutput.flushHeldWebchatText(p.webchat)
-          const partialPostId = randomUUID()
-          const replyTs = await webchatTurnOutput.appendWebchatTextRow(
-            this.store,
-            p.transcriptChannel,
-            statusThread,
-            monotonicTs(),
-            {
-              postId: partialPostId,
-              sender: agentId,
-              text: p.webchat.replyText
-            }
-          )
-          // A partial reply is still conversation content the other participants
-          // should see — fan it out exactly like the success path. Deliberately
-          // WITHOUT the author hopCount stamp: a failed turn's fragment must not
-          // continue the conversation (§5.2a activates only on a committed reply
-          // carrying a usable depth), or a crash-looping agent would keep waking
-          // its peers with broken half-answers.
-          p.webchat.postSink?.({
-            conversationId: p.webchat.conversationId,
-            agentId,
-            post: {
-              postId: partialPostId,
-              conversationId: p.webchat.conversationId,
-              author: { kind: 'agent', agentId },
-              text: p.webchat.replyText,
-              at: Number(replyTs)
-            },
-            ...(p.webchat.initiator ? { initiator: p.webchat.initiator } : {})
-          })
-        }
-      }
-      if (!p.webchat || p.webchat.continuation) {
-        // Some runtimes narrate their terminal error into the message stream just
-        // before rejecting the prompt — codex-acp mirrors quota exhaustion / auth
-        // expiry as an agent_message_chunk — and that text is still sitting in the
-        // converger buffer (the idle flush never fired, or held a partial paragraph
-        // back). `flushTerminal` takes the WHOLE buffer — this turn has no later flush
-        // and never reaches onFinal — so the runtime's text isn't dropped with it, and
-        // the ⚠️ notice is skipped when the flushed text already carries the same
-        // message (posting both would say it twice). The notice rides the apply chain
-        // as a `post` so it lands after the flushed body and is recorded into the
-        // transcript either way.
-        const reason = turnFailureReason(err)
-        if (p.conv instanceof FeishuConverger) {
-          const attribution = showFooter ? await currentAttributionInfo() : undefined
-          for (const action of p.conv.onFailure(reason, attribution)) this.enqueueApply(p, action)
-        } else {
-          let covered = false
-          for (const action of p.conv.flushTerminal()) {
-            covered ||= action.kind === 'post' && action.text.includes(reason)
-            this.enqueueApply(p, action)
-          }
-          if (!covered)
-            this.enqueueApply(p, {
-              kind: 'post',
-              text: `⚠️ Agent failed to respond: ${reason}`,
-              attributed: false
-            })
-        }
-        this.showActivity(replyConn, msg.channel, statusThread, '') // clear "is thinking…"
-        try {
-          await p.applyChain
-        } finally {
-          // Continuation closes the browser stream only after the platform failure
-          // actions drain (or terminally fail) — never before, so the sinks stay ordered.
-          if (p.webchat?.continuation && !p.webchat.doneSent) {
-            p.webchat.doneSent = true
-            p.webchat.sink.done({
-              conversationId: p.webchat.conversationId,
-              turnId: p.webchat.turnId,
-              error: turnFailureReason(err)
-            })
-          }
-        }
-      }
-      if (hookContext && this.reportsHookOutcome(entry)) {
-        await this.emitHookCompletion(hookContext, 'failed', { sessionId, reason: turnFailureCode(err) }, entry)
-      }
-      throw err
-    } finally {
-      // The ACP prompt is no longer capable of ignoring session/cancel once control
-      // reaches cleanup. Clear its host-kill backstop BEFORE awaiting renderer I/O;
-      // renderer drain is tracked separately by this dispatch/safety lease.
-      this.clearCancelBackstop(agentId, sessionId)
-      // Remove Cancel run before releasing the Slack transport. Suppressed turns still
-      // allow this one terminal chrome update; ordinary queued output remains blocked.
-      await this.settleStatusBar(p)
-      await p.applyChain.catch(() => {})
-      // Platform turn settlement (§7.3 teardown hook): cleanup the ordinary final
-      // action may have bypassed on failure/suppression — Slack retries stale
-      // footer removals. Exact lookup: a webchat/hook turn rendering through the
-      // core surface must not inherit its platform's teardown.
-      await this.turnSurfaces.exact(p.platform)?.onSettle?.(p)
-      // The reply transport is no longer used after the final apply chain / failure
-      // notice. Release before local metadata cleanup so even a cleanup exception
-      // cannot strand the connection lease forever.
-      releaseReplyConn()
-      this.clearIdle(p)
-      this.clearFeishuStream(p)
-      // Backstop: settle any permission / elicitation card still awaiting a tap.
-      await this.permissions.releaseElicits(agentId, sessionId)
-      await this.permissions.releaseChatPermissions(agentId, sessionId)
-      await this.permissions.releaseEditorPermissions(agentId, sessionId)
-      // §6.7: this turn's active call context ends with the turn (a nested messageAgent can
-      // only inherit while the turn is in flight). Only clear if THIS turn owns the entry —
-      // the map is keyed by sessionKey and the gate guarantees one active turn per key.
-      if (callMeta) this.activeTurnCallMeta.delete(key)
-      if (activeGithub && this.activeGithubTurnMeta.get(key) === activeGithub) this.activeGithubTurnMeta.delete(key)
-      if (activeGithubReplyBatch && this.activeGithubReplyBatchMeta.get(key) === activeGithubReplyBatch) {
-        this.activeGithubReplyBatchMeta.delete(key)
-      }
-      // Anything other than no attempt or a correlated definite no-effect
-      // result is fail-closed: GitHub may already own the public response.
-      const formalReviewOwnsResponse = githubReply !== undefined && !githubFallbackAllowed(hookContext)
-      if (formalReviewOwnsResponse) {
-        try {
-          await this.persistHookState(entry, 'settled', true)
-        } catch (err) {
-          // Keep the no-second-write decision fail-closed. Terminal hook completion
-          // below makes a second durable settlement attempt while retaining the
-          // unredacted inbox row if local persistence is still unavailable.
-          this.log.warn(`github poster: formal-review settlement failed (${formatErr(err)})`)
-        }
-      }
-      // GitHub's turn output lives in its platform module (§7.6) — a turn-FINAL
-      // surface, not a streaming one. Core keeps the hook durability barrier
-      // (§12) and hands the surface only the verdicts it must obey.
-      if (p.github) {
-        await finalizeGithubTurn(
-          {
-            appendTranscript: async (row) => await this.store.appendTranscript(row),
-            monotonicTs: () => monotonicTs(),
-            beginPublish: async () => {
-              try {
-                // A replay of `in_flight` suppresses another comment. If this write
-                // cannot be made durable, fail closed and do not perform the POST.
-                await this.persistHookState(entry, 'in_flight', true)
-                return true
-              } catch (err) {
-                this.log.warn(`github poster: durability barrier failed; final publish skipped (${formatErr(err)})`)
-                return false
-              }
-            },
-            endPublish: async (publishedComment) => {
-              if (publishedComment && hookContext) hookContext.publishedComment = publishedComment
-              await this.persistHookState(entry, 'settled')
-            },
-            warn: (message) => this.log.warn(message)
-          },
-          p,
-          p.github,
-          {
-            suppressed: !!p.outputSuppressed,
-            atEnd: finalPhase === 'end',
-            formalReviewOwnsResponse
-          }
-        )
-      }
-      // Pending ownership and the non-idle session state are the final safety
-      // fence, so release them only after the exact selected cleanup.
-      const cleanupOutcome = await this.waitForTurnLifecycleCleanup(entry, key, p.selectedHost)
-      if (!cleanupOutcome.blocked) {
-        this.pending.delete(pendingTurnKey(agentId, sessionId))
-        // §7.3 prompting/cancelling → idle: the turn is over (cleanly, on error, or
-        // cancelled), so the session is idle again. Without this the row stayed
-        // `prompting` forever — the thread never went idle and TTL-close never fired.
-        await this.store.setSessionState(key, 'idle', this.clock.now())
-        // Record HOW it ended alongside the state, so a parent polling `viewSessionStatus` can tell
-        // a finished child from a broken one. `problem` is the same phase the CP snapshot below
-        // reports, so the two never disagree.
-        await this.store.setSessionTurnOutcome(key, finalPhase === 'problem' ? 'failed' : 'done', this.clock.now())
-        await this.sessionMetadataOutbox.emitSessionMetadataSnapshot({
-          sessionId,
-          agentId,
-          phase: finalPhase,
-          platform: msg.platform,
-          channel: msg.channel,
-          thread: statusThread
-        })
-        p.resolveDone()
-      } else if (!propagatingTurnError) {
-        // Success/cancel has no original error for runLoop to fail-stop on. Use
-        // the internal sentinel only in that case; a real prompt error must leave
-        // this finally unchanged and continue propagating from the catch above.
-        throw new LifecycleCleanupBlockedError(key, cleanupOutcome.error)
+        // Keep the no-second-write decision fail-closed. Terminal hook completion
+        // below makes a second durable settlement attempt while retaining the
+        // unredacted inbox row if local persistence is still unavailable.
+        this.log.warn(`github poster: formal-review settlement failed (${formatErr(err)})`)
       }
     }
-    // Turn finished cleanly. Draining the next queued message for this sessionKey is
-    // runLoop's job (it holds ownership across turns) — NOT here. On a throw, the catch
-    // above rethrows and runLoop applies fail-stop (§6.9 #378).
-    if (hookContext) {
-      const batch = hookContext.githubReviewBatch
-      const batchFailure =
-        batch && batch.items.length > 1
-          ? batch.items.some((item) => item.publishState === 'in_flight')
-            ? 'review_batch_publish_ambiguous'
-            : batch.items.some((item) => item.publishState !== 'settled')
-              ? 'review_batch_replies_missing'
-              : undefined
-          : undefined
-      await this.emitHookCompletion(
-        hookContext,
-        batchFailure ? 'failed' : 'success',
-        { sessionId, ...(batchFailure ? { reason: batchFailure } : {}) },
-        entry
+    // GitHub's turn output lives in its platform module (§7.6) — a turn-FINAL
+    // surface, not a streaming one. Core keeps the hook durability barrier
+    // (§12) and hands the surface only the verdicts it must obey.
+    if (p.github) {
+      await finalizeGithubTurn(
+        {
+          appendTranscript: async (row) => await this.store.appendTranscript(row),
+          monotonicTs: () => monotonicTs(),
+          beginPublish: async () => {
+            try {
+              // A replay of `in_flight` suppresses another comment. If this write
+              // cannot be made durable, fail closed and do not perform the POST.
+              await this.persistHookState(entry, 'in_flight', true)
+              return true
+            } catch (err) {
+              this.log.warn(`github poster: durability barrier failed; final publish skipped (${formatErr(err)})`)
+              return false
+            }
+          },
+          endPublish: async (publishedComment) => {
+            if (publishedComment && hookContext) hookContext.publishedComment = publishedComment
+            await this.persistHookState(entry, 'settled')
+          },
+          warn: (message) => this.log.warn(message)
+        },
+        p,
+        p.github,
+        {
+          suppressed: !!p.outputSuppressed,
+          atEnd: settlement.finalPhase === 'end',
+          formalReviewOwnsResponse
+        }
       )
     }
-    return sessionId
+    // Pending ownership and the non-idle session state are the final safety
+    // fence, so release them only after the exact selected cleanup.
+    const cleanupOutcome = await this.waitForTurnLifecycleCleanup(entry, key, p.selectedHost)
+    if (!cleanupOutcome.blocked) {
+      this.pending.delete(pendingTurnKey(agentId, sessionId))
+      // §7.3 prompting/cancelling → idle: the turn is over (cleanly, on error, or
+      // cancelled), so the session is idle again. Without this the row stayed
+      // `prompting` forever — the thread never went idle and TTL-close never fired.
+      await this.store.setSessionState(key, 'idle', this.clock.now())
+      // Record HOW it ended alongside the state, so a parent polling `viewSessionStatus` can tell
+      // a finished child from a broken one. `problem` is the same phase the CP snapshot below
+      // reports, so the two never disagree.
+      await this.store.setSessionTurnOutcome(
+        key,
+        settlement.finalPhase === 'problem' ? 'failed' : 'done',
+        this.clock.now()
+      )
+      await this.sessionMetadataOutbox.emitSessionMetadataSnapshot({
+        sessionId,
+        agentId,
+        phase: settlement.finalPhase,
+        platform: msg.platform,
+        channel: msg.channel,
+        thread: plan.statusThread
+      })
+      p.resolveDone()
+    } else if (!settlement.propagatingTurnError) {
+      // Success/cancel has no original error for runLoop to fail-stop on. Use
+      // the internal sentinel only in that case; a real prompt error must leave
+      // this finally unchanged and continue propagating from the catch above.
+      throw new LifecycleCleanupBlockedError(key, cleanupOutcome.error)
+    }
+  }
+
+  /** Report the terminal hook outcome of a cleanly finished turn, failing it when a sealed
+   *  GitHub review batch did not publish every reply. */
+  private async completeHookOutcome(entry: QueueEntry, sessionId: string): Promise<void> {
+    const hookContext = entry.hookContext
+    if (!hookContext) return
+    const batch = hookContext.githubReviewBatch
+    const batchFailure =
+      batch && batch.items.length > 1
+        ? batch.items.some((item) => item.publishState === 'in_flight')
+          ? 'review_batch_publish_ambiguous'
+          : batch.items.some((item) => item.publishState !== 'settled')
+            ? 'review_batch_replies_missing'
+            : undefined
+        : undefined
+    await this.emitHookCompletion(
+      hookContext,
+      batchFailure ? 'failed' : 'success',
+      { sessionId, ...(batchFailure ? { reason: batchFailure } : {}) },
+      entry
+    )
+  }
+
+  /** This turn's live attribution facts. Re-read per call: a runtime may only publish its final
+   *  session-scoped model during the prompt. */
+  private async turnAttributionInfo(
+    p: Pending,
+    run: TurnRun,
+    sessionId: string,
+    turnModel: string | undefined
+  ): Promise<SlackAttributionInfo> {
+    const { plan, agent, entry } = run
+    return {
+      botName: agent.name,
+      botUrl: this.agentLink(entry.agentId),
+      runtime: this.runtimeNames[agent.runtime] ?? agent.runtime,
+      model: (await this.buildStatusInfo(p)).model ?? turnModel ?? 'default',
+      sessionUrl: this.sessionLink(sessionId, this.sessionLinkSource(plan.platform, plan.integrationId)),
+      ...(plan.hopLimitNotice ? { notice: plan.hopLimitNotice } : {})
+    }
   }
 
   // ── §7.3 force-cancel backstop ──────────────────────────────────────────────
