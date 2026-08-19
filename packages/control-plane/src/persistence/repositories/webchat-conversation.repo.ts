@@ -9,8 +9,13 @@
 import { randomUUID } from 'node:crypto'
 import type { PrismaClient, Prisma } from '../../generated/prisma/client.js'
 import type { PrismaLike } from '../prisma.js'
-import type { WebchatConversationBinding, WebchatConversationRepo, WebchatParticipant } from '../ports.js'
-import { AgentId, type OrgId } from '../../domain/ids.js'
+import type {
+  WebchatConversationBinding,
+  WebchatConversationRepo,
+  WebchatParticipant,
+  WebchatResumeBinding
+} from '../ports.js'
+import { AgentId, SessionId, type OrgId } from '../../domain/ids.js'
 
 /** CP-minted webchat conversation ids are UUIDs. Daemon-local A2A children can
  * retain `platform: webchat` while using an `a2a:<caller>` channel; repository
@@ -122,6 +127,28 @@ export class PgWebchatConversationRepo implements WebchatConversationRepo {
       select: { id: true }
     })
     return row !== null
+  }
+
+  async resumeBinding(conversationId: string, orgId: OrgId): Promise<WebchatResumeBinding | null> {
+    if (!UUID_RE.test(conversationId)) return null
+    const row = await this.db.webchatConversation.findFirst({
+      where: { id: conversationId, orgId },
+      select: {
+        agentId: true,
+        userId: true,
+        currentSessionId: true,
+        participants: { select: { currentSessionId: true } }
+      }
+    })
+    if (!row) return null
+    // Every participant's own pointer, with the conversation's as the pre-roster fallback.
+    const sessionIds = row.participants.map((p) => p.currentSessionId).filter((id): id is string => id !== null)
+    if (sessionIds.length === 0 && row.currentSessionId) sessionIds.push(row.currentSessionId)
+    return {
+      primaryAgentId: AgentId(row.agentId),
+      ownerUserId: row.userId,
+      currentSessionIds: [...new Set(sessionIds)].map((id) => SessionId(id))
+    }
   }
 
   async ownedBy(conversationId: string, orgId: OrgId, userId: string): Promise<{ primaryAgentId: AgentId } | null> {

@@ -191,6 +191,15 @@ function mintWebchatToken(app: App, agentId: string, body: Record<string, unknow
   })
 }
 
+/** POST the conversation-scoped mint route as the devAuth owner (org-scoped). */
+function mintConversationToken(app: App, body: Record<string, unknown>) {
+  return app.http.inject({
+    method: 'POST',
+    url: `/api/v1/orgs/${DEFAULT_ORG_ID}/webchat/conversations/token`,
+    payload: body
+  })
+}
+
 async function verifyWebchat(
   base: string,
   token: string,
@@ -455,7 +464,7 @@ describe('relay control gateway — rc/* handshake over agentconnect.rc.v1', () 
     expect(body.conversationId).toMatch(/^[0-9a-f-]{36}$/) // a fresh conversation id
   })
 
-  it('POST …/webchat/token resumes only a conversation bound to the caller', async () => {
+  it('POST …/webchat/token resumes the caller’s own conversation; unknown ids and another member’s turnless one are 404', async () => {
     const { app } = await start({ PUBLIC_RELAY_URL: RELAY_URL })
     await seedAgent(prisma, AGENT)
     const fresh = await mintWebchatToken(app, AGENT)
@@ -467,6 +476,7 @@ describe('relay control gateway — rc/* handshake over agentconnect.rc.v1', () 
 
     expect((await mintWebchatToken(app, AGENT, { conversationId: randomUUID() })).statusCode).toBe(404)
 
+    // Another member's conversation that has not had a turn yet stands on no session: owner-only.
     const otherUserId = 'usr_webchat_victim'
     await prisma.user.create({ data: { id: otherUserId, email: 'webchat-victim@example.test' } })
     await prisma.membership.create({ data: { orgId: DEFAULT_ORG_ID, userId: otherUserId, role: 'collaborator' } })
@@ -475,6 +485,50 @@ describe('relay control gateway — rc/* handshake over agentconnect.rc.v1', () 
       data: { id: otherConversationId, orgId: DEFAULT_ORG_ID, agentId: AGENT, userId: otherUserId }
     })
     expect((await mintWebchatToken(app, AGENT, { conversationId: otherConversationId })).statusCode).toBe(404)
+  })
+
+  // Resume follows the session's visibility, exactly like an integration-origin continuation
+  // (policy `session.continue`): a conversation whose current session its owner made org-visible
+  // is every non-viewer member's to continue; a private one stays the owner's.
+  it('resumes another member’s conversation by the visibility of the session it stands on', async () => {
+    const { app } = await start({ PUBLIC_RELAY_URL: RELAY_URL })
+    await seedAgent(prisma, AGENT)
+    const otherUserId = 'usr_webchat_sharer'
+    await prisma.user.create({ data: { id: otherUserId, email: 'webchat-sharer@example.test' } })
+    await prisma.membership.create({ data: { orgId: DEFAULT_ORG_ID, userId: otherUserId, role: 'collaborator' } })
+    const seedConversation = async (visibility: 'org' | 'private'): Promise<string> => {
+      const conversationId = randomUUID()
+      const sessionId = `acp-${visibility}-${conversationId.slice(0, 8)}`
+      await prisma.webchatConversation.create({
+        data: { id: conversationId, orgId: DEFAULT_ORG_ID, agentId: AGENT, userId: otherUserId }
+      })
+      await seedSessionMeta(prisma, sessionId, AGENT, {
+        platform: 'webchat',
+        channel: conversationId,
+        visibility,
+        ownerIdentity: `user:${otherUserId}`
+      })
+      await prisma.webchatConversation.update({ where: { id: conversationId }, data: { currentSessionId: sessionId } })
+      await prisma.webchatConversationAgent.create({
+        data: {
+          conversationId,
+          agentId: AGENT,
+          role: 'primary',
+          ord: 0,
+          addedByUserId: otherUserId,
+          currentSessionId: sessionId
+        }
+      })
+      return conversationId
+    }
+    const shared = await seedConversation('org')
+    const kept = await seedConversation('private')
+
+    // Both mint paths agree: the per-agent legacy route and the conversation-scoped one.
+    expect((await mintWebchatToken(app, AGENT, { conversationId: shared })).statusCode).toBe(200)
+    expect((await mintConversationToken(app, { conversationId: shared })).statusCode).toBe(200)
+    expect((await mintWebchatToken(app, AGENT, { conversationId: kept })).statusCode).toBe(404)
+    expect((await mintConversationToken(app, { conversationId: kept })).statusCode).toBe(404)
   })
 
   it('POST …/webchat/token → 503 when no relay pool is configured (PUBLIC_RELAY_URL unset)', async () => {

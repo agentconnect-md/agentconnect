@@ -446,8 +446,12 @@ rules remain in
 
 A webchat browser presents a short-lived CP-minted token. For a new
 conversation, CP allocates its id and persists only the ownership tuple
-`(conversationId, userId, agentId, orgId)`. A resume mint succeeds only when
-that tuple matches the authenticated caller; unknown and foreign ids fail
+`(conversationId, userId, agentId, orgId)`. A resume mint succeeds for the
+owner of that tuple, and for any other non-viewer member whom the
+`session.continue` policy admits to every session the conversation currently
+stands on (an org-visible session is continuable by the organization; a
+private one stays its owner's, and a conversation with no turn yet has no
+session to judge, so it is the owner's alone); unknown and foreign ids fail
 closed. The token carries the authorized conversation id, and the relay uses
 that token-bound value rather than trusting the browser query. It then resolves
 the agent's current daemon placement and bridges browser turns and daemon

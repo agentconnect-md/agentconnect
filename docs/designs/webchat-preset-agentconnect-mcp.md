@@ -587,8 +587,13 @@ tools are unavailable.
 
 ### 10.2 Resume
 
-Resume succeeds only for the same authenticated owner, organization, agent, and
-conversation. The CP keeps the current logical authority generation, while the
+Resume succeeds for the conversation owner, and for any other non-viewer
+member the `session.continue` policy admits to every session the conversation
+currently stands on (org-visible sessions; private ones stay owner-only). The
+delegated admin MCP is owner-only regardless: the authority resolver fences the
+token's user against the conversation owner, so a non-owner's turns run without
+the `agentconnect-admin` entitlement. The CP keeps the current logical authority
+generation for the owner, while the
 daemon completes a fresh revision-fenced grant activation because stored hashes
 cannot be re-delivered when the daemon no longer retains the active credential.
 An ordinary browser reconnect does not itself rotate the credential: all tabs share

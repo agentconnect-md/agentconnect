@@ -383,7 +383,9 @@ session read policy; the merge renders what comes back:
   conversation resumes through the existing conversation-token mint, which
   already requires _all_ participants viewable. A caller with partial view
   gets a read-only merged page with the standard error on send.
-- The webchat per-conversation privacy model (owner-private by default) and
+- The webchat per-conversation privacy model (private by default; the owner
+  may make a session org-visible, which also lets other non-viewer members
+  continue the conversation) and
   Slack's org-visible default both pass through untouched — the merged page is
   as visible as its most visible member session, because that is literally
   what it fetches.
