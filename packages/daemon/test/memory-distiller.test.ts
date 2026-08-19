@@ -1,8 +1,8 @@
-import { mkdtemp, readFile } from 'node:fs/promises'
+import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { ensureMemory, MEMORY_HISTORY_FILENAME, memoryDir, readMemoryFile } from '../src/memory/store.js'
+import { ensureMemory, readMemoryFile } from '../src/memory/store.js'
 import { LocalMemoryFs } from '../src/memory/fs.js'
 import {
   buildDistillationPrompt,
