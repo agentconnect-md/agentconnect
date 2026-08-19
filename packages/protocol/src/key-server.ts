@@ -11,8 +11,9 @@ import { z } from 'zod'
  * the only caller; implementations range from a plain key vault that rotates
  * real provider keys to a managed LLM egress layer that issues short-lived
  * session-scoped credentials and meters usage on its own data path. The
- * daemon treats the returned pair as opaque — it never knows which kind it
- * received.
+ * daemon treats the returned key as opaque — it never knows which kind it
+ * received. Where the key is sent is deployment topology, configured on the
+ * daemon; the issuer supplies the credential alone.
  */
 
 export const KEY_SERVER_PROFILE = 'agentconnect.key-server/v1' as const
@@ -25,7 +26,7 @@ export const KEY_SERVER_REVOKE_KEY_PATH = '/v1/revoke-key' as const
 // the request carries no auth header at all. The token is opaque to the daemon.
 export const KEY_SERVER_AUTH_HEADER = 'authorization' as const
 
-/** Provider API dialect the credential must speak; selects the (key, baseUrl) pair. */
+/** Provider API dialect the credential must speak. */
 export const KeyProvider = z.enum(['anthropic', 'openai', 'deepseek'])
 export type KeyProvider = z.infer<typeof KeyProvider>
 
@@ -44,6 +45,10 @@ export const IssueKeyRequest = z
   .strict()
 export type IssueKeyRequest = z.infer<typeof IssueKeyRequest>
 
+// Responses parse tolerantly (unknown fields stripped, not rejected), unlike the `.strict()`
+// requests: the daemon reads many issuers it does not ship with, so a field an issuer still
+// sends (the retired `baseUrl`) or adds later must not fail every issuance. Base URLs are
+// deployment topology and come only from the daemon's own configuration.
 export const IssueKeyResponse = z
   .object({
     // Opaque handle for RevokeKey and audit; the key value never travels again. It names
@@ -51,20 +56,6 @@ export const IssueKeyResponse = z
     // credential, and only it knows whether revoking a keyId may touch other holders.
     keyId: z.string().min(1),
     key: z.string().min(1),
-    // Accepted and ignored: an issuer owns the key, a deployment owns where its runtimes send
-    // it, and the daemon reads its base URL only from its own configuration. The field stays in
-    // the contract because the response is `.strict()` — dropping it would reject every issuer
-    // still sending one — and because a `.url()` here still rejects a nonsense value early.
-    // Restricted to http(s) for the same reason it was when injected.
-    // The predicate must not throw: zod runs refinements even after `.url()` has already
-    // failed, and a bare `new URL(bad)` would escape safeParse as a TypeError.
-    baseUrl: z
-      .string()
-      .url()
-      .refine((u) => URL.canParse(u) && ['http:', 'https:'].includes(new URL(u).protocol), {
-        message: 'baseUrl must be http(s)'
-      })
-      .optional(),
     // Validity as a DURATION from the server's issuance instant, for the same reason the
     // request states one: an absolute instant would be the server's clock, and every reader
     // of it would be a different one. The daemon cannot observe that instant, so it anchors
@@ -76,7 +67,6 @@ export const IssueKeyResponse = z
     // Renew-from hint on the same scale; meaningless without an expiry, so it needs one.
     refreshInSeconds: z.number().int().positive().optional()
   })
-  .strict()
   .refine((r) => r.refreshInSeconds === undefined || r.expiresInSeconds !== undefined, {
     message: 'refreshInSeconds requires expiresInSeconds'
   })
@@ -92,7 +82,8 @@ export type IssueKeyResponse = z.infer<typeof IssueKeyResponse>
 export const RevokeKeyRequest = z.object({ keyId: z.string().min(1) }).strict()
 export type RevokeKeyRequest = z.infer<typeof RevokeKeyRequest>
 
-export const RevokeKeyResponse = z.object({}).strict()
+// Tolerant like IssueKeyResponse: the daemon wants "it is dead", not a shape check.
+export const RevokeKeyResponse = z.object({})
 export type RevokeKeyResponse = z.infer<typeof RevokeKeyResponse>
 
 /** Machine-readable denial reasons the daemon surfaces as attributable errors, never as internal faults. */

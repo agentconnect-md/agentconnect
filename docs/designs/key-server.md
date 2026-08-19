@@ -21,8 +21,8 @@ session" — so the seam is one small service contract, `agentconnect.key-server
 and every issuing strategy lives behind it. A deployment may implement it with a
 plain vault that hands out rotating real keys, or with an LLM egress gateway that
 issues its own gateway-scoped credentials and meters traffic on its data path. The
-daemon cannot tell the difference, by design: it receives an opaque
-`(key, baseUrl)` pair and injects it exactly like the static pair it replaces.
+daemon cannot tell the difference, by design: it receives an opaque key and
+injects it exactly like the static token it replaces.
 
 The contract deliberately carries **no quota, metering, or gateway concepts**.
 Attribution context goes in (org/agent/session), a credential comes out; everything
@@ -37,10 +37,10 @@ This is deliberately not the daemon↔CP WebSocket or a frame group: issuance is
 low-frequency, stateless exchange, and a bare REST surface lets any deployment
 implement the server without speaking AgentConnect's wire protocol.
 
-| Operation   | Route                 | Body → Response                                                                                                       |
-| ----------- | --------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| `IssueKey`  | `POST /v1/issue-key`  | `{orgId, agentId, sessionId, provider, ttlSeconds?}` → `{keyId, key, baseUrl?, expiresInSeconds?, refreshInSeconds?}` |
-| `RevokeKey` | `POST /v1/revoke-key` | `{keyId}` → `{}`                                                                                                      |
+| Operation   | Route                 | Body → Response                                                                                             |
+| ----------- | --------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `IssueKey`  | `POST /v1/issue-key`  | `{orgId, agentId, sessionId, provider, ttlSeconds?}` → `{keyId, key, expiresInSeconds?, refreshInSeconds?}` |
+| `RevokeKey` | `POST /v1/revoke-key` | `{keyId}` → `{}`                                                                                            |
 
 **Caller authentication rides the transport, never the body.** Configured with a
 token source, the daemon sends `Authorization: Bearer <token>`; configured with
@@ -62,7 +62,7 @@ hold to check it are decided together by the key server's own design and the
 deployment that installs both. This document stops at the header.
 
 `provider` names the API dialect the credential must speak (`anthropic` /
-`openai` / `deepseek`) and selects which `(key, baseUrl)` pair comes back. There is
+`openai` / `deepseek`) and selects which key comes back. There is
 deliberately **no `model` parameter**: per-model usage attribution belongs to
 whatever observes actual requests (a gateway data path, or the runtime's own usage
 reports), and a spawn-time hint would invite implementations to treat it as truth
@@ -120,8 +120,9 @@ neither completes the other:
   when a key-server address is configured; with none, the daemon's static token; with
   neither, whatever credential the runtime environment already carries.
 - **the base URL** is deployment topology — which gateway this install's runtimes talk
-  to — so it always comes from the daemon's own configuration, key server or not. An
-  `IssueKey` response may carry a `baseUrl`; the daemon does not read it.
+  to — so it always comes from the daemon's own configuration, key server or not. The
+  contract no longer defines a `baseUrl`; responses parse tolerantly, so an issuer
+  still sending the retired field (or adding one later) is stripped, never rejected.
 
 The earlier rule was the opposite: the response pair was atomic, so a key server that
 fronted a gateway had to name it and one that did not had to stay silent. That made
