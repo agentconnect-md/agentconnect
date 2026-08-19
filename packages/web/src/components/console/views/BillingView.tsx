@@ -1,12 +1,27 @@
 'use client'
 
 // Billing page. It renders what the billing service returns and nothing more —
-// no prices, no entitlement rules of its own. Paying for credit is not here yet:
-// it arrives with the service's payment channel, and this page's whole part in it
-// will be a redirect to the checkout URL the API hands back.
+// no prices, no entitlement rules of its own. Paying for credit is here, and the
+// console's whole part in it is: pick an amount, POST it, redirect to the Stripe
+// checkout URL the API hands back, and — after Stripe returns the browser — poll
+// the purchase until the service says the payment settled. The return redirect
+// itself is never treated as proof of payment.
 
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import useSWR from 'swr'
-import { fetchBillingAccount, fetchBillingTransactions, fmtMicroUsd } from '@/lib/billing-api'
+import {
+  BillingError,
+  BillingShapeError,
+  PURCHASE_MAX_MICRO,
+  PURCHASE_MIN_MICRO,
+  createBillingPurchase,
+  fetchBillingAccount,
+  fetchBillingPurchase,
+  fetchBillingTransactions,
+  fmtMicroUsd,
+  type BillingPurchase
+} from '@/lib/billing-api'
 import { featureFlagEnabled } from '@/lib/feature-flags'
 import { useOrgs } from '@/lib/org-context'
 import { consoleKeys } from '@/lib/swr-keys'
@@ -22,6 +37,13 @@ const KIND_LABEL: Record<string, string> = {
   promo: 'Promotional credit',
   refund: 'Refund'
 }
+
+const PRESETS_USD = [10, 50, 100]
+const MIN_USD = PURCHASE_MIN_MICRO / 1_000_000
+const MAX_USD = PURCHASE_MAX_MICRO / 1_000_000
+/** 2.5s cadence; ~5 minutes before the poll goes quiet ("safe to leave"). */
+const POLL_INTERVAL_MS = 2_500
+const POLL_MAX_ATTEMPTS = 120
 
 function fmtWhen(iso: string): string {
   return new Date(iso).toLocaleString('en-US', {
@@ -49,9 +71,270 @@ function Notice({ title, body }: { title: string; body: string }) {
   )
 }
 
+// ── The checkout return, as a state machine ──────────────────────────────────
+// `?checkout=success&purchase=<id>` only means "the browser came back"; the
+// purchase settles when the service — fed by its webhook and its own Stripe
+// reconcile — reports `completed`. `cancel` means the user backed out of the
+// hosted page: nothing was charged and there is nothing to poll.
+//
+// `failed` is the only polled status this page treats as an authoritative
+// no-charge answer. `expired` is NOT one: the mirrored contract says a paid
+// session may complete an intent an expiry guess had already marked `expired`,
+// so an expired reading keeps reconciling for the full poll budget and the
+// banner it ends on never claims nothing was charged. Transient poll failures
+// don't abandon the confirmation either — the purchase id is kept, retried
+// within the same budget, and surfaced with a manual retry if it runs out.
+
+type CheckoutReturn =
+  | { phase: 'confirming'; purchaseId: string; attempt: number }
+  | { phase: 'still-pending'; purchaseId: string }
+  | { phase: 'completed'; purchase: BillingPurchase }
+  | { phase: 'failed' }
+  | { phase: 'expired'; purchaseId: string }
+  | { phase: 'canceled' }
+  | { phase: 'error'; purchaseId: string; message: string }
+
+const BANNER_TONE: Record<CheckoutReturn['phase'], { border: string; bg: string; icon: string }> = {
+  confirming: { border: 'var(--status-info)', bg: 'var(--status-info-soft)', icon: 'clock' },
+  'still-pending': { border: 'var(--status-info)', bg: 'var(--status-info-soft)', icon: 'clock' },
+  completed: { border: 'var(--status-online)', bg: 'var(--status-online-soft)', icon: 'check' },
+  failed: { border: 'var(--status-error)', bg: 'var(--status-error-soft)', icon: 'x' },
+  expired: { border: 'var(--status-paused)', bg: 'var(--status-paused-soft)', icon: 'timer-off' },
+  canceled: { border: 'var(--border-strong)', bg: 'var(--surface-sunken)', icon: 'undo-2' },
+  error: { border: 'var(--status-error)', bg: 'var(--status-error-soft)', icon: 'triangle-alert' }
+}
+
+function checkoutCopy(state: CheckoutReturn): { title: string; body: string } {
+  switch (state.phase) {
+    case 'confirming':
+      return {
+        title: 'Confirming your payment',
+        body: 'You came back from Stripe, but the payment counts only once Stripe tells us it settled. Credits post as soon as that lands — usually seconds. Safe to leave this page; the balance updates on its own.'
+      }
+    case 'still-pending':
+      return {
+        title: 'Payment still settling',
+        body: 'Stripe has not confirmed the payment yet. Some payment methods settle over several minutes — credits post automatically once it lands, and it is safe to leave this page.'
+      }
+    case 'completed':
+      return {
+        title: `${fmtMicroUsd(state.purchase.amountMicro)} added`,
+        body: 'The payment settled and the credits are on your balance.'
+      }
+    case 'failed':
+      return {
+        title: "Payment didn't go through",
+        body: 'Stripe declined the payment, so nothing was charged and your balance is unchanged. You can try again with the same or a different method.'
+      }
+    case 'expired':
+      return {
+        title: 'Checkout session expired',
+        body: 'The Stripe session timed out and no payment confirmation has arrived. If you left without paying, nothing was charged. If you paid just as the session closed, the credits still post automatically once Stripe confirms — they will show in the transactions below.'
+      }
+    case 'canceled':
+      return { title: 'Checkout canceled', body: 'You left the Stripe page before paying. Nothing was charged.' }
+    case 'error':
+      return {
+        title: 'Could not check the payment',
+        body: `${state.message} — if the payment went through, the credits still post automatically; you can also check again now.`
+      }
+  }
+}
+
+function CheckoutBanner({
+  state,
+  onDismiss,
+  onRetry
+}: {
+  state: CheckoutReturn
+  onDismiss: () => void
+  onRetry: () => void
+}) {
+  const tone = BANNER_TONE[state.phase]
+  const copy = checkoutCopy(state)
+  const busy = state.phase === 'confirming'
+  return (
+    <div
+      className="mb-4 flex items-start gap-3 rounded-[10px] border px-4 py-3.5"
+      style={{ borderColor: tone.border, background: tone.bg }}
+    >
+      <span className="mt-[1px] flex-none" style={{ color: tone.border }}>
+        <Icon name={tone.icon} size={17} />
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="font-sans text-[13.5px] font-semibold leading-normal">{copy.title}</div>
+        <div className="mt-[3px] max-w-[720px] font-sans text-[12.5px] font-normal leading-[1.6] text-(--text-secondary)">
+          {copy.body}
+        </div>
+        {busy && (
+          <div className="mono mt-2 text-[11.5px] text-(--text-tertiary)">
+            checking payment status · attempt {state.phase === 'confirming' ? state.attempt : 0}
+          </div>
+        )}
+        {state.phase === 'error' && (
+          <div className="mt-2">
+            <Button size="xs" variant="secondary" onClick={onRetry}>
+              Check again
+            </Button>
+          </div>
+        )}
+        {state.phase === 'completed' && state.purchase.receiptUrl && (
+          <a
+            className="mt-2 inline-flex items-center gap-1 font-sans text-[12px] font-medium text-(--text-brand) hover:underline"
+            href={state.purchase.receiptUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            View receipt
+            <Icon name="arrow-up-right" size={12} />
+          </a>
+        )}
+      </div>
+      {!busy && (
+        <Button size="xs" variant="ghost" onClick={onDismiss} ariaLabel="Dismiss">
+          <Icon name="x" size={14} />
+        </Button>
+      )}
+    </div>
+  )
+}
+
+// ── Add credits (owners only — the service enforces this; the UI just agrees) ─
+
+function AddCreditsCard({ orgId, returnPath }: { orgId: string; returnPath: string }) {
+  const [preset, setPreset] = useState<number>(50)
+  const [custom, setCustom] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const usd = custom !== '' ? Number.parseFloat(custom) : preset
+  const cents = Number.isFinite(usd) ? Math.round(usd * 100) : Number.NaN
+  const valid = Number.isFinite(cents) && cents >= MIN_USD * 100 && cents <= MAX_USD * 100
+  const invalidCustom = custom !== '' && !valid
+
+  const submit = async () => {
+    if (!valid || submitting) return
+    setSubmitting(true)
+    setError(null)
+    try {
+      const { url } = await createBillingPurchase(orgId, {
+        amountMicro: cents * 10_000,
+        // Replay protection for THIS click; the service's crash-window and
+        // webhook idempotency are what actually guard the money.
+        idempotencyKey: crypto.randomUUID(),
+        returnPath
+      })
+      window.location.assign(url)
+      // `submitting` stays true — the page is navigating away.
+    } catch (e) {
+      setError((e as Error).message)
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="card flex flex-col">
+      <div className="cardhead">
+        <span className="cardtitle">Add credits</span>
+      </div>
+      <div className="flex flex-1 flex-col p-4">
+        <div className="grid grid-cols-4 gap-2">
+          {PRESETS_USD.map((v) => {
+            const on = custom === '' && preset === v
+            return (
+              <button
+                key={v}
+                type="button"
+                className="mono flex h-[38px] cursor-pointer items-center justify-center rounded-[9px] text-[14px] font-semibold"
+                style={
+                  on
+                    ? { border: '1.5px solid var(--brand)', background: 'var(--brand-soft)' }
+                    : { border: '1px solid var(--border-default)', background: 'var(--surface-card)' }
+                }
+                onClick={() => {
+                  setPreset(v)
+                  setCustom('')
+                }}
+              >
+                ${v}
+              </button>
+            )
+          })}
+          <div
+            className="flex h-[38px] items-center gap-1.5 rounded-[6px] border px-2.5"
+            style={{ borderColor: invalidCustom ? 'var(--status-error)' : 'var(--border-default)' }}
+          >
+            <span className="mono text-[12.5px] text-(--text-tertiary)">$</span>
+            <input
+              value={custom}
+              onChange={(e) => setCustom(e.target.value)}
+              placeholder="Other"
+              inputMode="decimal"
+              aria-label="Custom amount in USD"
+              className="mono w-full min-w-0 border-0 bg-transparent text-[12.5px] outline-none"
+            />
+          </div>
+        </div>
+        <div
+          className="mt-2 font-sans text-[11.5px] font-normal leading-[1.5]"
+          style={{ color: invalidCustom ? 'var(--status-error)' : 'var(--text-tertiary)' }}
+        >
+          {invalidCustom
+            ? `Enter an amount between $${MIN_USD.toFixed(2)} and $${MAX_USD.toLocaleString('en-US', { minimumFractionDigits: 2 })}.`
+            : `Minimum $${MIN_USD.toFixed(2)}, maximum $${MAX_USD.toLocaleString('en-US', { minimumFractionDigits: 2 })} per purchase.`}
+        </div>
+        {error && (
+          <div className="mt-2 flex items-center gap-2 font-sans text-[12px] text-(--status-error)">
+            <Icon name="triangle-alert" size={14} />
+            <span className="min-w-0 flex-1">{error}</span>
+          </div>
+        )}
+        <div className="mt-3">
+          <Button size="md" disabled={!valid || submitting} onClick={() => void submit()} className="w-full">
+            <span className="inline-flex items-center gap-2">
+              <Icon name={submitting ? 'loader-circle' : 'plus'} size={15} />
+              {submitting ? 'Opening Stripe checkout…' : `Add ${valid ? fmtMicroUsd(cents * 10_000) : 'credits'}`}
+            </span>
+          </Button>
+        </div>
+        <div className="mt-auto flex items-start gap-2 pt-3.5">
+          <span className="mt-[2px] flex-none text-(--text-tertiary)">
+            <Icon name="lock" size={13} />
+          </span>
+          <span className="font-sans text-[11.5px] font-normal leading-[1.55] text-(--text-tertiary)">
+            Payment is handled on Stripe's hosted page. Card details never touch AgentConnect.
+          </span>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function MembersDontPayCard() {
+  return (
+    <div className="card flex flex-col">
+      <div className="cardhead">
+        <span className="cardtitle">Add credits</span>
+      </div>
+      <div className="flex flex-1 flex-col items-center justify-center gap-2 p-5 text-center">
+        <span className="flex h-9 w-9 items-center justify-center rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) text-(--text-tertiary)">
+          <Icon name="user-round-cog" size={17} />
+        </span>
+        <div className="font-sans text-[13px] font-semibold">Owners add credits</div>
+        <div className="max-w-[300px] font-sans text-[12px] font-normal leading-[1.6] text-(--text-tertiary)">
+          You can see the balance and every transaction. Ask an org owner to top up.
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function BillingView() {
-  const { activeOrg, loading: orgLoading } = useOrgs()
+  const { activeOrg, myRole, loading: orgLoading } = useOrgs()
   const orgId = activeOrg?.id ?? null
+  const router = useRouter()
+  const pathname = usePathname()
+  const searchParams = useSearchParams()
   // Hooks run before any early return, so the flag has to gate the KEYS, not just
   // the render: a null key is what stops SWR from fetching. Checking it only below
   // would let a deep link on a console without billing still call the service —
@@ -63,6 +346,69 @@ export default function BillingView() {
   const transactions = useSWR(fetching ? consoleKeys.billingTransactions(orgId) : null, () =>
     fetchBillingTransactions(orgId!)
   )
+
+  // The return from Stripe. Claimed once from the URL, which is then cleaned so
+  // a refresh or a shared link does not replay the banner.
+  const [checkout, setCheckout] = useState<CheckoutReturn | null>(null)
+  const claimed = useRef(false)
+  useEffect(() => {
+    if (claimed.current || !offered) return
+    const result = searchParams.get('checkout')
+    const purchaseId = searchParams.get('purchase')
+    if (!result) return
+    claimed.current = true
+    if (result === 'success' && purchaseId) setCheckout({ phase: 'confirming', purchaseId, attempt: 1 })
+    else if (result === 'cancel') setCheckout({ phase: 'canceled' })
+    router.replace(pathname)
+  }, [offered, searchParams, router, pathname])
+
+  // Poll until the service reports a terminal status. Each poll also makes the
+  // service reconcile against Stripe directly, so a lost webhook delays nothing.
+  const refreshMoney = useCallback(() => {
+    void account.mutate()
+    void transactions.mutate()
+  }, [account.mutate, transactions.mutate])
+  useEffect(() => {
+    if (!orgId || checkout?.phase !== 'confirming') return
+    const { purchaseId, attempt } = checkout
+    let cancelled = false
+    const timer = setTimeout(
+      async () => {
+        try {
+          const purchase = await fetchBillingPurchase(orgId, purchaseId)
+          if (cancelled) return
+          if (purchase.status === 'completed') {
+            setCheckout({ phase: 'completed', purchase })
+            refreshMoney()
+          } else if (purchase.status === 'failed') setCheckout({ phase: 'failed' })
+          // `expired` is not authoritative (see the contract note above): keep
+          // reconciling like `pending`; only which banner ends the budget differs.
+          else if (attempt >= POLL_MAX_ATTEMPTS)
+            setCheckout(
+              purchase.status === 'expired' ? { phase: 'expired', purchaseId } : { phase: 'still-pending', purchaseId }
+            )
+          else setCheckout({ phase: 'confirming', purchaseId, attempt: attempt + 1 })
+        } catch (e) {
+          if (cancelled) return
+          // The URL was already cleaned, so giving up here would lose the
+          // purchase id for good. Retry transient failures (network, 5xx) inside
+          // the same budget; only a client-side refusal — shape drift or a 4xx —
+          // or an exhausted budget lands on the error banner, which keeps the id
+          // and offers a manual "Check again".
+          const permanent =
+            e instanceof BillingShapeError || (e instanceof BillingError && e.status >= 400 && e.status < 500)
+          if (!permanent && attempt < POLL_MAX_ATTEMPTS)
+            setCheckout({ phase: 'confirming', purchaseId, attempt: attempt + 1 })
+          else setCheckout({ phase: 'error', purchaseId, message: (e as Error).message })
+        }
+      },
+      attempt === 1 ? 0 : POLL_INTERVAL_MS
+    )
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [orgId, checkout, refreshMoney])
 
   // Deep-link landing for a console that does not offer billing: the rail hides
   // the entry, so anyone here typed the URL or followed an old bookmark. Gated on
@@ -97,6 +443,18 @@ export default function BillingView() {
         <p className="psub mt-0 flex-1">Prepaid balance for this organization, and what has been credited to it.</p>
       </div>
 
+      {checkout && (
+        <CheckoutBanner
+          state={checkout}
+          onDismiss={() => setCheckout(null)}
+          onRetry={() =>
+            setCheckout((c) =>
+              c && c.phase === 'error' ? { phase: 'confirming', purchaseId: c.purchaseId, attempt: 1 } : c
+            )
+          }
+        />
+      )}
+
       {account.error && (
         <div className="card mb-4 flex items-center gap-3 px-4 py-3">
           <Icon name="triangle-alert" size={18} color="var(--status-error)" />
@@ -111,12 +469,21 @@ export default function BillingView() {
 
       {acct && (
         <>
-          {/* One figure, no in-flight caveat: v1 has no hold layer, so the balance
-              is every reconciliation fact there is. A suspended/low-balance badge
-              belongs here once the service can report a state at all. */}
-          <div className="card stat mb-4 max-w-[320px]">
-            <div className="statlbl">Balance</div>
-            <div className="statval">{fmtMicroUsd(acct.balanceMicro)}</div>
+          <div className="mb-4 grid items-stretch gap-4 desktop:grid-cols-2">
+            {/* One figure, no in-flight caveat: v1 has no hold layer, so the balance
+                is every reconciliation fact there is. A suspended/low-balance badge
+                belongs here once the service can report a state at all. */}
+            <div className="card stat">
+              <div className="statlbl">Balance</div>
+              <div className="statval">{fmtMicroUsd(acct.balanceMicro)}</div>
+            </div>
+            {/* Only owners move money — the service enforces it (403); the page
+                just doesn't offer members a form that would be refused. */}
+            {myRole === 'owner' ? (
+              <AddCreditsCard orgId={orgId} returnPath={pathname} />
+            ) : myRole ? (
+              <MembersDontPayCard />
+            ) : null}
           </div>
 
           <div className="card">

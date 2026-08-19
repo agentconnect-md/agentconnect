@@ -18,7 +18,16 @@ const mocks = vi.hoisted(() => ({
 vi.mock('@/lib/org-context', () => ({
   useOrgs: () => ({ activeOrg: { id: 'org-1' }, myRole: 'owner', orgPath: (p: string) => p, loading: false })
 }))
+vi.mock('next/navigation', () => ({
+  usePathname: () => '/acme/billing',
+  useRouter: () => ({ replace: vi.fn() }),
+  useSearchParams: () => new URLSearchParams()
+}))
 vi.mock('@/lib/billing-api', () => ({
+  PURCHASE_MIN_MICRO: 5_000_000,
+  PURCHASE_MAX_MICRO: 2_000_000_000,
+  createBillingPurchase: vi.fn(),
+  fetchBillingPurchase: vi.fn(),
   fetchBillingAccount: mocks.fetchAccount,
   fetchBillingTransactions: mocks.fetchTransactions,
   fmtMicroUsd: (micro: number) => `$${micro / 1_000_000}`

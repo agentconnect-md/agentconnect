@@ -4,7 +4,14 @@
 // a response that does not match is REFUSED at the boundary, so the page shows
 // its error card instead of rendering `$NaN` where a balance belongs.
 import { describe, expect, it } from 'vitest'
-import { assertAccount, assertTransactionsPage, BillingShapeError, fmtMicroUsd } from './billing-api'
+import {
+  assertAccount,
+  assertPurchase,
+  assertPurchaseCreated,
+  assertTransactionsPage,
+  BillingShapeError,
+  fmtMicroUsd
+} from './billing-api'
 
 const tx = { id: 't1', kind: 'purchase', amountMicro: 25_000_000, at: '2026-08-17T09:25:33.751Z' }
 
@@ -55,5 +62,34 @@ describe('assertTransactionsPage', () => {
 
   it('refuses a body that is not a page at all', () => {
     expect(() => assertTransactionsPage({ items: 'nope', nextCursor: null })).toThrow(BillingShapeError)
+  })
+})
+
+describe('assertPurchase', () => {
+  const purchase = { id: 'p1', status: 'pending', amountMicro: 50_000_000, receiptUrl: null }
+
+  it('accepts the documented shape, with and without a receipt', () => {
+    expect(() => assertPurchase(purchase)).not.toThrow()
+    expect(() =>
+      assertPurchase({ ...purchase, status: 'completed', receiptUrl: 'https://pay.stripe.com/receipts/x' })
+    ).not.toThrow()
+  })
+
+  it('refuses an unknown status — the poll branches on it, so an unknown value would spin forever', () => {
+    expect(() => assertPurchase({ ...purchase, status: 'settling' })).toThrow(BillingShapeError)
+  })
+
+  it('refuses an unusable amount or receipt', () => {
+    expect(() => assertPurchase({ ...purchase, amountMicro: '50' })).toThrow(BillingShapeError)
+    expect(() => assertPurchase({ ...purchase, receiptUrl: undefined })).toThrow(BillingShapeError)
+    expect(() => assertPurchase(null)).toThrow(BillingShapeError)
+  })
+})
+
+describe('assertPurchaseCreated', () => {
+  it('accepts the documented shape and refuses anything without the redirect URL', () => {
+    expect(() => assertPurchaseCreated({ purchaseId: 'p1', url: 'https://checkout.stripe.com/x' })).not.toThrow()
+    expect(() => assertPurchaseCreated({ purchaseId: 'p1' })).toThrow(BillingShapeError)
+    expect(() => assertPurchaseCreated(null)).toThrow(BillingShapeError)
   })
 })
