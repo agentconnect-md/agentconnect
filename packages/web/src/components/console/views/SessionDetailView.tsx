@@ -3717,12 +3717,16 @@ export default function SessionDetailView() {
         {/* One growing inner wrapper = the scroller's single child useStickToBottom watches for
             growth. In conversation mode it is `min-h-full` so the flex-1 spacer can still pin the
             composer to the bottom, and `mx-auto max-w-[880px]` centres the transcript inside the
-            full-width scroller; in viewer mode it is a bounded `flex-1` so the viewer scrolls. */}
+            full-width scroller; in viewer mode it is a bounded `flex-1` so the viewer scrolls.
+            `shrink-0` is load-bearing: as a flex item of the scroller it would otherwise SHRINK to
+            the pane height, so a taller transcript overflows its box — capping the range the sticky
+            header/composer can pin within (they'd scroll off once you passed one screenful). With
+            `shrink-0` the box grows to the content, so both stay pinned the whole scroll. */}
         <div
           className={
             viewerOpen
               ? 'flex min-h-0 min-w-0 flex-1 flex-col'
-              : 'mx-auto flex min-h-full w-full min-w-0 max-w-[880px] flex-col'
+              : 'mx-auto flex min-h-full w-full min-w-0 max-w-[880px] shrink-0 flex-col'
           }
         >
           {/* Session title + action bar, PINNED to the top of the transcript pane (`sticky top-0`)
