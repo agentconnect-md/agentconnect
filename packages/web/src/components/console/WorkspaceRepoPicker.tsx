@@ -36,6 +36,23 @@ export function resolveWorkspaceRepoScope(
   return authorizations.find((row) => row.repoFullName.toLowerCase() === wanted.toLowerCase())?.repoFullName ?? null
 }
 
+/**
+ * What the `repo` parameter should become once grant resolution is definitive, or `undefined` when
+ * the URL already agrees with the root being read (`null` ⇒ drop the parameter).
+ *
+ * {@link resolveWorkspaceRepoScope} can answer with the grant's own casing or with the workspace, and
+ * a URL left saying something else both disagrees with the visible root and makes a link whose grant
+ * is gone retry its dead scope on every cold load.
+ */
+export function workspaceRepoParamRewrite(
+  repoParam: string | null,
+  resolvedRepo: string | null,
+  authorizations: AgentRepoAuthDto[] | undefined
+): string | null | undefined {
+  if (repoParam === null || authorizations === undefined) return undefined
+  return repoParam === resolvedRepo ? undefined : resolvedRepo
+}
+
 const CHOICE =
   'flex w-full cursor-pointer items-center gap-[9px] rounded-[6px] border-0 bg-transparent px-[9px] py-[6px] text-left outline-none hover:bg-(--surface-hover) focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-(--brand)'
 const CHOICE_ON = `${CHOICE} bg-(--brand-soft) text-(--brand-soft-text) hover:bg-(--brand-soft)`

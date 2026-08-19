@@ -4,7 +4,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { WorkspaceRepoPicker, resolveWorkspaceRepoScope } from './WorkspaceRepoPicker'
+import { WorkspaceRepoPicker, resolveWorkspaceRepoScope, workspaceRepoParamRewrite } from './WorkspaceRepoPicker'
 import type { AgentRepoAuthDto } from '@/lib/api'
 
 let root: Root | undefined
@@ -50,6 +50,23 @@ describe('resolveWorkspaceRepoScope', () => {
   it('treats a blank parameter as the workspace', () => {
     expect(resolveWorkspaceRepoScope(null, [grant('acme/infra')])).toBeNull()
     expect(resolveWorkspaceRepoScope('   ', [grant('acme/infra')])).toBeNull()
+  })
+})
+
+describe('workspaceRepoParamRewrite', () => {
+  it('leaves the URL alone while the grants are still loading, and when it already agrees', () => {
+    expect(workspaceRepoParamRewrite('acme/infra', 'acme/infra', undefined)).toBeUndefined()
+    expect(workspaceRepoParamRewrite('acme/infra', 'acme/infra', [grant('acme/infra')])).toBeUndefined()
+    expect(workspaceRepoParamRewrite(null, null, [grant('acme/infra')])).toBeUndefined()
+  })
+
+  it('canonicalizes a link written in another casing, so the URL matches the picker', () => {
+    expect(workspaceRepoParamRewrite('ACME/Infra', 'acme/infra', [grant('acme/infra')])).toBe('acme/infra')
+  })
+
+  it('drops a link whose grant is gone, so a cold load stops retrying the dead scope', () => {
+    expect(workspaceRepoParamRewrite('acme/revoked', null, [grant('acme/infra')])).toBeNull()
+    expect(workspaceRepoParamRewrite('acme/anything', null, [])).toBeNull()
   })
 })
 

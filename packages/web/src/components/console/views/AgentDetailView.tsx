@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import useSWR from 'swr'
 import Link from 'next/link'
 import { useParams, useRouter, useSearchParams } from 'next/navigation'
@@ -54,7 +54,7 @@ import { discordBotInviteUrl } from '@/components/console/platforms/discord/invi
 import { WorkspaceCard, type WorkspaceHeaderInfo } from '@/components/console/WorkspaceCard'
 import { WorkspaceFiles, workspaceReadModelKey } from '@/components/console/WorkspaceFiles'
 import { WorkspaceFilesMock } from '@/components/console/WorkspaceFilesMock'
-import { resolveWorkspaceRepoScope } from '@/components/console/WorkspaceRepoPicker'
+import { resolveWorkspaceRepoScope, workspaceRepoParamRewrite } from '@/components/console/WorkspaceRepoPicker'
 import { WorkspaceScopePicker } from '@/components/console/WorkspaceScopePicker'
 import { FileBrowserShell } from '@/components/console/FileBrowser'
 import { MemoryPanel } from '@/components/console/MemoryPanel'
@@ -234,12 +234,25 @@ export default function AgentDetailView() {
   const poolPlacedForRepos = isPoolPlacementKind(getAgent(id)?.placementKind, getAgent(id)?.setId, orgSetIds)
   const workspaceRepoOptions = poolPlacedForRepos ? [] : (agentReposData ?? [])
   const selectedRepo = resolveWorkspaceRepoScope(params.get('repo'), poolPlacedForRepos ? [] : agentReposData)
-  const selectRepoScope = (repo: string | null) => {
-    const next = new URLSearchParams(params)
-    if (repo) next.set('repo', repo)
-    else next.delete('repo')
-    router.replace(`${orgPath(`/agents/${id}`)}?${next.toString()}`, { scroll: false })
-  }
+  const selectRepoScope = useCallback(
+    (repo: string | null) => {
+      const next = new URLSearchParams(params)
+      if (repo) next.set('repo', repo)
+      else next.delete('repo')
+      router.replace(`${orgPath(`/agents/${id}`)}?${next.toString()}`, { scroll: false })
+    },
+    [id, orgPath, params, router]
+  )
+  // ...and once the grants are definitive, make the URL say which root the browser is actually
+  // reading, so a hand-written or revoked link stops disagreeing with the picker beside it.
+  const repoParamRewrite = workspaceRepoParamRewrite(
+    params.get('repo'),
+    selectedRepo,
+    poolPlacedForRepos ? [] : agentReposData
+  )
+  useEffect(() => {
+    if (repoParamRewrite !== undefined) selectRepoScope(repoParamRewrite)
+  }, [repoParamRewrite, selectRepoScope])
   // Grandfathered out-of-set hooks keep firing; only the gh write-back is
   // credential-less — badge them once the grant list has actually loaded.
   const watchUnauthorized = (h: HookDto): boolean =>
