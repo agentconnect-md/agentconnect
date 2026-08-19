@@ -1315,6 +1315,8 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
           // A 409 from the conversation mint names the exact blocker (an agent's
           // daemon lacking multi-agent webchat support) — surface it verbatim.
           const conflict = err instanceof ApiError && err.status === 409 ? err.message : undefined
+          // A 404 on a RESUME is the CP refusing this account the conversation (private to its owner, or a roster member out of view) — not an unreachable agent.
+          const notYours = Boolean(conversationId) && err instanceof ApiError && err.status === 404
           pushStep(id, {
             kind: 'done',
             turnId: requestedTurnId,
@@ -1322,7 +1324,9 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
               ? '⚠️ Webchat relay not configured — set PUBLIC_RELAY_URL on the control plane.'
               : conflict
                 ? `⚠️ ${conflict}`
-                : '⚠️ Could not reach the agent.'
+                : notYours
+                  ? '⚠️ You can’t continue this conversation — it is private to the person who started it, or includes an agent you can’t view.'
+                  : '⚠️ Could not reach the agent.'
           })
           pendingTurnFrames.current.delete(id)
           dropLanes(id)

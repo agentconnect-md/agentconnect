@@ -1439,6 +1439,15 @@ export interface WebchatParticipant {
   role: 'primary' | 'member'
 }
 
+/** What a resume mint authorizes against: the owner, and the sessions the conversation currently stands on. */
+export interface WebchatResumeBinding {
+  primaryAgentId: AgentId
+  ownerUserId: string
+  /** One slot per roster participant — null until that participant has a session (a partial roster is normal: a
+   *  targeted turn or a refused delivery leaves peers unmaterialized); the conversation's own pointer on a pre-roster row. */
+  currentSessionIds: Array<SessionId | null>
+}
+
 export interface WebchatConversationRepo {
   /** Register a server-allocated conversation before its first relay dial.
    *  `binding.agentId` is the PRIMARY; `memberAgentIds` are the remaining
@@ -1468,6 +1477,10 @@ export interface WebchatConversationRepo {
   /** Owner check for the conversation-scoped mint path: returns the primary
    *  agent when (conversationId, orgId, userId) matches, else null. */
   ownedBy(conversationId: string, orgId: OrgId, userId: string): Promise<{ primaryAgentId: AgentId } | null>
+  /** The resume-authorization subject of a conversation (null = unknown/foreign): its owner plus the
+   *  current session of every participant, which the `session.continue` policy is applied to for
+   *  anyone who is not the owner. */
+  resumeBinding(conversationId: string, orgId: OrgId): Promise<WebchatResumeBinding | null>
   /** Session-targeted continuation (webchat-cross-integration-continuation.md
    *  §6.2): find-or-create the caller's ONE conversation adopting
    *  `targetSessionId` — concurrent mints converge on the

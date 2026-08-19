@@ -97,6 +97,30 @@ export function webchatTokenRoutes(deps: HttpDeps) {
       return true
     }
 
+    /** Who may RESUME a conversation: its owner always; anyone else under the same `session.continue` policy an
+     *  integration-origin session gets — EVERY participant's current session visible to them and a non-viewer
+     *  role, private sessions owner-only. A participant with no session yet (before the first turn, or a peer a
+     *  targeted turn skipped) has nothing to judge, and the socket would let the caller target it into a session
+     *  that is default-private to the owner — so any missing slot keeps the conversation the owner's. Unknown
+     *  and foreign ids read as null, exactly like a refusal. */
+    const resumableBy = async (
+      req: Parameters<typeof ctxOf>[0] & { principal?: { userId: string } },
+      conversationId: string
+    ): Promise<{ primaryAgentId: AgentId } | null> => {
+      const binding = await deps.repos.webchatConversation.resumeBinding(conversationId, orgOf(req))
+      if (!binding) return null
+      const resumable = { primaryAgentId: binding.primaryAgentId }
+      if (binding.ownerUserId === req.principal!.userId) return resumable
+      const ids = binding.currentSessionIds.filter((id): id is SessionId => id !== null)
+      if (ids.length === 0 || ids.length !== binding.currentSessionIds.length) return null
+      const sessions = await Promise.all(ids.map((id) => deps.repos.session.get(orgOf(req), id)))
+      const rows = sessions.filter((s) => s !== null)
+      if (rows.length !== sessions.length) return null
+      const access = await sessionAccess.forSessions(req, rows)
+      const ctx = ctxOf(req)
+      return rows.every((s) => canContinueSession(s, ctx, access.identitySet, access.externalAccess)) ? resumable : null
+    }
+
     r.post(
       '/agents/:agentId/webchat/token',
       {
@@ -105,7 +129,7 @@ export function webchatTokenRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Mint a webchat token',
           description:
-            'Mints a short-lived token the browser presents to the relay pool to start or resume a playground webchat session with this agent. A resume is allowed only for a conversation already owned by the authenticated user.',
+            'Mints a short-lived token the browser presents to the relay pool to start or resume a playground webchat session with this agent. A resume is allowed for the conversation owner, and for any non-viewer member who may continue every session it currently stands on (org-visible sessions; private ones stay owner-only).',
           operationId: 'mintWebchatToken',
           params: Params,
           body: Body,
@@ -128,8 +152,10 @@ export function webchatTokenRoutes(deps: HttpDeps) {
         const conversationId = req.body.conversationId?.toLowerCase() ?? randomUUID()
         const binding = { conversationId, userId, agentId: agent.id, orgId: agent.orgId }
         if (req.body.conversationId) {
+          // The asserted agent must be the conversation's primary on this per-agent path.
+          const resumable = await resumableBy(req, conversationId)
           if (
-            !(await deps.repos.webchatConversation.owns(binding)) ||
+            resumable?.primaryAgentId !== agent.id ||
             !(await allParticipantsViewable(conversationId, agent.orgId, ctxOf(req)))
           ) {
             return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'conversation not found' })
@@ -237,7 +263,7 @@ export function webchatTokenRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Mint a conversation webchat token',
           description:
-            'Mints a short-lived token the browser presents to the relay pool. Pass `agentIds` (first entry is the primary) to create a conversation — the roster is fixed at creation — or `conversationId` to resume one owned by the authenticated user. Creating with more than one agent requires every selected agent to be placed on a daemon that supports multi-agent webchat.',
+            'Mints a short-lived token the browser presents to the relay pool. Pass `agentIds` (first entry is the primary) to create a conversation — the roster is fixed at creation — or `conversationId` to resume one — as its owner, or as any non-viewer member who may continue every session it currently stands on (org-visible sessions; private ones stay owner-only). Creating with more than one agent requires every selected agent to be placed on a daemon that supports multi-agent webchat.',
           operationId: 'mintWebchatConversationToken',
           params: ConversationParams,
           body: ConversationBody,
@@ -256,14 +282,14 @@ export function webchatTokenRoutes(deps: HttpDeps) {
 
         if (req.body.conversationId) {
           const conversationId = req.body.conversationId.toLowerCase()
-          const owned = await deps.repos.webchatConversation.ownedBy(conversationId, orgId, userId)
-          if (!owned) {
+          const resumable = await resumableBy(req, conversationId)
+          if (!resumable) {
             return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'conversation not found' })
           }
           // EVERY participant must still be viewable — the minted token exposes
           // and targets the full roster, so losing access to one restricted
           // member revokes resume for the whole conversation.
-          const primary = await deps.repos.agent.get(orgOf(req), owned.primaryAgentId)
+          const primary = await deps.repos.agent.get(orgOf(req), resumable.primaryAgentId)
           if (
             !primary ||
             primary.orgId !== orgId ||
