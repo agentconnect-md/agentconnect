@@ -643,6 +643,33 @@ describe('GithubRunReporter', () => {
     )
   })
 
+  it('keeps a superseded revision non-passing under a cleanup tombstone', async () => {
+    const p = projection({ desiredState: 'failure', tombstonedAt: new Date(NOW - 1_000) })
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.includes('/pulls?')) return Response.json([])
+      return Response.json(
+        { id: '90071992547409931', external_id: p.externalId, status: 'completed', conclusion: 'action_required' },
+        { status: 201 }
+      )
+    })
+    const { reporter, hooks } = worker(p, fetchImpl)
+
+    await reporter.tick()
+
+    const mutation = fetchImpl.mock.calls.find(([, init]) => init?.method === 'POST')
+    const body = JSON.parse(String(mutation?.[1]?.body)) as {
+      conclusion: string
+      output: { title: string }
+    }
+    // Organization deletion settles a tombstone only on `failure` or an association
+    // `action_required`; a neutral cleanup Check would leave the barrier pending forever.
+    expect(body.conclusion).toBe('action_required')
+    expect(body.output.title).toBe('Pull request association needs attention')
+    expect(hooks.completeProjectionWrite).toHaveBeenCalledWith(
+      expect.objectContaining({ observedState: 'action_required', settledErrorCode: 'no_current_pull_request' })
+    )
+  })
+
   it('keeps snapshotted attribution as plain text after the Agent has been deleted', async () => {
     const p = projection({ desiredState: 'failure', tombstonedAt: new Date(NOW - 1_000) })
     const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {

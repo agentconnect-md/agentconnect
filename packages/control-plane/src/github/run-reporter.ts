@@ -55,6 +55,9 @@ const CHECK_OUTPUT_TITLE: Record<ProjectionDesiredState, string> = {
   timed_out: 'Review exceeded its time limit'
 }
 
+const REVISION_NOT_CURRENT_TITLE = 'Revision is no longer current'
+const ASSOCIATION_ATTENTION_TITLE = 'Pull request association needs attention'
+
 const TERMINAL_CHECK_STATES = new Set<string>([
   'success',
   'action_required',
@@ -115,15 +118,11 @@ interface CheckPresentation {
   requestReviewAction?: boolean
 }
 
-/** A head GitHub no longer presents was superseded; only an unreadable association needs a human. */
-function associationBlockedState(code: SubjectAssociationErrorCode): ProjectionDesiredState {
+/** A head GitHub no longer presents was superseded, not a human's problem. Cleanup is exempt:
+ *  organization deletion settles a tombstone only on a durably non-passing Check. */
+function associationBlockedState(code: SubjectAssociationErrorCode, tombstoned: boolean): ProjectionDesiredState {
+  if (tombstoned) return 'action_required'
   return code === 'stale_head' || code === 'no_current_pull_request' ? 'neutral' : 'action_required'
-}
-
-function associationCheckTitle(code: SubjectAssociationErrorCode): string {
-  return associationBlockedState(code) === 'neutral'
-    ? 'Revision is no longer current'
-    : 'Pull request association needs attention'
 }
 
 export interface GithubRunReporterLog {
@@ -480,7 +479,7 @@ export class GithubRunReporter {
         : null
     if (
       settledAssociationError &&
-      projection.observedState === associationBlockedState(settledAssociationError) &&
+      projection.observedState === associationBlockedState(settledAssociationError, projection.tombstonedAt !== null) &&
       projection.writePhase === null &&
       projection.writeMarker === null
     ) {
@@ -553,7 +552,7 @@ export class GithubRunReporter {
       if (!association.synchronized) return
       associationError = association.errorCode
       if (associationError) {
-        effectiveState = associationBlockedState(associationError)
+        effectiveState = associationBlockedState(associationError, projection.tombstonedAt !== null)
       }
     }
 
@@ -1113,7 +1112,7 @@ function checkOutputTitle(
   associationError: SubjectAssociationErrorCode | null,
   presentation: CheckPresentation
 ): string {
-  if (associationError) return associationCheckTitle(associationError)
+  if (associationError) return state === 'neutral' ? REVISION_NOT_CURRENT_TITLE : ASSOCIATION_ATTENTION_TITLE
   if (state === 'skipped' && presentation.skippedLabel) return presentation.skippedLabel
   return CHECK_OUTPUT_TITLE[state]
 }
