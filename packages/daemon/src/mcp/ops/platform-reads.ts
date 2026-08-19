@@ -1,3 +1,4 @@
+import { z } from 'zod'
 import type { McpContentResult, MessageGateway, SessionContext } from './context.js'
 import {
   integrationsOnPlatform,
@@ -5,9 +6,38 @@ import {
   resolveGatewayForPlatform,
   type GatewayDeps
 } from './gateway.js'
-import { optionalString, requireString } from './validate.js'
+import { optionalString, parseArgs, requiredString } from './args.js'
 
 const DEFAULT_MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
+
+/** `listKnownUsers` arguments — history-backed, so no `integrationId` (history is not per-bot). */
+export const LIST_KNOWN_USERS_ARGS = z.object({ platform: optionalString('platform') })
+
+/** `listChannels` arguments. */
+export const LIST_CHANNELS_ARGS = z.object({
+  platform: optionalString('platform'),
+  integrationId: optionalString('integrationId')
+})
+
+/** `listChannelMembers` arguments; `channel` defaults to the current one on the same platform. */
+export const LIST_CHANNEL_MEMBERS_ARGS = z.object({
+  platform: optionalString('platform'),
+  integrationId: optionalString('integrationId'),
+  channel: optionalString('channel')
+})
+
+/** `getUserProfile` arguments. */
+export const GET_USER_PROFILE_ARGS = z.object({
+  platform: optionalString('platform'),
+  integrationId: optionalString('integrationId'),
+  user: requiredString('user')
+})
+
+/** Every platform's credentialed attachment read (`readSlackFile`, `readTelegramFile`, …). */
+export const READ_ATTACHMENT_ARGS = z.object({
+  url: requiredString('url'),
+  mimeType: optionalString('mimeType')
+})
 
 /** The platform-neutral read deps: live gateways plus the history-backed fallbacks for
  *  platforms whose bot API cannot enumerate chats or users. */
@@ -60,7 +90,7 @@ export async function listKnownUsers(
   args: Record<string, unknown>,
   deps: PlatformReadDeps
 ): Promise<unknown> {
-  const platform = optionalString(args, 'platform') ?? ctx.platform
+  const platform = parseArgs(LIST_KNOWN_USERS_ARGS, args).platform ?? ctx.platform
   if (integrationsOnPlatform(ctx, platform).length === 0) throw new Error(`this agent has no ${platform} integration`)
   if (integrationsOnPlatform(ctx, platform).length > 1) return { platform, users: [], note: MULTI_INTEGRATION_NOTE }
   return { platform, users: (await deps.observedUsers?.(ctx.agentId, platform)) ?? [] }
@@ -77,8 +107,9 @@ export async function listChannels(
   args: Record<string, unknown>,
   deps: PlatformReadDeps
 ): Promise<unknown> {
-  const platform = optionalString(args, 'platform') ?? ctx.platform
-  const { gw } = resolveGatewayForPlatform(ctx, deps, platform, optionalString(args, 'integrationId'))
+  const parsed = parseArgs(LIST_CHANNELS_ARGS, args)
+  const platform = parsed.platform ?? ctx.platform
+  const { gw } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId)
   const live = await gw.listChannels()
   // A platform whose bot API can't enumerate chats (Telegram) returns []; fall back to
   // the chats this agent has actually been active in, from local session history.
@@ -96,11 +127,12 @@ export async function listChannelMembers(
   args: Record<string, unknown>,
   deps: PlatformReadDeps
 ): Promise<unknown> {
-  const platform = optionalString(args, 'platform') ?? ctx.platform
-  const { gw, sameConvo } = resolveGatewayForPlatform(ctx, deps, platform, optionalString(args, 'integrationId'))
+  const parsed = parseArgs(LIST_CHANNEL_MEMBERS_ARGS, args)
+  const platform = parsed.platform ?? ctx.platform
+  const { gw, sameConvo } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId)
   // The current channel only defaults in for a same-platform read; a different
   // platform has no meaningful "current channel", so `channel` is required there.
-  const channel = optionalString(args, 'channel') ?? (sameConvo ? ctx.channel : undefined)
+  const channel = parsed.channel ?? (sameConvo ? ctx.channel : undefined)
   if (!channel)
     throw new Error(`channel is required to list members on ${platform} (a different platform than this session)`)
   return { platform, channel, members: await gw.listMembers(channel) }
@@ -111,10 +143,10 @@ export async function getUserProfile(
   args: Record<string, unknown>,
   deps: PlatformReadDeps
 ): Promise<unknown> {
-  const platform = optionalString(args, 'platform') ?? ctx.platform
-  const { gw } = resolveGatewayForPlatform(ctx, deps, platform, optionalString(args, 'integrationId'))
-  const user = requireString(args, 'user')
-  return { platform, ...(await gw.getUserProfile(user)) }
+  const parsed = parseArgs(GET_USER_PROFILE_ARGS, args)
+  const platform = parsed.platform ?? ctx.platform
+  const { gw } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId)
+  return { platform, ...(await gw.getUserProfile(parsed.user)) }
 }
 
 // Any platform's CREDENTIALED attachment read (`readSlackFile`, `readTelegramFile`, …).
@@ -126,7 +158,7 @@ export async function readAttachment(
   deps: PlatformReadDeps,
   gw: MessageGateway
 ): Promise<unknown> {
-  const url = requireString(args, 'url')
+  const { url, mimeType: mimeTypeHint } = parseArgs(READ_ATTACHMENT_ARGS, args)
   const max = deps.maxAttachmentBytes ?? DEFAULT_MAX_ATTACHMENT_BYTES
   const bytes = await gw.downloadFile(url, max)
   if (!bytes) {
@@ -135,7 +167,7 @@ export async function readAttachment(
         `may lack permission to read it (e.g. the Slack files:read scope)`
     )
   }
-  const mimeType = optionalString(args, 'mimeType') ?? guessMimeFromUrl(url) ?? 'application/octet-stream'
+  const mimeType = mimeTypeHint ?? guessMimeFromUrl(url) ?? 'application/octet-stream'
   if (mimeType.startsWith('image/')) {
     const result: McpContentResult = {
       mcpContent: [{ type: 'image', data: bytes.toString('base64'), mimeType }]

@@ -1,37 +1,72 @@
+import { z, type ZodType } from 'zod'
 import { MEMORY_ACCESS_BLOCKED } from '../memory/tools.js'
-import { isAttachmentReadTool } from '../platforms/read-ports.js'
+import { allAttachmentReadTools, isAttachmentReadTool } from '../platforms/read-ports.js'
 import type { SessionContext, ToolHandler } from './ops/context.js'
-import { listAgents, type DirectoryDeps } from './ops/directory.js'
-import { findKnowledge, listKnowledge, listOrgSkills, type KnowledgeDeps } from './ops/knowledge.js'
+import { listAgents, LIST_AGENTS_ARGS, type DirectoryDeps } from './ops/directory.js'
+import {
+  findKnowledge,
+  FIND_KNOWLEDGE_ARGS,
+  listKnowledge,
+  LIST_KNOWLEDGE_ARGS,
+  listOrgSkills,
+  LIST_ORG_SKILLS_ARGS,
+  type KnowledgeDeps
+} from './ops/knowledge.js'
 import {
   deleteMemory,
+  DELETE_MEMORY_ARGS,
   getMemory,
+  GET_MEMORY_ARGS,
   MEMORY_TOOL_ACCESS_MODES,
   readMemory,
+  READ_MEMORY_ARGS,
   saveMemory,
+  SAVE_MEMORY_ARGS,
   searchMemory,
+  SEARCH_MEMORY_ARGS,
   updateMemory,
+  UPDATE_MEMORY_ARGS,
   writeMemory,
+  WRITE_MEMORY_ARGS,
   type MemoryOpsDeps
 } from './ops/memory.js'
 import { sendMessage, type MessagingDeps } from './ops/messaging.js'
 import {
   cancelOrchestration,
   getOrchestration,
+  ORCHESTRATION_OWNER_ARGS,
   startOrchestration,
+  START_ORCHESTRATION_ARGS,
   type OrchestrationDeps
 } from './ops/orchestration.js'
-import { replyGithubReviewThreads, submitGithubReview, type GithubReviewDeps } from './ops/github.js'
+import {
+  replyGithubReviewThreads,
+  REPLY_GITHUB_REVIEW_THREADS_ARGS,
+  submitGithubReview,
+  SUBMIT_GITHUB_REVIEW_ARGS,
+  type GithubReviewDeps
+} from './ops/github.js'
 import {
   getCurrentChannel,
   getUserProfile,
+  GET_USER_PROFILE_ARGS,
   listChannelMembers,
+  LIST_CHANNEL_MEMBERS_ARGS,
   listChannels,
+  LIST_CHANNELS_ARGS,
   listKnownUsers,
+  LIST_KNOWN_USERS_ARGS,
   readAttachment,
+  READ_ATTACHMENT_ARGS,
   type PlatformReadDeps
 } from './ops/platform-reads.js'
-import { setSessionTitle, viewSessionStatus, type SessionOpsDeps } from './ops/session.js'
+import {
+  setSessionTitle,
+  SET_SESSION_TITLE_ARGS,
+  viewSessionStatus,
+  VIEW_SESSION_STATUS_ARGS,
+  type SessionOpsDeps
+} from './ops/session.js'
 
 export type { McpContentResult, MessageGateway, SendIdentity, SessionContext } from './ops/context.js'
 export type { ChannelAgentsRequest } from './ops/directory.js'
@@ -40,6 +75,7 @@ export type {
   ReplyGithubReviewThreadsResult,
   SubmitGithubReviewReq
 } from './ops/github.js'
+export { SEND_MESSAGE_BRANCHES } from './ops/messaging.js'
 export type { MessageAgentReq, MessageAgentResult, ReplyToSessionReq, ReplyToSessionResult } from './ops/messaging.js'
 export type {
   OrchestrationOwnerReq,
@@ -110,6 +146,43 @@ const HANDLERS: Map<string, ToolHandler<OpsDeps>> = new Map<string, ToolHandler<
   ['listChannels', listChannels],
   ['listChannelMembers', listChannelMembers],
   ['getUserProfile', getUserProfile]
+])
+
+/**
+ * Every dispatchable tool's ARGUMENT schema, by name — the runtime contract each handler
+ * parses its input with. Advertised JSON Schemas (`mcp/tools.ts` and the per-platform
+ * descriptors) carry the model-facing prose; `test/mcp-tool-args.test.ts` holds the two
+ * sides to the same fields so neither can drift. `sendMessage` is a four-branch union and
+ * lives in {@link SEND_MESSAGE_BRANCHES} instead.
+ */
+export const TOOL_ARG_SCHEMAS: Map<string, ZodType> = new Map<string, ZodType>([
+  ['setSessionTitle', SET_SESSION_TITLE_ARGS],
+  ['viewSessionStatus', VIEW_SESSION_STATUS_ARGS],
+  ['readMemory', READ_MEMORY_ARGS],
+  ['writeMemory', WRITE_MEMORY_ARGS],
+  ['searchMemory', SEARCH_MEMORY_ARGS],
+  ['saveMemory', SAVE_MEMORY_ARGS],
+  ['getMemory', GET_MEMORY_ARGS],
+  ['updateMemory', UPDATE_MEMORY_ARGS],
+  ['deleteMemory', DELETE_MEMORY_ARGS],
+  ['listAgents', LIST_AGENTS_ARGS],
+  ['listChannelAgents', LIST_AGENTS_ARGS],
+  ['findKnowledge', FIND_KNOWLEDGE_ARGS],
+  ['listKnowledge', LIST_KNOWLEDGE_ARGS],
+  ['listOrgSkills', LIST_ORG_SKILLS_ARGS],
+  ['startOrchestration', START_ORCHESTRATION_ARGS],
+  ['getOrchestration', ORCHESTRATION_OWNER_ARGS],
+  ['cancelOrchestration', ORCHESTRATION_OWNER_ARGS],
+  ['submitGithubReview', SUBMIT_GITHUB_REVIEW_ARGS],
+  ['replyGithubReviewThreads', REPLY_GITHUB_REVIEW_THREADS_ARGS],
+  ['listKnownUsers', LIST_KNOWN_USERS_ARGS],
+  ['listChannels', LIST_CHANNELS_ARGS],
+  ['listChannelMembers', LIST_CHANNEL_MEMBERS_ARGS],
+  ['getUserProfile', GET_USER_PROFILE_ARGS],
+  // The session's own conversation is read from trusted context alone — no arguments.
+  ['getCurrentChannel', z.object({})],
+  // One body serves every platform's credentialed attachment read, so one schema does too.
+  ...allAttachmentReadTools().map((tool) => [tool.name, READ_ATTACHMENT_ARGS] as [string, ZodType])
 ])
 
 /**

@@ -1,14 +1,8 @@
 import { randomUUID } from 'node:crypto'
+import { z } from 'zod'
 import type { MessageGateway, SendIdentity, SessionContext } from './context.js'
 import { resolveGatewayForPlatform, type GatewayDeps } from './gateway.js'
-import {
-  assertOnlyKeys,
-  optionalString,
-  parseAgentTarget,
-  parseUserTargets,
-  requireString,
-  SEND_MESSAGE_TARGET_HELP
-} from './validate.js'
+import { optionalString, parseArgs, requiredString } from './args.js'
 import {
   rootPostNeedsThreadMaterialization,
   rootPostThreadName,
@@ -21,6 +15,102 @@ import {
   offersDirectMessages,
   platformLabel
 } from '../../platforms/read-ports.js'
+
+export const SEND_MESSAGE_TARGET_HELP =
+  'Valid targets: agent {"toAgent":"<agent-id>","message":"..."}; ' +
+  'user DM {"toUser":"<Slack-user-id>","message":"..."}; ' +
+  'channel users {"toUser":["<id-1>","<id-2>"],"channel":"<channel-id>","message":"..."}; ' +
+  'channel {"channel":"<channel-id>","message":"..."}; ' +
+  'session {"sessionId":"<Parent session>","message":"..."}'
+
+const AGENT_TARGET_SHAPE_ERROR =
+  'sendMessage: `toAgent` must be an agent id string or {"agentId":"…","needsReply":bool}'
+const USER_TARGET_ERROR = 'sendMessage: `toUser` must be a user id string or a non-empty array of user id strings'
+
+/** Reject any key the branch does not accept, naming the repair — silently ignoring a `thread`
+ *  or a stray identity field is the confusing outcome (send-message-routing-rework.md §2.2). */
+function branchKeyError(target: string, allowed: readonly string[]): { error: z.core.$ZodErrorMap } {
+  const quoted = (keys: readonly PropertyKey[]) => keys.map((key) => `\`${String(key)}\``).join(', ')
+  return {
+    error: (issue) =>
+      issue.code === 'unrecognized_keys'
+        ? `sendMessage: ${target} allows only ${quoted(allowed)}; unexpected ${quoted(issue.keys)}. ` +
+          SEND_MESSAGE_TARGET_HELP
+        : undefined
+  }
+}
+
+/** One call mode's full key set — the runtime twin of a `oneOf` branch in the advertised schema. */
+function targetBranch<T extends z.ZodRawShape>(target: string, shape: T) {
+  return z.strictObject(shape, branchKeyError(target, Object.keys(shape)))
+}
+
+const messageField = requiredString('message')
+const channelField = optionalString('channel')
+const platformField = optionalString('platform')
+const integrationIdField = optionalString('integrationId')
+
+/** `toAgent` accepts the bare agent id or `{agentId, needsReply}`. The bare-string form stays
+ *  supported indefinitely: every published example and every warm ACP session teaches it, and
+ *  the object form only adds delivery options on top of it. */
+const AGENT_ID = z.string(AGENT_TARGET_SHAPE_ERROR).min(1, 'sendMessage: `toAgent` must be a non-empty agent id')
+const AGENT_TARGET_OBJECT = z.strictObject(
+  {
+    agentId: requiredString('agentId'),
+    needsReply: z.boolean('sendMessage: `toAgent.needsReply` must be a boolean').nullish()
+  },
+  branchKeyError('agent target `toAgent`', ['agentId', 'needsReply'])
+)
+const AGENT_TARGET = z.union([AGENT_ID, AGENT_TARGET_OBJECT])
+
+/** `toUser`: one id works for every delivery form; a non-empty array is reserved for one visible
+ *  channel-root post that @-mentions every listed member. */
+const USER_ID = z.string(USER_TARGET_ERROR).refine((id) => id.trim().length > 0, USER_TARGET_ERROR)
+const USER_TARGETS = z
+  .union([USER_ID, z.array(USER_ID).min(1, USER_TARGET_ERROR)], USER_TARGET_ERROR)
+  .transform((value) => (typeof value === 'string' ? [value] : value))
+  .refine(
+    (ids) => new Set(ids.map((id) => /^<@([^>]+)>$/.exec(id)?.[1] ?? id)).size === ids.length,
+    'sendMessage: `toUser` must not contain duplicate user ids'
+  )
+
+/** The four mutually exclusive call modes (§3.3), one strict key set each. */
+export const SEND_MESSAGE_BRANCHES = {
+  toAgent: targetBranch('agent target', { toAgent: AGENT_TARGET, channel: channelField, message: messageField }),
+  toUser: targetBranch('user target', {
+    toUser: USER_TARGETS,
+    channel: channelField,
+    platform: platformField,
+    integrationId: integrationIdField,
+    message: messageField
+  }),
+  channel: targetBranch('channel target', {
+    channel: requiredString('channel'),
+    platform: platformField,
+    integrationId: integrationIdField,
+    message: messageField
+  }),
+  sessionId: targetBranch('session target', {
+    sessionId: requiredString('sessionId'),
+    correlationId: optionalString('correlationId'),
+    message: messageField
+  })
+}
+
+/** Normalize `toAgent`. `undefined` ⇒ this is not an agent target. */
+function parseAgentTarget(value: unknown): { toAgent?: string; needsReply?: boolean } {
+  if (value === undefined || value === null) return {}
+  if (typeof value === 'string') return { toAgent: parseArgs(AGENT_ID, value) }
+  if (typeof value !== 'object' || Array.isArray(value)) throw new Error(AGENT_TARGET_SHAPE_ERROR)
+  const target = parseArgs(AGENT_TARGET_OBJECT, value)
+  return { toAgent: target.agentId, ...(target.needsReply === true ? { needsReply: true } : {}) }
+}
+
+/** Normalize `toUser` to the id list both delivery forms work from. */
+function parseUserTargets(value: unknown): string[] | undefined {
+  if (value === undefined || value === null) return undefined
+  return parseArgs(USER_TARGETS, value)
+}
 
 /**
  * A trusted agent-authored thread-message + attention request, assembled by the daemon
@@ -276,13 +366,12 @@ export async function sendMessage(
   args: Record<string, unknown>,
   deps: MessagingDeps
 ): Promise<unknown> {
-  const message = requireString(args, 'message')
+  const message = parseArgs(messageField, args.message)
 
   // Discriminant (§3.3): a `sessionId` ⇒ SessionTarget — reply into that existing session.
-  const sessionId = optionalString(args, 'sessionId')
+  const sessionId = parseArgs(optionalString('sessionId'), args.sessionId)
   if (sessionId !== undefined) {
-    assertOnlyKeys(args, ['sessionId', 'correlationId', 'message'], 'session target')
-    const correlationId = optionalString(args, 'correlationId')
+    const { correlationId } = parseArgs(SEND_MESSAGE_BRANCHES.sessionId, args)
     return await deps.replyToSession({
       callerAgentId: ctx.agentId,
       platform: ctx.platform,
@@ -303,7 +392,7 @@ export async function sendMessage(
   // Schema (as unit tests and older clients can).
   const { toAgent, needsReply } = parseAgentTarget(args.toAgent)
   const toUsers = parseUserTargets(args.toUser)
-  const channel = optionalString(args, 'channel')
+  const channel = parseArgs(channelField, args.channel)
   if (toAgent === undefined && toUsers === undefined && channel === undefined) {
     throw new Error(
       `sendMessage: \`toAgent\`, \`toUser\`, or \`channel\` must select the target. ${SEND_MESSAGE_TARGET_HELP}`
@@ -316,17 +405,18 @@ export async function sendMessage(
   }
   // send-message-routing-rework.md §2.2: NO branch accepts `thread`. A visible send is
   // either a direct message or a channel-ROOT post; addressing the CURRENT thread is the
-  // ordinary turn reply's job (§2.1), which already owns the right coordinates,
-  // streaming lifecycle, and sender identity. `assertOnlyKeys` is what rejects a `thread`
-  // a caller supplies anyway — a stale client, or a model working from an old example —
-  // and it rejects LOUDLY rather than ignoring it, because silently posting at the root
-  // what the caller meant for a thread is the confusing outcome.
-  if (toAgent !== undefined) assertOnlyKeys(args, ['toAgent', 'channel', 'message'], 'agent target')
-  else if (toUsers !== undefined) {
-    assertOnlyKeys(args, ['toUser', 'channel', 'platform', 'integrationId', 'message'], 'user target')
-  } else {
-    assertOnlyKeys(args, ['channel', 'platform', 'integrationId', 'message'], 'channel target')
-  }
+  // ordinary turn reply's job (§2.1), which already owns the right coordinates, streaming
+  // lifecycle, and sender identity. The selected branch schema is what rejects a `thread` a
+  // caller supplies anyway — a stale client, or a model working from an old example — and it
+  // rejects LOUDLY rather than ignoring it, because silently posting at the root what the
+  // caller meant for a thread is the confusing outcome.
+  const branch =
+    toAgent !== undefined
+      ? SEND_MESSAGE_BRANCHES.toAgent
+      : toUsers !== undefined
+        ? SEND_MESSAGE_BRANCHES.toUser
+        : SEND_MESSAGE_BRANCHES.channel
+  parseArgs(branch, args)
   if (toUsers !== undefined && channel === undefined && Array.isArray(args.toUser)) {
     throw new Error('sendMessage: a `toUser` array requires `channel` — direct messages accept exactly one user id')
   }
@@ -401,8 +491,8 @@ export async function sendMessage(
     // preferring this session's when it qualifies — the generalization of the literal
     // `'slack'` that used to sit here.
     const wantPlatform =
-      optionalString(args, 'platform') ?? (directMessage ? directMessagePlatformFor(ctx.platform) : ctx.platform)
-    const wantIntegrationId = optionalString(args, 'integrationId')
+      parseArgs(platformField, args.platform) ?? (directMessage ? directMessagePlatformFor(ctx.platform) : ctx.platform)
+    const wantIntegrationId = parseArgs(integrationIdField, args.integrationId)
     const { gw, integrationId: targetId } = resolveGatewayForPlatform(ctx, deps, wantPlatform, wantIntegrationId)
     let body = message
     if (toUsers !== undefined) {

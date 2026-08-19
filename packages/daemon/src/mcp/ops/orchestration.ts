@@ -1,5 +1,29 @@
+import { z } from 'zod'
 import type { SessionContext } from './context.js'
-import { optionalNumber, optionalString, requireString } from './validate.js'
+import { optionalNumber, optionalString, parseArgs, requiredString } from './args.js'
+
+const SUBTASKS_ERROR = 'missing required argument: subtasks (non-empty array)'
+
+/** `startOrchestration` arguments: the subtasks plus the optional deadline and reply marker. */
+export const START_ORCHESTRATION_ARGS = z.object({
+  subtasks: z
+    .array(
+      z.object(
+        { toAgentId: requiredString('toAgentId'), text: requiredString('text') },
+        {
+          error: (issue) =>
+            issue.code === 'invalid_type' ? `subtasks[${String(issue.path?.at(-1))}] must be an object` : undefined
+        }
+      ),
+      SUBTASKS_ERROR
+    )
+    .min(1, SUBTASKS_ERROR),
+  deadlineMs: optionalNumber('deadlineMs'),
+  replyTarget: optionalString('replyTarget')
+})
+
+/** The owner-checked read/cancel arguments shared by `getOrchestration` and `cancelOrchestration`. */
+export const ORCHESTRATION_OWNER_ARGS = z.object({ orchestrationId: requiredString('orchestrationId') })
 
 /** One subtask of a {@link StartOrchestrationReq}: an instruction for one worker. */
 export interface OrchestrationSubtaskInput {
@@ -74,17 +98,7 @@ export async function startOrchestration(
   args: Record<string, unknown>,
   deps: OrchestrationDeps
 ): Promise<unknown> {
-  const rawSubtasks = args.subtasks
-  if (!Array.isArray(rawSubtasks) || rawSubtasks.length === 0) {
-    throw new Error('missing required argument: subtasks (non-empty array)')
-  }
-  const subtasks: OrchestrationSubtaskInput[] = rawSubtasks.map((s, i) => {
-    if (typeof s !== 'object' || s === null) throw new Error(`subtasks[${i}] must be an object`)
-    const so = s as Record<string, unknown>
-    return { toAgentId: requireString(so, 'toAgentId'), text: requireString(so, 'text') }
-  })
-  const deadlineMs = optionalNumber(args, 'deadlineMs')
-  const replyTarget = optionalString(args, 'replyTarget')
+  const { subtasks, deadlineMs, replyTarget } = parseArgs(START_ORCHESTRATION_ARGS, args)
   return await deps.startOrchestration({
     mainAgentId: ctx.agentId,
     platform: ctx.platform,
@@ -106,7 +120,7 @@ function ownerReq(ctx: SessionContext, args: Record<string, unknown>): Orchestra
     channel: ctx.channel,
     thread: ctx.thread,
     ...(ctx.transportScope !== undefined ? { transportScope: ctx.transportScope } : {}),
-    orchestrationId: requireString(args, 'orchestrationId')
+    orchestrationId: parseArgs(ORCHESTRATION_OWNER_ARGS, args).orchestrationId
   }
 }
 

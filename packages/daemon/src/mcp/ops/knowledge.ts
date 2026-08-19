@@ -1,6 +1,31 @@
+import { z } from 'zod'
 import type { SessionContext } from './context.js'
-import { optionalString, requireString } from './validate.js'
+import { coercedIntWithDefault, optionalString, parseArgs, requiredString } from './args.js'
 import type { KnowledgeSearchOk, OrgSkillsOk } from '@agentconnect.md/protocol'
+
+/** The shared `tags` filter: absent, or an array of strings. */
+const tags = z.array(z.string('tags must be an array of strings'), 'tags must be an array of strings').optional()
+
+/** `findKnowledge` arguments. `limit` keeps its historical `Number()` coercion and default. */
+export const FIND_KNOWLEDGE_ARGS = z.object({
+  query: requiredString('query')
+    .transform((query) => query.trim())
+    .refine((query) => query.length > 0, 'query must not be blank'),
+  limit: coercedIntWithDefault(1, 10, 5, 'limit must be an integer from 1 to 10'),
+  tags
+})
+
+/** `listKnowledge` arguments — the query-less browse form of {@link FIND_KNOWLEDGE_ARGS}. */
+export const LIST_KNOWLEDGE_ARGS = z.object({
+  limit: coercedIntWithDefault(1, 20, 10, 'limit must be an integer from 1 to 20'),
+  tags
+})
+
+/** `listOrgSkills` arguments: `query` present ⇒ filter, absent ⇒ list. */
+export const LIST_ORG_SKILLS_ARGS = z.object({
+  query: optionalString('query').transform((query) => query?.trim()),
+  limit: coercedIntWithDefault(1, 50, 20, 'limit must be an integer from 1 to 50')
+})
 
 /** The organization-knowledge deps. All optional: a daemon whose CP does not advertise the
  *  feature carries no seam, and each tool then fails closed with its own message. */
@@ -27,27 +52,13 @@ export interface KnowledgeDeps {
   orgSkills?: (req: { requesterAgentId: string; query?: string; limit: number }) => Promise<OrgSkillsOk>
 }
 
-/** The shared `tags` filter shape: absent, or an array of strings. */
-function parseTags(args: Record<string, unknown>): string[] | undefined {
-  const rawTags = args.tags
-  if (rawTags !== undefined && (!Array.isArray(rawTags) || rawTags.some((tag) => typeof tag !== 'string'))) {
-    throw new Error('tags must be an array of strings')
-  }
-  return rawTags as string[] | undefined
-}
-
 export async function findKnowledge(
   ctx: SessionContext,
   args: Record<string, unknown>,
   deps: KnowledgeDeps
 ): Promise<unknown> {
   if (!deps.findKnowledge) throw new Error('organization knowledge is not available in this session')
-  const query = requireString(args, 'query').trim()
-  if (!query) throw new Error('query must not be blank')
-  const rawLimit = args.limit
-  const limit = rawLimit === undefined ? 5 : Number(rawLimit)
-  if (!Number.isInteger(limit) || limit < 1 || limit > 10) throw new Error('limit must be an integer from 1 to 10')
-  const tags = parseTags(args)
+  const { query, limit, tags } = parseArgs(FIND_KNOWLEDGE_ARGS, args)
   const result = await deps.findKnowledge({
     requesterAgentId: ctx.agentId,
     query,
@@ -64,10 +75,7 @@ export async function listKnowledge(
   deps: KnowledgeDeps
 ): Promise<unknown> {
   if (!deps.listKnowledge) throw new Error('organization knowledge is not available in this session')
-  const rawLimit = args.limit
-  const limit = rawLimit === undefined ? 10 : Number(rawLimit)
-  if (!Number.isInteger(limit) || limit < 1 || limit > 20) throw new Error('limit must be an integer from 1 to 20')
-  const tags = parseTags(args)
+  const { limit, tags } = parseArgs(LIST_KNOWLEDGE_ARGS, args)
   const result = await deps.listKnowledge({
     requesterAgentId: ctx.agentId,
     limit,
@@ -83,10 +91,7 @@ export async function listOrgSkills(
   deps: KnowledgeDeps
 ): Promise<unknown> {
   if (!deps.orgSkills) throw new Error('organization skills are not available in this session')
-  const query = optionalString(args, 'query')?.trim()
-  const rawLimit = args.limit
-  const limit = rawLimit === undefined ? 20 : Number(rawLimit)
-  if (!Number.isInteger(limit) || limit < 1 || limit > 50) throw new Error('limit must be an integer from 1 to 50')
+  const { query, limit } = parseArgs(LIST_ORG_SKILLS_ARGS, args)
   const result = await deps.orgSkills({
     requesterAgentId: ctx.agentId,
     ...(query ? { query } : {}),

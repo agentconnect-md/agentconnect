@@ -1,12 +1,14 @@
 import { randomUUID } from 'node:crypto'
+import { z } from 'zod'
 import type { SessionContext } from './context.js'
 import {
   optionalBoundedInt,
   optionalObject,
   optionalString,
-  requireString,
-  requireStringAllowEmpty
-} from './validate.js'
+  parseArgs,
+  requiredString,
+  requiredStringAllowEmpty
+} from './args.js'
 import type { MemoryProvider, MemoryScope } from '../../memory/provider.js'
 import { MemoryPathError, MemoryTooLargeError } from '../../memory/store.js'
 
@@ -29,6 +31,41 @@ export interface MemoryOpsDeps {
    *  Absent ⇒ agent-level store (unit fixtures). */
   memoryScope?: (ctx: SessionContext) => MemoryScope
 }
+
+/** `readMemory` arguments; an omitted `path` reads the MEMORY.md index. */
+export const READ_MEMORY_ARGS = z.object({ path: optionalString('path') })
+
+/** `writeMemory` arguments — the two modes are separated by the handler, not the schema. */
+export const WRITE_MEMORY_ARGS = z.object({
+  path: optionalString('path'),
+  content: optionalString('content'),
+  oldString: optionalString('oldString'),
+  newString: optionalString('newString')
+})
+
+/** `searchMemory` arguments (external record memory). */
+export const SEARCH_MEMORY_ARGS = z.object({
+  query: requiredString('query'),
+  topK: optionalBoundedInt('topK', 1, 20),
+  maxBytes: optionalBoundedInt('maxBytes', 1, 32_768)
+})
+
+/** `saveMemory` arguments. */
+export const SAVE_MEMORY_ARGS = z.object({ text: requiredString('text'), metadata: optionalObject('metadata') })
+
+/** `getMemory` arguments. */
+export const GET_MEMORY_ARGS = z.object({ id: requiredString('id') })
+
+/** `updateMemory` arguments; `text` may be empty, and `version` enables conditional writes. */
+export const UPDATE_MEMORY_ARGS = z.object({
+  id: requiredString('id'),
+  text: requiredString('text'),
+  metadata: optionalObject('metadata'),
+  version: optionalString('version')
+})
+
+/** `deleteMemory` arguments. */
+export const DELETE_MEMORY_ARGS = z.object({ id: requiredString('id'), version: optionalString('version') })
 
 /** Every memory tool's access mode, checked before dispatch: reads are universal, writes
  *  are refused for an isolated session (#653). */
@@ -62,7 +99,7 @@ export async function readMemory(
 ): Promise<unknown> {
   const scope = memoryScopeFor(ctx, deps)
   try {
-    const path = optionalString(args, 'path') ?? 'MEMORY.md'
+    const path = parseArgs(READ_MEMORY_ARGS, args).path ?? 'MEMORY.md'
     return await deps.memory.read(scope, path)
   } catch (err) {
     toToolError(err)
@@ -81,10 +118,9 @@ export async function writeMemory(
     // selects edit mode, and BOTH are then required (so a stray `newString` isn't silently
     // ignored, and an omitted `newString` isn't silently treated as a deletion — deletion
     // must be an explicit `newString: ""`).
-    const path = optionalString(args, 'path') ?? 'MEMORY.md'
-    const oldString = optionalString(args, 'oldString')
-    const newString = optionalString(args, 'newString')
-    const content = optionalString(args, 'content')
+    const parsed = parseArgs(WRITE_MEMORY_ARGS, args)
+    const path = parsed.path ?? 'MEMORY.md'
+    const { oldString, newString, content } = parsed
     const editMode = oldString !== undefined || newString !== undefined
     if (editMode) {
       if (content !== undefined)
@@ -109,7 +145,7 @@ export async function writeMemory(
       const updated = current.replace(oldString, newString)
       return await deps.memory.write(scope, path, updated, undefined, 'tool')
     }
-    const full = requireStringAllowEmpty(args, 'content')
+    const full = parseArgs(requiredStringAllowEmpty('content'), content)
     return await deps.memory.write(scope, path, full, undefined, 'tool')
   } catch (err) {
     toToolError(err)
@@ -137,13 +173,12 @@ export async function searchMemory(
 ): Promise<unknown> {
   const { surface, scope, requireCapability } = recordSurface(ctx, deps)
   requireCapability('recall')
-  const topK = optionalBoundedInt(args, 'topK', 1, 20) ?? 5
-  const maxBytes = optionalBoundedInt(args, 'maxBytes', 1, 32_768) ?? 8_192
+  const { query, topK, maxBytes } = parseArgs(SEARCH_MEMORY_ARGS, args)
   const records = await surface.search(scope, {
     turnId: randomUUID(),
-    query: requireString(args, 'query'),
-    topK,
-    maxBytes,
+    query,
+    topK: topK ?? 5,
+    maxBytes: maxBytes ?? 8_192,
     timeoutMs: 3_000
   })
   return { records }
@@ -156,10 +191,10 @@ export async function saveMemory(
 ): Promise<unknown> {
   const { surface, scope, requireCapability } = recordSurface(ctx, deps)
   requireCapability('create')
-  const metadata = optionalObject(args, 'metadata')
+  const { text, metadata } = parseArgs(SAVE_MEMORY_ARGS, args)
   const record = await surface.create(scope, {
     operationId: randomUUID(),
-    text: requireString(args, 'text'),
+    text,
     ...(metadata ? { metadata } : {})
   })
   return { record }
@@ -172,7 +207,7 @@ export async function getMemory(
 ): Promise<unknown> {
   const { surface, scope, requireCapability } = recordSurface(ctx, deps)
   requireCapability('get')
-  return { record: await surface.get(scope, requireString(args, 'id')) }
+  return { record: await surface.get(scope, parseArgs(GET_MEMORY_ARGS, args).id) }
 }
 
 export async function updateMemory(
@@ -182,12 +217,11 @@ export async function updateMemory(
 ): Promise<unknown> {
   const { surface, scope, requireCapability } = recordSurface(ctx, deps)
   requireCapability('update')
-  const metadata = optionalObject(args, 'metadata')
-  const version = optionalString(args, 'version')
+  const { id, text, metadata, version } = parseArgs(UPDATE_MEMORY_ARGS, args)
   const record = await surface.update(scope, {
     operationId: randomUUID(),
-    id: requireString(args, 'id'),
-    text: requireString(args, 'text'),
+    id,
+    text,
     ...(metadata ? { metadata } : {}),
     ...(version ? { version } : {})
   })
@@ -201,8 +235,7 @@ export async function deleteMemory(
 ): Promise<unknown> {
   const { surface, scope, requireCapability } = recordSurface(ctx, deps)
   requireCapability('delete')
-  const id = requireString(args, 'id')
-  const version = optionalString(args, 'version')
+  const { id, version } = parseArgs(DELETE_MEMORY_ARGS, args)
   return {
     id,
     deleted: await surface.delete(scope, {

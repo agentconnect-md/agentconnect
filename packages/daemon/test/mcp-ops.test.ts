@@ -1495,6 +1495,32 @@ describe('executeTool: submitGithubReview', () => {
     ).rejects.toThrow(/positive integer/)
     expect(submitGithubReview).not.toHaveBeenCalled()
   })
+
+  // A malformed entry must name its own INDEX — that is the whole repair instruction for a
+  // model holding a long batch, so the number has to survive the argument-schema plumbing.
+  it.each([
+    {
+      tool: 'submitGithubReview',
+      args: {
+        event: 'COMMENT',
+        verdict: 'neutral',
+        body: 'note',
+        comments: [{ path: 'x.ts', body: 'b', line: 1, side: 'LEFT' }, 'nope']
+      },
+      expected: 'comments[1] must be an object'
+    },
+    {
+      tool: 'replyGithubReviewThreads',
+      args: { replies: [{ threadRootCommentId: '1', body: 'ok' }, 7] },
+      expected: 'replies[1] must be an object'
+    },
+    { tool: 'startOrchestration', args: { subtasks: ['nope'] }, expected: 'subtasks[0] must be an object' }
+  ])('$tool names the offending entry by index', async ({ tool, args, expected }) => {
+    const { deps: d } = deps(fakeGateway())
+    d.submitGithubReview = vi.fn()
+    d.replyGithubReviewThreads = vi.fn()
+    await expect(executeTool(ctx, tool, args, d)).rejects.toThrow(expected)
+  })
 })
 
 describe('executeTool: replyGithubReviewThreads', () => {
