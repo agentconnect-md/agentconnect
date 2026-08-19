@@ -1,5 +1,5 @@
 import type { SessionUpdate } from '@agentclientprotocol/sdk'
-import { splitIntoSections } from '../slack/formatter.js'
+import { splitIntoSections } from '../messages/split-sections.js'
 import { splitAtParagraphBoundary } from '../messages/stream-boundary.js'
 import { isNoResponseBody, isNoResponsePrefix } from '../session/no-response.js'
 
