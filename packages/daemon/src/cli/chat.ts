@@ -184,7 +184,7 @@ export async function runChat(opts: RunChatOpts): Promise<void> {
       [],
       undefined,
       undefined,
-      workspaces.additionalWorkspaceDirectories(agent, cwd)
+      await workspaces.additionalWorkspaceDirectories(agent, cwd)
     )
 
     const send = async (text: string) => {

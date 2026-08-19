@@ -6218,8 +6218,8 @@ export class Daemon {
       cleanupSessionWorktree: (rec) => this.cleanupSessionWorktree(rec),
       prepareAgentWorkspace: (agent, expectedWarmHost, request) =>
         this.prepareAgentWorkspace(agent, expectedWarmHost, request),
-      sessionHasReferenceDirectories: (agent, request) =>
-        this.workspaces.sessionAdditionalRoots(agent, request).length > 0,
+      sessionHasReferenceDirectories: async (agent, request) =>
+        (await this.workspaces.sessionAdditionalRoots(agent, request)).length > 0,
       warmHostFor: (agentId) => (this.readyHosts.has(agentId) ? this.hosts.get(agentId) : undefined),
       anchorTrigger: (agentId, msg, target, anchorText, label, safetyGithubLane) =>
         this.anchorTrigger(agentId, msg, target, anchorText, label, safetyGithubLane),
@@ -12433,8 +12433,9 @@ export class Daemon {
     if (await this.sessionRetentionActive(rec)) return { outcome: 'active' }
     const agent = this.agents.get(rec.agentId)
     // A scratch agent has no primary worktree but may still own one per secondary root, so the
-    // gate is "any root that can hold one" rather than "the primary is a repository".
-    if (!agent || rec.workspaceIsolation === 'shared' || !this.workspaces.hasSessionWorktreeRoots(agent)) {
+    // prefilter is "could this agent own one at all" rather than "the primary is a repository" —
+    // and it is answered from the spec, because the disk that holds the roots is not bound yet.
+    if (!agent || rec.workspaceIsolation === 'shared' || !this.workspaces.mayOwnSessionWorktrees(agent)) {
       return { outcome: 'not_applicable' }
     }
     return this.withWorkspaceAdmissionFence(rec.agentId, async () => {
@@ -12445,15 +12446,22 @@ export class Daemon {
       if (
         !currentAgent ||
         rec.workspaceIsolation === 'shared' ||
-        !this.workspaces.hasSessionWorktreeRoots(currentAgent)
+        !this.workspaces.mayOwnSessionWorktrees(currentAgent)
       ) {
         return { outcome: 'not_applicable' }
       }
-      // The volume has to be up and bound for the removal, as it was for the preparation. A pod that
-      // will not come up is THIS session's failure, never the whole sweep's — it retries next pass.
-      const result = await this.withAgentVolume(rec.agentId, () =>
-        this.workspaces.removeSessionWorktree(currentAgent, rec.key)
+      // The volume has to be up and bound for the removal, as it was for the preparation — and for
+      // the question of WHICH roots exist, which is asked of the filesystem that holds them: on a
+      // suspended sandbox this daemon's own disk would answer "none" for a scratch agent whose pod
+      // volume carries secondary worktrees, and the session row would be deleted without them ever
+      // being judged. A pod that will not come up is THIS session's failure, never the whole
+      // sweep's — it retries next pass.
+      const result = await this.withAgentVolume(rec.agentId, async () =>
+        (await this.workspaces.hasSessionWorktreeRoots(currentAgent))
+          ? await this.workspaces.removeSessionWorktree(currentAgent, rec.key)
+          : undefined
       ).catch((err: unknown): SessionWorktreeRemoval => ({ outcome: 'failed', error: (err as Error).message }))
+      if (result === undefined) return { outcome: 'not_applicable' }
       // `partial` too: a kept aggregate can still have removed another root's worktree, and a warm
       // attachment naming a directory that is gone would skip preparation on its next turn.
       const changed = result.outcome === 'removed' || result.outcome === 'absent' || result.partial === true
@@ -12570,8 +12578,6 @@ export class Daemon {
    * awaited Git operations cannot have started against a root this pass is about to remove.
    */
   private async sweepRetiredWorkspaceRoots(): Promise<void> {
-    // Cluster daemons keep one checkout on a pod volume; there is no `repos/` subtree on this disk.
-    if (this.workspaces.sandboxMode) return
     let removed = 0
     let active = 0
     const retained: string[] = []
@@ -12579,7 +12585,16 @@ export class Daemon {
     for (const agent of [...this.agents.values()]) {
       if (this.draining) break
       if (!this.servesAgent(agent.id)) continue
-      const pending = this.workspaces.retiredSecondaryRoots(agent)
+      // On a cluster the subtrees are on the pod's volume, so an agent whose sandbox is not already
+      // bound is skipped: retiring a root is never worth waking a suspended pod, and the next pass
+      // that finds one bound sweeps it.
+      if (this.workspaces.sandboxMode && this.workspaces.sandboxMountFor(agent.id) === undefined) continue
+      const pending = await this.withAgentVolume(agent.id, () => this.workspaces.retiredSecondaryRoots(agent)).catch(
+        (err: unknown) => {
+          failures.push((err as Error).message)
+          return []
+        }
+      )
       if (pending.length === 0) continue
       if (await this.agentWorkspaceActive(agent.id)) {
         active += pending.length
@@ -12589,13 +12604,20 @@ export class Daemon {
         if (await this.agentWorkspaceActive(agent.id)) return undefined
         const current = this.agents.get(agent.id)
         if (!current) return undefined
-        // Re-listed inside the fence: the spec may have re-authorized a repository while this pass
-        // waited for the queue, which un-retires its root in place.
-        const results: RetiredRootRemoval[] = []
-        for (const root of this.workspaces.retiredSecondaryRoots(current)) {
-          results.push(await this.workspaces.removeRetiredSecondaryRoot(current, root))
-        }
-        return results
+        // The volume has to be up and bound for the removal, as it was for the preparation.
+        return await this.withAgentVolume(agent.id, async () => {
+          // Re-listed inside the fence: the spec may have re-authorized a repository while this pass
+          // waited for the queue, which un-retires its root in place.
+          const results: RetiredRootRemoval[] = []
+          for (const root of await this.workspaces.retiredSecondaryRoots(current)) {
+            results.push(await this.workspaces.removeRetiredSecondaryRoot(current, root))
+          }
+          return results
+        })
+      }).catch((err: unknown): RetiredRootRemoval[] => {
+        // A pod that will not come up is THIS agent's failure, never the whole sweep's.
+        failures.push((err as Error).message)
+        return []
       })
       if (outcomes === undefined) {
         active += pending.length

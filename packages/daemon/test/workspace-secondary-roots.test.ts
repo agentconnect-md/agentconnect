@@ -301,11 +301,11 @@ describe('secondary root materialization', () => {
       repoFullName: 'example-co/shared-library',
       branch: 'release/v2'
     })
-    expect(workspaces.readySecondaryRoots(agent).map((root) => [root.repoFullName, root.branch])).toEqual([
+    expect((await workspaces.readySecondaryRoots(agent)).map((root) => [root.repoFullName, root.branch])).toEqual([
       ['acme/infra', 'trunk'],
       ['example-co/shared-library', 'release/v2']
     ])
-    expect(workspaces.additionalWorkspaceDirectories(agent, cwd)).toEqual([
+    expect(await workspaces.additionalWorkspaceDirectories(agent, cwd)).toEqual([
       realpathSync(join(home, 'repos', 'acme', 'infra', 'checkout')),
       realpathSync(join(home, 'repos', 'example-co', 'shared-library', 'checkout'))
     ])
@@ -325,7 +325,7 @@ describe('secondary root materialization', () => {
 
     expect(existsSync(join(checkout, 'local-note.txt'))).toBe(true)
     expect(git(checkout, ['remote', 'get-url', 'origin']).trim()).toBe('https://github.com/acme/infra')
-    expect(workspaces.readySecondaryRoots(agent).map((root) => root.repoFullName)).toEqual(['acme/infra'])
+    expect((await workspaces.readySecondaryRoots(agent)).map((root) => root.repoFullName)).toEqual(['acme/infra'])
   })
 
   it('publishes the clone only after its attestation, so a checkout is never left unattributable', async () => {
@@ -353,7 +353,7 @@ describe('secondary root materialization', () => {
 
     await workspaces.prepareWorkspace(agent)
 
-    expect(workspaces.readySecondaryRoots(agent)).toEqual([])
+    expect(await workspaces.readySecondaryRoots(agent)).toEqual([])
     expect(existsSync(join(subtree, '.materialization.json'))).toBe(false)
     expect(existsSync(join(subtree, 'checkout', '.git'))).toBe(true)
   })
@@ -367,7 +367,7 @@ describe('secondary root materialization', () => {
 
     await workspaces.prepareWorkspace(agent)
 
-    expect(workspaces.readySecondaryRoots(agent).map((root) => root.repoFullName)).toEqual(['acme/infra'])
+    expect((await workspaces.readySecondaryRoots(agent)).map((root) => root.repoFullName)).toEqual(['acme/infra'])
     expect(existsSync(join(subtree, 'checkout.clone-8a1f9c02-0000-4000-8000-000000000000', 'partial.txt'))).toBe(true)
   })
 
@@ -382,8 +382,8 @@ describe('secondary root materialization', () => {
 
     const cwd = await workspaces.prepareWorkspace(agent)
 
-    expect(workspaces.readySecondaryRoots(agent)).toEqual([])
-    expect(workspaces.additionalWorkspaceDirectories(agent, cwd)).toEqual([])
+    expect(await workspaces.readySecondaryRoots(agent)).toEqual([])
+    expect(await workspaces.additionalWorkspaceDirectories(agent, cwd)).toEqual([])
     // Retirement, never deletion (decision 12): the checkout is left exactly where it was.
     expect(existsSync(join(subtree, 'checkout', '.git'))).toBe(true)
     expect(readdirSync(subtree).sort()).toEqual(['.materialization.json', 'checkout'])
@@ -400,7 +400,7 @@ describe('secondary root materialization', () => {
     const cwd = await workspaces.prepareWorkspace(agent)
 
     expect(cwd).toBe(realpathSync(agent.workspace.path))
-    expect(workspaces.readySecondaryRoots(agent).map((root) => root.repoFullName)).toEqual(['acme/infra'])
+    expect((await workspaces.readySecondaryRoots(agent)).map((root) => root.repoFullName)).toEqual(['acme/infra'])
     expect(
       existsSync(join(workspaces.agentRootFor(agent), 'repos', 'example-co', 'shared-library', 'checkout', '.git'))
     ).toBe(false)
@@ -413,7 +413,7 @@ describe('secondary root materialization', () => {
     const [first, second] = await Promise.all([workspaces.prepareWorkspace(agent), workspaces.prepareWorkspace(agent)])
 
     expect(second).toBe(first)
-    expect(workspaces.readySecondaryRoots(agent).map((root) => root.repoFullName)).toEqual(['acme/infra'])
+    expect((await workspaces.readySecondaryRoots(agent)).map((root) => root.repoFullName)).toEqual(['acme/infra'])
   })
 })
 
@@ -424,8 +424,8 @@ describe('submodule roots (decision 11)', () => {
 
     const cwd = await workspaces.prepareWorkspace(agent)
 
-    expect(workspaces.readySecondaryRoots(agent)).toEqual([])
-    expect(workspaces.additionalWorkspaceDirectories(agent, cwd)).toEqual([])
+    expect(await workspaces.readySecondaryRoots(agent)).toEqual([])
+    expect(await workspaces.additionalWorkspaceDirectories(agent, cwd)).toEqual([])
     // Not handed out AND not cloned: the parent's own submodule path is where it is reachable.
     expect(existsSync(join(workspaces.agentRootFor(agent), 'repos', 'acme', 'infra', 'checkout'))).toBe(false)
   })
@@ -444,7 +444,7 @@ describe('submodule roots (decision 11)', () => {
 
     await workspaces.prepareWorkspace(agent)
 
-    expect(workspaces.readySecondaryRoots(agent).map((root) => root.repoFullName)).toEqual(['acme/infra'])
+    expect((await workspaces.readySecondaryRoots(agent)).map((root) => root.repoFullName)).toEqual(['acme/infra'])
     expect(existsSync(join(workspaces.agentRootFor(agent), 'repos', 'example-co', 'shared-library', 'checkout'))).toBe(
       false
     )
@@ -469,7 +469,7 @@ describe('additionalWorkspaceDirectories with secondary roots', () => {
     const cwd = await workspaces.prepareWorkspace(agent)
 
     expect(cwd).toBe(realpathSync(join(agent.workspace.path, 'services', 'api')))
-    expect(workspaces.additionalWorkspaceDirectories(agent, cwd)).toEqual([
+    expect(await workspaces.additionalWorkspaceDirectories(agent, cwd)).toEqual([
       realpathSync(agent.workspace.path),
       realpathSync(join(workspaces.agentRootFor(agent), 'repos', 'acme', 'infra', 'checkout'))
     ])
@@ -490,7 +490,7 @@ describe('additionalWorkspaceDirectories with secondary roots', () => {
     const subtree = (repoFullName: string) => join(workspaces.agentRootFor(agent), 'repos', ...repoFullName.split('/'))
     const worktree = (repoFullName: string) => join(subtree(repoFullName), 'worktrees', id)
     expect(cwd).toBe(realpathSync(workspaces.sessionWorktreePath(agent, 'session-a')))
-    expect(workspaces.additionalWorkspaceDirectories(agent, cwd, request)).toEqual([
+    expect(await workspaces.additionalWorkspaceDirectories(agent, cwd, request)).toEqual([
       realpathSync(worktree('acme/infra')),
       realpathSync(worktree('example-co/shared-library'))
     ])
@@ -499,12 +499,12 @@ describe('additionalWorkspaceDirectories with secondary roots', () => {
     expect(git(worktree('acme/infra'), ['rev-parse', 'HEAD']).trim()).toBe(
       git(join(subtree('acme/infra'), 'checkout'), ['rev-parse', 'refs/remotes/origin/trunk']).trim()
     )
-    expect(workspaces.readySecondaryRoots(agent, request).map((root) => [root.path, root.branch])).toEqual([
+    expect((await workspaces.readySecondaryRoots(agent, request)).map((root) => [root.path, root.branch])).toEqual([
       [realpathSync(worktree('acme/infra')), 'trunk'],
       [realpathSync(worktree('example-co/shared-library')), 'release/v2']
     ])
     // The shared view of the same prepared set still names the checkouts.
-    expect(workspaces.readySecondaryRoots(agent, { isolation: 'shared' }).map((root) => root.path)).toEqual([
+    expect((await workspaces.readySecondaryRoots(agent, { isolation: 'shared' })).map((root) => root.path)).toEqual([
       realpathSync(join(workspaces.agentRootFor(agent), 'repos', 'acme', 'infra', 'checkout')),
       realpathSync(join(workspaces.agentRootFor(agent), 'repos', 'example-co', 'shared-library', 'checkout'))
     ])
@@ -527,7 +527,7 @@ describe('additionalWorkspaceDirectories with secondary roots', () => {
       workspaces.sessionWorktreeId('session-a')
     )
     expect(existsSync(join(worktree, '.git'))).toBe(true)
-    expect(workspaces.additionalWorkspaceDirectories(agent, cwd, request)).toEqual([realpathSync(worktree)])
+    expect(await workspaces.additionalWorkspaceDirectories(agent, cwd, request)).toEqual([realpathSync(worktree)])
   })
 
   it('omits a root whose session worktree cannot be created and still prepares the session', async () => {
@@ -545,7 +545,7 @@ describe('additionalWorkspaceDirectories with secondary roots', () => {
 
     const cwd = await workspaces.prepareSessionWorkspace(agent, request)
 
-    expect(workspaces.additionalWorkspaceDirectories(agent, cwd, request)).toEqual([
+    expect(await workspaces.additionalWorkspaceDirectories(agent, cwd, request)).toEqual([
       realpathSync(
         join(
           workspaces.agentRootFor(agent),
@@ -565,19 +565,9 @@ describe('additionalWorkspaceDirectories with secondary roots', () => {
 
     const cwd = await workspaces.prepareWorkspace(agent)
 
-    expect(workspaces.additionalWorkspaceDirectories(agent, cwd)).toEqual([
+    expect(await workspaces.additionalWorkspaceDirectories(agent, cwd)).toEqual([
       realpathSync(join(workspaces.agentRootFor(agent), 'repos', 'acme', 'infra', 'checkout'))
     ])
-  })
-
-  it('prepares and hands out nothing when workspaces live in sandboxes', async () => {
-    const agent = agentFixture([{ repoFullName: 'acme/infra', repoId: '42' }])
-    serveAll(agent, { 'acme/infra': 'trunk' })
-    workspaces.setSandboxMode(true)
-
-    expect(await workspaces.prepareSecondaryRoots(agent)).toEqual([])
-    expect(workspaces.readySecondaryRoots(agent)).toEqual([])
-    expect(existsSync(join(workspaces.agentRootFor(agent), 'repos'))).toBe(false)
   })
 })
 
@@ -677,22 +667,25 @@ describe('review of a secondary root (decisions 5, 6 and 11)', () => {
     // The primary and the other secondary ride along, each at its own default branch.
     const primaryWorktree = realpathSync(workspaces.sessionWorktreePath(agent, 'session-review'))
     const shared = realpathSync(worktreeOf(agent, 'example-co/shared-library', 'session-review'))
-    expect(workspaces.additionalWorkspaceDirectories(agent, cwd, request)).toEqual([primaryWorktree, shared])
+    expect(await workspaces.additionalWorkspaceDirectories(agent, cwd, request)).toEqual([primaryWorktree, shared])
     // And the same answer without the request naming the review, which is how a session's later
     // hand-outs ask: the reviewed root's own subtree attests that it took the cwd.
     expect(
-      workspaces.additionalWorkspaceDirectories(agent, cwd, { sessionKey: 'session-review', isolation: 'session' })
+      await workspaces.additionalWorkspaceDirectories(agent, cwd, {
+        sessionKey: 'session-review',
+        isolation: 'session'
+      })
     ).toEqual([primaryWorktree, shared])
     expect(
-      workspaces
-        .sessionAdditionalRoots(agent, { sessionKey: 'session-review', isolation: 'session' })
-        .map((root) => [root.repoFullName, root.branch])
+      (await workspaces.sessionAdditionalRoots(agent, { sessionKey: 'session-review', isolation: 'session' })).map(
+        (root) => [root.repoFullName, root.branch]
+      )
     ).toEqual([
       ['acme/primary-service', 'main'],
       ['example-co/shared-library', 'main']
     ])
     // The reviewed root is the working directory, so it is nobody's additional directory.
-    expect(workspaces.readySecondaryRoots(agent, request).map((root) => root.repoFullName)).toEqual([
+    expect((await workspaces.readySecondaryRoots(agent, request)).map((root) => root.repoFullName)).toEqual([
       'example-co/shared-library'
     ])
     expect(git(primaryWorktree, ['rev-parse', 'HEAD']).trim()).toBe(
@@ -720,7 +713,7 @@ describe('review of a secondary root (decisions 5, 6 and 11)', () => {
 
     expect(resumedCwd).toBe(cwd)
     expect(git(resumedCwd, ['rev-parse', 'HEAD']).trim()).toBe(pull.merge)
-    expect(restarted.additionalWorkspaceDirectories(agent, resumedCwd, resumed)).toEqual([
+    expect(await restarted.additionalWorkspaceDirectories(agent, resumedCwd, resumed)).toEqual([
       realpathSync(restarted.sessionWorktreePath(agent, 'session-resume')),
       realpathSync(worktreeOf(agent, 'example-co/shared-library', 'session-resume'))
     ])
@@ -767,9 +760,12 @@ describe('review of a secondary root (decisions 5, 6 and 11)', () => {
     expect(cwd).toBe(realpathSync(workspaces.sessionWorktreePath(agent, 'session-degraded')))
     // No root still claims the working directory, so the fallback cwd is accepted rather than
     // measured against a checkout the session no longer stands in.
-    expect(() =>
-      workspaces.additionalWorkspaceDirectories(agent, cwd, { sessionKey: 'session-degraded', isolation: 'session' })
-    ).not.toThrow()
+    await expect(
+      workspaces.additionalWorkspaceDirectories(agent, cwd, {
+        sessionKey: 'session-degraded',
+        isolation: 'session'
+      })
+    ).resolves.toBeDefined()
   })
 
   it('lets a swept session fall back to the primary, so a stale attestation captures nothing', async () => {
@@ -804,7 +800,7 @@ describe('review of a secondary root (decisions 5, 6 and 11)', () => {
     serveAll(agent, { 'acme/infra': 'trunk' }, { primary: gitmodulesFor('acme/infra') })
     const ordinary = { sessionKey: 'session-plain', isolation: 'session' as const }
     const ordinaryCwd = await workspaces.prepareSessionWorkspace(agent, ordinary)
-    expect(workspaces.additionalWorkspaceDirectories(agent, ordinaryCwd, ordinary)).toEqual([])
+    expect(await workspaces.additionalWorkspaceDirectories(agent, ordinaryCwd, ordinary)).toEqual([])
     restoreAuthorizedOrigins(agent)
     const pull = seedPullRequest(remoteOf('acme/infra'), 'trunk', 4)
 
@@ -814,8 +810,8 @@ describe('review of a secondary root (decisions 5, 6 and 11)', () => {
     expect(git(cwd, ['rev-parse', 'HEAD']).trim()).toBe(pull.merge)
     // Its own review gets the exact checkout; an ordinary session still reaches it only through the
     // parent's submodule path, so it is handed to nobody as an additional directory.
-    expect(workspaces.readySecondaryRoots(agent)).toEqual([])
-    expect(workspaces.additionalWorkspaceDirectories(agent, ordinaryCwd, ordinary)).toEqual([])
+    expect(await workspaces.readySecondaryRoots(agent)).toEqual([])
+    expect(await workspaces.additionalWorkspaceDirectories(agent, ordinaryCwd, ordinary)).toEqual([])
   })
 
   it('refuses a review of a repository this agent has no root for, leaving nothing behind', async () => {
@@ -832,19 +828,6 @@ describe('review of a secondary root (decisions 5, 6 and 11)', () => {
     expect(existsSync(workspaces.sessionWorktreePath(agent, 'session-unknown'))).toBe(false)
   })
 
-  it('refuses a secondary root’s review where workspaces live in sandboxes, leaving the fallback to the caller', async () => {
-    const agent = agentFixture([{ repoFullName: 'acme/infra', repoId: '42' }])
-    serveAll(agent, { 'acme/infra': 'trunk' })
-    workspaces.setSandboxMode(true)
-    const pull = { base: 'a'.repeat(40), head: 'b'.repeat(40) }
-
-    await expect(
-      workspaces.prepareSessionWorkspace(agent, reviewRequest('session-sandbox', 'acme/infra', 5, pull))
-    ).rejects.toThrow('needs a local workspace root')
-
-    expect(existsSync(join(workspaces.agentRootFor(agent), 'repos'))).toBe(false)
-  })
-
   it('keeps the primary the working directory when the review names it', async () => {
     const agent = agentFixture([{ repoFullName: 'acme/infra', repoId: '42' }])
     serveAll(agent, { 'acme/infra': 'trunk' })
@@ -858,7 +841,10 @@ describe('review of a secondary root (decisions 5, 6 and 11)', () => {
     expect(cwd).toBe(realpathSync(workspaces.sessionWorktreePath(agent, 'session-primary')))
     expect(git(cwd, ['rev-parse', 'HEAD']).trim()).toBe(pull.merge)
     expect(
-      workspaces.additionalWorkspaceDirectories(agent, cwd, { sessionKey: 'session-primary', isolation: 'session' })
+      await workspaces.additionalWorkspaceDirectories(agent, cwd, {
+        sessionKey: 'session-primary',
+        isolation: 'session'
+      })
     ).toEqual([realpathSync(worktreeOf(agent, 'acme/infra', 'session-primary'))])
   })
 
@@ -882,7 +868,10 @@ describe('review of a secondary root (decisions 5, 6 and 11)', () => {
     // A scratch workspace reports `shared` isolation of its own, having no clone to branch: a
     // session standing in a reviewed root is per-session whatever that report says.
     expect(
-      workspaces.additionalWorkspaceDirectories(agent, cwd, { sessionKey: 'session-scratch', isolation: 'shared' })
+      await workspaces.additionalWorkspaceDirectories(agent, cwd, {
+        sessionKey: 'session-scratch',
+        isolation: 'shared'
+      })
     ).toEqual([realpathSync(worktreeOf(agent, 'example-co/shared-library', 'session-scratch'))])
   })
 
@@ -967,7 +956,21 @@ describe('removeSessionWorktree across every root (decision 4)', () => {
     await workspaces.prepareSessionWorkspace(agent, { sessionKey: 'session-a', isolation: 'session' })
 
     expect(await workspaces.removeSessionWorktree(agent, 'session-a')).toEqual({ outcome: 'removed' })
-    expect(workspaces.hasSessionWorktreeRoots(agent)).toBe(true)
+    expect(await workspaces.hasSessionWorktreeRoots(agent)).toBe(true)
+  })
+
+  it('keeps a scratch agent in scope once its last row is gone, because the root only retired', () => {
+    // The prefilter the retention GC applies before it binds anything. A retired root keeps its
+    // worktrees (decision 12), so the rows alone would let this session's worktree be purged
+    // without the dirty/unique-commit rules ever running against it.
+    const agent = agentFixture([{ repoFullName: 'acme/infra', repoId: '42' }], { mode: 'from-scratch' })
+    serveAll(agent, { 'acme/infra': 'trunk' })
+    mkdirSync(join(workspaces.agentRootFor(agent), 'repos', 'acme', 'infra', 'checkout'), { recursive: true })
+    const retired = { ...agent, workspace: { ...agent.workspace, additionalRepos: [] } } as Agent
+
+    expect(workspaces.mayOwnSessionWorktrees(retired)).toBe(true)
+    // A scratch agent that never had one is out of scope, and takes no admission fence for nothing.
+    expect(workspaces.mayOwnSessionWorktrees(agentFixture([], { mode: 'from-scratch' }))).toBe(false)
   })
 
   it('reports absent when no root has a worktree for the session', async () => {
@@ -995,12 +998,12 @@ describe('retire → sweep → remove (decision 12)', () => {
     restoreAuthorizedOrigins(agent)
 
     const after = reauthorized(agent, [{ repoFullName: 'acme/infra', repoId: '42' }])
-    expect(workspaces.retiredSecondaryRoots(after).map((root) => root.repoFullName)).toEqual([
+    expect((await workspaces.retiredSecondaryRoots(after)).map((root) => root.repoFullName)).toEqual([
       'example-co/shared-library'
     ])
     // Retirement alone removes nothing, and it drops out of the hand-out at once.
     await workspaces.prepareWorkspace(after)
-    expect(workspaces.readySecondaryRoots(after).map((root) => root.repoFullName)).toEqual(['acme/infra'])
+    expect((await workspaces.readySecondaryRoots(after)).map((root) => root.repoFullName)).toEqual(['acme/infra'])
     expect(
       existsSync(join(workspaces.agentRootFor(agent), 'repos', 'example-co', 'shared-library', 'checkout', '.git'))
     ).toBe(true)
@@ -1013,9 +1016,9 @@ describe('retire → sweep → remove (decision 12)', () => {
 
     // Same repository id, new slug: the old directory is retired while the new one materializes.
     const renamed = reauthorized(agent, [{ repoFullName: 'acme/infrastructure', repoId: '42' }])
-    expect(workspaces.retiredSecondaryRoots(renamed).map((root) => root.repoFullName)).toEqual(['acme/infra'])
+    expect((await workspaces.retiredSecondaryRoots(renamed)).map((root) => root.repoFullName)).toEqual(['acme/infra'])
     // Re-authorizing the original slug un-retires it with nothing on disk having changed.
-    expect(workspaces.retiredSecondaryRoots(agent)).toEqual([])
+    expect(await workspaces.retiredSecondaryRoots(agent)).toEqual([])
   })
 
   it('leaves a subtree with no attestation alone rather than retiring it', async () => {
@@ -1024,7 +1027,7 @@ describe('retire → sweep → remove (decision 12)', () => {
     await workspaces.prepareWorkspace(agent)
     rmSync(join(workspaces.agentRootFor(agent), 'repos', 'acme', 'infra', '.materialization.json'))
 
-    expect(workspaces.retiredSecondaryRoots(reauthorized(agent, []))).toEqual([])
+    expect(await workspaces.retiredSecondaryRoots(reauthorized(agent, []))).toEqual([])
   })
 
   it('refuses a retired root while any worktree of it survives, and removes it once none does', async () => {
@@ -1032,7 +1035,7 @@ describe('retire → sweep → remove (decision 12)', () => {
     serveAll(agent, { 'acme/infra': 'trunk' })
     await workspaces.prepareSessionWorkspace(agent, { sessionKey: 'session-a', isolation: 'session' })
     const after = reauthorized(agent, [])
-    const [retired] = workspaces.retiredSecondaryRoots(after)
+    const [retired] = await workspaces.retiredSecondaryRoots(after)
 
     expect(await workspaces.removeRetiredSecondaryRoot(after, retired!)).toEqual({
       outcome: 'retained',
@@ -1051,7 +1054,7 @@ describe('retire → sweep → remove (decision 12)', () => {
     await workspaces.prepareWorkspace(agent)
     restoreAuthorizedOrigins(agent)
     const after = reauthorized(agent, [])
-    const [retired] = workspaces.retiredSecondaryRoots(after)
+    const [retired] = await workspaces.retiredSecondaryRoots(after)
     writeFileSync(join(retired!.path, 'unsaved.txt'), 'work\n')
 
     expect(await workspaces.removeRetiredSecondaryRoot(after, retired!)).toEqual({
@@ -1074,7 +1077,7 @@ describe('retire → sweep → remove (decision 12)', () => {
     await workspaces.prepareWorkspace(agent)
     restoreAuthorizedOrigins(agent)
     const after = reauthorized(agent, [])
-    const [retired] = workspaces.retiredSecondaryRoots(after)
+    const [retired] = await workspaces.retiredSecondaryRoots(after)
     // Removing the clone destroys its whole object store, so what the CHECKED-OUT branch can reach
     // does not speak for the work: a side branch and a stash are both invisible from `trunk`.
     git(retired!.path, ['checkout', '-q', '-b', 'side'])
@@ -1107,7 +1110,7 @@ describe('retire → sweep → remove (decision 12)', () => {
     serveAll(agent, { 'acme/infra': 'trunk' })
     await workspaces.prepareWorkspace(agent)
     const after = reauthorized(agent, [])
-    const [retired] = workspaces.retiredSecondaryRoots(after)
+    const [retired] = await workspaces.retiredSecondaryRoots(after)
     // A subtree that is itself a symlink is refused, so removal can never reach what it points at.
     const elsewhere = tempRoot('ac-secondary-outside-')
     writeFileSync(join(elsewhere, 'precious.txt'), 'not ours\n')
@@ -1119,7 +1122,7 @@ describe('retire → sweep → remove (decision 12)', () => {
     expect(result.outcome).toBe('failed')
     expect(existsSync(join(elsewhere, 'precious.txt'))).toBe(true)
     // And a symlinked subtree is not even listed as a candidate on the next pass.
-    expect(workspaces.retiredSecondaryRoots(after)).toEqual([])
+    expect(await workspaces.retiredSecondaryRoots(after)).toEqual([])
   })
 })
 

@@ -1,5 +1,6 @@
 import { lstatSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
+import type { WorkspaceFs } from './workspace-fs.js'
 
 // The on-disk shape of an agent's secondary roots (multi-repository-workspaces.md §"Directory
 // layout"), separate from the manager so the launch path can read it without the whole workspace
@@ -61,6 +62,51 @@ export function secondarySubtreesIn(agentRoot: string): SecondarySubtree[] {
     }
   }
   return out
+}
+
+/**
+ * The same subtrees under one parent, read through a workspace filesystem rather than `node:fs`.
+ *
+ * `parent` is already in that filesystem's coordinates — `<agentRoot>/repos` on this disk,
+ * `<mount>/repos` on a sandbox volume — and `stat` never follows a symlink, so an entry that is not
+ * a real directory is skipped exactly as the synchronous twin above skips it. Unlike that twin it
+ * RAISES when the filesystem cannot answer (see {@link realDirEntriesUnder}). The twin stays for the
+ * launch path, which computes a sandbox boundary before any agent seam exists, and where an
+ * unreadable directory means one less carve-back rather than one less safety check.
+ */
+export async function secondarySubtreesUnder(fs: WorkspaceFs, parent: string): Promise<SecondarySubtree[]> {
+  const out: SecondarySubtree[] = []
+  for (const owner of await realDirEntriesUnder(fs, parent)) {
+    for (const repo of await realDirEntriesUnder(fs, join(parent, owner))) {
+      const subtree = join(parent, owner, repo)
+      out.push({
+        repoFullName: `${owner}/${repo}`,
+        subtree,
+        path: join(subtree, 'checkout'),
+        worktreesPath: join(subtree, 'worktrees')
+      })
+    }
+  }
+  return out
+}
+
+/**
+ * {@link realDirEntries} over a workspace filesystem.
+ *
+ * Absence is data and raises nothing; a filesystem that could not ANSWER is not, and must not read
+ * as an empty tree. An empty answer here licenses resuming a cross-repository session in the primary
+ * checkout and licenses judging only the primary worktree, so a dropped shim channel — or a
+ * directory this process cannot list — has to abort the operation instead.
+ */
+async function realDirEntriesUnder(fs: WorkspaceFs, dir: string): Promise<string[]> {
+  if ((await fs.stat(dir)) !== 'dir') return []
+  const names: string[] = []
+  for (const name of await fs.readdir(dir)) {
+    if (!isRepoSegment(name)) continue
+    if ((await fs.stat(join(dir, name))) !== 'dir') continue
+    names.push(name)
+  }
+  return names.sort()
 }
 
 /** The materialized secondary checkouts under `<agentRoot>/repos`, for callers that only need those. */

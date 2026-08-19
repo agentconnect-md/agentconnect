@@ -2069,6 +2069,14 @@ describe('Daemon CP drain (#109)', () => {
 })
 
 describe('Daemon session retention GC (#485)', () => {
+  // `start()` fires its own retention pass, and the sweep drops a call that lands while one is
+  // running — so a test that just called it could assert against a pass that judged the clock it
+  // had before the advance. Wait the startup pass out, then sweep for real.
+  const sweepRetention = async (daemon: Daemon) => {
+    while ((daemon as any).sessionRetentionSweepInFlight) await new Promise((resolve) => setTimeout(resolve, 5))
+    await (daemon as any).sweepSessionRetention()
+  }
+
   const seedSession = async (daemon: Daemon, key: string, state: 'idle' | 'prompting' | 'closed', updatedAt: number) =>
     await (daemon as any).store.upsertSession({
       key,
@@ -2123,7 +2131,7 @@ describe('Daemon session retention GC (#485)', () => {
     await seedSession(daemon, 'expired-closed', 'closed', 0)
 
     clock.advance(8 * 24 * 3_600_000)
-    await (daemon as any).sweepSessionRetention()
+    await sweepRetention(daemon)
     expect(await (daemon as any).store.getSession('expired-closed')).toBeDefined()
 
     await daemon.stop()
@@ -2144,7 +2152,7 @@ describe('Daemon session retention GC (#485)', () => {
     await seedSession(daemon, 'expired-a', 'closed', 0)
     await seedSession(daemon, 'expired-b', 'idle', 0)
     clock.advance(8 * 24 * 3_600_000)
-    await (daemon as any).sweepSessionRetention()
+    await sweepRetention(daemon)
     await vi.waitFor(() => expect(emitSessionPurged).toHaveBeenCalledOnce(), WAIT)
 
     // One frame per agent, carrying the ACP session ids — the only session
@@ -2213,7 +2221,7 @@ describe('Daemon session retention GC (#485)', () => {
 
     await seedSession(daemon, 'expired-a', 'closed', 0)
     clock.advance(8 * 24 * 3_600_000)
-    await (daemon as any).sweepSessionRetention()
+    await sweepRetention(daemon)
 
     // Not even attempted: the receipt is durable and the reconnect drains it, so a
     // request here would only log a failure on every sweep of a local-only daemon.
@@ -2242,7 +2250,7 @@ describe('Daemon session retention GC (#485)', () => {
 
     await seedSession(daemon, 'expired-a', 'closed', 0)
     clock.advance(8 * 24 * 3_600_000)
-    await (daemon as any).sweepSessionRetention()
+    await sweepRetention(daemon)
     await (daemon as any).drainSessionPurges()
 
     expect(await (daemon as any).store.listSessionPurges(10, 0)).toMatchObject([
@@ -2282,7 +2290,7 @@ describe('Daemon session retention GC (#485)', () => {
     })
 
     clock.advance(8 * 24 * 3_600_000)
-    await (daemon as any).sweepSessionRetention()
+    await sweepRetention(daemon)
     expect(await (daemon as any).store.getSession('expired-queued')).toBeDefined()
 
     await daemon.stop()

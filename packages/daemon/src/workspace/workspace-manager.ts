@@ -1,7 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import {
   existsSync,
-  lstatSync,
   mkdirSync,
   readFileSync,
   readdirSync,
@@ -44,6 +43,7 @@ import {
   isRepoSegment,
   secondaryRootsDirIn,
   secondarySubtreesIn,
+  secondarySubtreesUnder,
   sessionCwdMarkerIn,
   SECONDARY_MATERIALIZATION_FILE,
   type SecondarySubtree
@@ -297,18 +297,40 @@ export class WorkspaceManager {
     }
   }
 
+  /** The primary checkout in one mount's coordinates — total, unlike {@link primaryRootAt}, so the
+   *  callers that only need the directory do not have to be about a repository. */
+  private primaryCheckoutAt(agent: Agent, mount: string | undefined): string {
+    return mount === undefined ? agent.workspace.path : this.clusterWorkspaceCheckout(agent, mount)
+  }
+
   /** The agent's own directory — the parent every daemon-owned subtree hangs off. */
   agentRootFor(agent: Agent): string {
     return (agent as { dir?: string }).dir ?? dirname(agent.workspace.path)
   }
 
-  /** `<agentRoot>/repos` — the parent every secondary root's subtree hangs off. */
+  /** `<agentRoot>/repos` — the parent every secondary root's subtree hangs off on THIS disk. */
   secondaryRootsDir(agent: Agent): string {
     return secondaryRootsDirIn(this.agentRootFor(agent))
   }
 
+  /** The same parent in one mount's coordinates: `<mount>/repos` on a pod volume, else this disk. */
+  private secondaryRootsDirAt(agent: Agent, mount: string | undefined): string {
+    return mount === undefined ? this.secondaryRootsDir(agent) : secondaryRootsDirIn(mount)
+  }
+
+  /** The agent's authorized additional repositories as roots, in the coordinates that hold them. */
+  private secondaryRootsFor(agent: Agent): SecondaryWorkspaceRoot[] {
+    return this.secondaryRootsAt(agent, this.sandboxMountFor(agent.id))
+  }
+
   /** The agent's authorized additional repositories as roots, sorted by name (design decision 1/8). */
   secondaryRoots(agent: Agent): SecondaryWorkspaceRoot[] {
+    return this.secondaryRootsAt(agent, undefined)
+  }
+
+  /** The same roots addressed in one sandbox mount's coordinates, mirroring {@link primaryRootAt}. */
+  secondaryRootsAt(agent: Agent, mount: string | undefined): SecondaryWorkspaceRoot[] {
+    const parent = this.secondaryRootsDirAt(agent, mount)
     const roots: SecondaryWorkspaceRoot[] = []
     for (const row of agent.workspace.additionalRepos ?? []) {
       const [owner, repo, ...rest] = row.repoFullName.split('/')
@@ -320,7 +342,7 @@ export class WorkspaceManager {
         continue
       }
       const repoFullName = `${owner}/${repo}`
-      const base = join(this.secondaryRootsDir(agent), owner, repo)
+      const base = join(parent, owner, repo)
       try {
         roots.push({
           repoFullName,
@@ -381,15 +403,8 @@ export class WorkspaceManager {
     const name = scope.reviewRepoFullName
     if (name === undefined) return undefined
     const wanted = repoKey(name)
-    const root = this.secondaryRoots(agent).find((entry) => repoKey(entry.repoFullName) === wanted)
-    if (root) {
-      // A sandboxed workspace materializes one checkout through the shim tunnel, so a secondary root
-      // has nowhere to live there — the review keeps the revision-only fallback, as it does today.
-      if (this.sandboxMode) {
-        throw new Error(`github review of ${root.repoFullName} needs a local workspace root (agent "${agent.id}")`)
-      }
-      return root
-    }
+    const root = this.secondaryRootsFor(agent).find((entry) => repoKey(entry.repoFullName) === wanted)
+    if (root) return root
     const primary = this.primaryRepoFullName(agent)
     if (primary !== undefined && repoKey(primary) === wanted) return undefined
     throw new Error(`github review repository "${name}" is not a workspace root of agent "${agent.id}"`)
@@ -405,11 +420,11 @@ export class WorkspaceManager {
    * out the checkout, `session` the worktree keyed by that session. A root whose worktree could not
    * be created contributes nothing to that session and is simply absent here.
    */
-  readySecondaryRoots(agent: Agent, request?: SessionRootScope): readonly ReadyWorkspaceRoot[] {
-    if (this.sandboxMode) return []
+  async readySecondaryRoots(agent: Agent, request?: SessionRootScope): Promise<readonly ReadyWorkspaceRoot[]> {
+    const fs = this.fsFor(agent.id)
     // The root a review made the cwd is not an additional directory of its own session.
-    const ready = this.sessionSecondaryRoots(agent, this.sessionCwdRepoFullName(agent, request))
-    const id = this.sessionWorktreeIdFor(agent, request)
+    const ready = this.sessionSecondaryRoots(agent, await this.sessionCwdRepoFullName(agent, request))
+    const id = await this.sessionWorktreeIdFor(agent, request)
     const roots: ReadyWorkspaceRoot[] = []
     for (const root of ready) {
       if (id === undefined) {
@@ -419,8 +434,12 @@ export class WorkspaceManager {
       const cwd = join(root.worktreesPath, id)
       // The `.git` marker is what `worktree add` writes, so its presence is the proof that this
       // root's per-session checkout exists rather than a directory a failed attempt left behind.
-      if (!existsSync(join(cwd, '.git'))) continue
-      roots.push({ path: realpathSync(cwd), repoFullName: root.repoFullName, branch: root.branch })
+      if ((await fs.stat(join(cwd, '.git'))) === 'missing') continue
+      roots.push({
+        path: this.canonicalWorkspacePath(agent.id, cwd),
+        repoFullName: root.repoFullName,
+        branch: root.branch
+      })
     }
     return roots
   }
@@ -433,21 +452,30 @@ export class WorkspaceManager {
    * session stands in the primary itself, where {@link additionalWorkspaceDirectories} widens an
    * `agentDir` cwd back to it instead.
    */
-  sessionAdditionalRoots(agent: Agent, request?: SessionRootScope): readonly ReadyWorkspaceRoot[] {
-    const primary = this.primaryReferenceRoot(agent, request)
-    const secondaries = this.readySecondaryRoots(agent, request)
+  async sessionAdditionalRoots(agent: Agent, request?: SessionRootScope): Promise<readonly ReadyWorkspaceRoot[]> {
+    const primary = await this.primaryReferenceRoot(agent, request)
+    const secondaries = await this.readySecondaryRoots(agent, request)
     return primary ? [primary, ...secondaries] : secondaries
   }
 
   /** The primary's own session directory, as a reference root beside a reviewed secondary's cwd. */
-  private primaryReferenceRoot(agent: Agent, request?: SessionRootScope): ReadyWorkspaceRoot | undefined {
-    if (this.sandboxMode || agent.workspace.mode !== 'git-repo' || !agent.workspace.gitRepo) return undefined
-    if (this.sessionCwdRepoFullName(agent, request) === undefined) return undefined
-    const path = this.sessionRootPath(agent, agent.workspace.path, this.worktreesPathFor(agent), request)
+  private async primaryReferenceRoot(
+    agent: Agent,
+    request?: SessionRootScope
+  ): Promise<ReadyWorkspaceRoot | undefined> {
+    if (agent.workspace.mode !== 'git-repo' || !agent.workspace.gitRepo) return undefined
+    if ((await this.sessionCwdRepoFullName(agent, request)) === undefined) return undefined
+    const mount = this.sandboxMountFor(agent.id)
+    const path = await this.sessionRootPath(
+      agent,
+      this.primaryCheckoutAt(agent, mount),
+      this.worktreesPathAt(agent, mount),
+      request
+    )
     // Same proof the secondaries answer to: a checkout the session did not get is not named here.
-    if (!existsSync(join(path, '.git'))) return undefined
+    if ((await this.fsFor(agent.id).stat(join(path, '.git'))) === 'missing') return undefined
     return {
-      path: realpathSync(path),
+      path: this.canonicalWorkspacePath(agent.id, path),
       repoFullName: gitRepoLabel(agent.workspace.gitRepo),
       branch: agent.workspace.gitBranch
     }
@@ -455,16 +483,23 @@ export class WorkspaceManager {
 
   /** One root's directory for a session: its per-session worktree, or the checkout itself when the
    *  session shares every root (decision 4). */
-  private sessionRootPath(agent: Agent, checkout: string, worktreesPath: string, request?: SessionRootScope): string {
-    const id = this.sessionWorktreeIdFor(agent, request)
+  private async sessionRootPath(
+    agent: Agent,
+    checkout: string,
+    worktreesPath: string,
+    request?: SessionRootScope
+  ): Promise<string> {
+    const id = await this.sessionWorktreeIdFor(agent, request)
     return id === undefined ? checkout : join(worktreesPath, id)
   }
 
   /** The id naming this session's worktrees, or undefined when it shares the roots' checkouts. A
    *  session whose cwd is a reviewed root is per-session by construction, whatever the caller says. */
-  private sessionWorktreeIdFor(agent: Agent, request?: SessionRootScope): string | undefined {
+  private async sessionWorktreeIdFor(agent: Agent, request?: SessionRootScope): Promise<string | undefined> {
     if (request?.sessionKey === undefined) return undefined
-    if (request.isolation !== 'session' && this.sessionCwdRepoFullName(agent, request) === undefined) return undefined
+    if (request.isolation !== 'session' && (await this.sessionCwdRepoFullName(agent, request)) === undefined) {
+      return undefined
+    }
     return this.sessionWorktreeId(request.sessionKey)
   }
 
@@ -475,10 +510,16 @@ export class WorkspaceManager {
   }
 
   /** The secondary root holding this session's cwd: named by the request, else attested on disk. */
-  private sessionCwdRepoFullName(agent: Agent, request?: SessionRootScope): string | undefined {
+  private async sessionCwdRepoFullName(agent: Agent, request?: SessionRootScope): Promise<string | undefined> {
     if (request?.reviewRepoFullName !== undefined) return request.reviewRepoFullName
     if (request?.sessionKey === undefined) return undefined
-    return this.sessionCwdSubtree(agent, request.sessionKey)?.repoFullName
+    return (await this.sessionCwdSubtree(agent, request.sessionKey))?.repoFullName
+  }
+
+  /** Every `repos/<owner>/<repo>` subtree the agent's own filesystem holds, in ITS coordinates. */
+  private async secondarySubtreesFor(agent: Agent): Promise<SecondarySubtree[]> {
+    const mount = this.sandboxMountFor(agent.id)
+    return await secondarySubtreesUnder(this.fsFor(agent.id), this.secondaryRootsDirAt(agent, mount))
   }
 
   /**
@@ -490,11 +531,15 @@ export class WorkspaceManager {
    * marker and that worktree must be present — a marker whose worktree the GC already took names
    * nothing, so a leftover cannot capture a later session that hashes to the same id.
    */
-  private sessionCwdSubtree(agent: Agent, sessionKey: string): SecondarySubtree | undefined {
+  private async sessionCwdSubtree(agent: Agent, sessionKey: string): Promise<SecondarySubtree | undefined> {
+    const fs = this.fsFor(agent.id)
     const id = this.sessionWorktreeId(sessionKey)
-    return secondarySubtreesIn(this.agentRootFor(agent)).find(
-      (entry) => existsSync(sessionCwdMarkerIn(entry.subtree, id)) && existsSync(join(entry.worktreesPath, id, '.git'))
-    )
+    for (const entry of await this.secondarySubtreesFor(agent)) {
+      if ((await fs.stat(sessionCwdMarkerIn(entry.subtree, id))) === 'missing') continue
+      if ((await fs.stat(join(entry.worktreesPath, id, '.git'))) === 'missing') continue
+      return entry
+    }
+    return undefined
   }
 
   /** Attest that this session's working directory is one root's worktree, or drop that attestation. */
@@ -522,16 +567,15 @@ export class WorkspaceManager {
    * the same repository twice at two different revisions.
    */
   async prepareSecondaryRoots(agent: Agent): Promise<SecondaryWorkspaceRoot[]> {
-    // Cluster daemons materialize one checkout through the shim tunnel; secondary roots there are a
-    // non-goal of this phase, and every path below would clone onto the DAEMON's disk instead.
-    if (this.sandboxMode) return []
-    const roots = this.secondaryRoots(agent)
+    const roots = this.secondaryRootsFor(agent)
     if (roots.length === 0) {
       this.readyRoots.delete(agent.id)
       return []
     }
     const submodules =
-      agent.workspace.mode === 'git-repo' ? this.submoduleReposOf(agent.workspace.path) : new Set<string>()
+      agent.workspace.mode === 'git-repo'
+        ? await this.submoduleReposOf(agent.id, this.primaryCheckoutAt(agent, this.sandboxMountFor(agent.id)))
+        : new Set<string>()
     const ready: SecondaryWorkspaceRoot[] = []
     for (const root of roots) {
       if (submodules.has(root.repoFullName.toLowerCase())) {
@@ -543,7 +587,7 @@ export class WorkspaceManager {
       }
       const prepared = await this.prepareSecondaryRoot(agent, root)
       if (!prepared) continue
-      for (const repo of this.submoduleReposOf(root.path)) submodules.add(repo)
+      for (const repo of await this.submoduleReposOf(agent.id, root.path)) submodules.add(repo)
       ready.push(prepared)
     }
     this.readyRoots.set(agent.id, ready)
@@ -551,15 +595,12 @@ export class WorkspaceManager {
   }
 
   /** The github.com repositories a root carries as submodules; empty when it declares none. */
-  submoduleReposOf(rootPath: string): Set<string> {
-    const file = join(rootPath, '.gitmodules')
-    try {
-      if (statSync(file).size > MAX_GITMODULES_BYTES) return new Set()
-      return gitmoduleRepos(readFileSync(file, 'utf8'))
-    } catch {
-      // No `.gitmodules`, or one this process cannot read: the root simply declares no submodules.
-      return new Set()
-    }
+  async submoduleReposOf(agentId: string, rootPath: string): Promise<Set<string>> {
+    // The seam answers what a path IS, not how big it is, so the bound is applied to the text it
+    // returned — a `.gitmodules` past it is not a declaration anyone wrote, whichever disk holds it.
+    const text = await this.fsFor(agentId).readFile(join(rootPath, '.gitmodules'))
+    if (text === undefined || text.length > MAX_GITMODULES_BYTES) return new Set()
+    return gitmoduleRepos(text)
   }
 
   /** One secondary root's clone-or-converge, single-flighted per root like the primary's clone. */
@@ -578,11 +619,12 @@ export class WorkspaceManager {
     agent: Agent,
     root: SecondaryWorkspaceRoot
   ): Promise<SecondaryWorkspaceRoot | undefined> {
+    const fs = this.fsFor(agent.id)
     const subtree = dirname(root.path)
     const marker = join(subtree, SECONDARY_MATERIALIZATION_FILE)
     try {
-      mkdirSync(subtree, { recursive: true, mode: 0o700 })
-      if (!existsSync(join(root.path, '.git'))) {
+      await fs.mkdir(subtree, 0o700)
+      if ((await fs.stat(join(root.path, '.git'))) === 'missing') {
         // The branch is not projected by the CP, so the remote's own HEAD decides it — resolved
         // BEFORE the clone, because `--branch` is how the clone records it.
         const branch = await this.resolveRemoteDefaultBranch(agent.id, root)
@@ -592,19 +634,23 @@ export class WorkspaceManager {
           // Attest first, publish last. A crash in between leaves a marker with no checkout, which
           // the next session simply re-clones; the other order is what strands a checkout that no
           // later session can attribute, and this code never deletes one to recover.
-          writeSecondaryMaterialization(marker, { repoId: root.repoId, repoFullName: root.repoFullName, branch })
-          this.publishSecondaryCheckout(staged, root.path)
+          await fs.writeFile(
+            marker,
+            JSON.stringify({ repoId: root.repoId, repoFullName: root.repoFullName, branch }, null, 2) + '\n',
+            { mode: 0o600 }
+          )
+          await this.publishSecondaryCheckout(agent.id, staged, root.path)
         } catch (err) {
-          rmSync(staged, { recursive: true, force: true })
+          await fs.rmTree(staged)
           throw err
         }
-        return { ...root, path: realpathSync(root.path), branch }
+        return { ...root, path: this.canonicalWorkspacePath(agent.id, root.path), branch }
       }
       // Identity is the numeric repo id, so a retired root whose owner/repo was later reused by a
       // DIFFERENT repository is refused rather than adopted — and nothing on disk is touched
       // (decision 12: retirement, never deletion). An origin URL cannot stand in for that id: it
       // names the slug, which is exactly what a reuse keeps. No attestation ⇒ no root.
-      const recorded = readSecondaryMaterialization(marker)
+      const recorded = parseSecondaryMaterialization(await fs.readFile(marker))
       if (recorded === undefined || recorded.repoId !== root.repoId) {
         workspaceLog.warn(
           `workspace: the checkout at ${subtree} does not attest repository id ${root.repoId} ` +
@@ -616,7 +662,7 @@ export class WorkspaceManager {
       await this.convergeOriginInPlaceFor(agent.id, resolved, root.path)
       await writeRepoHelperConfig(this.runnerFor(agent.id, root.path), agent.id).catch(() => undefined)
       if (agent.workspace.pullOnNewSession) await this.pullRoot(agent.id, resolved, root.path)
-      return { ...resolved, path: realpathSync(root.path) }
+      return { ...resolved, path: this.canonicalWorkspacePath(agent.id, root.path) }
     } catch (err) {
       // Degradation stays local to the root (decision 7): the session starts without it and the next
       // one retries. Never throw out of session start over an additional repository.
@@ -628,14 +674,16 @@ export class WorkspaceManager {
   }
 
   /** Move a staged clone onto the root's path, over nothing or a provably empty leftover. */
-  private publishSecondaryCheckout(staged: string, path: string): void {
-    if (existsSync(path)) {
-      // The same rule the worktree GC applies: reclaim a provably empty directory, report anything
-      // else. A leftover that holds files is a human's or an older attempt's, never ours to remove.
-      if (readdirSync(path).length > 0) throw new Error(`${path} is not empty; refusing to replace it`)
-      rmSync(path, { recursive: true, force: true })
+  private async publishSecondaryCheckout(agentId: string, staged: string, path: string): Promise<void> {
+    const fs = this.fsFor(agentId)
+    // The same rule the worktree GC applies: reclaim a provably empty directory, report anything
+    // else. A leftover that holds files is a human's or an older attempt's, never ours to remove.
+    // One operation, never a proof followed by a delete — `rmdir` refuses a directory that is not
+    // empty itself, so a file that arrives first keeps it instead of being discarded.
+    if ((await fs.stat(path)) !== 'missing' && !(await fs.rmdir(path))) {
+      throw new Error(`${path} is not empty; refusing to replace it`)
     }
-    renameSync(staged, path)
+    await fs.rename(staged, path)
   }
 
   /** The branch `origin/HEAD` points at, asked of the remote through the clone's own credentials. */
@@ -1044,30 +1092,45 @@ export class WorkspaceManager {
    *  MATERIALIZED secondary subtree on disk — a retired root's worktrees are this session's too
    *  (decision 12), while a subtree a failed clone left behind owns none and has no checkout for
    *  Git to run in, which would fail the whole session's cleanup forever. */
-  sessionWorktreeRoots(agent: Agent): Pick<WorkspaceRoot, 'path' | 'worktreesPath'>[] {
+  async sessionWorktreeRoots(agent: Agent): Promise<Pick<WorkspaceRoot, 'path' | 'worktreesPath'>[]> {
+    const fs = this.fsFor(agent.id)
     const mount = this.sandboxMountFor(agent.id)
-    return [
-      ...(agent.workspace.mode === 'git-repo'
-        ? [
-            {
-              path: mount === undefined ? agent.workspace.path : this.clusterWorkspaceCheckout(agent, mount),
-              worktreesPath: this.worktreesPathAt(agent, mount)
-            }
-          ]
-        : []),
-      // A sandboxed workspace has only the primary checkout, so these subtrees would judge this disk.
-      ...(this.sandboxMode
-        ? []
-        : secondarySubtreesIn(this.agentRootFor(agent))
-            .filter((entry) => existsSync(join(entry.path, '.git')))
-            .map(({ path, worktreesPath }) => ({ path, worktreesPath })))
-    ]
+    const roots: Pick<WorkspaceRoot, 'path' | 'worktreesPath'>[] =
+      agent.workspace.mode === 'git-repo'
+        ? [{ path: this.primaryCheckoutAt(agent, mount), worktreesPath: this.worktreesPathAt(agent, mount) }]
+        : []
+    for (const { path, worktreesPath } of await this.secondarySubtreesFor(agent)) {
+      if ((await fs.stat(join(path, '.git'))) === 'missing') continue
+      roots.push({ path, worktreesPath })
+    }
+    return roots
   }
 
   /** Whether the agent has any root a session worktree could live under — a scratch workspace with
-   *  secondary roots does, which is what makes it a candidate for the retention GC. */
-  hasSessionWorktreeRoots(agent: Agent): boolean {
-    return this.sessionWorktreeRoots(agent).length > 0
+   *  secondary roots does, which is what makes it a candidate for the retention GC. Reads the
+   *  filesystem that holds the roots, so its caller must already hold that agent's volume. */
+  async hasSessionWorktreeRoots(agent: Agent): Promise<boolean> {
+    return (await this.sessionWorktreeRoots(agent)).length > 0
+  }
+
+  /**
+   * Whether the agent could own a per-session worktree AT ALL — the prefilter for a caller that has
+   * not bound the agent's volume yet, and which may only ever err towards `true`.
+   *
+   * Deliberately not {@link hasSessionWorktreeRoots}: that one reads the filesystem holding the
+   * roots, which for a suspended sandbox is this daemon's own, where a scratch agent's pod-side
+   * secondary worktrees are invisible. Answering "no" there is what would let the retention GC
+   * delete a session row without ever applying the dirty/unique-commit rules to those worktrees.
+   *
+   * The rows are not the whole answer either: a retired root keeps its worktrees after its row
+   * disappears (decision 12), so a scratch agent whose last authorization was removed may still own
+   * one. Locally that is a cheap listing of `repos`; on a pod only the volume can say, so the answer
+   * is "maybe" and the bound predicate inside the fence decides.
+   */
+  mayOwnSessionWorktrees(agent: Agent): boolean {
+    if (agent.workspace.mode === 'git-repo') return true
+    if ((agent.workspace.additionalRepos ?? []).length > 0) return true
+    return this.sandboxMode || secondarySubtreesIn(this.agentRootFor(agent)).length > 0
   }
 
   /**
@@ -1081,7 +1144,7 @@ export class WorkspaceManager {
    * tells the caller its warm attachment is stale even though the session survives.
    */
   async removeSessionWorktree(agent: Agent, sessionKey: string): Promise<SessionWorktreeRemoval> {
-    const roots = this.sessionWorktreeRoots(agent)
+    const roots = await this.sessionWorktreeRoots(agent)
     if (roots.length === 0) return { outcome: 'failed', error: 'agent workspace is not a Git repository' }
     const id = this.sessionWorktreeId(sessionKey)
     let retained: SessionWorktreeRemoval | undefined
@@ -1100,11 +1163,14 @@ export class WorkspaceManager {
 
   /** The agent's secondary subtrees whose `.materialization.json` no longer matches a current row —
    *  by repository id, and by the directory a rename moved the repository out of (decision 12). */
-  retiredSecondaryRoots(agent: Agent): RetiredWorkspaceRoot[] {
-    const authorized = new Map(this.secondaryRoots(agent).map((root) => [root.repoId, root.repoFullName]))
+  async retiredSecondaryRoots(agent: Agent): Promise<RetiredWorkspaceRoot[]> {
+    const fs = this.fsFor(agent.id)
+    const authorized = new Map(this.secondaryRootsFor(agent).map((root) => [root.repoId, root.repoFullName]))
     const retired: RetiredWorkspaceRoot[] = []
-    for (const entry of secondarySubtreesIn(this.agentRootFor(agent))) {
-      const recorded = readSecondaryMaterialization(join(entry.subtree, SECONDARY_MATERIALIZATION_FILE))
+    for (const entry of await this.secondarySubtreesFor(agent)) {
+      const recorded = parseSecondaryMaterialization(
+        await fs.readFile(join(entry.subtree, SECONDARY_MATERIALIZATION_FILE))
+      )
       // No attestation ⇒ not ours to judge, let alone remove: materialization already refuses to
       // adopt such a subtree, and removing one would be exactly the deletion decision 12 forbids.
       if (recorded === undefined) continue
@@ -1123,12 +1189,13 @@ export class WorkspaceManager {
    * clone is the object store that worktree reads.
    */
   async removeRetiredSecondaryRoot(agent: Agent, root: RetiredWorkspaceRoot): Promise<RetiredRootRemoval> {
+    const fs = this.fsFor(agent.id)
     try {
-      const subtree = this.validateSecondarySubtree(agent, root.subtree)
-      if (existsSync(root.worktreesPath) && readdirSync(root.worktreesPath).length > 0) {
+      const subtree = await this.validateSecondarySubtree(agent, root.subtree)
+      if ((await fs.stat(root.worktreesPath)) !== 'missing' && (await fs.readdir(root.worktreesPath)).length > 0) {
         return { outcome: 'retained', reason: 'worktrees' }
       }
-      if (existsSync(join(root.path, '.git'))) {
+      if ((await fs.stat(join(root.path, '.git'))) !== 'missing') {
         const git = this.runnerFor(agent.id, root.path).withEnv(workspaceGitLocalEnv())
         if ((await git.raw(['status', '--porcelain'])).trim() !== '') return { outcome: 'retained', reason: 'dirty' }
         // EVERY local ref, not just HEAD: this removes the object store itself, so a side branch, a
@@ -1136,26 +1203,35 @@ export class WorkspaceManager {
         // daemon's own review refs are disposable — they were fetched verbatim from the remote.
         const unique = await git.raw(['rev-list', '--count', '--all', '--not', '--remotes', '--glob=refs/agentconnect'])
         if (unique.trim() !== '0') return { outcome: 'retained', reason: 'unique-commits' }
-      } else if (existsSync(root.path) && readdirSync(root.path).length > 0) {
-        // No `.git` to interrogate, but a nonempty directory may be exactly the untracked work this
-        // GC promises never to auto-delete — the same rule the worktree GC applies to a bare leftover.
+      } else if (!(await fs.rmdir(root.path))) {
+        // No `.git` to interrogate, so the checkout may hold exactly the untracked work this GC
+        // promises never to auto-delete. `rmdir` reclaims it only if the kernel finds it empty —
+        // one operation, rather than a proof the runtime can invalidate before the delete uses it.
         return { outcome: 'retained', reason: 'dirty' }
       }
-      rmSync(subtree, { recursive: true, force: true })
+      await fs.rmTree(subtree)
       return { outcome: 'removed' }
     } catch (err) {
       return { outcome: 'failed', error: (err as Error).message }
     }
   }
 
-  /** Canonicalize a secondary subtree and prove it still resolves inside the agent directory, the
-   *  same way every destructive worktree path goes through {@link validateWorktreesRoot}. */
-  private validateSecondarySubtree(agent: Agent, subtree: string): string {
-    if (lstatSync(subtree).isSymbolicLink()) throw new Error('secondary root subtree must not be a symlink')
+  /** Canonicalize a secondary subtree and prove it still resolves inside the parent that holds the
+   *  agent's roots, the same way every destructive worktree path goes through
+   *  {@link validateWorktreesRoot} — and by the same rule on a pod, where there is no symlink to
+   *  resolve from here and the shim's own descent is the containment. */
+  private async validateSecondarySubtree(agent: Agent, subtree: string): Promise<string> {
+    const mount = this.sandboxMountFor(agent.id)
+    if ((await this.fsFor(agent.id).stat(subtree)) === 'other') {
+      throw new Error('secondary root subtree must not be a symlink')
+    }
+    if (mount !== undefined) {
+      if (escapesRoot(mount, subtree)) throw new Error('secondary root subtree resolves outside the mount')
+      return subtree
+    }
     const agentRoot = realpathSync(this.agentRootFor(agent))
     const canonical = realpathSync(subtree)
-    const rel = relative(agentRoot, canonical)
-    if (isAbsolute(rel) || rel === '..' || rel.startsWith(`..${sep}`)) {
+    if (escapesRoot(agentRoot, canonical)) {
       throw new Error('secondary root subtree resolves outside the agent directory')
     }
     return canonical
@@ -1426,7 +1502,7 @@ export class WorkspaceManager {
     // re-prepares it after a host eviction or a daemon restart carries no review at all — and, for a
     // scratch workspace, reports `shared` isolation — so this is resolved BEFORE either shortcut: the
     // attestation on disk, not this process's memory, is what holds the working directory still.
-    const cwdRoot = reviewRoot ?? this.resumedReviewedRoot(agent, request)
+    const cwdRoot = reviewRoot ?? (await this.resumedReviewedRoot(agent, request))
     if (cwdRoot) return await this.prepareReviewedRootWorkspace(agent, cwdRoot, request, opts)
     if (request.isolation === 'shared') return primary
 
@@ -1440,6 +1516,21 @@ export class WorkspaceManager {
     if (cwd === undefined) return primary
     const agentDir = normalizeRepoSubdir(agent.workspace.agentDir)
     return this.withSkills(agent, this.resolveAcpCwd(cwd, agentDir), opts)
+  }
+
+  /** The post-clone skills step, which only this daemon's own disk has: a pod's runtime gets its
+   *  skills from the launch phase, so installing them here would write on the wrong filesystem.
+   *  Asked of the DAEMON, not of the agent's mount — a channel that dropped mid-preparation must not
+   *  turn "the pod owns this" into "write it here". */
+  private async withLocalSkills(agent: Agent, acpCwd: string, opts: PrepareWorkspaceOptions): Promise<string> {
+    return this.sandboxMode ? acpCwd : await this.withSkills(agent, acpCwd, opts)
+  }
+
+  /** The ACP cwd inside one prepared root: validated against this disk locally, composed lexically on
+   *  a pod — where the same join `clusterWorkspaceCwd` makes is what the shim's descent re-checks. */
+  private resolveRootAcpCwd(agentId: string, root: string, agentDir: string | undefined): string {
+    if (this.sandboxMountFor(agentId) === undefined) return this.resolveAcpCwd(root, agentDir)
+    return agentDir === undefined ? root : join(root, ...agentDir.split('/'))
   }
 
   /**
@@ -1469,7 +1560,7 @@ export class WorkspaceManager {
     await this.prepareReferenceSessionWorktrees(agent, this.referenceRootsOf(agent, prepared.repoFullName), request)
     // The same post-steps the primary cwd gets, deliberately: skills install into the working
     // directory, and the reviewed root is the one the model stands in. `agentDir` is the primary's.
-    const acpCwd = await this.withSkills(agent, this.resolveAcpCwd(cwd, undefined), opts)
+    const acpCwd = await this.withLocalSkills(agent, this.resolveRootAcpCwd(agent.id, cwd, undefined), opts)
     // Attested LAST, because the attestation says a session was placed here: a preparation that
     // failed a post-step must leave the caller's revision-only fallback a primary cwd it can use,
     // while a later preparation of a placed session — in a fresh process, carrying no review —
@@ -1485,19 +1576,22 @@ export class WorkspaceManager {
 
   /** Drop every root's attestation that it holds one session's working directory. */
   private async forgetSessionCwdRoots(agent: Agent, sessionWorktreeId: string): Promise<void> {
-    for (const entry of secondarySubtreesIn(this.agentRootFor(agent))) {
+    for (const entry of await this.secondarySubtreesFor(agent)) {
       await this.recordSessionCwdRoot(agent.id, entry.subtree, sessionWorktreeId)
     }
   }
 
   /** The root a session already stands in, as a root this preparation can drive — nothing when the
    *  attestation names a repository the agent's rows no longer authorize. */
-  private resumedReviewedRoot(agent: Agent, request: SessionRootScope): SecondaryWorkspaceRoot | undefined {
-    if (this.sandboxMode || request.sessionKey === undefined) return undefined
-    const recorded = this.sessionCwdSubtree(agent, request.sessionKey)
+  private async resumedReviewedRoot(
+    agent: Agent,
+    request: SessionRootScope
+  ): Promise<SecondaryWorkspaceRoot | undefined> {
+    if (request.sessionKey === undefined) return undefined
+    const recorded = await this.sessionCwdSubtree(agent, request.sessionKey)
     if (recorded === undefined) return undefined
     const key = repoKey(recorded.repoFullName)
-    return this.secondaryRoots(agent).find((entry) => repoKey(entry.repoFullName) === key)
+    return this.secondaryRootsFor(agent).find((entry) => repoKey(entry.repoFullName) === key)
   }
 
   /** The roots that ride along this session, with the label their per-root failure is reported under. */
@@ -1738,10 +1832,11 @@ export class WorkspaceManager {
   /**
    * The pod cwd one session stands in, once its checkout is ready.
    *
-   * The same three shapes the local path has, against the same portable code: a shared session gets
-   * the checkout, an isolated one its own `<mount>/worktrees/<sid>` (which is also what gives a pool
-   * agent an exact same-repository review checkout), and a review with no local checkout to trust
-   * gets an empty daemon-owned directory beside them.
+   * The same shapes the local path has, against the same portable code: a shared session gets the
+   * checkout, an isolated one its own `<mount>/worktrees/<sid>` (which is also what gives a pool
+   * agent an exact same-repository review checkout), a review of a secondary root that root's own
+   * exact worktree, and a review with no local checkout to trust an empty daemon-owned directory
+   * beside them.
    */
   private async prepareClusterSessionCwd(
     agent: Agent,
@@ -1753,11 +1848,26 @@ export class WorkspaceManager {
         throw new Error('github revision-only workspace requires an isolated git-repo review session')
       }
       const id = this.sessionWorktreeId(request.sessionKey)
+      // The cwd becomes the primary's own empty directory, so no root may go on attesting that this
+      // session stands in it — a surviving attestation would refuse the very fallback prepared here.
+      await this.forgetSessionCwdRoots(agent, id)
       return await this.prepareGithubRevisionOnlyWorkspace(agent, id, this.worktreesPathAt(agent, mount))
     }
-    // A from-scratch workspace keeps the mount: isolation has no clone to branch off, as locally.
-    if (request?.isolation === 'session' && agent.workspace.mode === 'git-repo') {
-      await this.prepareRootSessionWorktree(agent, this.primaryRootAt(agent, mount), request)
+    // Resolved before anything is materialized, as locally: a review naming a repository this agent
+    // has no root for leaves no worktree behind for the caller's revision-only fallback.
+    const reviewRoot = request ? this.reviewedSecondaryRoot(agent, request) : undefined
+    // The volume's own secondary roots, in the pod's coordinates — the same pass `prepareWorkspace`
+    // makes locally, and where a root that has left the set stops being handed out (decision 12).
+    await this.prepareSecondaryRoots(agent)
+    const cwdRoot = reviewRoot ?? (request ? await this.resumedReviewedRoot(agent, request) : undefined)
+    if (cwdRoot && request) return await this.prepareReviewedRootWorkspace(agent, cwdRoot, request, {})
+    if (request?.isolation === 'session') {
+      // A from-scratch workspace keeps the mount: isolation has no clone to branch off, as locally —
+      // but its secondaries still get per-session worktrees (decisions 4 and 5).
+      if (agent.workspace.mode === 'git-repo') {
+        await this.prepareRootSessionWorktree(agent, this.primaryRootAt(agent, mount), request)
+      }
+      await this.prepareReferenceSessionWorktrees(agent, this.referenceRootsOf(agent), request)
     }
     return this.clusterWorkspaceCwd(agent, mount, request)
   }
@@ -1828,50 +1938,64 @@ export class WorkspaceManager {
     return this.resolveAcpCwd(agent.workspace.path, agentDir)
   }
 
-  additionalWorkspaceDirectories(
+  async additionalWorkspaceDirectories(
     agent: Agent,
     cwd: string,
     request?: Pick<PrepareSessionWorkspaceRequest, 'sessionKey' | 'isolation' | 'reviewRepoFullName'>
-  ): string[] {
+  ): Promise<string[]> {
+    const widened = await this.widenedCwdRoot(agent, cwd, request)
+    const roots = await this.sessionAdditionalRoots(agent, request)
+    return [...(widened === undefined ? [] : [widened]), ...roots.map((root) => root.path)]
+  }
+
+  /**
+   * The checkout root an `agentDir` cwd is widened back to, so repo-wide tools reach `.git` and its
+   * siblings — undefined when the cwd already IS that root, or when a review made a secondary root
+   * the working directory (decision 5), which has no `agentDir` of its own.
+   */
+  private async widenedCwdRoot(agent: Agent, cwd: string, request?: SessionRootScope): Promise<string | undefined> {
     if (this.sandboxMode) {
-      if (agent.workspace.mode !== 'git-repo') return []
+      if (agent.workspace.mode !== 'git-repo') return undefined
+      if ((await this.sessionCwdRepoFullName(agent, request)) !== undefined) return undefined
       // `cwd` is in the POD's coordinates, which this daemon cannot `realpathSync` — the path exists
       // on no filesystem it can see, so the check below throws on the workspace it was handed. Undo
       // the lexical join `clusterWorkspaceCwd` made instead; the shim re-checks containment itself.
       const agentDir = normalizeRepoSubdir(agent.workspace.agentDir)
-      if (agentDir === undefined) return []
-      return [agentDir.split('/').reduce((path) => dirname(path), cwd)]
+      if (agentDir === undefined) return undefined
+      return agentDir.split('/').reduce((path) => dirname(path), cwd)
     }
     // Containment is proven against the root this session actually stands in — the primary, or the
-    // secondary a review made the working directory (decision 5). Widening an `agentDir` cwd back to
-    // its checkout root is the primary's alone; a reviewed root has no `agentDir`.
-    const widened: string[] = []
-    const cwdRoot = this.sessionCwdRootPath(agent, request)
-    if (cwdRoot !== undefined) {
-      const root = realpathSync(cwdRoot)
-      const canonicalCwd = realpathSync(cwd)
-      const rel = relative(root, canonicalCwd)
-      if (isAbsolute(rel) || rel === '..' || rel.startsWith(`..${sep}`)) {
-        throw new Error(`prepared workspace cwd "${cwd}" resolves outside its checkout root`)
-      }
-      if (root !== canonicalCwd && this.sessionCwdRepoFullName(agent, request) === undefined) widened.push(root)
+    // secondary a review made the working directory. Widening is the primary's alone.
+    const cwdRoot = await this.sessionCwdRootPath(agent, request)
+    if (cwdRoot === undefined) return undefined
+    const root = realpathSync(cwdRoot)
+    const canonicalCwd = realpathSync(cwd)
+    if (escapesRoot(root, canonicalCwd)) {
+      throw new Error(`prepared workspace cwd "${cwd}" resolves outside its checkout root`)
     }
-    return [...widened, ...this.sessionAdditionalRoots(agent, request).map((root) => root.path)]
+    if (root === canonicalCwd) return undefined
+    return (await this.sessionCwdRepoFullName(agent, request)) === undefined ? root : undefined
   }
 
   /** The directory this session's cwd must sit under: the reviewed secondary root's, else the
    *  primary's. Undefined when the agent has no primary checkout and no review named a root. */
-  private sessionCwdRootPath(agent: Agent, request?: SessionRootScope): string | undefined {
-    const reviewed = this.sessionCwdRepoFullName(agent, request)
+  private async sessionCwdRootPath(agent: Agent, request?: SessionRootScope): Promise<string | undefined> {
+    const mount = this.sandboxMountFor(agent.id)
+    const reviewed = await this.sessionCwdRepoFullName(agent, request)
     if (reviewed !== undefined) {
       const key = repoKey(reviewed)
-      const root = secondarySubtreesIn(this.agentRootFor(agent)).find((entry) => repoKey(entry.repoFullName) === key)
+      const root = (await this.secondarySubtreesFor(agent)).find((entry) => repoKey(entry.repoFullName) === key)
       // A subtree that is no longer on disk cannot vouch for the cwd; fall through to the primary,
       // which the cwd is not under either, so the containment check refuses it.
-      if (root) return this.sessionRootPath(agent, root.path, root.worktreesPath, request)
+      if (root) return await this.sessionRootPath(agent, root.path, root.worktreesPath, request)
     }
     if (agent.workspace.mode !== 'git-repo') return undefined
-    return this.sessionRootPath(agent, agent.workspace.path, this.worktreesPathFor(agent), request)
+    return await this.sessionRootPath(
+      agent,
+      this.primaryCheckoutAt(agent, mount),
+      this.worktreesPathAt(agent, mount),
+      request
+    )
   }
 
   resolveAcpCwd(workspaceRoot: string, agentDir: string | undefined): string {
@@ -2102,7 +2226,7 @@ export class WorkspaceManager {
       } catch (e) {
         // A failed clone leaves a half-written dir whose stray `.git` would make
         // every later attempt think the checkout exists — clean before rethrowing.
-        rmSync(join(cwd, '.git'), { recursive: true, force: true })
+        await this.fsFor(agentId).rmTree(join(cwd, '.git'))
         throw e
       }
       // Pin the repo-local helper so AGENT-run git in this checkout authenticates
@@ -2142,21 +2266,21 @@ export function parseSymrefDefaultBranch(out: string): string | undefined {
   return undefined
 }
 
-/** Write the attestation the way the primary's marker is written: temp file, then atomic rename. */
-function writeSecondaryMaterialization(file: string, value: SecondaryMaterialization): void {
-  const temp = `${file}.tmp`
+/** The same attestation off THIS disk, for the console seam, which answers synchronously and whose
+ *  cluster branch discards the answer before it is used. */
+function readSecondaryMaterialization(file: string): SecondaryMaterialization | undefined {
   try {
-    writeFileSync(temp, JSON.stringify(value, null, 2) + '\n', { mode: 0o600 })
-    renameSync(temp, file)
-  } catch (err) {
-    rmSync(temp, { force: true })
-    throw err
+    return parseSecondaryMaterialization(readFileSync(file, 'utf8'))
+  } catch {
+    return undefined
   }
 }
 
-function readSecondaryMaterialization(file: string): SecondaryMaterialization | undefined {
+/** A secondary root's attestation as the seam read it; undefined for absent, unreadable or partial. */
+function parseSecondaryMaterialization(text: string | undefined): SecondaryMaterialization | undefined {
+  if (text === undefined) return undefined
   try {
-    const value = JSON.parse(readFileSync(file, 'utf8')) as Partial<SecondaryMaterialization>
+    const value = JSON.parse(text) as Partial<SecondaryMaterialization>
     if (typeof value.repoId !== 'string' || !value.repoId) return undefined
     if (typeof value.branch !== 'string' || !value.branch) return undefined
     if (typeof value.repoFullName !== 'string' || !value.repoFullName) return undefined
