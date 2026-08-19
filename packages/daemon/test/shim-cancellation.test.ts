@@ -4,28 +4,25 @@ import { randomUUID } from 'node:crypto'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { Backoff, ClientTransport, FakeClock } from '@agentconnect.md/connection'
+import { Backoff, FakeClock } from '@agentconnect.md/connection'
 import type { ShimConnection } from '../src/shim/connection.js'
-import { ShimListener } from '../src/shim/listener.js'
-import { ShimClient, type ShimTransport } from '../src/shim/client.js'
 import { ShimChannel, ShimRequestAbortedError } from '../src/shim/channels.js'
 import { createExecHandler } from '../src/shim/exec-handler.js'
 import { ShimGitRunner } from '../src/shim/git-exec.js'
 import type { ShimFrame } from '../src/shim/protocol.js'
 import type { SpawnRecord } from '../src/shim/binding.js'
+import { shimFixtures } from './fakes/shim-sandbox.js'
 
 // Cancellation across the channel, end to end: real socket, real shim client, real hanging git.
 // The point is not that the daemon's promise rejects — a bare timeout already did that — but that
 // the CHILD DIES. An abandoned git keeps index.lock and wedges the next session's pull, which is
 // exactly what simple-git's signal handling prevents on the local runner.
 
-const listeners: ShimListener[] = []
-const clients: ShimClient[] = []
+const fixtures = shimFixtures()
 const roots: string[] = []
 
 afterEach(async () => {
-  for (const client of clients.splice(0)) client.stop()
-  await Promise.all(listeners.splice(0).map((instance) => instance.stop()))
+  await fixtures.cleanup()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
@@ -56,11 +53,11 @@ function blockingRepository(): { root: string; env: Record<string, string>; mark
   }
 }
 
-/** Real listener + real shim client, the client serving git through the production handler. */
+/** Real dialer + real shim server, the in-pod client serving git through the production handler. */
 async function channelUnderTest(
   workspaceRoot: string,
   options: { credentialTtlMs?: number; shimClock?: FakeClock } = {}
-): Promise<{ channel: ShimChannel; connection: ShimConnection; sent: ShimFrame[]; listener: ShimListener }> {
+): Promise<{ channel: ShimChannel; connection: ShimConnection; sent: ShimFrame[] }> {
   const record: SpawnRecord = {
     agentId: 'agent-a',
     generation: 1,
@@ -68,56 +65,38 @@ async function channelUnderTest(
     podUid: 'pod-uid-1',
     grants: ['exec', 'materialize']
   } as SpawnRecord
-  const listener = new ShimListener({
+  const { endpoint } = await fixtures.sandbox({
+    workspaceRoot,
+    clock: options.shimClock ?? new FakeClock(),
+    backoff: new Backoff({ jitter: () => 0 }),
+    handle: createExecHandler({ workspaceRoot, log: { info: () => {}, warn: () => {} } })
+  })
+  const dialer = fixtures.dialer({
     verifier: { reviewToken: async () => ({ authenticated: true, podName: 'runtime-1', podUid: 'pod-uid-1' }) },
-    spawnRecordForPod: () => record,
     now: () => Date.now(),
     ...(options.credentialTtlMs !== undefined ? { credentialTtlMs: options.credentialTtlMs } : {}),
     log: { info: () => {}, warn: () => {} }
   })
-  listeners.push(listener)
-  const port = await listener.start(0, '127.0.0.1')
+  const connection = await dialer.connect(endpoint, record, 5_000)
 
-  const client = new ShimClient({
-    endpoint: `ws://127.0.0.1:${port}`,
-    dial: (url, opts) =>
-      ClientTransport.dial(url, { subprotocol: opts.subprotocol, path: opts.path }) as Promise<ShimTransport>,
-    readToken: () => 'projected-token',
-    clock: options.shimClock ?? new FakeClock(),
-    backoff: new Backoff({ jitter: () => 0 }),
-    handle: createExecHandler({ workspaceRoot, log: { info: () => {}, warn: () => {} } }),
-    log: { info: () => {}, warn: () => {} }
-  })
-  clients.push(client)
-  void client.start()
-
-  const deadline = Date.now() + 5_000
-  for (;;) {
-    const connection = listener.connectionsFor('agent-a')[0]
-    if (connection) {
-      // Observed so a test can read the REAL request id. Sending a cancel for an invented id
-      // proves nothing — the lookup misses whether or not the fencing is there, which is how the
-      // first version of the stale-generation test below passed against unfenced code.
-      const sent: ShimFrame[] = []
-      const observed: ShimConnection = {
-        binding: connection.binding,
-        issuedCredential: connection.issuedCredential,
-        send: (frame) => {
-          sent.push(frame)
-          connection.send(frame)
-        },
-        onFrame: (listen) => connection.onFrame(listen),
-        close: (reason) => connection.close(reason)
-      }
-      return {
-        channel: new ShimChannel(observed, connection.issuedCredential, timers),
-        connection: observed,
-        sent,
-        listener
-      }
-    }
-    if (Date.now() > deadline) throw new Error('no channel bound in time')
-    await new Promise((resolve) => setTimeout(resolve, 20))
+  // Observed so a test can read the REAL request id. Sending a cancel for an invented id
+  // proves nothing — the lookup misses whether or not the fencing is there, which is how the
+  // first version of the stale-generation test below passed against unfenced code.
+  const sent: ShimFrame[] = []
+  const observed: ShimConnection = {
+    binding: connection.binding,
+    issuedCredential: connection.issuedCredential,
+    send: (frame) => {
+      sent.push(frame)
+      connection.send(frame)
+    },
+    onFrame: (listen) => connection.onFrame(listen),
+    close: (reason) => connection.close(reason)
+  }
+  return {
+    channel: new ShimChannel(observed, connection.issuedCredential, timers),
+    connection: observed,
+    sent
   }
 }
 
@@ -227,7 +206,7 @@ describe('shim work spanning a credential renewal', () => {
       .request('exec', { tool: 'git', args: ['config', '--get', `user.${marker}`], env }, { timeoutMs: 120_000 })
       .catch(() => undefined)
     expect(await until(() => liveGitChildren(marker) > 0)).toBe(true)
-    for (const client of clients) client.stop()
+    for (const client of fixtures.clients) client.stop()
     expect(await until(() => liveGitChildren(marker) === 0)).toBe(true)
   })
 })

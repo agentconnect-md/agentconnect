@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Backoff, ClientTransport, DEFAULT_BACKOFF_BASE_MS } from '@agentconnect.md/connection'
 import { MAX_FRAME_BYTES } from '@agentconnect.md/protocol'
 import { WebSocket } from 'ws'
-import { ShimClient, type ShimTransport } from '../src/shim/client.js'
 import { ShimDialer, STARTUP_DIAL_BACKOFF, type ShimDialerDeps } from '../src/shim/dialer.js'
 import { ShimServer } from '../src/shim/server.js'
 import { ShimSession } from '../src/shim/session.js'
@@ -17,6 +16,7 @@ import {
   type ShimDialHello,
   type ShimFrame
 } from '../src/shim/protocol.js'
+import { shimFixtures } from './fakes/shim-sandbox.js'
 import { runVirtual, VirtualClock } from './fakes/virtual-clock.js'
 
 // Zero-jitter millisecond backoff so reconnect tests never sleep real seconds.
@@ -27,38 +27,14 @@ const pausedBackoff = (): Backoff => new Backoff({ baseMs: 10_000, jitter: () =>
 
 const quiet = { info: () => {}, warn: () => {} }
 
-const clients: ShimClient[] = []
-const dialers: ShimDialer[] = []
-const servers: ShimServer[] = []
+const fixtures = shimFixtures()
+const { dialers, sandbox, servers } = fixtures
 const sockets: WebSocket[] = []
 
 afterEach(async () => {
   for (const socket of sockets.splice(0)) socket.close()
-  for (const client of clients.splice(0)) client.stop()
-  for (const dialer of dialers.splice(0)) dialer.stop()
-  await Promise.all(servers.splice(0).map((server) => server.stop()))
+  await fixtures.cleanup()
 })
-
-async function sandbox(
-  options: { handle?: (capability: string, payload: unknown) => Promise<unknown>; backoff?: Backoff } = {}
-) {
-  const server = new ShimServer()
-  servers.push(server)
-  const port = await server.start(0, '127.0.0.1')
-  const client = new ShimClient({
-    endpoint: 'accepted-daemon-channel',
-    acceptDialIn: true,
-    dial: () => server.nextTransport() as Promise<ShimTransport>,
-    readToken: () => 'projected-token',
-    workspaceRoot: '/agent',
-    ...(options.handle ? { handle: options.handle as never } : {}),
-    ...(options.backoff ? { backoff: options.backoff } : {}),
-    log: { info: () => {}, warn: () => {} }
-  })
-  clients.push(client)
-  void client.start().catch(() => undefined)
-  return { endpoint: `ws://127.0.0.1:${port}`, client }
-}
 
 async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<void> {
   const deadline = Date.now() + timeoutMs

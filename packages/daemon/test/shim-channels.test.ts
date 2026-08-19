@@ -6,11 +6,10 @@ import { materializeConfigFiles, materializeConfigFilesThrough, configFilesDir }
 import { LocalFileSink, applyFileSinkPayload, resolveSinkPath, FileSinkPayloadSchema } from '../src/shim/file-sink.js'
 import { ShimChannel, ShimFileSink } from '../src/shim/channels.js'
 import { SANDBOX_TUNNEL_PATHS, TunnelPayloadSchema } from '../src/shim/tunnel.js'
-import { ClientTransport } from '@agentconnect.md/connection'
+import type { SpawnRecord } from '../src/shim/binding.js'
 import type { ShimConnection } from '../src/shim/connection.js'
-import { ShimListener } from '../src/shim/listener.js'
-import { ShimClient, type ShimTransport } from '../src/shim/client.js'
 import type { ShimCapability, ShimFrame } from '../src/shim/protocol.js'
+import { shimFixtures } from './fakes/shim-sandbox.js'
 
 function agentDir(): string {
   return mkdtempSync(join(tmpdir(), 'ac-sink-'))
@@ -214,80 +213,64 @@ describe('tunnels', () => {
 })
 
 describe('materialization over a real daemon-and-shim pair', () => {
-  const listeners: ShimListener[] = []
+  const fixtures = shimFixtures()
   afterEach(async () => {
-    await Promise.all(listeners.splice(0).map((instance) => instance.stop()))
+    await fixtures.cleanup()
   })
 
+  // The production shape: the daemon dials into the pod, and the pod's ShimServer accepts.
   async function pair(grants: ShimCapability[]): Promise<{
-    instance: ShimListener
-    client: ShimClient
     channel: ShimChannel
     handled: Array<{ capability: ShimCapability; payload: unknown }>
     sandboxRoot: string
   }> {
     const sandboxRoot = mkdtempSync(join(tmpdir(), 'ac-sandbox-'))
-    const instance = new ShimListener({
-      verifier: { reviewToken: async () => ({ authenticated: true, podName: 'p', podUid: 'u' }) },
-      spawnRecordForPod: () => ({ agentId: 'agent-a', sandboxUid: 'sandbox-1', generation: 3, grants }),
-      now: () => Date.now(),
-      log: { info: () => {}, warn: () => {} }
-    })
-    listeners.push(instance)
-    const port = await instance.start(0, '127.0.0.1')
     const handled: Array<{ capability: ShimCapability; payload: unknown }> = []
-    const client = new ShimClient({
-      endpoint: `ws://127.0.0.1:${port}`,
-      dial: (url, opts) =>
-        ClientTransport.dial(url, { subprotocol: opts.subprotocol, path: opts.path }) as Promise<ShimTransport>,
-      readToken: () => 'projected-token',
+    const { endpoint } = await fixtures.sandbox({
+      workspaceRoot: sandboxRoot,
       handle: async (capability, payload) => {
         handled.push({ capability, payload })
         // The shim performs the write itself, re-validating the path on its own side.
         await applyFileSinkPayload(payload)
         return null
-      },
+      }
+    })
+    const dialer = fixtures.dialer({
+      verifier: { reviewToken: async () => ({ authenticated: true, podName: 'sandbox-pod-1', podUid: 'u' }) },
       log: { info: () => {}, warn: () => {} }
     })
-    await client.start()
-    let connection: ShimConnection | undefined
-    for (let i = 0; i < 200 && !connection; i += 1) {
-      connection = instance.connectionsFor('agent-a')[0]
-      if (!connection) await new Promise((resolve) => setTimeout(resolve, 10))
+    const record: SpawnRecord = {
+      agentId: 'agent-a',
+      sandboxUid: 'sandbox-1',
+      generation: 3,
+      grants,
+      podName: 'sandbox-pod-1'
     }
-    if (!connection) throw new Error('no bound connection')
+    const connection = await dialer.connect(endpoint, record, 5_000)
     const channel = new ShimChannel(connection, connection.issuedCredential, timers)
     connection.onFrame((text) => channel.accept(text))
-    return { instance, client, channel, handled, sandboxRoot }
+    return { channel, handled, sandboxRoot }
   }
 
   it('writes a secret into the sandbox filesystem, decided by the daemon', async () => {
-    const { client, channel, handled, sandboxRoot } = await pair(['materialize'])
-    try {
-      const result = await materializeConfigFilesThrough(
-        sandboxRoot,
-        { KUBECONFIG_DATA: 'apiVersion: v1\n' },
-        new ShimFileSink(channel)
-      )
-      expect(result.env.KUBECONFIG).toBe(join(configFilesDir(sandboxRoot), 'kubeconfig'))
-      // The file exists because the SHIM wrote it, over a real socket, after its own
-      // validation — neither half of this is stubbed.
-      expect(readFileSync(join(configFilesDir(sandboxRoot), 'kubeconfig'), 'utf8')).toBe('apiVersion: v1\n')
-      expect(handled.map((entry) => entry.capability)).toEqual(['materialize', 'materialize'])
-    } finally {
-      client.stop()
-    }
+    const { channel, handled, sandboxRoot } = await pair(['materialize'])
+    const result = await materializeConfigFilesThrough(
+      sandboxRoot,
+      { KUBECONFIG_DATA: 'apiVersion: v1\n' },
+      new ShimFileSink(channel)
+    )
+    expect(result.env.KUBECONFIG).toBe(join(configFilesDir(sandboxRoot), 'kubeconfig'))
+    // The file exists because the SHIM wrote it, over a real socket, after its own
+    // validation — neither half of this is stubbed.
+    expect(readFileSync(join(configFilesDir(sandboxRoot), 'kubeconfig'), 'utf8')).toBe('apiVersion: v1\n')
+    expect(handled.map((entry) => entry.capability)).toEqual(['materialize', 'materialize'])
   }, 20_000)
 
   it('is refused by the shim when the launch never received the capability', async () => {
     // The grant list is enforced on both sides deliberately. Here the binding carries only
     // `exec`, so the shim refuses a materialize request even though the daemon asked.
-    const { client, channel, handled } = await pair(['exec'])
-    try {
-      await expect(channel.request('materialize', { op: 'clear', root: '/tmp' })).rejects.toThrow(/not granted/)
-      expect(handled).toEqual([])
-    } finally {
-      client.stop()
-    }
+    const { channel, handled } = await pair(['exec'])
+    await expect(channel.request('materialize', { op: 'clear', root: '/tmp' })).rejects.toThrow(/not granted/)
+    expect(handled).toEqual([])
   }, 20_000)
 })
