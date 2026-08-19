@@ -62,7 +62,7 @@ hold to check it are decided together by the key server's own design and the
 deployment that installs both. This document stops at the header.
 
 `provider` names the API dialect the credential must speak (`anthropic` /
-`openai`) and selects which `(key, baseUrl)` pair comes back. There is
+`openai` / `deepseek`) and selects which `(key, baseUrl)` pair comes back. There is
 deliberately **no `model` parameter**: per-model usage attribution belongs to
 whatever observes actual requests (a gateway data path, or the runtime's own usage
 reports), and a spawn-time hint would invite implementations to treat it as truth
@@ -151,7 +151,8 @@ must be an HTTP(S) URL. Each pair is translated at runtime launch:
 | DeepSeek | `DEEPSEEK_API_KEY`                                                                       | `DEEPSEEK_BASE_URL`                                                                                                                  |
 
 Dynamic grants use the same translation and override the static token. If IssueKey
-omits `baseUrl`, only the static `MODEL_BASE_URL` is inherited. With no key server,
+omits `baseUrl`, the inherited one is the static base for the runtime being spawned —
+its own scoped pair when it has one, the shared `MODEL_BASE_URL` otherwise. With no key server,
 the static pair wins; with neither, the runtime's existing provider configuration is
 left unchanged.
 
