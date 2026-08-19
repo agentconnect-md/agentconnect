@@ -3731,35 +3731,14 @@ export default function SessionDetailView() {
           30px so only the scrollbar moves and the transcript stays exactly where it was. At `wide:`
           the track (its own −30px bleed) owns that edge and the scroller stops flush against it, and
           on mobile `.content` has no side padding to cross. */}
-      <div
-        data-transcript-scroll=""
-        className={
-          viewerOpen
-            ? 'flex h-full min-h-0 min-w-0 flex-1 flex-col'
-            : 'flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto desktop:max-wide:-mr-[30px] desktop:max-wide:pr-[30px]'
-        }
-      >
-        {/* One growing inner wrapper = the scroller's single child useStickToBottom watches for
-            growth. In conversation mode it is `min-h-full` so the flex-1 spacer can still pin the
-            composer to the bottom, and `mx-auto max-w-[880px]` centres the transcript inside the
-            full-width scroller; in viewer mode it is a bounded `flex-1` so the viewer scrolls.
-            `shrink-0` is load-bearing: as a flex item of the scroller it would otherwise SHRINK to
-            the pane height, so a taller transcript overflows its box — capping the range the sticky
-            header/composer can pin within (they'd scroll off once you passed one screenful). With
-            `shrink-0` the box grows to the content, so both stay pinned the whole scroll. */}
-        <div
-          className={
-            viewerOpen
-              ? 'flex min-h-0 min-w-0 flex-1 flex-col'
-              : 'mx-auto flex min-h-full w-full min-w-0 max-w-[880px] shrink-0 flex-col'
-          }
-        >
-          {/* Session title + action bar, PINNED to the top of the transcript pane (`sticky top-0`)
-          so they stay put while the conversation scrolls — the top counterpart to the sticky
-          composer at the bottom. Opaque page-colour background covers turns sliding underneath. On
-          mobile both desktop rows are hidden, so this box collapses to nothing (the mobile header
-          below carries its own sticky). */}
-          <div className="sticky top-0 z-10 bg-(--surface-app)">
+      {/* Column: fixed header chrome ABOVE the scrolling transcript pane. The header lives OUTSIDE
+      the scroller (no `sticky`), so it never scrolls away and the pane below can be virtualized. */}
+      <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
+        {/* HEADER CHROME — title + action bar (+ any notices). Centred to line up with the 880px
+        transcript below. `flex-none`; no `sticky`, no bottom `margin` — the meta row's border-b is
+        the flush divider with the transcript, with no blank gap under the line. */}
+        <div className="mx-auto w-full min-w-0 max-w-[880px] flex-none">
+          <div>
             {/* DESKTOP TITLE ROW — the session name + its status badge. These used to live
             in the top-bar crumb; with the crumb gone the page has to name itself. The
             mobile title/status live in Shell's app bar, so this region is desktop-only. */}
@@ -3797,7 +3776,7 @@ export default function SessionDetailView() {
             </div>
             {/* DESKTOP META ROW — focused agent · people · workspace · visibility · Details
           popover · copy-link. The old stat/usage cards moved into the Details popover. */}
-            <div className="mt-0 mb-[10px] hidden items-center gap-2 border-b border-(--border-subtle) pb-[7px] desktop:flex">
+            <div className="hidden items-center gap-2 border-b border-(--border-subtle) pb-[7px] desktop:flex">
               <SessionAgentFocusMenu
                 options={headerFocusOptions}
                 value={headerFocusAgentId}
@@ -3938,7 +3917,7 @@ export default function SessionDetailView() {
           daemon/runtime/model config line, both of which now live in the popover;
           three stacked bands of chrome above the transcript were the phone's whole
           first screen. Tap toggles (`tapped`) — there is no hover to lean on. */}
-          <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-(--border-subtle) bg-(--surface-card) px-4 py-[9px] desktop:hidden">
+          <div className="relative flex items-center gap-2 border-b border-(--border-subtle) bg-(--surface-card) px-4 py-[9px] desktop:hidden">
             <span className="flex min-w-0 flex-1">
               <SessionAgentFocusMenu
                 options={headerFocusOptions}
@@ -4027,827 +4006,855 @@ export default function SessionDetailView() {
           )}
 
           {!isLive && approvalCard('mx-4 mt-4 max-desktop:rounded-lg desktop:mx-0 desktop:mt-0 desktop:mb-4')}
+        </div>
+        {/* SCROLL PANE — the transcript/viewer ONLY (all chrome is above, in the header). Full-width
+        so the scrollbar rides the page edge via the −mr/pr bleed; nothing sticky scrolls inside it,
+        so it is ready to host a virtualized turn list. useStickToBottom pins this element. */}
+        <div
+          data-transcript-scroll=""
+          className={
+            viewerOpen
+              ? 'flex min-h-0 min-w-0 flex-1 flex-col'
+              : 'flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto desktop:max-wide:-mr-[30px] desktop:max-wide:pr-[30px]'
+          }
+        >
+          {/* One growing inner wrapper = the scroller's single child useStickToBottom watches; in
+          conversation mode `min-h-full shrink-0` grows it to the content (so the flex-1 spacer can
+          pin the composer) and `mx-auto max-w-[880px]` centres it; in viewer mode a bounded flex-1. */}
+          <div
+            className={
+              viewerOpen
+                ? 'flex min-h-0 min-w-0 flex-1 flex-col'
+                : 'mx-auto flex min-h-full w-full min-w-0 max-w-[880px] shrink-0 flex-col'
+            }
+          >
+            {viewerOpen && viewerPath && filesAgentId ? (
+              // Keyed on the whole WORKSPACE SCOPE, not just the path: the viewer resets its slice in a passive effect, which runs AFTER paint, so without a fresh mount one committed frame draws the previous read's bytes — and its line count and size — under the new heading. The path alone is not that scope: switching header focus from one agent to another while `?file=` holds still is the same stale paint. Same hazard `transcriptMatchesSession` guards for the transcript; nothing inside the viewer is worth carrying across either axis.
+              <SessionViewer
+                key={`${filesAgentId}:${filesSessionId ?? 'primary'}:${viewerPath}`}
+                agentId={filesAgentId}
+                {...(filesSessionId ? { sessionId: filesSessionId } : {})}
+                path={viewerPath}
+                // NOT part of the mount key: the pill must redraw the pane it already has, and a remount would re-read the file (and the diff) on every toggle.
+                mode={viewerMode}
+                onModeChange={(mode) => setViewerFile(viewerPath, filesAgentId, mode)}
+                diffRefreshTick={viewerDiffTick}
+                {...(canWriteWorkspace ? { onIndexChanged: onViewerIndexChanged } : {})}
+                onClose={() => {
+                  // Keep the reader ON the workspace they were reading before dropping `agent=`. The
+                  // param outranks the stored selection, so clearing it alone snaps focus back to the
+                  // default — a scope change with no user action behind it, which would discard whatever
+                  // is in the commit box, including a message the reader just paid a model pass for.
+                  if (filesAgentId) setHeaderFocusSelection({ scope: headerFocusScope, agentId: filesAgentId })
+                  setViewerFile(null)
+                }}
+              />
+            ) : null}
 
-          {viewerOpen && viewerPath && filesAgentId ? (
-            // Keyed on the whole WORKSPACE SCOPE, not just the path: the viewer resets its slice in a passive effect, which runs AFTER paint, so without a fresh mount one committed frame draws the previous read's bytes — and its line count and size — under the new heading. The path alone is not that scope: switching header focus from one agent to another while `?file=` holds still is the same stale paint. Same hazard `transcriptMatchesSession` guards for the transcript; nothing inside the viewer is worth carrying across either axis.
-            <SessionViewer
-              key={`${filesAgentId}:${filesSessionId ?? 'primary'}:${viewerPath}`}
-              agentId={filesAgentId}
-              {...(filesSessionId ? { sessionId: filesSessionId } : {})}
-              path={viewerPath}
-              // NOT part of the mount key: the pill must redraw the pane it already has, and a remount would re-read the file (and the diff) on every toggle.
-              mode={viewerMode}
-              onModeChange={(mode) => setViewerFile(viewerPath, filesAgentId, mode)}
-              diffRefreshTick={viewerDiffTick}
-              {...(canWriteWorkspace ? { onIndexChanged: onViewerIndexChanged } : {})}
-              onClose={() => {
-                // Keep the reader ON the workspace they were reading before dropping `agent=`. The
-                // param outranks the stored selection, so clearing it alone snaps focus back to the
-                // default — a scope change with no user action behind it, which would discard whatever
-                // is in the commit box, including a message the reader just paid a model pass for.
-                if (filesAgentId) setHeaderFocusSelection({ scope: headerFocusScope, agentId: filesAgentId })
-                setViewerFile(null)
-              }}
-            />
-          ) : null}
-
-          {/* CONVERSATION MODE, concealed rather than unmounted. Everything below belongs to the transcript and the composer, and all of it is state a session round trip must not spend: every expanded tool body and its refetch, the composer's caret and any open @mention menu (with the `mentionJoining` latch it reports upward, which has no owner left to clear it once the composer is gone), and the approval cards' poll. `contents` keeps the flex layout it has today exactly — an active box here would be a second flex item in the column.
+            {/* CONVERSATION MODE, concealed rather than unmounted. Everything below belongs to the transcript and the composer, and all of it is state a session round trip must not spend: every expanded tool body and its refetch, the composer's caret and any open @mention menu (with the `mentionJoining` latch it reports upward, which has no owner left to clear it once the composer is gone), and the approval cards' poll. `contents` keeps the flex layout it has today exactly — an active box here would be a second flex item in the column.
           The cost, accepted: a pending webchat MCP write approval is concealed with the composer and has no header twin the way permission requests do (those stay in the Requests popover). A reader who opened a file sees the agent stall until they come back. */}
-          <div data-conversation-pane="" className={viewerOpen ? 'hidden' : 'contents'}>
-            {wantTranscript && visibleMsgLoading && (
-              <div className="flex justify-center py-10">
-                <Spinner size={30} />
-              </div>
-            )}
-            {conversationOffline > 0 && (
-              <div className="card m-4 flex items-start gap-[10px] px-[18px] py-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary) desktop:m-0">
-                <Icon name="triangle-alert" size={15} color="var(--amber-500)" />
-                <span>
-                  Some participants&apos; records are on an offline daemon — this view may be missing part of the
-                  conversation until it reconnects.
-                </span>
-              </div>
-            )}
-            {wantTranscript && visibleMsgErr && !transcriptPurged && (
-              <div className="card m-4 flex items-start gap-[10px] px-[18px] py-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary) desktop:m-0">
-                <Icon name="triangle-alert" size={15} color="var(--amber-500)" />
-                <span>
-                  Couldn&apos;t load the transcript — the owning daemon may be offline. Session history is pulled live
-                  from the daemon, so it&apos;s unavailable while that machine is disconnected.
-                </span>
-              </div>
-            )}
-            {transcriptPurged && (
-              <div className="card m-4 flex items-start gap-[10px] px-[18px] py-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary) desktop:m-0">
-                <Icon name="trash-2" size={15} color="var(--text-tertiary)" />
-                <span>
-                  This transcript was deleted on {fmtDate(purgedAt)} by the session retention policy, together with any
-                  workspace created just for it. The details on this page are all that remain.
-                </span>
-              </div>
-            )}
-            {transcriptPartiallyPurged && (
-              <div className="card m-4 flex items-start gap-[10px] px-[18px] py-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary) desktop:m-0">
-                <Icon name="trash-2" size={15} color="var(--text-tertiary)" />
-                <span>
-                  Part of this history is missing:{' '}
-                  {memberCount > 1
-                    ? `${purgedMemberCount} of ${memberCount} participants had their transcript deleted`
-                    : 'this transcript was deleted'}{' '}
-                  on {fmtDate(purgedAt)} by the session retention policy. What you see below is the remaining record.
-                </span>
-              </div>
-            )}
-            {transcriptEmpty && !transcriptPurged && (
-              <div className="card m-4 flex flex-col items-center gap-[6px] px-6 py-[34px] text-center desktop:m-0">
-                <Icon name="message-square-dashed" size={20} color="var(--text-tertiary)" />
-                <div className="font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-                  No messages in this session yet.
+            <div data-conversation-pane="" className={viewerOpen ? 'hidden' : 'contents'}>
+              {wantTranscript && visibleMsgLoading && (
+                <div className="flex justify-center py-10">
+                  <Spinner size={30} />
                 </div>
-              </div>
-            )}
+              )}
+              {conversationOffline > 0 && (
+                <div className="card m-4 flex items-start gap-[10px] px-[18px] py-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary) desktop:m-0">
+                  <Icon name="triangle-alert" size={15} color="var(--amber-500)" />
+                  <span>
+                    Some participants&apos; records are on an offline daemon — this view may be missing part of the
+                    conversation until it reconnects.
+                  </span>
+                </div>
+              )}
+              {wantTranscript && visibleMsgErr && !transcriptPurged && (
+                <div className="card m-4 flex items-start gap-[10px] px-[18px] py-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary) desktop:m-0">
+                  <Icon name="triangle-alert" size={15} color="var(--amber-500)" />
+                  <span>
+                    Couldn&apos;t load the transcript — the owning daemon may be offline. Session history is pulled live
+                    from the daemon, so it&apos;s unavailable while that machine is disconnected.
+                  </span>
+                </div>
+              )}
+              {transcriptPurged && (
+                <div className="card m-4 flex items-start gap-[10px] px-[18px] py-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary) desktop:m-0">
+                  <Icon name="trash-2" size={15} color="var(--text-tertiary)" />
+                  <span>
+                    This transcript was deleted on {fmtDate(purgedAt)} by the session retention policy, together with
+                    any workspace created just for it. The details on this page are all that remain.
+                  </span>
+                </div>
+              )}
+              {transcriptPartiallyPurged && (
+                <div className="card m-4 flex items-start gap-[10px] px-[18px] py-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary) desktop:m-0">
+                  <Icon name="trash-2" size={15} color="var(--text-tertiary)" />
+                  <span>
+                    Part of this history is missing:{' '}
+                    {memberCount > 1
+                      ? `${purgedMemberCount} of ${memberCount} participants had their transcript deleted`
+                      : 'this transcript was deleted'}{' '}
+                    on {fmtDate(purgedAt)} by the session retention policy. What you see below is the remaining record.
+                  </span>
+                </div>
+              )}
+              {transcriptEmpty && !transcriptPurged && (
+                <div className="card m-4 flex flex-col items-center gap-[6px] px-6 py-[34px] text-center desktop:m-0">
+                  <Icon name="message-square-dashed" size={20} color="var(--text-tertiary)" />
+                  <div className="font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
+                    No messages in this session yet.
+                  </div>
+                </div>
+              )}
 
-            {conversationKey && conversationHasEarlier && (
-              <div className="flex items-center justify-center pt-[10px] font-sans text-[11.5px] font-medium leading-normal text-(--text-tertiary) desktop:pt-1 desktop:pb-3">
-                <button
-                  className="lnk text-[12px]"
-                  onClick={() => void loadEarlierConversation()}
-                  disabled={conversationPagingEarlier}
-                >
-                  {conversationPagingEarlier ? 'Loading earlier activity…' : 'Load earlier activity'}
-                </button>
-              </div>
-            )}
-            {visibleMsgPaging && (
-              <div className="flex items-center justify-center gap-2 pt-[10px] font-sans text-[11.5px] font-medium leading-normal text-(--text-tertiary) desktop:pt-1 desktop:pb-3">
-                <Spinner size={14} />
-                Loading earlier activity…
-              </div>
-            )}
-            {/* TRANSCRIPT — one shared tree. Mobile adds the 16px gutter column around
+              {conversationKey && conversationHasEarlier && (
+                <div className="flex items-center justify-center pt-[10px] font-sans text-[11.5px] font-medium leading-normal text-(--text-tertiary) desktop:pt-1 desktop:pb-3">
+                  <button
+                    className="lnk text-[12px]"
+                    onClick={() => void loadEarlierConversation()}
+                    disabled={conversationPagingEarlier}
+                  >
+                    {conversationPagingEarlier ? 'Loading earlier activity…' : 'Load earlier activity'}
+                  </button>
+                </div>
+              )}
+              {visibleMsgPaging && (
+                <div className="flex items-center justify-center gap-2 pt-[10px] font-sans text-[11.5px] font-medium leading-normal text-(--text-tertiary) desktop:pt-1 desktop:pb-3">
+                  <Spinner size={14} />
+                  Loading earlier activity…
+                </div>
+              )}
+              {/* TRANSCRIPT — one shared tree. Mobile adds the 16px gutter column around
           turns + live tail. The column grows to fill the page (flex-1 inside the
           min-h-full wrap) so the flex-1 spacer below can pin the composer to the
           bottom even when the transcript is short. */}
-            {/* `max-desktop:pb-0` for the same reason as the wrap above: this column's
+              {/* `max-desktop:pb-0` for the same reason as the wrap above: this column's
           last child is the sticky composer, and a bottom gutter under it is a strip
           the composer stops short of. (Longhand `pb-*` always sorts after shorthand
           `p-*`, so the cancel wins — STYLE.md §8.) */}
-            <div className="flex flex-1 flex-col gap-4 p-3 max-desktop:pb-0 desktop:gap-0 desktop:p-0">
-              {turns.length > 0 && (
-                <div className="flex flex-col gap-4 max-desktop:pb-3 desktop:gap-[15px]">
-                  {turns.map((turn, ti) => (
-                    // The turn's clock time is its own centred line above the message —
-                    // a shared separator for both sides, instead of a label-row tail
-                    // that never lines up with the bubble edge on either side.
-                    <div key={turn.key} className="flex flex-col gap-[5px]">
-                      {turn.time && (
-                        <div className="mono text-center text-[11px] leading-normal text-(--text-tertiary)">
-                          {turn.time}
-                        </div>
-                      )}
-                      {turn.kind === 'user' ? (
-                        // 2b: user turns are right-aligned brand-soft bubbles. A sender label
-                        // sits above the bubble only when it isn't you (platform user / cron).
-                        <div className="group/turn flex items-start justify-end gap-[9px]">
-                          <div className="relative flex min-w-0 max-w-[86%] flex-col items-end gap-[3px]">
-                            {showsSenderLabel(turn) && (
-                              <span className="flex items-center gap-[6px] pr-1 font-sans text-[11px] font-medium leading-normal text-(--text-tertiary)">
-                                {turn.isCron && turn.cronId ? (
-                                  <Link className="lnk text-inherit" href={orgPath(`/crons/${turn.cronId}`)}>
-                                    {turn.sp.name}
-                                  </Link>
-                                ) : (
-                                  <span>{turn.sp.name}</span>
-                                )}
-                              </span>
-                            )}
-                            <div className={SELF_BUBBLE}>
-                              {turn.image && (
-                                <img
-                                  src={`data:${turn.image.mimeType};base64,${turn.image.data}`}
-                                  alt={turn.image.name}
-                                  className={`max-h-[360px] max-w-full rounded-md object-contain ${turn.text ? 'mb-[10px]' : ''}`}
-                                />
+              <div className="flex flex-1 flex-col gap-4 p-3 max-desktop:pb-0 desktop:gap-0 desktop:p-0">
+                {turns.length > 0 && (
+                  <div className="flex flex-col gap-4 max-desktop:pb-3 desktop:gap-[15px]">
+                    {turns.map((turn, ti) => (
+                      // The turn's clock time is its own centred line above the message —
+                      // a shared separator for both sides, instead of a label-row tail
+                      // that never lines up with the bubble edge on either side.
+                      <div key={turn.key} className="flex flex-col gap-[5px]">
+                        {turn.time && (
+                          <div className="mono text-center text-[11px] leading-normal text-(--text-tertiary)">
+                            {turn.time}
+                          </div>
+                        )}
+                        {turn.kind === 'user' ? (
+                          // 2b: user turns are right-aligned brand-soft bubbles. A sender label
+                          // sits above the bubble only when it isn't you (platform user / cron).
+                          <div className="group/turn flex items-start justify-end gap-[9px]">
+                            <div className="relative flex min-w-0 max-w-[86%] flex-col items-end gap-[3px]">
+                              {showsSenderLabel(turn) && (
+                                <span className="flex items-center gap-[6px] pr-1 font-sans text-[11px] font-medium leading-normal text-(--text-tertiary)">
+                                  {turn.isCron && turn.cronId ? (
+                                    <Link className="lnk text-inherit" href={orgPath(`/crons/${turn.cronId}`)}>
+                                      {turn.sp.name}
+                                    </Link>
+                                  ) : (
+                                    <span>{turn.sp.name}</span>
+                                  )}
+                                </span>
                               )}
-                              {turn.text && <MessageText text={turn.text} platform={turn.platform} />}
-                            </div>
-                            {/* Sent bubbles are complete by definition — the copy affordance
+                              <div className={SELF_BUBBLE}>
+                                {turn.image && (
+                                  <img
+                                    src={`data:${turn.image.mimeType};base64,${turn.image.data}`}
+                                    alt={turn.image.name}
+                                    className={`max-h-[360px] max-w-full rounded-md object-contain ${turn.text ? 'mb-[10px]' : ''}`}
+                                  />
+                                )}
+                                {turn.text && <MessageText text={turn.text} platform={turn.platform} />}
+                              </div>
+                              {/* Sent bubbles are complete by definition — the copy affordance
                         (hover-revealed, right-aligned under the bubble) always mounts.
                         Absolutely positioned into the inter-turn gap so revealing it
                         never changes the row's height. */}
-                            {turn.text && (
-                              <span className="absolute right-0 top-full">
-                                <CopyTurnButton text={turn.text} />
-                              </span>
-                            )}
+                              {turn.text && (
+                                <span className="absolute right-0 top-full">
+                                  <CopyTurnButton text={turn.text} />
+                                </span>
+                              )}
+                            </div>
+                            <ParticipantAvatar
+                              agent={turn.agent}
+                              avatarUrl={turn.avatarUrl}
+                              avatarInitials={turn.avatarInitials}
+                              platformMark={usesIntegrationAvatar ? sessionIntegration : undefined}
+                              sp={turn.sp}
+                              isCron={turn.isCron}
+                              // Optically centre the 26px mark on the bubble's FIRST LINE, not
+                              // on the bubble's top edge: 9px of padding plus half of a 21px
+                              // line puts that centre 19.5px down, while a top-aligned mark
+                              // centres at 13px — the 6px it looked too high by. A labelled row
+                              // keeps the mark level with its label instead, like the bot side.
+                              className={showsSenderLabel(turn) ? '' : 'mt-[6px]'}
+                            />
                           </div>
-                          <ParticipantAvatar
-                            agent={turn.agent}
-                            avatarUrl={turn.avatarUrl}
-                            avatarInitials={turn.avatarInitials}
-                            platformMark={usesIntegrationAvatar ? sessionIntegration : undefined}
-                            sp={turn.sp}
-                            isCron={turn.isCron}
-                            // Optically centre the 26px mark on the bubble's FIRST LINE, not
-                            // on the bubble's top edge: 9px of padding plus half of a 21px
-                            // line puts that centre 19.5px down, while a top-aligned mark
-                            // centres at 13px — the 6px it looked too high by. A labelled row
-                            // keeps the mark level with its label instead, like the bot side.
-                            className={showsSenderLabel(turn) ? '' : 'mt-[6px]'}
-                          />
-                        </div>
-                      ) : (
-                        (() => {
-                          // 2b: the spoken answer (MSG/DONE) is plain text; the agent's work
-                          // (reasoning / plan / tool / edit) collapses behind a per-turn toggle.
-                          const textSteps = turn.steps.filter((s) => !WORK_LANES.has(s.lane))
-                          const workSteps = turn.steps.filter((s) => WORK_LANES.has(s.lane))
-                          // Reasoning steps / tool commands / edited FILES (distinct paths across
-                          // EDIT rows, since one EDIT row can touch several files).
-                          const { thinkCount, toolCount, editCount } = workCounts(workSteps)
-                          const summary = workSummary(thinkCount, toolCount, editCount)
-                          // Is this turn still streaming? A multi-agent live webchat runs
-                          // several reply lanes at once, so a TAGGED turn asks its own lane
-                          // (an earlier still-active participant must not show the copy
-                          // affordance or lose its live line just because a later turn renders
-                          // below it). Lane-less/single-agent streams keep the trailing-turn
-                          // fallback. statusLabel carries the RAW session state — the
-                          // active-turn predicate lives (and is tested) in session-work.ts.
-                          const turnInFlight = sessionTurnInFlight(pgBusy, session.statusLabel)
-                          const busyLanes = turnInFlight ? getBusyLaneAgentIds(session.id) : []
-                          // The lane only says WHICH AGENT is busy — restrict the match to that
-                          // agent's LAST turn so its finished history stays non-streaming.
-                          const streaming =
-                            turnInFlight &&
-                            (turn.agentId && busyLanes.length > 0
-                              ? busyLanes.includes(turn.agentId) && lastBotTurnIndexByAgent.get(turn.agentId) === ti
-                              : ti === turns.length - 1)
-                          const openWork = workPanelOpen(workOverride.get(turn.key ?? ''))
-                          // Is the WORK itself still running? `streaming` alone is turn-level —
-                          // it stays true while the spoken answer streams AFTER the last tool
-                          // finished, which must not keep the live line alive. ACP tool calls
-                          // can also run in PARALLEL, each update replacing its original row
-                          // in place (keyed by toolCallId) — so "the newest row is finished"
-                          // does not mean the work is: any non-terminal tool row keeps the
-                          // work running, and the LATEST such row is what the toggle line
-                          // reports. With no active tool, a trailing unfinished work step
-                          // still counts (THINK rows carry no status and run until
-                          // superseded); a trailing text step means the agent moved on to its
-                          // answer.
-                          const stepDone = (st?: FmtStep) =>
-                            ['completed', 'failed'].includes((st?.msg?.toolStatus ?? '').toLowerCase())
-                          const activeTool = [...workSteps].reverse().find((st) => st.msg?.toolCallId && !stepDone(st))
-                          const lastStep = turn.steps[turn.steps.length - 1]
-                          const tailRunning = !!lastStep && WORK_LANES.has(lastStep.lane) && !stepDone(lastStep)
-                          const liveStep = activeTool ?? (tailRunning ? lastStep : undefined)
-                          const workRunning = streaming && liveStep !== undefined
-                          // While work runs, the toggle line also carries what is running RIGHT
-                          // NOW — the live step's first line (tool rows keep the command in
-                          // `code`) — so a collapsed panel still shows live progress.
-                          // trimStart skips the blank lines reasoning text can open with; a
-                          // reasoning line also drops its markdown markers (same as the row title).
-                          const liveRaw =
-                            workRunning && liveStep
-                              ? (liveStep.text || liveStep.code)?.trimStart().split('\n', 1)[0]?.trim()
-                              : undefined
-                          const liveLine = liveRaw && liveStep?.text ? stripMdMarkers(liveRaw) : liveRaw
-                          // Step identity for the fade-in key: two consecutive steps can show
-                          // the SAME first line, and a keyed-by-text span would keep its DOM
-                          // node and never replay the animation.
-                          const liveKey =
-                            liveStep && liveLine
-                              ? `${liveStep.msg?.toolCallId ?? turn.steps.indexOf(liveStep)}:${liveLine}`
-                              : undefined
-                          // Keyed by agent id where there is one so the colour survives a
-                          // rename; a mock/playground row without an id falls back to the
-                          // display name, which is stable for as long as the row is.
-                          const turnTone = agentToneColor(turn.agentId || turn.agentName)
-                          // What the bubble-level copy button copies: the spoken answer.
-                          const answerText = textSteps
-                            .map((st) => st.text)
-                            .filter(Boolean)
-                            .join('\n\n')
-                          return (
-                            <div
-                              key={`${session.id}:${ti}`}
-                              className="group/turn flex items-start gap-2 desktop:gap-[10px]"
-                            >
-                              <span className="av h-[26px] w-[26px] flex-none rounded-md">
-                                <AgentIconView
-                                  icon={((turn.agentId ? agentById.get(turn.agentId) : owner) ?? owner)?.icon}
-                                  runtime={
-                                    (turn.agentId ? agentById.get(turn.agentId)?.runtime : undefined) ??
-                                    (agentRuntime || turn.model)
-                                  }
-                                  size={26}
-                                />
-                              </span>
-                              <div className="min-w-0 flex-1" style={{ '--agent-accent': turnTone } as CSSProperties}>
-                                <div className="mb-[5px] flex items-center gap-[7px]">
-                                  <span className={AGENT_NAME}>{turn.agentName}</span>
-                                </div>
-                                {/* One bubble per text step: a turn that answers in two chunks
+                        ) : (
+                          (() => {
+                            // 2b: the spoken answer (MSG/DONE) is plain text; the agent's work
+                            // (reasoning / plan / tool / edit) collapses behind a per-turn toggle.
+                            const textSteps = turn.steps.filter((s) => !WORK_LANES.has(s.lane))
+                            const workSteps = turn.steps.filter((s) => WORK_LANES.has(s.lane))
+                            // Reasoning steps / tool commands / edited FILES (distinct paths across
+                            // EDIT rows, since one EDIT row can touch several files).
+                            const { thinkCount, toolCount, editCount } = workCounts(workSteps)
+                            const summary = workSummary(thinkCount, toolCount, editCount)
+                            // Is this turn still streaming? A multi-agent live webchat runs
+                            // several reply lanes at once, so a TAGGED turn asks its own lane
+                            // (an earlier still-active participant must not show the copy
+                            // affordance or lose its live line just because a later turn renders
+                            // below it). Lane-less/single-agent streams keep the trailing-turn
+                            // fallback. statusLabel carries the RAW session state — the
+                            // active-turn predicate lives (and is tested) in session-work.ts.
+                            const turnInFlight = sessionTurnInFlight(pgBusy, session.statusLabel)
+                            const busyLanes = turnInFlight ? getBusyLaneAgentIds(session.id) : []
+                            // The lane only says WHICH AGENT is busy — restrict the match to that
+                            // agent's LAST turn so its finished history stays non-streaming.
+                            const streaming =
+                              turnInFlight &&
+                              (turn.agentId && busyLanes.length > 0
+                                ? busyLanes.includes(turn.agentId) && lastBotTurnIndexByAgent.get(turn.agentId) === ti
+                                : ti === turns.length - 1)
+                            const openWork = workPanelOpen(workOverride.get(turn.key ?? ''))
+                            // Is the WORK itself still running? `streaming` alone is turn-level —
+                            // it stays true while the spoken answer streams AFTER the last tool
+                            // finished, which must not keep the live line alive. ACP tool calls
+                            // can also run in PARALLEL, each update replacing its original row
+                            // in place (keyed by toolCallId) — so "the newest row is finished"
+                            // does not mean the work is: any non-terminal tool row keeps the
+                            // work running, and the LATEST such row is what the toggle line
+                            // reports. With no active tool, a trailing unfinished work step
+                            // still counts (THINK rows carry no status and run until
+                            // superseded); a trailing text step means the agent moved on to its
+                            // answer.
+                            const stepDone = (st?: FmtStep) =>
+                              ['completed', 'failed'].includes((st?.msg?.toolStatus ?? '').toLowerCase())
+                            const activeTool = [...workSteps]
+                              .reverse()
+                              .find((st) => st.msg?.toolCallId && !stepDone(st))
+                            const lastStep = turn.steps[turn.steps.length - 1]
+                            const tailRunning = !!lastStep && WORK_LANES.has(lastStep.lane) && !stepDone(lastStep)
+                            const liveStep = activeTool ?? (tailRunning ? lastStep : undefined)
+                            const workRunning = streaming && liveStep !== undefined
+                            // While work runs, the toggle line also carries what is running RIGHT
+                            // NOW — the live step's first line (tool rows keep the command in
+                            // `code`) — so a collapsed panel still shows live progress.
+                            // trimStart skips the blank lines reasoning text can open with; a
+                            // reasoning line also drops its markdown markers (same as the row title).
+                            const liveRaw =
+                              workRunning && liveStep
+                                ? (liveStep.text || liveStep.code)?.trimStart().split('\n', 1)[0]?.trim()
+                                : undefined
+                            const liveLine = liveRaw && liveStep?.text ? stripMdMarkers(liveRaw) : liveRaw
+                            // Step identity for the fade-in key: two consecutive steps can show
+                            // the SAME first line, and a keyed-by-text span would keep its DOM
+                            // node and never replay the animation.
+                            const liveKey =
+                              liveStep && liveLine
+                                ? `${liveStep.msg?.toolCallId ?? turn.steps.indexOf(liveStep)}:${liveLine}`
+                                : undefined
+                            // Keyed by agent id where there is one so the colour survives a
+                            // rename; a mock/playground row without an id falls back to the
+                            // display name, which is stable for as long as the row is.
+                            const turnTone = agentToneColor(turn.agentId || turn.agentName)
+                            // What the bubble-level copy button copies: the spoken answer.
+                            const answerText = textSteps
+                              .map((st) => st.text)
+                              .filter(Boolean)
+                              .join('\n\n')
+                            return (
+                              <div
+                                key={`${session.id}:${ti}`}
+                                className="group/turn flex items-start gap-2 desktop:gap-[10px]"
+                              >
+                                <span className="av h-[26px] w-[26px] flex-none rounded-md">
+                                  <AgentIconView
+                                    icon={((turn.agentId ? agentById.get(turn.agentId) : owner) ?? owner)?.icon}
+                                    runtime={
+                                      (turn.agentId ? agentById.get(turn.agentId)?.runtime : undefined) ??
+                                      (agentRuntime || turn.model)
+                                    }
+                                    size={26}
+                                  />
+                                </span>
+                                <div className="min-w-0 flex-1" style={{ '--agent-accent': turnTone } as CSSProperties}>
+                                  <div className="mb-[5px] flex items-center gap-[7px]">
+                                    <span className={AGENT_NAME}>{turn.agentName}</span>
+                                  </div>
+                                  {/* One bubble per text step: a turn that answers in two chunks
                             arrives as two delivered messages, so one wrapper around the set
                             would merge messages the platform kept apart. */}
-                                {textSteps.map((st, si) => (
-                                  <div key={si} className={`${AGENT_BUBBLE} ${si > 0 ? 'mt-2' : ''}`}>
-                                    {st.image && (
-                                      <img
-                                        src={`data:${st.image.mimeType};base64,${st.image.data}`}
-                                        alt={st.image.name}
-                                        className={`max-h-[360px] max-w-full rounded-md object-contain ${st.text ? 'mb-[10px]' : ''}`}
-                                      />
-                                    )}
-                                    {st.text && (
-                                      <div className="whitespace-pre-wrap">
-                                        <MessageText text={st.text} platform={st.platform} />
-                                      </div>
-                                    )}
-                                    <StepExtras step={st} sessionId={toolSid} />
-                                  </div>
-                                ))}
-                                {workSteps.length > 0 && (
-                                  <>
-                                    {/* One row: the work toggle, with the bubble's copy button at
-                                the line's end — mounted only once the turn has finished. */}
-                                    <div className="mt-2 flex min-w-0 items-center gap-[6px]">
-                                      <button
-                                        type="button"
-                                        onClick={() => toggleWork(turn.key ?? '', openWork)}
-                                        className="inline-flex min-w-0 items-center gap-[6px] border-0 bg-transparent p-0 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary) hover:text-(--text-secondary)"
-                                        title={openWork ? 'Hide the agent’s work' : 'Show the agent’s work'}
-                                      >
-                                        <Icon
-                                          name={openWork ? 'chevron-down' : 'chevron-right'}
-                                          size={13}
-                                          color="var(--text-tertiary)"
+                                  {textSteps.map((st, si) => (
+                                    <div key={si} className={`${AGENT_BUBBLE} ${si > 0 ? 'mt-2' : ''}`}>
+                                      {st.image && (
+                                        <img
+                                          src={`data:${st.image.mimeType};base64,${st.image.data}`}
+                                          alt={st.image.name}
+                                          className={`max-h-[360px] max-w-full rounded-md object-contain ${st.text ? 'mb-[10px]' : ''}`}
                                         />
-                                        <span className="flex-none">{summary || 'Details'}</span>
-                                        {liveLine && (
-                                          // Keyed by step identity + content: a new step (or a new
-                                          // first line within one) remounts the span, replaying the
-                                          // ac-rise fade-in (honors reduced-motion in globals.css).
-                                          <span key={liveKey} className="work-live min-w-0 truncate">
-                                            · {liveLine}
-                                          </span>
-                                        )}
-                                      </button>
-                                      {!streaming && answerText && <CopyTurnButton text={answerText} />}
+                                      )}
+                                      {st.text && (
+                                        <div className="whitespace-pre-wrap">
+                                          <MessageText text={st.text} platform={st.platform} />
+                                        </div>
+                                      )}
+                                      <StepExtras step={st} sessionId={toolSid} />
                                     </div>
-                                    {openWork && (
-                                      <div className="mt-2 overflow-hidden rounded-md border border-(--border-subtle) bg-(--surface-app)">
-                                        {/* All work steps show, streaming or not — a live turn's
-                                    panel grows as steps arrive so the whole run is visible. */}
-                                        {workSteps.map((st, si) => (
-                                          <WorkStepRow
-                                            // Keyed by tool identity where there is one, so an
-                                            // open row survives re-renders as new steps stream
-                                            // in. Steps without a tool id (THINK rows) fall back
-                                            // to the index; within one agent's turn a toolCallId
-                                            // appears once.
-                                            key={st.msg?.toolCallId ?? `i:${si}`}
-                                            step={st}
-                                            sessionId={toolSid}
-                                            divider={si > 0}
+                                  ))}
+                                  {workSteps.length > 0 && (
+                                    <>
+                                      {/* One row: the work toggle, with the bubble's copy button at
+                                the line's end — mounted only once the turn has finished. */}
+                                      <div className="mt-2 flex min-w-0 items-center gap-[6px]">
+                                        <button
+                                          type="button"
+                                          onClick={() => toggleWork(turn.key ?? '', openWork)}
+                                          className="inline-flex min-w-0 items-center gap-[6px] border-0 bg-transparent p-0 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary) hover:text-(--text-secondary)"
+                                          title={openWork ? 'Hide the agent’s work' : 'Show the agent’s work'}
+                                        >
+                                          <Icon
+                                            name={openWork ? 'chevron-down' : 'chevron-right'}
+                                            size={13}
+                                            color="var(--text-tertiary)"
                                           />
-                                        ))}
+                                          <span className="flex-none">{summary || 'Details'}</span>
+                                          {liveLine && (
+                                            // Keyed by step identity + content: a new step (or a new
+                                            // first line within one) remounts the span, replaying the
+                                            // ac-rise fade-in (honors reduced-motion in globals.css).
+                                            <span key={liveKey} className="work-live min-w-0 truncate">
+                                              · {liveLine}
+                                            </span>
+                                          )}
+                                        </button>
+                                        {!streaming && answerText && <CopyTurnButton text={answerText} />}
                                       </div>
-                                    )}
-                                  </>
-                                )}
-                                {/* A turn with no work has no toggle row — the finished
+                                      {openWork && (
+                                        <div className="mt-2 overflow-hidden rounded-md border border-(--border-subtle) bg-(--surface-app)">
+                                          {/* All work steps show, streaming or not — a live turn's
+                                    panel grows as steps arrive so the whole run is visible. */}
+                                          {workSteps.map((st, si) => (
+                                            <WorkStepRow
+                                              // Keyed by tool identity where there is one, so an
+                                              // open row survives re-renders as new steps stream
+                                              // in. Steps without a tool id (THINK rows) fall back
+                                              // to the index; within one agent's turn a toolCallId
+                                              // appears once.
+                                              key={st.msg?.toolCallId ?? `i:${si}`}
+                                              step={st}
+                                              sessionId={toolSid}
+                                              divider={si > 0}
+                                            />
+                                          ))}
+                                        </div>
+                                      )}
+                                    </>
+                                  )}
+                                  {/* A turn with no work has no toggle row — the finished
                             bubble's copy button gets its own line instead. */}
-                                {workSteps.length === 0 && !streaming && answerText && (
-                                  <div className="mt-2 flex">
-                                    <CopyTurnButton text={answerText} />
-                                  </div>
-                                )}
+                                  {workSteps.length === 0 && !streaming && answerText && (
+                                    <div className="mt-2 flex">
+                                      <CopyTurnButton text={answerText} />
+                                    </div>
+                                  )}
+                                </div>
                               </div>
-                            </div>
-                          )
-                        })()
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
+                            )
+                          })()
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
 
-              {/* LIVE INDICATOR — mobile-only trailing bot avatar + blue-dot note while a
+                {/* LIVE INDICATOR — mobile-only trailing bot avatar + blue-dot note while a
             platform run is live. (A live playground/webchat surface uses the
             typing-dots affordance below instead.) */}
-              {session.status === 'online' && !isLive && (
-                <div className="flex items-center gap-[10px] desktop:hidden">
-                  <span className="av h-[30px] w-[30px] flex-none rounded-md">
-                    <AgentIconView icon={owner?.icon} runtime={agentRuntime} size={30} />
-                  </span>
-                  <span className="inline-flex items-center gap-[6px] font-sans text-[12px] font-medium leading-normal text-(--text-tertiary)">
-                    <span className="h-[6px] w-[6px] rounded-full bg-(--blue-500)" />
-                    {session.statusLabel || 'Live'}
-                  </span>
-                </div>
-              )}
+                {session.status === 'online' && !isLive && (
+                  <div className="flex items-center gap-[10px] desktop:hidden">
+                    <span className="av h-[30px] w-[30px] flex-none rounded-md">
+                      <AgentIconView icon={owner?.icon} runtime={agentRuntime} size={30} />
+                    </span>
+                    <span className="inline-flex items-center gap-[6px] font-sans text-[12px] font-medium leading-normal text-(--text-tertiary)">
+                      <span className="h-[6px] w-[6px] rounded-full bg-(--blue-500)" />
+                      {session.statusLabel || 'Live'}
+                    </span>
+                  </div>
+                )}
 
-              {/* Playground / resumed webchat: typing indicator, starter prompts, composer. */}
-              {isLive && (
-                <>
-                  {pgBusy &&
-                    (() => {
-                      // Multi-agent conversations attribute the typing indicator to
-                      // the participants whose reply lanes are STILL OPEN — after a
-                      // supersession it is the REGENERATING agent working, not the
-                      // primary. Single-agent (and lane-less adopted) sessions keep
-                      // the owner row.
-                      const busyAgents =
-                        (session.participants?.length ?? 0) > 1
-                          ? getBusyLaneAgentIds(session.id)
-                              .map((agentId) => agentById.get(agentId))
-                              .filter((agent): agent is Agent => agent !== undefined)
-                          : []
-                      const rows = busyAgents.length > 0 ? busyAgents : [owner]
-                      // 26px mark + 10px gap, same geometry as an agent turn's row, so the
-                      // dots start on the same left edge as that agent's bubbles above.
-                      return rows.map((agent, i) => (
-                        <div key={agent?.id ?? i} className="flex items-center gap-[10px] desktop:mt-[14px]">
-                          <span className="av h-[26px] w-[26px] flex-none rounded-md">
-                            <AgentIconView icon={agent?.icon} runtime={agent?.runtime || agentRuntime} size={26} />
-                          </span>
-                          <div className="inline-flex items-center gap-1 rounded-[11px] bg-(--brand-soft) px-[14px] py-[11px]">
-                            <span className="tdot" />
-                            <span className="tdot [animation-delay:.18s]" />
-                            <span className="tdot [animation-delay:.36s]" />
+                {/* Playground / resumed webchat: typing indicator, starter prompts, composer. */}
+                {isLive && (
+                  <>
+                    {pgBusy &&
+                      (() => {
+                        // Multi-agent conversations attribute the typing indicator to
+                        // the participants whose reply lanes are STILL OPEN — after a
+                        // supersession it is the REGENERATING agent working, not the
+                        // primary. Single-agent (and lane-less adopted) sessions keep
+                        // the owner row.
+                        const busyAgents =
+                          (session.participants?.length ?? 0) > 1
+                            ? getBusyLaneAgentIds(session.id)
+                                .map((agentId) => agentById.get(agentId))
+                                .filter((agent): agent is Agent => agent !== undefined)
+                            : []
+                        const rows = busyAgents.length > 0 ? busyAgents : [owner]
+                        // 26px mark + 10px gap, same geometry as an agent turn's row, so the
+                        // dots start on the same left edge as that agent's bubbles above.
+                        return rows.map((agent, i) => (
+                          <div key={agent?.id ?? i} className="flex items-center gap-[10px] desktop:mt-[14px]">
+                            <span className="av h-[26px] w-[26px] flex-none rounded-md">
+                              <AgentIconView icon={agent?.icon} runtime={agent?.runtime || agentRuntime} size={26} />
+                            </span>
+                            <div className="inline-flex items-center gap-1 rounded-[11px] bg-(--brand-soft) px-[14px] py-[11px]">
+                              <span className="tdot" />
+                              <span className="tdot [animation-delay:.18s]" />
+                              <span className="tdot [animation-delay:.36s]" />
+                            </div>
                           </div>
+                        ))
+                      })()}
+                    {pgEmpty && (
+                      <div className="desktop:mt-[6px]">
+                        <div className="mb-2 font-mono text-[10.5px] font-semibold uppercase tracking-[.08em] text-(--text-tertiary)">
+                          Start with
                         </div>
-                      ))
-                    })()}
-                  {pgEmpty && (
-                    <div className="desktop:mt-[6px]">
-                      <div className="mb-2 font-mono text-[10.5px] font-semibold uppercase tracking-[.08em] text-(--text-tertiary)">
-                        Start with
+                        <div className="flex flex-wrap gap-2">
+                          {prompts.map((p) => (
+                            <button key={p} className="chip whitespace-nowrap" onClick={() => onPgSend(p)}>
+                              {p}
+                            </button>
+                          ))}
+                        </div>
                       </div>
-                      <div className="flex flex-wrap gap-2">
-                        {prompts.map((p) => (
-                          <button key={p} className="chip whitespace-nowrap" onClick={() => onPgSend(p)}>
-                            {p}
-                          </button>
-                        ))}
+                    )}
+                    {imageError && (
+                      <div className="font-sans text-[11.5px] font-medium leading-normal text-(--red-600)">
+                        {imageError}
                       </div>
-                    </div>
-                  )}
-                  {imageError && (
-                    <div className="font-sans text-[11.5px] font-medium leading-normal text-(--red-600)">
-                      {imageError}
-                    </div>
-                  )}
-                  {/* Flexible spacer (design): pushes the composer to the bottom of the page
+                    )}
+                    {/* Flexible spacer (design): pushes the composer to the bottom of the page
                 when the transcript is short; collapses once content overflows. -mt-4
                 cancels the mobile gutter's gap so a collapsed spacer adds no height. */}
-                  <div aria-hidden="true" className="-mt-4 flex-1 desktop:mt-0 desktop:min-h-[18px]" />
-                  {/* Sticky footer: `bottom-0` pins the composer to the bottom of the transcript
+                    <div aria-hidden="true" className="-mt-4 flex-1 desktop:mt-0 desktop:min-h-[18px]" />
+                    {/* Sticky footer: `bottom-0` pins the composer to the bottom of the transcript
                 column's OWN scroller (no longer the page), so it stays reachable while the
                 transcript scrolls behind its opaque background. The old negative-bottom bleed is
                 gone — the column's overflow would clip it — so the composer rests on the scroller's
                 bottom edge and the `.content` inset below reads as a clean margin. A top gradient
                 softens the seam where the transcript slides underneath. */}
-                  <div className="sticky bottom-0 z-10 bg-(--surface-app) pt-2 desktop:pt-3">
-                    <div
-                      aria-hidden="true"
-                      className="pointer-events-none absolute inset-x-0 -top-5 h-5 bg-gradient-to-b from-transparent to-(--surface-app)"
-                    />
-                    {/* Jump-to-bottom: floats just above the composer while the reader is
+                    <div className="sticky bottom-0 z-10 bg-(--surface-app) pt-2 desktop:pt-3">
+                      <div
+                        aria-hidden="true"
+                        className="pointer-events-none absolute inset-x-0 -top-5 h-5 bg-gradient-to-b from-transparent to-(--surface-app)"
+                      />
+                      {/* Jump-to-bottom: floats just above the composer while the reader is
                   scrolled up out of a transcript long enough to scroll. Click re-arms
                   the bottom-follow (same path a send takes) and snaps to the newest turn. */}
-                    {awayFromBottom && (
-                      <button
-                        type="button"
-                        onClick={() => stickToBottom()}
-                        aria-label="Scroll to latest messages"
-                        title="Scroll to latest"
-                        className="absolute -top-3 left-1/2 z-10 flex h-8 w-8 -translate-x-1/2 -translate-y-full cursor-pointer items-center justify-center rounded-full border border-(--border-default) bg-(--surface-card) text-(--text-secondary) shadow-(--shadow-md) transition-colors hover:border-(--border-strong) hover:bg-(--surface-hover) hover:text-(--text-primary)"
-                      >
-                        <Icon name="chevron-down" size={16} />
-                      </button>
-                    )}
-                    {approvalCard('mb-2 max-desktop:rounded-lg')}
-                    {/* Webchat MCP write approvals ride the same sticky footer as permission
+                      {awayFromBottom && (
+                        <button
+                          type="button"
+                          onClick={() => stickToBottom()}
+                          aria-label="Scroll to latest messages"
+                          title="Scroll to latest"
+                          className="absolute -top-3 left-1/2 z-10 flex h-8 w-8 -translate-x-1/2 -translate-y-full cursor-pointer items-center justify-center rounded-full border border-(--border-default) bg-(--surface-card) text-(--text-secondary) shadow-(--shadow-md) transition-colors hover:border-(--border-strong) hover:bg-(--surface-hover) hover:text-(--text-primary)"
+                        >
+                          <Icon name="chevron-down" size={16} />
+                        </button>
+                      )}
+                      {approvalCard('mb-2 max-desktop:rounded-lg')}
+                      {/* Webchat MCP write approvals ride the same sticky footer as permission
                   requests: always above the input, never scrolled away. */}
-                    {activeOrg && session.agentId && webchatConversationId && (
-                      <WebchatMcpApprovalCard
-                        key={webchatConversationId}
-                        orgId={activeOrg.id}
-                        agentId={session.agentId}
-                        conversationId={webchatConversationId}
-                        className="mb-2"
-                      />
-                    )}
-                    {/* Queued messages (Claude Code-style): sends accepted while a turn was
+                      {activeOrg && session.agentId && webchatConversationId && (
+                        <WebchatMcpApprovalCard
+                          key={webchatConversationId}
+                          orgId={activeOrg.id}
+                          agentId={session.agentId}
+                          conversationId={webchatConversationId}
+                          className="mb-2"
+                        />
+                      )}
+                      {/* Queued messages (Claude Code-style): sends accepted while a turn was
                   still streaming wait here, dispatch in order as turns finish, and can
                   be cancelled individually before they go out. */}
-                    {pgQueue.length > 0 && (
-                      <div className="mb-2 flex flex-col items-end gap-1">
-                        {pgQueue.map((q) => (
-                          <div
-                            key={q.queueId}
-                            className="group flex max-w-full items-center gap-2 rounded-[9px] border border-dashed border-(--border-default) bg-(--surface-card) py-[5px] pr-[5px] pl-3"
-                          >
-                            <Icon name="clock" size={13} color="var(--text-tertiary)" />
-                            <span
-                              className="min-w-0 truncate font-sans text-[13px] leading-normal text-(--text-tertiary)"
-                              title={q.text}
+                      {pgQueue.length > 0 && (
+                        <div className="mb-2 flex flex-col items-end gap-1">
+                          {pgQueue.map((q) => (
+                            <div
+                              key={q.queueId}
+                              className="group flex max-w-full items-center gap-2 rounded-[9px] border border-dashed border-(--border-default) bg-(--surface-card) py-[5px] pr-[5px] pl-3"
                             >
-                              {q.text || q.image?.name || 'Image'}
-                            </span>
-                            <button
-                              type="button"
-                              className="flex h-6 w-6 flex-none cursor-pointer items-center justify-center rounded-md border-0 bg-transparent text-(--text-tertiary) opacity-0 group-hover:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100 hover:bg-(--surface-hover) hover:text-(--text-secondary)"
-                              aria-label="Cancel queued message"
-                              title="Cancel queued message"
-                              onClick={() => pgCancelQueued(session.id, q.queueId)}
-                            >
-                              <Icon name="x" size={13} />
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                    {/* Composer card (design "achero"): textarea on top, a toolbar row below
+                              <Icon name="clock" size={13} color="var(--text-tertiary)" />
+                              <span
+                                className="min-w-0 truncate font-sans text-[13px] leading-normal text-(--text-tertiary)"
+                                title={q.text}
+                              >
+                                {q.text || q.image?.name || 'Image'}
+                              </span>
+                              <button
+                                type="button"
+                                className="flex h-6 w-6 flex-none cursor-pointer items-center justify-center rounded-md border-0 bg-transparent text-(--text-tertiary) opacity-0 group-hover:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100 hover:bg-(--surface-hover) hover:text-(--text-secondary)"
+                                aria-label="Cancel queued message"
+                                title="Cancel queued message"
+                                onClick={() => pgCancelQueued(session.id, q.queueId)}
+                              >
+                                <Icon name="x" size={13} />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {/* Composer card (design "achero"): textarea on top, a toolbar row below
                   the divider — attach · model pill (fast toggle in its menu) · effort ·
                   permission · context ring · send. Tokens/cost live in the header's
                   Details popover, not here. */}
-                    <div
-                      className="relative min-w-0 rounded-[11px] border border-(--border-default) bg-(--surface-card) shadow-(--shadow-xs) transition-[border-color,box-shadow] focus-within:border-(--brand) focus-within:[box-shadow:0_0_0_3px_var(--brand-ring)]"
-                      inert={resumeDisabled}
-                      aria-disabled={resumeDisabled}
-                      onKeyDown={(event) => {
-                        if (event.key !== 'Escape') return
-                        setAttachMenuOpen(false)
-                        setComposerMenuOpen(null)
-                      }}
-                    >
-                      {resumeDisabled && (
-                        <textarea
-                          className="absolute inset-0 z-10 block h-full min-h-[92px] w-full resize-none rounded-[10px] border-0 bg-(--surface-sunken) px-[15px] py-[13px] font-sans text-[14px] font-normal leading-[1.55] text-(--text-tertiary) outline-none placeholder:text-(--text-tertiary) disabled:cursor-not-allowed"
-                          aria-label="Conversation unavailable"
-                          placeholder={resumePlaceholder}
-                          disabled
-                        />
-                      )}
-                      {attachmentsEnabled && (
-                        <input
-                          ref={imageInputRef}
-                          type="file"
-                          accept="image/*"
-                          hidden
-                          onChange={(event) => void onImageFile(event.target.files?.[0])}
-                        />
-                      )}
-                      {attachmentsEnabled && pgImage && (
-                        <div className="relative mx-[15px] mt-3 w-fit">
-                          <img
-                            src={`data:${pgImage.mimeType};base64,${pgImage.data}`}
-                            alt={pgImage.name}
-                            title={pgImage.name}
-                            className="h-20 w-20 rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) object-cover"
+                      <div
+                        className="relative min-w-0 rounded-[11px] border border-(--border-default) bg-(--surface-card) shadow-(--shadow-xs) transition-[border-color,box-shadow] focus-within:border-(--brand) focus-within:[box-shadow:0_0_0_3px_var(--brand-ring)]"
+                        inert={resumeDisabled}
+                        aria-disabled={resumeDisabled}
+                        onKeyDown={(event) => {
+                          if (event.key !== 'Escape') return
+                          setAttachMenuOpen(false)
+                          setComposerMenuOpen(null)
+                        }}
+                      >
+                        {resumeDisabled && (
+                          <textarea
+                            className="absolute inset-0 z-10 block h-full min-h-[92px] w-full resize-none rounded-[10px] border-0 bg-(--surface-sunken) px-[15px] py-[13px] font-sans text-[14px] font-normal leading-[1.55] text-(--text-tertiary) outline-none placeholder:text-(--text-tertiary) disabled:cursor-not-allowed"
+                            aria-label="Conversation unavailable"
+                            placeholder={resumePlaceholder}
+                            disabled
                           />
-                          <button
-                            type="button"
-                            className="iconbtn absolute -right-2 -top-2 h-6 w-6 rounded-full shadow-(--shadow-xs)"
-                            title="Remove image"
-                            aria-label="Remove image"
-                            onClick={() => setPgImage(session.id)}
-                          >
-                            <Icon name="x" size={14} />
-                          </button>
-                        </div>
-                      )}
-                      <ComposerTextarea
-                        sessionId={session.id}
-                        placeholder={
-                          (session.participants?.length ?? 0) > 1
-                            ? 'Message everyone…'
-                            : `Message ${session.agentName}…`
-                        }
-                        onSend={() => onPgSend()}
-                        onImageFile={attachmentsEnabled ? (file) => void onImageFile(file) : undefined}
-                        mentionCandidates={mentionCandidates}
-                        onPickMention={onPickMention}
-                        onMentionJoiningChange={setMentionJoining}
-                      />
-                      <div className="flex items-center gap-2 border-t border-(--border-subtle) py-[7px] pr-[9px] pl-[10px]">
+                        )}
                         {attachmentsEnabled && (
-                          <div className="relative flex-none">
+                          <input
+                            ref={imageInputRef}
+                            type="file"
+                            accept="image/*"
+                            hidden
+                            onChange={(event) => void onImageFile(event.target.files?.[0])}
+                          />
+                        )}
+                        {attachmentsEnabled && pgImage && (
+                          <div className="relative mx-[15px] mt-3 w-fit">
+                            <img
+                              src={`data:${pgImage.mimeType};base64,${pgImage.data}`}
+                              alt={pgImage.name}
+                              title={pgImage.name}
+                              className="h-20 w-20 rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) object-cover"
+                            />
                             <button
                               type="button"
-                              className="flex h-7 w-7 flex-none cursor-pointer items-center justify-center rounded-md border-0 bg-transparent text-(--text-tertiary) hover:bg-(--surface-hover) hover:text-(--text-secondary)"
-                              aria-label="Attach a file"
-                              aria-haspopup="menu"
-                              aria-expanded={attachMenuOpen}
-                              title="Attach a file"
-                              disabled={imagePreparing}
-                              onClick={() => {
-                                setComposerMenuOpen(null)
-                                setAttachMenuOpen((open) => !open)
-                              }}
+                              className="iconbtn absolute -right-2 -top-2 h-6 w-6 rounded-full shadow-(--shadow-xs)"
+                              title="Remove image"
+                              aria-label="Remove image"
+                              onClick={() => setPgImage(session.id)}
                             >
-                              {imagePreparing ? <Spinner size={14} /> : <Icon name="paperclip" size={15} />}
+                              <Icon name="x" size={14} />
                             </button>
-                            {attachMenuOpen && (
-                              <>
-                                <div
-                                  aria-hidden="true"
-                                  className="fixed inset-0 z-40"
-                                  onClick={() => setAttachMenuOpen(false)}
-                                ></div>
-                                <div
-                                  role="menu"
-                                  className="absolute bottom-[calc(100%+8px)] left-0 z-50 w-[166px] rounded-[9px] border border-(--border-default) bg-(--surface-card) p-1 shadow-(--shadow-lg)"
-                                >
-                                  <button
-                                    type="button"
-                                    role="menuitem"
-                                    className="fopt"
-                                    onClick={() => {
-                                      setAttachMenuOpen(false)
-                                      imageInputRef.current?.click()
-                                    }}
-                                  >
-                                    <Icon name="image" size={16} color="var(--text-secondary)" />
-                                    Add photos
-                                  </button>
-                                </div>
-                              </>
-                            )}
                           </div>
                         )}
-                        {/* nowrap on mobile — pills shrink + truncate (ComposerMenu min-w-0)
+                        <ComposerTextarea
+                          sessionId={session.id}
+                          placeholder={
+                            (session.participants?.length ?? 0) > 1
+                              ? 'Message everyone…'
+                              : `Message ${session.agentName}…`
+                          }
+                          onSend={() => onPgSend()}
+                          onImageFile={attachmentsEnabled ? (file) => void onImageFile(file) : undefined}
+                          mentionCandidates={mentionCandidates}
+                          onPickMention={onPickMention}
+                          onMentionJoiningChange={setMentionJoining}
+                        />
+                        <div className="flex items-center gap-2 border-t border-(--border-subtle) py-[7px] pr-[9px] pl-[10px]">
+                          {attachmentsEnabled && (
+                            <div className="relative flex-none">
+                              <button
+                                type="button"
+                                className="flex h-7 w-7 flex-none cursor-pointer items-center justify-center rounded-md border-0 bg-transparent text-(--text-tertiary) hover:bg-(--surface-hover) hover:text-(--text-secondary)"
+                                aria-label="Attach a file"
+                                aria-haspopup="menu"
+                                aria-expanded={attachMenuOpen}
+                                title="Attach a file"
+                                disabled={imagePreparing}
+                                onClick={() => {
+                                  setComposerMenuOpen(null)
+                                  setAttachMenuOpen((open) => !open)
+                                }}
+                              >
+                                {imagePreparing ? <Spinner size={14} /> : <Icon name="paperclip" size={15} />}
+                              </button>
+                              {attachMenuOpen && (
+                                <>
+                                  <div
+                                    aria-hidden="true"
+                                    className="fixed inset-0 z-40"
+                                    onClick={() => setAttachMenuOpen(false)}
+                                  ></div>
+                                  <div
+                                    role="menu"
+                                    className="absolute bottom-[calc(100%+8px)] left-0 z-50 w-[166px] rounded-[9px] border border-(--border-default) bg-(--surface-card) p-1 shadow-(--shadow-lg)"
+                                  >
+                                    <button
+                                      type="button"
+                                      role="menuitem"
+                                      className="fopt"
+                                      onClick={() => {
+                                        setAttachMenuOpen(false)
+                                        imageInputRef.current?.click()
+                                      }}
+                                    >
+                                      <Icon name="image" size={16} color="var(--text-secondary)" />
+                                      Add photos
+                                    </button>
+                                  </div>
+                                </>
+                              )}
+                            </div>
+                          )}
+                          {/* nowrap on mobile — pills shrink + truncate (ComposerMenu min-w-0)
                       instead of wrapping into a second toolbar line. Except with a
                       multi-agent roster: those chips are unbounded in count, so no
                       amount of truncation bounds one line — let that case wrap. */}
-                        <div
-                          className={
-                            multiLive
-                              ? 'flex min-w-0 flex-1 flex-wrap items-center gap-2'
-                              : 'flex min-w-0 flex-1 items-center gap-2 desktop:flex-wrap'
-                          }
-                        >
-                          {multiLive &&
-                            liveRoster.map((p) => {
-                              const rosterAgent = agents.find((a) => a.id === p.agentId)
-                              return (
-                                <span key={p.agentId} className={COMPOSER_PILL_STATIC} title="Participant">
-                                  {rosterAgent && (
-                                    <span className="av h-[14px] w-[14px] flex-none rounded-xs">
-                                      <AgentIconView icon={rosterAgent.icon} runtime={rosterAgent.runtime} size={14} />
-                                    </span>
-                                  )}
-                                  <span className="truncate">{p.name}</span>
-                                </span>
-                              )
-                            })}
-                          {/* h-7 w-7 like every other control on this row (and the Home composer's
+                          <div
+                            className={
+                              multiLive
+                                ? 'flex min-w-0 flex-1 flex-wrap items-center gap-2'
+                                : 'flex min-w-0 flex-1 items-center gap-2 desktop:flex-wrap'
+                            }
+                          >
+                            {multiLive &&
+                              liveRoster.map((p) => {
+                                const rosterAgent = agents.find((a) => a.id === p.agentId)
+                                return (
+                                  <span key={p.agentId} className={COMPOSER_PILL_STATIC} title="Participant">
+                                    {rosterAgent && (
+                                      <span className="av h-[14px] w-[14px] flex-none rounded-xs">
+                                        <AgentIconView
+                                          icon={rosterAgent.icon}
+                                          runtime={rosterAgent.runtime}
+                                          size={14}
+                                        />
+                                      </span>
+                                    )}
+                                    <span className="truncate">{p.name}</span>
+                                  </span>
+                                )
+                              })}
+                            {/* h-7 w-7 like every other control on this row (and the Home composer's
                         twin), so the dashed circle shares their 28px box instead of floating
                         inside it. A lucide glyph, not a text "+": a text plus centres on its
                         line box, which left it a hair low. */}
-                          {isPg && addAgentOptions.length > 0 && (
-                            <ComposerMenu
-                              title="Add agents"
-                              value=""
-                              options={addAgentOptions}
-                              iconOnly
-                              open={composerMenuOpen === 'addAgent'}
-                              align="left"
-                              triggerClassName="inline-flex h-7 w-7 flex-none items-center justify-center rounded-full border border-dashed border-(--border-default) font-sans leading-normal text-(--text-secondary) hover:bg-(--surface-hover) hover:text-(--text-primary)"
-                              tooltips={false}
-                              leading={<Icon name="plus" size={14} />}
-                              onOpenChange={(open) => {
-                                setAttachMenuOpen(false)
-                                setComposerMenuOpen(open ? 'addAgent' : null)
-                              }}
-                              onChange={(v) => {
-                                const picked = agents.find((a) => a.id === v)
-                                if (picked) void pgAddAgent(session.id, picked)
-                              }}
-                            />
-                          )}
-                          {!multiLive &&
-                            (runtimeChangesEnabled && pgModelOptions.length > 0 ? (
+                            {isPg && addAgentOptions.length > 0 && (
                               <ComposerMenu
-                                title="Model"
-                                value={pgModel}
-                                options={pgModelOptions.map((model) => ({ value: model, label: modelLabel(model) }))}
-                                open={composerMenuOpen === 'model'}
+                                title="Add agents"
+                                value=""
+                                options={addAgentOptions}
+                                iconOnly
+                                open={composerMenuOpen === 'addAgent'}
                                 align="left"
-                                triggerClassName={COMPOSER_PILL}
+                                triggerClassName="inline-flex h-7 w-7 flex-none items-center justify-center rounded-full border border-dashed border-(--border-default) font-sans leading-normal text-(--text-secondary) hover:bg-(--surface-hover) hover:text-(--text-primary)"
                                 tooltips={false}
-                                leading={
-                                  <span className="inline-flex h-[14px] w-[14px] flex-none items-center justify-center">
-                                    <ModelMark model={pgModel} fallbackRuntime={agentRuntime} />
-                                  </span>
-                                }
-                                trailing={pgFastModeAvailable && pgFastMode ? <FastBadge /> : undefined}
-                                footer={
-                                  pgFastModeAvailable ? (
-                                    <div className="flex items-center gap-[10px] px-[7px] pt-2 pb-[3px]">
-                                      <button
-                                        type="button"
-                                        role="switch"
-                                        aria-checked={pgFastMode}
-                                        aria-label="Fast mode"
-                                        title="Fast mode trades depth for latency"
-                                        className={`relative h-[15px] w-[26px] flex-none cursor-pointer rounded-full border-0 p-0 transition-colors ${
-                                          pgFastMode ? 'bg-(--brand)' : 'bg-(--border-strong)'
-                                        }`}
-                                        onClick={() => {
-                                          const fast = !pgFastMode
-                                          setRuntimeSelection({ fast })
-                                          pgSetFast(session.id, session.agentId ?? '', fast, webchatConversationId)
-                                        }}
-                                      >
-                                        <span
-                                          className={`absolute top-[1px] h-[13px] w-[13px] rounded-full bg-white transition-[left] ${
-                                            pgFastMode ? 'left-3' : 'left-[1px]'
-                                          }`}
-                                        />
-                                      </button>
-                                      <span className="flex-1 font-sans text-[13px] font-medium leading-normal text-(--text-primary)">
-                                        Fast mode
-                                      </span>
-                                      <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-                                        lower latency
-                                      </span>
-                                    </div>
-                                  ) : undefined
-                                }
+                                leading={<Icon name="plus" size={14} />}
                                 onOpenChange={(open) => {
                                   setAttachMenuOpen(false)
-                                  setComposerMenuOpen(open ? 'model' : null)
+                                  setComposerMenuOpen(open ? 'addAgent' : null)
                                 }}
-                                onChange={(model) => {
-                                  const currentEffort =
-                                    runtimeSelection?.effort ?? session.effort ?? owner?.reasoning ?? ''
-                                  const effort = sessionEffortAfterModelChange(
-                                    agentRuntime,
-                                    owningDaemon,
-                                    model,
-                                    currentEffort
-                                  )
-                                  setRuntimeSelection(effort === currentEffort ? { model } : { model, effort })
-                                  pgSetModel(session.id, session.agentId ?? '', model, webchatConversationId)
-                                  if (effort !== currentEffort) {
-                                    pgSetEffort(session.id, session.agentId ?? '', effort, webchatConversationId)
+                                onChange={(v) => {
+                                  const picked = agents.find((a) => a.id === v)
+                                  if (picked) void pgAddAgent(session.id, picked)
+                                }}
+                              />
+                            )}
+                            {!multiLive &&
+                              (runtimeChangesEnabled && pgModelOptions.length > 0 ? (
+                                <ComposerMenu
+                                  title="Model"
+                                  value={pgModel}
+                                  options={pgModelOptions.map((model) => ({ value: model, label: modelLabel(model) }))}
+                                  open={composerMenuOpen === 'model'}
+                                  align="left"
+                                  triggerClassName={COMPOSER_PILL}
+                                  tooltips={false}
+                                  leading={
+                                    <span className="inline-flex h-[14px] w-[14px] flex-none items-center justify-center">
+                                      <ModelMark model={pgModel} fallbackRuntime={agentRuntime} />
+                                    </span>
                                   }
-                                }}
-                              />
-                            ) : (
-                              pgModel && (
-                                <span className={COMPOSER_PILL_STATIC} title="Model">
-                                  <span className="inline-flex h-[14px] w-[14px] flex-none items-center justify-center">
-                                    <ModelMark model={pgModel} fallbackRuntime={agentRuntime} />
+                                  trailing={pgFastModeAvailable && pgFastMode ? <FastBadge /> : undefined}
+                                  footer={
+                                    pgFastModeAvailable ? (
+                                      <div className="flex items-center gap-[10px] px-[7px] pt-2 pb-[3px]">
+                                        <button
+                                          type="button"
+                                          role="switch"
+                                          aria-checked={pgFastMode}
+                                          aria-label="Fast mode"
+                                          title="Fast mode trades depth for latency"
+                                          className={`relative h-[15px] w-[26px] flex-none cursor-pointer rounded-full border-0 p-0 transition-colors ${
+                                            pgFastMode ? 'bg-(--brand)' : 'bg-(--border-strong)'
+                                          }`}
+                                          onClick={() => {
+                                            const fast = !pgFastMode
+                                            setRuntimeSelection({ fast })
+                                            pgSetFast(session.id, session.agentId ?? '', fast, webchatConversationId)
+                                          }}
+                                        >
+                                          <span
+                                            className={`absolute top-[1px] h-[13px] w-[13px] rounded-full bg-white transition-[left] ${
+                                              pgFastMode ? 'left-3' : 'left-[1px]'
+                                            }`}
+                                          />
+                                        </button>
+                                        <span className="flex-1 font-sans text-[13px] font-medium leading-normal text-(--text-primary)">
+                                          Fast mode
+                                        </span>
+                                        <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+                                          lower latency
+                                        </span>
+                                      </div>
+                                    ) : undefined
+                                  }
+                                  onOpenChange={(open) => {
+                                    setAttachMenuOpen(false)
+                                    setComposerMenuOpen(open ? 'model' : null)
+                                  }}
+                                  onChange={(model) => {
+                                    const currentEffort =
+                                      runtimeSelection?.effort ?? session.effort ?? owner?.reasoning ?? ''
+                                    const effort = sessionEffortAfterModelChange(
+                                      agentRuntime,
+                                      owningDaemon,
+                                      model,
+                                      currentEffort
+                                    )
+                                    setRuntimeSelection(effort === currentEffort ? { model } : { model, effort })
+                                    pgSetModel(session.id, session.agentId ?? '', model, webchatConversationId)
+                                    if (effort !== currentEffort) {
+                                      pgSetEffort(session.id, session.agentId ?? '', effort, webchatConversationId)
+                                    }
+                                  }}
+                                />
+                              ) : (
+                                pgModel && (
+                                  <span className={COMPOSER_PILL_STATIC} title="Model">
+                                    <span className="inline-flex h-[14px] w-[14px] flex-none items-center justify-center">
+                                      <ModelMark model={pgModel} fallbackRuntime={agentRuntime} />
+                                    </span>
+                                    <span className="truncate">{modelLabel(pgModel)}</span>
+                                    {pgFastModeAvailable && pgFastMode && <FastBadge />}
                                   </span>
-                                  <span className="truncate">{modelLabel(pgModel)}</span>
-                                  {pgFastModeAvailable && pgFastMode && <FastBadge />}
-                                </span>
-                              )
-                            ))}
-                          {!multiLive &&
-                            (runtimeChangesEnabled && pgEffortOptions.length > 0 ? (
-                              <ComposerMenu
-                                title="Effort"
-                                value={pgEffort}
-                                options={pgEffortOptions.map((effort) => ({
-                                  value: effort.value,
-                                  label: effort.label,
-                                  description: effort.description
-                                }))}
-                                open={composerMenuOpen === 'effort'}
-                                align="left"
-                                triggerClassName={COMPOSER_CHIP}
-                                tooltips={false}
-                                onOpenChange={(open) => {
-                                  setAttachMenuOpen(false)
-                                  setComposerMenuOpen(open ? 'effort' : null)
-                                }}
-                                onChange={(effort) => {
-                                  setRuntimeSelection({ effort })
-                                  pgSetEffort(session.id, session.agentId ?? '', effort, webchatConversationId)
-                                }}
-                              />
-                            ) : (
-                              pgEffort && (
-                                <span className={COMPOSER_CHIP_STATIC} title="Effort">
-                                  <span className="truncate">
-                                    {pgEffortChoices.find((choice) => choice.value === pgEffort)?.label ??
-                                      effortLabel(agentRuntime, pgEffort)}
+                                )
+                              ))}
+                            {!multiLive &&
+                              (runtimeChangesEnabled && pgEffortOptions.length > 0 ? (
+                                <ComposerMenu
+                                  title="Effort"
+                                  value={pgEffort}
+                                  options={pgEffortOptions.map((effort) => ({
+                                    value: effort.value,
+                                    label: effort.label,
+                                    description: effort.description
+                                  }))}
+                                  open={composerMenuOpen === 'effort'}
+                                  align="left"
+                                  triggerClassName={COMPOSER_CHIP}
+                                  tooltips={false}
+                                  onOpenChange={(open) => {
+                                    setAttachMenuOpen(false)
+                                    setComposerMenuOpen(open ? 'effort' : null)
+                                  }}
+                                  onChange={(effort) => {
+                                    setRuntimeSelection({ effort })
+                                    pgSetEffort(session.id, session.agentId ?? '', effort, webchatConversationId)
+                                  }}
+                                />
+                              ) : (
+                                pgEffort && (
+                                  <span className={COMPOSER_CHIP_STATIC} title="Effort">
+                                    <span className="truncate">
+                                      {pgEffortChoices.find((choice) => choice.value === pgEffort)?.label ??
+                                        effortLabel(agentRuntime, pgEffort)}
+                                    </span>
                                   </span>
-                                </span>
-                              )
-                            ))}
-                          {!multiLive &&
-                            (runtimeChangesEnabled && pgPermissionPresets.length > 0 ? (
-                              <ComposerMenu
-                                title="Permission"
-                                value={pgPermissionPreset}
-                                options={pgPermissionPresets.map((mode) => ({
-                                  value: mode.v,
-                                  label: mode.l,
-                                  description: mode.description
-                                }))}
-                                open={composerMenuOpen === 'permission'}
-                                align="left"
-                                triggerClassName={COMPOSER_CHIP}
-                                onOpenChange={(open) => {
-                                  setAttachMenuOpen(false)
-                                  setComposerMenuOpen(open ? 'permission' : null)
-                                }}
-                                onChange={(permissionPreset) => {
-                                  setRuntimeSelection({ permissionPreset })
-                                  pgSetPermissionPreset(
-                                    session.id,
-                                    session.agentId ?? '',
-                                    permissionPreset,
-                                    webchatConversationId
-                                  )
-                                }}
-                              />
-                            ) : (
-                              pgPermissionPreset && (
-                                <span className={COMPOSER_CHIP_STATIC} title="Permission">
-                                  <span className="truncate">
-                                    {agentPermissionDisplay(owningDaemon, agentRuntime, pgPermissionPreset)}
+                                )
+                              ))}
+                            {!multiLive &&
+                              (runtimeChangesEnabled && pgPermissionPresets.length > 0 ? (
+                                <ComposerMenu
+                                  title="Permission"
+                                  value={pgPermissionPreset}
+                                  options={pgPermissionPresets.map((mode) => ({
+                                    value: mode.v,
+                                    label: mode.l,
+                                    description: mode.description
+                                  }))}
+                                  open={composerMenuOpen === 'permission'}
+                                  align="left"
+                                  triggerClassName={COMPOSER_CHIP}
+                                  onOpenChange={(open) => {
+                                    setAttachMenuOpen(false)
+                                    setComposerMenuOpen(open ? 'permission' : null)
+                                  }}
+                                  onChange={(permissionPreset) => {
+                                    setRuntimeSelection({ permissionPreset })
+                                    pgSetPermissionPreset(
+                                      session.id,
+                                      session.agentId ?? '',
+                                      permissionPreset,
+                                      webchatConversationId
+                                    )
+                                  }}
+                                />
+                              ) : (
+                                pgPermissionPreset && (
+                                  <span className={COMPOSER_CHIP_STATIC} title="Permission">
+                                    <span className="truncate">
+                                      {agentPermissionDisplay(owningDaemon, agentRuntime, pgPermissionPreset)}
+                                    </span>
                                   </span>
-                                </span>
-                              )
-                            ))}
-                          {canChooseWorktree && (
-                            <label className={`${COMPOSER_CHIP} min-w-0 cursor-pointer`}>
-                              <input
-                                type="checkbox"
-                                checked={pgWorktree}
-                                onChange={(event) => {
-                                  const worktree = event.target.checked
-                                  setWorktreeSelections((current) => ({ ...current, [session.id]: worktree }))
-                                  pgSetWorktree(session.id, worktree)
-                                }}
-                                className="h-4 w-4 flex-none accent-(--brand)"
-                              />
-                              <span className="truncate">Worktree</span>
-                            </label>
-                          )}
+                                )
+                              ))}
+                            {canChooseWorktree && (
+                              <label className={`${COMPOSER_CHIP} min-w-0 cursor-pointer`}>
+                                <input
+                                  type="checkbox"
+                                  checked={pgWorktree}
+                                  onChange={(event) => {
+                                    const worktree = event.target.checked
+                                    setWorktreeSelections((current) => ({ ...current, [session.id]: worktree }))
+                                    pgSetWorktree(session.id, worktree)
+                                  }}
+                                  className="h-4 w-4 flex-none accent-(--brand)"
+                                />
+                                <span className="truncate">Worktree</span>
+                              </label>
+                            )}
+                          </div>
+                          <ContextWindowIndicator used={u?.contextUsed} size={u?.contextSize} />
+                          <ComposerSendButton
+                            sessionId={session.id}
+                            busy={pgBusy}
+                            imagePreparing={imagePreparing}
+                            hasImage={!!pgImage}
+                            mentionJoining={mentionJoining}
+                            onSend={() => onPgSend()}
+                            onStop={() => pgCancel(session.id, session.agentId ?? '', webchatConversationId)}
+                          />
                         </div>
-                        <ContextWindowIndicator used={u?.contextUsed} size={u?.contextSize} />
-                        <ComposerSendButton
-                          sessionId={session.id}
-                          busy={pgBusy}
-                          imagePreparing={imagePreparing}
-                          hasImage={!!pgImage}
-                          mentionJoining={mentionJoining}
-                          onSend={() => onPgSend()}
-                          onStop={() => pgCancel(session.id, session.agentId ?? '', webchatConversationId)}
-                        />
                       </div>
                     </div>
-                  </div>
-                </>
-              )}
+                  </>
+                )}
+              </div>
             </div>
           </div>
         </div>
