@@ -167,7 +167,7 @@ program
   .option('--lazy-tools', 'resolve tools/list dynamically for a private delegated broker')
   .action(async (opts: { lazyTools?: boolean }) => {
     const { runBridge } = await import('./mcp/bridge.js')
-    await runBridge({ lazyTools: opts.lazyTools === true })
+    await runBridge({ lazyTools: opts.lazyTools === true, version: DAEMON_VERSION })
   })
 
 // Service lifecycle (up/down/restart/status/install-service/uninstall-service)

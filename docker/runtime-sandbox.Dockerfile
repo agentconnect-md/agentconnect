@@ -124,7 +124,13 @@ COPY --from=shim-builder --chown=0:0 /build/packages/daemon/dist/shim/git-creden
 # The gh wrapper's token fetch, a third disjoint bundle for the same reason: the wrapper spawns it once per `gh`.
 # Path must match SANDBOX_GH_TOKEN_ENTRY in packages/daemon/src/shim/sandbox-paths.ts.
 COPY --from=shim-builder --chown=0:0 /build/packages/daemon/dist/shim/gh-token.js /opt/agentconnect/shim/gh-token.js
-RUN chmod 0444 /opt/agentconnect/shim/index.js /opt/agentconnect/shim/git-credential.js /opt/agentconnect/shim/gh-token.js \
+# The AgentConnect tool server, a fourth disjoint bundle: the agent's harness spawns it once per session from the
+# spec the daemon sends, and it reaches the daemon over the `mcp` tunnel rather than this image's filesystem.
+# Path must match SANDBOX_MCP_BRIDGE_ENTRY in packages/daemon/src/shim/sandbox-paths.ts — the daemon puts this path
+# in the spec, so a rename here is a runtime that retries a missing module until it gives up.
+COPY --from=shim-builder --chown=0:0 /build/packages/daemon/dist/shim/mcp-bridge.js /opt/agentconnect/shim/mcp-bridge.js
+RUN chmod 0444 /opt/agentconnect/shim/index.js /opt/agentconnect/shim/git-credential.js \
+  /opt/agentconnect/shim/gh-token.js /opt/agentconnect/shim/mcp-bridge.js \
   && chmod 0555 /opt/agentconnect/shim
 
 # The executable git runs as its credential helper. A wrapper because git needs something

@@ -38,6 +38,22 @@ function catalog(): ResolvedRuntimeCatalog {
 }
 
 describe('k8s runtime table', () => {
+  it('takes the probed MCP bridge launch, and drops a malformed one without losing the runtimes', () => {
+    const mcpBridge = { command: '/usr/local/bin/node', args: ['/opt/agentconnect/shim/mcp-bridge.js'] }
+    const shipped = K8sRuntimeTableSchema.parse({ runtimes: [{ id: 'claude' }], mcpBridge })
+    expect(shipped.mcpBridge).toEqual(mcpBridge)
+    // The daemon hands this to the pod's runtime to spawn, so a command that is not an absolute
+    // path in that image is refused — but refusing it must not fail the parse: the same answer
+    // carries the runtimes this member advertises, and losing those takes the member out of
+    // service over a tool surface.
+    const odd = K8sRuntimeTableSchema.parse({
+      runtimes: [{ id: 'claude' }],
+      mcpBridge: { command: 'node', args: ['mcp-bridge.js'] }
+    })
+    expect(odd.mcpBridge).toBeUndefined()
+    expect(odd.runtimes).toHaveLength(1)
+  })
+
   it('defaults under the daemon root and honors the env override', () => {
     const dir = root()
     expect(k8sRuntimesPath(dir, {})).toBe(join(dir, 'k8s-runtimes.json'))

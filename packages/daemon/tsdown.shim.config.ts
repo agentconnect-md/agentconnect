@@ -23,14 +23,16 @@ const shared = {
   clean: false
 }
 
-// THREE builds rather than one build with three entries, and the difference is load-bearing: several
+// FOUR builds rather than one build with four entries, and the difference is load-bearing: several
 // entries in a single build make rolldown hoist anything they share into a chunk, and the image
 // copies each artifact as a single file — so that chunk would be a further file nothing copies and
 // the helper would fail at startup on a missing module. Independent builds cannot share one. It
-// also keeps each graph honest: git spawns the credential helper once per operation and the gh
-// wrapper spawns the token entry once per `gh`, and neither has any use for the channel's WebSocket client.
+// also keeps each graph honest: git spawns the credential helper once per operation, the gh
+// wrapper spawns the token entry once per `gh`, and the agent's harness spawns the MCP bridge once
+// per session — none of the three has any use for the channel's WebSocket client.
 export default defineConfig([
   { ...shared, entry: { index: 'src/shim/index.ts' } },
   { ...shared, entry: { 'git-credential': 'src/shim/git-credential.ts' } },
-  { ...shared, entry: { 'gh-token': 'src/shim/gh-token.ts' } }
+  { ...shared, entry: { 'gh-token': 'src/shim/gh-token.ts' } },
+  { ...shared, entry: { 'mcp-bridge': 'src/shim/mcp-bridge.ts' } }
 ])

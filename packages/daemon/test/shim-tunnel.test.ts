@@ -213,7 +213,7 @@ function proxyUnderTest(options: { stall?: (payload: unknown) => boolean } = {})
       offAttach: () => undefined,
       onLost: () => undefined
     },
-    socketPathFor: (tunnel) => (tunnel === 'gitcred' ? '/daemon/gitcred.sock' : undefined),
+    socketPathFor: (tunnel) => (tunnel === 'gitcred' ? '/daemon/gitcred.sock' : '/daemon/mcp.sock'),
     dial: (path) => {
       dialled.push(path)
       const socket = new Socket()
@@ -417,6 +417,32 @@ describe('the shim tunnel', () => {
     expect(proxy.dialled).toEqual(['/daemon/gitcred.sock'])
     expect(proxy.instance.streamCount()).toBe(1)
     expect(proxy.sent.at(-1)).toEqual(expect.objectContaining({ op: 'close', streamId }))
+  })
+
+  it('keeps an mcp stream through an idle window that ends a gitcred one', async () => {
+    // The two tunnels have opposite shapes, so one deadline cannot fit both. A credential stream is
+    // one request and its reply, and silence past a few minutes means no answer is coming. The
+    // harness's MCP bridge holds ONE connection for the life of an ACP session and is idle between
+    // tool calls — ending that is the agent quietly losing its tools mid-session.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const proxy = proxyUnderTest()
+      await proxy.instance.ensure('gitcred')
+      await proxy.instance.ensure('mcp')
+      const credential = randomUUID()
+      const bridge = randomUUID()
+      proxy.announce({ kind: 'connect', tunnel: 'gitcred' }, credential)
+      proxy.announce({ kind: 'connect', tunnel: 'mcp' }, bridge)
+      expect(proxy.instance.streamCount()).toBe(2)
+
+      vi.advanceTimersByTime(10 * 60_000)
+
+      expect(proxy.instance.streamCount()).toBe(1)
+      expect(proxy.sent).toContainEqual(expect.objectContaining({ op: 'close', streamId: credential }))
+      expect(proxy.sent).not.toContainEqual(expect.objectContaining({ op: 'close', streamId: bridge }))
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('refuses tunnel data for a stream the pod never opened', async () => {

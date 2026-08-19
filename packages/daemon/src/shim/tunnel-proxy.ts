@@ -2,9 +2,17 @@ import { createConnection, type Socket } from 'node:net'
 import type { ShimCapability, ShimEvent } from './protocol.js'
 import { MAX_TUNNEL_CHUNK_BYTES, TunnelListeningSchema, type TunnelName } from './tunnel.js'
 
-/** A connection reached its deadline without the daemon-side server answering. Bounded because a
- *  stream nobody closes holds one of the pod's few tunnel slots. */
-const STREAM_IDLE_MS = 5 * 60_000
+/**
+ * How long a stream may stay silent before this side ends it, per tunnel — `null` for none.
+ *
+ * `gitcred` carries one request and its reply, so silence past a few minutes means no answer is
+ * coming and the stream is holding one of the pod's few slots for nothing. `mcp` is the opposite
+ * shape: the harness spawns one bridge per ACP session and it stays connected, idle between tool
+ * calls, so the same deadline would take the agent's tool surface away a few quiet minutes into
+ * every session. Its bound is the channel instead — a lost or superseded one stops every stream,
+ * and the pod dies with its sandbox.
+ */
+const STREAM_IDLE_MS: Readonly<Record<TunnelName, number | null>> = { gitcred: 5 * 60_000, mcp: null }
 
 /** This side's own ceiling on concurrent streams per agent. The shim enforces one too; that one
  *  protects the pod, and this one protects the daemon from a shim that does not. */
@@ -41,7 +49,7 @@ export interface TunnelProxyDeps {
  * filesystem.
  */
 export class TunnelProxy {
-  private readonly streams = new Map<string, { socket: Socket; timer: NodeJS.Timeout; inFlight: number }>()
+  private readonly streams = new Map<string, { socket: Socket; timer?: NodeJS.Timeout; inFlight: number }>()
   private readonly listening = new Set<TunnelName>()
   private readonly onEvent = (event: ShimEvent): void => this.accept(event)
   private readonly onAttach = (): void => this.dropUnaccountedStreams()
@@ -148,7 +156,7 @@ export class TunnelProxy {
     // somebody else's and not an error.
     if (!entry) return
     if (event.event.kind === 'chunk') {
-      entry.timer.refresh()
+      entry.timer?.refresh()
       entry.socket.write(Buffer.from(event.event.data, 'base64'))
       return
     }
@@ -171,13 +179,14 @@ export class TunnelProxy {
       this.refuse(streamId, `could not reach the ${tunnel} socket: ${(err as Error).message}`)
       return
     }
-    const timer = setTimeout(() => this.close(streamId, `idle for ${STREAM_IDLE_MS}ms`), STREAM_IDLE_MS)
-    timer.unref?.()
-    this.streams.set(streamId, { socket, timer, inFlight: 0 })
+    const idleMs = STREAM_IDLE_MS[tunnel]
+    const timer = idleMs === null ? undefined : setTimeout(() => this.close(streamId, `idle for ${idleMs}ms`), idleMs)
+    timer?.unref?.()
+    this.streams.set(streamId, { socket, ...(timer ? { timer } : {}), inFlight: 0 })
     socket.on('data', (data: Buffer) => {
       const entry = this.streams.get(streamId)
       if (!entry) return
-      entry.timer.refresh()
+      entry.timer?.refresh()
       for (let offset = 0; offset < data.length; offset += MAX_TUNNEL_CHUNK_BYTES) {
         const slice = data.subarray(offset, offset + MAX_TUNNEL_CHUNK_BYTES)
         void this.deliver(streamId, { op: 'data', streamId, chunk: slice.toString('base64') })
@@ -204,7 +213,7 @@ export class TunnelProxy {
     const entry = this.streams.get(streamId)
     if (!entry) return false
     this.streams.delete(streamId)
-    clearTimeout(entry.timer)
+    if (entry.timer) clearTimeout(entry.timer)
     entry.socket.destroy()
     return true
   }

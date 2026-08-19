@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { buildMcpServers } from '../src/mcp/inject.js'
+import { buildMcpServers, buildSandboxMcpServers } from '../src/mcp/inject.js'
+import { SANDBOX_TUNNEL_PATHS } from '../src/shim/sandbox-paths.js'
 
 describe('buildMcpServers', () => {
   it('builds a single stdio server that re-invokes this CLI with mcp-bridge', () => {
@@ -36,5 +37,22 @@ describe('buildMcpServers', () => {
       { name: 'AC_MCP_ENDPOINT', value: '/private' },
       { name: 'AC_MCP_TOKEN', value: 'private-token' }
     ])
+  })
+})
+
+describe('buildSandboxMcpServers', () => {
+  it('names the image’s own bridge and the tunnel socket, never a path on this daemon', () => {
+    const bridge = { command: '/usr/local/bin/node', args: ['/opt/agentconnect/shim/mcp-bridge.js'] }
+    const [server] = buildSandboxMcpServers({ bridge, token: 'tok-1' })
+    expect(server!.name).toBe('agentconnect')
+    // Not process.execPath and not the daemon's CLI entry: both name files the pod does not have,
+    // and a runtime handed them retries a missing module instead of serving tools.
+    expect(server!.command).toBe(bridge.command)
+    expect(server!.args).toEqual(bridge.args)
+    expect(server!.env).toEqual([
+      { name: 'AC_MCP_ENDPOINT', value: SANDBOX_TUNNEL_PATHS.mcp },
+      { name: 'AC_MCP_TOKEN', value: 'tok-1' }
+    ])
+    expect(server!.args).not.toContain('tok-1')
   })
 })

@@ -6,7 +6,8 @@ import { AGENT_WAKE_FEATURE, DAEMON_BOOTSTRAP_UPGRADE_FEATURE } from '@agentconn
 import { Daemon } from '../src/daemon.js'
 import type { ResolvedRuntimeCatalog } from '../src/runtimes/registry.js'
 import { LocalStore } from '../src/store/local-store.js'
-import { statePath } from '../src/paths.js'
+import { mcpSocketPath, statePath } from '../src/paths.js'
+import { SANDBOX_TUNNEL_PATHS } from '../src/shim/sandbox-paths.js'
 
 /** The behavior matrix for `--k8s`: each assertion here is one row of the mode
  *  contract, so k8s and self-hosted behavior cannot drift apart unnoticed. */
@@ -59,6 +60,8 @@ function daemon(opts: {
   dataPlane?: boolean
   openDataPlane?: ReturnType<typeof vi.fn>
   startControlPlane?: ReturnType<typeof vi.fn>
+  /** Receives the options the mode hands the plane — the rows about what it asks the pod to serve. */
+  onPlaneStart?: (options: any) => void
 }): Daemon {
   return new Daemon({
     root: opts.root,
@@ -86,8 +89,9 @@ function daemon(opts: {
                     close: async () => {}
                   }) as never
               }),
-          startK8sPlane: async () =>
-            ({
+          startK8sPlane: async (options: any) => {
+            opts.onPlaneStart?.(options)
+            return {
               driver: { claimName: (id: string) => `agent-${id}` } as never,
               listener: { listeningPort: () => 0 } as never,
               gitRunnerFor: () => undefined,
@@ -96,7 +100,8 @@ function daemon(opts: {
               discardAgent: async () => {},
               stop: async () => {},
               ...opts.plane
-            }) as never
+            } as never
+          }
         }
       : {}),
     ...(opts.openDataPlane ? { openDataPlane: opts.openDataPlane as never } : {}),
@@ -483,6 +488,84 @@ describe('daemon --k8s mode', () => {
     }
   })
 
+  // A daemon-path bridge spec sent to a pod is not a degraded tool surface but an unspawnable one:
+  // the runtime retried `/app/.../dist/index.js` on a backoff until it gave up, and the agent had no
+  // AgentConnect tools at all. The spec has to name what the IMAGE reports shipping.
+  it('injects the image’s own MCP bridge, in pod coordinates, once the probe reports one', async () => {
+    const BRIDGE = { command: '/usr/local/bin/node', args: ['/opt/agentconnect/shim/mcp-bridge.js'] }
+    let settle!: (table: unknown) => void
+    const k8sDaemon = daemon({
+      root: root({ declared: { runtimes: [{ id: 'claude' }] } }),
+      k8s: true,
+      plane: { probeRuntimes: () => new Promise((resolve) => (settle = resolve)) }
+    })
+    try {
+      await k8sDaemon.start()
+      settle({ runtimes: [{ id: 'claude', version: '1.2.3' }], mcpBridge: BRIDGE })
+      await vi.waitFor(() => expect(mcpServersFor(k8sDaemon)).toHaveLength(1))
+      const [server] = mcpServersFor(k8sDaemon)
+      // The image's own interpreter and entry, verbatim: anything resolved on this host — the
+      // daemon's node, its CLI entry, even a bare `node` trusting the pod's PATH — names something
+      // the runtime may not have.
+      expect(server).toMatchObject({ command: BRIDGE.command, args: BRIDGE.args })
+      // And the endpoint is the tunnel's in-pod socket, which the shim serves back to this daemon.
+      expect(server!.env).toContainEqual({ name: 'AC_MCP_ENDPOINT', value: SANDBOX_TUNNEL_PATHS.mcp })
+    } finally {
+      await k8sDaemon.stop()
+    }
+  })
+
+  it('withholds the tool server from an image that reports no bridge, rather than a spec it cannot spawn', async () => {
+    let settle!: (table: unknown) => void
+    const k8sDaemon = daemon({
+      root: root({ declared: { runtimes: [{ id: 'claude' }] } }),
+      k8s: true,
+      plane: { probeRuntimes: () => new Promise((resolve) => (settle = resolve)) }
+    })
+    try {
+      await k8sDaemon.start()
+      // An image built before the bridge shipped: it says nothing, and silence is the answer.
+      settle({ runtimes: [{ id: 'claude', version: '1.2.3' }] })
+      await vi.waitFor(() => expect((k8sDaemon as any).k8sRuntimeProbed).toBe(true))
+      expect(mcpServersFor(k8sDaemon)).toEqual([])
+    } finally {
+      await k8sDaemon.stop()
+    }
+  })
+
+  it('still injects this daemon’s own bridge outside k8s, where the runtime shares its filesystem', async () => {
+    const local = daemon({ root: root(), k8s: false })
+    try {
+      await local.start()
+      const servers = mcpServersFor(local)
+      expect(servers).toHaveLength(1)
+      expect(servers[0]!.args).toContain('mcp-bridge')
+    } finally {
+      await local.stop()
+    }
+  })
+
+  it('asks every pod to serve the mcp socket, and the credential socket only where git needs one', async () => {
+    let planeOptions!: any
+    const rootDir = root({ declared: { runtimes: [{ id: 'claude' }] } })
+    const k8sDaemon = daemon({ root: rootDir, k8s: true, onPlaneStart: (options) => (planeOptions = options) })
+    try {
+      await k8sDaemon.start()
+      // Every pod agent: any session may carry tools, and the listener belongs to the pod's
+      // lifetime while the spec that dials it is decided per session.
+      ;(k8sDaemon as any).agents.set('plain', { id: 'plain', workspace: {} })
+      expect(planeOptions.tunnelsFor('plain')).toEqual(['mcp'])
+      expect(planeOptions.tunnelSocketPath('mcp')).toBe(mcpSocketPath(rootDir))
+      ;(k8sDaemon as any).agents.set('gh', { id: 'gh', workspace: { gitCredential: 'github-app' } })
+      expect(planeOptions.tunnelsFor('gh')).toEqual(['mcp', 'gitcred'])
+      // And nothing for the member's own runtime probe, whose channel is granted `probe` alone —
+      // asking it to serve a socket would be refused, and the refusal logged, on every boot.
+      expect(planeOptions.tunnelsFor('ac-runtime-probe-0f0f0f0f')).toEqual([])
+    } finally {
+      await k8sDaemon.stop()
+    }
+  })
+
   it('deletes a removed agent’s sandbox, which is what takes its workspace volume with it', async () => {
     const discarded: string[] = []
     const k8sDaemon = daemon({
@@ -503,3 +586,17 @@ describe('daemon --k8s mode', () => {
     }
   })
 })
+
+/** The session seam that decides an agent's MCP servers, asked about an ordinary agent. */
+function mcpServersFor(
+  instance: Daemon
+): { command: string; args: string[]; env: { name: string; value: string }[] }[] {
+  const agent = { id: 'a1', name: 'a1', runtime: 'claude', integrations: [], mcpServers: [] }
+  return (instance as any).sessions.deps.mcpServersFor({
+    agent,
+    platform: 'slack',
+    channel: 'C1',
+    thread: '1',
+    isDm: false
+  })
+}

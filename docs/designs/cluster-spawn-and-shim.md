@@ -66,8 +66,22 @@ it holds no policy — every decision stays in the daemon.
 The tunnel names a **closed set** of daemon-side servers (`gitcred`, `mcp`) at paths the
 runtime image fixes. `gh`'s token helper is not among them because it shares `gitcred.sock`
 with the credential helper: a second name would be a second in-pod path onto one server.
-`mcp` is declared but not yet opened — the in-pod bridge that would dial it is not in the
-image, so a listener for it would be a socket nothing can use.
+`mcp` is served for every pod agent, because any session may carry tools and the listener belongs
+to the pod's lifetime; the `mcpServers` spec that dials it is decided per session instead.
+
+That spec is in **pod coordinates**, and the launch half of it is reported by the image rather
+than assembled here: the runtime probe answers with the interpreter and the bridge bundle (a
+fourth single-file shim artifact, spawned by the agent's harness once per session), and the daemon
+copies both into `mcpServers` beside the tunnel's in-pod socket. Even `node` by name would be an
+assumption about a filesystem and a PATH the daemon cannot see. An image built before the bridge
+reports neither and gets no tool server at all, which is the honest outcome: the daemon's own
+bridge path sent into a pod is not a degraded spec but an unspawnable one, and a runtime handed it
+retried a missing module on a backoff for the life of the session.
+
+The `mcp` stream is also the one tunnel with no idle deadline. A credential stream is one request
+and its reply, so silence means no answer is coming; the bridge holds a single connection for the
+life of an ACP session and is idle between tool calls, and ending that is the agent losing its
+tools mid-session. Its bound is the channel: a lost or superseded one stops every stream.
 
 **The shim listens; the daemon dials the ready pod's IP.** The Sandbox status already reports
 the backing pod's addresses, so no per-sandbox Service is required. The sandbox
