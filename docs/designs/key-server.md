@@ -111,27 +111,30 @@ overstating the degradation window by the same amount.
   `expiresInSeconds` and strictly less than it. Daemons renew inside that window
   instead of inventing their own margin.
 
-## 4. Injection: one precedence chain, pairs never split
+## 4. Injection: the key is issued, the base URL is deployed
 
-The response pair is atomic with respect to injection — a dynamic key must never
-be combined with a static base URL or vice versa (a gateway credential aimed at a
-public endpoint 401s; a real key aimed at a gateway bypasses whatever the
-deployment put there). The daemon resolves the pair for a spawn top-down and takes
-the first layer that yields a key, whole:
+Key and base URL answer to different owners, so they come from different places and
+neither completes the other:
 
-1. `IssueKey` response — when a key-server address is configured;
-2. the daemon's static config pair — when no key-server is configured;
-3. the runtime's default public endpoint with whatever credential the runtime
-   environment already carries.
+- **the key** is per-session identity, and an `IssueKey` response is its only source
+  when a key-server address is configured; with none, the daemon's static token; with
+  neither, whatever credential the runtime environment already carries.
+- **the base URL** is deployment topology — which gateway this install's runtimes talk
+  to — so it always comes from the daemon's own configuration, key server or not. An
+  `IssueKey` response may carry a `baseUrl`; the daemon does not read it.
 
-The daemon contributes no half of a pair: configuring a key server retires its static
-pair, so a grant is never completed from deployment config the issuer never saw. What
-stays beneath a grant is layer 3 itself — the runtime's own environment, including the
-pod's `AC_*_BASE_URL` floor the shim fills in — so a grant that omits `baseUrl` leaves
-whatever base that environment already carries. A key server fronting a gateway must
-therefore name it; only one content with the runtime's existing endpoint may stay
-silent. A present one must be `http(s)`, since it becomes a runtime's API base; plain
-`http` is legal and is the normal choice for a loopback or in-pod gateway.
+The earlier rule was the opposite: the response pair was atomic, so a key server that
+fronted a gateway had to name it and one that did not had to stay silent. That made
+every issuer restate a fact it does not own — the address is the same for every session
+the install ever runs, and it is already written down where the gateway is deployed.
+Restating it invites the two copies to disagree, and the disagreement surfaces as a
+runtime aimed somewhere the deployment never put a gateway.
+
+What remains beneath both is the runtime's own environment, including the pod's
+`AC_*_BASE_URL` floor the shim fills in: a daemon with no base URL configured for a
+runtime leaves that environment as it found it. A configured base URL must be
+`http(s)`, since it becomes a runtime's API base; plain `http` is legal and is the
+normal choice for a loopback or in-pod gateway.
 
 The cloud daemon's static pair is `MODEL_TOKEN` plus optional `MODEL_BASE_URL`, with a
 per-runtime pair that replaces it whole: `ANTHROPIC_MODEL_TOKEN`/`ANTHROPIC_MODEL_BASE_URL`
@@ -153,10 +156,10 @@ must be an HTTP(S) URL. Each pair is translated at runtime launch:
 | OpenCode | `OPENCODE_CONFIG_CONTENT` → selected provider `options.apiKey` using `{env:MODEL_TOKEN}` | selected provider `options.baseURL`                                                                                                  |
 | DeepSeek | `DEEPSEEK_API_KEY`                                                                       | `DEEPSEEK_BASE_URL`                                                                                                                  |
 
-Dynamic grants use the same translation. Configuring a key server retires the static
-pair outright — the daemon reads none of these variables — so a grant needs no
-precedence against them. With no key server the static pair wins; with neither, the
-runtime's existing provider configuration is left unchanged.
+Dynamic grants use the same translation for their key, and take their base URL from
+these same variables — a key server changes where the token comes from, never where the
+runtime points. With neither a key server nor a static token, the runtime's existing
+provider configuration is left unchanged.
 
 One logical AgentConnect session owns one ACP host when key-server mode is active.
 Provider credentials are process-level settings, so sharing a runtime would let

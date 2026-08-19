@@ -1132,8 +1132,9 @@ export class Daemon {
       (keyServerAddress
         ? new KeyServerClient(keyServerAddress, { tokenPath: keyServerTokenPath, now: this.modelKeyNow })
         : undefined)
-    // A key server answers with the whole pair, so the daemon's static one is not a layer under it.
-    this.staticModelCredentials = this.k8s && !this.keyServer ? configuredModelCredentials(process.env) : undefined
+    // Base URLs are deployment topology and always come from here, key server or not; an issuer
+    // supplies the key alone.
+    this.staticModelCredentials = this.k8s ? configuredModelCredentials(process.env) : undefined
     this.evalHooks = new DaemonEvaluationHooks(this.evaluationHost(), opts.evaluation)
     this.sessionMetadataOutbox = new SessionMetadataOutbox(this.sessionMetadataHost())
     this.observedChannelsSync = new ObservedChannelsSync(this.observedChannelsSyncHost())
@@ -3395,7 +3396,7 @@ export class Daemon {
   private boundModelTarget(sessionKey: string, agentId: string): ModelProviderTarget | undefined {
     const credentialHost = this.modelSessionHosts.get(sessionKey)
     if (credentialHost) return credentialHost.target
-    if (!this.k8s || !this.staticModelCredentials) return undefined
+    if (this.keyServer || !this.k8s || !this.staticModelCredentials) return undefined
     const agent = this.agents.get(agentId)
     const runtime = agent ? this.runtimes[agent.runtime] : undefined
     const target = agent && runtime ? modelProviderTarget(agent, runtime) : undefined
@@ -3418,6 +3419,12 @@ export class Daemon {
   private async modelSessionSdkQuiescent(entry: ModelSessionHost): Promise<boolean> {
     const acpSessionId = (await this.store.getSession(entry.sessionKey))?.acpSessionId
     return this.sessionSdkQuiescent(entry.agentId, acpSessionId)
+  }
+
+  /** The deployment's base for a target, the only source of one — an IssueKey `baseUrl` is not read. */
+  private staticModelBaseUrl(target: ModelProviderTarget): { baseUrl?: string } {
+    const baseUrl = this.staticModelCredentials?.[target.runtime]?.baseUrl
+    return baseUrl ? { baseUrl } : {}
   }
 
   private async issueModelKey(
@@ -3450,7 +3457,7 @@ export class Daemon {
           target: entry.target,
           credential: {
             key: entry.grant.key,
-            ...(entry.grant.baseUrl ? { baseUrl: entry.grant.baseUrl } : {})
+            ...this.staticModelBaseUrl(entry.target)
           }
         }
       })
@@ -4044,7 +4051,7 @@ export class Daemon {
               target: issued.target,
               credential: {
                 key: issued.grant.key,
-                ...(issued.grant.baseUrl ? { baseUrl: issued.grant.baseUrl } : {})
+                ...this.staticModelBaseUrl(issued.target)
               }
             }
           }

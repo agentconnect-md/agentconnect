@@ -51,11 +51,11 @@ export const IssueKeyResponse = z
     // credential, and only it knows whether revoking a keyId may touch other holders.
     keyId: z.string().min(1),
     key: z.string().min(1),
-    // Atomic with `key` — inject both or neither. Absent ⇒ the daemon falls through to its
-    // next base-URL layer (static config, then runtime default). Restricted to http(s): it
-    // becomes a runtime's API base, so any other scheme is a value the daemon would inject
-    // and only fail on at request time. Plain http stays legal for a loopback or in-pod
-    // gateway, which is where it is the normal choice.
+    // Accepted and ignored: an issuer owns the key, a deployment owns where its runtimes send
+    // it, and the daemon reads its base URL only from its own configuration. The field stays in
+    // the contract because the response is `.strict()` — dropping it would reject every issuer
+    // still sending one — and because a `.url()` here still rejects a nonsense value early.
+    // Restricted to http(s) for the same reason it was when injected.
     // The predicate must not throw: zod runs refinements even after `.url()` has already
     // failed, and a bare `new URL(bad)` would escape safeParse as a TypeError.
     baseUrl: z
