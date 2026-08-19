@@ -130,19 +130,25 @@ gateway needs no URL opinion. A present one must be `http(s)`, since it becomes 
 runtime's API base; plain `http` is legal and is the normal choice for a loopback
 or in-pod gateway.
 
-The cloud daemon's static pair is `MODEL_TOKEN` plus optional `MODEL_BASE_URL`, with
-per-provider overrides `MODEL_TOKEN_ANTHROPIC`/`MODEL_BASE_URL_ANTHROPIC` and
-`MODEL_TOKEN_OPENAI`/`MODEL_BASE_URL_OPENAI`. A scoped pair replaces the unscoped one
-whole for that provider and never merges with it, so the atomicity rule above holds
-inside the static layer too — a gateway's Anthropic and OpenAI base paths differ, and
-`IssueKey` is provider-scoped, so the static layer needs the same dimension. Every
-base URL must be an HTTP(S) URL. The pair is translated at runtime launch:
+The cloud daemon's static pair is `MODEL_TOKEN` plus optional `MODEL_BASE_URL`, with a
+per-runtime pair that replaces it whole: `ANTHROPIC_MODEL_TOKEN`/`ANTHROPIC_MODEL_BASE_URL`
+for Claude, `OPENAI_MODEL_*` for Codex, `DEEPSEEK_MODEL_*` for the DeepSeek Harness.
+OpenCode has no pair of its own — it picks a provider per model and takes the shared one.
+
+One deployment gateway is still one address; the runtimes just do not agree on where their
+base ends. Claude Code appends `/v1/messages` to its base, while Codex appends `/responses`
+and OpenCode's providers append `/messages`, so the same gateway is `https://gw` for one and
+`https://gw/v1` for the others. The daemon injects each base verbatim and never derives a
+path: the gateway's own layout is the deployment's to know, so composing these variables from
+one address belongs where that layout is configured, not in a runtime guess. Every base URL
+must be an HTTP(S) URL. Each pair is translated at runtime launch:
 
 | Runtime  | Token                                                                                    | Base URL                                                                                                                             |
 | -------- | ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
 | Claude   | `ANTHROPIC_AUTH_TOKEN`                                                                   | `ANTHROPIC_BASE_URL`                                                                                                                 |
 | Codex    | `OPENAI_API_KEY`                                                                         | `CODEX_CONFIG` → `model_provider = "openai"` and `model_providers.openai.base_url`; `OPENAI_BASE_URL` is also set for older adapters |
 | OpenCode | `OPENCODE_CONFIG_CONTENT` → selected provider `options.apiKey` using `{env:MODEL_TOKEN}` | selected provider `options.baseURL`                                                                                                  |
+| DeepSeek | `DEEPSEEK_API_KEY`                                                                       | `DEEPSEEK_BASE_URL`                                                                                                                  |
 
 Dynamic grants use the same translation and override the static token. If IssueKey
 omits `baseUrl`, only the static `MODEL_BASE_URL` is inherited. With no key server,

@@ -3082,7 +3082,7 @@ export class Daemon {
           if (!this.k8s || !target) return
           if (opts.modelCredential) applyModelCredential(target, launchEnv, opts.modelCredential.credential)
           else if (!this.keyServer) {
-            const configured = this.staticModelCredentials?.[target.provider]
+            const configured = this.staticModelCredentials?.[target.runtime]
             if (configured) applyStaticModelConfig(target, launchEnv, configured)
           }
         },
@@ -3368,7 +3368,7 @@ export class Daemon {
     const runtime = agent ? this.runtimes[agent.runtime] : undefined
     const target = agent && runtime ? modelProviderTarget(agent, runtime) : undefined
     // A partial map binds only the providers it configures; the rest keep their runtime-owned auth.
-    return target && this.staticModelCredentials[target.provider] ? target : undefined
+    return target && this.staticModelCredentials[target.runtime] ? target : undefined
   }
 
   /** Whether a model resolves to a different provider than the one the session's host was
@@ -3418,8 +3418,8 @@ export class Daemon {
           target: entry.target,
           credential: {
             key: entry.grant.key,
-            ...((entry.grant.baseUrl ?? this.staticModelCredentials?.[entry.target.provider]?.baseUrl)
-              ? { baseUrl: entry.grant.baseUrl ?? this.staticModelCredentials?.[entry.target.provider]?.baseUrl }
+            ...((entry.grant.baseUrl ?? this.staticModelCredentials?.[entry.target.runtime]?.baseUrl)
+              ? { baseUrl: entry.grant.baseUrl ?? this.staticModelCredentials?.[entry.target.runtime]?.baseUrl }
               : {})
           }
         }
@@ -4014,8 +4014,8 @@ export class Daemon {
               target: issued.target,
               credential: {
                 key: issued.grant.key,
-                ...((issued.grant.baseUrl ?? this.staticModelCredentials?.[issued.target.provider]?.baseUrl)
-                  ? { baseUrl: issued.grant.baseUrl ?? this.staticModelCredentials?.[issued.target.provider]?.baseUrl }
+                ...((issued.grant.baseUrl ?? this.staticModelCredentials?.[issued.target.runtime]?.baseUrl)
+                  ? { baseUrl: issued.grant.baseUrl ?? this.staticModelCredentials?.[issued.target.runtime]?.baseUrl }
                   : {})
               }
             }

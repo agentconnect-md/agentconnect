@@ -26,7 +26,7 @@ export const KEY_SERVER_REVOKE_KEY_PATH = '/v1/revoke-key' as const
 export const KEY_SERVER_AUTH_HEADER = 'authorization' as const
 
 /** Provider API dialect the credential must speak; selects the (key, baseUrl) pair. */
-export const KeyProvider = z.enum(['anthropic', 'openai'])
+export const KeyProvider = z.enum(['anthropic', 'openai', 'deepseek'])
 export type KeyProvider = z.infer<typeof KeyProvider>
 
 // No `daemonId` field: caller identity belongs to the transport, and a server able to
