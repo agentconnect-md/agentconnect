@@ -12,7 +12,7 @@ export const START_ORCHESTRATION_ARGS = z.object({
         { toAgentId: requiredString('toAgentId'), text: requiredString('text') },
         {
           error: (issue) =>
-            issue.code === 'invalid_type' ? `subtasks[${String(issue.path?.[0])}] must be an object` : undefined
+            issue.code === 'invalid_type' ? `subtasks[${String(issue.path?.at(-1))}] must be an object` : undefined
         }
       ),
       SUBTASKS_ERROR

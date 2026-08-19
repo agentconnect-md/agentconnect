@@ -25,7 +25,7 @@ const REVIEW_COMMENT = z.object(
   },
   {
     error: (issue) =>
-      issue.code === 'invalid_type' ? `comments[${String(issue.path?.[0])}] must be an object` : undefined
+      issue.code === 'invalid_type' ? `comments[${String(issue.path?.at(-1))}] must be an object` : undefined
   }
 )
 
@@ -52,7 +52,7 @@ export const REPLY_GITHUB_REVIEW_THREADS_ARGS = z.object({
         { threadRootCommentId: requiredString('threadRootCommentId'), body: requiredString('body') },
         {
           error: (issue) =>
-            issue.code === 'invalid_type' ? `replies[${String(issue.path?.[0])}] must be an object` : undefined
+            issue.code === 'invalid_type' ? `replies[${String(issue.path?.at(-1))}] must be an object` : undefined
         }
       ),
       REPLIES_ERROR
