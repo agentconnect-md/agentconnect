@@ -154,6 +154,42 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     }
   })
 
+  it('hands a scratch workspace with App credentials the same gitcred capability a clone gets', async () => {
+    const root = scaffold()
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root,
+      sandboxMechanism: 'bwrap',
+      probeRuntimes: async () => []
+    })
+    try {
+      await daemon.start()
+      const agent = (daemon as any).agents.get('bot-a')
+      const cwd = agent.workspace.path
+      // Authorized repositories are the only repositories a scratch workspace can reach, and its
+      // in-session git and gh authenticate for them through the same helper a clone uses.
+      agent.workspace = {
+        mode: 'from-scratch',
+        path: cwd,
+        gitBranch: 'main',
+        gitCredential: 'github-app',
+        pullOnNewSession: true,
+        skills: []
+      }
+      const scratch = (daemon as any).buildAcpHost(agent, (daemon as any).cfg, { runInSandbox: true, cwd }).host
+      expect((scratch as any).opts.env[GITCRED_CAPABILITY_ENV]).toEqual(expect.any(String))
+      expect((scratch as any).opts.env[GITCRED_AGENT_ENV]).toBe('bot-a')
+      // Without App credentials a scratch workspace still carries no git identity of any kind.
+      agent.workspace = { mode: 'from-scratch', path: cwd, gitBranch: 'main', pullOnNewSession: true, skills: [] }
+      const plain = (daemon as any).buildAcpHost(agent, (daemon as any).cfg, { runInSandbox: true, cwd }).host
+      expect((plain as any).opts.env[GITCRED_CAPABILITY_ENV]).toBeUndefined()
+      expect((plain as any).opts.env.GIT_CONFIG_KEY_0).toBeUndefined()
+    } finally {
+      await daemon.stop().catch(() => undefined)
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('keeps agent tool credentials out of the dream host without re-enabling repository hooks', async () => {
     const root = scaffold()
     const daemon = new Daemon({
