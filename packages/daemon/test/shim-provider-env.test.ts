@@ -128,6 +128,33 @@ describe('AcpRunner provider env fill-in', () => {
     })
   })
 
+  it('aims a runtime-owned key at the runtime-owned custom endpoint, never past it', async () => {
+    // No key server, no static credential: key and endpoint both belong to the runtime. The pod
+    // floor and the public default must not outrank the runtime's live surface.
+    const seen = await spawnAndReadEnv('codex-acp', {
+      PATH: process.env.PATH ?? '',
+      OPENAI_API_KEY: 'sk-runtime-own',
+      CODEX_CONFIG: JSON.stringify({ openai_base_url: 'https://runtime-own.example/v1' })
+    })
+    expect(JSON.parse(seen.R!)._meta.gateway.baseUrl).toBe('https://runtime-own.example/v1')
+
+    const envAimed = await spawnAndReadEnv(
+      'codex-acp',
+      { PATH: process.env.PATH ?? '', OPENAI_API_KEY: 'sk-runtime-own', OPENAI_BASE_URL: 'https://env-own.example' },
+      { AC_CODEX_API_KEY: 'sk-pod-unused' }
+    )
+    expect(JSON.parse(envAimed.R!)._meta.gateway.baseUrl).toBe('https://env-own.example')
+  })
+
+  it('composes nothing for a runtime that selected its own model provider', async () => {
+    const seen = await spawnAndReadEnv('codex-acp', {
+      PATH: process.env.PATH ?? '',
+      OPENAI_API_KEY: 'sk-runtime-own',
+      CODEX_CONFIG: JSON.stringify({ model_provider: 'my-own-gateway' })
+    })
+    expect(seen.R).toBeNull()
+  })
+
   it('routes a daemon-injected key by the pod base-URL floor when the daemon named no endpoint', async () => {
     // The reported cloud shape: issued key, base URL present only in the live pod. The request
     // must aim at the pod's gateway — composing the public endpoint here would send the issued
