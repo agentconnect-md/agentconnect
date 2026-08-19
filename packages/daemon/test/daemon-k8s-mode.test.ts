@@ -502,4 +502,39 @@ describe('daemon --k8s mode', () => {
       await k8sDaemon.stop()
     }
   })
+
+  // Sent to a pod, the daemon-path bridge spec became a MODULE_NOT_FOUND restart loop in its log.
+  it('injects no AgentConnect MCP server, because the sandbox image ships no bridge to spawn', async () => {
+    const k8sDaemon = daemon({ root: root({ declared: { runtimes: [{ id: 'claude' }] } }), k8s: true })
+    try {
+      await k8sDaemon.start()
+      expect(mcpServersFor(k8sDaemon)).toEqual([])
+    } finally {
+      await k8sDaemon.stop()
+    }
+  })
+
+  it('still injects the bridge outside k8s, where the runtime shares this filesystem', async () => {
+    const local = daemon({ root: root(), k8s: false })
+    try {
+      await local.start()
+      const servers = mcpServersFor(local)
+      expect(servers).toHaveLength(1)
+      expect(servers[0]!.args).toContain('mcp-bridge')
+    } finally {
+      await local.stop()
+    }
+  })
 })
+
+/** The session seam that decides an agent's MCP servers, asked about an ordinary agent. */
+function mcpServersFor(instance: Daemon): { args: string[] }[] {
+  const agent = { id: 'a1', name: 'a1', runtime: 'claude', integrations: [], mcpServers: [] }
+  return (instance as any).sessions.deps.mcpServersFor({
+    agent,
+    platform: 'slack',
+    channel: 'C1',
+    thread: '1',
+    isDm: false
+  })
+}

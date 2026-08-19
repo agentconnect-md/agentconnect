@@ -1536,7 +1536,7 @@ export class Daemon {
           // workspace is the one case today: its git reaches the credential helper over a unix
           // socket that, without a tunnel, exists only on the daemon's own filesystem. MCP is
           // deliberately absent — the in-pod bridge that would dial it is not in the image yet, so
-          // a listener for it would be a socket nobody can use.
+          // a listener for it would be a socket nobody can use — `mcpBridgeRunnable` withholds the spec too.
           tunnelsFor: (agentId) =>
             this.agents.get(agentId)?.workspace.gitCredential === 'github-app' ? ['gitcred'] : [],
           tunnelSocketPath: (tunnel) => (tunnel === 'gitcred' ? gitcredSocketPath(root) : undefined),
@@ -1566,6 +1566,11 @@ export class Daemon {
       // in-place conversion has no pod-side implementation of its rollback contract.
       this.workspaces.setSandboxMode(true)
       this.log.info('k8s: execution plane ready — daemon-to-sandbox shim dialing enabled')
+      // Once at boot rather than per session: it is a property of the image this pool runs.
+      this.log.warn(
+        'mcp: cluster agents get no AgentConnect tool server — the runtime image ships no in-pod bridge, ' +
+          'so agent tools, memory distillation and dream knowledge browsing are unavailable to them'
+      )
     }
     // Sandbox-optional principle (#36): skills are NOT force-sandboxed fleet-wide.
     // A skill runs sandboxed only when its agent does (agentRunsInSandbox), so the
@@ -2218,7 +2223,8 @@ export class Daemon {
         // Falling back to agent.integrations[0] can send a title/message through the
         // wrong bot when one agent has multiple integrations. A memory-only session
         // still registers with no integration so its universal tools work.
-        if (tools.length > 0) {
+        // No bridge to spawn ⇒ no token either: a live credential nothing can ever present.
+        if (tools.length > 0 && this.mcpBridgeRunnable()) {
           const token = this.mcp.register({
             agentId: agent.id,
             platform,
@@ -2775,6 +2781,12 @@ export class Daemon {
     // agent runs (and installs/uses skills) unsandboxed, and the daemon never
     // fails closed on a host with no OS sandbox.
     return effectiveRunInSandbox(this.cfg.security.requireSandbox, agent.runInSandbox, this.sandboxMechanism)
+  }
+
+  // False in --k8s: `buildMcpServers` names a bridge entry and control socket on THIS filesystem,
+  // and the sandbox image ships neither — the pod's runtime restarted a missing module instead.
+  private mcpBridgeRunnable(): boolean {
+    return !this.k8sPlane
   }
 
   private async runAgentWorkspacePreparation(agent: Agent, request?: PrepareSessionWorkspaceRequest): Promise<string> {
@@ -3811,11 +3823,14 @@ export class Daemon {
         })
         this.releaseMemoryExtractionToken(cacheKey)
         this.memoryExtractionTokens.set(cacheKey, mcpToken)
-        const mcpServers = buildMcpServers({
-          socketPath: mcpSocketPath(this.root),
-          token: mcpToken,
-          cliEntry: daemonEntryForShims(this.root)
-        })
+        // Tool-less in --k8s: the extraction already wrote nothing behind a bridge the pod could not start.
+        const mcpServers = this.mcpBridgeRunnable()
+          ? buildMcpServers({
+              socketPath: mcpSocketPath(this.root),
+              token: mcpToken,
+              cliEntry: daemonEntryForShims(this.root)
+            })
+          : []
         sessionId = trusted
           ? await host.newSession(cwd, mcpServers, undefined, MEMORY_DISTILLATION_SYSTEM_PROMPT)
           : await host.newSession(cwd, mcpServers)
@@ -4209,11 +4224,14 @@ export class Daemon {
       thread: context.dreamId,
       tools: KNOWLEDGE_TOOLS
     })
-    const mcpServers = buildMcpServers({
-      socketPath: mcpSocketPath(this.root),
-      token: mcpToken,
-      cliEntry: daemonEntryForShims(this.root)
-    })
+    // Tool-less in --k8s for the same reason: no knowledge browsing, rather than an unspawnable spec.
+    const mcpServers = this.mcpBridgeRunnable()
+      ? buildMcpServers({
+          socketPath: mcpSocketPath(this.root),
+          token: mcpToken,
+          cliEntry: daemonEntryForShims(this.root)
+        })
+      : []
     try {
       const sessionId = trusted
         ? await host.newSession(cwd, mcpServers, undefined, systemPrompt)
