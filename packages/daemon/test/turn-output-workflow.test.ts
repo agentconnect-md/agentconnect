@@ -81,7 +81,7 @@ function connect(daemon: Daemon, overrides: Record<string, unknown> = {}) {
 describe('TurnOutputWorkflow', () => {
   it('offers a final-fence provider snapshot only where the Layer-1 thread-history port exists', async () => {
     // The gate is the read port (`getThreadReplies`), asked by name — not a
-    // `pending.platform !== 'slack'` test and not a `Partial<SlackConnection>`
+    // `pending.plan.platform !== 'slack'` test and not a `Partial<SlackConnection>`
     // cast that only looks like one. A connection without the port contributes
     // no provider snapshot and the fence falls back to daemon-observed rows.
     const daemon = new Daemon({
@@ -99,12 +99,14 @@ describe('TurnOutputWorkflow', () => {
     })
     await daemon.start()
     const pending = {
-      agentId: 'bot-a',
-      integrationId: 'int-a',
-      channel: 'C1',
-      statusThread: 'T1',
-      transcriptChannel: transcriptChannelKey('C1', undefined),
-      platform: 'slack'
+      plan: {
+        agentId: 'bot-a',
+        integrationId: 'int-a',
+        channel: 'C1',
+        statusThread: 'T1',
+        transcriptChannel: transcriptChannelKey('C1', undefined),
+        platform: 'slack'
+      }
     }
 
     connect(daemon)
@@ -115,9 +117,11 @@ describe('TurnOutputWorkflow', () => {
 
     // Port presence, not platform identity: a NON-Slack pending whose connection
     // answers the port still gets a snapshot, and a Slack one that doesn't, doesn't.
-    expect(typeof (daemon as any).finalThreadSnapshot({ ...pending, platform: 'telegram' })).toBe('function')
+    expect(typeof (daemon as any).finalThreadSnapshot({ plan: { ...pending.plan, platform: 'telegram' } })).toBe(
+      'function'
+    )
     connect(daemon)
-    expect((daemon as any).finalThreadSnapshot({ ...pending, platform: 'telegram' })).toBeUndefined()
+    expect((daemon as any).finalThreadSnapshot({ plan: { ...pending.plan, platform: 'telegram' } })).toBeUndefined()
 
     // No connection at all is the same fail-closed answer.
     ;(daemon as any).connByIntegration.delete('int-a')

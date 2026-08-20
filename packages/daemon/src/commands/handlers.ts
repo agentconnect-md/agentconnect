@@ -607,7 +607,7 @@ export class CommandHandlers {
         (entry) => entry.cancelledReason === 'loop protection' && loopGuardScope(entry.msg) === scope
       ) ||
       [...this.host.pending().values()].some((pending) => {
-        return pending.outputSuppressed === 'loop protection' && pending.loopGuardScope === scope
+        return pending.outputSuppressed === 'loop protection' && pending.plan.loopGuardScope === scope
       })
     if (stillStopping) {
       reply('Loop protection is still stopping the previous turn. Try `!resume` again in a moment.')

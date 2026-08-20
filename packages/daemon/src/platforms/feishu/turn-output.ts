@@ -32,21 +32,25 @@ export interface FeishuTurnState {
 /** The core turn, as Feishu's applier sees it. `Pending` satisfies it structurally. */
 export interface FeishuTurn {
   conn?: unknown
-  channel: string
-  thread?: string
-  statusThread: string
-  transcriptChannel: string
-  agentId: string
-  sessionKey: string
   acpSessionId: string
-  platform: string
-  integrationId?: string
-  progressTs?: string
-  progressAttempted?: boolean
-  planTs?: string
-  planAttempted?: boolean
-  reasoningTs?: string
-  reasoningAttempted?: boolean
+  plan: {
+    channel: string
+    thread?: string
+    statusThread: string
+    transcriptChannel: string
+    agentId: string
+    sessionKey: string
+    platform: string
+    integrationId?: string
+  }
+  chrome: {
+    progressTs?: string
+    progressAttempted?: boolean
+    planTs?: string
+    planAttempted?: boolean
+    reasoningTs?: string
+    reasoningAttempted?: boolean
+  }
 }
 
 /** The host capabilities this applier needs: the two every platform needs, plus
@@ -86,41 +90,41 @@ export async function applyFeishuAction<TTurn extends FeishuTurn>(
     case 'card-start':
       if (state.cardAttempted) return
       state.cardAttempted = true
-      state.card = await conn.startStreamingCard(turn.channel, turn.thread, {
-        sessionKey: turn.sessionKey,
+      state.card = await conn.startStreamingCard(turn.plan.channel, turn.plan.thread, {
+        sessionKey: turn.plan.sessionKey,
         sessionUrl: host.sessionUrl(turn),
-        ...(turn.integrationId
-          ? { target: { v: 1, agentId: turn.agentId, integrationId: turn.integrationId } as const }
+        ...(turn.plan.integrationId
+          ? { target: { v: 1, agentId: turn.plan.agentId, integrationId: turn.plan.integrationId } as const }
           : {})
       })
       return
     case 'card-stream':
-      if (state.card) await conn.updateStreamingCard(turn.channel, state.card, action.text)
+      if (state.card) await conn.updateStreamingCard(turn.plan.channel, state.card, action.text)
       return
     case 'card-final': {
       if (state.card) {
-        const delivered = await conn.finishStreamingCard(turn.channel, state.card, action.text, action.attribution)
+        const delivered = await conn.finishStreamingCard(turn.plan.channel, state.card, action.text, action.attribution)
         if (delivered) return
         // A final CardKit update failure must not lose the answer. Remove the stale
         // partial card where possible, then fall back to ordinary text.
-        await conn.cancelStreamingCard(turn.channel, state.card)
+        await conn.cancelStreamingCard(turn.plan.channel, state.card)
       }
-      await conn.postMessage(turn.channel, action.text, turn.thread)
+      await conn.postMessage(turn.plan.channel, action.text, turn.plan.thread)
       return
     }
     case 'card-cancel':
-      if (state.card) await conn.cancelStreamingCard(turn.channel, state.card)
+      if (state.card) await conn.cancelStreamingCard(turn.plan.channel, state.card)
       return
     case 'typing':
-      await conn.sendChatAction(turn.channel)
+      await conn.sendChatAction(turn.plan.channel)
       return
     case 'post': {
-      const id = await conn.postMessage(turn.channel, action.text, turn.thread)
+      const id = await conn.postMessage(turn.plan.channel, action.text, turn.plan.thread)
       await host.appendTranscript({
-        channel: turn.transcriptChannel,
-        thread: turn.statusThread,
+        channel: turn.plan.transcriptChannel,
+        thread: turn.plan.statusThread,
         ts: id ?? `local-${Date.now()}`,
-        sender: turn.agentId,
+        sender: turn.plan.agentId,
         kind: 'text',
         text: action.text
       })
@@ -130,27 +134,27 @@ export async function applyFeishuAction<TTurn extends FeishuTurn>(
     case 'tool-output':
       // Posted to the chat but NOT recorded — the done footer is chrome, and tool
       // output is captured independently by the recorder.
-      await conn.postChrome(turn.channel, action.text, { threadTs: turn.thread })
+      await conn.postChrome(turn.plan.channel, action.text, { threadTs: turn.plan.thread })
       return
     case 'progress':
-      if (turn.progressTs) await conn.updateMessage(turn.channel, turn.progressTs, action.text)
-      else if (!turn.progressAttempted) {
-        turn.progressAttempted = true
-        turn.progressTs = await conn.postChrome(turn.channel, action.text, { threadTs: turn.thread })
+      if (turn.chrome.progressTs) await conn.updateMessage(turn.plan.channel, turn.chrome.progressTs, action.text)
+      else if (!turn.chrome.progressAttempted) {
+        turn.chrome.progressAttempted = true
+        turn.chrome.progressTs = await conn.postChrome(turn.plan.channel, action.text, { threadTs: turn.plan.thread })
       }
       return
     case 'plan':
-      if (turn.planTs) await conn.updateMessage(turn.channel, turn.planTs, action.text)
-      else if (!turn.planAttempted) {
-        turn.planAttempted = true
-        turn.planTs = await conn.postChrome(turn.channel, action.text, { threadTs: turn.thread })
+      if (turn.chrome.planTs) await conn.updateMessage(turn.plan.channel, turn.chrome.planTs, action.text)
+      else if (!turn.chrome.planAttempted) {
+        turn.chrome.planAttempted = true
+        turn.chrome.planTs = await conn.postChrome(turn.plan.channel, action.text, { threadTs: turn.plan.thread })
       }
       return
     case 'reasoning':
-      if (turn.reasoningTs) await conn.updateMessage(turn.channel, turn.reasoningTs, action.text)
-      else if (!turn.reasoningAttempted) {
-        turn.reasoningAttempted = true
-        turn.reasoningTs = await conn.postChrome(turn.channel, action.text, { threadTs: turn.thread })
+      if (turn.chrome.reasoningTs) await conn.updateMessage(turn.plan.channel, turn.chrome.reasoningTs, action.text)
+      else if (!turn.chrome.reasoningAttempted) {
+        turn.chrome.reasoningAttempted = true
+        turn.chrome.reasoningTs = await conn.postChrome(turn.plan.channel, action.text, { threadTs: turn.plan.thread })
       }
       return
   }

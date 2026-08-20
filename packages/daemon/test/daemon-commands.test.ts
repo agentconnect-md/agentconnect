@@ -38,7 +38,7 @@ const LOOP_SCOPE = `slack:C1:dm:${TRANSPORT_SCOPE}`
 
 function hasPending(daemon: Daemon, acpSessionId: string): boolean {
   return [...(daemon as any).pending.values()].some(
-    (pending: any) => pending.agentId === 'bot-a' && pending.acpSessionId === acpSessionId
+    (pending: any) => pending.plan.agentId === 'bot-a' && pending.acpSessionId === acpSessionId
   )
 }
 
@@ -1498,30 +1498,27 @@ describe('Slack interactive status bar', () => {
     const clearStatusBarTs = vi.fn()
     ;(daemon as any).store = { getStatusBarTs, clearStatusBarTs }
     const pending: any = {
-      platform: 'slack',
-      showStatusBar: false,
-      statusBarTs: 'sb1',
-      sessionKey: SESSION_KEY,
-      channel: 'C1',
+      plan: { platform: 'slack', showStatusBar: false, sessionKey: SESSION_KEY, channel: 'C1' },
+      chrome: { statusBarTs: 'sb1' },
       conn,
-      applyChain: Promise.resolve()
+      signals: { applyChain: Promise.resolve() }
     }
 
     ;(daemon as any).emitStatusBar(pending)
-    await pending.applyChain
+    await pending.signals.applyChain
     expect(conn.deleteMessage).toHaveBeenCalledWith('C1', 'sb1')
-    expect(pending.statusBarTs).toBeUndefined()
+    expect(pending.chrome.statusBarTs).toBeUndefined()
     expect(clearStatusBarTs).toHaveBeenCalledWith(SESSION_KEY)
 
     ;(daemon as any).emitStatusBar(pending)
-    await pending.applyChain
+    await pending.signals.applyChain
     expect(conn.deleteMessage).toHaveBeenCalledTimes(1)
 
     // Never adopt an unowned legacy row for deletion: a shared Slack thread may contain
     // another Agent's status bar.
-    const unowned = { ...pending, statusBarTs: undefined, lastStatusBar: undefined, applyChain: Promise.resolve() }
+    const unowned = { ...pending, chrome: {}, signals: { applyChain: Promise.resolve() } }
     ;(daemon as any).emitStatusBar(unowned)
-    await unowned.applyChain
+    await unowned.signals.applyChain
     expect(conn.getThreadReplies).not.toHaveBeenCalled()
     expect(conn.deleteMessage).toHaveBeenCalledTimes(1)
   }, 15_000)
@@ -1540,13 +1537,13 @@ describe('Slack interactive status bar', () => {
     const t1 = (daemon as any).dispatch('bot-a', dm('100', 'hi'), 'int-a')
     await vi.waitFor(() => expect(conn.postBlocks).toHaveBeenCalledTimes(1), WAIT)
     const p = [...(daemon as any).pending.values()][0]
-    expect(p.statusBarTs).toBe('sb1')
+    expect(p.chrome.statusBarTs).toBe('sb1')
 
     // A permission / elicitation card is posted mid-turn (its handler calls this). Other
     // live output re-anchors below the card, but the session header must remain at sb1.
     ;(daemon as any).reanchorInPlaceChrome(p)
-    await p.applyChain
-    p.lastStatusBar = undefined // mimic a usage update that changes the visible header
+    await p.signals.applyChain
+    p.chrome.lastStatusBar = undefined // mimic a usage update that changes the visible header
     ;(daemon as any).emitStatusBar(p)
     await vi.waitFor(
       () =>
@@ -1561,8 +1558,8 @@ describe('Slack interactive status bar', () => {
         ),
       WAIT
     )
-    expect(p.statusBarTs).toBe('sb1')
-    expect(await (daemon as any).store.getStatusBarTs(p.sessionKey)).toBe('sb1')
+    expect(p.chrome.statusBarTs).toBe('sb1')
+    expect(await (daemon as any).store.getStatusBarTs(p.plan.sessionKey)).toBe('sb1')
     expect(conn.postBlocks).toHaveBeenCalledTimes(1)
     expect(conn.deleteMessage).not.toHaveBeenCalled()
 

@@ -20,23 +20,27 @@ import type { DiscordAction } from '../../discord/render.js'
  *  nothing more. `Pending` satisfies this structurally. */
 export interface DiscordTurn {
   conn?: unknown
-  channel: string
-  thread?: string
-  statusThread: string
-  transcriptChannel: string
-  agentId: string
-  sessionKey: string
-  progressTs?: string
-  progressAttempted?: boolean
-  planTs?: string
-  planAttempted?: boolean
-  reasoningTs?: string
-  reasoningAttempted?: boolean
-  statusBarTs?: string
-  statusBarAttempted?: boolean
-  liveReplyTs?: string
-  liveReplyText?: string
-  liveReplyAttempted?: boolean
+  plan: {
+    channel: string
+    thread?: string
+    statusThread: string
+    transcriptChannel: string
+    agentId: string
+    sessionKey: string
+  }
+  chrome: {
+    progressTs?: string
+    progressAttempted?: boolean
+    planTs?: string
+    planAttempted?: boolean
+    reasoningTs?: string
+    reasoningAttempted?: boolean
+    statusBarTs?: string
+    statusBarAttempted?: boolean
+    liveReplyTs?: string
+    liveReplyText?: string
+    liveReplyAttempted?: boolean
+  }
 }
 
 /** The host capabilities this applier needs — the same two Telegram's does. */
@@ -71,15 +75,15 @@ export async function applyDiscordAction<TTurn extends DiscordTurn>(
   if (!conn) return
   switch (action.kind) {
     case 'typing':
-      await conn.sendChatAction(turn.channel, turn.thread)
+      await conn.sendChatAction(turn.plan.channel, turn.plan.thread)
       return
     case 'post': {
-      const id = await conn.postMessage(turn.channel, action.text, turn.thread)
+      const id = await conn.postMessage(turn.plan.channel, action.text, turn.plan.thread)
       await host.appendTranscript({
-        channel: turn.transcriptChannel,
-        thread: turn.statusThread,
+        channel: turn.plan.transcriptChannel,
+        thread: turn.plan.statusThread,
         ts: id ?? `local-${Date.now()}`,
-        sender: turn.agentId,
+        sender: turn.plan.agentId,
         kind: 'text',
         text: action.text
       })
@@ -88,13 +92,15 @@ export async function applyDiscordAction<TTurn extends DiscordTurn>(
     case 'live-reply': {
       // minimal mode's single agent reply: send once then edit in place as the turn
       // streams. Skip an update when unchanged; not recorded (the `recordOnly` posts do).
-      if (turn.liveReplyText === action.text) return
-      turn.liveReplyText = action.text
-      if (turn.liveReplyTs)
-        await conn.updateMessage(turn.channel, turn.liveReplyTs, action.text, { threadTs: turn.thread })
-      else if (!turn.liveReplyAttempted) {
-        turn.liveReplyAttempted = true
-        turn.liveReplyTs = await conn.postMessage(turn.channel, action.text, turn.thread)
+      if (turn.chrome.liveReplyText === action.text) return
+      turn.chrome.liveReplyText = action.text
+      if (turn.chrome.liveReplyTs)
+        await conn.updateMessage(turn.plan.channel, turn.chrome.liveReplyTs, action.text, {
+          threadTs: turn.plan.thread
+        })
+      else if (!turn.chrome.liveReplyAttempted) {
+        turn.chrome.liveReplyAttempted = true
+        turn.chrome.liveReplyTs = await conn.postMessage(turn.plan.channel, action.text, turn.plan.thread)
       }
       return
     }
@@ -102,45 +108,48 @@ export async function applyDiscordAction<TTurn extends DiscordTurn>(
     case 'tool-output':
       // Posted to the channel but NOT recorded — the done footer is chrome, and tool
       // output is captured independently by the recorder.
-      await conn.postChrome(turn.channel, action.text, { threadTs: turn.thread })
+      await conn.postChrome(turn.plan.channel, action.text, { threadTs: turn.plan.thread })
       return
     case 'progress':
-      if (turn.progressTs)
-        await conn.updateMessage(turn.channel, turn.progressTs, action.text, { threadTs: turn.thread })
-      else if (!turn.progressAttempted) {
-        turn.progressAttempted = true
-        turn.progressTs = await conn.postChrome(turn.channel, action.text, { threadTs: turn.thread })
+      if (turn.chrome.progressTs)
+        await conn.updateMessage(turn.plan.channel, turn.chrome.progressTs, action.text, { threadTs: turn.plan.thread })
+      else if (!turn.chrome.progressAttempted) {
+        turn.chrome.progressAttempted = true
+        turn.chrome.progressTs = await conn.postChrome(turn.plan.channel, action.text, { threadTs: turn.plan.thread })
       }
       return
     case 'plan':
-      if (turn.planTs) await conn.updateMessage(turn.channel, turn.planTs, action.text, { threadTs: turn.thread })
-      else if (!turn.planAttempted) {
-        turn.planAttempted = true
-        turn.planTs = await conn.postChrome(turn.channel, action.text, { threadTs: turn.thread })
+      if (turn.chrome.planTs)
+        await conn.updateMessage(turn.plan.channel, turn.chrome.planTs, action.text, { threadTs: turn.plan.thread })
+      else if (!turn.chrome.planAttempted) {
+        turn.chrome.planAttempted = true
+        turn.chrome.planTs = await conn.postChrome(turn.plan.channel, action.text, { threadTs: turn.plan.thread })
       }
       return
     case 'reasoning':
-      if (turn.reasoningTs)
-        await conn.updateMessage(turn.channel, turn.reasoningTs, action.text, { threadTs: turn.thread })
-      else if (!turn.reasoningAttempted) {
-        turn.reasoningAttempted = true
-        turn.reasoningTs = await conn.postChrome(turn.channel, action.text, { threadTs: turn.thread })
+      if (turn.chrome.reasoningTs)
+        await conn.updateMessage(turn.plan.channel, turn.chrome.reasoningTs, action.text, {
+          threadTs: turn.plan.thread
+        })
+      else if (!turn.chrome.reasoningAttempted) {
+        turn.chrome.reasoningAttempted = true
+        turn.chrome.reasoningTs = await conn.postChrome(turn.plan.channel, action.text, { threadTs: turn.plan.thread })
       }
       return
     case 'status-bar':
       // Per-turn status line + button row: post once (registering the message →
       // sessionKey so its button interactions resolve), then edit in place.
-      if (turn.statusBarTs)
-        await conn.updateMessage(turn.channel, turn.statusBarTs, action.text, {
-          threadTs: turn.thread,
+      if (turn.chrome.statusBarTs)
+        await conn.updateMessage(turn.plan.channel, turn.chrome.statusBarTs, action.text, {
+          threadTs: turn.plan.thread,
           keyboard: action.keyboard
         })
-      else if (!turn.statusBarAttempted) {
-        turn.statusBarAttempted = true
-        turn.statusBarTs = await conn.postChrome(turn.channel, action.text, {
-          threadTs: turn.thread,
+      else if (!turn.chrome.statusBarAttempted) {
+        turn.chrome.statusBarAttempted = true
+        turn.chrome.statusBarTs = await conn.postChrome(turn.plan.channel, action.text, {
+          threadTs: turn.plan.thread,
           keyboard: action.keyboard,
-          sessionKey: turn.sessionKey
+          sessionKey: turn.plan.sessionKey
         })
       }
       return

@@ -686,9 +686,9 @@ export class WebchatTransport {
       convId === conversationId && (agentId === undefined || a === agentId)
     const interrupted = new Set<string>()
     for (const p of this.host.pending().values()) {
-      if (matches(p.agentId, p.webchat?.conversationId) && !interrupted.has(p.sessionKey)) {
-        interrupted.add(p.sessionKey)
-        await this.host.interruptTurn(p.agentId, p.sessionKey, 'cancel', p.acpSessionId)
+      if (matches(p.plan.agentId, p.webchat?.conversationId) && !interrupted.has(p.plan.sessionKey)) {
+        interrupted.add(p.plan.sessionKey)
+        await this.host.interruptTurn(p.plan.agentId, p.plan.sessionKey, 'cancel', p.acpSessionId)
       }
     }
     // Cold accepted head: it owns the logical gate but has not reached Pending yet.

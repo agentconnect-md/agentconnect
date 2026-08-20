@@ -714,15 +714,18 @@ describe('continue-the-topic hint delivery', () => {
       sendChatAction: vi.fn(async () => {})
     }
     const p = {
-      agentId: 'bot-a',
-      channel: '-100',
-      transcriptChannel: '-100',
-      statusThread: 'tg:100',
-      thread: 'tg:100',
+      plan: {
+        agentId: 'bot-a',
+        channel: '-100',
+        transcriptChannel: '-100',
+        statusThread: 'tg:100',
+        thread: 'tg:100',
+        approvalSurfaceSuppressed: false
+      },
+      chrome: {},
       // §7.3: Telegram's per-turn state lives in the opaque slot, seeded by its
       // output surface at dispatch (here, by hand).
       turnState: { replyTo: 100 } as { replyTo?: number; lastBody?: { id: string; text: string } },
-      approvalSurfaceSuppressed: false,
       conn
     }
     return { conn, p, apply: (a: unknown) => (daemon as any).applyTelegramAction(p, a) }
