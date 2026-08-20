@@ -38,16 +38,10 @@ export interface BillingAccount {
   orgId: string
   /** Credit posted minus usage billed. One definition, settled facts only. */
   balanceMicro: number
-  /** What the gateway is doing to this org right now. Do NOT re-derive it from
-   *  `balanceMicro`, which would claim something about the gateway from a number that may
-   *  not have reached it.
-   *
-   *  `unknown` is a real answer and not a placeholder: a write whose outcome was lost may
-   *  or may not have taken effect, so while a change of decision is unconfirmed the
-   *  service cannot support either of the other two. It clears on its own. */
-  state: 'active' | 'suspended' | 'unknown'
-  /** Warn below this balance. 0 ⇒ no warning is configured for this deployment. */
-  lowBalanceMicro: number
+  /** The gateway's own call, never re-derived from `balanceMicro`. Absent ⇒ an older service. */
+  state?: 'active' | 'suspended' | 'unknown'
+  /** Warn below this balance. 0, absent or null ⇒ no warning configured. */
+  lowBalanceMicro?: number | null
 }
 
 // The history merges both ledger sides, so a row is one of two shapes and `type` says
@@ -148,14 +142,12 @@ function isFiniteNumber(v: unknown): boolean {
 export function assertAccount(body: unknown): asserts body is BillingAccount {
   const b = body as Partial<BillingAccount> | null
   if (!b || typeof b.orgId !== 'string' || !isFiniteNumber(b.balanceMicro)) throw new BillingShapeError('account')
-  // A missing `state` is refused rather than defaulted to 'active': the default would be
-  // silence about a stop that IS happening, and this page's whole job in that moment is
-  // to say why nothing works. An unknown value is refused for the same reason — a state
-  // this build cannot interpret must not render as "everything is fine".
-  if (b.state !== 'active' && b.state !== 'suspended' && b.state !== 'unknown') {
+  // Unrecognised is refused; ABSENT is an older service, and the page then claims nothing.
+  if (b.state !== undefined && b.state !== 'active' && b.state !== 'suspended' && b.state !== 'unknown') {
     throw new BillingShapeError('account')
   }
-  if (!isFiniteNumber(b.lowBalanceMicro)) throw new BillingShapeError('account')
+  // A hint with a documented off value: throwing would drop the card AND the Add-credits form.
+  if (b.lowBalanceMicro != null && !isFiniteNumber(b.lowBalanceMicro)) throw new BillingShapeError('account')
 }
 
 export function assertPurchase(body: unknown): asserts body is BillingPurchase {

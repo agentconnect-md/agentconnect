@@ -46,15 +46,23 @@ describe('assertAccount', () => {
     expect(() => assertAccount({ ...ACCOUNT, state: 'unknown' })).not.toThrow()
   })
 
-  it('refuses a missing or unrecognised state rather than defaulting to active', () => {
-    // Defaulting would be silence about a stop that IS happening, at the one moment
-    // this page's whole job is to say why nothing works.
-    expect(() => assertAccount({ orgId: 'org1', balanceMicro: 0, lowBalanceMicro: 0 })).toThrow(BillingShapeError)
+  it('accepts an account from a service that predates `state`, and claims nothing', () => {
+    // This side deploys ahead of the service routinely, and throwing would cost the balance
+    // figure AND the Add-credits card — the one control a suspended org needs.
+    expect(() => assertAccount({ orgId: 'org1', balanceMicro: 0 })).not.toThrow()
+  })
+
+  it('refuses an UNRECOGNISED state — it must not render as “everything is fine”', () => {
     expect(() => assertAccount({ ...ACCOUNT, state: 'closed' })).toThrow(BillingShapeError)
   })
 
-  it('refuses a missing low-balance threshold', () => {
-    expect(() => assertAccount({ orgId: 'org1', balanceMicro: 0, state: 'active' })).toThrow(BillingShapeError)
+  it('reads an absent or null threshold as “no warning”, never as a broken account', () => {
+    // `null` is the natural serialization of a nullable "no threshold configured" value, and
+    // a presentation hint must not be able to take the whole card down.
+    expect(() => assertAccount({ orgId: 'org1', balanceMicro: 0, state: 'active' })).not.toThrow()
+    expect(() => assertAccount({ ...ACCOUNT, lowBalanceMicro: null })).not.toThrow()
+    // A threshold that is present but unusable is still refused.
+    expect(() => assertAccount({ ...ACCOUNT, lowBalanceMicro: 'ten' })).toThrow(BillingShapeError)
   })
 
   it('refuses null and non-objects', () => {

@@ -57,43 +57,32 @@ function fmtWhen(iso: string): string {
   })
 }
 
-/** The one line under the balance. `state` comes from the service and is never
- *  re-derived here: it means the gateway is refusing traffic, which a balance alone
- *  cannot establish — a deployment with no gateway configured has plenty of orgs at zero
- *  and nothing stopping any of them.
- *
- *  `unknown` is its own answer, not a fallback: while a change of decision is unconfirmed
- *  at the gateway the service cannot support either of the others, so neither can this.
- *
- *  Low balance is the opposite: it IS a presentation decision, so the service sends the
- *  threshold and this decides. `lowBalanceMicro: 0` means the deployment configured no
- *  warning, and 0 also falls out of the comparison on its own. */
-function BalanceState({ acct }: { acct: BillingAccount }) {
-  if (acct.state === 'suspended') {
-    return (
-      <div className="mt-1 font-sans text-[12px] font-medium leading-normal text-(--status-error)">
-        Suspended — add credit to resume access
-      </div>
-    )
+// Which notice the balance warrants — split out because the ORDER is the part worth a test.
+export function balanceNotice(acct: BillingAccount): { text: string; tone: 'error' | 'warn' | 'muted' } | null {
+  // Suspended outranks everything: strictly worse news, and its copy already says what to do.
+  if (acct.state === 'suspended') return { text: 'Suspended — add credit to resume access', tone: 'error' }
+  // Ahead of `unknown`: a known actionable fact outranks the absence of news, and `unknown` is
+  // reported DURING a suspension decision — exactly when a balance sits near its threshold.
+  if (acct.lowBalanceMicro && acct.balanceMicro < acct.lowBalanceMicro) {
+    return { text: `Running low — below ${fmtMicroUsd(acct.lowBalanceMicro)}`, tone: 'warn' }
   }
-  if (acct.state === 'unknown') {
-    // Said plainly rather than guessed either way. The service reports this while a change
-    // of decision is still unconfirmed at the gateway, and it clears on its own — so this
-    // is deliberately not styled as an error.
-    return (
-      <div className="mt-1 font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-        Confirming access status…
-      </div>
-    )
-  }
-  if (acct.lowBalanceMicro > 0 && acct.balanceMicro < acct.lowBalanceMicro) {
-    return (
-      <div className="mt-1 font-sans text-[12px] font-normal leading-normal text-(--text-secondary)">
-        Running low — below {fmtMicroUsd(acct.lowBalanceMicro)}
-      </div>
-    )
-  }
+  // Not an error: unconfirmed at the gateway, and it clears on its own.
+  if (acct.state === 'unknown') return { text: 'Confirming access status…', tone: 'muted' }
+  // Absent `state` lands here too — a service that predates the field claims nothing.
   return null
+}
+
+const NOTICE_TONE = {
+  error: 'font-medium text-(--status-error)',
+  warn: 'font-medium text-(--status-paused)',
+  muted: 'font-normal text-(--text-tertiary)'
+} as const
+
+// `state` is the service's call; low balance IS presentation, so it sends the threshold.
+function BalanceState({ acct }: { acct: BillingAccount }) {
+  const notice = balanceNotice(acct)
+  if (!notice) return null
+  return <div className={`mt-1 font-sans text-[12px] leading-normal ${NOTICE_TONE[notice.tone]}`}>{notice.text}</div>
 }
 
 function Notice({ title, body }: { title: string; body: string }) {
