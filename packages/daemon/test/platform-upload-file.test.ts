@@ -179,7 +179,21 @@ describe('outbound file sends', () => {
       api.createText.mockRejectedValueOnce(new Error('rate limited'))
       await expect(conn.uploadFile('oc_1', png, 'from slack')).resolves.toEqual({
         messageId: 'om_img',
-        warning: expect.stringContaining('caption')
+        warning: 'the image was sent, but its caption did not post'
+      })
+    })
+
+    it('says PART of the caption when earlier chunks already landed', async () => {
+      // Whole-vs-part decides whether re-sending duplicates: an agent told the whole caption
+      // failed would post the chunks that did land a second time.
+      const { conn, api } = connection()
+      api.createText
+        .mockImplementationOnce(async () => ({ messageId: 'om_text' }))
+        .mockRejectedValueOnce(new Error('rate limited'))
+      const long = 'z'.repeat(6000)
+      await expect(conn.uploadFile('oc_1', png, long)).resolves.toEqual({
+        messageId: 'om_img',
+        warning: 'the image was sent, but part of its caption did not post'
       })
     })
 

@@ -1008,15 +1008,21 @@ export class FeishuConnection implements PlatformConnection {
           return undefined
         }
         const anchor = sent.messageId !== undefined ? { messageId: sent.messageId } : {}
+        // A long caption is several messages, so the warning has to say whether NONE or only
+        // SOME of it landed: an agent told the whole caption failed would re-send all of it and
+        // duplicate the chunks that did post — the very duplication the ordering above avoids.
+        let posted = 0
         try {
           for (const chunk of comment ? chunkForFeishu(comment) : []) {
             await this.sendChunk(channel, threadAnchor, chunk)
+            posted += 1
           }
           return anchor
         } catch (err) {
           this.rememberPermissionIssue(err, channel)
           this.deps.log?.debug(`feishu: uploadFile caption failed (ch=${channel}): ${(err as Error).message}`)
-          return { ...anchor, warning: 'the image was sent, but its caption did not post' }
+          const lost = posted > 0 ? 'part of its caption' : 'its caption'
+          return { ...anchor, warning: `the image was sent, but ${lost} did not post` }
         }
       } catch (err) {
         this.rememberPermissionIssue(err, channel)
