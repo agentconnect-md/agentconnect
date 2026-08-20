@@ -38,6 +38,8 @@ function connWith(files: Record<string, unknown>) {
 }
 
 describe('SlackConnection.uploadFile', () => {
+  // Slack is the outlier: its share answers with the FILE, so success carries no messageId and
+  // a forward there anchors nothing — see platform-upload-file.test.ts for the other three.
   it('reserves a URL, POSTs the bytes, and shares the file as the message', async () => {
     const getUploadURLExternal = vi.fn(async () => ({
       upload_url: 'https://files.slack.com/upload/v1/x',
@@ -52,7 +54,7 @@ describe('SlackConnection.uploadFile', () => {
         username: 'Scout',
         icon_url: 'https://example.test/a.png'
       })
-    ).resolves.toBe('F1')
+    ).resolves.toEqual({ fileId: 'F1' })
 
     expect(getUploadURLExternal).toHaveBeenCalledWith({ filename: 'shot.png', length: bytes.byteLength })
     expect(undici.fetch).toHaveBeenCalledWith(
@@ -86,7 +88,7 @@ describe('SlackConnection.uploadFile', () => {
 
     await expect(
       conn.uploadFile('C1', { bytes: Buffer.from('x'), name: 'a.png' }, 'hi', undefined, { username: 'Scout' })
-    ).resolves.toBe('F1')
+    ).resolves.toEqual({ fileId: 'F1' })
     expect(completeUploadExternal).toHaveBeenCalledTimes(2)
     expect(completeUploadExternal.mock.calls[1]![0]).not.toHaveProperty('username')
   })

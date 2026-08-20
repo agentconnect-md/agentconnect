@@ -1249,17 +1249,17 @@ export class SlackConnection implements PlatformConnection {
    * message here — `comment` rides as `initial_comment`, and the agent's conversational
    * identity as username/icon, exactly as {@link postChatMessage} applies it to a text post.
    *
-   * Returns the Slack file id, or undefined on any failure. Slack answers with the FILE and
-   * no message ts, so this cannot serve as a post anchor: a caller that needs one (a session
-   * seed, a paired wake) must post separately and treat this as decoration.
+   * Undefined means the share FAILED and nothing is in the conversation. Success carries no
+   * `messageId`: Slack answers with the file and no ts, so a shared file is the one post kind
+   * that cannot anchor a session seed or a paired wake. `fileId` is diagnostic only.
    */
   async uploadFile(
     channel: string,
-    file: { bytes: Buffer; name: string },
+    file: { bytes: Buffer; name: string; mimeType?: string },
     comment?: string,
     threadTs?: string,
     options?: SlackPostOptions
-  ): Promise<string | undefined> {
+  ): Promise<{ messageId?: string; fileId?: string } | undefined> {
     return this.queue.enqueue(async () => {
       try {
         const reserved = await this.app.client.files.getUploadURLExternal({
@@ -1282,7 +1282,7 @@ export class SlackConnection implements PlatformConnection {
           ...(comment ? { initial_comment: comment } : {})
         }
         await this.completeUpload(share, options)
-        return fileId
+        return { fileId }
       } catch (err) {
         this.rememberMissingScopes(err)
         this.deps.log?.debug(`slack: uploadFile ${file.name} → ch=${channel} failed: ${(err as Error).message}`)

@@ -208,18 +208,17 @@ describe('executeTool: sendMessage (channel post)', () => {
   // platforms: the bytes are resolved daemon-side from what already arrived, never produced
   // by the model, and a file share is its own message kind rather than a decorated post.
   describe('attachment forward', () => {
-    const withUpload = () =>
-      fakeGateway({ uploadFile: vi.fn(async () => 'F_UPLOADED') as MessageGateway['uploadFile'] })
     const bytes = Buffer.from('PNGBYTES')
-    const resolves = (over: Partial<OpsDeps> = {}) => ({
-      resolveAttachment: vi.fn(async (_c: SessionContext, name: string) =>
-        name === 'shot.png' ? { bytes, name } : undefined
-      ),
-      ...over
+    const resolved = { bytes, name: 'shot.png', mimeType: 'image/png' }
+    // Slack's share answers with the file and no ts; the other three answer with a message.
+    const anchorless = () => fakeGateway({ uploadFile: vi.fn(async () => ({})) })
+    const anchoring = () => fakeGateway({ uploadFile: vi.fn(async () => ({ messageId: 'ts-999' })) })
+    const resolves = () => ({
+      resolveAttachment: vi.fn(async (_c: SessionContext, name: string) => (name === 'shot.png' ? resolved : undefined))
     })
 
     it('uploads the received bytes with `message` as the caption instead of posting text', async () => {
-      const gw = withUpload()
+      const gw = anchorless()
       const { deps: d, recorded } = deps(gw)
       Object.assign(d, resolves())
 
@@ -230,23 +229,46 @@ describe('executeTool: sendMessage (channel post)', () => {
         d
       )) as Record<string, unknown>
 
-      expect(gw.uploadFile).toHaveBeenCalledWith(
-        'C_OTHER',
-        { bytes, name: 'shot.png' },
-        'from telegram',
-        undefined,
-        authorIdentity
-      )
+      expect(gw.uploadFile).toHaveBeenCalledWith('C_OTHER', resolved, 'from telegram', undefined, authorIdentity)
       expect(gw.postMessage).not.toHaveBeenCalled()
-      // Slack answers a file share with the FILE and no message ts, so the send has no post
-      // anchor: it records under a synthetic id and seeds no channel-root session, exactly as
-      // a gateway that returned no id already did.
+      // No anchor came back, so the send records under a synthetic id and seeds no
+      // channel-root session — the path a gateway returning no id already took.
       expect(res).toMatchObject({ ok: true, post: { channel: 'C_OTHER', ts: 'local-1000' } })
       expect(recorded).toEqual([{ channel: 'C_OTHER', thread: undefined, text: 'from telegram', ts: 'local-1000' }])
     })
 
+    it('anchors the forward like any other post when the platform answers with a message id', async () => {
+      // Slack is the outlier here: Telegram, Discord and Feishu all return the message their
+      // file send created, so a forward there threads and seeds exactly like a text post.
+      const gw = anchoring()
+      const { deps: d, recorded } = deps(gw)
+      Object.assign(d, resolves())
+
+      const res = (await executeTool(
+        ctx,
+        'sendMessage',
+        { channel: 'C_OTHER', attachment: 'shot.png', message: 'look' },
+        d
+      )) as Record<string, unknown>
+
+      expect(res).toMatchObject({ ok: true, post: { channel: 'C_OTHER', ts: 'ts-999' } })
+      expect(recorded).toEqual([{ channel: 'C_OTHER', thread: 'ts-999', text: 'look', ts: 'ts-999' }])
+    })
+
+    it('raises a refused share instead of reporting it as sent', async () => {
+      // Nothing reached the conversation, so this must not read as a delivered message —
+      // a silently dropped image is the one outcome the agent cannot detect on its own.
+      const gw = fakeGateway({ uploadFile: vi.fn(async () => undefined) })
+      const { deps: d, recorded } = deps(gw)
+      Object.assign(d, resolves())
+      await expect(
+        executeTool(ctx, 'sendMessage', { channel: 'C_OTHER', attachment: 'shot.png', message: 'hi' }, d)
+      ).rejects.toThrow(/rejected the file "shot.png"/)
+      expect(recorded).toEqual([])
+    })
+
     it('refuses a name this conversation never received, posting nothing', async () => {
-      const gw = withUpload()
+      const gw = anchorless()
       const { deps: d } = deps(gw)
       Object.assign(d, resolves())
       await expect(

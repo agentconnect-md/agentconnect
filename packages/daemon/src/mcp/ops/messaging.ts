@@ -340,7 +340,10 @@ export interface MessagingDeps extends GatewayDeps {
    *  bytes are the bounded copy already kept for transcript replay, so a forward re-fetches
    *  nothing, never routes bytes through the model, and can be lower-resolution than the original.
    *  Scoped to the caller's own (channel, thread). Absent with no daemon ⇒ no file can be named. */
-  resolveAttachment?: (ctx: SessionContext, name: string) => Promise<{ bytes: Buffer; name: string } | undefined>
+  resolveAttachment?: (
+    ctx: SessionContext,
+    name: string
+  ) => Promise<{ bytes: Buffer; name: string; mimeType: string } | undefined>
   /** Record an agent-sent message into the session transcript. */
   recordOutbound: (
     ctx: SessionContext,
@@ -508,7 +511,7 @@ export async function sendMessage(
     const wantIntegrationId = parseArgs(integrationIdField, args.integrationId)
     const { gw, integrationId: targetId } = resolveGatewayForPlatform(ctx, deps, wantPlatform, wantIntegrationId)
     // Resolved before anything is posted: a bad name or a fileless target fails the whole send.
-    let attachment: { bytes: Buffer; name: string } | undefined
+    let attachment: { bytes: Buffer; name: string; mimeType: string } | undefined
     if (attachmentName !== undefined) {
       if (!gw.uploadFile) {
         throw new Error(`sendMessage: the selected ${platformLabel(wantPlatform)} integration cannot post files`)
@@ -579,11 +582,18 @@ export async function sendMessage(
           }
         : {})
     }
-    // A file share IS the message — chat.postMessage cannot carry bytes — and Slack answers it with
-    // the file, no ts. So a forward has no post anchor: `providerPostId` stays undefined and every
-    // consumer of it below degrades on the path a gateway returning no id already takes.
+    // A file share IS the message — the caption is `body`, not a second post. It anchors like
+    // any other post where the platform answers with a message id; Slack's does not, and that
+    // arm degrades on the path a gateway returning no id already takes. A failed share is
+    // raised rather than reported as sent: nothing reached the conversation.
     if (attachment) {
-      await gw.uploadFile?.(postChannel, attachment, body, undefined, identity)
+      const shared = await gw.uploadFile?.(postChannel, attachment, body, undefined, identity)
+      if (!shared) {
+        throw new Error(
+          `sendMessage: ${platformLabel(wantPlatform)} rejected the file "${attachment.name}" — nothing was sent.`
+        )
+      }
+      providerPostId = shared.messageId
     } else {
       providerPostId = await gw.postMessage(postChannel, body, undefined, identity)
     }

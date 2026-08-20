@@ -1,4 +1,4 @@
-import { Bot } from 'grammy'
+import { Bot, InputFile } from 'grammy'
 import type { Agent } from '../agents/agent-schema.js'
 import { platformIntegrationConfig } from '../platforms/integration-config.js'
 import type { NormalizedMessage } from '../messages/normalized.js'
@@ -6,6 +6,9 @@ import type { Logger } from '../log.js'
 import { PlatformSendQueue } from '../platforms/send-queue.js'
 import { isTelegramMembershipServiceMessage, normalizeTelegramMessage, type TelegramMessage } from './normalize.js'
 import type { PlatformConnection } from '../platforms/contract.js'
+
+/** Telegram truncates a caption past this instead of rejecting it, so we never send one longer. */
+const TELEGRAM_CAPTION_LIMIT = 1024
 
 /**
  * §Telegram edge unit. Mirrors slack/connection.ts but over grammY long-polling
@@ -144,6 +147,18 @@ export interface TelegramApi {
     text: string,
     opts?: { parse_mode?: string; reply_markup?: InlineKeyboardMarkup }
   ): Promise<unknown>
+  /** The two outbound file forms. An image previews inline through sendPhoto; sendDocument
+   *  takes everything else and is the only form that preserves the bytes exactly. */
+  sendPhoto(
+    chatId: number | string,
+    photo: InputFile,
+    opts?: { message_thread_id?: number; caption?: string }
+  ): Promise<{ message_id: number }>
+  sendDocument(
+    chatId: number | string,
+    document: InputFile,
+    opts?: { message_thread_id?: number; caption?: string }
+  ): Promise<{ message_id: number }>
   answerCallbackQuery(callbackQueryId: string, opts?: { text?: string }): Promise<unknown>
   sendChatAction(chatId: number | string, action: string): Promise<unknown>
   setMyCommands(commands: { command: string; description: string }[]): Promise<unknown>
@@ -331,6 +346,41 @@ export class TelegramConnection implements PlatformConnection {
           : {})
       })
       return res?.message_id != null ? String(res.message_id) : undefined
+    })
+  }
+
+  /**
+   * Put a file into a chat — the mirror of {@link downloadFile}. An image goes through
+   * `sendPhoto` so it previews inline; anything else through `sendDocument`, which is also
+   * the only form that preserves the bytes exactly.
+   *
+   * Telegram caps a caption at 1024 characters and silently truncates past it, so a longer
+   * `comment` is posted as its own message first rather than losing its tail. Returns the
+   * FILE message's id — the post a reply to this send would thread from.
+   */
+  async uploadFile(
+    channel: string,
+    file: { bytes: Buffer; name: string; mimeType?: string },
+    comment?: string,
+    threadTs?: string
+  ): Promise<{ messageId?: string } | undefined> {
+    const thread = threadTs != null && /^\d+$/.test(threadTs) ? Number(threadTs) : undefined
+    const threadOpt = thread !== undefined ? { message_thread_id: thread } : {}
+    const inCaption = comment && comment.length <= TELEGRAM_CAPTION_LIMIT ? comment : undefined
+    const asOwnMessage = comment && !inCaption ? comment : undefined
+    return this.queue.enqueue(async () => {
+      try {
+        if (asOwnMessage) await this.bot.api.sendMessage(channel, asOwnMessage, threadOpt)
+        const input = new InputFile(file.bytes, file.name)
+        const opts = { ...threadOpt, ...(inCaption ? { caption: inCaption } : {}) }
+        const res = file.mimeType?.startsWith('image/')
+          ? await this.bot.api.sendPhoto(channel, input, opts)
+          : await this.bot.api.sendDocument(channel, input, opts)
+        return { ...(res?.message_id != null ? { messageId: String(res.message_id) } : {}) }
+      } catch (err) {
+        this.deps.log?.debug(`telegram: uploadFile ${file.name} → ch=${channel} failed: ${(err as Error).message}`)
+        return undefined
+      }
     })
   }
 

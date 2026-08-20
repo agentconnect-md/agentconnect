@@ -2235,7 +2235,9 @@ export class Daemon {
           ctx.agentId,
           name
         )
-        return found ? { bytes: Buffer.from(found.data, 'base64'), name: found.name } : undefined
+        return found
+          ? { bytes: Buffer.from(found.data, 'base64'), name: found.name, mimeType: found.mimeType }
+          : undefined
       },
       recordOutbound: async (ctx, channel, thread, text, ts, integrationId) =>
         await this.store.appendTranscript({

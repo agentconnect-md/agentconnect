@@ -150,6 +150,8 @@ function discordPermissionIssueFrom(err: unknown): DiscordPermissionIssue | null
 type SendPayload = {
   content?: string
   components?: DiscordComponents
+  /** Discord carries bytes on the message itself — no separate upload call. */
+  files?: { attachment: Buffer; name: string }[]
 }
 type Sendable = Channel & {
   send: (payload: SendPayload) => Promise<Message>
@@ -509,6 +511,47 @@ export class DiscordConnection implements PlatformConnection {
       }
       await this.postPermissionUpdateNotice(target, ch)
       return firstId
+    })
+  }
+
+  /**
+   * Put a file into a channel — the mirror of {@link downloadFile}. Discord carries bytes on
+   * the message itself, so the file and its caption are ONE post and the id it returns
+   * anchors like any other. Over-cap text keeps the existing chunking, with the file riding
+   * the first chunk so the caption reads above it.
+   */
+  async uploadFile(
+    channel: string,
+    file: { bytes: Buffer; name: string; mimeType?: string },
+    comment?: string,
+    threadTs?: string
+  ): Promise<{ messageId?: string } | undefined> {
+    const target = this.replyTarget(channel, threadTs)
+    return this.queue.enqueue(async () => {
+      const ch = await this.sendableChannel(target)
+      if (!ch) {
+        await this.postPermissionUpdateNotice(target, ch)
+        return undefined
+      }
+      const chunks = comment ? chunkForDiscord(comment) : ['']
+      let firstId: string | undefined
+      let attached = false
+      for (const chunk of chunks) {
+        const payload: SendPayload = {
+          ...(chunk ? { content: chunk } : {}),
+          ...(attached ? {} : { files: [{ attachment: file.bytes, name: file.name }] })
+        }
+        const sent = await ch.send(payload).catch((err: Error) => {
+          this.rememberPermissionIssue(err, target)
+          this.deps.log?.debug(`discord: uploadFile failed (ch=${target}): ${err.message}`)
+          return null
+        })
+        if (!sent && !attached) return undefined
+        attached = true
+        if (sent && firstId === undefined) firstId = sent.id
+      }
+      await this.postPermissionUpdateNotice(target, ch)
+      return { ...(firstId !== undefined ? { messageId: firstId } : {}) }
     })
   }
 

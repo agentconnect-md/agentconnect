@@ -256,11 +256,19 @@ model. It forwards the bounded copy already retained for console replay rather t
 re-fetching the original, so a forwarded image can be smaller than the one that arrived.
 
 A file share is its own message on the receiving platform, not a decorated text post: the
-send's `message` becomes the file's caption, and the platform returns the file rather than
-a message anchor. Such a send therefore starts no conversation of its own — unlike the
-bare `channel` post below, it seeds no session — and it cannot be paired with an agent
-wake. An unresolvable name, or a target platform that cannot host files, fails the whole
-send rather than delivering the caption alone.
+send's `message` becomes the file's caption, and each platform sends it the way that
+platform shows a file — an image previews inline where the platform can do that, and a
+caption too long for the platform's limit becomes its own message instead of being
+truncated.
+
+Such a send anchors like any other channel-root post, and so seeds a session, wherever the
+platform answers with the message it created. Slack is the exception: its file share
+returns the file and no message id, so a Slack forward anchors nothing and seeds no
+session. Nothing else depends on which case applies — the send degrades to the same
+behaviour as a post whose id never came back.
+
+An unresolvable name, a target platform that cannot host files, or a refused share fails
+the whole send rather than delivering the caption alone or reporting an image as sent.
 
 ## Self-authored channel roots
 
