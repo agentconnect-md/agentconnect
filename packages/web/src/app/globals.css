@@ -2639,6 +2639,15 @@
   .md-body tr:nth-child(2n) td {
     background: var(--surface-app);
   }
+  /* YAML frontmatter, rendered as a keyed table above the body (GitHub's shape).
+   The key column is centered and unwrapped; nested tables sit flush in their cell. */
+  .md-body .md-frontmatter th {
+    text-align: center;
+    white-space: nowrap;
+  }
+  .md-body .md-frontmatter table {
+    margin: 0;
+  }
   .md-body hr {
     height: 1px;
     border: 0;
