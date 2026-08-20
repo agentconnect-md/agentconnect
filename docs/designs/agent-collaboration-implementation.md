@@ -232,9 +232,19 @@ allowedCallerAgentIds, outboundPolicy, allowedTargetAgentIds, name?, displayName
     `botAppId`). This is the authorization input. The channel-keyed structure
     _structurally cannot_ express an integration-less agent: such an agent appears
     in no `channels[]` entry at all, so "which agents exist in this org" — exactly
-    the input channel-free authorization needs — is unanswerable from it. Unplaced
-    agents (`daemonId` null) are dropped from both parts: with no owning daemon
-    there is nothing to route to.
+    the input channel-free authorization needs — is unanswerable from it.
+  - **Who serves an agent is resolved ONCE, for both parts.** `daemonId` in either
+    part is the answer `PlacementResolver.resolveDirectory` gives — placement for a
+    machine-placed agent, the live duty holder for a `set` (pool) one — never
+    `Agent.daemonId` re-read per part. That column is null for a pool agent BY
+    DESIGN, so deriving routability from it inside `channels[]` dropped every pool
+    agent from its own channels while `agents[]` listed it; the daemon's
+    `coordsDecision` reads the channel half, so such an agent was refused as a
+    non-member of a channel it is in and its peer wakes came back `not_allowed`
+    whatever its call policy said. An agent nothing serves is dropped from both
+    parts. A pool agent with an UNCONFIRMED grant is PENDING: `agents[]` carries it
+    without a `daemonId` so a wake gets the retryable `not_ready`, and `channels[]`
+    — which has no daemon-less entry — omits it until the hold is confirmed.
   - Relay resolves `toAgentId` to its owning `daemonId` from `agents[]`, then gets the connection through `relay-daemon-server.get(daemonId)`.
   - `CollabRoutesSnapshot` travels to relay through `rc/collab-routes` and to
     daemons through `register/ok` plus `collaboration/routes`.

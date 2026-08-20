@@ -173,6 +173,42 @@ describe('buildCollabSnapshot (agent-collaboration P2)', () => {
     expect(snap.agents.find((a) => a.agentId === AGENT_1)?.displayName).toBe('Deploy Bot')
   })
 
+  // A `set` (pool) agent's `Agent.daemonId` is null BY DESIGN — its holder lives in the duty
+  // ledger, which is what the resolved directory carries. Reading the placement column instead
+  // dropped such an agent from its OWN channels while agents[] listed it, and the daemon's
+  // `coordsDecision` then refused every peer wake it made from that channel as a non-member.
+  it('places a pool agent in its channels from the resolved directory, not the null placement column', () => {
+    const snap = buildCollabSnapshot(
+      DEFAULT_ORG_ID,
+      [
+        rec({ agentId: AGENT_1, daemonId: DAEMON_1, botUserId: 'U09SHARED', name: 'machine-placed' }),
+        // Pool-placed: no machine on the row, and a live member holds it.
+        rec({ agentId: AGENT_2, daemonId: null, botUserId: 'U09SHARED', name: 'pool-placed' })
+      ],
+      1,
+      [orgAgent({ agentId: AGENT_1, daemonId: DAEMON_1 }), orgAgent({ agentId: AGENT_2, daemonId: DAEMON_2 })]
+    )
+    expect(CollabRoutesSnapshot.parse(snap)).toEqual(snap)
+    const byAgent = new Map(snap.channels[0]!.agents.map((a) => [a.agentId, a]))
+    // The membership `coordsDecision` reads — both halves now agree on who serves AGENT_2.
+    expect([...byAgent.keys()].sort()).toEqual([AGENT_1, AGENT_2].sort())
+    expect(byAgent.get(AGENT_2)).toMatchObject({ daemonId: DAEMON_2, name: 'pool-placed' })
+    // Mention sharing counts it too: it was invisible to that derivation for the same reason.
+    expect(byAgent.get(AGENT_1)).toMatchObject({ botShared: true })
+    expect(byAgent.get(AGENT_2)).toMatchObject({ botShared: true })
+  })
+
+  it('still drops a PENDING pool agent from channels[] — that half carries no daemon-less entry', () => {
+    // The wire contract keeps pending entries to the flat directory, so a wake at an
+    // unconfirmed grant gets the retryable `not_ready` from there rather than a channel row
+    // naming a daemon that would refuse it.
+    const snap = buildCollabSnapshot(DEFAULT_ORG_ID, [rec({ agentId: AGENT_2, daemonId: null })], 1, [
+      orgAgent({ agentId: AGENT_2, daemonId: null })
+    ])
+    expect(snap.channels).toHaveLength(0)
+    expect(snap.agents.map((a) => a.agentId)).toEqual([AGENT_2])
+  })
+
   // The resolver already dropped what nothing serves; a null daemon here is a PENDING pool
   // agent, carried without a daemon so a wake gets the retryable `not_ready` (#987).
   it('carries a pending (daemon-less) directory row without a daemonId', () => {
