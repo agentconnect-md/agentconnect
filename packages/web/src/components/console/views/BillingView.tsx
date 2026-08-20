@@ -61,18 +61,25 @@ function fmtWhen(iso: string): string {
 // Complete literal class strings, never assembled from fragments: Tailwind's scanner only
 // sees whole literals, and `tone` is a closed union of four compile-time constants, so
 // nothing here is the data-derived value rule 8's inline carve-out is for.
-// The glyph colour is per-tone because amber cannot carry a white one: #e0930f against
-// #fff is 2.52:1, under the 3:1 non-text threshold, where a dark glyph on it is 6.92:1.
-// The other three clear 3:1 against white (4.08 / 4.55 / 5.25).
+// Glyph colour is per-tone because the chips do not all carry white, and the two that fail
+// use a LITERAL rather than `--text-primary`: the chips stay mid-tone in both themes while
+// that token flips to near-white in dark, which would make the fix worse than the bug
+// (amber would go 1.78:1). Contrast against the chip, light / dark, 3:1 non-text threshold:
+//
+//   brand  white 5.25 / 5.25      ✓ white
+//   red    white 4.08 / 3.01      ✓ white, but dark mode is at the line — if the red
+//                                 palette is ever nudged lighter, this needs the literal too
+//   amber  white 2.52 / 2.05  ✗   → #1a212b: 6.44 / 7.90
+//   blue   white 4.55 / 2.85  ✗   → #1a212b: 3.56 / 5.68
 const BALANCE_TONE = {
   brand: { card: 'bg-(--brand-soft) border-(--brand)', chip: 'bg-(--brand)', glyph: '#fff' },
   red: { card: 'bg-(--status-error-soft) border-(--status-error)', chip: 'bg-(--status-error)', glyph: '#fff' },
   amber: {
     card: 'bg-(--status-paused-soft) border-(--status-paused)',
     chip: 'bg-(--status-paused)',
-    glyph: 'var(--text-primary)'
+    glyph: '#1a212b'
   },
-  blue: { card: 'bg-(--status-info-soft) border-(--status-info)', chip: 'bg-(--status-info)', glyph: '#fff' }
+  blue: { card: 'bg-(--status-info-soft) border-(--status-info)', chip: 'bg-(--status-info)', glyph: '#1a212b' }
 } as const
 
 function BalanceBannerCard({
