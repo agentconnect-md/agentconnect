@@ -264,15 +264,21 @@ export async function fetchBillingPurchase(orgId: string, id: string): Promise<B
 
 const MICRO_PER_USD = 1_000_000
 
-/** Render microUSD as dollars. Display only — never a step in a calculation. */
 /** A decimal-string amount, for display only. `Number` is fine HERE and only here: the
- *  value shown is rounded to cents anyway and the exact string stays untouched in the
- *  data. Never feed the result back to the service. */
+ *  shown value is a rounding of the exact string, which stays untouched in the data.
+ *  Never feed the result back to the service. Cents above $1; below it, four significant
+ *  digits (design: a nonzero charge must never render as a bare $0.00). */
 export function fmtDecimalUsd(amount: string): string {
   const n = Number(amount)
-  return Number.isFinite(n) ? fmtMicroUsd(n * MICRO_PER_USD) : `$${amount}`
+  if (!Number.isFinite(n)) return `$${amount}`
+  if (Math.abs(n) >= 1) return fmtMicroUsd(n * MICRO_PER_USD)
+  const zeros = /^-?0\.(0*)[1-9]/.exec(amount)
+  if (!zeros) return fmtMicroUsd(n * MICRO_PER_USD)
+  const out = n.toFixed(Math.min(zeros[1]!.length + 4, 18)).replace(/0+$/, '')
+  return `$${out.endsWith('.') ? `${out}00` : out}`
 }
 
+/** Render microUSD as dollars. Display only — never a step in a calculation. */
 export function fmtMicroUsd(micro: number): string {
   const sign = micro < 0 ? '-' : ''
   return `${sign}$${(Math.abs(micro) / MICRO_PER_USD).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`

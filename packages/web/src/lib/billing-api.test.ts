@@ -167,4 +167,10 @@ describe('fmtDecimalUsd', () => {
   it('shows the raw string rather than $NaN when it is not a number', () => {
     expect(fmtDecimalUsd('twelve')).toBe('$twelve')
   })
+
+  it('keeps four significant digits under a dollar — a nonzero charge is never a bare $0.00', () => {
+    expect(fmtDecimalUsd('0.001234567890123456')).toBe('$0.001235')
+    expect(fmtDecimalUsd('0.4821')).toBe('$0.4821')
+    expect(fmtDecimalUsd('0.000098')).toBe('$0.000098')
+  })
 })
