@@ -765,8 +765,8 @@ async function dispatchGithubRerequest(
   await Promise.all(dispatches)
 }
 
-function pullRequestNeedsMaintainer(ctx: GithubMatchCtx, prAuthorCanWrite: boolean): boolean {
-  return ctx.event === 'pull_request' && ctx.eventAction !== 'pull_request:review_requested' && !prAuthorCanWrite
+function pullRequestNeedsMaintainer(ctx: GithubMatchCtx, prAuthorAuthorized: boolean): boolean {
+  return ctx.event === 'pull_request' && ctx.eventAction !== 'pull_request:review_requested' && !prAuthorAuthorized
 }
 
 function reportReviewRequestRequired(deps: GithubIngressDeps, rule: RcHookAssign, msg: RdMsgHook): void {
@@ -900,7 +900,7 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
       const fallbackSessionKeyPrefix = payload.repository?.full_name ?? String(repoId)
       const firedAt = new Date(deps.clock.now()).toISOString()
 
-      const dispatchRule = (rule: RcHookAssign, prAuthorCanWrite = false): void => {
+      const dispatchRule = (rule: RcHookAssign, prAuthorAuthorized = false): void => {
         // Post-match per-hook budget: a drop is a skip + metadata log, never a 429
         // (GitHub treats non-2xx as a dead delivery) and never a run row (a storm
         // must not flood hook_run).
@@ -923,7 +923,7 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
           context,
           ...(rule.target ? { target: rule.target } : {})
         }
-        if (!cleanupEvent && pullRequestNeedsMaintainer(ctx, prAuthorCanWrite)) {
+        if (!cleanupEvent && pullRequestNeedsMaintainer(ctx, prAuthorAuthorized)) {
           // No third-party-authored PR lifecycle payload reaches the daemon.
           // Revision events still create a durable, actionable informational
           // Check so a maintainer can request the first review explicitly.

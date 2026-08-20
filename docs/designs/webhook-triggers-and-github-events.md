@@ -565,7 +565,7 @@ without the relay, while a webhook always requires a public ingress process.
 - Repository matching uses numeric IDs.
 - Installation membership comes from CP-owned records.
 - Bot senders never trigger GitHub hooks.
-- Issue/PR actors pass live write/admin checks; payload associations never authorize.
+- Issue/PR actors pass live repository-role checks; payload associations never authorize.
 - External Issues and pull requests require an explicit maintainer request.
 - Event bodies remain relay-to-daemon only.
 - Logs contain identifiers and outcomes, never payload text or secrets.
