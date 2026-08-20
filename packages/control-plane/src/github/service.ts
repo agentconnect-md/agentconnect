@@ -62,6 +62,10 @@ interface GhUser {
   type: string
 }
 
+/** A user's repository role: GitHub's legacy permission levels plus the built-in triage role,
+ *  which the legacy field hides under `read`. Maintain already arrives collapsed as `write`. */
+export type GithubRepoRole = 'admin' | 'write' | 'triage' | 'read' | 'none'
+
 /** One entry of `GET /app/hook/deliveries` (summary — no payload body). */
 export interface GhHookDelivery {
   /** Delivery id as a STRING: real values are 19 digits — past
@@ -560,21 +564,17 @@ export class GithubService {
     return refreshed
   }
 
-  /**
-   * A GitHub user's effective permission on `owner/repo` (team/org-derived
-   * included), asked with the installation's own token — Metadata:read
-   * suffices (open question #7's verified identity-assertion leg). GitHub's legacy
-   * `permission` field collapses maintain→write and triage→read, which is
-   * exactly the granularity gitAccess needs. A 404 (user unknown to the repo)
-   * reads as `none`.
-   */
+  /** A GitHub user's effective permission on `owner/repo` (team/org-derived included), asked with
+   *  the installation's own Metadata:read token (open question #7's identity-assertion leg).
+   *  gitAccess wants GitHub's legacy granularity, where triage is not repository write. */
   async userRepoPermission(
     ins: GithubInstallationRecord,
     owner: string,
     repo: string,
     username: string
   ): Promise<'admin' | 'write' | 'read' | 'none'> {
-    return this.userRepoPermissionWithPolicy(ins, owner, repo, username, 'legacy')
+    const role = await this.userRepoPermissionWithPolicy(ins, owner, repo, username, 'legacy')
+    return role === 'triage' ? 'read' : role
   }
 
   /** Authorization-specific permission lookup with the same strict error
@@ -584,7 +584,7 @@ export class GithubService {
     owner: string,
     repo: string,
     username: string
-  ): Promise<'admin' | 'write' | 'read' | 'none'> {
+  ): Promise<GithubRepoRole> {
     return this.userRepoPermissionWithPolicy(ins, owner, repo, username, 'comment-authz')
   }
 
@@ -594,13 +594,16 @@ export class GithubService {
     repo: string,
     username: string,
     policy: 'legacy' | 'comment-authz'
-  ): Promise<'admin' | 'write' | 'read' | 'none'> {
+  ): Promise<GithubRepoRole> {
     const token = await this.tokens.metadataToken(ins.installationId)
     try {
-      const res = await githubRequest<{ permission?: string }>(
+      const res = await githubRequest<{ permission?: string; role_name?: string }>(
         `/repos/${owner}/${repo}/collaborators/${encodeURIComponent(username)}/permission`,
         { auth: token, fetchImpl: this.deps.fetchImpl, baseUrl: this.deps.baseUrl }
       )
+      // The legacy `permission` field collapses maintain→write and triage→read; the built-in
+      // triage role is only visible in `role_name`, and a custom role never matches it exactly.
+      if (res.role_name === 'triage') return 'triage'
       const p = res.permission
       return p === 'admin' || p === 'write' || p === 'read' ? p : 'none'
     } catch (e) {

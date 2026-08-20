@@ -278,6 +278,45 @@ describe('GithubService comment authorization lookups', () => {
       service.userRepoPermissionForCommentAuthz(installation, 'acme', 'repo', 'octocat')
     ).rejects.toMatchObject({ status: 403 })
   })
+
+  function roleHarness(body: Record<string, unknown>): GithubService {
+    const service = new GithubService({
+      cfg: cfg(),
+      clock: new FakeClock(1_700_000_000_000),
+      installations: {} as never,
+      installState: { put: async () => {}, consume: async () => true },
+      pepper: 'p'.repeat(32),
+      fetchImpl: async () => Response.json(body, { status: 200 })
+    })
+    vi.spyOn(service.tokens, 'metadataToken').mockResolvedValue('ghs_test')
+    return service
+  }
+
+  it('reads the built-in triage role that the legacy permission field reports as read', async () => {
+    const service = roleHarness({ permission: 'read', role_name: 'triage' })
+
+    await expect(service.userRepoPermissionForCommentAuthz(installation, 'acme', 'repo', 'octocat')).resolves.toBe(
+      'triage'
+    )
+    // gitAccess keeps GitHub's legacy granularity, where triage is not repository write.
+    await expect(service.userRepoPermission(installation, 'acme', 'repo', 'octocat')).resolves.toBe('read')
+  })
+
+  it('leaves maintain collapsed as the legacy write it already arrives as', async () => {
+    const service = roleHarness({ permission: 'write', role_name: 'maintain' })
+
+    await expect(service.userRepoPermissionForCommentAuthz(installation, 'acme', 'repo', 'octocat')).resolves.toBe(
+      'write'
+    )
+  })
+
+  it('never promotes a custom role whose name merely resembles triage', async () => {
+    const service = roleHarness({ permission: 'read', role_name: 'triage-plus' })
+
+    await expect(service.userRepoPermissionForCommentAuthz(installation, 'acme', 'repo', 'octocat')).resolves.toBe(
+      'read'
+    )
+  })
 })
 
 describe('mintAppJwt', () => {

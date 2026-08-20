@@ -235,11 +235,11 @@ by the CP. Webhook `author_association` values are descriptive only: `MEMBER`
 and `COLLABORATOR` can still represent read or triage access and never bypass
 the current repository-permission lookup.
 
-Issue and pull-request lifecycle events require current write/admin authority
-from the subject author. Every comment requires it from `comment.user`, not the
+Issue and pull-request lifecycle events require a current trigger-authorized role
+(`admin`, `write`, or `triage`) from the subject author. Every comment requires it from `comment.user`, not the
 top-level action `sender`; this distinction prevents a maintainer edit/delete
 action from authorizing someone else's content. An unmentioned comment also
-requires current write/admin authority from the Issue/PR author; an explicit
+requires that same role from the Issue/PR author; an explicit
 mention by an authorized maintainer omits that second requirement and can summon
 the Agent onto an externally authored thread. Missing identity metadata, denial,
 timeout, or an unavailable lookup fails closed. Matching comment rules with the
@@ -260,7 +260,7 @@ repository fan-out before any agent dispatch.
 An authorized maintainer can request execution on an external thread by
 explicitly mentioning the Agent or App in a comment. An ordinary unmentioned
 comment cannot silently activate an external thread; both its commenter and
-the original subject author must pass the same live write/admin check.
+the original subject author must pass the same live role check.
 
 For external PR revision-bearing events such as open and synchronize, the system records a body-free
 `review_request_required` outcome and may project an informational Check with a
@@ -283,7 +283,7 @@ preserves the PR number when GitHub supplies one; fork workflow runs may omit
 that association. CP otherwise resolves the latest body-free
 `review_request_required` candidate per hook and PR and rejects a shared head
 with multiple candidates instead of guessing. Relay then rechecks current rule
-fences and the triggering actor's live write/admin permission. A stable
+fences and the triggering actor's live repository role. A stable
 repository/pull/head delivery key coalesces multiple workflows for one revision.
 
 ### Session Affinity

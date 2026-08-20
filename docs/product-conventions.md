@@ -813,17 +813,20 @@ and revision ordering survive daemon restarts.
 
 ## GitHub maintainer trigger authorization
 
-GitHub Issue and pull-request integrations treat current repository permission—not the
-webhook's `author_association` label—as trigger authority. An Issue or pull request whose
-author lacks current `write` or `admin` permission does not start an Agent automatically,
-even when its body mentions the Agent or App. A current `write`/`admin` maintainer can
+GitHub Issue and pull-request integrations treat the actor's current repository role—not the
+webhook's `author_association` label—as trigger authority. A **trigger-authorized role** is
+`admin`, `write`, or `triage`: GitHub reports `maintain` as `write`, and `triage` is the role a
+repository gives a trusted contributor to manage Issues and pull requests—requesting a pull
+request review is one of its listed permissions—so it authorizes a trigger while granting no
+push access. An Issue or pull request whose author holds none of those roles does not start an
+Agent automatically, even when its body mentions the Agent or App. A trigger-authorized user can
 explicitly `@` the Agent or App in a comment to request the first turn on that external
 thread; the same mention from a read-only user does nothing.
 
 Every comment author is checked live from the comment object; for edit/delete actions,
 the top-level webhook sender is not treated as the content author. An unmentioned
 comment follows the configured cadence only when both the commenter and the Issue/PR
-author still have `write` or `admin` permission. This keeps automatic follow-ups on
+author still hold a trigger-authorized role. This keeps automatic follow-ups on
 maintainer-owned threads while requiring an explicit maintainer summon for externally
 authored threads. Native review requests and Check reruns use the same
 current-maintainer boundary. For an external pull request waiting on its first
@@ -834,7 +837,9 @@ pull-request revision into one review generation.
 
 Trigger authorization is separate from effect authorization. A formal PR review still
 requires the active HookRun, review policy, Agent repository grant, and GitHub App
-permission checks at the moment the review is submitted.
+permission checks at the moment the review is submitted. Binding a repository to an Agent is a
+separate, stricter gate: it asks the console user for `write` or `admin` and never accepts
+`triage`.
 
 ## GitHub review mention routing
 

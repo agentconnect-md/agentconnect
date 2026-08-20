@@ -290,10 +290,8 @@ export function githubRuleVerdict(rule: RcHookAssign, ctx: GithubMatchCtx): Gith
   // Decision 6(a): the org-attribution gate. An event that cannot prove its
   // installation does not fire.
   if (!ctx.installationId || !rule.github.installationIds.includes(ctx.installationId)) return 'no-match'
-  // GitHub's native reviewer control is an explicit maintainer action. It
-  // bypasses cadence, label, and mention filters, but only when this App bot
-  // was the requested reviewer and only after the caller performs live write
-  // permission authorization.
+  // GitHub's native reviewer control bypasses cadence, label, and mention filters, but only for
+  // this App bot as the requested reviewer and only after live repository-role authorization.
   if (ctx.eventAction === 'pull_request:review_requested') {
     return requestsGithubAppReviewer(ctx.requestedReviewerLogin, rule.github.appSlug) &&
       githubRuleSupportsPullRequests(rule)
@@ -352,9 +350,8 @@ export function githubRuleVerdict(rule: RcHookAssign, ctx: GithubMatchCtx): Gith
   if (rule.github.labelFilter.length > 0 && !ctx.labels.some((l) => rule.github!.labelFilter.includes(l)))
     return 'no-match'
 
-  // GitHub's relationship labels are descriptive, not an authorization proof:
-  // MEMBER and COLLABORATOR may still have only read/triage access. Every
-  // numbered-thread event therefore resolves current write/admin authority.
+  // GitHub's relationship labels are descriptive, not an authorization proof: MEMBER and
+  // COLLABORATOR may still hold read only. Every numbered-thread event resolves the live role.
   return ctx.event === 'push' || isInternalAppPullRequest(rule, ctx) ? 'trusted' : 'needs-authz'
 }
 
