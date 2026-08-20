@@ -3030,7 +3030,9 @@ export const LocalSkillsDto = z.object({
 export const RuntimeCommandDto = z.object({
   name: z.string(),
   description: z.string(),
-  hint: z.string().nullable()
+  hint: z.string().nullable(),
+  /** Record-time skill classification (see protocol RuntimeCommand.skill); absent on older daemons. */
+  skill: z.boolean().optional()
 })
 /** `GET /agents/:id/commands` — what the agent's runtime can be asked to run. `reported` is false
  *  until a session has advertised a list, so an empty list then means "unknown", not "none". */

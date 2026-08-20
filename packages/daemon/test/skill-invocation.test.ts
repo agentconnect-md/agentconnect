@@ -45,6 +45,23 @@ describe('matchSkillInvocation', () => {
     expect(matchSkillInvocation('/$code-review', CODEX_TABLE)).toEqual({ name: '$code-review', args: '' })
   })
 
+  it('lets a skill win over a same-named built-in, whatever the advertisement order', () => {
+    const table = [
+      { name: 'review', description: 'Review my current changes', hint: null },
+      { name: '$review', description: 'Team review skill', hint: null }
+    ]
+    expect(matchSkillInvocation('/review now', table)).toEqual({ name: '$review', args: 'now' })
+  })
+
+  it('matches case-insensitively, like codex’s own parse', () => {
+    expect(matchSkillInvocation('/Code-Review 1', CLAUDE_TABLE)).toEqual({ name: 'code-review', args: '1' })
+  })
+
+  it('trusts the record-time skill bit over the truncated description', () => {
+    const truncated = [{ name: 'agentconnect-setup', description: 'x'.repeat(512), hint: null, skill: true }]
+    expect(matchSkillInvocation('/agentconnect-setup', truncated)).toEqual({ name: 'agentconnect-setup', args: '' })
+  })
+
   it('never translates a built-in — prose cannot dispatch one', () => {
     expect(matchSkillInvocation('/model haiku', CLAUDE_TABLE)).toBeNull()
     expect(matchSkillInvocation('/compact', CLAUDE_TABLE)).toBeNull()

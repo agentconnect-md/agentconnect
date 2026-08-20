@@ -11,7 +11,12 @@ export const RuntimeCommand = z
     /** The runtime's own description; empty when it advertised none. */
     description: z.string(),
     /** ACP `input.hint` — an argument hint, or null when the command takes no argument. */
-    hint: z.string().nullable()
+    hint: z.string().nullable(),
+    /** Classified from the RAW advertisement at record time (`isSkillCommand`), BEFORE the
+     *  description is capped — the claude marker is a description suffix, so classifying after
+     *  truncation silently demotes any skill with a long description. Absent on daemons that
+     *  predate the field; readers fall back to the heuristic then. */
+    skill: z.boolean().optional()
   })
   .strict()
 export type RuntimeCommand = z.infer<typeof RuntimeCommand>

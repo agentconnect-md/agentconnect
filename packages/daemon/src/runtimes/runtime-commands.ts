@@ -2,7 +2,7 @@
 // (agentclientprotocol.com/protocol/v1/slash-commands) — the runtime's own answer to what it can be
 // asked to run, including for a cluster agent whose workspace no local scan can reach.
 
-import type { RuntimeCommand, RuntimeCommandsList } from '@agentconnect.md/protocol'
+import { isSkillCommand, type RuntimeCommand, type RuntimeCommandsList } from '@agentconnect.md/protocol'
 
 // Names/descriptions are workspace-controlled (a repo's SKILL.md), and the reply rides a control
 // frame the receiver rejects over 256 KiB — bound both.
@@ -46,7 +46,10 @@ export function normalizeAvailableCommands(update: unknown): RuntimeCommand[] {
     const command: RuntimeCommand = {
       name,
       description: text(row.description, MAX_DESCRIPTION_CHARS) ?? '',
-      hint: input && typeof input === 'object' ? text(input.hint, MAX_HINT_CHARS) : null
+      hint: input && typeof input === 'object' ? text(input.hint, MAX_HINT_CHARS) : null,
+      // From the RAW description — the claude skill marker is its SUFFIX, which the cap above
+      // removes for long descriptions, and this bit must not change with the display length.
+      skill: isSkillCommand({ name, description: typeof row.description === 'string' ? row.description : '' })
     }
     bytes += Buffer.byteLength(JSON.stringify(command)) + 1
     if (bytes > MAX_TOTAL_BYTES) break

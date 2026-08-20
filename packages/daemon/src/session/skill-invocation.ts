@@ -28,11 +28,17 @@ export function matchSkillInvocation(text: string, commands: readonly RuntimeCom
   if (!PREFIXES.some((prefix) => trimmed.startsWith(prefix))) return null
   const body = trimmed.slice(1)
   const space = body.search(/\s/)
-  const token = space === -1 ? body : body.slice(0, space)
+  const token = (space === -1 ? body : body.slice(0, space)).toLowerCase()
   if (!token) return null
-  // Exact advertised name, or the `$`-stripped form a hand-typed `/name` produces on codex.
-  const command = commands.find((entry) => entry.name === token || entry.name === `$${token}`)
-  if (!command || !isSkillCommand(command)) return null
+  // Skills first, so a same-named built-in (codex's `review` vs a `$review` skill) cannot shadow
+  // the one entry that is actually invocable. Case-insensitive like codex's own parse; the `skill`
+  // bit is record-time truth, with the heuristic only as the pre-field fallback.
+  const skills = commands.filter((entry) => entry.skill ?? isSkillCommand(entry))
+  const command = skills.find((entry) => {
+    const name = entry.name.toLowerCase()
+    return name === token || name === `$${token}`
+  })
+  if (!command) return null
   return { name: command.name, args: space === -1 ? '' : body.slice(space + 1).trim() }
 }
 

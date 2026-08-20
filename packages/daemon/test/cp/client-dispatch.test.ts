@@ -963,7 +963,7 @@ describe('CpClient dispatch', () => {
       reported: true,
       updatedAt: '2026-06-26T00:00:00.000Z',
       sessionId: 'acp-1',
-      commands: [{ name: 'code-review', description: 'Review the diff', hint: '[pr]' }]
+      commands: [{ name: 'code-review', description: 'Review the diff', hint: '[pr]', skill: false }]
     })
   })
 
