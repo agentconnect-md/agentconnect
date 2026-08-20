@@ -418,6 +418,6 @@ to be the rollback as a retry of the edit.
 
 Session-isolated (worktree) workspaces are covered the same way: the WorkspaceFs seam
 (`workspace-fs-channel.ts`) and the shim's exec allowlist (`worktree add`/prune) materialize a
-session's own worktree on the pod's volume at `<mount>/worktrees/<sid>`, and the retention GC
-that retires local worktrees reads the pod's tree through the same seam
-(multi-repository-workspaces.md Phase 7).
+session's own worktree on the pod's volume at `<mount>/worktrees/<sid>`, and the same retention GC
+that retires worktrees locally reads the pod's tree through the same seam
+([multi-repository-workspaces.md](multi-repository-workspaces.md) Phase 7).
