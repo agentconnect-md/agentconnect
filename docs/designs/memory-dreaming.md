@@ -312,9 +312,11 @@ Where the runtime has no trusted system-prompt channel (today: Codex ACP),
 the policy text is prepended to the user prompt instead. That is acceptable
 because invariant 3 + staged output constrain the proposal to validated
 managed-memory content. Independently, the extraction session is **hard-gated
-on a verified read-only / plan mode** (§2) — so even on that untrusted-channel
-path a prompt injection cannot cause tool side effects during the run; a
-runtime with no non-mutating mode fails the dream. When `autoAdopt` is enabled,
+on a verified read-only / plan mode** (§2); a runtime with no non-mutating mode
+fails the dream. That gate is necessary but NOT sufficient — a real claude run
+in plan mode still wrote files through its own tools (#1302) — so the staged
+store is verified explicitly rather than trusted: staging refuses any file the
+bound memory tools did not write. When `autoAdopt` is enabled,
 a valid completed proposal is accepted on either prompt transport; the console
 warns that this skips content review.
 

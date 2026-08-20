@@ -112,26 +112,28 @@ class FakeStore implements DreamStorePort {
 // the model WROTE through the memory tools, so a fake extraction has to write too.
 const PROPOSAL = JSON.stringify({ agentSkills: [], organizationKnowledge: [], organizationSkills: [] })
 
-/** Stand in for the model writing its rebuilt store through the bound memory tools. */
+/** Stand in for the model writing its rebuilt store through the bound memory tools.
+ *  Returns the topics written, which is what the daemon reports as provenance. */
 async function writeStagedProposal(
   stagedStore: {
     writeFile(path: string, content: string, opts?: unknown): Promise<unknown>
     mkdir(p: string): Promise<unknown>
   },
   files: { path: string; content: string }[] = [{ path: 'prefs.md', content: '- Uses tabs, not spaces (2026-07-24).' }]
-): Promise<void> {
+): Promise<string[]> {
   await stagedStore.mkdir('memory')
   for (const file of files) {
     const content = file.content.endsWith('\n') ? file.content : `${file.content}\n`
     await stagedStore.writeFile(join('memory', file.path), content, {})
   }
+  return files.map((file) => file.path)
 }
 
 async function setup(opts: {
   /** Files the fake model writes into the staged store; `null` writes nothing. */
   stagedFiles?: { path: string; content: string }[] | null
   /** Write the staged store exactly as the bound memory tools would, instead. */
-  stagedWrite?: (stagedStore: MemoryFs) => Promise<void>
+  stagedWrite?: (stagedStore: MemoryFs) => Promise<string[]>
   extract?: (agentId: string, systemPrompt: string, prompt: string, signal: AbortSignal) => Promise<string>
   policy?: MemoryDreamingPolicy
   cancelGraceMs?: number
@@ -159,15 +161,17 @@ async function setup(opts: {
     store,
     extract: async (agentId, systemPrompt, prompt, signal, context) => {
       prompts.push({ systemPrompt, prompt, inputDir: context.inputDir })
+      const stage = async (): Promise<string[]> => {
+        if (opts.stagedWrite) return opts.stagedWrite(context.stagedStore)
+        if (opts.stagedFiles === null) return []
+        return writeStagedProposal(context.stagedStore, opts.stagedFiles)
+      }
       if (opts.extractionResult) {
-        if (opts.stagedWrite) await opts.stagedWrite(context.stagedStore)
-        else if (opts.stagedFiles !== null) await writeStagedProposal(context.stagedStore, opts.stagedFiles)
-        return opts.extractionResult
+        const memoryTopics = await stage()
+        return { memoryTopics, ...opts.extractionResult }
       }
       const output = opts.extract ? await opts.extract(agentId, systemPrompt, prompt, signal) : PROPOSAL
-      if (opts.stagedWrite) await opts.stagedWrite(context.stagedStore)
-      else if (opts.stagedFiles !== null) await writeStagedProposal(context.stagedStore, opts.stagedFiles)
-      return { output }
+      return { output, memoryTopics: await stage() }
     },
     ...(opts.onEvent ? { onEvent: opts.onEvent } : {}),
     ...(opts.onOrganizationSuggestions ? { onOrganizationSuggestions: opts.onOrganizationSuggestions } : {}),
@@ -299,6 +303,7 @@ describe('DreamRunner pipeline', () => {
           undefined,
           'dream'
         )
+        return ['deploys.md']
       }
     })
     const started = await runner.start('a1', { trigger: 'manual' })
@@ -326,6 +331,26 @@ describe('DreamRunner pipeline', () => {
     const done = await settle(store, started.dreamId)
     expect(done.status).toBe('failed')
     expect(done.error?.type).toBe('empty_proposal')
+    expect(await runner.stagedFiles('a1', started.dreamId)).toBeNull()
+    expect(await readMemoryFile(local(dir), 'prefs.md')).toContain('uses tabs')
+  })
+
+  it('fails a dream whose staged files the memory tools never wrote (found in a live E2E)', async () => {
+    // The runtime's own file tools can reach the staging directory — it is a sibling of
+    // the dream's cwd, and a real claude run in plan mode wrote there when the MCP bridge
+    // was down. Such a file skipped the name rule, the byte cap, and header stamping, so
+    // the proposal is refused rather than reviewed.
+    const { dir, store, runner } = await setup({
+      stagedWrite: async (stagedStore) => {
+        await writeMemoryFile(stagedStore, 'smuggled.md', 'written with the runtime file tool\n', undefined, 'dream')
+        return [] // ...and reported by nobody: no bound tool call happened
+      }
+    })
+    const started = await runner.start('a1', { trigger: 'manual' })
+    const done = await settle(store, started.dreamId)
+    expect(done.status).toBe('failed')
+    expect(done.error?.type).toBe('untrusted_staging')
+    expect(done.error?.message).toContain('smuggled.md')
     expect(await runner.stagedFiles('a1', started.dreamId)).toBeNull()
     expect(await readMemoryFile(local(dir), 'prefs.md')).toContain('uses tabs')
   })
@@ -517,8 +542,8 @@ describe('DreamRunner pipeline', () => {
       operationPolicy: 'test-only',
       store,
       extract: async (_agentId, _systemPrompt, _prompt, _signal, context) => {
-        await writeStagedProposal(context.stagedStore)
-        return { output: PROPOSAL }
+        const memoryTopics = await writeStagedProposal(context.stagedStore)
+        return { output: PROPOSAL, memoryTopics }
       },
       onStaged: async (agentId, dreamId) => {
         await runner.cancel(agentId, dreamId) // cancel after staging, before completion
@@ -695,8 +720,8 @@ describe('DreamRunner adoption', () => {
       extract: async (_agentId, _systemPrompt, _prompt, _signal, context) => {
         heldDuringExtraction = holds
         // The model writes its rebuilt store through the tools, on the pod's volume.
-        await writeStagedProposal(context.stagedStore)
-        return { output: PROPOSAL }
+        const memoryTopics = await writeStagedProposal(context.stagedStore)
+        return { output: PROPOSAL, memoryTopics }
       },
       log: silent
     })

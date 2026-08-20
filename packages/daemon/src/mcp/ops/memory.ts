@@ -89,9 +89,16 @@ function memoryScopeFor(ctx: SessionContext, deps: MemoryOpsDeps): MemoryScope {
 /** Provenance for a write made through the shared tool surface. The ordinary
  *  conversational case is `tool`; a distillation- or dream-bound session keeps its own
  *  source so the write ledger — and dream adoption's distill-only rebase — stay honest. */
-/** Topics a bound session has already written, so `maxTopics` counts DISTINCT files
- *  rather than writes — appending to one topic repeatedly is not new content. */
+/** Topics a bound session has SUCCESSFULLY written, so `maxTopics` counts DISTINCT files
+ *  rather than writes — appending to one topic repeatedly is not new content. It doubles
+ *  as the provenance record a dream checks its staged store against. */
 const boundTopics = new WeakMap<SessionContext, Set<string>>()
+
+/** Every topic this bound session wrote through the tool. A staged file that is NOT
+ *  here did not come from the memory write path — see the dream's staging check. */
+export function boundWrittenTopics(ctx: SessionContext): string[] {
+  return [...(boundTopics.get(ctx) ?? [])]
+}
 
 /** Apply the binding's own limits before a write reaches the store. These carry the
  *  constraints the dream's JSON proposal format used to enforce; the store still
@@ -99,20 +106,29 @@ const boundTopics = new WeakMap<SessionContext, Set<string>>()
 function enforceBindingPolicy(ctx: SessionContext, path: string): void {
   const binding = ctx.memoryBinding
   if (!binding) return
-  const name = path.replace(/^.*\//, '')
+  const name = topicOf(path)
   if (binding.topicPattern && !binding.topicPattern.test(name)) {
     throw new Error(`invalid memory path: "${name}" must match ${String(binding.topicPattern)}`)
   }
-  if (binding.maxTopics === undefined) return
-  let seen = boundTopics.get(ctx)
-  if (!seen) {
-    seen = new Set()
-    boundTopics.set(ctx, seen)
-  }
-  if (!seen.has(name) && seen.size >= binding.maxTopics) {
+  const seen = boundTopics.get(ctx)
+  if (binding.maxTopics !== undefined && !seen?.has(name) && (seen?.size ?? 0) >= binding.maxTopics) {
     throw new Error(`memory topic limit reached (${binding.maxTopics}) for this session`)
   }
-  seen.add(name)
+}
+
+/** Record the topic only once the write is DURABLE. A refused write — a subdirectory
+ *  path, an oversized body, a bad mode pair — must not vouch for that name, or a dream
+ *  could name a topic here and then smuggle its content in some other way. It also
+ *  keeps a rejected call from consuming a `maxTopics` slot. */
+function recordBoundTopic(ctx: SessionContext, path: string): void {
+  if (!ctx.memoryBinding) return
+  const seen = boundTopics.get(ctx) ?? new Set<string>()
+  seen.add(topicOf(path))
+  boundTopics.set(ctx, seen)
+}
+
+function topicOf(path: string): string {
+  return path.replace(/^.*\//, '')
 }
 
 function writeSource(ctx: SessionContext): MemoryWriteSource {
@@ -189,10 +205,14 @@ export async function writeMemory(
           'writeMemory: `oldString` occurs multiple times — include more surrounding context to make it unique'
         )
       const updated = current.replace(oldString, newString)
-      return await deps.memory.write(scope, path, updated, undefined, writeSource(ctx))
+      const edited = await deps.memory.write(scope, path, updated, undefined, writeSource(ctx))
+      recordBoundTopic(ctx, path)
+      return edited
     }
     const full = parseArgs(requiredStringAllowEmpty('content'), content)
-    return await deps.memory.write(scope, path, full, undefined, writeSource(ctx))
+    const written = await deps.memory.write(scope, path, full, undefined, writeSource(ctx))
+    recordBoundTopic(ctx, path)
+    return written
   } catch (err) {
     toToolError(err)
   }

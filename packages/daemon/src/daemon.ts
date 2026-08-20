@@ -3975,6 +3975,7 @@ export class Daemon {
     model?: string
     stopReason: string
     usage?: StoredUsage
+    memoryTopics: string[]
   }> {
     // Defense in depth: DreamRunner is the intended caller and already checks
     // admission before creating a job. Keep the extraction seam independently
@@ -4115,6 +4116,7 @@ export class Daemon {
     model?: string
     stopReason: string
     usage?: StoredUsage
+    memoryTopics: string[]
   }> {
     const agentId = agent.id
     // Capture the transport capability from THIS host so the extraction policy
@@ -4159,7 +4161,7 @@ export class Daemon {
         ? await host.newSession(cwd, mcpServers, undefined, systemPrompt)
         : await host.newSession(cwd, mcpServers)
       ref.sessionId = sessionId
-      return await this.runDreamExtractionSession(
+      const result = await this.runDreamExtractionSession(
         host,
         agent,
         sessionId,
@@ -4169,6 +4171,9 @@ export class Daemon {
         systemPrompt,
         trusted
       )
+      // What the model actually wrote through the bound tools. Staging refuses
+      // anything else that turned up in the staged store.
+      return { ...result, memoryTopics: this.mcp.writtenMemoryTopics(mcpToken) }
     } finally {
       this.mcp.unregister(mcpToken)
     }
