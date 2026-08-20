@@ -494,7 +494,13 @@ describe('values that only stay strings while quoted', () => {
       '1e10',
       '.inf',
       '.NaN',
-      '0x1f'
+      '0x1f',
+      // Leading-decimal floats: the branch a hand-written grammar keeps missing,
+      // which is why the parser itself is now the oracle.
+      '.5',
+      '+.5',
+      '.5e2',
+      '-.5E-2'
     ]
     for (const value of nonStrings) {
       const fixed = normalizeMemoryHeader(`---\ndescription: ${JSON.stringify(value)}\n---\nbody\n`)

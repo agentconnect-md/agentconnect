@@ -1,3 +1,4 @@
+import { parse as parseYaml } from 'yaml'
 /**
  * Memory file headers — a small YAML frontmatter block at the top of each topic
  * file (Claude Code's agent-memory shape, #41):
@@ -108,22 +109,37 @@ export function parseMemoryFrontmatter(text: string): ParsedMemory {
   }
 }
 
-/** Plain forms YAML resolves to something OTHER than a string — booleans, null, and
- *  numbers in every spelling. A description of exactly `true` or `123` must keep its
- *  quotes or it stops being text on the way back in. */
-const NON_STRING_SCALAR =
-  /^(?:true|false|yes|no|on|off|null|~|[-+]?(?:\d[\d_]*)(?:\.[\d_]*)?(?:[eE][-+]?\d+)?|[-+]?\.(?:inf|nan)|0[xXoObB][0-9a-fA-F_]+)$/i
+/**
+ * Whether YAML would read this plain scalar as something other than a string —
+ * booleans, null, and every numeric spelling (including leading-decimal floats like
+ * `.5e2`). Asking the parser we already depend on beats re-deriving its grammar by
+ * hand: a hand-written pattern silently drifts from it, and each gap turns a stored
+ * description into a boolean or number on the way back in.
+ */
+/** YAML 1.1 spells these as booleans; the 1.2 core schema our parser implements reads
+ *  them as plain strings. Quote them anyway — the guarantee is that the value survives
+ *  ANY strict reader, not only the one we happen to link. */
+const YAML_11_BOOLEANS = /^(?:y|n|yes|no|on|off)$/i
+
+function resolvesAsNonString(value: string): boolean {
+  if (YAML_11_BOOLEANS.test(value)) return true
+  try {
+    return typeof parseYaml(value) !== 'string'
+  } catch {
+    // Unparseable as a bare scalar ⇒ definitely not a safe plain string.
+    return true
+  }
+}
 
 /**
  * Quote unless the value is unambiguously a plain YAML *string* scalar. Conservative
  * on purpose: a stored description must survive any strict YAML reader. Covers every
  * leading indicator (`- ? : , [ ] { } # & * ! | > ' " % @ \``), a `key: value` split,
- * a trailing colon, an inline ` #` comment, edge whitespace, and any spelling that
- * would resolve as a boolean, null, or number. An ISO timestamp's interior colons are
- * safe and stay unquoted.
+ * a trailing colon, an inline ` #` comment, edge whitespace, and anything the parser
+ * would resolve as a non-string.
  */
 function quoteIfNeeded(value: string): string {
-  const unsafe = /^[\s\-?:,[\]{}#&*!|>'"%@`]|: |:$| #|\s$/.test(value) || NON_STRING_SCALAR.test(value)
+  const unsafe = /^[\s\-?:,[\]{}#&*!|>'"%@`]|: |:$| #|\s$/.test(value) || resolvesAsNonString(value)
   return unsafe ? JSON.stringify(value) : value
 }
 
