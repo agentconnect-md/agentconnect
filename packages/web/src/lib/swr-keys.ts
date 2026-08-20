@@ -18,6 +18,8 @@ export const consoleKeys = {
   memberSets: (orgId: string | null | undefined) => consoleKey(orgId, 'member-sets'),
   agentLocalSkills: (orgId: string | null | undefined, agentId: string) =>
     consoleKey(orgId, 'agent-local-skills', agentId),
+  agentRuntimeCommands: (orgId: string | null | undefined, agentId: string) =>
+    consoleKey(orgId, 'agent-runtime-commands', agentId),
   managedSkills: (orgId: string | null | undefined, includeArchived: boolean) =>
     consoleKey(orgId, 'managed-skills', includeArchived ? 'include-archived' : 'active'),
   organizationEnvironment: (orgId: string | null | undefined) => consoleKey(orgId, 'organization-environment'),

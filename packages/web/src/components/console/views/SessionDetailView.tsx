@@ -89,6 +89,10 @@ import { ContextWindowIndicator } from '@/components/console/ContextWindowIndica
 import { ComposerMenu } from '@/components/console/ComposerMenu'
 import { MentionMenu, type MentionOption } from '@/components/console/MentionMenu'
 import { useMentionAutocomplete } from '@/components/console/useMentionAutocomplete'
+import { CommandMenu } from '@/components/console/CommandMenu'
+import { useCommandAutocomplete } from '@/components/console/useCommandAutocomplete'
+import { useRuntimeCommands } from '@/components/console/useRuntimeCommands'
+import type { AgentIcon } from '@/lib/agent-icon'
 import {
   WORK_LANES,
   sessionTurnInFlight,
@@ -218,6 +222,9 @@ function useHeaderPopover() {
   return { open, setPresence, closeTap, toggleTap, reset }
 }
 
+/** Stable identity for a composer with no participants to ask — keeps useRuntimeCommands' memo still. */
+const EMPTY_ROSTER: ReadonlyArray<{ agentId: string; name: string }> = []
+
 // The composer's textarea, isolated so a keystroke re-renders ONLY this node:
 // the draft lives outside the playground context (usePgDraft subscription), and
 // SessionDetailView rebuilds the whole transcript on every render — routing
@@ -229,7 +236,9 @@ function ComposerTextarea({
   onImageFile,
   mentionCandidates,
   onPickMention,
-  onMentionJoiningChange
+  onMentionJoiningChange,
+  onCommandPick,
+  commands
 }: {
   sessionId: string
   placeholder: string
@@ -240,6 +249,14 @@ function ComposerTextarea({
   /** Mirrors `mention.joining` up to the parent so the (separately isolated)
    *  Send button can disable itself too — see the effect below. */
   onMentionJoiningChange: (joining: boolean) => void
+  /** A pick names its owner; the parent validates it at send time and merges it into mentions[]. */
+  onCommandPick?: (target: { agentId: string; name: string }) => void
+  /** The `/` picker's participants, absent when the conversation has no live runtime to ask. */
+  commands?: {
+    roster: ReadonlyArray<{ agentId: string; name: string }>
+    iconOf: (agentId: string) => { icon: AgentIcon | null | undefined; runtime: string } | undefined
+    multi: boolean
+  }
 }) {
   const draft = usePgDraft(sessionId)
   const { setPgInput } = usePlayground()
@@ -255,6 +272,20 @@ function ComposerTextarea({
     onPick: onPickMention
   })
   useEffect(() => onMentionJoiningChange(mention.joining), [mention.joining, onMentionJoiningChange])
+  // Fetched HERE rather than in the view body: the picker's pool must be read with a hook, and the
+  // view returns early above this point. The composer mounts with the conversation, so the read is
+  // still a mount-time prefetch rather than a keystroke-time one.
+  const runtimeCommands = useRuntimeCommands(commands?.roster ?? EMPTY_ROSTER, !!commands)
+  // `/skill` picker. Offered BEFORE the mention picker on every key, and their triggers cannot
+  // both be live (a command is the draft's leading token; a mention is not). The pick's owner
+  // travels structurally through onCommandPick — never as inline `@Name` text.
+  const command = useCommandAutocomplete({
+    ref: textareaRef,
+    value: draft,
+    setValue: (v) => setPgInput(sessionId, v),
+    candidates: runtimeCommands.candidates,
+    onPicked: onCommandPick
+  })
   return (
     <div className="relative">
       <textarea
@@ -264,13 +295,17 @@ function ComposerTextarea({
         value={draft}
         onChange={(e) => {
           setPgInput(sessionId, e.target.value)
-          mention.sync(e.target.value, e.target.selectionStart ?? e.target.value.length)
+          const caret = e.target.selectionStart ?? e.target.value.length
+          mention.sync(e.target.value, caret)
+          command.sync(e.target.value, caret)
         }}
         onSelect={(e) => {
           // Re-derives the anchor on every caret move, not just typing — see
           // the Home composer's identical handler for why.
           const el = e.currentTarget
-          mention.sync(el.value, el.selectionStart ?? el.value.length)
+          const caret = el.selectionStart ?? el.value.length
+          mention.sync(el.value, caret)
+          command.sync(el.value, caret)
         }}
         onPaste={(event) => {
           if (!onImageFile) return
@@ -280,6 +315,7 @@ function ComposerTextarea({
           onImageFile(image)
         }}
         onKeyDown={(e) => {
+          if (command.handleKeyDown(e)) return
           if (mention.handleKeyDown(e)) return
           // Enter sends — but NOT while an IME is composing (that Enter
           // just confirms the candidate), while a mention join is still in
@@ -297,6 +333,18 @@ function ComposerTextarea({
         onHover={mention.setActiveIndex}
         onPick={mention.pick}
       />
+      {commands && (
+        <CommandMenu
+          options={command.matches}
+          activeIndex={command.activeIndex}
+          coords={command.coords}
+          iconOf={commands.iconOf}
+          showOwner={commands.multi}
+          gaps={runtimeCommands.gaps}
+          onHover={command.setActiveIndex}
+          onPick={command.pick}
+        />
+      )}
     </div>
   )
 }
@@ -1620,6 +1668,8 @@ export default function SessionDetailView() {
   // join is still in flight, so the separately-isolated Send button can
   // disable itself for the same reason ComposerTextarea holds off Enter-send.
   const [mentionJoining, setMentionJoining] = useState(false)
+  // The last `/` pick, if any — consumed (and cleared) by the next send; see onPgSend.
+  const commandPickRef = useRef<{ agentId: string; name: string } | null>(null)
   const [runtimeSelections, setRuntimeSelections] = useState<
     Record<string, { model?: string; effort?: string; permissionPreset?: string; fast?: boolean }>
   >({})
@@ -2943,6 +2993,11 @@ export default function SessionDetailView() {
   const onPgSend = (text?: string): boolean => {
     if (imagePreparing || mentionJoining || (isContinuable && pgImage !== undefined)) return false
     setImageError(null)
+    // The `/` pick's owner. Validation happens in pgSend against the OUTGOING draft (this parent
+    // deliberately does not subscribe to it) — the pick narrows the turn only while its token
+    // still leads and the owner is still a participant.
+    const pick = commandPickRef.current
+    commandPickRef.current = null
     // A continuation socket mints through the session-target route (§6.5).
     if (isContinuable) markSessionTarget(session.id)
     // Pass the fetched roster: an adopted webchat session has no provider-side
@@ -2955,7 +3010,9 @@ export default function SessionDetailView() {
       session.agentId ?? '',
       text,
       isWebchat ? session.channelId : undefined,
-      isWebchat ? liveRoster : undefined
+      isWebchat ? liveRoster : undefined,
+      undefined,
+      pick ?? undefined
     )
     // Writing ends reading: someone who scrolled up through history and then
     // sends must not have their own message — or the reply to it — land
@@ -3031,6 +3088,18 @@ export default function SessionDetailView() {
           return a ? [{ id: a.id, name: p.name, icon: a.icon, runtime: a.runtime, inRoster: true }] : []
         })
       : []
+  // The `/` picker's participants. Every live participant contributes its OWN runtime's commands,
+  // so a name can legitimately appear twice; picking one addresses its agent (see commandInsertion).
+  const commandParticipants = isLive
+    ? {
+        roster: liveRoster.map((p) => ({ agentId: p.agentId, name: p.name })),
+        iconOf: (agentId: string) => {
+          const agent = agentById.get(agentId)
+          return agent ? { icon: agent.icon, runtime: agent.runtime } : undefined
+        },
+        multi: multiLive
+      }
+    : undefined
   // Returns the join's promise (not fire-and-forget): pgAddAgent awaits the
   // HTTP request before the roster reflects the new participant, and the
   // composer holds Enter-send off until it settles — sending against the OLD
@@ -4578,6 +4647,10 @@ export default function SessionDetailView() {
                           mentionCandidates={mentionCandidates}
                           onPickMention={onPickMention}
                           onMentionJoiningChange={setMentionJoining}
+                          onCommandPick={(target) => {
+                            commandPickRef.current = target
+                          }}
+                          commands={commandParticipants}
                         />
                         <div className="flex items-center gap-2 border-t border-(--border-subtle) py-[7px] pr-[9px] pl-[10px]">
                           {attachmentsEnabled && (

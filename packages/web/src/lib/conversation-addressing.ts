@@ -118,9 +118,32 @@ export function mentionQueryAt(text: string, caret: number): { start: number; qu
  *  as stray text instead of being consumed by the inserted name.
  */
 export function mentionSpanEnd(text: string, start: number): number {
+  return tokenSpanEnd(text, start)
+}
+
+/** The run of non-space characters a trigger token occupies, from its sigil at `start`. Shared with
+ *  the `/` command picker, which replaces its whole token for the same reason. */
+export function tokenSpanEnd(text: string, start: number): number {
   let end = start + 1
   while (end < text.length && !/\s/.test(text[end]!)) end++
   return end
+}
+
+/** The `/command` being typed at `caret`, if any (composer command picker).
+ *
+ *  Unlike a mention, a command is the prompt's own leading token — ACP invokes one as the prompt
+ *  text `/name arg` — so only whitespace and @mentions may precede it. That also keeps the two
+ *  pickers from competing: `/` mid-sentence is ordinary text, as is a path or a URL. */
+export function commandQueryAt(text: string, caret: number): { start: number; query: string } | null {
+  const upto = text.slice(0, caret)
+  const at = upto.lastIndexOf('/')
+  if (at === -1) return null
+  const query = upto.slice(at + 1)
+  if (/\s/.test(query)) return null
+  // Strictly whitespace and COMPLETE @mention tokens before the `/` — `(?:@.*\s)?` also matched
+  // "@Bob the log is in /tmp" and opened the picker mid-sentence, turning Enter into an insert.
+  if (!/^\s*(?:@\S+\s+)*$/.test(upto.slice(0, at))) return null
+  return { start: at, query }
 }
 
 /** Where a `/sessions/:id` deep link goes when its session turns out to belong
