@@ -3,6 +3,7 @@ import { chmodSync, mkdirSync, statSync } from 'node:fs'
 import { dirname } from 'node:path'
 import {
   QuotedMessageSchema,
+  SessionImageAttachment as SessionImageAttachmentSchema,
   type DreamInfo,
   type ExternalSessionOrigin,
   type QuotedMessage,
@@ -3968,6 +3969,42 @@ export class LocalStore {
     return (await this.db
       .prepare('SELECT * FROM transcript WHERE orgId = ? AND channel = ? AND thread = ? ORDER BY seq ASC')
       .all(this.orgFor(agentId), channel, thread)) as unknown as TranscriptRow[]
+  }
+
+  /**
+   * The bytes of an inline transcript image in one thread, by the file NAME the agent read
+   * in its `[attached: …]` marker. Latest wins — the same name can legitimately recur.
+   *
+   * Backs forwarding a received file: the copy already kept for console replay is reused, so
+   * no second fetch hits the source platform and the bytes never pass through the model. That
+   * copy is BOUNDED (and may be a smaller rendition), so a forward can be lower-resolution
+   * than what arrived. Bounded scan depth for the same reason the copy is bounded.
+   */
+  async transcriptAttachmentByName(
+    channel: string,
+    thread: string,
+    agentId: string | undefined,
+    name: string
+  ): Promise<SessionImageAttachment | undefined> {
+    const rows = (await this.db
+      .prepare(
+        `SELECT attachmentsJson FROM transcript
+          WHERE orgId = ? AND channel = ? AND thread = ? AND attachmentsJson IS NOT NULL
+          ORDER BY seq DESC LIMIT 100`
+      )
+      .all(this.orgFor(agentId), channel, thread)) as unknown as { attachmentsJson: string }[]
+    for (const row of rows) {
+      let raw: unknown
+      try {
+        raw = JSON.parse(row.attachmentsJson)
+      } catch {
+        continue
+      }
+      const parsed = SessionImageAttachmentSchema.array().safeParse(raw)
+      const match = parsed.success ? parsed.data.find((attachment) => attachment.name === name) : undefined
+      if (match) return match
+    }
+    return undefined
   }
 
   /**

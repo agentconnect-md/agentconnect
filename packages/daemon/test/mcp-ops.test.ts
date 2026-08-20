@@ -204,6 +204,69 @@ describe('executeTool: sendMessage (channel post)', () => {
     expect(gw.postMessage).toHaveBeenCalledWith('C_OTHER', 'yo', undefined, authorIdentity)
   })
 
+  // Forwarding a file the conversation RECEIVED. This is the only way an image crosses
+  // platforms: the bytes are resolved daemon-side from what already arrived, never produced
+  // by the model, and a file share is its own message kind rather than a decorated post.
+  describe('attachment forward', () => {
+    const withUpload = () =>
+      fakeGateway({ uploadFile: vi.fn(async () => 'F_UPLOADED') as MessageGateway['uploadFile'] })
+    const bytes = Buffer.from('PNGBYTES')
+    const resolves = (over: Partial<OpsDeps> = {}) => ({
+      resolveAttachment: vi.fn(async (_c: SessionContext, name: string) =>
+        name === 'shot.png' ? { bytes, name } : undefined
+      ),
+      ...over
+    })
+
+    it('uploads the received bytes with `message` as the caption instead of posting text', async () => {
+      const gw = withUpload()
+      const { deps: d, recorded } = deps(gw)
+      Object.assign(d, resolves())
+
+      const res = (await executeTool(
+        ctx,
+        'sendMessage',
+        { channel: 'C_OTHER', attachment: 'shot.png', message: 'from telegram' },
+        d
+      )) as Record<string, unknown>
+
+      expect(gw.uploadFile).toHaveBeenCalledWith(
+        'C_OTHER',
+        { bytes, name: 'shot.png' },
+        'from telegram',
+        undefined,
+        authorIdentity
+      )
+      expect(gw.postMessage).not.toHaveBeenCalled()
+      // Slack answers a file share with the FILE and no message ts, so the send has no post
+      // anchor: it records under a synthetic id and seeds no channel-root session, exactly as
+      // a gateway that returned no id already did.
+      expect(res).toMatchObject({ ok: true, post: { channel: 'C_OTHER', ts: 'local-1000' } })
+      expect(recorded).toEqual([{ channel: 'C_OTHER', thread: undefined, text: 'from telegram', ts: 'local-1000' }])
+    })
+
+    it('refuses a name this conversation never received, posting nothing', async () => {
+      const gw = withUpload()
+      const { deps: d } = deps(gw)
+      Object.assign(d, resolves())
+      await expect(
+        executeTool(ctx, 'sendMessage', { channel: 'C_OTHER', attachment: 'nope.png', message: 'hi' }, d)
+      ).rejects.toThrow(/no file named "nope.png"/)
+      expect(gw.uploadFile).not.toHaveBeenCalled()
+      expect(gw.postMessage).not.toHaveBeenCalled()
+    })
+
+    it('refuses a target platform with no upload port rather than sending the caption alone', async () => {
+      const gw = fakeGateway()
+      const { deps: d } = deps(gw)
+      Object.assign(d, resolves())
+      await expect(
+        executeTool(ctx, 'sendMessage', { channel: 'C_OTHER', attachment: 'shot.png', message: 'hi' }, d)
+      ).rejects.toThrow(/cannot post files/)
+      expect(gw.postMessage).not.toHaveBeenCalled()
+    })
+  })
+
   describe('root post: one canonical thread key for every consumer', () => {
     // A post whose key differs from what the next inbound reply resolves to opens a session that
     // reply can never reach. threadKeyForPost is the ONE place a post becomes a thread segment,

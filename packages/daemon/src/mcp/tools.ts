@@ -79,6 +79,15 @@ function buildSendMessageTool(platforms: string[]): ToolDescriptor {
       'always lands at the channel ROOT, which opens a new conversation there — to speak in the thread you are ' +
       'already in, just write your ordinary reply.'
   }
+  const attachment = {
+    type: 'string',
+    minLength: 1,
+    description:
+      'Optional. Forward a file THIS conversation received, by its name exactly as the `[attached: …]` marker ' +
+      'spells it — this is how an image reaches another platform. The daemon posts the bytes itself with ' +
+      '`message` as the caption; you can neither attach a file you were not sent nor produce one from what you ' +
+      'saw. The forwarded copy may be smaller than the original.'
+  }
 
   // Mode 1 — toAgent: wake one AgentConnect agent. Two forms: postless (no channel, peers
   // only) and channel root (channel, peers or self). There is no in-thread form — an ordinary
@@ -193,6 +202,7 @@ function buildSendMessageTool(platforms: string[]): ToolDescriptor {
         channel,
         platform,
         integrationId,
+        attachment,
         message
       },
       ['toUser', 'message']
@@ -210,6 +220,7 @@ function buildSendMessageTool(platforms: string[]): ToolDescriptor {
         channel,
         platform,
         integrationId,
+        attachment,
         message
       },
       ['channel', 'message']
@@ -268,6 +279,10 @@ function buildSendMessageTool(platforms: string[]): ToolDescriptor {
       'posts once at the channel root and @-mentions every listed user; a single id string also works.\n' +
       '- Channel (bare post, no recipient): `{"channel":"<channel id>","message":"..."}` — posts at the channel ' +
       'root without waking anyone or @-mentioning anyone; add `platform` or `integrationId` only when needed.\n' +
+      '- attachment (with `toUser` or `channel`) — forward a file this conversation received: ' +
+      '`{"channel":"<channel id>","attachment":"<file name>","message":"..."}`. The name is the one in the ' +
+      '`[attached: …]` marker. This is the ONLY way to put an image on another platform; describing what you saw ' +
+      'is not the same thing.\n' +
       '- Parent session reply: `{"sessionId":"<Parent session>","message":"..."}` — relay an answer back to whoever ' +
       'asked this way, never by posting it at their channel root.\n' +
       'Every visible send lands at the channel ROOT and opens a NEW conversation of your own there. Write ' +

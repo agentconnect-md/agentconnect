@@ -2228,6 +2228,15 @@ export class Daemon {
         return !(await this.store.isCaptureExcluded(ctx.agentId, await this.acpSessionIdForToolCall(ctx)))
       },
       memoryScope: (ctx) => this.memoryScope(ctx.agentId, ctx.channel, ctx.transportScope),
+      resolveAttachment: async (ctx, name) => {
+        const found = await this.store.transcriptAttachmentByName(
+          transcriptChannelKey(ctx.channel, ctx.transportScope),
+          ctx.thread,
+          ctx.agentId,
+          name
+        )
+        return found ? { bytes: Buffer.from(found.data, 'base64'), name: found.name } : undefined
+      },
       recordOutbound: async (ctx, channel, thread, text, ts, integrationId) =>
         await this.store.appendTranscript({
           channel: transcriptChannelKey(channel, this.transportScopeForIntegrationIds([integrationId])),

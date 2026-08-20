@@ -351,6 +351,12 @@ export type AppLike = {
       update: (a: unknown) => Promise<{ ts?: string }>
       delete: (a: unknown) => Promise<unknown>
     }
+    // The external upload flow (`files:write`). chat.postMessage cannot carry bytes at
+    // all, so this three-step dance is the ONLY way to put a file in a conversation.
+    files: {
+      getUploadURLExternal: (a: unknown) => Promise<{ upload_url?: string; file_id?: string }>
+      completeUploadExternal: (a: unknown) => Promise<{ files?: { id?: string }[] }>
+    }
     conversations: {
       open: (a: unknown) => Promise<{ channel?: { id?: string } }>
       info: (a: unknown) => Promise<{
@@ -1233,6 +1239,98 @@ export class SlackConnection implements PlatformConnection {
       if (window?.throwOnError) throw err
     }
     return out
+  }
+
+  /**
+   * Put a file INTO a conversation — Slack's three-step external upload (`files:write`).
+   *
+   * `chat.postMessage` cannot carry bytes at all: it can only reference an image by public
+   * URL or by the id of a file already hosted in Slack. So the completion call IS the
+   * message here — `comment` rides as `initial_comment`, and the agent's conversational
+   * identity as username/icon, exactly as {@link postChatMessage} applies it to a text post.
+   *
+   * Returns the Slack file id, or undefined on any failure. Slack answers with the FILE and
+   * no message ts, so this cannot serve as a post anchor: a caller that needs one (a session
+   * seed, a paired wake) must post separately and treat this as decoration.
+   */
+  async uploadFile(
+    channel: string,
+    file: { bytes: Buffer; name: string },
+    comment?: string,
+    threadTs?: string,
+    options?: SlackPostOptions
+  ): Promise<string | undefined> {
+    return this.queue.enqueue(async () => {
+      try {
+        const reserved = await this.app.client.files.getUploadURLExternal({
+          filename: file.name,
+          length: file.bytes.byteLength
+        })
+        const uploadUrl = reserved.upload_url
+        const fileId = reserved.file_id
+        if (!uploadUrl || !fileId) {
+          this.deps.log?.debug(`slack: uploadFile got no upload url for ${file.name}`)
+          return undefined
+        }
+        if (!(await this.putUploadBytes(uploadUrl, file))) return undefined
+        // Sharing is what makes the file a message; without `channel_id` it stays a private
+        // upload nobody can see. `thread_ts` must be the PARENT's ts, never a reply's.
+        const share: Record<string, unknown> = {
+          files: [{ id: fileId, title: file.name }],
+          channel_id: channel,
+          ...(threadTs ? { thread_ts: threadTs } : {}),
+          ...(comment ? { initial_comment: comment } : {})
+        }
+        await this.completeUpload(share, options)
+        return fileId
+      } catch (err) {
+        this.rememberMissingScopes(err)
+        this.deps.log?.debug(`slack: uploadFile ${file.name} → ch=${channel} failed: ${(err as Error).message}`)
+        return undefined
+      }
+    })
+  }
+
+  /** Step 2 of the upload: POST the bytes to the reserved URL. It is NOT a Slack API
+   *  endpoint (no token, no JSON envelope), so it goes out through undici with the same
+   *  proxy dispatcher the Web API client uses rather than through `this.app.client`. */
+  private async putUploadBytes(uploadUrl: string, file: { bytes: Buffer; name: string }): Promise<boolean> {
+    const form = new FormData()
+    form.append('file', new Blob([new Uint8Array(file.bytes)]), file.name)
+    const dispatcher = proxyDispatcher()
+    // Same cast seam as `fetchWithDispatcher`: undici's own FormData/RequestInit types and
+    // the Node globals are structurally identical but nominally distinct.
+    const init = { method: 'POST', body: form, ...(dispatcher ? { dispatcher } : {}) }
+    const res = await undiciFetch(uploadUrl, init as Parameters<typeof undiciFetch>[1])
+    if (!res.ok) {
+      this.deps.log?.debug(`slack: uploadFile byte POST for ${file.name} → HTTP ${res.status}`)
+      return false
+    }
+    return true
+  }
+
+  /** Step 3 of the upload, with the same `chat:write.customize` fallback the text send has:
+   *  an installation without the scope still shares the file, under the app's own identity. */
+  private async completeUpload(share: Record<string, unknown>, options?: SlackPostOptions): Promise<void> {
+    const customize: Record<string, unknown> = {}
+    const username = options?.username?.trim()
+    const iconUrl = options?.icon_url?.trim()
+    if (username) customize.username = username
+    if (iconUrl) customize.icon_url = iconUrl
+    if (Object.keys(customize).length === 0 || Date.now() < this.customUsernameRetryAt) {
+      await this.app.client.files.completeUploadExternal(share)
+      return
+    }
+    try {
+      await this.app.client.files.completeUploadExternal({ ...share, ...customize })
+      this.customUsernameRetryAt = 0
+    } catch (err) {
+      this.rememberMissingScopes(err)
+      if (!isMissingCustomizeScope(err)) throw err
+      this.customUsernameRetryAt = Date.now() + CUSTOM_USERNAME_REPROBE_MS
+      this.deps.log?.debug('slack: chat:write.customize missing — sharing the file with the app default identity')
+      await this.app.client.files.completeUploadExternal(share)
+    }
   }
 
   /**

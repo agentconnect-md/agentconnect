@@ -47,6 +47,10 @@ function targetBranch<T extends z.ZodRawShape>(target: string, shape: T) {
 
 const messageField = requiredString('message')
 const channelField = optionalString('channel')
+/** The name of a file the caller RECEIVED in this conversation, forwarded as-is. Named
+ *  rather than id'd because the name is what the agent already has: it reads it in the
+ *  `[attached: …]` marker on the triggering message. */
+const attachmentField = optionalString('attachment')
 const platformField = optionalString('platform')
 const integrationIdField = optionalString('integrationId')
 
@@ -82,12 +86,14 @@ export const SEND_MESSAGE_BRANCHES = {
     channel: channelField,
     platform: platformField,
     integrationId: integrationIdField,
+    attachment: attachmentField,
     message: messageField
   }),
   channel: targetBranch('channel target', {
     channel: requiredString('channel'),
     platform: platformField,
     integrationId: integrationIdField,
+    attachment: attachmentField,
     message: messageField
   }),
   sessionId: targetBranch('session target', {
@@ -329,6 +335,12 @@ export interface MessagingDeps extends GatewayDeps {
     originChannel: string
     originThread: string
   }) => boolean | Promise<boolean>
+  /** Resolve a file the caller RECEIVED here, by the name it read in the `[attached: …]` marker,
+   *  to daemon-local bytes — this is what lets an image the agent can only SEE be passed on. The
+   *  bytes are the bounded copy already kept for transcript replay, so a forward re-fetches
+   *  nothing, never routes bytes through the model, and can be lower-resolution than the original.
+   *  Scoped to the caller's own (channel, thread). Absent with no daemon ⇒ no file can be named. */
+  resolveAttachment?: (ctx: SessionContext, name: string) => Promise<{ bytes: Buffer; name: string } | undefined>
   /** Record an agent-sent message into the session transcript. */
   recordOutbound: (
     ctx: SessionContext,
@@ -393,6 +405,7 @@ export async function sendMessage(
   const { toAgent, needsReply } = parseAgentTarget(args.toAgent)
   const toUsers = parseUserTargets(args.toUser)
   const channel = parseArgs(channelField, args.channel)
+  const attachmentName = parseArgs(attachmentField, args.attachment)
   if (toAgent === undefined && toUsers === undefined && channel === undefined) {
     throw new Error(
       `sendMessage: \`toAgent\`, \`toUser\`, or \`channel\` must select the target. ${SEND_MESSAGE_TARGET_HELP}`
@@ -494,6 +507,20 @@ export async function sendMessage(
       parseArgs(platformField, args.platform) ?? (directMessage ? directMessagePlatformFor(ctx.platform) : ctx.platform)
     const wantIntegrationId = parseArgs(integrationIdField, args.integrationId)
     const { gw, integrationId: targetId } = resolveGatewayForPlatform(ctx, deps, wantPlatform, wantIntegrationId)
+    // Resolved before anything is posted: a bad name or a fileless target fails the whole send.
+    let attachment: { bytes: Buffer; name: string } | undefined
+    if (attachmentName !== undefined) {
+      if (!gw.uploadFile) {
+        throw new Error(`sendMessage: the selected ${platformLabel(wantPlatform)} integration cannot post files`)
+      }
+      attachment = await deps.resolveAttachment?.(ctx, attachmentName)
+      if (!attachment) {
+        throw new Error(
+          `sendMessage: no file named "${attachmentName}" was received in this conversation — ` +
+            'name it exactly as the `[attached: …]` marker spells it.'
+        )
+      }
+    }
     let body = message
     if (toUsers !== undefined) {
       // Whole `toUser` mode — DM and the channel-root mention form alike — is gated on
@@ -552,7 +579,14 @@ export async function sendMessage(
           }
         : {})
     }
-    providerPostId = await gw.postMessage(postChannel, body, undefined, identity)
+    // A file share IS the message — chat.postMessage cannot carry bytes — and Slack answers it with
+    // the file, no ts. So a forward has no post anchor: `providerPostId` stays undefined and every
+    // consumer of it below degrades on the path a gateway returning no id already takes.
+    if (attachment) {
+      await gw.uploadFile?.(postChannel, attachment, body, undefined, identity)
+    } else {
+      providerPostId = await gw.postMessage(postChannel, body, undefined, identity)
+    }
     const ts = providerPostId ?? `local-${deps.now()}`
     // Whether the target is a DM decides the thread key on the platforms that keep a DM as one
     // continuous conversation, and no id carries that — ask the platform, once, and only where

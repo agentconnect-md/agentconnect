@@ -59,6 +59,17 @@ export interface MessageGateway {
    *  bot credentials; null on failure / over-cap. Backs the `read*File` tools so
    *  the agent can read attachments without ever holding the token. */
   downloadFile(sourceUrl: string, maxBytes?: number): Promise<Buffer | null>
+  /** The mirror of {@link downloadFile}: put BYTES into a conversation. Optional —
+   *  only a platform that can host a file offers it, and the result is the hosted
+   *  file's id, NOT a message anchor (Slack's share call returns no ts). `comment`
+   *  is the message the file is introduced with. */
+  uploadFile?(
+    channel: string,
+    file: { bytes: Buffer; name: string },
+    comment?: string,
+    threadTs?: string,
+    identity?: SendIdentity
+  ): Promise<string | undefined>
 }
 
 /**

@@ -243,6 +243,25 @@ best-effort edge: a target on another daemon whose call policy terminally reject
 caller can still leave a visible post, because that policy verdict is only known on the
 target's daemon after the post is made.
 
+### Forwarding a received file
+
+A `toUser` or bare-`channel` send may carry `attachment`, naming a file **this
+conversation received** exactly as the agent's `[attached: …]` marker spells it. This is
+the only way a shared image reaches another platform: an agent can describe what it saw,
+but it cannot produce the bytes, and no send accepts model-supplied file content.
+
+The daemon resolves the name against its own transcript for the caller's conversation, so
+an agent can forward only what was delivered to it, and the bytes never pass through the
+model. It forwards the bounded copy already retained for console replay rather than
+re-fetching the original, so a forwarded image can be smaller than the one that arrived.
+
+A file share is its own message on the receiving platform, not a decorated text post: the
+send's `message` becomes the file's caption, and the platform returns the file rather than
+a message anchor. Such a send therefore starts no conversation of its own — unlike the
+bare `channel` post below, it seeds no session — and it cannot be paired with an agent
+wake. An unresolvable name, or a target platform that cannot host files, fails the whole
+send rather than delivering the caption alone.
+
 ## Self-authored channel roots
 
 When an agent uses `sendMessage` to publish a new channel-root message without waking
