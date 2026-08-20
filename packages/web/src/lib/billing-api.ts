@@ -71,6 +71,11 @@ export interface BillingDebit {
 
 export type BillingTransaction = BillingCredit | BillingDebit
 
+// `type` is optional on the CREDIT arm only, and only for reading: a service that predates
+// the union sends credit rows without it. Everything this file hands onward is normalised
+// to carry it, so components switch on `type` without a special case.
+export type BillingTransactionWire = (Omit<BillingCredit, 'type'> & { type?: 'credit' }) | BillingDebit
+
 export interface BillingTransactionsPage {
   items: BillingTransaction[]
   /** Pass back as `?cursor=` for the next page; null ⇒ this is the last one. */
@@ -162,8 +167,13 @@ export function assertPurchaseCreated(body: unknown): asserts body is BillingPur
   if (!b || typeof b.purchaseId !== 'string' || typeof b.url !== 'string') throw new BillingShapeError('purchase')
 }
 
-export function assertTransactionsPage(body: unknown): asserts body is BillingTransactionsPage {
-  const b = body as Partial<BillingTransactionsPage> | null
+/** Guarantees the WIRE shape, which is one step looser than what components see: a credit
+ *  row may arrive without `type` from a service that predates the union.
+ *  `fetchBillingTransactions` fills it in. */
+export function assertTransactionsPage(
+  body: unknown
+): asserts body is { items: BillingTransactionWire[]; nextCursor: string | null } {
+  const b = body as { items?: BillingTransactionWire[]; nextCursor?: string | null } | null
   if (!b || !Array.isArray(b.items)) throw new BillingShapeError('transaction page')
   if (!(b.nextCursor === null || typeof b.nextCursor === 'string')) throw new BillingShapeError('transaction page')
   for (const row of b.items) {
@@ -172,10 +182,20 @@ export function assertTransactionsPage(body: unknown): asserts body is BillingTr
     // to `never`.
     const t = row as unknown as Record<string, unknown> | null
     if (!t || typeof t.id !== 'string' || typeof t.at !== 'string') throw new BillingShapeError('transaction')
-    // An unknown `type` is refused, unlike an unknown `kind` below: a row whose shape
+    // An ABSENT `type` is the shape this API had before the history merged both ledger
+    // sides, and it is read as a credit — which is exactly what it was.
+    //
+    // That tolerance is not politeness, it is what makes this side deployable on its own.
+    // Merge order is not deploy order: the console rides the application train and goes
+    // out automatically, while the billing service's image is pinned and synced by hand,
+    // so a console carrying a new mirror routinely runs against the previous service for
+    // a while. Requiring `type` made that window a page that failed outright.
+    //
+    // An unknown `type` VALUE is still refused, unlike an unknown `kind` below: a shape
     // this build cannot read has no sensible fallback rendering, where an unfamiliar
-    // ledger kind is only a label.
-    if (t.type === 'credit') {
+    // ledger kind is only a label. "Absent" is not unknown — it is the previous contract,
+    // and this file knows what it was.
+    if (t.type === 'credit' || t.type === undefined) {
       if (!isFiniteNumber(t.amountMicro)) throw new BillingShapeError('transaction')
       // Checked as a string rather than against the known set, deliberately: a kind
       // this build has not heard of renders with its raw value as the label, and
@@ -228,7 +248,15 @@ export async function fetchBillingTransactions(orgId: string, cursor?: string): 
   const query = cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''
   const body = await request<unknown>(`${orgPath(orgId)}/transactions${query}`)
   assertTransactionsPage(body)
-  return body
+  // Normalised here so the tolerance stops at this boundary: a service that predates the
+  // union omits `type` on its credit rows, and every component past this line gets to
+  // switch on it without knowing that history.
+  // Keyed on `debit` rather than on the absence of `type`, so the credit arm is stamped
+  // the same way whether the service sent it or not.
+  const items: BillingTransaction[] = body.items.map((row) =>
+    row.type === 'debit' ? row : { ...row, type: 'credit' as const }
+  )
+  return { items, nextCursor: body.nextCursor }
 }
 
 /** Start a purchase: the service persists the intent, mints a Stripe Checkout
