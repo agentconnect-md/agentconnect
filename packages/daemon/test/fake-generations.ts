@@ -1,4 +1,4 @@
-import type { LaunchGenerations } from '../src/k8s/driver.js'
+import type { LaunchGenerations } from '../src/k8s/launch-registry.js'
 
 /** Process-local stand-in for the shared store, for tests that only need generations to increase. */
 export function fakeGenerations(): LaunchGenerations {

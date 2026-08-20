@@ -14,10 +14,6 @@ import { ChannelBinder } from './channel-binder.js'
 import { awaitBoundSandbox, awaitReady, readIfPresent, type SandboxWaitDeps } from './sandbox-waits.js'
 import { AC_LABEL_AGENT, AC_LABEL_ORG, LaunchTimeoutError, RUNTIME_GRANTS, resolvePodIp } from './sandbox-identity.js'
 
-// Re-exported so existing importers keep reaching identity and launch types through this module.
-export * from './sandbox-identity.js'
-export type { Launch, LaunchGenerations } from './launch-registry.js'
-
 export interface K8sDriverDeps {
   api: SandboxApi
   /** Resolves tenant ownership at claim time; pool members serve more than one org. */

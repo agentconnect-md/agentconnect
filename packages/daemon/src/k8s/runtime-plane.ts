@@ -1,5 +1,7 @@
 import { K8sHttp, loadInClusterConfig } from '@agentconnect.md/k8s-client'
-import { K8sDriver, PROBE_GRANTS, type LaunchGenerations } from './driver.js'
+import { K8sDriver } from './driver.js'
+import type { LaunchGenerations } from './launch-registry.js'
+import { PROBE_GRANTS } from './sandbox-identity.js'
 import { SandboxApi } from './sandbox-api.js'
 import { PROBE_CLAIM_EXPIRES_ANNOTATION, PROBE_CLAIM_LABEL, PROBE_CLAIM_TTL_MS, probeAgentId } from './probe-claim.js'
 import { clusterMetrics } from '../metrics/cluster-metrics.js'

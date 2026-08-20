@@ -10,7 +10,7 @@ import {
   resolveOrphanReconcilerSettings,
   type OrphanReconcilerDeps
 } from '../src/k8s/orphan-reconciler.js'
-import { AC_LABEL_AGENT, AC_LABEL_ORG } from '../src/k8s/driver.js'
+import { AC_LABEL_AGENT, AC_LABEL_ORG } from '../src/k8s/sandbox-identity.js'
 import { PROBE_CLAIM_EXPIRES_ANNOTATION, PROBE_CLAIM_LABEL, probeAgentId } from '../src/k8s/probe-claim.js'
 import { SandboxApi, type Sandbox, type SandboxClaim } from '../src/k8s/sandbox-api.js'
 
