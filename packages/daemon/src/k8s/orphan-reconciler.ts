@@ -1,6 +1,6 @@
 import { systemClock, type Clock } from '@agentconnect.md/connection'
 import { K8sApiError } from '@agentconnect.md/k8s-client'
-import { AC_LABEL_AGENT } from './driver.js'
+import { AC_LABEL_AGENT } from './sandbox-identity.js'
 import { probeClaimExpiry } from './probe-claim.js'
 import type { Sandbox, SandboxApi, SandboxClaim } from './sandbox-api.js'
 
