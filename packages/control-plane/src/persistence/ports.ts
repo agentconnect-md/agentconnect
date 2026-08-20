@@ -3572,8 +3572,9 @@ export interface ChannelPlacementRecord {
   platform: Platform
   channelId: string
   agentId: AgentId
-  /** Owning daemon (may be null if the agent is not yet placed — such rows are
-   *  dropped from the routable snapshot). */
+  /** `Agent.daemonId` verbatim — a MACHINE placement, null for a `set` (pool) one, which names
+   *  a member set instead. Not the routing answer: `buildCollabSnapshot` takes that from the
+   *  resolved directory, because only the duty ledger knows which member holds a pool agent. */
   daemonId: string | null
   integrationId: IntegrationId
   /** Public platform app identity used to recognize messages from another

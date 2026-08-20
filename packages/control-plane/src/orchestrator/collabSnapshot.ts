@@ -1,12 +1,14 @@
 /**
  * `buildCollabSnapshot` — assemble the bot-AGNOSTIC collaboration routing snapshot
  * (agent-collaboration §2.3/§6.2) from an org's channel placements. Groups the flat
- * placement records into per-channel `CollabChannelRoute`s, dropping unplaced agents
- * (no daemonId ⇒ not routable), plus the FLAT org-scoped `agents[]` directory built
- * from the RESOLVED `orgAgents` (`PlacementResolver.resolveDirectory`) — the only
- * carrier for an agent that has no IM integration and so appears in no channel at all,
- * and the only list that may carry a PENDING (daemon-less) entry. Bodiless
- * routing/policy metadata only.
+ * placement records into per-channel `CollabChannelRoute`s, dropping the agents nothing
+ * serves, plus the FLAT org-scoped `agents[]` directory built from the RESOLVED
+ * `orgAgents` (`PlacementResolver.resolveDirectory`) — the only carrier for an agent that
+ * has no IM integration and so appears in no channel at all, and the only list that may
+ * carry a PENDING (daemon-less) entry. Bodiless routing/policy metadata only.
+ *
+ * ONE resolution, both halves: "who serves this agent right now" comes from the resolved
+ * `orgAgents` and the channel half reads that answer instead of re-deriving it.
  *
  * The SAME snapshot is shipped to the relay (`rc/collab-routes`, full org) and to a
  * daemon (`register/ok.collabRoutes` / `collaboration/routes` EVT). The daemon copy is
@@ -31,6 +33,13 @@ export function buildCollabSnapshot(
   generation: number,
   orgAgents: OrgAgentRecord[]
 ): CollabRoutesSnapshot {
+  // Who serves this agent: the resolved directory's answer, never `Agent.daemonId` re-read — that
+  // column is null for a `set` agent by design (agent-collaboration-implementation.md §snapshot).
+  // A row the directory does not cover keeps its column, i.e. a caller passing no directory.
+  const servingByAgent = new Map<string, string | null>(orgAgents.map((a) => [a.agentId, a.daemonId]))
+  const servingDaemonOf = (p: ChannelPlacementRecord): string | null =>
+    servingByAgent.has(p.agentId) ? (servingByAgent.get(p.agentId) ?? null) : p.daemonId
+
   // Sharing is an observed property of ONE conversation, not the bot's `shareable`
   // capacity setting. A bot may be shareable while only one agent is present here;
   // conversely duplicate legacy bot rows may expose the same member id. Count the
@@ -38,7 +47,7 @@ export function buildCollabSnapshot(
   // truthful compatibility flag.
   const agentsByMentionIdentity = new Map<string, Set<string>>()
   for (const p of placements) {
-    if (!p.daemonId || !p.botUserId) continue
+    if (!servingDaemonOf(p) || !p.botUserId) continue
     const key = `${p.platform}\u0000${p.channelId}\u0000${p.botUserId}`
     const agents = agentsByMentionIdentity.get(key) ?? new Set<string>()
     agents.add(p.agentId)
@@ -48,7 +57,9 @@ export function buildCollabSnapshot(
   // (platform, channelId) → CollabChannelRoute
   const byChannel = new Map<string, CollabChannelRoute>()
   for (const p of placements) {
-    if (!p.daemonId) continue // unplaced agent — not routable
+    // Nothing serves it (unplaced, or an unconfirmed pool grant) — channels[] holds no pending row.
+    const daemonId = servingDaemonOf(p)
+    if (!daemonId) continue
     const key = `${p.platform} ${p.channelId}`
     let route = byChannel.get(key)
     if (!route) {
@@ -57,7 +68,7 @@ export function buildCollabSnapshot(
     }
     route.agents.push({
       agentId: p.agentId,
-      daemonId: p.daemonId,
+      daemonId,
       integrationId: p.integrationId,
       ...(p.botAppId !== undefined ? { botAppId: p.botAppId } : {}),
       // §8.5 mention-address inputs. Channel-keyed on purpose: an address is only
