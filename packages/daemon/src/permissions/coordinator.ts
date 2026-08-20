@@ -36,6 +36,15 @@ import {
 } from '../daemon/tool-classification.js'
 import { pendingTurnKey, type DaemonRenderAction, type Pending } from '../daemon/turn-types.js'
 
+/** The union of a turn's explicit human-approval waits, measured here and nowhere else.
+ *  Regeneration budgets subtract it while retaining runtime/tool work time; `depth` counts
+ *  overlapping requests so the union is measured once, and `startedAt` marks the open interval. */
+export interface ApprovalWait {
+  waitMs: number
+  depth: number
+  startedAt?: number
+}
+
 /** Process-wide daemon state the permission path reads. */
 export interface PermissionCoreHost {
   log(): Logger
@@ -57,7 +66,7 @@ export interface PermissionSurfaceHost {
     p: Pending,
     post: (conn: SlackConnection) => Promise<string | undefined>
   ): Promise<string | undefined>
-  httpSlackSessionTarget(p: Pick<Pending, 'agentId' | 'integrationId' | 'sessionKey'>): string | undefined
+  httpSlackSessionTarget(p: Pick<Pending, 'plan'>): string | undefined
   maskAgentSecrets<T>(agentId: string, payload: T): T
   logSessionAction(verb: string, sessionKey: string, actor?: InteractionActor): void
 }
@@ -136,7 +145,7 @@ export class PermissionCoordinator {
   ): Promise<void> {
     const store = this.host.store()
     const session = await store.getSessionByAcpIdForAgent(agentId, sessionId)
-    const requesterId = p.requesterId ?? session?.triggeredBy ?? null
+    const requesterId = p.plan.requesterId ?? session?.triggeredBy ?? null
     const requesterName = requesterId ? ((await store.getDisplayNames([requesterId])).get(requesterId) ?? null) : null
     await store.createPermissionRequest({
       id,
@@ -168,7 +177,7 @@ export class PermissionCoordinator {
     } catch (err) {
       // The durable editor request is authoritative. A best-effort chat notice
       // must never discard the live resolver or silently fall back to auto-allow.
-      this.host.log().warn(`permission request notice failed for "${p.sessionKey}": ${formatErr(err)}`)
+      this.host.log().warn(`permission request notice failed for "${p.plan.sessionKey}": ${formatErr(err)}`)
     }
   }
 
@@ -191,17 +200,16 @@ export class PermissionCoordinator {
   /** Exclude only explicit human decision latency from regeneration wall time.
    * A depth counter measures the union of overlapping approval intervals. */
   private async trackHumanApprovalWait<T>(p: Pending, result: Promise<T>): Promise<T> {
-    p.approvalWaitDepth ??= 0
-    p.approvalWaitMs ??= 0
-    if (p.approvalWaitDepth === 0) p.approvalWaitStartedAt = this.host.clock().now()
-    p.approvalWaitDepth += 1
+    const a = p.approval
+    if (a.depth === 0) a.startedAt = this.host.clock().now()
+    a.depth += 1
     try {
       return await result
     } finally {
-      p.approvalWaitDepth = Math.max(0, p.approvalWaitDepth - 1)
-      if (p.approvalWaitDepth === 0 && p.approvalWaitStartedAt !== undefined) {
-        p.approvalWaitMs += Math.max(0, this.host.clock().now() - p.approvalWaitStartedAt)
-        delete p.approvalWaitStartedAt
+      a.depth = Math.max(0, a.depth - 1)
+      if (a.depth === 0 && a.startedAt !== undefined) {
+        a.waitMs += Math.max(0, this.host.clock().now() - a.startedAt)
+        delete a.startedAt
       }
     }
   }
@@ -292,7 +300,7 @@ export class PermissionCoordinator {
       params,
       evaluationParams,
       conn,
-      channel: p.channel,
+      channel: p.plan.channel,
       resolve: resolveResult
     })
     const recorded = this.noteEditorPermissionRequest(
@@ -317,8 +325,8 @@ export class PermissionCoordinator {
     const blocks = buildPermissionCard(requestId, params, this.host.httpSlackSessionTarget(p))
     const fallback = `Permission requested: ${params.toolCall?.title ?? 'a tool call'}`
     const ts = await this.host.postCardSerialized(p, (slack) =>
-      slack.postBlocks(p.channel, blocks, fallback, p.statusThread, {
-        ...(slackPostOptions(p) ?? {}),
+      slack.postBlocks(p.plan.channel, blocks, fallback, p.plan.statusThread, {
+        ...(slackPostOptions(p.plan) ?? {}),
         chrome: true
       })
     )
@@ -327,7 +335,7 @@ export class PermissionCoordinator {
       if (ts) {
         void conn
           .updateBlocks(
-            p.channel,
+            p.plan.channel,
             ts,
             buildPermissionResolvedCard(params, 'Cancelled', undefined),
             'Permission cancelled',
@@ -579,7 +587,7 @@ export class PermissionCoordinator {
     const context = {
       agentId,
       sessionId,
-      ...(pending?.evaluationTurnId ? { turnId: pending.evaluationTurnId } : {})
+      ...(pending?.plan.evaluationTurnId ? { turnId: pending.plan.evaluationTurnId } : {})
     }
     const toolCallId = typeof params.toolCall?.toolCallId === 'string' ? params.toolCall.toolCallId : undefined
     if (event.kind === 'requested') {
@@ -666,7 +674,7 @@ export class PermissionCoordinator {
           type: 'permission.auto_allowed',
           agentId,
           sessionId,
-          ...(p?.evaluationTurnId ? { turnId: p.evaluationTurnId } : {}),
+          ...(p?.plan.evaluationTurnId ? { turnId: p.plan.evaluationTurnId } : {}),
           data: { reason: 'agentconnect_system_tool', optionId: allow.optionId }
         })
         return { outcome: { outcome: 'selected', optionId: allow.optionId } }
@@ -680,9 +688,9 @@ export class PermissionCoordinator {
     }
     const chatApprovalEnabled =
       this.host.agents().get(agentId)?.allowRuntimeChangesInChat === true &&
-      turnChromeFor(p.platform).chatInputCards === true &&
+      turnChromeFor(p.plan.platform).chatInputCards === true &&
       p.conn instanceof SlackConnection &&
-      !p.approvalSurfaceSuppressed &&
+      !p.plan.approvalSurfaceSuppressed &&
       params.options.length > 0
     if (chatApprovalEnabled) {
       return await this.awaitChatPermission(agentId, sessionId, params, evaluationParams, p)
@@ -718,15 +726,15 @@ export class PermissionCoordinator {
     if (isApproval) {
       const chatApprovalEnabled =
         this.host.agents().get(agentId)?.allowRuntimeChangesInChat === true &&
-        turnChromeFor(p.platform).chatInputCards === true &&
+        turnChromeFor(p.plan.platform).chatInputCards === true &&
         p.conn instanceof SlackConnection &&
-        !p.approvalSurfaceSuppressed
+        !p.plan.approvalSurfaceSuppressed
       if (!chatApprovalEnabled) return await this.awaitEditorElicitation(agentId, sessionId, params, p)
     }
     // A `none` Slack turn has no generic human-input card to answer this request.
-    if (p.approvalSurfaceSuppressed) return { action: 'cancel' }
+    if (p.plan.approvalSurfaceSuppressed) return { action: 'cancel' }
     const conn = p.conn
-    if (!turnChromeFor(p.platform).chatInputCards || !(conn instanceof SlackConnection)) return undefined
+    if (!turnChromeFor(p.plan.platform).chatInputCards || !(conn instanceof SlackConnection)) return undefined
     const target = elicitTarget(params)
     if (!target) return undefined
     const requestId = isApproval ? randomUUID() : `elicit-${++this.elicitSeq}`
@@ -743,7 +751,7 @@ export class PermissionCoordinator {
       kind: target.kind,
       approval: isApproval,
       conn,
-      channel: p.channel,
+      channel: p.plan.channel,
       resolve: resolveResult
     })
     if (isApproval) {
@@ -767,8 +775,8 @@ export class PermissionCoordinator {
       if (!this.pendingElicits.has(requestId)) return await result
     }
     const ts = await this.host.postCardSerialized(p, (sc) =>
-      sc.postBlocks(p.channel, blocks, fallback, p.statusThread, {
-        ...(slackPostOptions(p) ?? {}),
+      sc.postBlocks(p.plan.channel, blocks, fallback, p.plan.statusThread, {
+        ...(slackPostOptions(p.plan) ?? {}),
         chrome: true
       })
     )
@@ -776,7 +784,13 @@ export class PermissionCoordinator {
     if (!live) {
       if (ts)
         void conn
-          .updateBlocks(p.channel, ts, buildElicitationResolvedCard(params, ':hourglass: Cancelled'), 'Cancelled', true)
+          .updateBlocks(
+            p.plan.channel,
+            ts,
+            buildElicitationResolvedCard(params, ':hourglass: Cancelled'),
+            'Cancelled',
+            true
+          )
           .catch(() => {})
       return await result
     }

@@ -113,16 +113,22 @@ function installPending(daemon: Daemon): {
     resolvePermissionRequest: vi.fn(() => true)
   }
   const pending = {
+    plan: {
+      platform: 'hook',
+      agentId: 'agent-1',
+      requesterId: 'turn-user',
+      channel: 'test',
+      statusThread: 'test',
+      approvalSurfaceSuppressed: false
+    },
+    chrome: {},
+    reply: { text: '', attemptText: '', attemptAnswerUpdates: [] },
+    signals: { applyChain: Promise.resolve() },
+    approval: { waitMs: 0, depth: 0 },
     builtinSystemToolCallIds: new Set<string>(),
     hiddenSessionTitleToolCallIds: new Set<string>(),
-    replyText: '',
-    platform: 'hook',
     conv: { onUpdate: () => [], hasBuffered: () => false },
-    rec: { onUpdate: () => [] },
-    agentId: 'agent-1',
-    requesterId: 'turn-user',
-    channel: 'test',
-    statusThread: 'test'
+    rec: { onUpdate: () => [] }
   }
   ;(daemon as any).pending.set(JSON.stringify(['agent-1', 's1']), pending)
   return pending
@@ -132,7 +138,7 @@ describe('an approval publishes its resolver before the durable write', () => {
   it('a cancellation during createPermissionRequest leaves no orphaned wait or pending row', async () => {
     const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
     const pending = installPending(daemon) as Record<string, unknown>
-    pending.approvalSurfaceSuppressed = true
+    pending.plan.approvalSurfaceSuppressed = true
 
     // Hold the durable write open so the cancellation sweep lands inside it — the window the
     // async store opened, which the synchronous path never had.
@@ -205,7 +211,7 @@ describe('built-in MCP approvals use one policy on both ACP paths', () => {
   it('queues non-system requests for an Agent editor even when `none` hides the chat surface', async () => {
     const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
     const pending = installPending(daemon) as Record<string, unknown>
-    pending.approvalSurfaceSuppressed = true
+    pending.plan.approvalSurfaceSuppressed = true
 
     const permissionResult = (daemon as any).permissions.onAcpPermission(
       'agent-1',
@@ -268,8 +274,8 @@ describe('built-in MCP approvals use one policy on both ACP paths', () => {
     for (const platform of ['telegram', 'discord', 'feishu', 'webchat']) {
       const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
       const pending = installPending(daemon) as Record<string, unknown>
-      pending.platform = platform
-      pending.approvalSurfaceSuppressed = false
+      pending.plan.platform = platform
+      pending.plan.approvalSurfaceSuppressed = false
 
       const result = (daemon as any).permissions.onAcpPermission('agent-1', 's1', req({ title: 'Bash' }))
       await vi.waitFor(() => expect((daemon as any).permissions.pendingEditorPermissions.size).toBe(1))

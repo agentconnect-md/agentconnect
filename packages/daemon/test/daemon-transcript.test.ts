@@ -596,7 +596,7 @@ describe('Daemon transcript records the agent reply', () => {
         // FRESH reply BELOW it — not edit reply-1 in place above the question.
         const p = [...(daemon as any).pending.values()][0]
         ;(daemon as any).reanchorInPlaceChrome(p)
-        await p.applyChain
+        await p.signals.applyChain
         onUpdate(sid, text('second part'))
         onUpdate(sid, tool('t2', 'Read two'))
         await vi.waitFor(
@@ -671,7 +671,7 @@ describe('Daemon transcript records the agent reply', () => {
       })
     }
     // A pre-card chrome send is already queued on the chain but has not flushed yet.
-    const p: any = { conn, applyChain: chromeSent.then(() => void order.push('chrome')) }
+    const p: any = { conn, chrome: {}, signals: { applyChain: chromeSent.then(() => void order.push('chrome')) } }
 
     const cardPromise = (daemon as any).postCardSerialized(p, (sc: any) => sc.postBlocks())
     // Give microtasks a chance: the card still must NOT post while the queued chrome is pending.

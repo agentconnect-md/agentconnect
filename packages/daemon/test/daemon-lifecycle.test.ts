@@ -165,7 +165,7 @@ function wakeFenceHeld(daemon: Daemon): boolean {
 
 function pendingFor(daemon: Daemon, acpSessionId: string): any {
   return [...(daemon as any).pending.values()].find(
-    (pending: any) => pending.agentId === 'bot-a' && pending.acpSessionId === acpSessionId
+    (pending: any) => pending.plan.agentId === 'bot-a' && pending.acpSessionId === acpSessionId
   )
 }
 
@@ -1002,7 +1002,7 @@ describe('Daemon session lifecycle (#118)', () => {
     await vi.waitFor(() => expect(pendingFor(daemon, 'acp-1')).toBeDefined(), WAIT)
     const pending = pendingFor(daemon, 'acp-1')
     let releaseApply!: () => void
-    pending.applyChain = new Promise<void>((resolve) => (releaseApply = resolve))
+    pending.signals.applyChain = new Promise<void>((resolve) => (releaseApply = resolve))
     ;(daemon as any).enqueueApply(pending, { kind: 'post', text: 'must not post' })
 
     writePause(root, true)

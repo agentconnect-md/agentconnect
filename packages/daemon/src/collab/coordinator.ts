@@ -348,7 +348,7 @@ export class CollabCoordinator {
         type,
         agentId: req.callerAgentId,
         ...(caller?.acpSessionId ? { sessionId: caller.acpSessionId } : {}),
-        ...(pending?.evaluationTurnId ? { turnId: pending.evaluationTurnId } : {}),
+        ...(pending?.plan.evaluationTurnId ? { turnId: pending.plan.evaluationTurnId } : {}),
         platform,
         channel: req.channel,
         data: {
@@ -684,7 +684,7 @@ export class CollabCoordinator {
     agentId: string,
     msg: NormalizedMessage,
     callMeta: CallMeta | undefined,
-    p: { replyText: string; outputSuppressed?: string | undefined }
+    p: { reply: { text: string }; outputSuppressed?: string | undefined }
   ): Promise<void> {
     if (this.host.draining()) return
     if (!callMeta?.needsReply || callMeta.originSessionId === undefined) return
@@ -700,7 +700,7 @@ export class CollabCoordinator {
     const sessionId = (await this.host.store().getSession(childKey))?.acpSessionId ?? undefined
     const lease = sessionId !== undefined ? this.host.sdkLease().get(sdkLeaseKey(agentId, sessionId)) : undefined
     if (lease !== undefined && (lease.tasks.size > 0 || lease.armedWakes > 0)) return
-    const finalOutput = p.replyText.trim()
+    const finalOutput = p.reply.text.trim()
     const text =
       finalOutput && !isNoResponseBody(finalOutput)
         ? `[inferred reply] The delegated session finished its turn without sending its report ` +

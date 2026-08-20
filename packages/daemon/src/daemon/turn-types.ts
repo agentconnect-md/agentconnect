@@ -5,6 +5,7 @@ import type { TurnPlan } from './turn-plan.js'
 import type { TurnEvaluationReporter } from './turn-evaluation.js'
 import type { KeyGrant } from '../key-server/client.js'
 import type { NormalizedMessage } from '../messages/normalized.js'
+import type { ApprovalWait } from '../permissions/coordinator.js'
 import type { GithubTurnState } from '../platforms/github/turn-output.js'
 import type { ModelProviderTarget } from '../runtimes/model-provider-config.js'
 import type { TranscriptRecorder } from '../session/transcript-recorder.js'
@@ -398,8 +399,102 @@ export function turnState<S extends object>(p: Pending): S {
   return (p.turnState ??= {} as S) as S
 }
 
-/** Per-in-flight-turn rendering state, keyed by ACP sessionId in `this.pending`. */
+/** The in-place platform chrome anchors a turn edits rather than re-posts. Each `*Ts` is the
+ *  message id of a single row, and its `*Attempted` sibling records that the first post was
+ *  tried so a failed post cannot spam a duplicate on the next action. */
+export interface TurnChromeCursors {
+  /** ts of the single in-place "main progress" message, once posted (medium/high). */
+  progressTs?: string
+  /** Whether the progress message's first post was attempted. */
+  progressAttempted?: boolean
+  /** ts of the single in-place plan-summary message, once posted (medium/high). */
+  planTs?: string
+  planAttempted?: boolean
+  /** ts of the single in-place reasoning "context block" message, once posted (high). */
+  reasoningTs?: string
+  reasoningAttempted?: boolean
+  /** ts of the single in-place agent reply message (minimal mode's `live-reply`), once posted. */
+  liveReplyTs?: string
+  liveReplyAttempted?: boolean
+  /** Text last written to the live-reply message — skip a chat.update when unchanged. */
+  liveReplyText?: string
+  /** Set after an interactive card that needs a human answer (permission / elicitation) is
+   *  posted: the current live reply is now ABOVE that card, so the NEXT live-reply action
+   *  starts a FRESH reply BELOW the card (leaving the old one frozen above) instead of
+   *  editing the one above in place. Consumed lazily by the next live-reply so an empty tail
+   *  keeps the old message (and its settled footer). */
+  liveReplyReanchor?: boolean
+  /** ts of the session's interactive status-bar message, once known. Persisted in the
+   *  session row so later turns update the first line instead of posting duplicates. */
+  statusBarTs?: string
+  statusBarAttempted?: boolean
+  /** Dedup key for the last status snapshot + cancel availability emitted this turn, so
+   *  a `usage_update` that changes nothing observable skips a redundant edit. */
+  lastStatusBar?: string
+  /** Whether the Slack status controls may still interrupt this turn. Cleared as soon as
+   *  cancellation starts or terminal cleanup begins, then included in the dedup key so
+   *  the persisted status row drops its stale Cancel run option. */
+  statusCancellable: boolean
+}
+
+/** What one turn has said so far: the raw stream, the generation-local attempt held behind
+ *  the context fence, and the pointers to what is actually posted. */
+export interface ReplyAccumulator {
+  /** Complete raw assistant text, used only as input to opt-in memory distillation. */
+  text: string
+  /** IM answer text is generation-local until the final context fence accepts it. */
+  attemptText: string
+  /** Answer-bearing ACP updates withheld from the platform converger until commit. */
+  attemptAnswerUpdates: any[]
+  /** Current successfully-delivered agent reply message. `footerKey` records which footer
+   *  it owns; progress/tool/reasoning chrome never replaces this pointer. */
+  lastReply?: { ts: string; text: string; footerKey?: string }
+  /** The LAST agent-authored conversational message posted this turn, with the exact
+   *  text it currently shows — the message turn finalization re-stamps as
+   *  `delivery_state: 'final'` (§5.5). The text is carried because chat.update REPLACES
+   *  content, so closing the response means re-sending what is already displayed.
+   *  Undefined when the turn posted no conversational body (chrome-only, `none` mode, or
+   *  a headless turn): there is then no response event to close. */
+  lastResponse?: { ts: string; text: string }
+  /** send-message-routing-rework.md §5.1: the id of the ONE complete logical response
+   *  this turn produces. Every physical message of a long answer carries it, so a peer
+   *  deduplicates on (responseId, target agent) and activates exactly once even when the
+   *  answer was split across several Slack messages. Minted per turn, never per post. */
+  responseId: string
+}
+
+/** The turn's completion machinery: what settles it, what defers it, and the once-only
+ *  latches that keep its terminal reporting from firing twice. */
+export interface TurnSignals {
+  /** Resolves when this turn leaves `pending` (success or failure) — drain awaits it. */
+  done: Promise<void>
+  /** Settles `done`; called once from dispatch's finally. */
+  resolveDone: () => void
+  /** Pending idle-flush timer (§9.1). */
+  idleTimer?: NodeJS.Timeout
+  /** Serializes applyAction so in-place edits don't race on the chrome cursors. */
+  applyChain: Promise<void>
+  /** True once the normal turn-end usage/report has been emitted. */
+  usageReportSent: boolean
+  /** Whether this turn received an ACP-native cost. When true, it wins and the
+   *  public-pricing fallback must not add another amount for the same turn. */
+  runtimeCostReported: boolean
+}
+
+/** Per-in-flight-turn rendering state, keyed by ACP sessionId in `this.pending`.
+ *
+ *  Everything a turn DECIDED before it ran lives on the readonly `plan` and is read
+ *  through it; the mutable rest is grouped by who writes it — platform chrome cursors,
+ *  reply accumulation, the approval-wait meter (permissions/), and completion signals. */
 export interface Pending {
+  /** The pure decisions this turn was planned with — its identity, coordinates, output
+   *  mode, and surface. Readonly by construction: nothing here is turn state. */
+  readonly plan: TurnPlan
+  chrome: TurnChromeCursors
+  reply: ReplyAccumulator
+  /** Explicit human-approval wait meter (permissions/coordinator owns every write). */
+  approval: ApprovalWait
+  signals: TurnSignals
   /** Admitted-turn lifecycle owner. Backstops and finalization share its cleanup
    * failure latch so one rejected stop cannot be logged or fenced twice. */
   entry: QueueEntry
@@ -409,22 +504,6 @@ export interface Pending {
   /** Captures the full activity log (tool/reasoning) from the raw ACP stream,
    *  independent of output mode. Text/result rows are recorded at send time. */
   rec: TranscriptRecorder
-  /** Complete raw assistant text, used only as input to opt-in memory distillation. */
-  replyText: string
-  /** IM answer text is generation-local until the final context fence accepts it. */
-  attemptReplyText: string
-  /** Answer-bearing ACP updates withheld from the platform converger until commit. */
-  attemptAnswerUpdates: any[]
-  /** Interactive IM platforms use staged answer delivery; webchat/hooks keep their
-   * existing transport-specific contracts and remain outside the initial rollout. */
-  stageAnswer: boolean
-  /** Turn-final context refresh for webchat conversations (webchat-multi-agents.md
-   * §5.4): the browser stream stays LIVE (no answer staging) — only the canonical
-   * post commit (reply record + rd/webchat-post) is fenced. Invalidation comes
-   * from conversation posts other participants produced (relay `context` ops
-   * recorded into the shared transcript); a single-agent conversation receives
-   * none, so the check is inert there. */
-  webchatRefresh: boolean
   /** Tool-call ids structurally identified as this daemon's own MCP tools. Approval
    *  requests may carry only this opaque id, regardless of which ACP path is used. */
   builtinSystemToolCallIds: Set<string>
@@ -432,27 +511,6 @@ export interface Pending {
    *  session metadata, but housekeeping must not appear in platform/webchat output
    *  or the persisted user-visible activity log. */
   hiddenSessionTitleToolCallIds: Set<string>
-  /** Agent that owns this turn — the sender stamped on its recorded reply rows. */
-  agentId: string
-  /** Human-readable AgentConnect agent name captured for this turn's Slack channel authorship. */
-  agentName: string
-  /** Trusted sender id for the message that started this turn. Approval audit rows use
-   *  this actor, not the session's historical first trigger. */
-  requesterId?: string
-  /** Exact integration that owns the reply path. HTTP Slack turns encode it into the
-   *  status controls so the relay can route each button to the right owner. */
-  integrationId?: string
-  /** Public avatar URL for this turn's Slack channel messages (icon_url), if the CP resolved one. */
-  iconUrl?: string
-  /** Source platform (for building the protocol SessionKey on drain release). */
-  platform: string
-  /** Whether the source conversation is a direct message. Slack thread titles are
-   *  valid only for Agents-feature app threads, which live in the app DM. */
-  isDm: boolean
-  /** Durable loop-breaker scope captured from the original event shape. */
-  loopGuardScope: string
-  /** Local session key (platform:channel:thread:agentId[:transportScope]) — for state writes. */
-  sessionKey: string
   /** The live ACP session id for this turn (part of the `this.pending` map key) — surfaced
    *  in the status bar so the console can deep-link to the session detail page. */
   acpSessionId: string
@@ -461,13 +519,6 @@ export interface Pending {
   /** Once an operator pause or loop trip targets this turn, no subsequent ACP update
    *  or queued renderer action may publish output, even if the gate is later reset. */
   outputSuppressed?: TurnInterruptReason
-  channel: string
-  /** Internal transcript namespace for this physical bot connection. */
-  transcriptChannel: string
-  /** thread_ts for body posts (undefined for a top-level message). */
-  thread?: string
-  /** thread_ts for the assistant status bar (always set; falls back to msgId). */
-  statusThread: string
   /** P3 outbound: the final-answer selector + completed comment on the triggering
    *  GitHub issue/PR. Commentary stays transcript-local; final is awaited at turn end.
    *  For a headless hook, explicit final chunks are withheld from OutputConverger and
@@ -478,99 +529,9 @@ export interface Pending {
    *  read only by that surface (see {@link turnState}). Core carries the slot and
    *  never inspects it — the reason platform-shaped fields stopped accreting here. */
   turnState?: unknown
-  /** True when `none` output mode removed this turn's interactive permission surface — see
-   *  {@link noneSuppressedApprovalSurface}. Snapshotted at dispatch ALONGSIDE `conn`; the
-   *  permission policy still queues the request for an Agent editor, but never exposes a
-   *  chat-side approval card. Frozen for the turn, so a mid-turn `none → low` change can't
-   *  desync it from the connection it was derived from. */
-  approvalSurfaceSuppressed: boolean
-  /** Union of explicit human-approval wait intervals for this turn. Regeneration
-   * budgets subtract these intervals while retaining runtime/tool work time. */
-  approvalWaitMs: number
-  approvalWaitDepth: number
-  approvalWaitStartedAt?: number
-  /** ts of the single in-place "main progress" message, once posted (medium/high). */
-  progressTs?: string
-  /** Whether the progress message's first post was attempted (so a failed initial
-   *  post does not spam a duplicate on the next progress action). */
-  progressAttempted?: boolean
-  /** ts of the single in-place plan-summary message, once posted (medium/high). */
-  planTs?: string
-  /** Whether the plan message's first post was attempted (see progressAttempted). */
-  planAttempted?: boolean
-  /** ts of the single in-place reasoning "context block" message, once posted (high). */
-  reasoningTs?: string
-  /** Whether the reasoning message's first post was attempted (see progressAttempted). */
-  reasoningAttempted?: boolean
-  /** Telegram: the id and exact sent text of the LAST body message posted this turn, so a
-   *  turn-end `continue-hint` action can append the continue-the-topic line to it in place
-   *  (the body may have been flushed long before the turn ended). */
-  /** ts of the single in-place agent reply message (minimal mode's `live-reply`), once posted. */
-  liveReplyTs?: string
-  /** Whether the live-reply's first post was attempted (see progressAttempted). */
-  liveReplyAttempted?: boolean
-  /** Text last written to the live-reply message — skip a chat.update when unchanged. */
-  liveReplyText?: string
-  /** Set after an interactive card that needs a human answer (permission / elicitation) is
-   *  posted: the current live reply is now ABOVE that card, so the NEXT live-reply action
-   *  starts a FRESH reply BELOW the card (leaving the old one frozen above) instead of
-   *  editing the one above in place. Consumed lazily by the next live-reply so an empty tail
-   *  keeps the old message (and its settled footer). */
-  liveReplyReanchor?: boolean
   /** Linked footer prepared before the runtime starts streaming. Every reply section is
    *  initially posted with these trailing blocks so Slack can suppress unfurls. */
   attribution?: { blocks: unknown[]; key: string }
-  /** Current successfully-delivered agent reply message. `footerKey` records which footer
-   *  it owns; progress/tool/reasoning chrome never replaces this pointer. */
-  lastReply?: { ts: string; text: string; footerKey?: string }
-  /** send-message-routing-rework.md §5.1: the id of the ONE complete logical response
-   *  this turn produces. Every physical message of a long answer carries it, so a peer
-   *  deduplicates on (responseId, target agent) and activates exactly once even when the
-   *  answer was split across several Slack messages. Minted per turn, never per post. */
-  responseId: string
-  /** The LAST agent-authored conversational message posted this turn, with the exact
-   *  text it currently shows — the message turn finalization re-stamps as
-   *  `delivery_state: 'final'` (§5.5). The text is carried because chat.update REPLACES
-   *  content, so closing the response means re-sending what is already displayed.
-   *  Undefined when the turn posted no conversational body (chrome-only, `none` mode, or
-   *  a headless turn): there is then no response event to close. */
-  lastResponse?: { ts: string; text: string }
-  /** send-message-routing-rework.md §4.1: this turn's own trusted depth, stamped on every
-   *  body it posts so the NEXT routing edge advances from it. A human/root turn is 0. */
-  sourceHopCount: number
-  /** §5.3: compound shared-bot addresses this conversation can contain, which the
-   *  splitter must never cut in half. Empty off Slack, or with no collaboration snapshot. */
-  protectedAddresses: readonly string[]
-  /** ts of the session's interactive status-bar message, once known. Persisted in the
-   *  session row so later turns update the first line instead of posting duplicates. */
-  statusBarTs?: string
-  /** Agent-level Slack status-row preference, snapshotted for this turn alongside output
-   *  mode/footer settings so a hot config edit takes effect cleanly on the next turn. */
-  showStatusBar: boolean
-  /** Whether the status bar's first post was attempted (see progressAttempted). */
-  statusBarAttempted?: boolean
-  /** Dedup key for the last status snapshot + cancel availability emitted this turn, so
-   *  a `usage_update` that changes nothing observable skips a redundant edit. */
-  lastStatusBar?: string
-  /** Whether the Slack status controls may still interrupt this turn. Cleared as soon as
-   *  cancellation starts or terminal cleanup begins, then included in the dedup key so
-   *  the persisted status row drops its stale Cancel run option. */
-  statusCancellable: boolean
-  /** Whether this turn received an ACP-native cost. When true, it wins and the
-   *  public-pricing fallback must not add another amount for the same turn. */
-  runtimeCostReported: boolean
-  /** True once the normal turn-end usage/report has been emitted. */
-  usageReportSent: boolean
-  /** Stable semantic turn id used by evaluation events (never shown to the model). */
-  evaluationTurnId: string
-  /** Pending idle-flush timer (§9.1). */
-  idleTimer?: NodeJS.Timeout
-  /** Serializes applyAction so in-place edits don't race on progressTs/planTs/reasoningTs. */
-  applyChain: Promise<void>
-  /** Resolves when this turn leaves `pending` (success or failure) — drain awaits it. */
-  done: Promise<void>
-  /** Settles `done`; called once from dispatch's finally. */
-  resolveDone: () => void
   /**
    * DAEMON-PRIVATE trusted call metadata for an agent→agent turn (design §3.3a/§6.6/§6.7).
    * Present iff this turn was started by `messageAgent`. Holds the AUTHORITATIVE caller
@@ -615,8 +576,9 @@ export interface SessionDeliveryBinding {
  *  a channel-root message), NOT `statusThread` (which falls back to msgId): the CP
  *  keys assignments by `thread ?? "-"`, so reporting the msgId would miss the match. */
 export function pendingSessionKey(p: Pending): SessionKey {
-  const platform = p.platform as SessionKey['platform']
-  return p.thread !== undefined ? { platform, channel: p.channel, thread: p.thread } : { platform, channel: p.channel }
+  const { platform: rawPlatform, channel, thread } = p.plan
+  const platform = rawPlatform as SessionKey['platform']
+  return thread !== undefined ? { platform, channel, thread } : { platform, channel }
 }
 
 /** One shutdown duty drain: its bound, its counters, and the grants that landed after the latch. */

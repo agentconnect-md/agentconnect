@@ -367,7 +367,7 @@ import type {
 } from '@agentconnect.md/protocol'
 import { formatErr } from './daemon/text.js'
 import { isBuiltinSystemToolCall } from './daemon/tool-classification.js'
-import { buildTurnPlan } from './daemon/turn-plan.js'
+import { buildTurnPlan, type TurnPlan } from './daemon/turn-plan.js'
 import { turnEvaluationReporter, type TurnEvaluationReporter } from './daemon/turn-evaluation.js'
 import {
   isTrustedHumanTurn,
@@ -3056,7 +3056,7 @@ export class Daemon {
    * SessionManager call, so abort those callers immediately, stop every selected
    * cell, and wait for their uncancellable workspace I/O before returning. */
   private async quiesceAgentWorkspaceAuthority(agentId: string): Promise<void> {
-    const selected = [...this.pending.values()].filter((turn) => turn.agentId === agentId)
+    const selected = [...this.pending.values()].filter((turn) => turn.plan.agentId === agentId)
     await this.interruptAgentTurns(agentId, 'stop')
     for (const entry of this.activeGateEntries.values()) {
       if (entry.agentId !== agentId) continue
@@ -6428,8 +6428,8 @@ export class Daemon {
     const recentlyActive =
       (await this.store.activeSessionCountSince(msg.channel, thread, sinceTs, msg.transportScope)) > 0
     const inFlightAgent = [...this.pending.values()].find(
-      (p) => p.transcriptChannel === transcriptChannel && p.statusThread === thread
-    )?.agentId
+      (p) => p.plan.transcriptChannel === transcriptChannel && p.plan.statusThread === thread
+    )?.plan.agentId
     const initializingAgent = [...this.activeGateEntries.values()].find((entry) => {
       const coords = transcriptCoords(entry.msg)
       return (
@@ -6549,20 +6549,20 @@ export class Daemon {
     // NOTE for the second adapter: the checkpoint below is minted in Slack's ts
     // format; when another platform implements the port, checkpoint minting moves
     // into it.
-    if (!offersReadPort(this.replyConnFor(pending.agentId, pending.integrationId), 'getThreadReplies')) {
+    if (!offersReadPort(this.replyConnFor(pending.plan.agentId, pending.plan.integrationId), 'getThreadReplies')) {
       return undefined
     }
     return async () => {
       const checkpoint = slackTsForWallClock(this.clock.now())
       const readState = { truncated: false }
       const history = await this.fetchThreadHistory(
-        pending.agentId,
-        pending.channel,
-        pending.statusThread,
+        pending.plan.agentId,
+        pending.plan.channel,
+        pending.plan.statusThread,
         checkpoint,
         providerCheckpoint,
         true,
-        pending.integrationId,
+        pending.plan.integrationId,
         readState
       )
       return {
@@ -6572,8 +6572,8 @@ export class Daemon {
         // the completeness label exposes the remaining provider-side gap.
         completeness: readState.truncated ? 'observed-only' : 'authoritative',
         events: history.map((event) => ({
-          channel: pending.transcriptChannel,
-          thread: pending.statusThread,
+          channel: pending.plan.transcriptChannel,
+          thread: pending.plan.statusThread,
           ts: event.ts,
           sender: event.sender,
           kind: 'text' as const,
@@ -6593,26 +6593,26 @@ export class Daemon {
     const startedAt = this.clock.now()
     const snapshot = includeProviderSnapshot ? this.finalThreadSnapshot(pending, providerCheckpoint) : undefined
     const refresh = await this.threadContext.refresh({
-      agentId: pending.agentId,
-      transcriptChannel: pending.transcriptChannel,
-      thread: pending.statusThread,
+      agentId: pending.plan.agentId,
+      transcriptChannel: pending.plan.transcriptChannel,
+      thread: pending.plan.statusThread,
       afterRevision,
       // Pairwise a2a threads are shared storage but private conversations:
       // scope the refresh to this agent's own rows (#967).
-      ...(isSyntheticA2aChannel(pending.transcriptChannel) ? { scopeReadsToAgent: true } : {}),
+      ...(isSyntheticA2aChannel(pending.plan.transcriptChannel) ? { scopeReadsToAgent: true } : {}),
       ...(providerCheckpoint ? { providerCheckpoint } : {}),
       ...(snapshot ? { snapshot } : {})
     })
     const phase = includeProviderSnapshot ? 'final' : 'start'
     defaultTurnOutputMetrics.refresh({
-      platform: pending.platform,
+      platform: pending.plan.platform,
       phase,
       completeness: refresh.completeness,
       result: refresh.snapshotFailed ? 'degraded' : 'ok',
       durationMs: Math.max(0, this.clock.now() - startedAt)
     })
     defaultTurnOutputMetrics.events(
-      pending.platform,
+      pending.plan.platform,
       refresh.completeness === 'authoritative' ? 'provider' : 'observed',
       refresh.events.length
     )
@@ -6620,23 +6620,23 @@ export class Daemon {
   }
 
   private async localInvalidatingEvents(pending: Pending, afterRevision: number): Promise<TranscriptRow[]> {
-    const rows = isSyntheticA2aChannel(pending.transcriptChannel)
+    const rows = isSyntheticA2aChannel(pending.plan.transcriptChannel)
       ? // Pairwise a2a threads: only this agent's own rows may invalidate its
         // turn — a sibling's private delivery is not its context (#967).
         await this.store.transcriptSinceRevisionForAgent(
-          pending.transcriptChannel,
-          pending.statusThread,
+          pending.plan.transcriptChannel,
+          pending.plan.statusThread,
           afterRevision,
-          pending.agentId
+          pending.plan.agentId
         )
       : await this.store.transcriptSinceRevision(
-          pending.transcriptChannel,
-          pending.statusThread,
+          pending.plan.transcriptChannel,
+          pending.plan.statusThread,
           afterRevision,
-          pending.agentId
+          pending.plan.agentId
         )
     return rows
-      .filter((row) => row.kind === 'text' && row.sender !== pending.agentId)
+      .filter((row) => row.kind === 'text' && row.sender !== pending.plan.agentId)
       .sort((a, b) => a.eventTimeUs - b.eventTimeUs || a.seq - b.seq)
   }
 
@@ -6653,7 +6653,7 @@ export class Daemon {
    *  as coalesced instead of queueing it. Returns false when nothing absorbed this message. */
   private async coalesceLateAdmission(key: string, entry: QueueEntry): Promise<boolean> {
     if (!this.claimAbsorbedContext(key, transcriptCoords(entry.msg).ts)) return false
-    const sessionId = [...this.pending.values()].find((p) => p.sessionKey === key)?.acpSessionId
+    const sessionId = [...this.pending.values()].find((p) => p.plan.sessionKey === key)?.acpSessionId
     await this.coalesceEntryIntoTurn(entry, sessionId ?? null)
     defaultTurnOutputMetrics.queueCoalesced(entry.msg.platform, 1)
     this.log.info(`turn context: coalesced 1 late activation into ${key}`)
@@ -6913,15 +6913,15 @@ export class Daemon {
   /** Move only the accepted generation through the existing renderer. This call and
    * the first enqueue performed by the caller form the local answer commit point. */
   private acceptStagedAttempt(pending: Pending): void {
-    pending.replyText = pending.attemptReplyText
-    for (const update of pending.attemptAnswerUpdates) {
+    pending.reply.text = pending.reply.attemptText
+    for (const update of pending.reply.attemptAnswerUpdates) {
       for (const action of pending.conv.onUpdate(update)) this.enqueueApply(pending, action)
     }
   }
 
   private discardStagedAttempt(pending: Pending): void {
-    pending.attemptReplyText = ''
-    pending.attemptAnswerUpdates = []
+    pending.reply.attemptText = ''
+    pending.reply.attemptAnswerUpdates = []
   }
 
   // ── §4.3/§6.9 per-sessionKey serial admission gate ────────────────────────────
@@ -7110,7 +7110,7 @@ export class Daemon {
       raceDeadline: (work, ms) => this.raceDeadline(work, ms),
       sleepUntil: (at) => this.sleepUntil(at),
       activeDispatchCount: (agentId) => this.activeDispatchesByAgent.get(agentId)?.size ?? 0,
-      pendingTurnAgentIds: () => [...this.pending.values()].map((p) => p.agentId),
+      pendingTurnAgentIds: () => [...this.pending.values()].map((p) => p.plan.agentId),
       activeGateAgentIds: () => [...this.activeGateEntries.values()].map((entry) => entry.agentId),
       dreamInFlight: (agentId) => this.dreamRunnerInstance?.inFlight(agentId) === true
     }
@@ -7673,8 +7673,8 @@ export class Daemon {
       targets.set(key, { agentId: entry.agentId })
     }
     for (const pending of this.pending.values()) {
-      if (pending.loopGuardScope === scope) {
-        targets.set(pending.sessionKey, { agentId: pending.agentId, acpSessionId: pending.acpSessionId })
+      if (pending.plan.loopGuardScope === scope) {
+        targets.set(pending.plan.sessionKey, { agentId: pending.plan.agentId, acpSessionId: pending.acpSessionId })
       }
     }
     for (const [key, queued] of this.serialQueue) {
@@ -8475,7 +8475,7 @@ export class Daemon {
     // and Pending.done views until both are empty, then it is safe to stop.
     while (true) {
       const leases = [...(this.activeReplyConnectionUses.get(conn) ?? [])]
-      const pending = [...this.pending.values()].filter((turn) => turn.conn === conn).map((turn) => turn.done)
+      const pending = [...this.pending.values()].filter((turn) => turn.conn === conn).map((turn) => turn.signals.done)
       if (leases.length === 0 && pending.length === 0) return
       await Promise.all([...leases, ...pending])
     }
@@ -9024,8 +9024,8 @@ export class Daemon {
     run: TurnRun,
     turn: { conv: DaemonConverger; rec: TranscriptRecorder; sessionId: string; webchat: Pending['webchat'] }
   ): Pending {
-    const { entry, key, plan } = run
-    const { agentId, msg, integrationId, callMeta, githubReply } = entry
+    const { entry, plan } = run
+    const { agentId, callMeta, githubReply } = entry
     const { conv, rec, sessionId } = turn
     let resolveDone!: () => void
     const done = new Promise<void>((r) => (resolveDone = r))
@@ -9034,57 +9034,33 @@ export class Daemon {
       if (ordinaryHost) entry.selectedHost = this.selectedOrdinaryTurnHost(agentId, ordinaryHost)
     }
     const p: Pending = {
+      plan,
       entry,
       conv,
       rec,
-      replyText: '',
-      attemptReplyText: '',
-      attemptAnswerUpdates: [],
-      stageAnswer: plan.stageAnswer,
-      webchatRefresh: plan.webchatRefresh,
+      chrome: { statusCancellable: true },
+      reply: {
+        text: '',
+        attemptText: '',
+        attemptAnswerUpdates: [],
+        // One id for this turn's complete logical response (§5.1), minted before any
+        // output can be produced so every physical section of it agrees.
+        responseId: randomUUID()
+      },
+      approval: { waitMs: 0, depth: 0 },
+      signals: {
+        done,
+        resolveDone,
+        applyChain: Promise.resolve(),
+        usageReportSent: false,
+        runtimeCostReported: false
+      },
       builtinSystemToolCallIds: new Set(),
       hiddenSessionTitleToolCallIds: new Set(),
-      // One id for this turn's complete logical response (§5.1), minted before any
-      // output can be produced so every physical section of it agrees.
-      responseId: randomUUID(),
-      // §4.1: the author's OWN turn depth, stamped on every body it posts so the next
-      // routing edge advances from it. A human/root turn carries none and is depth 0; the
-      // model can neither read nor set this.
-      sourceHopCount: plan.sourceHopCount,
-      // §5.3: compound shared-bot addresses a split must never cut in half.
-      protectedAddresses: plan.protectedAddresses,
-      agentId,
-      agentName: plan.agentName,
-      requesterId: plan.requesterId,
-      ...(integrationId !== undefined ? { integrationId } : {}),
-      ...(plan.iconUrl ? { iconUrl: plan.iconUrl } : {}),
-      platform: msg.platform,
-      isDm: msg.isDm,
-      loopGuardScope: plan.loopGuardScope,
-      sessionKey: key,
       acpSessionId: sessionId,
       ...(entry.selectedHost ? { selectedHost: entry.selectedHost } : {}),
-      channel: msg.channel,
-      transcriptChannel: plan.transcriptChannel,
-      thread: msg.thread,
       turnState: plan.turnSurface.initialTurnState(plan.turnCtx),
-      statusThread: plan.statusThread,
       conn: run.replyConn,
-      // Snapshot alongside `conn`: true only when `none` removed THIS turn's Slack permission
-      // card surface (not Telegram/Discord/Feishu, webchat, or headless). Frozen for the turn
-      // so a mid-turn mode flip can't desync the permission policy from the already-cleared
-      // connection (auto-allow regression).
-      approvalSurfaceSuppressed: plan.approvalSurfaceSuppressed,
-      approvalWaitMs: 0,
-      approvalWaitDepth: 0,
-      runtimeCostReported: false,
-      usageReportSent: false,
-      evaluationTurnId: plan.evaluationTurnId,
-      showStatusBar: plan.showStatusBar,
-      statusCancellable: true,
-      applyChain: Promise.resolve(),
-      done,
-      resolveDone,
       ...(callMeta ? { callMeta } : {}),
       ...(turn.webchat ? { webchat: turn.webchat } : {}),
       ...(plan.githubTurnEligible && githubReply
@@ -9279,9 +9255,9 @@ export class Daemon {
     let finalCaptureInput = handled.captureInput ?? msg.text
     let baseRevision =
       handled.contextRevision ??
-      (await this.store.threadTranscriptRevision(p.transcriptChannel, p.statusThread, p.agentId))
+      (await this.store.threadTranscriptRevision(p.plan.transcriptChannel, p.plan.statusThread, p.plan.agentId))
     let providerCheckpoint = handled.providerCheckpoint
-    if (p.stageAnswer || p.webchatRefresh) {
+    if (p.plan.stageAnswer || p.plan.webchatRefresh) {
       // Queue entries remain untouched until every gate above has succeeded.
       const initialRefresh = await this.refreshTurnContext(p, baseRevision, providerCheckpoint, false)
       // Webchat: a co-hosted participant's recipient-delivery bump can re-surface
@@ -9290,7 +9266,7 @@ export class Daemon {
       // A row an earlier prompt for this session already carried is not new context — the
       // async store lets a fence re-read it, and replaying it would prompt it twice.
       const initialEvents = (
-        p.webchatRefresh
+        p.plan.webchatRefresh
           ? initialRefresh.events.filter((event) => msg.transcriptTs === undefined || event.ts !== msg.transcriptTs)
           : initialRefresh.events
       ).filter((event) => !this.absorbedContext(key, event))
@@ -9310,7 +9286,11 @@ export class Daemon {
         finalCaptureInput = recallQueryFromBlocks([{ type: 'text', text: finalCaptureInput }, ...deltaBlocks])
       }
       await this.coalesceQueuedContext(key, sessionId, representedEventTs)
-      baseRevision = await this.store.threadTranscriptRevision(p.transcriptChannel, p.statusThread, p.agentId)
+      baseRevision = await this.store.threadTranscriptRevision(
+        p.plan.transcriptChannel,
+        p.plan.statusThread,
+        p.plan.agentId
+      )
       providerCheckpoint = initialRefresh.providerCheckpoint ?? providerCheckpoint
     }
     return { promptBlocks, finalCaptureInput, baseRevision, providerCheckpoint }
@@ -9379,7 +9359,7 @@ export class Daemon {
     const codexUsageIsPerPrompt = plan.codexUsageIsPerPrompt
 
     while (true) {
-      if (p.stageAnswer) this.discardStagedAttempt(p)
+      if (p.plan.stageAnswer) this.discardStagedAttempt(p)
 
       // Start-fence linearization: no await occurs between queue coalescing above
       // (or the prior regeneration decision) and initiating this ACP request.
@@ -9424,7 +9404,7 @@ export class Daemon {
             cachedReadTokens: (evaluationUsage?.cachedReadTokens ?? 0) + (usage.cachedReadTokens ?? 0),
             cachedWriteTokens: (evaluationUsage?.cachedWriteTokens ?? 0) + (usage.cachedWriteTokens ?? 0)
           }
-          if (!p.runtimeCostReported) {
+          if (!p.signals.runtimeCostReported) {
             const estimate = estimateOpenAiTurnCost(turnModel, counts)
             if (estimate.ok) {
               if (!(await this.store.addCost(key, estimate.amount, estimate.currency))) {
@@ -9442,7 +9422,7 @@ export class Daemon {
         }
       }
 
-      if (!p.stageAnswer && !p.webchatRefresh) break
+      if (!p.plan.stageAnswer && !p.plan.webchatRefresh) break
 
       const refresh = await this.refreshTurnContext(p, baseRevision, providerCheckpoint, true)
       providerCheckpoint = refresh.providerCheckpoint ?? providerCheckpoint
@@ -9466,23 +9446,27 @@ export class Daemon {
         // the shared trigger row's revision (recipient-delivery write), which
         // would re-surface this agent's OWN trigger as a "new" message. The
         // trigger's canonical ts is carried on the message — exclude it.
-        .filter((event) => !p.webchatRefresh || msg.transcriptTs === undefined || event.ts !== msg.transcriptTs)
+        .filter((event) => !p.plan.webchatRefresh || msg.transcriptTs === undefined || event.ts !== msg.transcriptTs)
         // A row an earlier prompt for this session already carried is not new context: the
         // async store lets a later write bump its revision and re-surface it here.
         .filter((event) => !this.absorbedContext(key, event))
         .sort((a, b) => a.eventTimeUs - b.eventTimeUs || a.seq - b.seq)
-      const finalRevision = await this.store.threadTranscriptRevision(p.transcriptChannel, p.statusThread, p.agentId)
+      const finalRevision = await this.store.threadTranscriptRevision(
+        p.plan.transcriptChannel,
+        p.plan.statusThread,
+        p.plan.agentId
+      )
 
       if (invalidatingEvents.length === 0) {
-        if (p.stageAnswer) this.acceptStagedAttempt(p)
-        if (generation > 0) defaultTurnOutputMetrics.regeneration(p.platform, 'accepted')
+        if (p.plan.stageAnswer) this.acceptStagedAttempt(p)
+        if (generation > 0) defaultTurnOutputMetrics.regeneration(p.plan.platform, 'accepted')
         defaultTurnOutputMetrics.generations(generation + 1)
         baseRevision = finalRevision
         break
       }
 
       this.discardStagedAttempt(p)
-      if (p.webchatRefresh && p.webchat) {
+      if (p.plan.webchatRefresh && p.webchat) {
         // The canonical post — and post-turn memory / turn.completed.output —
         // must carry only the accepted generation. Webchat chunks accumulate
         // into BOTH buffers (the stream is never staged), so clear both — and
@@ -9490,7 +9474,7 @@ export class Daemon {
         p.webchat.replyText = ''
         p.webchat.heldText = ''
         p.webchat.messageEmitted = false
-        p.replyText = ''
+        p.reply.text = ''
       }
       this.evalHooks.emit({
         type: 'turn.context_changed',
@@ -9512,13 +9496,13 @@ export class Daemon {
       const regenerationElapsedMs =
         regenerationStartedAt === undefined
           ? 0
-          : this.clock.now() - regenerationStartedAt - Math.max(0, p.approvalWaitMs - regenerationApprovalWaitBaseline)
+          : this.clock.now() - regenerationStartedAt - Math.max(0, p.approval.waitMs - regenerationApprovalWaitBaseline)
       const retryAvailable =
         generation < MAX_TURN_CONTEXT_REGENERATIONS &&
         (regenerationStartedAt === undefined || regenerationElapsedMs < MAX_TURN_CONTEXT_REGENERATION_MS)
       if (!retryAvailable) {
         defaultTurnOutputMetrics.candidateDiscarded('context_churn')
-        defaultTurnOutputMetrics.contextChurnExhausted(p.platform)
+        defaultTurnOutputMetrics.contextChurnExhausted(p.plan.platform)
         defaultTurnOutputMetrics.generations(generation + 1)
         evaluation.finishEvaluation('turn.cancelled', { reason: 'context_churn', generations: generation + 1 })
         if (p.webchat) {
@@ -9561,7 +9545,7 @@ export class Daemon {
       // The browser supersession marker fires HERE — after the budget check —
       // so it is only ever followed by a real replacement generation, never by
       // the context-churn terminal (§5.4: "the replacement streams next").
-      if (p.webchatRefresh && p.webchat && !p.webchat.doneSent) {
+      if (p.plan.webchatRefresh && p.webchat && !p.webchat.doneSent) {
         p.webchat.sink.output({
           conversationId: p.webchat.conversationId,
           turnId: p.webchat.turnId,
@@ -9571,7 +9555,11 @@ export class Daemon {
       }
       defaultTurnOutputMetrics.candidateDiscarded('context_changed')
       await this.coalesceQueuedContext(key, sessionId, eventTs)
-      baseRevision = await this.store.threadTranscriptRevision(p.transcriptChannel, p.statusThread, p.agentId)
+      baseRevision = await this.store.threadTranscriptRevision(
+        p.plan.transcriptChannel,
+        p.plan.statusThread,
+        p.plan.agentId
+      )
       generation += 1
       promptBlocks = [
         {
@@ -9584,9 +9572,9 @@ export class Daemon {
       // generation (including approval waits) must never consume the first retry.
       if (regenerationStartedAt === undefined) {
         regenerationStartedAt = this.clock.now()
-        regenerationApprovalWaitBaseline = p.approvalWaitMs
+        regenerationApprovalWaitBaseline = p.approval.waitMs
       }
-      defaultTurnOutputMetrics.regeneration(p.platform, 'started')
+      defaultTurnOutputMetrics.regeneration(p.plan.platform, 'started')
       this.evalHooks.emit({
         type: 'turn.regeneration_started',
         agentId,
@@ -9613,7 +9601,7 @@ export class Daemon {
     // historical dashboard. Fire-and-forget; no-op if the CP is down. Wrapped so
     // a transport hiccup can never abort the turn before the final reply flush.
     await this.emitStoredUsageReport(sessionId, entry.agentId, plan.platform, plan.channel, key)
-    p.usageReportSent = true
+    p.signals.usageReportSent = true
     // turn finished: stop any pending idle-flush, then drain the final actions
     // (remaining body + status clear + optional Web App detail link). A webchat
     // turn skips the Slack renderer entirely — its reply already streamed through
@@ -9638,7 +9626,7 @@ export class Daemon {
       // agent): drop the held stream text — nothing was ever streamed — and
       // commit no canonical post or transcript reply row.
       p.webchat.heldText = ''
-      p.replyText = ''
+      p.reply.text = ''
     } else if (trimmedWebchatReply) {
       // A real reply that never diverged from the sentinel prefix mid-stream
       // (shorter than the sentinel) is still held — release it before commit.
@@ -9654,7 +9642,7 @@ export class Daemon {
         const replyPostId = randomUUID()
         const replyTs = await webchatTurnOutput.appendWebchatTextRow(
           this.store,
-          p.transcriptChannel,
+          p.plan.transcriptChannel,
           plan.statusThread,
           monotonicTs(),
           {
@@ -9676,7 +9664,7 @@ export class Daemon {
           post: {
             postId: replyPostId,
             conversationId: p.webchat.conversationId,
-            author: { kind: 'agent', agentId, hopCount: p.sourceHopCount },
+            author: { kind: 'agent', agentId, hopCount: p.plan.sourceHopCount },
             text: p.webchat.replyText,
             at: Number(replyTs)
           },
@@ -9751,7 +9739,7 @@ export class Daemon {
     // The turn is over, so nothing more will supersede a coalesced tool body: make the last
     // state of every streamed tool call durable now rather than on the buffer's own timer.
     await this.store.flushToolCallWrites()
-    await p.applyChain
+    await p.signals.applyChain
     // Every section has now been delivered, so the complete logical response exists and
     // exactly one of its messages can be marked final (§5.5). Must run AFTER applyChain:
     // before it, the message being closed might not be the last one posted.
@@ -9759,7 +9747,7 @@ export class Daemon {
     // §7.3 `closeResponse`: exact lookup, so a webchat / hook / dream turn rendering
     // through the core surface does not inherit its platform's closure, and a platform
     // that cannot amend a sent message simply registers none.
-    await this.turnSurfaces.exact(p.platform)?.closeResponse?.(p)
+    await this.turnSurfaces.exact(p.plan.platform)?.closeResponse?.(p)
     // Continuation `done` fires only now, behind the platform apply/finalization
     // boundary, so both sinks settle as ONE ordered turn: the console cannot admit
     // a next turn (whose mirror posts immediately) ahead of this reply's flush.
@@ -9781,14 +9769,14 @@ export class Daemon {
       sessionId,
       p.webchat?.turnId ?? handled.turnId ?? stableTurnId(agentId, msg),
       finalCaptureInput,
-      p.replyText,
+      p.reply.text,
       agent.memory,
       memoryCaptureTarget,
       plan.evaluationTurnId
     )
     evaluation.finishEvaluation('turn.completed', {
       ...(stopReason ? { stopReason } : {}),
-      output: p.replyText,
+      output: p.reply.text,
       ...(usage
         ? {
             usage: {
@@ -9885,7 +9873,7 @@ export class Daemon {
         const partialPostId = randomUUID()
         const replyTs = await webchatTurnOutput.appendWebchatTextRow(
           this.store,
-          p.transcriptChannel,
+          p.plan.transcriptChannel,
           plan.statusThread,
           monotonicTs(),
           {
@@ -9944,7 +9932,7 @@ export class Daemon {
       }
       this.clearTurnActivity(run) // clear "is thinking…"
       try {
-        await p.applyChain
+        await p.signals.applyChain
       } finally {
         // Continuation closes the browser stream only after the platform failure
         // actions drain (or terminally fail) — never before, so the sinks stay ordered.
@@ -9983,12 +9971,12 @@ export class Daemon {
     // Remove Cancel run before releasing the Slack transport. Suppressed turns still
     // allow this one terminal chrome update; ordinary queued output remains blocked.
     await this.settleStatusBar(p)
-    await p.applyChain.catch(() => {})
+    await p.signals.applyChain.catch(() => {})
     // Platform turn settlement (§7.3 teardown hook): cleanup the ordinary final
     // action may have bypassed on failure/suppression — Slack retries stale
     // footer removals. Exact lookup: a webchat/hook turn rendering through the
     // core surface must not inherit its platform's teardown.
-    await this.turnSurfaces.exact(p.platform)?.onSettle?.(p)
+    await this.turnSurfaces.exact(p.plan.platform)?.onSettle?.(p)
     // The reply transport is no longer used after the final apply chain / failure
     // notice. Release before local metadata cleanup so even a cleanup exception
     // cannot strand the connection lease forever.
@@ -10081,7 +10069,7 @@ export class Daemon {
         channel: msg.channel,
         thread: plan.statusThread
       })
-      p.resolveDone()
+      p.signals.resolveDone()
     } else if (!settlement.propagatingTurnError) {
       // Success/cancel has no original error for runLoop to fail-stop on. Use
       // the internal sentinel only in that case; a real prompt error must leave
@@ -10201,7 +10189,7 @@ export class Daemon {
     }
     const live = acpSessionId
       ? this.pending.get(pendingTurnKey(agentId, acpSessionId))
-      : [...this.pending.values()].find((pending) => pending.sessionKey === key)
+      : [...this.pending.values()].find((pending) => pending.plan.sessionKey === key)
     const liveSessionId = acpSessionId ?? live?.acpSessionId
     if (live) {
       await this.settleStatusBar(live)
@@ -10209,8 +10197,8 @@ export class Daemon {
       this.clearIdle(live)
       // Platform suppression teardown (§7.3): Feishu stops its stream timer and
       // cancels the CardKit entity. Exact lookup — no core fallback.
-      this.turnSurfaces.exact(live.platform)?.onSuppress?.(live)
-      this.showActivity(live.conn, live.channel, live.statusThread, '')
+      this.turnSurfaces.exact(live.plan.platform)?.onSuppress?.(live)
+      this.showActivity(live.conn, live.plan.channel, live.plan.statusThread, '')
       if (live.webchat && !live.webchat.doneSent) {
         live.webchat.doneSent = true
         live.webchat.sink.done({
@@ -10278,7 +10266,7 @@ export class Daemon {
       targets.set(key, undefined)
     }
     for (const p of this.pending.values()) {
-      if (p.agentId === agentId) targets.set(p.sessionKey, p.acpSessionId)
+      if (p.plan.agentId === agentId) targets.set(p.plan.sessionKey, p.acpSessionId)
     }
     for (const [key, queued] of this.serialQueue) {
       if (queued.some((entry) => entry.agentId === agentId) && !targets.has(key)) {
@@ -10377,13 +10365,12 @@ export class Daemon {
 
   /** Opaque routing target attached to daemon-rendered interactive Slack blocks when
    * inbound actions belong to the relay instead of this process's Socket Mode edge. */
-  private httpSlackSessionTarget(p: Pick<Pending, 'agentId' | 'integrationId' | 'sessionKey'>): string | undefined {
-    return p.integrationId && this.isHttpSlackIntegration(p.agentId, p.integrationId)
-      ? encodeSharedSlackStatusTarget({
-          agentId: p.agentId,
-          integrationId: p.integrationId,
-          sessionKey: p.sessionKey
-        })
+  private httpSlackSessionTarget(p: {
+    plan: Pick<TurnPlan, 'agentId' | 'integrationId' | 'sessionKey'>
+  }): string | undefined {
+    const { agentId, integrationId, sessionKey } = p.plan
+    return integrationId && this.isHttpSlackIntegration(agentId, integrationId)
+      ? encodeSharedSlackStatusTarget({ agentId, integrationId, sessionKey })
       : undefined
   }
 
@@ -10393,10 +10380,10 @@ export class Daemon {
    * dedup collisions. Platform-agnostic; runs even headless (no conn). */
   private async recordReplySegment(p: Pending, text: string): Promise<void> {
     await this.store.appendTranscript({
-      channel: p.transcriptChannel,
-      thread: p.statusThread,
+      channel: p.plan.transcriptChannel,
+      thread: p.plan.statusThread,
       ts: monotonicTs(),
-      sender: p.agentId,
+      sender: p.plan.agentId,
       kind: 'text',
       text
     })
@@ -10413,26 +10400,27 @@ export class Daemon {
    */
   private async closeSlackResponse(p: Pending): Promise<void> {
     if (!p.conn) return
-    const orgId = this.cpCollab.orgForAgent(p.agentId)
+    const orgId = this.cpCollab.orgForAgent(p.plan.agentId)
     const recipients = orgId
-      ? resolveSlackMentionedAgents(p.replyText, this.cpCollab.mentionDirectory(orgId, p.platform, p.channel)).filter(
-          (id) => id !== p.agentId
-        )
+      ? resolveSlackMentionedAgents(
+          p.reply.text,
+          this.cpCollab.mentionDirectory(orgId, p.plan.platform, p.plan.channel)
+        ).filter((id) => id !== p.plan.agentId)
       : []
     // Whether the answer addressed ANYONE is read from the complete reply text, not
     // from the final section: §2.3 makes any address binding, and the splitter may
     // have put the only mention in section one. Without this the same answer would
     // wake a peer or not depending on where the cut landed.
-    const addressedAnyone = slackTextAddressesAnyone(p.replyText)
+    const addressedAnyone = slackTextAddressesAnyone(p.reply.text)
     // What this response RESOLVED to, at the one place the author still knows it.
     // Everything downstream (relay arbitration, the target's ladder) sees only the
     // outcome, so without this a response that addressed a peer but resolved to no
     // agent — a stale or unpopulated mention directory — is indistinguishable from
     // one that addressed nobody, on either side of the wire.
-    const mentionDir = orgId ? this.cpCollab.mentionDirectory(orgId, p.platform, p.channel) : []
+    const mentionDir = orgId ? this.cpCollab.mentionDirectory(orgId, p.plan.platform, p.plan.channel) : []
     this.log.debug(
-      `slack: finalizing response ${p.responseId} for "${p.agentId}" — recipients=[${recipients.join(',')}] ` +
-        `addressedAnyone=${addressedAnyone} text=${JSON.stringify(p.replyText.slice(0, 120))} ` +
+      `slack: finalizing response ${p.reply.responseId} for "${p.plan.agentId}" — recipients=[${recipients.join(',')}] ` +
+        `addressedAnyone=${addressedAnyone} text=${JSON.stringify(p.reply.text.slice(0, 120))} ` +
         `directory=[${mentionDir
           .map((e) => `${e.agentId.slice(0, 8)}:${e.botUserId ?? 'NO-BOT-USER-ID'}${e.botShared ? '(shared)' : ''}`)
           .join(' ')}]`
@@ -10522,7 +10510,7 @@ export class Daemon {
         recordReplySegment: (turn, text) => this.recordReplySegment(turn as Pending, text),
         appendTranscript: async (row) => await this.store.appendTranscript(row),
         sessionUrl: (turn) =>
-          this.sessionLink(turn.acpSessionId, this.sessionLinkSource(turn.platform, turn.integrationId))
+          this.sessionLink(turn.acpSessionId, this.sessionLinkSource(turn.plan.platform, turn.plan.integrationId))
       },
       p,
       turnState<FeishuTurnState>(p),
@@ -10697,7 +10685,7 @@ export class Daemon {
 
   /** Per-turn status snapshot for the live in-thread line + webchat status payload (no breakdown). */
   private buildStatusInfo(p: Pending): Promise<StatusBarInfo> {
-    return this.statusInfoFrom(p.agentId, p.sessionKey, p.acpSessionId)
+    return this.statusInfoFrom(p.plan.agentId, p.plan.sessionKey, p.acpSessionId)
   }
 
   /** Agent identity + status snapshot (WITH the full token breakdown) + deep link for a
@@ -10720,16 +10708,16 @@ export class Daemon {
       ...(sessionTitle ? { sessionTitle } : {})
     }
     const link = rec.acpSessionId ? this.sessionLink(rec.acpSessionId, 'slack') : undefined
-    const pending = [...this.pending.values()].find((turn) => turn.sessionKey === sessionKey)
-    const cancellable = pending?.statusCancellable ?? this.inflight.has(sessionKey)
+    const pending = [...this.pending.values()].find((turn) => turn.plan.sessionKey === sessionKey)
+    const cancellable = pending?.chrome.statusCancellable ?? this.inflight.has(sessionKey)
     return { info, identity, ...(link ? { link } : {}), cancellable }
   }
 
   /** Settle the persistent Slack status row without reviving suppressed turn output. */
   private async settleStatusBar(p: Pending): Promise<void> {
-    const emitted = p.lastStatusBar !== undefined
-    p.statusCancellable = false
-    if (turnChromeFor(p.platform).statusSurface === 'turn-bar' && emitted) await this.emitStatusBar(p, true)
+    const emitted = p.chrome.lastStatusBar !== undefined
+    p.chrome.statusCancellable = false
+    if (turnChromeFor(p.plan.platform).statusSurface === 'turn-bar' && emitted) await this.emitStatusBar(p, true)
   }
 
   /** Emit/refresh the session's status bar (model / context / tokens / cost). Called at
@@ -10742,23 +10730,23 @@ export class Daemon {
    *  applyAction (no connection), which is fine. */
   private async emitStatusBar(p: Pending, allowWhenSuppressed = false): Promise<void> {
     if (p.outputSuppressed && !allowWhenSuppressed) return
-    const statusSurface = turnChromeFor(p.platform).statusSurface
-    if (statusSurface === 'turn-bar' && !p.showStatusBar) {
+    const statusSurface = turnChromeFor(p.plan.platform).statusSurface
+    if (statusSurface === 'turn-bar' && !p.plan.showStatusBar) {
       const key = 'status-bar:hidden'
-      if (key === p.lastStatusBar) return
-      p.lastStatusBar = key
+      if (key === p.chrome.lastStatusBar) return
+      p.chrome.lastStatusBar = key
       this.enqueueApply(p, { kind: 'clear-status-bar' }, { allowWhenSuppressed })
       return
     }
     const info = await this.buildStatusInfo(p)
-    const key = JSON.stringify([info, statusSurface === 'turn-bar' ? p.statusCancellable : null])
-    if (key === p.lastStatusBar) return // unchanged since the last emit — no-op
+    const key = JSON.stringify([info, statusSurface === 'turn-bar' ? p.chrome.statusCancellable : null])
+    if (key === p.chrome.lastStatusBar) return // unchanged since the last emit — no-op
     if (p.webchat) {
       // Webchat: skip a truly-empty frame (nothing for the web bar to show); the model /
       // usage lands on a later call. `sessionId` is always present, so exclude it.
       const hasContent = Object.entries(info).some(([k, v]) => k !== 'sessionId' && v !== undefined)
       if (hasContent) {
-        p.lastStatusBar = key
+        p.chrome.lastStatusBar = key
         const wc = p.webchat
         wc.sink.output({
           conversationId: wc.conversationId,
@@ -10776,20 +10764,20 @@ export class Daemon {
       // Record the dedup key so the shared bookkeeping stays consistent, but emit
       // nothing. The absent declaration (webchat handled above; hook/dream/
       // headless) falls through to the legacy default arm below.
-      p.lastStatusBar = key
+      p.chrome.lastStatusBar = key
     } else {
       // Slack: ensure/refresh the status bar from turn START unconditionally — it must be
       // visible as soon as the turn begins, even before the model/usage is known (some
       // runtimes only advertise the model after the first prompt). It fills in via edits
       // as usage_update / turn-end land.
-      p.lastStatusBar = key
+      p.chrome.lastStatusBar = key
       const link = this.sessionLink(p.acpSessionId, 'slack')
       const sessionTarget = this.httpSlackSessionTarget(p)
       const shared =
-        sessionTarget && p.integrationId
+        sessionTarget && p.plan.integrationId
           ? {
               sessionTarget,
-              shareable: this.isShareableSlackIntegration(p.agentId, p.integrationId)
+              shareable: this.isShareableSlackIntegration(p.plan.agentId, p.plan.integrationId)
             }
           : undefined
       this.enqueueApply(
@@ -10797,7 +10785,7 @@ export class Daemon {
         {
           kind: 'status-bar',
           text: renderStatusBar(info),
-          blocks: buildStatusBlocks(info, p.sessionKey, link, shared, p.statusCancellable)
+          blocks: buildStatusBlocks(info, p.plan.sessionKey, link, shared, p.chrome.statusCancellable)
         },
         { allowWhenSuppressed }
       )
@@ -10833,12 +10821,12 @@ export class Daemon {
     opts: { allowWhenSuppressed?: boolean } = {}
   ): void {
     if (p.outputSuppressed && !opts.allowWhenSuppressed) return
-    p.applyChain = p.applyChain.then(() => {
+    p.signals.applyChain = p.signals.applyChain.then(() => {
       // Check again at execution time: actions queued before an interrupt must not
       // publish later after a backed-up transport queue drains.
       if (p.outputSuppressed && !opts.allowWhenSuppressed) return
       return this.turnSurfaces
-        .for(p.platform)
+        .for(p.plan.platform)
         .apply(p, action)
         .catch((err) => this.log.error(`apply failed: ${formatErr(err)}`))
     })
@@ -10849,8 +10837,8 @@ export class Daemon {
   private armIdle(p: Pending): void {
     this.clearIdle(p)
     if (!p.conv.hasBuffered()) return
-    p.idleTimer = setTimeout(() => {
-      p.idleTimer = undefined
+    p.signals.idleTimer = setTimeout(() => {
+      p.signals.idleTimer = undefined
       for (const action of p.conv.flushBuffered()) this.enqueueApply(p, action)
     }, IDLE_FLUSH_MS)
   }
@@ -10880,8 +10868,8 @@ export class Daemon {
   }
 
   private clearIdle(p: Pending): void {
-    if (p.idleTimer) clearTimeout(p.idleTimer)
-    p.idleTimer = undefined
+    if (p.signals.idleTimer) clearTimeout(p.signals.idleTimer)
+    p.signals.idleTimer = undefined
   }
 
   /** In-flight rendering state keyed by (agentId, ACP sessionId). */
@@ -10915,7 +10903,7 @@ export class Daemon {
   ): Promise<T | undefined> {
     const conn = p.conn as SlackConnection
     let result: T | undefined
-    const step = p.applyChain.then(async () => {
+    const step = p.signals.applyChain.then(async () => {
       result = await post(conn)
       if (result !== undefined && LIVE_CHROME_BOUNDARY_MESSAGE_TYPES.has(messageType)) {
         this.markInPlaceChromeForReanchor(p)
@@ -10923,7 +10911,7 @@ export class Daemon {
     })
     // Keep the chain alive for later actions (the reanchor, the post-answer stream) even if
     // this post throws — mirrors enqueueApply's per-step error isolation.
-    p.applyChain = step.catch(() => {})
+    p.signals.applyChain = step.catch(() => {})
     await step
     return result
   }
@@ -10951,17 +10939,17 @@ export class Daemon {
    * reset directly. Slack-only.
    */
   private reanchorInPlaceChrome(p: Pending): void {
-    p.applyChain = p.applyChain.then(() => this.markInPlaceChromeForReanchor(p))
+    p.signals.applyChain = p.signals.applyChain.then(() => this.markInPlaceChromeForReanchor(p))
   }
 
   private markInPlaceChromeForReanchor(p: Pending): void {
-    p.liveReplyReanchor = true
-    p.progressTs = undefined
-    p.progressAttempted = false
-    p.planTs = undefined
-    p.planAttempted = false
-    p.reasoningTs = undefined
-    p.reasoningAttempted = false
+    p.chrome.liveReplyReanchor = true
+    p.chrome.progressTs = undefined
+    p.chrome.progressAttempted = false
+    p.chrome.planTs = undefined
+    p.chrome.planAttempted = false
+    p.chrome.reasoningTs = undefined
+    p.chrome.reasoningAttempted = false
   }
 
   /** Copy-on-write mask of an agent's write-only secret values over any JSON-ish
@@ -11101,13 +11089,13 @@ export class Daemon {
     await this.persistSessionTitle(rec, req.title)
 
     const p = this.pending.get(pendingTurnKey(rec.agentId, rec.acpSessionId))
-    if (p && p.sessionKey === key && !p.outputSuppressed) {
+    if (p && p.plan.sessionKey === key && !p.outputSuppressed) {
       if (p.webchat) {
         webchatTurnOutput.emitWebchatUpdate(p.webchat, { sessionUpdate: 'session_info_update', title: req.title })
       }
-      if (turnChromeFor(p.platform).dmSessionTitle && p.isDm && p.conn) {
+      if (turnChromeFor(p.plan.platform).dmSessionTitle && p.plan.isDm && p.conn) {
         this.enqueueApply(p, { kind: 'set-title', text: req.title })
-        await p.applyChain
+        await p.signals.applyChain
         return
       }
     }
@@ -11186,9 +11174,9 @@ export class Daemon {
       type: 'acp.update',
       agentId,
       sessionId,
-      ...(p?.evaluationTurnId ? { turnId: p.evaluationTurnId } : {}),
-      ...(p?.platform ? { platform: p.platform } : {}),
-      ...(p?.channel ? { channel: p.channel } : {}),
+      ...(p?.plan.evaluationTurnId ? { turnId: p.plan.evaluationTurnId } : {}),
+      ...(p?.plan.platform ? { platform: p.plan.platform } : {}),
+      ...(p?.plan.channel ? { channel: p.plan.channel } : {}),
       data: { update }
     })
     if (p?.outputSuppressed) return
@@ -11216,9 +11204,9 @@ export class Daemon {
     // reported, rather than being silently lost.
     if (update?.sessionUpdate === 'usage_update') {
       const rec = p ? undefined : detachedRec
-      const key = p?.sessionKey ?? rec?.key
+      const key = p?.plan.sessionKey ?? rec?.key
       if (key) {
-        if (p && update.cost?.amount !== undefined) p.runtimeCostReported = true
+        if (p && update.cost?.amount !== undefined) p.signals.runtimeCostReported = true
         await this.store.setUsageSnapshot(key, {
           contextUsed: update.used,
           contextSize: update.size,
@@ -11232,8 +11220,8 @@ export class Daemon {
           // prompt() may already have returned and emitted the normal CP report while
           // output is still draining. In that window Pending still exists, so send a
           // latest-wins correction instead of waiting for another turn.
-          if (p.usageReportSent) {
-            await this.emitStoredUsageReport(sessionId, p.agentId, p.platform, p.channel, key, true)
+          if (p.signals.usageReportSent) {
+            await this.emitStoredUsageReport(sessionId, p.plan.agentId, p.plan.platform, p.plan.channel, key, true)
           }
         } else if (rec) {
           // The normal report happens at turn end. A notification after that point
@@ -11247,7 +11235,7 @@ export class Daemon {
     // renames and some adapters can notify out of turn. ACP semantics: string ⇒ set,
     // null ⇒ clear, absent ⇒ no change.
     if (update?.sessionUpdate === 'session_info_update' && update.title !== undefined) {
-      const rec = p ? await this.store.getSession(p.sessionKey) : detachedRec
+      const rec = p ? await this.store.getSession(p.plan.sessionKey) : detachedRec
       // The callback is agent-bound, but ACP session ids are runtime-controlled. Match
       // both before touching another logical session if two adapters reuse an id.
       if (rec?.agentId === agentId && rec.acpSessionId === sessionId) {
@@ -11256,7 +11244,7 @@ export class Daemon {
         // the runtime's title verbatim (apart from surrounding whitespace); do not
         // invent one from the first-message fallback used by the console session list.
         const slackTitle = typeof update.title === 'string' ? update.title.trim() : ''
-        if (p && turnChromeFor(p.platform).dmSessionTitle && p.isDm && slackTitle) {
+        if (p && turnChromeFor(p.plan.platform).dmSessionTitle && p.plan.isDm && slackTitle) {
           this.enqueueApply(p, { kind: 'set-title', text: slackTitle })
         } else if (!p && slackTitle) {
           const binding = this.sessionDeliveryBindings.get(rec.key)
@@ -11268,11 +11256,11 @@ export class Daemon {
     const isAnswerChunk = update?.sessionUpdate === 'agent_message_chunk' && update.content?.type === 'text'
     if (isAnswerChunk) {
       const text = String(update.content.text ?? '')
-      if (p.stageAnswer) {
-        p.attemptReplyText += text
-        p.attemptAnswerUpdates.push(update)
+      if (p.plan.stageAnswer) {
+        p.reply.attemptText += text
+        p.reply.attemptAnswerUpdates.push(update)
       } else {
-        p.replyText += text
+        p.reply.text += text
       }
     }
     // `setSessionTitle` is daemon housekeeping, not conversational activity. Codex
@@ -11298,13 +11286,14 @@ export class Daemon {
     // full activity log below, so a webchat session reads back like any other.
     // A continuation turn drives BOTH: the browser sink and the platform renderer (§5.2).
     if (p.webchat) webchatTurnOutput.emitWebchatUpdate(p.webchat, update)
-    if ((!p.webchat || p.webchat.continuation) && !isHeadlessGithubFinal && !(p.stageAnswer && isAnswerChunk)) {
+    if ((!p.webchat || p.webchat.continuation) && !isHeadlessGithubFinal && !(p.plan.stageAnswer && isAnswerChunk)) {
       for (const action of p.conv.onUpdate(update)) this.enqueueApply(p, action)
       this.armIdle(p)
       this.armFeishuStream(p)
     }
     // Full activity log (tool/reasoning), recorded regardless of output mode.
-    for (const ev of p.rec.onUpdate(update)) await this.recordEvent(p.agentId, p.transcriptChannel, p.statusThread, ev)
+    for (const ev of p.rec.onUpdate(update))
+      await this.recordEvent(p.plan.agentId, p.plan.transcriptChannel, p.plan.statusThread, ev)
   }
 
   /** Persist one internal activity event (tool/reasoning). Ordered by row `seq`, so its
@@ -12709,7 +12698,7 @@ export class Daemon {
       this.drainingAgents.has(rec.agentId) ||
       this.inflight.has(rec.key) ||
       this.activeDispatchDoneByKey.has(rec.key) ||
-      [...this.pending.values()].some((p) => p.sessionKey === rec.key) ||
+      [...this.pending.values()].some((p) => p.plan.sessionKey === rec.key) ||
       (await this.store.sessionHasPendingInboxRows(rec.key)) ||
       !this.sessionSdkQuiescent(rec.agentId, rec.acpSessionId)
     )
@@ -12855,7 +12844,7 @@ export class Daemon {
   private async agentWorkspaceActive(agentId: string): Promise<boolean> {
     if (!this.servesAgent(agentId) || this.workspaceMutationBusy(agentId)) return true
     for (const entry of this.activeGateEntries.values()) if (entry.agentId === agentId) return true
-    for (const turn of this.pending.values()) if (turn.agentId === agentId) return true
+    for (const turn of this.pending.values()) if (turn.plan.agentId === agentId) return true
     return await this.store.agentHasPendingInboxRows(agentId)
   }
 
@@ -13127,7 +13116,7 @@ export class Daemon {
     for (const [agentId, entry] of this.hostConfigFiles) {
       if (!entry.materialized || !entry.childEnv) continue
       if (this.drainingAgents.has(agentId)) continue // stopHost will remove them
-      if ([...this.pending.values()].some((p) => p.agentId === agentId)) continue
+      if ([...this.pending.values()].some((p) => p.plan.agentId === agentId)) continue
       const last = Math.max((await this.store.agentLastActivityTs(agentId)) ?? 0, this.hostStartedAt.get(agentId) ?? 0)
       if (now - last <= configFilesIdle) continue
       // The lease also covers the settle→followup gap of a background task: a
@@ -13155,7 +13144,7 @@ export class Daemon {
       // be assembling memory/context or preparing its workspace before that;
       // reclaiming its host here would detach a live initialization generation.
       if ((this.activeDispatchesByAgent.get(agentId)?.size ?? 0) > 0) continue
-      if ([...this.pending.values()].some((p) => p.agentId === agentId)) continue
+      if ([...this.pending.values()].some((p) => p.plan.agentId === agentId)) continue
       // A just-started host that hasn't served a turn yet has no recorded activity
       // (`agentLastActivityTs` unset ⇒ 0 ⇒ idle≈now), so without this it would be
       // reclaimed on the very next sweep — including WHILE it is still mid-startup
@@ -13209,7 +13198,7 @@ export class Daemon {
       // beneath a runtime that is merely between turns.
       if (this.hosts.has(agentId) || this.modelSessions.hasStartedHostForAgent(agentId)) continue
       if ((this.activeDispatchesByAgent.get(agentId)?.size ?? 0) > 0) continue
-      if ([...this.pending.values()].some((p) => p.agentId === agentId)) continue
+      if ([...this.pending.values()].some((p) => p.plan.agentId === agentId)) continue
       // Shared-store activity, floored at when this member took the launch: a full window, not epoch-idle.
       const last = Math.max((await this.store.agentLastActivityTs(agentId)) ?? 0, since)
       if (now - last <= ttl) continue
@@ -13305,10 +13294,12 @@ export class Daemon {
   ): Promise<{ matched: SessionKey[]; drained: SessionKey[]; targets: Pending[] }> {
     const match = (p: Pending): boolean => {
       if (scope.kind === 'daemon') return true
-      if (scope.kind === 'agent') return p.agentId === scope.agentId
+      if (scope.kind === 'agent') return p.plan.agentId === scope.agentId
       const k = scope.sessionKey
       return (
-        p.platform === k.platform && p.channel === k.channel && (k.thread === undefined || p.statusThread === k.thread)
+        p.plan.platform === k.platform &&
+        p.plan.channel === k.channel &&
+        (k.thread === undefined || p.plan.statusThread === k.thread)
       )
     }
     if (scope.kind === 'daemon') this.draining = true
@@ -13327,7 +13318,7 @@ export class Daemon {
     let remaining = targets.length
     const work = Promise.all(
       targets.map(([, p]) =>
-        p.done.then(() => {
+        p.signals.done.then(() => {
           const sk = pendingSessionKey(p)
           drained.set(keyOf(sk), sk)
           remaining--
@@ -13341,7 +13332,7 @@ export class Daemon {
       for (const p of this.pending.values()) {
         if (!match(p)) continue
         this.log.warn(`drain[${scope.kind}]: cancelling straggler turn (session ${p.acpSessionId})`)
-        await (p.selectedHost?.host ?? this.hosts.get(p.agentId))?.cancel(p.acpSessionId).catch(() => {})
+        await (p.selectedHost?.host ?? this.hosts.get(p.plan.agentId))?.cancel(p.acpSessionId).catch(() => {})
       }
     }
     return { matched: [...matched.values()], drained: [...drained.values()], targets: targets.map(([, p]) => p) }
@@ -13690,7 +13681,7 @@ export class Daemon {
   private async drainForShutdown(deadlineMs = this.shutdownDrainBudgetMs()): Promise<void> {
     this.draining = true
     const active = [...new Set([...this.activeDispatchesByAgent.values()].flatMap((runs) => [...runs]))]
-    const pendingKeys = new Set([...this.pending.values()].map((p) => p.sessionKey))
+    const pendingKeys = new Set([...this.pending.values()].map((p) => p.plan.sessionKey))
     const coldAgents = new Set<string>()
     // A pre-Pending dispatch has no p.done for the old shutdown drain to observe.
     // Latch + abort its whole SessionManager initialization path immediately, retaining
@@ -13728,11 +13719,11 @@ export class Daemon {
         for (const p of this.pending.values()) {
           p.outputSuppressed ??= 'shutdown'
           this.clearIdle(p)
-          this.turnSurfaces.exact(p.platform)?.onSuppress?.(p)
-          await this.permissions.releaseElicits(p.agentId, p.acpSessionId)
-          await this.permissions.releaseChatPermissions(p.agentId, p.acpSessionId)
-          await this.permissions.releaseEditorPermissions(p.agentId, p.acpSessionId)
-          void (p.selectedHost?.host ?? this.hosts.get(p.agentId))?.cancel(p.acpSessionId).catch(() => {})
+          this.turnSurfaces.exact(p.plan.platform)?.onSuppress?.(p)
+          await this.permissions.releaseElicits(p.plan.agentId, p.acpSessionId)
+          await this.permissions.releaseChatPermissions(p.plan.agentId, p.acpSessionId)
+          await this.permissions.releaseEditorPermissions(p.plan.agentId, p.acpSessionId)
+          void (p.selectedHost?.host ?? this.hosts.get(p.plan.agentId))?.cancel(p.acpSessionId).catch(() => {})
         }
         const forceStops = [...forceAgents].filter((id) => !coldAgents.has(id)).map(stopFailClosed)
         // stopHost is the hard deadline backstop, but closing the store underneath an

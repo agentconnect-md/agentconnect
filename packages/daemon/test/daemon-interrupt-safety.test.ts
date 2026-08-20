@@ -19,7 +19,7 @@ const CONV_2 = '22222222-2222-4222-8222-222222222222'
 
 function hasPending(daemon: Daemon, acpSessionId: string): boolean {
   return [...(daemon as any).pending.values()].some(
-    (pending: any) => pending.agentId === AGENT_ID && pending.acpSessionId === acpSessionId
+    (pending: any) => pending.plan.agentId === AGENT_ID && pending.acpSessionId === acpSessionId
   )
 }
 

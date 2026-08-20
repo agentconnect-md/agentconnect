@@ -62,10 +62,12 @@ export interface GithubTurnState {
  *  structurally — a far smaller footprint than the chat surfaces need, because
  *  GitHub owns no anchors on the turn record. */
 export interface GithubTurn {
-  statusThread: string
-  transcriptChannel: string
-  agentId: string
-  platform: string
+  plan: {
+    statusThread: string
+    transcriptChannel: string
+    agentId: string
+    platform: string
+  }
 }
 
 /** The host capabilities this surface needs.
@@ -96,11 +98,11 @@ export interface GithubTurnHost {
  *  reach a platform before `publish()` makes the single public POST — so its
  *  transcript row is owed at turn end instead. */
 export function isGithubFinalChunk(
-  turn: Pick<GithubTurn, 'platform'>,
+  turn: { plan: Pick<GithubTurn['plan'], 'platform'> },
   update: { sessionUpdate?: unknown; _meta?: { codex?: { phase?: unknown } } } | undefined
 ): boolean {
   return (
-    turn.platform === 'hook' &&
+    turn.plan.platform === 'hook' &&
     update?.sessionUpdate === 'agent_message_chunk' &&
     update?._meta?.codex?.phase === 'final_answer'
   )
@@ -133,10 +135,10 @@ export async function finalizeGithubTurn<TTurn extends GithubTurn>(
   const final = !opts.suppressed && opts.atEnd ? state.collector.finalText(true) : undefined
   if (state.deferredFinalTranscript && final?.trim()) {
     await host.appendTranscript({
-      channel: turn.transcriptChannel,
-      thread: turn.statusThread,
+      channel: turn.plan.transcriptChannel,
+      thread: turn.plan.statusThread,
       ts: host.monotonicTs(),
-      sender: turn.agentId,
+      sender: turn.plan.agentId,
       kind: 'text',
       text: final
     })
