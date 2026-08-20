@@ -79,7 +79,7 @@ describe('balanceBanner', () => {
   it('derives no STATE banner from a null `state`, exactly as from an absent one', () => {
     // `null` is the natural serialization if the service ever models "no gateway configured"
     // explicitly. A funded balance isolates it from the low-balance rule below.
-    const nulled = acct({ state: null as unknown as undefined })
+    const nulled = acct({ state: null })
     expect(balanceBanner(nulled, funded)).toBeNull()
     // …and the balance rules still apply, because they owe nothing to the gateway.
     expect(balanceBanner({ ...nulled, balanceMicro: 1 }, funded)?.tone).toBe('amber')
