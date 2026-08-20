@@ -20,7 +20,7 @@ import {
   OrganizationSuggestionContentBody,
   organizationSuggestionCanonical
 } from '@agentconnect.md/protocol'
-import { memoryNameForTopic, normalizeMemoryHeader, parseMemoryFrontmatter } from '../memory/frontmatter.js'
+import { memoryNameForTopic, parseMemoryFrontmatter } from '../memory/frontmatter.js'
 import {
   MEMORY_INDEX,
   renderMemoryIndex,
@@ -195,7 +195,16 @@ export interface DreamRunnerDeps {
     systemPrompt: string,
     prompt: string,
     signal: AbortSignal,
-    context: { dreamId: string; trigger: DreamTrigger; sessionIds: string[]; inputDir: string }
+    context: {
+      dreamId: string
+      trigger: DreamTrigger
+      sessionIds: string[]
+      inputDir: string
+      /** The dream's STAGED memory store. The extraction session binds the shared
+       *  memory tools to it, so the model writes its proposal the same way an agent
+       *  writes memory — the daemon no longer transcribes files out of JSON. */
+      stagedStore: MemoryFs
+    }
   ): Promise<DreamExtractionResult>
   /** Metadata-only lifecycle tap. Observer failures are contained by the
    *  runner and can never change the job outcome. */
@@ -681,12 +690,29 @@ export class DreamRunner {
 
       // The dream's cwd is its input dir in the coordinates of the filesystem that holds it: this
       // disk for a local agent, the pod's volume for a cluster agent — where its host runs.
-      const extracted = await this.extractWithBackstop(dream, prompt, signal, join(fs.root, inputDir), mineSkills)
+      // The staged store must exist BEFORE extraction: the model writes into it
+      // through the memory tools rather than returning file contents to transcribe.
+      const stagedStore = fs.subdir(base)
+      await fs.rm(join(base, MEMORY_DIRNAME))
+      await fs.rm(join(base, LEGACY_STAGED_DIRNAME))
+      await fs.mkdir(join(base, MEMORY_DIRNAME))
+      const extracted = await this.extractWithBackstop(
+        dream,
+        prompt,
+        signal,
+        join(fs.root, inputDir),
+        stagedStore,
+        mineSkills
+      )
 
       // A cancel that landed mid-extraction wins: drop the output unstaged. This
       // also covers the backstop firing (extraction ignored the cancel and never
       // settled within the grace window) — the reservation is released either way.
-      if ((await this.deps.store.getDream(agentId, dreamId))?.status !== 'running' || extracted.abandoned) return
+      // The model writes as it goes, so whatever it already wrote is dropped too.
+      if ((await this.deps.store.getDream(agentId, dreamId))?.status !== 'running' || extracted.abandoned) {
+        await this.clearStaging(agentId, dreamId)
+        return
+      }
       const output = extracted.output
       const execution = {
         ...(extracted.sessionId ? { executionSessionId: extracted.sessionId } : {}),
@@ -706,6 +732,7 @@ export class DreamRunner {
         sources.map((s) => s.sessionId)
       )
       if (!proposal) {
+        await this.clearStaging(agentId, dreamId)
         await this.finish(agentId, dreamId, {
           status: 'failed',
           error: { type: 'unparseable_proposal', message: 'the dream reply carried no valid store proposal' },
@@ -725,10 +752,12 @@ export class DreamRunner {
       // stage() is several awaited writes; a cancel can land while it runs.
       // Cancel-wins: honor it, drop the partial output, don't flip to completed.
       if ((await this.deps.store.getDream(agentId, dreamId))?.status !== 'running') {
-        await fs.rm(join(base, MEMORY_DIRNAME)).catch(() => {})
-        await fs.rm(join(base, LEGACY_STAGED_DIRNAME)).catch(() => {})
+        await this.clearStaging(agentId, dreamId)
         return
       }
+      // Count before completing: every await after the status flip widens the
+      // window where the job reads completed but the reservation is still held.
+      const stagedCount = (await fs.readdir(join(base, MEMORY_DIRNAME))).filter((e) => e.kind === 'file').length
       await this.finish(agentId, dreamId, {
         status: 'completed',
         ...execution,
@@ -751,7 +780,7 @@ export class DreamRunner {
           `dream ${dreamId}: suggestion inventory sync deferred (${err instanceof Error ? err.name : 'unknown'})`
         )
       })
-      this.deps.log.info(`dream ${dreamId} completed for agent ${agentId} (${proposal.files.length + 1} staged files)`)
+      this.deps.log.info(`dream ${dreamId} completed for agent ${agentId} (${stagedCount} staged files)`)
     } catch (err) {
       this.deps.log.warn(`dream ${dreamId} failed for agent ${agentId}: ${err instanceof Error ? err.name : 'unknown'}`)
       // Fail BOTH pending and running dreams terminally — a failure before the
@@ -760,11 +789,25 @@ export class DreamRunner {
       // status is preserved, not overwritten).
       const status = (await this.deps.store.getDream(agentId, dreamId))?.status
       if (status === 'running' || status === 'pending') {
+        // Whatever the model already wrote belongs to a run that never completed.
+        await this.clearStaging(agentId, dreamId)
         await this.finish(agentId, dreamId, {
           status: 'failed',
           error: { type: 'pipeline_error', message: err instanceof Error ? err.message : 'unknown error' }
         })
       }
+    }
+  }
+
+  /** Drop every staged byte of a run that will never complete — both layouts, best effort. */
+  private async clearStaging(agentId: string, dreamId: string): Promise<void> {
+    try {
+      const fs = this.fsFor(agentId)
+      const base = this.dreamDir(agentId, dreamId)
+      await fs.rm(join(base, MEMORY_DIRNAME))
+      await fs.rm(join(base, LEGACY_STAGED_DIRNAME))
+    } catch {
+      // The home may already be unreachable; the dream dir is swept with the record.
     }
   }
 
@@ -782,6 +825,7 @@ export class DreamRunner {
     prompt: string,
     signal: AbortSignal,
     inputDir: string,
+    stagedStore: MemoryFs,
     mineSkills = false
   ): Promise<({ abandoned: false } & DreamExtractionResult) | { abandoned: true; output: '' }> {
     const graceMs = this.deps.cancelGraceMs ?? 30_000
@@ -790,7 +834,8 @@ export class DreamRunner {
         dreamId: dream.dreamId,
         trigger: dream.trigger,
         sessionIds: dream.sessionIds,
-        inputDir
+        inputDir,
+        stagedStore
       })
       .then((result) => ({ abandoned: false as const, ...result }))
     let timer: ReturnType<typeof setTimeout> | undefined
@@ -809,30 +854,22 @@ export class DreamRunner {
   }
 
   private async stage(fs: MemoryFs, base: string, proposal: DreamProposal): Promise<DreamOrganizationSuggestionInfo[]> {
+    // The model already wrote its topic files into the staged store through the memory
+    // tools, so staging no longer transcribes them — it reads back what landed and
+    // renders the index the same way adoption will.
     const out = join(base, MEMORY_DIRNAME)
-    await fs.rm(out)
-    await fs.rm(join(base, LEGACY_STAGED_DIRNAME))
-    await fs.mkdir(out)
     const staged: MemoryIndexEntry[] = []
-    for (const file of proposal.files) {
-      // parseDreamProposal already enforced TOPIC_RE — belt and suspenders here
-      // because these names become filesystem paths.
-      if (!stagedPathOk(file.path)) continue
-      // The dream writes frontmatter as free text, so re-render its known scalars through
-      // the shared quoting rule before staging — a description holding `: ` or ` #` would
-      // otherwise be invalid YAML, and auto-adopt would make that malformed topic live.
-      const content = normalizeMemoryHeader(file.content)
-      await fs.writeFile(join(out, file.path), content)
-      const { header } = parseMemoryFrontmatter(content)
+    for (const entry of await fs.readdir(out)) {
+      if (entry.kind !== 'file' || entry.name === MEMORY_INDEX || !stagedPathOk(entry.name)) continue
+      const raw = await fs.readFile(join(out, entry.name))
+      if (raw === null) continue
+      const { header } = parseMemoryFrontmatter(raw.content)
       staged.push({
-        topic: file.path,
-        name: header.name || memoryNameForTopic(file.path),
+        topic: entry.name,
+        name: header.name || memoryNameForTopic(entry.name),
         description: header.description ?? ''
       })
     }
-    // Generate the staged index the same way adoption will, rather than staging the
-    // model's hand-written one: otherwise the index a human reviews is not the index
-    // that ends up installed.
     await fs.writeFile(join(out, MEMORY_INDEX), renderMemoryIndex(staged))
     await this.stageSkills(fs, base, proposal)
     return this.stageOrganizationSuggestions(fs, base, proposal)

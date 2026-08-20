@@ -108,12 +108,30 @@ class FakeStore implements DreamStorePort {
   }
 }
 
-const PROPOSAL = JSON.stringify({
-  index: '# Memory\n- [prefs](prefs.md)',
-  files: [{ path: 'prefs.md', content: '- Uses tabs, not spaces (2026-07-24).' }]
-})
+// The JSON reply now carries only review-queue proposals; the store itself is what
+// the model WROTE through the memory tools, so a fake extraction has to write too.
+const PROPOSAL = JSON.stringify({ agentSkills: [], organizationKnowledge: [], organizationSkills: [] })
+
+/** Stand in for the model writing its rebuilt store through the bound memory tools. */
+async function writeStagedProposal(
+  stagedStore: {
+    writeFile(path: string, content: string, opts?: unknown): Promise<unknown>
+    mkdir(p: string): Promise<unknown>
+  },
+  files: { path: string; content: string }[] = [{ path: 'prefs.md', content: '- Uses tabs, not spaces (2026-07-24).' }]
+): Promise<void> {
+  await stagedStore.mkdir('memory')
+  for (const file of files) {
+    const content = file.content.endsWith('\n') ? file.content : `${file.content}\n`
+    await stagedStore.writeFile(join('memory', file.path), content, {})
+  }
+}
 
 async function setup(opts: {
+  /** Files the fake model writes into the staged store; `null` writes nothing. */
+  stagedFiles?: { path: string; content: string }[] | null
+  /** Write the staged store exactly as the bound memory tools would, instead. */
+  stagedWrite?: (stagedStore: MemoryFs) => Promise<void>
   extract?: (agentId: string, systemPrompt: string, prompt: string, signal: AbortSignal) => Promise<string>
   policy?: MemoryDreamingPolicy
   cancelGraceMs?: number
@@ -141,8 +159,14 @@ async function setup(opts: {
     store,
     extract: async (agentId, systemPrompt, prompt, signal, context) => {
       prompts.push({ systemPrompt, prompt, inputDir: context.inputDir })
-      if (opts.extractionResult) return opts.extractionResult
+      if (opts.extractionResult) {
+        if (opts.stagedWrite) await opts.stagedWrite(context.stagedStore)
+        else if (opts.stagedFiles !== null) await writeStagedProposal(context.stagedStore, opts.stagedFiles)
+        return opts.extractionResult
+      }
       const output = opts.extract ? await opts.extract(agentId, systemPrompt, prompt, signal) : PROPOSAL
+      if (opts.stagedWrite) await opts.stagedWrite(context.stagedStore)
+      else if (opts.stagedFiles !== null) await writeStagedProposal(context.stagedStore, opts.stagedFiles)
       return { output }
     },
     ...(opts.onEvent ? { onEvent: opts.onEvent } : {}),
@@ -260,6 +284,37 @@ describe('DreamRunner pipeline', () => {
     expect(staged?.map((f) => f.name)).toEqual(['MEMORY.md', 'prefs.md'])
     const read = await runner.stagedRead('a1', started.dreamId, 'prefs.md')
     expect(read?.content).toContain('2026-07-24')
+  })
+
+  it('stages what the model wrote through the shared write path, indexed by its own headers', async () => {
+    // The composed contract: a dream writes with the memory tools bound to its staged
+    // store, so the same normalize/stamp/index-regen a turn gets applies there — and a
+    // topic the model never rewrote is simply gone, because staging replaces the store.
+    const { dir, store, runner } = await setup({
+      stagedWrite: async (stagedStore) => {
+        await writeMemoryFile(
+          stagedStore,
+          'deploys.md',
+          '---\ndescription: how we ship\n---\n\n- ship from main\n',
+          undefined,
+          'dream'
+        )
+      }
+    })
+    const started = await runner.start('a1', { trigger: 'manual' })
+    await settle(store, started.dreamId)
+
+    const staged = await runner.stagedFiles('a1', started.dreamId)
+    expect(staged?.map((f) => f.name)).toEqual(['MEMORY.md', 'deploys.md'])
+    const stagedIndex = await runner.stagedRead('a1', started.dreamId, MEMORY_INDEX)
+    expect(stagedIndex?.content).toContain('- [deploys](deploys.md) — how we ship')
+
+    await runner.adopt('a1', started.dreamId, false)
+    const adopted = await readMemoryFile(local(dir), 'deploys.md')
+    expect(adopted).toContain('name: deploys') // stamped on the way in, not at adoption
+    expect(adopted).toMatch(/modified: \d{4}-/)
+    expect(await readMemoryFile(local(dir), MEMORY_INDEX)).toBe(stagedIndex?.content)
+    expect(await readMemoryFile(local(dir), 'prefs.md')).toBe('')
   })
 
   it('mines every session the agent participated in, without a capture-visibility filter (#36)', async () => {
@@ -603,8 +658,10 @@ describe('DreamRunner adoption', () => {
       dreamingPolicyFor: () => ({ enabled: true, autoAdopt: true }),
       operationPolicy: 'test-only',
       store,
-      extract: async () => {
+      extract: async (_agentId, _systemPrompt, _prompt, _signal, context) => {
         heldDuringExtraction = holds
+        // The model writes its rebuilt store through the tools, on the pod's volume.
+        await writeStagedProposal(context.stagedStore)
         return { output: PROPOSAL }
       },
       log: silent
@@ -727,14 +784,10 @@ describe('DreamRunner adoption', () => {
     // file would show the adoption time. Only files whose content actually
     // changed should get a fresh updated-time.
     const { dir, store, runner } = await setup({
-      extract: async () =>
-        JSON.stringify({
-          index: '# Memory\n- [keep](keep.md)\n- [prefs](prefs.md)',
-          files: [
-            { path: 'keep.md', content: 'unchanged body' },
-            { path: 'prefs.md', content: 'changed by the dream' }
-          ]
-        })
+      stagedFiles: [
+        { path: 'keep.md', content: 'unchanged body' },
+        { path: 'prefs.md', content: 'changed by the dream' }
+      ]
     })
     const started = await runner.start('a1', { trigger: 'manual' })
     await settle(store, started.dreamId)
@@ -797,14 +850,12 @@ describe('DreamRunner adoption', () => {
   })
 
   it('records the exact add, update, and delete set with live before snapshots', async () => {
-    const proposal = JSON.stringify({
-      index: '# Memory\n- [prefs](prefs.md)\n- [fresh](fresh.md)',
-      files: [
+    const { dir, store, runner } = await setup({
+      stagedFiles: [
         { path: 'prefs.md', content: '- consolidated preference' },
         { path: 'fresh.md', content: '- newly learned fact' }
       ]
     })
-    const { dir, store, runner } = await setup({ extract: async () => proposal })
     await writeMemoryFile(local(dir), 'obsolete.md', '- no longer relevant\n', undefined, 'tool')
     const started = await runner.start('a1', { trigger: 'manual' })
     await settle(store, started.dreamId)
@@ -1024,10 +1075,7 @@ describe('DreamRunner adoption', () => {
     // A proposal that is already at capacity plus one distilled line must not
     // adopt an over-limit store the ordinary write path could never produce.
     const atCap = '- ' + 'x'.repeat(MAX_MEMORY_FILE_BYTES - 4)
-    const { dir, store, runner } = await setup({
-      extract: async () =>
-        JSON.stringify({ index: '# Memory\n- [prefs](prefs.md)', files: [{ path: 'prefs.md', content: atCap }] })
-    })
+    const { dir, store, runner } = await setup({ stagedFiles: [{ path: 'prefs.md', content: atCap }] })
     const started = await runner.start('a1', { trigger: 'manual' })
     await settle(store, started.dreamId)
 

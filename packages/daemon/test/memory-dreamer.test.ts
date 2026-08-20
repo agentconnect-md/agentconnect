@@ -8,7 +8,6 @@ import {
   parseDreamProposal,
   parseOrganizationSkills,
   storeDigest,
-  MAX_DREAM_FILES,
   MAX_DREAM_SKILLS,
   MAX_SKILL_BODY_BYTES,
   MAX_SKILL_SCRIPTS,
@@ -96,16 +95,21 @@ describe('dream exploration prompt + materialized inputs', () => {
 })
 
 describe('dream proposal parsing', () => {
+  // The reply now carries only the review queue — the store the dream rebuilt was
+  // written through the memory tools while it ran, not returned as JSON.
   const good = JSON.stringify({
-    index: '# Memory\n- [prefs](prefs.md)',
-    files: [{ path: 'prefs.md', content: '- Uses tabs, not spaces.' }]
+    agentSkills: [],
+    organizationKnowledge: [
+      { operation: 'create', title: 'Deploy runbook', content: 'Ship from main.', sessionIds: ['sess-a'] }
+    ],
+    organizationSkills: []
   })
 
   it('parses a fenced or bare JSON proposal', () => {
     for (const text of [good, `Here you go:\n\`\`\`json\n${good}\n\`\`\``]) {
-      const proposal = parseDreamProposal(text)
-      expect(proposal?.files).toHaveLength(1)
-      expect(proposal?.files[0]).toMatchObject({ path: 'prefs.md' })
+      const proposal = parseDreamProposal(text, ['sess-a'])
+      expect(proposal?.organizationKnowledge).toHaveLength(1)
+      expect(proposal?.organizationKnowledge[0]).toMatchObject({ title: 'Deploy runbook' })
     }
   })
 
@@ -146,60 +150,17 @@ describe('dream proposal parsing', () => {
   })
 
   it('parses a fenced proposal that trails prose after the JSON', () => {
-    const proposal = parseDreamProposal(`\`\`\`json\n${good}\n\`\`\`\n\nThat covers it — nothing else stood out.`)
-    expect(proposal?.files).toHaveLength(1)
+    const proposal = parseDreamProposal(`\`\`\`json\n${good}\n\`\`\`\n\nThat covers it — nothing else stood out.`, [
+      'sess-a'
+    ])
+    expect(proposal?.organizationKnowledge).toHaveLength(1)
   })
 
-  it('returns null only for unparseable replies — an absent index is now expected', () => {
+  it('returns null only for unparseable replies — an empty review queue is expected', () => {
     expect(parseDreamProposal('no json at all')).toBeNull()
-    // An empty store is valid and adoptable — staging renders an index for it.
-    expect(parseDreamProposal(JSON.stringify({ files: [] }))?.files).toEqual([])
-    // A proposal with files and no index is valid now: staging generates the index.
-    expect(parseDreamProposal(JSON.stringify({ files: [{ path: 'topic.md', content: 'x' }] }))?.files).toHaveLength(1)
-  })
-
-  it('drops traversal paths, bad names, duplicates, and the index masquerading as a file', () => {
-    const proposal = parseDreamProposal(
-      JSON.stringify({
-        index: '# Memory',
-        files: [
-          { path: '../escape.md', content: 'x' },
-          { path: 'Bad Name.md', content: 'x' },
-          { path: '.history', content: 'x' },
-          { path: 'MEMORY.md', content: 'shadow index' },
-          { path: 'ok.md', content: 'first' },
-          { path: 'ok.md', content: 'dupe' },
-          { path: 'also-ok.md', content: '' }
-        ]
-      })
-    )
-    expect(proposal?.files.map((f) => f.path)).toEqual(['ok.md'])
-  })
-
-  it('caps the number of proposed files', () => {
-    const proposal = parseDreamProposal(
-      JSON.stringify({
-        index: '# Memory',
-        files: Array.from({ length: 100 }, (_, i) => ({ path: `topic-${i}.md`, content: 'x' }))
-      })
-    )
-    expect(proposal?.files).toHaveLength(MAX_DREAM_FILES)
-  })
-
-  it('keeps oversized content adoptable: final bytes never exceed the writer cap', () => {
-    // A multibyte body larger than the cap: the trailing-newline reservation and
-    // the code-point-boundary clamp must keep the stored string within
-    // MAX_MEMORY_FILE_BYTES (256000), so writeMemoryFile can never reject it.
-    const proposal = parseDreamProposal(
-      JSON.stringify({
-        index: '#'.repeat(30_000), // over the 25k index cap
-        files: [{ path: 'big.md', content: '€'.repeat(200_000) }] // 3 bytes each ⇒ ~600kB
-      })
-    )
-    expect(proposal).not.toBeNull()
-    expect(Buffer.byteLength(proposal!.files[0]!.content)).toBeLessThanOrEqual(256_000)
-    // No replacement character introduced by a mid-codepoint cut.
-    expect(proposal!.files[0]!.content).not.toContain('�')
+    // A dream that only rewrote memory proposes nothing for review, and that is valid:
+    // the staged store it wrote through the tools is what gets adopted.
+    expect(parseDreamProposal('{}')?.skills).toEqual([])
   })
 })
 
@@ -290,8 +251,7 @@ describe('structured organization proposals', () => {
       })
 
     const proposal = parseDreamProposal(reply, ['sess-1', 'sess-2'])
-    // The model no longer supplies an index at all; staging renders one.
-    expect(proposal?.files).toEqual([])
+    // The model supplies neither files nor an index: it wrote the store as it went.
     expect(proposal?.organizationKnowledge).toMatchObject([{ sessionIds: ['sess-1'] }])
     expect(proposal?.organizationSkills).toMatchObject([
       { title: 'incident-rollback', sessionIds: ['sess-1', 'sess-2'] }

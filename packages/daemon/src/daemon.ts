@@ -77,6 +77,7 @@ import { buildMcpServers, buildSandboxMcpServers, type McpStdioServer } from './
 import { resolveAgentMcpServers, RESERVED_MCP_SERVER_NAME } from './mcp/resolve-servers.js'
 import { toolsForIntegrations, GITHUB_REVIEW_TOOLS, KNOWLEDGE_TOOLS } from './mcp/tools.js'
 import { MEMORY_TOOL_NAMES, MEMORY_TOOLS } from './memory/tools.js'
+import { DREAM_TOPIC_RE, MAX_DREAM_FILES } from './dream/dreamer.js'
 import { isSessionTitleToolCall } from './mcp/session-title-tool.js'
 import { MEMORY_DISTILLATION_SYSTEM_PROMPT, readOnlyExtractionMode } from './memory/distill.js'
 import {
@@ -479,6 +480,16 @@ export type {
   DaemonEvaluationTurnInput,
   DaemonEvaluationTurnResult
 } from './daemon/evaluation-types.js'
+
+/** What the dream runner hands the extraction: where its inputs are materialized and
+ *  which staged store its memory tools write into. */
+type DreamExtractionContext = {
+  dreamId: string
+  trigger: 'manual' | 'schedule' | 'auto'
+  sessionIds: string[]
+  inputDir: string
+  stagedStore: MemoryFs
+}
 
 /** Identity of a desired Feishu connection: appId + gateway region + ingress mode — a region or mode change on the same appId yields a distinct connection for reuse-matching, mapping-eviction, and the in-flight guard. */
 /** The session-control selectors driven by `/models` `/effort` `/permission` + their tappable cards — single-char codes keep the inline-button `callback_data` (≤64 bytes) compact as `<code>:<optionIndex>`. */
@@ -3956,7 +3967,7 @@ export class Daemon {
     systemPrompt: string,
     prompt: string,
     signal: AbortSignal,
-    context: { dreamId: string; trigger: 'manual' | 'schedule' | 'auto'; sessionIds: string[]; inputDir: string }
+    context: DreamExtractionContext
   ): Promise<{
     output: string
     sessionId: string
@@ -4093,7 +4104,7 @@ export class Daemon {
     systemPrompt: string,
     prompt: string,
     signal: AbortSignal,
-    context: { dreamId: string; trigger: 'manual' | 'schedule' | 'auto'; sessionIds: string[]; inputDir: string },
+    context: DreamExtractionContext,
     // Written back once the ACP session exists so the caller's teardown can
     // reclaim this session's quarantine tombstone after the host is stopped.
     ref: { sessionId?: string }
@@ -4125,13 +4136,22 @@ export class Daemon {
     // prompt. Read-only, org-scoped from the trusted agentId in this context.
     // The token is unregistered in finally so a leaked token cannot outlive the
     // one-off dream host.
+    // The dream writes its proposal through the SAME memory tools an agent uses,
+    // bound to the dream's staged store rather than the live one (#41). The two
+    // constraints its old JSON format enforced ride along on the binding.
     const mcpToken = this.mcp.register({
       agentId,
       platform: 'dream',
       isDm: false,
       channel: 'memory',
       thread: context.dreamId,
-      tools: KNOWLEDGE_TOOLS
+      tools: [...KNOWLEDGE_TOOLS, ...MEMORY_TOOLS],
+      memoryBinding: {
+        source: 'dream',
+        scope: { agentId, root: context.stagedStore },
+        topicPattern: DREAM_TOPIC_RE,
+        maxTopics: MAX_DREAM_FILES
+      }
     })
     const mcpServers = this.mcpToolServerSpec(mcpToken)
     try {
@@ -4163,7 +4183,7 @@ export class Daemon {
     sessionId: string,
     prompt: string,
     signal: AbortSignal,
-    context: { dreamId: string; trigger: 'manual' | 'schedule' | 'auto'; sessionIds: string[]; inputDir: string },
+    context: DreamExtractionContext,
     systemPrompt: string,
     trusted: boolean
   ): Promise<{
