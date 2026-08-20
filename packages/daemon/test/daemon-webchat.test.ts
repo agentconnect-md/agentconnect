@@ -1742,6 +1742,19 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     await daemon.stop()
   })
 
+  it('names a failed runtime start instead of reporting the agent as absent', async () => {
+    const { factory } = streamingHost([])
+    const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
+    await daemon.start()
+    ;(daemon as any).cpClient = fakeCpClient()
+    const detail = 'Error: Missing optional dependency @openai/codex-linux-x64'
+    ;(daemon as any).lastStartFailure.set('ghost', detail)
+
+    const ack = await (daemon as any).handleRelayMsg(rd({ op: 'turn', text: 'go' }, { agentId: 'ghost' }), () => {})
+    expect(ack).toMatchObject({ accepted: false, reason: 'start_failed', detail })
+    await daemon.stop()
+  })
+
   it('routes each session-control op to its key-based core under the webchat session key', async () => {
     const { factory } = streamingHost([])
     const daemon = new Daemon({ root: scaffold(), hostFactory: factory })

@@ -53,6 +53,21 @@ an operator explicitly paused remains `paused`. Once the operation succeeds, fai
 expires, the console returns to the daemon's current connection status; a daemon that
 did not return then reads `offline`.
 
+## An unavailable agent is reported by its actual cause
+
+A refusal must name the fault the user can act on. When a daemon owns an agent but the
+agent's runtime would not start, the refusal says the agent could not start and carries
+the one-line cause the daemon observed — it must not be reported as a missing or offline
+daemon, which sends the user to look at infrastructure that answered correctly. "No live
+daemon" is reserved for an agent that genuinely has no daemon serving it.
+
+The cause shown to the user is bounded to one line and carries no absolute paths, so a
+console reader learns what broke without learning the daemon's filesystem layout. The
+full diagnostic stays in the daemon log.
+
+A runtime that failed to start because its own installation is incomplete is repaired
+and retried automatically before the agent is reported as unavailable at all.
+
 ## Moving an agent from an unavailable daemon
 
 A normal agent move is the safe default and uses a hard cutover. The current daemon
