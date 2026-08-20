@@ -139,6 +139,7 @@ import {
   DreamSkillContent
 } from './frames/memory.js'
 import { LocalSkillsReq, LocalSkillsList } from './frames/skill.js'
+import { RuntimeCommandsReq, RuntimeCommandsList } from './frames/runtime-command.js'
 import {
   KnowledgeSearchReq,
   KnowledgeSearchOk,
@@ -403,6 +404,8 @@ export const FRAME_SCHEMAS = {
   'memory/dream/skill/dismiss/ok': DreamState,
   'skills/local': LocalSkillsReq,
   'skills/local/list': LocalSkillsList,
+  'runtime/commands': RuntimeCommandsReq,
+  'runtime/commands/list': RuntimeCommandsList,
   // ── organization knowledge + managed skills ──
   'knowledge/search': KnowledgeSearchReq,
   'knowledge/search/ok': KnowledgeSearchOk,
@@ -640,6 +643,8 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('memory/dream/skill/dismiss/ok', FRAME_SCHEMAS['memory/dream/skill/dismiss/ok']),
   frame('skills/local', FRAME_SCHEMAS['skills/local']),
   frame('skills/local/list', FRAME_SCHEMAS['skills/local/list']),
+  frame('runtime/commands', FRAME_SCHEMAS['runtime/commands']),
+  frame('runtime/commands/list', FRAME_SCHEMAS['runtime/commands/list']),
   frame('knowledge/search', FRAME_SCHEMAS['knowledge/search']),
   frame('knowledge/list', FRAME_SCHEMAS['knowledge/list']),
   frame('knowledge/list/ok', FRAME_SCHEMAS['knowledge/list/ok']),

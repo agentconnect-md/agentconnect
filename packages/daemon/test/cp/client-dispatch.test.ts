@@ -5,6 +5,8 @@ import { WorkspaceConflictError, WorkspaceViolationError } from '../../src/cp/wo
 import { MemorySandboxUnavailableError } from '../../src/cp/memory-reader.js'
 import { TaskViolationError } from '../../src/cp/task-reader.js'
 import { AgentWakeViolationError } from '../../src/cp/agent-wake.js'
+import { createRuntimeCommandsReader } from '../../src/cp/runtime-commands-reader.js'
+import { RuntimeCommandsCache } from '../../src/runtimes/runtime-commands.js'
 import { FakeTransport } from './fake-transport.js'
 import { FakeClock } from './fake-clock.js'
 
@@ -935,6 +937,45 @@ describe('CpClient dispatch', () => {
     expect(rep.corr).toBe(f.id)
     expect(rep.payload.tasks[0].state).toBe('running')
     expect(rep.payload.tracked).toBe(true)
+  })
+
+  it('replies runtime/commands/list from what the runtime advertised over ACP', async () => {
+    const commands = new RuntimeCommandsCache()
+    commands.record(
+      'a1',
+      'acp-1',
+      {
+        sessionUpdate: 'available_commands_update',
+        availableCommands: [{ name: 'code-review', description: 'Review the diff', input: { hint: '[pr]' } }]
+      },
+      Date.parse('2026-06-26T00:00:00.000Z')
+    )
+    const { t } = await readyClient({
+      runtimeCommandsReader: createRuntimeCommandsReader(commands, (id) => id === 'a1')
+    })
+    const f = JSON.parse(frame('runtime/commands', { agentId: 'a1' }, { epoch: 5 }))
+    t.pushInbound(JSON.stringify(f))
+    await tick()
+    const rep = JSON.parse(t.sent[0]!)
+    expect(rep.type).toBe('runtime/commands/list')
+    expect(rep.corr).toBe(f.id)
+    expect(rep.payload).toEqual({
+      reported: true,
+      updatedAt: '2026-06-26T00:00:00.000Z',
+      sessionId: 'acp-1',
+      commands: [{ name: 'code-review', description: 'Review the diff', hint: '[pr]' }]
+    })
+  })
+
+  it('replies runtime/commands/list with reported:false before any advertisement', async () => {
+    const { t } = await readyClient({
+      runtimeCommandsReader: createRuntimeCommandsReader(new RuntimeCommandsCache(), () => true)
+    })
+    t.pushInbound(frame('runtime/commands', { agentId: 'a1' }, { epoch: 5 }))
+    await tick()
+    const rep = JSON.parse(t.sent[0]!)
+    expect(rep.type).toBe('runtime/commands/list')
+    expect(rep.payload).toEqual({ reported: false, commands: [] })
   })
 
   it('maps an unknown-agent task violation to BAD_PAYLOAD with its reason', async () => {

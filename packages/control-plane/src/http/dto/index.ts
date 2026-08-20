@@ -3026,6 +3026,21 @@ export const LocalSkillsDto = z.object({
   skills: z.array(LocalSkillEntryDto)
 })
 
+/** One slash command the agent's runtime advertised over ACP. */
+export const RuntimeCommandDto = z.object({
+  name: z.string(),
+  description: z.string(),
+  hint: z.string().nullable()
+})
+/** `GET /agents/:id/commands` — what the agent's runtime can be asked to run. `reported` is false
+ *  until a session has advertised a list, so an empty list then means "unknown", not "none". */
+export const RuntimeCommandsDto = z.object({
+  reported: z.boolean(),
+  updatedAt: z.string().optional(),
+  sessionId: z.string().optional(),
+  commands: z.array(RuntimeCommandDto)
+})
+
 export const WorkspaceGitFileDto = z.object({
   path: z.string(),
   index: z.string(), // staged (X) status char

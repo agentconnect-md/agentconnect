@@ -275,6 +275,7 @@ export class CpClient {
       memoryReader: deps.memoryReader,
       dreamReader: deps.dreamReader,
       localSkillsReader: deps.localSkillsReader,
+      runtimeCommandsReader: deps.runtimeCommandsReader,
       gitMessagePasses: new GitMessagePasses(),
       noteLeasesGranted: (groupIds) => this.noteLeasesGranted(groupIds),
       forgetLeaseDeadlines: (groupIds) => this.forgetLeaseDeadlines(groupIds),

@@ -87,6 +87,11 @@ export const WORKSPACE_GIT_MESSAGE_FEATURE = 'workspace-git-message-v1'
  * hides the Tasks tab on a daemon without it rather than showing a tab that can never answer. */
 export const TASK_LIST_FEATURE = 'task-list-v1'
 
+/** Daemon serves `runtime/commands` — the slash commands an agent's ACP runtime advertised it can be
+ * asked to run. Checked before sending: an older daemon ignores an unknown frame silently, so the REQ
+ * would burn its retransmit budget and then read as an offline daemon. */
+export const RUNTIME_COMMANDS_FEATURE = 'runtime-commands-v1'
+
 /** Daemon serves `agent/wake` — the console's "start this agent's sandbox" for a Files/Memory read.
  * Advertised only by a daemon that runs agents in cluster sandboxes: on any other daemon there is
  * nothing to wake, and the CP answers `unsupported` without sending a frame it would ignore. */

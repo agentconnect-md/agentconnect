@@ -44,6 +44,7 @@ import {
   WORKSPACE_GIT_REVIEW_FEATURE,
   WORKSPACE_GIT_WRITE_FEATURE,
   TASK_LIST_FEATURE,
+  RUNTIME_COMMANDS_FEATURE,
   AGENT_WAKE_FEATURE,
   WorkspaceErrorReason,
   TaskErrorReason,
@@ -168,6 +169,7 @@ import {
   DreamSkillParam,
   DreamSkillContentDto,
   LocalSkillsDto,
+  RuntimeCommandsDto,
   StartDreamBody,
   AdoptDreamBody,
   AcceptDreamSkillBody,
@@ -2981,6 +2983,51 @@ export function agentRoutes(deps: HttpDeps) {
         }
         try {
           return await deps.control.listLocalSkills(agent.daemonId, { agentId: agent.id })
+        } catch (err) {
+          const unavailable = daemonEdgeFailure(err)
+          if (unavailable !== null) {
+            return reply.code(503).send({ error: 'Service Unavailable', statusCode: 503, message: unavailable })
+          }
+          throw err
+        }
+      }
+    )
+
+    // Runtime slash commands: what the agent's ACP runtime advertised it can be
+    // asked to run. Unlike skills/local this is the runtime's own answer, so it
+    // covers user/plugin skills and built-ins a workspace scan never sees.
+    r.get(
+      '/agents/:id/commands',
+      {
+        schema: {
+          tags: [Tag.Skills],
+          summary: 'List an agent’s runtime slash commands',
+          description:
+            'Proxy the slash commands the agent’s ACP runtime last advertised (`available_commands_update`) live from the owning daemon — skills, plugin skills and the harness’s own built-ins in one list, each with the runtime’s description and optional argument hint. `reported:false` means no session has advertised a list yet, so the empty list is "unknown", not "no commands". 409 when the daemon predates this read, 503 when unplaced or offline.',
+          operationId: 'listAgentRuntimeCommands',
+          params: IdParam,
+          response: { 200: RuntimeCommandsDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const agent = await getServingAgent(req, req.params.id)
+        if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
+        if (!agent.daemonId) {
+          return reply
+            .code(503)
+            .send({ error: 'Service Unavailable', statusCode: 503, message: 'agent has no live daemon' })
+        }
+        // Version skew: an older daemon drops the frame silently, so refuse before sending it.
+        const supported = await requireDaemonFeature(
+          reply,
+          agent.orgId,
+          agent.daemonId,
+          RUNTIME_COMMANDS_FEATURE,
+          'this agent version does not report its runtime commands; upgrade its daemon'
+        )
+        if (!supported) return reply
+        try {
+          return await deps.control.listRuntimeCommands(agent.daemonId, { agentId: agent.id })
         } catch (err) {
           const unavailable = daemonEdgeFailure(err)
           if (unavailable !== null) {
