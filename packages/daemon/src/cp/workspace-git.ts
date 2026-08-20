@@ -60,8 +60,7 @@ import {
   gitCommitIdentityEnv,
   pullWorkspaceRef,
   workspaceGitLocalEnv,
-  workspaceGitPullTarget,
-  workspaceGitPushTarget
+  workspaceGitRemoteTarget
 } from '../workspace/git-injection.js'
 import { WorkspaceManager } from '../workspace/workspace-manager.js'
 import { GitTransportError, type GitRunner } from '../workspace/git-runner.js'
@@ -211,10 +210,12 @@ export interface WorkspaceGitTarget {
 export function createWorkspaceGit(
   workspaces: WorkspaceManager,
   workspaceRootByAgent: (agentId: string, sessionId?: string, repo?: string) => Promise<string | undefined>,
-  /** The git-credential helper env for the scope being operated on. Scoped by `repo` for the same
-   *  reason the target is: a secondary root is App-covered even when the primary workspace is not,
-   *  so gating the helper on the primary's credential mode would leave its private clone anonymous. */
-  credentialEnvByAgent: (agentId: string, repo?: string) => Record<string, string> = () => ({}),
+  /** The identity the daemon's git-credential helper answers as for the scope being operated on, or
+   *  undefined when the daemon issues no credentials for it — that scope then reaches the remote on
+   *  whatever ambient auth the host has, or fails as data. Scoped by `repo` for the same reason the
+   *  target is: a secondary root is App-covered even when the primary workspace is not, so gating the
+   *  helper on the primary's credential mode would leave its private clone anonymous. */
+  credentialAgentIdFor: (agentId: string, repo?: string) => string | undefined = () => undefined,
   /** The origin and branch of the scope being operated on — the agent's primary workspace, or the
    *  secondary root `repo` names. A pull reaches THAT repository's remote, never the primary's. */
   workspaceTargetByAgent: (agentId: string, repo?: string) => Promise<WorkspaceGitTarget | undefined> = async () =>
@@ -553,14 +554,12 @@ export function createWorkspaceGit(
         }
         await assertSafeWorkspaceGitConfig(base)
         const pullBranch = authorized.branch
-        const pullTarget = workspaceGitPullTarget(authorized.origin)
+        const pullTarget = workspaceGitRemoteTarget(authorized.origin, credentialAgentIdFor(agentId, repo))
         timer = setTimeout(() => abort.abort(), PULL_TIMEOUT_MS)
         const res = await pullWorkspaceRef(
           git.withEnv({
             ...workspaceGitLocalEnv(),
-            ...pullTarget.env,
-            ...credentialEnvByAgent(agentId, repo),
-            GIT_TERMINAL_PROMPT: '0'
+            ...pullTarget.env
           }),
           pullTarget.remote,
           pullBranch
@@ -724,10 +723,7 @@ export function createWorkspaceGit(
         }
         // check-ref-format so a checkout-chosen branch cannot read as an option or a second refspec.
         await git.raw(['check-ref-format', '--branch', branch])
-        // Only a workspace the daemon issues credentials for gets the helper; anything else pushes on
-        // whatever ambient auth the host has, or fails as data.
-        const helperAgentId = Object.keys(credentialEnvByAgent(agentId, req.repo)).length > 0 ? agentId : undefined
-        const pushTarget = workspaceGitPushTarget(authorized.origin, helperAgentId)
+        const pushTarget = workspaceGitRemoteTarget(authorized.origin, credentialAgentIdFor(agentId, req.repo))
         timer = setTimeout(() => abort.abort(), PUSH_TIMEOUT_MS)
         // NEVER --force / --force-with-lease: a console push must not drop a commit the remote has
         // and this checkout does not — divergence is data that says "pull first". Both refspec sides

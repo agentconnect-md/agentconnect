@@ -27,13 +27,12 @@ import { acceptedDreamSkillSources } from '../skills/dream-skills.js'
 import {
   assertSafeWorkspaceGitConfig,
   cloneGitEnv,
-  gitCredentialEnv,
   gitFor,
   preWarmGitCred,
   pullWorkspaceRef,
   workspaceGitEnvBase,
   workspaceGitLocalEnv,
-  workspaceGitPullTarget,
+  workspaceGitRemoteTarget,
   writeRepoHelperConfig
 } from './git-injection.js'
 import { LocalGitRunner, type GitRunner } from './git-runner.js'
@@ -938,12 +937,10 @@ export class WorkspaceManager {
     const timer = setTimeout(() => abort.abort(), PULL_TIMEOUT_MS)
     try {
       await assertSafeWorkspaceGitConfig(this.runnerFor(agentId, cwd))
-      const pullTarget = workspaceGitPullTarget(root.cloneUrl)
+      const pullTarget = workspaceGitRemoteTarget(root.cloneUrl, root.githubApp ? agentId : undefined)
       const git = this.runnerFor(agentId, cwd, abort.signal).withEnv({
         ...workspaceGitLocalEnv(),
-        ...pullTarget.env,
-        ...(root.githubApp ? gitCredentialEnv(agentId) : {}),
-        GIT_TERMINAL_PROMPT: '0'
+        ...pullTarget.env
       })
       await pullWorkspaceRef(git, pullTarget.remote, root.branch)
     } catch {
@@ -1369,15 +1366,11 @@ export class WorkspaceManager {
     const mergeRef = `${refRoot}/merge`
     await assertSafeWorkspaceGitConfig(this.runnerFor(agentId, root.path))
     if (root.githubApp) await preWarmGitCred(agentId, 'pull')
-    const pullTarget = workspaceGitPullTarget(root.cloneUrl)
+    const pullTarget = workspaceGitRemoteTarget(root.cloneUrl, root.githubApp ? agentId : undefined)
     const abort = new AbortController()
     const timer = setTimeout(() => abort.abort(), REVIEW_FETCH_TIMEOUT_MS)
     try {
-      const git = this.runnerFor(agentId, root.path, abort.signal).withEnv({
-        ...pullTarget.env,
-        ...(root.githubApp ? gitCredentialEnv(agentId) : {}),
-        GIT_TERMINAL_PROMPT: '0'
-      })
+      const git = this.runnerFor(agentId, root.path, abort.signal).withEnv(pullTarget.env)
       await git.raw([
         'fetch',
         '--force',
@@ -1783,12 +1776,10 @@ export class WorkspaceManager {
       const timer = setTimeout(() => abort.abort(), PULL_TIMEOUT_MS)
       try {
         await assertSafeWorkspaceGitConfig(this.runnerFor(agent.id, checkout))
-        const pullTarget = workspaceGitPullTarget(repository)
+        const pullTarget = workspaceGitRemoteTarget(repository, githubApp ? agent.id : undefined)
         const git = this.runnerFor(agent.id, checkout, abort.signal).withEnv({
           ...workspaceGitLocalEnv(),
-          ...pullTarget.env,
-          ...(githubApp ? gitCredentialEnv(agent.id) : {}),
-          GIT_TERMINAL_PROMPT: '0'
+          ...pullTarget.env
         })
         await pullWorkspaceRef(git, pullTarget.remote, agent.workspace.gitBranch)
         pulled = true

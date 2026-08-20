@@ -35,6 +35,17 @@ const { WorkspaceManager } = await import('../src/workspace/workspace-manager.js
 const workspaces = new WorkspaceManager()
 const { WorkspaceViolationError } = await import('../src/cp/workspace-reader.js')
 
+const { daemonGitCredentialTarget, initGitInjection } = await import('../src/workspace/git-injection.js')
+// The credential channel a pull builds is real here: the seam is handed the agent the helper answers
+// as, and `gitCredentialEnv` mints the pair — so an uninitialized injection is a failing pull, not an
+// empty env. `vi.mock` keeps this file isolated, so the registration cannot reach another file.
+const SHIM = join(mkdtempSync(join(tmpdir(), 'ac-git-shim-')), 'git-credential-helper.sh')
+initGitInjection({
+  targetFor: () => daemonGitCredentialTarget({ shimPath: SHIM, runDir: join(SHIM, '..') }),
+  preWarm: async () => undefined,
+  capabilityFor: (agentId) => `cap-${agentId}`
+})
+
 /** A temp dir; `repo:true` seeds a `.git/` so it reads as a git-repo checkout. */
 function ws(repo: boolean): string {
   const dir = join(mkdtempSync(join(tmpdir(), 'ac-git-')), 'co')
@@ -209,7 +220,7 @@ describe('createWorkspaceGit.pull', () => {
     const git = createWorkspaceGit(
       workspaces,
       async () => dir,
-      () => ({ AC_GITCRED_CAPABILITY: 'cap-a' }),
+      (id) => id,
       githubTarget
     )
     const r = await git.pull('a')
@@ -246,7 +257,7 @@ describe('createWorkspaceGit.pull', () => {
         createWorkspaceGit(
           workspaces,
           async () => dir,
-          () => ({}),
+          () => undefined,
           githubTarget
         ).pull('a')
       ).resolves.toMatchObject({
@@ -272,9 +283,9 @@ describe('createWorkspaceGit.pull', () => {
       },
       // A manual GitHub primary authorizes an App-covered repository: the SECONDARY root needs the
       // helper the primary does not, so the decision must follow the scope rather than the workspace.
-      (_id, repo) => {
+      (id, repo) => {
         credentialScopes.push(repo)
-        return repo ? { AGENTCONNECT_GIT_CRED: 'helper' } : {}
+        return repo ? id : undefined
       },
       (_id, repo) =>
         repo
@@ -299,7 +310,7 @@ describe('createWorkspaceGit.pull', () => {
     const git = createWorkspaceGit(
       workspaces,
       async () => dir,
-      () => ({}),
+      () => undefined,
       githubTarget
     )
     const r = await git.pull('a')
@@ -313,7 +324,7 @@ describe('createWorkspaceGit.pull', () => {
     const git = createWorkspaceGit(
       workspaces,
       async () => dir,
-      () => ({}),
+      () => undefined,
       githubTarget
     )
 
@@ -336,7 +347,7 @@ describe('createWorkspaceGit.pull', () => {
     const git = createWorkspaceGit(
       workspaces,
       async () => dir,
-      () => ({}),
+      () => undefined,
       () => ({ repo: 'https://github.com/acme/repo.git', branch: 'main', githubApp: true })
     )
 
@@ -372,7 +383,7 @@ describe('createWorkspaceGit.pull', () => {
     const git = createWorkspaceGit(
       workspaces,
       async () => dir,
-      () => ({}),
+      () => undefined,
       githubTarget
     )
 
@@ -395,7 +406,7 @@ describe('createWorkspaceGit.pull', () => {
     const git = createWorkspaceGit(
       workspaces,
       async () => dir,
-      () => ({}),
+      () => undefined,
       githubTarget
     )
 
@@ -412,7 +423,7 @@ describe('createWorkspaceGit.pull', () => {
     const git = createWorkspaceGit(
       workspaces,
       async () => dir,
-      () => ({}),
+      () => undefined,
       () => ({ repo: 'https://github.com/acme/repo.git', branch: 'release/v2', githubApp: true })
     )
 
@@ -436,7 +447,7 @@ describe('createWorkspaceGit.pull', () => {
     const git = createWorkspaceGit(
       workspaces,
       async () => dir,
-      () => ({}),
+      () => undefined,
       githubTarget
     )
     const r = await git.pull('a')

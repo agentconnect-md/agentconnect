@@ -300,7 +300,7 @@ describe('createWorkspaceGit.log against a real repo', () => {
       createWorkspaceGit(
         workspaces,
         async () => root,
-        () => ({}),
+        () => undefined,
         () => target
       )
 
