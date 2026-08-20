@@ -1,3 +1,4 @@
+import { parse as parseYaml } from 'yaml'
 /**
  * Memory file headers — a small YAML frontmatter block at the top of each topic
  * file (Claude Code's agent-memory shape, #41):
@@ -108,15 +109,38 @@ export function parseMemoryFrontmatter(text: string): ParsedMemory {
   }
 }
 
+/** YAML 1.1 spells these as booleans; the 1.2 core schema our parser implements reads
+ *  them as plain strings. Quote them anyway — the guarantee is that the value survives
+ *  ANY strict reader, not only the one we happen to link. */
+const YAML_11_BOOLEANS = /^(?:y|n|yes|no|on|off)$/i
+
 /**
- * Quote unless the value is unambiguously a plain YAML scalar. Conservative on
- * purpose: a stored description must survive any strict YAML reader, so this covers
- * every leading indicator character (`- ? : , [ ] { } # & * ! | > ' " % @ \``), a
- * `key: value` split, a trailing colon, an inline ` #` comment, and edge whitespace.
- * An ISO timestamp's interior colons are safe and stay unquoted.
+ * Whether emitting this value bare would round-trip byte-for-byte. Asking the parser
+ * we already depend on beats re-deriving its grammar by hand, and comparing the VALUE
+ * rather than its type catches the cases a type check misses: a decoded escape, a
+ * folded line break, trimmed padding — each of which keeps the `string` type while
+ * silently changing the bytes, or breaks the header outright.
+ */
+function roundTripsBare(value: string): boolean {
+  try {
+    return parseYaml(value) === value
+  } catch {
+    // Unparseable as a bare scalar ⇒ definitely not safe to emit bare.
+    return false
+  }
+}
+
+/**
+ * Quote unless the value is unambiguously a plain YAML *string* scalar. Conservative
+ * on purpose: a stored description must survive any strict YAML reader. Covers every
+ * leading indicator (`- ? : , [ ] { } # & * ! | > ' " % @ \``), a `key: value` split,
+ * a trailing colon, an inline ` #` comment, edge whitespace, and anything that would
+ * not read back byte-for-byte as the same string.
  */
 function quoteIfNeeded(value: string): string {
-  return /^[\s\-?:,[\]{}#&*!|>'"%@`]|: |:$| #|\s$/.test(value) ? JSON.stringify(value) : value
+  const structural = /^[\s\-?:,[\]{}#&*!|>'"%@`]|: |:$| #|\s$/.test(value)
+  const safe = !structural && !YAML_11_BOOLEANS.test(value) && roundTripsBare(value)
+  return safe ? value : JSON.stringify(value)
 }
 
 /**

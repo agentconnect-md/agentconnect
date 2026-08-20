@@ -49,6 +49,7 @@ import {
   memoryNameForTopic,
   memoryRefToTopic,
   parseMemoryFrontmatter,
+  normalizeMemoryHeader,
   stampMemoryHeader
 } from './frontmatter.js'
 
@@ -573,7 +574,14 @@ export async function writeMemoryFileHoldingLock(
   const topic = memoryTopicName(relPath)
   // Keep a written header truthful (`name` from the filename, fresh `modified`).
   // Headerless notes are left exactly as written — frontmatter is never forced on.
-  if (topic !== MEMORY_INDEX) content = stampMemoryHeader(topic, content, new Date().toISOString())
+  if (topic !== MEMORY_INDEX) {
+    // Normalize BEFORE stamping so every writer — a turn, distillation, a dream —
+    // stores a header a strict YAML reader accepts. Doing it here rather than at one
+    // caller means a model-written `description: ship: prod` cannot reach disk from
+    // any path. Both steps are idempotent, so re-writing a file is a no-op.
+    content = normalizeMemoryHeader(content)
+    content = stampMemoryHeader(topic, content, new Date().toISOString())
+  }
   if (Buffer.byteLength(content) > MAX_MEMORY_FILE_BYTES) {
     throw new MemoryTooLargeError(`memory file exceeds the ${MAX_MEMORY_FILE_BYTES}-byte limit`)
   }

@@ -443,3 +443,108 @@ describe('the reviewed index is the adopted index', () => {
     expect(liveIndex.replace(/^# .*$/m, '')).toBe(stagedIndex.replace(/^# .*$/m, ''))
   })
 })
+
+describe('every writer stores safe frontmatter', () => {
+  it('normalizes an unsafe header no matter which trigger wrote it', async () => {
+    // Normalization used to live at dream staging only, so a description reaching
+    // disk from a turn or from distillation could still be invalid YAML. It is in the
+    // shared write path now, so the guarantee holds for all three.
+    const nasty = 'ship: prod #now'
+    for (const source of ['tool', 'distill', 'dream', 'console'] as const) {
+      const f = fs()
+      await ensureMemory(f, 'bot')
+      await writeMemoryFile(f, 'topic.md', `---\ndescription: ${nasty}\n---\nbody\n`, undefined, source)
+
+      const stored = await readMemoryFile(f, 'topic.md')
+      expect(stored).toContain(`description: ${JSON.stringify(nasty)}`)
+      expect(parseMemoryFrontmatter(stored).header.description).toBe(nasty)
+    }
+  })
+
+  it('is a no-op for a header that is already safe, so rewrites do not churn', async () => {
+    const f = fs()
+    await ensureMemory(f, 'bot')
+    await writeMemoryFile(f, 'plain.md', '---\ndescription: how we ship\n---\nbody\n', undefined, 'tool')
+    const first = await readMemoryFile(f, 'plain.md')
+    expect(first).toContain('description: how we ship') // still unquoted
+
+    await writeMemoryFile(f, 'plain.md', first, undefined, 'tool')
+    const second = await readMemoryFile(f, 'plain.md')
+    // Only `modified` may differ; the description must not gain quoting or escapes.
+    expect(second).toContain('description: how we ship')
+  })
+})
+
+describe('values that only stay strings while quoted', () => {
+  it('keeps quotes on anything YAML would resolve as a bool, null, or number', () => {
+    // Normalization runs on EVERY write now, so dequoting one of these would turn a
+    // correctly-stored description into a boolean/number on the way back in.
+    const nonStrings = [
+      'true',
+      'False',
+      'yes',
+      'no',
+      'on',
+      'off',
+      'null',
+      '~',
+      '123',
+      '-4',
+      '1.5',
+      '1e10',
+      '.inf',
+      '.NaN',
+      '0x1f',
+      // Leading-decimal floats: the branch a hand-written grammar keeps missing,
+      // which is why the parser itself is now the oracle.
+      '.5',
+      '+.5',
+      '.5e2',
+      '-.5E-2'
+    ]
+    for (const value of nonStrings) {
+      const fixed = normalizeMemoryHeader(`---\ndescription: ${JSON.stringify(value)}\n---\nbody\n`)
+      expect(fixed).toContain(`description: ${JSON.stringify(value)}`)
+      expect(parseMemoryFrontmatter(fixed).header.description).toBe(value)
+    }
+  })
+
+  it('still leaves ordinary prose unquoted', () => {
+    for (const value of ['how we ship', 'version 2 of the plan', 'notes about 123 things']) {
+      const fixed = normalizeMemoryHeader(`---\ndescription: ${value}\n---\nbody\n`)
+      expect(fixed).toContain(`description: ${value}`)
+    }
+  })
+
+  it('survives a write/read cycle for a numeric-looking description', async () => {
+    const f = fs()
+    await ensureMemory(f, 'bot')
+    await writeMemoryFile(f, 'n.md', '---\ndescription: "2026"\n---\nbody\n', undefined, 'dream')
+    expect(parseMemoryFrontmatter(await readMemoryFile(f, 'n.md')).header.description).toBe('2026')
+  })
+})
+
+describe('values whose BYTES change when emitted bare', () => {
+  it('keeps quotes when the text would not read back identically', () => {
+    // A type check is not enough: each of these stays a `string` but comes back with
+    // different bytes — or breaks the header outright, as the newline does by turning
+    // one header line into two.
+    const changed = ['line1\nline2', 'trailing  ', '  leading', 'tab\there', 'a  b']
+    for (const value of changed) {
+      const fixed = normalizeMemoryHeader(`---\ndescription: ${JSON.stringify(value)}\n---\nbody\n`)
+      // Still exactly one description line — a decoded newline would have split it.
+      expect(fixed.match(/^description:/gm)).toHaveLength(1)
+      expect(parseMemoryFrontmatter(fixed).header.description).toBe(value)
+    }
+  })
+
+  it('survives the real write path with an embedded newline', async () => {
+    const f = fs()
+    await ensureMemory(f, 'bot')
+    const value = 'first\nsecond'
+    await writeMemoryFile(f, 'multi.md', `---\ndescription: ${JSON.stringify(value)}\n---\nbody\n`, undefined, 'dream')
+    const stored = await readMemoryFile(f, 'multi.md')
+    expect(stored.match(/^description:/gm)).toHaveLength(1)
+    expect(parseMemoryFrontmatter(stored).header.description).toBe(value)
+  })
+})
