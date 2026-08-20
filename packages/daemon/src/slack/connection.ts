@@ -1279,15 +1279,17 @@ export class SlackConnection implements PlatformConnection {
         if (!(await this.putUploadBytes(uploadUrl, file))) return undefined
         // Sharing is what makes the file a message; without `channel_id` it stays a private
         // upload nobody can see. `thread_ts` must be the PARENT's ts, never a reply's.
-        // The caption takes the SAME markdown seam as a text post. `initial_comment` is
-        // mrkdwn, so without the block the one `message` string would render differently
-        // depending on whether it carried a file; the comment stays as the notification text.
-        const caption = comment ? markdownBlock(comment) : undefined
+        // A CAPTION IS MRKDWN HERE, unlike every other send in this file. `postMessage` renders
+        // through a Block Kit `markdown` block, but this method documents `blocks` as IGNORED
+        // whenever `initial_comment` is set — and it has no separate `text` argument, so
+        // blocks-only would buy CommonMark at the price of the notification preview for every
+        // forwarded file. Keeping the comment is the better half of that trade; the cost is
+        // that `**bold**` and `[label](url)` read literally on a forward.
         const share: Record<string, unknown> = {
           files: [{ id: fileId, title: file.name }],
           channel_id: channel,
           ...(threadTs ? { thread_ts: threadTs } : {}),
-          ...(caption ? { initial_comment: caption.text, blocks: caption.blocks } : {})
+          ...(comment ? { initial_comment: comment } : {})
         }
         await this.completeUpload(share, options)
         return { fileId }
@@ -1318,6 +1320,11 @@ export class SlackConnection implements PlatformConnection {
         ...(dispatcher ? { dispatcher } : {})
       }
       const res = await undiciFetch(uploadUrl, init as Parameters<typeof undiciFetch>[1])
+      // Only `ok` is read, so the body is never drained — and an unread body leaves the
+      // request in flight, which is exactly what the graceful `close()` below waits for. That
+      // wait sits inside the send queue and outside the signal's reach, so it would trade the
+      // socket-pool leak for the wedge the timeout was added to prevent.
+      await res.body?.cancel().catch(() => {})
       if (!res.ok) {
         this.deps.log?.debug(`slack: uploadFile byte POST for ${file.name} → HTTP ${res.status}`)
         return false

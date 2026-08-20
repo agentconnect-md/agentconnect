@@ -67,10 +67,10 @@ describe('SlackConnection.uploadFile', () => {
       files: [{ id: 'F1', title: 'shot.png' }],
       channel_id: 'C1',
       thread_ts: '111.1',
+      // No `blocks`: this method ignores them whenever `initial_comment` is set, so sending
+      // both would only look like the caption renders as CommonMark. It does not — see the
+      // note on the trade in `uploadFile`.
       initial_comment: 'from telegram',
-      // The caption takes the same markdown block a text post does, so one `message` string
-      // cannot render as CommonMark or as mrkdwn depending on whether it carried a file.
-      blocks: [{ type: 'markdown', text: 'from telegram' }],
       username: 'Scout',
       icon_url: 'https://example.test/a.png'
     })
@@ -96,13 +96,18 @@ describe('SlackConnection.uploadFile', () => {
     expect(completeUploadExternal.mock.calls[1]![0]).not.toHaveProperty('username')
   })
 
-  it('bounds the byte POST so a stuck upload cannot wedge the send queue', async () => {
+  it('bounds the byte POST and drains its body, so neither can wedge the send queue', async () => {
+    // The body matters as much as the signal: an unread one keeps the request in flight, and
+    // the graceful agent close waits for exactly that — outside the signal's reach.
+    const cancel = vi.fn(async () => {})
+    undici.fetch.mockResolvedValueOnce({ ok: true, status: 200, body: { cancel } })
     const conn = connWith({
       getUploadURLExternal: async () => ({ upload_url: 'https://files.slack.com/upload/v1/x', file_id: 'F1' }),
       completeUploadExternal: async () => ({ files: [{ id: 'F1' }] })
     })
     await conn.uploadFile('C1', { bytes: Buffer.from('x'), name: 'a.png' })
     expect(undici.fetch.mock.calls[0]![1]).toMatchObject({ signal: expect.any(AbortSignal) })
+    expect(cancel).toHaveBeenCalledOnce()
   })
 
   it('gives up without sharing when the reservation returns no upload url', async () => {

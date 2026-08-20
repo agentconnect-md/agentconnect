@@ -276,6 +276,12 @@ behaviour as a post whose id never came back.
 An unresolvable name, a target platform that cannot host files, or a share that posted
 nothing fails the whole send rather than reporting an image as sent.
 
+One caption limitation is worth stating because it contradicts the rest of the product: on
+Slack a forwarded caption is **mrkdwn**, not the CommonMark every other message is written
+in, so `**bold**` and `[label](url)` read literally there. Slack's file share ignores rich
+blocks whenever a comment is supplied and offers no separate notification text, so the
+alternative would cost every forwarded file its notification preview.
+
 Where a platform cannot carry a file and its caption as one message it sends two, and it
 sends the **file first** — so a failure before anything lands really did land nothing, and
 a caption lost after it is reported as a notice on an otherwise successful send rather than
