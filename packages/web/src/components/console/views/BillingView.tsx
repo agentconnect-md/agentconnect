@@ -601,7 +601,9 @@ export default function BillingView() {
             onAddCredits={() => {
               const card = document.getElementById('add-credits')
               if (!card) return
-              card.scrollIntoView({ behavior: 'smooth', block: 'center' })
+              // A scripted scroll dodges the CSS reduced-motion block, so honor it here.
+              const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+              card.scrollIntoView({ behavior: reduced ? 'auto' : 'smooth', block: 'center' })
               card.querySelector('input')?.focus({ preventScroll: true })
               card.classList.remove('card-flash')
               void card.offsetWidth // restart the animation on repeat clicks
