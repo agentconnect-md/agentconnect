@@ -40,13 +40,9 @@ export interface FleetRuntime {
   authRequired: boolean
 }
 
-/**
- * The runtimes a set offers, unioned over the members given (pass the serving ones).
- *
- * Version is the first non-empty one seen: the members of a set roll together, so they
- * agree, and quoting nothing is worse than quoting the release they share. `authRequired`
- * is sticky — one member whose probe was rejected is a real problem on that member.
- */
+// The runtimes a set offers, unioned over the members given (pass the serving ones). Version is
+// the first non-empty one seen — a set's members roll together, so they agree — and `authRequired`
+// is sticky, because one member whose probe was rejected is a real problem on that member.
 export function unionRuntimes(members: readonly DaemonRow[]): FleetRuntime[] {
   const byId = new Map<string, FleetRuntime>()
   for (const m of members) {
@@ -127,12 +123,9 @@ export function ResourceBar({
   )
 }
 
-/**
- * The runtimes a set offers, each disclosing its models.
- *
- * A real button, not the design's hover target: the model list is the only place a set's
- * models are readable, and a pointer is not the only input.
- */
+// The runtimes a set offers, each disclosing its models. A real button, not the design's hover
+// target: the model list is the only place a set's models are readable, and a pointer is not the
+// only input.
 export function FleetRuntimesCard({
   title,
   runtimes,

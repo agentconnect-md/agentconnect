@@ -39,7 +39,8 @@ export default function GroupDetailView() {
   const { orgPath } = useOrgs()
   const { id } = useParams<{ id: string }>()
   const router = useRouter()
-  const { daemons, agents, integrations, memberSets, memberSetsLoading } = useConsoleData()
+  const { daemons, agents, agentsLoading, daemonsLoading, integrations, memberSets, memberSetsLoading } =
+    useConsoleData()
   const { openModal } = useModal()
 
   const group = useMemo(() => memberSets.find((g) => g.setId === id), [memberSets, id])
@@ -89,6 +90,17 @@ export default function GroupDetailView() {
       </div>
     )
   }
+
+  // Found, but not yet describable. `memberSets`, `daemons` and `agents` are independent SWR
+  // keys and the group's is by far the smallest payload, so a deep link resolves the NAME a round
+  // trip before the membership. Rendering there would state "0 / 0 serving · no daemons · no
+  // runtimes · no agents" as settled fact and then correct itself, which is worse than waiting.
+  if (daemonsLoading || agentsLoading)
+    return (
+      <div className="wrap max-w-[1240px]">
+        <LoadingState fill />
+      </div>
+    )
 
   const s = status(groupFleetStatus(group, daemons))
   const online = serving.length > 0
@@ -151,14 +163,19 @@ export default function GroupDetailView() {
         />
         <FleetStat icon="bot" label="Agents on group" value={String(hosted.length)} />
         <FleetStat icon="plug" label="Connections held" value={String(conns.length)} />
-        <FleetStat icon="activity" label="Active sessions" value={String(sessions)} />
+        {/* Machine-scoped, unlike its three neighbours: the CP counts active sessions per DAEMON,
+            so this includes the ones belonging to agents pinned to these members — the agents the
+            rest of the page deliberately excludes. Named for what it actually counts. */}
+        <FleetStat icon="activity" label="Sessions on members" value={String(sessions)} note="incl. pinned agents" />
       </div>
 
       <div className="mb-[18px] grid grid-cols-1 items-start gap-[18px] desktop:grid-cols-[1.15fr_1fr]">
         <div className="card">
           <div className="cardhead">
             <span className="cardtitle">Daemons in this group</span>
-            <span className="mono ml-auto text-[11px] text-(--text-tertiary)">cpu / memory · pinned</span>
+            <span className="mono ml-auto text-[11px] text-(--text-tertiary)">
+              <span className="hidden desktop:inline">cpu / memory · </span>pinned
+            </span>
           </div>
           {members.length > 0 ? (
             members.map((m) => (
@@ -258,8 +275,7 @@ function MemberRow({ m, pinned, onOpen }: { m: DaemonRow; pinned: number; onOpen
   )
 }
 
-/** A member's CPU or memory reading. Clamped: a daemon predating the cpu-normalization fix
- *  reports a raw load average, which would otherwise render as e.g. "722%". */
+/** A member's CPU or memory. Clamped — a daemon predating cpu-normalization reports a raw load average. */
 function MemberBar({ pct }: { pct: number }) {
   const shown = Math.max(0, Math.min(100, Math.round(pct)))
   return (

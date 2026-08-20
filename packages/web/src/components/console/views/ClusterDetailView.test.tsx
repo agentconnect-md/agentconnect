@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   agents: [] as unknown[],
   integrations: [] as unknown[],
   daemonsLoading: false,
+  balance: { data: { orgId: 'org-pool', balanceMicro: 12_340_000 } } as Record<string, unknown>,
   push: vi.fn()
 }))
 
@@ -33,7 +34,7 @@ vi.mock('@/lib/data-context', () => ({
 }))
 vi.mock('@/lib/acp-registry', () => ({ useAcpRegistry: () => ({}), acpRuntime: () => undefined }))
 // Only the managed reading fetches anything (the balance); no test should reach the network for it.
-vi.mock('swr', () => ({ default: () => ({ data: { orgId: 'org-pool', balanceMicro: 12_340_000 } }) }))
+vi.mock('swr', () => ({ default: () => mocks.balance }))
 
 const ClusterDetailView = (await import('./ClusterDetailView')).default
 
@@ -114,6 +115,7 @@ beforeEach(() => {
   mocks.agents = []
   mocks.integrations = []
   mocks.daemonsLoading = false
+  mocks.balance = { data: { orgId: 'org-pool', balanceMicro: 12_340_000 } }
   mocks.push.mockClear()
   setFlags('daemon-pool')
 })
@@ -338,6 +340,19 @@ describe('ClusterDetailView — managed (AgentConnect Cloud)', () => {
     expect(html).toContain('acme-ops')
     expect(html).toContain('2 models')
     expect(html).toContain('Runtimes available')
+  })
+
+  it('lets the billing failure say which failure it was', () => {
+    // A shape mismatch throws BillingShapeError into the same slot as an unreachable service, and
+    // this console deploys ahead of the pinned billing image — so blaming the network guesses.
+    mocks.daemons = [member('p1')]
+    mocks.balance = { error: new Error('billing sent an unexpected account — the console may be out of date') }
+
+    const html = render()
+
+    expect(html).toContain('Balance unavailable')
+    expect(html).toContain('may be out of date')
+    expect(html).not.toContain('Could not reach')
   })
 
   it('says where Cloud usage is billed, and where it is not', () => {

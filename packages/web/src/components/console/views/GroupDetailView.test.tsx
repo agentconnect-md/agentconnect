@@ -16,6 +16,8 @@ const mocks = vi.hoisted(() => ({
   integrations: [] as unknown[],
   memberSets: [] as unknown[],
   memberSetsLoading: false,
+  daemonsLoading: false,
+  agentsLoading: false,
   routeId: 'g1',
   push: vi.fn(),
   openModal: vi.fn()
@@ -34,7 +36,9 @@ vi.mock('@/lib/data-context', () => ({
     agents: mocks.agents,
     integrations: mocks.integrations,
     memberSets: mocks.memberSets,
-    memberSetsLoading: mocks.memberSetsLoading
+    memberSetsLoading: mocks.memberSetsLoading,
+    daemonsLoading: mocks.daemonsLoading,
+    agentsLoading: mocks.agentsLoading
   })
 }))
 vi.mock('@/components/console/ModalProvider', () => ({ useModal: () => ({ openModal: mocks.openModal }) }))
@@ -141,6 +145,8 @@ beforeEach(() => {
   mocks.integrations = []
   mocks.memberSets = []
   mocks.memberSetsLoading = false
+  mocks.daemonsLoading = false
+  mocks.agentsLoading = false
   mocks.routeId = 'g1'
   mocks.push.mockClear()
   mocks.openModal.mockClear()
@@ -283,6 +289,37 @@ describe('GroupDetailView', () => {
 
     expect(html).toContain('No daemons in this group')
     expect(html).toContain('0 / 0')
+  })
+
+  it('waits for the membership rather than calling a found group empty', () => {
+    // `memberSets` is the smallest of three independent SWR keys, so a deep link resolves the
+    // group's NAME a round trip before its members. Answering there is a confident wrong answer.
+    mocks.memberSets = [group({ memberDaemonIds: ['d1'] })]
+    mocks.daemonsLoading = true
+
+    const html = render()
+
+    expect(html).not.toContain('No daemons in this group')
+    expect(html).not.toContain('0 / 0')
+
+    mocks.daemonsLoading = false
+    mocks.agentsLoading = true
+
+    expect(render()).not.toContain('No agents target this group yet')
+  })
+
+  it('names the sessions stat for what the CP actually counts', () => {
+    // activeSessions is per-DAEMON, so it includes the sessions of agents pinned to a member —
+    // the agents every other stat on the page excludes.
+    mocks.memberSets = [group({ memberDaemonIds: ['d1'] })]
+    mocks.daemons = [daemon('d1', { activeSessions: '4' })]
+    mocks.agents = [onGroup('a1'), pinned('a2', 'd1')]
+
+    const html = render()
+
+    expect(html).toContain('Sessions on members')
+    expect(html).toContain('incl. pinned agents')
+    expect(html).not.toContain('Active sessions')
   })
 
   it('offers no log tail — a fabricated one is indistinguishable from telemetry', () => {

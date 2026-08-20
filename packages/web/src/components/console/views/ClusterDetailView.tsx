@@ -286,14 +286,9 @@ function MetaItem({ icon, text, mono = false }: { icon: string; text: string; mo
   )
 }
 
-/**
- * What Cloud costs, on the one figure the billing service will actually stand behind.
- *
- * NOT the design's "included usage" bar: this deployment sells prepaid credit, so there is no
- * plan quota to fill a track with, and drawing one from load telemetry would read as a real
- * ceiling. The balance is a settled fact, so it is what shows — and it shares SWR's cache key
- * with the Billing page, so opening this page costs no extra request there.
- */
+// What Cloud costs, on the one figure billing stands behind. NOT the design's "included usage"
+// bar: this deployment sells prepaid credit, so there is no quota to fill a track with and
+// drawing one from load telemetry would read as a real ceiling. Shares the Billing page's SWR key.
 function CloudBillingCard() {
   const { activeOrg } = useOrgs()
   const orgId = activeOrg?.id ?? null
@@ -307,9 +302,12 @@ function CloudBillingCard() {
       </div>
       <div className="px-4 py-[15px]">
         {account.error ? (
+          // Not only unreachability: `assertAccount` throws BillingShapeError on an unexpected
+          // shape and lands here too — likely, since this console deploys ahead of the pinned
+          // billing image. So the label stays neutral and the service's own message says which.
           <div className="flex items-start gap-2 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary)">
             <Icon name="triangle-alert" size={15} color="var(--status-error)" />
-            Could not reach the billing service.
+            Balance unavailable — {(account.error as Error).message}
           </div>
         ) : account.data ? (
           <>
