@@ -152,7 +152,7 @@ must be an HTTP(S) URL. Each pair is translated at runtime launch:
 
 | Runtime  | Token                                                                                    | Base URL                                                                                                                             |
 | -------- | ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| Claude   | `ANTHROPIC_AUTH_TOKEN`                                                                   | `ANTHROPIC_BASE_URL`                                                                                                                 |
+| Claude   | `ANTHROPIC_API_KEY` (`ANTHROPIC_AUTH_TOKEN` is cleared — one credential per launch)      | `ANTHROPIC_BASE_URL`                                                                                                                 |
 | Codex    | `OPENAI_API_KEY`                                                                         | `CODEX_CONFIG` → `model_provider = "openai"` and `model_providers.openai.base_url`; `OPENAI_BASE_URL` is also set for older adapters |
 | OpenCode | `OPENCODE_CONFIG_CONTENT` → selected provider `options.apiKey` using `{env:MODEL_TOKEN}` | selected provider `options.baseURL`                                                                                                  |
 | DeepSeek | `DEEPSEEK_API_KEY`                                                                       | `DEEPSEEK_BASE_URL`                                                                                                                  |
