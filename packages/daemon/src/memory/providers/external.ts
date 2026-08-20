@@ -5,7 +5,7 @@ import type {
   MemoryPluginOperation
 } from '@agentconnect.md/protocol'
 import { randomUUID } from 'node:crypto'
-import type { ToolDescriptor } from '../../mcp/tool-descriptor.js'
+import type { ToolDescriptor } from '../../tool-schema/descriptor.js'
 import { externalMemoryTools } from '../tools.js'
 import { MemoryConflictError, MemoryTooLargeError } from '../store.js'
 import { canonicalAgentMemoryKey } from '../keys.js'

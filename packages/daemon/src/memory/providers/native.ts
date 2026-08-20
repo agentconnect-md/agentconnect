@@ -1,6 +1,6 @@
 import type { MemoryEntry } from '@agentconnect.md/protocol'
 import type { RuntimeDef } from '../../config/config-schema.js'
-import type { ToolDescriptor } from '../../mcp/tool-descriptor.js'
+import type { ToolDescriptor } from '../../tool-schema/descriptor.js'
 import type { MemoryWriteSource } from '../store.js'
 import { nativeMemoryList, nativeMemoryRead, nativeMemoryWrite } from '../runtime/native.js'
 import type {

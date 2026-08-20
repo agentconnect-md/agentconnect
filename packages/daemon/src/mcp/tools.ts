@@ -1,5 +1,5 @@
 import type { Integration } from '../agents/agent-schema.js'
-import { obj, unionOf, type ToolDescriptor } from './tool-descriptor.js'
+import { obj, unionOf, type ToolDescriptor } from '../tool-schema/descriptor.js'
 import { SESSION_TITLE_TOOL_NAME } from './session-title-tool.js'
 import { allAttachmentReadTools, attachmentReadToolsFor } from '../platforms/read-ports.js'
 import { EXTERNAL_MEMORY_TOOL_NAMES, MEMORY_TOOLS } from '../memory/tools.js'
