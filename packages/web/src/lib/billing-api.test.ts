@@ -42,7 +42,11 @@ describe('assertAccount', () => {
     expect(() => assertAccount({ ...ACCOUNT, balanceMicro: '25' })).toThrow(BillingShapeError)
   })
 
-  it('refuses a missing or unknown state rather than defaulting to active', () => {
+  it('accepts the unknown state, which the service reports while a change is unconfirmed', () => {
+    expect(() => assertAccount({ ...ACCOUNT, state: 'unknown' })).not.toThrow()
+  })
+
+  it('refuses a missing or unrecognised state rather than defaulting to active', () => {
     // Defaulting would be silence about a stop that IS happening, at the one moment
     // this page's whole job is to say why nothing works.
     expect(() => assertAccount({ orgId: 'org1', balanceMicro: 0, lowBalanceMicro: 0 })).toThrow(BillingShapeError)

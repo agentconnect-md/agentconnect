@@ -62,6 +62,9 @@ function fmtWhen(iso: string): string {
  *  cannot establish — a deployment with no gateway configured has plenty of orgs at zero
  *  and nothing stopping any of them.
  *
+ *  `unknown` is its own answer, not a fallback: while a change of decision is unconfirmed
+ *  at the gateway the service cannot support either of the others, so neither can this.
+ *
  *  Low balance is the opposite: it IS a presentation decision, so the service sends the
  *  threshold and this decides. `lowBalanceMicro: 0` means the deployment configured no
  *  warning, and 0 also falls out of the comparison on its own. */
@@ -70,6 +73,16 @@ function BalanceState({ acct }: { acct: BillingAccount }) {
     return (
       <div className="mt-1 font-sans text-[12px] font-medium leading-normal text-(--status-error)">
         Suspended — add credit to resume access
+      </div>
+    )
+  }
+  if (acct.state === 'unknown') {
+    // Said plainly rather than guessed either way. The service reports this while a change
+    // of decision is still unconfirmed at the gateway, and it clears on its own — so this
+    // is deliberately not styled as an error.
+    return (
+      <div className="mt-1 font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+        Confirming access status…
       </div>
     )
   }

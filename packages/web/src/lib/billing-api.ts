@@ -38,11 +38,14 @@ export interface BillingAccount {
   orgId: string
   /** Credit posted minus usage billed. One definition, settled facts only. */
   balanceMicro: number
-  /** Whether the gateway is refusing this org's traffic right now. The service decides
-   *  this from its own decision AND the gateway's confirmation of it — do NOT re-derive
-   *  it from `balanceMicro`, which would claim something about the gateway from a number
-   *  that may not have reached it. */
-  state: 'active' | 'suspended'
+  /** What the gateway is doing to this org right now. Do NOT re-derive it from
+   *  `balanceMicro`, which would claim something about the gateway from a number that may
+   *  not have reached it.
+   *
+   *  `unknown` is a real answer and not a placeholder: a write whose outcome was lost may
+   *  or may not have taken effect, so while a change of decision is unconfirmed the
+   *  service cannot support either of the other two. It clears on its own. */
+  state: 'active' | 'suspended' | 'unknown'
   /** Warn below this balance. 0 ⇒ no warning is configured for this deployment. */
   lowBalanceMicro: number
 }
@@ -149,7 +152,9 @@ export function assertAccount(body: unknown): asserts body is BillingAccount {
   // silence about a stop that IS happening, and this page's whole job in that moment is
   // to say why nothing works. An unknown value is refused for the same reason — a state
   // this build cannot interpret must not render as "everything is fine".
-  if (b.state !== 'active' && b.state !== 'suspended') throw new BillingShapeError('account')
+  if (b.state !== 'active' && b.state !== 'suspended' && b.state !== 'unknown') {
+    throw new BillingShapeError('account')
+  }
   if (!isFiniteNumber(b.lowBalanceMicro)) throw new BillingShapeError('account')
 }
 
