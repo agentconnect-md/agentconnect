@@ -1,5 +1,5 @@
 import type { MemoryPluginOperation } from '@agentconnect.md/protocol'
-import { obj, type ToolDescriptor } from '../mcp/tool-descriptor.js'
+import { obj, type ToolDescriptor } from '../tool-schema/descriptor.js'
 
 /** Refusal surfaced to the model when an isolated session tries to access agent memory shared with other users. */
 export const MEMORY_ACCESS_BLOCKED =

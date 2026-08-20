@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { SEND_MESSAGE_BRANCHES, TOOL_ARG_SCHEMAS } from '../src/mcp/ops.js'
 import { GITHUB_REVIEW_TOOLS, RETIRED_ORCHESTRATION_TOOLS, toolsForIntegrations } from '../src/mcp/tools.js'
 import { externalMemoryTools } from '../src/memory/tools.js'
-import type { ToolDescriptor } from '../src/mcp/tool-descriptor.js'
+import type { ToolDescriptor } from '../src/tool-schema/descriptor.js'
 import type { Integration } from '../src/agents/agent-schema.js'
 
 /**

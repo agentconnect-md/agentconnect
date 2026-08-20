@@ -10,7 +10,7 @@
  *
  * THE NAME IS FROZEN — see the note on Slack's sibling module.
  */
-import type { ToolDescriptor } from '../../mcp/tool-descriptor.js'
+import type { ToolDescriptor } from '../../tool-schema/descriptor.js'
 
 export const TELEGRAM_ATTACHMENT_TOOL: ToolDescriptor = {
   name: 'readTelegramFile',

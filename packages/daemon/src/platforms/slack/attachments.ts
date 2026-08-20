@@ -11,7 +11,7 @@
  * shared resource_link points at, and what warm ACP sessions already carry in
  * their descriptor list. The injection mechanism generalized; the name did not.
  */
-import type { ToolDescriptor } from '../../mcp/tool-descriptor.js'
+import type { ToolDescriptor } from '../../tool-schema/descriptor.js'
 
 export const SLACK_ATTACHMENT_TOOL: ToolDescriptor = {
   name: 'readSlackFile',

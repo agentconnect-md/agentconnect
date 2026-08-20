@@ -37,7 +37,7 @@
  * names do not move. They live in their platform's own module now, which is the
  * whole point — core no longer knows that either name exists.
  */
-import type { ToolDescriptor } from '../mcp/tool-descriptor.js'
+import type { ToolDescriptor } from '../tool-schema/descriptor.js'
 import { SLACK_ATTACHMENT_TOOL } from './slack/attachments.js'
 import { TELEGRAM_ATTACHMENT_TOOL } from './telegram/attachments.js'
 

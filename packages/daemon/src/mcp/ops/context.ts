@@ -1,6 +1,6 @@
 import type { MemoryWriteSource } from '../../memory/store.js'
 import type { MemoryScope } from '../../memory/types.js'
-import type { ToolDescriptor } from '../tool-descriptor.js'
+import type { ToolDescriptor } from '../../tool-schema/descriptor.js'
 
 /**
  * The platform-neutral slice a session's tools need. `SlackConnection` and

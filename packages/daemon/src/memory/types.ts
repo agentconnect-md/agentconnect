@@ -10,7 +10,7 @@ import type {
   MemoryPluginOperation
 } from '@agentconnect.md/protocol'
 import type { RuntimeDef } from '../config/config-schema.js'
-import type { ToolDescriptor } from '../mcp/tool-descriptor.js'
+import type { ToolDescriptor } from '../tool-schema/descriptor.js'
 import type { MemoryWriteSource, ManagedMemoryHistoryPage } from './store.js'
 import type { DistillationTurn } from './distill.js'
 
