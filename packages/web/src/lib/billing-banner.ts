@@ -54,18 +54,18 @@ export function balanceBanner(
       cta: 'Add credits'
     }
   }
+  // Hoisted to a plain number so nothing below needs narrowing, and `> 0` covers absent, null,
+  // zero and the nonsense negative in one comparison.
+  const threshold = acct.lowBalanceMicro ?? 0
   // Ahead of the unconfirmed case: a known actionable fact outranks the absence of news, and
   // `unknown` is reported DURING a suspension decision — exactly when a balance is near its
   // threshold, which is when this line is worth the most.
-  // `> 0` and not truthiness: a negative threshold is truthy and would render "below -$5.00".
-  // The leading conjunct is NOT redundant with it — under `strict` this field is
-  // `number | null | undefined`, and the `&&` is what narrows it before the comparison.
-  if (acct.lowBalanceMicro && acct.lowBalanceMicro > 0 && acct.balanceMicro < acct.lowBalanceMicro) {
+  if (threshold > 0 && acct.balanceMicro < threshold) {
     return {
       tone: 'amber',
       icon: 'triangle-alert',
       title: `Low balance — ${fmtMicroUsd(acct.balanceMicro)} remaining`,
-      text: `This balance is below the ${fmtMicroUsd(acct.lowBalanceMicro)} alert threshold. Agents keep serving until it reaches zero.`,
+      text: `This balance is below the ${fmtMicroUsd(threshold)} alert threshold. Agents keep serving until it reaches zero.`,
       cta: 'Add credits'
     }
   }
