@@ -21,8 +21,11 @@ import {
   fetchBillingTransactions,
   fmtDecimalUsd,
   fmtMicroUsd,
-  type BillingPurchase
+  type BillingAccount,
+  type BillingPurchase,
+  type BillingTransaction
 } from '@/lib/billing-api'
+import { balanceBanner, ledgerHistory } from '@/lib/billing-banner'
 import { featureFlagEnabled } from '@/lib/feature-flags'
 import { useOrgs } from '@/lib/org-context'
 import { consoleKeys } from '@/lib/swr-keys'
@@ -30,13 +33,28 @@ import { LoadingState } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 
 // `.row` is a bare grid — the column template is the caller's, as a full literal.
-const TX_GRID = 'grid-cols-[1fr_110px] gap-3'
+// Design columns: direction chip · description · amount · posted. Mobile scrolls the
+// card sideways (globals' `.card:has(.row)`), so one fixed template serves both.
+const TX_GRID = 'grid-cols-[34px_minmax(0,1fr)_132px_168px] gap-2'
 
 const KIND_LABEL: Record<string, string> = {
   purchase: 'Credit purchase',
   adjustment: 'Adjustment',
   promo: 'Promotional credit',
   refund: 'Refund'
+}
+
+// The gateway's own call, as the design's balance-card status pill. No `state` ⇒ no pill.
+const STATE_PILL: Record<NonNullable<BillingAccount['state']>, { label: string; color: string }> = {
+  active: { label: 'Serving', color: 'var(--status-online)' },
+  suspended: { label: 'Suspended', color: 'var(--status-error)' },
+  unknown: { label: 'Unconfirmed', color: 'var(--status-info)' }
+}
+
+/** Design's Posted (UTC) column: `YYYY-MM-DD HH:mm`. */
+function fmtPostedUtc(iso: string): string {
+  const d = new Date(iso)
+  return Number.isNaN(d.getTime()) ? iso : d.toISOString().slice(0, 16).replace('T', ' ')
 }
 
 const PRESETS_USD = [10, 50, 100]
@@ -46,14 +64,69 @@ const MAX_USD = PURCHASE_MAX_MICRO / 1_000_000
 const POLL_INTERVAL_MS = 2_500
 const POLL_MAX_ATTEMPTS = 120
 
-function fmtWhen(iso: string): string {
-  return new Date(iso).toLocaleString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit'
-  })
+// Complete literal class strings, never assembled from fragments: Tailwind's scanner only
+// sees whole literals, and `tone` is a closed union of four compile-time constants, so
+// nothing here is the data-derived value rule 8's inline carve-out is for.
+// Glyph colour is per-tone because the chips do not all carry white. The chips stay mid-tone
+// in both themes while `--text-primary` flips to near-white in dark, which would make the fix
+// worse than the bug (amber would go 1.78:1). Contrast against the chip, light / dark, against
+// the 3:1 non-text threshold:
+//
+//   brand  white 5.25 / 5.25      ✓ white
+//   red    white 4.08 / 3.01      ✓ white, but dark mode is at the line — if the red
+//                                 palette is ever nudged lighter, this needs `--gray-900` too
+//   amber  white 2.52 / 2.05  ✗   → --gray-900: 6.44 / 7.90
+//   blue   white 4.55 / 2.85      ✓ white — the design canvas carries white here, and the
+//                                 dark glyph read WORSE in practice (near-invisible on the
+//                                 mid blue) than the numeric dark-mode shortfall it fixed
+//
+// `--gray-900`, not the hex it resolves to, and not `--text-primary`: the palette entry is
+// theme-stable (the dark block remaps only the semantic layer above it), which is exactly the
+// property the amber chip needs.
+const BALANCE_TONE = {
+  brand: { card: 'bg-(--brand-soft) border-(--brand)', chip: 'bg-(--brand)', glyph: '#fff' },
+  red: { card: 'bg-(--status-error-soft) border-(--status-error)', chip: 'bg-(--status-error)', glyph: '#fff' },
+  amber: {
+    card: 'bg-(--status-paused-soft) border-(--status-paused)',
+    chip: 'bg-(--status-paused)',
+    glyph: 'var(--gray-900)'
+  },
+  blue: { card: 'bg-(--status-info-soft) border-(--status-info)', chip: 'bg-(--status-info)', glyph: '#fff' }
+} as const
+
+function BalanceBannerCard({
+  acct,
+  hasHistory,
+  canPay,
+  onAddCredits
+}: {
+  acct: BillingAccount
+  hasHistory: boolean | null
+  canPay: boolean
+  onAddCredits: () => void
+}) {
+  const banner = balanceBanner(acct, { hasHistory })
+  if (!banner) return null
+  const tone = BALANCE_TONE[banner.tone]
+  return (
+    <div className={`mb-[18px] flex items-start gap-3 rounded-[10px] border px-4 py-3.5 ${tone.card}`}>
+      <span className={`flex h-7 w-7 flex-none items-center justify-center rounded-lg ${tone.chip}`}>
+        <Icon name={banner.icon} size={16} color={tone.glyph} />
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="font-sans text-[13px] font-semibold leading-normal">{banner.title}</div>
+        <div className="mt-1 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary)">
+          {banner.text}
+        </div>
+        {/* Only owners move money — the service enforces it; this just doesn't offer a refused form. */}
+        {banner.cta && canPay && (
+          <Button size="sm" className="mt-2.5" onClick={onAddCredits}>
+            {banner.cta}
+          </Button>
+        )}
+      </div>
+    </div>
+  )
 }
 
 function Notice({ title, body }: { title: string; body: string }) {
@@ -234,7 +307,7 @@ function AddCreditsCard({ orgId, returnPath }: { orgId: string; returnPath: stri
   }
 
   return (
-    <div className="card flex flex-col">
+    <div id="add-credits" className="card flex flex-col">
       <div className="cardhead">
         <span className="cardtitle">Add credits</span>
       </div>
@@ -261,14 +334,20 @@ function AddCreditsCard({ orgId, returnPath }: { orgId: string; returnPath: stri
               </button>
             )
           })}
+          {/* Focus lands on the inner input, so the wrapper carries the console's
+              input focus look via focus-within; invalid keeps the red border either way. */}
           <div
-            className="flex h-[38px] items-center gap-1.5 rounded-[6px] border px-2.5"
-            style={{ borderColor: invalidCustom ? 'var(--status-error)' : 'var(--border-default)' }}
+            className={`flex h-[38px] items-center gap-1.5 rounded-[6px] border px-2.5 ${
+              invalidCustom
+                ? 'border-(--status-error)'
+                : 'border-(--border-default) focus-within:border-(--border-focus) focus-within:shadow-[0_0_0_3px_var(--brand-ring)]'
+            }`}
           >
             <span className="mono text-[12.5px] text-(--text-tertiary)">$</span>
             <input
               value={custom}
-              onChange={(e) => setCustom(e.target.value)}
+              // Digits and one dot only — anything else never enters the state.
+              onChange={(e) => setCustom(e.target.value.replace(/[^0-9.]/g, '').replace(/(\..*)\./g, '$1'))}
               placeholder="Other"
               inputMode="decimal"
               aria-label="Custom amount in USD"
@@ -347,6 +426,14 @@ export default function BillingView() {
   const transactions = useSWR(fetching ? consoleKeys.billingTransactions(orgId) : null, () =>
     fetchBillingTransactions(orgId!)
   )
+
+  // Pages past the first, keyed to their org so a switch drops them without an effect.
+  // SWR owns page one (and revalidates it); this only ever appends behind it.
+  const [tail, setTail] = useState<{ orgId: string; items: BillingTransaction[]; nextCursor: string | null } | null>(
+    null
+  )
+  const [loadingMore, setLoadingMore] = useState(false)
+  const [tailError, setTailError] = useState<string | null>(null)
 
   // The return from Stripe. Claimed once from the URL, which is then cleaned so
   // a refresh or a shared link does not replay the banner.
@@ -438,6 +525,41 @@ export default function BillingView() {
 
   const acct = account.data
 
+  // Page one from SWR plus the appended tail, deduped: a revalidated page one can
+  // grow into rows the tail already fetched.
+  const tailItems = tail && tail.orgId === orgId ? tail.items : []
+  const firstIds = new Set(transactions.data?.items.map((t) => t.id))
+  const txItems = transactions.data ? [...transactions.data.items, ...tailItems.filter((t) => !firstIds.has(t.id))] : []
+  const nextCursor = tail && tail.orgId === orgId ? tail.nextCursor : (transactions.data?.nextCursor ?? null)
+
+  const loadMore = async () => {
+    if (!nextCursor || loadingMore) return
+    setLoadingMore(true)
+    setTailError(null)
+    try {
+      const page = await fetchBillingTransactions(orgId, nextCursor)
+      setTail({ orgId, items: [...tailItems, ...page.items], nextCursor: page.nextCursor })
+    } catch (e) {
+      setTailError((e as Error).message)
+    }
+    setLoadingMore(false)
+  }
+
+  // Design's balance-card stats, from what the wire actually carries: the latest debit
+  // comes off the loaded ledger, the threshold off the account. The design's
+  // "Billed this period" needs a service field that does not exist — still out.
+  const lastDebit = txItems.find((t) => t.type === 'debit')
+  const thresholdMicro = acct?.lowBalanceMicro ?? 0
+  const threshold = thresholdMicro > 0 ? fmtMicroUsd(thresholdMicro) : '—'
+  // Design: still Serving below the threshold, but the pill turns amber with the banner.
+  const lowBalance = acct != null && thresholdMicro > 0 && acct.balanceMicro < thresholdMicro
+  const pill =
+    acct?.state === 'active' && lowBalance
+      ? { label: 'Serving', color: 'var(--status-paused)' }
+      : acct?.state != null
+        ? STATE_PILL[acct.state]
+        : null
+
   return (
     <div className="wrap">
       <div className="mb-4 flex min-h-[34px] items-center gap-4">
@@ -470,13 +592,58 @@ export default function BillingView() {
 
       {acct && (
         <>
-          <div className="mb-4 grid items-stretch gap-4 desktop:grid-cols-2">
+          <BalanceBannerCard
+            acct={acct}
+            hasHistory={ledgerHistory(transactions.data)}
+            canPay={myRole === 'owner'}
+            // The banner's CTA leads INTO the inline form (the design's modal equivalent):
+            // scroll to it, blink the card, and land focus in the amount field.
+            onAddCredits={() => {
+              const card = document.getElementById('add-credits')
+              if (!card) return
+              // A scripted scroll dodges the CSS reduced-motion block, so honor it here.
+              // 'instant', not 'auto': auto defers to CSS scroll-behavior, instant never animates.
+              const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+              card.scrollIntoView({ behavior: reduced ? 'instant' : 'smooth', block: 'center' })
+              card.querySelector('input')?.focus({ preventScroll: true })
+              card.classList.remove('card-flash')
+              void card.offsetWidth // restart the animation on repeat clicks
+              card.classList.add('card-flash')
+            }}
+          />
+          <div className="mb-[18px] grid items-stretch gap-[18px] desktop:grid-cols-2">
             {/* One figure, no in-flight caveat: v1 has no hold layer, so the balance
-                is every reconciliation fact there is. A suspended/low-balance badge
-                belongs here once the service can report a state at all. */}
-            <div className="card stat">
-              <div className="statlbl">Balance</div>
-              <div className="statval">{fmtMicroUsd(acct.balanceMicro)}</div>
+                is every reconciliation fact there is. */}
+            <div className="card">
+              <div className="cardhead justify-between">
+                <span className="cardtitle">Balance</span>
+                {pill && (
+                  <span className="inline-flex items-center gap-[7px]">
+                    <span className="h-[7px] w-[7px] rounded-full" style={{ background: pill.color }} />
+                    <span className="font-sans text-[12px] font-medium leading-normal" style={{ color: pill.color }}>
+                      {pill.label}
+                    </span>
+                  </span>
+                )}
+              </div>
+              <div className="px-[18px] pt-[22px] pb-5">
+                <div className="flex items-end gap-3.5">
+                  <span className="mono text-[44px] leading-none font-semibold tracking-[-0.02em]">
+                    {fmtMicroUsd(acct.balanceMicro)}
+                  </span>
+                  <span className="mono pb-1.5 text-[12px] text-(--text-tertiary)">USD</span>
+                </div>
+                <div className="mt-5 flex gap-[26px] border-t border-(--border-subtle) pt-4">
+                  <div>
+                    <div className="eyebrow">Last deduction</div>
+                    <div className="mono mt-[5px] text-[13px]">{lastDebit ? fmtPostedUtc(lastDebit.at) : '—'}</div>
+                  </div>
+                  <div>
+                    <div className="eyebrow">Alert threshold</div>
+                    <div className="mono mt-[5px] text-[13px]">{threshold}</div>
+                  </div>
+                </div>
+              </div>
             </div>
             {/* Only owners move money — the service enforces it (403); the page
                 just doesn't offer members a form that would be refused. */}
@@ -488,8 +655,16 @@ export default function BillingView() {
           </div>
 
           <div className="card">
-            <div className="cardhead">
-              <span className="cardtitle">Transactions</span>
+            <div className="cardhead justify-between">
+              <span className="inline-flex items-baseline gap-2">
+                <span className="cardtitle">Transactions</span>
+                {transactions.data && (
+                  <span className="mono text-[11.5px] text-(--text-tertiary)">{txItems.length} loaded</span>
+                )}
+              </span>
+              <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+                Newest first · amounts in USD
+              </span>
             </div>
             {/* The two requests fail independently, so this card carries its own
                 error: a reachable account with an unreachable history would
@@ -508,33 +683,90 @@ export default function BillingView() {
               <div className="px-4 py-8 text-center font-sans text-[13px] font-normal leading-[1.55] text-(--text-tertiary)">
                 Loading…
               </div>
-            ) : transactions.data.items.length === 0 ? (
-              <div className="px-4 py-8 text-center font-sans text-[13px] font-normal leading-[1.55] text-(--text-secondary)">
-                No transactions yet.
+            ) : txItems.length === 0 ? (
+              <div className="flex flex-col items-center px-4 py-10 text-center">
+                <span className="flex h-11 w-11 items-center justify-center rounded-[11px] border border-(--border-subtle) bg-(--surface-sunken) text-(--text-tertiary)">
+                  <Icon name="receipt-text" size={20} />
+                </span>
+                <div className="mt-3 font-sans text-[14px] font-semibold leading-normal">No transactions yet</div>
+                <div className="mt-1 max-w-[340px] font-sans text-[12.5px] font-normal leading-[1.6] text-(--text-tertiary)">
+                  Purchases and usage deductions will appear here once your org is funded.
+                </div>
               </div>
             ) : (
-              transactions.data.items.map((t) => (
-                <div key={t.id} className={`row ${TX_GRID}`}>
-                  <span className="min-w-0">
-                    <span className="block truncate font-sans text-[13px] font-medium leading-normal">
-                      {t.type === 'debit' ? `Usage — ${t.period}` : (KIND_LABEL[t.kind] ?? t.kind)}
-                    </span>
-                    <span className="block font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                      {fmtWhen(t.at)}
-                    </span>
-                  </span>
-                  {/* A debit is recorded as a positive amount that was taken away, so
-                      the sign belongs here rather than in what the service sends. */}
-                  <span className="mono text-right text-[13px]">
-                    {t.type === 'debit' ? `-${fmtDecimalUsd(t.amount)}` : fmtMicroUsd(t.amountMicro)}
-                  </span>
+              <>
+                <div className={`row h rounded-none ${TX_GRID}`}>
+                  <span />
+                  <span>Description</span>
+                  <span className="text-right">Amount</span>
+                  <span>Posted (UTC)</span>
                 </div>
-              ))
-            )}
-            {transactions.data?.nextCursor && (
-              <div className="px-4 py-3 text-center font-sans text-[12px] font-normal leading-[1.55] text-(--text-tertiary)">
-                Showing the most recent transactions.
-              </div>
+                {txItems.map((t) => {
+                  const credit = t.type === 'credit'
+                  const positive = credit && t.amountMicro > 0
+                  return (
+                    <div key={t.id} className={`row ${TX_GRID}`}>
+                      <span
+                        className="flex h-[26px] w-[26px] items-center justify-center rounded-[7px]"
+                        style={
+                          positive
+                            ? { background: 'var(--status-online-soft)', color: 'var(--status-online)' }
+                            : { background: 'var(--surface-sunken)', color: 'var(--text-tertiary)' }
+                        }
+                      >
+                        <Icon name={credit ? 'arrow-down-left' : 'arrow-up-right'} size={14} strokeWidth={2} />
+                      </span>
+                      <span className="flex min-w-0 items-center gap-2">
+                        <span className="truncate font-sans text-[13px] font-medium leading-normal">
+                          {credit ? (KIND_LABEL[t.kind] ?? t.kind) : `Usage — ${t.period}`}
+                        </span>
+                        <span
+                          className="mono inline-flex h-[19px] flex-none items-center rounded-[4px] px-[7px] text-[10.5px] font-semibold tracking-[0.04em] uppercase"
+                          style={
+                            positive
+                              ? { background: 'var(--status-online-soft)', color: 'var(--status-online)' }
+                              : { background: 'var(--surface-active)', color: 'var(--text-secondary)' }
+                          }
+                        >
+                          {credit ? t.kind : 'usage'}
+                        </span>
+                      </span>
+                      {/* A debit is recorded as a positive amount that was taken away, so the
+                          sign belongs here. The rounded figure carries the exact wire string
+                          as its tooltip, dotted per the design. */}
+                      {credit ? (
+                        <span
+                          className="mono text-right text-[13px]"
+                          style={positive ? { color: 'var(--status-online)' } : undefined}
+                        >
+                          {positive ? `+${fmtMicroUsd(t.amountMicro)}` : fmtMicroUsd(t.amountMicro)}
+                        </span>
+                      ) : (
+                        <span className="mono text-right text-[13px]" title={`$${t.amount}`}>
+                          <span className="cursor-help border-b border-dotted border-(--border-strong)">
+                            -{fmtDecimalUsd(t.amount)}
+                          </span>
+                        </span>
+                      )}
+                      <span className="mono text-[12px] text-(--text-secondary)">{fmtPostedUtc(t.at)}</span>
+                    </div>
+                  )
+                })}
+                <div className="flex items-center justify-center gap-3 rounded-b-[10px] border-t border-(--border-subtle) bg-(--surface-app) px-4 py-3.5">
+                  {nextCursor ? (
+                    <Button size="sm" variant="secondary" disabled={loadingMore} onClick={() => void loadMore()}>
+                      {loadingMore ? 'Loading…' : 'Load more'}
+                    </Button>
+                  ) : (
+                    <span className="mono text-[11.5px] text-(--text-tertiary)">end of ledger</span>
+                  )}
+                  {tailError && (
+                    <span className="font-sans text-[12px] font-normal leading-normal text-(--status-error)">
+                      {tailError}
+                    </span>
+                  )}
+                </div>
+              </>
             )}
           </div>
         </>

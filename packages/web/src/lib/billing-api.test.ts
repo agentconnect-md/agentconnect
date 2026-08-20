@@ -23,9 +23,11 @@ const debit = {
   at: '2026-08-20T10:00:00.000Z'
 }
 
+const ACCOUNT = { orgId: 'org1', balanceMicro: 0, state: 'active', lowBalanceMicro: 0 }
+
 describe('assertAccount', () => {
   it('accepts the documented shape', () => {
-    expect(() => assertAccount({ orgId: 'org1', balanceMicro: 0 })).not.toThrow()
+    expect(() => assertAccount({ orgId: 'org1', balanceMicro: 0, state: 'active', lowBalanceMicro: 0 })).not.toThrow()
   })
 
   it('refuses a missing balance rather than letting undefined reach the formatter', () => {
@@ -36,8 +38,37 @@ describe('assertAccount', () => {
   })
 
   it('refuses a non-finite balance', () => {
-    expect(() => assertAccount({ orgId: 'org1', balanceMicro: Number.NaN })).toThrow(BillingShapeError)
-    expect(() => assertAccount({ orgId: 'org1', balanceMicro: '25' })).toThrow(BillingShapeError)
+    expect(() => assertAccount({ ...ACCOUNT, balanceMicro: Number.NaN })).toThrow(BillingShapeError)
+    expect(() => assertAccount({ ...ACCOUNT, balanceMicro: '25' })).toThrow(BillingShapeError)
+  })
+
+  it('accepts the unknown state, which the service reports while a change is unconfirmed', () => {
+    expect(() => assertAccount({ ...ACCOUNT, state: 'unknown' })).not.toThrow()
+  })
+
+  it('tolerates a null state the same way it tolerates an absent one', () => {
+    // The two checks in this function must read the same way; `null` is the natural
+    // serialization if the service ever models "no gateway configured" explicitly.
+    expect(() => assertAccount({ ...ACCOUNT, state: null })).not.toThrow()
+  })
+
+  it('accepts an account from a service that predates `state`, and claims nothing', () => {
+    // This side deploys ahead of the service routinely, and throwing would cost the balance
+    // figure AND the Add-credits card — the one control a suspended org needs.
+    expect(() => assertAccount({ orgId: 'org1', balanceMicro: 0 })).not.toThrow()
+  })
+
+  it('refuses an UNRECOGNISED state — it must not render as “everything is fine”', () => {
+    expect(() => assertAccount({ ...ACCOUNT, state: 'closed' })).toThrow(BillingShapeError)
+  })
+
+  it('reads an absent or null threshold as “no warning”, never as a broken account', () => {
+    // `null` is the natural serialization of a nullable "no threshold configured" value, and
+    // a presentation hint must not be able to take the whole card down.
+    expect(() => assertAccount({ orgId: 'org1', balanceMicro: 0, state: 'active' })).not.toThrow()
+    expect(() => assertAccount({ ...ACCOUNT, lowBalanceMicro: null })).not.toThrow()
+    // A threshold that is present but unusable is still refused.
+    expect(() => assertAccount({ ...ACCOUNT, lowBalanceMicro: 'ten' })).toThrow(BillingShapeError)
   })
 
   it('refuses null and non-objects', () => {
@@ -146,5 +177,22 @@ describe('fmtDecimalUsd', () => {
 
   it('shows the raw string rather than $NaN when it is not a number', () => {
     expect(fmtDecimalUsd('twelve')).toBe('$twelve')
+  })
+
+  it('keeps four significant digits under a dollar — a nonzero charge is never a bare $0.00', () => {
+    expect(fmtDecimalUsd('0.001234567890123456')).toBe('$0.001235')
+    expect(fmtDecimalUsd('0.4821')).toBe('$0.4821')
+    expect(fmtDecimalUsd('0.000098')).toBe('$0.000098')
+  })
+
+  it('pads back to cents so $0.10 lines up with fmtMicroUsd amounts in the same column', () => {
+    expect(fmtDecimalUsd('0.10')).toBe('$0.10')
+    expect(fmtDecimalUsd('0.5')).toBe('$0.50')
+    expect(fmtDecimalUsd('0.2')).toBe('$0.20')
+  })
+
+  it('keeps the sign outside the symbol, matching fmtMicroUsd', () => {
+    expect(fmtDecimalUsd('-0.5')).toBe('-$0.50')
+    expect(fmtDecimalUsd('-0.001234')).toBe('-$0.001234')
   })
 })

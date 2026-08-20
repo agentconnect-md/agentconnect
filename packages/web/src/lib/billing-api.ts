@@ -38,6 +38,10 @@ export interface BillingAccount {
   orgId: string
   /** Credit posted minus usage billed. One definition, settled facts only. */
   balanceMicro: number
+  /** The gateway's own call, never re-derived from `balanceMicro`. Absent or null ⇒ an older service. */
+  state?: 'active' | 'suspended' | 'unknown' | null
+  /** Warn below this balance. 0, absent or null ⇒ no warning configured. */
+  lowBalanceMicro?: number | null
 }
 
 // The history merges both ledger sides, so a row is one of two shapes and `type` says
@@ -143,6 +147,12 @@ function isFiniteNumber(v: unknown): boolean {
 export function assertAccount(body: unknown): asserts body is BillingAccount {
   const b = body as Partial<BillingAccount> | null
   if (!b || typeof b.orgId !== 'string' || !isFiniteNumber(b.balanceMicro)) throw new BillingShapeError('account')
+  // Unrecognised is refused; absent or null is an older service, and the page claims nothing.
+  if (b.state != null && b.state !== 'active' && b.state !== 'suspended' && b.state !== 'unknown') {
+    throw new BillingShapeError('account')
+  }
+  // A hint with a documented off value: throwing would drop the card AND the Add-credits form.
+  if (b.lowBalanceMicro != null && !isFiniteNumber(b.lowBalanceMicro)) throw new BillingShapeError('account')
 }
 
 export function assertPurchase(body: unknown): asserts body is BillingPurchase {
@@ -282,15 +292,26 @@ export async function fetchBillingPurchase(orgId: string, id: string): Promise<B
 
 const MICRO_PER_USD = 1_000_000
 
-/** Render microUSD as dollars. Display only — never a step in a calculation. */
 /** A decimal-string amount, for display only. `Number` is fine HERE and only here: the
- *  value shown is rounded to cents anyway and the exact string stays untouched in the
- *  data. Never feed the result back to the service. */
+ *  shown value is a rounding of the exact string, which stays untouched in the data.
+ *  Never feed the result back to the service. Cents above $1; below it, four significant
+ *  digits (design: a nonzero charge must never render as a bare $0.00). */
 export function fmtDecimalUsd(amount: string): string {
   const n = Number(amount)
-  return Number.isFinite(n) ? fmtMicroUsd(n * MICRO_PER_USD) : `$${amount}`
+  if (!Number.isFinite(n)) return `$${amount}`
+  if (Math.abs(n) >= 1) return fmtMicroUsd(n * MICRO_PER_USD)
+  const zeros = /^-?0\.(0*)[1-9]/.exec(amount)
+  if (!zeros) return fmtMicroUsd(n * MICRO_PER_USD)
+  // Fraction padded back to at least cents so $0.10 lines up with fmtMicroUsd's
+  // $0.50 in the same column; the sign stays outside the symbol for the same reason.
+  const out = Math.abs(n)
+    .toFixed(Math.min(zeros[1]!.length + 4, 18))
+    .replace(/0+$/, '')
+  const [int, frac = ''] = out.split('.')
+  return `${n < 0 ? '-' : ''}$${int}.${frac.padEnd(2, '0')}`
 }
 
+/** Render microUSD as dollars. Display only — never a step in a calculation. */
 export function fmtMicroUsd(micro: number): string {
   const sign = micro < 0 ? '-' : ''
   return `${sign}$${(Math.abs(micro) / MICRO_PER_USD).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
