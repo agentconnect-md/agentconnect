@@ -8,6 +8,7 @@ import { prisma } from '../setup.db.js'
 import { seedAgent, seedDaemon, seedSessionMeta } from '../fixtures/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { PullRequestViewService } from '../../src/github/pull-request-view.service.js'
+import { SessionPullRequestLinkService } from '../../src/github/session-pull-request-link.service.js'
 import { GitCredDeniedError, type GithubService } from '../../src/github/service.js'
 import type { InstallationTokenService } from '../../src/github/installation-token.service.js'
 import type { FetchLike } from '../../src/github/api.js'
@@ -120,10 +121,16 @@ function fullAnswer() {
   }
 }
 
-function app(view?: PullRequestViewService, userId?: string, github?: GithubService): HttpApp {
+function app(
+  view?: PullRequestViewService,
+  userId?: string,
+  github?: GithubService,
+  sessionPullRequestLink?: SessionPullRequestLinkService
+): HttpApp {
   const running = buildHttpApp(prisma, userId ? { DEFAULT_OWNER_ID: userId } : undefined, undefined, undefined, {
     ...(view ? { pullRequestView: view } : {}),
-    ...(github ? { github } : {})
+    ...(github ? { github } : {}),
+    ...(sessionPullRequestLink ? { sessionPullRequestLink } : {})
   })
   opened.push(running)
   return running
@@ -236,7 +243,10 @@ describe('GET /sessions/:id/pull-request', () => {
       canArmAutoMerge: false,
       degraded: false,
       degradedReason: null,
-      agentReview: null
+      agentReview: null,
+      linkedBy: 'run',
+      linkBranch: null,
+      linkAmbiguous: false
     })
     expect(github.calls).toHaveLength(1)
     expect(github.mint).toHaveBeenCalledWith(INSTALLATION, REPO, REPO_ID)
@@ -562,5 +572,124 @@ describe('POST /sessions/:id/pull-request/auto-merge', () => {
     expect(res.statusCode).toBe(404)
     expect(res.json()).toEqual(NOT_FOUND)
     expect(github.calls).toHaveLength(0)
+  })
+})
+
+// §12.6's SECOND identity source: the pull request this session worktree's own head branch has, for a
+// session no pull-request run owns — the case a PR the agent opened mid-conversation always lands in.
+describe('GET /sessions/:id/pull-request — the head-branch link', () => {
+  const BRANCH = 'dev/jane/panel'
+
+  // The link service as the route sees it: a scripted daemon branch read plus the `pulls` REST list.
+  function linkStub(opts: { branch?: string | null; pulls?: unknown[] } = {}) {
+    const calls: string[] = []
+    const fetch: FetchLike = async (url) => {
+      calls.push(String(url))
+      return new Response(JSON.stringify(opts.pulls ?? [{ number: PULL, state: 'open', head: { ref: BRANCH } }]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    }
+    const links = new SessionPullRequestLinkService({
+      clock: systemClock,
+      github: {
+        resolveWorkspaceRepo: async () => ({ repoId: REPO_ID, repoFullName: REPO, installationId: INSTALLATION })
+      } as unknown as GithubService,
+      tokens: { mintPullRequestRead: async () => ({ token: 'ghs_link' }) } as unknown as InstallationTokenService,
+      readSessionBranch: async () => (opts.branch === undefined ? BRANCH : opts.branch),
+      fetchImpl: fetch
+    })
+    return { links, calls }
+  }
+
+  // Only a session-isolated worktree HAS a branch of its own — the same gate the console applies.
+  async function seedSessionWorktree(): Promise<string> {
+    const session = await seedAgentAndSession()
+    await prisma.sessionMeta.update({ where: { id: session }, data: { workspaceIsolation: 'session' } })
+    return session
+  }
+
+  it('links the pull request the branch has, and says which source named it', async () => {
+    const session = await seedSessionWorktree()
+    const github = githubStub([graphqlOk(fullAnswer())])
+    const link = linkStub()
+    const running = app(github.view, undefined, undefined, link.links)
+
+    const res = await running.app.inject({ method: 'GET', url: `${ORG}/sessions/${session}/pull-request` })
+
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toMatchObject({
+      repoFullName: REPO,
+      pullNumber: PULL,
+      degraded: false,
+      linkedBy: 'head-branch',
+      linkBranch: BRANCH,
+      linkAmbiguous: false
+    })
+    // One REST list for identity, then the same single GraphQL projection a run-linked PR spends.
+    expect(link.calls).toHaveLength(1)
+    expect(link.calls[0]).toContain(`head=${encodeURIComponent(`acme:${BRANCH}`)}`)
+    expect(github.calls).toHaveLength(1)
+  })
+
+  it('reports the ambiguity when the branch has more than one open pull request', async () => {
+    const session = await seedSessionWorktree()
+    const github = githubStub([graphqlOk(fullAnswer())])
+    const link = linkStub({
+      pulls: [
+        { number: 9, state: 'open', head: { ref: BRANCH } },
+        { number: PULL, state: 'open', head: { ref: BRANCH } }
+      ]
+    })
+    const running = app(github.view, undefined, undefined, link.links)
+
+    const res = await running.app.inject({ method: 'GET', url: `${ORG}/sessions/${session}/pull-request` })
+
+    expect(res.json()).toMatchObject({ pullNumber: PULL, linkAmbiguous: true, linkBranch: BRANCH })
+  })
+
+  it('still 404s when the branch has no pull request — the panel keeps its create action', async () => {
+    const session = await seedSessionWorktree()
+    const github = githubStub([])
+    const link = linkStub({ pulls: [] })
+    const running = app(github.view, undefined, undefined, link.links)
+
+    const res = await running.app.inject({ method: 'GET', url: `${ORG}/sessions/${session}/pull-request` })
+
+    expect(res.statusCode).toBe(404)
+    expect(res.json()).toEqual(NOT_FOUND)
+    expect(github.calls).toHaveLength(0)
+  })
+
+  it('prefers the owning run and never asks the branch — the run carries review facts a branch cannot', async () => {
+    const session = await seedSessionWorktree()
+    await seedPullRequestRun(session)
+    const github = githubStub([graphqlOk(fullAnswer())])
+    const link = linkStub()
+    const running = app(github.view, undefined, undefined, link.links)
+
+    const res = await running.app.inject({ method: 'GET', url: `${ORG}/sessions/${session}/pull-request` })
+
+    expect(res.json()).toMatchObject({ linkedBy: 'run', linkBranch: null })
+    expect(link.calls).toHaveLength(0)
+  })
+
+  it('arms auto-merge on a branch-linked session, under that session’s own agent', async () => {
+    const session = await seedSessionWorktree()
+    const github = githubStub([
+      graphqlOk({ data: { repository: { pullRequest: { id: 'PR_node1', autoMergeRequest: null } } } }),
+      graphqlOk({ data: { enablePullRequestAutoMerge: { clientMutationId: null } } })
+    ])
+    const link = linkStub()
+    const running = app(github.view, undefined, fakeGithub(), link.links)
+
+    const res = await running.app.inject({
+      method: 'POST',
+      url: `${ORG}/sessions/${session}/pull-request/auto-merge`,
+      payload: { enabled: true }
+    })
+
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual({ armed: true })
   })
 })

@@ -43,6 +43,7 @@ vi.mock('@/lib/api', () => {
   }
 })
 
+import { PR_POLL_MS } from './auto-refresh'
 import {
   PR_LINK_RETRY_LADDER_MS,
   PullRequestPanel,
@@ -281,10 +282,10 @@ describe('PullRequestPanel verdicts', () => {
     expect(posted[0]).toContain('against release')
   })
 
-  it('stops presenting creation as fresh once asked, and says why this tab may never link the result', async () => {
-    // The probe identifies a PR through the run that owns the session, and an agent opening one from a
-    // conversation creates no such run — so the 404 outlives the pull request. Re-offering "Create pull
-    // request" against that state is what invited a second PR for the same branch.
+  it('stops presenting creation as fresh once asked, and says what the link still waits on', async () => {
+    // The PR is found through this worktree's head branch, so it appears once the branch is pushed and a
+    // pull request exists for it — not the instant the agent replies. Re-offering "Create pull request"
+    // against that state is what invited a second PR for the same branch.
     wire.failure = { status: 404 }
     const posted: string[] = []
     await render({ branch: 'dev/jane-doe/candid-lynx', tracking: null, onPostTurn: accept(posted) })
@@ -298,7 +299,7 @@ describe('PullRequestPanel verdicts', () => {
 
     await rerender({ branch: 'dev/jane-doe/candid-lynx', tracking: null, onPostTurn: accept(posted) })
     expect(container?.querySelector('[data-pr-create-requested]')?.textContent).toContain(
-      'links one only when a review run owns the session'
+      'links it once the branch is pushed and a pull request exists'
     )
     expect(container?.querySelector('[data-pr-create]')?.textContent).toContain('Ask again')
   })
@@ -407,6 +408,21 @@ describe('PullRequestPanel body', () => {
     expect(link?.textContent).toContain('View on GitHub')
   })
 
+  it('names the pick when a branch-resolved link is ambiguous, and stays silent when it is not', async () => {
+    // A run-linked PR is unique by construction; a branch's is not — several open PRs on one head are all
+    // equally "this session's", so the panel says which one it drew rather than picking silently.
+    await render()
+    expect(container?.querySelector('[data-pr-link-ambiguous]')).toBeNull()
+
+    // A scope switch is what re-reads: the answer is held per session, so a new id is how the second
+    // shape reaches the panel at all.
+    wire.data = pr({ linkedBy: 'head-branch', linkBranch: 'dev/jane-doe/candid-lynx', linkAmbiguous: true })
+    await rerender({ sessionId: 'session-2' })
+    expect(container?.querySelector('[data-pr-link-ambiguous]')?.textContent).toContain(
+      'Branch dev/jane-doe/candid-lynx has more than one open pull request'
+    )
+  })
+
   it('draws each check with its own state marker and a duration only where both ends exist', async () => {
     await render()
     const checks = Array.from(container?.querySelectorAll<HTMLElement>('[data-pr-check]') ?? [])
@@ -498,10 +514,12 @@ describe('PullRequestPanel body', () => {
     await rerender({ onPostTurn: accept(posted), turnActive: false })
     expect(wire.calls).toHaveLength(2)
     expect(wire.calls[1]).toMatchObject({ refresh: true })
-    // A LATER turn settling re-reads nothing — the wait was consumed.
+    // A LATER turn settling re-reads AGAIN, and forced: the edge belongs to the dock's refresh
+    // cadence, not to `awaitingTurn` — whatever that turn did on GitHub is younger than the CP's TTL.
     await rerender({ onPostTurn: accept(posted), turnActive: true })
     await rerender({ onPostTurn: accept(posted), turnActive: false })
-    expect(wire.calls).toHaveLength(2)
+    expect(wire.calls).toHaveLength(3)
+    expect(wire.calls[2]).toMatchObject({ refresh: true })
   })
 
   it('does not arm the wait on a REFUSED send — the button stays pressable and no edge is owed', async () => {
@@ -512,10 +530,12 @@ describe('PullRequestPanel body', () => {
     await press('[data-pr-autofix]')
     expect(container?.querySelector<HTMLButtonElement>('[data-pr-autofix]')?.disabled).toBe(false)
 
-    // And no stale wait rides a later, unrelated turn into a phantom re-read.
+    // A later, unrelated turn still refreshes — that is the dock's cadence, not this button's wait —
+    // and the button, whose wait was never armed, stays pressable through it.
     await rerender({ onPostTurn: () => false, turnActive: true })
     await rerender({ onPostTurn: () => false, turnActive: false })
-    expect(wire.calls).toHaveLength(1)
+    expect(wire.calls).toHaveLength(2)
+    expect(container?.querySelector<HTMLButtonElement>('[data-pr-autofix]')?.disabled).toBe(false)
   })
 
   it('holds Auto-fix while ANY turn streams — a queued post would let that turn eat the wait', async () => {
@@ -680,7 +700,12 @@ describe('PullRequestPanel degraded answers', () => {
     // hint that the link may just have committed, so it re-asks immediately and re-arms the ladder.
     vi.useFakeTimers()
     wire.failure = { status: 404 }
-    await render({ sessionStatus: 'online' })
+    // Hidden TAB, so the ladder is the only clock in the test: the whole ladder spans past the poll
+    // cadence, and a poll landing mid-drain would count as a rung it never was. The ladder runs for a
+    // hidden tab on purpose — a held 404 removes the tab, so there is no tab left to reveal and the
+    // ladder is the only way back — but it IS gated on the document being visible, since a runless
+    // session's 404 now costs a daemon read and, for a pushed branch, a GitHub list.
+    await render({ sessionStatus: 'online', active: false })
 
     // Rung by rung: each retry schedules the next only after its answer settles, so the clock advances per step.
     for (const step of PR_LINK_RETRY_LADDER_MS) {
@@ -695,7 +720,7 @@ describe('PullRequestPanel degraded answers', () => {
     })
     expect(wire.calls).toHaveLength(drained)
 
-    await rerender({ sessionStatus: 'idle' })
+    await rerender({ sessionStatus: 'idle', active: false })
     expect(wire.calls).toHaveLength(drained + 1)
     await act(async () => {
       await vi.advanceTimersByTimeAsync(PR_LINK_RETRY_LADDER_MS[0]!)
@@ -703,17 +728,57 @@ describe('PullRequestPanel degraded answers', () => {
     expect(wire.calls).toHaveLength(drained + 2)
   })
 
-  it('keeps a LINKED answer still — no timers, no reaction to status changes', async () => {
-    // The provisional treatment is for the missing link ONLY: an answered probe schedules nothing, so
-    // the panel never polls GitHub (§9's budget) and never re-asks on status churn.
+  it('arms no ladder for a LINKED answer, and re-reads only on its own slow poll', async () => {
+    // The provisional treatment is for the missing link ONLY: an answered probe schedules no ladder and
+    // does not re-ask on status churn. What it does keep is the dock's poll — a check turns green and a
+    // review lands without anything here changing — at a cadence sized for §9's GitHub budget.
     vi.useFakeTimers()
     wire.data = pr()
     await render({ sessionStatus: 'online' })
     expect(wire.calls).toHaveLength(1)
     await rerender({ sessionStatus: 'idle' })
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(600_000)
+      await vi.advanceTimersByTimeAsync(PR_POLL_MS - 1)
     })
     expect(wire.calls).toHaveLength(1)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1)
+    })
+    // A poll, not a forced read: the CP's projection TTL is what keeps several open panels cheap.
+    expect(wire.calls).toHaveLength(2)
+    expect(wire.calls[1]).toMatchObject({ refresh: false })
+  })
+
+  it('polls nothing while its tab is hidden, and still takes a turn’s edge — the badge is on screen', async () => {
+    // A hidden panel is a request nobody is looking at; its BADGE is not — the unresolved count sits in
+    // the tab strip either way, so the one signal that reaches a hidden panel is a turn settling.
+    vi.useFakeTimers()
+    wire.data = pr()
+    await render({ active: false, sessionStatus: 'online' })
+    expect(wire.calls).toHaveLength(1)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10 * PR_POLL_MS)
+    })
+    expect(wire.calls).toHaveLength(1)
+
+    await rerender({ active: false, sessionStatus: 'online', turnActive: true })
+    await rerender({ active: false, sessionStatus: 'online', turnActive: false })
+    expect(wire.calls).toHaveLength(2)
+    expect(wire.calls[1]).toMatchObject({ refresh: true })
+  })
+
+  it('links a pull request the agent opened mid-turn, without anyone pressing refresh', async () => {
+    // The case this cadence exists for: the probe answered 404, the agent opened the PR inside the
+    // turn, and the falling edge is what turns the tab's no-PR state into the linked one.
+    vi.useFakeTimers()
+    wire.failure = { status: 404 }
+    await render({ sessionStatus: 'online', turnActive: true })
+    expect(verdicts.at(-1)?.answer).toBe('none')
+
+    wire.failure = null
+    wire.data = pr()
+    await rerender({ sessionStatus: 'online', turnActive: false })
+    expect(verdicts.at(-1)?.answer).toBe('linked')
+    expect(container?.querySelector('[data-pr-panel=""]')).not.toBeNull()
   })
 })

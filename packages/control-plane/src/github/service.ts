@@ -850,6 +850,41 @@ export class GithubService {
     }
   }
 
+  /**
+   * The repo + live installation behind an agent's PRIMARY workspace checkout, for a reader that has
+   * only a repo NAME and no hook run to take identity from (webchat-side-panels.md §12.6). Absence is
+   * DATA here — a scratch workspace, a revoked or suspended installation and a repo out of the grant
+   * set all read `null` rather than throwing, because the caller's answer to any of them is the same
+   * "no pull request to name". The numeric id is the agent's captured one where it has one, and is
+   * repaired through the installation's metadata token where it does not.
+   */
+  async resolveWorkspaceRepo(
+    agent: AgentRecord
+  ): Promise<{ repoId: bigint; repoFullName: string; installationId: bigint } | null> {
+    const workspace = agent.workspace
+    if (workspace.mode !== 'github' || workspace.installationId === undefined) return null
+    const label = gitRepoLabel(workspace.gitRepo)
+    const [owner, repo] = label.split('/')
+    if (!owner || !repo) return null
+    // By ACCOUNT LOGIN against live rows, like every other mint path: the stored installationId is
+    // provenance only, so an uninstall→reinstall self-heals here too.
+    const installation = await this.deps.installations.liveByOrgAndAccount(agent.orgId, owner)
+    if (!installation || installation.orgId !== agent.orgId || installation.suspendedAt) return null
+    if (agent.workspaceRepoId !== undefined) {
+      return { repoId: agent.workspaceRepoId, repoFullName: label, installationId: installation.installationId }
+    }
+    try {
+      const ref = await this.repoRefFor(installation, owner, repo)
+      if (!ref) return null
+      // Best-effort repair, exactly as resolveAgentRepoAuthorization does it: a losing race just
+      // means the next read resolves the id again, which is cheaper than failing this one.
+      await this.deps.agents?.setWorkspaceRepoId(agent.id, ref.repoId).catch(() => {})
+      return { repoId: ref.repoId, repoFullName: ref.fullName, installationId: installation.installationId }
+    } catch {
+      return null
+    }
+  }
+
   /** Whether the console may arm auto-merge for this agent's PR — the GET projection's per-caller
    *  capability flag, Postgres-only (no GitHub call): a read/comment tier renders a disabled control. */
   async canArmAutoMerge(agent: AgentRecord, repoId: bigint, repoFullName: string): Promise<boolean> {

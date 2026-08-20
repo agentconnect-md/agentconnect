@@ -62,6 +62,7 @@ vi.mock('@/lib/api', () => {
 })
 
 import { FilesPanel, filesTabStatus } from './FilesPanel'
+import { DOCK_POLL_MS } from './auto-refresh'
 import { SessionDock, type DockTab } from './SessionDock'
 import { fetchWorkspaceFiles, fetchWorkspaceGitStatus, wakeAgent } from '@/lib/api'
 import type { WorkspaceGitFileDto, WorkspaceGitStatusDto } from '@/lib/api'
@@ -204,6 +205,8 @@ afterEach(async () => {
   vi.mocked(fetchWorkspaceFiles).mockClear()
   vi.mocked(fetchWorkspaceGitStatus).mockClear()
   vi.mocked(wakeAgent).mockClear()
+  // The polling case installs fake timers; leaving them installed would starve the next test's reads.
+  vi.useRealTimers()
 })
 
 describe('filesTabStatus', () => {
@@ -333,19 +336,32 @@ describe('FilesPanel tree', () => {
     expect(row('src')?.getAttribute('style')).toContain('padding-left: 8px')
   })
 
-  it('drops a stale subtree on a refresh instead of leaving it on screen', async () => {
-    wire.listings = { '': { entries: [dir('src'), textFile('README.md')] }, src: { entries: [textFile('index.ts')] } }
+  it('drops a subtree whose folder is gone, and keeps the ones that are not', async () => {
+    // PREMISE CHANGED with the dock's refresh cadence: a refresh no longer collapses the tree — on a
+    // timer that would close the reader's folders every few seconds — so what protects against a stale
+    // subtree is the root re-read plus a re-read of each OPEN folder, not a reset. A directory that has
+    // since been deleted is no longer in the root listing, so it draws nothing either way.
+    wire.listings = {
+      '': { entries: [dir('src'), dir('gone'), textFile('README.md')] },
+      src: { entries: [textFile('index.ts')] },
+      gone: { entries: [textFile('old.ts')] }
+    }
     await render()
     await click(row('src'), 'src folder row')
-    expect(rowNames()).toEqual(['src', 'index.ts', 'README.md'])
+    await click(row('gone'), 'gone folder row')
+    expect(rowNames()).toEqual(['src', 'index.ts', 'gone', 'old.ts', 'README.md'])
 
+    wire.listings[''] = { entries: [dir('src'), textFile('README.md')] }
     await rerender({ refreshTick: 1 })
 
-    // The refresh re-reads the root and starts the cache and the expand set over: a directory that has since been deleted must not keep drawing its old children.
-    expect(rowNames()).toEqual(['src', 'README.md'])
+    expect(rowNames()).toEqual(['src', 'index.ts', 'README.md'])
   })
 
-  it('shows the tree loading while a refresh is in flight, not the rows it is replacing', async () => {
+  it('keeps its rows on screen while a refresh is in flight, then replaces them', async () => {
+    // PREMISE CHANGED with the dock's refresh cadence: M-era refreshes were presses, so emptying the
+    // tree for the round trip was defensible. On a 15s timer it is a flicker — and a spinner that
+    // replaced the rows every few seconds would be one too — so an in-flight refresh is SILENT: the
+    // rows stand until the new listing lands. The tab stays `ready` throughout, as it already did.
     await render()
     let land: ((listing: unknown) => void) | undefined
     vi.mocked(fetchWorkspaceFiles).mockImplementationOnce(
@@ -354,9 +370,8 @@ describe('FilesPanel tree', () => {
 
     await rerender({ refreshTick: 1 })
 
-    // The panel itself stays (the tab is still `ready`), and the rows a stale listing would keep showing are replaced by the tree's own spinner.
-    expect(rowNames()).toEqual([])
-    expect(container?.querySelector('svg[aria-label="Loading"]')).not.toBeNull()
+    expect(rowNames()).toEqual(['src', 'README.md'])
+    expect(container?.querySelector('svg[aria-label="Loading"]')).toBeNull()
     expect(container?.querySelector('input')).not.toBeNull()
 
     await act(async () => {
@@ -366,7 +381,10 @@ describe('FilesPanel tree', () => {
     expect(rowNames()).toEqual(['fresh.ts'])
   })
 
-  it('re-reads a folder after a refresh instead of re-showing its old listing', async () => {
+  it('re-reads an OPEN folder on a refresh, without closing it and without serving its old listing', async () => {
+    // The cache must not put back a file the agent has since renamed — but the expand set is the
+    // reader's own state, and a refresh that closed their folders would be unusable on a timer. So the
+    // open folder is re-read in place: one more request, same expansion, fresh rows, no click needed.
     wire.listings = { '': { entries: [dir('src')] }, src: { entries: [textFile('old.ts')] } }
     await render()
     await click(row('src'), 'src folder row')
@@ -374,9 +392,7 @@ describe('FilesPanel tree', () => {
 
     wire.listings.src = { entries: [textFile('new.ts')] }
     await rerender({ refreshTick: 1 })
-    await click(row('src'), 'src folder row')
 
-    // A refresh starts the cache AND the expand set over: keeping the cache would put back a file the agent has since renamed, and keeping the expand set would make this click close a folder the reader sees as shut.
     expect(rowNames()).toEqual(['src', 'new.ts'])
     expect(vi.mocked(fetchWorkspaceFiles).mock.calls.filter((call) => call[1].path === 'src').length).toBe(2)
   })
@@ -795,5 +811,73 @@ describe('FilesPanel footer', () => {
     expect(text()).not.toContain('synced')
     // Not an empty bordered strip either: the footer is absent, not blank.
     expect(container?.querySelector('[data-files-footer]')).toBeNull()
+  })
+})
+
+// The dock's refresh cadence, wired here. This tab carries no badge, so a hidden panel OWES itself the
+// read a turn earned and spends it on the reveal edge — re-reading a tree nobody is looking at is the
+// one thing this cadence must not do. The hook itself is `auto-refresh.test.tsx`'s subject.
+describe('FilesPanel auto refresh', () => {
+  const rootReads = () => vi.mocked(fetchWorkspaceFiles).mock.calls.filter((call) => call[1].path === '').length
+
+  it('re-reads the tree when a turn settles while the tab is on screen', async () => {
+    await render({ active: true })
+    expect(rootReads()).toBe(1)
+
+    await rerender({ active: true, turnActive: true })
+    expect(rootReads()).toBe(1)
+    await rerender({ active: true, turnActive: false })
+    expect(rootReads()).toBe(2)
+  })
+
+  it('defers a hidden tab’s turn read to the moment the reader opens it', async () => {
+    await render({ active: false })
+    expect(rootReads()).toBe(1)
+
+    await rerender({ active: false, turnActive: true })
+    await rerender({ active: false, turnActive: false })
+    expect(rootReads()).toBe(1)
+
+    await rerender({ active: true, turnActive: false })
+    expect(rootReads()).toBe(2)
+  })
+
+  it('keeps the open folders — and the filter’s corpus — across an automatic re-read', async () => {
+    // A refresh that collapsed the tree back to root would, on a timer, also shrink the path filter's
+    // corpus to root-level hits every few seconds. A refresh re-reads the root AND each open folder.
+    wire.listings = {
+      '': { entries: [dir('src'), textFile('README.md')] },
+      src: { entries: [textFile('deep.ts')] }
+    }
+    await render({ active: true })
+    await click(row('src'), 'src folder row')
+    expect(text()).toContain('deep.ts')
+    await type('deep')
+    expect(text()).toContain('Matched 1 of 2 loaded files')
+
+    await rerender({ active: true, turnActive: true })
+    await rerender({ active: true, turnActive: false })
+
+    // Both reads went out again — the root and the open folder — and neither the expansion nor the
+    // filter's reach went with them.
+    expect(rootReads()).toBe(2)
+    expect(vi.mocked(fetchWorkspaceFiles).mock.calls.filter((call) => call[1].path === 'src').length).toBe(2)
+    expect(text()).toContain('deep.ts')
+    expect(text()).toContain('Matched 1 of 2 loaded files')
+  })
+
+  it('polls while on screen, and stops when the tab is hidden', async () => {
+    vi.useFakeTimers()
+    await render({ active: true })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(DOCK_POLL_MS)
+    })
+    expect(rootReads()).toBe(2)
+
+    await rerender({ active: false })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(DOCK_POLL_MS * 4)
+    })
+    expect(rootReads()).toBe(2)
   })
 })

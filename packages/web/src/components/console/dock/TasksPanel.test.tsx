@@ -465,3 +465,22 @@ describe('TasksPanel polling', () => {
     expect(last()).toEqual({ settled: true, running: 1 })
   })
 })
+
+// Tasks already polled; what the shared cadence adds is a turn's falling edge (a finished turn is where
+// a background task comes from) and the browser-visibility gate the other tabs get.
+describe('TasksPanel auto refresh', () => {
+  it('re-reads when a turn settles on screen, and defers that read while the tab is hidden', async () => {
+    await render({ active: true })
+    expect(wire.calls).toHaveLength(1)
+
+    await rerender({ active: true, turnActive: true })
+    await rerender({ active: true, turnActive: false })
+    expect(wire.calls).toHaveLength(2)
+
+    await rerender({ active: false, turnActive: true })
+    await rerender({ active: false, turnActive: false })
+    expect(wire.calls).toHaveLength(2)
+    await rerender({ active: true, turnActive: false })
+    expect(wire.calls).toHaveLength(3)
+  })
+})

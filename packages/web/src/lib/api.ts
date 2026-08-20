@@ -3315,6 +3315,12 @@ export interface SessionPullRequestDto {
   degradedReason: 'rate_limited' | 'denied' | 'unreachable' | null
   /** The agent's own recorded review, present ONLY on a degraded answer — the one review state the deployment knows without GitHub. */
   agentReview: 'approved' | 'changes_requested' | 'commented' | null
+  /** Which source named this PR: the owning review run, or this session's own head branch. Optional — a CP that predates the branch source sends neither this nor the two fields below. */
+  linkedBy?: 'run' | 'head-branch'
+  /** The head branch a `head-branch` link resolved through; null for a run-linked PR. */
+  linkBranch?: string | null
+  /** true ⇒ that branch has more than one OPEN pull request and this is the first of them. */
+  linkAmbiguous?: boolean
 }
 
 // Read the session's PR projection. `refresh` bypasses the CP's short TTL but not its in-flight

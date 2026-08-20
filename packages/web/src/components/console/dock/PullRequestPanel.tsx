@@ -16,6 +16,7 @@ import {
   type SessionPullRequestReviewDto,
   type SessionPullRequestThreadDto
 } from '@/lib/api'
+import { PR_POLL_MS, useDocumentVisible, useDockRefresh } from '@/components/console/dock/auto-refresh'
 import type { DockTabStatus } from './SessionDock'
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e))
@@ -201,11 +202,11 @@ export function PullRequestPanel({
 }: {
   /** The OPEN SESSION's id, the scope the CP resolves to its hook run. Deliberately no agentId: the PR belongs to the session, so a merged conversation's header-focus change must not re-key this read — the prop shape makes that unbuildable rather than merely avoided. */
   sessionId: string
-  /** Whether this tab is the visible one; the panel re-reads on the edge where it becomes so, because PR state read when the page opened is not an answer about now. It does not poll — GitHub rate limits are this milestone's one external budget (§9). */
+  /** Whether this tab is the visible one; the panel re-reads on the edge where it becomes so, because PR state read when the page opened is not an answer about now. It also polls while it is — slowly, because GitHub rate limits are this surface's one external budget (§9) and the CP already absorbs repeats behind its projection TTL. */
   active?: boolean
   /** The open session's live status: a transition re-asks a held 404 immediately and refills the bounded retry ladder — a hint that the session→run link may just have committed, though the frames race, which is why the ladder exists at all. */
   sessionStatus?: string
-  /** Whether a turn is streaming right now. After Auto-fix posts one, the FALLING edge is the panel's cue to force one re-read — the agent's GitHub write-back (resolved threads, pushed fixes) lands with the turn, and the CP's short TTL would otherwise hide it. */
+  /** Whether a turn is streaming right now. Its FALLING edge forces one re-read past the CP's TTL, whether or not this panel posted the turn: anything the agent did on GitHub — resolving threads, pushing fixes, OPENING the pull request this tab is looking for — lands with the turn, and it is the same edge either way. */
   turnActive?: boolean
   /** The branch this session's checkout is on, from the Git tab's verdict — the panel's no-PR state is about THIS branch, and reading git status again here would be a second round trip for a fact the dock already holds. Null while that read has not answered, for a detached worktree, and for a workspace that is not a checkout. */
   branch?: string | null
@@ -242,10 +243,16 @@ export function PullRequestPanel({
     attempt.current = 0
     if (was404) setReads((r) => ({ tick: r.tick + 1, force: false }))
   }, [sessionStatus, was404])
-  // The bounded ladder that survives the unfavorable orderings: a 404 never reaches GitHub — the CP answers it from its own tables — so these retries spend none of §9's rate-limit budget, and the bound is what lets a session with no PR go quiet.
+  // The bounded ladder that survives the unfavorable orderings. It is NOT free any more: since the CP
+  // resolves a runless session's PR from its worktree's head branch, a 404 costs a `workspace/gitstatus`
+  // REQ to the owning daemon and — for a pushed branch with no PR — a GitHub `pulls` list, and the
+  // rungs outrun the CP's 15s miss cache. So it is gated on the document being VISIBLE, like the poll:
+  // a backgrounded page spends nothing. It is deliberately NOT gated on the tab being active, unlike
+  // the poll — a held 404 REMOVES this tab, so there would be no tab left to reveal and no way back.
+  const visible = useDocumentVisible()
   useEffect(() => {
-    if (!was404) {
-      attempt.current = 0
+    if (!was404 || !visible) {
+      if (!was404) attempt.current = 0
       return
     }
     const delay = PR_LINK_RETRY_LADDER_MS[attempt.current]
@@ -255,7 +262,7 @@ export function PullRequestPanel({
       setReads((r) => ({ tick: r.tick + 1, force: false }))
     }, delay)
     return () => clearTimeout(timer)
-  }, [was404, reads])
+  }, [was404, reads, visible])
 
   const answer: PullRequestPanelAnswer = read.loading
     ? 'pending'
@@ -273,22 +280,34 @@ export function PullRequestPanel({
   // must not graft the old session's wait onto the new one's reads.
   const [awaitingTurn, setAwaitingTurn] = useState(false)
   useEffect(() => setAwaitingTurn(false), [sessionId])
-  // Whether a create-pull-request turn was already handed to the agent HERE. It has to be remembered,
-  // because this panel cannot observe the result: identity comes from the pull-request run that owns the
-  // session (§3.4), and an agent opening a PR from a webchat session creates no such run — so the probe
-  // keeps answering 404 even once the PR exists. Without this, the state re-offers creation as though
-  // nothing had happened, which invites a second PR for the same branch. Reset per scope, like the wait.
+  // Whether a create-pull-request turn was already handed to the agent HERE. It is remembered because
+  // the result is not instantaneous: the PR is found through this worktree's own head branch, so it
+  // appears once the branch is pushed and one exists against it — and until then the state would
+  // re-offer creation as though nothing had happened, which invites a second PR for the same branch.
+  // Reset per scope, like the wait.
   const [createRequested, setCreateRequested] = useState(false)
   useEffect(() => setCreateRequested(false), [sessionId])
-  const wasTurnActive = useRef(turnActive)
-  useEffect(() => {
-    const settled = wasTurnActive.current && !turnActive
-    wasTurnActive.current = turnActive
-    if (settled && awaitingTurn) {
-      setAwaitingTurn(false)
-      setReads((r) => ({ tick: r.tick + 1, force: true }))
+  // Every turn's falling edge, not only a turn THIS panel posted: the reader's own "open a PR for this"
+  // in the composer produces the same GitHub write-back, and a panel that re-read only after its own
+  // button was the reason a PR opened from the conversation stayed invisible until someone pressed
+  // refresh. `awaitingTurn` still clears here — it is the button's spinner, not the refresh's trigger.
+  // Forced, because the write-back is younger than the CP's projection TTL by construction. The 404
+  // ladder is refilled too: a turn is a fresh reason to believe the link may exist now — and that
+  // refill is bounded per turn and gated on visibility below, which is what keeps a page left open on
+  // an unreviewed branch from re-asking the daemon and GitHub forever.
+  useDockRefresh({
+    active,
+    turnActive,
+    whileHidden: true,
+    intervalMs: PR_POLL_MS,
+    onRefresh: (reason) => {
+      if (reason === 'turn') {
+        setAwaitingTurn(false)
+        attempt.current = 0
+      }
+      setReads((r) => ({ tick: r.tick + 1, force: reason === 'turn' }))
     }
-  }, [turnActive, awaitingTurn])
+  })
 
   // The auto-merge toggle's own in-flight/error state; the armed FACT stays on the view, re-read after every write.
   const [merge, setMerge] = useState<{ busy: boolean; err: string | null }>({ busy: false, err: null })
@@ -381,7 +400,7 @@ export function PullRequestPanel({
                 : 'No pull request is linked to this session yet.'
           }
         />
-        {/* What this panel CANNOT observe, said rather than hidden: it identifies a pull request through the run that owns the session, and a PR the agent opens from a conversation creates no such run — so this state can outlive the pull request it asked for. Drawn only after the ask, because until then it is not the reader's problem. */}
+        {/* What this state still depends on, said rather than hidden: a PR is found through this worktree's own head branch, so it appears once the branch is pushed and the PR exists against it — not the instant the agent replies. Drawn only after the ask, because until then it is not the reader's problem. */}
         {createRequested ? (
           <div
             data-pr-create-requested=""
@@ -390,8 +409,8 @@ export function PullRequestPanel({
             <Icon name="info" size={13} color="var(--text-tertiary)" className="mt-[2px] flex-none" />
             <span>
               A pull request was requested in this session — the agent replies with its URL in the conversation. This
-              tab links one only when a review run owns the session, so it can keep showing this state even after the
-              pull request exists.
+              tab links it once the branch is pushed and a pull request exists for it; press refresh if that just
+              happened.
             </span>
           </div>
         ) : null}
@@ -586,6 +605,21 @@ export function PullRequestPanel({
         </a>
       </div>
       <div className="flex min-h-0 flex-1 flex-col overflow-auto pb-2">
+        {/* A branch-resolved link can be ambiguous where a run-linked one never is: the head branch is the whole identity, so several open PRs on it are all equally "this session's". The panel names the pick rather than picking silently. */}
+        {view.linkAmbiguous ? (
+          <div
+            data-pr-link-ambiguous=""
+            className="flex items-start gap-2 px-3 pt-[7px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)"
+          >
+            <Icon name="info" size={13} color="var(--text-tertiary)" className="mt-[2px] flex-none" />
+            <span>
+              {view.linkBranch
+                ? `Branch ${view.linkBranch} has more than one open pull request`
+                : 'This session’s branch has more than one open pull request'}{' '}
+              — this is the first of them.
+            </span>
+          </div>
+        ) : null}
         {view.degraded ? (
           <>
             <PanelNotice warn text={degradedNoticeText(view.degradedReason)} />

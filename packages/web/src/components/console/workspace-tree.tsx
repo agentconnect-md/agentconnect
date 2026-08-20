@@ -61,12 +61,20 @@ export interface WorkspaceTree {
   openPath: (paths: string[]) => void
 }
 
-/** The tree half of the read model for one daemon-local checkout. `refreshTick` re-runs the root load, deliberately wiping the cache and the expand set with it. */
+/** The tree half of the read model for one daemon-local checkout. `refreshTick` re-reads the root AND every open folder, keeping the expand set; a SCOPE change is the one thing that wipes both. */
 // `sessionId` selects that session's isolated worktree; omit it for the primary checkout, and pass it only for a session whose `workspaceIsolation` is `'session'` — the daemon answers a shared-workspace sessionId with BAD_PAYLOAD, which the CP maps to a 503 that reads as "the daemon may be offline".
 // `repo` selects one of the agent's authorized additional repositories, browsing that secondary root; the two scopes compose, so a `repo` with a `sessionId` is that root's own worktree for the session.
 export function useWorkspaceTree(agentId: string, sessionId?: string, refreshTick = 0, repo?: string): WorkspaceTree {
   const [dirs, setDirs] = useState<Record<string, WorkspaceDirState>>({})
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
+  // Which checkout this is, as one value: what tells a refresh (re-read what is open) from a scope
+  // change (a different tree entirely, where the previous expand set names paths that may not exist).
+  const scope = `${agentId}\u0000${sessionId ?? ''}\u0000${repo ?? ''}`
+  const lastScope = useRef<string | null>(null)
+  // The expand set as the refresh effect reads it. A REF because the effect must not re-run when a
+  // folder opens — that would re-read the whole tree on every expand.
+  const expandedRef = useRef(expanded)
+  expandedRef.current = expanded
   // Which checkout+refresh a reply was asked for. The panel SURVIVES a scope change, so an in-flight directory read from the previous agent or worktree would otherwise splice its entries into the new one's cache — and worse, leave `dirs[path]` populated, so expanding that folder in the new scope skips the fetch that would have corrected it.
   const generation = useRef(0)
 
@@ -171,41 +179,58 @@ export function useWorkspaceTree(agentId: string, sessionId?: string, refreshTic
     [dirs, loadDir]
   )
 
-  // Reset the tree and load the root whenever the scope changes or a refresh lands.
+  // Load the root whenever the scope changes or a refresh lands. A SCOPE change resets the tree: the
+  // previous expand set names paths in another checkout, which may not exist in this one. A REFRESH
+  // does NOT — collapsing every open folder back to root is not what "re-read this" means, and on the
+  // dock's timer it would also shrink the path filter's corpus (which is derived from `dirs`) to
+  // root-level hits every few seconds. It re-reads the root and each OPEN folder instead.
   useEffect(() => {
     // Bumped FIRST, so any directory read still in flight for the previous checkout is already fenced by the time this one's root lands.
     generation.current += 1
     const gen = generation.current
     const active = () => gen === generation.current
-    setDirs({ '': { ...LOADING_DIR } })
-    setExpanded(new Set())
+    const scopeChanged = lastScope.current !== scope
+    lastScope.current = scope
+    const reopen = scopeChanged ? [] : [...expandedRef.current]
+    if (scopeChanged) {
+      setDirs({ '': { ...LOADING_DIR } })
+      setExpanded(new Set())
+    } else {
+      // Marked loading in place: the rows stay on screen behind their spinners rather than vanishing.
+      patchDir('', { loading: true, err: null, errStatus: null, errCode: null })
+    }
     fetchWorkspaceFiles(agentId, { path: '', ...(sessionId ? { sessionId } : {}), ...(repo ? { repo } : {}) }).then(
       (page) => {
         if (!active()) return
-        setDirs({
-          '': {
-            entries: page.entries,
-            exists: page.exists,
-            nextCursor: page.nextCursor,
-            loading: false,
-            loadingMore: false,
-            err: null,
-            errStatus: null,
-            errCode: null,
-            moreErr: null
-          }
-        })
+        const root = {
+          entries: page.entries,
+          exists: page.exists,
+          nextCursor: page.nextCursor,
+          loading: false,
+          loadingMore: false,
+          err: null,
+          errStatus: null,
+          errCode: null,
+          moreErr: null
+        }
+        // Merged on a refresh, replaced on a scope change — the open folders being re-read below are in
+        // this map, and dropping them here would collapse the tree by another route.
+        setDirs((prev) => (scopeChanged ? { '': root } : { ...prev, '': root }))
       },
       (e) => {
-        if (active())
-          setDirs({ '': { ...LOADING_DIR, loading: false, err: msg(e), errStatus: statusOf(e), errCode: codeOf(e) } })
+        if (!active()) return
+        const failed = { ...LOADING_DIR, loading: false, err: msg(e), errStatus: statusOf(e), errCode: codeOf(e) }
+        setDirs((prev) => (scopeChanged ? { '': failed } : { ...prev, '': failed }))
       }
     )
+    // Every folder that was open, re-read on its own. Each one fences on the generation bumped above,
+    // so a scope change landing mid-refresh discards all of them.
+    for (const path of reopen) loadDir(path)
     return () => {
       // A teardown is its own generation change: the next mount's reads must not be answered by this one's.
       generation.current += 1
     }
-  }, [agentId, refreshTick, repo, sessionId])
+  }, [agentId, loadDir, patchDir, refreshTick, repo, scope, sessionId])
 
   return { dirs, root: dirs[''], expanded, toggleDir, loadMoreDir, openPath }
 }
