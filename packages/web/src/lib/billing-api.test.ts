@@ -61,11 +61,22 @@ describe('assertTransactionsPage', () => {
     expect(() => assertTransactionsPage({ items: [tx, debit], nextCursor: null })).not.toThrow()
   })
 
+  it('accepts a credit row from a service that predates the union, and fills in its type', async () => {
+    // Merge order is not deploy order: this app rides the train and goes out
+    // automatically, while the billing service's image is synced by hand — so a console
+    // carrying a new mirror routinely runs against the previous service. Requiring `type`
+    // turned that window into a page that failed outright, which is what happened on test.
+    const legacy = { id: 't0', kind: 'purchase', amountMicro: 1_000_000, at: tx.at }
+    expect(() => assertTransactionsPage({ items: [legacy], nextCursor: null })).not.toThrow()
+  })
+
   it('refuses a row whose type this build cannot read', () => {
     // Unlike an unknown `kind`, an unknown `type` has no sensible fallback rendering.
     expect(() => assertTransactionsPage({ items: [{ ...tx, type: 'hold' }], nextCursor: null })).toThrow(
       BillingShapeError
     )
+    // A row with no `type` AND no credit fields is still refused — tolerating the
+    // previous shape means reading it as a credit, not waving anything through.
     expect(() => assertTransactionsPage({ items: [{ id: 'x', at: tx.at }], nextCursor: null })).toThrow(
       BillingShapeError
     )
