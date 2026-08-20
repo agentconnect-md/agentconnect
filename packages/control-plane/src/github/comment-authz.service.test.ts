@@ -128,6 +128,16 @@ describe('GithubCommentAuthzService', () => {
     await expect(make({ permission: 'read' }).service.allowed(request)).resolves.toBe(false)
   })
 
+  it('allows the triage role, which GitHub lets request a pull request review', async () => {
+    await expect(make({ permission: 'triage' }).service.allowed(request)).resolves.toBe(true)
+  })
+
+  it('denies when one actor holds triage and the other is read-only', async () => {
+    const h = make({ permissions: { octocat: 'triage', 'issue-author': 'read' } })
+
+    await expect(h.service.allowed({ ...request, subjectAuthorLogin: 'issue-author' })).resolves.toBe(false)
+  })
+
   it('requires write permission from both an unmentioned commenter and the thread author', async () => {
     const h = make({ permissions: { octocat: 'write', 'issue-author': 'read' } })
 

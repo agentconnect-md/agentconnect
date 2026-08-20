@@ -250,14 +250,14 @@ describe('GithubService comment authorization lookups', () => {
     createdAt: new Date(0)
   }
 
-  function harness(status: number): GithubService {
+  function harness(status: number, body: Record<string, unknown> = { message: 'test failure' }): GithubService {
     const service = new GithubService({
       cfg: cfg(),
       clock: new FakeClock(1_700_000_000_000),
       installations: {} as never,
       installState: { put: async () => {}, consume: async () => true },
       pepper: 'p'.repeat(32),
-      fetchImpl: async () => Response.json({ message: 'test failure' }, { status })
+      fetchImpl: async () => Response.json(body, { status })
     })
     vi.spyOn(service.tokens, 'metadataToken').mockResolvedValue('ghs_test')
     return service
@@ -277,6 +277,32 @@ describe('GithubService comment authorization lookups', () => {
     await expect(
       service.userRepoPermissionForCommentAuthz(installation, 'acme', 'repo', 'octocat')
     ).rejects.toMatchObject({ status: 403 })
+  })
+
+  it('reads the built-in triage role that the legacy permission field reports as read', async () => {
+    const service = harness(200, { permission: 'read', role_name: 'triage' })
+
+    await expect(service.userRepoPermissionForCommentAuthz(installation, 'acme', 'repo', 'octocat')).resolves.toBe(
+      'triage'
+    )
+    // gitAccess keeps GitHub's legacy granularity, where triage is not repository write.
+    await expect(service.userRepoPermission(installation, 'acme', 'repo', 'octocat')).resolves.toBe('read')
+  })
+
+  it('leaves maintain collapsed as the legacy write it already arrives as', async () => {
+    const service = harness(200, { permission: 'write', role_name: 'maintain' })
+
+    await expect(service.userRepoPermissionForCommentAuthz(installation, 'acme', 'repo', 'octocat')).resolves.toBe(
+      'write'
+    )
+  })
+
+  it('never promotes a custom role whose name merely resembles triage', async () => {
+    const service = harness(200, { permission: 'read', role_name: 'triage-plus' })
+
+    await expect(service.userRepoPermissionForCommentAuthz(installation, 'acme', 'repo', 'octocat')).resolves.toBe(
+      'read'
+    )
   })
 })
 

@@ -1,7 +1,7 @@
 import type { RcGithubCommentAuthz } from '@agentconnect.md/protocol'
 import { HookId } from '../domain/ids.js'
 import type { GithubInstallationRepo, HookRecord, HookRepo } from '../persistence/ports.js'
-import type { GithubService } from './service.js'
+import type { GithubRepoRole, GithubService } from './service.js'
 
 export interface GithubCommentAuthzDeps {
   hooks: Pick<HookRepo, 'getManyUnscoped'>
@@ -12,6 +12,9 @@ export interface GithubCommentAuthzDeps {
 }
 
 const DEFAULT_TIMEOUT_MS = 4_000
+
+/** Repository roles that may fire an agent on a thread. Maintain arrives collapsed as `write`. */
+const TRIGGER_ROLES = new Set<GithubRepoRole>(['admin', 'write', 'triage'])
 
 /**
  * Resolve every relevant GitHub actor's current repository permission without trusting
@@ -89,7 +92,9 @@ export class GithubCommentAuthzService {
     const permissions = await Promise.all(
       actorLogins.map((login) => this.deps.github.userRepoPermissionForCommentAuthz(installation, owner, repo, login))
     )
-    if (permissions.some((permission) => permission !== 'admin' && permission !== 'write')) return false
+    // Triage is GitHub's role for a trusted non-committer: requesting a pull request review is one
+    // of its listed permissions, so it authorizes a trigger even though it grants no push access.
+    if (permissions.some((permission) => !TRIGGER_ROLES.has(permission))) return false
 
     // The GitHub calls above can take seconds. Re-read immediately before the
     // allow verdict so a concurrent disable, retarget, or reassignment cannot
