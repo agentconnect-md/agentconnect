@@ -68,7 +68,7 @@ function fmtWhen(iso: string): string {
 //
 //   brand  white 5.25 / 5.25      ✓ white
 //   red    white 4.08 / 3.01      ✓ white, but dark mode is at the line — if the red
-//                                 palette is ever nudged lighter, this needs the literal too
+//                                 palette is ever nudged lighter, this needs `--gray-900` too
 //   amber  white 2.52 / 2.05  ✗   → --gray-900: 6.44 / 7.90
 //   blue   white 4.55 / 2.85  ✗   → --gray-900: 3.56 / 5.68
 //
