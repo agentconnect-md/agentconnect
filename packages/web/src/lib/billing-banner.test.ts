@@ -1,9 +1,8 @@
-// Which banner the account warrants, per the Billing design canvas — the ORDER is the whole
-// content of this decision and had no test: `unknown` sitting ahead of low balance silently
+// The ORDER of the balance banner, which is the whole content of that decision and had no test: `unknown` sitting ahead of low balance silently
 // swallowed the one actionable line, and did it exactly when it mattered, since `unknown` is
 // reported DURING a suspension decision so the balance is near its threshold by definition.
 import { describe, expect, it } from 'vitest'
-import { balanceBanner } from './BillingView'
+import { balanceBanner } from '@/lib/billing-banner'
 import type { BillingAccount } from '@/lib/billing-api'
 
 const acct = (over: Partial<BillingAccount> = {}): BillingAccount => ({
@@ -54,8 +53,25 @@ describe('balanceBanner', () => {
     expect(balanceBanner({ orgId: 'org-1', balanceMicro: 50_000_000 }, funded)).toBeNull()
   })
 
-  it('treats an absent or zero threshold as no warning', () => {
+  it('treats an absent, null, zero or negative threshold as no warning', () => {
     expect(balanceBanner({ orgId: 'org-1', balanceMicro: 1, state: 'active' }, funded)).toBeNull()
+    expect(balanceBanner(acct({ balanceMicro: 1, lowBalanceMicro: null }), funded)).toBeNull()
     expect(balanceBanner(acct({ balanceMicro: 1, lowBalanceMicro: 0 }), funded)).toBeNull()
+    // An overspent balance under a negative threshold is the only way to reach the comparison
+    // with a nonsense value, and truthiness alone would render "Running low — below -$5.00".
+    // `state` has to be non-suspended to get past the branch above, which the unconfirmed
+    // window supplies.
+    expect(
+      balanceBanner(acct({ balanceMicro: -10_000_000, lowBalanceMicro: -5_000_000, state: 'unknown' }), funded)
+    ).toMatchObject({ tone: 'blue' })
+  })
+
+  it('derives no STATE banner from a null `state`, exactly as from an absent one', () => {
+    // `null` is the natural serialization if the service ever models "no gateway configured"
+    // explicitly. A funded balance isolates it from the low-balance rule below.
+    const nulled = acct({ state: null as unknown as undefined })
+    expect(balanceBanner(nulled, funded)).toBeNull()
+    // …and the balance rules still apply, because they owe nothing to the gateway.
+    expect(balanceBanner({ ...nulled, balanceMicro: 1 }, funded)?.tone).toBe('amber')
   })
 })

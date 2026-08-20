@@ -46,6 +46,12 @@ describe('assertAccount', () => {
     expect(() => assertAccount({ ...ACCOUNT, state: 'unknown' })).not.toThrow()
   })
 
+  it('tolerates a null state the same way it tolerates an absent one', () => {
+    // The two checks in this function must read the same way; `null` is the natural
+    // serialization if the service ever models "no gateway configured" explicitly.
+    expect(() => assertAccount({ ...ACCOUNT, state: null })).not.toThrow()
+  })
+
   it('accepts an account from a service that predates `state`, and claims nothing', () => {
     // This side deploys ahead of the service routinely, and throwing would cost the balance
     // figure AND the Add-credits card — the one control a suspended org needs.

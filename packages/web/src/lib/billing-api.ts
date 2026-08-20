@@ -142,8 +142,8 @@ function isFiniteNumber(v: unknown): boolean {
 export function assertAccount(body: unknown): asserts body is BillingAccount {
   const b = body as Partial<BillingAccount> | null
   if (!b || typeof b.orgId !== 'string' || !isFiniteNumber(b.balanceMicro)) throw new BillingShapeError('account')
-  // Unrecognised is refused; ABSENT is an older service, and the page then claims nothing.
-  if (b.state !== undefined && b.state !== 'active' && b.state !== 'suspended' && b.state !== 'unknown') {
+  // Unrecognised is refused; absent or null is an older service, and the page claims nothing.
+  if (b.state != null && b.state !== 'active' && b.state !== 'suspended' && b.state !== 'unknown') {
     throw new BillingShapeError('account')
   }
   // A hint with a documented off value: throwing would drop the card AND the Add-credits form.

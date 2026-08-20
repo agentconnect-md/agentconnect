@@ -24,6 +24,7 @@ import {
   type BillingAccount,
   type BillingPurchase
 } from '@/lib/billing-api'
+import { balanceBanner } from '@/lib/billing-banner'
 import { featureFlagEnabled } from '@/lib/feature-flags'
 import { useOrgs } from '@/lib/org-context'
 import { consoleKeys } from '@/lib/swr-keys'
@@ -55,65 +56,6 @@ function fmtWhen(iso: string): string {
     hour: '2-digit',
     minute: '2-digit'
   })
-}
-
-// Which banner the account warrants, per the Billing design canvas. Split out because the
-// ORDER is the part worth a test, and because the wire does not name these states — they are
-// derived here from the balance, the threshold and the gateway's own call.
-export type BalanceBanner = {
-  tone: 'brand' | 'red' | 'amber' | 'blue'
-  icon: string
-  title: string
-  text: string
-  cta?: string
-}
-
-export function balanceBanner(acct: BillingAccount, opts: { hasHistory: boolean }): BalanceBanner | null {
-  const suspended = acct.state === 'suspended'
-  // Never funded reads differently from spent out, and only the ledger can tell them apart.
-  if (suspended && !opts.hasHistory) {
-    return {
-      tone: 'brand',
-      icon: 'sparkles',
-      title: 'Add credits to start serving traffic',
-      text: 'AgentConnect is prepaid: you buy credits, and usage is deducted at the provider’s actual cost. Until the balance is above zero, agents in this org won’t take sessions.',
-      cta: 'Add credits'
-    }
-  }
-  if (suspended) {
-    return {
-      tone: 'red',
-      icon: 'circle-slash',
-      title: 'Agent traffic is paused — balance is empty',
-      text: 'LLM requests from this org are being rejected at the gateway. Adding credits resumes service within a minute.',
-      cta: 'Add credits'
-    }
-  }
-  // Ahead of the unconfirmed case: a known actionable fact outranks the absence of news, and
-  // `unknown` is reported DURING a suspension decision — exactly when a balance is near its
-  // threshold, which is when this line is worth the most.
-  if (acct.lowBalanceMicro && acct.balanceMicro < acct.lowBalanceMicro) {
-    return {
-      tone: 'amber',
-      icon: 'triangle-alert',
-      title: `Low balance — ${fmtMicroUsd(acct.balanceMicro)} remaining`,
-      text: `This balance is below the ${fmtMicroUsd(acct.lowBalanceMicro)} alert threshold. Agents keep serving until it reaches zero.`,
-      cta: 'Add credits'
-    }
-  }
-  // The design's blue slot is "we treat it as unconfirmed until we are told otherwise", which is
-  // exactly this — only what is unconfirmed here is the GATEWAY's answer, not a payment, so the
-  // copy says that. It clears on its own within one of the service's renewal sweeps.
-  if (acct.state === 'unknown') {
-    return {
-      tone: 'blue',
-      icon: 'clock',
-      title: 'Confirming access status',
-      text: 'A change to this org’s access is still unconfirmed at the gateway, so we are not claiming either way yet. This resolves on its own.'
-    }
-  }
-  // Active, no usage yet, and a service too old to report `state` all land here.
-  return null
 }
 
 const BALANCE_TONE = {
