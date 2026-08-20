@@ -232,6 +232,19 @@ const LAST_SUCCESSFUL_DREAM_SCAN = 50
 const MAX_AUTO_SESSION_WINDOW = 100
 const DREAMS_DIRNAME = 'memory-dreams'
 const BACKUPS_DIRNAME = 'memory-backups'
+/** A dream stages into a real memory store (`<dream>/memory/`), so every store helper
+ *  — listing, index generation, the memory tools — works on it unchanged. Dreams
+ *  staged before that lived in `output/`; those keep resolving for review and adoption. */
+const LEGACY_STAGED_DIRNAME = 'output'
+
+/** The staged store for a dream: the current layout when present, else the legacy one. */
+async function resolveStagedDir(fs: MemoryFs, base: string): Promise<string> {
+  const current = join(base, MEMORY_DIRNAME)
+  if ((await fs.readdir(current)).length > 0) return current
+  const legacy = join(base, LEGACY_STAGED_DIRNAME)
+  return (await fs.readdir(legacy)).length > 0 ? legacy : current
+}
+
 /** Staged file names are the validator's own outputs; anything else is a violation. */
 const STAGED_NAME_RE = /^[a-z0-9][a-z0-9-]{0,62}\.md$/
 
@@ -712,7 +725,8 @@ export class DreamRunner {
       // stage() is several awaited writes; a cancel can land while it runs.
       // Cancel-wins: honor it, drop the partial output, don't flip to completed.
       if ((await this.deps.store.getDream(agentId, dreamId))?.status !== 'running') {
-        await fs.rm(join(base, 'output')).catch(() => {})
+        await fs.rm(join(base, MEMORY_DIRNAME)).catch(() => {})
+        await fs.rm(join(base, LEGACY_STAGED_DIRNAME)).catch(() => {})
         return
       }
       await this.finish(agentId, dreamId, {
@@ -795,8 +809,9 @@ export class DreamRunner {
   }
 
   private async stage(fs: MemoryFs, base: string, proposal: DreamProposal): Promise<DreamOrganizationSuggestionInfo[]> {
-    const out = join(base, 'output')
+    const out = join(base, MEMORY_DIRNAME)
     await fs.rm(out)
+    await fs.rm(join(base, LEGACY_STAGED_DIRNAME))
     await fs.mkdir(out)
     const staged: MemoryIndexEntry[] = []
     for (const file of proposal.files) {
@@ -1013,7 +1028,7 @@ export class DreamRunner {
       if (dream.status !== 'completed') throw new DreamStateError(`cannot adopt a ${dream.status} dream`)
       if (this.active.has(agentId)) throw new DreamStateError('a dream is in flight for this agent; wait or cancel it')
 
-      const out = join(this.dreamDir(agentId, dreamId), 'output')
+      const out = await resolveStagedDir(fs, this.dreamDir(agentId, dreamId))
       const stagedNames = (await fs.readdir(out))
         .filter((entry) => entry.kind === 'file' && stagedPathOk(entry.name))
         .map((entry) => entry.name)
@@ -1344,7 +1359,7 @@ export class DreamRunner {
       (dream.skills ?? []).some((skill) => skill.state === 'proposed') ||
       (dream.organizationSuggestions ?? []).some((suggestion) => suggestion.state === 'proposed')
     if (pending) {
-      for (const part of ['input', 'output']) await fs.rm(join(base, part))
+      for (const part of ['input', MEMORY_DIRNAME, LEGACY_STAGED_DIRNAME]) await fs.rm(join(base, part))
     } else {
       await fs.rm(base)
     }
@@ -1574,7 +1589,7 @@ export class DreamRunner {
   async stagedFiles(agentId: string, dreamId: string): Promise<{ name: string; size: number; mtime: string }[] | null> {
     this.assertStagedContentAllowed()
     await this.getDream(agentId, dreamId)
-    const out = join(this.dreamDir(agentId, dreamId), 'output')
+    const out = await resolveStagedDir(this.fsFor(agentId), this.dreamDir(agentId, dreamId))
     // A staged store always carries its index, so no entries means no staging (absent is data).
     const staged = (await this.fsFor(agentId).readdir(out)).filter(
       (entry) => entry.kind === 'file' && stagedPathOk(entry.name)
@@ -1597,7 +1612,8 @@ export class DreamRunner {
     this.assertStagedContentAllowed()
     await this.getDream(agentId, dreamId)
     if (!stagedPathOk(path)) throw new DreamViolationError('staged memory paths are plain kebab-case .md names')
-    const file = await this.fsFor(agentId).readFile(join(this.dreamDir(agentId, dreamId), 'output', path))
+    const stagedDir = await resolveStagedDir(this.fsFor(agentId), this.dreamDir(agentId, dreamId))
+    const file = await this.fsFor(agentId).readFile(join(stagedDir, path))
     return file ? { content: file.content, mtime: file.mtime } : null
   }
 
@@ -1609,7 +1625,7 @@ export class DreamRunner {
     this.assertStagedContentAllowed()
     await this.getDream(agentId, dreamId)
     const fs = this.fsFor(agentId)
-    const out = join(this.dreamDir(agentId, dreamId), 'output')
+    const out = await resolveStagedDir(fs, this.dreamDir(agentId, dreamId))
     const names = (await fs.readdir(out))
       .filter((entry) => entry.kind === 'file' && stagedPathOk(entry.name))
       .map((entry) => entry.name)

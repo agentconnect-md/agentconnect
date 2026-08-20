@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, readdir, stat, utimes, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from 'node:fs/promises'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -742,7 +742,8 @@ describe('DreamRunner adoption', () => {
     // Seed a live keep.md byte-identical to what the dream staged, and backdate
     // every current file so "fresh" is unambiguous. Adopt with force since this
     // live edit intentionally drifts from the dream's start snapshot.
-    const out = join(dir, 'memory-dreams', started.dreamId, 'output')
+    // A dream stages into a real memory store now, so its files live under `memory/`.
+    const out = join(dir, 'memory-dreams', started.dreamId, 'memory')
     const stagedKeep = await readFile(join(out, 'keep.md'), 'utf8')
     await writeMemoryFile(local(dir), 'keep.md', stagedKeep, undefined, 'tool')
     const OLD = new Date('2020-01-01T00:00:00.000Z')
@@ -764,7 +765,8 @@ describe('DreamRunner adoption', () => {
     await settle(store, started.dreamId)
 
     // The review token is the digest of the exact staged output the user reviewed.
-    const out = join(dir, 'memory-dreams', started.dreamId, 'output')
+    // A dream stages into a real memory store now, so its files live under `memory/`.
+    const out = join(dir, 'memory-dreams', started.dreamId, 'memory')
     const names = await readdir(out)
     const stagedFiles = await Promise.all(
       names.map(async (name) => ({ name, content: await readFile(join(out, name), 'utf8') }))
@@ -1191,6 +1193,32 @@ describe('DreamRunner crash recovery', () => {
     await runner.reclaimDreams(['a1'])
     expect(store.dreams.get('drm-peer')?.status).toBe('completed')
     expect(failures).toEqual(['drm-peer'])
+  })
+
+  it('still reviews and adopts a dream staged under the legacy output/ layout', async () => {
+    // Dreams staged before the store-shaped layout keep their files in `output/`.
+    // They must stay reviewable and adoptable rather than reading as unstaged.
+    const { dir, store, runner } = await setup({})
+    const started = await runner.start('a1', { trigger: 'manual' })
+    await settle(store, started.dreamId)
+
+    // Rewrite this dream the old way: same bytes, legacy directory.
+    const base = join(dir, 'memory-dreams', started.dreamId)
+    const current = join(base, 'memory')
+    const legacy = join(base, 'output')
+    await mkdir(legacy, { recursive: true })
+    for (const name of await readdir(current)) {
+      await writeFile(join(legacy, name), await readFile(join(current, name), 'utf8'))
+    }
+    await rm(current, { recursive: true, force: true })
+
+    const staged = await runner.stagedFiles('a1', started.dreamId)
+    expect(staged?.some((f) => f.name === 'prefs.md')).toBe(true)
+    expect((await runner.stagedRead('a1', started.dreamId, 'prefs.md'))?.content).toContain('2026-07-24')
+
+    const adopted = await runner.adopt('a1', started.dreamId, false)
+    expect(adopted.status).toBe('adopted')
+    expect(await readMemoryFile(local(dir), 'prefs.md')).toContain('2026-07-24')
   })
 
   it('sweeps reconciled superseded staging while preserving proposed skills', async () => {
