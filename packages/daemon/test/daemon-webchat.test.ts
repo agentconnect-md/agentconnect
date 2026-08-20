@@ -836,7 +836,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     })
     const daemon = new Daemon({ root, hostFactory: factory })
     await daemon.start()
-    ;(daemon as any).runtimeCatalogs.set('claude', {
+    ;(daemon as any).runtimeFacts.catalogs.set('claude', {
       models: [
         {
           id: 'default',

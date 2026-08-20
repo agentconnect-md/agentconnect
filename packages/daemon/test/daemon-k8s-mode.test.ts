@@ -181,7 +181,7 @@ describe('daemon --k8s mode', () => {
       expect(Object.keys((k8sDaemon as any).runtimes)).toEqual(['claude'])
       // Never launches a runtime locally to learn this — the table is the source.
       expect(probe).not.toHaveBeenCalled()
-      const profile = (k8sDaemon as any).runtimeProfileFor('claude')
+      const profile = (k8sDaemon as any).runtimeFacts.profileFor('claude')
       expect(profile.models).toEqual(['sonnet'])
       // Declared, not probed: model gates must stay permissive on this provenance.
       expect(profile.modelsSource).toBe('cached')

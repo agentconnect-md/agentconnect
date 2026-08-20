@@ -121,30 +121,30 @@ describe('live-turn runtime auth signal', () => {
     try {
       // An ordinary turn failure is NOT an auth signal — no mark, no emit.
       await expect((daemon as any).dispatch('bot-a', dm('100', 'q1'), 'int-a')).rejects.toThrow('runtime exploded')
-      expect((daemon as any).runtimeProfileFor('claude').authRequired).toBeUndefined()
+      expect((daemon as any).runtimeFacts.profileFor('claude').authRequired).toBeUndefined()
       expect(emitted.length).toBe(0)
 
       // ACP -32000 marks the agent's runtime and re-emits the facts snapshot.
       await expect((daemon as any).dispatch('bot-a', dm('200', 'q2'), 'int-a')).rejects.toMatchObject({
         code: -32000
       })
-      expect((daemon as any).runtimeProfileFor('claude')).toMatchObject({ authRequired: true })
+      expect((daemon as any).runtimeFacts.profileFor('claude')).toMatchObject({ authRequired: true })
       expect(emitted.length).toBe(1)
       expect(emitted[0]!.find((p) => p.runtime === 'claude')?.authRequired).toBe(true)
 
       // The next successful turn proves credentials work — mark cleared, flip emitted.
       await (daemon as any).dispatch('bot-a', dm('300', 'q3'), 'int-a')
-      expect((daemon as any).runtimeProfileFor('claude').authRequired).toBeUndefined()
+      expect((daemon as any).runtimeFacts.profileFor('claude').authRequired).toBeUndefined()
       expect(emitted.length).toBe(2)
       expect(emitted[1]!.find((p) => p.runtime === 'claude')?.authRequired).toBeUndefined()
 
       // The expired-credential family (-32603 + auth wording) marks it too.
       await expect((daemon as any).dispatch('bot-a', dm('400', 'q4'), 'int-a')).rejects.toThrow(/OAuth session expired/)
-      expect((daemon as any).runtimeProfileFor('claude')).toMatchObject({ authRequired: true })
+      expect((daemon as any).runtimeFacts.profileFor('claude')).toMatchObject({ authRequired: true })
       expect(emitted.length).toBe(3)
 
       await (daemon as any).dispatch('bot-a', dm('500', 'q5'), 'int-a')
-      expect((daemon as any).runtimeProfileFor('claude').authRequired).toBeUndefined()
+      expect((daemon as any).runtimeFacts.profileFor('claude').authRequired).toBeUndefined()
       expect(emitted.length).toBe(4)
     } finally {
       await daemon.stop()
@@ -182,10 +182,10 @@ describe('live-turn runtime auth signal', () => {
       await expect((daemon as any).dispatch('bot-a', dm('100', 'q1'), 'int-a')).rejects.toMatchObject({
         code: -32000
       })
-      expect((daemon as any).runtimeProfileFor('claude')).toMatchObject({ authRequired: true })
+      expect((daemon as any).runtimeFacts.profileFor('claude')).toMatchObject({ authRequired: true })
       // The successful turn still completes and clears the mark.
       await (daemon as any).dispatch('bot-a', dm('200', 'q2'), 'int-a')
-      expect((daemon as any).runtimeProfileFor('claude').authRequired).toBeUndefined()
+      expect((daemon as any).runtimeFacts.profileFor('claude').authRequired).toBeUndefined()
     } finally {
       await daemon.stop()
     }

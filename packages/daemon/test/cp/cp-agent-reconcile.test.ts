@@ -823,7 +823,7 @@ describe('Daemon CP agent → memory + reconcile', () => {
 
     await seam(daemon).applyAgentDetach({ agentId: 'ghost', moveId: MOVE_ID_3 })
     ;(daemon as any).cpMcpDefs.upsert('org-a', 'remote', { transport: 'http', url: 'https://mcp.invalid' })
-    ;(daemon as any).runtimeMcpCaps.set('claude', { http: false, sse: false })
+    ;(daemon as any).runtimeFacts.mcpCaps.set('claude', { http: false, sse: false })
     await expect(
       seam(daemon).applyAgentActivate({
         agentId: 'ghost',
@@ -838,7 +838,7 @@ describe('Daemon CP agent → memory + reconcile', () => {
     })
 
     await seam(daemon).applyAgentDetach({ agentId: 'ghost', moveId: MOVE_ID_4 })
-    ;(daemon as any).runtimeModels.set('claude', ['supported-model'])
+    ;(daemon as any).runtimeFacts.models.set('claude', ['supported-model'])
     await expect(
       seam(daemon).applyAgentActivate({
         agentId: 'ghost',
