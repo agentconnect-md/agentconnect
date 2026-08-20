@@ -83,10 +83,12 @@ function buildSendMessageTool(platforms: string[]): ToolDescriptor {
     type: 'string',
     minLength: 1,
     description:
-      'Optional. Forward a file THIS conversation received, by its name exactly as the `[attached: …]` marker ' +
-      'spells it — this is how an image reaches another platform. The daemon posts the bytes itself with ' +
-      '`message` as the caption; you can neither attach a file you were not sent nor produce one from what you ' +
-      'saw. The forwarded copy may be smaller than the original.'
+      'Optional. Forward an IMAGE this conversation received, by its name exactly as the `[attached: …]` ' +
+      'marker spells it — this is how a picture reaches another platform. Images only, and only the one ' +
+      'retained per message: a document, or a second image on the same message, is listed in the marker but ' +
+      'cannot be forwarded. The daemon posts the bytes itself with `message` as the caption; you can neither ' +
+      'attach a file you were not sent nor produce one from what you saw. The copy sent may be smaller than ' +
+      'the original.'
   }
 
   // Mode 1 — toAgent: wake one AgentConnect agent. Two forms: postless (no channel, peers
@@ -279,7 +281,7 @@ function buildSendMessageTool(platforms: string[]): ToolDescriptor {
       'posts once at the channel root and @-mentions every listed user; a single id string also works.\n' +
       '- Channel (bare post, no recipient): `{"channel":"<channel id>","message":"..."}` — posts at the channel ' +
       'root without waking anyone or @-mentioning anyone; add `platform` or `integrationId` only when needed.\n' +
-      '- attachment (with `toUser` or `channel`) — forward a file this conversation received: ' +
+      '- attachment (with `toUser` or `channel`) — forward an image this conversation received: ' +
       '`{"channel":"<channel id>","attachment":"<file name>","message":"..."}`. The name is the one in the ' +
       '`[attached: …]` marker. This is the ONLY way to put an image on another platform; describing what you saw ' +
       'is not the same thing.\n' +

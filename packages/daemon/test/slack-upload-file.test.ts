@@ -68,6 +68,9 @@ describe('SlackConnection.uploadFile', () => {
       channel_id: 'C1',
       thread_ts: '111.1',
       initial_comment: 'from telegram',
+      // The caption takes the same markdown block a text post does, so one `message` string
+      // cannot render as CommonMark or as mrkdwn depending on whether it carried a file.
+      blocks: [{ type: 'markdown', text: 'from telegram' }],
       username: 'Scout',
       icon_url: 'https://example.test/a.png'
     })
@@ -91,6 +94,15 @@ describe('SlackConnection.uploadFile', () => {
     ).resolves.toEqual({ fileId: 'F1' })
     expect(completeUploadExternal).toHaveBeenCalledTimes(2)
     expect(completeUploadExternal.mock.calls[1]![0]).not.toHaveProperty('username')
+  })
+
+  it('bounds the byte POST so a stuck upload cannot wedge the send queue', async () => {
+    const conn = connWith({
+      getUploadURLExternal: async () => ({ upload_url: 'https://files.slack.com/upload/v1/x', file_id: 'F1' }),
+      completeUploadExternal: async () => ({ files: [{ id: 'F1' }] })
+    })
+    await conn.uploadFile('C1', { bytes: Buffer.from('x'), name: 'a.png' })
+    expect(undici.fetch.mock.calls[0]![1]).toMatchObject({ signal: expect.any(AbortSignal) })
   })
 
   it('gives up without sharing when the reservation returns no upload url', async () => {

@@ -517,10 +517,15 @@ export async function sendMessage(
         throw new Error(`sendMessage: the selected ${platformLabel(wantPlatform)} integration cannot post files`)
       }
       attachment = await deps.resolveAttachment?.(ctx, attachmentName)
+      // Not necessarily a wrong name: the `[attached: …]` marker lists EVERY file on a
+      // message, while only the one retained image is forwardable. Saying "no such name"
+      // would send the agent back to retry a name it read correctly.
       if (!attachment) {
         throw new Error(
-          `sendMessage: no file named "${attachmentName}" was received in this conversation — ` +
-            'name it exactly as the `[attached: …]` marker spells it.'
+          `sendMessage: "${attachmentName}" is not forwardable from this conversation. Only a shared ` +
+            'IMAGE is retained for forwarding — a document, a second image on the same message, or an ' +
+            'image too large to retain is not, even though the `[attached: …]` marker still lists it. ' +
+            'Check the spelling once; if it matches, this file cannot be forwarded and retrying will not help.'
         )
       }
     }

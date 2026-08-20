@@ -255,6 +255,12 @@ an agent can forward only what was delivered to it, and the bytes never pass thr
 model. It forwards the bounded copy already retained for console replay rather than
 re-fetching the original, so a forwarded image can be smaller than the one that arrived.
 
+**Only that retained copy is forwardable — one image per message.** The `[attached: …]`
+marker lists every file on a message, but a document, a second image on the same message,
+and an image too large to retain have no bytes to forward. Naming one is refused as _not
+forwardable_ rather than as an unknown name, because the agent read the name correctly and
+would otherwise retry it.
+
 A file share is its own message on the receiving platform, not a decorated text post: the
 send's `message` becomes the file's caption, and each platform sends it the way that
 platform shows a file — an image previews inline where the platform can do that, and a

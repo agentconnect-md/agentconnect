@@ -497,6 +497,10 @@ function slackApiErrorCode(err: unknown): string | undefined {
 // call per message for installations that have not been upgraded yet.
 const CUSTOM_USERNAME_REPROBE_MS = 5 * 60_000
 
+/** Per-request bound on every Slack egress call. Shared with the byte upload, which rides the
+ *  same serial queue and would otherwise block all delivery on undici's 300 s defaults. */
+const SLACK_API_TIMEOUT_MS = 30_000
+
 function proxyDispatcher(): ProxyAgent | undefined {
   const url = process.env.HTTPS_PROXY ?? process.env.HTTP_PROXY
   return url ? new ProxyAgent(url) : undefined
@@ -513,7 +517,7 @@ function sendOnlyApp(botToken: string): AppLike {
   const dispatcher = proxyDispatcher()
   const client = new WebClient(botToken, {
     ...(dispatcher ? { fetch: fetchWithDispatcher(dispatcher) } : {}),
-    timeout: 30_000,
+    timeout: SLACK_API_TIMEOUT_MS,
     retryConfig: { retries: 2 }
   })
   return {
@@ -543,7 +547,7 @@ function realSocketModeApp(o: { token: string; appToken: string }, boltDebug?: b
     // let one transient failure block all delivery for a whole turn. 30s is a
     // compromise: long enough for auth.test and sends to survive a slow/VPN link,
     // yet still bounded so a stuck call cannot wedge the queue indefinitely.
-    timeout: 30_000,
+    timeout: SLACK_API_TIMEOUT_MS,
     retryConfig: { retries: 2 }
   }
   const logLevel = boltDebug ? LogLevel.DEBUG : undefined
@@ -1275,11 +1279,15 @@ export class SlackConnection implements PlatformConnection {
         if (!(await this.putUploadBytes(uploadUrl, file))) return undefined
         // Sharing is what makes the file a message; without `channel_id` it stays a private
         // upload nobody can see. `thread_ts` must be the PARENT's ts, never a reply's.
+        // The caption takes the SAME markdown seam as a text post. `initial_comment` is
+        // mrkdwn, so without the block the one `message` string would render differently
+        // depending on whether it carried a file; the comment stays as the notification text.
+        const caption = comment ? markdownBlock(comment) : undefined
         const share: Record<string, unknown> = {
           files: [{ id: fileId, title: file.name }],
           channel_id: channel,
           ...(threadTs ? { thread_ts: threadTs } : {}),
-          ...(comment ? { initial_comment: comment } : {})
+          ...(caption ? { initial_comment: caption.text, blocks: caption.blocks } : {})
         }
         await this.completeUpload(share, options)
         return { fileId }
@@ -1297,16 +1305,29 @@ export class SlackConnection implements PlatformConnection {
   private async putUploadBytes(uploadUrl: string, file: { bytes: Buffer; name: string }): Promise<boolean> {
     const form = new FormData()
     form.append('file', new Blob([new Uint8Array(file.bytes)]), file.name)
+    // This runs inside the serial send queue, so it carries the same bound the WebClient
+    // does: a stuck upload must not wedge every other message on this connection.
     const dispatcher = proxyDispatcher()
-    // Same cast seam as `fetchWithDispatcher`: undici's own FormData/RequestInit types and
-    // the Node globals are structurally identical but nominally distinct.
-    const init = { method: 'POST', body: form, ...(dispatcher ? { dispatcher } : {}) }
-    const res = await undiciFetch(uploadUrl, init as Parameters<typeof undiciFetch>[1])
-    if (!res.ok) {
-      this.deps.log?.debug(`slack: uploadFile byte POST for ${file.name} → HTTP ${res.status}`)
-      return false
+    try {
+      // Same cast seam as `fetchWithDispatcher`: undici's own FormData/RequestInit types and
+      // the Node globals are structurally identical but nominally distinct.
+      const init = {
+        method: 'POST',
+        body: form,
+        signal: AbortSignal.timeout(SLACK_API_TIMEOUT_MS),
+        ...(dispatcher ? { dispatcher } : {})
+      }
+      const res = await undiciFetch(uploadUrl, init as Parameters<typeof undiciFetch>[1])
+      if (!res.ok) {
+        this.deps.log?.debug(`slack: uploadFile byte POST for ${file.name} → HTTP ${res.status}`)
+        return false
+      }
+      return true
+    } finally {
+      // Unlike the two long-lived clients, this agent serves one request — closing it keeps
+      // a proxied deployment from leaking a keep-alive socket pool per forward.
+      await dispatcher?.close()
     }
-    return true
   }
 
   /** Step 3 of the upload, with the same `chat:write.customize` fallback the text send has:

@@ -267,13 +267,13 @@ describe('executeTool: sendMessage (channel post)', () => {
       expect(recorded).toEqual([])
     })
 
-    it('refuses a name this conversation never received, posting nothing', async () => {
+    it('refuses an unforwardable name without blaming the spelling, posting nothing', async () => {
       const gw = anchorless()
       const { deps: d } = deps(gw)
       Object.assign(d, resolves())
       await expect(
         executeTool(ctx, 'sendMessage', { channel: 'C_OTHER', attachment: 'nope.png', message: 'hi' }, d)
-      ).rejects.toThrow(/no file named "nope.png"/)
+      ).rejects.toThrow(/"nope.png" is not forwardable/)
       expect(gw.uploadFile).not.toHaveBeenCalled()
       expect(gw.postMessage).not.toHaveBeenCalled()
     })
