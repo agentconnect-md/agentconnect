@@ -89,6 +89,32 @@ function memoryScopeFor(ctx: SessionContext, deps: MemoryOpsDeps): MemoryScope {
 /** Provenance for a write made through the shared tool surface. The ordinary
  *  conversational case is `tool`; a distillation- or dream-bound session keeps its own
  *  source so the write ledger — and dream adoption's distill-only rebase — stay honest. */
+/** Topics a bound session has already written, so `maxTopics` counts DISTINCT files
+ *  rather than writes — appending to one topic repeatedly is not new content. */
+const boundTopics = new WeakMap<SessionContext, Set<string>>()
+
+/** Apply the binding's own limits before a write reaches the store. These carry the
+ *  constraints the dream's JSON proposal format used to enforce; the store still
+ *  applies path containment and the byte cap underneath. */
+function enforceBindingPolicy(ctx: SessionContext, path: string): void {
+  const binding = ctx.memoryBinding
+  if (!binding) return
+  const name = path.replace(/^.*\//, '')
+  if (binding.topicPattern && !binding.topicPattern.test(name)) {
+    throw new Error(`invalid memory path: "${name}" must match ${String(binding.topicPattern)}`)
+  }
+  if (binding.maxTopics === undefined) return
+  let seen = boundTopics.get(ctx)
+  if (!seen) {
+    seen = new Set()
+    boundTopics.set(ctx, seen)
+  }
+  if (!seen.has(name) && seen.size >= binding.maxTopics) {
+    throw new Error(`memory topic limit reached (${binding.maxTopics}) for this session`)
+  }
+  seen.add(name)
+}
+
 function writeSource(ctx: SessionContext): MemoryWriteSource {
   return ctx.memoryBinding?.source ?? 'tool'
 }
@@ -139,6 +165,7 @@ export async function writeMemory(
     // must be an explicit `newString: ""`).
     const parsed = parseArgs(WRITE_MEMORY_ARGS, args)
     const path = parsed.path ?? 'MEMORY.md'
+    enforceBindingPolicy(ctx, path)
     const { oldString, newString, content } = parsed
     const editMode = oldString !== undefined || newString !== undefined
     if (editMode) {

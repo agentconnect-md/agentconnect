@@ -1,3 +1,4 @@
+import type { MemoryFs } from './fs.js'
 /** The L0 memory contract: the `MemoryProvider` port plus its scope, result, admin-surface
  *  and error types. Implementations and factories live in `provider.ts`, which re-exports
  *  everything here so existing importers stay unchanged. */
@@ -26,6 +27,10 @@ export type MemoryProviderKind = 'none' | 'native' | 'managed' | 'external'
  *  `userId`/`sessionId` are reserved for later providers. */
 export interface MemoryScope {
   agentId: string
+  /** Act on exactly this store instead of resolving one from the agent + channel.
+   *  A dream binds its STAGED store here, so the same memory tools serve it without
+   *  the provider needing to know what a dream is. */
+  root?: MemoryFs
   /** A filesystem-safe per-channel folder name (channel + transport scope), set by
    *  the daemon only for channel-scoped agents. Absent ⇒ agent-level store. */
   channelKey?: string
