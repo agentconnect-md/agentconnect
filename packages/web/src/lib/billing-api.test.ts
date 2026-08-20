@@ -9,11 +9,19 @@ import {
   assertPurchase,
   assertPurchaseCreated,
   assertTransactionsPage,
+  fmtDecimalUsd,
   BillingShapeError,
   fmtMicroUsd
 } from './billing-api'
 
-const tx = { id: 't1', kind: 'purchase', amountMicro: 25_000_000, at: '2026-08-17T09:25:33.751Z' }
+const tx = { type: 'credit', id: 't1', kind: 'purchase', amountMicro: 25_000_000, at: '2026-08-17T09:25:33.751Z' }
+const debit = {
+  type: 'debit',
+  id: 'd1',
+  period: '2026-08',
+  amount: '0.450000000000000001',
+  at: '2026-08-20T10:00:00.000Z'
+}
 
 describe('assertAccount', () => {
   it('accepts the documented shape', () => {
@@ -47,6 +55,31 @@ describe('assertTransactionsPage', () => {
     // Deliberate: the row renders the raw value as its label. Refusing the whole
     // page because the service added a kind would be the worse failure.
     expect(() => assertTransactionsPage({ items: [{ ...tx, kind: 'chargeback' }], nextCursor: null })).not.toThrow()
+  })
+
+  it('accepts a debit row', () => {
+    expect(() => assertTransactionsPage({ items: [tx, debit], nextCursor: null })).not.toThrow()
+  })
+
+  it('refuses a row whose type this build cannot read', () => {
+    // Unlike an unknown `kind`, an unknown `type` has no sensible fallback rendering.
+    expect(() => assertTransactionsPage({ items: [{ ...tx, type: 'hold' }], nextCursor: null })).toThrow(
+      BillingShapeError
+    )
+    expect(() => assertTransactionsPage({ items: [{ id: 'x', at: tx.at }], nextCursor: null })).toThrow(
+      BillingShapeError
+    )
+  })
+
+  it('refuses a debit whose amount arrived as a number', () => {
+    // The service sends a decimal string precisely so 18 decimals survive the wire;
+    // accepting a number here would hide the day that stops being true.
+    expect(() => assertTransactionsPage({ items: [{ ...debit, amount: 0.45 }], nextCursor: null })).toThrow(
+      BillingShapeError
+    )
+    expect(() => assertTransactionsPage({ items: [{ ...debit, period: 8 }], nextCursor: null })).toThrow(
+      BillingShapeError
+    )
   })
 
   it('refuses a row with an unusable amount or timestamp', () => {
@@ -91,5 +124,16 @@ describe('assertPurchaseCreated', () => {
     expect(() => assertPurchaseCreated({ purchaseId: 'p1', url: 'https://checkout.stripe.com/x' })).not.toThrow()
     expect(() => assertPurchaseCreated({ purchaseId: 'p1' })).toThrow(BillingShapeError)
     expect(() => assertPurchaseCreated(null)).toThrow(BillingShapeError)
+  })
+})
+
+describe('fmtDecimalUsd', () => {
+  it('rounds an exact decimal to cents for display', () => {
+    expect(fmtDecimalUsd('0.450000000000000001')).toBe('$0.45')
+    expect(fmtDecimalUsd('1234.5')).toBe('$1,234.50')
+  })
+
+  it('shows the raw string rather than $NaN when it is not a number', () => {
+    expect(fmtDecimalUsd('twelve')).toBe('$twelve')
   })
 })
