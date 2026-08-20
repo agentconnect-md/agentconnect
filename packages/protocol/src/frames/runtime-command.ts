@@ -33,3 +33,16 @@ export const RuntimeCommandsList = z
   })
   .strict()
 export type RuntimeCommandsList = z.infer<typeof RuntimeCommandsList>
+
+/** Whether an advertised command is a SKILL — content loaded on request — rather than a harness
+ *  built-in. Only skills are dispatchable through a plain-text instruction, so the daemon's
+ *  invocation translation and the console's pickers both gate on this. The markers are each
+ *  adapter's own convention: codex advertises skills as `$name`; claude-agent-acp suffixes the
+ *  SKILL.md scope onto the description (`(user)` / `(project)`) and names plugin skills
+ *  `plugin:skill`; `mcp:`-prefixed names are MCP prompts, not skills. */
+export function isSkillCommand(command: Pick<RuntimeCommand, 'name' | 'description'>): boolean {
+  if (command.name.startsWith('$')) return true
+  if (command.name.startsWith('mcp:')) return false
+  if (command.name.includes(':')) return true
+  return /\((?:user|project)\)$/.test(command.description.trimEnd())
+}
