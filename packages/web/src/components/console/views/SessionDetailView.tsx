@@ -81,7 +81,8 @@ import {
 } from '@/lib/session-trigger'
 import { platformTranscriptOrdering } from '@/components/console/platforms/registry'
 import { mergeSessionMessages } from '@/lib/session-transcript'
-import { useStickToBottom } from '@/lib/stick-to-bottom'
+import { VirtualTranscript, type VirtualTranscriptHandle } from '@/components/console/VirtualTranscript'
+import { estimateTurnSize } from '@/lib/transcript-virtual'
 import { socialLoginProviders } from '@/lib/social-login-providers'
 import { isAuthConfigured } from '@/lib/auth'
 import { clipboardImageFile, prepareWebchatImage } from '@/lib/webchat-image'
@@ -2590,10 +2591,12 @@ export default function SessionDetailView() {
     void refreshTranscriptTail()
   }, [visibleTailReady, sessionBusy, sessionActivityVersion, sessionStreamGeneration, refreshTranscriptTail])
 
-  // Everything above only APPENDS rows; nothing ever moved the viewport, so a
-  // live session's newest output landed below the fold. Follow it — but only for
-  // a reader who is already at the bottom (see lib/stick-to-bottom).
-  const { pin: stickToBottom, awayFromBottom } = useStickToBottom(conversationKey ?? sid ?? null)
+  // The transcript's follow-to-bottom + jump-button state now live in <VirtualTranscript>; this
+  // just holds a handle to it. `stickToBottom` (re-arm + jump) is called from the send path and the
+  // jump button; `awayFromBottom` (the reader scrolled up out of a scrollable transcript) shows it.
+  const transcriptRef = useRef<VirtualTranscriptHandle>(null)
+  const [awayFromBottom, setAwayFromBottom] = useState(false)
+  const stickToBottom = useCallback(() => transcriptRef.current?.scrollToBottom(), [])
 
   useEffect(() => {
     if (!session || (session.platform !== 'playground' && session.platform !== 'webchat') || !sessionBusy) return
@@ -4138,246 +4141,247 @@ export default function SessionDetailView() {
           the composer stops short of. (Longhand `pb-*` always sorts after shorthand
           `p-*`, so the cancel wins — STYLE.md §8.) */}
               <div className="flex flex-1 flex-col gap-4 p-3 max-desktop:pb-0 desktop:gap-0 desktop:p-0">
-                {turns.length > 0 && (
-                  <div className="flex flex-col gap-4 max-desktop:pb-3 desktop:gap-[15px]">
-                    {turns.map((turn, ti) => (
-                      // The turn's clock time is its own centred line above the message —
-                      // a shared separator for both sides, instead of a label-row tail
-                      // that never lines up with the bubble edge on either side.
-                      <div key={turn.key} className="flex flex-col gap-[5px]">
-                        {turn.time && (
-                          <div className="mono text-center text-[11px] leading-normal text-(--text-tertiary)">
-                            {turn.time}
-                          </div>
-                        )}
-                        {turn.kind === 'user' ? (
-                          // 2b: user turns are right-aligned brand-soft bubbles. A sender label
-                          // sits above the bubble only when it isn't you (platform user / cron).
-                          <div className="group/turn flex items-start justify-end gap-[9px]">
-                            <div className="relative flex min-w-0 max-w-[86%] flex-col items-end gap-[3px]">
-                              {showsSenderLabel(turn) && (
-                                <span className="flex items-center gap-[6px] pr-1 font-sans text-[11px] font-medium leading-normal text-(--text-tertiary)">
-                                  {turn.isCron && turn.cronId ? (
-                                    <Link className="lnk text-inherit" href={orgPath(`/crons/${turn.cronId}`)}>
-                                      {turn.sp.name}
-                                    </Link>
-                                  ) : (
-                                    <span>{turn.sp.name}</span>
-                                  )}
-                                </span>
-                              )}
-                              <div className={SELF_BUBBLE}>
-                                {turn.image && (
-                                  <img
-                                    src={`data:${turn.image.mimeType};base64,${turn.image.data}`}
-                                    alt={turn.image.name}
-                                    className={`max-h-[360px] max-w-full rounded-md object-contain ${turn.text ? 'mb-[10px]' : ''}`}
-                                  />
+                <VirtualTranscript
+                  turns={turns}
+                  estimate={estimateTurnSize}
+                  resetKey={conversationKey ?? sid ?? null}
+                  onAtBottomChange={(atBottom) => setAwayFromBottom(!atBottom)}
+                  handleRef={transcriptRef}
+                  renderTurn={(turn, ti) => (
+                    // The turn's clock time is its own centred line above the message —
+                    // a shared separator for both sides, instead of a label-row tail
+                    // that never lines up with the bubble edge on either side.
+                    <div key={turn.key} className="flex flex-col gap-[5px]">
+                      {turn.time && (
+                        <div className="mono text-center text-[11px] leading-normal text-(--text-tertiary)">
+                          {turn.time}
+                        </div>
+                      )}
+                      {turn.kind === 'user' ? (
+                        // 2b: user turns are right-aligned brand-soft bubbles. A sender label
+                        // sits above the bubble only when it isn't you (platform user / cron).
+                        <div className="group/turn flex items-start justify-end gap-[9px]">
+                          <div className="relative flex min-w-0 max-w-[86%] flex-col items-end gap-[3px]">
+                            {showsSenderLabel(turn) && (
+                              <span className="flex items-center gap-[6px] pr-1 font-sans text-[11px] font-medium leading-normal text-(--text-tertiary)">
+                                {turn.isCron && turn.cronId ? (
+                                  <Link className="lnk text-inherit" href={orgPath(`/crons/${turn.cronId}`)}>
+                                    {turn.sp.name}
+                                  </Link>
+                                ) : (
+                                  <span>{turn.sp.name}</span>
                                 )}
-                                {turn.text && <MessageText text={turn.text} platform={turn.platform} />}
-                              </div>
-                              {/* Sent bubbles are complete by definition — the copy affordance
+                              </span>
+                            )}
+                            <div className={SELF_BUBBLE}>
+                              {turn.image && (
+                                <img
+                                  src={`data:${turn.image.mimeType};base64,${turn.image.data}`}
+                                  alt={turn.image.name}
+                                  className={`max-h-[360px] max-w-full rounded-md object-contain ${turn.text ? 'mb-[10px]' : ''}`}
+                                />
+                              )}
+                              {turn.text && <MessageText text={turn.text} platform={turn.platform} />}
+                            </div>
+                            {/* Sent bubbles are complete by definition — the copy affordance
                         (hover-revealed, right-aligned under the bubble) always mounts.
                         Absolutely positioned into the inter-turn gap so revealing it
                         never changes the row's height. */}
-                              {turn.text && (
-                                <span className="absolute right-0 top-full">
-                                  <CopyTurnButton text={turn.text} />
-                                </span>
-                              )}
-                            </div>
-                            <ParticipantAvatar
-                              agent={turn.agent}
-                              avatarUrl={turn.avatarUrl}
-                              avatarInitials={turn.avatarInitials}
-                              platformMark={usesIntegrationAvatar ? sessionIntegration : undefined}
-                              sp={turn.sp}
-                              isCron={turn.isCron}
-                              // Optically centre the 26px mark on the bubble's FIRST LINE, not
-                              // on the bubble's top edge: 9px of padding plus half of a 21px
-                              // line puts that centre 19.5px down, while a top-aligned mark
-                              // centres at 13px — the 6px it looked too high by. A labelled row
-                              // keeps the mark level with its label instead, like the bot side.
-                              className={showsSenderLabel(turn) ? '' : 'mt-[6px]'}
-                            />
+                            {turn.text && (
+                              <span className="absolute right-0 top-full">
+                                <CopyTurnButton text={turn.text} />
+                              </span>
+                            )}
                           </div>
-                        ) : (
-                          (() => {
-                            // 2b: the spoken answer (MSG/DONE) is plain text; the agent's work
-                            // (reasoning / plan / tool / edit) collapses behind a per-turn toggle.
-                            const textSteps = turn.steps.filter((s) => !WORK_LANES.has(s.lane))
-                            const workSteps = turn.steps.filter((s) => WORK_LANES.has(s.lane))
-                            // Reasoning steps / tool commands / edited FILES (distinct paths across
-                            // EDIT rows, since one EDIT row can touch several files).
-                            const { thinkCount, toolCount, editCount } = workCounts(workSteps)
-                            const summary = workSummary(thinkCount, toolCount, editCount)
-                            // Is this turn still streaming? A multi-agent live webchat runs
-                            // several reply lanes at once, so a TAGGED turn asks its own lane
-                            // (an earlier still-active participant must not show the copy
-                            // affordance or lose its live line just because a later turn renders
-                            // below it). Lane-less/single-agent streams keep the trailing-turn
-                            // fallback. statusLabel carries the RAW session state — the
-                            // active-turn predicate lives (and is tested) in session-work.ts.
-                            const turnInFlight = sessionTurnInFlight(pgBusy, session.statusLabel)
-                            const busyLanes = turnInFlight ? getBusyLaneAgentIds(session.id) : []
-                            // The lane only says WHICH AGENT is busy — restrict the match to that
-                            // agent's LAST turn so its finished history stays non-streaming.
-                            const streaming =
-                              turnInFlight &&
-                              (turn.agentId && busyLanes.length > 0
-                                ? busyLanes.includes(turn.agentId) && lastBotTurnIndexByAgent.get(turn.agentId) === ti
-                                : ti === turns.length - 1)
-                            const openWork = workPanelOpen(workOverride.get(turn.key ?? ''))
-                            // Is the WORK itself still running? `streaming` alone is turn-level —
-                            // it stays true while the spoken answer streams AFTER the last tool
-                            // finished, which must not keep the live line alive. ACP tool calls
-                            // can also run in PARALLEL, each update replacing its original row
-                            // in place (keyed by toolCallId) — so "the newest row is finished"
-                            // does not mean the work is: any non-terminal tool row keeps the
-                            // work running, and the LATEST such row is what the toggle line
-                            // reports. With no active tool, a trailing unfinished work step
-                            // still counts (THINK rows carry no status and run until
-                            // superseded); a trailing text step means the agent moved on to its
-                            // answer.
-                            const stepDone = (st?: FmtStep) =>
-                              ['completed', 'failed'].includes((st?.msg?.toolStatus ?? '').toLowerCase())
-                            const activeTool = [...workSteps]
-                              .reverse()
-                              .find((st) => st.msg?.toolCallId && !stepDone(st))
-                            const lastStep = turn.steps[turn.steps.length - 1]
-                            const tailRunning = !!lastStep && WORK_LANES.has(lastStep.lane) && !stepDone(lastStep)
-                            const liveStep = activeTool ?? (tailRunning ? lastStep : undefined)
-                            const workRunning = streaming && liveStep !== undefined
-                            // While work runs, the toggle line also carries what is running RIGHT
-                            // NOW — the live step's first line (tool rows keep the command in
-                            // `code`) — so a collapsed panel still shows live progress.
-                            // trimStart skips the blank lines reasoning text can open with; a
-                            // reasoning line also drops its markdown markers (same as the row title).
-                            const liveRaw =
-                              workRunning && liveStep
-                                ? (liveStep.text || liveStep.code)?.trimStart().split('\n', 1)[0]?.trim()
-                                : undefined
-                            const liveLine = liveRaw && liveStep?.text ? stripMdMarkers(liveRaw) : liveRaw
-                            // Step identity for the fade-in key: two consecutive steps can show
-                            // the SAME first line, and a keyed-by-text span would keep its DOM
-                            // node and never replay the animation.
-                            const liveKey =
-                              liveStep && liveLine
-                                ? `${liveStep.msg?.toolCallId ?? turn.steps.indexOf(liveStep)}:${liveLine}`
-                                : undefined
-                            // Keyed by agent id where there is one so the colour survives a
-                            // rename; a mock/playground row without an id falls back to the
-                            // display name, which is stable for as long as the row is.
-                            const turnTone = agentToneColor(turn.agentId || turn.agentName)
-                            // What the bubble-level copy button copies: the spoken answer.
-                            const answerText = textSteps
-                              .map((st) => st.text)
-                              .filter(Boolean)
-                              .join('\n\n')
-                            return (
-                              <div
-                                key={`${session.id}:${ti}`}
-                                className="group/turn flex items-start gap-2 desktop:gap-[10px]"
-                              >
-                                <span className="av h-[26px] w-[26px] flex-none rounded-md">
-                                  <AgentIconView
-                                    icon={((turn.agentId ? agentById.get(turn.agentId) : owner) ?? owner)?.icon}
-                                    runtime={
-                                      (turn.agentId ? agentById.get(turn.agentId)?.runtime : undefined) ??
-                                      (agentRuntime || turn.model)
-                                    }
-                                    size={26}
-                                  />
-                                </span>
-                                <div className="min-w-0 flex-1" style={{ '--agent-accent': turnTone } as CSSProperties}>
-                                  <div className="mb-[5px] flex items-center gap-[7px]">
-                                    <span className={AGENT_NAME}>{turn.agentName}</span>
-                                  </div>
-                                  {/* One bubble per text step: a turn that answers in two chunks
+                          <ParticipantAvatar
+                            agent={turn.agent}
+                            avatarUrl={turn.avatarUrl}
+                            avatarInitials={turn.avatarInitials}
+                            platformMark={usesIntegrationAvatar ? sessionIntegration : undefined}
+                            sp={turn.sp}
+                            isCron={turn.isCron}
+                            // Optically centre the 26px mark on the bubble's FIRST LINE, not
+                            // on the bubble's top edge: 9px of padding plus half of a 21px
+                            // line puts that centre 19.5px down, while a top-aligned mark
+                            // centres at 13px — the 6px it looked too high by. A labelled row
+                            // keeps the mark level with its label instead, like the bot side.
+                            className={showsSenderLabel(turn) ? '' : 'mt-[6px]'}
+                          />
+                        </div>
+                      ) : (
+                        (() => {
+                          // 2b: the spoken answer (MSG/DONE) is plain text; the agent's work
+                          // (reasoning / plan / tool / edit) collapses behind a per-turn toggle.
+                          const textSteps = turn.steps.filter((s) => !WORK_LANES.has(s.lane))
+                          const workSteps = turn.steps.filter((s) => WORK_LANES.has(s.lane))
+                          // Reasoning steps / tool commands / edited FILES (distinct paths across
+                          // EDIT rows, since one EDIT row can touch several files).
+                          const { thinkCount, toolCount, editCount } = workCounts(workSteps)
+                          const summary = workSummary(thinkCount, toolCount, editCount)
+                          // Is this turn still streaming? A multi-agent live webchat runs
+                          // several reply lanes at once, so a TAGGED turn asks its own lane
+                          // (an earlier still-active participant must not show the copy
+                          // affordance or lose its live line just because a later turn renders
+                          // below it). Lane-less/single-agent streams keep the trailing-turn
+                          // fallback. statusLabel carries the RAW session state — the
+                          // active-turn predicate lives (and is tested) in session-work.ts.
+                          const turnInFlight = sessionTurnInFlight(pgBusy, session.statusLabel)
+                          const busyLanes = turnInFlight ? getBusyLaneAgentIds(session.id) : []
+                          // The lane only says WHICH AGENT is busy — restrict the match to that
+                          // agent's LAST turn so its finished history stays non-streaming.
+                          const streaming =
+                            turnInFlight &&
+                            (turn.agentId && busyLanes.length > 0
+                              ? busyLanes.includes(turn.agentId) && lastBotTurnIndexByAgent.get(turn.agentId) === ti
+                              : ti === turns.length - 1)
+                          const openWork = workPanelOpen(workOverride.get(turn.key ?? ''))
+                          // Is the WORK itself still running? `streaming` alone is turn-level —
+                          // it stays true while the spoken answer streams AFTER the last tool
+                          // finished, which must not keep the live line alive. ACP tool calls
+                          // can also run in PARALLEL, each update replacing its original row
+                          // in place (keyed by toolCallId) — so "the newest row is finished"
+                          // does not mean the work is: any non-terminal tool row keeps the
+                          // work running, and the LATEST such row is what the toggle line
+                          // reports. With no active tool, a trailing unfinished work step
+                          // still counts (THINK rows carry no status and run until
+                          // superseded); a trailing text step means the agent moved on to its
+                          // answer.
+                          const stepDone = (st?: FmtStep) =>
+                            ['completed', 'failed'].includes((st?.msg?.toolStatus ?? '').toLowerCase())
+                          const activeTool = [...workSteps].reverse().find((st) => st.msg?.toolCallId && !stepDone(st))
+                          const lastStep = turn.steps[turn.steps.length - 1]
+                          const tailRunning = !!lastStep && WORK_LANES.has(lastStep.lane) && !stepDone(lastStep)
+                          const liveStep = activeTool ?? (tailRunning ? lastStep : undefined)
+                          const workRunning = streaming && liveStep !== undefined
+                          // While work runs, the toggle line also carries what is running RIGHT
+                          // NOW — the live step's first line (tool rows keep the command in
+                          // `code`) — so a collapsed panel still shows live progress.
+                          // trimStart skips the blank lines reasoning text can open with; a
+                          // reasoning line also drops its markdown markers (same as the row title).
+                          const liveRaw =
+                            workRunning && liveStep
+                              ? (liveStep.text || liveStep.code)?.trimStart().split('\n', 1)[0]?.trim()
+                              : undefined
+                          const liveLine = liveRaw && liveStep?.text ? stripMdMarkers(liveRaw) : liveRaw
+                          // Step identity for the fade-in key: two consecutive steps can show
+                          // the SAME first line, and a keyed-by-text span would keep its DOM
+                          // node and never replay the animation.
+                          const liveKey =
+                            liveStep && liveLine
+                              ? `${liveStep.msg?.toolCallId ?? turn.steps.indexOf(liveStep)}:${liveLine}`
+                              : undefined
+                          // Keyed by agent id where there is one so the colour survives a
+                          // rename; a mock/playground row without an id falls back to the
+                          // display name, which is stable for as long as the row is.
+                          const turnTone = agentToneColor(turn.agentId || turn.agentName)
+                          // What the bubble-level copy button copies: the spoken answer.
+                          const answerText = textSteps
+                            .map((st) => st.text)
+                            .filter(Boolean)
+                            .join('\n\n')
+                          return (
+                            <div
+                              key={`${session.id}:${ti}`}
+                              className="group/turn flex items-start gap-2 desktop:gap-[10px]"
+                            >
+                              <span className="av h-[26px] w-[26px] flex-none rounded-md">
+                                <AgentIconView
+                                  icon={((turn.agentId ? agentById.get(turn.agentId) : owner) ?? owner)?.icon}
+                                  runtime={
+                                    (turn.agentId ? agentById.get(turn.agentId)?.runtime : undefined) ??
+                                    (agentRuntime || turn.model)
+                                  }
+                                  size={26}
+                                />
+                              </span>
+                              <div className="min-w-0 flex-1" style={{ '--agent-accent': turnTone } as CSSProperties}>
+                                <div className="mb-[5px] flex items-center gap-[7px]">
+                                  <span className={AGENT_NAME}>{turn.agentName}</span>
+                                </div>
+                                {/* One bubble per text step: a turn that answers in two chunks
                             arrives as two delivered messages, so one wrapper around the set
                             would merge messages the platform kept apart. */}
-                                  {textSteps.map((st, si) => (
-                                    <div key={si} className={`${AGENT_BUBBLE} ${si > 0 ? 'mt-2' : ''}`}>
-                                      {st.image && (
-                                        <img
-                                          src={`data:${st.image.mimeType};base64,${st.image.data}`}
-                                          alt={st.image.name}
-                                          className={`max-h-[360px] max-w-full rounded-md object-contain ${st.text ? 'mb-[10px]' : ''}`}
-                                        />
-                                      )}
-                                      {st.text && (
-                                        <div className="whitespace-pre-wrap">
-                                          <MessageText text={st.text} platform={st.platform} />
-                                        </div>
-                                      )}
-                                      <StepExtras step={st} sessionId={toolSid} />
-                                    </div>
-                                  ))}
-                                  {workSteps.length > 0 && (
-                                    <>
-                                      {/* One row: the work toggle, with the bubble's copy button at
-                                the line's end — mounted only once the turn has finished. */}
-                                      <div className="mt-2 flex min-w-0 items-center gap-[6px]">
-                                        <button
-                                          type="button"
-                                          onClick={() => toggleWork(turn.key ?? '', openWork)}
-                                          className="inline-flex min-w-0 items-center gap-[6px] border-0 bg-transparent p-0 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary) hover:text-(--text-secondary)"
-                                          title={openWork ? 'Hide the agent’s work' : 'Show the agent’s work'}
-                                        >
-                                          <Icon
-                                            name={openWork ? 'chevron-down' : 'chevron-right'}
-                                            size={13}
-                                            color="var(--text-tertiary)"
-                                          />
-                                          <span className="flex-none">{summary || 'Details'}</span>
-                                          {liveLine && (
-                                            // Keyed by step identity + content: a new step (or a new
-                                            // first line within one) remounts the span, replaying the
-                                            // ac-rise fade-in (honors reduced-motion in globals.css).
-                                            <span key={liveKey} className="work-live min-w-0 truncate">
-                                              · {liveLine}
-                                            </span>
-                                          )}
-                                        </button>
-                                        {!streaming && answerText && <CopyTurnButton text={answerText} />}
+                                {textSteps.map((st, si) => (
+                                  <div key={si} className={`${AGENT_BUBBLE} ${si > 0 ? 'mt-2' : ''}`}>
+                                    {st.image && (
+                                      <img
+                                        src={`data:${st.image.mimeType};base64,${st.image.data}`}
+                                        alt={st.image.name}
+                                        className={`max-h-[360px] max-w-full rounded-md object-contain ${st.text ? 'mb-[10px]' : ''}`}
+                                      />
+                                    )}
+                                    {st.text && (
+                                      <div className="whitespace-pre-wrap">
+                                        <MessageText text={st.text} platform={st.platform} />
                                       </div>
-                                      {openWork && (
-                                        <div className="mt-2 overflow-hidden rounded-md border border-(--border-subtle) bg-(--surface-app)">
-                                          {/* All work steps show, streaming or not — a live turn's
-                                    panel grows as steps arrive so the whole run is visible. */}
-                                          {workSteps.map((st, si) => (
-                                            <WorkStepRow
-                                              // Keyed by tool identity where there is one, so an
-                                              // open row survives re-renders as new steps stream
-                                              // in. Steps without a tool id (THINK rows) fall back
-                                              // to the index; within one agent's turn a toolCallId
-                                              // appears once.
-                                              key={st.msg?.toolCallId ?? `i:${si}`}
-                                              step={st}
-                                              sessionId={toolSid}
-                                              divider={si > 0}
-                                            />
-                                          ))}
-                                        </div>
-                                      )}
-                                    </>
-                                  )}
-                                  {/* A turn with no work has no toggle row — the finished
-                            bubble's copy button gets its own line instead. */}
-                                  {workSteps.length === 0 && !streaming && answerText && (
-                                    <div className="mt-2 flex">
-                                      <CopyTurnButton text={answerText} />
+                                    )}
+                                    <StepExtras step={st} sessionId={toolSid} />
+                                  </div>
+                                ))}
+                                {workSteps.length > 0 && (
+                                  <>
+                                    {/* One row: the work toggle, with the bubble's copy button at
+                                the line's end — mounted only once the turn has finished. */}
+                                    <div className="mt-2 flex min-w-0 items-center gap-[6px]">
+                                      <button
+                                        type="button"
+                                        onClick={() => toggleWork(turn.key ?? '', openWork)}
+                                        className="inline-flex min-w-0 items-center gap-[6px] border-0 bg-transparent p-0 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary) hover:text-(--text-secondary)"
+                                        title={openWork ? 'Hide the agent’s work' : 'Show the agent’s work'}
+                                      >
+                                        <Icon
+                                          name={openWork ? 'chevron-down' : 'chevron-right'}
+                                          size={13}
+                                          color="var(--text-tertiary)"
+                                        />
+                                        <span className="flex-none">{summary || 'Details'}</span>
+                                        {liveLine && (
+                                          // Keyed by step identity + content: a new step (or a new
+                                          // first line within one) remounts the span, replaying the
+                                          // ac-rise fade-in (honors reduced-motion in globals.css).
+                                          <span key={liveKey} className="work-live min-w-0 truncate">
+                                            · {liveLine}
+                                          </span>
+                                        )}
+                                      </button>
+                                      {!streaming && answerText && <CopyTurnButton text={answerText} />}
                                     </div>
-                                  )}
-                                </div>
+                                    {openWork && (
+                                      <div className="mt-2 overflow-hidden rounded-md border border-(--border-subtle) bg-(--surface-app)">
+                                        {/* All work steps show, streaming or not — a live turn's
+                                    panel grows as steps arrive so the whole run is visible. */}
+                                        {workSteps.map((st, si) => (
+                                          <WorkStepRow
+                                            // Keyed by tool identity where there is one, so an
+                                            // open row survives re-renders as new steps stream
+                                            // in. Steps without a tool id (THINK rows) fall back
+                                            // to the index; within one agent's turn a toolCallId
+                                            // appears once.
+                                            key={st.msg?.toolCallId ?? `i:${si}`}
+                                            step={st}
+                                            sessionId={toolSid}
+                                            divider={si > 0}
+                                          />
+                                        ))}
+                                      </div>
+                                    )}
+                                  </>
+                                )}
+                                {/* A turn with no work has no toggle row — the finished
+                            bubble's copy button gets its own line instead. */}
+                                {workSteps.length === 0 && !streaming && answerText && (
+                                  <div className="mt-2 flex">
+                                    <CopyTurnButton text={answerText} />
+                                  </div>
+                                )}
                               </div>
-                            )
-                          })()
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                )}
+                            </div>
+                          )
+                        })()
+                      )}
+                    </div>
+                  )}
+                />
 
                 {/* LIVE INDICATOR — mobile-only trailing bot avatar + blue-dot note while a
             platform run is live. (A live playground/webchat surface uses the
