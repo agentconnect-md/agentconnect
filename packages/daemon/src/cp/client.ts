@@ -9,9 +9,6 @@ import type {
   RegisterReq,
   Heartbeat,
   HeartbeatDuties,
-  DutyGrant,
-  DutyRenewed,
-  DutyRevoke,
   DutyClaimOk,
   DutyFetchOk,
   FactsRuntimeProfile,
@@ -29,64 +26,13 @@ import type {
   GithubReviewAuthorized,
   GithubReviewResultReport,
   GithubReviewResultOk,
-  AgentLaunch,
-  AgentStop,
-  AgentUpsert,
-  Drain,
-  DrainProgress,
-  DaemonRestart,
-  DaemonUpgrade,
-  SessionListReq,
-  SessionHistoryReq,
-  SessionToolBodyReq,
-  WorkspaceListReq,
-  WorkspaceReadReq,
-  WorkspaceWriteReq,
-  WorkspaceDeleteReq,
-  WorkspaceGitStatusReq,
-  WorkspaceGitDiffReq,
-  WorkspaceGitLogReq,
-  WorkspaceGitPullReq,
-  WorkspaceGitStageReq,
-  WorkspaceGitCommitReq,
-  WorkspaceGitPushReq,
-  WorkspaceGitMessageReq,
-  TaskListReq,
-  AgentWakeReq,
-  WorkspaceGitMessageResult,
   GitCredRequest,
   GitCredGrant,
   ChannelAgentsReq,
   ChannelAgentsOk,
   ChildSessionStatus,
   ChildSessionStatusReq,
-  ChildSessionStatusProbe,
-  MemoryChannelsReq,
-  MemoryListReq,
-  MemoryReadReq,
-  MemoryWriteReq,
-  MemoryHistoryReq,
-  MemorySurfaceReq,
-  MemoryRecordSearchReq,
-  MemoryRecordListReq,
-  MemoryRecordGetReq,
-  MemoryRecordCreateReq,
-  MemoryRecordUpdateReq,
-  MemoryRecordDeleteReq,
-  MemoryRecordHistoryReq,
   MemoryConnectionFact,
-  DreamStartReq,
-  DreamCancelReq,
-  DreamListReq,
-  DreamGetReq,
-  DreamAdoptReq,
-  DreamDiscardReq,
-  DreamFilesReq,
-  DreamFileReadReq,
-  DreamSkillReviewReq,
-  DreamSkillReadReq,
-  LocalSkillsReq,
-  SessionVisibilityPush,
   WebchatMcpGrantIssue,
   WebchatMcpGrantIssued,
   WebchatMcpGrantAccept,
@@ -103,8 +49,6 @@ import type {
   OrganizationSuggestionsSyncOk,
   ManagedSkillReadReq,
   ManagedSkillChunk,
-  OrganizationSuggestionReadReq,
-  OrganizationSuggestionReviewReq,
   BootstrapLifecycle,
   FrameOrgPeer,
   OrganizationMode
@@ -123,25 +67,16 @@ import {
   checkReplyFrameOrg,
   isInstallWideFrameType
 } from '@agentconnect.md/protocol'
-import type { SessionReader } from './session-reader.js'
-import { WorkspaceConflictError, WorkspaceViolationError, type WorkspaceReader } from './workspace-reader.js'
-import {
-  MemoryViolationError,
-  MemoryPathError,
-  MemorySandboxUnavailableError,
-  MemoryTooLargeError,
-  MemoryConflictError,
-  type MemoryReader
-} from './memory-reader.js'
-import type { WorkspaceGit } from './workspace-git.js'
-import type { TaskReader } from './task-reader.js'
-import { TaskViolationError } from './task-reader.js'
-import type { AgentWaker } from './agent-wake.js'
-import { AgentWakeViolationError } from './agent-wake.js'
-import type { DreamReader } from './dream-reader.js'
-import type { LocalSkillsReader } from './local-skills-reader.js'
-import { DreamViolationError, DreamStateError } from '../dream/runner.js'
 import { ReqRep, WireError, type Clock, type TimerHandle, type Transport } from '@agentconnect.md/connection'
+import type { AgentControlDeps } from './control/agent.js'
+import type { ControlWire } from './control/context.js'
+import type { DreamControlDeps } from './control/dream.js'
+import type { MemoryControlDeps } from './control/memory.js'
+import { CONTROL_HANDLERS, type ControlDeps } from './control/registry.js'
+import type { SessionControlDeps } from './control/session.js'
+import type { SkillsControlDeps } from './control/skills.js'
+import type { TaskControlDeps } from './control/task.js'
+import { GitMessagePasses, type WorkspaceReadDeps } from './control/workspace.js'
 import type { ConfigApply } from './config-apply.js'
 import type { Logger } from '../log.js'
 
@@ -179,7 +114,15 @@ interface RegisterControlBarrier {
   controls: Array<{ frame: AnyFrame; epoch?: number }>
 }
 
-export interface CpClientDeps {
+export interface CpClientDeps
+  extends
+    AgentControlDeps,
+    DreamControlDeps,
+    MemoryControlDeps,
+    SessionControlDeps,
+    SkillsControlDeps,
+    TaskControlDeps,
+    WorkspaceReadDeps {
   url: string
   /** The CP API key. Absent on an in-cluster daemon, which presents
    *  {@link CpClientDeps.clusterIdentityToken} instead. */
@@ -229,27 +172,6 @@ export interface CpClientDeps {
    *  with the groups whose OWN deadline elapsed — never the whole held set — so a member sheds exactly what it
    *  can no longer prove it holds and keeps serving the rest. */
   onDutyFence?: (groupIds: string[]) => void
-  configApply: ConfigApply
-  /** Read-only session list/history seam over the local store (§1/§12). */
-  sessionRead: SessionReader
-  /** Answer a CP-forwarded child-session status probe for a child THIS daemon owns
-   *  (session-concept §5.4). The daemon re-checks the lineage itself — the CP proves only that the
-   *  asking daemon owns the claimed parent session, never that the child belongs to it. */
-  childSessionStatusProbe?: (probe: ChildSessionStatusProbe) => ChildSessionStatus | Promise<ChildSessionStatus>
-  /** Live workspace file seam over the agents' workspace dirs (§1/§12). */
-  workspaceRead: WorkspaceReader
-  /** Git status/pull seam over the agents' git-repo workspace dirs (§1/§12). */
-  workspaceGit: WorkspaceGit
-  /** Read-only projection of the in-memory background-task lease (§3.5 of webchat-side-panels.md). */
-  taskReader: TaskReader
-  /** The console's sandbox wake (`agent/wake`); absent ⇒ every wake answers `unsupported`. */
-  agentWake?: AgentWaker
-  /** Read/write seam over the agents' memory dirs (`<agent-root>/memory/`, §1/§12). */
-  memoryReader: MemoryReader
-  /** Dream-job lifecycle + staged-output review seam (docs/designs/memory-dreaming.md §10). */
-  dreamReader: DreamReader
-  /** Read-only inventory of the skills an agent's workspace can load (skills/local). */
-  localSkillsReader: LocalSkillsReader
   // webchat content no longer rides this control WS (milestone A4) — the daemon serves
   // webchat over the relay's rd/* wire (RelayClient / Daemon.handleRelayMsg) instead.
   clock: Clock
@@ -329,12 +251,42 @@ export class CpClient {
   // register value, refreshed by `capabilities/update`). Serialized for the
   // change check in updateCapabilities(); reset on each register.
   private lastSentCapabilities?: string
-  /** In-flight commit-message passes by REQ id, so a retransmit of the same REQ joins the pass it
-   *  already started instead of running a second model turn (see the `workspace/gitmessage` case). */
-  private gitMessageInflight = new Map<string, Promise<WorkspaceGitMessageResult>>()
+  /** The socket-facing half handed to every control handler — this client owns the transport. */
+  private readonly wire: ControlWire
+  /** The deps slice the control registry dispatches against (`src/cp/control/*`). */
+  private readonly controlDeps: ControlDeps
 
   constructor(private readonly deps: CpClientDeps) {
     this.correlator = new ReqRep<AnyFrame>(deps.clock, ACK_TIMEOUT_MS)
+    this.wire = {
+      reply: (req, type, payload) => this.reply(req, type, payload),
+      sendError: (corr, code, message, retryable, details) => this.sendError(corr, code, message, retryable, details),
+      emit: (type, payload) => this.emit(type, payload),
+      log: deps.log
+    }
+    this.controlDeps = {
+      configApply: deps.configApply,
+      sessionRead: deps.sessionRead,
+      childSessionStatusProbe: deps.childSessionStatusProbe && ((probe) => deps.childSessionStatusProbe!(probe)),
+      workspaceRead: deps.workspaceRead,
+      workspaceGit: deps.workspaceGit,
+      taskReader: deps.taskReader,
+      agentWake: deps.agentWake,
+      memoryReader: deps.memoryReader,
+      dreamReader: deps.dreamReader,
+      localSkillsReader: deps.localSkillsReader,
+      gitMessagePasses: new GitMessagePasses(),
+      noteLeasesGranted: (groupIds) => this.noteLeasesGranted(groupIds),
+      forgetLeaseDeadlines: (groupIds) => this.forgetLeaseDeadlines(groupIds),
+      onDutyRenewed: (leaseMs) => this.onDutyRenewed(leaseMs),
+      // §2.1: DRAINING still admits control frames, and a bare drain is a rebalance — back to READY when it settles.
+      beginDrain: () => {
+        this.state = 'DRAINING'
+      },
+      endDrain: () => {
+        if (this.state === 'DRAINING') this.state = 'READY'
+      }
+    }
   }
 
   /** Non-blocking: kicks off the connect loop and returns. */
@@ -617,7 +569,7 @@ export class CpClient {
    * nothing changed (serialized compare ⇒
    * no-op), so callers fire it after every agent reconcile / probe sweep. An
    * older CP answers `error{UNKNOWN_FRAME}`, which lands in dispatchControl's
-   * default no-op — the feature then simply waits for the next register.
+   * unknown-frame no-op — the feature then simply waits for the next register.
    * No-op unless READY/DRAINING.
    */
   updateCapabilities(): void {
@@ -1414,713 +1366,16 @@ export class CpClient {
     }
   }
 
-  /** C→D control dispatch. The CP changes config, never live routing. */
+  /** C→D control dispatch. The CP changes config, never live routing. A frame kind with no
+   *  registry entry is ignored — webchat content moved off this control WS (milestone A4) and
+   *  rides the relay's rd/* wire now, so a stray legacy webchat/* frame lands here. */
   private async dispatchControl(frame: AnyFrame): Promise<void> {
-    switch (frame.type) {
-      case 'config/push':
-        this.deps.configApply.applyConfigPush((frame.payload as { keys: Record<string, unknown> }).keys)
-        return // EVT — no reply
-      case 'duty/grant': {
-        const { grants } = frame.payload as DutyGrant
-        // BEFORE admission, which is async: the CP's lease on these groups is already running, and a grant whose
-        // renewal confirmation never arrives must still fence — the receipt of the grant is what arms it.
-        this.noteLeasesGranted(grants.map((entry) => entry.groupId))
-        this.deps.configApply.applyDutyGrant(grants)
-        return // EVT — no reply
-      }
-      case 'duty/renewed':
-        this.onDutyRenewed((frame.payload as DutyRenewed).leaseMs)
-        return // EVT — no reply
-      case 'duty/revoke': {
-        const { revocations } = frame.payload as DutyRevoke
-        this.deps.configApply.applyDutyRevoke(revocations)
-        // Not ours any more: a revoked group must not keep a deadline that could fence it a second time, nor
-        // hold the timer earlier than any group still held.
-        this.forgetLeaseDeadlines(revocations.map((revocation) => revocation.groupId))
-        return // EVT — no reply
-      }
-      case 'cron/upsert':
-        try {
-          this.deps.configApply.upsertCron(frame.payload as Parameters<ConfigApply['upsertCron']>[0])
-          this.reply(frame, 'ack', { ok: true })
-        } catch (err) {
-          this.sendError(frame.id, 'BAD_PAYLOAD', `cron upsert failed: ${(err as Error).message}`, false)
-        }
-        return
-      case 'cron/remove':
-        this.deps.configApply.removeCron((frame.payload as { cronId: string }).cronId)
-        this.reply(frame, 'ack', { ok: true })
-        return
-      case 'cron/run':
-        this.reply(frame, 'ack', this.deps.configApply.runCron((frame.payload as { cronId: string }).cronId))
-        return
-      case 'session/visibility': {
-        // session-visibility.md §5.1. ALWAYS reply: a stale revision is answered
-        // `superseded`, never an error frame — an error would reject the CP's
-        // promise and drive its retransmit budget to exhaustion.
-        const p = frame.payload as SessionVisibilityPush
-        const status = await this.deps.configApply.applySessionVisibility(p)
-        this.reply(frame, 'session/visibility/ok', {
-          sessionId: p.sessionId,
-          visibilityRev: p.visibilityRev,
-          status
-        })
-        return
-      }
-      case 'session/visibility/snapshot': {
-        // Register-time convergence: the full gate set, applied entry by entry
-        // under the same revision rule. One ack for the whole chunk.
-        const { entries } = frame.payload as { entries: SessionVisibilityPush[] }
-        for (const entry of entries) await this.deps.configApply.applySessionVisibility(entry)
-        this.reply(frame, 'ack', { ok: true })
-        return
-      }
-      case 'route/assign': {
-        const a = frame.payload as Parameters<ConfigApply['applyRouteAssign']>[0]
-        this.deps.configApply.applyRouteAssign(a)
-        this.reply(frame, 'route/assign/ack', { ok: true, sessionKey: a.sessionKey })
-        return
-      }
-      case 'route/update':
-        this.deps.configApply.applyRouteUpdate(frame.payload as Parameters<ConfigApply['applyRouteUpdate']>[0])
-        return // EVT — no reply
-      case 'relay/roster':
-        // Hot roster update (shared-bot-relay.md §5) — converge the relay dial-out set.
-        // The reconnect register/ok.relays snapshot is the backstop.
-        this.deps.configApply.applyRelayRoster(
-          (frame.payload as { relays: Parameters<ConfigApply['applyRelayRoster']>[0] }).relays
-        )
-        return // EVT — no reply
-      case 'collaboration/routes':
-        // Hot collaboration routing snapshot (agent-collaboration §2.3/§6.5) —
-        // FULL-REPLACE the daemon's terminal-verify table for remote agent callers.
-        // The reconnect register/ok.collabRoutes baseline is the backstop.
-        this.deps.configApply.applyCollabRoutes(frame.payload as Parameters<ConfigApply['applyCollabRoutes']>[0])
-        return // EVT — no reply
-      case 'agent/upsert': {
-        this.deps.configApply
-          .applyAgentUpsert(frame.payload as AgentUpsert)
-          .then((ack) => this.reply(frame, 'ack', ack))
-          .catch((err) => {
-            this.deps.log.warn(`cp: agent/upsert failed: ${(err as Error)?.message}`)
-            this.reply(frame, 'ack', { ok: false, reason: 'agent/upsert failed' })
-          })
-        return
-      }
-      case 'agent/remove': {
-        try {
-          const run = this.deps.configApply.applyAgentRemove((frame.payload as { agentId: string }).agentId)
-          void Promise.resolve(run).catch((err) =>
-            this.deps.log.error(`cp: agent/remove failed closed: ${(err as Error).message}`)
-          )
-        } catch (err) {
-          this.deps.log.error(`cp: agent/remove failed closed: ${(err as Error).message}`)
-        }
-        return // EVT — no reply
-      }
-      case 'agent/detach':
-        this.deps.configApply
-          .applyAgentDetach(frame.payload as Parameters<ConfigApply['applyAgentDetach']>[0])
-          .then((ack) => this.reply(frame, 'ack', ack))
-          .catch((err) => this.sendError(frame.id, 'INTERNAL', `agent/detach failed: ${(err as Error).message}`, false))
-        return
-      case 'agent/activate':
-        // Token-bearing authoritative bundle — NEVER log the frame body.
-        this.deps.configApply
-          .applyAgentActivate(frame.payload as Parameters<ConfigApply['applyAgentActivate']>[0])
-          .then((ack) => this.reply(frame, 'ack', ack))
-          .catch((err) =>
-            this.sendError(frame.id, 'INTERNAL', `agent/activate failed: ${(err as Error).message}`, false)
-          )
-        return
-      case 'agent/permission-requests':
-        try {
-          this.reply(
-            frame,
-            'agent/permission-requests/page',
-            await this.deps.configApply.listAgentPermissionRequests(
-              frame.payload as Parameters<ConfigApply['listAgentPermissionRequests']>[0]
-            )
-          )
-        } catch (err) {
-          this.sendError(frame.id, 'INTERNAL', `permission request list failed: ${(err as Error).message}`, false)
-        }
-        return
-      case 'agent/permission-decision':
-        try {
-          this.reply(
-            frame,
-            'ack',
-            await this.deps.configApply.decideAgentPermission(
-              frame.payload as Parameters<ConfigApply['decideAgentPermission']>[0]
-            )
-          )
-        } catch (err) {
-          this.sendError(frame.id, 'INTERNAL', `permission decision failed: ${(err as Error).message}`, false)
-        }
-        return
-      case 'integration/upsert':
-        // Token-bearing payload — NEVER log the frame body.
-        this.deps.configApply.applyIntegrationUpsert(
-          frame.payload as Parameters<ConfigApply['applyIntegrationUpsert']>[0]
-        )
-        return // EVT — no reply (reconnect roster is the backstop)
-      case 'integration/remove':
-        this.deps.configApply.applyIntegrationRemove((frame.payload as { integrationId: string }).integrationId)
-        return // EVT — no reply
-      case 'integration/forget':
-        // REQ → ack: an undelivered suppression means the conversation comes back, so
-        // the CP must be able to tell the operator instead of reporting success.
-        try {
-          this.deps.configApply.applyIntegrationForget(
-            frame.payload as Parameters<ConfigApply['applyIntegrationForget']>[0]
-          )
-          this.reply(frame, 'ack', { ok: true })
-        } catch (err) {
-          this.reply(frame, 'ack', { ok: false, reason: (err as Error).message })
-        }
-        return
-      case 'integration/leave': {
-        // REQ → reply: this one changes the OUTSIDE world, so the operator is told
-        // what the platform said rather than what we hoped. A refusal is a normal
-        // reply (`ok:false`), not a protocol error — a missing scope or a
-        // `last_member` channel is the operator's problem to see, not a daemon fault.
-        const leave = frame.payload as Parameters<ConfigApply['applyIntegrationLeave']>[0]
-        this.deps.configApply
-          .applyIntegrationLeave(leave)
-          .then((result) => this.reply(frame, 'integration/leave/ok', result))
-          .catch((err) => this.reply(frame, 'integration/leave/ok', { ok: false, error: (err as Error).message }))
-        return
-      }
-      case 'mcpserver/upsert':
-        // Grant-key-bearing payload — NEVER log the frame body.
-        this.deps.configApply.applyMcpServerUpsert(frame.payload as Parameters<ConfigApply['applyMcpServerUpsert']>[0])
-        return // EVT — no reply (reconnect roster is the backstop)
-      case 'mcpserver/remove':
-        this.deps.configApply.applyMcpServerRemove(frame.payload as Parameters<ConfigApply['applyMcpServerRemove']>[0])
-        return // EVT — no reply
-      case 'memoryconnection/upsert':
-        // Grant/secret-bearing daemon-private payload — NEVER log the frame body.
-        this.deps.configApply
-          .applyMemoryConnectionUpsert(frame.payload as Parameters<ConfigApply['applyMemoryConnectionUpsert']>[0])
-          .then((ack) => this.reply(frame, 'ack', ack))
-          .catch(() => this.reply(frame, 'ack', { ok: false, reason: 'memory connection probe failed' }))
-        return // REQ → probe ACK; reconnect snapshot remains the backstop
-      case 'memoryconnection/remove':
-        this.deps.configApply.applyMemoryConnectionRemove((frame.payload as { connectionId: string }).connectionId)
-        return // EVT
-      case 'agent/launch': {
-        const launch = frame.payload as AgentLaunch
-        this.deps.configApply
-          .applyAgentLaunch(launch)
-          .then((launched) => this.reply(frame, 'agent/launched', launched))
-          .catch((err) => this.sendError(frame.id, 'INTERNAL', `agent/launch failed: ${(err as Error).message}`, false))
-        return
-      }
-      case 'agent/stop': {
-        const stop = frame.payload as AgentStop
-        this.deps.configApply
-          .applyAgentStop(stop)
-          .then((ack) => this.reply(frame, 'ack', ack))
-          .catch((err) => this.sendError(frame.id, 'INTERNAL', `agent/stop failed: ${(err as Error).message}`, false))
-        return
-      }
-      case 'daemon/drain': {
-        const drain = frame.payload as Drain
-        // §2.1: enter DRAINING so the legal-state gate still admits control frames
-        // while we drain. Return to READY once drain/done is sent (a bare drain is a
-        // rebalance — the daemon stays connected).
-        this.state = 'DRAINING'
-        this.deps.configApply
-          .applyDaemonDrain(drain, (p: DrainProgress) => this.emit('drain/progress', p))
-          .then((done) => {
-            this.reply(frame, 'drain/done', done)
-            if (this.state === 'DRAINING') this.state = 'READY'
-          })
-          .catch((err) => {
-            this.sendError(frame.id, 'INTERNAL', `drain failed: ${(err as Error).message}`, false)
-            if (this.state === 'DRAINING') this.state = 'READY'
-          })
-        return
-      }
-      case 'daemon/restart':
-        this.reply(
-          frame,
-          'daemon/control/ack',
-          this.deps.configApply.applyDaemonRestart(frame.payload as DaemonRestart)
-        )
-        return
-      case 'daemon/upgrade':
-        this.reply(
-          frame,
-          'daemon/control/ack',
-          this.deps.configApply.applyDaemonUpgrade(frame.payload as DaemonUpgrade)
-        )
-        return
-      case 'session/list': {
-        // Read-only — legal in READY/DRAINING (no epoch mutation). Body-locality §12.
-        // The frame's org is the read's partition on a shared pool store: this member may hold
-        // none of the agents whose sessions it serves, so it cannot resolve one locally.
-        Promise.resolve()
-          .then(() => this.deps.sessionRead.list(frame.payload as SessionListReq, { orgId: frame.orgId }))
-          .then((page) => this.reply(frame, 'session/list/page', page))
-          .catch((err) => this.sendError(frame.id, 'INTERNAL', `session/list failed: ${(err as Error).message}`, false))
-        return
-      }
-      case 'session/history': {
-        const req = frame.payload as SessionHistoryReq
-        if (!req.agentId)
-          this.deps.log.warn('cp: legacy session/history request omitted agentId; owner binding is unavailable')
-        Promise.resolve()
-          .then(() => this.deps.sessionRead.history(req, { orgId: frame.orgId }))
-          .then((page) => this.reply(frame, 'session/history/page', page))
-          .catch((err) =>
-            this.sendError(frame.id, 'INTERNAL', `session/history failed: ${(err as Error).message}`, false)
-          )
-        return
-      }
-      case 'session/child-status/probe': {
-        try {
-          const probe = frame.payload as ChildSessionStatusProbe
-          // No handler wired (older/embedded daemon) ⇒ answer `found:false`, which the asking side
-          // renders as "not your child" rather than a hard failure.
-          const answer = (await this.deps.childSessionStatusProbe?.(probe)) ?? { found: false }
-          this.reply(frame, 'session/child-status/probe/ok', answer)
-        } catch (err) {
-          this.sendError(frame.id, 'INTERNAL', `session/child-status/probe failed: ${(err as Error).message}`, false)
-        }
-        return
-      }
-      case 'session/tool-body': {
-        const req = frame.payload as SessionToolBodyReq
-        if (!req.agentId)
-          this.deps.log.warn('cp: legacy session/tool-body request omitted agentId; owner binding is unavailable')
-        Promise.resolve()
-          .then(() => this.deps.sessionRead.toolBody(req, { orgId: frame.orgId }))
-          .then((chunk) => this.reply(frame, 'session/tool-body/chunk', chunk))
-          .catch((err) =>
-            this.sendError(frame.id, 'INTERNAL', `session/tool-body failed: ${(err as Error).message}`, false)
-          )
-        return
-      }
-      case 'workspace/list': {
-        // Read-only live pull — bytes stay daemon-local; never log payload/reply bodies.
-        this.deps.workspaceRead
-          .list(frame.payload as WorkspaceListReq)
-          .then((page) => this.reply(frame, 'workspace/list/page', page))
-          .catch((err) => this.workspaceError(frame.id, 'workspace/list', err))
-        return
-      }
-      case 'workspace/read': {
-        this.deps.workspaceRead
-          .read(frame.payload as WorkspaceReadReq)
-          .then((content) => this.reply(frame, 'workspace/read/content', content))
-          .catch((err) => this.workspaceError(frame.id, 'workspace/read', err))
-        return
-      }
-      case 'workspace/write': {
-        // Console manager edit: bounded scratch text create/replace; never log content.
-        this.deps.workspaceRead
-          .write(frame.payload as WorkspaceWriteReq)
-          .then((ok) => this.reply(frame, 'workspace/write/ok', ok))
-          .catch((err) => this.workspaceError(frame.id, 'workspace/write', err))
-        return
-      }
-      case 'workspace/delete': {
-        // Console manager delete: scratch-only and mtime-fenced like replacement.
-        this.deps.workspaceRead
-          .delete(frame.payload as WorkspaceDeleteReq)
-          .then((ok) => this.reply(frame, 'workspace/delete/ok', ok))
-          .catch((err) => this.workspaceError(frame.id, 'workspace/delete', err))
-        return
-      }
-      case 'workspace/gitstatus': {
-        // git status of a git-repo workspace — a dirty tree / non-repo is DATA, not an error.
-        const req = frame.payload as WorkspaceGitStatusReq
-        this.deps.workspaceGit
-          .status(req.agentId, req.sessionId, req.repo)
-          .then((status) => this.reply(frame, 'workspace/gitstatus/result', status))
-          .catch((err) => this.workspaceError(frame.id, 'workspace/gitstatus', err))
-        return
-      }
-      case 'workspace/gitdiff': {
-        // Unified diff for one path — binary / unchanged / non-repo all come back as a result.
-        this.deps.workspaceGit
-          .diff(frame.payload as WorkspaceGitDiffReq)
-          .then((result) => this.reply(frame, 'workspace/gitdiff/result', result))
-          .catch((err) => this.workspaceError(frame.id, 'workspace/gitdiff', err))
-        return
-      }
-      case 'workspace/gitlog': {
-        // Newest commits of the checked-out branch; an empty repo is a result, not an error.
-        this.deps.workspaceGit
-          .log(frame.payload as WorkspaceGitLogReq)
-          .then((result) => this.reply(frame, 'workspace/gitlog/result', result))
-          .catch((err) => this.workspaceError(frame.id, 'workspace/gitlog', err))
-        return
-      }
-      case 'workspace/gitpull': {
-        // On-demand ff-only pull — a failed pull comes back as a result (ok:false), not an error.
-        this.deps.workspaceGit
-          .pull((frame.payload as WorkspaceGitPullReq).agentId, (frame.payload as WorkspaceGitPullReq).repo)
-          .then((result) => this.reply(frame, 'workspace/gitpull/result', result))
-          .catch((err) => this.workspaceError(frame.id, 'workspace/gitpull', err))
-        return
-      }
-      case 'workspace/gitstage': {
-        // Console staging — the REP is the FRESH status, so the panel never re-polls its own action.
-        this.deps.workspaceGit
-          .stage(frame.payload as WorkspaceGitStageReq)
-          .then((status) => this.reply(frame, 'workspace/gitstage/result', status))
-          .catch((err) => this.workspaceError(frame.id, 'workspace/gitstage', err))
-        return
-      }
-      case 'workspace/gitunstage': {
-        this.deps.workspaceGit
-          .unstage(frame.payload as WorkspaceGitStageReq)
-          .then((status) => this.reply(frame, 'workspace/gitunstage/result', status))
-          .catch((err) => this.workspaceError(frame.id, 'workspace/gitunstage', err))
-        return
-      }
-      case 'workspace/gitcommit': {
-        // Nothing staged / no registered identity / a git refusal are all results, not errors.
-        this.deps.workspaceGit
-          .commit(frame.payload as WorkspaceGitCommitReq)
-          .then((result) => this.reply(frame, 'workspace/gitcommit/result', result))
-          .catch((err) => this.workspaceError(frame.id, 'workspace/gitcommit', err))
-        return
-      }
-      case 'workspace/gitpush': {
-        // A diverged branch, no upstream, a detached HEAD and a remote rejection are all results.
-        this.deps.workspaceGit
-          .push(frame.payload as WorkspaceGitPushReq)
-          .then((result) => this.reply(frame, 'workspace/gitpush/result', result))
-          .catch((err) => this.workspaceError(frame.id, 'workspace/gitpush', err))
-        return
-      }
-      case 'workspace/gitmessage': {
-        // The AI commit-message draft: a bounded model turn on THIS daemon's runtime. Nothing staged,
-        // a runtime that declines and a timeout are all results, not errors.
-        //
-        // Retransmit-joined, and this is the only frame that needs it: the correlator re-sends the
-        // IDENTICAL bytes (same id) when a REP is slow, and a model pass is always slower than one
-        // ack window. Without this, one press could run — and bill — several passes.
-        const inflight = this.gitMessageInflight.get(frame.id)
-        const pass =
-          inflight ??
-          this.deps.workspaceGit
-            .message(frame.payload as WorkspaceGitMessageReq)
-            .finally(() => this.gitMessageInflight.delete(frame.id))
-        if (!inflight) this.gitMessageInflight.set(frame.id, pass)
-        pass
-          .then((result) => this.reply(frame, 'workspace/gitmessage/result', result))
-          .catch((err) => this.workspaceError(frame.id, 'workspace/gitmessage', err))
-        return
-      }
-      case 'task/list': {
-        // Background tasks of ONE ACP session, projected live from the lease. A session with no
-        // lease and a session with no tasks are both results (`tracked` tells them apart).
-        this.deps.taskReader
-          .list(frame.payload as TaskListReq)
-          .then((result) => this.reply(frame, 'task/list/result', result))
-          .catch((err) => this.taskError(frame.id, 'task/list', err))
-        return
-      }
-      case 'agent/wake': {
-        // A sandbox resume with no turn; a daemon with no waker has nothing to wake.
-        const wake = frame.payload as AgentWakeReq
-        const answer =
-          this.deps.agentWake?.wake(wake) ?? Promise.resolve({ agentId: wake.agentId, state: 'unsupported' as const })
-        answer
-          .then((result) => this.reply(frame, 'agent/wake/ok', result))
-          .catch((err) => this.wakeError(frame.id, err))
-        return
-      }
-      case 'memory/channels': {
-        this.deps.memoryReader
-          .channels(frame.payload as MemoryChannelsReq)
-          .then((page) => this.reply(frame, 'memory/channels/page', page))
-          .catch((err) => this.memoryError(frame.id, 'memory/channels', err))
-        return
-      }
-      case 'memory/list': {
-        this.deps.memoryReader
-          .list(frame.payload as MemoryListReq)
-          .then((page) => this.reply(frame, 'memory/list/page', page))
-          .catch((err) => this.memoryError(frame.id, 'memory/list', err))
-        return
-      }
-      case 'memory/read': {
-        // Read-only live pull of an agent memory file — bytes stay daemon-local.
-        this.deps.memoryReader
-          .read(frame.payload as MemoryReadReq)
-          .then((content) => this.reply(frame, 'memory/read/content', content))
-          .catch((err) => this.memoryError(frame.id, 'memory/read', err))
-        return
-      }
-      case 'memory/write': {
-        // Console edit: replace the whole memory file, reply with the new size/mtime.
-        this.deps.memoryReader
-          .write(frame.payload as MemoryWriteReq)
-          .then((ok) => this.reply(frame, 'memory/write/ok', ok))
-          .catch((err) => this.memoryError(frame.id, 'memory/write', err))
-        return
-      }
-      case 'memory/history': {
-        // Managed provenance is paged separately so `.history` stays hidden from
-        // ordinary file listing/reads and only bounded rows cross the wire.
-        this.deps.memoryReader
-          .history(frame.payload as MemoryHistoryReq)
-          .then((page) => this.reply(frame, 'memory/history/page', page))
-          .catch((err) => this.memoryError(frame.id, 'memory/history', err))
-        return
-      }
-      case 'memory/surface': {
-        this.deps.memoryReader
-          .surface(frame.payload as MemorySurfaceReq)
-          .then((info) => this.reply(frame, 'memory/surface/info', info))
-          .catch((err) => this.memoryError(frame.id, 'memory/surface', err))
-        return
-      }
-      case 'memory/record/search': {
-        this.deps.memoryReader
-          .search(frame.payload as MemoryRecordSearchReq)
-          .then((page) => this.reply(frame, 'memory/record/search/page', page))
-          .catch((err) => this.memoryError(frame.id, 'memory/record/search', err))
-        return
-      }
-      case 'memory/record/list': {
-        this.deps.memoryReader
-          .recordList(frame.payload as MemoryRecordListReq)
-          .then((page) => this.reply(frame, 'memory/record/list/page', page))
-          .catch((err) => this.memoryError(frame.id, 'memory/record/list', err))
-        return
-      }
-      case 'memory/record/get': {
-        this.deps.memoryReader
-          .recordGet(frame.payload as MemoryRecordGetReq)
-          .then((result) => this.reply(frame, 'memory/record/get/result', result))
-          .catch((err) => this.memoryError(frame.id, 'memory/record/get', err))
-        return
-      }
-      case 'memory/record/create': {
-        this.deps.memoryReader
-          .recordCreate(frame.payload as MemoryRecordCreateReq)
-          .then((result) => this.reply(frame, 'memory/record/create/result', result))
-          .catch((err) => this.memoryError(frame.id, 'memory/record/create', err))
-        return
-      }
-      case 'memory/record/update': {
-        this.deps.memoryReader
-          .recordUpdate(frame.payload as MemoryRecordUpdateReq)
-          .then((result) => this.reply(frame, 'memory/record/update/result', result))
-          .catch((err) => this.memoryError(frame.id, 'memory/record/update', err))
-        return
-      }
-      case 'memory/record/delete': {
-        this.deps.memoryReader
-          .recordDelete(frame.payload as MemoryRecordDeleteReq)
-          .then((result) => this.reply(frame, 'memory/record/delete/result', result))
-          .catch((err) => this.memoryError(frame.id, 'memory/record/delete', err))
-        return
-      }
-      case 'memory/record/history': {
-        this.deps.memoryReader
-          .recordHistory(frame.payload as MemoryRecordHistoryReq)
-          .then((page) => this.reply(frame, 'memory/record/history/page', page))
-          .catch((err) => this.memoryError(frame.id, 'memory/record/history', err))
-        return
-      }
-      // ── memory dreaming — job metadata + staged-body review (bodies stay daemon-local) ──
-      case 'memory/dream/start': {
-        this.deps.dreamReader
-          .start(frame.payload as DreamStartReq)
-          .then((state) => this.reply(frame, 'memory/dream/start/ok', state))
-          .catch((err) => this.dreamError(frame.id, 'memory/dream/start', err))
-        return
-      }
-      case 'memory/dream/cancel': {
-        this.deps.dreamReader
-          .cancel(frame.payload as DreamCancelReq)
-          .then((state) => this.reply(frame, 'memory/dream/cancel/ok', state))
-          .catch((err) => this.dreamError(frame.id, 'memory/dream/cancel', err))
-        return
-      }
-      case 'memory/dream/list': {
-        this.deps.dreamReader
-          .list(frame.payload as DreamListReq)
-          .then((page) => this.reply(frame, 'memory/dream/list/page', page))
-          .catch((err) => this.dreamError(frame.id, 'memory/dream/list', err))
-        return
-      }
-      case 'memory/dream/get': {
-        this.deps.dreamReader
-          .get(frame.payload as DreamGetReq)
-          .then((state) => this.reply(frame, 'memory/dream/get/result', state))
-          .catch((err) => this.dreamError(frame.id, 'memory/dream/get', err))
-        return
-      }
-      case 'memory/dream/adopt': {
-        this.deps.dreamReader
-          .adopt(frame.payload as DreamAdoptReq)
-          .then((state) => this.reply(frame, 'memory/dream/adopt/ok', state))
-          .catch((err) => this.dreamError(frame.id, 'memory/dream/adopt', err))
-        return
-      }
-      case 'memory/dream/discard': {
-        this.deps.dreamReader
-          .discard(frame.payload as DreamDiscardReq)
-          .then((state) => this.reply(frame, 'memory/dream/discard/ok', state))
-          .catch((err) => this.dreamError(frame.id, 'memory/dream/discard', err))
-        return
-      }
-      case 'memory/dream/files': {
-        this.deps.dreamReader
-          .files(frame.payload as DreamFilesReq)
-          .then((page) => this.reply(frame, 'memory/dream/files/page', page))
-          .catch((err) => this.dreamError(frame.id, 'memory/dream/files', err))
-        return
-      }
-      case 'memory/dream/file/read': {
-        this.deps.dreamReader
-          .fileRead(frame.payload as DreamFileReadReq)
-          .then((content) => this.reply(frame, 'memory/dream/file/read/content', content))
-          .catch((err) => this.dreamError(frame.id, 'memory/dream/file/read', err))
-        return
-      }
-      case 'memory/dream/skill/read': {
-        const req = frame.payload as DreamSkillReadReq
-        this.deps.dreamReader
-          .skillRead(req)
-          .then((content) => this.reply(frame, 'memory/dream/skill/read/ok', content))
-          .catch((err) => this.dreamError(frame.id, 'memory/dream/skill/read', err))
-        return
-      }
-      case 'memory/dream/skill/accept': {
-        this.deps.dreamReader
-          .skillAccept(frame.payload as DreamSkillReviewReq)
-          .then((state) => this.reply(frame, 'memory/dream/skill/accept/ok', state))
-          .catch((err) => this.dreamError(frame.id, 'memory/dream/skill/accept', err))
-        return
-      }
-      case 'memory/dream/skill/dismiss': {
-        this.deps.dreamReader
-          .skillDismiss(frame.payload as DreamSkillReviewReq)
-          .then((state) => this.reply(frame, 'memory/dream/skill/dismiss/ok', state))
-          .catch((err) => this.dreamError(frame.id, 'memory/dream/skill/dismiss', err))
-        return
-      }
-      case 'skills/local': {
-        this.deps.localSkillsReader
-          .list(frame.payload as LocalSkillsReq)
-          .then((list) => this.reply(frame, 'skills/local/list', list))
-          .catch((err) => {
-            this.deps.log.warn(`cp: skills/local failed: ${(err as Error)?.message}`)
-            this.sendError(frame.id, 'INTERNAL', 'skills/local failed', false)
-          })
-        return
-      }
-      case 'knowledge/suggestion/read': {
-        this.deps.dreamReader
-          .organizationSuggestionRead(frame.payload as OrganizationSuggestionReadReq)
-          .then((content) => this.reply(frame, 'knowledge/suggestion/content', content))
-          .catch((err) => this.dreamError(frame.id, 'knowledge/suggestion/read', err))
-        return
-      }
-      case 'knowledge/suggestion/review': {
-        this.deps.dreamReader
-          .organizationSuggestionReview(frame.payload as OrganizationSuggestionReviewReq)
-          .then((ack) => this.reply(frame, 'ack', ack))
-          .catch((err) => this.dreamError(frame.id, 'knowledge/suggestion/review', err))
-        return
-      }
-      // webchat content moved off this control WS (milestone A4) — it rides the relay's
-      // rd/* wire now. Any stray legacy webchat/* frame falls through to the no-op default.
-      default:
-        this.deps.log.debug(`cp: ignoring ${frame.type}`)
-        return
-    }
-  }
-
-  /** Map a workspace failure onto the wire: stale writes → CONFLICT; containment/
-   *  bad-request violations → BAD_PAYLOAD (their messages are hand-written and
-   *  path-free); anything else → INTERNAL with a GENERIC message — raw fs errors
-   *  (ELOOP, EACCES, …) embed absolute host paths that must not leak to the CP/UI.
-   *  Both typed cases carry their `reason` in `details` so the CP can answer a bad
-   *  request with a status the console can tell apart from an offline daemon. */
-  private workspaceError(corr: string, op: string, err: unknown): void {
-    if (err instanceof WorkspaceConflictError) {
-      this.sendError(corr, 'CONFLICT', `${op} failed: ${err.message}`, false, { reason: err.reason })
+    const handler = CONTROL_HANDLERS.get(frame.type)
+    if (!handler) {
+      this.deps.log.debug(`cp: ignoring ${frame.type}`)
       return
     }
-    if (err instanceof WorkspaceViolationError) {
-      this.sendError(corr, 'BAD_PAYLOAD', `${op} failed: ${err.message}`, false, { reason: err.reason })
-      return
-    }
-    this.deps.log.warn(`cp: ${op} failed: ${(err as Error)?.message}`)
-    this.sendError(corr, 'INTERNAL', `${op} failed`, false)
-  }
-
-  /** Unknown agent → BAD_PAYLOAD with the machine reason (the CP maps it like a workspace read's); else INTERNAL. */
-  private wakeError(corr: string, err: unknown): void {
-    if (err instanceof AgentWakeViolationError) {
-      this.sendError(corr, 'BAD_PAYLOAD', `agent/wake failed: ${err.message}`, false, { reason: err.reason })
-      return
-    }
-    this.deps.log.warn(`cp: agent/wake failed: ${(err as Error)?.message}`)
-    this.sendError(corr, 'INTERNAL', 'agent/wake failed', false)
-  }
-
-  /** Unknown agent → BAD_PAYLOAD with the machine reason; anything else → INTERNAL with a generic
-   *  message. There is no CONFLICT arm because `task/list` reads in-memory state and mutates
-   *  nothing, so no lifecycle state can make it a legal-but-refused request. */
-  private taskError(corr: string, op: string, err: unknown): void {
-    if (err instanceof TaskViolationError) {
-      this.sendError(corr, 'BAD_PAYLOAD', `${op} failed: ${err.message}`, false, { reason: err.reason })
-      return
-    }
-    this.deps.log.warn(`cp: ${op} failed: ${(err as Error)?.message}`)
-    this.sendError(corr, 'INTERNAL', `${op} failed`, false)
-  }
-
-  /** Unknown agent/dream/path → BAD_PAYLOAD; a legal request against the wrong
-   *  lifecycle state → CONFLICT; anything else → INTERNAL with a generic message
-   *  (raw fs errors embed absolute host paths that must not leak to the CP/UI). */
-  private dreamError(corr: string, op: string, err: unknown): void {
-    if (err instanceof DreamViolationError) {
-      this.sendError(corr, 'BAD_PAYLOAD', `${op} failed: ${err.message}`, false)
-      return
-    }
-    // A cluster agent's staging is on its sandbox volume: asleep is transient, and carries the reason.
-    if (err instanceof MemorySandboxUnavailableError) {
-      this.sendError(corr, 'BAD_PAYLOAD', `${op} failed: ${err.message}`, false, { reason: err.reason })
-      return
-    }
-    if (err instanceof DreamStateError) {
-      this.sendError(corr, 'CONFLICT', `${op} failed: ${err.message}`, false)
-      return
-    }
-    this.deps.log.warn(`cp: ${op} failed: ${(err as Error)?.message}`)
-    this.sendError(corr, 'INTERNAL', `${op} failed`, false)
-  }
-
-  private memoryError(corr: string, op: string, err: unknown): void {
-    if (err instanceof MemoryConflictError) {
-      this.sendError(corr, 'CONFLICT', `${op} failed: ${err.message}`, false)
-      return
-    }
-    // The memory tree is on a sandbox that is not running: refused with the workspace reader's
-    // reason, so the CP answers 503 with the code the console wakes on (#1077) — not a 400.
-    if (err instanceof MemorySandboxUnavailableError) {
-      this.sendError(corr, 'BAD_PAYLOAD', `${op} failed: ${err.message}`, false, { reason: err.reason })
-      return
-    }
-    if (err instanceof MemoryViolationError || err instanceof MemoryPathError || err instanceof MemoryTooLargeError) {
-      this.sendError(corr, 'BAD_PAYLOAD', `${op} failed: ${err.message}`, false)
-      return
-    }
-    this.deps.log.warn(`cp: ${op} failed: ${(err as Error)?.message}`)
-    this.sendError(corr, 'INTERNAL', `${op} failed`, false)
+    await handler(frame, this.controlDeps, this.wire)
   }
 
   private reply(req: AnyFrame, type: string, payload: unknown): void {
