@@ -58,11 +58,14 @@ function fmtWhen(iso: string): string {
   })
 }
 
+// Complete literal class strings, never assembled from fragments: Tailwind's scanner only
+// sees whole literals, and `tone` is a closed union of four compile-time constants, so
+// nothing here is the data-derived value rule 8's inline carve-out is for.
 const BALANCE_TONE = {
-  brand: { bg: 'var(--brand-soft)', border: 'var(--brand)', icon: 'var(--brand)' },
-  red: { bg: 'var(--status-error-soft)', border: 'var(--status-error)', icon: 'var(--status-error)' },
-  amber: { bg: 'var(--status-paused-soft)', border: 'var(--status-paused)', icon: 'var(--status-paused)' },
-  blue: { bg: 'var(--status-info-soft)', border: 'var(--status-info)', icon: 'var(--status-info)' }
+  brand: { card: 'bg-(--brand-soft) border-(--brand)', chip: 'bg-(--brand)' },
+  red: { card: 'bg-(--status-error-soft) border-(--status-error)', chip: 'bg-(--status-error)' },
+  amber: { card: 'bg-(--status-paused-soft) border-(--status-paused)', chip: 'bg-(--status-paused)' },
+  blue: { card: 'bg-(--status-info-soft) border-(--status-info)', chip: 'bg-(--status-info)' }
 } as const
 
 function BalanceBannerCard({
@@ -72,7 +75,7 @@ function BalanceBannerCard({
   onAddCredits
 }: {
   acct: BillingAccount
-  hasHistory: boolean
+  hasHistory: boolean | null
   canPay: boolean
   onAddCredits: () => void
 }) {
@@ -80,11 +83,8 @@ function BalanceBannerCard({
   if (!banner) return null
   const tone = BALANCE_TONE[banner.tone]
   return (
-    <div
-      className="mb-[18px] flex items-start gap-3 rounded-[10px] border p-[14px_16px]"
-      style={{ background: tone.bg, borderColor: tone.border }}
-    >
-      <span className="flex h-7 w-7 flex-none items-center justify-center rounded-lg" style={{ background: tone.icon }}>
+    <div className={`mb-[18px] flex items-start gap-3 rounded-[10px] border px-4 py-3.5 ${tone.card}`}>
+      <span className={`flex h-7 w-7 flex-none items-center justify-center rounded-lg ${tone.chip}`}>
         <Icon name={banner.icon} size={16} color="#fff" />
       </span>
       <div className="min-w-0 flex-1">
@@ -519,7 +519,8 @@ export default function BillingView() {
         <>
           <BalanceBannerCard
             acct={acct}
-            hasHistory={(transactions.data?.items.length ?? 0) > 0}
+            // `null`, not false: undefined data means both in flight AND failed.
+            hasHistory={transactions.data ? transactions.data.items.length > 0 : null}
             canPay={myRole === 'owner'}
             onAddCredits={() => document.getElementById('add-credits')?.scrollIntoView({ behavior: 'smooth' })}
           />

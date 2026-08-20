@@ -13,10 +13,21 @@ export type BalanceBanner = {
   cta?: string
 }
 
-export function balanceBanner(acct: BillingAccount, opts: { hasHistory: boolean }): BalanceBanner | null {
+export function balanceBanner(
+  acct: BillingAccount,
+  opts: {
+    /** Whether the ledger holds anything — `null` while it has not answered, or could not.
+     *  A boolean cannot say that, and "has not answered" is the caller's state for the first
+     *  moments of every load and permanently whenever the request fails. */
+    hasHistory: boolean | null
+  }
+): BalanceBanner | null {
   const suspended = acct.state === 'suspended'
-  // Never funded reads differently from spent out, and only the ledger can tell them apart.
-  if (suspended && !opts.hasHistory) {
+  // Never funded reads differently from spent out, and only the ledger can tell them apart —
+  // so this needs an EXPLICIT false. Unknown history falls through to the paused copy below,
+  // which is true about the gateway either way; guessing the other direction tells a customer
+  // who has been paying for months that they have never paid.
+  if (suspended && opts.hasHistory === false) {
     return {
       tone: 'brand',
       icon: 'sparkles',
@@ -25,6 +36,7 @@ export function balanceBanner(acct: BillingAccount, opts: { hasHistory: boolean 
       cta: 'Add credits'
     }
   }
+  // Spent out, or history unknown.
   if (suspended) {
     return {
       tone: 'red',

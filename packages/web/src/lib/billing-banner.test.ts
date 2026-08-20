@@ -13,6 +13,7 @@ const acct = (over: Partial<BillingAccount> = {}): BillingAccount => ({
   ...over
 })
 const funded = { hasHistory: true }
+const unknownHistory = { hasHistory: null }
 
 describe('balanceBanner', () => {
   it('shows nothing when funded, confirmed and above the threshold', () => {
@@ -29,6 +30,15 @@ describe('balanceBanner', () => {
   it('says traffic is paused once an org that HAS paid runs out', () => {
     const banner = balanceBanner(acct({ balanceMicro: 0, state: 'suspended' }), funded)
     expect(banner).toMatchObject({ tone: 'red', icon: 'circle-slash', cta: 'Add credits' })
+  })
+
+  it('does not call an org never-funded while the ledger has not answered', () => {
+    // The ledger is a separate concurrent request, undefined both in flight and after it
+    // FAILS. Reading either as "no history" gave a customer paying for months the onboarding
+    // banner — flickering on every load, and permanently if that request errored. Paused is
+    // true about the gateway either way, so unknown history falls there.
+    const banner = balanceBanner(acct({ balanceMicro: 0, state: 'suspended' }), unknownHistory)
+    expect(banner).toMatchObject({ tone: 'red', icon: 'circle-slash' })
   })
 
   it('keeps the low-balance banner even while the gateway answer is unconfirmed', () => {
