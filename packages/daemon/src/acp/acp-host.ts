@@ -49,9 +49,15 @@ export const APPROVALS_REVIEWER_CATEGORY = '_approvals_reviewer'
 
 /** A session/load may replay the historical conversation stream. Keep that off
  *  platform transports, but preserve latest-wins metadata needed to converge the
- *  local/CP session projection after a restart. */
+ *  local/CP session projection after a restart. The command list is one of those:
+ *  the adapter advertises it after the replay, and it is the only advertisement a
+ *  resumed session ever makes. */
 export function shouldForwardUpdateDuringLoad(update: SessionUpdate): boolean {
-  return update.sessionUpdate === 'session_info_update' || update.sessionUpdate === 'usage_update'
+  return (
+    update.sessionUpdate === 'session_info_update' ||
+    update.sessionUpdate === 'usage_update' ||
+    update.sessionUpdate === 'available_commands_update'
+  )
 }
 
 /** A runtime's advertised model selector, distilled from ACP session config options. */
@@ -1066,6 +1072,13 @@ export class AcpHost {
   /** True iff THIS agent process created or loaded `sessionId` in its current lifetime. */
   hasSession(sessionId: string): boolean {
     return this.live.has(sessionId)
+  }
+
+  /** True while a session/load is in flight — the session is this host's, but `live` does not hold it
+   *  yet. A caller identifying "is this session mine" from an update must accept this window too, or
+   *  it depends on whether the adapter emits before or after the load response. */
+  isLoadingSession(sessionId: string): boolean {
+    return this.loadingSessions.has(sessionId)
   }
 
   /** Force the next exact-session turn through session/load/new so a rotated

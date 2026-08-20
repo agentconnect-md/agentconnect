@@ -108,6 +108,8 @@ import type {
   DreamSkillReadReq,
   LocalSkillsReq,
   LocalSkillsList,
+  RuntimeCommandsReq,
+  RuntimeCommandsList,
   DreamSkillContent,
   OrganizationSuggestionReadReq,
   OrganizationSuggestionChunk,
@@ -699,6 +701,12 @@ export class ControlSender {
   async listLocalSkills(daemonId: string, req: LocalSkillsReq): Promise<LocalSkillsList> {
     const c = this.must(daemonId)
     return c.conn.request<LocalSkillsList>('skills/local', req, { epoch: c.sessionEpoch })
+  }
+
+  /** The slash commands the agent's runtime advertised over ACP — what it can be asked to run. */
+  async listRuntimeCommands(daemonId: string, req: RuntimeCommandsReq): Promise<RuntimeCommandsList> {
+    const c = this.must(daemonId)
+    return c.conn.request<RuntimeCommandsList>('runtime/commands', req, { epoch: c.sessionEpoch })
   }
 
   /** Accept one mined skill candidate — installs it for the agent (design §7). */

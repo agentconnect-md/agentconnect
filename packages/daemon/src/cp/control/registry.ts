@@ -60,7 +60,7 @@ import {
   sessionVisibilitySnapshot,
   type SessionControlDeps
 } from './session.js'
-import { skillsLocal, type SkillsControlDeps } from './skills.js'
+import { runtimeCommands, skillsLocal, type SkillsControlDeps } from './skills.js'
 import { taskList, type TaskControlDeps } from './task.js'
 import {
   workspaceDelete,
@@ -177,6 +177,7 @@ export const CONTROL_HANDLERS: Map<string, ControlHandler<ControlDeps>> = new Ma
   ['memory/dream/skill/accept', dreamSkillAccept],
   ['memory/dream/skill/dismiss', dreamSkillDismiss],
   ['skills/local', skillsLocal],
+  ['runtime/commands', runtimeCommands],
   ['knowledge/suggestion/read', knowledgeSuggestionRead],
   ['knowledge/suggestion/review', knowledgeSuggestionReview]
 ])

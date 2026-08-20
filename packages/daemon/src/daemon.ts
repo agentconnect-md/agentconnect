@@ -192,6 +192,7 @@ import {
   selectGithubReviewBatchLeader
 } from './github/queue-admission.js'
 import { resolveRuntimeCatalog, type ResolvedRuntimeCatalog } from './runtimes/registry.js'
+import { isAvailableCommandsUpdate, RuntimeCommandsCache } from './runtimes/runtime-commands.js'
 import { installedRuntimeCatalog, installedRuntimes, resolveCommandPath } from './runtimes/probe.js'
 import { startK8sRuntimePlane, type K8sRuntimePlane } from './k8s/runtime-plane.js'
 import { declaredRuntimeCatalog, loadK8sRuntimeTable, type K8sRuntimeAcpSnapshot } from './runtimes/k8s-runtimes.js'
@@ -252,6 +253,7 @@ import {
   MAX_TASK_DETAIL,
   MAX_TASK_LIST_TASKS,
   TASK_LIST_FEATURE,
+  RUNTIME_COMMANDS_FEATURE,
   AGENT_WAKE_FEATURE,
   WORKSPACE_GIT_MESSAGE_FEATURE,
   WORKSPACE_GIT_REVIEW_FEATURE,
@@ -1019,6 +1021,8 @@ export class Daemon {
   private readonly observedChannelsSync: ObservedChannelsSync
   private readonly webchatTransport: WebchatTransport
   private readonly webchatMcpRevocations: WebchatMcpRevocations
+  // What each agent's runtime last advertised it can be asked to run (ACP available_commands_update).
+  private readonly runtimeCommands = new RuntimeCommandsCache()
   // In-conversation command execution (commands/handlers.ts), behind the delegates below.
   private readonly commands: CommandHandlers
   // §7.3 force-cancel backstops, keyed by (agentId, acpSessionId); cleared at turn end.
@@ -2687,6 +2691,7 @@ export class Daemon {
       this.dreamScheduler.unregister(id)
       this.gitCreds.remove(id)
       this.gitCredServer?.revoke(id)
+      this.runtimeCommands.forget(id)
       // Use the one generation-safe teardown path: it evicts the host synchronously,
       // publishes hostStopping, and fences every older startup/retry generation.
       await this.stopHost(id)
@@ -2751,6 +2756,10 @@ export class Daemon {
         const wasDraining = this.drainingAgents.has(a.id)
         this.drainingAgents.add(a.id)
         await this.interruptAgentTurns(a.id, 'stop')
+        // The advertised command list belongs to the runtime and workspace being torn down — both
+        // are in hostSpawnSig, so a runtime switch would otherwise keep serving the old harness's
+        // commands until some later session/new replaced them.
+        this.runtimeCommands.forget(a.id)
         if (workspaceNeedsColdRecovery) {
           this.gitCreds.remove(a.id)
           this.gitCredServer?.revoke(a.id)
@@ -3410,6 +3419,7 @@ export class Daemon {
       WORKSPACE_SESSION_READ_FEATURE,
       WORKSPACE_REPO_SCOPE_FEATURE,
       TASK_LIST_FEATURE,
+      RUNTIME_COMMANDS_FEATURE,
       // Only a cluster daemon has a sandbox to wake; elsewhere the CP answers `unsupported` unsent.
       ...(this.k8s ? [AGENT_WAKE_FEATURE] : []),
       WORKSPACE_GIT_MESSAGE_FEATURE,
@@ -11194,6 +11204,21 @@ export class Daemon {
       }
       return
     }
+    // Recorded before the pending-turn gate below, because an advertisement arrives outside a turn.
+    // A dream host is a separate AcpHost that never enters `hosts`, and it advertises right after
+    // ITS session/new — before the collector returns above exist — so identifying the agent's own
+    // host positively is what makes the exclusion ordering-proof. `isLoadingSession` covers the
+    // session/load window, where the session is this host's but `live` does not hold it yet.
+    // KNOWN GAP: distillation and the commit-message pass run on the agent's OWN host over a temp
+    // dir, so their advertisement is recorded and the list loses the agent's project skills until
+    // the next ordinary session/new replaces it (#1310 review, follow-up).
+    if (isAvailableCommandsUpdate(update)) {
+      const host = this.hosts.get(agentId)
+      if (host?.hasSession(sessionId) || host?.isLoadingSession(sessionId)) {
+        this.runtimeCommands.record(agentId, sessionId, update, this.clock.now())
+      }
+      return
+    }
     const p = this.pending.get(pendingTurnKey(agentId, sessionId))
     this.evalHooks.emit({
       type: 'acp.update',
@@ -14123,6 +14148,7 @@ export class Daemon {
       k8sPlane: () => this.k8sPlane,
       memory: () => this.memory,
       dreamRunner: () => this.dreamRunner(),
+      runtimeCommands: () => this.runtimeCommands,
       memoryFsFor: (agentId) => this.memoryFsFor(agentId),
       gitCommitIdentity: () => this.gitCommitIdentity,
       sessionThreadUrl: (session) => this.sessionThreadUrl(session),
