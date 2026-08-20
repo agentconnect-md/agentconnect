@@ -66,6 +66,18 @@ describe('applyModelCredential', () => {
       baseUrl: 'https://gateway.example/openai/v1'
     })
     expect(env.OPENAI_API_KEY).toBe('issued')
+    // An endpoint-carrying credential authenticates as a GATEWAY: process-ephemeral, so no
+    // persisted account can override this launch's grant and concurrent hosts share nothing.
+    expect(JSON.parse(env.DEFAULT_AUTH_REQUEST)).toEqual({
+      methodId: 'gateway',
+      _meta: {
+        gateway: {
+          baseUrl: 'https://gateway.example/openai/v1',
+          headers: { Authorization: 'Bearer issued' },
+          providerName: 'AgentConnect model egress'
+        }
+      }
+    })
     expect(env.OPENAI_BASE_URL).toBe('https://gateway.example/openai/v1')
     expect(JSON.parse(env.CODEX_CONFIG)).toEqual({
       features: { apps: false },
@@ -182,6 +194,18 @@ describe('applyModelCredential', () => {
         } as never
       )
     ).toEqual({ provider: 'deepseek', runtime: 'deepseek' })
+  })
+})
+
+describe('applyModelCredential codex auth request', () => {
+  it('sends no auth request for an endpoint-less key — the shim owns the effective endpoint', () => {
+    // The key-server contract supports a plain vault rotating real provider keys with no base
+    // URL, and the pod's AC_CODEX_BASE_URL floor outranks the runtime default endpoint. Only the
+    // shim can see that floor, so the daemon must not pre-compose a request that would send the
+    // issued key past it to public OpenAI.
+    const env: Record<string, string> = {}
+    applyModelCredential({ provider: 'openai', runtime: 'codex' }, env, { key: 'real-provider-key' })
+    expect(env).toEqual({ OPENAI_API_KEY: 'real-provider-key' })
   })
 })
 

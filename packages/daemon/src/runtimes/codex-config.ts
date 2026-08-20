@@ -6,6 +6,28 @@
 // This module is import-free on purpose: the sandbox shim bundle must not drag the daemon's
 // credential paths into the runtime image (see tsdown.shim.config.ts).
 
+/** The runtime's own default endpoint — the third layer of the sanctioned injection precedence
+ *  (issued base > deployment base > this), so an endpoint-less key still rides the gateway
+ *  method against exactly the URL codex's built-in provider would have used. */
+export const CODEX_DEFAULT_ENDPOINT = 'https://api.openai.com/v1'
+
+/** The gateway auth request: codex-acp holds the grant as an in-process provider (base URL +
+ *  auth header, responses wire), authRequired() short-circuits before account/read, and nothing
+ *  touches the shared auth.json — so a persisted account of any shape cannot override the grant
+ *  and concurrently launching hosts share no credential state. */
+export function codexGatewayAuthRequest(baseUrl: string, key: string): string {
+  return JSON.stringify({
+    methodId: 'gateway',
+    _meta: {
+      gateway: {
+        baseUrl,
+        headers: { Authorization: `Bearer ${key}` },
+        providerName: 'AgentConnect model egress'
+      }
+    }
+  })
+}
+
 export function objectFromJson(raw: string | undefined, label: string): Record<string, unknown> {
   if (!raw?.trim()) return {}
   let parsed: unknown

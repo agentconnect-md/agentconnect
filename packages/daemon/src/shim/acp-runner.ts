@@ -1,6 +1,12 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { codexConfigWithBaseUrlFillIn, codexConfigWithFloor } from '../runtimes/codex-config.js'
+import {
+  CODEX_DEFAULT_ENDPOINT,
+  codexConfigWithBaseUrlFillIn,
+  codexConfigWithFloor,
+  codexGatewayAuthRequest,
+  objectFromJson
+} from '../runtimes/codex-config.js'
 import { AcpStreamPayloadSchema, type AcpOpen } from './acp-stream.js'
 import { SANDBOX_GH_WRAPPER_DIR } from './sandbox-paths.js'
 import type { ShimEvent } from './protocol.js'
@@ -178,8 +184,34 @@ export class AcpRunner {
       // aim never blocks the base-url fill-in below.
       fillInCodexConfigFloor(env, podEnv, (message) => this.deps.log?.warn(message))
       fillInCodexBaseUrl(env, podEnv, (message) => this.deps.log?.warn(message))
+      // A key without this is unusable on a fresh CODEX_HOME: codex-acp answers authRequired
+      // itself only when told which method. Always the GATEWAY method — process-ephemeral, so a
+      // key never becomes a shared account that outlives or races its launch. The base is the
+      // FINAL effective aim, read after every fill-in above: CODEX_CONFIG's openai_base_url
+      // (daemon, agent, or pod, already layered), a runtime-owned OPENAI_BASE_URL, and only then
+      // the public default — and a runtime that selected its own provider composes nothing, auth
+      // included. Same fill-in rule as everything here: a daemon-sent value wins.
+      if (env.OPENAI_API_KEY && !env.DEFAULT_AUTH_REQUEST) {
+        try {
+          const config = objectFromJson(env.CODEX_CONFIG, 'CODEX_CONFIG')
+          const provider = config.model_provider
+          if (typeof provider !== 'string' || provider === 'openai') {
+            const aimed = typeof config.openai_base_url === 'string' ? config.openai_base_url.trim() : ''
+            const base = aimed || env.OPENAI_BASE_URL?.trim() || CODEX_DEFAULT_ENDPOINT
+            env.DEFAULT_AUTH_REQUEST = codexGatewayAuthRequest(base, env.OPENAI_API_KEY)
+          }
+        } catch (error) {
+          // Composing blind could aim the key at the wrong service; failing auth is recoverable.
+          const reason = error instanceof Error ? error.message : String(error)
+          this.deps.log?.warn(`acp: leaving the codex auth request uncomposed — ${reason}`)
+        }
+      }
     }
     const command = this.deps.resolveCommand?.(payload.command, env) ?? payload.command
+    return this.spawnChild(command, payload, env)
+  }
+
+  private spawnChild(command: string, payload: AcpOpen, env: Record<string, string>): void {
     const child = spawn(command, payload.args, {
       stdio: ['pipe', 'pipe', 'inherit'],
       env,

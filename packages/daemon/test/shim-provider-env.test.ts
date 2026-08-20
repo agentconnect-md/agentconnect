@@ -51,7 +51,11 @@ describe('sandboxProviderEnv', () => {
 
 // Spawn through the real runner: resolveCommand maps the registry command to node so the
 // child can print the environment it actually received.
-async function spawnAndReadEnv(command: string, requestEnv: Record<string, string>): Promise<Record<string, string>> {
+async function spawnAndReadEnv(
+  command: string,
+  requestEnv: Record<string, string>,
+  podEnv: Record<string, string | undefined> = POD_ENV
+): Promise<Record<string, string>> {
   const chunks: string[] = []
   let onExit: (() => void) | undefined
   const exited = new Promise<void>((resolve) => (onExit = resolve))
@@ -59,13 +63,13 @@ async function spawnAndReadEnv(command: string, requestEnv: Record<string, strin
     if (event.kind === 'chunk') chunks.push(Buffer.from(event.data, 'base64').toString('utf8'))
     if (event.kind === 'exit') onExit?.()
   }
-  const runner = new AcpRunner({ emit, resolveCommand: () => process.execPath, podEnv: POD_ENV })
+  const runner = new AcpRunner({ emit, resolveCommand: () => process.execPath, podEnv })
   await runner.apply({
     op: 'open',
     command,
     args: [
       '-e',
-      'process.stdout.write(JSON.stringify({A: process.env.ANTHROPIC_API_KEY ?? null, B: process.env.ANTHROPIC_BASE_URL ?? null, O: process.env.OPENAI_API_KEY ?? null, D: process.env.DEEPSEEK_API_KEY ?? null, C: process.env.CODEX_CONFIG ?? null}))'
+      'process.stdout.write(JSON.stringify({A: process.env.ANTHROPIC_API_KEY ?? null, B: process.env.ANTHROPIC_BASE_URL ?? null, O: process.env.OPENAI_API_KEY ?? null, D: process.env.DEEPSEEK_API_KEY ?? null, C: process.env.CODEX_CONFIG ?? null, R: process.env.DEFAULT_AUTH_REQUEST ?? null}))'
     ],
     env: requestEnv
   })
@@ -76,12 +80,92 @@ async function spawnAndReadEnv(command: string, requestEnv: Record<string, strin
 describe('AcpRunner provider env fill-in', () => {
   it('fills pod provider vars into a claude spawn and keeps codex vars out', async () => {
     const seen = await spawnAndReadEnv('claude-agent-acp', { PATH: process.env.PATH ?? '' })
-    expect(seen).toEqual({ A: 'sk-claude-pod', B: 'https://claude-egress.internal', O: null, D: null, C: null })
+    expect(seen).toEqual({
+      A: 'sk-claude-pod',
+      B: 'https://claude-egress.internal',
+      O: null,
+      D: null,
+      C: null,
+      R: null
+    })
   })
 
   it('fills the deepseek pod vars into a dsh-acp spawn', async () => {
     const seen = await spawnAndReadEnv('dsh-acp', { PATH: process.env.PATH ?? '' })
-    expect(seen).toEqual({ A: null, B: null, O: null, D: 'sk-deepseek-pod', C: null })
+    expect(seen).toEqual({ A: null, B: null, O: null, D: 'sk-deepseek-pod', C: null, R: null })
+  })
+
+  it('pairs a codex key with a gateway auth request, and lets a daemon-sent one win', async () => {
+    const filled = await spawnAndReadEnv('codex-acp', { PATH: process.env.PATH ?? '' })
+    expect(filled.O).toBe('sk-codex-pod')
+    // Without this a fresh CODEX_HOME answers every session with -32000 — and the gateway method
+    // keeps the grant process-ephemeral, so an injected key never becomes a shared account.
+    expect(JSON.parse(filled.R!)._meta.gateway).toEqual({
+      baseUrl: 'https://codex-egress.internal',
+      headers: { Authorization: 'Bearer sk-codex-pod' },
+      providerName: 'AgentConnect model egress'
+    })
+    const daemonSent = await spawnAndReadEnv('codex-acp', {
+      PATH: process.env.PATH ?? '',
+      DEFAULT_AUTH_REQUEST: '{"methodId":"chat-gpt"}'
+    })
+    expect(daemonSent.R).toBe('{"methodId":"chat-gpt"}')
+  })
+
+  it('falls to the runtime default endpoint only when the pod floor carries no base either', async () => {
+    // A daemon-injected key with no daemon URL and no pod URL: the endpoint-less shape bottoms
+    // out at the injection precedence's last layer, still as a process-ephemeral gateway grant.
+    const seen = await spawnAndReadEnv(
+      'codex-acp',
+      { PATH: process.env.PATH ?? '', OPENAI_API_KEY: 'sk-issued' },
+      { AC_CODEX_API_KEY: 'sk-pod-unused' }
+    )
+    expect(seen.O).toBe('sk-issued')
+    expect(JSON.parse(seen.R!)._meta.gateway).toEqual({
+      baseUrl: 'https://api.openai.com/v1',
+      headers: { Authorization: 'Bearer sk-issued' },
+      providerName: 'AgentConnect model egress'
+    })
+  })
+
+  it('aims a runtime-owned key at the runtime-owned custom endpoint, never past it', async () => {
+    // No key server, no static credential: key and endpoint both belong to the runtime. The pod
+    // floor and the public default must not outrank the runtime's live surface.
+    const seen = await spawnAndReadEnv('codex-acp', {
+      PATH: process.env.PATH ?? '',
+      OPENAI_API_KEY: 'sk-runtime-own',
+      CODEX_CONFIG: JSON.stringify({ openai_base_url: 'https://runtime-own.example/v1' })
+    })
+    expect(JSON.parse(seen.R!)._meta.gateway.baseUrl).toBe('https://runtime-own.example/v1')
+
+    const envAimed = await spawnAndReadEnv(
+      'codex-acp',
+      { PATH: process.env.PATH ?? '', OPENAI_API_KEY: 'sk-runtime-own', OPENAI_BASE_URL: 'https://env-own.example' },
+      { AC_CODEX_API_KEY: 'sk-pod-unused' }
+    )
+    expect(JSON.parse(envAimed.R!)._meta.gateway.baseUrl).toBe('https://env-own.example')
+  })
+
+  it('composes nothing for a runtime that selected its own model provider', async () => {
+    const seen = await spawnAndReadEnv('codex-acp', {
+      PATH: process.env.PATH ?? '',
+      OPENAI_API_KEY: 'sk-runtime-own',
+      CODEX_CONFIG: JSON.stringify({ model_provider: 'my-own-gateway' })
+    })
+    expect(seen.R).toBeNull()
+  })
+
+  it('routes a daemon-injected key by the pod base-URL floor when the daemon named no endpoint', async () => {
+    // The reported cloud shape: issued key, base URL present only in the live pod. The request
+    // must aim at the pod's gateway — composing the public endpoint here would send the issued
+    // key straight past the floor.
+    const seen = await spawnAndReadEnv('codex-acp', { PATH: process.env.PATH ?? '', OPENAI_API_KEY: 'sk-issued' })
+    expect(seen.O).toBe('sk-issued')
+    expect(JSON.parse(seen.R!)._meta.gateway).toEqual({
+      baseUrl: 'https://codex-egress.internal',
+      headers: { Authorization: 'Bearer sk-issued' },
+      providerName: 'AgentConnect model egress'
+    })
   })
 
   it('lets a daemon-sent value win over the pod value', async () => {
