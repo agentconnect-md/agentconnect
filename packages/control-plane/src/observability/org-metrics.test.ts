@@ -6,7 +6,6 @@ const NOW = new Date('2026-01-01T00:00:00Z')
 
 const row = (over: Partial<OrgTelemetryRow> = {}): OrgTelemetryRow => ({
   orgId: 'org_acme',
-  orgSlug: 'acme',
   daemons: 2,
   agents: 7,
   sessionsTotal: 900,
@@ -25,14 +24,15 @@ const valueOf = (obs: ReturnType<typeof orgObservations>, metric: string, window
   obs.find((o) => o.metric === metric && o.attrs.window === window)?.value
 
 describe('orgObservations', () => {
-  it('labels every series with the org slug and splits sessions by window', () => {
+  it('labels every series with the org id and splits sessions by window', () => {
     const obs = orgObservations([row()])
     expect(valueOf(obs, 'daemons')).toBe(2)
     expect(valueOf(obs, 'agents')).toBe(7)
     expect(valueOf(obs, 'sessions', 'total')).toBe(900)
     expect(valueOf(obs, 'sessions', '30d')).toBe(120)
     expect(valueOf(obs, 'sessions', '24h')).toBe(5)
-    expect(obs.every((o) => o.attrs.org === 'acme')).toBe(true)
+    // The ID, never the slug: a slug is mutable, and a personal org's is built from its owner's name.
+    expect(obs.every((o) => o.attrs.org === 'org_acme')).toBe(true)
   })
 
   // The counts are not a hierarchy: only `total` is cumulative, so an org that has stopped using
@@ -46,17 +46,18 @@ describe('orgObservations', () => {
 
   // A series that vanishes on the way to zero is invisible on a dashboard — an org that removed
   // its last daemon would look like an org that was never there.
-  it('reports an org holding nothing, as zeros', () => {
-    const obs = orgObservations([row({ orgSlug: 'empty', daemons: 0, agents: 0, sessionsTotal: 0 })])
+  it('emits all five series for an org holding nothing, as zeros', () => {
+    const empty = row({ orgId: 'org_empty', daemons: 0, agents: 0, sessionsTotal: 0, sessions30d: 0, sessions24h: 0 })
+    const obs = orgObservations([empty])
     expect(obs).toHaveLength(5)
-    expect(obs.map((o) => o.value)).toEqual([0, 0, 0, 120, 5])
+    expect(obs.map((o) => o.value)).toEqual([0, 0, 0, 0, 0])
   })
 
   it('reports every org, so a busy one cannot be averaged away by an idle one', () => {
-    const obs = orgObservations([row(), row({ orgSlug: 'other', agents: 1 })])
+    const obs = orgObservations([row(), row({ orgId: 'org_other', agents: 1 })])
     expect(obs.filter((o) => o.metric === 'agents').map((o) => [o.attrs.org, o.value])).toEqual([
-      ['acme', 7],
-      ['other', 1]
+      ['org_acme', 7],
+      ['org_other', 1]
     ])
   })
 })

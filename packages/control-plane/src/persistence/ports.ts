@@ -3913,14 +3913,16 @@ export interface OrgRecord {
 
 /** One org's footprint, for the per-org gauges (observability/org-metrics.ts). */
 export interface OrgTelemetryRow {
+  /** What the gauge labels the series with. The slug is deliberately NOT read here: it is mutable,
+   *  and a personal org's is built from its owner's display name or email. */
   orgId: string
-  /** The org's console URL segment — what the gauge labels the series with. */
-  orgSlug: string
   /** Daemons registered to the org, any status. An install-wide pool member belongs to NO org
    *  (`daemon.orgId IS NULL`) and is counted for none of them — a pool-backed org reads zero here
    *  however much of the pool it occupies, which `duty_group` is the ledger for. */
   daemons: number
-  /** Agents defined in the org, any status — including inactive and unplaced ones. */
+  /** Agents defined in the org, any status — including inactive and unplaced ones. A brand-new org
+   *  reads 1, not 0: `provisionPresetAgents` gives every org the `agentconnect` preset at creation
+   *  unless the install sets `PRESET_AGENTS_ENABLED=false`. */
   agents: number
   /** Sessions the org has ever started. `session_meta` has no retention sweep, so this is a
    *  lifetime total that only grows; the windows below are what carry a trend. */

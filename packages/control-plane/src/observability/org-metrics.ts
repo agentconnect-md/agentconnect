@@ -6,17 +6,26 @@
  * whole install. Sibling of `pool-metrics.ts` in shape and in discipline — one read per collection
  * feeding every gauge, and a failed read reports NOTHING rather than zeros.
  *
- * Two things to know before reading a dashboard built on these:
+ * Three things to know before reading a dashboard built on these:
  *
  *  - `org.daemons` counts daemons the org OWNS. A pool member belongs to no org, so an org running
  *    entirely on the install-wide pool reads zero here no matter how much of it it occupies — its
  *    demand is in the `agentconnect.pool.*` / `agentconnect.duty.*` series instead.
+ *  - `org.agents` reads 1 for a brand-new org, not 0 — every org is born with the `agentconnect`
+ *    preset unless the install disables it.
  *  - `org.sessions{window="total"}` is a lifetime count over an unpruned table, so it only ever
  *    climbs. The `30d`/`24h` windows are the ones that show whether an org is still active.
  *
+ * The `org` label is the org's ID, never its slug. A slug is mutable, so labelling with it would
+ * retire a series on rename — exactly the disappearance the zeros below exist to prevent — and a
+ * personal org's slug is built from its owner's display name or email, which has no business being
+ * a label value in a metrics backend. Resolving an id to a name is the dashboard's job.
+ *
  * Every CP replica observes the same install-wide numbers, so these are fleet totals repeated per
- * pod, not per-pod shards: aggregate them with `max by (...)`, never `sum`. Series count is
- * (orgs × 5) per replica — cheap at this scale, and the thing to watch if org count ever explodes.
+ * pod, not per-pod shards: aggregate them with `max by (...)`, never `sum`. Cardinality, not the
+ * query, is the dominant cost: an activated user gets a personal org, so a signup-driven install
+ * reports closer to (users × 5) series per replica, every one of them re-reported each collection
+ * interval whether or not that org has ever held anything.
  */
 import { metrics, type BatchObservableResult, type ObservableGauge } from '@opentelemetry/api'
 import type { OrgTelemetryRow } from '../persistence/ports.js'
@@ -48,10 +57,11 @@ export interface OrgObservation {
   attrs: { org: string; window?: SessionWindow }
 }
 
-/** Rows → the series each gauge reports. Pure, so a dashboard's input is testable on its own. */
+/** Rows → the series each gauge reports, labelled by org ID. Pure, so a dashboard's input is
+ *  testable on its own. */
 export function orgObservations(rows: readonly OrgTelemetryRow[]): OrgObservation[] {
   return rows.flatMap((row): OrgObservation[] => {
-    const org = row.orgSlug
+    const org = row.orgId
     const sessions = (window: SessionWindow, value: number): OrgObservation => ({
       metric: 'sessions',
       value,
@@ -99,7 +109,8 @@ function createGauges(): Record<OrgMetricName, ObservableGauge> {
     }),
     agents: meter.createObservableGauge('agentconnect.org.agents', {
       unit: '{agent}',
-      description: 'Agents defined in the org, including inactive and unplaced ones'
+      description:
+        'Agents defined in the org, including inactive and unplaced ones. A brand-new org reads 1, not 0 — every org is born with the agentconnect preset unless the install disables it'
     }),
     sessions: meter.createObservableGauge('agentconnect.org.sessions', {
       unit: '{session}',
