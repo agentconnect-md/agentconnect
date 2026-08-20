@@ -12,7 +12,7 @@ const MAX_DESCRIPTION_CHARS = 512
 const MAX_HINT_CHARS = 256
 const MAX_TOTAL_BYTES = 200 * 1024
 
-interface AdvertisedCommands {
+export interface AdvertisedCommands {
   sessionId: string
   updatedAt: string
   commands: RuntimeCommand[]
@@ -43,13 +43,17 @@ export function normalizeAvailableCommands(update: unknown): RuntimeCommand[] {
     const name = text(row.name, MAX_NAME_CHARS)
     if (!name || seen.has(name)) continue
     const input = row.input as { hint?: unknown } | null | undefined
+    const rawDescription = typeof row.description === 'string' ? row.description : ''
+    // Classify from the RAW description — the claude skill marker is its SUFFIX, which both the
+    // display cap and the strip below would otherwise destroy before the bit is derived.
+    const skill = isSkillCommand({ name, description: rawDescription })
+    // The scope marker is adapter bookkeeping, not prose: once the bit is derived, showing
+    // "… (project)" to a user is a leak, so it never enters the stored description.
     const command: RuntimeCommand = {
       name,
-      description: text(row.description, MAX_DESCRIPTION_CHARS) ?? '',
+      description: text(rawDescription.replace(/\s*\((?:user|project)\)\s*$/, ''), MAX_DESCRIPTION_CHARS) ?? '',
       hint: input && typeof input === 'object' ? text(input.hint, MAX_HINT_CHARS) : null,
-      // From the RAW description — the claude skill marker is its SUFFIX, which the cap above
-      // removes for long descriptions, and this bit must not change with the display length.
-      skill: isSkillCommand({ name, description: typeof row.description === 'string' ? row.description : '' })
+      skill
     }
     bytes += Buffer.byteLength(JSON.stringify(command)) + 1
     if (bytes > MAX_TOTAL_BYTES) break
@@ -110,13 +114,22 @@ export class RuntimeCommandsCache {
   // Latest-wins per agent, not per session: a session-worktree list still beats none once it ends.
   private readonly byAgent = new Map<string, AdvertisedCommands>()
 
-  record(agentId: string, sessionId: string, update: unknown, at: number): void {
-    if (!isAvailableCommandsUpdate(update)) return
-    this.byAgent.set(agentId, {
+  record(agentId: string, sessionId: string, update: unknown, at: number): AdvertisedCommands | null {
+    if (!isAvailableCommandsUpdate(update)) return null
+    const entry: AdvertisedCommands = {
       sessionId,
       updatedAt: new Date(at).toISOString(),
       commands: normalizeAvailableCommands(update)
-    })
+    }
+    this.byAgent.set(agentId, entry)
+    return entry
+  }
+
+  /** Hydrate one agent from the persisted copy — a LIVE advertisement always wins, so this only
+   *  fills an absent slot (daemon restart/upgrade must not blind the picker until the next
+   *  session happens to start). */
+  seed(agentId: string, entry: AdvertisedCommands): void {
+    if (!this.byAgent.has(agentId)) this.byAgent.set(agentId, entry)
   }
 
   get(agentId: string): RuntimeCommandsList {

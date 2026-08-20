@@ -111,5 +111,33 @@ describe('skill-invocation translation through dispatch', () => {
     } finally {
       await daemon.stop()
     }
-  }, 20_000)
+
+    // Restart onto the same root: the advertisement must survive the process — a daemon
+    // upgrade or restart must not read as "this agent has never run" until a session starts.
+    const prompts2: string[][] = []
+    const fakeHost2 = {
+      __started: true,
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => 'acp-2'),
+      hasSession: (id: string) => id === 'acp-2',
+      prompt: vi.fn(async (_sid: string, blocks: any[]) => {
+        prompts2.push(blocks.map((b) => String(b.text ?? '')))
+        return 'end_turn'
+      }),
+      cancel: vi.fn(),
+      stop: vi.fn()
+    }
+    const restarted = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: () => fakeHost2 as any })
+    await restarted.start()
+    try {
+      await vi.waitFor(() => {
+        expect((restarted as any).runtimeCommands.get('bot-a').reported).toBe(true)
+      })
+      // And the seeded table still drives translation, before any new advertisement.
+      await (restarted as any).dispatch('bot-a', msg('/code-review 7', 5))
+      expect(prompts2[0]!.join('\n')).toContain('[U123] Run the command /code-review 7')
+    } finally {
+      await restarted.stop()
+    }
+  }, 30_000)
 })
