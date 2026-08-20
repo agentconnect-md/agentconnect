@@ -5,7 +5,8 @@
 #
 # Deliberately a different image from docker/Dockerfile's service targets. Those run the
 # published daemon and control-plane packages; this one runs half-trusted agent code, so it
-# carries the opposite bias: the shim and nothing the shim does not need.
+# carries the opposite bias: the shim, plus the baseline build toolchain a coding agent needs, and
+# nothing else.
 #
 #   docker build -f docker/runtime-sandbox.Dockerfile -t runtime-sandbox .
 #
@@ -95,11 +96,16 @@ ARG OPENCODE_VERSION=1.18.16
 ARG DEEPSEEK_HARNESS_ACP_VERSION=0.4.9
 
 # git and ca-certificates are load-bearing — the workspace surface runs git IN here over the
-# shim's exec channel. openssh-client is for ssh remotes; tini is PID 1. Nothing else: every
-# additional binary is one more thing half-trusted code can reach.
+# shim's exec channel. openssh-client is for ssh remotes; tini is PID 1.
+# curl, python3 (+venv/pip) and build-essential are the baseline toolchain an agent needs to build and
+# run the workspace it was given; without them a routine `pip install` or native-module build just fails.
 RUN apt-get update \
-  && apt-get install --no-install-recommends -y ca-certificates git openssh-client tini \
+  && apt-get install --no-install-recommends -y \
+    ca-certificates git openssh-client tini \
+    build-essential curl pkg-config python3 python3-dev python3-pip python3-venv \
   && rm -rf /var/lib/apt/lists/*
+# `python` as well as `python3` — plenty of tooling still spawns the unsuffixed name.
+RUN ln -sf /usr/bin/python3 /usr/local/bin/python
 
 # Installed globally so the shim resolves a real executable on PATH. `--k8s` deliberately
 # refuses package-launcher (npx/uvx) entries: fetching a runtime at spawn time would mean the
