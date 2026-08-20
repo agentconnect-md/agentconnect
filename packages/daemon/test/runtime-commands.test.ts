@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest'
 import { Daemon } from '../src/daemon.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { createRuntimeCommandsReader } from '../src/cp/runtime-commands-reader.js'
+import { pendingTurnKey } from '../src/daemon/turn-types.js'
 import {
+  internalPassSlot,
+  InternalPassSessions,
   isAvailableCommandsUpdate,
   normalizeAvailableCommands,
   RuntimeCommandsCache
@@ -150,5 +153,68 @@ describe('the daemon records only its own host’s advertisement', () => {
 
     await host.onAcpUpdate('agent-1', 'resuming', advertisement)
     expect(host.runtimeCommands.get('agent-1').sessionId).toBe('resuming')
+  })
+
+  // Distillation and the commit-message wand open their session on the agent's OWN host over a
+  // throwaway temp dir, so ownership says yes and only the daemon's own registry can tell that list
+  // (user + plugin skills, no project skills) from a real one.
+  it('ignores the temp-dir advertisement from a session it opened for a pass of its own', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const inner = daemon as unknown as {
+      hosts: Map<string, { hasSession(id: string): boolean; isLoadingSession(id: string): boolean }>
+      internalPassSessions: InternalPassSessions
+      onAcpUpdate(agentId: string, sessionId: string, update: unknown): Promise<void>
+      runtimeCommands: RuntimeCommandsCache
+    }
+    inner.hosts.set('agent-1', { hasSession: () => true, isLoadingSession: () => false })
+    const passKey = pendingTurnKey('agent-1', 'commit-session')
+    inner.internalPassSessions.add(internalPassSlot.commit('agent-1', 'commit-session'), passKey)
+
+    await inner.onAcpUpdate('agent-1', 'commit-session', advertisement)
+    expect(inner.runtimeCommands.get('agent-1')).toEqual({ reported: false, commands: [] })
+
+    // Per session, not per host: the agent's ordinary chat session on that same host still reports.
+    await inner.onAcpUpdate('agent-1', 'chat-session', advertisement)
+    expect(inner.runtimeCommands.get('agent-1').sessionId).toBe('chat-session')
+  })
+})
+
+describe('the sessions the daemon opened for its own passes', () => {
+  it('retires a slot’s previous session, so the registry cannot grow with uptime', () => {
+    const sessions = new InternalPassSessions()
+    // Distillation's session is cached per memory scope and has no discard site, so the next
+    // session for that scope is what retires it.
+    sessions.add(internalPassSlot.distill('a'), 'key-1')
+    expect(sessions.has('key-1')).toBe(true)
+    sessions.add(internalPassSlot.distill('a'), 'key-2')
+    expect(sessions.has('key-1')).toBe(false)
+    expect(sessions.has('key-2')).toBe(true)
+
+    // A dream keeps its own slot alongside, and re-adding a session is idempotent.
+    sessions.add(internalPassSlot.dream('a'), 'key-3')
+    sessions.add(internalPassSlot.dream('a'), 'key-3')
+    expect(sessions.size).toBe(2)
+
+    sessions.delete('key-2')
+    sessions.delete('key-2')
+    expect(sessions.has('key-2')).toBe(false)
+    expect(sessions.has('key-3')).toBe(true)
+    expect(sessions.size).toBe(1)
+  })
+
+  // Nothing serializes the wand daemon-side: the console disables its own button while a press is in
+  // flight, but two tabs or two repo panels on one agent do overlap. Retiring the first press while
+  // its session is still live would re-open the gap for exactly that press's advertisement.
+  it('keeps both of two overlapping commit presses excluded', () => {
+    const sessions = new InternalPassSessions()
+    sessions.add(internalPassSlot.commit('a', 'sess-1'), 'key-1')
+    sessions.add(internalPassSlot.commit('a', 'sess-2'), 'key-2')
+    expect(sessions.has('key-1')).toBe(true)
+    expect(sessions.has('key-2')).toBe(true)
+
+    // Each press deletes its own entry when it discards its session, so nothing accumulates.
+    sessions.delete('key-1')
+    sessions.delete('key-2')
+    expect(sessions.size).toBe(0)
   })
 })

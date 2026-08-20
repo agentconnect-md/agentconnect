@@ -12,6 +12,13 @@ import { Daemon } from '../src/daemon.js'
 const AGENT = 'bot-a'
 const roots: string[] = []
 
+// What claude-agent-acp advertises for the pass's empty temp cwd: user and plugin skills survive a
+// cwd change, the agent's project skills do not.
+const ADVERTISEMENT = {
+  sessionUpdate: 'available_commands_update',
+  availableCommands: [{ name: 'superpowers:brainstorming', description: 'Explore intent (user)' }]
+}
+
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
@@ -66,6 +73,8 @@ function stubHost(
     stopReason?: string
     /** A runtime that answers only when it is canceled — i.e. one that honours `session/cancel`. */
     awaitCancel?: boolean
+    /** A runtime that advertises its slash commands the way a real adapter does — see below. */
+    advertise?: boolean
   } = {}
 ): { host: HostStub; factory: ReturnType<typeof vi.fn> } {
   let seq = 0
@@ -73,8 +82,27 @@ function stubHost(
   const host: HostStub = {
     usesMetaSystemPrompt: () => opts.trusted ?? false,
     permissionModeOptions: () => ({ modes: opts.modes ?? ['read-only'] }),
-    setSessionPermissionMode: vi.fn(async () => opts.modeAccepted ?? true),
-    newSession: vi.fn(async () => `sess-${++seq}`),
+    setSessionPermissionMode: vi.fn(async () => {
+      // A real `session/set_mode` is a round-trip, not a microtask. Deferring it by a macrotask is
+      // what lets the advertisement below overtake anything registered after this await.
+      if (opts.advertise) await new Promise((resolve) => setTimeout(resolve, 0))
+      return opts.modeAccepted ?? true
+    }),
+    newSession: vi.fn(async () => {
+      const id = `sess-${++seq}`
+      // claude-agent-acp advertises its commands on a timer right after the session/new response —
+      // outside any turn, and before the pass registers its collector.
+      if (opts.advertise) {
+        setTimeout(() => {
+          ;(daemon as never as { onAcpUpdate(a: string, s: string, u: unknown): void }).onAcpUpdate(
+            AGENT,
+            id,
+            ADVERTISEMENT
+          )
+        }, 0)
+      }
+      return id
+    }),
     prompt: vi.fn(async (sessionId: string) => {
       for (const text of opts.chunks ?? []) {
         // Exactly the path a real adapter takes, so the collector interception is what is under test.
@@ -173,6 +201,23 @@ describe('runCommitMessagePass — a fresh isolated session on the warm host', (
       // A second press replaces it rather than adding one, so presses cannot accumulate entries.
       await pass(daemon)
       expect([...inner.memoryExtractionQuarantines.keys()]).toEqual([JSON.stringify([AGENT, 'sess-2'])])
+    })
+  }, 20_000)
+
+  it('keeps its throwaway cwd out of the command list the console reports for the agent', async () => {
+    // The pass's session belongs to the agent's warm host, so host ownership alone would take this
+    // advertisement and truncate the agent's `/` picker to the skills a temp dir has (#1310 review).
+    await withDaemon({ advertise: true, chunks: ['fix: quiet'] }, async (daemon, host) => {
+      const inner = daemon as never as Record<string, any>
+      await pass(daemon)
+      expect(host.newSession).toHaveBeenCalledTimes(1)
+      expect(inner.runtimeCommands.get(AGENT)).toEqual({ reported: false, commands: [] })
+      // …and the pass leaves no entry behind, because the session it registered is discarded.
+      expect(inner.internalPassSessions.size).toBe(0)
+
+      // An ordinary chat session on that same host still reports.
+      await inner.onAcpUpdate(AGENT, 'chat-1', ADVERTISEMENT)
+      expect(inner.runtimeCommands.get(AGENT).sessionId).toBe('chat-1')
     })
   }, 20_000)
 

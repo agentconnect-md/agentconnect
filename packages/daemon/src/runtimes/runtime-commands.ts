@@ -56,6 +56,53 @@ export function normalizeAvailableCommands(update: unknown): RuntimeCommand[] {
   return commands
 }
 
+/** The slot an internal pass parks its ACP session in. One live session per slot, so registering
+ *  the next one retires the slot's previous session and the registry cannot grow with uptime.
+ *  A pass that DISCARDS its session takes a slot per session instead — it deletes its own entry, so
+ *  it needs no retirement, and retiring one press while a concurrent one is still live would re-open
+ *  the gap the registry exists to close. */
+export const internalPassSlot = {
+  /** The distillation session is cached and reused per memory scope, and has no discard site. */
+  distill: (cacheKey: string) => `distill:${cacheKey}`,
+  /** Two presses on one agent can overlap — the console disables its own button, two tabs do not. */
+  commit: (agentId: string, sessionId: string) => `commit:${agentId}:${sessionId}`,
+  /** Per agent, not per dream: a dream can fail before the discard in its own finally, and its
+   *  dedicated host keeps it out of the gate whether or not this entry is current. */
+  dream: (agentId: string) => `dream:${agentId}`
+}
+
+/** The ACP sessions the daemon opens for its OWN passes — distillation, the commit-message wand, a
+ *  dream — over a throwaway temp dir. Their advertisement is missing the agent's project skills, and
+ *  the two that run on the agent's own warm host are indistinguishable there by session ownership.
+ *  Register SYNCHRONOUSLY in the continuation right after `newSession` resolves: the adapter
+ *  advertises on a timer, so a registration behind one more await loses the race (#1310 review). */
+export class InternalPassSessions {
+  private readonly bySlot = new Map<string, string>()
+  private readonly slotOf = new Map<string, string>()
+
+  add(slot: string, sessionKey: string): void {
+    const prior = this.bySlot.get(slot)
+    if (prior !== undefined && prior !== sessionKey) this.slotOf.delete(prior)
+    this.bySlot.set(slot, sessionKey)
+    this.slotOf.set(sessionKey, slot)
+  }
+
+  has(sessionKey: string): boolean {
+    return this.slotOf.has(sessionKey)
+  }
+
+  delete(sessionKey: string): void {
+    const slot = this.slotOf.get(sessionKey)
+    if (slot === undefined) return
+    this.slotOf.delete(sessionKey)
+    if (this.bySlot.get(slot) === sessionKey) this.bySlot.delete(slot)
+  }
+
+  get size(): number {
+    return this.slotOf.size
+  }
+}
+
 export class RuntimeCommandsCache {
   // Latest-wins per agent, not per session: a session-worktree list still beats none once it ends.
   private readonly byAgent = new Map<string, AdvertisedCommands>()
