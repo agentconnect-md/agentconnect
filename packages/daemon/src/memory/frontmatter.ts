@@ -109,25 +109,24 @@ export function parseMemoryFrontmatter(text: string): ParsedMemory {
   }
 }
 
-/**
- * Whether YAML would read this plain scalar as something other than a string —
- * booleans, null, and every numeric spelling (including leading-decimal floats like
- * `.5e2`). Asking the parser we already depend on beats re-deriving its grammar by
- * hand: a hand-written pattern silently drifts from it, and each gap turns a stored
- * description into a boolean or number on the way back in.
- */
 /** YAML 1.1 spells these as booleans; the 1.2 core schema our parser implements reads
  *  them as plain strings. Quote them anyway — the guarantee is that the value survives
  *  ANY strict reader, not only the one we happen to link. */
 const YAML_11_BOOLEANS = /^(?:y|n|yes|no|on|off)$/i
 
-function resolvesAsNonString(value: string): boolean {
-  if (YAML_11_BOOLEANS.test(value)) return true
+/**
+ * Whether emitting this value bare would round-trip byte-for-byte. Asking the parser
+ * we already depend on beats re-deriving its grammar by hand, and comparing the VALUE
+ * rather than its type catches the cases a type check misses: a decoded escape, a
+ * folded line break, trimmed padding — each of which keeps the `string` type while
+ * silently changing the bytes, or breaks the header outright.
+ */
+function roundTripsBare(value: string): boolean {
   try {
-    return typeof parseYaml(value) !== 'string'
+    return parseYaml(value) === value
   } catch {
-    // Unparseable as a bare scalar ⇒ definitely not a safe plain string.
-    return true
+    // Unparseable as a bare scalar ⇒ definitely not safe to emit bare.
+    return false
   }
 }
 
@@ -135,12 +134,13 @@ function resolvesAsNonString(value: string): boolean {
  * Quote unless the value is unambiguously a plain YAML *string* scalar. Conservative
  * on purpose: a stored description must survive any strict YAML reader. Covers every
  * leading indicator (`- ? : , [ ] { } # & * ! | > ' " % @ \``), a `key: value` split,
- * a trailing colon, an inline ` #` comment, edge whitespace, and anything the parser
- * would resolve as a non-string.
+ * a trailing colon, an inline ` #` comment, edge whitespace, and anything that would
+ * not read back byte-for-byte as the same string.
  */
 function quoteIfNeeded(value: string): string {
-  const unsafe = /^[\s\-?:,[\]{}#&*!|>'"%@`]|: |:$| #|\s$/.test(value) || resolvesAsNonString(value)
-  return unsafe ? JSON.stringify(value) : value
+  const structural = /^[\s\-?:,[\]{}#&*!|>'"%@`]|: |:$| #|\s$/.test(value)
+  const safe = !structural && !YAML_11_BOOLEANS.test(value) && roundTripsBare(value)
+  return safe ? value : JSON.stringify(value)
 }
 
 /**

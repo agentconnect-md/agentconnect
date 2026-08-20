@@ -523,3 +523,28 @@ describe('values that only stay strings while quoted', () => {
     expect(parseMemoryFrontmatter(await readMemoryFile(f, 'n.md')).header.description).toBe('2026')
   })
 })
+
+describe('values whose BYTES change when emitted bare', () => {
+  it('keeps quotes when the text would not read back identically', () => {
+    // A type check is not enough: each of these stays a `string` but comes back with
+    // different bytes — or breaks the header outright, as the newline does by turning
+    // one header line into two.
+    const changed = ['line1\nline2', 'trailing  ', '  leading', 'tab\there', 'a  b']
+    for (const value of changed) {
+      const fixed = normalizeMemoryHeader(`---\ndescription: ${JSON.stringify(value)}\n---\nbody\n`)
+      // Still exactly one description line — a decoded newline would have split it.
+      expect(fixed.match(/^description:/gm)).toHaveLength(1)
+      expect(parseMemoryFrontmatter(fixed).header.description).toBe(value)
+    }
+  })
+
+  it('survives the real write path with an embedded newline', async () => {
+    const f = fs()
+    await ensureMemory(f, 'bot')
+    const value = 'first\nsecond'
+    await writeMemoryFile(f, 'multi.md', `---\ndescription: ${JSON.stringify(value)}\n---\nbody\n`, undefined, 'dream')
+    const stored = await readMemoryFile(f, 'multi.md')
+    expect(stored.match(/^description:/gm)).toHaveLength(1)
+    expect(parseMemoryFrontmatter(stored).header.description).toBe(value)
+  })
+})
