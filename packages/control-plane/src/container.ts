@@ -161,6 +161,7 @@ import { relayHttpOrigin } from './orchestrator/mcpProvider.js'
 import { CollabRoutesService } from './orchestrator/collabRoutes.service.js'
 import { DutyLeaseService, DUTY_LEASE_DEFAULTS } from './orchestrator/dutyLease.js'
 import { registerPoolMetrics } from './observability/pool-metrics.js'
+import { registerOrgMetrics } from './observability/org-metrics.js'
 import { AgentDelivery } from './orchestrator/agentDelivery.js'
 import { AgentRoutingConverger } from './orchestrator/agentRouting.js'
 import { PlacementResolver, type ResolvableAgent } from './orchestrator/placementResolver.js'
@@ -742,6 +743,9 @@ export function buildContainer(
     maxMembers: DUTY_GRANT_MEMBERS_MAX,
     log: { warn: (o, m) => http.log.warn(o, m) }
   })
+  // Per-org footprint gauges (observability/org-metrics.ts) — daemons/agents/sessions per org, the
+  // "who is using this install, and how much" read the pool gauges deliberately do not answer.
+  const orgMetrics = registerOrgMetrics({ repo: repos.org, clock, log: { warn: (o, m) => http.log.warn(o, m) } })
   const agentMutations = new AgentMutationGate()
 
   // Relay roster (shared-bot-relay.md §5): computed from the durable `relay` table
@@ -1818,6 +1822,7 @@ export function buildContainer(
       relaySweeper.stop()
       dutyRecompute.stop()
       poolMetrics.stop()
+      orgMetrics.stop()
       sessionAccessWarmer.stop()
       for (const loop of backgroundLoops) loop.stop()
       visibilityPush.stop()
