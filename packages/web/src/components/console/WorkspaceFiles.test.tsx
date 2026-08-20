@@ -413,7 +413,7 @@ it('scopes file and git reads to the selected session worktree', async () => {
   expect(container?.textContent).not.toContain('Add file')
 })
 
-it('explains when a selected session workspace has been cleaned up', async () => {
+it('explains a selected session that has no checkout, without inventing why', async () => {
   workspace.exists = false
   container = document.createElement('div')
   document.body.append(container)
@@ -431,9 +431,20 @@ it('explains when a selected session workspace has been cleaned up', async () =>
     await Promise.resolve()
   })
 
-  expect(container.textContent).toContain("This session's workspace has been cleaned up")
-  expect(container.textContent).toContain('it will be recreated from the repository')
+  expect(container.textContent).toContain('No checkout for this session')
+  expect(container.textContent).toContain('may not have one of its own')
   expect(container.textContent).not.toContain('The workspace has no files yet')
+})
+
+it('speaks about the SESSION, not the agent, when a session scope selects an additional repository', async () => {
+  // Both selectors ride the same read, and the repository sentence is the AGENT's: told to a reader
+  // looking at one finished session's worktree it promises a checkout no later session will produce.
+  workspace.exists = false
+  await renderRepoScoped({ repo: 'acme/infra', sessionId: 'session-a' })
+
+  // Named, because with a root selected the missing worktree is THAT root's.
+  expect(container?.textContent).toContain('No checkout of acme/infra for this session')
+  expect(container?.textContent).not.toContain('materialized on the agent’s next session')
 })
 
 it('keeps an inline new-file draft across the desktop-to-mobile breakpoint', async () => {

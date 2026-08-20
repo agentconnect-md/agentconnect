@@ -9,6 +9,7 @@ import { Icon } from '@/components/ui'
 import { FileBrowserRow, formatFileMtime, formatFileSize } from '@/components/console/FileBrowser'
 import {
   SANDBOX_ASLEEP_CODE,
+  sessionWorktreeAbsentNotice,
   StatusBadge,
   useWorkspaceGitStatus,
   useWorkspaceTree,
@@ -215,7 +216,7 @@ export function FilesPanel({
         <PanelNotice
           text={
             sessionId
-              ? "This session's workspace has been cleaned up — it will be recreated from the repository when the agent next works in this session."
+              ? sessionWorktreeAbsentNotice()
               : 'The workspace has no files yet — the agent creates them as it works.'
           }
         />

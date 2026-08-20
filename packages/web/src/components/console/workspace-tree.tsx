@@ -241,6 +241,13 @@ export type WorkspaceGitOutcome = 'pending' | 'repo' | 'none' | 'asleep' | 'unav
 /** The CP's code for "this agent's sandbox is not running". A 503 like an offline daemon — the code is the only thing that separates the two, and a plain 503 keeps the offline story. */
 export const SANDBOX_ASLEEP_CODE = 'WORKSPACE_SANDBOX_UNAVAILABLE'
 
+/** What both file surfaces say when a read SUCCEEDS and reports a session-scoped root that is not there. Named no cause on purpose: a worktree the daemon reclaimed and one this session was never given are the same answer from here, and the sentence this replaced asserted the first and promised a recreation the second never gets. */
+// `repo` names the SELECTED root, because with one chosen the missing worktree is that root's and a bare "its worktree" reads as the session's primary one.
+export function sessionWorktreeAbsentNotice(repo?: string): string {
+  const of = repo ? ` of ${repo}` : ''
+  return `No checkout${of} for this session — its worktree may have been cleaned up, or this session may not have one${repo ? ' for this repository' : ' of its own'}.`
+}
+
 /** Whether a failed workspace read was the sandbox being asleep rather than anything being wrong. */
 export function isSandboxAsleep(err: unknown): boolean {
   return err instanceof ApiError && err.code === SANDBOX_ASLEEP_CODE
