@@ -758,9 +758,10 @@ export class DreamRunner {
         .map((entry) => entry.name)
       const stagedTopics = stagedNames.length
       const liveTopics = files.filter((file) => file.name !== MEMORY_INDEX).length
-      // A staged file the memory tools did not write skipped every rule they enforce
-      // (name, byte cap, header normalize + stamp). It means the model reached the
-      // staging directory with its own file tools, so the whole proposal is suspect.
+      // Provenance is by NAME: a staged file no bound write ever produced means the
+      // model reached the staging directory some other way — its own file tools — so
+      // the whole proposal is suspect. (A topic written properly and then overwritten
+      // out of band still passes; catching that needs a per-write digest.)
       const written = new Set(extracted.memoryTopics ?? [])
       const unaccounted = stagedNames.filter((name) => !written.has(name))
       if (unaccounted.length > 0) {

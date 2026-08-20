@@ -10,6 +10,7 @@
  */
 import { describe, it, expect, vi } from 'vitest'
 import { executeTool, type OpsDeps, type SessionContext } from '../src/mcp/ops.js'
+import { boundWrittenTopics } from '../src/mcp/ops/memory.js'
 import { MEMORY_ACCESS_BLOCKED } from '../src/memory/tools.js'
 
 const ctx = (): SessionContext => ({
@@ -229,6 +230,32 @@ describe('a dream-bound session writing its staged store', () => {
       /topic limit reached/
     )
     expect((d.memory.write as unknown as { mock: { calls: unknown[][] } }).mock.calls).toHaveLength(3)
+  })
+
+  it('reports the topics it wrote, which is what the dream stages against', async () => {
+    const d = deps(true)
+    const ctx = dreamCtx()
+    await executeTool(ctx, 'writeMemory', { path: 'one.md', content: 'a' }, d)
+    await executeTool(ctx, 'writeMemory', { path: 'one.md', content: 'a2' }, d)
+    expect(boundWrittenTopics(ctx)).toEqual(['one.md'])
+  })
+
+  it('does not let a REFUSED write vouch for its topic or spend a topic slot', async () => {
+    // The store rejects the write (a subdirectory path, an oversized body). The name must
+    // not enter the provenance record, or a dream could claim a topic through the tool and
+    // then put the actual bytes there with the runtime's own file tool.
+    const d = deps(true)
+    const ctx = dreamCtx()
+    ;(d.memory.write as unknown as { mockRejectedValueOnce(e: Error): void }).mockRejectedValueOnce(
+      new Error('memory is a flat directory')
+    )
+    await expect(executeTool(ctx, 'writeMemory', { path: 'one.md', content: 'x' }, d)).rejects.toThrow()
+    expect(boundWrittenTopics(ctx)).toEqual([])
+
+    // ...and the refusal did not consume one of the two allowed topics.
+    await executeTool(ctx, 'writeMemory', { path: 'two.md', content: 'x' }, d)
+    await executeTool(ctx, 'writeMemory', { path: 'three.md', content: 'x' }, d)
+    expect(boundWrittenTopics(ctx).sort()).toEqual(['three.md', 'two.md'])
   })
 
   it('leaves an unbound turn unconstrained', async () => {
