@@ -59,6 +59,26 @@ export interface MessageGateway {
    *  bot credentials; null on failure / over-cap. Backs the `read*File` tools so
    *  the agent can read attachments without ever holding the token. */
   downloadFile(sourceUrl: string, maxBytes?: number): Promise<Buffer | null>
+  /** The mirror of {@link downloadFile}: put BYTES into a conversation, introduced by
+   *  `comment`. Optional — only a platform that can host a file offers it.
+   *
+   *  THE CONTRACT IS `undefined` ⇔ NOTHING WAS POSTED. Two platforms cannot express a
+   *  file and its caption as one message, so they send two — and an implementation must
+   *  order them so the FILE goes first. Then a failure before anything lands returns
+   *  `undefined`, and a caption lost after it reports `warning` on an otherwise successful
+   *  send. Conflating the two would tell an agent nothing was sent while its words sat in
+   *  the chat, and the retry would duplicate them.
+   *
+   *  A result carries the post anchor when the platform's file send produces one; Slack's
+   *  does not (it answers with the file, no ts), so there `messageId` is absent on success
+   *  and the caller degrades exactly as it does for a post that returned no id. */
+  uploadFile?(
+    channel: string,
+    file: { bytes: Buffer; name: string; mimeType: string },
+    comment?: string,
+    threadTs?: string,
+    identity?: SendIdentity
+  ): Promise<{ messageId?: string; warning?: string } | undefined>
 }
 
 /**

@@ -243,6 +243,51 @@ best-effort edge: a target on another daemon whose call policy terminally reject
 caller can still leave a visible post, because that policy verdict is only known on the
 target's daemon after the post is made.
 
+### Forwarding a received file
+
+A `toUser` or bare-`channel` send may carry `attachment`, naming a file **this
+conversation received** exactly as the agent's `[attached: …]` marker spells it. This is
+the only way a shared image reaches another platform: an agent can describe what it saw,
+but it cannot produce the bytes, and no send accepts model-supplied file content.
+
+The daemon resolves the name against its own transcript for the caller's conversation, so
+an agent can forward only what was delivered to it, and the bytes never pass through the
+model. It forwards the bounded copy already retained for console replay rather than
+re-fetching the original, so a forwarded image can be smaller than the one that arrived.
+
+**Only that retained copy is forwardable — one image per message.** The `[attached: …]`
+marker lists every file on a message, but a document, a second image on the same message,
+and an image too large to retain have no bytes to forward. Naming one is refused as _not
+forwardable_ rather than as an unknown name, because the agent read the name correctly and
+would otherwise retry it.
+
+A file share is its own message on the receiving platform, not a decorated text post: the
+send's `message` becomes the file's caption, and each platform sends it the way that
+platform shows a file — an image previews inline where the platform can do that, and a
+caption too long for the platform's limit becomes its own message instead of being
+truncated.
+
+Such a send anchors like any other channel-root post, and so seeds a session, wherever the
+platform answers with the message it created. Slack is the exception: its file share
+returns the file and no message id, so a Slack forward anchors nothing and seeds no
+session. Nothing else depends on which case applies — the send degrades to the same
+behaviour as a post whose id never came back.
+
+An unresolvable name, a target platform that cannot host files, or a share that posted
+nothing fails the whole send rather than reporting an image as sent.
+
+One caption limitation is worth stating because it contradicts the rest of the product: on
+Slack a forwarded caption is **mrkdwn**, not the CommonMark every other message is written
+in, so `**bold**` and `[label](url)` read literally there. Slack's file share ignores rich
+blocks whenever a comment is supplied and offers no separate notification text, so the
+alternative would cost every forwarded file its notification preview.
+
+Where a platform cannot carry a file and its caption as one message it sends two, and it
+sends the **file first** — so a failure before anything lands really did land nothing, and
+a caption lost after it is reported as a notice on an otherwise successful send rather than
+as a failure. The agent is never told nothing was sent while its words sit in the
+conversation, because it would retry and post them twice.
+
 ## Self-authored channel roots
 
 When an agent uses `sendMessage` to publish a new channel-root message without waking

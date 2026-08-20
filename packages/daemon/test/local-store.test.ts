@@ -1764,6 +1764,33 @@ describe('LocalStore webchat MCP grant ledger', () => {
     ])
     await s.close()
   })
+
+  it('finds a stored image by name, newest first, and only inside its own thread', async () => {
+    // Backs forwarding a received file: the copy kept for console replay is what gets sent on,
+    // so it has to be addressable by the name the agent read in its `[attached: …]` marker.
+    const s = await store()
+    const append = (thread: string, ts: string, data: string) =>
+      s.appendTranscript({
+        channel: 'C1',
+        thread,
+        ts,
+        sender: 'U1',
+        kind: 'text',
+        text: '[attached: shot.png (image/png)]',
+        attachments: [{ name: 'shot.png', mimeType: 'image/png', data }]
+      })
+    await append('T', '1', 'b2xk')
+    await append('T', '2', 'bmV3')
+    await append('T_OTHER', '3', 'ZWxzZQ==')
+
+    // The same name can recur in a long conversation; the latest one is what "that image" means.
+    expect((await s.transcriptAttachmentByName('C1', 'T', undefined, 'shot.png'))?.data).toBe('bmV3')
+    // A neighbouring thread's image is not addressable from here — an agent forwards only
+    // what its own conversation received.
+    expect(await s.transcriptAttachmentByName('C1', 'T_MISSING', undefined, 'shot.png')).toBeUndefined()
+    expect(await s.transcriptAttachmentByName('C1', 'T', undefined, 'other.png')).toBeUndefined()
+    await s.close()
+  })
 })
 
 describe('LocalStore recovery scope on a shared store (daemon pool)', () => {

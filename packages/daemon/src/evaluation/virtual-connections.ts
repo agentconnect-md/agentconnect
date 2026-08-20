@@ -394,6 +394,30 @@ export class VirtualSlackConnection implements PlatformConnection {
   async downloadFile(): Promise<Buffer | null> {
     return null
   }
+
+  /** The Arena world hosts no files, so a forward is recorded for the ONE part of it a
+   *  participant can see: the caption, as an ordinary reply. It reports delivery but no
+   *  `messageId`, because the real Slack share answers with the file and no message ts — a
+   *  virtual anchor would make the Arena the only place a forward can seed a session. */
+  async uploadFile(
+    channel: string,
+    _file: { bytes: Buffer; name: string; mimeType?: string },
+    comment?: string,
+    threadTs?: string,
+    options?: VirtualPostOptions
+  ): Promise<{ messageId?: string } | undefined> {
+    const result = await this.world.recordOutbound({
+      kind: 'reply',
+      platform: 'slack',
+      integrationId: this.integrationId,
+      channel,
+      ...(threadTs !== undefined ? { thread: threadTs } : {}),
+      ...(identityOf(options) ? { identity: identityOf(options)! } : {}),
+      text: comment ?? ''
+    })
+    if (result.status !== 'delivered') throw new VirtualDeliveryRejected(result)
+    return {}
+  }
 }
 
 /** Minimal Discord shape: the reply path + gateway ops the counting milestone

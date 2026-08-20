@@ -47,6 +47,10 @@ function targetBranch<T extends z.ZodRawShape>(target: string, shape: T) {
 
 const messageField = requiredString('message')
 const channelField = optionalString('channel')
+/** The name of a file the caller RECEIVED in this conversation, forwarded as-is. Named
+ *  rather than id'd because the name is what the agent already has: it reads it in the
+ *  `[attached: …]` marker on the triggering message. */
+const attachmentField = optionalString('attachment')
 const platformField = optionalString('platform')
 const integrationIdField = optionalString('integrationId')
 
@@ -82,12 +86,14 @@ export const SEND_MESSAGE_BRANCHES = {
     channel: channelField,
     platform: platformField,
     integrationId: integrationIdField,
+    attachment: attachmentField,
     message: messageField
   }),
   channel: targetBranch('channel target', {
     channel: requiredString('channel'),
     platform: platformField,
     integrationId: integrationIdField,
+    attachment: attachmentField,
     message: messageField
   }),
   sessionId: targetBranch('session target', {
@@ -329,6 +335,15 @@ export interface MessagingDeps extends GatewayDeps {
     originChannel: string
     originThread: string
   }) => boolean | Promise<boolean>
+  /** Resolve a file the caller RECEIVED here, by the name it read in the `[attached: …]` marker,
+   *  to daemon-local bytes — this is what lets an image the agent can only SEE be passed on. The
+   *  bytes are the bounded copy already kept for transcript replay, so a forward re-fetches
+   *  nothing, never routes bytes through the model, and can be lower-resolution than the original.
+   *  Scoped to the caller's own (channel, thread). Absent with no daemon ⇒ no file can be named. */
+  resolveAttachment?: (
+    ctx: SessionContext,
+    name: string
+  ) => Promise<{ bytes: Buffer; name: string; mimeType: string } | undefined>
   /** Record an agent-sent message into the session transcript. */
   recordOutbound: (
     ctx: SessionContext,
@@ -393,6 +408,7 @@ export async function sendMessage(
   const { toAgent, needsReply } = parseAgentTarget(args.toAgent)
   const toUsers = parseUserTargets(args.toUser)
   const channel = parseArgs(channelField, args.channel)
+  const attachmentName = parseArgs(attachmentField, args.attachment)
   if (toAgent === undefined && toUsers === undefined && channel === undefined) {
     throw new Error(
       `sendMessage: \`toAgent\`, \`toUser\`, or \`channel\` must select the target. ${SEND_MESSAGE_TARGET_HELP}`
@@ -463,10 +479,11 @@ export async function sendMessage(
   // BEFORE any peer wake (B) so the wake can anchor to the post a human sees — that
   // thread is the post's own `ts`, which only exists after the send.
   let post: { platform: string; integrationId: string; channel: string; thread: string | null; ts: string } | undefined
-  // Set when the root post just forked a conversation this agent is already part of — see the
-  // notice built below. Surfaced in the tool RESULT, where the agent reads it inside the same
-  // turn it made the call, and can still answer the right way.
-  let notice: string | undefined
+  // What the agent must know inside THIS turn: a root post that forked a conversation it is
+  // already in, or a file share that landed without all of its caption. Surfaced in the tool
+  // RESULT, where it is read in time to still answer the right way. Collected rather than
+  // assigned because a forward can raise both.
+  const notices: string[] = []
   // The thread the peer wake / new session anchors to: the root post's own `ts`
   // (undefined if no real ts came back — the peer then falls back to messageAgent's
   // default thread).
@@ -494,6 +511,25 @@ export async function sendMessage(
       parseArgs(platformField, args.platform) ?? (directMessage ? directMessagePlatformFor(ctx.platform) : ctx.platform)
     const wantIntegrationId = parseArgs(integrationIdField, args.integrationId)
     const { gw, integrationId: targetId } = resolveGatewayForPlatform(ctx, deps, wantPlatform, wantIntegrationId)
+    // Resolved before anything is posted: a bad name or a fileless target fails the whole send.
+    let attachment: { bytes: Buffer; name: string; mimeType: string } | undefined
+    if (attachmentName !== undefined) {
+      if (!gw.uploadFile) {
+        throw new Error(`sendMessage: the selected ${platformLabel(wantPlatform)} integration cannot post files`)
+      }
+      attachment = await deps.resolveAttachment?.(ctx, attachmentName)
+      // Not necessarily a wrong name: the `[attached: …]` marker lists EVERY file on a
+      // message, while only the one retained image is forwardable. Saying "no such name"
+      // would send the agent back to retry a name it read correctly.
+      if (!attachment) {
+        throw new Error(
+          `sendMessage: "${attachmentName}" is not forwardable from this conversation. Only a shared ` +
+            'IMAGE is retained for forwarding — a document, a second image on the same message, or an ' +
+            'image too large to retain is not, even though the `[attached: …]` marker still lists it. ' +
+            'Check the spelling once; if it matches, this file cannot be forwarded and retrying will not help.'
+        )
+      }
+    }
     let body = message
     if (toUsers !== undefined) {
       // Whole `toUser` mode — DM and the channel-root mention form alike — is gated on
@@ -552,7 +588,23 @@ export async function sendMessage(
           }
         : {})
     }
-    providerPostId = await gw.postMessage(postChannel, body, undefined, identity)
+    // A file share IS the message — the caption is `body`, not a second post. It anchors like
+    // any other post where the platform answers with a message id; Slack's does not, and that
+    // arm degrades on the path a gateway returning no id already takes. A failed share is
+    // raised rather than reported as sent: nothing reached the conversation.
+    if (attachment) {
+      const shared = await gw.uploadFile?.(postChannel, attachment, body, undefined, identity)
+      // `undefined` is the port's "nothing was posted" — the only case that may claim so.
+      if (!shared) {
+        throw new Error(
+          `sendMessage: ${platformLabel(wantPlatform)} rejected the file "${attachment.name}" — nothing was sent.`
+        )
+      }
+      providerPostId = shared.messageId
+      if (shared.warning) notices.push(`This send partly failed: ${shared.warning}.`)
+    } else {
+      providerPostId = await gw.postMessage(postChannel, body, undefined, identity)
+    }
     const ts = providerPostId ?? `local-${deps.now()}`
     // Whether the target is a DM decides the thread key on the platforms that keep a DM as one
     // continuous conversation, and no id carries that — ask the platform, once, and only where
@@ -628,15 +680,17 @@ export async function sendMessage(
             })
           : undefined
       if (relation?.kind === 'parent') {
-        notice =
+        notices.push(
           `This posted at the ROOT of the conversation your parent session occupies, so it starts a separate ` +
-          `context there instead of answering — the conversation waiting on you did not receive it. To answer ` +
-          `it, call sendMessage with {"sessionId":"${relation.sessionId}"}.`
+            `context there instead of answering — the conversation waiting on you did not receive it. To answer ` +
+            `it, call sendMessage with {"sessionId":"${relation.sessionId}"}.`
+        )
       } else if (relation?.kind === 'self') {
-        notice =
+        notices.push(
           `This posted at the ROOT of the conversation this session is already in, so it starts a separate ` +
-          `context instead of continuing it. Your ordinary reply for this turn already reaches this conversation ` +
-          `— no sendMessage needed.`
+            `context instead of continuing it. Your ordinary reply for this turn already reaches this ` +
+            `conversation — no sendMessage needed.`
+        )
       }
     }
   }
@@ -689,6 +743,6 @@ export async function sendMessage(
             'Message delivered. The agent will reply by waking this session in a later turn. End this turn and wait; do not retry or ask it to repeat the work.'
         }
       : {}),
-    ...(notice !== undefined ? { notice } : {})
+    ...(notices.length ? { notice: notices.join(' ') } : {})
   }
 }

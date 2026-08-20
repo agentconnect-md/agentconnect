@@ -11,6 +11,7 @@ import { githubActionsReporters } from '../../scripts/vitest-github-reporters.js
 export const MOCKING_TESTS = [
   'test/cp/cp-integration.test.ts',
   'test/daemon-cp-onboarding.test.ts',
+  'test/slack-upload-file.test.ts',
   'test/telegram-connection.test.ts',
   'test/workspace-git.test.ts',
   'test/workspace.test.ts'

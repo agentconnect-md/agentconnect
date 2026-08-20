@@ -181,7 +181,14 @@ describe('toolsForIntegrations', () => {
     const user = sendTargetBranch([slackInt], 'toUser')
     expect(user.required).toEqual(['toUser', 'message'])
     expect(user.additionalProperties).toBe(false)
-    expect(Object.keys(user.properties)).toEqual(['toUser', 'channel', 'platform', 'integrationId', 'message'])
+    expect(Object.keys(user.properties)).toEqual([
+      'toUser',
+      'channel',
+      'platform',
+      'integrationId',
+      'attachment',
+      'message'
+    ])
     expect(user.description).toContain('dm')
     expect(user.description).toContain('channel-root')
     expect(user.properties.toUser!.oneOf).toMatchObject([
@@ -192,7 +199,7 @@ describe('toolsForIntegrations', () => {
     const channel = sendTargetBranch([slackInt], 'channel')
     expect(channel.required).toEqual(['channel', 'message'])
     expect(channel.additionalProperties).toBe(false)
-    expect(Object.keys(channel.properties)).toEqual(['channel', 'platform', 'integrationId', 'message'])
+    expect(Object.keys(channel.properties)).toEqual(['channel', 'platform', 'integrationId', 'attachment', 'message'])
     expect(channel.description).toContain('without waking an agent or @-mentioning a human')
 
     const session = sendTargetBranch([slackInt], 'sessionId')
