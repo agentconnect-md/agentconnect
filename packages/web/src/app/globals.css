@@ -3180,6 +3180,9 @@
    Copy-pulse rings are hidden, and the manifest tile keeps its (static) highlight. The
    bot-setup walkthroughs stop auto-advancing (see their interval) and keep a static highlight. */
 @media (prefers-reduced-motion: reduce) {
+  .card-flash {
+    animation: none;
+  }
   .step-blink {
     animation: none;
   }

@@ -173,4 +173,15 @@ describe('fmtDecimalUsd', () => {
     expect(fmtDecimalUsd('0.4821')).toBe('$0.4821')
     expect(fmtDecimalUsd('0.000098')).toBe('$0.000098')
   })
+
+  it('pads back to cents so $0.10 lines up with fmtMicroUsd amounts in the same column', () => {
+    expect(fmtDecimalUsd('0.10')).toBe('$0.10')
+    expect(fmtDecimalUsd('0.5')).toBe('$0.50')
+    expect(fmtDecimalUsd('0.2')).toBe('$0.20')
+  })
+
+  it('keeps the sign outside the symbol, matching fmtMicroUsd', () => {
+    expect(fmtDecimalUsd('-0.5')).toBe('-$0.50')
+    expect(fmtDecimalUsd('-0.001234')).toBe('-$0.001234')
+  })
 })

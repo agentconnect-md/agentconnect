@@ -274,8 +274,13 @@ export function fmtDecimalUsd(amount: string): string {
   if (Math.abs(n) >= 1) return fmtMicroUsd(n * MICRO_PER_USD)
   const zeros = /^-?0\.(0*)[1-9]/.exec(amount)
   if (!zeros) return fmtMicroUsd(n * MICRO_PER_USD)
-  const out = n.toFixed(Math.min(zeros[1]!.length + 4, 18)).replace(/0+$/, '')
-  return `$${out.endsWith('.') ? `${out}00` : out}`
+  // Fraction padded back to at least cents so $0.10 lines up with fmtMicroUsd's
+  // $0.50 in the same column; the sign stays outside the symbol for the same reason.
+  const out = Math.abs(n)
+    .toFixed(Math.min(zeros[1]!.length + 4, 18))
+    .replace(/0+$/, '')
+  const [int, frac = ''] = out.split('.')
+  return `${n < 0 ? '-' : ''}$${int}.${frac.padEnd(2, '0')}`
 }
 
 /** Render microUSD as dollars. Display only — never a step in a calculation. */
