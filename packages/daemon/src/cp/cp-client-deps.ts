@@ -26,7 +26,6 @@ import { createAgentWaker } from './agent-wake.js'
 import { createMemoryReader, type AgentMemoryAdminResolver } from './memory-reader.js'
 import { createDreamReader } from './dream-reader.js'
 import { createLocalSkillsReader } from './local-skills-reader.js'
-import { gitCredentialEnv } from '../workspace/git-injection.js'
 import type { CpAgentRegistry } from './cp-agent-registry.js'
 import type { CpIntegrationRegistry } from './cp-integration-registry.js'
 import type { CpCronRegistry } from './cp-cron.js'
@@ -164,7 +163,7 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
     // Derived from the SCOPE's own target, not the primary workspace's credential mode: a manual
     // GitHub workspace may authorize an App-covered repository, whose secondary root then needs the
     // helper the primary does not. The helper itself is URL-routed, so it only answers for that root.
-    (id, repo) => (workspaceScope.usesGithubApp(id, repo) ? gitCredentialEnv(id) : {}),
+    (id, repo) => (workspaceScope.usesGithubApp(id, repo) ? id : undefined),
     workspaceScope.target,
     // Registered on `register/ok` only, and reset by every reconnect — a console commit is
     // refused as data whenever it is absent (workspace-git.ts explains why).

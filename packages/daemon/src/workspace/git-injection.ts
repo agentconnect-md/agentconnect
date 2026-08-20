@@ -232,41 +232,23 @@ export function workspaceGitEnvBase(repository?: string): Record<string, string>
 }
 
 /**
- * Bind a validated pull URL to an unguessable daemon-owned remote name.
- * Git otherwise resolves a URL-shaped argument as a checkout-defined remote
- * name first, which could replace the authorized target through remote.*.url.
- */
-export function workspaceGitPullTarget(repository: string): {
-  remote: string
-  env: Record<string, string>
-} {
-  const normalized = normalizeGitCloneUrl(repository)
-  const remote = `agentconnect-${randomUUID()}`
-  const pairs = [
-    ...workspaceGitConfigPairs(normalized),
-    // The unguessable name cannot collide with a checkout-owned remote after
-    // the local config audit. Do not prepend an empty value: Git treats it as
-    // the first fetch URL and fails before trying the authorized target.
-    [`remote.${remote}.url`, normalized] as const,
-    [`remote.${remote}.proxy`, ''] as const
-  ]
-  const env = workspaceGitProcessEnv()
-  env.GIT_ALLOW_PROTOCOL = 'https:ssh'
-  return { remote, env: { ...env, ...gitConfigEnv(pairs) } }
-}
-
-/**
- * Bind a validated PUSH URL to an unguessable daemon-owned remote name, like
- * {@link workspaceGitPullTarget}, plus the credential channel a push actually needs.
+ * Bind a validated remote URL to an unguessable daemon-owned remote name, plus the credential
+ * channel reaching it needs. Git otherwise resolves a URL-shaped argument as a checkout-defined
+ * remote name first, which could replace the authorized target through remote.*.url.
  *
  * The helper pairs must come AFTER `workspaceGitConfigPairs`: its `credential.helper=''` is a
  * command-scope reset of the whole helper list, so a helper pinned earlier — including the
  * repo-local `credential.https://github.com.helper` written post-clone — never runs. `cloneGitEnv`
- * survives for exactly this reason; a push has to re-add the pointer the same way or it reaches
- * the remote with no credentials at all. `credentialAgentId` is omitted for a workspace with no
- * github-app credential, which then pushes on whatever ambient (ssh) auth the host provides.
+ * survives for exactly this reason. FETCH needs the pointer as much as push does: a public remote
+ * answers an anonymous request, so a pull target that only carried the helper's env (identity and
+ * capability, which nothing invokes without the config line) looked healthy against a public remote
+ * and failed every remote that DEMANDS credentials with "could not read Username" — which is how a
+ * formal review of such a repository lost its exact checkout and degraded to revision-only inspection.
+ * One function for both directions so the two cannot drift apart again. `credentialAgentId` is
+ * omitted for a workspace with no github-app credential, which then reaches the remote on whatever
+ * ambient (ssh) auth the host provides.
  */
-export function workspaceGitPushTarget(
+export function workspaceGitRemoteTarget(
   repository: string,
   credentialAgentId?: string
 ): { remote: string; env: Record<string, string> } {
@@ -275,6 +257,7 @@ export function workspaceGitPushTarget(
   const pairs = [
     ...workspaceGitConfigPairs(normalized),
     ...(credentialAgentId ? credentialConfigPairs(credentialAgentId) : []),
+    // Never an empty value first: Git reads it as the first fetch URL and fails before the authorized target.
     [`remote.${remote}.url`, normalized] as const,
     [`remote.${remote}.proxy`, ''] as const
   ]

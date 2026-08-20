@@ -37,8 +37,8 @@ initGitInjection({
 // The shim dir outlives every fixture, so it is reclaimed once rather than per test.
 afterAll(() => rmSync(join(SHIM, '..'), { recursive: true, force: true }))
 
-/** What the daemon passes for a github-app git-repo agent (gitCredentialEnv's pair). */
-const gitcredEnv = () => ({ AC_GITCRED_CAPABILITY: 'cap-a', AC_GITCRED_AGENT: 'a' })
+/** What the daemon passes for a github-app git-repo agent: the identity its credential helper answers as. */
+const gitcredAgent = () => 'a'
 
 /** Setup-only env: the daemon's own local policy, widened to `file:` so a fixture can build a bare
  *  remote (daemon policy forbids the protocol, which is why the seam needs the runner substitution
@@ -300,7 +300,7 @@ describe('workspace git commit (real repo, real commit)', () => {
     const seam = createWorkspaceGit(
       workspaces,
       async () => dir,
-      () => ({}),
+      () => undefined,
       () => githubTarget(),
       () => IDENTITY
     )
@@ -328,7 +328,7 @@ describe('workspace git commit (real repo, real commit)', () => {
     const seam = createWorkspaceGit(
       workspaces,
       async () => dir,
-      () => ({}),
+      () => undefined,
       () => githubTarget(),
       () => IDENTITY
     )
@@ -368,7 +368,7 @@ describe('workspace git commit (real repo, real commit)', () => {
     const seam = createWorkspaceGit(
       workspaces,
       async () => dir,
-      () => ({}),
+      () => undefined,
       () => githubTarget(),
       () => IDENTITY
     )
@@ -388,7 +388,7 @@ describe('workspace git commit (real repo, real commit)', () => {
     const scratchSeam = createWorkspaceGit(
       workspaces,
       async () => scratch,
-      () => ({}),
+      () => undefined,
       () => undefined,
       () => IDENTITY
     )
@@ -405,7 +405,7 @@ describe('workspace git commit (real repo, real commit)', () => {
     const seam = createWorkspaceGit(
       workspaces,
       async () => dir,
-      () => ({}),
+      () => undefined,
       () => githubTarget(),
       () => IDENTITY
     )
@@ -430,7 +430,7 @@ describe('workspace git commit (real repo, real commit)', () => {
     const seam = createWorkspaceGit(
       workspaces,
       async () => dir,
-      () => ({}),
+      () => undefined,
       () => githubTarget(),
       () => IDENTITY
     )
@@ -450,7 +450,7 @@ describe('workspace git push (real repo; local bare remote through the runner se
     const seam = createWorkspaceGit(
       workspaces,
       async () => dir,
-      gitcredEnv,
+      gitcredAgent,
       () => githubTarget(),
       () => IDENTITY
     )
@@ -512,7 +512,7 @@ describe('workspace git push (real repo; local bare remote through the runner se
     const seam = createWorkspaceGit(
       workspaces,
       async () => dir,
-      () => ({}),
+      () => undefined,
       () => githubTarget(),
       () => IDENTITY
     )
@@ -551,7 +551,7 @@ describe('workspace git push preconditions (data, not errors)', () => {
     createWorkspaceGit(
       workspaces,
       async () => dir,
-      () => ({}),
+      () => undefined,
       () => githubTarget(),
       () => IDENTITY
     )
@@ -628,7 +628,7 @@ describe('workspace git push preconditions (data, not errors)', () => {
     const seam = createWorkspaceGit(
       workspaces,
       async () => dir,
-      gitcredEnv,
+      gitcredAgent,
       () => githubTarget(),
       () => IDENTITY
     )

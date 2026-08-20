@@ -103,7 +103,7 @@ beforeAll(() => {
     runtimeRootOf: () => undefined
   })
   reader = createWorkspaceReader(workspaces, scope.location, (_id, write) => write())
-  seam = createWorkspaceGit(workspaces, scope.gitRoot, () => ({}), scope.target)
+  seam = createWorkspaceGit(workspaces, scope.gitRoot, () => undefined, scope.target)
 })
 
 afterAll(() => rmSync(base, { recursive: true, force: true }))
