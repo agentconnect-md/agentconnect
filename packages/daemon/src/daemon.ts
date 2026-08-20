@@ -4133,7 +4133,7 @@ export class Daemon {
     // Give the dream on-demand tools to browse existing org knowledge/skills
     // (findKnowledge / listKnowledge / listOrgSkills) so it can choose update
     // over duplicate-create — instead of pre-stuffing that context into the
-    // prompt. Read-only, org-scoped from the trusted agentId in this context.
+    // prompt. Those reads are org-scoped from the trusted agentId in this context.
     // The token is unregistered in finally so a leaked token cannot outlive the
     // one-off dream host.
     // The dream writes its proposal through the SAME memory tools an agent uses,

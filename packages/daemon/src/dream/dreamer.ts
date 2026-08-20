@@ -100,9 +100,7 @@ export interface DreamExplorationPromptInput {
   dismissedSkills?: string[]
 }
 
-/** Same topic-name discipline as the distiller: lowercase kebab-case .md files. */
-/** The filename shape a dream's topics must take. Enforced on the memory-tool
- *  binding now that the proposal no longer carries file entries to validate. */
+/** Same topic discipline as the distiller, enforced on the dream's memory-tool binding. */
 export const DREAM_TOPIC_RE = /^[a-z0-9][a-z0-9-]{0,62}\.md$/
 
 /** Bounded proposal: a store rebuild, not a dump. */
@@ -158,7 +156,7 @@ Rules:
 ${MEMORY_FORMAT_GUIDANCE}
 
 - Never include credentials, tokens, or other secrets.
-- Return JSON only with four explicit categories:
+- Return JSON only with three explicit categories:
   {"agentSkills":[],"organizationKnowledge":[],"organizationSkills":[]}.
 - WRITE the rebuilt store with \`writeMemory\`, one call per topic file. Your JSON reply carries ONLY the review-queue proposals above — the memory itself is what you wrote.
 - Those writes land in an EMPTY staging area that REPLACES the live store if a human adopts it: write every file you are keeping, copying an unchanged one byte-for-byte from the snapshot. A file you never write is deleted — that is how you prune.

@@ -317,6 +317,37 @@ describe('DreamRunner pipeline', () => {
     expect(await readMemoryFile(local(dir), 'prefs.md')).toBe('')
   })
 
+  it('fails a dream that wrote no memory rather than staging a store that deletes every topic', async () => {
+    // The store is what the model wrote, so a parseable reply with zero writes is not
+    // an empty proposal — it is no proposal. Completing it would hand auto-adopt an
+    // index-only store to install over the live one.
+    const { dir, store, runner } = await setup({ stagedFiles: null })
+    const started = await runner.start('a1', { trigger: 'manual' })
+    const done = await settle(store, started.dreamId)
+    expect(done.status).toBe('failed')
+    expect(done.error?.type).toBe('empty_proposal')
+    expect(await runner.stagedFiles('a1', started.dreamId)).toBeNull()
+    expect(await readMemoryFile(local(dir), 'prefs.md')).toContain('uses tabs')
+  })
+
+  it('still completes an empty rebuild when the live store had nothing to lose', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ac-dream-'))
+    const fs = local(dir)
+    await ensureMemory(fs, 'bot')
+    const store = new FakeStore()
+    const runner = new DreamRunner({
+      agentDirByAgent: (id) => (id === 'a1' ? dir : undefined),
+      memoryFsFor: (id) => (id === 'a1' ? fs : undefined),
+      dreamingPolicyFor: () => ({ enabled: true }),
+      operationPolicy: 'test-only',
+      store,
+      extract: async () => ({ output: PROPOSAL }),
+      log: silent
+    })
+    const started = await runner.start('a1', { trigger: 'manual' })
+    expect((await settle(store, started.dreamId)).status).toBe('completed')
+  })
+
   it('mines every session the agent participated in, without a capture-visibility filter (#36)', async () => {
     // A dream distills all of the agent's own sessions — including DM / webchat /
     // external (GitHub) / A2A ones that the per-turn capture gate marks private.
@@ -485,7 +516,10 @@ describe('DreamRunner pipeline', () => {
       dreamingPolicyFor: () => ({ enabled: true }),
       operationPolicy: 'test-only',
       store,
-      extract: async () => ({ output: PROPOSAL }),
+      extract: async (_agentId, _systemPrompt, _prompt, _signal, context) => {
+        await writeStagedProposal(context.stagedStore)
+        return { output: PROPOSAL }
+      },
       onStaged: async (agentId, dreamId) => {
         await runner.cancel(agentId, dreamId) // cancel after staging, before completion
       },

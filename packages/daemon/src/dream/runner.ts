@@ -742,6 +742,29 @@ export class DreamRunner {
         return
       }
 
+      // The store is what the model WROTE, so an extraction that never called
+      // `writeMemory` — a broken tool surface, refused writes, a turn that ended
+      // early — produced no store proposal at all, only a parseable reply. Staging
+      // it would complete an index-only store that adoption, auto-adoption above
+      // all, installs over every live topic. Treat it as no proposal.
+      const stagedTopics = (await fs.readdir(join(base, MEMORY_DIRNAME))).filter(
+        (entry) => entry.kind === 'file' && entry.name !== MEMORY_INDEX && stagedPathOk(entry.name)
+      ).length
+      const liveTopics = files.filter((file) => file.name !== MEMORY_INDEX).length
+      if (stagedTopics === 0 && liveTopics > 0) {
+        await this.clearStaging(agentId, dreamId)
+        await this.finish(agentId, dreamId, {
+          status: 'failed',
+          error: {
+            type: 'empty_proposal',
+            message: `the dream wrote no memory files; refusing a rebuild that would delete ${liveTopics} existing topic(s)`
+          },
+          ...execution,
+          usage
+        })
+        return
+      }
+
       if (!mineSkills) {
         proposal.skills = []
         proposal.organizationSkills = []
@@ -755,9 +778,6 @@ export class DreamRunner {
         await this.clearStaging(agentId, dreamId)
         return
       }
-      // Count before completing: every await after the status flip widens the
-      // window where the job reads completed but the reservation is still held.
-      const stagedCount = (await fs.readdir(join(base, MEMORY_DIRNAME))).filter((e) => e.kind === 'file').length
       await this.finish(agentId, dreamId, {
         status: 'completed',
         ...execution,
@@ -780,7 +800,7 @@ export class DreamRunner {
           `dream ${dreamId}: suggestion inventory sync deferred (${err instanceof Error ? err.name : 'unknown'})`
         )
       })
-      this.deps.log.info(`dream ${dreamId} completed for agent ${agentId} (${stagedCount} staged files)`)
+      this.deps.log.info(`dream ${dreamId} completed for agent ${agentId} (${stagedTopics} staged topics)`)
     } catch (err) {
       this.deps.log.warn(`dream ${dreamId} failed for agent ${agentId}: ${err instanceof Error ? err.name : 'unknown'}`)
       // Fail BOTH pending and running dreams terminally — a failure before the

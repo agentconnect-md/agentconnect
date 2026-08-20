@@ -258,8 +258,11 @@ interface DreamRecord {
    human reviews is byte-for-byte the one adoption installs. Parse the returned
    JSON (§5) for the review queue only — skills and organization suggestions,
    validated per §7 — and stage candidates to
-   `memory-dreams/<dreamId>/skills/<name>/`. A parse failure ⇒ `failed`, and the
-   staging of a run that never completes is dropped.
+   `memory-dreams/<dreamId>/skills/<name>/`. A parse failure ⇒ `failed`, and so
+   does a run that wrote no topic file while the live store had some: the store
+   is what the model wrote, so writing nothing is no proposal at all, not an
+   empty one — completing it would let adoption install an index-only store over
+   a live one. The staging of a run that never completes is dropped.
 5. **Finish.** Mark `completed`; emit `memory.dream.completed` on the
    evaluation-events channel (alongside the existing `memory.capture.*`
    events). If `autoAdopt` is set, run §6 adoption for the store — never for
