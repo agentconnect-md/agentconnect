@@ -185,3 +185,55 @@ describe('the distillation binding is its own authorization', () => {
     expect((calls[1]![0] as { channelKey?: string }).channelKey).toBe('chan-B')
   })
 })
+
+describe('a dream-bound session writing its staged store', () => {
+  const dreamCtx = (over: Partial<SessionContext['memoryBinding']> = {}): SessionContext => ({
+    agentId: 'bot-a',
+    platform: 'dream',
+    channel: 'memory',
+    thread: 'drm-1',
+    isDm: false,
+    tools: [],
+    memoryBinding: {
+      source: 'dream',
+      scope: { agentId: 'bot-a', root: { key: 'staged' } as never },
+      topicPattern: /^[a-z0-9][a-z0-9-]{0,62}\.md$/,
+      maxTopics: 2,
+      ...over
+    }
+  })
+
+  it('writes to the pinned staged store, recorded as `dream`', async () => {
+    const d = deps(true)
+    await executeTool(dreamCtx(), 'writeMemory', { path: 'deploys.md', content: '- x' }, d)
+    const [scope, , , , source] = (d.memory.write as unknown as { mock: { calls: unknown[][] } }).mock.calls[0]!
+    expect((scope as { root?: unknown }).root).toEqual({ key: 'staged' })
+    expect(source).toBe('dream')
+  })
+
+  it('keeps the lowercase-kebab filename rule the proposal format used to enforce', async () => {
+    const d = deps(true)
+    await expect(executeTool(dreamCtx(), 'writeMemory', { path: 'Bad_Name.md', content: 'x' }, d)).rejects.toThrow(
+      /invalid memory path/
+    )
+    expect(d.memory.write).not.toHaveBeenCalled()
+  })
+
+  it('caps DISTINCT topics, while letting one topic be rewritten freely', async () => {
+    const d = deps(true)
+    const ctx = dreamCtx()
+    await executeTool(ctx, 'writeMemory', { path: 'one.md', content: 'a' }, d)
+    await executeTool(ctx, 'writeMemory', { path: 'one.md', content: 'a2' }, d) // same topic, fine
+    await executeTool(ctx, 'writeMemory', { path: 'two.md', content: 'b' }, d)
+    await expect(executeTool(ctx, 'writeMemory', { path: 'three.md', content: 'c' }, d)).rejects.toThrow(
+      /topic limit reached/
+    )
+    expect((d.memory.write as unknown as { mock: { calls: unknown[][] } }).mock.calls).toHaveLength(3)
+  })
+
+  it('leaves an unbound turn unconstrained', async () => {
+    const d = deps(true)
+    await executeTool(ctx(), 'writeMemory', { path: 'Any_Name.md', content: 'x' }, d)
+    expect(d.memory.write).toHaveBeenCalled()
+  })
+})

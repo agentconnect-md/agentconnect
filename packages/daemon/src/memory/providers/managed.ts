@@ -63,6 +63,7 @@ export class ManagedMemoryProvider implements MemoryProvider {
    *  agent base. All WRITES (tools + distillation) target this so a channel's
    *  content never lands in another channel or the shared base (#653). */
   private activeRoot(scope: MemoryScope): MemoryFs {
+    if (scope.root) return scope.root
     const base = this.rootFor(scope.agentId)
     return scope.channelKey ? channelMemoryRoot(base, scope.channelKey) : base
   }
@@ -71,6 +72,9 @@ export class ManagedMemoryProvider implements MemoryProvider {
    *  scoped so the channel layer shadows the shared base per file; `[base]`
    *  otherwise. */
   private readRoots(scope: MemoryScope): MemoryFs[] {
+    // An explicit store stands alone: a dream's staged proposal must not read through
+    // to the live store, or a reviewer would see files the proposal does not contain.
+    if (scope.root) return [scope.root]
     const base = this.rootFor(scope.agentId)
     return scope.channelKey ? [channelMemoryRoot(base, scope.channelKey), base] : [base]
   }
