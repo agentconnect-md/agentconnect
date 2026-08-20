@@ -29,6 +29,7 @@ degraded operation, and fleet control.
 - **Subprotocol:** `agentconnect.v1` (sent in `Sec-WebSocket-Protocol`). The CP echoes it on accept; mismatch → close `4400`.
 - **Encoding:** UTF-8 **JSON text frames**. One protocol envelope per WS frame. Binary frames are reserved (future MsgPack negotiation) and currently rejected with close `4415`.
 - **Validation:** every payload is a **zod**-discriminated union keyed on `type`. Unknown `type` from a peer → `error` reply with `code: "UNKNOWN_FRAME"` (not a connection close — forward-compat).
+- **Unknown KEYS are forward-compat too, and asymmetrically so.** The daemon reads this socket with the tolerant reader (`decodeCpEnvelope`, over `packages/protocol/src/tolerant.ts`): every object in a CP-authored payload strips a key it does not know instead of failing the frame. That is not a nicety — the CP upgrades first, so one added optional field inside a `.strict()` object nested anywhere in `register/ok` fails the handshake, identically, on every retry, until the daemon is upgraded too. The CP reads the daemon with the strict reader (`decodeEnvelope`), where refusing an unknown key is an input check on what a peer sends in. Field-level validation — types, required fields, refinements — is identical on both sides.
 - **Size:** soft cap **256 KiB** per frame. Anything larger (e.g. a big facts blob) must be chunked or moved off-band (attachment/object-store, see §3.2). Over cap → `error` `FRAME_TOO_LARGE`.
 - **Compression:** `permessage-deflate` enabled if both sides offer it; never assumed.
 

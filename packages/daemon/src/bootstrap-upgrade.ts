@@ -5,7 +5,7 @@ import {
   CP_SUBPROTOCOL,
   CP_WS_PATH,
   DAEMON_BOOTSTRAP_PROTOCOL_VERSION,
-  decodeEnvelope,
+  decodeCpEnvelope,
   RESERVED_RESTART_CODE
 } from '@agentconnect.md/protocol'
 import { ClientTransport, ReqRep, systemClock, type Transport } from '@agentconnect.md/connection'
@@ -107,7 +107,7 @@ export async function runBootstrapUpgrade(
   try {
     transport = await deps.connect(cp.url)
     transport.onMessage((text) => {
-      const decoded = decodeEnvelope(text)
+      const decoded = decodeCpEnvelope(text)
       if (decoded.ok && decoded.frame.corr) correlator.settle(decoded.frame)
     })
     transport.onClose(() => correlator.rejectAll(new Error('bootstrap connection closed')))

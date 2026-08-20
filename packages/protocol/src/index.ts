@@ -106,8 +106,11 @@ export function isFrame<T extends FrameType>(type: T) {
 export { isFrameType as isKnownFrameType }
 
 // ── wire codec (shared by daemon + control-plane) ──
-export { decodeEnvelope, buildEnvelope, encode, MAX_FRAME_BYTES } from './codec.js'
+export { decodeEnvelope, decodeCpEnvelope, buildEnvelope, encode, MAX_FRAME_BYTES } from './codec.js'
 export type { DecodeResult, BuildOpts, InboundControlExt } from './codec.js'
+
+// ── tolerant reading of a peer-authored payload, for a wire that needs its own reader ──
+export { tolerantReader, tolerantSchemas } from './tolerant.js'
 
 // ── which frames carry an organization (k8s-daemon-pool.md M4) ──
 export {

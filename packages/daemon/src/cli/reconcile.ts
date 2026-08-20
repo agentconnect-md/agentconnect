@@ -24,7 +24,7 @@ import {
   CP_SUBPROTOCOL,
   CP_URL_ENV,
   CP_WS_PATH,
-  decodeEnvelope
+  decodeCpEnvelope
 } from '@agentconnect.md/protocol'
 import { ClientTransport, ReqRep, systemClock, type Transport } from '@agentconnect.md/connection'
 import { K8sHttp, loadInClusterConfig } from '@agentconnect.md/k8s-client'
@@ -144,7 +144,7 @@ export async function connectObserver(url: string, seams: ObserverSeams = {}): P
     })
   try {
     transport.onMessage((text) => {
-      const decoded = decodeEnvelope(text)
+      const decoded = decodeCpEnvelope(text)
       if (decoded.ok && decoded.frame.corr) correlator.settle(decoded.frame)
     })
     transport.onClose(() => correlator.rejectAll(new Error('control-plane connection closed')))
