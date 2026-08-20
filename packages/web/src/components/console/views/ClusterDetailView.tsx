@@ -22,11 +22,9 @@
 
 import { useMemo } from 'react'
 import { useRouter } from 'next/navigation'
-import useSWR from 'swr'
 import { isPoolPlacementKind, poolFleetStatus, poolLabel, status, type DaemonRow } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
-import { consoleKeys } from '@/lib/swr-keys'
-import { fetchBillingAccount, fmtMicroUsd } from '@/lib/billing-api'
+import { fmtMicroUsd } from '@/lib/billing-api'
 import { featureFlagEnabled } from '@/lib/feature-flags'
 import { NotFound } from '@/components/console/NotFound'
 import {
@@ -206,7 +204,7 @@ export default function ClusterDetailView() {
             report. Neither borrows the other's figure — a plan's included usage cannot be
             derived from load telemetry, and a self-hoster is billed nothing here. */}
         {managed ? (
-          billingOffered && <CloudBillingCard />
+          billingOffered && <CloudCreditsCard />
         ) : (
           <ClusterCapacityCard {...{ capacityLabel, capacityPct, unbounded, cpu, mem }} />
         )}
@@ -286,39 +284,106 @@ function MetaItem({ icon, text, mono = false }: { icon: string; text: string; mo
   )
 }
 
-// What Cloud costs, on the one figure billing stands behind. NOT the design's "included usage"
-// bar: this deployment sells prepaid credit, so there is no quota to fill a track with and
-// drawing one from load telemetry would read as a real ceiling. Shares the Billing page's SWR key.
-function CloudBillingCard() {
-  const { activeOrg } = useOrgs()
-  const orgId = activeOrg?.id ?? null
-  const account = useSWR(orgId ? consoleKeys.billingAccount(orgId) : null, () => fetchBillingAccount(orgId!))
+// PLACEHOLDER. Every figure and bar below is sample data, not this organization's money.
+//
+// The billing service cannot serve this card yet: it exposes a balance and a transaction feed
+// whose debits carry a `period` of `YYYY-MM`, so they are MONTHLY aggregates and no daily spend
+// can be recovered from them. Rather than draw a real-looking chart from the wrong numbers, the
+// card ships with its shape settled and its data openly fake, badged `sample` so nobody reads it
+// as a statement. Wiring it up is a mechanical swap once the service can answer:
+//
+//   BALANCE          → `fetchBillingAccount(orgId).balanceMicro` (already available today)
+//   TOPPED UP · 30D  → the credit rows in the transaction feed, summed over the window
+//   SPENT · 30D      → needs a DAILY spend series the service does not expose yet
+//   the bars         → the same daily series, with credits placed on the day they posted
+//
+// Scope matters when that lands: the spend has to cover only what ran on Cloud, or the card
+// contradicts this page's own footnote about agents on daemons you connected yourself.
+const SAMPLE_TOPPED_UP_MICRO = 1_800_000_000
+const SAMPLE_TOP_UPS = 3
+const SAMPLE_SPENT_MICRO = 1_412_600_000
+const SAMPLE_BALANCE_MICRO = 387_400_000
+const SAMPLE_DAYS = 30
+// Daily spend as cents, plus which days carried a top-up. Fixed, never generated: a random walk
+// would redraw on every render and read as live data.
+const SAMPLE_SPEND = [
+  3_780, 4_240, 3_960, 4_680, 5_120, 3_540, 2_980, 4_320, 5_040, 5_480, 6_120, 5_260, 4_880, 3_240, 2_760, 5_180, 5_720,
+  6_040, 6_680, 5_840, 4_620, 3_880, 3_420, 5_560, 6_240, 6_920, 5_380, 4_740, 5_020, 5_960
+]
+const SAMPLE_TOP_UP_DAYS = new Set([4, 14, 25])
+
+function CloudCreditsCard() {
+  const peak = Math.max(...SAMPLE_SPEND)
 
   return (
     <div className="card">
       <div className="cardhead">
-        <span className="cardtitle">Billing</span>
-        <span className="mono ml-auto text-[11px] text-(--text-tertiary)">prepaid balance</span>
+        <span className="cardtitle">Credits</span>
+        <span
+          className="badge bg-(--surface-active) text-(--text-tertiary)"
+          title="Sample data — the billing service cannot serve this card yet"
+        >
+          sample
+        </span>
+        <span className="mono ml-auto text-[11px] text-(--text-tertiary)">last 30 days</span>
       </div>
-      <div className="px-4 py-[15px]">
-        {account.error ? (
-          // Not only unreachability: `assertAccount` throws BillingShapeError on an unexpected
-          // shape and lands here too — likely, since this console deploys ahead of the pinned
-          // billing image. So the label stays neutral and the service's own message says which.
-          <div className="flex items-start gap-2 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary)">
-            <Icon name="triangle-alert" size={15} color="var(--status-error)" />
-            Balance unavailable — {(account.error as Error).message}
+
+      <div className="flex flex-wrap items-start gap-x-4 gap-y-3 px-4 pt-[15px] pb-[13px] desktop:gap-x-5">
+        <div className="min-w-0">
+          <div className="eyebrow">Topped up · 30d</div>
+          <div className="mono mt-[6px] text-[20px] leading-none font-semibold tracking-[-.02em] desktop:text-[24px]">
+            {fmtMicroUsd(SAMPLE_TOPPED_UP_MICRO)}
           </div>
-        ) : account.data ? (
-          <>
-            <div className="mono text-[22px] leading-none font-semibold">{fmtMicroUsd(account.data.balanceMicro)}</div>
-            <p className="mt-[10px] font-sans text-[12.5px] font-normal leading-[1.6] text-(--text-secondary)">
-              Sessions that run on Cloud draw down this balance. Top it up on the Billing page.
-            </p>
-          </>
-        ) : (
-          <div className="mono text-[22px] leading-none font-semibold text-(--text-tertiary)">—</div>
-        )}
+          <div className="mt-[7px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+            {SAMPLE_TOP_UPS} top-ups
+          </div>
+        </div>
+        <span className="w-px flex-none self-stretch bg-(--border-subtle)" />
+        <div className="min-w-0">
+          <div className="eyebrow">Spent · 30d</div>
+          <div className="mono mt-[6px] text-[20px] leading-none font-semibold tracking-[-.02em] text-(--brand) desktop:text-[24px]">
+            {fmtMicroUsd(SAMPLE_SPENT_MICRO)}
+          </div>
+          <div className="mt-[7px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+            avg {fmtMicroUsd(Math.round(SAMPLE_SPENT_MICRO / SAMPLE_DAYS))} / day
+          </div>
+        </div>
+        <div className="ml-auto flex-none text-right">
+          <div className="eyebrow">Balance</div>
+          <div className="mono mt-[6px] text-[18px] leading-none font-semibold">
+            {fmtMicroUsd(SAMPLE_BALANCE_MICRO)}
+          </div>
+        </div>
+      </div>
+
+      {/* Bars are decoration until the series is real, so they are aria-hidden rather than
+          announced as a figure a reader could act on. */}
+      <div aria-hidden className="flex h-[96px] items-end gap-[3px] px-4">
+        {SAMPLE_SPEND.map((cents, day) => (
+          <span
+            key={day}
+            className="min-w-0 flex-1 rounded-t-[2px]"
+            style={{
+              height: `${Math.max(6, Math.round((cents / peak) * 100))}%`,
+              background: SAMPLE_TOP_UP_DAYS.has(day) ? 'var(--green-500)' : 'var(--brand)'
+            }}
+          />
+        ))}
+      </div>
+
+      <div className="flex items-center gap-3 px-4 pt-[9px] pb-[13px]">
+        <span className="mono text-[11px] text-(--text-tertiary)">Jul 21</span>
+        <span className="mx-auto flex items-center gap-3">
+          <span className="inline-flex items-center gap-[6px] font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+            <span className="dot h-[7px] w-[7px] bg-(--brand)" />
+            daily spend
+          </span>
+          <span className="inline-flex items-center gap-[6px] font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+            <span className="dot h-[7px] w-[7px] bg-(--green-500)" />
+            top-up
+          </span>
+        </span>
+        <span className="mono text-[11px] text-(--text-tertiary)">Aug 20</span>
       </div>
     </div>
   )

@@ -16,7 +16,6 @@ const mocks = vi.hoisted(() => ({
   agents: [] as unknown[],
   integrations: [] as unknown[],
   daemonsLoading: false,
-  balance: { data: { orgId: 'org-pool', balanceMicro: 12_340_000 } } as Record<string, unknown>,
   push: vi.fn()
 }))
 
@@ -33,8 +32,6 @@ vi.mock('@/lib/data-context', () => ({
   })
 }))
 vi.mock('@/lib/acp-registry', () => ({ useAcpRegistry: () => ({}), acpRuntime: () => undefined }))
-// Only the managed reading fetches anything (the balance); no test should reach the network for it.
-vi.mock('swr', () => ({ default: () => mocks.balance }))
 
 const ClusterDetailView = (await import('./ClusterDetailView')).default
 
@@ -115,7 +112,6 @@ beforeEach(() => {
   mocks.agents = []
   mocks.integrations = []
   mocks.daemonsLoading = false
-  mocks.balance = { data: { orgId: 'org-pool', balanceMicro: 12_340_000 } }
   mocks.push.mockClear()
   setFlags('daemon-pool')
 })
@@ -292,16 +288,26 @@ describe('ClusterDetailView — managed (AgentConnect Cloud)', () => {
     expect(html).not.toContain('pool-member-p1')
   })
 
-  it('quotes the prepaid balance, not an invented plan quota', () => {
+  it('marks the Credits card as sample data rather than passing it off as money', () => {
+    // The billing service cannot serve a daily spend series yet — its debits are monthly
+    // aggregates — so the card ships with its shape settled and its data openly fake.
     mocks.daemons = [member('p1')]
 
     const html = render()
 
-    expect(html).toContain('Billing')
-    expect(html).toContain('$12.34')
+    expect(html).toContain('Credits')
+    expect(html).toContain('sample')
     expect(html).toContain('Manage billing')
+    // Decoration, not a figure a reader could act on.
+    expect(html).toContain('aria-hidden')
     // A plan's included usage is not derivable from load telemetry, so no bar pretends it is.
     expect(html).not.toContain('included')
+  })
+
+  it('never generates the placeholder series, so it cannot read as live data', () => {
+    mocks.daemons = [member('p1')]
+
+    expect(render()).toBe(render())
   })
 
   it('offers no billing surface where the deployment has none', () => {
@@ -312,7 +318,7 @@ describe('ClusterDetailView — managed (AgentConnect Cloud)', () => {
 
     expect(html).toContain('AgentConnect Cloud')
     expect(html).not.toContain('Manage billing')
-    expect(html).not.toContain('prepaid balance')
+    expect(html).not.toContain('Credits')
   })
 
   it('still lists the runtimes, agents and connections Cloud offers', () => {
@@ -340,19 +346,6 @@ describe('ClusterDetailView — managed (AgentConnect Cloud)', () => {
     expect(html).toContain('acme-ops')
     expect(html).toContain('2 models')
     expect(html).toContain('Runtimes available')
-  })
-
-  it('lets the billing failure say which failure it was', () => {
-    // A shape mismatch throws BillingShapeError into the same slot as an unreachable service, and
-    // this console deploys ahead of the pinned billing image — so blaming the network guesses.
-    mocks.daemons = [member('p1')]
-    mocks.balance = { error: new Error('billing sent an unexpected account — the console may be out of date') }
-
-    const html = render()
-
-    expect(html).toContain('Balance unavailable')
-    expect(html).toContain('may be out of date')
-    expect(html).not.toContain('Could not reach')
   })
 
   it('says where Cloud usage is billed, and where it is not', () => {
