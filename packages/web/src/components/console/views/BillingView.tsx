@@ -61,25 +61,29 @@ function fmtWhen(iso: string): string {
 // Complete literal class strings, never assembled from fragments: Tailwind's scanner only
 // sees whole literals, and `tone` is a closed union of four compile-time constants, so
 // nothing here is the data-derived value rule 8's inline carve-out is for.
-// Glyph colour is per-tone because the chips do not all carry white, and the two that fail
-// use a LITERAL rather than `--text-primary`: the chips stay mid-tone in both themes while
-// that token flips to near-white in dark, which would make the fix worse than the bug
-// (amber would go 1.78:1). Contrast against the chip, light / dark, 3:1 non-text threshold:
+// Glyph colour is per-tone because the chips do not all carry white. The chips stay mid-tone
+// in both themes while `--text-primary` flips to near-white in dark, which would make the fix
+// worse than the bug (amber would go 1.78:1). Contrast against the chip, light / dark, against
+// the 3:1 non-text threshold:
 //
 //   brand  white 5.25 / 5.25      ✓ white
 //   red    white 4.08 / 3.01      ✓ white, but dark mode is at the line — if the red
 //                                 palette is ever nudged lighter, this needs the literal too
-//   amber  white 2.52 / 2.05  ✗   → #1a212b: 6.44 / 7.90
-//   blue   white 4.55 / 2.85  ✗   → #1a212b: 3.56 / 5.68
+//   amber  white 2.52 / 2.05  ✗   → --gray-900: 6.44 / 7.90
+//   blue   white 4.55 / 2.85  ✗   → --gray-900: 3.56 / 5.68
+//
+// `--gray-900`, not the hex it resolves to, and not `--text-primary`: the palette entry is
+// theme-stable (the dark block remaps only the semantic layer above it), which is exactly the
+// property these two chips need.
 const BALANCE_TONE = {
   brand: { card: 'bg-(--brand-soft) border-(--brand)', chip: 'bg-(--brand)', glyph: '#fff' },
   red: { card: 'bg-(--status-error-soft) border-(--status-error)', chip: 'bg-(--status-error)', glyph: '#fff' },
   amber: {
     card: 'bg-(--status-paused-soft) border-(--status-paused)',
     chip: 'bg-(--status-paused)',
-    glyph: '#1a212b'
+    glyph: 'var(--gray-900)'
   },
-  blue: { card: 'bg-(--status-info-soft) border-(--status-info)', chip: 'bg-(--status-info)', glyph: '#1a212b' }
+  blue: { card: 'bg-(--status-info-soft) border-(--status-info)', chip: 'bg-(--status-info)', glyph: 'var(--gray-900)' }
 } as const
 
 function BalanceBannerCard({
