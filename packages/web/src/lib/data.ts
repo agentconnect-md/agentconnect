@@ -1841,10 +1841,21 @@ const RAW_SESSIONS_BY_AGENT: Record<string, MockSession[]> = {
   ]
 }
 
-const mintStepTurnIds = (s: MockSession): Session => ({
-  ...s,
-  steps: s.steps.map((step) => ({ ...step, turnId: step.turnId ?? `mock:${randomUuid()}` }))
-})
+const mintStepTurnIds = (s: MockSession): Session => {
+  // One turnId per LOGICAL turn, not per step: a `msg` opens a new turn and the agent's following
+  // plan/tool/edit/done steps carry it, so an answer groups as ONE bot turn (the session-detail
+  // builder folds bot output by turnId via liveBotTurnKey). This mirrors a real webchat turn, whose
+  // reply steps all share the one wire turnId.
+  let turnId = `mock:${randomUuid()}`
+  return {
+    ...s,
+    steps: s.steps.map((step) => {
+      if (step.turnId !== undefined) return step as SessionStep
+      if (step.kind === 'msg') turnId = `mock:${randomUuid()}`
+      return { ...step, turnId }
+    })
+  }
+}
 const SESSIONS_BY_AGENT: Record<string, Session[]> = Object.fromEntries(
   Object.entries(RAW_SESSIONS_BY_AGENT).map(([id, list]) => [id, list.map((s) => tagTitle(mintStepTurnIds(s)))])
 )
