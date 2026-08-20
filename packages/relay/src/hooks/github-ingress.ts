@@ -1059,7 +1059,13 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
           // transient CP/GitHub failures all fail closed.
           deps.log.warn(`github ingress: authz failed ${representative.hookId}:${deliveryKey}: ${String(err)}`)
         }
-        if (!allowed && onDenied === 'skip') return
+        // A silent skip is indistinguishable from "GitHub never delivered it" without this line.
+        if (!allowed && onDenied === 'skip') {
+          deps.log.info(
+            `github ingress: authz denied ${representative.hookId}:${deliveryKey} (${ctx.eventAction} actor ${actors.senderLogin})`
+          )
+          return
+        }
 
         // Authorization waited on at least two remote calls. Re-read the table so a
         // remove/reconfigure/reassignment during that window cannot dispatch
@@ -1082,6 +1088,12 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
       const matched = candidates
         .map((rule) => ({ rule, verdict: githubRuleVerdict(rule, ctx) }))
         .filter((candidate) => candidate.verdict !== 'no-match')
+      // A native reviewer request is an explicit maintainer action; a drop always deserves a line.
+      if (ctx.eventAction === 'pull_request:review_requested' && matched.length === 0) {
+        deps.log.info(
+          `github ingress: reviewer request matched no rule ${deliveryKey} (reviewer ${ctx.requestedReviewerLogin ?? 'none'} github:${repoId}#${thread})`
+        )
+      }
       if (
         ctx.event === 'issues' ||
         (ctx.event === 'pull_request' && ctx.eventAction !== 'pull_request:review_requested')
