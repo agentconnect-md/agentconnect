@@ -57,32 +57,108 @@ function fmtWhen(iso: string): string {
   })
 }
 
-// Which notice the balance warrants — split out because the ORDER is the part worth a test.
-export function balanceNotice(acct: BillingAccount): { text: string; tone: 'error' | 'warn' | 'muted' } | null {
-  // Suspended outranks everything: strictly worse news, and its copy already says what to do.
-  if (acct.state === 'suspended') return { text: 'Suspended — add credit to resume access', tone: 'error' }
-  // Ahead of `unknown`: a known actionable fact outranks the absence of news, and `unknown` is
-  // reported DURING a suspension decision — exactly when a balance sits near its threshold.
-  if (acct.lowBalanceMicro && acct.balanceMicro < acct.lowBalanceMicro) {
-    return { text: `Running low — below ${fmtMicroUsd(acct.lowBalanceMicro)}`, tone: 'warn' }
+// Which banner the account warrants, per the Billing design canvas. Split out because the
+// ORDER is the part worth a test, and because the wire does not name these states — they are
+// derived here from the balance, the threshold and the gateway's own call.
+export type BalanceBanner = {
+  tone: 'brand' | 'red' | 'amber' | 'blue'
+  icon: string
+  title: string
+  text: string
+  cta?: string
+}
+
+export function balanceBanner(acct: BillingAccount, opts: { hasHistory: boolean }): BalanceBanner | null {
+  const suspended = acct.state === 'suspended'
+  // Never funded reads differently from spent out, and only the ledger can tell them apart.
+  if (suspended && !opts.hasHistory) {
+    return {
+      tone: 'brand',
+      icon: 'sparkles',
+      title: 'Add credits to start serving traffic',
+      text: 'AgentConnect is prepaid: you buy credits, and usage is deducted at the provider’s actual cost. Until the balance is above zero, agents in this org won’t take sessions.',
+      cta: 'Add credits'
+    }
   }
-  // Not an error: unconfirmed at the gateway, and it clears on its own.
-  if (acct.state === 'unknown') return { text: 'Confirming access status…', tone: 'muted' }
-  // Absent `state` lands here too — a service that predates the field claims nothing.
+  if (suspended) {
+    return {
+      tone: 'red',
+      icon: 'circle-slash',
+      title: 'Agent traffic is paused — balance is empty',
+      text: 'LLM requests from this org are being rejected at the gateway. Adding credits resumes service within a minute.',
+      cta: 'Add credits'
+    }
+  }
+  // Ahead of the unconfirmed case: a known actionable fact outranks the absence of news, and
+  // `unknown` is reported DURING a suspension decision — exactly when a balance is near its
+  // threshold, which is when this line is worth the most.
+  if (acct.lowBalanceMicro && acct.balanceMicro < acct.lowBalanceMicro) {
+    return {
+      tone: 'amber',
+      icon: 'triangle-alert',
+      title: `Low balance — ${fmtMicroUsd(acct.balanceMicro)} remaining`,
+      text: `This balance is below the ${fmtMicroUsd(acct.lowBalanceMicro)} alert threshold. Agents keep serving until it reaches zero.`,
+      cta: 'Add credits'
+    }
+  }
+  // The design's blue slot is "we treat it as unconfirmed until we are told otherwise", which is
+  // exactly this — only what is unconfirmed here is the GATEWAY's answer, not a payment, so the
+  // copy says that. It clears on its own within one of the service's renewal sweeps.
+  if (acct.state === 'unknown') {
+    return {
+      tone: 'blue',
+      icon: 'clock',
+      title: 'Confirming access status',
+      text: 'A change to this org’s access is still unconfirmed at the gateway, so we are not claiming either way yet. This resolves on its own.'
+    }
+  }
+  // Active, no usage yet, and a service too old to report `state` all land here.
   return null
 }
 
-const NOTICE_TONE = {
-  error: 'font-medium text-(--status-error)',
-  warn: 'font-medium text-(--status-paused)',
-  muted: 'font-normal text-(--text-tertiary)'
+const BALANCE_TONE = {
+  brand: { bg: 'var(--brand-soft)', border: 'var(--brand)', icon: 'var(--brand)' },
+  red: { bg: 'var(--status-error-soft)', border: 'var(--status-error)', icon: 'var(--status-error)' },
+  amber: { bg: 'var(--status-paused-soft)', border: 'var(--status-paused)', icon: 'var(--status-paused)' },
+  blue: { bg: 'var(--status-info-soft)', border: 'var(--status-info)', icon: 'var(--status-info)' }
 } as const
 
-// `state` is the service's call; low balance IS presentation, so it sends the threshold.
-function BalanceState({ acct }: { acct: BillingAccount }) {
-  const notice = balanceNotice(acct)
-  if (!notice) return null
-  return <div className={`mt-1 font-sans text-[12px] leading-normal ${NOTICE_TONE[notice.tone]}`}>{notice.text}</div>
+function BalanceBannerCard({
+  acct,
+  hasHistory,
+  canPay,
+  onAddCredits
+}: {
+  acct: BillingAccount
+  hasHistory: boolean
+  canPay: boolean
+  onAddCredits: () => void
+}) {
+  const banner = balanceBanner(acct, { hasHistory })
+  if (!banner) return null
+  const tone = BALANCE_TONE[banner.tone]
+  return (
+    <div
+      className="mb-[18px] flex items-start gap-3 rounded-[10px] border p-[14px_16px]"
+      style={{ background: tone.bg, borderColor: tone.border }}
+    >
+      <span className="flex h-7 w-7 flex-none items-center justify-center rounded-lg" style={{ background: tone.icon }}>
+        <Icon name={banner.icon} size={16} color="#fff" />
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="font-sans text-[13px] font-semibold leading-normal">{banner.title}</div>
+        <div className="mt-1 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary)">
+          {banner.text}
+        </div>
+        {/* Only owners move money — the service enforces it; this just doesn't offer a refused form. */}
+        {banner.cta && canPay && (
+          <Button size="sm" className="mt-2.5" onClick={onAddCredits}>
+            {banner.cta}
+          </Button>
+        )}
+      </div>
+    </div>
+  )
 }
 
 function Notice({ title, body }: { title: string; body: string }) {
@@ -263,7 +339,7 @@ function AddCreditsCard({ orgId, returnPath }: { orgId: string; returnPath: stri
   }
 
   return (
-    <div className="card flex flex-col">
+    <div id="add-credits" className="card flex flex-col">
       <div className="cardhead">
         <span className="cardtitle">Add credits</span>
       </div>
@@ -499,13 +575,18 @@ export default function BillingView() {
 
       {acct && (
         <>
+          <BalanceBannerCard
+            acct={acct}
+            hasHistory={(transactions.data?.items.length ?? 0) > 0}
+            canPay={myRole === 'owner'}
+            onAddCredits={() => document.getElementById('add-credits')?.scrollIntoView({ behavior: 'smooth' })}
+          />
           <div className="mb-4 grid items-stretch gap-4 desktop:grid-cols-2">
             {/* One figure, no in-flight caveat: v1 has no hold layer, so the balance
                 is every reconciliation fact there is. */}
             <div className="card stat">
               <div className="statlbl">Balance</div>
               <div className="statval">{fmtMicroUsd(acct.balanceMicro)}</div>
-              <BalanceState acct={acct} />
             </div>
             {/* Only owners move money — the service enforces it (403); the page
                 just doesn't offer members a form that would be refused. */}
