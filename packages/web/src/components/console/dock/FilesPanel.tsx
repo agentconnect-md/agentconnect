@@ -22,6 +22,7 @@ import {
   SandboxAsleepNotice,
   SandboxStartingNotice
 } from '@/components/console/SandboxWakeNotice'
+import { DOCK_POLL_MS, useDockRefresh } from '@/components/console/dock/auto-refresh'
 import type { DockTabStatus } from './SessionDock'
 
 /** The Files tab's status: `loading` covers the first root listing only, and everything after it is `ready` — an offline daemon, a non-repo workspace and an empty directory are each something this panel has copy for, and copy is content. */
@@ -52,6 +53,7 @@ export function FilesPanel({
   workdir,
   refreshTick = 0,
   active = true,
+  turnActive = false,
   openFilePath,
   onOpenFile,
   onRootSettledChange
@@ -59,6 +61,8 @@ export function FilesPanel({
   agentId: string
   /** Whether the Files tab is the one selected. The dock keeps every panel mounted, and a hidden panel must not start a pod: the sandbox wake and its polling run only while this is true. */
   active?: boolean
+  /** Whether a turn is streaming in this session. Its falling edge re-reads the tree — that is when the agent's file writes have landed — but only for a tab the reader is looking at: this panel carries no badge, so a hidden one owes itself the read and spends it on the reveal edge instead. */
+  turnActive?: boolean
   /** ACP session id selecting that session's isolated worktree; omit for the agent's primary checkout. Pass it only when the session's `workspaceIsolation` is `'session'` — the daemon answers a shared-workspace sessionId with BAD_PAYLOAD, which the CP maps to a 503 that reads as "the daemon may be offline". */
   sessionId?: string
   /** The agent's working directory, shown beside the branch. */
@@ -74,9 +78,14 @@ export function FilesPanel({
 }) {
   // The wake's own refresh rides beside the tab's: a poll re-reads the tree the same way the refresh action does.
   const [wakeTick, setWakeTick] = useState(0)
-  const { dirs, root, expanded, toggleDir, loadMoreDir } = useWorkspaceTree(agentId, sessionId, refreshTick + wakeTick)
-  const { git, outcome, primaryBranch } = useWorkspaceGitStatus(agentId, sessionId, refreshTick + wakeTick)
-  const retryRoot = useCallback(() => setWakeTick((tick) => tick + 1), [])
+  // The automatic re-read (turn edge, poll, reveal) is the same counter shape, so an auto refresh takes
+  // the identical read path a pressed one does — expanded folders and the filter text survive both.
+  const [autoTick, setAutoTick] = useState(0)
+  const tick = refreshTick + wakeTick + autoTick
+  const { dirs, root, expanded, toggleDir, loadMoreDir } = useWorkspaceTree(agentId, sessionId, tick)
+  const { git, outcome, primaryBranch } = useWorkspaceGitStatus(agentId, sessionId, tick)
+  const retryRoot = useCallback(() => setWakeTick((current) => current + 1), [])
+  useDockRefresh({ active, turnActive, intervalMs: DOCK_POLL_MS, onRefresh: () => setAutoTick((n) => n + 1) })
   const wake = useSandboxWake(agentId, workspaceRootReadState(root), retryRoot, { active })
   const [query, setQuery] = useState('')
   const scope = `${agentId}:${sessionId ?? 'primary'}`

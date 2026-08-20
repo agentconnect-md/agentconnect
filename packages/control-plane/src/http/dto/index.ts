@@ -3249,7 +3249,14 @@ export const SessionPullRequestDto = z.object({
   degraded: z.boolean(),
   degradedReason: z.enum(['rate_limited', 'denied', 'unreachable']).nullable(),
   // The agent's own recorded review, present ONLY on a degraded answer — GitHub's list is authoritative when it answered.
-  agentReview: z.enum(['approved', 'changes_requested', 'commented']).nullable()
+  agentReview: z.enum(['approved', 'changes_requested', 'commented']).nullable(),
+  // Which identity source named this pull request: the owning review `run`, or the session worktree's
+  // own head branch. The panel says so, because the two answer different questions about the session.
+  linkedBy: z.enum(['run', 'head-branch']),
+  // The head branch a `head-branch` link resolved through; null for a run-linked PR.
+  linkBranch: z.string().nullable(),
+  // true ⇒ that branch has more than one OPEN pull request and this is the first of them.
+  linkAmbiguous: z.boolean()
 })
 export type SessionPullRequestDtoT = z.infer<typeof SessionPullRequestDto>
 

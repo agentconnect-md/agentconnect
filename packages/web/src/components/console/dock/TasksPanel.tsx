@@ -10,6 +10,7 @@ import { Spinner } from '@/components/marks'
 import { Icon } from '@/components/ui'
 import { formatFileMtime } from '@/components/console/FileBrowser'
 import { ApiError, fetchAgentTasks, type AgentTaskDto, type AgentTasksDto } from '@/lib/api'
+import { useDockRefresh } from '@/components/console/dock/auto-refresh'
 import type { DockTabStatus } from './SessionDock'
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e))
@@ -102,6 +103,7 @@ export function TasksPanel({
   agentId,
   sessionId,
   active = true,
+  turnActive = false,
   refreshTick = 0,
   onVerdictChange
 }: {
@@ -110,6 +112,8 @@ export function TasksPanel({
   sessionId: string
   /** Whether this tab is the visible one. A hidden panel neither polls nor ticks nor re-reads; its rows are then as fresh as its last read, which is what the Git tab's changed count already is. */
   active?: boolean
+  /** Whether a turn is streaming in this session. Its falling edge re-reads, for the same reason the idle poll exists: a turn is where new background tasks come from. Deferred to the reveal edge while the tab is hidden — the count on the badge is worth a read the reader can see, not one they cannot. */
+  turnActive?: boolean
   /** Bumped by the tab's `refresh-cw` action: re-reads without remounting. */
   refreshTick?: number
   /** The inputs to {@link tasksTabStatus} and the tab's badge. */
@@ -132,12 +136,15 @@ export function TasksPanel({
 
   // A VISIBLE panel always polls; only the cadence depends on what it is showing. Visibility is the
   // whole gate because a hidden panel is a request nobody is looking at, whereas an idle VISIBLE one
-  // still has the 0 -> running edge to discover (see {@link IDLE_POLL_MS}).
-  useEffect(() => {
-    if (!active) return
-    const timer = setInterval(() => setOwnTick((tick) => tick + 1), running > 0 ? POLL_MS : IDLE_POLL_MS)
-    return () => clearInterval(timer)
-  }, [active, running])
+  // still has the 0 -> running edge to discover (see {@link IDLE_POLL_MS}). Through the dock's shared
+  // hook, so a backgrounded BROWSER counts as hidden here exactly as it does for the other tabs — and
+  // a turn's falling edge is a read too: a turn that ended may have left a task behind it.
+  useDockRefresh({
+    active,
+    turnActive,
+    intervalMs: running > 0 ? POLL_MS : IDLE_POLL_MS,
+    onRefresh: () => setOwnTick((tick) => tick + 1)
+  })
 
   // Elapsed redraws from `startedAt` alone, so it ticks without a request.
   useEffect(() => {

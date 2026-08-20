@@ -62,6 +62,7 @@ vi.mock('@/lib/api', () => {
 })
 
 import { FilesPanel, filesTabStatus } from './FilesPanel'
+import { DOCK_POLL_MS } from './auto-refresh'
 import { SessionDock, type DockTab } from './SessionDock'
 import { fetchWorkspaceFiles, fetchWorkspaceGitStatus, wakeAgent } from '@/lib/api'
 import type { WorkspaceGitFileDto, WorkspaceGitStatusDto } from '@/lib/api'
@@ -204,6 +205,8 @@ afterEach(async () => {
   vi.mocked(fetchWorkspaceFiles).mockClear()
   vi.mocked(fetchWorkspaceGitStatus).mockClear()
   vi.mocked(wakeAgent).mockClear()
+  // The polling case installs fake timers; leaving them installed would starve the next test's reads.
+  vi.useRealTimers()
 })
 
 describe('filesTabStatus', () => {
@@ -795,5 +798,49 @@ describe('FilesPanel footer', () => {
     expect(text()).not.toContain('synced')
     // Not an empty bordered strip either: the footer is absent, not blank.
     expect(container?.querySelector('[data-files-footer]')).toBeNull()
+  })
+})
+
+// The dock's refresh cadence, wired here. This tab carries no badge, so a hidden panel OWES itself the
+// read a turn earned and spends it on the reveal edge — re-reading a tree nobody is looking at is the
+// one thing this cadence must not do. The hook itself is `auto-refresh.test.tsx`'s subject.
+describe('FilesPanel auto refresh', () => {
+  const rootReads = () => vi.mocked(fetchWorkspaceFiles).mock.calls.filter((call) => call[1].path === '').length
+
+  it('re-reads the tree when a turn settles while the tab is on screen', async () => {
+    await render({ active: true })
+    expect(rootReads()).toBe(1)
+
+    await rerender({ active: true, turnActive: true })
+    expect(rootReads()).toBe(1)
+    await rerender({ active: true, turnActive: false })
+    expect(rootReads()).toBe(2)
+  })
+
+  it('defers a hidden tab’s turn read to the moment the reader opens it', async () => {
+    await render({ active: false })
+    expect(rootReads()).toBe(1)
+
+    await rerender({ active: false, turnActive: true })
+    await rerender({ active: false, turnActive: false })
+    expect(rootReads()).toBe(1)
+
+    await rerender({ active: true, turnActive: false })
+    expect(rootReads()).toBe(2)
+  })
+
+  it('polls while on screen, and stops when the tab is hidden', async () => {
+    vi.useFakeTimers()
+    await render({ active: true })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(DOCK_POLL_MS)
+    })
+    expect(rootReads()).toBe(2)
+
+    await rerender({ active: false })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(DOCK_POLL_MS * 4)
+    })
+    expect(rootReads()).toBe(2)
   })
 })

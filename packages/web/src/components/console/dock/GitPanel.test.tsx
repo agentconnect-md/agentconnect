@@ -85,6 +85,7 @@ vi.mock('@/lib/api', () => {
 })
 
 import { baseBranchOf, GitPanel, gitTabStatus, splitGitSections, type GitPanelVerdict } from './GitPanel'
+import { DOCK_POLL_MS } from './auto-refresh'
 import { commitWorkspace, draftWorkspaceCommitMessage, fetchWorkspaceGitLog } from '@/lib/api'
 import type { WorkspaceGitFileDto, WorkspaceGitLogDto, WorkspaceGitStatusDto } from '@/lib/api'
 
@@ -231,6 +232,8 @@ afterEach(() => {
   container?.remove()
   container = undefined
   root = undefined
+  // The polling cases install fake timers; leaving them installed would starve the next test's reads.
+  vi.useRealTimers()
 })
 
 describe('splitGitSections', () => {
@@ -895,5 +898,59 @@ describe('GitPanel — staging', () => {
 
     expect(container?.querySelector('[data-commit-box]')).toBeNull()
     expect(text()).toContain('not a git checkout')
+  })
+})
+
+// The dock's refresh cadence, wired here: this panel's tab carries the changed-file BADGE, so the
+// signal that reaches it while hidden is a turn settling — and the poll is spent only where a reader
+// is looking. The cadence itself is `auto-refresh.test.tsx`'s subject; these are the wiring facts.
+describe('GitPanel auto refresh', () => {
+  it('re-reads status and log on a turn’s falling edge, even while its tab is hidden', async () => {
+    await render({ active: false })
+    expect(wire.statusCalls).toBe(1)
+    expect(wire.logCalls).toHaveLength(1)
+
+    await rerender({ active: false, turnActive: true })
+    expect(wire.statusCalls).toBe(1)
+    await rerender({ active: false, turnActive: false })
+    // Both reads, because a turn commits: the index empties and the branch gains a commit.
+    expect(wire.statusCalls).toBe(2)
+    expect(wire.logCalls).toHaveLength(2)
+  })
+
+  it('polls while its tab is on screen, and not while it is hidden', async () => {
+    vi.useFakeTimers()
+    await render({ active: true })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(DOCK_POLL_MS)
+    })
+    expect(wire.statusCalls).toBe(2)
+
+    await rerender({ active: false })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(DOCK_POLL_MS * 4)
+    })
+    expect(wire.statusCalls).toBe(2)
+  })
+
+  it('skips an automatic read while one of its OWN writes is in flight', async () => {
+    // The write answers with the fresh status; a read racing it would land the pre-write tree over that
+    // reply, and the write's own re-read is what covers this case.
+    const dirty = gitStatus({ clean: false, files: [file('src/staged.ts', 'A', ' '), file('src/edited.ts', ' ', 'M')] })
+    wire.git = dirty
+    wire.writeResult = dirty
+    wire.holdWrite = true
+    await render({ canWrite: true })
+    const before = wire.statusCalls
+    await click(toggles('changes')[0], 'a row toggle')
+
+    await rerender({ canWrite: true, turnActive: true })
+    await rerender({ canWrite: true, turnActive: false })
+    expect(wire.statusCalls).toBe(before)
+
+    await act(async () => {
+      wire.releaseWrite?.()
+      await Promise.resolve()
+    })
   })
 })

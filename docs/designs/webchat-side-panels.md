@@ -136,6 +136,32 @@ Revision 2 **removed** the Fetch / Pull / Stash button row that revision 1 had.
 the `sessionId` extension that revision 1 called for. Refresh is the tab's
 `refresh-cw` header action, which re-reads status — not a network pull.
 
+**The refresh cadence (landed after M6).** A pressed refresh is not the only one:
+every panel here reads a LIVE surface, so one that re-read only on demand showed
+the tree as it was when the page opened. `dock/auto-refresh.ts` owns the three
+signals, and every panel bumps the same tick a press does — there is no second
+read path to keep in step:
+
+| signal                    | when                                              | who takes it                                                            |
+| ------------------------- | ------------------------------------------------- | ----------------------------------------------------------------------- |
+| a turn's **falling edge** | the agent's own writes have landed                | Files, Git, PR, Tasks — the highest-value signal, and free of any timer |
+| a **poll**                | the tab is selected AND the document is visible   | Files/Git 15s, PR 60s (§9's GitHub budget), Tasks 5s/20s as before      |
+| the **reveal edge**       | a tab becoming active, or the browser coming back | whoever deferred a turn refresh while hidden                            |
+
+Two rules make the cost defensible. A background tab and a background BROWSER
+both poll **nothing** — these reads reach a daemon, and for the PR panel an
+installation's rate limit. And a turn's edge reaches a HIDDEN panel only where
+that tab shows a badge whose numbers are on screen anyway (Git's changed count,
+PR's unresolved threads); a panel without one defers the read to the reveal edge
+rather than re-reading a worktree nobody is looking at. The Git panel also skips
+an automatic read while one of its OWN writes is in flight — that write answers
+with the fresh status, and a read racing it would land the pre-write tree over
+the reply.
+
+Which turn: the workspace panels follow HEADER FOCUS, so their edge is the
+focused participant's turn — the PR tab, which is keyed to the open session
+(§3.4), takes that session's.
+
 Consequence for sequencing: the Git panel's rows are _stage toggles_ in this
 revision, so a read-only Git tab is a visibly amputated version of the design.
 It is still worth shipping first — a reviewer reading what the agent changed is
@@ -143,6 +169,11 @@ the majority use — but the milestone must render the toggles absent rather tha
 inert, and say so.
 
 ### 3.4 PR — linkage exists, both the read projection and the write loop are new
+
+> Revised after M6: the run is no longer the ONLY identity source. A session
+> with no pull-request run resolves its PR from the worktree's own head branch
+> instead — see §12.6's "second identity source", which is where that contract
+> and its five deliberate limits live.
 
 `HookRun` already stores everything needed to _find_ the PR for a session:
 `sessionId`, `repoFullName`, `repoId`, `pullNumber`, `headSha`, `baseSha`,
@@ -416,6 +447,7 @@ FilesPanel.tsx         narrow single-column tree over WorkspaceFiles' read model
 GitPanel.tsx           status + numstat + staging + commit box + log
 PullRequestPanel.tsx   the /sessions/:id/pull-request projection + Auto-fix / auto-merge actions
 TasksPanel.tsx         task list (read-only — §3.5); polls while visible, backed off when idle
+auto-refresh.ts        the dock's shared cadence: turn edge / poll / reveal edge (§3.3)
 ```
 
 and `packages/web/src/components/console/viewer/`:
@@ -1082,16 +1114,52 @@ list; `HookRun`'s recorded review appears only as the degraded-arm fallback
    would make right.
 
    **What this action cannot do, and how the panel says so.** A PR the agent
-   opens from a conversation creates no `HookRun`, and PR identity comes from
-   the run that owns the session — so the probe keeps answering 404 after the
-   pull request exists. The panel therefore does not pretend the action closed
-   the loop: once asked, it says the agent replies with the URL in the
-   conversation and that this tab links a PR only for a review run, and the
-   control becomes **Ask again**. The instruction itself is idempotent (open
-   one, or report the existing one), so pressing again cannot yield a second PR
-   for the branch. Making the tab link a self-opened PR needs either a durable
-   session↔PR binding or a by-head-branch read source, both of which change the
-   §3.4 identity contract and belong in their own change.
+   opens from a conversation creates no `HookRun`, so a tab whose identity came
+   only from the owning run kept answering 404 after the pull request existed.
+   That gap is now closed by the second identity source below; what remains is
+   a timing statement, and the panel says exactly that: once asked, it says the
+   agent replies with the URL in the conversation and that this tab links the PR
+   once the branch is pushed and one exists for it, and the control becomes
+   **Ask again**. The instruction itself is idempotent (open one, or report the
+   existing one), so pressing again cannot yield a second PR for the branch.
+
+   **The second identity source (landed).** With no pull-request run, the route
+   resolves the PR from the session worktree's OWN head branch:
+   `SessionPullRequestLinkService` reads the branch from the owning daemon
+   (`workspace/gitstatus`, session-scoped), resolves the agent's primary
+   workspace repo and live installation (`GithubService.resolveWorkspaceRepo`),
+   and asks GitHub `GET /repos/{o}/{r}/pulls?state=all&head=<owner>:<branch>`.
+   The chosen number then joins the SAME projection a run-linked PR takes, so
+   checks, reviews, threads, Auto-fix and auto-merge all work unchanged. Five
+   things this deliberately keeps:
+
+   - **The run stays PREFERRED.** It carries the review facts a branch lookup
+     cannot know — the subject's open state, the run's draft fact, the agent's
+     own recorded review — which are exactly what a degraded answer falls back
+     on. The branch is the fallback, never an override.
+   - **The branch, not the head sha.** A session branch is amended and rebased;
+     its sha is not stable and `commits/{sha}/pulls` would go blind on the next
+     rewrite. `head=` is fork-blind by construction, which reads as the absence
+     it is.
+   - **Absence, not degradation.** An unreachable, denied or rate-limited
+     lookup resolves `null` — the degraded arm needs a PR to NAME, and identity
+     that never resolved has none. The panel keeps its no-PR state for all of
+     them.
+   - **Only a session worktree.** A shared checkout is the agent's primary tree
+     and its branch is no session's work; a purged session has no worktree left.
+     Both skip the daemon read entirely, as does an offline or too-old daemon —
+     so a session that can never resolve a PR spends none of the installation's
+     quota.
+   - **The ambiguity is reported, not hidden.** Several open PRs on one head are
+     all equally "this session's": the lowest number wins (the first opened for
+     the branch is the canonical review) and `linkAmbiguous` makes the panel say
+     so. With none open, the highest number wins instead — the newest attempt is
+     what describes the branch's fate. Two TTLs bound the cost: 60s for a link,
+     15s for a miss (a PR opened seconds ago must not stay invisible), both
+     bypassed by the panel's own refresh.
+
+   `linkedBy` (`run` | `head-branch`), `linkBranch` and `linkAmbiguous` are on
+   the DTO so the console can say which question it answered.
 
 7. **Write authorization.** Committing as the agent and resolving GitHub threads
    from the console are new classes of action. Does workspace-write access plus

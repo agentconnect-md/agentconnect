@@ -2200,6 +2200,11 @@ export default function SessionDetailView() {
     [session, railCurrentKey, railCurrentMemberIds]
   )
   const sessionBusy = session ? isPgBusy(session.id) : false
+  // The busy flag for the dock's WORKSPACE panels, which follow header focus rather than the open
+  // session (§3.4): in a merged conversation it is the focused participant's turn that writes the
+  // checkout those panels read, so keying them to the open session would refresh the wrong worktree's
+  // reader — and, for a participant nobody focused, never at all.
+  const focusBusy = headerFocusSessionId ? isPgBusy(headerFocusSessionId) : sessionBusy
   const sessionBusyRef = useRef(sessionBusy)
   sessionBusyRef.current = sessionBusy
 
@@ -4906,6 +4911,7 @@ export default function SessionDetailView() {
           {filesAgentId && filesScopeReady ? (
             <FilesPanel
               active={dockTabKey === 'files'}
+              turnActive={focusBusy}
               agentId={filesAgentId}
               {...(filesSessionId ? { sessionId: filesSessionId } : {})}
               {...(filesWorkdir ? { workdir: filesWorkdir } : {})}
@@ -4932,6 +4938,8 @@ export default function SessionDetailView() {
             <GitPanel
               agentId={filesAgentId}
               {...(filesSessionId ? { sessionId: filesSessionId } : {})}
+              active={dockTabKey === 'git'}
+              turnActive={focusBusy}
               refreshTick={gitRefreshTick}
               openPath={viewerOpen && viewerMode !== 'file' ? viewerPath : null}
               openStaged={viewerMode === 'staged'}
@@ -4971,6 +4979,7 @@ export default function SessionDetailView() {
               agentId={filesAgentId}
               sessionId={tasksSessionId}
               active={dockTabKey === 'tasks'}
+              turnActive={focusBusy}
               refreshTick={tasksRefreshTick}
               onVerdictChange={setTasksVerdict}
             />

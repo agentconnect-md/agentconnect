@@ -14,7 +14,11 @@
 import type { FastifyInstance, FastifyServerOptions } from 'fastify'
 import type { PrismaClient } from './generated/prisma/client.js'
 import type { WebSocketServer } from 'ws'
-import { DUTY_GRANT_MEMBERS_MAX, HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED } from '@agentconnect.md/protocol'
+import {
+  DUTY_GRANT_MEMBERS_MAX,
+  HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED,
+  WORKSPACE_SESSION_READ_FEATURE
+} from '@agentconnect.md/protocol'
 
 import { type AppConfig, resolveWebAppUrl } from './config/env.js'
 import { resolveGithubAppConfig } from './github/config.js'
@@ -28,6 +32,7 @@ import { GithubCommentAuthzService } from './github/comment-authz.service.js'
 import { GithubRerequestService } from './github/rerequest.service.js'
 import { GithubReviewBrokerService } from './github/review-broker.service.js'
 import { PullRequestViewService } from './github/pull-request-view.service.js'
+import { SessionPullRequestLinkService } from './github/session-pull-request-link.service.js'
 import { GithubRunCoordinator, GithubRunReporter } from './github/run-reporter.js'
 import { githubProjectionIntent } from './github/projection-intent.js'
 import { HookRedeliveryReconciler } from './orchestrator/hookRedeliveryReconciler.js'
@@ -889,6 +894,36 @@ export function buildContainer(
     : undefined
   // The console PR panel's read projection — long-lived so its short TTL cache actually absorbs mounts.
   const pullRequestView = github ? new PullRequestViewService(github.tokens, clock, opts.githubFetch) : undefined
+  // §12.6's second identity source for that panel: the PR a session's own head branch has, for the
+  // sessions no pull-request run owns. Long-lived for the same reason — its TTL absorbs panel mounts.
+  const sessionPullRequestLink =
+    github && pullRequestView
+      ? new SessionPullRequestLinkService({
+          clock,
+          github,
+          tokens: github.tokens,
+          readSessionBranch: async (agent, session) => {
+            if (!agent.daemonId) return null
+            const daemon = await registry.getAvailable(agent.orgId, agent.daemonId)
+            // An older daemon drops the frame silently, so the REQ would burn its retransmit budget
+            // and then read as an offline daemon — refuse first, exactly as the workspace routes do.
+            if (!daemon?.capabilities.features.includes(WORKSPACE_SESSION_READ_FEATURE)) return null
+            try {
+              const status = await sender.workspaceGitStatus(agent.daemonId, {
+                agentId: agent.id,
+                sessionId: session.id
+              })
+              return status.isRepo ? (status.branch ?? null) : null
+            } catch {
+              // An offline daemon, a REQ timeout and a non-repo workspace are one answer here: no
+              // branch to resolve a PR through. The panel keeps its own no-PR state for all of them.
+              return null
+            }
+          },
+          log: { warn: (obj, message) => http.log.warn(obj, message) },
+          ...(opts.githubFetch ? { fetchImpl: opts.githubFetch } : {})
+        })
+      : undefined
   const githubReviewBroker = github
     ? new GithubReviewBrokerService({
         hook: repos.hook,
@@ -1146,6 +1181,7 @@ export function buildContainer(
     resolvePublicRepo: createPublicRepoResolver(),
     ...(github ? { github } : {}),
     ...(pullRequestView ? { pullRequestView } : {}),
+    ...(sessionPullRequestLink ? { sessionPullRequestLink } : {}),
     ...(githubUserAuthz ? { githubUserAuthz } : {}),
     ...(logtoIdentity ? { logtoIdentity } : {}),
     sessionAccessPlugins: [slackSessionAccess, githubSessionAccess, feishuSessionAccess],

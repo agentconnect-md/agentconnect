@@ -9,6 +9,7 @@ import { Spinner } from '@/components/marks'
 import { Icon } from '@/components/ui'
 import { formatFileMtime } from '@/components/console/FileBrowser'
 import { CommitBox } from '@/components/console/dock/CommitBox'
+import { DOCK_POLL_MS, useDockRefresh } from '@/components/console/dock/auto-refresh'
 import { gitWriteRequestFailureText } from '@/components/console/dock/git-write'
 import { StatusBadge, useWorkspaceGitStatus } from '@/components/console/workspace-tree'
 import {
@@ -125,6 +126,8 @@ export function GitPanel({
   agentId,
   sessionId,
   refreshTick = 0,
+  active = true,
+  turnActive = false,
   openPath,
   openStaged = false,
   canWrite = false,
@@ -133,6 +136,10 @@ export function GitPanel({
   onWrote
 }: {
   agentId: string
+  /** Whether the Git tab is the one selected — the poll's gate. The panel stays MOUNTED either way, because its verdict is what keeps its own tab out of the dock's vacant state. */
+  active?: boolean
+  /** Whether a turn is streaming in this session. Its falling edge re-reads even while the tab is hidden: the agent's commits and pushes are what this panel counts, and that count is on the tab's badge. */
+  turnActive?: boolean
   /** ACP session id selecting that session's isolated worktree; omit for the agent's primary checkout. Pass it only when the session's `workspaceIsolation` is `'session'` — the daemon answers a shared-workspace sessionId with BAD_PAYLOAD, which the CP maps to a 503 that reads as "the daemon may be offline". */
   sessionId?: string
   /** Bumped by the tab's `refresh-cw` action: re-reads status and log without remounting. */
@@ -153,7 +160,10 @@ export function GitPanel({
 }) {
   // The panel's own re-read, summed with the tab action's: a commit empties the index and adds a commit, so status AND log have to come again — a stage does not, because its reply carries the fresh status. Both counters only ever increase, so their sum names a distinct read.
   const [writeTick, setWriteTick] = useState(0)
-  const statusTick = refreshTick + writeTick
+  // The automatic re-read (turn edge, poll, reveal), a third counter on the same sum so an auto refresh
+  // is byte-identical to a pressed one — there is no second read path to keep in step.
+  const [autoTick, setAutoTick] = useState(0)
+  const statusTick = refreshTick + writeTick + autoTick
   const { git: readGit, outcome, primaryBranch } = useWorkspaceGitStatus(agentId, sessionId, statusTick)
   const log = useWorkspaceGitLog(agentId, sessionId, statusTick)
   const scope = `${agentId}:${sessionId ?? 'primary'}`
@@ -168,6 +178,21 @@ export function GitPanel({
   const [stageErr, setStageErr] = useState<string | null>(null)
   // The re-entry latch is a REF, not `staging`: two clicks dispatched in one task both read the same pre-update state and the same not-yet-disabled button, so a double-click would send two writes. Measured on the commit box, which has the same shape.
   const writing = useRef(false)
+
+  // Automatic re-reads, on the dock's shared cadence. Skipped while a write of THIS panel's is in
+  // flight: that write answers with the fresh status, and a read racing it would land the pre-write
+  // tree over the reply — the write's own `writeTick` is the re-read for that case.
+  useDockRefresh({
+    active,
+    turnActive,
+    whileHidden: true,
+    intervalMs: DOCK_POLL_MS,
+    onRefresh: () => {
+      if (writing.current) return
+      setApplied(null)
+      setAutoTick((tick) => tick + 1)
+    }
+  })
 
   // Move paths across the index on the daemon. Only paths the checkout reports as changed on the relevant side are ever passed in, so an empty selection is the one no-op this refuses locally.
   const moveIndex = async (kind: 'stage' | 'unstage', paths: string[], busyKey: string) => {

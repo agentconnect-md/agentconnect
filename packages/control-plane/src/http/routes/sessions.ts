@@ -29,6 +29,7 @@ import { ConnectionClosed } from '../../ws/registry.js'
 import { sessionContentReaders } from '../../domain/session-content.js'
 import { visibilityStateOf } from '../../orchestrator/visibilityPush.js'
 import type { PullRequestView } from '../../github/pull-request-view.service.js'
+import type { SessionMetaRecord } from '../../persistence/ports.js'
 import { GithubApiError } from '../../github/api.js'
 import { GitCredDeniedError } from '../../github/service.js'
 import {
@@ -364,8 +365,18 @@ function agentReviewOf(event: string | null): 'approved' | 'changes_requested' |
 }
 
 // Service view -> HTTP body, 1:1 plus the caller's write capability; degradation judgements are the service's.
-function toSessionPullRequestDto(view: PullRequestView, canArmAutoMerge: boolean): SessionPullRequestDtoT {
+function toSessionPullRequestDto(
+  view: PullRequestView,
+  canArmAutoMerge: boolean,
+  // How this PR was found. Defaulted to the run, which is the only source that existed before §12.6.
+  link: { linkedBy: 'run' | 'head-branch'; linkBranch: string | null; linkAmbiguous: boolean } = {
+    linkedBy: 'run',
+    linkBranch: null,
+    linkAmbiguous: false
+  }
+): SessionPullRequestDtoT {
   return {
+    ...link,
     canArmAutoMerge,
     autoMergeArmed: view.autoMergeArmed,
     repoFullName: view.repoFullName,
@@ -1075,8 +1086,21 @@ export function sessionRoutes(deps: HttpDeps) {
       }
     )
 
-    // The session's PR (§3.4): identity from the owning run, live state from GitHub; a GitHub
-    // failure is DATA (`degraded`), and only a session with no pull-request run 404s (hides the tab).
+    // §12.6's second identity source, shared by the PR read and the auto-merge write: the pull request
+    // this session's OWN head branch has, for a session no pull-request run owns — plus the agent whose
+    // grant those writes ride, which for a branch link is the session's own agent rather than a run's.
+    const branchPullRequestLink = async (req: FastifyRequest, session: SessionMetaRecord, force: boolean) => {
+      const links = deps.sessionPullRequestLink
+      if (!links) return null
+      const agent = await deps.repos.agent.get(orgOf(req), session.agentId)
+      if (!agent) return null
+      const link = await links.resolve(agent, session, force)
+      return link ? { ...link, agent } : null
+    }
+
+    // The session's PR (§3.4): identity from the owning run — or, with no run, from the session
+    // worktree's own head branch (§12.6) — and live state from GitHub; a GitHub failure is DATA
+    // (`degraded`), and only a session neither source can name a PR for 404s (hides the tab).
     r.get(
       '/sessions/:id/pull-request',
       {
@@ -1084,7 +1108,7 @@ export function sessionRoutes(deps: HttpDeps) {
           tags: [Tag.Sessions],
           summary: 'Get the session’s pull request',
           description:
-            'The pull request this session was dispatched for: identity (repo, number, url, head/base) from the owning hook run, and live state (checks, current reviews, unresolved review threads) proxied from GitHub in one GraphQL read. GitHub being rate limited, denying the installation, or unreachable is data — `degraded` names which, identity survives, and the live lists are empty — because a panel that still names its PR beats an empty one. 404 when the session has no pull-request run, when the deployment has no GitHub App configured, or when the run predates repo/installation capture; the console hides its PR tab on that. Review thread bodies are user content: proxied, never stored.',
+            'This session’s pull request: identity (repo, number, url, head/base) plus live state (checks, current reviews, unresolved review threads) proxied from GitHub in one GraphQL read. Identity comes from the owning hook run where one exists (`linkedBy: run`, which also carries the review facts a rate-limited answer falls back on); otherwise from the session worktree’s own head branch (`linkedBy: head-branch`, `linkBranch`), so a pull request the agent opened mid-conversation is linked too — `linkAmbiguous` says the branch has more than one open pull request and this is the first of them. GitHub being rate limited, denying the installation, or unreachable is data — `degraded` names which, identity survives, and the live lists are empty — because a panel that still names its PR beats an empty one. 404 when neither source names a pull request (no run and no pull request for the branch, a shared or purged workspace, an offline daemon) or when the deployment has no GitHub App configured; the console then draws its branch state and a create action instead. Review thread bodies are user content: proxied, never stored.',
           operationId: 'getSessionPullRequest',
           params: IdParam,
           querystring: SessionPullRequestQueryDto,
@@ -1100,8 +1124,31 @@ export function sessionRoutes(deps: HttpDeps) {
         const view = deps.pullRequestView
         if (!view) return absent()
         const run = await deps.repos.hook.latestPullRequestRunForSession(orgOf(req), owned.session.id)
-        // Legacy rows predate repo/installation capture — nothing to mint against, so the PR reads absent.
-        if (!run?.pullNumber || !run.repoId || !run.repoFullName || !run.sourceInstallationId) return absent()
+        // No run, or a legacy row that predates repo/installation capture (nothing to mint against):
+        // fall back to the branch. A PR the agent opened from a conversation creates no HookRun at all,
+        // which is the whole reason this arm exists — the run stays the PREFERRED source, because it
+        // also carries the review facts (subject, draft, recorded review) a branch lookup cannot know.
+        if (!run?.pullNumber || !run.repoId || !run.repoFullName || !run.sourceInstallationId) {
+          const link = await branchPullRequestLink(req, owned.session, req.query.refresh === true)
+          if (!link) return absent()
+          const canArmBranch = deps.github
+            ? await deps.github.canArmAutoMerge(link.agent, link.repoId, link.repoFullName)
+            : false
+          return toSessionPullRequestDto(
+            await view.view(
+              {
+                orgId: orgOf(req),
+                installationId: link.installationId,
+                repoId: link.repoId,
+                repoFullName: link.repoFullName,
+                pullNumber: link.pullNumber
+              },
+              req.query.refresh === true
+            ),
+            canArmBranch,
+            { linkedBy: 'head-branch', linkBranch: link.branch, linkAmbiguous: link.ambiguous }
+          )
+        }
         // The subject's own open/draft facts feed the degraded arm, so a rate-limited panel still names them.
         const subject = run.projectionId
           ? (await deps.repos.hook.listReviewSubjects(run.projectionId)).find((s) => s.pullNumber === run.pullNumber)
@@ -1139,7 +1186,7 @@ export function sessionRoutes(deps: HttpDeps) {
           tags: [Tag.Sessions],
           summary: 'Arm or disarm auto-merge on the session’s pull request',
           description:
-            'Enables or disables GitHub auto-merge (squash) for the pull request this session was dispatched for, using an installation token clamped to the owning agent’s repository tier — the write requires that clamp to actually carry `pull_requests: write`, so a read- or comment-tier agent is refused (403) rather than escalated. Idempotent: asking for the state the PR is already in succeeds without a mutation. 404 mirrors the GET; 409 relays GitHub declining the state change (for example a pull request whose checks already pass, which GitHub arms nothing for); 429 is GitHub rate limiting; 502 is GitHub unreachable.',
+            'Enables or disables GitHub auto-merge (squash) for this session’s pull request — the same identity the GET resolves, from the owning run or the session branch — using an installation token clamped to the owning agent’s repository tier — the write requires that clamp to actually carry `pull_requests: write`, so a read- or comment-tier agent is refused (403) rather than escalated. Idempotent: asking for the state the PR is already in succeeds without a mutation. 404 mirrors the GET; 409 relays GitHub declining the state change (for example a pull request whose checks already pass, which GitHub arms nothing for); 429 is GitHub rate limiting; 502 is GitHub unreachable.',
           operationId: 'setSessionPullRequestAutoMerge',
           params: IdParam,
           body: SessionPullRequestAutoMergeBodyDto,
@@ -1162,18 +1209,28 @@ export function sessionRoutes(deps: HttpDeps) {
         const github = deps.github
         if (!view || !github) return absent()
         const run = await deps.repos.hook.latestPullRequestRunForSession(orgOf(req), owned.session.id)
-        if (!run?.pullNumber || !run.repoId || !run.repoFullName || !run.sourceInstallationId) return absent()
-        // The capability is the RUN's agent — the write rides that agent's authorization, not the viewer's.
-        const agent = run.agentId ? await deps.repos.agent.get(orgOf(req), AgentId(run.agentId)) : null
+        // Same two sources as the GET, in the same order — the arm mirrors what the panel is showing.
+        const linked =
+          run?.pullNumber && run.repoId && run.repoFullName && run.sourceInstallationId
+            ? {
+                repoId: run.repoId,
+                repoFullName: run.repoFullName,
+                pullNumber: run.pullNumber,
+                // The capability is the RUN's agent — the write rides that agent's authorization, not the viewer's.
+                agent: run.agentId ? await deps.repos.agent.get(orgOf(req), AgentId(run.agentId)) : null
+              }
+            : await branchPullRequestLink(req, owned.session, false)
+        if (!linked) return absent()
+        const agent = linked.agent
         if (!agent) {
           return reply
             .code(403)
             .send({ error: 'Forbidden', statusCode: 403, message: 'the owning agent no longer exists' })
         }
         try {
-          const cred = await github.mintAutoMergeForAgent(agent, run.repoId, run.repoFullName)
+          const cred = await github.mintAutoMergeForAgent(agent, linked.repoId, linked.repoFullName)
           return await view.setAutoMerge(
-            { repoId: run.repoId, repoFullName: run.repoFullName, pullNumber: run.pullNumber },
+            { repoId: linked.repoId, repoFullName: linked.repoFullName, pullNumber: linked.pullNumber },
             cred.token,
             req.body.enabled
           )

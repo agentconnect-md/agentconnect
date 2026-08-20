@@ -1,0 +1,178 @@
+// `SessionPullRequestLinkService` — the head-branch identity source (webchat-side-panels.md §12.6):
+// which PR a branch means, which sessions never reach GitHub at all, and the two TTLs. GitHub is a
+// scripted `fetchImpl`; no network, no Postgres.
+import { describe, it, expect, vi } from 'vitest'
+import { FakeClock } from '../../test/fakes/fake-clock.js'
+import {
+  SessionPullRequestLinkService,
+  chooseHeadPull,
+  SESSION_PR_LINK_TTL_MS,
+  SESSION_PR_LINK_MISS_TTL_MS,
+  type HeadPull
+} from './session-pull-request-link.service.js'
+import type { GithubService } from './service.js'
+import type { InstallationTokenService } from './installation-token.service.js'
+import type { FetchLike } from './api.js'
+import type { AgentRecord, SessionMetaRecord } from '../persistence/ports.js'
+import { AgentId, OrgId, SessionId } from '../domain/ids.js'
+
+const AGENT = { id: AgentId('agent-1'), orgId: OrgId('org_a') } as unknown as AgentRecord
+
+const SESSION = {
+  id: SessionId('sess-1'),
+  orgId: OrgId('org_a'),
+  agentId: AgentId('agent-1'),
+  workspaceIsolation: 'session',
+  contentPurgedAt: null
+} as unknown as SessionMetaRecord
+
+const REPO = { repoId: 42n, repoFullName: 'acme/repo', installationId: 111n }
+
+const pull = (number: number, state: string, ref = 'dev/jane/panel'): HeadPull => ({
+  number,
+  state,
+  head: { ref }
+})
+
+function harness(opts: { pulls?: HeadPull[][]; branch?: string | null; repo?: typeof REPO | null }): {
+  service: SessionPullRequestLinkService
+  clock: FakeClock
+  fetch: ReturnType<typeof vi.fn>
+  readBranch: ReturnType<typeof vi.fn>
+  resolveRepo: ReturnType<typeof vi.fn>
+} {
+  const clock = new FakeClock(1_760_000_000_000)
+  const pages = [...(opts.pulls ?? [[pull(7, 'open')]])]
+  const fetch = vi.fn(async () => {
+    const next = pages.shift() ?? []
+    return new Response(JSON.stringify(next), { status: 200, headers: { 'content-type': 'application/json' } })
+  })
+  const readBranch = vi.fn(async () => (opts.branch === undefined ? 'dev/jane/panel' : opts.branch))
+  const resolveRepo = vi.fn(async () => (opts.repo === undefined ? REPO : opts.repo))
+  const service = new SessionPullRequestLinkService({
+    clock,
+    github: { resolveWorkspaceRepo: resolveRepo } as unknown as GithubService,
+    tokens: {
+      mintPullRequestRead: async () => ({ token: 'ghs_test' })
+    } as unknown as InstallationTokenService,
+    readSessionBranch: readBranch,
+    fetchImpl: fetch as unknown as FetchLike
+  })
+  return { service, clock, fetch, readBranch, resolveRepo }
+}
+
+describe('chooseHeadPull', () => {
+  it('prefers the FIRST open pull request and reports the ambiguity', () => {
+    expect(chooseHeadPull([pull(9, 'open'), pull(4, 'open'), pull(2, 'closed')], 'dev/jane/panel')).toEqual({
+      pullNumber: 4,
+      ambiguous: true
+    })
+  })
+
+  it('takes the newest closed attempt when none is open, without calling that ambiguous', () => {
+    expect(chooseHeadPull([pull(3, 'closed'), pull(8, 'closed')], 'dev/jane/panel')).toEqual({
+      pullNumber: 8,
+      ambiguous: false
+    })
+  })
+
+  it('is null for an empty answer, and drops a row whose head is another branch', () => {
+    expect(chooseHeadPull([], 'dev/jane/panel')).toBeNull()
+    expect(chooseHeadPull([pull(5, 'open', 'main')], 'dev/jane/panel')).toBeNull()
+  })
+
+  it('keeps a row that carries no head at all — the filter already narrowed it', () => {
+    expect(chooseHeadPull([{ number: 5, state: 'open' }], 'dev/jane/panel')).toEqual({
+      pullNumber: 5,
+      ambiguous: false
+    })
+  })
+})
+
+describe('SessionPullRequestLinkService', () => {
+  it('resolves the branch’s pull request and asks GitHub for that head only', async () => {
+    const { service, fetch } = harness({})
+
+    expect(await service.resolve(AGENT, SESSION)).toEqual({
+      ...REPO,
+      pullNumber: 7,
+      branch: 'dev/jane/panel',
+      ambiguous: false
+    })
+    const url = String(fetch.mock.calls[0]![0])
+    expect(url).toContain('/repos/acme/repo/pulls')
+    expect(url).toContain(`head=${encodeURIComponent('acme:dev/jane/panel')}`)
+    expect(url).toContain('state=all')
+  })
+
+  it('spends NO GitHub call for a shared checkout, a purged session, or a branchless worktree', async () => {
+    const shared = harness({})
+    expect(
+      await shared.service.resolve(AGENT, { ...SESSION, workspaceIsolation: 'shared' } as SessionMetaRecord)
+    ).toBeNull()
+    expect(shared.readBranch).not.toHaveBeenCalled()
+
+    const purged = harness({})
+    expect(
+      await purged.service.resolve(AGENT, { ...SESSION, contentPurgedAt: new Date() } as SessionMetaRecord)
+    ).toBeNull()
+    expect(purged.readBranch).not.toHaveBeenCalled()
+
+    // No branch ⇒ the repo is never even resolved: an offline daemon must not spend the installation's quota.
+    const detached = harness({ branch: null })
+    expect(await detached.service.resolve(AGENT, SESSION)).toBeNull()
+    expect(detached.resolveRepo).not.toHaveBeenCalled()
+    expect(detached.fetch).not.toHaveBeenCalled()
+  })
+
+  it('reads a denied GitHub answer as an absence, cached as a miss', async () => {
+    const clock = new FakeClock(1_760_000_000_000)
+    const fetch = vi.fn(async () => new Response(JSON.stringify({ message: 'nope' }), { status: 403 }))
+    const service = new SessionPullRequestLinkService({
+      clock,
+      github: { resolveWorkspaceRepo: async () => REPO } as unknown as GithubService,
+      tokens: { mintPullRequestRead: async () => ({ token: 'ghs_test' }) } as unknown as InstallationTokenService,
+      readSessionBranch: async () => 'dev/jane/panel',
+      fetchImpl: fetch as unknown as FetchLike
+    })
+
+    expect(await service.resolve(AGENT, SESSION)).toBeNull()
+    expect(await service.resolve(AGENT, SESSION)).toBeNull()
+    expect(fetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('holds a link for its TTL, a miss for the shorter one, and re-reads on force', async () => {
+    const { service, clock, fetch } = harness({ pulls: [[pull(7, 'open')], [pull(9, 'open')], [pull(11, 'open')]] })
+
+    expect((await service.resolve(AGENT, SESSION))?.pullNumber).toBe(7)
+    clock.advance(SESSION_PR_LINK_TTL_MS - 1)
+    expect((await service.resolve(AGENT, SESSION))?.pullNumber).toBe(7)
+    expect(fetch).toHaveBeenCalledTimes(1)
+
+    // The panel's refresh bypasses the live entry.
+    expect((await service.resolve(AGENT, SESSION, true))?.pullNumber).toBe(9)
+    clock.advance(SESSION_PR_LINK_TTL_MS)
+    expect((await service.resolve(AGENT, SESSION))?.pullNumber).toBe(11)
+    expect(fetch).toHaveBeenCalledTimes(3)
+  })
+
+  it('re-asks a miss after the miss TTL — a PR opened seconds ago must appear', async () => {
+    const { service, clock, fetch } = harness({ pulls: [[], [pull(7, 'open')]] })
+
+    expect(await service.resolve(AGENT, SESSION)).toBeNull()
+    clock.advance(SESSION_PR_LINK_MISS_TTL_MS - 1)
+    expect(await service.resolve(AGENT, SESSION)).toBeNull()
+    expect(fetch).toHaveBeenCalledTimes(1)
+    clock.advance(1)
+    expect((await service.resolve(AGENT, SESSION))?.pullNumber).toBe(7)
+  })
+
+  it('invalidateSession drops the held link', async () => {
+    const { service, fetch } = harness({ pulls: [[pull(7, 'open')], [pull(8, 'open')]] })
+
+    expect((await service.resolve(AGENT, SESSION))?.pullNumber).toBe(7)
+    service.invalidateSession(SESSION)
+    expect((await service.resolve(AGENT, SESSION))?.pullNumber).toBe(8)
+    expect(fetch).toHaveBeenCalledTimes(2)
+  })
+})
