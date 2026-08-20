@@ -9,7 +9,7 @@
  * cannot double-count, a report for a vanished agent cannot wedge the batch, and a late
  * report writes its own checkpoint without rolling the snapshot back.
  */
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { USAGE_COLLECTOR_SA_NAME } from '@agentconnect.md/protocol'
 import { prisma } from '../setup.db.js'
 import { buildHttpApp } from '../fakes/build-http.js'
@@ -23,6 +23,25 @@ const POD_UID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
 const AGENT_A = '11111111-1111-4111-8111-111111111111'
 const GONE = '99999999-9999-4999-8999-999999999999'
 const URL = '/api/v1/internal/usage/reports'
+
+/** Wait until a backend is genuinely queued on a `session_spend` row lock — the interleaving the
+ *  race below is written for. Sleeping a fixed guess instead runs a DIFFERENT interleaving whenever
+ *  the runner is slower than the guess, and the split the test names then goes uncovered. */
+async function awaitCheckpointLockWaiter(): Promise<void> {
+  await vi.waitFor(
+    async () => {
+      const rows = await prisma.$queryRaw<Array<{ waiting: number }>>`
+        SELECT count(*)::int AS "waiting"
+        FROM pg_stat_activity
+        WHERE datname = current_database()
+          AND cardinality(pg_blocking_pids(pid)) > 0
+          AND query ILIKE '%session_spend%'
+      `
+      expect(rows[0]?.waiting ?? 0).toBeGreaterThanOrEqual(1)
+    },
+    { timeout: 20_000, interval: 10 }
+  )
+}
 
 function report(sessionId: string, agentId: string, costAmount: string, at: Date) {
   return {
@@ -456,17 +475,26 @@ describe('the shared store semantics both adapters get', () => {
     // waited. Two autocommit statements publish the snapshot mid-flight; one
     // transaction cannot. This is the split the fences alone could not prevent.
     let release!: () => void
+    let markLocked!: () => void
     const held = new Promise<void>((resolve) => (release = resolve))
+    const locked = new Promise<void>((resolve) => (markLocked = resolve))
     const holding = prisma.$transaction(
       async (tx) => {
         await tx.$queryRaw`SELECT 1 FROM "session_spend"
           WHERE "agentId" = ${AGENT_A}::uuid AND "sessionId" = 'gated' FOR UPDATE`
+        markLocked()
         await held
       },
       { timeout: 20_000 }
     )
+    // Report only once the lock is PROVABLY held (racing `holding` so a failure there surfaces
+    // instead of hanging): started earlier, the report runs to completion unblocked and the read
+    // below sees its 999 without any mid-flight publish having happened.
+    await Promise.race([locked, holding])
     const writing = write(999, '9')
-    await new Promise((resolve) => setTimeout(resolve, 300))
+    // Parked on the checkpoint row ⇒ its snapshot statement has already run, so this read is
+    // exactly the mid-flight instant — no sleep long enough to guess at.
+    await awaitCheckpointLockWaiter()
     const midFlight = await snapshotTokens()
     release()
     await holding
