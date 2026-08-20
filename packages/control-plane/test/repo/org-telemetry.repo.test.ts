@@ -10,7 +10,7 @@ import { describe, expect, it } from 'vitest'
 import { prisma } from '../setup.db.js'
 import { PgOrgRepo } from '../../src/persistence/repositories/org.repo.js'
 import { seedAgent, seedDaemon, seedSessionMeta } from '../fixtures/seed.js'
-import { DEFAULT_ORG_SLUG } from '../../prisma/seed.js'
+import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 import type { OrgTelemetryRow } from '../../src/persistence/ports.js'
 
 const NOW = new Date('2026-06-01T12:00:00Z')
@@ -21,7 +21,7 @@ const DAY = 24 * HOUR
 // Preset agents would add rows this test does not control, so the repo is built without them.
 const repo = () => new PgOrgRepo(prisma, false)
 
-const bySlug = (rows: OrgTelemetryRow[], slug: string) => rows.find((r) => r.orgSlug === slug)!
+const byId = (rows: OrgTelemetryRow[], orgId: string) => rows.find((r) => r.orgId === orgId)!
 
 describe('orgTelemetry', () => {
   it('attributes daemons, agents and sessions to their own org', async () => {
@@ -38,8 +38,22 @@ describe('orgTelemetry', () => {
 
     const rows = await repo().orgTelemetry(NOW)
 
-    expect(bySlug(rows, DEFAULT_ORG_SLUG)).toMatchObject({ daemons: 1, agents: 2, sessionsTotal: 1 })
-    expect(bySlug(rows, 'other-org')).toMatchObject({ daemons: 0, agents: 1, sessionsTotal: 1 })
+    expect(byId(rows, DEFAULT_ORG_ID)).toMatchObject({ daemons: 1, agents: 2, sessionsTotal: 1 })
+    expect(byId(rows, other.id)).toMatchObject({ daemons: 0, agents: 1, sessionsTotal: 1 })
+  })
+
+  // The label has to survive a rename, and must not carry the owner's name a personal org's slug is
+  // built from — so the row is keyed by id and the slug is never read.
+  it('identifies an org by id, not by its mutable slug', async () => {
+    const org = await prisma.org.create({ data: { slug: 'before-rename' } })
+
+    const before = await repo().orgTelemetry(NOW)
+    await prisma.org.update({ where: { id: org.id }, data: { slug: 'after-rename' } })
+    const after = await repo().orgTelemetry(NOW)
+
+    expect(byId(before, org.id)).toBeDefined()
+    expect(byId(after, org.id)).toBeDefined()
+    expect(Object.keys(byId(after, org.id))).not.toContain('orgSlug')
   })
 
   // An org running entirely on the install-wide pool reads zero daemons — the member is shared by
@@ -59,25 +73,25 @@ describe('orgTelemetry', () => {
     await seedSessionMeta(prisma, 'this-month', agent, { startedAt: ago(10 * DAY) })
     await seedSessionMeta(prisma, 'ancient', agent, { startedAt: ago(90 * DAY) })
 
-    const row = bySlug(await repo().orgTelemetry(NOW), DEFAULT_ORG_SLUG)
+    const row = byId(await repo().orgTelemetry(NOW), DEFAULT_ORG_ID)
 
     // The total is cumulative over an unpruned table; the windows are how many BEGAN inside them.
     expect(row).toMatchObject({ sessionsTotal: 3, sessions30d: 2, sessions24h: 1 })
 
     // The windows move with the caller's clock, not the database's — 40 days on and only the
     // lifetime total survives, which is what makes an idle org legible on the dashboard.
-    const later = bySlug(await repo().orgTelemetry(new Date(NOW.getTime() + 40 * DAY)), DEFAULT_ORG_SLUG)
+    const later = byId(await repo().orgTelemetry(new Date(NOW.getTime() + 40 * DAY)), DEFAULT_ORG_ID)
     expect(later).toMatchObject({ sessionsTotal: 3, sessions30d: 0, sessions24h: 0 })
   })
 
   // A series that vanishes on its way to zero is invisible on a dashboard: an org that removed its
   // last daemon would look like an org that never existed.
   it('reports an org holding nothing at all, as zeros', async () => {
-    await prisma.org.create({ data: { slug: 'empty-org' } })
+    const empty = await prisma.org.create({ data: { slug: 'empty-org' } })
 
     const rows = await repo().orgTelemetry(NOW)
 
-    expect(bySlug(rows, 'empty-org')).toMatchObject({
+    expect(byId(rows, empty.id)).toMatchObject({
       daemons: 0,
       agents: 0,
       sessionsTotal: 0,

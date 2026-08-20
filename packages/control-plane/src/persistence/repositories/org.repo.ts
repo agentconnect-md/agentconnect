@@ -193,7 +193,7 @@ export class PgOrgRepo implements OrgRepo {
         FROM "session_meta" GROUP BY "orgId"
       )
       -- Driven from "org" so an org holding nothing still reports its zeros.
-      SELECT o.id AS "orgId", o.slug AS "orgSlug",
+      SELECT o.id AS "orgId",
              COALESCE(d.n, 0)::int AS "daemons",
              COALESCE(a.n, 0)::int AS "agents",
              COALESCE(s.total, 0)::int AS "sessionsTotal",
