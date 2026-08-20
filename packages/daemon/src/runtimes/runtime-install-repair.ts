@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
+import { resolveCommandPath } from './probe.js'
 
 // npm can leave an `npx` tree whose lockfile names a platform package that node_modules lacks:
 // reifying an in-place upgrade removes the old aliased optional package without adding the new one.
@@ -81,6 +82,7 @@ const NPM_ENV_ALLOWLIST = [
   'SSL_CERT_FILE',
   'SystemRoot',
   'ComSpec',
+  'PATHEXT',
   'APPDATA',
   'LOCALAPPDATA'
 ]
@@ -104,10 +106,13 @@ export type NpmRunner = (tree: string, args: string[], env: NodeJS.ProcessEnv) =
 // binary, short enough that a hung registry fails the start instead of parking a turn.
 const REPAIR_TIMEOUT_MS = 5 * 60_000
 
-/** Reify one tree with the child's own env, so npm resolves the same HOME, cache, and registry. */
+/** Reify one tree with the child's own env, so npm resolves the same HOME, cache, and registry.
+ *  Resolves the executable against that same env — `execFile` does no PATH/PATHEXT search of its
+ *  own, so a bare `npm` would be ENOENT on Windows, where it ships as `npm.cmd`. */
 export const execFileNpmRunner: NpmRunner = (tree, args, env) =>
   new Promise((resolve, reject) => {
-    execFile('npm', args, { cwd: tree, env, timeout: REPAIR_TIMEOUT_MS, windowsHide: true }, (err) =>
+    const npm = resolveCommandPath('npm', env) ?? 'npm'
+    execFile(npm, args, { cwd: tree, env, timeout: REPAIR_TIMEOUT_MS, windowsHide: true }, (err) =>
       err ? reject(err) : resolve()
     )
   })
