@@ -443,3 +443,34 @@ describe('the reviewed index is the adopted index', () => {
     expect(liveIndex.replace(/^# .*$/m, '')).toBe(stagedIndex.replace(/^# .*$/m, ''))
   })
 })
+
+describe('every writer stores safe frontmatter', () => {
+  it('normalizes an unsafe header no matter which trigger wrote it', async () => {
+    // Normalization used to live at dream staging only, so a description reaching
+    // disk from a turn or from distillation could still be invalid YAML. It is in the
+    // shared write path now, so the guarantee holds for all three.
+    const nasty = 'ship: prod #now'
+    for (const source of ['tool', 'distill', 'dream', 'console'] as const) {
+      const f = fs()
+      await ensureMemory(f, 'bot')
+      await writeMemoryFile(f, 'topic.md', `---\ndescription: ${nasty}\n---\nbody\n`, undefined, source)
+
+      const stored = await readMemoryFile(f, 'topic.md')
+      expect(stored).toContain(`description: ${JSON.stringify(nasty)}`)
+      expect(parseMemoryFrontmatter(stored).header.description).toBe(nasty)
+    }
+  })
+
+  it('is a no-op for a header that is already safe, so rewrites do not churn', async () => {
+    const f = fs()
+    await ensureMemory(f, 'bot')
+    await writeMemoryFile(f, 'plain.md', '---\ndescription: how we ship\n---\nbody\n', undefined, 'tool')
+    const first = await readMemoryFile(f, 'plain.md')
+    expect(first).toContain('description: how we ship') // still unquoted
+
+    await writeMemoryFile(f, 'plain.md', first, undefined, 'tool')
+    const second = await readMemoryFile(f, 'plain.md')
+    // Only `modified` may differ; the description must not gain quoting or escapes.
+    expect(second).toContain('description: how we ship')
+  })
+})
