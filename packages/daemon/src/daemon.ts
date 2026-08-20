@@ -217,10 +217,10 @@ import {
   configuredModelCredentials,
   modelProviderTarget,
   type ModelCredential,
-  type ModelProviderTarget,
-  type StaticModelCredentials
+  type ModelProviderTarget
 } from './runtimes/model-provider-config.js'
-import { DEFAULT_MODEL_KEY_TTL_SECONDS, KeyServerClient, type KeyGrant } from './key-server/client.js'
+import { KeyServerClient, type KeyGrant } from './key-server/client.js'
+import { internalSessionKey, ModelSessionHostPool, type ModelSessionHostPoolHost } from './key-server/session-hosts.js'
 import { CuratedRuntimeAdmission } from './runtimes/curated-admission.js'
 import { runtimeSandboxReadRoots } from './launch/compose.js'
 import { assembleRuntimeLaunch } from './launch/assemble.js'
@@ -615,7 +615,6 @@ export class Daemon {
   private agents = new Map<string, LoadedAgent>()
   private fileAgents = new Map<string, LoadedAgent>()
   private hosts = new Map<string, AcpHost>()
-  private readonly modelSessionHosts = new Map<string, ModelSessionHost>()
   // agentId → when its current host was (re)built (clock ms). The idle reaper reads
   // this so a freshly-started host that hasn't recorded session activity yet is NOT
   // treated as idle-since-epoch (`agentLastActivityTs` is unset until the first turn
@@ -858,9 +857,8 @@ export class Daemon {
   // `--k8s`: this daemon supervises runtimes in sandbox pods instead of local
   // subprocesses, so every "daemon and runtime share one machine" behavior is off.
   private readonly k8s: boolean
-  private readonly keyServer?: KeyServerClient
-  private readonly modelKeyNow: () => number
-  private readonly staticModelCredentials?: StaticModelCredentials
+  /** Owns the per-session model-credential lifecycle: key-server handle, grants, confined hosts. */
+  private readonly modelSessions: ModelSessionHostPool
   /** Deployment codex session-config floor, daemon-applied at spawn so it also reaches agents
    *  whose sandbox pod spec predates the value (the pod-env copy is a frozen snapshot). */
   private readonly codexSessionFloor?: string
@@ -1141,23 +1139,17 @@ export class Daemon {
           : probeSandboxHost()
     this.sandboxMechanism = this.sandboxProbe?.mechanism
     this.clock = opts.clock ?? systemClock
-    this.modelKeyNow = opts.clock ? () => this.clock.now() : () => performance.timeOrigin + performance.now()
-    const keyServerAddress = opts.keyServer?.trim() || process.env.KEY_SERVER?.trim()
-    const keyServerTokenPath = opts.keyServerTokenPath?.trim() || process.env.KEY_SERVER_TOKEN_PATH?.trim()
-    if ((keyServerAddress || opts.keyServerClient) && !this.k8s) {
-      throw new Error('key-server is supported only by cloud daemons running with --k8s')
-    }
-    if (keyServerTokenPath && !keyServerAddress && !opts.keyServerClient) {
-      throw new Error('key-server-token-path requires key-server')
-    }
-    this.keyServer =
-      opts.keyServerClient ??
-      (keyServerAddress
-        ? new KeyServerClient(keyServerAddress, { tokenPath: keyServerTokenPath, now: this.modelKeyNow })
-        : undefined)
+    const modelKeyNow = opts.clock ? () => this.clock.now() : () => performance.timeOrigin + performance.now()
+    this.modelSessions = new ModelSessionHostPool(this.modelSessionPoolHost(), {
+      k8s: this.k8s,
+      address: opts.keyServer?.trim() || process.env.KEY_SERVER?.trim(),
+      tokenPath: opts.keyServerTokenPath?.trim() || process.env.KEY_SERVER_TOKEN_PATH?.trim(),
+      ...(opts.keyServerClient ? { client: opts.keyServerClient } : {}),
+      now: modelKeyNow
+    })
     // Base URLs are deployment topology and always come from here, key server or not; an issuer
     // supplies the key alone.
-    this.staticModelCredentials = this.k8s ? configuredModelCredentials(process.env) : undefined
+    this.modelSessions.staticModelCredentials = this.k8s ? configuredModelCredentials(process.env) : undefined
     this.codexSessionFloor = this.k8s ? configuredCodexSessionFloor(process.env) : undefined
     this.evalHooks = new DaemonEvaluationHooks(this.evaluationHost(), opts.evaluation)
     this.sessionMetadataOutbox = new SessionMetadataOutbox(this.sessionMetadataHost())
@@ -1248,9 +1240,10 @@ export class Daemon {
       serialQueue: () => this.serialQueue,
       activeGateEntries: () => this.activeGateEntries,
       commandChrome: () => this.commandChrome,
-      hasModelSessionHost: (key) => this.modelSessionHosts.has(key),
-      modelCrossesHostProvider: (key, agentId, model) => this.modelCrossesHostProvider(key, agentId, model),
-      hostForStoredSession: async (agentId, acpSessionId) => await this.hostForStoredSession(agentId, acpSessionId),
+      hasModelSessionHost: (key) => this.modelSessions.has(key),
+      modelCrossesHostProvider: (key, agentId, model) => this.modelSessions.crossesHostProvider(key, agentId, model),
+      hostForStoredSession: async (agentId, acpSessionId) =>
+        await this.modelSessions.hostForStoredSession(agentId, acpSessionId),
       statusInfoFrom: async (agentId, sessionKey, acpSessionId) =>
         await this.statusInfoFrom(agentId, sessionKey, acpSessionId),
       emitStatusBar: (p) => this.emitStatusBar(p),
@@ -2568,7 +2561,7 @@ export class Daemon {
       // Use the one generation-safe teardown path: it evicts the host synchronously,
       // publishes hostStopping, and fences every older startup/retry generation.
       await this.stopHost(id)
-      await this.releaseModelSessionHostsForAgent(id)
+      await this.modelSessions.releaseForAgent(id)
       await this.webchatMcpRevocations.revokeRemoteWebchatGrantsForAgent(id, 'agent_detached')
       // Preserve lifecycle/move gates that predated this reconcile. A plain file/CP
       // removal needs no permanent gate once the host is proven stopped (the agent is
@@ -2645,7 +2638,7 @@ export class Daemon {
             )
           }
           try {
-            await this.releaseModelSessionHostsForAgent(a.id)
+            await this.modelSessions.releaseForAgent(a.id)
           } catch (err) {
             this.log.error(
               `reconcile: model-session teardown failed for "${a.id}" — releasing admission gate anyway: ${formatErr(err)}`
@@ -2931,7 +2924,7 @@ export class Daemon {
     }
     await this.stopSelectedTurnHosts(selected)
     await this.stopHost(agentId)
-    await this.releaseModelSessionHostsForAgent(agentId)
+    await this.modelSessions.releaseForAgent(agentId)
     // A dispatch admitted before the drain may still be waiting for a workspace
     // workspace-mutation fence. Release/join that fence first, then collect the dispatch
     // it registers; reversing the order leaves a late active-dispatch join gap.
@@ -3136,7 +3129,7 @@ export class Daemon {
           if (!this.k8s || !target) return
           if (opts.modelCredential) applyModelCredential(target, launchEnv, opts.modelCredential.credential)
           else {
-            const configured = this.staticModelCredentials?.[target.runtime]
+            const configured = this.modelSessions.staticCredential(target.runtime)
             if (configured) applyStaticModelConfig(target, launchEnv, configured)
           }
           // Last, so every key the daemon authored above stays authoritative over the floor.
@@ -3319,163 +3312,23 @@ export class Daemon {
     }
   }
 
-  private selectedModelTurnHost(entry: ModelSessionHost, host: AcpHost): SelectedTurnHost {
-    let cleanup: Promise<void> | undefined
+  /** What the model-session pool still needs from this daemon (src/key-server/session-hosts.ts). */
+  private modelSessionPoolHost(): ModelSessionHostPoolHost {
     return {
-      host,
-      stop: (deadlineMs) => (cleanup ??= this.stopModelSessionRuntime(entry, host, deadlineMs)),
-      waitForCleanup: () => cleanup ?? Promise.resolve()
+      log: () => this.log,
+      agent: (agentId) => this.agents.get(agentId),
+      runtime: (kind) => this.runtimes[kind],
+      orgForAgent: (agentId) => this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId),
+      modelOverride: async (sessionKey) => await this.store.getModelOverride(sessionKey),
+      acpSessionId: async (sessionKey) => (await this.store.getSession(sessionKey))?.acpSessionId,
+      sessionKeyForAcpId: async (agentId, acpSessionId) =>
+        (await this.store.getSessionByAcpIdForAgent(agentId, acpSessionId))?.key,
+      sessionSdkQuiescent: (agentId, acpSessionId) => this.sessionSdkQuiescent(agentId, acpSessionId),
+      releaseSdkLease: (agentId, acpSessionId) => void this.sdkLease.delete(sdkLeaseKey(agentId, acpSessionId)),
+      startRuntime: async (agent, entry) => await this.startModelSessionRuntime(agent, entry),
+      ordinaryHost: (agentId) => this.hosts.get(agentId),
+      cleanupAgentConfigFiles: (agentId) => this.cleanupModelSessionConfigFiles(agentId)
     }
-  }
-
-  private async ensureModelSessionHost(
-    agent: LoadedAgent,
-    sessionKey: string,
-    effectiveModel?: string
-  ): Promise<SelectedTurnHost> {
-    const keyServer = this.keyServer
-    if (!keyServer) throw new Error('key-server is not configured')
-    const runtime = this.runtimes[agent.runtime]
-    if (!runtime) throw new Error(`runtime "${agent.runtime}" is unavailable`)
-    const target = modelProviderTarget(
-      agent,
-      runtime,
-      effectiveModel ?? (await this.store.getModelOverride(sessionKey)) ?? agent.runtimeOverrides?.model
-    )
-    if (!target) throw new Error(`runtime "${agent.runtime}" does not support MODEL_TOKEN translation`)
-    const now = this.modelKeyNow()
-    let entry = this.modelSessionHosts.get(sessionKey)
-    if (entry?.stopping) {
-      await entry.stopping
-      entry = this.modelSessionHosts.get(sessionKey) // a concurrent release may have dropped it
-    }
-    // A released entry only survives in the map when its stop failed, so its process may still
-    // be alive on a key already given back — retry the kill before this session gets a host.
-    if (entry?.released) {
-      await this.releaseModelSessionHost(sessionKey)
-      entry = undefined
-    }
-    const targetChanged = entry !== undefined && JSON.stringify(entry.target) !== JSON.stringify(target)
-    const refreshDue = entry?.grant.refreshAtMs !== undefined && now >= entry.grant.refreshAtMs
-    const expired = entry?.grant.expiresAtMs !== undefined && now >= entry.grant.expiresAtMs
-    // A started host is authoritative for its whole working life: while its session still has
-    // live SDK work, a provider change or a credential refresh is recorded and honoured at the
-    // next start, never by swapping the process out from under the work in flight.
-    if (entry?.host && (targetChanged || refreshDue || expired) && !(await this.modelSessionSdkQuiescent(entry))) {
-      this.log.debug(`session ${sessionKey}: model host pinned to its start-time credential while SDK work is live`)
-      return this.selectedModelTurnHost(entry, entry.host)
-    }
-    if (targetChanged) {
-      await this.releaseModelSessionHost(sessionKey)
-      entry = undefined
-    }
-
-    if (!entry || refreshDue || expired) {
-      let grant: KeyGrant
-      try {
-        grant = await this.issueModelKey(agent, target, sessionKey)
-      } catch (error) {
-        if (entry?.host && !expired) {
-          this.log.warn(`key-server refresh deferred for session ${sessionKey} (${formatErr(error)})`)
-          return this.selectedModelTurnHost(entry, entry.host)
-        }
-        throw error
-      }
-      if (entry) {
-        const staleKeyId = entry.grant.keyId
-        try {
-          await this.stopModelSessionRuntime(entry, entry.host)
-        } catch (error) {
-          // The map still holds the old entry, so a later release still revokes its key. The
-          // grant just issued has no owner at all and the protocol lets one never expire —
-          // this is the only place that can still give it back.
-          void keyServer
-            .revoke(grant.keyId)
-            .catch((e) => this.log.warn(`key-server revoke failed for ${grant.keyId} (${formatErr(e)})`))
-          throw error
-        }
-        void keyServer
-          .revoke(staleKeyId)
-          .catch((error) => this.log.warn(`key-server revoke failed for ${staleKeyId} (${formatErr(error)})`))
-      }
-      entry = { agentId: agent.id, sessionKey, target, grant }
-      this.modelSessionHosts.set(sessionKey, entry)
-    }
-
-    const owner = entry
-    let host = owner.host
-    if (!host) {
-      // Publish the start before awaiting it: a concurrent release joins this promise instead
-      // of seeing an entry with no host, stopping nothing, and leaking the process it misses.
-      const starting: Promise<AcpHost> = (owner.starting ??= this.startModelSessionRuntime(agent, owner)
-        .then((started) => {
-          owner.host = started
-          return started
-        })
-        .finally(() => {
-          if (owner.starting === starting) owner.starting = undefined
-        }))
-      host = await starting
-      if (owner.released || this.modelSessionHosts.get(sessionKey) !== owner) {
-        await this.stopModelSessionRuntime(owner, host).catch(() => {})
-        throw new Error(`model session host for ${sessionKey} was released during startup`)
-      }
-    }
-    return this.selectedModelTurnHost(owner, host)
-  }
-
-  /** The provider binding the session's current host was started with, when this daemon is the
-   *  one injecting its credential. Undefined means nothing is bound — the runtime carries its
-   *  own auth — so any model the runtime offers is applicable. */
-  private boundModelTarget(sessionKey: string, agentId: string): ModelProviderTarget | undefined {
-    const credentialHost = this.modelSessionHosts.get(sessionKey)
-    if (credentialHost) return credentialHost.target
-    if (this.keyServer || !this.k8s || !this.staticModelCredentials) return undefined
-    const agent = this.agents.get(agentId)
-    const runtime = agent ? this.runtimes[agent.runtime] : undefined
-    const target = agent && runtime ? modelProviderTarget(agent, runtime) : undefined
-    // A partial map binds only the providers it configures; the rest keep their runtime-owned auth.
-    return target && this.staticModelCredentials[target.runtime] ? target : undefined
-  }
-
-  /** Whether a model resolves to a different provider than the one the session's host was
-   *  started for. OpenCode model ids are provider-prefixed, so such a pick would land on a
-   *  provider whose options never received a key or base URL. */
-  private modelCrossesHostProvider(sessionKey: string, agentId: string, model: string): boolean {
-    const bound = this.boundModelTarget(sessionKey, agentId)
-    if (!bound) return false
-    const agent = this.agents.get(agentId)
-    const runtime = agent ? this.runtimes[agent.runtime] : undefined
-    const target = agent && runtime ? modelProviderTarget(agent, runtime, model) : undefined
-    return !target || JSON.stringify(target) !== JSON.stringify(bound)
-  }
-
-  private async modelSessionSdkQuiescent(entry: ModelSessionHost): Promise<boolean> {
-    const acpSessionId = (await this.store.getSession(entry.sessionKey))?.acpSessionId
-    return this.sessionSdkQuiescent(entry.agentId, acpSessionId)
-  }
-
-  /** The deployment's base for a target, the only source of one — an IssueKey `baseUrl` is not read. */
-  private staticModelBaseUrl(target: ModelProviderTarget): { baseUrl?: string } {
-    const baseUrl = this.staticModelCredentials?.[target.runtime]?.baseUrl
-    return baseUrl ? { baseUrl } : {}
-  }
-
-  private async issueModelKey(
-    agent: Pick<LoadedAgent, 'id'>,
-    target: ModelProviderTarget,
-    sessionKey: string
-  ): Promise<KeyGrant> {
-    const orgId = this.cpAgents?.orgForAgent(agent.id) ?? this.cpCollab.orgForAgent(agent.id)
-    if (!orgId) throw new Error(`cannot resolve organization for agent ${agent.id}`)
-    if (!this.keyServer) throw new Error('key-server is not configured')
-    return await this.keyServer.issue({
-      orgId,
-      agentId: agent.id,
-      sessionId: createHash('sha256').update(sessionKey).digest('hex'),
-      provider: target.provider,
-      ttlSeconds: DEFAULT_MODEL_KEY_TTL_SECONDS
-    })
   }
 
   private async startModelSessionRuntime(agent: LoadedAgent, entry: ModelSessionHost): Promise<AcpHost> {
@@ -3491,7 +3344,7 @@ export class Daemon {
           target: entry.target,
           credential: {
             key: entry.grant.key,
-            ...this.staticModelBaseUrl(entry.target)
+            ...this.modelSessions.staticBaseUrl(entry.target)
           }
         }
       })
@@ -3510,79 +3363,13 @@ export class Daemon {
     throw lastError
   }
 
-  private async stopModelSessionRuntime(
-    entry: ModelSessionHost,
-    expectedHost?: AcpHost,
-    deadlineMs?: number
-  ): Promise<void> {
-    if (entry.stopping) return await entry.stopping
-    const host = entry.host
-    if (!host || (expectedHost && host !== expectedHost)) return
-    entry.host = undefined
-    const stopping = host
-      .stop(deadlineMs)
-      .catch((error) => {
-        // A stop that rejects may have left the process alive, so the entry has to keep owning
-        // it — dropping the reference is what makes the kill unretryable.
-        entry.host ??= host
-        throw error
-      })
-      .finally(async () => {
-        if (entry.stopping === stopping) entry.stopping = undefined
-        const sessionId = (await this.store.getSession(entry.sessionKey))?.acpSessionId
-        if (sessionId) this.sdkLease.delete(sdkLeaseKey(entry.agentId, sessionId))
-      })
-    entry.stopping = stopping
-    await stopping
-  }
-
-  private async releaseModelSessionHost(sessionKey: string, deadlineMs?: number): Promise<void> {
-    const entry = this.modelSessionHosts.get(sessionKey)
-    if (!entry) return
-    this.modelSessionHosts.delete(sessionKey)
-    entry.released = true
-    // Join an in-progress start so the host it produces is stopped rather than left untracked.
-    if (entry.starting) await entry.starting.catch(() => undefined)
-    let stopError: unknown
-    try {
-      await this.stopModelSessionRuntime(entry, entry.host, deadlineMs)
-    } catch (error) {
-      stopError = error
-    }
-    await this.keyServer
-      ?.revoke(entry.grant.keyId)
-      .catch((error) => this.log.warn(`key-server revoke failed for ${entry.grant.keyId} (${formatErr(error)})`))
-    // A surviving host means the stop rejected and the process may still be running. Put the
-    // entry back so shutdown and the next activation retry the kill; `RevokeKey` is idempotent
-    // (§5), so handing the same key back a second time is a no-op.
-    if (entry.host && !this.modelSessionHosts.has(sessionKey)) {
-      this.modelSessionHosts.set(sessionKey, entry)
-      this.log.warn(`session ${sessionKey}: model host stop failed — retained for a retry`)
-    }
-    if (
-      !this.hosts.has(entry.agentId) &&
-      ![...this.modelSessionHosts.values()].some((candidate) => candidate.agentId === entry.agentId)
-    ) {
-      const agentDir = this.hostConfigFiles.get(entry.agentId)?.agentDir
-      this.hostConfigFiles.delete(entry.agentId)
-      if (agentDir) {
-        const cleanupError = cleanupConfigFiles(agentDir)
-        if (cleanupError) this.log.warn(`config-files: cleanup for agent "${entry.agentId}" failed — ${cleanupError}`)
-      }
-    }
-    if (stopError) throw stopError
-  }
-
-  private async releaseModelSessionHostsForAgent(agentId: string, deadlineMs?: number): Promise<void> {
-    const keys = [...this.modelSessionHosts.values()]
-      .filter((entry) => entry.agentId === agentId)
-      .map((entry) => entry.sessionKey)
-    await Promise.all(keys.map((key) => this.releaseModelSessionHost(key, deadlineMs)))
-  }
-
-  private async hostForStoredSession(agentId: string, acpSessionId: string): Promise<AcpHost | undefined> {
-    const record = await this.store.getSessionByAcpIdForAgent(agentId, acpSessionId)
-    return (record ? this.modelSessionHosts.get(record.key)?.host : undefined) ?? this.hosts.get(agentId)
+  /** Drop an agent's config-file secrets once the pool's last host for it is gone. */
+  private cleanupModelSessionConfigFiles(agentId: string): void {
+    const agentDir = this.hostConfigFiles.get(agentId)?.agentDir
+    this.hostConfigFiles.delete(agentId)
+    if (!agentDir) return
+    const cleanupError = cleanupConfigFiles(agentDir)
+    if (cleanupError) this.log.warn(`config-files: cleanup for agent "${agentId}" failed — ${cleanupError}`)
   }
 
   private fenceLifecycleCleanupFailure(
@@ -3757,9 +3544,9 @@ export class Daemon {
     const cacheKey = this.memoryExtractionKey(agentId, scope)
     const agent = this.agents.get(agentId)
     if (!agent) throw new Error(`unknown agent ${agentId}`)
-    const modelSessionKey = this.keyServer ? `internal:memory:${agentId}` : undefined
+    const modelSessionKey = this.modelSessions.enabled ? internalSessionKey.memory(agentId) : undefined
     const host = modelSessionKey
-      ? (await this.ensureModelSessionHost(agent, modelSessionKey)).host
+      ? (await this.modelSessions.ensure(agent, modelSessionKey)).host
       : await this.ensureHostAsync(agentId)
     try {
       if (this.memoryExtractionUnavailable.has(host)) {
@@ -3859,7 +3646,7 @@ export class Daemon {
           this.memoryExtractionQuarantines.delete(pendingTurnKey(agentId, extractionSessionId))
         }
         this.memoryExtractionSessions.delete(cacheKey)
-        await this.releaseModelSessionHost(modelSessionKey)
+        await this.modelSessions.release(modelSessionKey)
       }
     }
   }
@@ -3901,9 +3688,9 @@ export class Daemon {
     const agent = this.agents.get(agentId)
     if (!agent) throw new Error(`unknown agent ${agentId}`)
     if (signal.aborted) throw new Error('commit-message pass canceled before dispatch')
-    const modelSessionKey = this.keyServer ? `internal:commit:${agentId}:${randomUUID()}` : undefined
+    const modelSessionKey = this.modelSessions.enabled ? internalSessionKey.commit(agentId, randomUUID()) : undefined
     const host = modelSessionKey
-      ? (await this.ensureModelSessionHost(agent, modelSessionKey)).host
+      ? (await this.modelSessions.ensure(agent, modelSessionKey)).host
       : await this.ensureHostAsync(agentId)
     try {
       // OBSERVED, not gated (memory-dreaming.md §2): the policy rides `_meta.systemPrompt` where the
@@ -3965,13 +3752,13 @@ export class Daemon {
       } finally {
         host.discardSession(sessionId)
         if (modelSessionKey) {
-          await this.releaseModelSessionHost(modelSessionKey)
+          await this.modelSessions.release(modelSessionKey)
           this.memoryExtractionQuarantines.delete(key)
           if (this.commitMessageTombstones.get(agentId) === key) this.commitMessageTombstones.delete(agentId)
         }
       }
     } catch (error) {
-      if (modelSessionKey) await this.releaseModelSessionHost(modelSessionKey)
+      if (modelSessionKey) await this.modelSessions.release(modelSessionKey)
       throw error
     }
   }
@@ -4052,17 +3839,20 @@ export class Daemon {
     // runs sandboxed so the attacker-controlled transcript is confined from
     // provider credentials, and torn down the moment the extraction settles.
     let issued: { target: ModelProviderTarget; grant: KeyGrant } | undefined
-    if (this.keyServer) {
+    if (this.modelSessions.enabled) {
       const runtime = this.runtimes[agent.runtime]
       const target = runtime ? modelProviderTarget(agent, runtime) : undefined
       if (!target) throw new Error(`runtime "${agent.runtime}" does not support MODEL_TOKEN translation`)
-      issued = { target, grant: await this.issueModelKey(agent, target, `internal:dream:${context.dreamId}`) }
+      issued = {
+        target,
+        grant: await this.modelSessions.issueKey(agent, target, internalSessionKey.dream(context.dreamId))
+      }
     }
     let host: AcpHost
     try {
       host = await this.buildDreamHost(agent, context.inputDir, issued)
     } catch (error) {
-      if (issued) await this.keyServer?.revoke(issued.grant.keyId).catch(() => {})
+      if (issued) await this.modelSessions.revokeKeyQuietly(issued.grant.keyId)
       throw error
     }
     const ref: { sessionId?: string } = {}
@@ -4074,10 +3864,7 @@ export class Daemon {
       // child also kills a runtime that ignored `session/cancel`.
       await host.stop().catch(() => {})
       if (issued) {
-        const issuedKeyId = issued.grant.keyId
-        await this.keyServer
-          ?.revoke(issuedKeyId)
-          .catch((error) => this.log.warn(`key-server revoke failed for ${issuedKeyId} (${formatErr(error)})`))
+        await this.modelSessions.revokeKey(issued.grant.keyId)
       }
       // The confined child is gone, so no straggler ACP callback can arrive for
       // this dream's session. Reclaim the extraction quarantine tombstone now —
@@ -4123,7 +3910,7 @@ export class Daemon {
               target: issued.target,
               credential: {
                 key: issued.grant.key,
-                ...this.staticModelBaseUrl(issued.target)
+                ...this.modelSessions.staticBaseUrl(issued.target)
               }
             }
           }
@@ -5455,7 +5242,7 @@ export class Daemon {
   private async restoreConfiguredRuntimeSettings(agent: LoadedAgent): Promise<void> {
     for (const session of await this.store.listSessions(agent.id)) {
       const host = session.acpSessionId
-        ? await this.hostForStoredSession(agent.id, session.acpSessionId)
+        ? await this.modelSessions.hostForStoredSession(agent.id, session.acpSessionId)
         : this.hosts.get(agent.id)
       if (!session.acpSessionId || host?.hasSession?.(session.acpSessionId) !== true) continue
       const sessionId = session.acpSessionId
@@ -6343,7 +6130,8 @@ export class Daemon {
       agentLink: (agentId) => this.agentLink(agentId),
       sessionLink: (acpSessionId, source) => this.sessionLink(acpSessionId, source),
       runtimeNames: () => this.runtimeNames,
-      hostForStoredSession: async (agentId, acpSessionId) => await this.hostForStoredSession(agentId, acpSessionId)
+      hostForStoredSession: async (agentId, acpSessionId) =>
+        await this.modelSessions.hostForStoredSession(agentId, acpSessionId)
     }
   }
 
@@ -8715,7 +8503,7 @@ export class Daemon {
       evaluationTurnId,
       // Read here, not in the planner: the sticky override is live daemon state.
       stickyOutputMode: await this.store.getOutputModeOverride(key),
-      hostAlreadyRunning: this.hostStarts.has(agentId) || this.modelSessionHosts.get(key)?.host !== undefined,
+      hostAlreadyRunning: this.hostStarts.has(agentId) || this.modelSessions.hasStartedHost(key),
       protectedAddresses: this.compoundMentionAddresses(agentId, msg),
       codexUsageIsPerPrompt: this.isCodexRuntime(agentId),
       features: { turnFinalContextRefresh: this.cfg.features.turnFinalContextRefresh },
@@ -8896,9 +8684,9 @@ export class Daemon {
     let remoteMcpServer: import('@agentclientprotocol/sdk').McpServer | undefined
     try {
       const reviewWorkspace = await this.githubReviews.prepareGithubReviewWorkspace(entry, key, agent)
-      if (this.keyServer) {
+      if (this.modelSessions.enabled) {
         const firstTurnModel = agent.allowRuntimeChangesInChat ? webchat?.runtime?.model : undefined
-        entry.selectedHost = await this.ensureModelSessionHost(agent, key, firstTurnModel)
+        entry.selectedHost = await this.modelSessions.ensure(agent, key, firstTurnModel)
       }
       // A prior provider post-turn operation is serialized. Managed needs this
       // barrier before reading its index; external recordTurn only durably enqueues.
@@ -9032,7 +8820,7 @@ export class Daemon {
     // shared static host, which has no per-session start to rebind at — persisting it there
     // would leave the session showing an override no prompt could ever honour.
     if (stagedRuntime?.model !== undefined) {
-      if (this.modelCrossesHostProvider(key, agentId, stagedRuntime.model)) {
+      if (this.modelSessions.crossesHostProvider(key, agentId, stagedRuntime.model)) {
         this.log.warn(`session ${key}: first-turn model "${stagedRuntime.model}" refused — the static host is bound`)
       } else {
         await this.store.setModelOverride(key, stagedRuntime.model)
@@ -9228,7 +9016,7 @@ export class Daemon {
     // switch) before the turn runs — the agent's default model was applied at
     // session/new, so this layers the per-session choice on top each turn. Best-effort.
     const override = allowRuntimeChangesInChat ? await this.store.getModelOverride(key) : undefined
-    if (override && this.modelCrossesHostProvider(key, agentId, override)) {
+    if (override && this.modelSessions.crossesHostProvider(key, agentId, override)) {
       // The host is bound to the provider it was started for — pushing a foreign one live
       // would run the turn against options that never received a key or base URL.
       this.log.debug(`model override "${override}" deferred — host is bound to its start-time provider`)
@@ -10692,7 +10480,9 @@ export class Daemon {
     const agent = this.agents.get(agentId)
     const usage = await this.store.getUsage(sessionKey)
     // `?.()` guards a host stub without the method (test fakes); real AcpHosts always have it.
-    const host = acpSessionId ? await this.hostForStoredSession(agentId, acpSessionId) : this.hosts.get(agentId)
+    const host = acpSessionId
+      ? await this.modelSessions.hostForStoredSession(agentId, acpSessionId)
+      : this.hosts.get(agentId)
     const model = host?.modelOptions?.(acpSessionId)
     // A persisted session can outlive the adapter process that created it. In that
     // cold state the exact session selector is unavailable, but the runtime probe has
@@ -12837,7 +12627,9 @@ export class Daemon {
         // the worktree and runs session/load/new before prompting in its cwd.
         const current = await this.store.getSession(rec.key)
         if (current?.acpSessionId === rec.acpSessionId) {
-          ;(await this.hostForStoredSession(rec.agentId, rec.acpSessionId))?.forgetSession(rec.acpSessionId)
+          ;(await this.modelSessions.hostForStoredSession(rec.agentId, rec.acpSessionId))?.forgetSession(
+            rec.acpSessionId
+          )
         }
       }
       return result
@@ -12910,7 +12702,7 @@ export class Daemon {
       if (await this.store.deleteSession(rec.key, { reason: 'retention', at: purgedAt, ownerId: this.cfg.daemonId })) {
         removed += 1
         if (rec.acpSessionId) this.sdkLease.delete(sdkLeaseKey(rec.agentId, rec.acpSessionId))
-        await this.releaseModelSessionHost(rec.key)
+        await this.modelSessions.release(rec.key)
       }
     }
     this.log.info(
@@ -13168,9 +12960,9 @@ export class Daemon {
     // drain below (and the CP READY replay) delivers it eventually.
     void this.webchatMcpRevocations.drainWebchatMcpRevocations()
     for (const row of closed) {
-      void this.releaseModelSessionHost(row.key).catch((error) =>
-        this.log.warn(`key-server session cleanup failed for ${row.key} (${formatErr(error)})`)
-      )
+      void this.modelSessions
+        .release(row.key)
+        .catch((error) => this.log.warn(`key-server session cleanup failed for ${row.key} (${formatErr(error)})`))
       if (row.platform === 'webchat' && row.channel) {
         const descriptor = this.remoteWebchatGrants
         if (descriptor) {
@@ -13282,11 +13074,7 @@ export class Daemon {
       if (this.dutyCoordinator.dutyEnforced() && !this.duties.holdsAgent(agentId)) continue
       // A live host owns the decision above; suspending under it would pull the pod out from
       // beneath a runtime that is merely between turns.
-      if (
-        this.hosts.has(agentId) ||
-        [...this.modelSessionHosts.values()].some((entry) => entry.agentId === agentId && entry.host)
-      )
-        continue
+      if (this.hosts.has(agentId) || this.modelSessions.hasStartedHostForAgent(agentId)) continue
       if ((this.activeDispatchesByAgent.get(agentId)?.size ?? 0) > 0) continue
       if ([...this.pending.values()].some((p) => p.agentId === agentId)) continue
       // Shared-store activity, floored at when this member took the launch: a full window, not epoch-idle.
@@ -13449,14 +13237,14 @@ export class Daemon {
     if (drain.scope.kind === 'daemon') {
       await this.stopSelectedTurnHosts(targets)
       for (const id of [...this.hosts.keys()]) await this.stopHost(id)
-      for (const key of [...this.modelSessionHosts.keys()]) await this.releaseModelSessionHost(key)
+      for (const key of this.modelSessions.keys()) await this.modelSessions.release(key)
       await this.webchatMcpRevocations.revokeAllRemoteWebchatGrants('agent_detached')
       this.draining = false
       released = matched
     } else if (drain.scope.kind === 'agent') {
       await this.stopSelectedTurnHosts(targets)
       await this.stopHost(drain.scope.agentId)
-      await this.releaseModelSessionHostsForAgent(drain.scope.agentId)
+      await this.modelSessions.releaseForAgent(drain.scope.agentId)
       await this.webchatMcpRevocations.revokeRemoteWebchatGrantsForAgent(drain.scope.agentId, 'agent_detached')
       if (!this.agentDestructivePending(drain.scope.agentId)) this.drainingAgents.delete(drain.scope.agentId)
       released = matched
@@ -14089,7 +13877,7 @@ export class Daemon {
       agents: () => this.agents,
       workspaces: () => this.workspaces,
       runtimes: () => this.runtimes,
-      keyServer: () => this.keyServer,
+      keyServer: () => this.modelSessions.keyServer,
       gitCreds: () => this.gitCreds,
       gitCredServer: () => this.gitCredServer,
       quiesceAgentWorkspaceAuthority: (agentId) => this.quiesceAgentWorkspaceAuthority(agentId),
@@ -15338,8 +15126,8 @@ export class Daemon {
     const hostStarts = [...this.hostStarts.values()]
     const hostIds = new Set([...this.hosts.keys(), ...this.hostStarts.keys(), ...this.hostStopping.keys()])
     for (const agentId of hostIds) await this.stopHost(agentId).catch((e) => errors.push(e))
-    for (const key of [...this.modelSessionHosts.keys()]) {
-      await this.releaseModelSessionHost(key).catch((e) => errors.push(e))
+    for (const key of this.modelSessions.keys()) {
+      await this.modelSessions.release(key).catch((e) => errors.push(e))
     }
     // Only now: the shim channel IS the runtimes' transport, so closing it before the drain
     // would cut in-flight turns and closing it before host teardown would leave `AcpHost.stop()`

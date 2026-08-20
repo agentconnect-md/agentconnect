@@ -35,7 +35,7 @@ export interface TurnPlanInput {
   evaluationTurnId: string
   /** Pre-awaited `store.getOutputModeOverride(sessionKey)`; undefined ⇒ agent default. */
   stickyOutputMode: OutputMode | undefined
-  /** `hostStarts.has(agentId) || modelSessionHosts.get(key)?.host !== undefined`, read cold. */
+  /** `hostStarts.has(agentId) || modelSessions.hasStartedHost(key)`, read cold. */
   hostAlreadyRunning: boolean
   /** `daemon.compoundMentionAddresses(agentId, msg)`. */
   protectedAddresses: readonly string[]
