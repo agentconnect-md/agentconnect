@@ -1,8 +1,9 @@
 import { execFile } from 'node:child_process'
 import { MAX_FRAME_BYTES } from '@agentconnect.md/protocol'
-import { realpathSync } from 'node:fs'
+import { existsSync, realpathSync } from 'node:fs'
 import { isAbsolute, normalize, resolve, sep } from 'node:path'
 import { applyFileSinkPayload } from './file-sink.js'
+import { SANDBOX_MCP_BRIDGE_ENTRY } from './sandbox-paths.js'
 import { GitExecPayloadSchema, type GitExecResult } from './git-exec.js'
 import type { ShimCapability } from './protocol.js'
 import { applyWorkspaceFilesPayload } from './workspace-files-channel.js'
@@ -193,7 +194,7 @@ export function createExecHandler(
 }
 
 /**
- * Ask this image which runtimes it provides.
+ * Ask this image what it provides: the runtimes, and the in-pod MCP bridge beside them.
  *
  * Runs the generator rather than reading the table it wrote at build time: the two agree by
  * construction, but a live answer cannot go stale against the image the way a copy in a ConfigMap
@@ -217,7 +218,15 @@ async function probeRuntimes(deps: ExecHandlerDeps, abort?: AbortSignal): Promis
           return
         }
         try {
-          resolvePromise(JSON.parse(String(stdout)))
+          const table = JSON.parse(String(stdout)) as Record<string, unknown>
+          // Consulted here rather than assumed there: whether this image ships the bridge, and
+          // which interpreter runs it, are facts of THIS filesystem — and an older image, whose
+          // probe simply reports neither, is the version skew the daemon has to read rather than
+          // guess. `process.execPath` because the daemon must not have to trust the pod's PATH.
+          const bridge = existsSync(SANDBOX_MCP_BRIDGE_ENTRY)
+            ? { mcpBridge: { command: process.execPath, args: [SANDBOX_MCP_BRIDGE_ENTRY] } }
+            : {}
+          resolvePromise({ ...table, ...bridge })
         } catch (err) {
           reject(new ExecRefusedError(`runtime probe produced invalid JSON: ${(err as Error).message}`))
         }

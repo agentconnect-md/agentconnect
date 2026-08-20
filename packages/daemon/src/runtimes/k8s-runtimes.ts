@@ -46,7 +46,24 @@ const K8sRuntimeEntrySchema = z.object({
   acp: K8sRuntimeAcpSchema.optional()
 })
 
-export const K8sRuntimeTableSchema = z.object({ runtimes: z.array(K8sRuntimeEntrySchema).min(1) })
+export const K8sRuntimeTableSchema = z.object({
+  runtimes: z.array(K8sRuntimeEntrySchema).min(1),
+  /**
+   * How to launch the in-pod MCP bridge, stated by the image: the interpreter it runs and the
+   * bundle it ships. Absent on an image built before the bridge shipped.
+   *
+   * Both halves rather than the path alone, and read from a live PROBE only. The daemon copies
+   * this into the `mcpServers` spec verbatim for a runtime it cannot see, so every part of it has
+   * to come from the filesystem that will run it — a command resolved anywhere else, even one as
+   * ordinary as `node`, is an assumption about a machine the daemon is not on. Hence absolute, and
+   * `catch` rather than a parse error: a bad value costs one tool surface and must not also cost
+   * the member the runtime table the same answer carries.
+   */
+  mcpBridge: z
+    .object({ command: z.string().min(1).startsWith('/'), args: z.array(z.string().min(1)).max(8) })
+    .optional()
+    .catch(undefined)
+})
 
 export type K8sRuntimeTable = z.infer<typeof K8sRuntimeTableSchema>
 export type K8sRuntimeEntry = z.infer<typeof K8sRuntimeEntrySchema>

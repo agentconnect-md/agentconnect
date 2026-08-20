@@ -73,7 +73,7 @@ import {
   sessionGitPolicyEnv
 } from './workspace/git-injection.js'
 import { configureWorkspaceGitOrigins } from './workspace/git-origin-policy.js'
-import { buildMcpServers } from './mcp/inject.js'
+import { buildMcpServers, buildSandboxMcpServers, type McpStdioServer } from './mcp/inject.js'
 import { resolveAgentMcpServers, RESERVED_MCP_SERVER_NAME } from './mcp/resolve-servers.js'
 import { toolsForIntegrations, GITHUB_REVIEW_TOOLS, KNOWLEDGE_TOOLS } from './mcp/tools.js'
 import { MEMORY_TOOL_NAMES, MEMORY_TOOLS } from './memory/tools.js'
@@ -873,6 +873,9 @@ export class Daemon {
   // runtimeProfiles() reports — ACP protocol version, the adapter's own version, MCP transports —
   // stay empty and the published snapshot describes nothing.
   private k8sDeclaredAcp: Record<string, K8sRuntimeAcpSnapshot> = {}
+  // How the probed image launches its in-pod MCP bridge; undefined until the probe answers, and on
+  // an image built before it shipped one. Set only from a live probe — see probeK8sRuntimes.
+  private k8sMcpBridge?: { command: string; args: string[] }
   // Per-runtime facts (names, versions, models, ACP/MCP caps, login state, catalogs),
   // the probe sweep that learns them, and the `facts/daemon-runtimes` snapshot.
   private runtimeFacts!: RuntimeFactsRegistry
@@ -1464,7 +1467,7 @@ export class Daemon {
     await this.hydrateCpRouting()
     this.buildCpRegistries()
     await this.startMcpControlServer(root, cfg)
-    this.buildSessionRuntime(root, cfg)
+    this.buildSessionRuntime(cfg)
     this.buildSchedulers()
     const startControlPlane = await this.connectControlPlane(root)
     await this.openPlatformConnections(agents)
@@ -1550,14 +1553,19 @@ export class Daemon {
           // member shares — a per-process counter restarts at 1 and the agent's pod refuses it.
           generations: this.dataPlane!.store,
           orgForAgent: (agentId) => this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId),
-          // Which sockets this agent's pod needs, and where this daemon serves them. A GitHub-App
-          // workspace is the one case today: its git reaches the credential helper over a unix
-          // socket that, without a tunnel, exists only on the daemon's own filesystem. MCP is
-          // deliberately absent — the in-pod bridge that would dial it is not in the image yet, so
-          // a listener for it would be a socket nobody can use.
-          tunnelsFor: (agentId) =>
-            this.agents.get(agentId)?.workspace.gitCredential === 'github-app' ? ['gitcred'] : [],
-          tunnelSocketPath: (tunnel) => (tunnel === 'gitcred' ? gitcredSocketPath(root) : undefined),
+          // Which sockets this agent's pod needs, and where this daemon serves them — both are on
+          // the daemon's own filesystem, so without a tunnel they exist nowhere the pod can reach.
+          // `mcp` is served for every pod agent because any session may carry tools and the
+          // listener belongs to the pod's lifetime, while the spec that dials it is decided per
+          // session; a GitHub-App workspace adds the credential helper its git asks for.
+          // An id this daemon holds no agent for gets neither: the member's own runtime probe is
+          // the case, and its channel is granted `probe` alone, so asking would only be refused.
+          tunnelsFor: (agentId) => {
+            const agent = this.agents.get(agentId)
+            if (!agent) return []
+            return agent.workspace.gitCredential === 'github-app' ? ['mcp', 'gitcred'] : ['mcp']
+          },
+          tunnelSocketPath: (tunnel) => (tunnel === 'gitcred' ? gitcredSocketPath(root) : mcpSocketPath(root)),
           // A bound sandbox is a reachable memory tree: drain any managed capture that waited for it.
           onSandboxBound: () => this.memoryOutbox?.wake(),
           log: {
@@ -2200,9 +2208,7 @@ export class Daemon {
   }
 
   /** Phase 24 — the turn-context coordinator and the session manager, which registers bridge tokens against the MCP server above. */
-  private buildSessionRuntime(root: string, cfg: Config): void {
-    const cliEntry = daemonEntryForShims(root)
-
+  private buildSessionRuntime(cfg: Config): void {
     this.threadContext = new ThreadContextCoordinator(this.store, (error) =>
       this.log.warn(`turn context snapshot degraded to observed-only (${formatErr(error)})`)
     )
@@ -2296,7 +2302,8 @@ export class Daemon {
         // Falling back to agent.integrations[0] can send a title/message through the
         // wrong bot when one agent has multiple integrations. A memory-only session
         // still registers with no integration so its universal tools work.
-        if (tools.length > 0) {
+        // No reachable bridge ⇒ no token either: a live credential nothing can present.
+        if (tools.length > 0 && this.mcpToolServerReachable()) {
           const token = this.mcp.register({
             agentId: agent.id,
             platform,
@@ -2314,7 +2321,7 @@ export class Daemon {
             agentName: agent.displayName?.trim() || agent.name,
             ...(agent.iconUrl ? { iconUrl: agent.iconUrl } : {})
           })
-          servers.push(...buildMcpServers({ socketPath: mcpSocketPath(root), token, cliEntry }))
+          servers.push(...this.mcpToolServerSpec(token))
         }
         servers.push(
           ...resolveAgentMcpServers({
@@ -2879,6 +2886,29 @@ export class Daemon {
     // agent runs (and installs/uses skills) unsandboxed, and the daemon never
     // fails closed on a host with no OS sandbox.
     return effectiveRunInSandbox(this.cfg.security.requireSandbox, agent.runInSandbox, this.sandboxMechanism)
+  }
+
+  /**
+   * Whether a bridge spawned for this daemon's tools can reach it at all.
+   *
+   * Always, where the runtime shares this filesystem. In `--k8s` only once the image has said it
+   * ships the in-pod bridge: an older one ships none, and a spec it cannot spawn is worse than no
+   * tools — its harness retries the missing module on a backoff for the life of the session.
+   */
+  private mcpToolServerReachable(): boolean {
+    return !this.k8sPlane || this.k8sMcpBridge !== undefined
+  }
+
+  /** That tool server's `session/new` spec, in the coordinates of wherever the runtime runs. */
+  private mcpToolServerSpec(token: string): McpStdioServer[] {
+    if (!this.k8sPlane) {
+      return buildMcpServers({
+        socketPath: mcpSocketPath(this.root),
+        token,
+        cliEntry: daemonEntryForShims(this.root)
+      })
+    }
+    return this.k8sMcpBridge ? buildSandboxMcpServers({ bridge: this.k8sMcpBridge, token }) : []
   }
 
   private async runAgentWorkspacePreparation(agent: Agent, request?: PrepareSessionWorkspaceRequest): Promise<string> {
@@ -3709,11 +3739,7 @@ export class Daemon {
         })
         this.releaseMemoryExtractionToken(cacheKey)
         this.memoryExtractionTokens.set(cacheKey, mcpToken)
-        const mcpServers = buildMcpServers({
-          socketPath: mcpSocketPath(this.root),
-          token: mcpToken,
-          cliEntry: daemonEntryForShims(this.root)
-        })
+        const mcpServers = this.mcpToolServerSpec(mcpToken)
         sessionId = trusted
           ? await host.newSession(cwd, mcpServers, undefined, MEMORY_DISTILLATION_SYSTEM_PROMPT)
           : await host.newSession(cwd, mcpServers)
@@ -4107,11 +4133,7 @@ export class Daemon {
       thread: context.dreamId,
       tools: KNOWLEDGE_TOOLS
     })
-    const mcpServers = buildMcpServers({
-      socketPath: mcpSocketPath(this.root),
-      token: mcpToken,
-      cliEntry: daemonEntryForShims(this.root)
-    })
+    const mcpServers = this.mcpToolServerSpec(mcpToken)
     try {
       const sessionId = trusted
         ? await host.newSession(cwd, mcpServers, undefined, systemPrompt)
@@ -14572,6 +14594,16 @@ export class Daemon {
     try {
       this.log.info('runtimes: probing a sandbox for the runtimes this image provides')
       const table = await plane.probeRuntimes()
+      // The image's answer about its own filesystem, which is the only place this can be known:
+      // the tool-server spec is copied from it verbatim, and a spec assembled here instead gave
+      // the pod's runtime a module to retry forever. Absent means an image from before the bridge
+      // shipped — no tools rather than a server that cannot start.
+      this.k8sMcpBridge = table.mcpBridge
+      if (!table.mcpBridge) {
+        this.log.warn(
+          'mcp: this runtime image ships no in-pod tool bridge — cluster agents get no agent tools, memory distillation or knowledge browsing until it is updated'
+        )
+      }
       const catalog = this.projectDeclaredRuntimes(resolved, table)
       this.runtimeCatalog = catalog
       // The profile reports these, and they come from the catalog entry rather than the table —

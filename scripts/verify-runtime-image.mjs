@@ -52,6 +52,10 @@ const CREDENTIAL_HELPER_PATH = '/opt/agentconnect/bin/git-credential'
 /** Must match SANDBOX_GH_WRAPPER_DIR in packages/daemon/src/shim/sandbox-paths.ts: the shim prepends exactly
  *  this directory to the runtime's PATH, so a rename here silently drops every per-repo gh token. */
 const GH_WRAPPER_PATH = '/opt/agentconnect/pathbin/gh'
+/** Must match SANDBOX_MCP_BRIDGE_ENTRY in packages/daemon/src/shim/sandbox-paths.ts: the shim reports this
+ *  path to the daemon, which copies it into the `mcpServers` spec — so a bundle missing here is a runtime
+ *  retrying a module that is not there, which is how an agent silently lost its AgentConnect tools. */
+const MCP_BRIDGE_PATH = '/opt/agentconnect/shim/mcp-bridge.js'
 const TABLE_PATH = '/opt/agentconnect/runtime/k8s-runtimes.json'
 
 // The runtime is the untrusted party in this image, so root would hand it the whole filesystem.
@@ -140,18 +144,48 @@ check('the credential helper runs and fails loudly with no daemon socket', () =>
   return 'exits 1 with an actionable message'
 })
 
-// The shim is built with everything inlined so this image installs no node_modules for it. A
-// require of anything but a node: builtin means the bundle is depending on a tree that is absent.
-check('the shim bundle is self-contained', () => {
+// The agent's harness spawns this per session from a spec the daemon builds around THIS path, and
+// it inherits the shim's threat model: one the runtime can rewrite is one it can replace with a
+// tool server that answers the daemon's tool calls however it likes.
+check('the MCP bridge is present and root-owned', () => {
+  const owner = inImage(`stat -c '%U:%G %a' ${MCP_BRIDGE_PATH}`)
+  if (!owner.startsWith('root:root')) throw new Error(`mcp bridge is not root-owned (${owner})`)
+  const mode = owner.split(' ')[1]
+  if (/[2367]$/.test(mode) || /^.[2367]/.test(mode)) throw new Error(`mcp bridge is group/other writable (${mode})`)
+  const refused = inImage(`(echo x >> ${MCP_BRIDGE_PATH} && echo WRITABLE) || echo refused`)
+  if (refused !== 'refused') throw new Error('the runtime user can modify the mcp bridge')
+  return owner
+})
+
+// It has to LOAD before it can fail: a bundle that reads a file the image does not ship dies on
+// import, and to the harness that is indistinguishable from a missing module — the failure this
+// whole path exists to remove. Reaching "could not reach daemon" proves the module ran.
+check('the MCP bridge starts and fails loudly with no daemon socket', () => {
+  const out = inImage(
+    `AC_MCP_ENDPOINT=/nonexistent/mcp.sock AC_MCP_TOKEN=probe ` +
+      `sh -c 'node ${MCP_BRIDGE_PATH} </dev/null; echo "exit=$?"' 2>&1`
+  )
+  if (!/mcp-bridge: could not reach daemon/.test(out)) throw new Error(`bridge did not run to its own error: ${out}`)
+  if (!out.includes('exit=1')) throw new Error(`bridge did not exit 1 without a socket: ${out}`)
+  return 'exits 1 with an actionable message'
+})
+
+// The bundles are built with everything inlined so this image installs no node_modules for them. A
+// require of anything but a node: builtin means a bundle is depending on a tree that is absent.
+check('the shim bundles are self-contained', () => {
   // Same specifier shapes the daemon package's own assert-self-contained step looks for, run
-  // against the artifact that actually shipped. The local build being clean says nothing about
+  // against the artifacts that actually shipped. The local build being clean says nothing about
   // the image: an earlier version of this Dockerfile ran tsdown without building the workspace
   // deps, and produced a bundle that imported them externally — which the image cannot resolve.
-  const specs = inImage(
-    `grep -oE '\\b(from|import)[[:space:]]*\\(?[[:space:]]*"[^"]+"' ${SHIM_PATH} | ` +
-      `grep -oE '"[^"]+"' | tr -d '"' | sort -u | grep -v '^node:' || true`
-  )
-  if (specs) throw new Error(`shim references non-builtin modules: ${specs.split('\n').join(', ')}`)
+  const external = []
+  for (const path of [SHIM_PATH, MCP_BRIDGE_PATH]) {
+    const specs = inImage(
+      `grep -oE '\\b(from|import)[[:space:]]*\\(?[[:space:]]*"[^"]+"' ${path} | ` +
+        `grep -oE '"[^"]+"' | tr -d '"' | sort -u | grep -v '^node:' || true`
+    )
+    if (specs) external.push(`${path}: ${specs.split('\n').join(', ')}`)
+  }
+  if (external.length > 0) throw new Error(`bundles reference non-builtin modules — ${external.join('; ')}`)
   return 'node: builtins only'
 })
 

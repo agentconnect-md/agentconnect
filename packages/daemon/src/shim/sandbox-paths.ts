@@ -14,6 +14,10 @@ export const SANDBOX_GIT_CREDENTIAL_HELPER = '/opt/agentconnect/bin/git-credenti
 /** The gh wrapper's token fetch in the pod — the in-sandbox twin of the daemon's hidden `gh-token` subcommand. */
 export const SANDBOX_GH_TOKEN_ENTRY = '/opt/agentconnect/shim/gh-token.js'
 
+/** The AgentConnect tool server the agent's harness spawns in the pod, reached over the `mcp` tunnel.
+ *  Reported to the daemon by the probe rather than assumed: an image built before it ships none. */
+export const SANDBOX_MCP_BRIDGE_ENTRY = '/opt/agentconnect/shim/mcp-bridge.js'
+
 /** The ONLY image directory prepended to the runtime's PATH: the gh wrapper and nothing else. */
 // Its own dir rather than reusing bin/ or shim/: those hold the credential helper and the runtime-table
 // generator, and neither should become a command an agent can run by name.

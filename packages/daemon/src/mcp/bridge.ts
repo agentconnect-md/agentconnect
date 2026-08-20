@@ -3,7 +3,6 @@ import { Server } from '@modelcontextprotocol/server'
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio'
 import { decodeFrames, encodeFrame, type IpcListToolsResult, type IpcResponse } from './ipc.js'
 import type { McpContentResult } from './ops.js'
-import { DAEMON_VERSION } from '../version.js'
 
 type IpcCall = { op: 'attach' } | { op: 'listTools' } | { op: 'callTool'; name: string; args: Record<string, unknown> }
 
@@ -65,11 +64,13 @@ class IpcClient {
 }
 
 /**
- * Entry point for `agentconnect mcp-bridge`: a stdio MCP server that relays
- * `tools/list` and `tools/call` to the running daemon over its control socket.
- * The agent harness spawns this per session; the daemon does the real work.
+ * The stdio MCP server that relays `tools/list` and `tools/call` to the running
+ * daemon over its control socket. The agent harness spawns it per session; the
+ * daemon does the real work. Two entries reach it: the daemon's hidden
+ * `mcp-bridge` subcommand where the runtime shares this filesystem, and the
+ * runtime image's own bundle where it does not (src/shim/mcp-bridge.ts).
  */
-export async function runBridge(opts: { lazyTools?: boolean } = {}): Promise<void> {
+export async function runBridge(opts: { lazyTools?: boolean; version?: string } = {}): Promise<void> {
   const endpoint = process.env.AC_MCP_ENDPOINT
   const token = process.env.AC_MCP_TOKEN
   if (!endpoint || !token) {
@@ -99,7 +100,9 @@ export async function runBridge(opts: { lazyTools?: boolean } = {}): Promise<voi
     }
   }
 
-  const server = new Server({ name: 'agentconnect', version: DAEMON_VERSION }, { capabilities: { tools: {} } })
+  // Stated by the entry rather than read from a package.json: the in-sandbox bundle is copied into
+  // the runtime image on its own, and a manifest beside it would change how node reads every .js there.
+  const server = new Server({ name: 'agentconnect', version: opts.version ?? '0.0.0' }, { capabilities: { tools: {} } })
   server.setRequestHandler('tools/list', async () => {
     if (tools) return { tools }
     const res = (await ipc.request({ op: 'listTools' })) as IpcListToolsResult
