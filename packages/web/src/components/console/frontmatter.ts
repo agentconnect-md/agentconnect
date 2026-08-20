@@ -22,7 +22,6 @@ function text(value: string): ElementContent {
  *  a table inside a cell is why this builds hast rather than an mdast table node. */
 function valueContent(value: unknown): ElementContent[] {
   if (value === null || value === undefined) return []
-  if (value instanceof Date) return [text(value.toISOString())]
   if (Array.isArray(value)) {
     if (value.length === 0) return []
     const cells = value.map((item) => element('td', valueContent(item)))

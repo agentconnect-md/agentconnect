@@ -894,6 +894,14 @@ and `Add file`, `Edit`, and `Delete` actions on the right. New-file naming happe
 in that breadcrumb; completed slash-separated directory names become breadcrumb
 segments. The preview pane does not repeat the file name, path, or workspace label.
 
+A Markdown preview renders a leading YAML frontmatter block as a keyed table above
+the document, the way GitHub does — a memory topic file, a `SKILL.md`, and a
+knowledge body all open with one, and CommonMark would otherwise read it as a
+thematic break plus a setext heading. A sequence renders as a row of cells and a
+nested mapping as its own table. A block that is not a readable mapping is hidden
+rather than shown as prose, and the document body still renders; the raw text stays
+visible through the preview's Code toggle. Editing always shows the file verbatim.
+
 The managed and native Memory file browser uses the same shared inline file editor,
 breadcrumb naming field, and header actions as Workspace. It must not introduce a
 separate prompt or modal flow for adding or editing files; only the persistence API
