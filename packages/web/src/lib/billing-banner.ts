@@ -5,6 +5,14 @@
 // threshold and the gateway's own call. Copy and tone follow the Billing design canvas.
 import { fmtMicroUsd, type BillingAccount } from '@/lib/billing-api'
 
+/** Whether the ledger holds anything, from the transactions page as SWR hands it over.
+ *  Undefined data means BOTH "in flight" and "failed", so it can only answer `null` — and
+ *  this exists as a function so that answer is pinned by a test rather than living inline
+ *  in a component the suite never renders. */
+export function ledgerHistory(page: { items: unknown[] } | undefined): boolean | null {
+  return page ? page.items.length > 0 : null
+}
+
 export type BalanceBanner = {
   tone: 'brand' | 'red' | 'amber' | 'blue'
   icon: string

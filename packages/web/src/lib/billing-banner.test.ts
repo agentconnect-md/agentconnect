@@ -2,7 +2,7 @@
 // swallowed the one actionable line, and did it exactly when it mattered, since `unknown` is
 // reported DURING a suspension decision so the balance is near its threshold by definition.
 import { describe, expect, it } from 'vitest'
-import { balanceBanner } from '@/lib/billing-banner'
+import { balanceBanner, ledgerHistory } from '@/lib/billing-banner'
 import type { BillingAccount } from '@/lib/billing-api'
 
 const acct = (over: Partial<BillingAccount> = {}): BillingAccount => ({
@@ -83,5 +83,19 @@ describe('balanceBanner', () => {
     expect(balanceBanner(nulled, funded)).toBeNull()
     // …and the balance rules still apply, because they owe nothing to the gateway.
     expect(balanceBanner({ ...nulled, balanceMicro: 1 }, funded)?.tone).toBe('amber')
+  })
+})
+
+describe('ledgerHistory', () => {
+  it('answers null for undefined, which is BOTH in flight and failed', () => {
+    // The call site used to inline `?? 0`, which no test could reach: the suite calls
+    // `balanceBanner` directly and never renders the component, so reverting the call site
+    // alone stayed green. This is the function that closes that.
+    expect(ledgerHistory(undefined)).toBeNull()
+  })
+
+  it('answers true or false once the ledger has actually answered', () => {
+    expect(ledgerHistory({ items: [] })).toBe(false)
+    expect(ledgerHistory({ items: [{}] })).toBe(true)
   })
 })

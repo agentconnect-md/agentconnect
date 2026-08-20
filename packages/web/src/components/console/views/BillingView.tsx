@@ -24,7 +24,7 @@ import {
   type BillingAccount,
   type BillingPurchase
 } from '@/lib/billing-api'
-import { balanceBanner } from '@/lib/billing-banner'
+import { balanceBanner, ledgerHistory } from '@/lib/billing-banner'
 import { featureFlagEnabled } from '@/lib/feature-flags'
 import { useOrgs } from '@/lib/org-context'
 import { consoleKeys } from '@/lib/swr-keys'
@@ -61,11 +61,18 @@ function fmtWhen(iso: string): string {
 // Complete literal class strings, never assembled from fragments: Tailwind's scanner only
 // sees whole literals, and `tone` is a closed union of four compile-time constants, so
 // nothing here is the data-derived value rule 8's inline carve-out is for.
+// The glyph colour is per-tone because amber cannot carry a white one: #e0930f against
+// #fff is 2.52:1, under the 3:1 non-text threshold, where a dark glyph on it is 6.92:1.
+// The other three clear 3:1 against white (4.08 / 4.55 / 5.25).
 const BALANCE_TONE = {
-  brand: { card: 'bg-(--brand-soft) border-(--brand)', chip: 'bg-(--brand)' },
-  red: { card: 'bg-(--status-error-soft) border-(--status-error)', chip: 'bg-(--status-error)' },
-  amber: { card: 'bg-(--status-paused-soft) border-(--status-paused)', chip: 'bg-(--status-paused)' },
-  blue: { card: 'bg-(--status-info-soft) border-(--status-info)', chip: 'bg-(--status-info)' }
+  brand: { card: 'bg-(--brand-soft) border-(--brand)', chip: 'bg-(--brand)', glyph: '#fff' },
+  red: { card: 'bg-(--status-error-soft) border-(--status-error)', chip: 'bg-(--status-error)', glyph: '#fff' },
+  amber: {
+    card: 'bg-(--status-paused-soft) border-(--status-paused)',
+    chip: 'bg-(--status-paused)',
+    glyph: 'var(--text-primary)'
+  },
+  blue: { card: 'bg-(--status-info-soft) border-(--status-info)', chip: 'bg-(--status-info)', glyph: '#fff' }
 } as const
 
 function BalanceBannerCard({
@@ -85,7 +92,7 @@ function BalanceBannerCard({
   return (
     <div className={`mb-[18px] flex items-start gap-3 rounded-[10px] border px-4 py-3.5 ${tone.card}`}>
       <span className={`flex h-7 w-7 flex-none items-center justify-center rounded-lg ${tone.chip}`}>
-        <Icon name={banner.icon} size={16} color="#fff" />
+        <Icon name={banner.icon} size={16} color={tone.glyph} />
       </span>
       <div className="min-w-0 flex-1">
         <div className="font-sans text-[13px] font-semibold leading-normal">{banner.title}</div>
@@ -519,8 +526,7 @@ export default function BillingView() {
         <>
           <BalanceBannerCard
             acct={acct}
-            // `null`, not false: undefined data means both in flight AND failed.
-            hasHistory={transactions.data ? transactions.data.items.length > 0 : null}
+            hasHistory={ledgerHistory(transactions.data)}
             canPay={myRole === 'owner'}
             onAddCredits={() => document.getElementById('add-credits')?.scrollIntoView({ behavior: 'smooth' })}
           />
