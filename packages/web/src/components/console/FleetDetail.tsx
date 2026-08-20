@@ -32,10 +32,12 @@ export function barColor(pct: number): string {
   return pct >= 80 ? 'var(--status-paused)' : pct >= 60 ? 'var(--amber-500)' : 'var(--brand)'
 }
 
-/** A runtime as a whole SET offers it — the union over its serving members. */
+/** A runtime as a whole SET offers it, aggregated over its serving members. */
 export interface FleetRuntime {
   runtime: string
   version: string
+  /** Members disagree on the version, so there is no single one to quote. */
+  versionsDiffer?: boolean
   models: string[]
   authRequired: boolean
 }
@@ -63,6 +65,40 @@ export function unionRuntimes(members: readonly DaemonRow[]): FleetRuntime[] {
     }
   }
   return [...byId.values()]
+}
+
+/**
+ * The runtimes every member offers — the INTERSECTION, for a set whose members are not replicas.
+ *
+ * A pool rolls identical Pods, so union and intersection agree there and `unionRuntimes` is the
+ * cheaper read. A GROUP is machines an operator enrolled by hand, and they routinely differ: an
+ * agent placed on the group lands on whichever member is serving, so a runtime one member lacks
+ * is not something the group can run — advertising it promises a placement that fails on the runs
+ * that land elsewhere. Models intersect for exactly the same reason.
+ *
+ * Empty in, empty out: nothing serving offers nothing, rather than the vacuous "everything".
+ */
+export function intersectRuntimes(members: readonly DaemonRow[]): FleetRuntime[] {
+  const [first, ...rest] = members
+  if (!first) return []
+  const out: FleetRuntime[] = []
+  for (const rt of first.runtimeModels) {
+    const peers = rest.map((m) => m.runtimeModels.find((other) => other.runtime === rt.runtime))
+    // One member without it is enough to make it unavailable to the group.
+    if (peers.some((peer) => peer === undefined)) continue
+    const all = [rt, ...peers.filter((peer) => peer !== undefined)]
+    const versions = new Set(all.map((peer) => peer.version).filter(Boolean))
+    out.push({
+      runtime: rt.runtime,
+      version: versions.size === 1 ? [...versions][0]! : '',
+      versionsDiffer: versions.size > 1,
+      models: rt.models.filter((model) => all.every((peer) => peer.models.includes(model))),
+      // Sticky, as in the union: a member whose probe was rejected cannot serve this runtime,
+      // so the group cannot promise it either.
+      authRequired: all.some((peer) => peer.authRequired === true)
+    })
+  }
+  return out
 }
 
 /** The MCP servers a set offers, deduped by name over the members given. */
@@ -130,13 +166,16 @@ export function FleetRuntimesCard({
   title,
   runtimes,
   agents,
-  empty
+  empty,
+  note = 'Open a runtime for its models'
 }: {
   title: string
   runtimes: readonly FleetRuntime[]
   /** Agents placed on the set — a runtime's row says how many of them use it. */
   agents: readonly Agent[]
   empty: string
+  /** What the header says the list means — a group's is narrower than a pool's. */
+  note?: string
 }) {
   const acpRegistry = useAcpRegistry()
   // Independent disclosures — more than one runtime's models can be open at once, matching
@@ -155,7 +194,7 @@ export function FleetRuntimesCard({
       <div className="cardhead">
         <span className="cardtitle">{title}</span>
         <span className="ml-auto font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-          Open a runtime for its models
+          {note}
         </span>
       </div>
       {runtimes.length > 0 ? (
@@ -191,7 +230,7 @@ export function FleetRuntimesCard({
                   )}
                 </span>
                 <span className="mono text-[12px] text-(--text-secondary)">
-                  {rt.version ? `v${rt.version.replace(/^v/, '')}` : '—'}
+                  {rt.versionsDiffer ? 'mixed' : rt.version ? `v${rt.version.replace(/^v/, '')}` : '—'}
                 </span>
                 <span className="font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary)">
                   {users.length > 0 ? `${users.length} agent${users.length === 1 ? '' : 's'}` : 'no agents'}

@@ -28,8 +28,8 @@ import {
   FleetStat,
   barColor,
   connsHeldBy,
-  unionMcpServers,
-  unionRuntimes
+  intersectRuntimes,
+  unionMcpServers
 } from '@/components/console/FleetDetail'
 import { LoadingState } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
@@ -56,7 +56,10 @@ export default function GroupDetailView() {
     () => (group ? agents.filter((a) => isSetPlacementKind(a.placementKind) && a.setId === group.setId) : []),
     [agents, group]
   )
-  const runtimes = useMemo(() => unionRuntimes(serving), [serving])
+  // INTERSECTED, not unioned: a group's members are machines an operator enrolled, not the
+  // interchangeable replicas a pool rolls, and an agent here lands on whichever one is serving.
+  // A runtime that only some members have is therefore not one the group can run.
+  const runtimes = useMemo(() => intersectRuntimes(serving), [serving])
   const mcpServers = useMemo(() => unionMcpServers(serving), [serving])
   const conns = useMemo(() => connsHeldBy(hosted, integrations), [hosted, integrations])
   // Agents PINNED to a member, per member. They are not the group's — a pinned agent names one
@@ -214,13 +217,18 @@ export default function GroupDetailView() {
       </div>
 
       <FleetRuntimesCard
-        title="Runtimes across the group"
+        title="Runtimes the whole group can run"
+        note="Only what every serving member offers"
         runtimes={runtimes}
         agents={hosted}
         empty={
           members.length === 0
             ? 'No runtimes — the group has no members yet.'
-            : 'No runtimes reported — no serving member has advertised its runtime profiles yet.'
+            : serving.length === 0
+              ? 'No runtimes — no member is serving.'
+              : serving.length === 1
+                ? 'No runtimes reported — the serving member has not advertised its runtime profiles yet.'
+                : 'No runtime is on every serving member. An agent here lands on whichever one is serving, so only what they all offer can run.'
         }
       />
 
