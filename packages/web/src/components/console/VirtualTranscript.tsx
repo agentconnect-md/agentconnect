@@ -91,58 +91,78 @@ export function VirtualTranscript<T extends { key?: string }>({
     setScrollMargin((prev) => (Math.abs(prev - offset) > 0.5 ? offset : prev))
   }, [turns.length, virtualize])
 
+  // The latest props in refs, so the effects below don't re-run on every parent render — the parent
+  // passes fresh callback identities and a fresh `turns` array each time, and an effect that re-ran
+  // on those would re-arm the follow constantly and trap the reader at the bottom.
+  const onAtBottomRef = useRef(onAtBottomChange)
+  onAtBottomRef.current = onAtBottomChange
+  const onLoadOlderRef = useRef(onLoadOlder)
+  onLoadOlderRef.current = onLoadOlder
+  const hasOlderRef = useRef(hasOlder)
+  hasOlderRef.current = hasOlder
+  const virtualizeRef = useRef(virtualize)
+  virtualizeRef.current = virtualize
+  const countRef = useRef(turns.length)
+  countRef.current = turns.length
+  const virtualizerRef = useRef(rowVirtualizer)
+  virtualizerRef.current = rowVirtualizer
+
+  const reportAtBottom = useCallback((atBottom: boolean) => onAtBottomRef.current?.(atBottom), [])
+
   const pinToBottom = useCallback(() => {
     const el = scrollRef.current
     if (!el) return
-    // The virtualizer keeps an accurate end while rows are still estimated; the plain path just
-    // clamps to the bottom.
-    if (virtualize && turns.length > 0) rowVirtualizer.scrollToIndex(turns.length - 1, { align: 'end' })
-    else el.scrollTop = el.scrollHeight
-  }, [virtualize, turns.length, rowVirtualizer])
+    // The virtualizer keeps an accurate end while rows are still estimated; the plain path clamps.
+    if (virtualizeRef.current && countRef.current > 0) {
+      virtualizerRef.current.scrollToIndex(countRef.current - 1, { align: 'end' })
+    } else {
+      el.scrollTop = el.scrollHeight
+    }
+  }, [])
 
-  // Resolve the scroll pane once mounted; re-arm the follow for the newly-opened session.
+  // Arm the follow ONLY when the session/conversation changes — never on an ordinary re-render, or
+  // the reader is yanked back to the bottom the moment they scroll up. The view mounts before the
+  // turns land, so an empty pane reads as at-the-bottom and the first history render lands newest.
   useEffect(() => {
     scrollRef.current = rootRef.current?.closest<HTMLElement>('[data-transcript-scroll]') ?? null
     follow.current = true
-    // The view mounts before the turns land, so an empty pane reads as at-the-bottom and the first
-    // history render lands at the newest turn — which is what makes the follow reachable at all.
-    onAtBottomChange?.(true)
-  }, [resetKey, onAtBottomChange])
+    reportAtBottom(true)
+  }, [resetKey, reportAtBottom])
 
-  // Follow the growing transcript, but ONLY while the reader is already at the bottom.
+  // Follow ACTUAL growth, not every render: a ResizeObserver on the growing content fires only when
+  // it really grows (a streamed step, a merged row), and only re-pins while the reader is still at
+  // the bottom. `onScroll` latches that, and drives the reverse-infinite-scroll load. Re-attached
+  // only on a session switch or a plain↔virtual flip (the root element changes) — not per render.
   useEffect(() => {
-    if (follow.current) pinToBottom()
-    // The button follows the same latch: away = the reader scrolled up out of a scrollable list.
-    const el = scrollRef.current
-    onAtBottomChange?.(el ? nearBottom(el) : true)
-  }, [turns, pinToBottom, onAtBottomChange])
-
-  const onScroll = useCallback(() => {
     const el = scrollRef.current
     if (!el) return
-    follow.current = nearBottom(el)
-    onAtBottomChange?.(follow.current)
-    if (hasOlder && onLoadOlder && !loadingOlder.current && el.scrollTop <= NEAR_TOP) {
-      loadingOlder.current = true
-      // Preserve the viewport across the prepend: the caller grows the list at the top, so hold the
-      // distance-from-bottom and restore it after the new rows land.
-      const anchorFromBottom = el.scrollHeight - el.scrollTop
-      Promise.resolve(onLoadOlder()).finally(() => {
-        requestAnimationFrame(() => {
-          const pane = scrollRef.current
-          if (pane) pane.scrollTop = pane.scrollHeight - anchorFromBottom
-          loadingOlder.current = false
+    const onScroll = () => {
+      follow.current = nearBottom(el)
+      reportAtBottom(follow.current)
+      if (hasOlderRef.current && onLoadOlderRef.current && !loadingOlder.current && el.scrollTop <= NEAR_TOP) {
+        loadingOlder.current = true
+        // Hold the distance-from-bottom across the prepend and restore it after the new rows land.
+        const anchorFromBottom = el.scrollHeight - el.scrollTop
+        Promise.resolve(onLoadOlderRef.current()).finally(() => {
+          requestAnimationFrame(() => {
+            const pane = scrollRef.current
+            if (pane) pane.scrollTop = pane.scrollHeight - anchorFromBottom
+            loadingOlder.current = false
+          })
         })
-      })
+      }
     }
-  }, [hasOlder, onLoadOlder, onAtBottomChange])
-
-  useEffect(() => {
-    const el = scrollRef.current
-    if (!el) return
     el.addEventListener('scroll', onScroll, { passive: true })
-    return () => el.removeEventListener('scroll', onScroll)
-  }, [onScroll])
+    const grow = new ResizeObserver(() => {
+      if (follow.current) pinToBottom()
+      reportAtBottom(nearBottom(el))
+    })
+    if (rootRef.current) grow.observe(rootRef.current)
+    return () => {
+      el.removeEventListener('scroll', onScroll)
+      grow.disconnect()
+    }
+  }, [resetKey, virtualize, pinToBottom, reportAtBottom])
 
   useImperativeHandle(
     handleRef,
@@ -150,10 +170,10 @@ export function VirtualTranscript<T extends { key?: string }>({
       scrollToBottom() {
         follow.current = true
         pinToBottom()
-        onAtBottomChange?.(true)
+        reportAtBottom(true)
       }
     }),
-    [pinToBottom, onAtBottomChange]
+    [pinToBottom, reportAtBottom]
   )
 
   if (!virtualize) {
