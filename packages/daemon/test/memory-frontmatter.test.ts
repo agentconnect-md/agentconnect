@@ -474,3 +474,46 @@ describe('every writer stores safe frontmatter', () => {
     expect(second).toContain('description: how we ship')
   })
 })
+
+describe('values that only stay strings while quoted', () => {
+  it('keeps quotes on anything YAML would resolve as a bool, null, or number', () => {
+    // Normalization runs on EVERY write now, so dequoting one of these would turn a
+    // correctly-stored description into a boolean/number on the way back in.
+    const nonStrings = [
+      'true',
+      'False',
+      'yes',
+      'no',
+      'on',
+      'off',
+      'null',
+      '~',
+      '123',
+      '-4',
+      '1.5',
+      '1e10',
+      '.inf',
+      '.NaN',
+      '0x1f'
+    ]
+    for (const value of nonStrings) {
+      const fixed = normalizeMemoryHeader(`---\ndescription: ${JSON.stringify(value)}\n---\nbody\n`)
+      expect(fixed).toContain(`description: ${JSON.stringify(value)}`)
+      expect(parseMemoryFrontmatter(fixed).header.description).toBe(value)
+    }
+  })
+
+  it('still leaves ordinary prose unquoted', () => {
+    for (const value of ['how we ship', 'version 2 of the plan', 'notes about 123 things']) {
+      const fixed = normalizeMemoryHeader(`---\ndescription: ${value}\n---\nbody\n`)
+      expect(fixed).toContain(`description: ${value}`)
+    }
+  })
+
+  it('survives a write/read cycle for a numeric-looking description', async () => {
+    const f = fs()
+    await ensureMemory(f, 'bot')
+    await writeMemoryFile(f, 'n.md', '---\ndescription: "2026"\n---\nbody\n', undefined, 'dream')
+    expect(parseMemoryFrontmatter(await readMemoryFile(f, 'n.md')).header.description).toBe('2026')
+  })
+})
