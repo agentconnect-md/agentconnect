@@ -245,7 +245,7 @@ export const SANDBOX_ASLEEP_CODE = 'WORKSPACE_SANDBOX_UNAVAILABLE'
 // `repo` names the SELECTED root, because with one chosen the missing worktree is that root's and a bare "its worktree" reads as the session's primary one.
 export function sessionWorktreeAbsentNotice(repo?: string): string {
   const of = repo ? ` of ${repo}` : ''
-  return `No checkout${of} for this session — its worktree may have been cleaned up, or this session may not have one${repo ? ' of this repository' : ' of its own'}.`
+  return `No checkout${of} for this session — its worktree may have been cleaned up, or this session may not have one${repo ? ' for this repository' : ' of its own'}.`
 }
 
 /** Whether a failed workspace read was the sandbox being asleep rather than anything being wrong. */
