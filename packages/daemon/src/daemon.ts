@@ -196,16 +196,26 @@ import { isAvailableCommandsUpdate, RuntimeCommandsCache } from './runtimes/runt
 import { installedRuntimeCatalog, installedRuntimes, resolveCommandPath } from './runtimes/probe.js'
 import { startK8sRuntimePlane, type K8sRuntimePlane } from './k8s/runtime-plane.js'
 import { declaredRuntimeCatalog, loadK8sRuntimeTable, type K8sRuntimeAcpSnapshot } from './runtimes/k8s-runtimes.js'
+import {
+  K8S_PROBE_CLAIM_TTL_MS,
+  K8S_PROBE_FRESH_MS,
+  K8S_PROBE_POLL_MS,
+  K8S_PROBE_WAIT_MS,
+  parseK8sProbePayload,
+  probeClusterRuntimes,
+  type K8sProbePayload
+} from './runtimes/cluster-probe.js'
 import { ensureNodeBinOnPath } from './runtimes/exec-path.js'
 import {
   isAuthRequiredError,
   sweepStaleProbeRoots,
+  type ProbeHostFactory,
   type ProbeOptions,
   type RuntimeProbeResult
 } from './runtimes/runtime-prober.js'
 import { ModelCatalogService } from './runtimes/model-catalog.js'
 import { makeModelEnumerator } from './runtimes/model-enumerator.js'
-import { defaultProbeHostFactory } from './acp/probe-host-factory.js'
+import { clusterProbeHostFactory, defaultProbeHostFactory } from './acp/probe-host-factory.js'
 import { runtimeHomePath } from './runtimes/runtime-home.js'
 import {
   applyCodexSessionFloor,
@@ -1073,6 +1083,9 @@ export class Daemon {
         runtimes: Record<string, import('./config/config-schema.js').RuntimeDef>,
         opts: ProbeOptions
       ) => Promise<RuntimeProbeResult[]>
+      /** Seam for the `--k8s` sandbox model probe's ACP client, so a test can exercise the sweep
+       *  without a cluster. Defaults to the real one, which launches through the cluster driver. */
+      probeHostFactory?: ProbeHostFactory
       /** Seam for the k8s execution plane. `--k8s` builds it from the pod's own in-cluster
        *  config and REFUSES to boot without one — running runtimes on the daemon's host is the
        *  outcome the mode exists to prevent, so it must not be a fallback. Tests override this
@@ -14633,34 +14646,39 @@ export class Daemon {
     const plane = this.k8sPlane
     const resolved = this.k8sResolvedCatalog
     if (!plane || !resolved) return
+    let claimed: string | undefined
     try {
-      this.log.info('runtimes: probing a sandbox for the runtimes this image provides')
-      const table = await plane.probeRuntimes()
-      // The image's answer about its own filesystem, which is the only place this can be known:
-      // the tool-server spec is copied from it verbatim, and a spec assembled here instead gave
-      // the pod's runtime a module to retry forever. Absent means an image from before the bridge
-      // shipped — no tools rather than a server that cannot start.
-      this.k8sMcpBridge = table.mcpBridge
-      if (!table.mcpBridge) {
-        this.log.warn(
-          'mcp: this runtime image ships no in-pod tool bridge — cluster agents get no agent tools, memory distillation or knowledge browsing until it is updated'
-        )
+      // Who probes: one member per runtime image, not one per replica.
+      const imageRef = await this.poolRuntimeImageRef(plane)
+      if (imageRef && (await this.adoptPublishedK8sProbe(imageRef, resolved))) return
+      if (imageRef) {
+        if (await this.claimK8sProbe(imageRef, plane.memberId)) claimed = imageRef
+        else {
+          this.log.info(`runtimes: another member is probing ${imageRef} — waiting for its answer`)
+          if (await this.awaitPublishedK8sProbe(imageRef, resolved)) return
+          // The wait ends exactly when that claim becomes retakeable, so this take-over is the
+          // crash path: a holder that died must not leave the whole pool advertising nothing.
+          this.log.warn('runtimes: the probing member published nothing in time — probing this member instead')
+          if (await this.claimK8sProbe(imageRef, plane.memberId)) claimed = imageRef
+        }
       }
-      const catalog = this.projectDeclaredRuntimes(resolved, table)
-      this.runtimeCatalog = catalog
-      // The profile reports these, and they come from the catalog entry rather than the table —
-      // so without this refresh the version the image just told us about would be reported as the
-      // registry's, or as an empty string.
-      this.runtimeFacts.noteImageCatalog(catalog.entries)
-      this.runtimeFacts.applyDeclaredFacts(this.k8sDeclaredModels, this.k8sDeclaredAcp)
-      // The half of readiness only this call can settle: before it the member advertises nothing
-      // and the CP would assign it nothing, so it is not servable however healthy it looks.
-      this.k8sRuntimeProbed = true
-      this.readiness?.refresh()
-      this.log.info(
-        `runtimes ready (probed): ${table.runtimes.map((entry) => `${entry.id}@${entry.version}`).join(', ') || '(none)'}`
-      )
-      this.runtimeFacts.emitFacts()
+      this.log.info('runtimes: probing a sandbox for the runtimes this image provides')
+      let adopted = false
+      let published = false
+      // The model probe rides the SAME held sandbox: a second claim would cost another pod for an
+      // answer this one can already give.
+      const table = await plane.probeRuntimes(async (probed, sandbox) => {
+        this.adoptK8sRuntimeTable(probed, resolved)
+        adopted = true
+        const results = await this.probeK8sRuntimeModels(sandbox)
+        if (imageRef) published = await this.publishK8sProbe(imageRef, probed, results)
+      })
+      // A probe already in flight served this call its table without running the sweep above.
+      if (!adopted) this.adoptK8sRuntimeTable(table, resolved)
+      // ONLY a landed payload keeps the claim: neither a swallowed publish failure nor a swept
+      // sandbox that failed quietly leaves an answer behind, and holding the claim through either
+      // is what would make the pool wait out the whole stale window for nothing.
+      if (published) claimed = undefined
     } catch (err) {
       // Advertising nothing is the honest outcome: the Control Plane then assigns no agent, which
       // is better than assigning one to a daemon that cannot launch it.
@@ -14674,7 +14692,182 @@ export class Daemon {
           ? `runtimes: the runtime image does not serve the probe capability — pin one built with it (${message})`
           : `runtimes: sandbox probe failed — advertising none (${message})`
       )
+    } finally {
+      // A failed probe hands the claim back rather than making the pool wait out its whole stale
+      // window: the next member to try is a better bet than this one's next restart.
+      if (claimed) await this.releaseK8sProbeClaim(claimed, plane.memberId)
     }
+  }
+
+  /** The image the pool's template pins, or undefined when it cannot be read (RBAC, a template
+   *  mid-edit). Undefined means this member probes for itself: the old behaviour, always correct,
+   *  just not shared. */
+  private async poolRuntimeImageRef(plane: K8sRuntimePlane): Promise<string | undefined> {
+    try {
+      return await plane.runtimeImage()
+    } catch (err) {
+      this.log.warn(`runtimes: could not resolve the pool's runtime image — probing alone (${formatErr(err)})`)
+      return undefined
+    }
+  }
+
+  /** Adopt an answer another member already published for this image, if there is one. */
+  private async adoptPublishedK8sProbe(imageRef: string, resolved: ResolvedRuntimeCatalog): Promise<boolean> {
+    const published = await this.store.readRuntimeImageProbe(imageRef).catch((err: unknown) => {
+      this.log.warn(`runtimes: could not read the published probe for ${imageRef}: ${formatErr(err)}`)
+      return undefined
+    })
+    if (!published) return false
+    // An image reference is not always an immutable identity, and the answer also depends on the
+    // deployment's credentials — so an old one is re-asked rather than inherited. See
+    // K8S_PROBE_FRESH_MS for what each staleness would otherwise cost.
+    if (this.clock.now() - published.probedAt > K8S_PROBE_FRESH_MS) {
+      this.log.info(`runtimes: the pool's probe of ${imageRef} is stale — probing again`)
+      return false
+    }
+    const payload = parseK8sProbePayload(published.payload)
+    if (!payload) {
+      this.log.warn(`runtimes: the published probe for ${imageRef} is unreadable — probing this member instead`)
+      return false
+    }
+    this.adoptK8sRuntimeTable(payload.table, resolved)
+    // Folded exactly as this member's own sweep would fold them: the pod that produced them runs
+    // THIS image, which is what the key guarantees and the only thing that makes them ours to use.
+    for (const result of payload.results) await this.runtimeFacts.applySandboxProbe(result)
+    this.log.info(
+      `runtimes: adopted the pool's probe of ${imageRef} (${payload.results.filter((r) => r.models.length > 0).length}/${payload.results.length} runtime(s) with models)`
+    )
+    return true
+  }
+
+  /** Win the right to probe this image for the whole pool. A stale claim is retakeable, so one
+   *  member dying mid-probe cannot leave the pool without an answer forever. */
+  private async claimK8sProbe(imageRef: string, memberId: string): Promise<boolean> {
+    try {
+      const now = this.clock.now()
+      return await this.store.claimRuntimeImageProbe({
+        imageRef,
+        memberId,
+        now,
+        staleBefore: now - K8S_PROBE_CLAIM_TTL_MS
+      })
+    } catch (err) {
+      // Unclaimable is not unprobeable: fall back to this member probing for itself.
+      this.log.warn(`runtimes: could not claim the pool probe for ${imageRef}: ${formatErr(err)}`)
+      return true
+    }
+  }
+
+  /** Hand the claim back after a failed probe, so the pool retries through another member now
+   *  rather than after the stale window. */
+  private async releaseK8sProbeClaim(imageRef: string, memberId: string): Promise<void> {
+    await this.store
+      .releaseRuntimeImageProbe(imageRef, memberId)
+      .catch((err: unknown) => this.log.debug(`runtimes: could not release the probe claim: ${formatErr(err)}`))
+  }
+
+  /** Wait out the member that won the claim, then adopt what it published. */
+  private async awaitPublishedK8sProbe(imageRef: string, resolved: ResolvedRuntimeCatalog): Promise<boolean> {
+    const deadline = this.clock.now() + K8S_PROBE_WAIT_MS
+    for (;;) {
+      await new Promise<void>((resolve) => this.clock.setTimeout(() => resolve(), K8S_PROBE_POLL_MS))
+      if (this.draining || this.shutdownDraining) return false
+      if (await this.adoptPublishedK8sProbe(imageRef, resolved)) return true
+      if (this.clock.now() >= deadline) return false
+    }
+  }
+
+  /** Publish this member's probe for the rest of the pool, reporting whether it landed. Best
+   *  effort for THIS member — it has already probed for itself — but the answer decides whether
+   *  the claim is handed back, so a failure must not read as a published answer. */
+  private async publishK8sProbe(
+    imageRef: string,
+    table: import('./runtimes/k8s-runtimes.js').K8sRuntimeTable,
+    results: RuntimeProbeResult[]
+  ): Promise<boolean> {
+    try {
+      await this.store.publishRuntimeImageProbe({
+        imageRef,
+        payload: JSON.stringify({ table, results } satisfies K8sProbePayload),
+        now: this.clock.now()
+      })
+      this.log.info(`runtimes: published this probe of ${imageRef} for the pool`)
+      return true
+    } catch (err) {
+      this.log.warn(`runtimes: could not publish the probe of ${imageRef}: ${formatErr(err)}`)
+      return false
+    }
+  }
+
+  /** Advertise what the image just said it provides. Idempotent: every caller of the probe applies
+   *  the same table, and the facts frame is a fenced REPLACE. */
+  private adoptK8sRuntimeTable(
+    table: import('./runtimes/k8s-runtimes.js').K8sRuntimeTable,
+    resolved: ResolvedRuntimeCatalog
+  ): void {
+    // The image's answer about its own filesystem, which is the only place this can be known:
+    // the tool-server spec is copied from it verbatim, and a spec assembled here instead gave
+    // the pod's runtime a module to retry forever. Absent means an image from before the bridge
+    // shipped — no tools rather than a server that cannot start.
+    this.k8sMcpBridge = table.mcpBridge
+    if (!table.mcpBridge) {
+      this.log.warn(
+        'mcp: this runtime image ships no in-pod tool bridge — cluster agents get no agent tools, memory distillation or knowledge browsing until it is updated'
+      )
+    }
+    const catalog = this.projectDeclaredRuntimes(resolved, table)
+    this.runtimeCatalog = catalog
+    // The profile reports these, and they come from the catalog entry rather than the table —
+    // so without this refresh the version the image just told us about would be reported as the
+    // registry's, or as an empty string.
+    this.runtimeFacts.noteImageCatalog(catalog.entries)
+    this.runtimeFacts.applyDeclaredFacts(this.k8sDeclaredModels, this.k8sDeclaredAcp)
+    // The half of readiness only this call can settle: before it the member advertises nothing
+    // and the CP would assign it nothing, so it is not servable however healthy it looks.
+    this.k8sRuntimeProbed = true
+    this.readiness?.refresh()
+    this.log.info(
+      `runtimes ready (probed): ${table.runtimes.map((entry) => `${entry.id}@${entry.version}`).join(', ') || '(none)'}`
+    )
+    this.runtimeFacts.emitFacts()
+  }
+
+  /**
+   * Read the models each declared runtime actually offers, by running it — with credentials — in
+   * the probe sandbox the image table just came from.
+   *
+   * The table itself cannot carry this: it is generated at image build time with no provider
+   * credentials, so it publishes no model list and the console shows an empty picker for every
+   * cluster runtime. The credentials are the whole difference, and they exist in exactly two
+   * places this launch reaches: the deployment's own pair on the daemon, and the pod's `AC_*`
+   * fill-in on the SandboxTemplate.
+   */
+  private async probeK8sRuntimeModels(sandbox: { agentId: string; cwd: string }): Promise<RuntimeProbeResult[]> {
+    const plane = this.k8sPlane
+    if (!plane) return []
+    this.refreshAdmittedRuntimes()
+    const runtimes = this.runtimes
+    if (Object.keys(runtimes).length === 0) return []
+    this.log.info(`probe: reading models from the sandbox for ${Object.keys(runtimes).join(', ')}`)
+    const results = await probeClusterRuntimes({
+      runtimes,
+      agentId: sandbox.agentId,
+      cwd: sandbox.cwd,
+      hostFactory:
+        this.opts.probeHostFactory ??
+        clusterProbeHostFactory({
+          driver: plane.driver,
+          log: this.log,
+          isolateAccountApps: this.cfg.security.isolateAccountApps
+        }),
+      staticCredential: (kind) => this.modelSessions.staticCredential(kind),
+      ...(this.codexSessionFloor ? { codexSessionFloor: this.codexSessionFloor } : {}),
+      log: this.log,
+      onResult: (result) => this.runtimeFacts.applySandboxProbe(result)
+    })
+    const withModels = results.filter((result) => result.models.length > 0).length
+    this.log.info(`probe: sandbox sweep complete — ${withModels}/${results.length} runtime(s) advertised models`)
+    return results
   }
 
   /**

@@ -54,10 +54,14 @@ function daemon(opts: {
   root: string
   k8s: boolean
   probe?: ReturnType<typeof vi.fn>
+  /** The ACP client the sandbox model probe drives, so the sweep runs without a cluster. */
+  probeHostFactory?: (rt: unknown, id: string, cwd: string, policy: unknown) => unknown
   supervisor?: string
   /** Extra plane members for the rows that are ABOUT the plane the mode installs. */
   plane?: Record<string, unknown>
   dataPlane?: boolean
+  /** A store shared by several members, so a pool-wide probe can be asserted across them. */
+  store?: LocalStore
   openDataPlane?: ReturnType<typeof vi.fn>
   startControlPlane?: ReturnType<typeof vi.fn>
   /** Receives the options the mode hands the plane — the rows about what it asks the pod to serve. */
@@ -75,7 +79,7 @@ function daemon(opts: {
             : {
                 openDataPlane: async () =>
                   ({
-                    store: await LocalStore.open(':memory:'),
+                    store: opts.store ?? (await LocalStore.open(':memory:')),
                     transcripts: {
                       appendTranscript: () => {},
                       insertToolCall: () => {},
@@ -93,6 +97,8 @@ function daemon(opts: {
             opts.onPlaneStart?.(options)
             return {
               driver: { claimName: (id: string) => `agent-${id}` } as never,
+              memberId: 'member-under-test',
+              runtimeImage: async () => 'runtime-sandbox:test',
               listener: { listeningPort: () => 0 } as never,
               gitRunnerFor: () => undefined,
               launchedAgents: () => [],
@@ -109,6 +115,7 @@ function daemon(opts: {
     ...(opts.supervisor ? { supervisor: opts.supervisor } : {}),
     resolveCatalog: async () => catalog(),
     ...(opts.probe ? { probeRuntimes: opts.probe as never } : {}),
+    ...(opts.probeHostFactory ? { probeHostFactory: opts.probeHostFactory as never } : {}),
     hostFactory: () => ({}) as never
   })
 }
@@ -484,6 +491,243 @@ describe('daemon --k8s mode', () => {
       await vi.waitFor(() => expect(k8sDaemon.readinessState()).toEqual({ ready: true, reason: 'ready' }))
     } finally {
       ;(k8sDaemon as any).cpClient = undefined
+      await k8sDaemon.stop()
+    }
+  })
+
+  // The image's own table is generated with no provider credentials, so it carries no model list at
+  // all — which is how every cluster runtime reached the console with an empty model picker. The
+  // credentialed probe is the answer: run the runtime in the pod that ships it and ASK.
+  it('reads each runtime’s models by running it in the probe sandbox, with the deployment’s credentials', async () => {
+    vi.stubEnv('ANTHROPIC_MODEL_TOKEN', 'deployment-token')
+    vi.stubEnv('ANTHROPIC_MODEL_BASE_URL', 'https://gateway.example/anthropic')
+    const policies: Array<{ id: string; env?: Record<string, string>; inherit?: boolean; cwd: string }> = []
+    const k8sDaemon = daemon({
+      root: root({ declared: { runtimes: [{ id: 'claude' }] } }),
+      k8s: true,
+      probeHostFactory: (_rt, id, cwd, policy: any) => {
+        policies.push({ id, env: policy.env, inherit: policy.inheritProcessEnv, cwd })
+        return {
+          start: async () => {},
+          newSession: async () => 'probe-session',
+          modelOptions: () => ({ models: ['sonnet', 'opus[1m]'], current: 'sonnet' }),
+          acpProtocolVersion: () => 1,
+          acpAgentInfo: () => ({ name: 'claude-agent-acp', version: '0.66.0' }),
+          stop: async () => {}
+        } as never
+      },
+      // One held sandbox answers both halves: the table, then the runtimes it named.
+      plane: {
+        probeRuntimes: async (sweep: any) => {
+          // The command is the IMAGE's, which is also what identifies the provider surface the
+          // credential is written onto.
+          const table = { runtimes: [{ id: 'claude', version: '1.2.3', command: 'claude-agent-acp' }] }
+          await sweep?.(table, { agentId: 'ac-runtime-probe-abc', cwd: '/agent' })
+          return table
+        }
+      }
+    })
+    try {
+      await k8sDaemon.start()
+      await vi.waitFor(() => expect((k8sDaemon as any).runtimeFacts.profileFor('claude').models).toHaveLength(2))
+      const profile = (k8sDaemon as any).runtimeFacts.profileFor('claude')
+      expect(profile.models).toEqual(['sonnet', 'opus[1m]'])
+      // A live session said so, so the model gates are strict — unlike a declared snapshot.
+      expect(profile.modelsSource).toBe('probed')
+      // The runtime ran in the POD: routed by the probe identity, addressed in the pod's
+      // coordinates, and carrying the deployment's provider pair rather than this daemon's env.
+      expect(policies).toEqual([
+        {
+          id: 'claude',
+          cwd: '/agent',
+          inherit: false,
+          env: {
+            AC_AGENT_ID: 'ac-runtime-probe-abc',
+            ANTHROPIC_API_KEY: 'deployment-token',
+            ANTHROPIC_BASE_URL: 'https://gateway.example/anthropic'
+          }
+        }
+      ])
+    } finally {
+      await k8sDaemon.stop()
+      vi.unstubAllEnvs()
+    }
+  })
+
+  // One pod per POOL, not per replica. The answer describes the runtime image, and every member on
+  // that image would spend a sandbox to be told the same thing.
+  it('adopts the pool’s published probe instead of claiming a sandbox of its own', async () => {
+    const store = await LocalStore.open(':memory:')
+    await store.publishRuntimeImageProbe({
+      imageRef: 'runtime-sandbox:test',
+      now: Date.now(),
+      payload: JSON.stringify({
+        table: { runtimes: [{ id: 'claude', version: '9.9.9', command: 'claude-agent-acp' }] },
+        results: [{ runtime: 'claude', ok: true, models: ['sonnet', 'opus[1m]'], acpProtocolVersion: 1 }]
+      })
+    })
+    const probeRuntimes = vi.fn()
+    const k8sDaemon = daemon({ root: root(), k8s: true, store, plane: { probeRuntimes } })
+    try {
+      await k8sDaemon.start()
+      await vi.waitFor(() => expect((k8sDaemon as any).k8sRuntimeProbed).toBe(true))
+      // No sandbox was claimed, and the member still advertises the models and the image's version.
+      expect(probeRuntimes).not.toHaveBeenCalled()
+      const profile = (k8sDaemon as any).runtimeFacts.profileFor('claude')
+      expect(profile.models).toEqual(['sonnet', 'opus[1m]'])
+      expect(profile.modelsSource).toBe('probed')
+      expect(profile.version).toBe('9.9.9')
+    } finally {
+      await k8sDaemon.stop()
+    }
+  })
+
+  it('hands the claim back when its own probe leaves the pool no answer', async () => {
+    // Holding a claim through a failure is what would make every other member wait out the whole
+    // stale window for a payload that is never coming.
+    const store = await LocalStore.open(':memory:')
+    const k8sDaemon = daemon({
+      root: root(),
+      k8s: true,
+      store,
+      plane: {
+        probeRuntimes: async () => {
+          throw new Error('probe sandbox bound no session')
+        }
+      }
+    })
+    try {
+      await k8sDaemon.start()
+      await vi.waitFor(async () =>
+        expect(
+          await store.claimRuntimeImageProbe({
+            imageRef: 'runtime-sandbox:test',
+            memberId: 'another-member',
+            now: Date.now(),
+            staleBefore: 0
+          })
+        ).toBe(true)
+      )
+    } finally {
+      await k8sDaemon.stop()
+    }
+  })
+
+  it('re-probes rather than inherit an answer that has gone stale', async () => {
+    // An image reference is not always an immutable identity — a template pinned to a moving tag
+    // keeps one key across rebuilds — and the answer also depends on the deployment's credentials.
+    const store = await LocalStore.open(':memory:')
+    await store.publishRuntimeImageProbe({
+      imageRef: 'runtime-sandbox:test',
+      now: Date.now() - 25 * 60 * 60_000,
+      payload: JSON.stringify({
+        table: { runtimes: [{ id: 'claude', version: 'from-a-previous-build' }] },
+        results: [{ runtime: 'claude', ok: true, models: ['gone'] }]
+      })
+    })
+    const probeRuntimes = vi.fn(async (sweep: any) => {
+      const table = { runtimes: [{ id: 'claude', version: '1.2.3' }] }
+      await sweep?.(table, { agentId: 'ac-runtime-probe-abc', cwd: '/agent' })
+      return table
+    })
+    const k8sDaemon = daemon({
+      root: root(),
+      k8s: true,
+      store,
+      probeHostFactory: () =>
+        ({
+          start: async () => {},
+          newSession: async () => 's',
+          modelOptions: () => ({ models: ['sonnet'], current: 'sonnet' }),
+          acpProtocolVersion: () => 1,
+          stop: async () => {}
+        }) as never,
+      plane: { probeRuntimes }
+    })
+    try {
+      await k8sDaemon.start()
+      await vi.waitFor(() => expect((k8sDaemon as any).k8sRuntimeProbed).toBe(true))
+      expect(probeRuntimes).toHaveBeenCalledOnce()
+      const profile = (k8sDaemon as any).runtimeFacts.profileFor('claude')
+      expect(profile.version).toBe('1.2.3')
+      expect(profile.models).toEqual(['sonnet'])
+    } finally {
+      await k8sDaemon.stop()
+    }
+  })
+
+  it('probes for itself when the pool has published nothing for THIS image', async () => {
+    // A template bump is a different key, so a member on a new image never adopts the old one's
+    // answer — which is what makes one shared probe safe across a rollout.
+    const store = await LocalStore.open(':memory:')
+    await store.publishRuntimeImageProbe({
+      imageRef: 'runtime-sandbox:previous',
+      now: 1,
+      payload: JSON.stringify({ table: { runtimes: [{ id: 'claude', version: '0.0.1' }] }, results: [] })
+    })
+    const probeRuntimes = vi.fn(async (sweep: any) => {
+      const table = { runtimes: [{ id: 'claude', version: '1.2.3' }] }
+      await sweep?.(table, { agentId: 'ac-runtime-probe-abc', cwd: '/agent' })
+      return table
+    })
+    const k8sDaemon = daemon({
+      root: root(),
+      k8s: true,
+      store,
+      probeHostFactory: () =>
+        ({
+          start: async () => {},
+          newSession: async () => 's',
+          modelOptions: () => null,
+          acpProtocolVersion: () => 1,
+          stop: async () => {}
+        }) as never,
+      plane: { probeRuntimes }
+    })
+    try {
+      await k8sDaemon.start()
+      await vi.waitFor(() => expect((k8sDaemon as any).k8sRuntimeProbed).toBe(true))
+      expect(probeRuntimes).toHaveBeenCalledOnce()
+      expect((k8sDaemon as any).runtimeFacts.profileFor('claude').version).toBe('1.2.3')
+      // And what it found is published for the members that start after it.
+      const published = await store.readRuntimeImageProbe('runtime-sandbox:test')
+      expect(JSON.parse(published!.payload).table.runtimes[0].version).toBe('1.2.3')
+    } finally {
+      await k8sDaemon.stop()
+    }
+  })
+
+  it('keeps the image’s declared facts when the sandbox probe cannot reach a runtime', async () => {
+    // An empty `probed` list is a STRICT gate, so one slow pod would refuse an agent whose model
+    // the declared table already vouches for. Unreachable says nothing about the runtime.
+    const k8sDaemon = daemon({
+      root: root({ declared: { runtimes: [{ id: 'claude', models: ['sonnet'] }] } }),
+      k8s: true,
+      probeHostFactory: () =>
+        ({
+          start: async () => {
+            throw new Error('no shim channel bound in time')
+          },
+          newSession: async () => 'unused',
+          modelOptions: () => null,
+          acpProtocolVersion: () => undefined,
+          stop: async () => {}
+        }) as never,
+      plane: {
+        probeRuntimes: async (sweep: any) => {
+          const table = { runtimes: [{ id: 'claude', version: '1.2.3', models: ['sonnet'] }] }
+          await sweep?.(table, { agentId: 'ac-runtime-probe-abc', cwd: '/agent' })
+          return table
+        }
+      }
+    })
+    try {
+      await k8sDaemon.start()
+      await vi.waitFor(() => expect((k8sDaemon as any).k8sRuntimeProbed).toBe(true))
+      const profile = (k8sDaemon as any).runtimeFacts.profileFor('claude')
+      expect(profile.models).toEqual(['sonnet'])
+      expect(profile.modelsSource).toBe('cached')
+    } finally {
       await k8sDaemon.stop()
     }
   })

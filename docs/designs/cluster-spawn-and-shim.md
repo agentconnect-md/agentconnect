@@ -100,6 +100,10 @@ defaults to the namespace mounted into the daemon Pod's ServiceAccount.
 Runtime probes use a member-hashed claim name plus an expiry annotation, so simultaneous member
 startup never races on one probe claim and a missed teardown cannot retain a Sandbox forever: the
 pool's orphan reconciler collects an expired one ([k8s-daemon-pool.md](k8s-daemon-pool.md) §3–§4).
+That one sandbox answers both halves of the probe — the image's runtime table over the `probe`
+channel, then the runtimes it named, RUN over the `acp` channel to read the models they advertise —
+so the probe claim is granted exactly `probe` + `acp` and nothing else. A second claim for the
+second half would cost another pod for an answer this one can already give.
 
 ## 3. Binding: proving which pod accepted the connection
 

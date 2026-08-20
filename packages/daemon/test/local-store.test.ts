@@ -1417,6 +1417,58 @@ describe('LocalStore session retention GC (#485)', () => {
   })
 })
 
+describe('LocalStore pool-wide runtime probe claim', () => {
+  // One member per runtime image runs the probe sandbox; the rest read what it published. The
+  // store is what decides which member that is, so the race and the stale holder both settle here.
+  it('gives the claim to exactly one member, and the loser reads the winner’s answer', async () => {
+    const s = await store()
+    const claim = (memberId: string) =>
+      s.claimRuntimeImageProbe({ imageRef: 'runtime:v1', memberId, now: 1_000, staleBefore: 0 })
+    expect(await claim('member-a')).toBe(true)
+    expect(await claim('member-b')).toBe(false)
+    // Re-entrant for the holder: a retry after a transient failure is not a second member.
+    expect(await claim('member-a')).toBe(true)
+
+    expect(await s.readRuntimeImageProbe('runtime:v1')).toBeUndefined()
+    await s.publishRuntimeImageProbe({ imageRef: 'runtime:v1', payload: '{"table":{},"results":[]}', now: 2_000 })
+    expect(await s.readRuntimeImageProbe('runtime:v1')).toEqual({
+      payload: '{"table":{},"results":[]}',
+      probedAt: 2_000
+    })
+  })
+
+  it('lets another member retake a claim whose holder went away', async () => {
+    // Otherwise one member dying mid-probe leaves the whole pool advertising nothing, forever.
+    const s = await store()
+    expect(await s.claimRuntimeImageProbe({ imageRef: 'runtime:v1', memberId: 'gone', now: 1_000, staleBefore: 0 }))
+    expect(
+      await s.claimRuntimeImageProbe({ imageRef: 'runtime:v1', memberId: 'next', now: 9_000, staleBefore: 5_000 })
+    ).toBe(true)
+  })
+
+  it('keys the answer on the image, so a template bump is a different question', async () => {
+    const s = await store()
+    await s.publishRuntimeImageProbe({ imageRef: 'runtime:v1', payload: '{"v":1}', now: 1 })
+    expect(await s.readRuntimeImageProbe('runtime:v2')).toBeUndefined()
+    expect(
+      await s.claimRuntimeImageProbe({ imageRef: 'runtime:v2', memberId: 'member-a', now: 1, staleBefore: 0 })
+    ).toBe(true)
+    // And publishing the new image leaves the old row alone.
+    await s.publishRuntimeImageProbe({ imageRef: 'runtime:v2', payload: '{"v":2}', now: 2 })
+    expect((await s.readRuntimeImageProbe('runtime:v1'))?.payload).toBe('{"v":1}')
+  })
+
+  it('drops answers for images the pool stopped running long ago', async () => {
+    // One row per image tag ever deployed would otherwise accumulate for the life of the store.
+    const s = await store()
+    const year = 365 * 24 * 60 * 60_000
+    await s.publishRuntimeImageProbe({ imageRef: 'runtime:ancient', payload: '{"v":0}', now: 1 })
+    await s.publishRuntimeImageProbe({ imageRef: 'runtime:current', payload: '{"v":1}', now: year })
+    expect(await s.readRuntimeImageProbe('runtime:ancient')).toBeUndefined()
+    expect((await s.readRuntimeImageProbe('runtime:current'))?.payload).toBe('{"v":1}')
+  })
+})
+
 describe('LocalStore runtime model-catalog cache (runtime-model-catalog.md §4)', () => {
   const meta = (runtimeId: string, fingerprint: string, observedAt = 100) => ({
     runtimeId,

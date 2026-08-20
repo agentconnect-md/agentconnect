@@ -470,6 +470,23 @@ export class RuntimeFactsRegistry {
     }
   }
 
+  /** Fold one result from the `--k8s` sandbox probe and re-assert the snapshot. Identical folding
+   *  to a host sweep — the probe ran in a pod rather than beside the daemon, which is a fact about
+   *  where the runtime lives, not about what its answer means. */
+  async applySandboxProbe(result: RuntimeProbeResult): Promise<void> {
+    // A pod probe that never reached the runtime says nothing ABOUT the runtime — the pod may have
+    // been slow, or the channel may have dropped. The image's declared facts are still the best
+    // knowledge this member has, and replacing them with an empty `probed` list would turn one
+    // transient cluster failure into a strict model gate that refuses the agent. An auth-required
+    // rejection is different: the runtime answered, and "logged out" is live knowledge.
+    if (!result.ok && !result.authRequired) {
+      this.host.log().warn(`probe: ${result.runtime} unreachable in the sandbox — keeping the image's declared facts`)
+      return
+    }
+    await this.applyProbeResult(result)
+    this.emitFacts()
+  }
+
   /** Fold one probe result into admission, advertised models/caps and the model
    *  catalog. Called per result so a slow runtime delays only itself. */
   private async applyProbeResult(r: RuntimeProbeResult): Promise<void> {
@@ -554,12 +571,18 @@ export class RuntimeFactsRegistry {
         }
         await this.rebuildCatalog(r.runtime)
       }
-      this.host.noteCatalogProbe({
-        runtimeId: r.runtime,
-        rt: entry.runtime,
-        probedVersion: r.probedVersion,
-        models: r.models
-      })
+      // Phase 2 enumerates model by model in an isolated HOME on THIS host, which `--k8s` does not
+      // have: its runtimes live in a pod. A cluster probe therefore stops at the phase-1 seed
+      // rather than scheduling a discovery that could only fail (or, for a native driver, run the
+      // wrong machine's executable).
+      if (!this.host.launch().k8s) {
+        this.host.noteCatalogProbe({
+          runtimeId: r.runtime,
+          rt: entry.runtime,
+          probedVersion: r.probedVersion,
+          models: r.models
+        })
+      }
     } catch (err) {
       this.host.log().warn(`catalog: phase-1 seed for ${r.runtime} failed: ${formatErr(err)}`)
     }

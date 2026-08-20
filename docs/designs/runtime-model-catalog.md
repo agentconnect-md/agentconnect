@@ -409,7 +409,14 @@ Lifecycle rules:
    it. A cold daemon with no cached list still reports `models: []` on failure.
    **Capability** (`modelCatalog`) remains independent and is never cleared by a
    probe failure.
-6. **Garbage collection**: during hydration, ignore runtime IDs absent from the
+6. **`--k8s` stops at phase 1.** The probe runs in the sandbox pod that ships the
+   runtime (see [daemon-detailed-design.md](daemon-detailed-design.md) §2.6), so
+   its `models[]` and its phase-1 config-option seed are live and reported
+   `probed`. Phase 2 is not scheduled: enumeration switches the model per
+   `set_config_option` inside an isolated HOME on the probing host, and a cluster
+   daemon has neither that HOME nor the runtime's filesystem. A native driver
+   would be worse — it would run this machine's executable to describe another's.
+7. **Garbage collection**: during hydration, ignore runtime IDs absent from the
    current catalog resolved from registry/user/curated sources. Do not advertise
    or report them, but retain the rows because resolution may have failed
    temporarily. At startup, delete catalogs unseen for 30 days to prevent

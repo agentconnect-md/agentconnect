@@ -751,6 +751,10 @@ const SCHEMA_VERSION = 11
  * in the `CREATE` block, which runs afterwards and is `IF NOT EXISTS`, so it
  * covers fresh and upgraded stores from the one description.
  */
+/** How long a probed image's published answer outlives its last publish. A rollback inside the
+ *  window costs nothing; past it, one member probes the image again. */
+const RUNTIME_IMAGE_PROBE_RETENTION_MS = 30 * 24 * 60 * 60_000
+
 const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean }) => Promise<void>)[] = [
   async (db) => await db.exec('ALTER TABLE permission_requests ADD COLUMN ownerId TEXT'),
   async (db) =>
@@ -1305,6 +1309,18 @@ export class LocalStore {
         modelsHash TEXT,                  -- hash of probed models[] at last complete discovery
         observedAt INTEGER NOT NULL,
         PRIMARY KEY (ownerId, runtimeId)
+      );
+      -- The pool-wide runtime probe's published answer, keyed on the runtime IMAGE it describes
+      -- (docs/designs/daemon-detailed-design.md §2.6). One member claims a key and probes; every
+      -- member reads the payload and advertises it, so a pool runs ONE probe sandbox rather than
+      -- one per replica. The image is the key because that is what the answer is about: a template
+      -- bump is a different row, and no member can be served a previous image's models.
+      CREATE TABLE IF NOT EXISTS runtime_image_probe (
+        imageRef TEXT PRIMARY KEY,
+        claimedBy TEXT,                   -- member currently probing; the claim goes stale on its own
+        claimedAt INTEGER,
+        probedAt INTEGER,                 -- when a payload landed; NULL while only claimed
+        payload TEXT                      -- JSON {table, results} — the image table and probe results
       );
       CREATE TABLE IF NOT EXISTS runtime_model_catalog (
         ownerId TEXT NOT NULL DEFAULT '',
@@ -5625,6 +5641,66 @@ export class LocalStore {
       caps: parseJsonColumn<RuntimeModelCapRecord['caps']>(row.capsJson) ?? {},
       observedAt: row.observedAt
     }))
+  }
+
+  /**
+   * Try to become the member that probes this runtime image. One atomic upsert decides it, so two
+   * members starting together cannot both win: the loser reads the winner's payload instead. A
+   * claim whose holder died is retaken once it goes stale — otherwise one crashed member would
+   * leave the pool with no probe at all.
+   */
+  async claimRuntimeImageProbe(input: {
+    imageRef: string
+    memberId: string
+    now: number
+    staleBefore: number
+  }): Promise<boolean> {
+    const row = (await this.db
+      .prepare(
+        `INSERT INTO runtime_image_probe (imageRef, claimedBy, claimedAt)
+         VALUES (@imageRef, @memberId, @now)
+         ON CONFLICT(imageRef) DO UPDATE SET claimedBy = @memberId, claimedAt = @now
+           WHERE runtime_image_probe.claimedBy IS NULL
+              OR runtime_image_probe.claimedBy = @memberId
+              OR COALESCE(runtime_image_probe.claimedAt, 0) <= @staleBefore
+         RETURNING claimedBy`
+      )
+      .get(input)) as { claimedBy: string | null } | undefined
+    return row?.claimedBy === input.memberId
+  }
+
+  /** The published answer for an image, if one has landed. */
+  async readRuntimeImageProbe(imageRef: string): Promise<{ payload: string; probedAt: number } | undefined> {
+    const row = (await this.db
+      .prepare('SELECT payload, probedAt FROM runtime_image_probe WHERE imageRef = ?')
+      .get(imageRef)) as { payload: string | null; probedAt: number | null } | undefined
+    if (!row?.payload || row.probedAt === null) return undefined
+    return { payload: row.payload, probedAt: row.probedAt }
+  }
+
+  /** Hand a claim back without an answer: this member tried and failed, and the pool should not
+   *  have to wait out the whole stale window before another member does. */
+  async releaseRuntimeImageProbe(imageRef: string, memberId: string): Promise<void> {
+    await this.db
+      .prepare('UPDATE runtime_image_probe SET claimedBy = NULL, claimedAt = NULL WHERE imageRef = ? AND claimedBy = ?')
+      .run(imageRef, memberId)
+  }
+
+  /** Publish what this member's probe found, and release the claim with it. Rows for images the
+   *  pool has long stopped running are dropped on the way past: one per image tag ever deployed
+   *  would otherwise accumulate for the life of the deployment. */
+  async publishRuntimeImageProbe(input: { imageRef: string; payload: string; now: number }): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT INTO runtime_image_probe (imageRef, claimedBy, claimedAt, probedAt, payload)
+         VALUES (@imageRef, NULL, NULL, @now, @payload)
+         ON CONFLICT(imageRef) DO UPDATE SET claimedBy = NULL, claimedAt = NULL,
+           probedAt = @now, payload = @payload`
+      )
+      .run(input)
+    await this.db
+      .prepare('DELETE FROM runtime_image_probe WHERE imageRef <> ? AND COALESCE(probedAt, claimedAt, 0) < ?')
+      .run(input.imageRef, input.now - RUNTIME_IMAGE_PROBE_RETENTION_MS)
   }
 
   /** Next shim-binding generation for an agent's sandbox: one atomic upsert, so two members cannot tie. */
