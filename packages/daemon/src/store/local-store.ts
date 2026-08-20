@@ -1297,6 +1297,15 @@ export class LocalStore {
       -- can tell "never fully discovered" from "last-good on file".
       -- ownerId leads both keys (#1039): the cache describes an image, so on a store every
       -- pool member shares, two rollout generations would re-probe and prune each other.
+      -- The last slash-command list each agent's runtime advertised (ACP
+      -- available_commands_update), so a daemon restart/upgrade does not blind the
+      -- console's skill picker until the next session happens to start.
+      CREATE TABLE IF NOT EXISTS runtime_commands (
+        agentId TEXT PRIMARY KEY,
+        sessionId TEXT NOT NULL,
+        updatedAt TEXT NOT NULL,          -- ISO timestamp of the advertisement
+        payload TEXT NOT NULL             -- JSON RuntimeCommand[]
+      );
       CREATE TABLE IF NOT EXISTS runtime_catalog_meta (
         ownerId TEXT NOT NULL DEFAULT '', -- the owning member; '' is the single-daemon store
         runtimeId TEXT NOT NULL,
@@ -4280,6 +4289,29 @@ export class LocalStore {
   }
 
   /** Whether an integration's first channel snapshot has been baselined (seeded). */
+  /** Persist one agent's advertised slash-command list (latest-wins, whole list). */
+  async setRuntimeCommands(agentId: string, row: { sessionId: string; updatedAt: string; payload: string }) {
+    await this.db
+      .prepare(
+        `INSERT INTO runtime_commands (agentId, sessionId, updatedAt, payload) VALUES (?, ?, ?, ?)
+         ON CONFLICT(agentId) DO UPDATE SET sessionId=excluded.sessionId, updatedAt=excluded.updatedAt, payload=excluded.payload`
+      )
+      .run(agentId, row.sessionId, row.updatedAt, row.payload)
+  }
+
+  async getRuntimeCommands(
+    agentId: string
+  ): Promise<{ sessionId: string; updatedAt: string; payload: string } | undefined> {
+    const row = (await this.db
+      .prepare('SELECT sessionId, updatedAt, payload FROM runtime_commands WHERE agentId = ?')
+      .get(agentId)) as { sessionId: string; updatedAt: string; payload: string } | undefined
+    return row ?? undefined
+  }
+
+  async deleteRuntimeCommands(agentId: string): Promise<void> {
+    await this.db.prepare('DELETE FROM runtime_commands WHERE agentId = ?').run(agentId)
+  }
+
   async isChannelIntroSeeded(integrationId: string): Promise<boolean> {
     return (
       (await this.db.prepare('SELECT 1 FROM channel_intro_seed WHERE integrationId = ?').get(integrationId)) !==

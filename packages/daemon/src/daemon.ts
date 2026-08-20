@@ -284,8 +284,10 @@ import {
   manifestFor,
   originKindOf,
   SessionPurgeReason,
-  RD_ACK_NOT_HOLDER
+  RD_ACK_NOT_HOLDER,
+  RuntimeCommand
 } from '@agentconnect.md/protocol'
+import { z } from 'zod'
 import { isNoResponseBody } from './session/no-response.js'
 import { WorkspaceConflictError } from './cp/workspace-reader.js'
 import { TaskViolationError } from './cp/task-reader.js'
@@ -2055,6 +2057,9 @@ export class Daemon {
     for (const a of this.effectiveAgents()) {
       this.agents.set(a.id, a)
       this.prefetchClone(a)
+      // Same reason as the clone: the picker's command list must survive a restart, and this
+      // path never goes through reconcile's toStart.
+      void this.hydrateRuntimeCommands(a.id)
     }
   }
 
@@ -2714,6 +2719,7 @@ export class Daemon {
       this.gitCreds.remove(id)
       this.gitCredServer?.revoke(id)
       this.runtimeCommands.forget(id)
+      void this.store.deleteRuntimeCommands(id).catch(() => undefined)
       // Use the one generation-safe teardown path: it evicts the host synchronously,
       // publishes hostStopping, and fences every older startup/retry generation.
       await this.stopHost(id)
@@ -2782,6 +2788,7 @@ export class Daemon {
         // are in hostSpawnSig, so a runtime switch would otherwise keep serving the old harness's
         // commands until some later session/new replaced them.
         this.runtimeCommands.forget(a.id)
+        void this.store.deleteRuntimeCommands(a.id).catch(() => undefined)
         if (workspaceNeedsColdRecovery) {
           this.gitCreds.remove(a.id)
           this.gitCredServer?.revoke(a.id)
@@ -2829,6 +2836,9 @@ export class Daemon {
       // New agent: warm its git-repo checkout in the background now (e.g. on daemon
       // start every agent is a toStart), so the repo is cloned ahead of the first message.
       this.prefetchClone(a as LoadedAgent)
+      // And the picker's command list, from the persisted last advertisement — a restart
+      // must not read as "this agent has never run" until a session happens to start.
+      void this.hydrateRuntimeCommands(a.id)
       await this.syncAgentSchedules(a)
     }
     // Reconcile exactly once from the final live roster. The close phase is strict:
@@ -8486,6 +8496,19 @@ export class Daemon {
     )
   }
 
+  /** Seed the in-memory command cache from the persisted advertisement; a live one always wins. */
+  private async hydrateRuntimeCommands(agentId: string): Promise<void> {
+    try {
+      const row = await this.store.getRuntimeCommands(agentId)
+      if (!row) return
+      const parsed = z.array(RuntimeCommand).safeParse(JSON.parse(row.payload))
+      if (!parsed.success) return
+      this.runtimeCommands.seed(agentId, { sessionId: row.sessionId, updatedAt: row.updatedAt, commands: parsed.data })
+    } catch {
+      // Corrupt or unreadable persisted copy — the next live advertisement rewrites it.
+    }
+  }
+
   private withWorkspaceFileWrite<T>(agentId: string, write: () => Promise<T>): Promise<T> {
     // Admission into the shared mutation tail is synchronous: a preparation or
     // second publication accepted in the next call stack can only run after this
@@ -11253,7 +11276,18 @@ export class Daemon {
       const host = this.hosts.get(agentId)
       const owned = host?.hasSession(sessionId) || host?.isLoadingSession(sessionId)
       if (owned && !this.internalPassSessions.has(extractionKey)) {
-        this.runtimeCommands.record(agentId, sessionId, update, this.clock.now())
+        const entry = this.runtimeCommands.record(agentId, sessionId, update, this.clock.now())
+        // Persisted so a restart/upgrade serves the last-known list instead of "nothing yet".
+        // `store` is absent only in bare test harnesses constructed without start().
+        if (entry && this.store) {
+          void this.store
+            .setRuntimeCommands(agentId, {
+              sessionId: entry.sessionId,
+              updatedAt: entry.updatedAt,
+              payload: JSON.stringify(entry.commands)
+            })
+            .catch((err) => this.log.debug(`runtime-commands persist failed for ${agentId}: ${formatErr(err)}`))
+        }
       }
       return
     }

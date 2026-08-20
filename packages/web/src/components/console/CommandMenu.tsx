@@ -99,7 +99,7 @@ export function CommandMenu({
           >
             {gap.agentName || 'One agent'}
             {gap.reason === 'unreported'
-              ? ' hasn’t run yet — skills appear after its first session'
+              ? ' hasn’t reported its skills yet — they appear after its next session starts'
               : ' is unreachable'}
           </div>
         ))}

@@ -162,7 +162,7 @@ describe('CommandMenu', () => {
       )
     )
     const text = container.textContent ?? ''
-    expect(text).toContain('review-bot hasn’t run yet')
+    expect(text).toContain('review-bot hasn’t reported its skills yet')
     expect(text).toContain('refactor-bot is unreachable')
   })
 

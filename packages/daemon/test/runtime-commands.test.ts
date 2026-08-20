@@ -31,15 +31,18 @@ describe('runtime command advertisements', () => {
 
   it('normalizes names, descriptions and argument hints, classifying skills at record time', () => {
     expect(normalizeAvailableCommands(advertisement)).toEqual([
-      { name: 'code-review', description: 'Review the current diff (project)', hint: '[pr-number]', skill: true },
-      {
-        name: 'superpowers:brainstorming',
-        description: 'Explore intent before implementing (user)',
-        hint: null,
-        skill: true
-      },
+      { name: 'code-review', description: 'Review the current diff', hint: '[pr-number]', skill: true },
+      { name: 'superpowers:brainstorming', description: 'Explore intent before implementing', hint: null, skill: true },
       { name: 'model', description: 'Set the model for this session', hint: null, skill: false }
     ])
+  })
+
+  it('strips the scope marker from the stored description — adapter bookkeeping, not prose', () => {
+    const [command] = normalizeAvailableCommands({
+      sessionUpdate: 'available_commands_update',
+      availableCommands: [{ name: 'deploy', description: 'Ship the release. (project)', input: null }]
+    })
+    expect(command).toEqual({ name: 'deploy', description: 'Ship the release.', hint: null, skill: true })
   })
 
   it('keeps the skill bit when the description cap eats the claude marker', () => {
