@@ -141,6 +141,9 @@ The cloud daemon's static pair is `MODEL_TOKEN` plus optional `MODEL_BASE_URL`, 
 per-runtime pair that replaces it whole: `ANTHROPIC_MODEL_TOKEN`/`ANTHROPIC_MODEL_BASE_URL`
 for Claude, `OPENAI_MODEL_*` for Codex, `DEEPSEEK_MODEL_*` for the DeepSeek Harness.
 OpenCode has no pair of its own — it picks a provider per model and takes the shared one.
+`*_MODEL_TOKEN` names an opaque deployment credential, not a header choice: despite the
+word "token" it is unrelated to `ANTHROPIC_AUTH_TOKEN`, and Claude's injection slot is
+`ANTHROPIC_API_KEY` (see the table below).
 
 One deployment gateway is still one address; the runtimes just do not agree on where their
 base ends. Claude Code appends `/v1/messages` to its base, while Codex appends `/responses`
