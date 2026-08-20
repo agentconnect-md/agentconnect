@@ -2692,7 +2692,9 @@ export class Daemon {
       await this.interruptAgentTurns(id, 'stop')
       this.agents.delete(id)
       this.hostRuntimeHome.delete(id)
-      this.lastStartFailure.delete(id)
+      // A stage-out leaves the roster for exactly the reason a later refusal must explain, so the
+      // recorded cause survives it. A genuine removal clears it where the tombstone is taken.
+      if (!this.moveStagedAgents.has(id)) this.lastStartFailure.delete(id)
       this.scheduler.unregister(id)
       this.dreamScheduler.unregister(id)
       this.gitCreds.remove(id)
@@ -11493,10 +11495,12 @@ export class Daemon {
           if (cleanupErr) this.log.warn(`config-files: cleanup for agent "${agentId}" failed — ${cleanupErr}`)
         }
         // Retrying an incomplete package tree just reproduces the same crash, so repair it once and
-        // let the loop try again rather than burning every attempt and staging the agent out.
+        // let the loop try again rather than burning every attempt and staging the agent out. An
+        // attempt that failed for some other reason must not spend the one repair.
         if (!repairTried && failedRuntimeHome) {
-          repairTried = true
-          if (await this.repairAgentRuntimeInstall(agentId, failedRuntimeHome, err)) extraAttempts = 1
+          const outcome = await this.repairAgentRuntimeInstall(agentId, failedRuntimeHome, err)
+          if (outcome !== 'declined') repairTried = true
+          if (outcome === 'repaired') extraAttempts = 1
         }
         const budget = attempts + extraAttempts
         if (i < budget) {
@@ -11514,23 +11518,41 @@ export class Daemon {
     throw lastErr
   }
 
+  // Agents on a non-isolated runtime share one npx tree, so their simultaneous failures would
+  // otherwise run concurrent installs in the same directory and leave it worse than they found it.
+  private readonly runtimeInstallRepairs = new Map<string, Promise<boolean>>()
+
   /** Reinstall a runtime package the adapter reported missing, in the tree the child resolved.
    *  Repairs only what an installed lockfile already declares, and never runs npm lifecycle
    *  scripts — the tree sits in the agent's own writable HOME. Cluster launches resolve their
-   *  packages inside the agent's pod, so there is nothing here to repair. */
-  private async repairAgentRuntimeInstall(agentId: string, home: string, err: unknown): Promise<boolean> {
-    if (this.k8sPlane) return false
+   *  packages inside the agent's pod, so there is nothing here to repair. `declined` means no
+   *  repair was applicable, and leaves the one repair a start sequence gets unspent. */
+  private async repairAgentRuntimeInstall(
+    agentId: string,
+    home: string,
+    err: unknown
+  ): Promise<'declined' | 'failed' | 'repaired'> {
+    if (this.k8sPlane) return 'declined'
     const plan = planRuntimeInstallRepair(home, (err as { message?: string })?.message ?? '')
-    if (!plan) return false
+    if (!plan) return 'declined'
+    const inFlight = this.runtimeInstallRepairs.get(plan.tree)
+    if (inFlight) {
+      this.log.info(`acp: agent "${agentId}" is waiting on the in-flight repair of ${plan.tree}`)
+      return (await inFlight.catch(() => false)) ? 'repaired' : 'failed'
+    }
     this.log.warn(`acp: agent "${agentId}" is missing runtime package "${plan.pkg}" — reinstalling ${plan.tree}`)
+    const run = repairRuntimeInstall(plan, npmRepairEnv(home))
+    this.runtimeInstallRepairs.set(plan.tree, run)
     try {
-      const repaired = await repairRuntimeInstall(plan, npmRepairEnv(home))
+      const repaired = await run
       if (repaired) this.log.info(`acp: reinstalled "${plan.pkg}" for agent "${agentId}" — retrying start`)
       else this.log.warn(`acp: reinstall left "${plan.pkg}" absent for agent "${agentId}"`)
-      return repaired
+      return repaired ? 'repaired' : 'failed'
     } catch (repairErr) {
       this.log.warn(`acp: reinstalling "${plan.pkg}" for agent "${agentId}" failed: ${formatErr(repairErr)}`)
-      return false
+      return 'failed'
+    } finally {
+      if (this.runtimeInstallRepairs.get(plan.tree) === run) this.runtimeInstallRepairs.delete(plan.tree)
     }
   }
 
@@ -13527,6 +13549,8 @@ export class Daemon {
     try {
       const marker = markAgentRemoval(this.agentsDir, agentId, this.removalObligationsDir)
       this.removedAgentTombstones.add(agentId)
+      // Gone for good: a re-added id must not inherit the old incarnation's start failure.
+      this.lastStartFailure.delete(agentId)
       if (marker.degraded.length > 0) {
         this.log.warn(
           `cp: agent "${agentId}" removal marker is running on one durable mirror; retry will repair the other (${marker.degraded.map(formatErr).join('; ')})`

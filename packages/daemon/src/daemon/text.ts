@@ -16,7 +16,7 @@ export function formatErr(err: unknown): string {
 // the adapter's generic wrapper, and reduce absolute paths to basenames: the console user who reads
 // this is not entitled to the daemon's filesystem layout.
 const ERROR_LINE_RE = /^(?:[A-Za-z]*Error|error)\b[:\s]/
-const ABSOLUTE_PATH_RE = /(^|[\s'"(<])((?:file:\/\/)?\/[^\s'"()>]+)/g
+const ABSOLUTE_PATH_RE = /(?<![A-Za-z0-9._-])(?:file:\/\/)?(\/[^\s'"()>\]]+)/g
 
 /** One bounded, path-free line explaining a failed start, for a client-facing refusal. */
 export function startFailureDetail(err: unknown, max = 240): string {
@@ -26,9 +26,7 @@ export function startFailureDetail(err: unknown, max = 240): string {
     .map((line) => line.trim())
     .filter(Boolean)
   const specific = [...lines].reverse().find((line) => ERROR_LINE_RE.test(line)) ?? lines[0] ?? ''
-  const redacted = specific.replace(ABSOLUTE_PATH_RE, (_match: string, lead: string, path: string) =>
-    lead.concat(basename(path))
-  )
+  const redacted = specific.replace(ABSOLUTE_PATH_RE, (_match: string, path: string) => basename(path))
   return redacted.length > max ? `${redacted.slice(0, max - 1)}…` : redacted
 }
 

@@ -60,13 +60,38 @@ export function planRuntimeInstallRepair(home: string, message: string): Runtime
   return tree ? { tree, pkg } : undefined
 }
 
-/** The daemon env pointed at the child's HOME, with npm's ambient overrides dropped so the
- *  reinstall lands in the very cache and lockfile the adapter's own `npx` resolves. */
+// npm reads `.npmrc` from the HOME we point it at — a directory the agent can write — and npm
+// interpolates `${VAR}` in config values from the environment. Handing it the daemon's whole env
+// would let an agent-authored `_authToken=${SOME_DAEMON_KEY}` ship a daemon secret to a registry of
+// its choosing, no lifecycle script required. So pass an allowlist: what npm needs to reach a
+// registry through this host's network, and nothing that is worth stealing.
+const NPM_ENV_ALLOWLIST = [
+  'PATH',
+  'Path',
+  'LANG',
+  'LC_ALL',
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'NO_PROXY',
+  'http_proxy',
+  'https_proxy',
+  'no_proxy',
+  'NODE_EXTRA_CA_CERTS',
+  'SSL_CERT_DIR',
+  'SSL_CERT_FILE',
+  'SystemRoot',
+  'ComSpec',
+  'APPDATA',
+  'LOCALAPPDATA'
+]
+
+/** The minimum env npm needs, pointed at the child's HOME so the reinstall lands in the very cache
+ *  and lockfile the adapter's own `npx` resolves. */
 export function npmRepairEnv(home: string, source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {}
-  for (const [name, value] of Object.entries(source)) {
-    if (value === undefined || name.toLowerCase().startsWith('npm_config_')) continue
-    env[name] = value
+  for (const name of NPM_ENV_ALLOWLIST) {
+    const value = source[name]
+    if (value !== undefined) env[name] = value
   }
   env.HOME = home
   if (process.platform === 'win32') env.USERPROFILE = home

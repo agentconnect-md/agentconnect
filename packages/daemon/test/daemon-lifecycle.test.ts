@@ -238,11 +238,32 @@ describe('Daemon session lifecycle (#118)', () => {
     const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: factory })
     await daemon.start()
     ;(daemon as any).hostRuntimeHome.set('bot-a', join(root, 'agents', 'bot-a', 'home'))
-    const repair = vi.spyOn(daemon as any, 'repairAgentRuntimeInstall').mockResolvedValue(true)
+    const repair = vi.spyOn(daemon as any, 'repairAgentRuntimeInstall').mockResolvedValue('repaired')
 
     await expect((daemon as any).ensureHostAsync('bot-a')).resolves.toBe(started)
     expect(repair).toHaveBeenCalledTimes(1)
     expect((daemon as any).lastStartFailure.has('bot-a')).toBe(false)
+    await daemon.stop()
+  }, 20_000)
+
+  it('does not spend its one repair on a failure that was never a broken install', async () => {
+    const root = scaffold({ agentStartAttempts: 2, agentStartBackoffMs: 0 })
+    const unrelated = quietHost()
+    unrelated.start.mockRejectedValue(new Error('initialize failed'))
+    const missing = quietHost()
+    missing.start.mockRejectedValue(new Error('Error: Missing optional dependency @openai/codex-linux-x64'))
+    const started = quietHost()
+    const factory = vi.fn().mockReturnValueOnce(unrelated).mockReturnValueOnce(missing).mockReturnValueOnce(started)
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: factory })
+    await daemon.start()
+    ;(daemon as any).hostRuntimeHome.set('bot-a', join(root, 'agents', 'bot-a', 'home'))
+    const repair = vi
+      .spyOn(daemon as any, 'repairAgentRuntimeInstall')
+      .mockResolvedValueOnce('declined')
+      .mockResolvedValueOnce('repaired')
+
+    await expect((daemon as any).ensureHostAsync('bot-a')).resolves.toBe(started)
+    expect(repair).toHaveBeenCalledTimes(2)
     await daemon.stop()
   }, 20_000)
 
@@ -255,7 +276,7 @@ describe('Daemon session lifecycle (#118)', () => {
     const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: vi.fn(() => failing) })
     await daemon.start()
     ;(daemon as any).hostRuntimeHome.set('bot-a', join(root, 'agents', 'bot-a', 'home'))
-    const repair = vi.spyOn(daemon as any, 'repairAgentRuntimeInstall').mockResolvedValue(false)
+    const repair = vi.spyOn(daemon as any, 'repairAgentRuntimeInstall').mockResolvedValue('failed')
 
     await expect((daemon as any).ensureHostAsync('bot-a')).rejects.toThrow('Missing optional dependency')
     expect(repair).toHaveBeenCalledTimes(1)
@@ -271,10 +292,12 @@ describe('Daemon session lifecycle (#118)', () => {
     await daemon.start()
     const home = join(root, 'agents', 'bot-a', 'home')
 
-    expect(await (daemon as any).repairAgentRuntimeInstall('bot-a', home, new Error('initialize failed'))).toBe(false)
+    expect(await (daemon as any).repairAgentRuntimeInstall('bot-a', home, new Error('initialize failed'))).toBe(
+      'declined'
+    )
     ;(daemon as any).k8sPlane = { stop: async () => {} }
     const missing = new Error('Error: Missing optional dependency @openai/codex-linux-x64')
-    expect(await (daemon as any).repairAgentRuntimeInstall('bot-a', home, missing)).toBe(false)
+    expect(await (daemon as any).repairAgentRuntimeInstall('bot-a', home, missing)).toBe('declined')
     await daemon.stop()
   }, 20_000)
 

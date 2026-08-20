@@ -184,7 +184,7 @@ export class WebchatTransport {
     if (!result || !this.host.agents().has(result.agentId)) {
       // A failed ACP start drops the agent from the roster, so distinguish "its runtime did not
       // start" from "no daemon serves it" — the two read identically to a client otherwise.
-      const startFailure = this.host.startFailure(agentId)
+      const startFailure = this.host.startFailure(result?.agentId ?? agentId)
       if (startFailure) {
         this.host.warn(`webchat: agent "${agentId}" failed to start — rejecting turn (${startFailure})`)
         return { accepted: false, turnId, reason: 'start_failed', detail: startFailure }

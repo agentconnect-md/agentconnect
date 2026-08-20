@@ -86,15 +86,17 @@ describe('runtime install repair', () => {
     expect(idle).toBe(false)
   })
 
-  it('drops npm ambient overrides so the reinstall lands in the child HOME', () => {
+  it('hands npm an allowlist, so an agent-authored .npmrc has no daemon secret to interpolate', () => {
     const env = npmRepairEnv('/agents/a/home', {
       PATH: '/bin',
+      HTTPS_PROXY: 'http://proxy:3128',
       npm_config_cache: '/elsewhere',
-      NPM_CONFIG_PREFIX: '/x'
+      NPM_CONFIG_PREFIX: '/x',
+      ANTHROPIC_API_KEY: 'sk-secret',
+      GITHUB_TOKEN: 'ghp_secret',
+      HOME: '/root'
     })
-    expect(env).toMatchObject({ PATH: '/bin', HOME: '/agents/a/home' })
-    expect(env.npm_config_cache).toBeUndefined()
-    expect(env.NPM_CONFIG_PREFIX).toBeUndefined()
+    expect(env).toEqual({ PATH: '/bin', HTTPS_PROXY: 'http://proxy:3128', HOME: '/agents/a/home' })
   })
 })
 
@@ -110,6 +112,21 @@ describe('startFailureDetail', () => {
       new Error('Error: cannot read /home/dev/.agentconnect/agents/a/home/.codex/auth.json')
     )
     expect(detail).toBe('Error: cannot read auth.json')
+  })
+
+  it('redacts a path however it is introduced, and leaves a scoped package name alone', () => {
+    expect(startFailureDetail(new Error('Error: spawn failed cwd=/home/dev/agents/a/workspace'))).toBe(
+      'Error: spawn failed cwd=workspace'
+    )
+    expect(startFailureDetail(new Error('Error: npm --prefix=/home/dev/.npm/_npx/8b5 failed'))).toBe(
+      'Error: npm --prefix=8b5 failed'
+    )
+    expect(startFailureDetail(new Error('Error: missing [/home/dev/.codex/config.toml]'))).toBe(
+      'Error: missing [config.toml]'
+    )
+    expect(startFailureDetail(new Error(`Error: Missing optional dependency ${PKG}`))).toBe(
+      `Error: Missing optional dependency ${PKG}`
+    )
   })
 
   it('falls back to the first line and stays bounded', () => {
