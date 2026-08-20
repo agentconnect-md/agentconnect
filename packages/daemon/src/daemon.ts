@@ -76,10 +76,9 @@ import { configureWorkspaceGitOrigins } from './workspace/git-origin-policy.js'
 import { buildMcpServers } from './mcp/inject.js'
 import { resolveAgentMcpServers, RESERVED_MCP_SERVER_NAME } from './mcp/resolve-servers.js'
 import { toolsForIntegrations, GITHUB_REVIEW_TOOLS, KNOWLEDGE_TOOLS } from './mcp/tools.js'
-import { MEMORY_TOOL_NAMES } from './memory/tools.js'
+import { MEMORY_TOOL_NAMES, MEMORY_TOOLS } from './memory/tools.js'
 import { isSessionTitleToolCall } from './mcp/session-title-tool.js'
 import { MEMORY_DISTILLATION_SYSTEM_PROMPT, readOnlyExtractionMode } from './memory/distill.js'
-import { MEMORY_TOOLS } from './memory/tools.js'
 import {
   DREAM_MODEL_READABLE_CREDENTIALS_REASON,
   DreamRunner,
@@ -197,17 +196,14 @@ import { startK8sRuntimePlane, type K8sRuntimePlane } from './k8s/runtime-plane.
 import { declaredRuntimeCatalog, loadK8sRuntimeTable, type K8sRuntimeAcpSnapshot } from './runtimes/k8s-runtimes.js'
 import { ensureNodeBinOnPath } from './runtimes/exec-path.js'
 import {
-  probeAllRuntimes,
   isAuthRequiredError,
   sweepStaleProbeRoots,
   type ProbeOptions,
   type RuntimeProbeResult
 } from './runtimes/runtime-prober.js'
-import { ModelCatalogService, catalogFingerprint } from './runtimes/model-catalog.js'
+import { ModelCatalogService } from './runtimes/model-catalog.js'
 import { makeModelEnumerator } from './runtimes/model-enumerator.js'
 import { defaultProbeHostFactory } from './acp/probe-host-factory.js'
-import { capsFromConfigOptions, augmentEffortOptions } from './runtimes/config-caps.js'
-import { isClaudeRuntimeDef } from './runtime-defs/claude-runtime.js'
 import { runtimeHomePath } from './runtimes/runtime-home.js'
 import {
   applyCodexSessionFloor,
@@ -222,7 +218,7 @@ import {
 import { KeyServerClient, type KeyGrant } from './key-server/client.js'
 import { internalSessionKey, ModelSessionHostPool, type ModelSessionHostPoolHost } from './key-server/session-hosts.js'
 import { CuratedRuntimeAdmission } from './runtimes/curated-admission.js'
-import { runtimeSandboxReadRoots } from './launch/compose.js'
+import { RuntimeFactsRegistry, PROBE_TTL_MS, type RuntimeFactsHost } from './runtimes/facts-registry.js'
 import { assembleRuntimeLaunch } from './launch/assemble.js'
 import { resolveTrustedExecutable, trustedRuntimeReadRoots } from './runtimes/read-roots.js'
 import { nodeExecArgvModuleEntries } from './runtimes/node-exec-argv.js'
@@ -344,10 +340,7 @@ import type {
   RegisterReq,
   RelayRosterEntry,
   CronReport,
-  FactsRuntimeProfile,
   FactsMcpServer,
-  McpTransportCapabilities,
-  RuntimeModelCatalog,
   IntegrationChannel,
   Drain,
   DrainProgress,
@@ -877,40 +870,9 @@ export class Daemon {
   // runtimeProfiles() reports — ACP protocol version, the adapter's own version, MCP transports —
   // stay empty and the published snapshot describes nothing.
   private k8sDeclaredAcp: Record<string, K8sRuntimeAcpSnapshot> = {}
-  private runtimeNames: Record<string, string> = {} // registry id -> display name (for CP reporting)
-  private runtimeVersions: Record<string, string> = {} // registry id -> version (for the facts/daemon-runtimes snapshot)
-  // Models learned by actively probing each runtime (registry id -> model ids).
-  // Empty/absent until the post-connect probe sweep completes; feeds runtimeProfiles().
-  private runtimeModels = new Map<string, string[]>()
-  // ACP protocol version each runtime negotiated at its last probe; feeds runtimeProfiles().
-  private runtimeAcpVersions = new Map<string, number>()
-  // The agent's self-reported version (`agentInfo.version` from `initialize`) learned
-  // at the last probe — the ACTUAL running adapter release (e.g. claude-agent-acp
-  // 0.59.0). Preferred over the registry's declared version in runtimeProfileFor().
-  private runtimeProbedVersions = new Map<string, string>()
-  // MCP transports each runtime advertised at its last probe; feeds runtimeProfiles()
-  // and gates which configured http/sse servers attach at session/new (absent ⇒ not
-  // probed yet ⇒ assume stdio-only but attach optimistically — see resolve-servers.ts).
-  private runtimeMcpCaps = new Map<string, McpTransportCapabilities>()
-  // Provenance of runtimeModels entries: 'cached' = hydrated from the local
-  // catalog cache at boot (a live probe has not confirmed it this process) —
-  // the activation model gate treats it as permissive; 'probed' = live result.
-  private runtimeModelsSource = new Map<string, 'cached' | 'probed'>()
-  // Runtimes whose last probe was rejected with the ACP auth-required error
-  // (-32000): installed but needing an interactive login on this host. Feeds the
-  // console's per-runtime login warning; cleared on any successful probe.
-  private runtimeAuthRequired = new Set<string>()
-  // Same signal observed on a LIVE turn (dispatch): kept separate from the
-  // probe-derived set because a successful probe must not clear it —
-  // claude-agent-acp initializes, opens sessions, and enumerates models fine
-  // while logged out and only rejects the live prompt with -32000, so the probe
-  // sweep is blind to its login state. Cleared by the next successful turn.
-  private runtimeAuthRequiredLive = new Set<string>()
-  // Report-shape model catalogs (last-good CAPABILITY knowledge, augmented for
-  // reporting). Deliberately independent of the fail-to-empty rule that wipes
-  // runtimeModels (ADVERTISEMENT): a probe failure empties the offered list but
-  // keeps the catalog, so the CP's capability data survives transient timeouts.
-  private runtimeCatalogs = new Map<string, RuntimeModelCatalog>()
+  // Per-runtime facts (names, versions, models, ACP/MCP caps, login state, catalogs),
+  // the probe sweep that learns them, and the `facts/daemon-runtimes` snapshot.
+  private runtimeFacts!: RuntimeFactsRegistry
   private modelCatalogSvc?: ModelCatalogService
   // Daemon-local MCP definitions; CP definitions are overlaid per organization at use sites.
   private mcpServerDefs: Record<string, import('./config/config-schema.js').McpServerDef> = {}
@@ -920,11 +882,6 @@ export class Daemon {
   private memoryConnections?: CpMemoryConnectionRegistry
   /** Durable reply-after-delivery capture pump. Bodies remain in LocalStore. */
   private memoryOutbox?: MemoryCaptureOutbox
-  private probing = false // a probe sweep is in flight (dedup concurrent onReady fires)
-  private ordinaryProbePending = false // a CP-ready sweep arrived behind a local curated sweep
-  private curatedProbePending = false // a local TTL sweep arrived behind another sweep
-  private lastProbeAtMs = 0 // when ordinary runtimes were last swept; gates re-probe on reconnect
-  private runtimeProbeTimer?: TimerHandle
   private cpClient?: CpClient
   private remoteWebchatGrants?: RemoteWebchatGrantManager
   private managedSkillCache?: ManagedSkillCache
@@ -1161,8 +1118,9 @@ export class Daemon {
     this.githubReviews = new GithubReviewOrchestrator(this.githubReviewHost())
     this.curatedRuntimeAdmission = new CuratedRuntimeAdmission({
       now: () => this.clock.now(),
-      ttlMs: Daemon.PROBE_TTL_MS
+      ttlMs: PROBE_TTL_MS
     })
+    this.runtimeFacts = new RuntimeFactsRegistry(this.runtimeFactsHost())
     this.requestExit = opts.requestExit ?? ((code) => process.exit(code))
     this.fleetUpgrade = new FleetUpgradeCoordinator({
       log: () => this.log,
@@ -1726,12 +1684,7 @@ export class Daemon {
     const { runtimes: installed, entries: installedEntries } = installedCatalog
     this.runtimeCatalog = installedCatalog
     this.refreshAdmittedRuntimes()
-    this.runtimeNames = Object.fromEntries(
-      Object.entries(installedEntries).map(([id, entry]) => [id, entry.name || id])
-    )
-    this.runtimeVersions = Object.fromEntries(
-      Object.entries(installedEntries).map(([id, entry]) => [id, entry.version])
-    )
+    this.runtimeFacts.setInstalled(installedEntries)
     this.log.info(`runtimes ready: ${Object.keys(this.runtimes).join(', ') || '(none)'}`)
     const pendingCurated = Object.keys(installed).filter((id) => installedEntries[id]?.source === 'curated')
     if (pendingCurated.length) this.log.info(`runtimes pending ACP admission: ${pendingCurated.join(', ')}`)
@@ -1808,10 +1761,10 @@ export class Daemon {
     // Model-catalog cache: synchronous last-good hydrate BEFORE the CP client
     // starts, so the register-time facts snapshot already carries models + the
     // capability matrix instead of blanking the CP until the sweep completes.
-    await this.hydrateRuntimeCatalogCache()
+    await this.runtimeFacts.hydrateFromCache()
     // The image's declared models are the fresher truth than any cached row, and stay
     // `cached` provenance: no live probe confirmed them, so model gates remain permissive.
-    this.applyK8sDeclaredFacts()
+    this.runtimeFacts.applyDeclaredFacts(this.k8sDeclaredModels, this.k8sDeclaredAcp)
     // Started HERE, not when the plane comes up: the probe projects onto the resolved catalog, and
     // that is only assembled further down start(). Kicking it off earlier meant it returned
     // immediately every time — a probe that never ran, and a daemon that silently advertised
@@ -1837,9 +1790,9 @@ export class Daemon {
         mcpSocketPath: mcpSocketPath(root)
       }),
       onUpdated: async (runtimeId) => {
-        await this.rebuildRuntimeCatalog(runtimeId)
+        await this.runtimeFacts.rebuildCatalog(runtimeId)
         this.cpClient?.emitDaemonRuntimes?.(
-          this.admittedRuntimeIds().map((id) => this.runtimeProfileFor(id)),
+          this.admittedRuntimeIds().map((id) => this.runtimeFacts.profileFor(id)),
           this.mcpServerFactsFromDefs()
         )
       }
@@ -2235,7 +2188,7 @@ export class Daemon {
           ...resolveAgentMcpServers({
             enabled: agent.mcpServers,
             defs: this.mcpDefsForAgent(agent.id),
-            caps: this.runtimeMcpCaps.get(agent.runtime),
+            caps: this.runtimeFacts.mcpCapabilities(agent.runtime),
             ...(this.agentRunsInSandbox(agent)
               ? {
                   resolveStdioCommand: (command: string, entries: { name: string; value: string }[]) =>
@@ -2351,7 +2304,7 @@ export class Daemon {
     if (this.dreamOperationsAllowed()) await this.dreamRunner().initialize()
     // Curated admission belongs to local runtime resolution, not CP readiness.
     // Start it even when the control plane is disabled or still unreachable.
-    void this.probeRuntimesAndEmit(false).finally(() => this.armRuntimeProbeRefresh())
+    void this.runtimeFacts.probeAndEmit(false).finally(() => this.runtimeFacts.armProbeRefresh())
     if (!this.k8s) startControlPlane(root)
     this.armIdleSweep()
     this.armStoreRetentionSweep()
@@ -5209,7 +5162,7 @@ export class Daemon {
   /** Apply the Agent's configured runtime policy to one live session. Callers that
    *  fence a pending prompt await this; reconciliation fans it out in the background. */
   private async applyConfiguredRuntimeSettings(agent: LoadedAgent, host: AcpHost, sessionId: string): Promise<void> {
-    const catalog = this.runtimeCatalogs.get(agent.runtime)
+    const catalog = this.runtimeFacts.modelCatalog(agent.runtime)
     // A fresh ACP session may advertise its baseline as the literal `default`.
     // Catalog metadata intentionally keeps defaultModel concrete, so fall back to
     // that selectable entry when the Agent leaves its model unpinned.
@@ -6129,7 +6082,7 @@ export class Daemon {
       activeGithubReplyBatch: (key) => this.activeGithubReplyBatchMeta.get(key),
       agentLink: (agentId) => this.agentLink(agentId),
       sessionLink: (acpSessionId, source) => this.sessionLink(acpSessionId, source),
-      runtimeNames: () => this.runtimeNames,
+      runtimeNames: () => this.runtimeFacts.runtimeNames(),
       hostForStoredSession: async (agentId, acpSessionId) =>
         await this.modelSessions.hostForStoredSession(agentId, acpSessionId)
     }
@@ -9039,7 +8992,7 @@ export class Daemon {
       : undefined
     const configuredPermissionMode =
       runtimeAgent?.permissionMode ??
-      this.runtimeCatalogs.get(runtimeAgent?.runtime ?? agent.runtime)?.defaultPermissionMode
+      this.runtimeFacts.modelCatalog(runtimeAgent?.runtime ?? agent.runtime)?.defaultPermissionMode
     const effectivePermissionPreset =
       permissionPresetOverride ??
       (configuredPermissionMode
@@ -9260,7 +9213,7 @@ export class Daemon {
 
       // A completed prompt proves the runtime's credentials work — drop any
       // login-required mark (no-op emit unless the flag actually flips).
-      this.noteRuntimeAuthFromTurn(agent.runtime, false)
+      this.runtimeFacts.noteAuthFromTurn(agent.runtime, false)
       if (p.outputSuppressed) {
         evaluation.finishEvaluation('turn.cancelled', { reason: p.outputSuppressed })
         if (p.outputSuppressed === 'loop protection') settlement.finalPhase = 'problem'
@@ -9707,7 +9660,7 @@ export class Daemon {
     // classification catches the expired/revoked-credential family that
     // adapters surface as -32603 internal errors with auth wording.
     if (isAuthRequiredError(err) || turnFailureCode(err) === HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED)
-      this.noteRuntimeAuthFromTurn(agent.runtime, true)
+      this.runtimeFacts.noteAuthFromTurn(agent.runtime, true)
     if (p.outputSuppressed) {
       evaluation.finishEvaluation('turn.cancelled', { reason: p.outputSuppressed })
       if (p.outputSuppressed === 'loop protection') settlement.finalPhase = 'problem'
@@ -9991,7 +9944,7 @@ export class Daemon {
     return {
       botName: agent.name,
       botUrl: this.agentLink(entry.agentId),
-      runtime: this.runtimeNames[agent.runtime] ?? agent.runtime,
+      runtime: this.runtimeFacts.runtimeNames()[agent.runtime] ?? agent.runtime,
       model: (await this.buildStatusInfo(p)).model ?? turnModel ?? 'default',
       sessionUrl: this.sessionLink(sessionId, this.sessionLinkSource(plan.platform, plan.integrationId)),
       ...(plan.hopLimitNotice ? { notice: plan.hopLimitNotice } : {})
@@ -10490,9 +10443,9 @@ export class Daemon {
     // explicit lack of a selector authoritative; only fall back when the host does not
     // currently own this session.
     const modelSessionIsLive = acpSessionId !== undefined && host?.hasSession?.(acpSessionId) === true
-    const runtimeModels = agent ? this.runtimeModels.get(agent.runtime) : undefined
+    const runtimeModels = agent ? this.runtimeFacts.offeredModels(agent.runtime) : undefined
     const models = model?.models ?? (!modelSessionIsLive ? runtimeModels : undefined)
-    const runtimeDefaultModel = agent ? this.runtimeCatalogs.get(agent.runtime)?.defaultModel : undefined
+    const runtimeDefaultModel = agent ? this.runtimeFacts.modelCatalog(agent.runtime)?.defaultModel : undefined
     const fallbackModel =
       !modelSessionIsLive && models?.length
         ? runtimeDefaultModel && models.includes(runtimeDefaultModel)
@@ -13510,15 +13463,15 @@ export class Daemon {
 
   private activationCapabilityError(agent: LoadedAgent): string | undefined {
     const model = agent.runtimeOverrides?.model
-    const offeredModels = this.runtimeModels.get(agent.runtime) ?? []
+    const offeredModels = this.runtimeFacts.offeredModels(agent.runtime) ?? []
     // A cache-hydrated list is not live knowledge: enforcing it would reject
     // models added while this daemon was down (fail-open like the empty list;
     // the gate turns strict once the first real probe lands).
-    const offeredIsLive = this.runtimeModelsSource.get(agent.runtime) !== 'cached'
+    const offeredIsLive = this.runtimeFacts.offeredModelsAreLive(agent.runtime)
     if (model && offeredIsLive && offeredModels.length > 0 && !offeredModels.includes(model)) {
       return `model "${model}" is not offered by runtime "${agent.runtime}"`
     }
-    const caps = this.runtimeMcpCaps.get(agent.runtime)
+    const caps = this.runtimeFacts.mcpCapabilities(agent.runtime)
     for (const name of agent.mcpServers) {
       if (name === RESERVED_MCP_SERVER_NAME) return `MCP server name "${name}" is reserved`
       const def = this.mcpDefsForAgent(agent.id)[name]
@@ -13941,8 +13894,8 @@ export class Daemon {
       registrationFeatures: () => this.registrationFeatures(),
       admittedRuntimeIds: () => this.admittedRuntimeIds(),
       reportedRuntimeIds: () => this.reportedRuntimeIds(),
-      runtimeNames: () => this.runtimeNames,
-      runtimeProfileFor: (id) => this.runtimeProfileFor(id),
+      runtimeNames: () => this.runtimeFacts.runtimeNames(),
+      runtimeProfileFor: (id) => this.runtimeFacts.profileFor(id),
       mcpServerFactsFromDefs: () => this.mcpServerFactsFromDefs(),
       cpLocalState: () => this.cpLocalState(),
       metrics: () => this.metrics,
@@ -13951,7 +13904,7 @@ export class Daemon {
       bootstrapUpgradeCapable: () => this.bootstrapUpgradeCapable(),
       runBootstrapFleetUpgrade: (targetVersion) => this.fleetUpgrade.runBootstrapFleetUpgrade(targetVersion),
       readiness: () => this.readiness,
-      probeRuntimesAndEmit: () => this.probeRuntimesAndEmit(),
+      probeRuntimesAndEmit: () => this.runtimeFacts.probeAndEmit(),
       syncOrganizationSuggestions: () => this.syncOrganizationSuggestions(),
       memoryConnections: () => this.memoryConnections,
       replayHookTerminalReports: () => this.replayHookTerminalReports(),
@@ -14396,54 +14349,31 @@ export class Daemon {
     return initialRegistry
   }
 
-  /** Build the current profile entry for a runtime (one element of the
-   *  `facts/daemon-runtimes` snapshot), folding in any models learned by the
-   *  probe sweep. */
-  private runtimeProfileFor(id: string): FactsRuntimeProfile {
+  /** The outward calls the runtime facts/probe cluster makes — see RuntimeFactsRegistry. */
+  private runtimeFactsHost(): RuntimeFactsHost {
     return {
-      runtime: id,
-      // Prefer the probed adapter version (the actual running release, learned at the
-      // last probe's `initialize`) over the registry's declared version; fall back to
-      // the declared version when a runtime hasn't been probed / reported none.
-      version: this.runtimeProbedVersions.get(id) || this.runtimeVersions[id] || '',
-      models: this.runtimeModels.get(id) ?? [],
-      acpSupport: 'full',
-      acpProtocolVersion: this.runtimeAcpVersions.get(id),
-      toolCalling: true,
-      mcpCapabilities: this.runtimeMcpCaps.get(id),
-      modelsSource: this.runtimeModelsSource.get(id),
-      // Capability matrix rides every frame it exists for — including probe-failure
-      // rounds where models[] empties (advertisement ≠ capability knowledge).
-      modelCatalog: this.runtimeCatalogs.get(id),
-      ...(this.runtimeAuthRequired.has(id) || this.runtimeAuthRequiredLive.has(id) ? { authRequired: true } : {})
-    }
-  }
-
-  /** Fold a live turn's auth outcome into the facts state. A turn rejected with
-   *  ACP -32000 marks the agent's runtime login-required; a completed turn is
-   *  the definitive "logged in" signal and clears both the live mark and any
-   *  stale probe-derived one (the user logged in between sweeps). Re-emits the
-   *  facts snapshot only when the reported flag actually flips. Called from the
-   *  dispatch hot path (right after prompt / inside its failure handler), so
-   *  the telemetry emit is best-effort like emitStoredUsageReport — it must
-   *  never affect message delivery. */
-  private noteRuntimeAuthFromTurn(runtimeId: string, authRequired: boolean): void {
-    let changed: boolean
-    if (authRequired) {
-      changed = !this.runtimeAuthRequiredLive.has(runtimeId) && !this.runtimeAuthRequired.has(runtimeId)
-      this.runtimeAuthRequiredLive.add(runtimeId)
-    } else {
-      changed = this.runtimeAuthRequiredLive.delete(runtimeId)
-      if (this.runtimeAuthRequired.delete(runtimeId)) changed = true
-    }
-    if (!changed) return
-    try {
-      this.cpClient?.emitDaemonRuntimes?.(
-        this.reportedRuntimeIds().map((id) => this.runtimeProfileFor(id)),
-        this.mcpServerFactsFromDefs()
-      )
-    } catch (err) {
-      this.log.debug(`runtime auth facts emit failed (${runtimeId}): ${(err as Error).message}`)
+      log: () => this.log,
+      clock: () => this.clock,
+      store: () => this.store,
+      draining: () => this.draining,
+      catalog: () => this.runtimeCatalog,
+      admittedRuntimes: () => this.runtimes,
+      refreshAdmitted: () => this.refreshAdmittedRuntimes(),
+      reportedRuntimeIds: () => this.reportedRuntimeIds(),
+      curatedAdmission: () => this.curatedRuntimeAdmission,
+      emitDaemonRuntimes: (profiles, mcpServers) => this.cpClient?.emitDaemonRuntimes?.(profiles, mcpServers),
+      updateCapabilities: () => this.cpClient?.updateCapabilities?.(),
+      mcpServerFacts: () => this.mcpServerFactsFromDefs(),
+      noteCatalogProbe: (input) => void this.modelCatalogSvc?.noteProbe(input),
+      launch: () => ({
+        k8s: this.k8s,
+        fakeHosts: this.opts.hostFactory !== undefined,
+        ...(this.opts.probeRuntimes ? { probe: this.opts.probeRuntimes } : {}),
+        ...(this.sandboxMechanism ? { sandboxMechanism: this.sandboxMechanism } : {}),
+        daemonRoot: this.root,
+        agentsRoot: this.cfg.agentsDir,
+        isolateAccountApps: this.cfg.security.isolateAccountApps
+      })
     }
   }
 
@@ -14453,23 +14383,6 @@ export class Daemon {
    * served cache-first from `<root>/acp_registry.json` in an image). Replaces host
    * executable discovery, which can only ever answer "nothing" in a daemon pod.
    */
-  /** Fold the declared/probed snapshot into the SAME maps runtimeProfiles() reads, so a probed
-   *  fact and a locally probed one are indistinguishable downstream. */
-  private applyK8sDeclaredFacts(): void {
-    for (const [runtimeId, models] of Object.entries(this.k8sDeclaredModels)) {
-      this.runtimeModels.set(runtimeId, [...models])
-      this.runtimeModelsSource.set(runtimeId, 'cached')
-    }
-    for (const [runtimeId, snapshot] of Object.entries(this.k8sDeclaredAcp)) {
-      if (snapshot.protocolVersion !== undefined) this.runtimeAcpVersions.set(runtimeId, snapshot.protocolVersion)
-      const mcp = snapshot.capabilities?.mcpCapabilities
-      if (mcp && typeof mcp === 'object') {
-        const caps = mcp as { http?: unknown; sse?: unknown }
-        this.runtimeMcpCaps.set(runtimeId, { http: caps.http === true, sse: caps.sse === true })
-      }
-    }
-  }
-
   private declaredPoolCatalog(root: string, resolved: ResolvedRuntimeCatalog): ResolvedRuntimeCatalog {
     // Kept for a file-supplied table (an override, or a daemon started before its first probe
     // returns). The authoritative answer comes from the sandbox itself — see probeK8sRuntimes.
@@ -14506,12 +14419,8 @@ export class Daemon {
       // The profile reports these, and they come from the catalog entry rather than the table —
       // so without this refresh the version the image just told us about would be reported as the
       // registry's, or as an empty string.
-      for (const [id, entry] of Object.entries(catalog.entries)) {
-        this.runtimeNames[id] = entry.name
-        if (entry.version) this.runtimeVersions[id] = entry.version
-        this.runtimeProbedVersions.set(id, entry.version || (this.runtimeProbedVersions.get(id) ?? ''))
-      }
-      this.applyK8sDeclaredFacts()
+      this.runtimeFacts.noteImageCatalog(catalog.entries)
+      this.runtimeFacts.applyDeclaredFacts(this.k8sDeclaredModels, this.k8sDeclaredAcp)
       // The half of readiness only this call can settle: before it the member advertises nothing
       // and the CP would assign it nothing, so it is not servable however healthy it looks.
       this.k8sRuntimeProbed = true
@@ -14519,10 +14428,7 @@ export class Daemon {
       this.log.info(
         `runtimes ready (probed): ${table.runtimes.map((entry) => `${entry.id}@${entry.version}`).join(', ') || '(none)'}`
       )
-      this.cpClient?.emitDaemonRuntimes?.(
-        this.reportedRuntimeIds().map((id) => this.runtimeProfileFor(id)),
-        this.mcpServerFactsFromDefs()
-      )
+      this.runtimeFacts.emitFacts()
     } catch (err) {
       // Advertising nothing is the honest outcome: the Control Plane then assigns no agent, which
       // is better than assigning one to a daemon that cannot launch it.
@@ -14596,60 +14502,6 @@ export class Daemon {
     return declared.catalog
   }
 
-  /** Synchronously pre-fill the in-memory runtime maps from the SQLite last-good
-   *  catalog cache (design runtime-model-catalog.md §4): the register-time facts
-   *  snapshot then carries cached models + matrix instead of an empty REPLACE
-   *  that would wipe the CP's learned state until the sweep completes. Rows for
-   *  runtimes not in the installed catalog are ignored (kept on disk — the
-   *  runtime may only be temporarily unresolved); rows older than 30 days are
-   *  garbage-collected. The store reads only this member's rows, so a member can
-   *  never boot advertising models a peer's image runs and its own does not. */
-  private async hydrateRuntimeCatalogCache(): Promise<void> {
-    try {
-      for (const meta of await this.store.listRuntimeCatalogMetas()) {
-        if (!this.runtimeCatalog.entries[meta.runtimeId]) continue
-        await this.rebuildRuntimeCatalog(meta.runtimeId)
-        const cachedModels = (await this.store.listRuntimeModelCaps(meta.runtimeId)).map((r) => r.modelId)
-        if (cachedModels.length > 0 && (this.runtimeModels.get(meta.runtimeId) ?? []).length === 0) {
-          this.runtimeModels.set(meta.runtimeId, cachedModels)
-          this.runtimeModelsSource.set(meta.runtimeId, 'cached')
-        }
-      }
-    } catch (err) {
-      this.log.warn(`catalog: cache hydrate failed: ${formatErr(err)}`)
-    }
-  }
-
-  /** Rebuild one runtime's report-shape catalog from the cache: raw stored caps
-   *  plus daemon-side synthetic effort levels (Claude max/ultracode) so the
-   *  console vocabulary always matches the live-session pickers. */
-  private async rebuildRuntimeCatalog(id: string): Promise<void> {
-    const meta = await this.store.getRuntimeCatalogMeta(id)
-    if (!meta) {
-      this.runtimeCatalogs.delete(id)
-      return
-    }
-    const rt = this.runtimeCatalog.entries[id]?.runtime
-    const claude = rt ? isClaudeRuntimeDef(rt) : false
-    const models = (await this.store.listRuntimeModelCaps(id)).map((r) => ({
-      id: r.modelId,
-      ...(r.caps.name ? { name: r.caps.name } : {}),
-      ...(r.caps.efforts !== undefined
-        ? { efforts: claude ? augmentEffortOptions(r.caps.efforts) : r.caps.efforts }
-        : {}),
-      ...(r.caps.defaultEffort ? { defaultEffort: r.caps.defaultEffort } : {}),
-      ...(r.caps.fastMode !== undefined ? { fastMode: r.caps.fastMode } : {})
-    }))
-    this.runtimeCatalogs.set(id, {
-      models: models.slice(0, 128),
-      ...(meta.defaultModel ? { defaultModel: meta.defaultModel } : {}),
-      ...(meta.permissionModes ? { permissionModes: meta.permissionModes } : {}),
-      ...(meta.defaultPermissionMode ? { defaultPermissionMode: meta.defaultPermissionMode } : {}),
-      source: meta.source,
-      observedAt: new Date(meta.observedAt).toISOString()
-    })
-  }
-
   private refreshAdmittedRuntimes(): void {
     this.runtimes = this.curatedRuntimeAdmission.filterCatalog(this.runtimeCatalog).runtimes
   }
@@ -14673,283 +14525,6 @@ export class Daemon {
     ]
   }
 
-  /** The `facts/daemon-runtimes` snapshot for the currently reported runtime set. */
-  private emitDaemonRuntimeFacts(): void {
-    this.cpClient?.emitDaemonRuntimes?.(
-      this.reportedRuntimeIds().map((id) => this.runtimeProfileFor(id)),
-      this.mcpServerFactsFromDefs()
-    )
-  }
-
-  /** How long a completed probe sweep stays fresh — reconnects within this window
-   *  re-emit the cached profiles instead of re-spawning every agent. */
-  private static readonly PROBE_TTL_MS = 5 * 60_000
-
-  /** Admission freshness must not depend on CP reconnects: a CP-disabled or
-   * continuously connected daemon rechecks curated winners on the same TTL. */
-  private armRuntimeProbeRefresh(): void {
-    if (this.draining || this.runtimeProbeTimer !== undefined) return
-    if (!Object.values(this.runtimeCatalog.entries).some((entry) => entry.source === 'curated')) return
-    this.runtimeProbeTimer = this.clock.setTimeout(() => {
-      this.runtimeProbeTimer = undefined
-      if (this.draining) return
-      void this.probeRuntimesAndEmit(false).finally(() => this.armRuntimeProbeRefresh())
-    }, Daemon.PROBE_TTL_MS)
-  }
-
-  /**
-   * Probe every installed runtime in the background (launch → initialize →
-   * session/new → read models → tear down), then emit one `facts/daemon-runtimes`
-   * snapshot once the sweep completes so the CP replaces its runtime list. The
-   * daemon-configured MCP-server list rides the same frame, derived from config
-   * (no probing — see `mcpServerFactsFromDefs`).
-   *
-   * Triggered on each CP (re)connect. Deduped while in flight; skipped (with a
-   * cached re-emit) when the last sweep is still fresh, so a reconnect storm can't
-   * spawn a fleet of agent subprocesses. Never throws — probing is best-effort and
-   * must not affect the CP connection.
-   */
-  private async probeRuntimesAndEmit(includeOrdinary = true): Promise<void> {
-    // --k8s has no runtime to launch on this host: profiles come from the image's
-    // declared table. Still emit them, because this is also the CP (re)connect path
-    // that (re)asserts the runtime list. Unconditional — unlike the fake-host guard
-    // below, an injected prober must not re-enable local spawning in this mode.
-    if (this.k8s) {
-      this.emitDaemonRuntimeFacts()
-      return
-    }
-    // With a hostFactory (unit tests use fake in-memory hosts) we don't spawn real
-    // subprocesses unless a probe seam is injected.
-    if (this.opts.hostFactory && !this.opts.probeRuntimes) return
-    // Runtime probes are ACP children under the same UID. Sandbox-optional
-    // principle (#36): probe sandboxed when a mechanism exists (launchFor below
-    // sets runInSandbox from `this.sandboxMechanism`), but still probe UNSANDBOXED
-    // when none is available — otherwise curated runtimes are never admitted and
-    // their agents cannot run on a no-sandbox host. The explicit operator
-    // `security.requireSandbox` already refused boot without a mechanism.
-    if (this.probing) {
-      if (includeOrdinary) this.ordinaryProbePending = true
-      else this.curatedProbePending = true
-      return
-    }
-
-    const fresh = this.lastProbeAtMs > 0 && this.clock.now() - this.lastProbeAtMs < Daemon.PROBE_TTL_MS
-    const curatedCandidates = this.curatedRuntimeAdmission.probeCandidates(this.runtimeCatalog)
-    if (fresh && Object.keys(curatedCandidates).length === 0) {
-      // Recent results still valid — just re-assert the snapshot to the (new) connection.
-      this.emitDaemonRuntimeFacts()
-      return
-    }
-
-    const ordinaryRuntimes =
-      !includeOrdinary || fresh
-        ? {}
-        : Object.fromEntries(
-            Object.entries(this.runtimeCatalog.entries)
-              .filter(([, entry]) => entry.source !== 'curated')
-              .map(([id, entry]) => [id, entry.runtime])
-          )
-    const probeCount = Object.keys(ordinaryRuntimes).length + Object.keys(curatedCandidates).length
-    if (probeCount === 0) return
-
-    this.probing = true
-    const probeIds = [...Object.keys(ordinaryRuntimes), ...Object.keys(curatedCandidates)]
-    this.log.info(`probe: sweeping ${probeCount} runtime(s): ${probeIds.join(', ') || '(none)'}`)
-    try {
-      const probe = this.opts.probeRuntimes ?? probeAllRuntimes
-      const probeHostFactory = defaultProbeHostFactory({
-        log: this.log,
-        isolateAccountApps: this.cfg.security.isolateAccountApps
-      })
-      // Apply and report every result the moment it lands. A package-launcher
-      // runtime building its install tree takes minutes on first use, and holding
-      // the whole sweep for it also held back the runtimes that answered in
-      // seconds. `facts/daemon-runtimes` is idempotent REPLACE fenced by `seq`
-      // (design runtime-model-catalog.md §6), so per-result frames converge.
-      const applied = new Set<string>()
-      const onResult = async (result: RuntimeProbeResult): Promise<void> => {
-        if (applied.has(result.runtime)) return
-        applied.add(result.runtime)
-        await this.applyProbeResult(result)
-        this.emitDaemonRuntimeFacts()
-      }
-      const batches: Array<Promise<RuntimeProbeResult[]>> = []
-      if (Object.keys(ordinaryRuntimes).length > 0) {
-        batches.push(
-          probe(ordinaryRuntimes, {
-            log: this.log,
-            hostFactory: probeHostFactory,
-            onResult,
-            launchFor: (id, runtime, scopeDir, cwd) =>
-              prepareRuntimeLaunch({
-                runtimeId: id,
-                runtime,
-                scopeDir,
-                cwd,
-                runInSandbox: this.sandboxMechanism !== undefined,
-                daemonRoot: this.root,
-                agentsRoot: this.cfg.agentsDir,
-                trustedRuntimeReadRoots:
-                  this.sandboxMechanism !== undefined
-                    ? runtimeSandboxReadRoots(runtime, process.env).readRoots
-                    : undefined,
-                explicitEnv: Object.fromEntries(runtime.env.map((entry) => [entry.name, entry.value])),
-                sandboxMechanism: this.sandboxMechanism,
-                hostPackageCache: true
-              })
-          })
-        )
-      }
-      if (Object.keys(curatedCandidates).length > 0) {
-        batches.push(
-          probe(curatedCandidates, {
-            curated: true,
-            log: this.log,
-            hostFactory: probeHostFactory,
-            onResult,
-            runInSandbox: this.sandboxMechanism !== undefined,
-            daemonRoot: this.root,
-            agentsRoot: this.cfg.agentsDir,
-            sandboxMechanism: this.sandboxMechanism,
-            mcpSocketPath: mcpSocketPath(this.root),
-            hostEnv: process.env
-          })
-        )
-      }
-      const results = (await Promise.all(batches)).flat()
-      // An injected prober (tests) may not drive the incremental callback.
-      for (const result of results) await onResult(result)
-      if (Object.keys(ordinaryRuntimes).length > 0) this.lastProbeAtMs = this.clock.now()
-      const okCount = results.filter((r) => r.ok).length
-      this.log.info(`probe: sweep complete — ${okCount}/${results.length} runtime(s) reachable`)
-      // Admission freshness is measured from the END of the sweep that observed it,
-      // because armRuntimeProbeRefresh() only starts the next one from here. Stamping
-      // each result when it landed would expire a runtime that answered in seconds one
-      // whole slow-launcher install before its next probe — unlaunchable, and pruned
-      // from the snapshot — so restamp the batch now that every result is in.
-      const reportedBefore = this.reportedRuntimeIds().join(' ')
-      for (const result of results) {
-        if (this.runtimeCatalog.entries[result.runtime]?.source === 'curated') {
-          this.curatedRuntimeAdmission.record(result)
-        }
-      }
-      this.refreshAdmittedRuntimes()
-      // Each result already emitted the REPLACE snapshot that prunes vanished ids, so
-      // the CP is owed one only when the sweep produced none, or when restamping
-      // brought a runtime back that had expired mid-sweep.
-      if (applied.size === 0 || this.reportedRuntimeIds().join(' ') !== reportedBefore) {
-        this.emitDaemonRuntimeFacts()
-      }
-      // Probe results can change runtime-derived registration capabilities, and
-      // register ran before this sweep — re-announce if the set moved.
-      this.cpClient?.updateCapabilities?.()
-    } catch (err) {
-      this.log.warn(`probe: sweep failed: ${formatErr(err)}`)
-    } finally {
-      this.probing = false
-      if (this.ordinaryProbePending || this.curatedProbePending) {
-        const includePendingOrdinary = this.ordinaryProbePending
-        this.ordinaryProbePending = false
-        this.curatedProbePending = false
-        void this.probeRuntimesAndEmit(includePendingOrdinary)
-      }
-    }
-  }
-
-  /** Fold one probe result into admission, advertised models/caps and the model
-   *  catalog. Called per result so a slow runtime delays only itself. */
-  private async applyProbeResult(r: RuntimeProbeResult): Promise<void> {
-    if (this.runtimeCatalog.entries[r.runtime]?.source === 'curated') this.curatedRuntimeAdmission.record(r)
-    this.refreshAdmittedRuntimes()
-    // Successful probes (including empty selectors) and auth failures are
-    // authoritative. Preserve a non-empty cache-hydrated list across other
-    // startup probe failures: disposable probe homes can fail while established
-    // agent homes remain usable. Cached provenance keeps model gates permissive
-    // until a later successful probe supplies live knowledge.
-    const keepCachedAdvertisement =
-      !r.ok &&
-      !r.authRequired &&
-      this.runtimeModelsSource.get(r.runtime) === 'cached' &&
-      (this.runtimeModels.get(r.runtime)?.length ?? 0) > 0
-    if (!keepCachedAdvertisement) {
-      this.runtimeModels.set(r.runtime, r.ok ? r.models : [])
-      this.runtimeModelsSource.set(r.runtime, 'probed')
-    }
-    if (r.ok && r.acpProtocolVersion !== undefined) this.runtimeAcpVersions.set(r.runtime, r.acpProtocolVersion)
-    else this.runtimeAcpVersions.delete(r.runtime)
-    if (r.ok && r.probedVersion) this.runtimeProbedVersions.set(r.runtime, r.probedVersion)
-    else this.runtimeProbedVersions.delete(r.runtime)
-    // Same overwrite rule: an unreachable runtime falls back to "not probed"
-    // (⇒ session resolution turns optimistic again rather than trusting stale caps).
-    if (r.ok && r.mcpCapabilities) this.runtimeMcpCaps.set(r.runtime, r.mcpCapabilities)
-    else this.runtimeMcpCaps.delete(r.runtime)
-    // Login state is live knowledge from this probe only: set on an ACP
-    // auth-required rejection, cleared on success or any OTHER failure kind
-    // (a timeout says nothing about credentials).
-    if (!r.ok && r.authRequired) this.runtimeAuthRequired.add(r.runtime)
-    else this.runtimeAuthRequired.delete(r.runtime)
-    await this.seedCatalogFromProbe(r)
-  }
-
-  /** Phase 1 of catalog discovery (design runtime-model-catalog.md §3.3): the probe
-   *  session's config options are already in hand — seed the cache with the default
-   *  model's caps + runtime-level permission modes, then let the discovery gate decide
-   *  whether a full phase-2 discovery is due. A failed probe deliberately skips this:
-   *  the last-good catalog is never cleared. */
-  private async seedCatalogFromProbe(r: RuntimeProbeResult): Promise<void> {
-    if (!r.ok) return
-    const entry = this.runtimeCatalog.entries[r.runtime]
-    if (!entry || this.runtimes[r.runtime] === undefined) return // curated candidates pre-admission stay out
-    try {
-      const fp = catalogFingerprint(r.runtime, r.probedVersion, entry.runtime)
-      if (r.configOptions) {
-        const caps = capsFromConfigOptions(r.configOptions)
-        const existing = await this.store.getRuntimeCatalogMeta(r.runtime)
-        // Phase 1 must not flip a driver-built catalog back to 'acp'.
-        const source = existing && existing.fingerprint === fp ? existing.source : 'acp'
-        // The probe session sits on `currentModel` — which may be the literal
-        // "default" a runtime advertises. Seed that model's caps under its real
-        // id (so selecting "default" shows the runtime's own effort/fast), but
-        // keep meta.defaultModel to a CONCRETE resolved id (never "default") —
-        // it feeds the console's preselection + "Default (…)" hint, and a
-        // native driver may still overwrite it with a concrete default.
-        const seedModel = caps.currentModel
-        const defaultModel = seedModel && seedModel !== 'default' ? seedModel : undefined
-        await this.store.recordRuntimeCatalogMeta({
-          runtimeId: r.runtime,
-          fingerprint: fp,
-          source,
-          ...(defaultModel ? { defaultModel } : {}),
-          ...(caps.permissionModes ? { permissionModes: caps.permissionModes } : {}),
-          ...(caps.currentPermissionMode ? { defaultPermissionMode: caps.currentPermissionMode } : {}),
-          observedAt: this.clock.now()
-        })
-        if (seedModel) {
-          await this.store.upsertRuntimeModelCap({
-            runtimeId: r.runtime,
-            modelId: seedModel,
-            fingerprint: fp,
-            caps: {
-              efforts: caps.efforts,
-              ...(caps.defaultEffort ? { defaultEffort: caps.defaultEffort } : {}),
-              fastMode: caps.fastMode
-            },
-            observedAt: this.clock.now()
-          })
-        }
-        await this.rebuildRuntimeCatalog(r.runtime)
-      }
-      this.modelCatalogSvc?.noteProbe({
-        runtimeId: r.runtime,
-        rt: entry.runtime,
-        probedVersion: r.probedVersion,
-        models: r.models
-      })
-    } catch (err) {
-      this.log.warn(`catalog: phase-1 seed for ${r.runtime} failed: ${formatErr(err)}`)
-    }
-  }
-
   /** Daemon-configured MCP servers as `{name, transport}` for `facts/daemon-runtimes`,
    *  derived from the effective def set (config + CP-pushed). The daemon does NOT
    *  connect to the servers — metadata only, for the console's server list. */
@@ -14967,7 +14542,7 @@ export class Daemon {
    * converges with the new provider set.
    */
   private onMcpDefsChanged(): void {
-    this.emitDaemonRuntimeFacts()
+    this.runtimeFacts.emitFacts()
   }
 
   private externalMemoryAdmission(agentId: string): { assertReady(connectionId: string): void } {
@@ -15033,10 +14608,7 @@ export class Daemon {
       this.clock.clearTimeout(this.storeRetentionTimer)
       this.storeRetentionTimer = undefined
     }
-    if (this.runtimeProbeTimer !== undefined) {
-      this.clock.clearTimeout(this.runtimeProbeTimer)
-      this.runtimeProbeTimer = undefined
-    }
+    this.runtimeFacts.dispose()
     this.dutyCoordinator.dispose()
     for (const t of this.bgWakeTimers) this.clock.clearTimeout(t)
     this.bgWakeTimers.clear()

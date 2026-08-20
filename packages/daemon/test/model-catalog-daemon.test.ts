@@ -75,7 +75,7 @@ async function seedCache(
  *  register-time `facts/daemon-runtimes` snapshot (cp/client.ts sends it at READY). */
 function firstSnapshot(daemon: Daemon): FactsRuntimeProfile[] {
   const d = daemon as any
-  return d.admittedRuntimeIds().map((id: string) => d.runtimeProfileFor(id))
+  return d.admittedRuntimeIds().map((id: string) => d.runtimeFacts.profileFor(id))
 }
 
 /** Capture post-sweep `facts/daemon-runtimes` emissions via the injected-cpClient
@@ -162,8 +162,8 @@ describe('daemon model-catalog cache hydrate', () => {
       })
       // The uninstalled runtime is absent from memory but retained on disk
       // (it may only be temporarily unresolved).
-      expect((daemon as any).runtimeModels.has('ghost')).toBe(false)
-      expect((daemon as any).runtimeCatalogs.has('ghost')).toBe(false)
+      expect((daemon as any).runtimeFacts.models.has('ghost')).toBe(false)
+      expect((daemon as any).runtimeFacts.catalogs.has('ghost')).toBe(false)
       expect(await ((daemon as any).store as LocalStore).getRuntimeCatalogMeta('ghost')).toBeDefined()
     } finally {
       await daemon.stop()
@@ -213,12 +213,12 @@ describe('daemon activation gate provenance rule', () => {
       await daemon.start()
       // Hydrated advertisement is non-empty but cached ⇒ NOT live knowledge: a
       // model added while the daemon was down must not be rejected at startup.
-      expect((daemon as any).runtimeModels.get('fake')).toEqual(['m-old'])
+      expect((daemon as any).runtimeFacts.models.get('fake')).toEqual(['m-old'])
       expect((daemon as any).activationCapabilityError(agent)).toBeUndefined()
 
       stubCatalogSvc(daemon)
       const emitted = captureEmits(daemon)
-      await (daemon as any).probeRuntimesAndEmit(true)
+      await (daemon as any).runtimeFacts.probeAndEmit(true)
 
       // The sweep flips provenance cached→probed in the emitted snapshot...
       expect(emitted).toHaveLength(1)
@@ -250,7 +250,7 @@ describe('daemon last-good advertisement fallback', () => {
       const noteProbe = stubCatalogSvc(daemon)
       const emitted = captureEmits(daemon)
 
-      await (daemon as any).probeRuntimesAndEmit(true)
+      await (daemon as any).runtimeFacts.probeAndEmit(true)
       expect(probe).toHaveBeenCalledTimes(1)
       const failed = emitted[0]![0]!
       // A disposable refresh can fail while established runtime homes remain
@@ -269,7 +269,7 @@ describe('daemon last-good advertisement fallback', () => {
       // no phase-2 rediscovery involved (the catalog service stub can't run one).
       clock.advance(6 * 60_000) // past the 5-minute probe TTL
       results = [{ runtime: 'fake', ok: true, models: ['m-a', 'm-b'] }]
-      await (daemon as any).probeRuntimesAndEmit(true)
+      await (daemon as any).runtimeFacts.probeAndEmit(true)
       expect(probe).toHaveBeenCalledTimes(2)
       const restored = emitted[1]![0]!
       expect(restored.models).toEqual(['m-a', 'm-b'])
@@ -298,7 +298,7 @@ describe('daemon auth-required probe fold', () => {
       stubCatalogSvc(daemon)
       const emitted = captureEmits(daemon)
 
-      await (daemon as any).probeRuntimesAndEmit(true)
+      await (daemon as any).runtimeFacts.probeAndEmit(true)
       // Authentication rejection is authoritative and clears even a warm cache.
       expect(emitted[0]![0]).toMatchObject({
         runtime: 'fake',
@@ -311,7 +311,7 @@ describe('daemon auth-required probe fold', () => {
       // entirely (absent ⇒ ok, matching older-daemon semantics).
       clock.advance(6 * 60_000) // past the 5-minute probe TTL
       results = [{ runtime: 'fake', ok: true, models: ['m-a'] }]
-      await (daemon as any).probeRuntimesAndEmit(true)
+      await (daemon as any).runtimeFacts.probeAndEmit(true)
       expect(emitted[1]![0]!.runtime).toBe('fake')
       expect(emitted[1]![0]!.authRequired).toBeUndefined()
     } finally {
@@ -331,7 +331,7 @@ describe('daemon auth-required probe fold', () => {
       await daemon.start()
       stubCatalogSvc(daemon)
       const emitted = captureEmits(daemon)
-      await (daemon as any).probeRuntimesAndEmit(true)
+      await (daemon as any).runtimeFacts.probeAndEmit(true)
       expect(emitted[0]![0]!.authRequired).toBeUndefined()
       // With no last-good cache, there is nothing to preserve.
       expect(emitted[0]![0]).toMatchObject({ models: [], modelsSource: 'probed' })
@@ -412,7 +412,7 @@ describe('daemon sweep phase-1 catalog seeding', () => {
         await daemon.start()
         const noteProbe = stubCatalogSvc(daemon)
         const emitted = captureEmits(daemon)
-        await (daemon as any).probeRuntimesAndEmit(true)
+        await (daemon as any).runtimeFacts.probeAndEmit(true)
 
         // Store: phase-1 meta (fingerprint, resolved default model, permission
         // modes) with the discovery gate left OPEN (complete=false)...
@@ -491,7 +491,7 @@ describe('daemon sweep phase-1 catalog seeding', () => {
     try {
       await daemon.start()
       stubCatalogSvc(daemon)
-      await (daemon as any).probeRuntimesAndEmit(true)
+      await (daemon as any).runtimeFacts.probeAndEmit(true)
       const store = (daemon as any).store as LocalStore
       // meta.defaultModel is never the literal "default" (feeds the concrete
       // preselection/hint) — but the caps row IS seeded under "default" so

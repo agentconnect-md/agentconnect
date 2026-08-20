@@ -138,7 +138,7 @@ describe('Daemon rd/msg hook fires', () => {
       hostFactory: factory
     })
     await daemon.start()
-    ;(daemon as any).runtimeNames.claude = 'Claude Code'
+    ;(daemon as any).runtimeFacts.names.claude = 'Claude Code'
     await (daemon as any).ensureHostAsync(AGENT_ID)
 
     expect(await (daemon as any).githubReviews.githubCommentAttribution(AGENT_ID, 'acp-hook-1')).toMatchObject({

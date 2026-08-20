@@ -375,7 +375,7 @@ describe('Daemon transcript records the agent reply', () => {
       hostFactory: factory
     })
     await daemon.start()
-    ;(daemon as any).runtimeNames.claude = 'Claude Code'
+    ;(daemon as any).runtimeFacts.names.claude = 'Claude Code'
     ;(daemon as any).agents.get('bot-a').displayName = 'Repo Bot'
     const conn = makeRoutable(daemon)
 

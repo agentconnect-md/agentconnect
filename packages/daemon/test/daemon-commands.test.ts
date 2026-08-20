@@ -2271,7 +2271,7 @@ describe('Slack interactive status bar', () => {
     // daemon-wide probe result still carries the runtime's model choices.
     host.hasSession.mockReturnValue(false)
     ;(host.modelOptions as any).mockReturnValue(null)
-    ;(daemon as any).runtimeModels.set('claude', ['default', 'opus[1m]', 'sonnet', 'haiku'])
+    ;(daemon as any).runtimeFacts.models.set('claude', ['default', 'opus[1m]', 'sonnet', 'haiku'])
 
     const fallback = (await (daemon as any).statusInfoForKey(key)).info
     expect(fallback.model).toBe('default')

@@ -33,7 +33,7 @@ function catalog(): ResolvedRuntimeCatalog {
 
 async function waitForProbe(daemon: Daemon, probe: ReturnType<typeof vi.fn>): Promise<void> {
   await vi.waitFor(() => expect(probe).toHaveBeenCalled(), WAIT)
-  await vi.waitFor(() => expect((daemon as any).probing).toBe(false), WAIT)
+  await vi.waitFor(() => expect((daemon as any).runtimeFacts.probing).toBe(false), WAIT)
 }
 
 describe('daemon curated runtime admission', () => {
@@ -66,7 +66,7 @@ describe('daemon curated runtime admission', () => {
         expect(probe.mock.calls.some(([, options]) => options.curated === true)).toBe(true)
 
         const calls = probe.mock.calls.length
-        await (daemon as any).probeRuntimesAndEmit(false)
+        await (daemon as any).runtimeFacts.probeAndEmit(false)
         expect(probe).toHaveBeenCalledTimes(calls)
       } finally {
         await daemon.stop()
@@ -129,7 +129,7 @@ describe('daemon curated runtime admission', () => {
       )
       // …but the facts snapshot reports it so the console can show the warning.
       expect((daemon as any).reportedRuntimeIds().sort()).toEqual(['explicit', 'hermes-agent'])
-      expect((daemon as any).runtimeProfileFor('hermes-agent')).toMatchObject({
+      expect((daemon as any).runtimeFacts.profileFor('hermes-agent')).toMatchObject({
         runtime: 'hermes-agent',
         models: [],
         authRequired: true
@@ -143,7 +143,7 @@ describe('daemon curated runtime admission', () => {
         },
         stop: vi.fn(async () => {})
       }
-      await (daemon as any).probeRuntimesAndEmit(true)
+      await (daemon as any).runtimeFacts.probeAndEmit(true)
       expect(emitted.length).toBeGreaterThan(0)
       const last = emitted[emitted.length - 1]!
       expect(last.find((p) => p.runtime === 'hermes-agent')?.authRequired).toBe(true)
@@ -177,23 +177,23 @@ describe('daemon curated runtime admission', () => {
       }
 
       // Live signal: a real turn on 'explicit' rejected with ACP -32000.
-      ;(daemon as any).noteRuntimeAuthFromTurn('explicit', true)
+      ;(daemon as any).runtimeFacts.noteAuthFromTurn('explicit', true)
       expect(emitted.length).toBe(1)
       expect(emitted[0]!.find((p) => p.runtime === 'explicit')?.authRequired).toBe(true)
       // Re-marking without a state flip does not re-emit.
-      ;(daemon as any).noteRuntimeAuthFromTurn('explicit', true)
+      ;(daemon as any).runtimeFacts.noteAuthFromTurn('explicit', true)
       expect(emitted.length).toBe(1)
 
       // A fresh all-OK sweep must NOT clear the live mark: claude-style adapters
       // probe fine (initialize + session/new succeed) while logged out.
-      ;(daemon as any).lastProbeAtMs = 0
-      await (daemon as any).probeRuntimesAndEmit(true)
+      ;(daemon as any).runtimeFacts.lastProbeAtMs = 0
+      await (daemon as any).runtimeFacts.probeAndEmit(true)
       const afterSweep = emitted[emitted.length - 1]!
       expect(afterSweep.find((p) => p.runtime === 'explicit')?.authRequired).toBe(true)
 
       // The next successful turn clears it and emits the flip.
       const beforeClear = emitted.length
-      ;(daemon as any).noteRuntimeAuthFromTurn('explicit', false)
+      ;(daemon as any).runtimeFacts.noteAuthFromTurn('explicit', false)
       expect(emitted.length).toBe(beforeClear + 1)
       expect(emitted[emitted.length - 1]!.find((p) => p.runtime === 'explicit')?.authRequired).toBeUndefined()
     } finally {
@@ -236,17 +236,17 @@ describe('daemon curated runtime admission', () => {
         stop: vi.fn(async () => {})
       }
       // Re-arm a full sweep whose curated probe blocks until released.
-      ;(daemon as any).lastProbeAtMs = 0
+      ;(daemon as any).runtimeFacts.lastProbeAtMs = 0
       ;(daemon as any).curatedRuntimeAdmission = new CuratedRuntimeAdmission()
       ;(daemon as any).refreshAdmittedRuntimes()
       gate = new Promise<void>((resolve) => {
         releaseCurated = resolve
       })
-      const sweep = (daemon as any).probeRuntimesAndEmit(true)
+      const sweep = (daemon as any).runtimeFacts.probeAndEmit(true)
 
       // The fast runtime is reported while the curated probe is still in flight.
       await vi.waitFor(() => expect(emitted.at(-1)).toContain('explicit'), WAIT)
-      expect((daemon as any).probing).toBe(true)
+      expect((daemon as any).runtimeFacts.probing).toBe(true)
       expect(emitted.at(-1)).not.toContain('hermes-agent')
 
       releaseCurated()
@@ -288,7 +288,7 @@ describe('daemon curated runtime admission', () => {
         stop: vi.fn(async () => {})
       }
 
-      await (daemon as any).probeRuntimesAndEmit(true)
+      await (daemon as any).runtimeFacts.probeAndEmit(true)
 
       expect(probe).toHaveBeenCalled()
       expect(Object.keys((daemon as any).runtimes).sort()).toEqual(['explicit', 'hermes-agent'])
@@ -297,7 +297,7 @@ describe('daemon curated runtime admission', () => {
       expect(emitted.at(-1)).toContain('hermes-agent')
     } finally {
       ;(daemon as any).draining = true
-      const timer = (daemon as any).runtimeProbeTimer
+      const timer = (daemon as any).runtimeFacts.probeTimer
       if (timer !== undefined) clock.clearTimeout(timer)
     }
   }, 15_000)
@@ -318,16 +318,16 @@ describe('daemon curated runtime admission', () => {
       ;(daemon as any).root = '/tmp/curated-admission-test'
       ;(daemon as any).runtimeCatalog = catalog()
       ;(daemon as any).refreshAdmittedRuntimes()
-      ;(daemon as any).armRuntimeProbeRefresh()
+      ;(daemon as any).runtimeFacts.armProbeRefresh()
 
       clock.advance(5 * 60_000)
       await vi.waitFor(() => expect(probe).toHaveBeenCalled(), WAIT)
-      await vi.waitFor(() => expect((daemon as any).probing).toBe(false), WAIT)
+      await vi.waitFor(() => expect((daemon as any).runtimeFacts.probing).toBe(false), WAIT)
       expect(Object.keys((daemon as any).runtimes).sort()).toEqual(['explicit', 'hermes-agent'])
       expect(Object.keys(probe.mock.calls[0]![0])).toEqual(['hermes-agent'])
     } finally {
       ;(daemon as any).draining = true
-      const timer = (daemon as any).runtimeProbeTimer
+      const timer = (daemon as any).runtimeFacts.probeTimer
       if (timer !== undefined) clock.clearTimeout(timer)
     }
   }, 15_000)
@@ -339,9 +339,9 @@ describe('daemon curated runtime admission', () => {
       runtimes: { explicit: catalog().runtimes.explicit }
     }
 
-    ;(daemon as any).armRuntimeProbeRefresh()
+    ;(daemon as any).runtimeFacts.armProbeRefresh()
 
-    expect((daemon as any).runtimeProbeTimer).toBeUndefined()
+    expect((daemon as any).runtimeFacts.probeTimer).toBeUndefined()
   })
 
   it('queues the ordinary CP-ready sweep behind an in-flight curated sweep', async () => {
@@ -359,9 +359,9 @@ describe('daemon curated runtime admission', () => {
     ;(daemon as any).runtimeCatalog = catalog()
     ;(daemon as any).refreshAdmittedRuntimes()
 
-    const curated = (daemon as any).probeRuntimesAndEmit(false)
+    const curated = (daemon as any).runtimeFacts.probeAndEmit(false)
     await vi.waitFor(() => expect(probe).toHaveBeenCalledTimes(1), WAIT)
-    await (daemon as any).probeRuntimesAndEmit(true)
+    await (daemon as any).runtimeFacts.probeAndEmit(true)
     releaseFirst()
     await curated
 
