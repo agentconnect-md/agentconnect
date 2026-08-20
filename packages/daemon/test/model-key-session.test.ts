@@ -28,8 +28,8 @@ describe('daemon model-key session lifecycle', () => {
 
   it('issues once per logical session, caches the host, and revokes on release', async () => {
     const h = harness([{ keyId: 'key-1', key: 'secret', requestedAtMs: 1_000 }])
-    const first = await h.daemon.ensureModelSessionHost(agent, 'slack:C:T:agent-a')
-    const second = await h.daemon.ensureModelSessionHost(agent, 'slack:C:T:agent-a')
+    const first = await h.daemon.modelSessions.ensure(agent, 'slack:C:T:agent-a')
+    const second = await h.daemon.modelSessions.ensure(agent, 'slack:C:T:agent-a')
 
     expect(first.host).toBe(h.firstHost)
     expect(second.host).toBe(h.firstHost)
@@ -42,7 +42,7 @@ describe('daemon model-key session lifecycle', () => {
       ttlSeconds: 3_600
     })
 
-    await h.daemon.releaseModelSessionHost('slack:C:T:agent-a')
+    await h.daemon.modelSessions.release('slack:C:T:agent-a')
     expect(h.firstHost.stop).toHaveBeenCalledOnce()
     expect(h.revoke).toHaveBeenCalledWith('key-1')
   })
@@ -52,9 +52,9 @@ describe('daemon model-key session lifecycle', () => {
       { keyId: 'key-1', key: 'old', requestedAtMs: 1_000, refreshAtMs: 2_000, expiresAtMs: 4_000 },
       { keyId: 'key-2', key: 'new', requestedAtMs: 2_000, refreshAtMs: 3_000, expiresAtMs: 5_000 }
     ])
-    await h.daemon.ensureModelSessionHost(agent, 'session-a')
+    await h.daemon.modelSessions.ensure(agent, 'session-a')
     h.clock.advance(1_000)
-    const rotated = await h.daemon.ensureModelSessionHost(agent, 'session-a')
+    const rotated = await h.daemon.modelSessions.ensure(agent, 'session-a')
 
     expect(rotated.host).toBe(h.secondHost)
     expect(h.issue).toHaveBeenCalledTimes(2)
@@ -67,7 +67,7 @@ describe('daemon model-key session lifecycle', () => {
       { keyId: 'key-1', key: 'old', requestedAtMs: 1_000, refreshAtMs: 2_000, expiresAtMs: 4_000 },
       { keyId: 'key-2', key: 'new', requestedAtMs: 2_000, refreshAtMs: 3_000, expiresAtMs: 5_000 }
     ])
-    await h.daemon.ensureModelSessionHost(agent, 'session-a')
+    await h.daemon.modelSessions.ensure(agent, 'session-a')
     h.daemon.store.getSession = () => ({ acpSessionId: 'acp-1' })
     h.daemon.sdkLease.set(JSON.stringify(['agent-a', 'acp-1']), {
       agentId: 'agent-a',
@@ -80,13 +80,13 @@ describe('daemon model-key session lifecycle', () => {
     })
     h.clock.advance(1_000)
 
-    const deferred = await h.daemon.ensureModelSessionHost(agent, 'session-a')
+    const deferred = await h.daemon.modelSessions.ensure(agent, 'session-a')
     expect(deferred.host).toBe(h.firstHost)
     expect(h.issue).toHaveBeenCalledOnce()
     expect(h.firstHost.stop).not.toHaveBeenCalled()
 
     h.daemon.sdkLease.clear()
-    const rotated = await h.daemon.ensureModelSessionHost(agent, 'session-a')
+    const rotated = await h.daemon.modelSessions.ensure(agent, 'session-a')
     expect(rotated.host).toBe(h.secondHost)
     expect(h.firstHost.stop).toHaveBeenCalledOnce()
   })
@@ -96,7 +96,7 @@ describe('daemon model-key session lifecycle', () => {
       { keyId: 'key-1', key: 'old', requestedAtMs: 1_000, refreshAtMs: 1_500, expiresAtMs: 2_000 },
       { keyId: 'key-2', key: 'new', requestedAtMs: 2_000 }
     ])
-    await h.daemon.ensureModelSessionHost(agent, 'session-a')
+    await h.daemon.modelSessions.ensure(agent, 'session-a')
     h.daemon.store.getSession = () => ({ acpSessionId: 'acp-1' })
     h.daemon.sdkLease.set(JSON.stringify(['agent-a', 'acp-1']), {
       agentId: 'agent-a',
@@ -109,7 +109,7 @@ describe('daemon model-key session lifecycle', () => {
     })
     h.clock.advance(1_000)
 
-    const pinned = await h.daemon.ensureModelSessionHost(agent, 'session-a')
+    const pinned = await h.daemon.modelSessions.ensure(agent, 'session-a')
     expect(pinned.host).toBe(h.firstHost)
     expect(h.issue).toHaveBeenCalledOnce()
     expect(h.firstHost.stop).not.toHaveBeenCalled()
@@ -130,7 +130,7 @@ describe('daemon model-key session lifecycle', () => {
     h.daemon.store.getModelOverride = () => 'anthropic/claude-opus-4'
     h.daemon.agents.set('agent-a', opencodeAgent)
 
-    await h.daemon.ensureModelSessionHost(opencodeAgent, 'session-a')
+    await h.daemon.modelSessions.ensure(opencodeAgent, 'session-a')
     expect(h.issue).toHaveBeenCalledWith(expect.objectContaining({ provider: 'anthropic' }))
 
     // Live SDK work: the switch is recorded, but the running host keeps its binding.
@@ -150,13 +150,13 @@ describe('daemon model-key session lifecycle', () => {
     expect(setModelOverride).toHaveBeenCalledWith('session-a', 'openai/gpt-5')
 
     h.daemon.store.getModelOverride = () => 'openai/gpt-5'
-    const pinned = await h.daemon.ensureModelSessionHost(opencodeAgent, 'session-a')
+    const pinned = await h.daemon.modelSessions.ensure(opencodeAgent, 'session-a')
     expect(pinned.host).toBe(h.firstHost)
     expect(h.issue).toHaveBeenCalledOnce()
 
     // Once the work settles, the next start honours the recorded provider.
     h.daemon.sdkLease.clear()
-    const rebound = await h.daemon.ensureModelSessionHost(opencodeAgent, 'session-a')
+    const rebound = await h.daemon.modelSessions.ensure(opencodeAgent, 'session-a')
     expect(rebound.host).toBe(h.secondHost)
     expect(h.firstHost.stop).toHaveBeenCalledOnce()
     expect(h.issue).toHaveBeenLastCalledWith(expect.objectContaining({ provider: 'openai' }))
@@ -164,7 +164,7 @@ describe('daemon model-key session lifecycle', () => {
 
   it('refuses a cross-provider switch on the shared static-credential host', async () => {
     const daemon = new Daemon({ k8s: true, clock: new FakeClock(1_000) }) as any
-    daemon.staticModelCredentials = { opencode: { key: 'static-token' } }
+    daemon.modelSessions.staticModelCredentials = { opencode: { key: 'static-token' } }
     const opencodeAgent = {
       id: 'agent-a',
       runtime: 'opencode',
@@ -184,7 +184,7 @@ describe('daemon model-key session lifecycle', () => {
 
   it('leaves a runtime the static map never configured switchable', async () => {
     const daemon = new Daemon({ k8s: true, clock: new FakeClock(1_000) }) as any
-    daemon.staticModelCredentials = { claude: { key: 'static-token' } }
+    daemon.modelSessions.staticModelCredentials = { claude: { key: 'static-token' } }
     const opencodeAgent = {
       id: 'agent-a',
       runtime: 'opencode',
@@ -206,9 +206,9 @@ describe('daemon model-key session lifecycle', () => {
     process.env.ANTHROPIC_MODEL_BASE_URL = 'https://gw.example'
     try {
       const withServer = new Daemon({ k8s: true, keyServer: 'https://keys.test', clock: new FakeClock(1_000) }) as any
-      expect(withServer.staticModelCredentials.claude).toEqual({ key: '', baseUrl: 'https://gw.example' })
+      expect(withServer.modelSessions.staticModelCredentials.claude).toEqual({ key: '', baseUrl: 'https://gw.example' })
       // The issuer owns the key; where it is sent is the deployment's, so a grant URL is not read.
-      expect(withServer.staticModelBaseUrl({ provider: 'anthropic', runtime: 'claude' })).toEqual({
+      expect(withServer.modelSessions.staticBaseUrl({ provider: 'anthropic', runtime: 'claude' })).toEqual({
         baseUrl: 'https://gw.example'
       })
     } finally {
@@ -222,20 +222,20 @@ describe('daemon model-key session lifecycle', () => {
       { keyId: 'key-1', key: 'old', requestedAtMs: 1_000, refreshAtMs: 2_000 },
       { keyId: 'key-2', key: 'new', requestedAtMs: 2_000 }
     ])
-    await h.daemon.ensureModelSessionHost(agent, 'session-a')
+    await h.daemon.modelSessions.ensure(agent, 'session-a')
     h.firstHost.stop.mockRejectedValueOnce(new Error('stop refused'))
     h.clock.advance(1_000)
 
-    await expect(h.daemon.ensureModelSessionHost(agent, 'session-a')).rejects.toThrow(/stop refused/)
+    await expect(h.daemon.modelSessions.ensure(agent, 'session-a')).rejects.toThrow(/stop refused/)
     await vi.waitFor(() => expect(h.revoke).toHaveBeenCalledWith('key-2'))
     expect(h.revoke).not.toHaveBeenCalledWith('key-1')
     // The old entry keeps owning both key-1 and the host whose stop rejected, so teardown
     // gives the key back AND retries the kill rather than losing the process.
-    expect(h.daemon.modelSessionHosts.get('session-a').host).toBe(h.firstHost)
-    await h.daemon.releaseModelSessionHost('session-a')
+    expect(h.daemon.modelSessions.entries.get('session-a').host).toBe(h.firstHost)
+    await h.daemon.modelSessions.release('session-a')
     expect(h.revoke).toHaveBeenCalledWith('key-1')
     expect(h.firstHost.stop).toHaveBeenCalledTimes(2)
-    expect(h.daemon.modelSessionHosts.has('session-a')).toBe(false)
+    expect(h.daemon.modelSessions.entries.has('session-a')).toBe(false)
   })
 
   it('retains a host whose stop rejected during release and retries the kill', async () => {
@@ -243,15 +243,15 @@ describe('daemon model-key session lifecycle', () => {
       { keyId: 'key-1', key: 'secret', requestedAtMs: 1_000 },
       { keyId: 'key-2', key: 'next', requestedAtMs: 1_000 }
     ])
-    await h.daemon.ensureModelSessionHost(agent, 'session-a')
+    await h.daemon.modelSessions.ensure(agent, 'session-a')
     h.firstHost.stop.mockRejectedValueOnce(new Error('stop refused'))
 
-    await expect(h.daemon.releaseModelSessionHost('session-a')).rejects.toThrow(/stop refused/)
+    await expect(h.daemon.modelSessions.release('session-a')).rejects.toThrow(/stop refused/)
     expect(h.revoke).toHaveBeenCalledWith('key-1')
     // Retained rather than lost — but never handed back out, since its key is already revoked.
-    expect(h.daemon.modelSessionHosts.get('session-a').host).toBe(h.firstHost)
+    expect(h.daemon.modelSessions.entries.get('session-a').host).toBe(h.firstHost)
 
-    const next = await h.daemon.ensureModelSessionHost(agent, 'session-a')
+    const next = await h.daemon.modelSessions.ensure(agent, 'session-a')
     expect(h.firstHost.stop).toHaveBeenCalledTimes(2)
     expect(next.host).toBe(h.secondHost)
     expect(h.issue).toHaveBeenCalledTimes(2)
@@ -262,9 +262,9 @@ describe('daemon model-key session lifecycle', () => {
     let settleStart: (host: unknown) => void = () => {}
     h.daemon.startModelSessionRuntime = vi.fn(() => new Promise((resolve) => (settleStart = resolve)))
 
-    const starting = h.daemon.ensureModelSessionHost(agent, 'session-a')
+    const starting = h.daemon.modelSessions.ensure(agent, 'session-a')
     await vi.waitFor(() => expect(h.daemon.startModelSessionRuntime).toHaveBeenCalled())
-    const released = h.daemon.releaseModelSessionHost('session-a')
+    const released = h.daemon.modelSessions.release('session-a')
     settleStart(h.firstHost)
 
     await expect(starting).rejects.toThrow(/released during startup/)
