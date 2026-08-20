@@ -38,7 +38,7 @@ import {
   type FileBrowserEditorDraft
 } from '@/components/console/FileBrowser'
 import {
-  SESSION_WORKTREE_ABSENT_NOTICE,
+  sessionWorktreeAbsentNotice,
   StatusBadge,
   useWorkspaceGitStatus,
   useWorkspaceTree,
@@ -704,7 +704,7 @@ export function WorkspaceFiles({
             text={
               // The SESSION scope answers first for every root: the repository sentence below is about the AGENT's checkout, and offering it to a reader looking at one session's worktree promises a materialization that session will never see.
               sessionId
-                ? SESSION_WORKTREE_ABSENT_NOTICE
+                ? sessionWorktreeAbsentNotice(repo)
                 : repo
                   ? 'Not checked out yet — this repository is materialized on the agent’s next session.'
                   : 'The workspace has no files yet — the agent creates them as it works.'

@@ -442,7 +442,8 @@ it('speaks about the SESSION, not the agent, when a session scope selects an add
   workspace.exists = false
   await renderRepoScoped({ repo: 'acme/infra', sessionId: 'session-a' })
 
-  expect(container?.textContent).toContain('No checkout for this session')
+  // Named, because with a root selected the missing worktree is THAT root's.
+  expect(container?.textContent).toContain('No checkout of acme/infra for this session')
   expect(container?.textContent).not.toContain('materialized on the agent’s next session')
 })
 
