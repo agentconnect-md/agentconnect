@@ -90,16 +90,10 @@ describe('useCommandAutocomplete', () => {
     expect(picks).toEqual([{ agentId: 'b', agentName: 'Bob', name: 'code-review' }])
   })
 
-  it('still opens after a hand-typed mention', () => {
+  it('does not open after a mention — the daemon never translates that draft', () => {
     const h = mountHarness(ROSTER)
     type(h, '@Bob /td')
-    expect(h.api().matches.map((c) => c.name)).toEqual(['tdd'])
-    act(() => h.api().pick(h.api().matches[0]!))
-    expect(h.getValue()).toBe('@Bob /tdd ')
-  })
-
-  it('does not open mid-sentence after a mention — the reviewed regression', () => {
-    const h = mountHarness(ROSTER)
+    expect(h.api().open).toBe(false)
     type(h, '@Bob the log is in /tmp')
     expect(h.api().open).toBe(false)
   })

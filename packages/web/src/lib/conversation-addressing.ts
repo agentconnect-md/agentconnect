@@ -132,17 +132,18 @@ export function tokenSpanEnd(text: string, start: number): number {
 /** The `/command` being typed at `caret`, if any (composer command picker).
  *
  *  Unlike a mention, a command is the prompt's own leading token — ACP invokes one as the prompt
- *  text `/name arg` — so only whitespace and @mentions may precede it. That also keeps the two
- *  pickers from competing: `/` mid-sentence is ordinary text, as is a path or a URL. */
+ *  text `/name arg` — so ONLY whitespace may precede it, exactly matching the daemon's
+ *  translation gate (`matchSkillInvocation` trims and demands the prefix). A leading @mention
+ *  used to be tolerated here, but the daemon never translates that draft, so offering the picker
+ *  on it manufactured the very UI-says-yes/wire-says-no split this feature exists to close;
+ *  owner addressing is structural now, so the allowance had no remaining purpose. */
 export function commandQueryAt(text: string, caret: number): { start: number; query: string } | null {
   const upto = text.slice(0, caret)
   const at = upto.lastIndexOf('/')
   if (at === -1) return null
   const query = upto.slice(at + 1)
   if (/\s/.test(query)) return null
-  // Strictly whitespace and COMPLETE @mention tokens before the `/` — `(?:@.*\s)?` also matched
-  // "@Bob the log is in /tmp" and opened the picker mid-sentence, turning Enter into an insert.
-  if (!/^\s*(?:@\S+\s+)*$/.test(upto.slice(0, at))) return null
+  if (!/^\s*$/.test(upto.slice(0, at))) return null
   return { start: at, query }
 }
 

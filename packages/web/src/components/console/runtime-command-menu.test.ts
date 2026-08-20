@@ -24,9 +24,11 @@ describe('commandQueryAt', () => {
     expect(commandQueryAt('  /rev', 6)).toEqual({ start: 2, query: 'rev' })
   })
 
-  it('opens after mentions, since picking a command may have inserted one', () => {
-    expect(commandQueryAt('@Bob /rev', 9)).toEqual({ start: 5, query: 'rev' })
-    expect(commandQueryAt('@Alice @Bob /co', 15)).toEqual({ start: 12, query: 'co' })
+  it('does NOT open after a mention — the daemon never translates that draft', () => {
+    // Owner addressing is structural (the pick rides mentions[]), so a leading @mention has no
+    // command meaning; offering the picker on it would re-create the UI-yes/wire-no split.
+    expect(commandQueryAt('@Bob /rev', 9)).toBeNull()
+    expect(commandQueryAt('@Alice @Bob /co', 15)).toBeNull()
   })
 
   it('leaves an ordinary slash alone — a command is the prompt’s leading token', () => {
@@ -114,14 +116,15 @@ describe('commandInsertion', () => {
 })
 
 describe('leadingCommandToken', () => {
-  it('reads the token a draft leads with, tolerating whitespace and complete mentions', () => {
+  it('reads the token a draft leads with, tolerating whitespace only', () => {
     expect(leadingCommandToken('/code-review 42')).toBe('code-review')
     expect(leadingCommandToken('  /$refactor')).toBe('$refactor')
-    expect(leadingCommandToken('@Bob /tdd now')).toBe('tdd')
   })
 
-  it('reads nothing from a draft the command no longer leads', () => {
+  it('reads nothing from a draft the command no longer leads — mentions included', () => {
     expect(leadingCommandToken('run /code-review')).toBeNull()
+    // Matches the daemon gate exactly: a leading mention defeats translation, so it defeats this.
+    expect(leadingCommandToken('@Bob /tdd now')).toBeNull()
     expect(leadingCommandToken('@Bob the log is in /tmp')).toBeNull()
     expect(leadingCommandToken('hello')).toBeNull()
   })

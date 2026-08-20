@@ -47,7 +47,7 @@ export function CommandMenu({
     ? { bottom: coords.elHeight - coords.top + 4 }
     : { top: coords.top + coords.height + 4 }
   // Clamp like MentionMenu: near a narrow composer's right edge `left` would otherwise push the
-  // whole popover past it. The detail pane collapses first, so clamp against the list alone.
+  // whole popover past it. Clamped against the list alone — the pane is desktop-only and fixed.
   const left = Math.min(Math.max(0, coords.left - 4), Math.max(0, coords.elWidth - LIST_WIDTH))
   return (
     <div style={{ ...position, left }} className="absolute z-50 flex items-start gap-1">
@@ -82,8 +82,9 @@ export function CommandMenu({
               )}
               <span className="min-w-0 flex-1 text-left">
                 <span className="mono block truncate text-[12px]">/{option.name}</span>
-                {option.description && (
+                {(option.description || showOwner) && (
                   <span className="block truncate font-sans text-[11px] leading-normal font-normal text-(--text-tertiary) desktop:hidden">
+                    {showOwner ? `${option.agentName} · ` : ''}
                     {option.description}
                   </span>
                 )}

@@ -80,9 +80,10 @@ export function commandInsertion(input: {
   return { text: head + inserted + tail, caret: head.length + inserted.length }
 }
 
-/** The `/token` a draft leads with (after whitespace and complete @mentions), for validating a
- *  stored pick at send time — the pick only narrows the turn while its token still leads. */
+/** The `/token` a draft leads with (after whitespace ONLY — the daemon's gate trims and demands
+ *  the prefix, and this must agree with it exactly), for validating a stored pick at send time:
+ *  the pick only narrows the turn while its token still leads. */
 export function leadingCommandToken(text: string): string | null {
-  const match = /^\s*(?:@\S+\s+)*\/(\S+)/.exec(text)
+  const match = /^\s*\/(\S+)/.exec(text)
   return match ? match[1]! : null
 }
