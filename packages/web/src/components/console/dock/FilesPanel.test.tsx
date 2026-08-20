@@ -740,11 +740,12 @@ describe('FilesPanel degraded states', () => {
     expect(text()).not.toContain('may be offline')
   })
 
-  it('explains a cleaned-up worktree that the listing reports as missing', async () => {
+  it('explains a listing that reports the session worktree missing, without inventing why', async () => {
     wire.listings = { '': { entries: [], exists: false } }
     await render()
 
-    expect(text()).toContain('will be recreated from the repository')
+    expect(text()).toContain('No checkout for this session')
+    expect(text()).toContain('may not have one of its own')
   })
 
   it('explains a primary workspace that has no files yet', async () => {
