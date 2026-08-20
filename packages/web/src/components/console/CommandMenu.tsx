@@ -49,8 +49,15 @@ export function CommandMenu({
   // Clamp like MentionMenu: near a narrow composer's right edge `left` would otherwise push the
   // whole popover past it. Clamped against the list alone — the pane is desktop-only and fixed.
   const left = Math.min(Math.max(0, coords.left - 4), Math.max(0, coords.elWidth - LIST_WIDTH))
+  // Anchored by whichever edge faces the caret: opening upward, the wrapper's BOTTOM is the fixed
+  // edge, so the cards must bottom-align — top-aligning there leaves the shorter card (usually the
+  // list, the primary surface) floating high above the composer while only the taller pane touches
+  // it. Downward, the top edge faces the caret and top-alignment is correct.
   return (
-    <div style={{ ...position, left }} className="absolute z-50 flex items-start gap-1">
+    <div
+      style={{ ...position, left }}
+      className={`absolute z-50 flex gap-1 ${coords.openUpward ? 'items-end' : 'items-start'}`}
+    >
       <div
         role="listbox"
         aria-label="Run a command"

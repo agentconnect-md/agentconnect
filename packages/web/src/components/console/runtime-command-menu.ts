@@ -8,7 +8,9 @@
 // offering it would put a dead entry in the menu. This also supersedes the old console-owned-name
 // filter: `model` / `effort` / `permission` are built-ins, so the same gate removes them.
 
-import { isSkillCommand } from '@agentconnect.md/protocol'
+// The bundler-facing LEAF, like `/slack-app-manifest`: the protocol root pulls the whole wire
+// index (codec and friends), which the web dev bundler cannot resolve from source.
+import { isSkillCommand } from '@agentconnect.md/protocol/runtime-command'
 
 /** One skill offered in the picker, carrying the agent it belongs to. */
 export interface CommandCandidate {

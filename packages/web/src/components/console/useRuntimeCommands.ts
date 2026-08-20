@@ -8,8 +8,36 @@ import { useMemo } from 'react'
 import useSWR from 'swr'
 import { useOrgs } from '@/lib/org-context'
 import { consoleKeys } from '@/lib/swr-keys'
-import { fetchAgentRuntimeCommands } from '@/lib/api'
+import { fetchAgentRuntimeCommands, type RuntimeCommandsDto } from '@/lib/api'
+import { MOCK_MODE } from '@/lib/data'
 import { offerableCommands, type CommandCandidate } from '@/components/console/runtime-command-menu'
+
+// Demo advertisement for mock mode, mirroring real adapter shapes (claude suffix-classified names,
+// a codex `$` name, argument hints) so the picker is demoable and its layout visually testable.
+const MOCK_COMMANDS: RuntimeCommandsDto = {
+  reported: true,
+  commands: [
+    {
+      name: 'deploy-checklist',
+      description: 'Walk the release checklist: build, canary, dashboards, rollout gates.',
+      hint: '[service]',
+      skill: true
+    },
+    {
+      name: 'code-review',
+      description: 'Review the current diff against the team conventions and open questions.',
+      hint: '[pr-number]',
+      skill: true
+    },
+    {
+      name: '$rollback',
+      description: 'Roll the named service back to the last good build.',
+      hint: '<service>',
+      skill: true
+    },
+    { name: 'triage', description: 'Sort the incoming issues by severity and route them.', hint: null, skill: true }
+  ]
+}
 
 /** Why one participant contributes nothing, so the picker can say so instead of going blank. */
 export type RuntimeCommandsGap = 'unreported' | 'unavailable'
@@ -34,6 +62,9 @@ export function useRuntimeCommands(
   // allSettled, not all: one offline daemon or one daemon too old to answer must not blank the whole
   // menu — that participant becomes a gap and the rest still list.
   const { data, isLoading } = useSWR(key, async () => {
+    if (MOCK_MODE) {
+      return ids.map((agentId) => ({ agentId, result: { status: 'fulfilled', value: MOCK_COMMANDS } as const }))
+    }
     const settled = await Promise.allSettled(ids.map((id) => fetchAgentRuntimeCommands(id)))
     return ids.map((agentId, index) => ({ agentId, result: settled[index]! }))
   })

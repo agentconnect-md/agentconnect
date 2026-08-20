@@ -166,6 +166,37 @@ describe('CommandMenu', () => {
     expect(text).toContain('refactor-bot is unreachable')
   })
 
+  it('bottom-aligns the cards when opening upward, so the list hugs the caret', () => {
+    // Opening upward anchors the wrapper's BOTTOM edge; top-aligning there left the shorter list
+    // card floating high above the composer while only the taller pane touched it (field report).
+    for (const [openUpward, expected] of [
+      [true, 'items-end'],
+      [false, 'items-start']
+    ] as const) {
+      container = document.createElement('div')
+      document.body.appendChild(container)
+      root = createRoot(container)
+      act(() =>
+        root!.render(
+          <CommandMenu
+            options={[command('a', 'Alice', 'tdd')]}
+            activeIndex={0}
+            coords={{ ...coords, openUpward }}
+            iconOf={() => undefined}
+            showOwner={false}
+            onHover={() => {}}
+            onPick={() => {}}
+          />
+        )
+      )
+      expect(container.firstElementChild?.className).toContain(expected)
+      act(() => root!.unmount())
+      container.remove()
+      root = null
+      container = null
+    }
+  })
+
   it('renders nothing without a caret anchor, so a closed picker leaves no artifact', () => {
     container = document.createElement('div')
     document.body.appendChild(container)
