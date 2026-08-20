@@ -167,12 +167,19 @@ describe('SessionPullRequestLinkService', () => {
     expect((await service.resolve(AGENT, SESSION))?.pullNumber).toBe(7)
   })
 
-  it('invalidateSession drops the held link', async () => {
-    const { service, fetch } = harness({ pulls: [[pull(7, 'open')], [pull(8, 'open')]] })
+  it('shares one resolution between concurrent probes, forced or not', async () => {
+    // A resolution is a daemon round trip plus a GitHub list; two panels mounting at once, or a read
+    // racing the auto-merge write, must not each spend both.
+    const { service, fetch, readBranch } = harness({ pulls: [[pull(7, 'open')]] })
 
-    expect((await service.resolve(AGENT, SESSION))?.pullNumber).toBe(7)
-    service.invalidateSession(SESSION)
-    expect((await service.resolve(AGENT, SESSION))?.pullNumber).toBe(8)
-    expect(fetch).toHaveBeenCalledTimes(2)
+    const [a, b, c] = await Promise.all([
+      service.resolve(AGENT, SESSION),
+      service.resolve(AGENT, SESSION),
+      service.resolve(AGENT, SESSION, true)
+    ])
+
+    expect([a?.pullNumber, b?.pullNumber, c?.pullNumber]).toEqual([7, 7, 7])
+    expect(readBranch).toHaveBeenCalledTimes(1)
+    expect(fetch).toHaveBeenCalledTimes(1)
   })
 })

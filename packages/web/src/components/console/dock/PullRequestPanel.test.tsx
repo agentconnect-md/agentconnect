@@ -700,10 +700,11 @@ describe('PullRequestPanel degraded answers', () => {
     // hint that the link may just have committed, so it re-asks immediately and re-arms the ladder.
     vi.useFakeTimers()
     wire.failure = { status: 404 }
-    // Hidden, so the ladder is the only clock in the test: the whole ladder spans past the poll
-    // cadence, and a poll landing mid-drain would count as a rung it never was. The ladder itself is
-    // deliberately NOT gated on visibility — a 404 is answered from the CP's own tables and reaches
-    // no GitHub call, so it costs nothing to keep asking for the tab's own sake.
+    // Hidden TAB, so the ladder is the only clock in the test: the whole ladder spans past the poll
+    // cadence, and a poll landing mid-drain would count as a rung it never was. The ladder runs for a
+    // hidden tab on purpose — a held 404 removes the tab, so there is no tab left to reveal and the
+    // ladder is the only way back — but it IS gated on the document being visible, since a runless
+    // session's 404 now costs a daemon read and, for a pushed branch, a GitHub list.
     await render({ sessionStatus: 'online', active: false })
 
     // Rung by rung: each retry schedules the next only after its answer settles, so the clock advances per step.

@@ -148,9 +148,25 @@ read path to keep in step:
 | a **poll**                | the tab is selected AND the document is visible   | Files/Git 15s, PR 60s (§9's GitHub budget), Tasks 5s/20s as before      |
 | the **reveal edge**       | a tab becoming active, or the browser coming back | whoever deferred a turn refresh while hidden                            |
 
+A refresh is also no longer a RESET. `useWorkspaceTree` used to wipe its cache and
+its expand set on every `refreshTick`, which was defensible for a press and is
+not on a timer: it would close the reader's folders every 15 seconds and shrink
+the path filter's corpus (derived from the same cache) to root-level hits with
+them. A refresh now re-reads the root **and each open folder** in place, silently
+— the rows stand until the new listing lands. Only a SCOPE change still resets,
+because there the previous expand set names paths in another checkout. For the
+same reason the Git panel draws its last SETTLED outcome while a re-read is in
+flight, rather than repainting the branch line as "Git status unavailable" every
+few seconds — the latch the commit box already used, applied to the header.
+
 Two rules make the cost defensible. A background tab and a background BROWSER
 both poll **nothing** — these reads reach a daemon, and for the PR panel an
-installation's rate limit. And a turn's edge reaches a HIDDEN panel only where
+installation's rate limit. The PR tab's 404 retry ladder is gated on document
+visibility for the same reason, and that gate is new with §12.6's second identity
+source: a runless session's 404 is no longer answered from CP tables alone — it
+costs a `workspace/gitstatus` REQ and, for a pushed branch with no PR, a GitHub
+list. It is deliberately NOT gated on the tab being active, because a held 404
+REMOVES the tab, leaving no tab to reveal and no way back. And a turn's edge reaches a HIDDEN panel only where
 that tab shows a badge whose numbers are on screen anyway (Git's changed count,
 PR's unresolved threads); a panel without one defers the read to the reveal edge
 rather than re-reading a worktree nobody is looking at. The Git panel also skips

@@ -11,7 +11,7 @@ import { formatFileMtime } from '@/components/console/FileBrowser'
 import { CommitBox } from '@/components/console/dock/CommitBox'
 import { DOCK_POLL_MS, useDockRefresh } from '@/components/console/dock/auto-refresh'
 import { gitWriteRequestFailureText } from '@/components/console/dock/git-write'
-import { StatusBadge, useWorkspaceGitStatus } from '@/components/console/workspace-tree'
+import { StatusBadge, useWorkspaceGitStatus, type WorkspaceGitOutcome } from '@/components/console/workspace-tree'
 import {
   ApiError,
   fetchWorkspaceGitLog,
@@ -221,6 +221,8 @@ export function GitPanel({
     branch: string | null
     tracking: string | null
     base: string | null
+    /** What the last settled read WAS, so a re-read's `pending` does not repaint the panel as unreadable. */
+    outcome: WorkspaceGitOutcome
   } | null>(null)
   useEffect(() => {
     if (outcome === 'pending') return
@@ -229,6 +231,7 @@ export function GitPanel({
       // Distinct PATHS: a file staged and then edited again is one changed file, in two sections.
       const next = {
         scope,
+        outcome,
         changed: outcome === 'repo' && git ? new Set(git.files.map((file) => file.path)).size : null,
         branch: outcome === 'repo' ? (git?.branch ?? null) : null,
         tracking: outcome === 'repo' ? (git?.tracking ?? null) : null,
@@ -236,6 +239,7 @@ export function GitPanel({
         base: outcome === 'repo' ? (log.loading ? (held?.base ?? null) : baseBranchOf(log.log?.base)) : null
       }
       return held &&
+        held.outcome === next.outcome &&
         held.changed === next.changed &&
         held.branch === next.branch &&
         held.tracking === next.tracking &&
@@ -246,6 +250,12 @@ export function GitPanel({
   }, [git, log, outcome, scope])
   const settled = answer?.scope === scope
   const changed = settled ? answer.changed : null
+  // What the panel DRAWS. A re-read puts the live outcome back to `pending` for a round trip, and every
+  // branch keyed on it would then repaint: the branch line would read "Git status unavailable", an
+  // offline notice would become "nothing has changed", and the Commits section would unmount. On the
+  // dock's timer that is a flicker every few seconds, so the last settled interpretation stands until
+  // the new one lands — the same latch the commit box below already applies for the same reason.
+  const shown: WorkspaceGitOutcome = outcome === 'pending' && settled ? answer.outcome : outcome
 
   const sections = useMemo(() => splitGitSections(git?.files ?? []), [git])
   // Reported on the EDGE: the caller's callback is a fresh closure per render, and re-reporting a verdict the tab already has is a state write for nothing.
@@ -271,7 +281,7 @@ export function GitPanel({
         : null
 
   // A session worktree checks out its own generated `dev/<user>/<words>` branch, so its OWN branch is the answer when it has one; only a detached worktree falls back to naming the primary checkout's.
-  const branch = git?.branch ?? (sessionId ? primaryBranch : null)
+  const branch = git?.branch ?? (settled ? answer.branch : null) ?? (sessionId ? primaryBranch : null)
   const branchTitle = !sessionId
     ? 'Current branch of the workspace checkout'
     : git?.branch
@@ -373,12 +383,12 @@ export function GitPanel({
     // Ahead of `unavailable`, which it arrives as (both are 503): the workspace is fine and comes
     // back on the agent's next turn, so this must not read as an outage — and must not read as "not
     // a git checkout" either, which is what a suspended pod used to answer.
-    if (outcome === 'asleep') {
+    if (shown === 'asleep') {
       return (
         <PanelNotice text="Git status is not available right now — this agent runs in a cluster sandbox and its pod is not running. It starts again on the agent's next turn, and the checkout comes back with it." />
       )
     }
-    if (outcome === 'unavailable') {
+    if (shown === 'unavailable') {
       return (
         <PanelNotice
           warn
@@ -386,7 +396,7 @@ export function GitPanel({
         />
       )
     }
-    if (outcome === 'none') {
+    if (shown === 'none') {
       return (
         <PanelNotice text="This workspace is not a git checkout, so it has no branch, no changes and no commits. The agent's files are still in the Files tab." />
       )
@@ -484,7 +494,7 @@ export function GitPanel({
   return (
     <div data-git-panel="" className="flex min-h-0 flex-1 flex-col">
       <div className="flex flex-none items-center gap-2 border-b border-(--border-subtle) px-3 py-[10px]">
-        {outcome === 'repo' && branch ? (
+        {shown === 'repo' && branch ? (
           <span
             className="mono flex min-w-0 flex-1 items-center gap-[4px] text-[11px] font-medium text-(--text-secondary)"
             title={branchTitle}
@@ -494,9 +504,9 @@ export function GitPanel({
           </span>
         ) : (
           <span className="min-w-0 flex-1 font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
-            {outcome === 'none'
+            {shown === 'none'
               ? 'Not a git checkout'
-              : outcome === 'asleep'
+              : shown === 'asleep'
                 ? 'Sandbox not running'
                 : 'Git status unavailable'}
           </span>
@@ -554,7 +564,7 @@ export function GitPanel({
         )
       ) : null}
       {/* History LAST and closed by default: what a reader does in this panel is read the changed files and commit them, and an open commit list pushed both off a 480px dock. The count is on the closed row because the log is read anyway — collapsing hides the list, not the fact that there is one. */}
-      {outcome === 'repo' ? (
+      {shown === 'repo' ? (
         <div data-git-section="commits" className="flex min-h-0 flex-none flex-col border-t border-(--border-subtle)">
           <button
             type="button"

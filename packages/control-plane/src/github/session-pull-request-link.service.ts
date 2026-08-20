@@ -88,6 +88,10 @@ interface CacheEntry {
 
 export class SessionPullRequestLinkService {
   private readonly cache = new Map<string, CacheEntry>()
+  // Concurrent probes for ONE session share the read, like `PullRequestViewService`'s: a resolution is
+  // a daemon round trip plus a GitHub list, and two panels (or a read racing the auto-merge write) must
+  // not each spend both.
+  private readonly inFlight = new Map<string, Promise<SessionPullRequestLink | null>>()
 
   constructor(private readonly deps: SessionPullRequestLinkDeps) {}
 
@@ -105,14 +109,20 @@ export class SessionPullRequestLinkService {
       if (!force && now - hit.at < ttl) return hit.link
       this.cache.delete(key)
     }
-    const link = await this.read(agent, session)
-    this.store(key, link)
-    return link
-  }
-
-  /** Drop one session's cached link — for a caller that just changed which PR the branch has. */
-  invalidateSession(session: Pick<SessionMetaRecord, 'id' | 'orgId'>): void {
-    this.cache.delete(`${session.orgId}#${session.id}`)
+    // A forced read JOINS an in-flight one rather than starting a second: the reader pressing refresh
+    // twice, or two panels mounting at once, is one resolution either way.
+    const running = this.inFlight.get(key)
+    if (running) return running
+    const read = this.read(agent, session)
+      .then((link) => {
+        this.store(key, link)
+        return link
+      })
+      .finally(() => {
+        if (this.inFlight.get(key) === read) this.inFlight.delete(key)
+      })
+    this.inFlight.set(key, read)
+    return read
   }
 
   private store(key: string, link: SessionPullRequestLink | null): void {

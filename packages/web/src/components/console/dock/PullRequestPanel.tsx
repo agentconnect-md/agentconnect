@@ -16,7 +16,7 @@ import {
   type SessionPullRequestReviewDto,
   type SessionPullRequestThreadDto
 } from '@/lib/api'
-import { PR_POLL_MS, useDockRefresh } from '@/components/console/dock/auto-refresh'
+import { PR_POLL_MS, useDocumentVisible, useDockRefresh } from '@/components/console/dock/auto-refresh'
 import type { DockTabStatus } from './SessionDock'
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e))
@@ -243,10 +243,16 @@ export function PullRequestPanel({
     attempt.current = 0
     if (was404) setReads((r) => ({ tick: r.tick + 1, force: false }))
   }, [sessionStatus, was404])
-  // The bounded ladder that survives the unfavorable orderings: a 404 never reaches GitHub — the CP answers it from its own tables — so these retries spend none of §9's rate-limit budget, and the bound is what lets a session with no PR go quiet.
+  // The bounded ladder that survives the unfavorable orderings. It is NOT free any more: since the CP
+  // resolves a runless session's PR from its worktree's head branch, a 404 costs a `workspace/gitstatus`
+  // REQ to the owning daemon and — for a pushed branch with no PR — a GitHub `pulls` list, and the
+  // rungs outrun the CP's 15s miss cache. So it is gated on the document being VISIBLE, like the poll:
+  // a backgrounded page spends nothing. It is deliberately NOT gated on the tab being active, unlike
+  // the poll — a held 404 REMOVES this tab, so there would be no tab left to reveal and no way back.
+  const visible = useDocumentVisible()
   useEffect(() => {
-    if (!was404) {
-      attempt.current = 0
+    if (!was404 || !visible) {
+      if (!was404) attempt.current = 0
       return
     }
     const delay = PR_LINK_RETRY_LADDER_MS[attempt.current]
@@ -256,7 +262,7 @@ export function PullRequestPanel({
       setReads((r) => ({ tick: r.tick + 1, force: false }))
     }, delay)
     return () => clearTimeout(timer)
-  }, [was404, reads])
+  }, [was404, reads, visible])
 
   const answer: PullRequestPanelAnswer = read.loading
     ? 'pending'
@@ -286,7 +292,9 @@ export function PullRequestPanel({
   // button was the reason a PR opened from the conversation stayed invisible until someone pressed
   // refresh. `awaitingTurn` still clears here — it is the button's spinner, not the refresh's trigger.
   // Forced, because the write-back is younger than the CP's projection TTL by construction. The 404
-  // ladder is refilled too: a turn is a fresh reason to believe the link may exist now.
+  // ladder is refilled too: a turn is a fresh reason to believe the link may exist now — and that
+  // refill is bounded per turn and gated on visibility below, which is what keeps a page left open on
+  // an unreviewed branch from re-asking the daemon and GitHub forever.
   useDockRefresh({
     active,
     turnActive,
