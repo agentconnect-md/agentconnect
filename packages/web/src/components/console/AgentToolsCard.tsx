@@ -25,8 +25,9 @@ import { Icon, Toggle } from '@/components/ui'
  * (they can't be turned back on here); this is the only place to clear a stale
  * name now that the create/edit picker is gone.
  *
- * Daemons are live-only, so a mock agent (or one whose daemon is out of the fleet)
- * has no reported servers and renders the empty state.
+ * Daemons are live-only, so an agent with no resolved daemon — a mock one, one
+ * out of the fleet, or one placed on a pool or a group rather than a member —
+ * contributes no daemon-reported servers. The org registry still does.
  */
 export function AgentToolsCard({
   agentId,
@@ -58,13 +59,10 @@ export function AgentToolsCard({
     const service = serviceByName.get(name)
     return service ? iconByService.get(service) : undefined
   }
-  // A demo agent has no live daemon, so mock mode falls back to the org registry
-  // alone — enough to render the tiles with no CP running.
-  const candidates = daemon
-    ? mcpCandidates(daemon.mcpServers, registryNames)
-    : MOCK_MODE
-      ? mcpCandidates([], registryNames)
-      : []
+  // The registry half is org-scoped and http-proxied, so it does NOT depend on resolving an
+  // owning daemon: a pool- or group-placed agent carries a placement sentinel rather than a
+  // member id, and gating the whole list on that lookup hid every org server it could attach.
+  const candidates = mcpCandidates(daemon?.mcpServers ?? [], registryNames)
   const caps = daemon ? mcpCapsFor(daemon.runtimeModels, runtime) : null
   const servers = mcpServersForRuntime(candidates, caps)
   // The persisted allow-list, once the raw spec loads; null ⇒ not loaded yet.
@@ -118,7 +116,7 @@ export function AgentToolsCard({
   const candidateNames = new Set(candidates.map((c) => c.name))
   const unknown = (enabled ?? []).filter((n) => !eligibleNames.has(n))
   const unknownMeta = (n: string) =>
-    candidateNames.has(n) ? 'Not supported by this runtime' : 'Not reported by this daemon'
+    candidateNames.has(n) ? 'Not supported by this runtime' : 'Not available to this agent'
 
   // One MCP tile — the same ToolTile the registry card renders, with the enable toggle
   // in place of its edit/delete action. Eligible servers toggle freely; an ineligible
@@ -158,7 +156,7 @@ export function AgentToolsCard({
       ) : (
         <div className="flex items-center gap-2 px-4 py-[13px] font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary) desktop:py-3">
           <Icon name="plug" size={14} />
-          No MCP servers on this daemon&apos;s runtime.
+          No MCP servers available to this agent.
         </div>
       )}
       {err && (
