@@ -7,7 +7,7 @@ import { loadConfig, persistDaemonId, persistRelays, type FlatOverrides } from '
 import { readCliEntry, runCliUpgrade } from './lifecycle/cli-upgrade.js'
 import { FleetUpgradeCoordinator } from './lifecycle/fleet-upgrade.js'
 import { ReadinessGate, readinessSinksFromEnv, readinessState, type ReadinessState } from './readiness.js'
-import { sessionRetentionMs, type RuntimeDef } from './config/config-schema.js'
+import { sessionRetentionMs, type Config, type RuntimeDef } from './config/config-schema.js'
 import { discoverAgentsTolerant, type LoadedAgent } from './agents/load-agents.js'
 import { agentChildEnv } from './agents/agent-env.js'
 import { cpRuntimeEnv } from './agents/cp-overlay.js'
@@ -493,6 +493,9 @@ registerObservedChannels(discordObservedChannels)
 function acpUpdateChainKey(agentId: string, sessionId: string): string {
   return `${agentId}\u001f${sessionId}`
 }
+
+// One agent-discovery pass: what this daemon will serve, plus the whole active fleet on disk.
+type AgentListSnapshot = { agents: LoadedAgent[]; activeFleet: LoadedAgent[] }
 
 export class Daemon {
   // This daemon's workspace execution plane. Owned per instance, so two daemons in one process
@@ -1423,11 +1426,66 @@ export class Daemon {
     return this.evalHooks.waitForIdle(timeoutMs)
   }
 
+  // Boot as the ordered sequence of phases it is. The ORDER is load-bearing — each phase below
+  // documents what it must come after — and the bodies live in the phase region under this method.
   async start(): Promise<void> {
+    await this.bootReadinessGate()
+    const { root, cfg } = this.resolvePathAndConfig()
+    this.sandboxPreflight(cfg)
+    await this.startClusterPlanes(root, cfg)
+    // Sandbox-optional principle (#36): skills are NOT force-sandboxed fleet-wide.
+    // A skill runs sandboxed only when its agent does (agentRunsInSandbox), so the
+    // daemon boots, reconciles, and connects on hosts with or without an OS
+    // sandbox. The residual "an unconfined ACP child could tamper with skill
+    // authority" exposure on an unsandboxed agent is a tracked P2.
+    // Mint a stable local daemonId only when the CP is not going to assign one:
+    // with a `controlPlane.key` — or an in-cluster identity token — and no explicit
+    // id, the CP resolves the id and the daemon adopts it (see startCpClient).
+    const cpKeyOnboarding = !!(cfg.controlPlane?.enabled && (cfg.controlPlane.key || this.clusterIdentityToken))
+    this.initGitCredentials(root)
+    this.mintDaemonIdentity(root, cfg, cpKeyOnboarding)
+    this.sweepProbeRoots()
+    this.log.info(
+      `control plane: ${cfg.controlPlane?.enabled ? `enabled (${cfg.controlPlane.url ?? 'no url'})` : 'disabled — running local'}`
+    )
+    const { snapshot, discoveredAgents, agents } = this.loadAgents(root, cfg)
+    this.assertWorkspaceExclusivity(snapshot, agents)
+    this.sweepStaleAgentArtifacts(discoveredAgents)
+    this.adoptFileAgents(discoveredAgents, agents)
+    this.installManagedSkillCache(root)
+    await this.discoverRuntimes(root, cfg, discoveredAgents)
+    this.sanitizeMcpDefs(cfg)
+    this.initMemoryConnections(cfg)
+    await this.openStoreAndRetention(root)
+    await this.startMemoryPumps()
+    await this.hydrateRuntimeCaches()
+    this.buildModelCatalogService(root)
+    this.buildNameResolvers()
+    await this.hydrateCpRouting()
+    this.buildCpRegistries()
+    await this.startMcpControlServer(root, cfg)
+    this.buildSessionRuntime(root, cfg)
+    this.buildSchedulers()
+    const startControlPlane = await this.connectControlPlane(root)
+    await this.openPlatformConnections(agents)
+    await this.registerAgentCrons(agents)
+    this.watchAgentConfigs()
+    await this.replayDurableWork()
+    this.armTimersAndReadiness(root, startControlPlane)
+  }
+
+  // ── start() boot phases, in execution order ───────────────────────────────
+
+  /** Phase 1 — clear the readiness marker before any await that a down control plane can block. */
+  private async bootReadinessGate(): Promise<void> {
     // FIRST, before any await that can block for as long as the control plane is down: the file
     // sink clears its marker here, and a marker on a mounted path outlives the container that
     // wrote it — left in place, `test -f` would call an unregistered replacement ready.
     if (this.k8s || this.opts.supervisor === K8S_SUPERVISOR) await this.startReadinessGate()
+  }
+
+  /** Phase 2 — the launching env, the daemon root, and the loaded config every later phase reads. */
+  private resolvePathAndConfig(): { root: string; cfg: Config } {
     // A service-installed daemon normally arrives through the CLI run shell's
     // login-shell launch with a full user env (cli service-spawn.ts). This is
     // the backstop for legacy direct-ExecStart units and bare docker runs:
@@ -1444,6 +1502,11 @@ export class Daemon {
     })
     this.cfg = cfg
     configureWorkspaceGitOrigins(cfg.security.workspaceGitAllowedOrigins)
+    return { root, cfg }
+  }
+
+  /** Phase 3 — report the host sandbox mechanism and refuse a boot that cannot honor requireSandbox. */
+  private sandboxPreflight(cfg: Config): void {
     this.logSandboxPreflight()
     if (cfg.security.requireSandbox && !this.sandboxMechanism) {
       throw new Error(
@@ -1452,6 +1515,10 @@ export class Daemon {
           : 'daemon startup refused: security.requireSandbox is true but this host has no supported Linux SRT/bwrap mechanism'
       )
     }
+  }
+
+  /** Phase 4 — under --k8s only: the shared data plane, then the execution plane the workspaces resolve through. */
+  private async startClusterPlanes(root: string, cfg: Config): Promise<void> {
     if (this.k8s) {
       const openDataPlane = this.opts.openDataPlane ?? openMountedPostgresDataPlane
       this.dataPlane = await openDataPlane(
@@ -1518,16 +1585,10 @@ export class Daemon {
       this.workspaces.setSandboxMode(true)
       this.log.info('k8s: execution plane ready — daemon-to-sandbox shim dialing enabled')
     }
-    // Sandbox-optional principle (#36): skills are NOT force-sandboxed fleet-wide.
-    // A skill runs sandboxed only when its agent does (agentRunsInSandbox), so the
-    // daemon boots, reconciles, and connects on hosts with or without an OS
-    // sandbox. The residual "an unconfined ACP child could tamper with skill
-    // authority" exposure on an unsandboxed agent is a tracked P2.
-    // Mint a stable local daemonId only when the CP is not going to assign one:
-    // with a `controlPlane.key` — or an in-cluster identity token — and no explicit
-    // id, the CP resolves the id and the daemon adopts it (see startCpClient).
-    const cpKeyOnboarding = !!(cfg.controlPlane?.enabled && (cfg.controlPlane.key || this.clusterIdentityToken))
+  }
 
+  /** Phase 5 — github-app git credentials, BEFORE agents load: reconcile-time prefetch clones pre-warm through this cache. */
+  private initGitCredentials(root: string): void {
     // github-app git credentials — initialized FIRST: reconcile-time prefetch
     // clones can fire as soon as agents load, and they pre-warm through this
     // cache. The request fn resolves this.cpClient lazily (it connects later);
@@ -1580,19 +1641,31 @@ export class Daemon {
     }
     this.gitCredServer.start()
     probeGitVersion((m) => this.log.warn(m))
+  }
+
+  /** Phase 6 — settle this daemon id (minted locally only when the CP will not assign one) and rebuild the logger at the configured level. */
+  private mintDaemonIdentity(root: string, cfg: Config, cpKeyOnboarding: boolean): void {
     if (!cfg.daemonId && !cpKeyOnboarding) {
       cfg.daemonId = randomUUID()
       persistDaemonId(root, cfg.daemonId, this.opts.configPath)
     }
     this.log = makeLogger(cfg.logging.level)
     this.log.info(`starting daemon (root=${root})`)
+  }
+
+  /** Phase 7 — reclaim probe temp roots orphaned by an earlier lifetime. */
+  private sweepProbeRoots(): void {
     // Reclaim probe temp roots orphaned by an earlier lifetime (a hard kill mid-sweep,
     // or a runtime that kept writing after its adapter was reaped). Each can hold a
     // private runtime HOME, so without this they accumulate until the disk fills.
     sweepStaleProbeRoots({ log: this.log })
-    this.log.info(
-      `control plane: ${cfg.controlPlane?.enabled ? `enabled (${cfg.controlPlane.url ?? 'no url'})` : 'disabled — running local'}`
-    )
+  }
+
+  /** Phase 8 — the agents dir, its removal/move obligations, and the discovered set minus everything draining. */
+  private loadAgents(
+    root: string,
+    cfg: Config
+  ): { snapshot: AgentListSnapshot; discoveredAgents: LoadedAgent[]; agents: LoadedAgent[] } {
     this.agentsDir = cfg.agentsDir!
     this.removalObligationsDir = agentRemovalObligationsDir(root)
     this.removedAgentTombstones = agentRemovalTombstones(this.agentsDir, this.removalObligationsDir)
@@ -1610,6 +1683,11 @@ export class Daemon {
     const agents = discoveredAgents.filter(
       (agent) => !this.moveStagedAgents.has(agent.id) && !this.removedAgentTombstones.has(agent.id)
     )
+    return { snapshot, discoveredAgents, agents }
+  }
+
+  /** Phase 9 — fail before any clone cleanup or prefetch can touch a workspace another local agent already holds writable. */
+  private assertWorkspaceExclusivity(snapshot: AgentListSnapshot, agents: LoadedAgent[]): void {
     // Fail before clone cleanup/prefetch or skill reconciliation can touch a
     // workspace that the kernel sandbox would later reject or another local
     // agent could already hold writable.
@@ -1624,6 +1702,10 @@ export class Daemon {
         )
       )
     }
+  }
+
+  /** Phase 10 — per-agent boot sweep: stale conversion clones and materialized config-file secrets a crash left behind. */
+  private sweepStaleAgentArtifacts(discoveredAgents: LoadedAgent[]): void {
     for (const agent of discoveredAgents) {
       if (!this.removedAgentTombstones.has(agent.id)) {
         try {
@@ -1644,13 +1726,20 @@ export class Daemon {
       if (staleConfigFiles)
         this.log.warn(`config-files: startup cleanup for agent "${agent.id}" failed — ${staleConfigFiles}`)
     }
+  }
+
+  /** Phase 11 — publish the file-authored agents; `this.agents` follows once the CP registries exist (see effectiveAgents()). */
+  private adoptFileAgents(discoveredAgents: LoadedAgent[], agents: LoadedAgent[]): void {
     this.fileAgents = new Map(discoveredAgents.map((a) => [a.id, a]))
     // `this.agents` is populated from the file agents once the CP registries are
     // built below; see effectiveAgents().
     this.log.info(
       `loaded ${agents.length} agent(s) from ${this.agentsDir}${agents.length ? `: ${agents.map((a) => a.id).join(', ')}` : ''}`
     )
+  }
 
+  /** Phase 12 — the daemon root and the managed-skill cache that reads through the (not yet connected) CP client. */
+  private installManagedSkillCache(root: string): void {
     this.root = root
     this.managedSkillCache = new ManagedSkillCache(join(root, 'managed-skills'), {
       read: (request) => {
@@ -1660,6 +1749,10 @@ export class Daemon {
       },
       warn: (message) => this.log.warn(message)
     })
+  }
+
+  /** Phase 13 — resolve the runtime catalog and narrow it to what is actually installed (declared, under --k8s). */
+  private async discoverRuntimes(root: string, cfg: Config, discoveredAgents: LoadedAgent[]): Promise<void> {
     const resolvedCatalog = await (this.opts.resolveCatalog ?? resolveRuntimeCatalog)(cfg, root, {
       neededRuntimes: discoveredAgents.map((a) => a.runtime),
       mode: 'cache-first'
@@ -1690,7 +1783,10 @@ export class Daemon {
     if (pendingCurated.length) this.log.info(`runtimes pending ACP admission: ${pendingCurated.join(', ')}`)
     const skipped = Object.keys(resolvedCatalog.runtimes).filter((id) => !installed[id])
     if (skipped.length) this.log.info(`runtimes not installed (skipped): ${skipped.join(', ')}`)
+  }
 
+  /** Phase 14 — strip the reserved bridge key ONCE, so every consumer sees a clean MCP server map. */
+  private sanitizeMcpDefs(cfg: Config): void {
     // Configured MCP servers — the reserved bridge key is stripped ONCE here, so
     // every consumer (the probe sweep, agent-session resolution) sees a clean map.
     const { [RESERVED_MCP_SERVER_NAME]: reservedMcp, ...mcpServerDefs } = cfg.mcpServers ?? {}
@@ -1700,14 +1796,20 @@ export class Daemon {
     this.mcpServerDefs = this.cpMcpDefs.localDefinitions()
     if (Object.keys(mcpServerDefs).length)
       this.log.info(`mcp servers configured: ${Object.keys(mcpServerDefs).join(', ')}`)
+  }
 
+  /** Phase 15 — the memory-plugin connection registry the pumps and sessions below bind to. */
+  private initMemoryConnections(cfg: Config): void {
     this.memoryConnections = new CpMemoryConnectionRegistry({
       ...(this.opts.memoryPluginConnect ? { connect: this.opts.memoryPluginConnect } : {}),
       stdioAllowlist: cfg.memoryPlugins ?? {},
       onFacts: (facts) => this.cpClient?.emitMemoryConnectionFacts(facts),
       onDefinitionChange: (connectionId) => this.onMemoryConnectionDefinitionChange(connectionId)
     })
+  }
 
+  /** Phase 16 — the local (or data-plane) store plus the one rule table every row retention runs from. */
+  private async openStoreAndRetention(root: string): Promise<void> {
     this.store = this.dataPlane?.store ?? (await LocalStore.open(statePath(root)))
     this.store.setTranscriptMutationListener((mutation) => this.scheduleSessionActivity(mutation))
     // Every table's row retention, from one rule table. This member owns the cache rows it
@@ -1719,11 +1821,15 @@ export class Daemon {
       clock: this.clock,
       log: { info: (m) => this.log.info(m), warn: (m) => this.log.warn(m) }
     })
+  }
+
+  /** Phase 17 — the managed memory capture outbox, which also drains a cluster agent once its sandbox binds again. */
+  private async startMemoryPumps(): Promise<void> {
     // The pump also drains a cluster agent's managed distillation once its sandbox is bound again —
     // a turn captured after the pod was suspended waits here rather than being lost.
     this.memoryOutbox = new MemoryCaptureOutbox(
       this.store,
-      withManagedDistill(this.memoryConnections, {
+      withManagedDistill(this.memoryConnections!, {
         agentIds: () =>
           [...this.agents.values()]
             .filter(
@@ -1754,6 +1860,10 @@ export class Daemon {
       { log: { warn: (message) => this.log.warn(message) } }
     )
     await this.memoryOutbox.start()
+  }
+
+  /** Phase 18 — age out expired rows, then hydrate runtime facts from cache BEFORE the CP client can snapshot them. */
+  private async hydrateRuntimeCaches(): Promise<void> {
     // Retention runs BEFORE the hydrate below, and synchronously, because the hydrate reads the
     // model-catalog cache: a catalog past its window must already be gone, or this member boots
     // advertising models it has not seen in a month.
@@ -1771,6 +1881,10 @@ export class Daemon {
     // nothing. Background because it needs a pod, and blocking boot on one would make a slow
     // cluster look like a hung daemon; `facts/daemon-runtimes` replaces, so the probed set wins.
     if (this.k8sPlane) void this.probeK8sRuntimes()
+  }
+
+  /** Phase 19 — model-catalog enumeration, wired to re-emit daemon runtimes whenever a catalog changes. */
+  private buildModelCatalogService(root: string): void {
     this.modelCatalogSvc = new ModelCatalogService({
       store: this.store,
       log: this.log,
@@ -1797,6 +1911,10 @@ export class Daemon {
         )
       }
     })
+  }
+
+  /** Phase 20 — off-hot-path display-name/channel-name resolution, cached into the store and re-emitted to the CP. */
+  private buildNameResolvers(): void {
     // Off-hot-path Slack id → display-name resolution, cached into the store so
     // session read-back can label channels/senders without a live Slack call.
     this.nameResolver = new SlackNameResolver(
@@ -1835,6 +1953,10 @@ export class Daemon {
         log: this.log
       }
     )
+  }
+
+  /** Phase 21 — the persisted CP routing layer, hydrated before any ingress can consult it. */
+  private async hydrateCpRouting(): Promise<void> {
     this.cpRouting = new CpRoutingLayer({
       load: async () => {
         const row = await this.store.getCpRouting()
@@ -1850,6 +1972,10 @@ export class Daemon {
         await this.store.setCpRouting(s.routingEpoch, JSON.stringify(s.assignments), JSON.stringify(s.globalRules))
     })
     await this.cpRouting.hydrate()
+  }
+
+  /** Phase 22 — the memory-only CP agent/integration/cron registries, then the initial effective agent set (warming each git checkout). */
+  private buildCpRegistries(): void {
     // CP agent specs stay in memory and are re-converged on every CP connection.
     // The registry removes a same-id agent.json and retains only a secret-free
     // data-root marker on disk; unrelated local agent.json files remain user-owned.
@@ -1887,7 +2013,10 @@ export class Daemon {
       this.agents.set(a.id, a)
       this.prefetchClone(a)
     }
+  }
 
+  /** Phase 23 — the daemon IS the MCP server: every agent-facing tool is resolved here, against the registries built above. */
+  private async startMcpControlServer(root: string, cfg: Config): Promise<void> {
     // MCP control server: the daemon *is* the MCP server. The bridge subprocess
     // (spawned by the agent harness) relays tool calls here over a local socket,
     // so sends go through our Slack connection and land in the transcript.
@@ -2068,7 +2197,10 @@ export class Daemon {
       maxAttachmentBytes: cfg.limits.maxAttachmentBytes
     })
     await this.mcp.start()
+  }
 
+  /** Phase 24 — the turn-context coordinator and the session manager, which registers bridge tokens against the MCP server above. */
+  private buildSessionRuntime(root: string, cfg: Config): void {
     const cliEntry = daemonEntryForShims(root)
 
     this.threadContext = new ThreadContextCoordinator(this.store, (error) =>
@@ -2216,6 +2348,10 @@ export class Daemon {
       fetchThreadHistory: (agentId, channel, threadTs, cutoffTs, afterTs) =>
         this.fetchThreadHistory(agentId, channel, threadTs, cutoffTs, afterTs)
     })
+  }
+
+  /** Phase 25 — cron and dream schedulers; nothing is registered on them until the agents converge below. */
+  private buildSchedulers(): void {
     this.scheduler = new Scheduler({
       onFire: (agentId, msg, cron) =>
         void this.onCronFire(agentId, msg, cron).catch((err) =>
@@ -2229,7 +2365,10 @@ export class Daemon {
       onFire: (agentId) => this.onDreamScheduleFire(agentId),
       warn: (m) => this.log.warn(m)
     })
+  }
 
+  /** Phase 26 — under --k8s the CP organization registry MUST arrive before ingress opens; otherwise the connect is deferred to the last phase. */
+  private async connectControlPlane(root: string): Promise<(root: string) => Promise<void> | undefined> {
     this.botUserIds = {}
     // Install synthetic evaluation integrations before routing observes them; they never open sockets.
     this.evalHooks.installEnvironment()
@@ -2245,6 +2384,11 @@ export class Daemon {
         this.clock.now()
       )
     }
+    return startControlPlane
+  }
+
+  /** Phase 27 — Slack connections gate boot; the long-poll/gateway platforms deliberately do not. */
+  private async openPlatformConnections(agents: LoadedAgent[]): Promise<void> {
     // open consolidated Slack connections, resolve bot user ids (merged rules are per-message)
     await this.connections.openInitialSlackConnections(agents)
     // Open send-only Slack clients for HTTP bots (inbound lives on the relay).
@@ -2264,12 +2408,18 @@ export class Daemon {
     void this.connections
       .reconcileFeishuConnections()
       .catch((err) => this.log.error(`feishu: initial connect failed: ${formatErr(err)}`))
+  }
 
+  /** Phase 28 — register crons per agent; the same converge reconcile re-runs on change. */
+  private async registerAgentCrons(agents: LoadedAgent[]): Promise<void> {
     // register crons (sync per agent — the same converge reconcile re-runs on change)
     for (const a of agents) await this.syncAgentSchedules(a)
     const cronCount = agents.reduce((n, a) => n + this.scheduler.count(a.id), 0)
     if (cronCount) this.log.info(`registered ${cronCount} cron(s)`)
+  }
 
+  /** Phase 29 — watch the discoverable agent config tree (not runtime homes/workspaces) and debounce it into reconcile. */
+  private watchAgentConfigs(): void {
     // Watch the discoverable agent config tree, not runtime homes/workspaces.
     this.watcher = chokidarWatch(this.agentsDir, {
       ignoreInitial: true,
@@ -2289,6 +2439,10 @@ export class Daemon {
       .on('change', debounced)
       .on('unlink', debounced)
     this.log.info(`watching ${this.agentsDir} for agent changes`)
+  }
+
+  /** Phase 30 — durable inbox replay, orchestration deadlines, the startup retention pass and dream crash recovery. */
+  private async replayDurableWork(): Promise<void> {
     await this.replayInbox()
     await this.collab.syncOrchestrationDeadlines()
     // #485 startup retention pass: reconcile what accumulated (or was orphaned by a
@@ -2302,6 +2456,10 @@ export class Daemon {
     // constructor: it reads the store, and the sweep needs the loaded agents' directories. A
     // deployment with dreams blocked still builds no runner at boot — it recovers on first use.
     if (this.dreamOperationsAllowed()) await this.dreamRunner().initialize()
+  }
+
+  /** Phase 31 — curated admission, the deferred CP connect, the periodic sweeps, and only then: ready. */
+  private armTimersAndReadiness(root: string, startControlPlane: (root: string) => Promise<void> | undefined): void {
     // Curated admission belongs to local runtime resolution, not CP readiness.
     // Start it even when the control plane is disabled or still unreachable.
     void this.runtimeFacts.probeAndEmit(false).finally(() => this.runtimeFacts.armProbeRefresh())
@@ -2315,7 +2473,7 @@ export class Daemon {
 
   // Multi-agent: all active agents under agentsDir. Single-agent (--agent): just
   // the selected agent, regardless of status.
-  private loadAgentList(preserveInvalid = false): { agents: LoadedAgent[]; activeFleet: LoadedAgent[] } {
+  private loadAgentList(preserveInvalid = false): AgentListSnapshot {
     const discovery = discoverAgentsTolerant(this.agentsDir)
     const validAgents = discovery.agents.map((entry) => entry.agent)
     const activeFleet = validAgents.filter((agent) => agent.status === 'active')
