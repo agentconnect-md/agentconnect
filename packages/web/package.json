@@ -33,6 +33,7 @@
     "@opentelemetry/resources": "^2.10.0",
     "@opentelemetry/sdk-trace-web": "^2.10.0",
     "@opentelemetry/semantic-conventions": "^1.43.0",
+    "@tanstack/react-virtual": "^3.14.10",
     "croner": "^10.0.1",
     "cronstrue": "^3.24.0",
     "highlight.js": "^11.11.1",
