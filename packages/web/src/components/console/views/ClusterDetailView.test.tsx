@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   agents: [] as unknown[],
   integrations: [] as unknown[],
   daemonsLoading: false,
+  balance: { data: { orgId: 'org-pool', balanceMicro: 38_740_000 } } as Record<string, unknown>,
   push: vi.fn()
 }))
 
@@ -32,6 +33,8 @@ vi.mock('@/lib/data-context', () => ({
   })
 }))
 vi.mock('@/lib/acp-registry', () => ({ useAcpRegistry: () => ({}), acpRuntime: () => undefined }))
+// The Credits card's Balance is live; nothing else on the page fetches.
+vi.mock('swr', () => ({ default: () => mocks.balance }))
 
 const ClusterDetailView = (await import('./ClusterDetailView')).default
 
@@ -112,6 +115,7 @@ beforeEach(() => {
   mocks.agents = []
   mocks.integrations = []
   mocks.daemonsLoading = false
+  mocks.balance = { data: { orgId: 'org-pool', balanceMicro: 38_740_000 } }
   mocks.push.mockClear()
   setFlags('daemon-pool')
 })
@@ -288,20 +292,51 @@ describe('ClusterDetailView — managed (AgentConnect Cloud)', () => {
     expect(html).not.toContain('pool-member-p1')
   })
 
-  it('marks the Credits card as sample data rather than passing it off as money', () => {
-    // The billing service cannot serve a daily spend series yet — its debits are monthly
-    // aggregates — so the card ships with its shape settled and its data openly fake.
+  it('shows the REAL balance and chips only the figures it cannot serve', () => {
+    // A fabricated balance beside a "Manage billing" link to the real one reads as headroom the
+    // org has, so the one figure billing can already answer is live and the rest are marked.
     mocks.daemons = [member('p1')]
 
     const html = render()
 
     expect(html).toContain('Credits')
+    expect(html).toContain('$38.74')
     expect(html).toContain('sample')
     expect(html).toContain('Manage billing')
     // Decoration, not a figure a reader could act on.
     expect(html).toContain('aria-hidden')
     // A plan's included usage is not derivable from load telemetry, so no bar pretends it is.
     expect(html).not.toContain('included')
+  })
+
+  it('keeps the sample total and the sample bars consistent with each other', () => {
+    // They come from ONE series once wired, so the placeholder satisfies that invariant already.
+    mocks.daemons = [member('p1')]
+
+    // 146,600 cents across the 30 bars.
+    expect(render()).toContain('$1,466.00')
+  })
+
+  it('lets the balance failure say which failure it was', () => {
+    // A shape mismatch throws BillingShapeError into the same slot as an unreachable service, and
+    // this console deploys ahead of the pinned billing image — so blaming the network guesses.
+    mocks.daemons = [member('p1')]
+    mocks.balance = { error: new Error('billing sent an unexpected account — the console may be out of date') }
+
+    const html = render()
+
+    expect(html).toContain('unavailable')
+    expect(html).toContain('may be out of date')
+    expect(html).not.toContain('Could not reach')
+  })
+
+  it('dates the axis relatively, so it cannot go stale', () => {
+    mocks.daemons = [member('p1')]
+
+    const html = render()
+
+    expect(html).toContain('30 days ago')
+    expect(html).toContain('today')
   })
 
   it('never generates the placeholder series, so it cannot read as live data', () => {

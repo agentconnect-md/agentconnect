@@ -6,9 +6,11 @@
 // (`GroupDetailView`) — and they answer the same four questions: what does the set offer,
 // what runs on it, what does it hold, and what is true of it right now.
 //
-// So the answers live here once. A member of any of those sets is interchangeable by
-// definition, which is why every aggregate below is a union over the SERVING members: a
-// member that stopped answering can no longer offer a runtime or hold a connection.
+// So the answers live here once. Every aggregate is over the SERVING members — one that stopped
+// answering can no longer offer a runtime or hold a connection — but whether it UNIONS or
+// INTERSECTS them depends on the set: a pool rolls identical Pods, so the two agree and the union
+// is cheaper, while a group is machines an operator enrolled by hand and only what they ALL offer
+// is something the group can promise. Hence a pair of each.
 
 import { useState } from 'react'
 import {
@@ -93,12 +95,24 @@ export function intersectRuntimes(members: readonly DaemonRow[]): FleetRuntime[]
       version: versions.size === 1 ? [...versions][0]! : '',
       versionsDiffer: versions.size > 1,
       models: rt.models.filter((model) => all.every((peer) => peer.models.includes(model))),
-      // Sticky, as in the union: a member whose probe was rejected cannot serve this runtime,
-      // so the group cannot promise it either.
+      // Sticky, as in the union: one member needing a login qualifies the set's promise, so the
+      // row is MARKED. Not withdrawn — placement is deliberately independent of login readiness
+      // (preset-agents.md §3.2), which is why this does not exclude the runtime.
       authRequired: all.some((peer) => peer.authRequired === true)
     })
   }
   return out
+}
+
+/**
+ * The MCP servers EVERY member configures — the intersection, for the same reason runtimes are
+ * intersected for a group: an agent lands on whichever member is serving, so a server only one
+ * member has is a tool missing from the runs that land elsewhere. Empty in, empty out.
+ */
+export function intersectMcpServers(members: readonly DaemonRow[]): McpServerInfo[] {
+  const [first, ...rest] = members
+  if (!first) return []
+  return first.mcpServers.filter((s) => rest.every((m) => m.mcpServers.some((other) => other.name === s.name)))
 }
 
 /** The MCP servers a set offers, deduped by name over the members given. */

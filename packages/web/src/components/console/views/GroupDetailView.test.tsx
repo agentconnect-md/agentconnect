@@ -259,6 +259,27 @@ describe('GroupDetailView', () => {
     expect(html).toContain('>1<')
   })
 
+  it('lists only the MCP servers EVERY serving member configures', () => {
+    // Same argument as the runtimes, one row above it in the same fact list: a server only one
+    // member has is a tool missing from every run that lands on another.
+    mocks.memberSets = [group({ memberDaemonIds: ['d1', 'd2'] })]
+    mocks.daemons = [
+      daemon('d1', {
+        mcpServers: [
+          { name: 'shared', transport: 'stdio' },
+          { name: 'only-d1', transport: 'stdio' }
+        ]
+      }),
+      daemon('d2', { mcpServers: [{ name: 'shared', transport: 'stdio' }] })
+    ] as unknown[]
+
+    const html = render()
+
+    // "MCP servers 1" — `shared` counts, `only-d1` does not.
+    expect(html).toContain('MCP servers')
+    expect(html).toContain('>1<')
+  })
+
   it('says "mixed" rather than picking one member’s version', () => {
     mocks.memberSets = [group({ memberDaemonIds: ['d1', 'd2'] })]
     mocks.daemons = [

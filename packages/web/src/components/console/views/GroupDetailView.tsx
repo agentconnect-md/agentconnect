@@ -28,8 +28,8 @@ import {
   FleetStat,
   barColor,
   connsHeldBy,
-  intersectRuntimes,
-  unionMcpServers
+  intersectMcpServers,
+  intersectRuntimes
 } from '@/components/console/FleetDetail'
 import { LoadingState } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
@@ -60,7 +60,10 @@ export default function GroupDetailView() {
   // interchangeable replicas a pool rolls, and an agent here lands on whichever one is serving.
   // A runtime that only some members have is therefore not one the group can run.
   const runtimes = useMemo(() => intersectRuntimes(serving), [serving])
-  const mcpServers = useMemo(() => unionMcpServers(serving), [serving])
+  // Intersected for the same reason the runtimes are: a server only one member configures is a
+  // tool missing from every run that lands on another. Union here would also read as an
+  // intersection anyway, sitting one row under "Runtimes" in the same fact list.
+  const mcpServers = useMemo(() => intersectMcpServers(serving), [serving])
   const conns = useMemo(() => connsHeldBy(hosted, integrations), [hosted, integrations])
   // Agents PINNED to a member, per member. They are not the group's — a pinned agent names one
   // machine and stays there — but they are why a member's load is what it is.
