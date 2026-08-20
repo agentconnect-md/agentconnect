@@ -71,7 +71,12 @@ export interface MessageGateway {
    *
    *  A result carries the post anchor when the platform's file send produces one; Slack's
    *  does not (it answers with the file, no ts), so there `messageId` is absent on success
-   *  and the caller degrades exactly as it does for a post that returned no id. */
+   *  and the caller degrades exactly as it does for a post that returned no id.
+   *
+   *  WHAT ACTUALLY FLOWS THROUGH HERE TODAY: images only. The one caller resolves from the
+   *  transcript's retained image, so an implementation's non-image arms — Telegram's
+   *  `sendDocument`, Feishu's refusal — are unreachable until the store retains something
+   *  else. They are what the port owes a platform, not a claim that PDFs work end to end. */
   uploadFile?(
     channel: string,
     file: { bytes: Buffer; name: string; mimeType: string },
