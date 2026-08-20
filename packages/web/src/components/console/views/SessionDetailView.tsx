@@ -3065,10 +3065,10 @@ export default function SessionDetailView() {
   // `key` never depends on presentation fields (`time`, `wake`) that change as it grows.
   const rowAnchor = (m: SessionMessageDto): string =>
     `${conversationSourceSessionByMessageRef.current.get(m) ?? session.id}#${m.seq}`
-  // Live steps have no persisted `seq`; their turn identity is the stream `turnId`, and a bare
-  // step (a live user line) falls back to its authoring participant + observed time.
-  const liveAnchor = (stp: SessionStep): string =>
-    `live:${stp.turnId ?? `${stp.agentId ?? stp.who ?? ''}@${stp.observedAtMs ?? stp.time ?? ''}`}`
+  // Live steps have no persisted `seq`; their turn identity is the step's `turnId`, which
+  // `stampStep` guarantees for every live step (minting one for a standalone line) — so no
+  // presentation-field fallback is needed here.
+  const liveAnchor = (stp: SessionStep): string => `live:${stp.turnId}`
   const speakers = new Map<string, SessionParticipant>()
   const rememberParticipant = (id: string, participant: Omit<SessionParticipant, 'id'>): void => {
     const current = speakers.get(id)

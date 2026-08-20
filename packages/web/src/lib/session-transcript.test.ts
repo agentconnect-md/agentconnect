@@ -40,7 +40,7 @@ describe('reconcilePersistedLiveSteps', () => {
   const agentId = 'agent'
 
   function prompt(text: string, observedAtMs: number): SessionStep {
-    return { kind: 'msg', who: '@you', text, observedAtMs }
+    return { kind: 'msg', who: '@you', turnId: `u:${observedAtMs}`, text, observedAtMs }
   }
 
   function persistedPrompt(seq: number, text: string, ts: number): SessionMessageDto {
@@ -50,7 +50,7 @@ describe('reconcilePersistedLiveSteps', () => {
   it('preserves an unpersisted failed turn when a tail refresh is empty', () => {
     const live = [
       prompt('ship it', 1_785_000_000_000),
-      { kind: 'done', text: '⚠️ Could not reach the agent.', observedAtMs: 1_785_000_000_100 }
+      { kind: 'done', turnId: 'warn-1', text: '⚠️ Could not reach the agent.', observedAtMs: 1_785_000_000_100 }
     ] satisfies SessionStep[]
 
     expect(reconcilePersistedLiveSteps(live, [], agentId)).toBe(live)
@@ -61,9 +61,9 @@ describe('reconcilePersistedLiveSteps', () => {
     const retriedAt = failedAt + 30_000
     const live = [
       prompt('ship it', failedAt),
-      { kind: 'done', text: '⚠️ Could not reach the agent.', observedAtMs: failedAt + 100 },
+      { kind: 'done', turnId: 'warn-1', text: '⚠️ Could not reach the agent.', observedAtMs: failedAt + 100 },
       prompt('ship it', retriedAt),
-      { kind: 'done', text: 'deployed', observedAtMs: retriedAt + 1_000 }
+      { kind: 'done', turnId: 'ok-1', text: 'deployed', observedAtMs: retriedAt + 1_000 }
     ] satisfies SessionStep[]
 
     expect(reconcilePersistedLiveSteps(live, [persistedPrompt(1, 'ship it', retriedAt + 50)], agentId)).toEqual(
@@ -75,7 +75,7 @@ describe('reconcilePersistedLiveSteps', () => {
     const at = 1_785_000_000_000
     const live = [
       prompt('yes', at),
-      { kind: 'done', text: '⚠️ Could not reach the agent.', observedAtMs: at + 100 }
+      { kind: 'done', turnId: 'warn-2', text: '⚠️ Could not reach the agent.', observedAtMs: at + 100 }
     ] satisfies SessionStep[]
     const peerRows = [
       { seq: 1, ts: String(at + 50), text: 'yes', sender: 'bot-b', kind: 'text' }
@@ -92,7 +92,14 @@ describe('reconcilePersistedLiveSteps', () => {
   // it renders as a standalone step, identified only by its canonical postId.
   it('drops a standalone agent-post step once ITS postId lands in a persisted row (adopted-conversation refresh)', () => {
     const live = [
-      { kind: 'done', text: 'Sent "hello" to bot-b', agentId: 'bot-a', postId: 'post-1', observedAtMs: 1 }
+      {
+        kind: 'done',
+        turnId: 'post-1',
+        text: 'Sent "hello" to bot-b',
+        agentId: 'bot-a',
+        postId: 'post-1',
+        observedAtMs: 1
+      }
     ] satisfies SessionStep[]
 
     expect(
@@ -102,7 +109,14 @@ describe('reconcilePersistedLiveSteps', () => {
 
   it('keeps a standalone agent-post step whose postId has not been persisted yet', () => {
     const live = [
-      { kind: 'done', text: 'Sent "hello" to bot-b', agentId: 'bot-a', postId: 'post-1', observedAtMs: 1 }
+      {
+        kind: 'done',
+        turnId: 'post-1',
+        text: 'Sent "hello" to bot-b',
+        agentId: 'bot-a',
+        postId: 'post-1',
+        observedAtMs: 1
+      }
     ] satisfies SessionStep[]
 
     expect(
@@ -115,7 +129,7 @@ describe('reconcilePersistedLiveSteps', () => {
   // matching must not be gated by sender the way the prompt heuristic is.
   it('drops a peer participant’s post confirmed by a row from that peer’s OWN session', () => {
     const live = [
-      { kind: 'done', text: 'hi from bot-b', agentId: 'bot-b', postId: 'post-2', observedAtMs: 1 }
+      { kind: 'done', turnId: 'post-2', text: 'hi from bot-b', agentId: 'bot-b', postId: 'post-2', observedAtMs: 1 }
     ] satisfies SessionStep[]
 
     expect(
@@ -126,9 +140,9 @@ describe('reconcilePersistedLiveSteps', () => {
   it('reconciles a standalone post step and a prompt-anchored turn independently in the same refresh', () => {
     const at = 1_785_000_000_000
     const live = [
-      { kind: 'done', text: 'stale post', agentId: 'bot-a', postId: 'post-3', observedAtMs: at },
+      { kind: 'done', turnId: 'post-3', text: 'stale post', agentId: 'bot-a', postId: 'post-3', observedAtMs: at },
       prompt('ship it', at + 1_000),
-      { kind: 'done', text: 'deployed', observedAtMs: at + 2_000 }
+      { kind: 'done', turnId: 'ok-2', text: 'deployed', observedAtMs: at + 2_000 }
     ] satisfies SessionStep[]
 
     const persisted = [

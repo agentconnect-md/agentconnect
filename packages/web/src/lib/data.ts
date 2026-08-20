@@ -5,6 +5,7 @@ import type { AgentIcon } from '@/lib/agent-icon'
 import type { DaemonSessionRetention, ManagedMemoryScope, MemoryDreamingConfig } from '@/lib/api'
 import { featureFlagEnabled } from '@/lib/feature-flags'
 import { platformLabel } from '@/lib/platform-labels'
+import { randomUuid } from '@/lib/random-uuid'
 
 export type LifecycleStatusKey = 'upgrading' | 'restarting'
 export type ConnectionStatusKey = 'online' | 'paused' | 'offline'
@@ -984,9 +985,12 @@ export interface SessionImage {
 export interface SessionStep {
   kind: LaneKind
   who?: string
-  /** Stable identity of the live webchat turn. Pair with `agentId` when
-   *  folding interleaved participant streams into conversation blocks. */
-  turnId?: string
+  /** Stable identity of the turn this step belongs to — the wire/user turnId for a live webchat
+   *  turn, or a minted id for a standalone step (a locally-pushed warning is its own trivial
+   *  turn). Guaranteed present: `stampStep` mints one when a producer omits it, so consumers
+   *  (lane grouping, transcript turn keys) can rely on it. Pair with `agentId` when folding
+   *  interleaved participant streams into conversation blocks. */
+  turnId: string
   /** Authoring participant of a live multi-agent webchat step — keys the per-agent
    *  stream lane accumulation and the per-block attribution label. */
   agentId?: string
@@ -1611,7 +1615,11 @@ export function getAgent(id: string): Agent {
   return AGENTS.find((a) => a.id === id) ?? AGENTS[0]!
 }
 
-const RAW_SESSIONS_BY_AGENT: Record<string, Session[]> = {
+// Mock sessions author steps without a stream turnId; the transform below mints one so demo data
+// satisfies the `SessionStep.turnId` invariant exactly as `stampStep` does for live steps.
+type MockStep = Omit<SessionStep, 'turnId'> & { turnId?: string }
+type MockSession = Omit<Session, 'steps'> & { steps: MockStep[] }
+const RAW_SESSIONS_BY_AGENT: Record<string, MockSession[]> = {
   deploy: [
     {
       id: 'd1',
@@ -1833,8 +1841,23 @@ const RAW_SESSIONS_BY_AGENT: Record<string, Session[]> = {
   ]
 }
 
+const mintStepTurnIds = (s: MockSession): Session => {
+  // One turnId per LOGICAL turn, not per step: a `msg` opens a new turn and the agent's following
+  // plan/tool/edit/done steps carry it, so an answer groups as ONE bot turn (the session-detail
+  // builder folds bot output by turnId via liveBotTurnKey). This mirrors a real webchat turn, whose
+  // reply steps all share the one wire turnId.
+  let turnId = `mock:${randomUuid()}`
+  return {
+    ...s,
+    steps: s.steps.map((step) => {
+      if (step.turnId !== undefined) return step as SessionStep
+      if (step.kind === 'msg') turnId = `mock:${randomUuid()}`
+      return { ...step, turnId }
+    })
+  }
+}
 const SESSIONS_BY_AGENT: Record<string, Session[]> = Object.fromEntries(
-  Object.entries(RAW_SESSIONS_BY_AGENT).map(([id, list]) => [id, list.map(tagTitle)])
+  Object.entries(RAW_SESSIONS_BY_AGENT).map(([id, list]) => [id, list.map((s) => tagTitle(mintStepTurnIds(s)))])
 )
 
 export function getSessions(agentId: string): Session[] {
