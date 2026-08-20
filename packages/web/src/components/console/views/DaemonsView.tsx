@@ -201,6 +201,8 @@ const GROUP_COLS = 'grid-cols-[2.2fr_.9fr_1.9fr_.55fr_32px] gap-x-[14px]'
 
 function GroupRow({ group, daemons }: { group: MemberSetRow; daemons: DaemonRow[] }) {
   const { openModal } = useModal()
+  const { orgPath } = useOrgs()
+  const router = useRouter()
   const [menuOpen, setMenuOpen] = useState(false)
   const s = status(groupFleetStatus(group, daemons))
   const members = daemons.filter((d) => group.memberDaemonIds.includes(d.daemonId))
@@ -215,7 +217,10 @@ function GroupRow({ group, daemons }: { group: MemberSetRow; daemons: DaemonRow[
         : `${members.length} daemons · ${serving} serving`
 
   return (
-    <div className={`row click ${GROUP_COLS}`} onClick={() => openModal('group', group)}>
+    // The row opens the group's own page, not the editor: what a reader wants from a group is
+    // what runs on it and which members are serving, and renaming it is the rarer of the two.
+    // The editor stays one click away, in the row menu and on that page.
+    <div className={`row click ${GROUP_COLS}`} onClick={() => router.push(orgPath(`/daemons/groups/${group.setId}`))}>
       <div className="flex min-w-0 items-center gap-[10px]">
         <span className="flex h-7 w-7 flex-none items-center justify-center rounded-[7px] border border-(--border-subtle) bg-(--surface-sunken)">
           <Icon name="layers" size={15} color={serving > 0 ? 'var(--brand)' : 'var(--text-tertiary)'} />
@@ -295,14 +300,15 @@ function PoolFleetCard({ members, hosted }: { members: DaemonRow[]; hosted: numb
   const online = serving.length > 0
   // Node count and version stay internal — the cloud pool doesn't expose its topology.
   const meta = online ? 'Managed by AgentConnect' : 'Managed by AgentConnect · not serving'
-  // Opens one member's detail for the runtimes, models and MCP servers the pool offers —
-  // a serving one, since a member that stopped answering can no longer describe itself.
-  const target = serving[0] ?? members[members.length - 1]!
+  // Opens CLOUD's own page, never a member's: no member id survives a rollout, so landing on
+  // one machine would name the pool after a Pod that is already gone. That page is where the
+  // runtimes, models and connections Cloud offers are read.
+  const open = () => router.push(orgPath('/daemons/cluster'))
 
   return (
     <div
       className="card click flex items-center gap-3 overflow-visible p-[14px] max-desktop:rounded-lg desktop:gap-[14px] desktop:px-4 desktop:py-[15px]"
-      onClick={() => router.push(orgPath(`/daemons/${target.daemonId}`))}
+      onClick={open}
     >
       <span className="relative flex h-10 w-10 flex-none items-center justify-center rounded-md bg-(--brand-soft) desktop:h-9 desktop:w-9">
         <Icon name="cloud" size={20} color={online ? 'var(--brand)' : 'var(--text-tertiary)'} />
