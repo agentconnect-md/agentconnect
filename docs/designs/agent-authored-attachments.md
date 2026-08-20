@@ -100,7 +100,12 @@ reply path resolves this per platform, and it is four shapes, not one:
 Three refusal classes, and only the first is port-probeable — the doc'd earlier claim that
 "postless/headless children get a clean port-probed refusal" was wrong on two of them:
 
-1. **No gateway** — webchat. The port probe answers this.
+1. **No gateway** — webchat, which the port probe answers, but the refusal is a
+   deferral rather than a verdict: the console already renders images in transcript rows
+   (`WebchatImageAttachment`, png/jpeg/webp ≤ 160 KB), so the missing piece is only an
+   outbound agent→browser image frame — the current schema is inbound-only. Deferred in
+   §7; worth naming because phase 1's audience (self-hosted installs) is exactly where
+   webchat is used most.
 2. **No conversation** — a postless A2A child keeps the caller's real platform and a live
    gateway, so the probe _passes_; the tell is the synthetic `a2a:<caller>` channel. Gate
    on the coordinate, before the file is read.
@@ -128,30 +133,45 @@ suppresses `blocks`), so `**bold**` reads literally there; stated, not fixed.
 
 **Result contract:** a `warning` from the port surfaces as the same in-turn `notice`
 `sendMessage` already raises; `undefined` is a thrown error; where the platform returns no
-message id, the transcript row synthesizes one exactly as `sendMessage` does.
+message id, the transcript row synthesizes one exactly as `sendMessage` does. One thing it
+must **not** do: reuse `sendMessage`'s post path, whose returned message id seeds and
+anchors a NEW session — correct for a channel-root post, and quietly relocating for
+`shareFile`, whose thread already has the session the turn is running in. The id is a
+transcript detail here, never a seed.
 
 ## 4. The resolver and the fence
 
 One resolver serves the tool; every restriction lives in it once.
 
-**Containment is reused, and named precisely:** `canonicalWorkspacePath()` — the lexical
-check plus **realpath re-verification**, so a symlink (including an intermediate component
-swapped after the check) cannot smuggle a target outside the root; its `null` (absent
-path) becomes the resolver's own refusal. In phase 1 this is hygiene, not a boundary — a
-host agent runs as the daemon's uid and can read anything the daemon can; it becomes a
-real boundary in the pod phase, where descent is fd-anchored on the pod side.
+**Containment is reused — and it is two fences, one per phase, not one.** On a host
+agent's local tree the resolver runs `canonicalWorkspacePath()`: the lexical check
+(absolute/`..`/`.git`) plus **realpath re-verification**, so a symlink — including an
+intermediate component swapped after the check — cannot smuggle a target outside the
+root; its `null` (absent path) becomes the resolver's own refusal. There this is hygiene,
+not a boundary: a host agent runs as the daemon's uid and can read anything the daemon
+can. In the pod phase the boundary is real, and it is **not** the daemon's realpath —
+there is nothing daemon-side to realpath — but the pod's own fd-anchored descent, which
+is stronger than any name check. The daemon then contributes only the lexical half
+(`containedWorkspacePath()`, which carries the `.git` rule the pod-side check lacks) as
+defence-in-depth on the relative path before the read.
 
 **The read is single-shot:** resolve once, read once into a buffer; the sniff, the size
 cap, and the upload all consume that same buffer. (The console's workspace `read` cannot
 be reused here — it refuses binary content by design — so this is new, small I/O code.)
 
-**Images only, decided by magic bytes:** the accepted set is **PNG, JPEG, WEBP, GIF** —
-`sniffImageMimeType`'s set plus two lines for GIF; Feishu's image upload accepts all four
-(10 MB cap, above §5's default). SVG stays out for the same provable-bytes reason. The
-outbound **filename and MIME type derive from the sniffed type, never from the
-model-supplied path** — Discord renders by extension alone, so `out/chart` (or any curl
-output without an extension) would otherwise land as a non-previewable attachment in the
-feature's primary case.
+**Images only, decided by magic bytes:** the accepted set is **PNG, JPEG, WEBP** —
+exactly `sniffImageMimeType`'s set, and that is a principled boundary, not a sniffing
+convenience: it is `SessionImageAttachment`'s enum, i.e. what the console can render back
+from a transcript row, and that enum is a wire schema shared with the webchat ingress
+validator, so widening it ripples across wire surfaces. GIF is therefore **deferred, not
+two lines away** (§7): beyond the enum, an animated GIF on Telegram must route through
+`sendAnimation` — `sendPhoto` silently de-animates it, the categorical form of the
+degradation this design forbids. Since an animated GIF is a plausible result of §1's
+find-me-images case, the refusal **names GIF** rather than saying "not an image". SVG
+stays out for the provable-bytes reason. The outbound **filename and MIME type derive
+from the sniffed type, never from the model-supplied path** — Discord renders by
+extension alone, so `out/chart` (or any curl output without an extension) would otherwise
+land as a non-previewable attachment in the feature's primary case.
 
 **What the gate is honestly for:** it stops the wrong file and the injected "attach your
 .env" instruction. It is _not_ a control against deliberate exfiltration — a secret
@@ -159,9 +179,12 @@ appended after a PNG's IEND still sniffs as PNG — and the reason that residual
 acceptable is that the ordinary text reply already exfiltrates to the same audience.
 
 **Provenance is a forensic aid, not a detection control:** the transcript row records the
-workspace path (a model-chosen label) plus the **sniffed type, byte length, and a
-digest** of what was actually published; the published bytes themselves are kept nowhere
-daemon-side.
+workspace path (a model-chosen label) plus the **sniffed type, byte length, and a digest**
+of what was actually published — and, when the bytes fit the existing 160 KB
+`SessionImageAttachment` cap, the bytes themselves, exactly as an inbound image does, so
+the console can render what the agent shared and not only that it shared something. Above
+the cap the row is digest-only; nothing else is kept daemon-side. Without this, a user's
+uploaded PNG would preview while the chart the agent produced in reply would not.
 
 ## 5. Size, time, and refusals that say why
 
@@ -210,8 +233,10 @@ work. It does not:
   considered and dropped: the honest single-frame ceiling after base64 expansion is
   ~189 KB, and the existing op would need a fit-to-budget fix anyway.)
 - one containment caveat travels with it: that channel's pod-side check has **no `.git`
-  rule** (absolute/`..`/NUL only), so §4's fence runs daemon-side on the relative path
-  before the read, or the design silently loses the exclusion it credits to the fence.
+  rule** (absolute/`..`/NUL only), so the daemon applies the lexical fence to the relative
+  path before the read — the pod-phase division of labor §4 spells out, with the symlink
+  guarantee owned by the pod's fd-anchored descent rather than by a daemon-side realpath
+  it cannot run.
 
 Host-first is therefore **sequencing, not a wire constraint**: phase 1 settles the tool
 contract, the anchor, and the fence where iteration is cheap; phase 2 is small.
@@ -253,6 +278,11 @@ shim boundary, and generalizes to none of the other three platforms.
   rich posts); composing on a single-file port would force the port into a shape it does
   not need. Several images today = several `shareFile` calls = several messages, which is
   how a person sends three photos. Sequence: source → multi-file → composition.
+- **GIF** — needs the `SessionImageAttachment` enum widened across its wire surfaces and
+  a `sendAnimation` shape on the Telegram arm; until then a GIF gets a refusal that names
+  it (§4).
+- **Webchat** — not a refusal on principle: the console already renders transcript
+  images, so this is one outbound agent→browser image frame on the relay content plane.
 - **Agent-to-agent attachments** — a protocol-frame change with its own routing
   questions; its own design.
 
@@ -262,7 +292,7 @@ shim boundary, and generalizes to none of the other three platforms.
 | ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------- |
 | 1     | `shareFile`; resolver + fence + sniff + caps; port widenings (reply anchor, typed failure reason, anchor refusal); refusal-class gates; description edits | Host agents, current conversation |
 | 2     | Bytes read on the `WorkspaceFs` seam (shim = existing base64 op), daemon-side fence on the relative path                                                  | Pod agents                        |
-| —     | `attachFile`, multi-file, composition, `preview \| file` fidelity hint, A2A files                                                                         | Deferred; §7                      |
+| —     | `attachFile`, GIF, webchat image frame, multi-file, composition, `preview \| file` fidelity hint, A2A files                                               | Deferred; §7                      |
 
 ## 9. Open questions
 
