@@ -79,11 +79,12 @@ inputs        │  snapshot of <agent-root>/memory/   (read-only)        │
               │            │                                           │
               │            ▼                                           │
 executor      │  isolated ACP session on the agent's runtime           │
-              │  (dream pipeline prompt; model returns proposals as    │
-              │   validated JSON — the model never writes files)       │
+              │  (dream pipeline prompt; the model WRITES the rebuilt  │
+              │   store through the memory tools, bound to the staged  │
+              │   store, and returns review proposals as JSON)         │
               │            │                                           │
               │            ▼                                           │
-outputs       │  memory-dreams/<dreamId>/output/    (staged store)     │
+outputs       │  memory-dreams/<dreamId>/memory/    (staged store)     │
               │  memory-dreams/<dreamId>/skills/    (staged skills §7) │
               └────────────┬───────────────────────────────────────────┘
                            ▼
@@ -99,11 +100,12 @@ Three invariants:
    timestamped backup and moves the staged tree into place, appending a
    `dream-adopt` event to `.history`. The backup is retained until the next
    successful adoption.
-3. **The model proposes; the daemon disposes.** The runtime returns the
-   proposed store as structured JSON. The daemon validates every entry (topic
-   filename regex, per-file and index size caps, no dotfiles, no path
-   traversal) and performs all filesystem writes itself. `.history` is never
-   part of the proposal — it is carried over verbatim and appended to.
+3. **The model proposes; the daemon disposes.** The model's writes reach disk
+   only through the daemon's own memory tools, bound to the staged store: the
+   same path validation, topic-name rule, and byte caps a turn gets, plus the
+   dream's own bounded file count. The daemon still performs every filesystem
+   write itself and generates the index. `.history` is never part of the
+   proposal — it is carried over verbatim and appended to.
 
 Invariant 3 bounds only what the dream _output_ can do: a bad proposal can
 change only the managed-memory store, and only after staging and validation.
@@ -111,7 +113,7 @@ Auto-accept deliberately skips a human content-quality check, as its console
 warning makes clear. The invariant says nothing about what the _extraction run
 itself_ can do — the mined transcript is attacker-controlled, so
 a prompt injection could drive the runtime's native shell/file/network tools
-before the model ever emits JSON, and staged-output review cannot undo those
+during the run, and staged-output review cannot undo those
 side effects. The executor therefore separates two independent gates:
 
 - **Side effects during the run — HARD gate (fail closed).** The extraction
@@ -246,14 +248,21 @@ interface DreamRecord {
    permission mode when the runtime offers one, dream system prompt (§5),
    snapshot + transcripts as untrusted prompt data. Collect the streamed text
    exactly as distillation does.
-4. **Validate & stage.** Parse the returned JSON
-   (`{"files":[...], "index":"...", "skills":[...]}`, §5) with the distiller's
-   hardening style: topic regex `^[a-z0-9][a-z0-9-]{0,62}\.md$`, per-file
-   clamp, index clamp to the 25 KB injection cap, bounded file count; skill
-   entries validated per §7. Write the store proposal to
-   `memory-dreams/<dreamId>/output/` and skill candidates to
-   `memory-dreams/<dreamId>/skills/<name>/`. A parse/validation failure ⇒
-   `failed`, with the partial staging left in place for inspection.
+4. **Validate & stage.** The store proposal is already on disk: the extraction
+   session's `writeMemory`/`readMemory` are bound to `memory-dreams/<dreamId>/`
+   as their store, so every topic file went through the same write path a turn
+   uses (header normalize + stamp, byte cap, `.history`) — the binding also
+   carries the two limits the old JSON format enforced, the topic regex
+   `^[a-z0-9][a-z0-9-]{0,62}\.md$` and the bounded file count. Staging then
+   generates the index from those files' `description` headers, so the index a
+   human reviews is byte-for-byte the one adoption installs. Parse the returned
+   JSON (§5) for the review queue only — skills and organization suggestions,
+   validated per §7 — and stage candidates to
+   `memory-dreams/<dreamId>/skills/<name>/`. A parse failure ⇒ `failed`, and so
+   does a run that wrote no topic file while the live store had some: the store
+   is what the model wrote, so writing nothing is no proposal at all, not an
+   empty one — completing it would let adoption install an index-only store over
+   a live one. The staging of a run that never completes is dropped.
 5. **Finish.** Mark `completed`; emit `memory.dream.completed` on the
    evaluation-events channel (alongside the existing `memory.capture.*`
    events). If `autoAdopt` is set, run §6 adoption for the store — never for
@@ -273,24 +282,28 @@ with the same injection posture and a five-phase pipeline:
   transcripts for corrections, preference shifts, decisions, and recurring
   patterns → **consolidate**: merge duplicates, keep the _latest_ value where
   entries contradict, convert relative dates to absolute, drop transient task
-  progress and secrets → **prune & index**: rebuild the index with one line
-  per topic, under the injection cap, demoting verbose entries into topic
-  files → (when skill mining is enabled) **extract procedures**: identify
+  progress and secrets → **prune**: give every topic a strong `description`
+  header (the index is generated from those), demoting verbose entries into
+  topic files → (when skill mining is enabled) **extract procedures**: identify
   workflows the agent performed repeatedly or re-derived across sessions and
   express each as a candidate skill (§7) — only procedures grounded in at
   least two distinct sessions, never one-off task steps.
 - Unlike distillation, rewriting and deleting are **allowed** — that is the
-  point — but only inside the returned proposal.
+  point — but only inside the staged store, never in the live one.
 - Existing topic boundaries, filenames, and byte-identical content are
   preserved by default. Small wording, formatting, ordering, or consistency
   edits do not justify renaming a topic. A rename, merge, or split is proposed
   only when a material content change makes the existing structure misleading;
   equally faithful proposals prefer the smallest diff.
-- Output is JSON only:
-  `{"files":[{"path":"topic.md","content":"..."}], "index":"...",
-"skills":[{"name":"...","description":"...","skill":"<SKILL.md body>",
-"scripts":[{"path":"...","content":"..."}]}]}` — `skills` present only when
-  mining is enabled.
+- The rebuilt store is WRITTEN, not returned: one `writeMemory` call per topic
+  file, into a staging area that starts empty and replaces the live store on
+  adoption — so a file the model does not write is how it prunes, and an
+  unchanged file is copied byte-for-byte. `MEMORY.md` is generated, never
+  written by the model.
+- The JSON reply carries only the review queue:
+  `{"agentSkills":[{"name":"...","description":"...","skill":"<SKILL.md body>",
+"scripts":[{"path":"...","content":"..."}]}],"organizationKnowledge":[],
+"organizationSkills":[]}` — skills present only when mining is enabled.
 - The operator's `instructions` string is appended to the system prompt (it is
   operator-, not model- or user-supplied — same trust class as the rest of the
   prompt).
@@ -316,7 +329,7 @@ warns that this skips content review.
    changed while the dream ran — rerun or force). This mirrors the `ifMatch`
    optimistic-concurrency style of `writeMemoryFile`.
 3. Atomically: rename `memory/` → `memory-backups/<ts>-pre-<dreamId>/`; move
-   staged `output/` into place as `memory/`; carry `.history` over and append
+   the staged store into place as `memory/`; carry `.history` over and append
    one `dream-adopt` line (`source: 'dream'`, dreamId, backup path).
 4. Mark the record `adopted`. Every other `completed` store proposal for the
    agent is no longer based on the live store, so remove its store staging and

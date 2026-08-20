@@ -2,7 +2,6 @@ import { createHash } from 'node:crypto'
 import { posix } from 'node:path'
 import { parse as parseYaml } from 'yaml'
 import { MAX_ORGANIZATION_SUGGESTION_BODY_BYTES, type SkillBundleTextFile } from '@agentconnect.md/protocol'
-import { MEMORY_INDEX, MAX_MEMORY_FILE_BYTES } from '../memory/store.js'
 import { MEMORY_FORMAT_GUIDANCE } from '../memory/frontmatter.js'
 
 /**
@@ -72,7 +71,6 @@ export interface TrustedOrganizationSkillTarget {
 }
 
 export interface DreamProposal {
-  files: DreamProposalFile[]
   /** Empty unless the agent enabled `mineSkills` AND the model proposed some. */
   skills: DreamProposalSkill[]
   organizationKnowledge: DreamOrganizationKnowledgeProposal[]
@@ -102,8 +100,8 @@ export interface DreamExplorationPromptInput {
   dismissedSkills?: string[]
 }
 
-/** Same topic-name discipline as the distiller: lowercase kebab-case .md files. */
-const TOPIC_RE = /^[a-z0-9][a-z0-9-]{0,62}\.md$/
+/** Same topic discipline as the distiller, enforced on the dream's memory-tool binding. */
+export const DREAM_TOPIC_RE = /^[a-z0-9][a-z0-9-]{0,62}\.md$/
 
 /** Bounded proposal: a store rebuild, not a dump. */
 export const MAX_DREAM_FILES = 64
@@ -158,9 +156,13 @@ Rules:
 ${MEMORY_FORMAT_GUIDANCE}
 
 - Never include credentials, tokens, or other secrets.
-- Return JSON only with four explicit categories:
-  {"agentMemory":{"files":[{"path":"topic.md","content":"full file text"}]},"agentSkills":[],"organizationKnowledge":[],"organizationSkills":[]}.
+- Return JSON only with three explicit categories:
+  {"agentSkills":[],"organizationKnowledge":[],"organizationSkills":[]}.
+- WRITE the rebuilt store with \`writeMemory\`, one call per topic file. Your JSON reply carries ONLY the review-queue proposals above — the memory itself is what you wrote.
+- Those writes land in an EMPTY staging area that REPLACES the live store if a human adopts it: write every file you are keeping, copying an unchanged one byte-for-byte from the snapshot. A file you never write is deleted — that is how you prune.
+- \`readMemory\` reads back what you have staged so far, never the live store. The existing store is the snapshot in your working directory; read it with your file tools.
 - Do NOT write MEMORY.md. The index is generated from your files' \`description\` headers, so a good description is what makes a memory findable — that is where the effort belongs.
+- Topic filenames must be lowercase kebab-case \`.md\`; a write that is not will be refused.
 - organizationKnowledge entries are owner-review proposals in exactly this shape: {"operation":"create|update","targetId":"uuid only for update","targetRevision":1,"title":"...","summary":"...","tags":["..."],"content":"Markdown","sessionIds":["..."]}. The citation property is named "sessionIds" (never "groundedSessionIds").
 - Propose organization knowledge only when it is reusable across multiple agents or represents a durable organization-wide convention. Agent-specific facts stay in agentMemory.
 - Before proposing organization knowledge, check what already exists with the listKnowledge / findKnowledge tools. If an existing entry covers the same subject, propose an "update" to its exact id/revision (never a near-duplicate "create").
@@ -310,48 +312,20 @@ function parseDreamJson(text: string): unknown | undefined {
 }
 
 /**
- * Parse and harden the model's proposal. Returns null when the text carries no
- * usable JSON proposal (the dream then fails; partial staging is never written
- * from an unparseable reply). Individual entries are dropped, not repaired:
- * bad topic names, oversized bodies, duplicate paths, and index entries are
- * filtered the same way the distiller filters memories.
+ * Parse and harden the model's review-queue proposals — skills and organization
+ * suggestions. Returns null when the text carries no usable JSON (the dream then
+ * fails and its staging is dropped). Ungrounded or malformed entries are dropped,
+ * never repaired. The memory store itself is not parsed from here: the model wrote
+ * it through the memory tools, which enforce naming and size on the way in.
  */
 export function parseDreamProposal(text: string, minedSessionIds: readonly string[] = []): DreamProposal | null {
   const value = parseDreamJson(text)
   if (value === undefined) return null
   const envelope = value as Record<string, unknown>
-  const memory =
-    envelope.agentMemory && typeof envelope.agentMemory === 'object'
-      ? (envelope.agentMemory as Record<string, unknown>)
-      : envelope
-  if (!Array.isArray(memory.files)) return null
-
-  const seen = new Set<string>([MEMORY_INDEX])
-  const files: DreamProposalFile[] = []
-  for (const row of memory.files) {
-    const file = row as DreamProposalFile
-    if (
-      typeof file?.path !== 'string' ||
-      typeof file?.content !== 'string' ||
-      !TOPIC_RE.test(file.path) ||
-      seen.has(file.path) ||
-      !file.content.trim()
-    ) {
-      continue
-    }
-    seen.add(file.path)
-    // Reserve one byte for the trailing newline so the final string is ≤ the
-    // writer's byte cap, and clamp on a code-point boundary so the cut never
-    // decodes to a replacement char that would push it back over the cap.
-    const content = clampToBytesOnBoundary(file.content.trim(), MAX_MEMORY_FILE_BYTES - 1) + '\n'
-    files.push({ path: file.path, content })
-    if (files.length >= MAX_DREAM_FILES) break
-  }
-
-  // No index is read from the model: staging generates MEMORY.md from these files'
-  // descriptions, exactly as adoption will, so what a reviewer sees is what installs.
+  // Neither files nor an index come back in JSON any more: the model writes its topic
+  // files into the staged store through the memory tools, and staging renders the
+  // index from them. The envelope now carries only the review-queue proposals.
   return {
-    files,
     skills: parseDreamSkills(envelope.agentSkills ?? envelope.skills, minedSessionIds),
     organizationKnowledge: parseOrganizationKnowledge(envelope.organizationKnowledge, minedSessionIds),
     organizationSkills: parseOrganizationSkills(envelope.organizationSkills, minedSessionIds)
