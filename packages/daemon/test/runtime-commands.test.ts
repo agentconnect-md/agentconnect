@@ -167,7 +167,8 @@ describe('the daemon records only its own host’s advertisement', () => {
       runtimeCommands: RuntimeCommandsCache
     }
     inner.hosts.set('agent-1', { hasSession: () => true, isLoadingSession: () => false })
-    inner.internalPassSessions.add(internalPassSlot.commit('agent-1'), pendingTurnKey('agent-1', 'commit-session'))
+    const passKey = pendingTurnKey('agent-1', 'commit-session')
+    inner.internalPassSessions.add(internalPassSlot.commit('agent-1', 'commit-session'), passKey)
 
     await inner.onAcpUpdate('agent-1', 'commit-session', advertisement)
     expect(inner.runtimeCommands.get('agent-1')).toEqual({ reported: false, commands: [] })
