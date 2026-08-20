@@ -75,7 +75,9 @@ export function npmRepairEnv(home: string, source: NodeJS.ProcessEnv = process.e
 
 export type NpmRunner = (tree: string, args: string[], env: NodeJS.ProcessEnv) => Promise<void>
 
-const REPAIR_TIMEOUT_MS = 10 * 60_000
+// Bounded because a start waits on it: generous enough for a cold fetch of a large platform
+// binary, short enough that a hung registry fails the start instead of parking a turn.
+const REPAIR_TIMEOUT_MS = 5 * 60_000
 
 /** Reify one tree with the child's own env, so npm resolves the same HOME, cache, and registry. */
 export const execFileNpmRunner: NpmRunner = (tree, args, env) =>

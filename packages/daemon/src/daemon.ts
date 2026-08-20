@@ -3376,7 +3376,9 @@ export class Daemon {
       log: this.log
     })
     constructed.host = host
-    const runtimeHome = launch.runtimeHome ?? (launch.inheritProcessEnv ? process.env.HOME : undefined)
+    // What HOME the child actually got, since that is where it resolves its packages: the private
+    // runtime home when isolated, otherwise whatever the inherited daemon environment points at.
+    const runtimeHome = launch.env.HOME ?? (launch.inheritProcessEnv ? process.env.HOME : undefined)
     return { host, configFileState, ...(runtimeHome ? { runtimeHome } : {}) }
   }
 
