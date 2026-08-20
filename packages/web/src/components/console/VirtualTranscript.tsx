@@ -12,7 +12,6 @@ import {
   useCallback,
   useEffect,
   useImperativeHandle,
-  useLayoutEffect,
   useRef,
   useState,
   type ReactNode,
@@ -83,14 +82,6 @@ export function VirtualTranscript<T extends { key?: string }>({
     scrollMargin
   })
 
-  useLayoutEffect(() => {
-    const root = rootRef.current
-    const scroll = scrollRef.current
-    if (!root || !scroll) return
-    const offset = root.getBoundingClientRect().top - scroll.getBoundingClientRect().top + scroll.scrollTop
-    setScrollMargin((prev) => (Math.abs(prev - offset) > 0.5 ? offset : prev))
-  }, [turns.length, virtualize])
-
   // The latest props in refs, so the effects below don't re-run on every parent render — the parent
   // passes fresh callback identities and a fresh `turns` array each time, and an effect that re-ran
   // on those would re-arm the follow constantly and trap the reader at the bottom.
@@ -100,24 +91,31 @@ export function VirtualTranscript<T extends { key?: string }>({
   onLoadOlderRef.current = onLoadOlder
   const hasOlderRef = useRef(hasOlder)
   hasOlderRef.current = hasOlder
-  const virtualizeRef = useRef(virtualize)
-  virtualizeRef.current = virtualize
-  const countRef = useRef(turns.length)
-  countRef.current = turns.length
-  const virtualizerRef = useRef(rowVirtualizer)
-  virtualizerRef.current = rowVirtualizer
+  // Where the last pin landed, so onScroll can swallow the pin's own (delayed) scroll event.
+  const pinnedTop = useRef<number | null>(null)
 
   const reportAtBottom = useCallback((atBottom: boolean) => onAtBottomRef.current?.(atBottom), [])
 
   const pinToBottom = useCallback(() => {
     const el = scrollRef.current
     if (!el) return
-    // The virtualizer keeps an accurate end while rows are still estimated; the plain path clamps.
-    if (virtualizeRef.current && countRef.current > 0) {
-      virtualizerRef.current.scrollToIndex(countRef.current - 1, { align: 'end' })
-    } else {
-      el.scrollTop = el.scrollHeight
-    }
+    // Scroll the PANE to its true bottom, not the last turn's: the typing dots, the flex-1 spacer
+    // and the sticky composer follow the turn list, so aligning the last turn would leave the newest
+    // reply under the composer and read as "not at the bottom".
+    el.scrollTop = el.scrollHeight
+    // Read back (the browser clamps) so onScroll can recognise this pin's echo by position.
+    pinnedTop.current = el.scrollTop
+  }, [])
+
+  // The list is offset from the scrollport by whatever sits above it (a "load earlier" row, the
+  // paging spinner, an offline/purge notice); the virtualizer needs that offset or every row is
+  // mispositioned. Remeasured on every content change (below), not just when the turn COUNT changes.
+  const measureScrollMargin = useCallback(() => {
+    const root = rootRef.current
+    const el = scrollRef.current
+    if (!root || !el) return
+    const offset = root.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop
+    setScrollMargin((prev) => (Math.abs(prev - offset) > 0.5 ? offset : prev))
   }, [])
 
   // Arm the follow ONLY when the session/conversation changes — never on an ordinary re-render, or
@@ -129,14 +127,22 @@ export function VirtualTranscript<T extends { key?: string }>({
     reportAtBottom(true)
   }, [resetKey, reportAtBottom])
 
-  // Follow ACTUAL growth, not every render: a ResizeObserver on the growing content fires only when
-  // it really grows (a streamed step, a merged row), and only re-pins while the reader is still at
-  // the bottom. `onScroll` latches that, and drives the reverse-infinite-scroll load. Re-attached
-  // only on a session switch or a plain↔virtual flip (the root element changes) — not per render.
+  // Follow ACTUAL growth, not every render. A ResizeObserver on the scroller's inner wrapper fires
+  // whenever anything in the pane grows or shrinks — a streamed step, a merged row, a notice
+  // appearing above the list — so it doubles as the trigger to re-pin (while the reader is at the
+  // bottom) and to remeasure `scrollMargin`. `onScroll` latches whether the reader is still at the
+  // bottom and drives the reverse-infinite-scroll load. Re-attached only on a session switch or a
+  // plain↔virtual flip, not per render.
   useEffect(() => {
     const el = scrollRef.current
     if (!el) return
     const onScroll = () => {
+      // Swallow the echo of our own pin: it dispatches a scroll event delivered LATER, by which time
+      // a streamed row may already have grown the content, so measuring it would read "far from the
+      // bottom" and drop the follow one beat after arming it. Matched by position (events coalesce).
+      const echo = pinnedTop.current !== null && el.scrollTop === pinnedTop.current
+      pinnedTop.current = null
+      if (echo) return
       follow.current = nearBottom(el)
       reportAtBottom(follow.current)
       if (hasOlderRef.current && onLoadOlderRef.current && !loadingOlder.current && el.scrollTop <= NEAR_TOP) {
@@ -154,15 +160,19 @@ export function VirtualTranscript<T extends { key?: string }>({
     }
     el.addEventListener('scroll', onScroll, { passive: true })
     const grow = new ResizeObserver(() => {
+      measureScrollMargin()
       if (follow.current) pinToBottom()
       reportAtBottom(nearBottom(el))
     })
-    if (rootRef.current) grow.observe(rootRef.current)
+    // Observe the scroller's inner wrapper (always present, unlike the turn list which is absent for
+    // an empty transcript), so the follow survives the empty→first-render transition.
+    const content = el.firstElementChild
+    if (content) grow.observe(content)
     return () => {
       el.removeEventListener('scroll', onScroll)
       grow.disconnect()
     }
-  }, [resetKey, virtualize, pinToBottom, reportAtBottom])
+  }, [resetKey, virtualize, pinToBottom, reportAtBottom, measureScrollMargin])
 
   useImperativeHandle(
     handleRef,
@@ -175,6 +185,10 @@ export function VirtualTranscript<T extends { key?: string }>({
     }),
     [pinToBottom, reportAtBottom]
   )
+
+  // Nothing to render when empty — return null rather than an empty wrapper, whose parent `gap-4` +
+  // `max-desktop:pb-3` would otherwise leave dead space above the mobile empty state / prompts.
+  if (turns.length === 0) return null
 
   if (!virtualize) {
     return (
