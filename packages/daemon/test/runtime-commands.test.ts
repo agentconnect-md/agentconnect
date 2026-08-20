@@ -121,7 +121,10 @@ describe('the daemon records only its own host’s advertisement', () => {
       onAcpUpdate(agentId: string, sessionId: string, update: unknown): Promise<void>
       runtimeCommands: RuntimeCommandsCache
     }
-    host.hosts.set('agent-1', { hasSession: (id) => id === 'own-session' })
+    host.hosts.set('agent-1', {
+      hasSession: (id) => id === 'own-session',
+      isLoadingSession: (id) => id === 'resuming-session'
+    })
 
     await host.onAcpUpdate('agent-1', 'dream-session', advertisement)
     expect(host.runtimeCommands.get('agent-1')).toEqual({ reported: false, commands: [] })
@@ -131,5 +134,21 @@ describe('the daemon records only its own host’s advertisement', () => {
     expect(reported.reported).toBe(true)
     expect(reported.sessionId).toBe('own-session')
     expect(reported.commands.map((c) => c.name)).toEqual(['code-review', 'superpowers:brainstorming', 'model'])
+  })
+
+  // claude-agent-acp advertises AFTER the session/load response, so `live` already holds the session
+  // by then — but that is one adapter's ordering, and the guard must not depend on it. A session the
+  // host is still loading is this host's session.
+  it('takes an advertisement that arrives while a session/load is still in flight', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const host = daemon as unknown as {
+      hosts: Map<string, { hasSession(id: string): boolean; isLoadingSession(id: string): boolean }>
+      onAcpUpdate(agentId: string, sessionId: string, update: unknown): Promise<void>
+      runtimeCommands: RuntimeCommandsCache
+    }
+    host.hosts.set('agent-1', { hasSession: () => false, isLoadingSession: (id) => id === 'resuming' })
+
+    await host.onAcpUpdate('agent-1', 'resuming', advertisement)
+    expect(host.runtimeCommands.get('agent-1').sessionId).toBe('resuming')
   })
 })

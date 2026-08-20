@@ -1074,6 +1074,13 @@ export class AcpHost {
     return this.live.has(sessionId)
   }
 
+  /** True while a session/load is in flight — the session is this host's, but `live` does not hold it
+   *  yet. A caller identifying "is this session mine" from an update must accept this window too, or
+   *  it depends on whether the adapter emits before or after the load response. */
+  isLoadingSession(sessionId: string): boolean {
+    return this.loadingSessions.has(sessionId)
+  }
+
   /** Force the next exact-session turn through session/load/new so a rotated
    * session-scoped MCP descriptor is installed before another prompt. */
   forgetSession(sessionId: string): void {

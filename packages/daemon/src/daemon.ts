@@ -11205,11 +11205,16 @@ export class Daemon {
       return
     }
     // Recorded before the pending-turn gate below, because an advertisement arrives outside a turn.
-    // Only the agent's OWN host describes the agent's workspace: a dream/distill host is a separate
-    // AcpHost over its own cwd, and it advertises right after its session/new — before its collector
-    // is registered above. Identifying this host positively is what makes that ordering-proof.
+    // A dream host is a separate AcpHost that never enters `hosts`, and it advertises right after
+    // ITS session/new — before the collector returns above exist — so identifying the agent's own
+    // host positively is what makes the exclusion ordering-proof. `isLoadingSession` covers the
+    // session/load window, where the session is this host's but `live` does not hold it yet.
+    // KNOWN GAP: distillation and the commit-message pass run on the agent's OWN host over a temp
+    // dir, so their advertisement is recorded and the list loses the agent's project skills until
+    // the next ordinary session/new replaces it (#1310 review, follow-up).
     if (isAvailableCommandsUpdate(update)) {
-      if (this.hosts.get(agentId)?.hasSession(sessionId)) {
+      const host = this.hosts.get(agentId)
+      if (host?.hasSession(sessionId) || host?.isLoadingSession(sessionId)) {
         this.runtimeCommands.record(agentId, sessionId, update, this.clock.now())
       }
       return
