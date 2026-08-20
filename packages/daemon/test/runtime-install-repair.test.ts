@@ -127,6 +127,9 @@ describe('startFailureDetail', () => {
     expect(startFailureDetail(new Error(`Error: Missing optional dependency ${PKG}`))).toBe(
       `Error: Missing optional dependency ${PKG}`
     )
+    expect(startFailureDetail(new Error(String.raw`Error: ENOENT C:\Users\dev\.agentconnect\agents\a\home`))).toBe(
+      'Error: ENOENT home'
+    )
   })
 
   it('falls back to the first line and stays bounded', () => {
