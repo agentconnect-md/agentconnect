@@ -976,8 +976,9 @@ export class FeishuConnection implements PlatformConnection {
    * sending, so this is `im.image.create` for the bytes and then a `msg_type: image` message
    * that references the returned key.
    *
-   * An image message carries NO caption, so `comment` is posted as its own message first and
-   * IS the anchor this returns — it is the post a reader replies to. Images only: everything
+   * An image message carries NO caption, so `comment` is a second message — sent AFTER the
+   * image, so a failed image leaves the chat untouched rather than stranding a caption for a
+   * picture that never arrived. The image is therefore the anchor. Images only: everything
    * forwardable today is one, and Feishu's file endpoint needs a `file_type` this has no
    * honest value for.
    */
@@ -998,13 +999,25 @@ export class FeishuConnection implements PlatformConnection {
           this.deps.log?.debug(`feishu: uploadFile got no image key for ${file.name}`)
           return undefined
         }
-        let firstId: string | undefined
-        for (const chunk of comment ? chunkForFeishu(comment) : []) {
-          const res = await this.sendChunk(channel, threadAnchor, chunk)
-          if (firstId === undefined) firstId = res.messageId
+        let sent: { messageId?: string }
+        try {
+          sent = await this.sendImage(channel, threadAnchor, imageKey)
+        } catch (err) {
+          this.rememberPermissionIssue(err, channel)
+          this.deps.log?.debug(`feishu: uploadFile ${file.name} → ch=${channel} failed: ${(err as Error).message}`)
+          return undefined
         }
-        const sent = await this.sendImage(channel, threadAnchor, imageKey)
-        return { ...((firstId ?? sent.messageId) !== undefined ? { messageId: firstId ?? sent.messageId! } : {}) }
+        const anchor = sent.messageId !== undefined ? { messageId: sent.messageId } : {}
+        try {
+          for (const chunk of comment ? chunkForFeishu(comment) : []) {
+            await this.sendChunk(channel, threadAnchor, chunk)
+          }
+          return anchor
+        } catch (err) {
+          this.rememberPermissionIssue(err, channel)
+          this.deps.log?.debug(`feishu: uploadFile caption failed (ch=${channel}): ${(err as Error).message}`)
+          return { ...anchor, warning: 'the image was sent, but its caption did not post' }
+        }
       } catch (err) {
         this.rememberPermissionIssue(err, channel)
         this.deps.log?.debug(`feishu: uploadFile ${file.name} → ch=${channel} failed: ${(err as Error).message}`)

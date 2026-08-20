@@ -536,6 +536,7 @@ export class DiscordConnection implements PlatformConnection {
       const chunks = comment ? chunkForDiscord(comment) : ['']
       let firstId: string | undefined
       let attached = false
+      let dropped = false
       for (const chunk of chunks) {
         const payload: SendPayload = {
           ...(chunk ? { content: chunk } : {}),
@@ -546,12 +547,19 @@ export class DiscordConnection implements PlatformConnection {
           this.deps.log?.debug(`discord: uploadFile failed (ch=${target}): ${err.message}`)
           return null
         })
+        // Nothing posted yet ⇒ nothing landed at all, which is the `undefined` contract. A
+        // later chunk failing is a partial: the file is in the chat, so say what was lost
+        // rather than claim the send never happened.
         if (!sent && !attached) return undefined
+        if (!sent) dropped = true
         attached = true
         if (sent && firstId === undefined) firstId = sent.id
       }
       await this.postPermissionUpdateNotice(target, ch)
-      return { ...(firstId !== undefined ? { messageId: firstId } : {}) }
+      return {
+        ...(firstId !== undefined ? { messageId: firstId } : {}),
+        ...(dropped ? { warning: 'the file was sent, but part of its caption did not post' } : {})
+      }
     })
   }
 

@@ -62,9 +62,15 @@ export interface MessageGateway {
   /** The mirror of {@link downloadFile}: put BYTES into a conversation, introduced by
    *  `comment`. Optional — only a platform that can host a file offers it.
    *
-   *  `undefined` means the send FAILED and nothing is in the conversation. A result
-   *  carries the post anchor when the platform's file send produces one; Slack's does
-   *  not (it answers with the file, no ts), so there `messageId` is absent on success
+   *  THE CONTRACT IS `undefined` ⇔ NOTHING WAS POSTED. Two platforms cannot express a
+   *  file and its caption as one message, so they send two — and an implementation must
+   *  order them so the FILE goes first. Then a failure before anything lands returns
+   *  `undefined`, and a caption lost after it reports `warning` on an otherwise successful
+   *  send. Conflating the two would tell an agent nothing was sent while its words sat in
+   *  the chat, and the retry would duplicate them.
+   *
+   *  A result carries the post anchor when the platform's file send produces one; Slack's
+   *  does not (it answers with the file, no ts), so there `messageId` is absent on success
    *  and the caller degrades exactly as it does for a post that returned no id. */
   uploadFile?(
     channel: string,
@@ -72,7 +78,7 @@ export interface MessageGateway {
     comment?: string,
     threadTs?: string,
     identity?: SendIdentity
-  ): Promise<{ messageId?: string } | undefined>
+  ): Promise<{ messageId?: string; warning?: string } | undefined>
 }
 
 /**

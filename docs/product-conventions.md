@@ -273,8 +273,14 @@ returns the file and no message id, so a Slack forward anchors nothing and seeds
 session. Nothing else depends on which case applies — the send degrades to the same
 behaviour as a post whose id never came back.
 
-An unresolvable name, a target platform that cannot host files, or a refused share fails
-the whole send rather than delivering the caption alone or reporting an image as sent.
+An unresolvable name, a target platform that cannot host files, or a share that posted
+nothing fails the whole send rather than reporting an image as sent.
+
+Where a platform cannot carry a file and its caption as one message it sends two, and it
+sends the **file first** — so a failure before anything lands really did land nothing, and
+a caption lost after it is reported as a notice on an otherwise successful send rather than
+as a failure. The agent is never told nothing was sent while its words sit in the
+conversation, because it would retry and post them twice.
 
 ## Self-authored channel roots
 

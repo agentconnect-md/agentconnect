@@ -355,8 +355,11 @@ export class TelegramConnection implements PlatformConnection {
    * the only form that preserves the bytes exactly.
    *
    * Telegram caps a caption at 1024 characters and silently truncates past it, so a longer
-   * `comment` is posted as its own message first rather than losing its tail. Returns the
-   * FILE message's id — the post a reply to this send would thread from.
+   * `comment` becomes its own message — sent AFTER the file, so that a rejected photo (extreme
+   * dimensions, over the size cap) leaves the chat untouched instead of stranding a caption
+   * for an image that never arrived. It reads below the image; that is the cost.
+   *
+   * Returns the FILE message's id — the post a reply to this send threads from.
    */
   async uploadFile(
     channel: string,
@@ -369,17 +372,26 @@ export class TelegramConnection implements PlatformConnection {
     const inCaption = comment && comment.length <= TELEGRAM_CAPTION_LIMIT ? comment : undefined
     const asOwnMessage = comment && !inCaption ? comment : undefined
     return this.queue.enqueue(async () => {
+      let sentId: string | undefined
       try {
-        if (asOwnMessage) await this.bot.api.sendMessage(channel, asOwnMessage, threadOpt)
         const input = new InputFile(file.bytes, file.name)
         const opts = { ...threadOpt, ...(inCaption ? { caption: inCaption } : {}) }
         const res = file.mimeType?.startsWith('image/')
           ? await this.bot.api.sendPhoto(channel, input, opts)
           : await this.bot.api.sendDocument(channel, input, opts)
-        return { ...(res?.message_id != null ? { messageId: String(res.message_id) } : {}) }
+        sentId = res?.message_id != null ? String(res.message_id) : undefined
       } catch (err) {
         this.deps.log?.debug(`telegram: uploadFile ${file.name} → ch=${channel} failed: ${(err as Error).message}`)
         return undefined
+      }
+      const anchor = sentId !== undefined ? { messageId: sentId } : {}
+      if (!asOwnMessage) return anchor
+      try {
+        await this.bot.api.sendMessage(channel, asOwnMessage, threadOpt)
+        return anchor
+      } catch (err) {
+        this.deps.log?.debug(`telegram: uploadFile caption failed (ch=${channel}): ${(err as Error).message}`)
+        return { ...anchor, warning: 'the file was sent, but its caption was too long to attach and did not post' }
       }
     })
   }

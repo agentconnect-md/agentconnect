@@ -479,10 +479,11 @@ export async function sendMessage(
   // BEFORE any peer wake (B) so the wake can anchor to the post a human sees — that
   // thread is the post's own `ts`, which only exists after the send.
   let post: { platform: string; integrationId: string; channel: string; thread: string | null; ts: string } | undefined
-  // Set when the root post just forked a conversation this agent is already part of — see the
-  // notice built below. Surfaced in the tool RESULT, where the agent reads it inside the same
-  // turn it made the call, and can still answer the right way.
-  let notice: string | undefined
+  // What the agent must know inside THIS turn: a root post that forked a conversation it is
+  // already in, or a file share that landed without all of its caption. Surfaced in the tool
+  // RESULT, where it is read in time to still answer the right way. Collected rather than
+  // assigned because a forward can raise both.
+  const notices: string[] = []
   // The thread the peer wake / new session anchors to: the root post's own `ts`
   // (undefined if no real ts came back — the peer then falls back to messageAgent's
   // default thread).
@@ -593,12 +594,14 @@ export async function sendMessage(
     // raised rather than reported as sent: nothing reached the conversation.
     if (attachment) {
       const shared = await gw.uploadFile?.(postChannel, attachment, body, undefined, identity)
+      // `undefined` is the port's "nothing was posted" — the only case that may claim so.
       if (!shared) {
         throw new Error(
           `sendMessage: ${platformLabel(wantPlatform)} rejected the file "${attachment.name}" — nothing was sent.`
         )
       }
       providerPostId = shared.messageId
+      if (shared.warning) notices.push(`This send partly failed: ${shared.warning}.`)
     } else {
       providerPostId = await gw.postMessage(postChannel, body, undefined, identity)
     }
@@ -677,15 +680,17 @@ export async function sendMessage(
             })
           : undefined
       if (relation?.kind === 'parent') {
-        notice =
+        notices.push(
           `This posted at the ROOT of the conversation your parent session occupies, so it starts a separate ` +
-          `context there instead of answering — the conversation waiting on you did not receive it. To answer ` +
-          `it, call sendMessage with {"sessionId":"${relation.sessionId}"}.`
+            `context there instead of answering — the conversation waiting on you did not receive it. To answer ` +
+            `it, call sendMessage with {"sessionId":"${relation.sessionId}"}.`
+        )
       } else if (relation?.kind === 'self') {
-        notice =
+        notices.push(
           `This posted at the ROOT of the conversation this session is already in, so it starts a separate ` +
-          `context instead of continuing it. Your ordinary reply for this turn already reaches this conversation ` +
-          `— no sendMessage needed.`
+            `context instead of continuing it. Your ordinary reply for this turn already reaches this ` +
+            `conversation — no sendMessage needed.`
+        )
       }
     }
   }
@@ -738,6 +743,6 @@ export async function sendMessage(
             'Message delivered. The agent will reply by waking this session in a later turn. End this turn and wait; do not retry or ask it to repeat the work.'
         }
       : {}),
-    ...(notice !== undefined ? { notice } : {})
+    ...(notices.length ? { notice: notices.join(' ') } : {})
   }
 }

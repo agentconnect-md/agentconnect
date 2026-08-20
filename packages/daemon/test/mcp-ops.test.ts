@@ -255,6 +255,23 @@ describe('executeTool: sendMessage (channel post)', () => {
       expect(recorded).toEqual([{ channel: 'C_OTHER', thread: 'ts-999', text: 'look', ts: 'ts-999' }])
     })
 
+    it('surfaces a partial send as a notice rather than as success or failure', async () => {
+      // The file landed and the caption did not. Neither "sent" nor "nothing was sent" is
+      // true, and only the agent can decide what to do about it inside this turn.
+      const gw = fakeGateway({
+        uploadFile: vi.fn(async () => ({ messageId: 'ts-999', warning: 'its caption did not post' }))
+      })
+      const { deps: d } = deps(gw)
+      Object.assign(d, resolves())
+      const res = (await executeTool(
+        ctx,
+        'sendMessage',
+        { channel: 'C_OTHER', attachment: 'shot.png', message: 'look' },
+        d
+      )) as Record<string, unknown>
+      expect(res).toMatchObject({ ok: true, notice: expect.stringContaining('its caption did not post') })
+    })
+
     it('raises a refused share instead of reporting it as sent', async () => {
       // Nothing reached the conversation, so this must not read as a delivered message —
       // a silently dropped image is the one outcome the agent cannot detect on its own.
