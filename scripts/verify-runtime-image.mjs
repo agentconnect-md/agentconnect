@@ -15,6 +15,8 @@
  */
 import { execFileSync } from 'node:child_process'
 
+import { diffRuntimeTables } from './runtime-table-diff.mjs'
+
 const image = process.argv[2]
 if (!image) {
   process.stderr.write('usage: verify-runtime-image.mjs <image>\n')
@@ -23,6 +25,7 @@ if (!image) {
 
 const failures = []
 const notes = []
+const warnings = []
 
 function check(name, fn) {
   try {
@@ -199,10 +202,8 @@ check('carries no service-account token of its own', () => {
   return 'none'
 })
 
-// The acceptance criterion: the published table must match what the runtimes report AT
-// INITIALIZE — not what a manifest or a `--version` string says. So it is checked by re-running
-// the same generator in the built image and diffing: a table that merely agrees with its own
-// source would prove only that the generator ran once.
+// Re-probed in the built image rather than checked against its own source: that proves only that the generator ran.
+// Compared on what the image pins, not byte for byte: an option's value roster comes from upstream and drifts alone.
 check('the published runtime table matches a fresh ACP probe of this image', () => {
   const published = inImage(`cat ${TABLE_PATH}`)
   const fresh = execFileSync(
@@ -222,11 +223,12 @@ check('the published runtime table matches a fresh ACP probe of this image', () 
       throw new Error(`${entry.id} publishes no ACP capabilities`)
     }
   }
-  if (published !== fresh) {
-    // Deliberately shows the ids rather than the whole diff: the point is which runtime drifted.
-    const before = JSON.parse(published).runtimes.map((r) => `${r.id}@${r.version}`)
-    const after = JSON.parse(fresh).runtimes.map((r) => `${r.id}@${r.version}`)
-    throw new Error(`the shipped table differs from a fresh probe (published ${before}, probed ${after})`)
+  const { failures: drift, warnings: rosters } = diffRuntimeTables(table, JSON.parse(fresh))
+  // Reported, never fatal: the image cannot pin these, and failing on them fails a build that changed nothing.
+  for (const roster of rosters) warnings.push(`  ! ${roster}`)
+  if (drift.length > 0) {
+    // Field by field, because the previous id@version list printed two identical strings for the drift it caught.
+    throw new Error(`the shipped table differs from a fresh probe — ${drift.join('; ')}`)
   }
   return table.runtimes.map((entry) => `${entry.id}@${entry.version} acp/${entry.acp.protocolVersion}`).join(' ')
 })
@@ -259,7 +261,7 @@ check('the workspace root is owned by the runtime user', () => {
   return owner
 })
 
-process.stdout.write(`runtime-sandbox image checks (${image})\n${[...notes, ...failures].join('\n')}\n`)
+process.stdout.write(`runtime-sandbox image checks (${image})\n${[...notes, ...warnings, ...failures].join('\n')}\n`)
 if (failures.length > 0) {
   process.stderr.write(`\n${failures.length} check(s) failed\n`)
   process.exit(1)
