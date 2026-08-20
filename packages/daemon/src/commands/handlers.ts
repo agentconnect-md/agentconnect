@@ -23,7 +23,12 @@ import type { NormalizedMessage } from '../messages/normalized.js'
 import { routeRules, type RouteVia } from '../router/routing-table.js'
 import { conversationAdmitted, integrationRouting, type RoutingRule } from '../router/routing-rule.js'
 import { sessionKey, type LocalStore, type SessionRecord } from '../store/local-store.js'
-import { CommandChromeRegistry, type SelectKind } from '../platforms/command-chrome.js'
+import {
+  CommandChromeRegistry,
+  type CommandChromeContext,
+  type CommandChromeSurface,
+  type SelectKind
+} from '../platforms/command-chrome.js'
 import { loopGuardScopesFor } from '../platforms/loop-guard.js'
 import { loopGuardScope, loopGuardScopeFromCoords } from '../daemon/loop-guard-scope.js'
 import type { PlatformConnection } from '../platforms/connection-reconciler.js'
@@ -78,6 +83,35 @@ export interface CommandHost {
   /** `!resume` re-arms this member's own loop-scope enforcement. */
   clearEnforcedLoopScope(scope: string): void
 }
+
+/** Everything `handleCommand`'s shared pre-dispatch resolves once, handed to the per-kind handler. */
+interface CommandContext {
+  msg: NormalizedMessage
+  target: { agentId: string; integrationId: string; via: RouteVia }
+  conn: PlatformConnection | undefined
+  chrome: CommandChromeSurface<NormalizedMessage, StatusBarInfo>
+  chromeCtx: CommandChromeContext
+  /** Post a short control reply on the platform's own command-chrome surface. */
+  reply: (text: string) => void
+  /** The session the command ACTS on — key/thread follow the resolved session, not the reply anchor. */
+  key: string
+  thread: string
+  /** Where the reply lands — the command message's own thread, kept separate from `thread`. */
+  replyThread: string
+  rec: SessionRecord | undefined
+  acpSessionId: string | undefined
+  /** A turn currently owns this logical session key (gate-owned or queued), per §6.9 #390. */
+  inflight: boolean
+}
+
+/** One registry entry: the handler plus the shared guards dispatch applies before it. */
+interface CommandEntry<K extends AgentCommand['kind']> {
+  /** Kinds that write runtime settings and so need the Agent-level chat-changes permission. */
+  readonly runtimeChange?: boolean
+  readonly run: (command: Extract<AgentCommand, { kind: K }>, ctx: CommandContext) => Promise<boolean>
+}
+
+type CommandRegistry = { readonly [K in AgentCommand['kind']]: CommandEntry<K> }
 
 export class CommandHandlers {
   constructor(private readonly host: CommandHost) {}
@@ -514,149 +548,190 @@ export class CommandHandlers {
       if (!conn) return
       chrome.reply(conn, msg, chromeCtx, text)
     }
-
-    if (command.kind === 'resume') {
-      // Commands sent outside the session thread (notably bare Telegram commands)
-      // may have resolved `thread` through latestSession above. Reset the scope the
-      // command actually targets, not the fresh command-message thread.
-      const directScope =
-        thread === replyThread
-          ? loopGuardScope(msg)
-          : loopGuardScopeFromCoords(msg.platform, msg.channel, thread, msg.isDm, msg.transportScope)
-      const topLevelScope = loopGuardScopesFor(msg).coarse
-      // A top-level feedback loop posts its warning into the triggering root. A
-      // trusted !resume from that warning thread (or elsewhere in the channel)
-      // must reset the shared channel circuit, not a never-open per-thread key.
-      const scope =
-        topLevelScope && (await this.host.store().isLoopGuardOpen(topLevelScope)) ? topLevelScope : directScope
-      const stillStopping =
-        [...this.host.activeGateEntries().values()].some(
-          (entry) => entry.cancelledReason === 'loop protection' && loopGuardScope(entry.msg) === scope
-        ) ||
-        [...this.host.pending().values()].some((pending) => {
-          return pending.outputSuppressed === 'loop protection' && pending.loopGuardScope === scope
-        })
-      if (stillStopping) {
-        reply('Loop protection is still stopping the previous turn. Try `!resume` again in a moment.')
-        return true
-      }
-      const wasOpen = await this.host.store().isLoopGuardOpen(scope)
-      await this.host.store().resetLoopGuard(scope)
-      this.host.clearEnforcedLoopScope(scope)
-      const wasMuted = await this.isSessionMuted(key)
-      if (wasMuted) await this.setSessionMuted(key, false)
-      if (wasOpen || wasMuted) {
-        this.host.log().info(`loop guard: explicitly reset ${scope} by ${msg.sender.id}`)
-        reply('▶️ Resumed. Loop protection is reset; send a new message to continue.')
-      } else {
-        reply('Loop protection is not active in this conversation.')
-      }
-      return true
+    const ctx: CommandContext = {
+      msg,
+      target,
+      conn,
+      chrome,
+      chromeCtx,
+      reply,
+      key,
+      thread,
+      replyThread,
+      rec,
+      acpSessionId: acpSessionId ?? undefined,
+      inflight
     }
 
-    if (command.kind === 'stop') {
-      // Mute the session's thread whether or not a turn is in flight: `!stop` is an
-      // explicit stand-down — implicit routing (thread affinity / keyword / auto)
-      // stays off until the user @mentions the agent again (onInbound clears it).
-      if (rec || inflight) await this.setSessionMuted(key, true)
-      const muteNote = 'Muted in this thread — @mention me to resume.'
-      if (!inflight) {
-        reply(rec ? `🔇 Nothing is running. ${muteNote}` : 'Nothing is running to stop.')
-        return true
-      }
-      await this.host.interruptTurn(target.agentId, key, 'stop', acpSessionId ?? undefined)
-      reply(`🛑 Stopped. ${muteNote}`)
-      return true
-    }
-
-    if (command.kind === 'cancel') {
-      // `!cancel` interrupts the in-flight turn but does NOT mute — the session stays
-      // live so a follow-up message dispatches normally. No-op (with a note) when idle.
-      if (!inflight) {
-        reply('Nothing is running to cancel.')
-        return true
-      }
-      await this.host.interruptTurn(target.agentId, key, 'cancel', acpSessionId ?? undefined)
-      reply('🛑 Cancelled.')
-      return true
-    }
-
-    if (command.kind === 'status') {
-      // `/status` — the on-demand replacement for Telegram's (removed) status bar:
-      // reply with the session's model / context / tokens (the latest session in this
-      // channel, per the resolution above). No-op note when there's none.
-      if (!rec) {
-        reply('No active session here yet — send me a message to start one.')
-        return true
-      }
-      const info = this.host.statusInfoFrom(target.agentId, key, acpSessionId ?? undefined)
-      const link = acpSessionId
-        ? this.host.sessionLink(acpSessionId, this.host.sessionLinkSource(msg.platform, target.integrationId))
-        : undefined
-      // Presentation is the platform's (§7.4): HTML chrome + View link on Telegram,
-      // markdown + a real link button on Discord, plain text + a 🔗 line on Feishu,
-      // the compact pipe-linked status line on Slack.
-      if (conn) chrome.status(conn, msg, chromeCtx, await info, link)
-      return true
-    }
-
-    if (
-      (command.kind === 'fast' ||
-        command.kind === 'model' ||
-        command.kind === 'effort' ||
-        command.kind === 'permission') &&
-      this.host.agents().get(target.agentId)?.allowRuntimeChangesInChat !== true
-    ) {
+    const entry = this.registry[command.kind]
+    // The Agent-level chat-changes guard, applied for every runtime-setting command before its handler runs.
+    if (entry.runtimeChange && this.host.agents().get(target.agentId)?.allowRuntimeChangesInChat !== true) {
       reply('Runtime settings can only be changed by an Agent editor from the Agent page.')
       return true
     }
+    // The entry is the one registered for this exact kind; the union-keyed index can't narrow that.
+    return await (entry.run as (c: AgentCommand, x: CommandContext) => Promise<boolean>)(command, ctx)
+  }
 
-    if (command.kind === 'fast') {
-      // `/fast on|off` — toggle the session's fast mode (the control the status-bar
-      // Fast button used to offer). Records the sticky override + applies live if warm.
-      if (!rec) {
-        reply('No active session here to configure.')
-        return true
-      }
-      if (command.enable === null) {
-        reply('Usage: `/fast on` or `/fast off`.')
-        return true
-      }
-      await this.setFastByKey(key, command.enable)
-      reply(command.enable ? '⚡ Fast mode on.' : '🐢 Fast mode off.')
+  /** Per-kind command handlers, plus the shared guards dispatch applies ahead of each. */
+  private readonly registry: CommandRegistry = {
+    resume: { run: async (_command, ctx) => await this.runResume(ctx) },
+    stop: { run: async (_command, ctx) => await this.runStop(ctx) },
+    cancel: { run: async (_command, ctx) => await this.runCancel(ctx) },
+    status: { run: async (_command, ctx) => await this.runStatus(ctx) },
+    fast: { runtimeChange: true, run: async (command, ctx) => await this.runFast(command, ctx) },
+    model: { runtimeChange: true, run: async (command, ctx) => await this.runSelect(command, ctx) },
+    effort: { runtimeChange: true, run: async (command, ctx) => await this.runSelect(command, ctx) },
+    permission: { runtimeChange: true, run: async (command, ctx) => await this.runSelect(command, ctx) },
+    queue: { run: async (command, ctx) => await this.runQueue(command, ctx) }
+  }
+
+  /** `!resume` — reset the latched conversation loop guard and clear a standing thread mute. */
+  private async runResume(ctx: CommandContext): Promise<boolean> {
+    const { msg, key, thread, replyThread, reply } = ctx
+    // Commands sent outside the session thread (notably bare Telegram commands)
+    // may have resolved `thread` through latestSession above. Reset the scope the
+    // command actually targets, not the fresh command-message thread.
+    const directScope =
+      thread === replyThread
+        ? loopGuardScope(msg)
+        : loopGuardScopeFromCoords(msg.platform, msg.channel, thread, msg.isDm, msg.transportScope)
+    const topLevelScope = loopGuardScopesFor(msg).coarse
+    // A top-level feedback loop posts its warning into the triggering root. A
+    // trusted !resume from that warning thread (or elsewhere in the channel)
+    // must reset the shared channel circuit, not a never-open per-thread key.
+    const scope =
+      topLevelScope && (await this.host.store().isLoopGuardOpen(topLevelScope)) ? topLevelScope : directScope
+    const stillStopping =
+      [...this.host.activeGateEntries().values()].some(
+        (entry) => entry.cancelledReason === 'loop protection' && loopGuardScope(entry.msg) === scope
+      ) ||
+      [...this.host.pending().values()].some((pending) => {
+        return pending.outputSuppressed === 'loop protection' && pending.loopGuardScope === scope
+      })
+    if (stillStopping) {
+      reply('Loop protection is still stopping the previous turn. Try `!resume` again in a moment.')
       return true
     }
+    const wasOpen = await this.host.store().isLoopGuardOpen(scope)
+    await this.host.store().resetLoopGuard(scope)
+    this.host.clearEnforcedLoopScope(scope)
+    const wasMuted = await this.isSessionMuted(key)
+    if (wasMuted) await this.setSessionMuted(key, false)
+    if (wasOpen || wasMuted) {
+      this.host.log().info(`loop guard: explicitly reset ${scope} by ${msg.sender.id}`)
+      reply('▶️ Resumed. Loop protection is reset; send a new message to continue.')
+    } else {
+      reply('Loop protection is not active in this conversation.')
+    }
+    return true
+  }
 
-    if (command.kind === 'model' || command.kind === 'effort' || command.kind === 'permission') {
-      // `/models`, `/effort`, `/permission` — on-demand session controls.
-      // Telegram status-bar dropdowns. A bare command renders a tappable card on Telegram
-      // AND Discord (numbered text list on Slack); an argument selects directly. Records
-      // the sticky per-session override + applies it live when the ACP session is warm.
-      if (!rec) {
-        reply('No active session here to configure.')
-        return true
-      }
-      // Platforms with tappable cards render one (§7.4), replied under the command;
-      // false falls back to the numbered text list (Slack, or a Discord select over
-      // its 25-button ceiling).
-      const selectCard = chrome.selectCard?.bind(chrome)
-      const renderCard =
-        selectCard && conn
-          ? (kind: SelectKind, current: string | undefined, options: string[]) =>
-              selectCard(conn, msg, chromeCtx, { kind, current, options, header: selectCardText(kind, current) })
-          : undefined
-      await this.handleSelectCommand(
-        command.kind,
-        command.value,
-        target.agentId,
-        key,
-        acpSessionId ?? undefined,
-        reply,
-        renderCard
-      )
+  /** `!stop` — interrupt any in-flight turn AND mute the thread until the agent is @mentioned again. */
+  private async runStop(ctx: CommandContext): Promise<boolean> {
+    const { target, key, rec, acpSessionId, inflight, reply } = ctx
+    // Mute the session's thread whether or not a turn is in flight: `!stop` is an
+    // explicit stand-down — implicit routing (thread affinity / keyword / auto)
+    // stays off until the user @mentions the agent again (onInbound clears it).
+    if (rec || inflight) await this.setSessionMuted(key, true)
+    const muteNote = 'Muted in this thread — @mention me to resume.'
+    if (!inflight) {
+      reply(rec ? `🔇 Nothing is running. ${muteNote}` : 'Nothing is running to stop.')
       return true
     }
+    await this.host.interruptTurn(target.agentId, key, 'stop', acpSessionId ?? undefined)
+    reply(`🛑 Stopped. ${muteNote}`)
+    return true
+  }
 
+  /** `!cancel` — interrupt the in-flight turn without muting the session. */
+  private async runCancel(ctx: CommandContext): Promise<boolean> {
+    const { target, key, acpSessionId, inflight, reply } = ctx
+    // `!cancel` interrupts the in-flight turn but does NOT mute — the session stays
+    // live so a follow-up message dispatches normally. No-op (with a note) when idle.
+    if (!inflight) {
+      reply('Nothing is running to cancel.')
+      return true
+    }
+    await this.host.interruptTurn(target.agentId, key, 'cancel', acpSessionId ?? undefined)
+    reply('🛑 Cancelled.')
+    return true
+  }
+
+  /** `/status` — reply with the session's model / context / tokens on the platform's own surface. */
+  private async runStatus(ctx: CommandContext): Promise<boolean> {
+    const { msg, target, conn, chrome, chromeCtx, key, rec, acpSessionId, reply } = ctx
+    // `/status` — the on-demand replacement for Telegram's (removed) status bar:
+    // reply with the session's model / context / tokens (the latest session in this
+    // channel, per the resolution above). No-op note when there's none.
+    if (!rec) {
+      reply('No active session here yet — send me a message to start one.')
+      return true
+    }
+    const info = this.host.statusInfoFrom(target.agentId, key, acpSessionId ?? undefined)
+    const link = acpSessionId
+      ? this.host.sessionLink(acpSessionId, this.host.sessionLinkSource(msg.platform, target.integrationId))
+      : undefined
+    // Presentation is the platform's (§7.4): HTML chrome + View link on Telegram,
+    // markdown + a real link button on Discord, plain text + a 🔗 line on Feishu,
+    // the compact pipe-linked status line on Slack.
+    if (conn) chrome.status(conn, msg, chromeCtx, await info, link)
+    return true
+  }
+
+  /** `/fast on|off` — toggle the session's fast mode. */
+  private async runFast(command: Extract<AgentCommand, { kind: 'fast' }>, ctx: CommandContext): Promise<boolean> {
+    const { key, rec, reply } = ctx
+    // `/fast on|off` — toggle the session's fast mode (the control the status-bar
+    // Fast button used to offer). Records the sticky override + applies live if warm.
+    if (!rec) {
+      reply('No active session here to configure.')
+      return true
+    }
+    if (command.enable === null) {
+      reply('Usage: `/fast on` or `/fast off`.')
+      return true
+    }
+    await this.setFastByKey(key, command.enable)
+    reply(command.enable ? '⚡ Fast mode on.' : '🐢 Fast mode off.')
+    return true
+  }
+
+  /** `/models` `/effort` `/permission` — list the selectable values or apply the chosen one. */
+  private async runSelect(command: Extract<AgentCommand, { kind: SelectKind }>, ctx: CommandContext): Promise<boolean> {
+    const { msg, target, conn, chrome, chromeCtx, key, rec, acpSessionId, reply } = ctx
+    // `/models`, `/effort`, `/permission` — on-demand session controls.
+    // Telegram status-bar dropdowns. A bare command renders a tappable card on Telegram
+    // AND Discord (numbered text list on Slack); an argument selects directly. Records
+    // the sticky per-session override + applies it live when the ACP session is warm.
+    if (!rec) {
+      reply('No active session here to configure.')
+      return true
+    }
+    // Platforms with tappable cards render one (§7.4), replied under the command;
+    // false falls back to the numbered text list (Slack, or a Discord select over
+    // its 25-button ceiling).
+    const selectCard = chrome.selectCard?.bind(chrome)
+    const renderCard =
+      selectCard && conn
+        ? (kind: SelectKind, current: string | undefined, options: string[]) =>
+            selectCard(conn, msg, chromeCtx, { kind, current, options, header: selectCardText(kind, current) })
+        : undefined
+    await this.handleSelectCommand(
+      command.kind,
+      command.value,
+      target.agentId,
+      key,
+      acpSessionId ?? undefined,
+      reply,
+      renderCard
+    )
+    return true
+  }
+
+  /** `!queue <text>` — admission through the unified per-sessionKey gate, with the queue ACK wording. */
+  private async runQueue(command: Extract<AgentCommand, { kind: 'queue' }>, ctx: CommandContext): Promise<boolean> {
+    const { msg, target, key, thread, inflight, reply } = ctx
     // queue — now just admission through the UNIFIED per-sessionKey gate (§6.9 #390): the
     // gate itself decides run-now vs enqueue-behind-the-turn; `!queue` only differs in the
     // ACK wording and the queue_full reply. Depth cap + queue-full fast-fail live in the
