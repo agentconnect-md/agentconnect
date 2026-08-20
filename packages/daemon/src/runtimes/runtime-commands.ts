@@ -57,11 +57,17 @@ export function normalizeAvailableCommands(update: unknown): RuntimeCommand[] {
 }
 
 /** The slot an internal pass parks its ACP session in. One live session per slot, so registering
- *  the next one retires the slot's previous session and the registry cannot grow with uptime. */
+ *  the next one retires the slot's previous session and the registry cannot grow with uptime.
+ *  A pass that DISCARDS its session takes a slot per session instead — it deletes its own entry, so
+ *  it needs no retirement, and retiring one press while a concurrent one is still live would re-open
+ *  the gap the registry exists to close. */
 export const internalPassSlot = {
-  /** Keyed by the distillation cache key (agent + memory scope), whose session is cached and reused. */
+  /** The distillation session is cached and reused per memory scope, and has no discard site. */
   distill: (cacheKey: string) => `distill:${cacheKey}`,
-  commit: (agentId: string) => `commit:${agentId}`,
+  /** Two presses on one agent can overlap — the console disables its own button, two tabs do not. */
+  commit: (agentId: string, sessionId: string) => `commit:${agentId}:${sessionId}`,
+  /** Per agent, not per dream: a dream can fail before the discard in its own finally, and its
+   *  dedicated host keeps it out of the gate whether or not this entry is current. */
   dream: (agentId: string) => `dream:${agentId}`
 }
 

@@ -181,18 +181,17 @@ describe('the daemon records only its own host’s advertisement', () => {
 describe('the sessions the daemon opened for its own passes', () => {
   it('retires a slot’s previous session, so the registry cannot grow with uptime', () => {
     const sessions = new InternalPassSessions()
-    sessions.add(internalPassSlot.commit('a'), 'key-1')
+    // Distillation's session is cached per memory scope and has no discard site, so the next
+    // session for that scope is what retires it.
+    sessions.add(internalPassSlot.distill('a'), 'key-1')
     expect(sessions.has('key-1')).toBe(true)
-
-    // A commit-message session is created and discarded per press, so the next press's session
-    // replaces the one before it even if nothing deleted it.
-    sessions.add(internalPassSlot.commit('a'), 'key-2')
+    sessions.add(internalPassSlot.distill('a'), 'key-2')
     expect(sessions.has('key-1')).toBe(false)
     expect(sessions.has('key-2')).toBe(true)
 
-    // A distillation session is cached and reused, and lives in its own slot alongside.
-    sessions.add(internalPassSlot.distill('a'), 'key-3')
-    sessions.add(internalPassSlot.distill('a'), 'key-3')
+    // A dream keeps its own slot alongside, and re-adding a session is idempotent.
+    sessions.add(internalPassSlot.dream('a'), 'key-3')
+    sessions.add(internalPassSlot.dream('a'), 'key-3')
     expect(sessions.size).toBe(2)
 
     sessions.delete('key-2')
@@ -200,5 +199,21 @@ describe('the sessions the daemon opened for its own passes', () => {
     expect(sessions.has('key-2')).toBe(false)
     expect(sessions.has('key-3')).toBe(true)
     expect(sessions.size).toBe(1)
+  })
+
+  // Nothing serializes the wand daemon-side: the console disables its own button while a press is in
+  // flight, but two tabs or two repo panels on one agent do overlap. Retiring the first press while
+  // its session is still live would re-open the gap for exactly that press's advertisement.
+  it('keeps both of two overlapping commit presses excluded', () => {
+    const sessions = new InternalPassSessions()
+    sessions.add(internalPassSlot.commit('a', 'sess-1'), 'key-1')
+    sessions.add(internalPassSlot.commit('a', 'sess-2'), 'key-2')
+    expect(sessions.has('key-1')).toBe(true)
+    expect(sessions.has('key-2')).toBe(true)
+
+    // Each press deletes its own entry when it discards its session, so nothing accumulates.
+    sessions.delete('key-1')
+    sessions.delete('key-2')
+    expect(sessions.size).toBe(0)
   })
 })

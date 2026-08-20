@@ -3803,6 +3803,10 @@ export class Daemon {
         if (this.memoryExtractionSessions.get(cacheKey) === sessionId) {
           this.memoryExtractionSessions.delete(cacheKey)
           this.releaseMemoryExtractionToken(cacheKey)
+          // Uncached means abandoned: leaving it in `live` leaks an ACP session on the warm host,
+          // and its temp-dir list would be recorded the moment a later pass took this slot.
+          host.discardSession(sessionId)
+          this.internalPassSessions.delete(key)
         }
         throw err
       } finally {
@@ -3881,7 +3885,7 @@ export class Daemon {
         : await host.newSession(cwd, [])
       const key = pendingTurnKey(agentId, sessionId)
       // Synchronous on purpose: see the distillation pass — the advertisement is already on a timer.
-      this.internalPassSessions.add(internalPassSlot.commit(agentId), key)
+      this.internalPassSessions.add(internalPassSlot.commit(agentId, sessionId), key)
       try {
         if (!(await host.setSessionPermissionMode(sessionId, readOnlyMode))) {
           throw new Error('runtime rejected the read-only/plan mode')
