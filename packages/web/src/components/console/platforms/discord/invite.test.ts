@@ -51,6 +51,6 @@ describe('discordBotInviteUrl', () => {
     // ADD_REACTIONS | VIEW_CHANNEL | SEND_MESSAGES | EMBED_LINKS | ATTACH_FILES |
     // READ_MESSAGE_HISTORY | CREATE_PUBLIC_THREADS | SEND_MESSAGES_IN_THREADS —
     // kept in lock-step with packages/daemon/src/discord. Too wide for 32 bits.
-    expect(url.searchParams.get('permissions')).toBe('292057893952')
+    expect(url.searchParams.get('permissions')).toBe('309237763136')
   })
 })

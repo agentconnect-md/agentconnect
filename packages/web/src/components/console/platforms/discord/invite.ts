@@ -20,7 +20,7 @@ const DISCORD_BOT_PERMISSIONS = (
   (1n << 14n) | // EMBED_LINKS
   (1n << 15n) | // ATTACH_FILES
   (1n << 16n) | // READ_MESSAGE_HISTORY
-  (1n << 34n) | // CREATE_PUBLIC_THREADS
+  (1n << 35n) | // CREATE_PUBLIC_THREADS (1 << 34, mistakenly used before, is MANAGE_THREADS)
   (1n << 38n)
 ) // SEND_MESSAGES_IN_THREADS
   .toString()
