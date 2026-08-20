@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest'
+import { Daemon } from '../src/daemon.js'
+import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { createRuntimeCommandsReader } from '../src/cp/runtime-commands-reader.js'
 import {
   isAvailableCommandsUpdate,
@@ -105,5 +107,29 @@ describe('runtime command advertisements', () => {
 
     expect((await reader.list({ agentId: 'mine' })).commands).toHaveLength(3)
     expect(await reader.list({ agentId: 'moved' })).toEqual({ reported: false, commands: [] })
+  })
+})
+
+describe('the daemon records only its own host’s advertisement', () => {
+  // A dream or distillation host is a separate AcpHost over its own cwd, and it advertises right
+  // after ITS session/new — before its extraction collector is registered, so the collector guard
+  // alone would let that list through and describe the agent with commands it does not have.
+  it('ignores a session the agent’s host does not own, and takes one it does', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const host = daemon as unknown as {
+      hosts: Map<string, { hasSession(id: string): boolean }>
+      onAcpUpdate(agentId: string, sessionId: string, update: unknown): Promise<void>
+      runtimeCommands: RuntimeCommandsCache
+    }
+    host.hosts.set('agent-1', { hasSession: (id) => id === 'own-session' })
+
+    await host.onAcpUpdate('agent-1', 'dream-session', advertisement)
+    expect(host.runtimeCommands.get('agent-1')).toEqual({ reported: false, commands: [] })
+
+    await host.onAcpUpdate('agent-1', 'own-session', advertisement)
+    const reported = host.runtimeCommands.get('agent-1')
+    expect(reported.reported).toBe(true)
+    expect(reported.sessionId).toBe('own-session')
+    expect(reported.commands.map((c) => c.name)).toEqual(['code-review', 'superpowers:brainstorming', 'model'])
   })
 })

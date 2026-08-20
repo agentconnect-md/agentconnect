@@ -2756,6 +2756,10 @@ export class Daemon {
         const wasDraining = this.drainingAgents.has(a.id)
         this.drainingAgents.add(a.id)
         await this.interruptAgentTurns(a.id, 'stop')
+        // The advertised command list belongs to the runtime and workspace being torn down — both
+        // are in hostSpawnSig, so a runtime switch would otherwise keep serving the old harness's
+        // commands until some later session/new replaced them.
+        this.runtimeCommands.forget(a.id)
         if (workspaceNeedsColdRecovery) {
           this.gitCreds.remove(a.id)
           this.gitCredServer?.revoke(a.id)
@@ -11200,10 +11204,14 @@ export class Daemon {
       }
       return
     }
-    // Past the extraction/quarantine returns (a dream host's list describes its own cwd, not the
-    // agent's workspace) and before the pending-turn gate: an advertisement arrives outside a turn.
+    // Recorded before the pending-turn gate below, because an advertisement arrives outside a turn.
+    // Only the agent's OWN host describes the agent's workspace: a dream/distill host is a separate
+    // AcpHost over its own cwd, and it advertises right after its session/new — before its collector
+    // is registered above. Identifying this host positively is what makes that ordering-proof.
     if (isAvailableCommandsUpdate(update)) {
-      this.runtimeCommands.record(agentId, sessionId, update, this.clock.now())
+      if (this.hosts.get(agentId)?.hasSession(sessionId)) {
+        this.runtimeCommands.record(agentId, sessionId, update, this.clock.now())
+      }
       return
     }
     const p = this.pending.get(pendingTurnKey(agentId, sessionId))
