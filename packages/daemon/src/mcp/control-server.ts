@@ -4,6 +4,7 @@ import { mkdirSync, rmSync, chmodSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { decodeFrames, encodeFrame, type IpcRequest, type IpcResponse } from './ipc.js'
 import { executeTool, type OpsDeps, type SessionContext } from './ops.js'
+import { boundWrittenTopics } from './ops/memory.js'
 import type { ToolDescriptor } from '../tool-schema/descriptor.js'
 import type { Logger } from '../log.js'
 
@@ -37,6 +38,13 @@ export class McpControlServer {
 
   unregister(token: string): void {
     this.sessions.delete(token)
+  }
+
+  /** Memory topics this session wrote through the bound memory tools. A dream checks
+   *  its staged files against this: anything else got there some other way. */
+  writtenMemoryTopics(token: string): string[] {
+    const ctx = this.sessions.get(token)
+    return ctx ? boundWrittenTopics(ctx) : []
   }
 
   async start(): Promise<void> {

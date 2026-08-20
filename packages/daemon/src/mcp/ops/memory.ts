@@ -89,9 +89,16 @@ function memoryScopeFor(ctx: SessionContext, deps: MemoryOpsDeps): MemoryScope {
 /** Provenance for a write made through the shared tool surface. The ordinary
  *  conversational case is `tool`; a distillation- or dream-bound session keeps its own
  *  source so the write ledger — and dream adoption's distill-only rebase — stay honest. */
-/** Topics a bound session has already written, so `maxTopics` counts DISTINCT files
- *  rather than writes — appending to one topic repeatedly is not new content. */
+/** Topics a bound session has written, so `maxTopics` counts DISTINCT files rather than
+ *  writes — appending to one topic repeatedly is not new content. It doubles as the
+ *  provenance record a dream checks its staged store against. */
 const boundTopics = new WeakMap<SessionContext, Set<string>>()
+
+/** Every topic this bound session wrote through the tool. A staged file that is NOT
+ *  here did not come from the memory write path — see the dream's staging check. */
+export function boundWrittenTopics(ctx: SessionContext): string[] {
+  return [...(boundTopics.get(ctx) ?? [])]
+}
 
 /** Apply the binding's own limits before a write reaches the store. These carry the
  *  constraints the dream's JSON proposal format used to enforce; the store still
@@ -103,13 +110,12 @@ function enforceBindingPolicy(ctx: SessionContext, path: string): void {
   if (binding.topicPattern && !binding.topicPattern.test(name)) {
     throw new Error(`invalid memory path: "${name}" must match ${String(binding.topicPattern)}`)
   }
-  if (binding.maxTopics === undefined) return
   let seen = boundTopics.get(ctx)
   if (!seen) {
     seen = new Set()
     boundTopics.set(ctx, seen)
   }
-  if (!seen.has(name) && seen.size >= binding.maxTopics) {
+  if (binding.maxTopics !== undefined && !seen.has(name) && seen.size >= binding.maxTopics) {
     throw new Error(`memory topic limit reached (${binding.maxTopics}) for this session`)
   }
   seen.add(name)

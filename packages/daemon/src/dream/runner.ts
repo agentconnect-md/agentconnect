@@ -149,6 +149,12 @@ export interface DreamStorePort {
 
 export interface DreamExtractionResult {
   output: string
+  /** Topics the extraction wrote through the BOUND memory tools. Staging refuses any
+   *  staged file missing from this list: it reached the staged store some other way
+   *  (a runtime file tool, say) and never passed the memory write path's rules.
+   *  Absent counts as none — an extraction that cannot report provenance cannot
+   *  stage files either. */
+  memoryTopics?: string[]
   /** The short-lived ACP id is retained for correlation after the runtime
    *  session itself is discarded. */
   sessionId?: string
@@ -747,10 +753,29 @@ export class DreamRunner {
       // early — produced no store proposal at all, only a parseable reply. Staging
       // it would complete an index-only store that adoption, auto-adoption above
       // all, installs over every live topic. Treat it as no proposal.
-      const stagedTopics = (await fs.readdir(join(base, MEMORY_DIRNAME))).filter(
-        (entry) => entry.kind === 'file' && entry.name !== MEMORY_INDEX && stagedPathOk(entry.name)
-      ).length
+      const stagedNames = (await fs.readdir(join(base, MEMORY_DIRNAME)))
+        .filter((entry) => entry.kind === 'file' && entry.name !== MEMORY_INDEX && stagedPathOk(entry.name))
+        .map((entry) => entry.name)
+      const stagedTopics = stagedNames.length
       const liveTopics = files.filter((file) => file.name !== MEMORY_INDEX).length
+      // A staged file the memory tools did not write skipped every rule they enforce
+      // (name, byte cap, header normalize + stamp). It means the model reached the
+      // staging directory with its own file tools, so the whole proposal is suspect.
+      const written = new Set(extracted.memoryTopics ?? [])
+      const unaccounted = stagedNames.filter((name) => !written.has(name))
+      if (unaccounted.length > 0) {
+        await this.clearStaging(agentId, dreamId)
+        await this.finish(agentId, dreamId, {
+          status: 'failed',
+          error: {
+            type: 'untrusted_staging',
+            message: `staged files did not come from the memory tools: ${unaccounted.slice(0, 5).join(', ')}`
+          },
+          ...execution,
+          usage
+        })
+        return
+      }
       if (stagedTopics === 0 && liveTopics > 0) {
         await this.clearStaging(agentId, dreamId)
         await this.finish(agentId, dreamId, {
