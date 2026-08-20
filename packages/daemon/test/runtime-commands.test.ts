@@ -29,12 +29,29 @@ describe('runtime command advertisements', () => {
     expect(isAvailableCommandsUpdate(undefined)).toBe(false)
   })
 
-  it('normalizes names, descriptions and argument hints', () => {
+  it('normalizes names, descriptions and argument hints, classifying skills at record time', () => {
     expect(normalizeAvailableCommands(advertisement)).toEqual([
-      { name: 'code-review', description: 'Review the current diff (project)', hint: '[pr-number]' },
-      { name: 'superpowers:brainstorming', description: 'Explore intent before implementing (user)', hint: null },
-      { name: 'model', description: 'Set the model for this session', hint: null }
+      { name: 'code-review', description: 'Review the current diff (project)', hint: '[pr-number]', skill: true },
+      {
+        name: 'superpowers:brainstorming',
+        description: 'Explore intent before implementing (user)',
+        hint: null,
+        skill: true
+      },
+      { name: 'model', description: 'Set the model for this session', hint: null, skill: false }
     ])
+  })
+
+  it('keeps the skill bit when the description cap eats the claude marker', () => {
+    // The `(user)` suffix sits past the 512-char display cap — classification reads the RAW text.
+    const long = `${'x'.repeat(600)} (user)`
+    const [command] = normalizeAvailableCommands({
+      sessionUpdate: 'available_commands_update',
+      availableCommands: [{ name: 'agentconnect-setup', description: long, input: null }]
+    })
+    expect(command!.description.length).toBeLessThanOrEqual(512)
+    expect(command!.description.endsWith('(user)')).toBe(false)
+    expect(command!.skill).toBe(true)
   })
 
   it('drops unnamed and duplicate entries rather than surfacing them', () => {
@@ -48,7 +65,7 @@ describe('runtime command advertisements', () => {
         { description: 'no name at all' }
       ]
     })
-    expect(commands).toEqual([{ name: 'deploy', description: 'first', hint: null }])
+    expect(commands).toEqual([{ name: 'deploy', description: 'first', hint: null, skill: false }])
   })
 
   it('bounds a hostile advertisement so the reply still fits a control frame', () => {

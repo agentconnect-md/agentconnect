@@ -21,6 +21,8 @@ import { backfillThreadHistory } from './turn/thread-backfill.js'
 import { RecallObserver, runTurnRecall, type MemoryRecallLifecycleEvent } from './turn/memory-recall.js'
 import { openRuntimeSession } from './turn/runtime-session.js'
 import { ingestInboundTranscript } from './turn/transcript-ingest.js'
+import { matchSkillInvocation, renderSkillInvocation } from './skill-invocation.js'
+import type { RuntimeCommand } from '@agentconnect.md/protocol'
 
 // The recall lifecycle contract lives with the collaborator that emits it; re-exported
 // here because SessionManagerDeps is the seam production wires its observer through.
@@ -204,6 +206,9 @@ export class SessionManager {
       /** Daemon-observed reply-source sidecar for context rows. Standalone/test
        * callers omit it and preserve the historical transcript-only behavior. */
       quoteForContextEvent?: (event: TranscriptEntry, replayed: readonly TranscriptEntry[]) => string | undefined
+      /** The agent runtime's advertised slash commands, for skill-invocation translation
+       *  (skill-invocation.ts). Absent (tests / chat CLI) ⇒ no translation. */
+      advertisedCommandsFor?: (agentId: string) => readonly RuntimeCommand[]
       /** The agent's own Slack bot user id on an integration (auth.test-resolved).
        *  Surfaced as the `Slack identity` line of the `# Agent` block: platform
        *  mentions are opaque `<@U…>` tokens, and without this binding the model
@@ -737,7 +742,14 @@ export class SessionManager {
         // no idea WHO is speaking and must guess from ambient account context. Synthetic
         // (cron/hook) triggers stay bare, and an agent delivery already names its caller in the
         // forwarded text (`From <caller>: …` from prepareAgentDelivery).
-        blocks.push({ type: 'text', text: msg.source === 'user' ? `[${msg.sender.id}] ${msg.text}` : msg.text })
+        // A typed `/skill` is translated into the instruction shape the runtime acts on; the
+        // transcript keeps the user's own words — prompt ≠ transcript is this seam's contract.
+        const invocation =
+          msg.source === 'user' && this.deps.advertisedCommandsFor
+            ? matchSkillInvocation(msg.text, this.deps.advertisedCommandsFor(agentId))
+            : null
+        const triggerText = invocation ? renderSkillInvocation(invocation) : msg.text
+        blocks.push({ type: 'text', text: msg.source === 'user' ? `[${msg.sender.id}] ${triggerText}` : msg.text })
         contextEvents = [...context.map((entry) => ({ ts: entry.ts, text: entry.text })), { ts, text: msg.text }]
       }
       rec.lastDeliveredTs = plan.deliveredThrough ?? ts

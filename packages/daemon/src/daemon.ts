@@ -2268,6 +2268,8 @@ export class Daemon {
       // single preparation rather than starting a warm preparation afterward.
       isHostRunning: (agentId) => this.readyHosts.has(agentId),
       agentById: (id) => this.agents.get(id),
+      // Skill-invocation translation reads what the runtime itself advertised (runtime-commands.ts).
+      advertisedCommandsFor: (agentId) => this.runtimeCommands.get(agentId).commands,
       prepareWorkspace: (agent, expectedWarmHost, request) =>
         this.prepareAgentWorkspace(agent, expectedWarmHost, request),
       // Cluster agents resolve to POD coordinates — the local resolver would hand back the
