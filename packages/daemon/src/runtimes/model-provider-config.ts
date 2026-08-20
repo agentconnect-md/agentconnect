@@ -67,8 +67,10 @@ export function applyModelCredential(
   credential: ModelCredential
 ): void {
   if (target.runtime === 'claude') {
-    env.ANTHROPIC_AUTH_TOKEN = credential.key
-    delete env.ANTHROPIC_API_KEY
+    // The x-api-key slot, matching the other runtimes' same-slot shape: the sandbox shim's
+    // per-variable AC_CLAUDE_API_KEY fill-in stays blocked, so exactly one credential travels.
+    env.ANTHROPIC_API_KEY = credential.key
+    delete env.ANTHROPIC_AUTH_TOKEN
     if (credential.baseUrl) env.ANTHROPIC_BASE_URL = credential.baseUrl
     return
   }

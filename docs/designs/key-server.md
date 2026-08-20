@@ -141,6 +141,9 @@ The cloud daemon's static pair is `MODEL_TOKEN` plus optional `MODEL_BASE_URL`, 
 per-runtime pair that replaces it whole: `ANTHROPIC_MODEL_TOKEN`/`ANTHROPIC_MODEL_BASE_URL`
 for Claude, `OPENAI_MODEL_*` for Codex, `DEEPSEEK_MODEL_*` for the DeepSeek Harness.
 OpenCode has no pair of its own — it picks a provider per model and takes the shared one.
+`*_MODEL_TOKEN` names an opaque deployment credential, not a header choice: despite the
+word "token" it is unrelated to `ANTHROPIC_AUTH_TOKEN`, and Claude's injection slot is
+`ANTHROPIC_API_KEY` (see the table below).
 
 One deployment gateway is still one address; the runtimes just do not agree on where their
 base ends. Claude Code appends `/v1/messages` to its base, while Codex appends `/responses`
@@ -152,7 +155,7 @@ must be an HTTP(S) URL. Each pair is translated at runtime launch:
 
 | Runtime  | Token                                                                                    | Base URL                                                                                                                             |
 | -------- | ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| Claude   | `ANTHROPIC_AUTH_TOKEN`                                                                   | `ANTHROPIC_BASE_URL`                                                                                                                 |
+| Claude   | `ANTHROPIC_API_KEY` (`ANTHROPIC_AUTH_TOKEN` is cleared — one credential per launch)      | `ANTHROPIC_BASE_URL`                                                                                                                 |
 | Codex    | `OPENAI_API_KEY`                                                                         | `CODEX_CONFIG` → `model_provider = "openai"` and `model_providers.openai.base_url`; `OPENAI_BASE_URL` is also set for older adapters |
 | OpenCode | `OPENCODE_CONFIG_CONTENT` → selected provider `options.apiKey` using `{env:MODEL_TOKEN}` | selected provider `options.baseURL`                                                                                                  |
 | DeepSeek | `DEEPSEEK_API_KEY`                                                                       | `DEEPSEEK_BASE_URL`                                                                                                                  |
