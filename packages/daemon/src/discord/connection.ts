@@ -106,20 +106,18 @@ const DEFAULT_MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
 const CHANNEL_CAP = 200
 const PERMISSION_NOTICE_RETRY_MS = 5 * 60_000
 
-// Keep this permission set in lock-step with
-// packages/web/src/components/console/platforms/discord/invite.ts.
-// It covers reactions, channel visibility, messages, embeds/files/history, and public
-// thread creation + replies. Discord permission bitfields exceed 32 bits.
+// Keep this permission set in lock-step with packages/web/src/components/console/platforms/discord/invite.ts.
 const DISCORD_BOT_PERMISSIONS = (
-  (1n << 6n) |
-  (1n << 10n) |
-  (1n << 11n) |
-  (1n << 14n) |
-  (1n << 15n) |
-  (1n << 16n) |
-  (1n << 35n) |
+  (1n << 6n) | // ADD_REACTIONS
+  (1n << 10n) | // VIEW_CHANNEL
+  (1n << 11n) | // SEND_MESSAGES
+  (1n << 14n) | // EMBED_LINKS
+  (1n << 15n) | // ATTACH_FILES
+  (1n << 16n) | // READ_MESSAGE_HISTORY
+  (1n << 35n) | // CREATE_PUBLIC_THREADS
   (1n << 38n)
-).toString()
+) // SEND_MESSAGES_IN_THREADS
+  .toString()
 
 type DiscordPermissionIssue = 'missing-access' | 'missing-permissions' | 'missing-oauth-scope'
 
