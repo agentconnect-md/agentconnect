@@ -38,7 +38,7 @@ export interface BillingAccount {
   orgId: string
   /** Credit posted minus usage billed. One definition, settled facts only. */
   balanceMicro: number
-  /** The gateway's own call, never re-derived from `balanceMicro`. Absent ⇒ an older service. */
+  /** The gateway's own call, never re-derived from `balanceMicro`. Absent or null ⇒ an older service. */
   state?: 'active' | 'suspended' | 'unknown' | null
   /** Warn below this balance. 0, absent or null ⇒ no warning configured. */
   lowBalanceMicro?: number | null

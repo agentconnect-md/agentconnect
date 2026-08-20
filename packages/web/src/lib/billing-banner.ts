@@ -58,6 +58,8 @@ export function balanceBanner(
   // `unknown` is reported DURING a suspension decision — exactly when a balance is near its
   // threshold, which is when this line is worth the most.
   // `> 0` and not truthiness: a negative threshold is truthy and would render "below -$5.00".
+  // The leading conjunct is NOT redundant with it — under `strict` this field is
+  // `number | null | undefined`, and the `&&` is what narrows it before the comparison.
   if (acct.lowBalanceMicro && acct.lowBalanceMicro > 0 && acct.balanceMicro < acct.lowBalanceMicro) {
     return {
       tone: 'amber',
