@@ -72,6 +72,18 @@ export function VirtualTranscript<T extends { key?: string }>({
   // or every row is mispositioned by that gap. Measured below and kept fresh as content shifts.
   const [scrollMargin, setScrollMargin] = useState(0)
 
+  // Resolve the scroll pane via a callback ref, NOT an effect keyed on `resetKey`: for a real CP
+  // session `resetKey` is already final at mount, so an effect would never re-run when the turns
+  // land (the empty→first-render flip) and the pane would stay unresolved forever. A callback ref
+  // fires whenever the root mounts — including that flip — so the lookup is independent of resetKey.
+  const [scrollEl, setScrollEl] = useState<HTMLElement | null>(null)
+  const setRoot = useCallback((node: HTMLDivElement | null) => {
+    rootRef.current = node
+    const pane = node?.closest<HTMLElement>('[data-transcript-scroll]') ?? null
+    scrollRef.current = pane
+    setScrollEl(pane)
+  }, [])
+
   const rowVirtualizer = useVirtualizer({
     count: virtualize ? turns.length : 0,
     enabled: virtualize,
@@ -102,9 +114,12 @@ export function VirtualTranscript<T extends { key?: string }>({
     // Scroll the PANE to its true bottom, not the last turn's: the typing dots, the flex-1 spacer
     // and the sticky composer follow the turn list, so aligning the last turn would leave the newest
     // reply under the composer and read as "not at the bottom".
+    const before = el.scrollTop
     el.scrollTop = el.scrollHeight
-    // Read back (the browser clamps) so onScroll can recognise this pin's echo by position.
-    pinnedTop.current = el.scrollTop
+    // Record the landing (browser-clamped) so onScroll can swallow this pin's echo by position — but
+    // only if the pin actually moved: an already-at-bottom pin dispatches no scroll event, so arming
+    // the latch here would instead eat the reader's next real scroll that happens to land here.
+    pinnedTop.current = el.scrollTop === before ? null : el.scrollTop
   }, [])
 
   // The list is offset from the scrollport by whatever sits above it (a "load earlier" row, the
@@ -113,7 +128,10 @@ export function VirtualTranscript<T extends { key?: string }>({
   const measureScrollMargin = useCallback(() => {
     const root = rootRef.current
     const el = scrollRef.current
-    if (!root || !el) return
+    // `offsetParent === null` means the list is display:none — opening a file conceals the transcript
+    // while the observed wrapper stays visible (hosting the viewer), so the ResizeObserver still fires.
+    // Measuring then reads all-zero rects and latches a large NEGATIVE margin; skip until it's back.
+    if (!root || !el || root.offsetParent === null) return
     const offset = root.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop
     setScrollMargin((prev) => (Math.abs(prev - offset) > 0.5 ? offset : prev))
   }, [])
@@ -122,7 +140,6 @@ export function VirtualTranscript<T extends { key?: string }>({
   // the reader is yanked back to the bottom the moment they scroll up. The view mounts before the
   // turns land, so an empty pane reads as at-the-bottom and the first history render lands newest.
   useEffect(() => {
-    scrollRef.current = rootRef.current?.closest<HTMLElement>('[data-transcript-scroll]') ?? null
     follow.current = true
     reportAtBottom(true)
   }, [resetKey, reportAtBottom])
@@ -134,7 +151,7 @@ export function VirtualTranscript<T extends { key?: string }>({
   // bottom and drives the reverse-infinite-scroll load. Re-attached only on a session switch or a
   // plain↔virtual flip, not per render.
   useEffect(() => {
-    const el = scrollRef.current
+    const el = scrollEl
     if (!el) return
     const onScroll = () => {
       // Swallow the echo of our own pin: it dispatches a scroll event delivered LATER, by which time
@@ -172,7 +189,7 @@ export function VirtualTranscript<T extends { key?: string }>({
       el.removeEventListener('scroll', onScroll)
       grow.disconnect()
     }
-  }, [resetKey, virtualize, pinToBottom, reportAtBottom, measureScrollMargin])
+  }, [scrollEl, virtualize, pinToBottom, reportAtBottom, measureScrollMargin])
 
   useImperativeHandle(
     handleRef,
@@ -192,7 +209,7 @@ export function VirtualTranscript<T extends { key?: string }>({
 
   if (!virtualize) {
     return (
-      <div ref={rootRef} className="flex flex-col gap-4 max-desktop:pb-3 desktop:gap-[15px]">
+      <div ref={setRoot} className="flex flex-col gap-4 max-desktop:pb-3 desktop:gap-[15px]">
         {turns.map((turn, index) => (
           <Fragment key={turn.key ?? index}>{renderTurn(turn, index)}</Fragment>
         ))}
@@ -202,7 +219,7 @@ export function VirtualTranscript<T extends { key?: string }>({
 
   const items = rowVirtualizer.getVirtualItems()
   return (
-    <div ref={rootRef} style={{ height: rowVirtualizer.getTotalSize(), position: 'relative', width: '100%' }}>
+    <div ref={setRoot} style={{ height: rowVirtualizer.getTotalSize(), position: 'relative', width: '100%' }}>
       {items.map((item) => (
         <div
           key={item.key}
