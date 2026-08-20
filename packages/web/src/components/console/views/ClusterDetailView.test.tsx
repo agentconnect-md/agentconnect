@@ -32,6 +32,8 @@ vi.mock('@/lib/data-context', () => ({
   })
 }))
 vi.mock('@/lib/acp-registry', () => ({ useAcpRegistry: () => ({}), acpRuntime: () => undefined }))
+// Only the managed reading fetches anything (the balance); no test should reach the network for it.
+vi.mock('swr', () => ({ default: () => ({ data: { orgId: 'org-pool', balanceMicro: 12_340_000 } }) }))
 
 const ClusterDetailView = (await import('./ClusterDetailView')).default
 
@@ -262,5 +264,88 @@ describe('ClusterDetailView', () => {
     const html = render()
 
     expect(html).not.toContain('No cluster connected')
+  })
+})
+
+/**
+ * The SAME page on the managed install, where the pool is AgentConnect Cloud — a product the
+ * org buys rather than infrastructure it runs. Node count, host names, versions and CPU are
+ * the operator's business, so the Cloud reading drops them and answers what the org can act
+ * on instead: what runs there, what it can run, what it holds, and what it costs.
+ */
+describe('ClusterDetailView — managed (AgentConnect Cloud)', () => {
+  beforeEach(() => setFlags('daemon-pool,managed,billing'))
+
+  it('names Cloud and keeps its topology to itself', () => {
+    mocks.daemons = [member('p1'), member('p2', { status: 'offline' })]
+
+    const html = render()
+
+    expect(html).toContain('AgentConnect Cloud')
+    expect(html).toContain('Managed by AgentConnect')
+    // Everything a self-hoster is shown about their own cluster is Cloud's internals.
+    expect(html).not.toContain('nodes serving')
+    expect(html).not.toContain('Agent ceiling')
+    expect(html).not.toContain('Sandbox capacity')
+    expect(html).not.toContain('pool-member-p1')
+  })
+
+  it('quotes the prepaid balance, not an invented plan quota', () => {
+    mocks.daemons = [member('p1')]
+
+    const html = render()
+
+    expect(html).toContain('Billing')
+    expect(html).toContain('$12.34')
+    expect(html).toContain('Manage billing')
+    // A plan's included usage is not derivable from load telemetry, so no bar pretends it is.
+    expect(html).not.toContain('included')
+  })
+
+  it('offers no billing surface where the deployment has none', () => {
+    setFlags('daemon-pool,managed')
+    mocks.daemons = [member('p1')]
+
+    const html = render()
+
+    expect(html).toContain('AgentConnect Cloud')
+    expect(html).not.toContain('Manage billing')
+    expect(html).not.toContain('prepaid balance')
+  })
+
+  it('still lists the runtimes, agents and connections Cloud offers', () => {
+    mocks.daemons = [
+      member('p1', {
+        runtimeModels: [{ runtime: 'claude', version: '0.54.1', models: ['opus', 'sonnet'], acpProtocolVersion: 1 }]
+      })
+    ] as unknown[]
+    mocks.agents = [onPool('a1')]
+    mocks.integrations = [
+      {
+        id: 'i1',
+        agentId: 'a1',
+        name: 'acme-ops',
+        platform: 'slack',
+        workspace: 'acme.slack.com',
+        status: 'online',
+        channels: [{ channelId: 'C1', name: 'deploys', trigger: 'mention' }]
+      }
+    ]
+
+    const html = render()
+
+    expect(html).toContain('Agents on Cloud')
+    expect(html).toContain('acme-ops')
+    expect(html).toContain('2 models')
+    expect(html).toContain('Runtimes available')
+  })
+
+  it('says where Cloud usage is billed, and where it is not', () => {
+    mocks.daemons = [member('p1')]
+
+    const html = render()
+
+    expect(html).toContain('billed to this organization')
+    expect(html).toContain('never billed here')
   })
 })

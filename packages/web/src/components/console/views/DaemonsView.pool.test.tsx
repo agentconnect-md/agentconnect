@@ -159,7 +159,7 @@ describe('DaemonsView pool', () => {
     expect(html).not.toContain('Delete')
   })
 
-  it('opens a serving member for the runtimes the pool offers', () => {
+  it('opens Cloud’s own page, never a member’s — no member id survives a rollout', () => {
     mocks.daemons = [member('dead', { status: 'offline' }), member('serving')]
 
     const host = document.createElement('div')
@@ -174,7 +174,7 @@ describe('DaemonsView pool', () => {
     act(() => root.unmount())
     host.remove()
 
-    expect(mocks.push).toHaveBeenCalledWith('/acme/daemons/serving')
+    expect(mocks.push).toHaveBeenCalledWith('/acme/daemons/cluster')
   })
 
   it('still shows the empty state when there is no daemon of any kind', () => {

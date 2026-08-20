@@ -333,7 +333,8 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
   const params = useParams<{ slug?: string }>()
   const { orgPath, orgs, activeOrg, setActiveOrg } = useOrgs()
   const { openModal } = useModal()
-  const { daemons, agents, crons, allSessions, sessionAccessSnapshot, usageAccessSnapshot } = useConsoleData()
+  const { daemons, agents, crons, allSessions, memberSets, sessionAccessSnapshot, usageAccessSnapshot } =
+    useConsoleData()
   useDaemonNotifier(daemons)
   useSessionAccessNotifier({ sessionAccessSnapshot, usageAccessSnapshot, orgPath })
   // Mobile-only chrome state: which bottom sheet is open, and the full-screen search.
@@ -565,8 +566,14 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
       const agent = agents.find((a) => a.id === id)
       return agent ? agentLabel(agent) : undefined
     }
-    // `cluster` is the pool's own page, not a daemon id — no member id survives a rollout.
-    if (section === 'daemons') return id === 'cluster' ? poolLabel() : daemons.find((d) => d.daemonId === id)?.name
+    if (section === 'daemons') {
+      // `cluster` is the pool's own page, not a daemon id — no member id survives a rollout —
+      // and `groups/<setId>` is a placement target rather than a machine, so neither resolves
+      // against the daemon list.
+      if (id === 'cluster') return poolLabel()
+      if (id === 'groups') return memberSets.find((g) => g.setId === seg[2])?.name
+      return daemons.find((d) => d.daemonId === id)?.name
+    }
     if (section === 'sessions') return allSessions.find((s) => s.id === id)?.title
     if (section === 'crons') return crons.find((c) => c.id === id)?.name
     return undefined

@@ -1,112 +1,75 @@
 'use client'
 
-// Cluster detail — the self-hosted pool read as ONE thing (design: the Cloud/cluster
-// detail screen, `cd.isCluster`). A pool member is a Pod: no member id survives a
-// rollout, so opening the Infra card must not land on one machine's page and call it
-// the cluster. Everything here aggregates the serving members.
+// The pool's own detail page, in both of its readings (design: the Cloud / cluster detail
+// screen, `cd.isCloud` and `cd.isCluster`).
 //
-// The design's mint/rotate-token action and its log tail are deliberately absent: the
-// console mints no cluster credentials, and inventing a log stream would be
+// A pool member is a Pod: no member id survives a rollout, so opening the Infra entry must
+// not land on one machine's page and call it the pool. Everything here aggregates the
+// serving members.
+//
+// Which reading applies is not cosmetic — it is whose infrastructure this IS:
+//
+//   managed   → AgentConnect Cloud, a product the org buys. Node count, host names,
+//               versions and CPU are the operator's business, not the reader's, so the page
+//               shows what the org can act on: what runs there, what it can run, what it
+//               holds, and what it costs.
+//   self-host → the operator's OWN cluster. Now the topology IS theirs, so capacity and
+//               utilization are the numbers worth quoting and nothing is billed here.
+//
+// The design's mint/rotate-token action and its log tail are deliberately absent in both:
+// the console mints no pool credentials, and inventing a log stream would be
 // indistinguishable from real telemetry (same call the daemon detail page made).
 
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import { useRouter } from 'next/navigation'
-import {
-  agentLabel,
-  agentModelDisplay,
-  effectiveAgentStatus,
-  isPoolPlacementKind,
-  platName,
-  poolFleetStatus,
-  poolLabel,
-  runtimeLabel,
-  status,
-  type DaemonRow,
-  type McpServerInfo
-} from '@/lib/data'
+import useSWR from 'swr'
+import { isPoolPlacementKind, poolFleetStatus, poolLabel, status, type DaemonRow } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
+import { consoleKeys } from '@/lib/swr-keys'
+import { fetchBillingAccount, fmtMicroUsd } from '@/lib/billing-api'
 import { featureFlagEnabled } from '@/lib/feature-flags'
 import { NotFound } from '@/components/console/NotFound'
-import { AgentIconView, AgentMark, LoadingState, PlatformMark } from '@/components/marks'
-import { Icon } from '@/components/ui'
+import {
+  FleetAgentsCard,
+  FleetConnectionsCard,
+  FleetFact,
+  FleetRuntimesCard,
+  FleetStat,
+  ResourceBar,
+  connsHeldBy,
+  unionMcpServers,
+  unionRuntimes
+} from '@/components/console/FleetDetail'
+import { LoadingState } from '@/components/marks'
+import { Button, Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
-import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
-
-// Bar colour tracks the reading, matching the Infra list and the daemon detail page.
-function barColor(pct: number): string {
-  return pct >= 80 ? 'var(--status-paused)' : pct >= 60 ? 'var(--amber-500)' : 'var(--brand)'
-}
-
-/** A runtime as the whole cluster offers it — the union over its serving members. */
-interface ClusterRuntime {
-  runtime: string
-  version: string
-  models: string[]
-  authRequired: boolean
-}
 
 export default function ClusterDetailView() {
-  const acpRegistry = useAcpRegistry()
   const { orgPath } = useOrgs()
   const router = useRouter()
   const { daemons, agents, integrations, orgSetIds, daemonsLoading } = useConsoleData()
-  // Independent disclosures — more than one runtime's models can be open at once, matching
-  // the daemon detail page's tap expansion.
-  const [openRuntimes, setOpenRuntimes] = useState<Set<string>>(new Set())
-  const toggleRuntime = (rid: string) =>
-    setOpenRuntimes((prev) => {
-      const next = new Set(prev)
-      if (next.has(rid)) next.delete(rid)
-      else next.add(rid)
-      return next
-    })
 
   const showPool = featureFlagEnabled('daemon-pool')
+  // Whose infrastructure the pool IS decides how the page reads — see the file header.
+  const managed = featureFlagEnabled('managed')
+  // Cloud's one honest action and its one honest figure both live on the Billing page, so
+  // neither is offered where this deployment does not have one.
+  const billingOffered = managed && featureFlagEnabled('billing')
   const members = useMemo(() => (showPool ? daemons.filter((d) => d.pool) : []), [daemons, showPool])
   const serving = useMemo(() => members.filter((m) => m.status === 'online'), [members])
   // Pool agents carry the POOL sentinel, never a member id: the Pod holding the duty is
   // ephemeral, so `agentFromDto` maps a set placement to `daemon: POOL_PLACEMENT`. Matching
-  // member ids here would report an empty cluster however many agents run on it.
+  // member ids here would report an empty pool however many agents run on it.
   const hosted = useMemo(
     () => agents.filter((a) => isPoolPlacementKind(a.placementKind, a.setId, orgSetIds)),
     [agents, orgSetIds]
   )
 
-  // The runtimes the cluster offers: a member that stopped answering can no longer serve
-  // one, so the union is over the serving members only.
-  const runtimes = useMemo<ClusterRuntime[]>(() => {
-    const byId = new Map<string, ClusterRuntime>()
-    for (const m of serving) {
-      for (const rt of m.runtimeModels) {
-        const prev = byId.get(rt.runtime)
-        if (!prev) {
-          byId.set(rt.runtime, {
-            runtime: rt.runtime,
-            version: rt.version,
-            models: [...rt.models],
-            authRequired: rt.authRequired === true
-          })
-          continue
-        }
-        if (!prev.version) prev.version = rt.version
-        for (const model of rt.models) if (!prev.models.includes(model)) prev.models.push(model)
-        prev.authRequired ||= rt.authRequired === true
-      }
-    }
-    return [...byId.values()]
-  }, [serving])
-
-  const mcpServers = useMemo<McpServerInfo[]>(() => {
-    const byName = new Map<string, McpServerInfo>()
-    for (const m of serving) for (const s of m.mcpServers) if (!byName.has(s.name)) byName.set(s.name, s)
-    return [...byName.values()]
-  }, [serving])
-
-  // The connections the cluster holds: an integration is held wherever its agent runs.
-  const conns = useMemo(() => {
-    const hostedIds = new Set(hosted.map((a) => a.id))
-    return integrations.filter((i) => i.agentId !== undefined && hostedIds.has(i.agentId))
-  }, [hosted, integrations])
+  // A member that stopped answering can no longer serve a runtime or hold a connection, so
+  // both unions are over the serving members only.
+  const runtimes = useMemo(() => unionRuntimes(serving), [serving])
+  const mcpServers = useMemo(() => unionMcpServers(serving), [serving])
+  const conns = useMemo(() => connsHeldBy(hosted, integrations), [hosted, integrations])
 
   if (members.length === 0) {
     if (daemonsLoading)
@@ -119,9 +82,13 @@ export default function ClusterDetailView() {
       <div className="wrap max-w-[1240px]">
         <NotFound
           icon="server-off"
-          kind="CLUSTER"
-          title="No cluster connected"
-          pre="No pool member has registered with this control plane. Install the daemon runtime on a cluster and it appears here."
+          kind={managed ? 'CLOUD' : 'CLUSTER'}
+          title={managed ? 'Cloud is not available here' : 'No cluster connected'}
+          pre={
+            managed
+              ? 'No Cloud capacity has registered with this control plane yet. Place your agents on a daemon you connected in the meantime.'
+              : 'No pool member has registered with this control plane. Install the daemon runtime on a cluster and it appears here.'
+          }
           actionLabel="Back to daemons"
           actionHref={orgPath('/daemons')}
           searchLabel="Search daemons"
@@ -146,37 +113,26 @@ export default function ClusterDetailView() {
   const cpu = avg((m) => m.cpu)
   const mem = avg((m) => m.mem)
   const sessions = serving.reduce((sum, m) => sum + Number(m.activeSessions ?? 0), 0)
-  // The serving members roll together, so they share a release; an idle cluster has no
+  // The serving members roll together, so they share a release; an idle pool has no
   // version worth quoting rather than one belonging to a Pod that is gone.
   const version = online ? serving[0]!.version : '—'
   // One serving member stands in for the set when reading what it can run — the same
   // substitution Add-agent and Edit-agent make (edit-agent-daemon-choice.ts).
   const capabilitySource = serving[0]
-
-  const labeled = (label: string, value: string) => (
-    <div className="row grid-cols-[1fr_auto]">
-      <span className="font-sans text-[13px] font-normal leading-normal text-(--text-tertiary)">{label}</span>
-      <span className="mono text-[12.5px]">{value}</span>
-    </div>
-  )
-
-  const stat = (icon: string, label: string, value: string) => (
-    <div className="card stat">
-      <div className="statlbl">
-        <Icon name={icon} size={14} />
-        {label}
-      </div>
-      <div className="statval">{value}</div>
-    </div>
-  )
+  const models = runtimes.reduce((sum, rt) => sum + rt.models.length, 0)
 
   return (
     <div className="wrap max-w-[1240px] px-4 pt-[14px] pb-1 desktop:p-0">
-      {/* header — no action button: a self-hoster's cluster credentials are minted on the
-          cluster, never here, so there is nothing for this page to offer. */}
+      {/* header — no credential action in either reading: pool credentials are minted where
+          the pool runs, never here, so there is nothing for this page to offer. Cloud does
+          get the one action it can honestly own, which is where its usage is paid for. */}
       <div className="mb-5 flex items-start gap-4">
-        <span className="relative flex h-13 w-13 flex-none items-center justify-center rounded-lg border border-(--border-subtle) bg-(--surface-sunken)">
-          <Icon name="boxes" size={26} color={online ? 'var(--brand)' : 'var(--text-tertiary)'} />
+        <span
+          className={`relative flex h-13 w-13 flex-none items-center justify-center rounded-lg ${
+            managed ? 'bg-(--brand-soft)' : 'border border-(--border-subtle) bg-(--surface-sunken)'
+          }`}
+        >
+          <Icon name={managed ? 'cloud' : 'boxes'} size={26} color={online ? 'var(--brand)' : 'var(--text-tertiary)'} />
           <span
             className="dot absolute -right-1 -bottom-1 h-[14px] w-[14px] border-[2.5px] border-(--surface-app)"
             style={{ background: s.dot }}
@@ -191,253 +147,217 @@ export default function ClusterDetailView() {
             </span>
           </div>
           <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2">
-            <span className="inline-flex items-center gap-[6px] font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
-              <Icon name="server" size={14} color="var(--text-tertiary)" />
-              {online ? `${serving.length} node${serving.length === 1 ? '' : 's'} serving` : 'no nodes serving'}
-            </span>
-            <span className="inline-flex items-center gap-[6px] font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
-              <Icon name="tag" size={14} color="var(--text-tertiary)" />
-              <span className="mono text-[12px]">{version}</span>
-            </span>
-            <span className="inline-flex items-center gap-[6px] font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
-              <Icon name="layers" size={14} color="var(--text-tertiary)" />
-              Runs your agents on your own cluster
-            </span>
+            {managed ? (
+              <>
+                <MetaItem icon="cloud" text="Managed by AgentConnect" />
+                <MetaItem icon="layers" text="Runs your agents on AgentConnect's infrastructure" />
+              </>
+            ) : (
+              <>
+                <MetaItem
+                  icon="server"
+                  text={
+                    online ? `${serving.length} node${serving.length === 1 ? '' : 's'} serving` : 'no nodes serving'
+                  }
+                />
+                <MetaItem icon="tag" mono text={version} />
+                <MetaItem icon="layers" text="Runs your agents on your own cluster" />
+              </>
+            )}
           </div>
         </div>
+        {billingOffered && (
+          <Button variant="secondary" size="sm" onClick={() => router.push(orgPath('/billing'))}>
+            Manage billing
+          </Button>
+        )}
       </div>
 
       {/* metric strip */}
       <div className="mb-[18px] grid grid-cols-2 gap-[14px] desktop:grid-cols-4">
-        {stat('bot', 'Agents on cluster', String(hosted.length))}
-        {stat('server', 'Nodes serving', `${serving.length} / ${members.length}`)}
-        {stat('layers', 'Sandbox capacity', capacityLabel)}
-        {stat('activity', 'Active sessions', String(sessions))}
+        {managed ? (
+          <>
+            <FleetStat icon="bot" label="Agents on Cloud" value={String(hosted.length)} />
+            <FleetStat icon="plug" label="Connections held" value={String(conns.length)} />
+            <FleetStat icon="activity" label="Active sessions" value={String(sessions)} />
+            <FleetStat
+              icon="cpu"
+              label="Runtimes available"
+              value={String(runtimes.length)}
+              note={`${models} model${models === 1 ? '' : 's'}`}
+            />
+          </>
+        ) : (
+          <>
+            <FleetStat icon="bot" label="Agents on cluster" value={String(hosted.length)} />
+            <FleetStat icon="server" label="Nodes serving" value={`${serving.length} / ${members.length}`} />
+            <FleetStat icon="layers" label="Sandbox capacity" value={capacityLabel} />
+            <FleetStat icon="activity" label="Active sessions" value={String(sessions)} />
+          </>
+        )}
       </div>
 
-      <div className="mb-[18px] grid grid-cols-1 items-start gap-[18px] desktop:grid-cols-[1.15fr_1fr]">
-        {/* capacity + utilization, the numbers the cluster's own members report */}
-        <div className="card">
-          <div className="cardhead">
-            <span className="cardtitle">Capacity</span>
-            <span className="mono ml-auto text-[11px] text-(--text-tertiary)">across serving nodes</span>
-          </div>
-          <div className="flex flex-col gap-[14px] px-4 py-[15px]">
-            <ResourceBar
-              label="Sandbox capacity in use"
-              detail={capacityLabel}
-              pct={capacityPct}
-              // An unbounded cluster has no fraction to fill: the track stays empty rather
-              // than drawing a 0% that reads as a measurement.
-              muted={unbounded}
-            />
-            <ResourceBar label="CPU" detail={`${cpu}%`} pct={cpu} />
-            <ResourceBar label="Memory" detail={`${mem}%`} pct={mem} />
-          </div>
-        </div>
+      <div
+        className={`mb-[18px] grid grid-cols-1 items-start gap-[18px] ${
+          managed && !billingOffered ? '' : 'desktop:grid-cols-[1.15fr_1fr]'
+        }`}
+      >
+        {/* Cloud quotes what its usage costs; a cluster quotes the capacity its own members
+            report. Neither borrows the other's figure — a plan's included usage cannot be
+            derived from load telemetry, and a self-hoster is billed nothing here. */}
+        {managed ? (
+          billingOffered && <CloudBillingCard />
+        ) : (
+          <ClusterCapacityCard {...{ capacityLabel, capacityPct, unbounded, cpu, mem }} />
+        )}
 
         <div className="card">
           <div className="cardhead">
             <span className="cardtitle">Details</span>
           </div>
           <div className="py-[6px]">
-            {labeled('Nodes', `${serving.length} serving of ${members.length}`)}
-            {labeled('Status', s.label)}
-            {labeled('Version', version)}
-            {labeled('Agent ceiling', unbounded ? 'unbounded' : String(capacity))}
-            {labeled('Placement', 'pool')}
-            {labeled('MCP servers', String(mcpServers.length))}
+            {managed ? (
+              <>
+                <FleetFact label="Status" value={s.label} />
+                <FleetFact label="Operated by" value="AgentConnect" />
+                <FleetFact label="Placement" value="pool" />
+                <FleetFact label="Runtimes" value={String(runtimes.length)} />
+                <FleetFact label="MCP servers" value={String(mcpServers.length)} />
+              </>
+            ) : (
+              <>
+                <FleetFact label="Nodes" value={`${serving.length} serving of ${members.length}`} />
+                <FleetFact label="Status" value={s.label} />
+                <FleetFact label="Version" value={version} />
+                <FleetFact label="Agent ceiling" value={unbounded ? 'unbounded' : String(capacity)} />
+                <FleetFact label="Placement" value="pool" />
+                <FleetFact label="MCP servers" value={String(mcpServers.length)} />
+              </>
+            )}
           </div>
         </div>
       </div>
 
-      {/* runtimes the cluster offers */}
-      <div className="card mb-[18px]">
-        <div className="cardhead">
-          <span className="cardtitle">Runtimes</span>
-          <span className="ml-auto font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-            Open a runtime for its models
-          </span>
-        </div>
-        {runtimes.length > 0 ? (
-          runtimes.map((rt) => {
-            const meta = acpRuntime(acpRegistry, rt.runtime)
-            const label = runtimeLabel(rt.runtime, meta?.name)
-            // Id namespaces differ across daemon generations ('claude' vs 'claude-acp'),
-            // so agents match on the display family rather than the raw id.
-            const users = hosted.filter((a) => a.runtime === rt.runtime || runtimeLabel(a.runtime) === label)
-            const hasModels = rt.models.length > 0
-            const open = openRuntimes.has(rt.runtime) && hasModels
-            return (
-              <div key={rt.runtime}>
-                {/* A real button, not a hover target: the model list is the only place the
-                    cluster's models are readable, and a pointer is not the only input. */}
-                <button
-                  type="button"
-                  aria-expanded={open}
-                  disabled={!hasModels}
-                  onClick={() => toggleRuntime(rt.runtime)}
-                  className="row grid w-full grid-cols-[1.4fr_.7fr_.9fr_.9fr_auto] gap-[14px] border-0 bg-transparent text-left enabled:cursor-pointer enabled:hover:bg-(--surface-hover)"
-                >
-                  <span className="inline-flex min-w-0 items-center gap-[9px]">
-                    <span className="imark h-[22px] w-[22px]">
-                      <AgentMark model={rt.runtime} />
-                    </span>
-                    <span className="truncate font-sans text-[13px] font-semibold leading-normal">{label}</span>
-                    {rt.authRequired && (
-                      <span
-                        className="flex flex-none"
-                        title="A node's probe was rejected with 'authentication required' — sign in to the runtime on that node."
-                      >
-                        <Icon name="triangle-alert" size={13} color="var(--amber-500)" />
-                      </span>
-                    )}
-                  </span>
-                  <span className="mono text-[12px] text-(--text-secondary)">
-                    {rt.version ? `v${rt.version.replace(/^v/, '')}` : '—'}
-                  </span>
-                  <span className="font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary)">
-                    {users.length > 0 ? `${users.length} agent${users.length === 1 ? '' : 's'}` : 'no agents'}
-                  </span>
-                  <span className="mono text-[12px] text-(--text-tertiary)">
-                    {rt.models.length} model{rt.models.length === 1 ? '' : 's'}
-                  </span>
-                  <Icon
-                    name={open ? 'chevron-up' : 'chevron-down'}
-                    size={15}
-                    color="var(--text-tertiary)"
-                    className={hasModels ? '' : 'invisible'}
-                  />
-                </button>
-                {open && (
-                  <div className="border-b border-(--border-subtle) bg-(--surface-sunken) px-4 py-[10px]">
-                    <div className="pb-1 font-sans text-[10px] font-semibold tracking-[.05em] uppercase leading-normal text-(--text-tertiary)">
-                      Models
-                    </div>
-                    {rt.models.map((m) => (
-                      <div key={m} className="mono truncate py-[3px] text-[11.5px]">
-                        {m}
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )
-          })
-        ) : (
-          <div className="px-4 py-7 text-center font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-            No runtimes reported — no node has advertised its runtime profiles yet.
-          </div>
-        )}
-      </div>
+      <FleetRuntimesCard
+        title="Runtimes"
+        runtimes={runtimes}
+        agents={hosted}
+        empty={
+          managed
+            ? 'No runtimes reported — Cloud has not advertised its runtime profiles yet.'
+            : 'No runtimes reported — no node has advertised its runtime profiles yet.'
+        }
+      />
 
       <div className="grid grid-cols-1 items-start gap-[18px] desktop:grid-cols-2">
-        <div className="card">
-          <div className="cardhead">
-            <span className="cardtitle">Agents on this cluster</span>
-          </div>
-          {hosted.length > 0 ? (
-            hosted.map((a) => {
-              // No member stands for the pool's agents individually — the Pod holding a duty
-              // is ephemeral. Status comes from the placement (effectiveAgentStatus reads the
-              // pool branch first), and the models a serving member reports name the cluster's.
-              const as = status(effectiveAgentStatus(a, undefined))
-              return (
-                <div
-                  key={a.id}
-                  className="row click grid-cols-[auto_1.6fr_1fr_auto] gap-3"
-                  onClick={() => router.push(orgPath(`/agents/${a.id}`))}
-                >
-                  <span className="av h-7 w-7 rounded-[7px]">
-                    <AgentIconView icon={a.icon} runtime={a.runtime} size={28} />
-                  </span>
-                  <span className="min-w-0 truncate font-sans text-[13px] font-semibold leading-normal">
-                    {agentLabel(a)}
-                  </span>
-                  <span className="min-w-0 truncate font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary)">
-                    {agentModelDisplay(capabilitySource, a.runtime, a.model)}
-                  </span>
-                  <span className="badge" style={{ background: as.bg, color: as.text }}>
-                    <span className="dot h-[6px] w-[6px]" style={{ background: as.dot }} />
-                    {as.label}
-                  </span>
-                </div>
-              )
-            })
-          ) : (
-            <div className="px-4 py-7 text-center">
-              <div className="font-sans text-[13px] font-medium leading-normal text-(--text-secondary)">
-                No agents run here yet
-              </div>
-              <div className="mt-[3px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                Place an agent on {poolLabel()} to start handling messages.
-              </div>
-            </div>
-          )}
-        </div>
+        <FleetAgentsCard
+          title={managed ? 'Agents on Cloud' : 'Agents on this cluster'}
+          agents={hosted}
+          capabilitySource={capabilitySource}
+          onOpen={(id) => router.push(orgPath(`/agents/${id}`))}
+          emptyTitle="No agents run here yet"
+          emptyHint={`Place an agent on ${poolLabel()} to start handling messages.`}
+        />
+        <FleetConnectionsCard
+          title="Connections held here"
+          conns={conns}
+          empty={
+            managed ? 'No integration tokens are held on Cloud.' : 'No integration tokens are held on this cluster.'
+          }
+        />
+      </div>
 
-        <div className="card">
-          <div className="cardhead">
-            <span className="cardtitle">Connections held here</span>
+      {managed && (
+        <p className="mt-[14px] max-w-[780px] font-sans text-[12px] font-normal leading-[1.6] text-(--text-tertiary) text-pretty">
+          Cloud usage is billed to this organization&rsquo;s balance. Agents on daemons you connected yourself use the
+          credentials on those machines and are never billed here.
+        </p>
+      )}
+    </div>
+  )
+}
+
+function MetaItem({ icon, text, mono = false }: { icon: string; text: string; mono?: boolean }) {
+  return (
+    <span className="inline-flex items-center gap-[6px] font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
+      <Icon name={icon} size={14} color="var(--text-tertiary)" />
+      {mono ? <span className="mono text-[12px]">{text}</span> : text}
+    </span>
+  )
+}
+
+/**
+ * What Cloud costs, on the one figure the billing service will actually stand behind.
+ *
+ * NOT the design's "included usage" bar: this deployment sells prepaid credit, so there is no
+ * plan quota to fill a track with, and drawing one from load telemetry would read as a real
+ * ceiling. The balance is a settled fact, so it is what shows — and it shares SWR's cache key
+ * with the Billing page, so opening this page costs no extra request there.
+ */
+function CloudBillingCard() {
+  const { activeOrg } = useOrgs()
+  const orgId = activeOrg?.id ?? null
+  const account = useSWR(orgId ? consoleKeys.billingAccount(orgId) : null, () => fetchBillingAccount(orgId!))
+
+  return (
+    <div className="card">
+      <div className="cardhead">
+        <span className="cardtitle">Billing</span>
+        <span className="mono ml-auto text-[11px] text-(--text-tertiary)">prepaid balance</span>
+      </div>
+      <div className="px-4 py-[15px]">
+        {account.error ? (
+          <div className="flex items-start gap-2 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary)">
+            <Icon name="triangle-alert" size={15} color="var(--status-error)" />
+            Could not reach the billing service.
           </div>
-          {conns.length > 0 ? (
-            conns.map((c) => {
-              const cs = status(c.status)
-              return (
-                <div key={c.id ?? c.name} className="row grid-cols-[auto_1.6fr_1fr_auto] gap-3">
-                  <span className="imark h-6 w-6">
-                    <PlatformMark platform={c.platform} fillPct={100} />
-                  </span>
-                  <span className="min-w-0">
-                    <span className="block truncate font-sans text-[13px] font-semibold leading-normal">{c.name}</span>
-                    <span className="mono block truncate text-[11px] text-(--text-tertiary)">
-                      {c.workspace || platName(c.platform)}
-                    </span>
-                  </span>
-                  <span className="mono min-w-0 truncate text-[12px] text-(--text-secondary)">
-                    {c.channels.length} channel{c.channels.length === 1 ? '' : 's'}
-                  </span>
-                  <span className="badge" style={{ background: cs.bg, color: cs.text }}>
-                    <span className="dot h-[6px] w-[6px]" style={{ background: cs.dot }} />
-                    {cs.label}
-                  </span>
-                </div>
-              )
-            })
-          ) : (
-            <div className="px-4 py-7 text-center font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-              No integration tokens are held on this cluster.
-            </div>
-          )}
-        </div>
+        ) : account.data ? (
+          <>
+            <div className="mono text-[22px] leading-none font-semibold">{fmtMicroUsd(account.data.balanceMicro)}</div>
+            <p className="mt-[10px] font-sans text-[12.5px] font-normal leading-[1.6] text-(--text-secondary)">
+              Sessions that run on Cloud draw down this balance. Top it up on the Billing page.
+            </p>
+          </>
+        ) : (
+          <div className="mono text-[22px] leading-none font-semibold text-(--text-tertiary)">—</div>
+        )}
       </div>
     </div>
   )
 }
 
-/** One labelled utilization bar (design: the cluster detail's `cd.resources` rows). */
-function ResourceBar({
-  label,
-  detail,
-  pct,
-  muted = false
+/** The capacity a self-hoster's own members report — the numbers only they can act on. */
+function ClusterCapacityCard({
+  capacityLabel,
+  capacityPct,
+  unbounded,
+  cpu,
+  mem
 }: {
-  label: string
-  detail: string
-  pct: number
-  muted?: boolean
+  capacityLabel: string
+  capacityPct: number
+  unbounded: boolean
+  cpu: number
+  mem: number
 }) {
   return (
-    <div className="flex flex-col gap-[6px]">
-      <div className="flex items-baseline gap-2">
-        <span className="flex-1 font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
-          {label}
-        </span>
-        <span className="mono text-[12.5px]">{detail}</span>
+    <div className="card">
+      <div className="cardhead">
+        <span className="cardtitle">Capacity</span>
+        <span className="mono ml-auto text-[11px] text-(--text-tertiary)">across serving nodes</span>
       </div>
-      <span className="block h-[6px] overflow-hidden rounded-[3px] bg-(--surface-active)">
-        {!muted && <span className="block h-full" style={{ width: `${pct}%`, background: barColor(pct) }} />}
-      </span>
+      <div className="flex flex-col gap-[14px] px-4 py-[15px]">
+        <ResourceBar
+          label="Sandbox capacity in use"
+          detail={capacityLabel}
+          pct={capacityPct}
+          // An unbounded cluster has no fraction to fill: the track stays empty rather
+          // than drawing a 0% that reads as a measurement.
+          muted={unbounded}
+        />
+        <ResourceBar label="CPU" detail={`${cpu}%`} pct={cpu} />
+        <ResourceBar label="Memory" detail={`${mem}%`} pct={mem} />
+      </div>
     </div>
   )
 }
