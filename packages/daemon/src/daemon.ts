@@ -192,7 +192,12 @@ import {
   selectGithubReviewBatchLeader
 } from './github/queue-admission.js'
 import { resolveRuntimeCatalog, type ResolvedRuntimeCatalog } from './runtimes/registry.js'
-import { isAvailableCommandsUpdate, RuntimeCommandsCache } from './runtimes/runtime-commands.js'
+import {
+  internalPassSlot,
+  InternalPassSessions,
+  isAvailableCommandsUpdate,
+  RuntimeCommandsCache
+} from './runtimes/runtime-commands.js'
 import { installedRuntimeCatalog, installedRuntimes, resolveCommandPath } from './runtimes/probe.js'
 import { startK8sRuntimePlane, type K8sRuntimePlane } from './k8s/runtime-plane.js'
 import { declaredRuntimeCatalog, loadK8sRuntimeTable, type K8sRuntimeAcpSnapshot } from './runtimes/k8s-runtimes.js'
@@ -1023,6 +1028,8 @@ export class Daemon {
   private readonly webchatMcpRevocations: WebchatMcpRevocations
   // What each agent's runtime last advertised it can be asked to run (ACP available_commands_update).
   private readonly runtimeCommands = new RuntimeCommandsCache()
+  // The ACP sessions this daemon opened for its own passes, whose advertisement describes a temp dir.
+  private readonly internalPassSessions = new InternalPassSessions()
   // In-conversation command execution (commands/handlers.ts), behind the delegates below.
   private readonly commands: CommandHandlers
   // §7.3 force-cancel backstops, keyed by (agentId, acpSessionId); cleared at turn end.
@@ -3764,8 +3771,13 @@ export class Daemon {
         sessionId = trusted
           ? await host.newSession(cwd, mcpServers, undefined, MEMORY_DISTILLATION_SYSTEM_PROMPT)
           : await host.newSession(cwd, mcpServers)
+        // Synchronous on purpose: the runtime advertises its commands on a timer right after this
+        // resolves, and a registration behind one more await loses that race (#1310 review).
+        const passKey = pendingTurnKey(agentId, sessionId)
+        this.internalPassSessions.add(internalPassSlot.distill(cacheKey), passKey)
         if (!(await host.setSessionPermissionMode(sessionId, readOnlyMode))) {
           host.discardSession(sessionId)
+          this.internalPassSessions.delete(passKey)
           this.memoryExtractionUnavailable.add(host)
           throw new Error('runtime lacks a verified read-only memory-extraction mode')
         }
@@ -3868,6 +3880,8 @@ export class Daemon {
         ? await host.newSession(cwd, [], undefined, systemPrompt)
         : await host.newSession(cwd, [])
       const key = pendingTurnKey(agentId, sessionId)
+      // Synchronous on purpose: see the distillation pass — the advertisement is already on a timer.
+      this.internalPassSessions.add(internalPassSlot.commit(agentId), key)
       try {
         if (!(await host.setSessionPermissionMode(sessionId, readOnlyMode))) {
           throw new Error('runtime rejected the read-only/plan mode')
@@ -3909,6 +3923,7 @@ export class Daemon {
         }
       } finally {
         host.discardSession(sessionId)
+        this.internalPassSessions.delete(key)
         if (modelSessionKey) {
           await this.modelSessions.release(modelSessionKey)
           this.memoryExtractionQuarantines.delete(key)
@@ -4171,6 +4186,9 @@ export class Daemon {
         ? await host.newSession(cwd, mcpServers, undefined, systemPrompt)
         : await host.newSession(cwd, mcpServers)
       ref.sessionId = sessionId
+      // Redundant while the dream owns a dedicated host the gate already excludes, but it keeps one
+      // rule: every session the daemon opens for itself is registered, synchronously, right here.
+      this.internalPassSessions.add(internalPassSlot.dream(agentId), pendingTurnKey(agentId, sessionId))
       const result = await this.runDreamExtractionSession(
         host,
         agent,
@@ -4400,6 +4418,7 @@ export class Daemon {
         ...(extractionMode ? { permissionMode: extractionMode } : {})
       })
       host.discardSession(sessionId)
+      this.internalPassSessions.delete(pendingTurnKey(agentId, sessionId))
     }
   }
 
@@ -11205,16 +11224,16 @@ export class Daemon {
       return
     }
     // Recorded before the pending-turn gate below, because an advertisement arrives outside a turn.
-    // A dream host is a separate AcpHost that never enters `hosts`, and it advertises right after
-    // ITS session/new — before the collector returns above exist — so identifying the agent's own
-    // host positively is what makes the exclusion ordering-proof. `isLoadingSession` covers the
-    // session/load window, where the session is this host's but `live` does not hold it yet.
-    // KNOWN GAP: distillation and the commit-message pass run on the agent's OWN host over a temp
-    // dir, so their advertisement is recorded and the list loses the agent's project skills until
-    // the next ordinary session/new replaces it (#1310 review, follow-up).
+    // It lands right after the session/new that caused it — before the collector returns above exist
+    // — so both guards are ordering-proof by construction rather than by arrival time. The host must
+    // own the session: a dream's dedicated AcpHost never enters `hosts`, and `isLoadingSession`
+    // covers the session/load window, where the session is this host's but `live` does not hold it
+    // yet. And the session must not be one this daemon opened for a pass of its OWN: those run on
+    // the agent's warm host over a temp dir, whose list is missing its project skills (#1310 review).
     if (isAvailableCommandsUpdate(update)) {
       const host = this.hosts.get(agentId)
-      if (host?.hasSession(sessionId) || host?.isLoadingSession(sessionId)) {
+      const owned = host?.hasSession(sessionId) || host?.isLoadingSession(sessionId)
+      if (owned && !this.internalPassSessions.has(extractionKey)) {
         this.runtimeCommands.record(agentId, sessionId, update, this.clock.now())
       }
       return

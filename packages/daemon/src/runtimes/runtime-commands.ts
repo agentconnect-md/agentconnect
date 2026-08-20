@@ -56,6 +56,47 @@ export function normalizeAvailableCommands(update: unknown): RuntimeCommand[] {
   return commands
 }
 
+/** The slot an internal pass parks its ACP session in. One live session per slot, so registering
+ *  the next one retires the slot's previous session and the registry cannot grow with uptime. */
+export const internalPassSlot = {
+  /** Keyed by the distillation cache key (agent + memory scope), whose session is cached and reused. */
+  distill: (cacheKey: string) => `distill:${cacheKey}`,
+  commit: (agentId: string) => `commit:${agentId}`,
+  dream: (agentId: string) => `dream:${agentId}`
+}
+
+/** The ACP sessions the daemon opens for its OWN passes — distillation, the commit-message wand, a
+ *  dream — over a throwaway temp dir. Their advertisement is missing the agent's project skills, and
+ *  the two that run on the agent's own warm host are indistinguishable there by session ownership.
+ *  Register SYNCHRONOUSLY in the continuation right after `newSession` resolves: the adapter
+ *  advertises on a timer, so a registration behind one more await loses the race (#1310 review). */
+export class InternalPassSessions {
+  private readonly bySlot = new Map<string, string>()
+  private readonly slotOf = new Map<string, string>()
+
+  add(slot: string, sessionKey: string): void {
+    const prior = this.bySlot.get(slot)
+    if (prior !== undefined && prior !== sessionKey) this.slotOf.delete(prior)
+    this.bySlot.set(slot, sessionKey)
+    this.slotOf.set(sessionKey, slot)
+  }
+
+  has(sessionKey: string): boolean {
+    return this.slotOf.has(sessionKey)
+  }
+
+  delete(sessionKey: string): void {
+    const slot = this.slotOf.get(sessionKey)
+    if (slot === undefined) return
+    this.slotOf.delete(sessionKey)
+    if (this.bySlot.get(slot) === sessionKey) this.bySlot.delete(slot)
+  }
+
+  get size(): number {
+    return this.slotOf.size
+  }
+}
+
 export class RuntimeCommandsCache {
   // Latest-wins per agent, not per session: a session-worktree list still beats none once it ends.
   private readonly byAgent = new Map<string, AdvertisedCommands>()
