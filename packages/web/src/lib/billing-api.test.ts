@@ -23,9 +23,11 @@ const debit = {
   at: '2026-08-20T10:00:00.000Z'
 }
 
+const ACCOUNT = { orgId: 'org1', balanceMicro: 0, state: 'active', lowBalanceMicro: 0 }
+
 describe('assertAccount', () => {
   it('accepts the documented shape', () => {
-    expect(() => assertAccount({ orgId: 'org1', balanceMicro: 0 })).not.toThrow()
+    expect(() => assertAccount({ orgId: 'org1', balanceMicro: 0, state: 'active', lowBalanceMicro: 0 })).not.toThrow()
   })
 
   it('refuses a missing balance rather than letting undefined reach the formatter', () => {
@@ -36,8 +38,19 @@ describe('assertAccount', () => {
   })
 
   it('refuses a non-finite balance', () => {
-    expect(() => assertAccount({ orgId: 'org1', balanceMicro: Number.NaN })).toThrow(BillingShapeError)
-    expect(() => assertAccount({ orgId: 'org1', balanceMicro: '25' })).toThrow(BillingShapeError)
+    expect(() => assertAccount({ ...ACCOUNT, balanceMicro: Number.NaN })).toThrow(BillingShapeError)
+    expect(() => assertAccount({ ...ACCOUNT, balanceMicro: '25' })).toThrow(BillingShapeError)
+  })
+
+  it('refuses a missing or unknown state rather than defaulting to active', () => {
+    // Defaulting would be silence about a stop that IS happening, at the one moment
+    // this page's whole job is to say why nothing works.
+    expect(() => assertAccount({ orgId: 'org1', balanceMicro: 0, lowBalanceMicro: 0 })).toThrow(BillingShapeError)
+    expect(() => assertAccount({ ...ACCOUNT, state: 'closed' })).toThrow(BillingShapeError)
+  })
+
+  it('refuses a missing low-balance threshold', () => {
+    expect(() => assertAccount({ orgId: 'org1', balanceMicro: 0, state: 'active' })).toThrow(BillingShapeError)
   })
 
   it('refuses null and non-objects', () => {

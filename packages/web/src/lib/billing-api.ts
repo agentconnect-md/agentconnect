@@ -38,6 +38,13 @@ export interface BillingAccount {
   orgId: string
   /** Credit posted minus usage billed. One definition, settled facts only. */
   balanceMicro: number
+  /** Whether the gateway is refusing this org's traffic right now. The service decides
+   *  this from its own decision AND the gateway's confirmation of it — do NOT re-derive
+   *  it from `balanceMicro`, which would claim something about the gateway from a number
+   *  that may not have reached it. */
+  state: 'active' | 'suspended'
+  /** Warn below this balance. 0 ⇒ no warning is configured for this deployment. */
+  lowBalanceMicro: number
 }
 
 // The history merges both ledger sides, so a row is one of two shapes and `type` says
@@ -138,6 +145,12 @@ function isFiniteNumber(v: unknown): boolean {
 export function assertAccount(body: unknown): asserts body is BillingAccount {
   const b = body as Partial<BillingAccount> | null
   if (!b || typeof b.orgId !== 'string' || !isFiniteNumber(b.balanceMicro)) throw new BillingShapeError('account')
+  // A missing `state` is refused rather than defaulted to 'active': the default would be
+  // silence about a stop that IS happening, and this page's whole job in that moment is
+  // to say why nothing works. An unknown value is refused for the same reason — a state
+  // this build cannot interpret must not render as "everything is fine".
+  if (b.state !== 'active' && b.state !== 'suspended') throw new BillingShapeError('account')
+  if (!isFiniteNumber(b.lowBalanceMicro)) throw new BillingShapeError('account')
 }
 
 export function assertPurchase(body: unknown): asserts body is BillingPurchase {

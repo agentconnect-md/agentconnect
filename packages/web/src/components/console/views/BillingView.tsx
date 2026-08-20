@@ -21,6 +21,7 @@ import {
   fetchBillingTransactions,
   fmtDecimalUsd,
   fmtMicroUsd,
+  type BillingAccount,
   type BillingPurchase
 } from '@/lib/billing-api'
 import { featureFlagEnabled } from '@/lib/feature-flags'
@@ -54,6 +55,32 @@ function fmtWhen(iso: string): string {
     hour: '2-digit',
     minute: '2-digit'
   })
+}
+
+/** The one line under the balance. `state` comes from the service and is never
+ *  re-derived here: it means the gateway is refusing traffic, which a balance alone
+ *  cannot establish — a deployment with no gateway configured has plenty of orgs at zero
+ *  and nothing stopping any of them.
+ *
+ *  Low balance is the opposite: it IS a presentation decision, so the service sends the
+ *  threshold and this decides. `lowBalanceMicro: 0` means the deployment configured no
+ *  warning, and 0 also falls out of the comparison on its own. */
+function BalanceState({ acct }: { acct: BillingAccount }) {
+  if (acct.state === 'suspended') {
+    return (
+      <div className="mt-1 font-sans text-[12px] font-medium leading-normal text-(--status-error)">
+        Suspended — add credit to resume access
+      </div>
+    )
+  }
+  if (acct.lowBalanceMicro > 0 && acct.balanceMicro < acct.lowBalanceMicro) {
+    return (
+      <div className="mt-1 font-sans text-[12px] font-normal leading-normal text-(--text-secondary)">
+        Running low — below {fmtMicroUsd(acct.lowBalanceMicro)}
+      </div>
+    )
+  }
+  return null
 }
 
 function Notice({ title, body }: { title: string; body: string }) {
@@ -472,11 +499,11 @@ export default function BillingView() {
         <>
           <div className="mb-4 grid items-stretch gap-4 desktop:grid-cols-2">
             {/* One figure, no in-flight caveat: v1 has no hold layer, so the balance
-                is every reconciliation fact there is. A suspended/low-balance badge
-                belongs here once the service can report a state at all. */}
+                is every reconciliation fact there is. */}
             <div className="card stat">
               <div className="statlbl">Balance</div>
               <div className="statval">{fmtMicroUsd(acct.balanceMicro)}</div>
+              <BalanceState acct={acct} />
             </div>
             {/* Only owners move money — the service enforces it (403); the page
                 just doesn't offer members a form that would be refused. */}
