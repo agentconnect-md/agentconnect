@@ -82,9 +82,11 @@ reply path resolves this per platform, and it is four shapes, not one:
   `discord:<ch>:<msgId>`, which no channel fetch resolves, and the share would report
   "nothing was posted" in a turn whose ordinary reply lands fine. Top-level guild slash
   commands sit permanently in that state (their message id is the interaction id, which
-  thread promotion cannot fetch). The share must fall back to the channel exactly as the
-  reply path's `replyTarget` does — and whether that state is an edge or the guild norm is
-  open question §9.1.
+  thread promotion cannot fetch) — and until [#1328](https://github.com/agentconnect-md/agentconnect/pull/1328)
+  the bot invite requested MANAGE_THREADS instead of CREATE_PUBLIC_THREADS, so promotion
+  has only ever worked where a server's `@everyone` default supplied the permission. The
+  channel fallback, exactly as the reply path's `replyTarget` does it, is therefore a
+  **phase-1 requirement**, not a caveat.
 - **Feishu** — the session thread key IS the platform anchor: normalization already sets
   it to the `om_` root (or the chat id for a DM), and the reply path passes it through
   unchanged. Never derive it via `threadKeyForPost`. The trap is the opposite one:
@@ -143,9 +145,9 @@ real boundary in the pod phase, where descent is fd-anchored on the pod side.
 cap, and the upload all consume that same buffer. (The console's workspace `read` cannot
 be reused here — it refuses binary content by design — so this is new, small I/O code.)
 
-**Images only, decided by magic bytes:** the accepted set is **PNG, JPEG, WEBP** —
-`sniffImageMimeType`'s set — plus GIF if two lines of sniffing prove worth it
-(§9.4 covers WEBP on Feishu); SVG stays out for the same provable-bytes reason. The
+**Images only, decided by magic bytes:** the accepted set is **PNG, JPEG, WEBP, GIF** —
+`sniffImageMimeType`'s set plus two lines for GIF; Feishu's image upload accepts all four
+(10 MB cap, above §5's default). SVG stays out for the same provable-bytes reason. The
 outbound **filename and MIME type derive from the sniffed type, never from the
 model-supplied path** — Discord renders by extension alone, so `out/chart` (or any curl
 output without an extension) would otherwise land as a non-previewable attachment in the
@@ -181,10 +183,10 @@ daemon-side.
   `missing_scope | too_large | not_found | forbidden | indeterminate | platform_error` —
   where **`indeterminate` means "may have landed; do not retry"**, and every
   implementation already holds the material to classify (scope trackers, permission-issue
-  helpers). Whether the default cap must also drop below what 30 s carries is §9.3.
+  helpers). Whether the default cap must also drop below what 30 s carries is §9.2.
 - **Fidelity is stated per platform, not promised globally.** Telegram routes every image
   through `sendPhoto`, which re-encodes server-side — on a text-dense chart that may be
-  exactly the silent degradation this design forbids (§9.2). The eventual fix is a
+  exactly the silent degradation this design forbids (§9.1). The eventual fix is a
   `preview | file` hint on the port (deferred; MIME mislabelling is not an option — it
   collides with Feishu's images-only refusal and with the sniff-derived name above).
 
@@ -223,7 +225,7 @@ shim boundary, and generalizes to none of the other three platforms.
 
 - **`attachFile` on `sendMessage`** (a produced file to a _different_ conversation) —
   deferred, by this document's own rule: §2 argues the current-conversation case, and no
-  concrete request exists for the other cell (§9.5). The shared resolver makes it a
+  concrete request exists for the other cell (§9.3). The shared resolver makes it a
   one-field addition later. If added: exclusivity with `attachment` must be an **explicit
   refusal** (the strict branch schemas only reject _unrecognized_ keys, so two recognized
   fields would otherwise resolve by silent precedence), and three shipped tool-description
@@ -264,17 +266,10 @@ shim boundary, and generalizes to none of the other three platforms.
 
 ## 9. Open questions
 
-1. **Discord:** is `1<<34` MANAGE_THREADS and `1<<35` CREATE_PUBLIC_THREADS in the current
-   permission table? If so, our invite has never requested thread creation, the
-   "promotion failed" state is the guild **norm**, and §3.1's Discord fallback is a
-   phase-1 requirement rather than a caveat. (Both bitfield copies label `1<<34` as
-   CREATE_PUBLIC_THREADS today.)
-2. **Telegram:** does `sendPhoto` re-encode a ≤8 MB PNG chart badly enough to blur axis
+1. **Telegram:** does `sendPhoto` re-encode a ≤8 MB PNG chart badly enough to blur axis
    labels? Decides whether the `preview | file` hint is deferrable.
-3. **Slack:** wall time of an 8 MB three-step share on a typical self-hosted uplink vs the
+2. **Slack:** wall time of an 8 MB three-step share on a typical self-hosted uplink vs the
    30 s queue bound — decides whether the default cap drops, the byte transfer gets its
    own lane, or `indeterminate` carries the weight.
-4. **Feishu:** does `im.image.create` accept WEBP? The sniff admits it; if Feishu refuses
-   it, the refusal must say so rather than report a generic failure.
-5. **Demand:** is there a concrete request behind "produced file → different
+3. **Demand:** is there a concrete request behind "produced file → different
    conversation", or only the table's symmetry? Decides whether `attachFile` leaves §7.
