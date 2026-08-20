@@ -92,21 +92,25 @@ export async function seedAgent(
 }
 
 /** A held duty group covering `agentIds`. The lease is live by default — an
- *  expired one is how a test states "this member no longer serves it". */
+ *  expired one is how a test states "this member no longer serves it".
+ *  `confirmed` is the hold the member reported in its digest: unconfirmed (the default) is a
+ *  lease, not a route, so only a confirmed one makes the agent addressable. */
 export async function seedDutyGroup(
   prisma: PrismaClient,
   groupId: string,
   holder: string,
   agentIds: string[],
-  opts: { expiresAt?: Date; term?: bigint; orgId?: string } = {}
+  opts: { expiresAt?: Date; term?: bigint; orgId?: string; confirmed?: boolean } = {}
 ): Promise<void> {
   const orgId = opts.orgId ?? DEFAULT_ORG_ID
+  const term = opts.term ?? 1n
   await prisma.dutyGroup.create({
     data: {
       id: groupId,
       orgId,
       holder,
-      term: opts.term ?? 1n,
+      term,
+      ...(opts.confirmed ? { confirmedTerm: term, confirmedHolder: holder } : {}),
       expiresAt: opts.expiresAt ?? new Date(Date.now() + 120_000)
     }
   })

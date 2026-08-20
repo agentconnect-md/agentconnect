@@ -1,20 +1,16 @@
 /**
  * The collaboration snapshot for a POOL agent — `channels[]` against the real query.
  *
- * `channelPlacements` carries `Agent.daemonId`, which a `set` placement leaves null, and the
- * snapshot builder used to read routability off that column. So a pool agent vanished from its own
- * channels while the resolver-backed `agents[]` listed it: `admits()` said yes, `coordsDecision`
- * said the caller is not in the channel, and every peer wake it made from an IM channel came back
- * `not_allowed` whatever its call policy said. Both halves now read one resolved answer.
- *
- * Unit coverage pins the builder (`orchestrator/collabSnapshot.test.ts`); this pins the seam that
- * actually broke — the real placement query plus the duty ledger behind it.
+ * Why both halves must resolve placement through one answer, and what a pool agent's missing
+ * channel row did to its wakes: agent-collaboration-implementation.md §"Collaboration-routing
+ * snapshot". Unit coverage pins the builder (`orchestrator/collabSnapshot.test.ts`); this pins the
+ * seam that actually broke — the real placement query plus the duty ledger behind it.
  */
 import { describe, expect, it } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
-import { seedDaemon } from '../fixtures/seed.js'
-import { joinPool, poolSetId } from '../fakes/member-set.js'
+import { seedDutyGroup } from '../fixtures/seed.js'
+import { poolSetId, seedPoolMember } from '../fakes/member-set.js'
 import { PgAgentRepo } from '../../src/persistence/repositories/agent.repo.js'
 import { PgIntegrationRepo } from '../../src/persistence/repositories/integration.repo.js'
 import { PgDutyGroupRepo } from '../../src/persistence/repositories/duty-group.repo.js'
@@ -28,30 +24,6 @@ const HOLDER = 'c1c1c1c1-cccc-4ccc-8ccc-cccccccccc01'
 const CHANNEL = 'C0POOLAGENT'
 
 const placement = () => new PlacementResolver({ duties: new PgDutyGroupRepo(prisma), clock: systemClock })
-
-/** An install-wide pool member: an org-less daemon row enrolled in the org-less set. */
-async function poolMember(daemonId: string): Promise<void> {
-  await seedDaemon(prisma, daemonId)
-  await prisma.daemon.update({ where: { id: daemonId }, data: { orgId: null } })
-  await joinPool(prisma, daemonId)
-}
-
-/** A live duty lease. CONFIRMED (reported in the member's digest) is what makes it routable; an
- *  unconfirmed grant is a lease, not a route — the PENDING state below. */
-async function grantDuty(holder: string, agentId: string, confirmed = true): Promise<void> {
-  const groupId = randomUUID()
-  await prisma.dutyGroup.create({
-    data: {
-      id: groupId,
-      orgId: DEFAULT_ORG_ID,
-      holder,
-      term: 1n,
-      ...(confirmed ? { confirmedTerm: 1n, confirmedHolder: holder } : {}),
-      expiresAt: new Date(Date.now() + 600_000)
-    }
-  })
-  await prisma.dutyGroupMember.create({ data: { kind: 'agent', refId: agentId, groupId, orgId: DEFAULT_ORG_ID } })
-}
 
 /** A pool-placed active agent reachable in one Slack channel — `daemonId` null by placement. */
 async function pooledSlackAgent(): Promise<string> {
@@ -104,14 +76,13 @@ async function snapshot(): Promise<ReturnType<typeof buildCollabSnapshot>> {
 
 describe('collaboration snapshot: pool placement', () => {
   it('lists a pool agent in its channel, named at the member that holds it', async () => {
-    await poolMember(HOLDER)
+    await seedPoolMember(prisma, HOLDER)
     const agentId = await pooledSlackAgent()
-    await grantDuty(HOLDER, agentId)
+    await seedDutyGroup(prisma, randomUUID(), HOLDER, [agentId], { confirmed: true })
 
     const snap = await snapshot()
     const channel = snap.channels.find((c) => c.channelId === CHANNEL)
-    // The membership the daemon's `coordsDecision` reads: absent here, the agent's own wakes
-    // from this channel are refused as a non-member's.
+    // The membership the daemon's `coordsDecision` reads — absent here, its own wakes are refused.
     expect(channel?.agents.map((a) => a.agentId)).toEqual([agentId])
     expect(channel?.agents[0]).toMatchObject({ daemonId: HOLDER })
     // And the two halves agree about who serves it.
@@ -119,11 +90,10 @@ describe('collaboration snapshot: pool placement', () => {
   })
 
   it('keeps a PENDING pool agent out of channels[] while the flat directory carries it', async () => {
-    await poolMember(HOLDER)
+    await seedPoolMember(prisma, HOLDER)
     const agentId = await pooledSlackAgent()
-    // Granted but not yet confirmed: the member has to receive its bundle before it serves, so
-    // naming it in a channel would address a wake at a daemon that refuses it.
-    await grantDuty(HOLDER, agentId, false)
+    // Granted, not yet confirmed: a lease is not a route until the member reports the hold.
+    await seedDutyGroup(prisma, randomUUID(), HOLDER, [agentId])
 
     const snap = await snapshot()
     expect(snap.channels.find((c) => c.channelId === CHANNEL)).toBeUndefined()

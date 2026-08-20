@@ -33,14 +33,9 @@ export function buildCollabSnapshot(
   generation: number,
   orgAgents: OrgAgentRecord[]
 ): CollabRoutesSnapshot {
-  // Who serves this placement's agent: the resolved directory's answer, never the column re-read.
-  // `ChannelPlacementRecord.daemonId` is `Agent.daemonId`, null for a `set` agent BY DESIGN — a
-  // pool agent names no machine and its holder lives in the duty ledger. Reading it here dropped
-  // every pool agent from its OWN channels while the resolver-backed `agents[]` listed it, and
-  // `coordsDecision` reads the channel half — so the agent was refused as a non-member of a
-  // channel it is in and its peer wakes came back `not_allowed` whatever its call policy said.
-  // A row the directory does not cover keeps its column: same placed-agent population, so that is
-  // only a caller passing no directory, which then gets exactly the pre-resolver behavior.
+  // Who serves this agent: the resolved directory's answer, never `Agent.daemonId` re-read — that
+  // column is null for a `set` agent by design (agent-collaboration-implementation.md §snapshot).
+  // A row the directory does not cover keeps its column, i.e. a caller passing no directory.
   const servingByAgent = new Map<string, string | null>(orgAgents.map((a) => [a.agentId, a.daemonId]))
   const servingDaemonOf = (p: ChannelPlacementRecord): string | null =>
     servingByAgent.has(p.agentId) ? (servingByAgent.get(p.agentId) ?? null) : p.daemonId

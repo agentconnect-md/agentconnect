@@ -173,10 +173,8 @@ describe('buildCollabSnapshot (agent-collaboration P2)', () => {
     expect(snap.agents.find((a) => a.agentId === AGENT_1)?.displayName).toBe('Deploy Bot')
   })
 
-  // A `set` (pool) agent's `Agent.daemonId` is null BY DESIGN — its holder lives in the duty
-  // ledger, which is what the resolved directory carries. Reading the placement column instead
-  // dropped such an agent from its OWN channels while agents[] listed it, and the daemon's
-  // `coordsDecision` then refused every peer wake it made from that channel as a non-member.
+  // A `set` (pool) agent's `Agent.daemonId` is null by design; only the resolved directory names
+  // its holder (agent-collaboration-implementation.md §"Collaboration-routing snapshot").
   it('places a pool agent in its channels from the resolved directory, not the null placement column', () => {
     const snap = buildCollabSnapshot(
       DEFAULT_ORG_ID,
