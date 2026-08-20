@@ -6,56 +6,43 @@
 outbound byte path: every chat platform implements `MessageGateway.uploadFile`, and
 `sendMessage` can put a file into a conversation. What it did **not** give the agent is a
 way to send a file it _produced_ — and, it turns out, a way to send any file into the
-conversation the user is actually in. This document designs both.
+conversation the user is actually in. This document designs that.
 
 ## 1. The gap, stated as use cases
 
-The transport is general. `uploadFile` takes arbitrary bytes and a MIME type; four
-platforms implement it; its contract (`undefined` ⇔ nothing was posted, a `warning` for a
-caption lost after the file landed) is settled and tested. What is narrow is everything
-upstream of it — the **source** of the bytes and the **destination** of the send:
+The transport is general: `uploadFile` takes arbitrary bytes and a MIME type, four
+platforms implement it, and its partial-send contract is settled and tested. What is
+narrow is everything upstream — the **source** of the bytes and the **destination**:
 
 |                                       | …into the CURRENT conversation           | …into a DIFFERENT conversation       |
 | ------------------------------------- | ---------------------------------------- | ------------------------------------ |
 | **A file this conversation received** | already visible there — nothing to build | `sendMessage` + `attachment` (#1323) |
-| **A file the agent produced**         | **missing — the primary case**           | **missing**                          |
+| **A file the agent produced**         | **missing — this design**                | deferred (§7) — no cited demand yet  |
 
 "Produced" covers more than generation: the runtime image ships `curl` and the agent has
 ordinary file tools, so an agent asked to _find_ images can already download them into its
 workspace. It then has no way to hand them to a platform. The missing piece is not
 capability, it is an entry point.
 
-The top-right cell is what #1323 shipped. The bottom row is this design. The top-left cell
-is intentionally empty.
-
-## 2. Why `sendMessage` cannot be the whole answer
-
-The obvious design — and the first draft of this document — extends `sendMessage` with a
-workspace-file source and stops. That design fails the primary case, for a reason that is
-load-bearing elsewhere:
+## 2. Why `sendMessage` cannot serve it
 
 **`sendMessage` has no in-thread form.** Every visible send lands at the channel **root**
 and opens a new conversation
-([send-message-routing-rework.md](send-message-routing-rework.md) §2.2). The rule exists
-because speaking in the current thread is the ordinary turn reply's job, and a second
-visible delivery path into the same thread would compete with it — so the branch schemas
-reject a `thread` argument loudly rather than accept coordinates.
+([send-message-routing-rework.md](send-message-routing-rework.md) §2.2): speaking in the
+current thread is the ordinary turn reply's job, and a second visible delivery path into
+the same thread would compete with it, so the branch schemas reject a `thread` argument
+loudly rather than accept coordinates.
 
-But the primary ask is: a user in a thread says "find me some images", the agent finds
-them, and the images should appear **in that thread**, as part of that exchange. Routed
-through `sendMessage`, they would land at the channel root as a fresh conversation the
-user has to go find. That is not a smaller version of the feature; it is the wrong
-feature.
+But the primary ask is: a user in a thread says "find me some images", and the images
+should appear **in that thread**, as part of that exchange. Routed through `sendMessage`
+they would land at the channel root as a fresh conversation the user has to go find. That
+is not a smaller version of the feature; it is the wrong feature.
 
 The ordinary turn reply cannot carry the file either — it is a text-streaming surface, and
-no platform lets `chat.postMessage`-shaped sends carry bytes at all. So the current
-conversation needs a surface of its own.
+no platform's `chat.postMessage`-shaped send carries bytes. The current conversation needs
+a surface of its own.
 
-## 3. Design
-
-Two additions, one resolver between them:
-
-### 3.1 `shareFile` — a produced file into the current conversation
+## 3. `shareFile`
 
 A new session tool:
 
@@ -63,171 +50,231 @@ A new session tool:
 { "path": "out/chart.png", "caption": "revenue by week" } // caption optional
 ```
 
-- **No coordinates, by construction.** The daemon posts into the session's own
-  conversation using the trusted `SessionContext`, the way the postless `toAgent` wake
-  derives its coordinates — availability is not authorization, and a model-supplied
-  destination is not evidence the agent may reach it. With no destination parameters, no
-  new authorization question exists.
-- **It does not compete with the turn reply**, which is §2.2's rationale. A file is a
-  message kind the reply path cannot produce, so there is no second path for the same
-  content — and to keep the boundary crisp, `shareFile` carries no routing semantics at
-  all: no mentions, no wake, no reply correlation.
-- **Identity, but no response metadata.** The post is identity-stamped (username / icon /
-  `agentAuthorId`) like every agent message, but carries no `response` block — the
-  precedent is the cron/hook trigger anchor, which is "authorship for the transcript, but
-  it closes no response and must never be routed as one". Peers therefore never treat the
-  file as an answer, and finalization ignores it.
-- **Posts when called.** The image may appear before the streamed reply finishes, like a
-  person sending a photo and then typing. Acceptable, and much simpler than queueing the
-  file into the reply's finalization lifecycle (considered and deferred — see §7).
-- Recorded in the transcript as the agent's own row, with the workspace path as
-  provenance (§4).
+**No coordinates, by construction.** The daemon posts into the session's own conversation;
+the model names no destination, so no new authorization question exists (the postless
+`toAgent` wake's precedent). It carries no routing semantics — no wake, no reply
+correlation, and the daemon adds no mention. The **caption**, being model-authored free
+text delivered as e.g. Slack `initial_comment`, is where mention syntax could still
+resolve — so mention syntax is escaped in the caption (a caption labels a file; escaping
+costs nothing) rather than promised away.
 
-Implementation checkpoints, recorded because each has bitten before:
+**Posts when called.** The image may appear before the streamed reply finishes, like a
+person sending a photo and then typing — much simpler than queueing the file into the
+reply's finalization lifecycle (§7).
 
-- The platform anchor handed to `uploadFile` must be derived the way the **reply path**
-  derives it, not `ctx.thread` verbatim — thread keys are canonicalized per platform
-  (`tg:` roots, Feishu `om_` anchors, DM continuations) and the two are not the same
-  string everywhere.
-- Slack's own echo of the post comes back as a `file_share` subtype, which is a
-  **routable** subtype — own-echo removal and thread backfill must drop it rather than
-  re-ingest it as a human message. In multi-agent channels the post mentions no one, so
-  the no-mention activation rules already keep peers quiet.
-- A session with no platform gateway (webchat, postless/headless children) gets a clean
-  port-probed refusal, same as `sendMessage`'s attachment does today.
+### 3.1 The anchor — one rule, four platform shapes
 
-### 3.2 `attachFile` — a produced file to a different conversation
+The anchor is the **active turn's** `(channel, thread?)` — an _optional_ thread, where
+absent legitimately means "post in the channel" — never `SessionContext.thread`, which is
+a required session key (`msg.thread ?? msg.msgId`) and not a platform coordinate. The
+reply path resolves this per platform, and it is four shapes, not one:
 
-The secondary case reuses `sendMessage`'s existing shape: a new `attachFile` field on the
-`toUser` and `channel` branches, mutually exclusive with `attachment` (the strict branch
-schemas give the exclusivity for free). Root-only semantics are unchanged and correct
-here — posting a produced file to _another_ channel legitimately opens a new conversation
-there, exactly like posting text does.
+- **Slack** — `thread_ts`. Directly what `uploadFile` already accepts.
+- **Telegram** — placement in a non-forum group comes from `replyTo`, not from a thread
+  id: the session thread key there (`tg:<id>` / `dm`) is deliberately non-numeric and
+  `postMessage` documents itself as ignoring it. `uploadFile` today has **no reply slot**,
+  so a share in every plain group would land at the chat root — §2's disqualifying
+  outcome — and a human reply to that root post would fork a new session key. The port
+  therefore gains a reply anchor (mirroring `postMessage`'s), applied to the photo send
+  and to the over-1024-char caption overflow alike.
+- **Discord** — the thread IS a channel id when one exists. The unrepresentable state is a
+  guild conversation whose thread promotion failed: the session key is then
+  `discord:<ch>:<msgId>`, which no channel fetch resolves, and the share would report
+  "nothing was posted" in a turn whose ordinary reply lands fine. Top-level guild slash
+  commands sit permanently in that state (their message id is the interaction id, which
+  thread promotion cannot fetch). The share must fall back to the channel exactly as the
+  reply path's `replyTarget` does — and whether that state is an edge or the guild norm is
+  open question §9.1.
+- **Feishu** — the session thread key IS the platform anchor: normalization already sets
+  it to the `om_` root (or the chat id for a DM), and the reply path passes it through
+  unchanged. Never derive it via `threadKeyForPost`. The trap is the opposite one:
+  `sendImage` prefix-sniffs the anchor and **silently falls back to a chat-root post** for
+  anything unrecognized (a hook-anchored turn's `hookId:deliveryKey`, for instance) — in
+  topic mode that manufactures a new topic and reports success. The port must refuse an
+  anchor it cannot honor rather than repurpose it.
 
-The two fields stay separate rather than overloading one string: an agent always knows
-which namespace it holds — a **name** copied out of an `[attached: …]` marker, or a
-**path** from its own file tools — and a daemon that has to guess between them is the
-failure mode this codebase repeatedly refuses.
+### 3.2 Who may not call it
 
-`attachment` keeps its name and meaning; nothing an agent has learned changes.
+Three refusal classes, and only the first is port-probeable — the doc'd earlier claim that
+"postless/headless children get a clean port-probed refusal" was wrong on two of them:
 
-### 3.3 The shared resolver
+1. **No gateway** — webchat. The port probe answers this.
+2. **No conversation** — a postless A2A child keeps the caller's real platform and a live
+   gateway, so the probe _passes_; the tell is the synthetic `a2a:<caller>` channel. Gate
+   on the coordinate, before the file is read.
+3. **Posting forbidden** — a headless turn has a real channel and a live gateway and must
+   post nothing; that is its point. `SessionContext` carries no headless flag today, so
+   adding one is a phase-1 checkpoint, and the gate again runs before the read.
 
-Both surfaces resolve a workspace-relative path to bytes through one function, which is
-where every restriction below lives once.
+### 3.3 Identity, caption, and the result
 
-## 4. The fence — reuse, then add what containment cannot give
+**The file post is _not_ identity-stamped today, on any platform** — three `uploadFile`
+implementations do not even declare the identity parameter, Telegram ignores identity by
+platform design, and Slack's share carries `username`/`icon_url` but not the
+`agentAuthorId` metadata every other agent post carries. On a shared Slack app that makes
+a shared file invisible to peer backfill and mis-attributable to whichever agent looks at
+it. Phase 1 states this degradation per platform rather than claiming otherwise; if
+attribution matters on shared bots, the fix is a paired zero-content anchor post stamped
+with `agentAuthorId` — which would also supply Slack's missing message id — and it is
+deferred until shared-bot usage demands it.
 
-Path containment is a solved problem in this codebase.
-`workspace-files.ts` already guards the console's workspace browser against exactly this
-input class, and its containment is stronger than a fresh attempt would be:
-`containedWorkspacePath()` rejects absolute paths, lexical escapes, and any `.git`
-component; the local implementation then **re-verifies through `realpath`**, so a symlink
-— including an intermediate directory component swapped after the check — cannot smuggle a
-target outside the root; violations carry a typed reason. `shareFile`/`attachFile` resolve
-through that same function. A model-supplied path is untrusted input, and this is the one
-place already hardened against it.
+**Caption contract:** a short, single-message, plain-text line with an explicit bound,
+refused **up front** when exceeded — the platforms otherwise diverge silently (Feishu fans
+long captions into N messages inside one queue task, Telegram re-sends the overflow,
+Slack fails the whole share opaquely). On Slack the caption is mrkdwn (`initial_comment`
+suppresses `blocks`), so `**bold**` reads literally there; stated, not fixed.
 
-**What containment cannot give: the workspace is not a safe-to-publish zone.** It holds
-source; on a multi-repository workspace it holds _every authorized repository_. A path
-that passes the fence can still be `.env`, a private key, or a repo the conversation's
-audience must not see. Three mitigations, deliberately layered:
+**Result contract:** a `warning` from the port surfaces as the same in-turn `notice`
+`sendMessage` already raises; `undefined` is a thrown error; where the platform returns no
+message id, the transcript row synthesizes one exactly as `sendMessage` does.
 
-- **Images only, decided by magic bytes.** `sniffImageMimeType` already exists — and
-  exists _because_ declared types are not trustworthy — so the gate is the bytes, never
-  the extension. An agent talked into publishing a secret can only do it if the secret is
-  a PNG. If document-sending is ever wanted, it needs its own answer to "what may an agent
-  publish from a workspace", not an exemption here.
-- **Provenance on the transcript row.** The send records the workspace path beside the
-  post, so an unintended publish is visible after the fact instead of silent.
-- **No new permission gate.** The ordinary reply is not gated, and this posts into the
-  same conversation with a narrower payload class than text can already leak. A gate here
-  would be theater; the real controls are the two above.
+## 4. The resolver and the fence
 
-## 5. Size
+One resolver serves the tool; every restriction lives in it once.
 
-Two caps, for two different failure modes:
+**Containment is reused, and named precisely:** `canonicalWorkspacePath()` — the lexical
+check plus **realpath re-verification**, so a symlink (including an intermediate component
+swapped after the check) cannot smuggle a target outside the root; its `null` (absent
+path) becomes the resolver's own refusal. In phase 1 this is hygiene, not a boundary — a
+host agent runs as the daemon's uid and can read anything the daemon can; it becomes a
+real boundary in the pod phase, where descent is fd-anchored on the pod side.
 
-- **Per file:** reuse `cfg.limits.maxAttachmentBytes` (8 MB default) — the same knob that
-  bounds inbound attachment downloads, so attachments are bounded symmetrically in both
-  directions and operators tune one number. The platform's own limit applies beneath it,
-  and the refusal names whichever bound was hit.
-- **Per turn:** a total-uploaded-bytes budget. `uploadFile` has no cap today because the
-  forward path could not exceed the 160 KB transcript copy by construction; a workspace
-  source removes that guarantee, and an agent in a loop could otherwise push megabytes per
-  turn through daemon memory into a channel.
+**The read is single-shot:** resolve once, read once into a buffer; the sniff, the size
+cap, and the upload all consume that same buffer. (The console's workspace `read` cannot
+be reused here — it refuses binary content by design — so this is new, small I/O code.)
 
-**Failures are loud.** An over-cap or non-image file gets a refusal naming the rule —
-never a silent downscale or truncation. An image the recipient cannot tell was degraded is
-worse than an error the agent can report and route around.
+**Images only, decided by magic bytes:** the accepted set is **PNG, JPEG, WEBP** —
+`sniffImageMimeType`'s set — plus GIF if two lines of sniffing prove worth it
+(§9.4 covers WEBP on Feishu); SVG stays out for the same provable-bytes reason. The
+outbound **filename and MIME type derive from the sniffed type, never from the
+model-supplied path** — Discord renders by extension alone, so `out/chart` (or any curl
+output without an extension) would otherwise land as a non-previewable attachment in the
+feature's primary case.
 
-## 6. The real constraint: agents that run in a pod
+**What the gate is honestly for:** it stops the wrong file and the injected "attach your
+.env" instruction. It is _not_ a control against deliberate exfiltration — a secret
+appended after a PNG's IEND still sniffs as PNG — and the reason that residual is
+acceptable is that the ordinary text reply already exfiltrates to the same audience.
 
-A host-run agent's workspace is on the daemon's filesystem — the resolver is a file read.
-A **sandboxed agent's workspace lives in its pod**, and the daemon reaches it over the
-shim workspace-files channel, which today cannot carry an image at all:
+**Provenance is a forensic aid, not a detection control:** the transcript row records the
+workspace path (a model-chosen label) plus the **sniffed type, byte length, and a
+digest** of what was actually published; the published bytes themselves are kept nowhere
+daemon-side.
 
-- frames are capped at `MAX_FRAME_BYTES` = 256 KB (`REPLY_BUDGET` ≈ 252 KB);
-- the existing `read` is text-only — a NUL byte in the first 8 KiB refuses the file as
-  binary;
-- there is no chunked binary read.
+## 5. Size, time, and refusals that say why
 
-So the same feature is one function call for a host agent and a new wire capability for a
-pod agent. That splits the delivery:
+- **Per file:** an outbound cap, its own config entry defaulting to
+  `limits.maxAttachmentBytes` (8 MB). It is not the same knob semantically — inbound
+  overflow degrades gracefully to a `resource_link`, outbound overflow is a hard
+  refusal — so it must be tunable separately even if the default is shared.
+- **Per turn:** a total-bytes budget with a named owner and a **synchronous charge
+  point** — tool calls dispatch concurrently, so the declared size is reserved in the
+  same tick as the check, before the read allocates, settled to actual after the upload,
+  released on failure. Headless and cron turns budget like any other.
+- **Time is the sharper bound than bytes.** Every platform runs one serial send queue per
+  connection, the whole upload is one queue task, and the queue abandons a task at 30 s
+  with the rejection racing _outside_ it — the abandoned upload keeps running and may
+  land. An 8 MB share therefore (a) freezes the streamed reply and every other chat on
+  that bot while it transfers, and (b) can produce the port's worst answer: "nothing was
+  sent" for a file that arrived, inviting a double-post retry. The port's failure
+  vocabulary gains a typed reason —
+  `missing_scope | too_large | not_found | forbidden | indeterminate | platform_error` —
+  where **`indeterminate` means "may have landed; do not retry"**, and every
+  implementation already holds the material to classify (scope trackers, permission-issue
+  helpers). Whether the default cap must also drop below what 30 s carries is §9.3.
+- **Fidelity is stated per platform, not promised globally.** Telegram routes every image
+  through `sendPhoto`, which re-encodes server-side — on a text-dense chart that may be
+  exactly the silent degradation this design forbids (§9.2). The eventual fix is a
+  `preview | file` hint on the port (deferred; MIME mislabelling is not an option — it
+  collides with Feishu's images-only refusal and with the sniff-derived name above).
 
-1. **Phase 1 — host agents.** The full feature; pod agents get a loud "not yet available
-   on sandboxed agents" refusal. Honest caveat: most managed-execution agents _are_ pod
-   agents, so phase 1's value is self-hosted/dev installs plus settling the tool contract
-   and the fence before wire work starts.
-2. **Phase 2 — single-frame `readBinary`.** A bytes read bounded to one frame (~250 KB).
-   No new framing; covers charts, diagrams, small screenshots. Over-cap files keep the
-   loud refusal.
-3. **Phase 3 — chunked binary read.** The honest answer for real screenshots and photos,
-   deferred only because phase 2 will tell us the shape of the wire surface.
+Failures are loud and **named**: an over-cap or non-image file gets a refusal quoting the
+rule; a missing Slack `files:write` scope (the likeliest first-run failure, and
+operator-fixable) is distinguishable from a deleted thread root.
+
+## 6. Reaching a pod agent's workspace
+
+A host agent's workspace is a local read. A sandboxed agent's workspace lives in its pod —
+and the first draft of this document wrongly concluded that reaching it needs new wire
+work. It does not:
+
+- the **workspace-fs channel** (the fd-anchored channel the managed memory tree rides,
+  pointed at the workspace tree per agent) already carries **chunked base64 reads** with
+  no binary refusal, mtime/size-fenced, under the `read` grant every sandbox already
+  holds;
+- the only genuine gap is a port shape: `WorkspaceFs.readFile` types its result as text.
+  Phase 2 is a bytes read on that seam — local = the same buffer read, shim = the existing
+  base64 op — bounded by the §5 cap, **not** by a frame. (A single-frame variant was
+  considered and dropped: the honest single-frame ceiling after base64 expansion is
+  ~189 KB, and the existing op would need a fit-to-budget fix anyway.)
+- one containment caveat travels with it: that channel's pod-side check has **no `.git`
+  rule** (absolute/`..`/NUL only), so §4's fence runs daemon-side on the relative path
+  before the read, or the design silently loses the exclusion it credits to the fence.
+
+Host-first is therefore **sequencing, not a wire constraint**: phase 1 settles the tool
+contract, the anchor, and the fence where iteration is cheap; phase 2 is small.
 
 **Rejected: the pod uploads directly to the platform.** Slack's reserved upload URL
-happens to need no credential, which makes this look cheap — but it means punching egress
-out of a namespace whose whole point is default-deny, it puts platform-facing behavior on
-the half-trusted side of the shim boundary, and it generalizes to none of the other three
-platforms.
+happens to need no credential, which makes this look cheap — but it punches egress out of
+a default-deny namespace, puts platform-facing behavior on the half-trusted side of the
+shim boundary, and generalizes to none of the other three platforms.
 
-## 7. Considered and rejected
+## 7. Considered and rejected / deferred
 
+- **`attachFile` on `sendMessage`** (a produced file to a _different_ conversation) —
+  deferred, by this document's own rule: §2 argues the current-conversation case, and no
+  concrete request exists for the other cell (§9.5). The shared resolver makes it a
+  one-field addition later. If added: exclusivity with `attachment` must be an **explicit
+  refusal** (the strict branch schemas only reject _unrecognized_ keys, so two recognized
+  fields would otherwise resolve by silent precedence), and three shipped tool-description
+  sentences must be edited in the same change — "you can neither attach a file you were
+  not sent nor produce one", "the ONLY way to put an image on another platform" (scope to
+  _received_), and `sendMessage`'s "write your ordinary turn reply instead" pointer, which
+  must name `shareFile` or agents will keep being steered to channel-root posts. The last
+  of these three edits is phase-1 work regardless, since `shareFile` obsoletes the
+  sentence on its own.
 - **Markdown-driven uploads** — the renderer spots `![](out/chart.png)` in the reply and
-  uploads the file. Most ergonomic for a model, and wrong: publishing becomes implicit (a
-  reply that merely _quotes_ a path would upload it), a mid-stream upload failure has no
-  sane place to land, and "a regex over prose" becomes a security boundary. Publishing a
-  workspace file must be a deliberate tool call.
-- **Queueing the file into the turn reply's lifecycle** (an `attachToReply` applied at
-  finalization). Better integrated on paper — the file could ride the logical response —
-  but it drags per-platform applier work and finalization-edit semantics into scope for no
+  uploads it. Ergonomic and wrong: publishing becomes implicit (quoting a path uploads
+  it), a mid-stream failure has no sane place to land, and a regex over prose becomes a
+  security boundary. Publishing a workspace file must be a deliberate tool call.
+- **Queueing the file into the reply's finalization lifecycle** — better integrated on
+  paper, but drags per-platform applier and finalization-edit semantics into scope for no
   user-visible gain over post-when-called. Deferred until something needs the file to be
   _part of_ the response rather than beside it.
-- **A URL source** (`shareFile({url})`, daemon fetches and re-uploads). Solves the
-  found-on-the-web case without touching the pod wire — but a daemon fetching
-  model-supplied URLs is an SSRF surface (metadata endpoints, private ranges) that this
-  codebase does not currently have and should not grow for a convenience, and the agent
-  already owns a download path into its workspace.
-- **Multiple images in one message, and illustrated articles.** These read like this
-  feature and are not: they are message-**composition** problems, solved differently per
-  platform (Block Kit image blocks referencing uploaded files; Telegram media groups with
-  their own text constraints; Feishu's rich-text post type rather than `msg_type: image`).
-  Designing composition on top of a single-file port would force the port into a shape it
-  does not need. Several images today = several `shareFile` calls = several messages,
-  which is also how a person sends three photos. Sequence: source (this document) →
-  multi-file → composition, each when something concrete needs it.
-- **Agent-to-agent attachments.** `sendMessage(toAgent)` and parent-session replies stay
-  text-only; carrying files across a wake is a protocol-frame change with its own
-  routing questions, and belongs to its own design.
+- **A URL source** (`shareFile({url})`, daemon fetches and re-uploads) — rejected, on the
+  reasons that hold: a model-supplied fetch is a new egress _decision_, and the agent
+  already owns a download path into its workspace. (Not on SSRF novelty: Discord's
+  `downloadFile` is already a bare fetch of a tool-supplied URL with no origin pinning —
+  a pre-existing gap to fix separately, not a precedent to extend.)
+- **Multiple images per message; illustrated articles** — message-**composition**
+  problems, solved differently per platform (Block Kit references, media groups, Feishu
+  rich posts); composing on a single-file port would force the port into a shape it does
+  not need. Several images today = several `shareFile` calls = several messages, which is
+  how a person sends three photos. Sequence: source → multi-file → composition.
+- **Agent-to-agent attachments** — a protocol-frame change with its own routing
+  questions; its own design.
 
 ## 8. Phasing
 
-| Phase | Scope                                                                        | Unlocks                                              |
-| ----- | ---------------------------------------------------------------------------- | ---------------------------------------------------- |
-| 1     | `shareFile` + `attachFile` + fence + image sniff + both caps, host-side read | Host agents send produced images, here and elsewhere |
-| 2     | Single-frame `readBinary` on the shim channel                                | Pod agents, images ≤ ~250 KB                         |
-| 3     | Chunked binary read                                                          | Pod agents, real screenshots and photos              |
-| —     | Multi-file, composition, A2A files                                           | Deferred; §7                                         |
+| Phase | Scope                                                                                                                                                     | Unlocks                           |
+| ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------- |
+| 1     | `shareFile`; resolver + fence + sniff + caps; port widenings (reply anchor, typed failure reason, anchor refusal); refusal-class gates; description edits | Host agents, current conversation |
+| 2     | Bytes read on the `WorkspaceFs` seam (shim = existing base64 op), daemon-side fence on the relative path                                                  | Pod agents                        |
+| —     | `attachFile`, multi-file, composition, `preview \| file` fidelity hint, A2A files                                                                         | Deferred; §7                      |
 
-Phase 1 lands alone and is the whole feature for host-run agents; phases 2–3 change no
-tool surface, only where the resolver can reach.
+## 9. Open questions
+
+1. **Discord:** is `1<<34` MANAGE_THREADS and `1<<35` CREATE_PUBLIC_THREADS in the current
+   permission table? If so, our invite has never requested thread creation, the
+   "promotion failed" state is the guild **norm**, and §3.1's Discord fallback is a
+   phase-1 requirement rather than a caveat. (Both bitfield copies label `1<<34` as
+   CREATE_PUBLIC_THREADS today.)
+2. **Telegram:** does `sendPhoto` re-encode a ≤8 MB PNG chart badly enough to blur axis
+   labels? Decides whether the `preview | file` hint is deferrable.
+3. **Slack:** wall time of an 8 MB three-step share on a typical self-hosted uplink vs the
+   30 s queue bound — decides whether the default cap drops, the byte transfer gets its
+   own lane, or `indeterminate` carries the weight.
+4. **Feishu:** does `im.image.create` accept WEBP? The sniff admits it; if Feishu refuses
+   it, the refusal must say so rather than report a generic failure.
+5. **Demand:** is there a concrete request behind "produced file → different
+   conversation", or only the table's symmetry? Decides whether `attachFile` leaves §7.
