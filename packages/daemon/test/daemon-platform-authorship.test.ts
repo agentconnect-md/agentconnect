@@ -282,13 +282,12 @@ describe('response closure is a turn-output surface member (audit F19, site 7)',
     const daemon = await boot(['bot-a', 'bot-b'])
     const finalizeResponse = vi.fn(async () => true)
     const turn = {
-      platform: 'slack',
-      agentId: 'bot-a',
-      channel: 'C1',
-      replyText: 'done <@UBOTB>',
-      responseId: 'r-1',
-      sourceHopCount: 1,
-      lastResponse: { ts: '1720000000.000300', text: 'done <@UBOTB>' },
+      plan: { platform: 'slack', agentId: 'bot-a', channel: 'C1', sourceHopCount: 1 },
+      reply: {
+        text: 'done <@UBOTB>',
+        responseId: 'r-1',
+        lastResponse: { ts: '1720000000.000300', text: 'done <@UBOTB>' }
+      },
       conn: { finalizeResponse }
     }
     await (daemon as any).turnSurfaces.exact('slack').closeResponse(turn)
