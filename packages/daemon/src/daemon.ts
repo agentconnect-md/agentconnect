@@ -12947,9 +12947,13 @@ export class Daemon {
    *  ones fencing the host; then the retained settled ones (newest end first). Only an unknown
    *  agent is an error — no lease answers `tracked:false`, which is a different statement from
    *  "no background tasks" and the console says so. */
-  private listBackgroundTasks(req: TaskListReq): TaskList {
+  private async listBackgroundTasks(req: TaskListReq): Promise<TaskList> {
     if (!this.agents.has(req.agentId)) throw new TaskViolationError(`unknown agent "${req.agentId}"`, 'unknown-agent')
-    const lease = this.sdkLease.get(sdkLeaseKey(req.agentId, req.sessionId))
+    // The console names the session outwardly (§1.1); the lease it wants is keyed by the runtime's
+    // id, so this read is where the two meet. An unresolvable id is passed through, which is what
+    // a pre-v12 session was reported under.
+    const slot = await this.store.getSessionByOutwardId(req.sessionId, req.agentId)
+    const lease = this.sdkLease.get(sdkLeaseKey(req.agentId, slot?.acpSessionId ?? req.sessionId))
     const iso = (ms: number) => new Date(ms).toISOString()
     // Model-authored, so bounded here rather than trusted; the row survives, the tail does not.
     const described = (description: string | undefined) =>

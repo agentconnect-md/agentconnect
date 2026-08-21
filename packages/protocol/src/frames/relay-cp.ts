@@ -146,7 +146,7 @@ export const RcVerifyResult = z.object({
   // always includes the primary. Absent ⇒ single-agent conversation on an older CP.
   participants: z.array(RcWebchatParticipant).max(16).optional(),
   // Session-targeted continuation (webchat-cross-integration-continuation.md):
-  // the CP-selected target ACP session id. The relay copies it verbatim onto
+  // the CP-selected target session, by its outward id (§1.1). The relay copies it verbatim onto
   // every rd/msg for this conversation; it never originates in the browser and
   // is deliberately the only cross-system coordinate on the wire — every local
   // coordinate comes from the daemon's own session row.

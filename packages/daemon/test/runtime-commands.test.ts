@@ -126,9 +126,17 @@ describe('runtime command advertisements', () => {
     const cache = new RuntimeCommandsCache()
     cache.record('mine', 'acp-1', advertisement, 0)
     cache.record('moved', 'acp-2', advertisement, 0)
-    const reader = createRuntimeCommandsReader(cache, (id) => id === 'mine')
+    // The advertising session crosses by its outward id (session-concept.md §1.1); the cache
+    // remembers the runtime's, so the reader translates.
+    const reader = createRuntimeCommandsReader(
+      cache,
+      (id) => id === 'mine',
+      async (_a, acp) => `sid-of-${acp}`
+    )
 
-    expect((await reader.list({ agentId: 'mine' })).commands).toHaveLength(3)
+    const mine = await reader.list({ agentId: 'mine' })
+    expect(mine.commands).toHaveLength(3)
+    expect(mine.sessionId).toBe('sid-of-acp-1')
     expect(await reader.list({ agentId: 'moved' })).toEqual({ reported: false, commands: [] })
   })
 })

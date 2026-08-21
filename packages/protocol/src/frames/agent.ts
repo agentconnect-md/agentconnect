@@ -555,8 +555,9 @@ export type AgentScopeDenied = z.infer<typeof AgentScopeDenied>
 export const AgentPermissionRequestRecord = z.object({
   id: z.string().uuid(),
   agentId: z.string().uuid(),
-  // Optional for rolling compatibility with daemons that predate session-scoped
-  // approval rendering. Current daemons always report the owning ACP session id.
+  // The owning session, by its outward id (session-concept.md §1.1) — the console scopes
+  // approvals to the session it is showing, by the id it routed on. Optional for rolling
+  // compatibility with daemons that predate session-scoped approval rendering.
   sessionId: z.string().min(1).optional(),
   createdAt: z.string().datetime(),
   requesterId: z.string().nullable(),

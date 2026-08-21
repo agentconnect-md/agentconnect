@@ -165,7 +165,7 @@ export const WebchatStatus = z.object({
   // config option only appears once a fast-capable model is selected). Absent/false ⇒
   // no fast toggle shown.
   fastModeAvailable: z.boolean().optional(),
-  // The daemon's session id (== acpSessionId) for this conversation, so the console can
+  // This conversation's session, by its outward id (session-concept.md §1.1), so the console can
   // deep-link to the session detail page. Absent until the session is created.
   sessionId: z.string().optional()
 })

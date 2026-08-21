@@ -134,7 +134,7 @@ export interface CpClientSeamHost {
   gitCommitIdentity(): GitCommitIdentity | undefined
   sessionThreadUrl(session: SessionRecord): string | undefined
   childSessionStatusProbe(probe: ChildSessionStatusProbe): Promise<ChildSessionStatus>
-  listBackgroundTasks(req: TaskListReq): TaskList
+  listBackgroundTasks(req: TaskListReq): Promise<TaskList>
   withWorkspaceFileWrite<T>(agentId: string, write: () => Promise<T>): Promise<T>
   withWorkspaceIndexWrite<T>(agentId: string, write: () => Promise<T>): Promise<T>
   runCommitMessagePass: CommitMessagePass
@@ -153,6 +153,12 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
   // Which root a console request addresses and where it IS — the sandbox pod's volume under --k8s.
   // ONE resolver for the file reader and the git seam: the directory the console browses and the one
   // it commits are the same directory, and describing them two different ways broke both panels.
+  // One translation for every CP-facing read in this file that holds only the runtime's id.
+  const outwardSessionId = async (agentId: string, acpSessionId: string): Promise<string> => {
+    const slot = await host.store().getSessionByAcpIdForAgent(agentId, acpSessionId)
+    return slot ? await host.store().ensureOutwardSessionId(slot.key, agentId, systemClock.now()) : acpSessionId
+  }
+
   const workspaceScope = createWorkspaceScope({
     workspaces: host.workspaces(),
     agentOf: (id) => host.agents().get(id),
@@ -337,7 +343,7 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
       log: host.log()
     }),
     memoryReader: createMemoryReader((id) => host.memoryFsFor(id), host.memory()),
-    dreamReader: createDreamReader(host.dreamRunner()),
+    dreamReader: createDreamReader(host.dreamRunner(), outwardSessionId),
     localSkillsReader: createLocalSkillsReader(
       host.workspaces(),
       // The workspace root in EXECUTION coordinates, like the file reader's: the skill roots the
@@ -346,7 +352,11 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
       join(host.daemonRoot(), 'skill-installs'),
       (id) => host.k8sPlane()?.workspaceFilesFor(id)
     ),
-    runtimeCommandsReader: createRuntimeCommandsReader(host.runtimeCommands(), (id) => host.agents().has(id)),
+    runtimeCommandsReader: createRuntimeCommandsReader(
+      host.runtimeCommands(),
+      (id) => host.agents().has(id),
+      outwardSessionId
+    ),
     // webchat is no longer a CP control-WS integration (milestone A4) — it rides the
     // relay's rd/* wire, wired through RelayManager.onRelayMsg.
     clock: systemClock,

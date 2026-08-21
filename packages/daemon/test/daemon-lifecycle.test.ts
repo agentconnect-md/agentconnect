@@ -1898,7 +1898,14 @@ describe('Daemon idle sweep — background-task lease', () => {
   it('projects the lease for task/list — running, done, and a failure refined by a later edge', async () => {
     const clock = new FakeClock()
     const { daemon } = await bootWithTurn(clock, { agentIdleTimeoutMs: 10_000_000, idleSweepMs: 10_000_000 })
-    const list = () => (daemon as any).listBackgroundTasks({ agentId: 'bot-a', sessionId: 'acp-1' })
+    const list = async () => await (daemon as any).listBackgroundTasks({ agentId: 'bot-a', sessionId: 'acp-1' })
+    // The console asks by the id it routed on — the outward one (session-concept.md §1.1) — and
+    // must get the same lease back, since the lease itself is keyed by the runtime's id.
+    const outwardList = async () =>
+      await (daemon as any).listBackgroundTasks({
+        agentId: 'bot-a',
+        sessionId: (await (daemon as any).store.getSessionByAcpId('acp-1'))!.sessionId
+      })
 
     await (daemon as any).onSdkLifecycle(
       'bot-a',
@@ -1915,22 +1922,23 @@ describe('Daemon idle sweep — background-task lease', () => {
     // Live rows, newest start first. The internal subagent is CARRIED, not filtered at the source:
     // it fences reclaim exactly like a real task, so hiding it here would make the panel and the
     // thing deferring reclaim disagree. Consumers filter at render.
-    expect(list().tasks.map((t: any) => [t.id, t.state, t.subagent])).toEqual([
+    expect((await list()).tasks.map((t: any) => [t.id, t.state, t.subagent])).toEqual([
       ['t2', 'running', true],
       ['t1', 'running', false]
     ])
-    expect(list().tracked).toBe(true)
-    expect(list().truncated).toBe(false)
-    expect(list().tasks[1].description).toBe('Sleep 15')
-    expect(list().tasks[1].startedAt).toBe(new Date(0).toISOString()) // the task_started edge's arrival
-    expect(list().tasks[1].endedAt).toBeUndefined() // a live task has not ended
-    expect(list().tasks[0].description).toBeUndefined() // the runtime omitted it
+    expect((await list()).tracked).toBe(true)
+    expect((await outwardList()).tasks.map((t: any) => t.id)).toEqual((await list()).tasks.map((t: any) => t.id))
+    expect((await list()).truncated).toBe(false)
+    expect((await list()).tasks[1].description).toBe('Sleep 15')
+    expect((await list()).tasks[1].startedAt).toBe(new Date(0).toISOString()) // the task_started edge's arrival
+    expect((await list()).tasks[1].endedAt).toBeUndefined() // a live task has not ended
+    expect((await list()).tasks[0].description).toBeUndefined() // the runtime omitted it
 
     // The snapshot settles both and carries NO status, which is the common case — so `done` means
     // "settled without a reported failure", and `detail` stays absent rather than claiming success.
     clock.advance(1000)
     await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('background_tasks_changed', { tasks: [] }))
-    expect(list().tasks.map((t: any) => [t.id, t.state, t.endedAt, t.detail])).toEqual([
+    expect((await list()).tasks.map((t: any) => [t.id, t.state, t.endedAt, t.detail])).toEqual([
       ['t1', 'done', new Date(2000).toISOString(), undefined],
       ['t2', 'done', new Date(2000).toISOString(), undefined]
     ])
@@ -1942,7 +1950,7 @@ describe('Daemon idle sweep — background-task lease', () => {
       'acp-1',
       evt('task_updated', { task_id: 't1', patch: { status: 'failed' } })
     )
-    const refined = list().tasks.find((t: any) => t.id === 't1')
+    const refined = (await list()).tasks.find((t: any) => t.id === 't1')
     expect([refined.state, refined.detail]).toEqual(['failed', 'failed'])
     expect((daemon as any).sdkLease.get(LEASE_KEY).tasks.size).toBe(0)
     expect((daemon as any).sessionSdkQuiescent('bot-a', 'acp-1')).toBe(false) // t1's own wake, not the record
@@ -1953,7 +1961,7 @@ describe('Daemon idle sweep — background-task lease', () => {
   it('bounds the retained history and the page, and neither bound touches the liveness set', async () => {
     const clock = new FakeClock()
     const { daemon } = await bootWithTurn(clock, { agentIdleTimeoutMs: 10_000_000, idleSweepMs: 10_000_000 })
-    const list = () => (daemon as any).listBackgroundTasks({ agentId: 'bot-a', sessionId: 'acp-1' })
+    const list = async () => await (daemon as any).listBackgroundTasks({ agentId: 'bot-a', sessionId: 'acp-1' })
     // Subagent tasks, so the sweep of settles below neither announces nor wakes — they are retained
     // and counted as live exactly like any other task, which is the point.
     const ids = Array.from({ length: MAX_TASK_LIST_TASKS + 1 }, (_unused, i) => `t${i}`)
@@ -1966,17 +1974,17 @@ describe('Daemon idle sweep — background-task lease', () => {
       )
     }
     expect((daemon as any).sdkLease.get(LEASE_KEY).tasks.size).toBe(MAX_TASK_LIST_TASKS + 1)
-    expect(list().tasks).toHaveLength(MAX_TASK_LIST_TASKS)
-    expect(list().truncated).toBe(true)
+    expect((await list()).tasks).toHaveLength(MAX_TASK_LIST_TASKS)
+    expect((await list()).truncated).toBe(true)
 
     // All settle on one snapshot. Retention keeps the newest MAX_SETTLED_TASKS_PER_SESSION (20) and
     // the liveness set empties completely — the cap evicts history, never a live task.
     await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('background_tasks_changed', { tasks: [] }))
     expect((daemon as any).sdkLease.get(LEASE_KEY).tasks.size).toBe(0)
-    expect(list().tasks).toHaveLength(20)
-    expect(list().truncated).toBe(false)
-    expect(list().tasks.map((t: any) => t.id)).not.toContain('t0') // oldest settle evicted first
-    expect(list().tasks.every((t: any) => t.state === 'done' && t.subagent)).toBe(true)
+    expect((await list()).tasks).toHaveLength(20)
+    expect((await list()).truncated).toBe(false)
+    expect((await list()).tasks.map((t: any) => t.id)).not.toContain('t0') // oldest settle evicted first
+    expect((await list()).tasks.every((t: any) => t.state === 'done' && t.subagent)).toBe(true)
     expect((daemon as any).sessionSdkQuiescent('bot-a', 'acp-1')).toBe(true) // 20 retained rows, still quiescent
 
     await daemon.stop()
@@ -1988,14 +1996,14 @@ describe('Daemon idle sweep — background-task lease', () => {
 
     // No lease is NOT "no background tasks": a non-Claude runtime and an adapter without the
     // lifecycle extension both land here, and the console says so rather than claiming idleness.
-    expect((daemon as any).listBackgroundTasks({ agentId: 'bot-a', sessionId: 'acp-9' })).toEqual({
+    expect(await (daemon as any).listBackgroundTasks({ agentId: 'bot-a', sessionId: 'acp-9' })).toEqual({
       agentId: 'bot-a',
       sessionId: 'acp-9',
       tracked: false,
       tasks: [],
       truncated: false
     })
-    expect(() => (daemon as any).listBackgroundTasks({ agentId: 'nope', sessionId: 'acp-1' })).toThrow(
+    await expect((daemon as any).listBackgroundTasks({ agentId: 'nope', sessionId: 'acp-1' })).rejects.toThrow(
       TaskViolationError
     )
 
