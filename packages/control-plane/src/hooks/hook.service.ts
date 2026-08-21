@@ -60,12 +60,16 @@ export class HookService {
 
   /**
    * HookDef → relay rule, or null when it must not be in the pool (disabled,
-   * legacy orphaned, unplaced, missing kind columns, or — github kind — no
-   * valid installation left to attribute events with).
+   * legacy orphaned, paused, unplaced, missing kind columns, or — github kind —
+   * no valid installation left to attribute events with).
    */
   async compile(hook: HookRecord): Promise<RcHookAssign | null> {
     if (!hook.enabled || !hook.agentId) return null
     const agent = await this.agents.getUnscoped(hook.agentId)
+    // A paused agent rejects every fire at the daemon, so a rule left in the pool buys only a
+    // dispatch that dies and, for a github hook, a Check that reports nothing anyone can act on.
+    // Pause leaves the pool the same way an unplaced agent does, and resuming re-assigns it.
+    if (agent?.pause === true) return null
     // The relay needs one member to address; for a pool agent that is the current duty holder,
     // since placement names none. Nothing serving it ⇒ the rule leaves the relay pool, exactly as
     // an unplaced agent's does.

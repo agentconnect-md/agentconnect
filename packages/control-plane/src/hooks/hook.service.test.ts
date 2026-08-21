@@ -75,13 +75,19 @@ function make(
     installations?: GithubInstallationRecord[]
     appSlug?: string
     hooks?: Partial<HookRepo>
+    pause?: boolean | null
   } = {}
 ) {
   const agents: HookAgentReads = {
     getUnscoped: vi.fn(async () =>
       opts.daemonId === null
         ? null
-        : ({ id: AGENT, name: 'review-agent', daemonId: opts.daemonId ?? DAEMON } as AgentRecord)
+        : ({
+            id: AGENT,
+            name: 'review-agent',
+            daemonId: opts.daemonId ?? DAEMON,
+            ...(opts.pause !== undefined ? { pause: opts.pause } : {})
+          } as AgentRecord)
     )
   }
   const secrets = { get: vi.fn(async () => opts.secret ?? null) } as unknown as HookSecretStore
@@ -141,6 +147,23 @@ describe('HookService.compile', () => {
 
   it('returns null for a tokenless webhook hook', async () => {
     expect(await make().svc.compile(hook({ urlToken: null }))).toBeNull()
+  })
+
+  it('keeps a paused agent out of the pool, and converges the rule to a removal', async () => {
+    const { svc, assigns, removes } = make({ pause: true })
+
+    expect(await svc.compile(hook())).toBeNull()
+    await svc.broadcast(hook())
+    expect(assigns).toEqual([])
+    expect(removes).toEqual([HOOK])
+  })
+
+  it('compiles again once the agent resumes', async () => {
+    const { svc, assigns, removes } = make({ pause: false })
+
+    await svc.broadcast(hook())
+    expect(removes).toEqual([])
+    expect(assigns).toHaveLength(1)
   })
 
   const ghHook = (over: Partial<HookRecord> = {}) =>
