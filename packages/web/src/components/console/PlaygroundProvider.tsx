@@ -927,7 +927,8 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
             const rejectLane = (
               agentId: string | undefined,
               turnId: string | undefined,
-              reason: string | undefined
+              reason: string | undefined,
+              detail?: string
             ) => {
               const key = cursorKeyFor(id, agentId)
               if (key) {
@@ -948,7 +949,11 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                       ? `⚠️ ${name ?? 'Agent'} is busy — try again shortly.`
                       : reason === 'not_participant'
                         ? `⚠️ ${name ?? 'That agent'} is not in this conversation.`
-                        : `⚠️ ${name ?? 'Agent'} unavailable (no live daemon).`
+                        : // Its daemon is live; the runtime it launches is not. Say so, and name the
+                          // cause the daemon reported instead of blaming a daemon that answered.
+                          reason === 'start_failed'
+                          ? `⚠️ ${name ?? 'Agent'} could not start${detail ? ` — ${detail}` : ' — check the daemon logs.'}`
+                          : `⚠️ ${name ?? 'Agent'} is unavailable — no live daemon is serving it.`
               })
               if (lanesOf(id).length === 0) {
                 reconnectAttempts.current.delete(id)
@@ -962,7 +967,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                 participants?: WebchatParticipant[]
                 output?: WebchatOutput
                 done?: WebchatDone
-                ack?: { accepted?: boolean; reason?: string; turnId?: string; agentId?: string }
+                ack?: { accepted?: boolean; reason?: string; detail?: string; turnId?: string; agentId?: string }
                 post?: WebchatPost
                 initiator?: string
               }
@@ -1097,7 +1102,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                   sendLaneResume(ws, key)
                 }
               } else if (m.type === 'ack' && m.ack?.accepted === false) {
-                rejectLane(m.ack.agentId, m.ack.turnId, m.ack.reason)
+                rejectLane(m.ack.agentId, m.ack.turnId, m.ack.reason, m.ack.detail)
               } else if (m.type === 'error') {
                 failStream(id, 'Connection error.')
               }

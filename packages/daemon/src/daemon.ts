@@ -222,6 +222,7 @@ import { ModelCatalogService } from './runtimes/model-catalog.js'
 import { makeModelEnumerator } from './runtimes/model-enumerator.js'
 import { clusterProbeHostFactory, defaultProbeHostFactory } from './acp/probe-host-factory.js'
 import { runtimeHomePath } from './runtimes/runtime-home.js'
+import { npmRepairEnv, planRuntimeInstallRepair, repairRuntimeInstall } from './runtimes/runtime-install-repair.js'
 import {
   applyCodexSessionFloor,
   applyModelCredential,
@@ -390,7 +391,7 @@ import type {
   TaskList,
   TaskListReq
 } from '@agentconnect.md/protocol'
-import { formatErr } from './daemon/text.js'
+import { formatErr, startFailureDetail } from './daemon/text.js'
 import { isBuiltinSystemToolCall } from './daemon/tool-classification.js'
 import { buildTurnPlan, type TurnPlan } from './daemon/turn-plan.js'
 import { turnEvaluationReporter, type TurnEvaluationReporter } from './daemon/turn-evaluation.js'
@@ -663,6 +664,12 @@ export class Daemon {
     string,
     { agentDir: string; childEnv?: Record<string, string | undefined>; materialized: boolean }
   >()
+  // HOME the last built host launched with, so a start failure can be diagnosed against the exact
+  // package tree the child resolved — private for an isolated runtime, the daemon's own otherwise.
+  private hostRuntimeHome = new Map<string, string>()
+  // Terminal ACP start failure per agent, so a later refusal can say the runtime did not start
+  // instead of reporting the agent as absent. Cleared once the agent starts or leaves the roster.
+  private lastStartFailure = new Map<string, string>()
   // Background-task lease keyed by acpSessionId, fed by the Claude SDK lifecycle
   // feed (`_claude/sdkMessage`, claude-agent-acp ≥ 0.59.0). A session is NOT
   // quiescent — and its host must not be idle-reclaimed nor the session TTL-closed —
@@ -1365,6 +1372,7 @@ export class Daemon {
       agents: () => this.agents,
       mergedRules: () => this.mergedRules(),
       paused: (agentId) => this.paused(agentId),
+      startFailure: (agentId) => this.lastStartFailure.get(agentId),
       safetyDraining: (agentId) => this.safetyDrainingAgents.has(agentId),
       draining: () => this.draining,
       agentDraining: (agentId) => this.drainingAgents.has(agentId),
@@ -2828,6 +2836,10 @@ export class Daemon {
       this.drainingAgents.add(id)
       await this.interruptAgentTurns(id, 'stop')
       this.agents.delete(id)
+      this.hostRuntimeHome.delete(id)
+      // A stage-out leaves the roster for exactly the reason a later refusal must explain, so the
+      // recorded cause survives it. A genuine removal clears it where the tombstone is taken.
+      if (!this.moveStagedAgents.has(id)) this.lastStartFailure.delete(id)
       this.scheduler.unregister(id)
       this.dreamScheduler.unregister(id)
       this.gitCreds.remove(id)
@@ -3257,6 +3269,7 @@ export class Daemon {
     this.hosts.set(agentId, built.host)
     this.hostStartedAt.set(agentId, this.clock.now())
     this.hostConfigFiles.set(agentId, { agentDir: agent.dir, ...built.configFileState })
+    if (built.runtimeHome) this.hostRuntimeHome.set(agentId, built.runtimeHome)
     return built.host
   }
 
@@ -3284,7 +3297,12 @@ export class Daemon {
       excludeAgentToolCredentials?: boolean
       modelCredential?: { target: ModelProviderTarget; credential: ModelCredential }
     }
-  ): { host: AcpHost; configFileState: { childEnv?: Record<string, string | undefined>; materialized: boolean } } {
+  ): {
+    host: AcpHost
+    configFileState: { childEnv?: Record<string, string | undefined>; materialized: boolean }
+    /** HOME the child resolves its packages under; absent only for an injected host factory. */
+    runtimeHome?: string
+  } {
     const agentId = agent.id
     const onUpdate = (sid: string, u: any) => this.enqueueAcpUpdate(agentId, sid, u)
     const runtimeEntry = this.runtimeCatalog.entries[agent.runtime]
@@ -3515,7 +3533,10 @@ export class Daemon {
       log: this.log
     })
     constructed.host = host
-    return { host, configFileState }
+    // What HOME the child actually got, since that is where it resolves its packages: the private
+    // runtime home when isolated, otherwise whatever the inherited daemon environment points at.
+    const runtimeHome = launch.env.HOME ?? (launch.inheritProcessEnv ? process.env.HOME : undefined)
+    return { host, configFileState, ...(runtimeHome ? { runtimeHome } : {}) }
   }
 
   /**
@@ -6500,7 +6521,8 @@ export class Daemon {
               msgId: msg.msgId,
               accepted: ack.accepted,
               turnId: ack.turnId,
-              ...(ack.reason ? { reason: ack.reason } : {})
+              ...(ack.reason ? { reason: ack.reason } : {}),
+              ...(ack.detail ? { detail: ack.detail } : {})
             }))
         case 'set_model':
         case 'set_effort':
@@ -6534,7 +6556,8 @@ export class Daemon {
           msgId: msg.msgId,
           accepted: ack.accepted,
           turnId: ack.turnId,
-          ...(ack.reason ? { reason: ack.reason } : {})
+          ...(ack.reason ? { reason: ack.reason } : {}),
+          ...(ack.detail ? { detail: ack.detail } : {})
         }
       }
       case 'context': {
@@ -11675,7 +11698,10 @@ export class Daemon {
     const agent = this.agents.get(agentId)
     if (!agent) throw new Error(`unknown agent ${agentId}`)
     let lastErr: unknown
-    for (let i = 1; i <= attempts; i++) {
+    // A repaired runtime install earns one extra attempt, so a fault fixed on the last try still starts.
+    let extraAttempts = 0
+    let repairTried = false
+    for (let i = 1; i <= attempts + extraAttempts; i++) {
       if (this.hostStartGeneration.get(agentId) !== generation) {
         throw new Error(`host start superseded for ${agentId}`)
       }
@@ -11694,6 +11720,7 @@ export class Daemon {
           throw new Error(`host start superseded for ${agentId}`)
         }
         this.readyHosts.add(agentId)
+        this.lastStartFailure.delete(agentId)
         return host
       } catch (err) {
         lastErr = err
@@ -11707,23 +11734,72 @@ export class Daemon {
         // resting on disk. Generation-fenced above, so this can't touch a
         // superseding host's files; the next attempt re-materializes its own.
         const failedSpawnDir = this.hostConfigFiles.get(agentId)?.agentDir
+        const failedRuntimeHome = this.hostRuntimeHome.get(agentId)
         this.hostConfigFiles.delete(agentId)
         if (failedSpawnDir) {
           const cleanupErr = cleanupConfigFiles(failedSpawnDir)
           if (cleanupErr) this.log.warn(`config-files: cleanup for agent "${agentId}" failed — ${cleanupErr}`)
         }
-        if (i < attempts) {
+        // Retrying an incomplete package tree just reproduces the same crash, so repair it once and
+        // let the loop try again rather than burning every attempt and staging the agent out. An
+        // attempt that failed for some other reason must not spend the one repair.
+        if (!repairTried && failedRuntimeHome) {
+          const outcome = await this.repairAgentRuntimeInstall(agentId, failedRuntimeHome, err)
+          if (outcome !== 'declined') repairTried = true
+          if (outcome === 'repaired') extraAttempts = 1
+        }
+        const budget = attempts + extraAttempts
+        if (i < budget) {
           const backoff = this.cfg.limits.agentStartBackoffMs
           this.log.warn(
-            `acp: agent "${agentId}" start attempt ${i}/${attempts} failed (${(err as Error).message}) — retrying in ${backoff}ms`
+            `acp: agent "${agentId}" start attempt ${i}/${budget} failed (${(err as Error).message}) — retrying in ${backoff}ms`
           )
           await this.sleep(backoff, signal)
         } else {
-          this.log.error(`acp: agent "${agentId}" failed to start after ${attempts} attempt(s): ${formatErr(err)}`)
+          this.log.error(`acp: agent "${agentId}" failed to start after ${budget} attempt(s): ${formatErr(err)}`)
+          this.lastStartFailure.set(agentId, startFailureDetail(err))
         }
       }
     }
     throw lastErr
+  }
+
+  // Agents on a non-isolated runtime share one npx tree, so their simultaneous failures would
+  // otherwise run concurrent installs in the same directory and leave it worse than they found it.
+  private readonly runtimeInstallRepairs = new Map<string, Promise<boolean>>()
+
+  /** Reinstall a runtime package the adapter reported missing, in the tree the child resolved.
+   *  Repairs only what an installed lockfile already declares, and never runs npm lifecycle
+   *  scripts — the tree sits in the agent's own writable HOME. Cluster launches resolve their
+   *  packages inside the agent's pod, so there is nothing here to repair. `declined` means no
+   *  repair was applicable, and leaves the one repair a start sequence gets unspent. */
+  private async repairAgentRuntimeInstall(
+    agentId: string,
+    home: string,
+    err: unknown
+  ): Promise<'declined' | 'failed' | 'repaired'> {
+    if (this.k8sPlane) return 'declined'
+    const plan = planRuntimeInstallRepair(home, (err as { message?: string })?.message ?? '')
+    if (!plan) return 'declined'
+    const inFlight = this.runtimeInstallRepairs.get(plan.tree)
+    if (inFlight) {
+      this.log.info(`acp: agent "${agentId}" is waiting on the in-flight repair of ${plan.tree}`)
+      return (await inFlight.catch(() => false)) ? 'repaired' : 'failed'
+    }
+    this.log.warn(`acp: agent "${agentId}" is missing runtime package "${plan.pkg}" — reinstalling ${plan.tree}`)
+    const run = repairRuntimeInstall(plan, npmRepairEnv(home))
+    this.runtimeInstallRepairs.set(plan.tree, run)
+    try {
+      const repaired = await run
+      if (repaired) this.log.info(`acp: reinstalled "${plan.pkg}" for agent "${agentId}" — retrying start`)
+      else this.log.warn(`acp: reinstall left "${plan.pkg}" absent for agent "${agentId}"`)
+      return repaired ? 'repaired' : 'failed'
+    } catch (repairErr) {
+      this.log.warn(`acp: reinstalling "${plan.pkg}" for agent "${agentId}" failed: ${formatErr(repairErr)}`)
+      return 'failed'
+    } finally {
+      if (this.runtimeInstallRepairs.get(plan.tree) === run) this.runtimeInstallRepairs.delete(plan.tree)
+    }
   }
 
   /** Clock-driven delay (so a FakeClock stays deterministic in tests). */
@@ -13719,6 +13795,8 @@ export class Daemon {
     try {
       const marker = markAgentRemoval(this.agentsDir, agentId, this.removalObligationsDir)
       this.removedAgentTombstones.add(agentId)
+      // Gone for good: a re-added id must not inherit the old incarnation's start failure.
+      this.lastStartFailure.delete(agentId)
       if (marker.degraded.length > 0) {
         this.log.warn(
           `cp: agent "${agentId}" removal marker is running on one durable mirror; retry will repair the other (${marker.degraded.map(formatErr).join('; ')})`

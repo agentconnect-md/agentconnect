@@ -89,6 +89,9 @@ export interface WebchatHost {
   /** Local + CP routing rules, so a named webchat target resolves like any other. */
   mergedRules(): RoutingRule[]
   paused(agentId: string): boolean
+  /** The bounded cause when this agent's runtime failed to start, so a refusal can name it
+   *  instead of reporting the agent as absent. Undefined ⇒ no known start failure. */
+  startFailure(agentId: string): string | undefined
   /** This agent is stopping an interrupted turn and cannot admit another. */
   safetyDraining(agentId: string): boolean
   /** The daemon as a whole is draining. */
@@ -179,6 +182,13 @@ export class WebchatTransport {
       agentId
     )
     if (!result || !this.host.agents().has(result.agentId)) {
+      // A failed ACP start drops the agent from the roster, so distinguish "its runtime did not
+      // start" from "no daemon serves it" — the two read identically to a client otherwise.
+      const startFailure = this.host.startFailure(result?.agentId ?? agentId)
+      if (startFailure) {
+        this.host.warn(`webchat: agent "${agentId}" failed to start — rejecting turn (${startFailure})`)
+        return { accepted: false, turnId, reason: 'start_failed', detail: startFailure }
+      }
       this.host.warn(`webchat: no agent "${agentId}" on this daemon — rejecting turn`)
       return { accepted: false, turnId, reason: 'no_agent' }
     }
@@ -330,7 +340,11 @@ export class WebchatTransport {
     requestedTurnId?: string
   ): Promise<WebchatAck> {
     const turnId = requestedTurnId ?? randomUUID()
-    if (!this.host.agents().has(agentId)) return { accepted: false, turnId, reason: 'no_agent' }
+    if (!this.host.agents().has(agentId)) {
+      const startFailure = this.host.startFailure(agentId)
+      if (startFailure) return { accepted: false, turnId, reason: 'start_failed', detail: startFailure }
+      return { accepted: false, turnId, reason: 'no_agent' }
+    }
     // ACP ids are runtime-owned: resolve agent-scoped, and use ONLY the local
     // row's coordinates. A miss means the CP verdict is stale (retention GC /
     // metadata replacement) — fail closed.

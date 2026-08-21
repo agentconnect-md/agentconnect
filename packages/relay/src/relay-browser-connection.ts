@@ -409,7 +409,8 @@ export class RelayBrowserConnection implements ChatSink {
         accepted: ack.accepted,
         ...(ack.turnId ? { turnId: ack.turnId } : {}),
         agentId,
-        ...(ack.reason ? { reason: ack.reason } : {})
+        ...(ack.reason ? { reason: ack.reason } : {}),
+        ...(ack.detail ? { detail: ack.detail } : {})
       }
       // A refusal is the whole story of a stream that "never came back" — name it, and who refused.
       if (!ack.accepted && (op.op === 'turn' || op.op === 'resume')) {

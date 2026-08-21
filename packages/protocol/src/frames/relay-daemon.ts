@@ -437,6 +437,8 @@ export const RdAck = z.object({
   accepted: z.boolean(),
   turnId: z.string().uuid().optional(),
   reason: z.string().optional(),
+  /** Bounded human-readable cause for a refusal the browser should explain (see WebchatAck.detail). */
+  detail: z.string().max(240).optional(),
   /** Set with `reason: 'not_holder'`: the member that holds the duty now, as the
    *  losing claimant learned it from the CP. Absent when even the CP could not
    *  name one — the router then retries rather than re-routing. */

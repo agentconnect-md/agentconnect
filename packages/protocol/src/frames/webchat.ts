@@ -58,9 +58,15 @@ export const WebchatAck = z.object({
       'not_participant',
       'not_found',
       'integration_offline',
-      'integration_delivery_failed'
+      'integration_delivery_failed',
+      // The daemon owns this agent but its runtime would not start — distinct from `no_agent`,
+      // which says no daemon serves it at all. Only this one carries `detail`.
+      'start_failed'
     ])
-    .optional()
+    .optional(),
+  // One bounded, path-free line naming the fault, so the client can state the cause instead of
+  // guessing at it. The daemon redacts it; nothing here reveals its filesystem layout.
+  detail: z.string().max(240).optional()
 })
 export type WebchatAck = z.infer<typeof WebchatAck>
 

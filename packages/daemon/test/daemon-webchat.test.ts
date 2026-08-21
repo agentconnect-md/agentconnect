@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Daemon } from '../src/daemon.js'
@@ -1739,6 +1739,42 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
 
     const ack = await (daemon as any).handleRelayMsg(rd({ op: 'turn', text: 'go' }, { agentId: 'ghost' }), () => {})
     expect(ack).toMatchObject({ accepted: false, reason: 'no_agent' })
+    await daemon.stop()
+  })
+
+  it('names a failed runtime start after the failure staged the agent out of the roster', async () => {
+    const { factory } = streamingHost([])
+    const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
+    await daemon.start()
+    ;(daemon as any).cpClient = fakeCpClient()
+    const detail = 'Error: Missing optional dependency @openai/codex-linux-x64'
+    ;(daemon as any).lastStartFailure.set(AGENT_ID, detail)
+    // Exactly what agent/activate does when its start proof fails: fence the agent, then let
+    // reconcile drop it from the roster. The cause must survive that removal to be reportable.
+    ;(daemon as any).moveStagedAgents.add(AGENT_ID)
+    await (daemon as any).reconcile()
+    expect((daemon as any).agents.has(AGENT_ID)).toBe(false)
+
+    const ack = await (daemon as any).handleRelayMsg(rd({ op: 'turn', text: 'go' }), () => {})
+    expect(ack).toMatchObject({ accepted: false, reason: 'start_failed', detail })
+    await daemon.stop()
+  })
+
+  it('forgets a start failure once the agent is genuinely removed', async () => {
+    const { factory } = streamingHost([])
+    const root = scaffold()
+    const daemon = new Daemon({ root, hostFactory: factory })
+    await daemon.start()
+    ;(daemon as any).cpClient = fakeCpClient()
+    ;(daemon as any).lastStartFailure.set(AGENT_ID, 'Error: Missing optional dependency x')
+    await (daemon as any).reconcile()
+    expect((daemon as any).lastStartFailure.has(AGENT_ID)).toBe(true)
+
+    rmSync(join(root, 'agents', AGENT_ID), { recursive: true, force: true })
+    await (daemon as any).reconcile()
+
+    expect((daemon as any).agents.has(AGENT_ID)).toBe(false)
+    expect((daemon as any).lastStartFailure.has(AGENT_ID)).toBe(false)
     await daemon.stop()
   })
 
