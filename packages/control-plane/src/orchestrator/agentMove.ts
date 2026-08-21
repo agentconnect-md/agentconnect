@@ -16,6 +16,7 @@
  * state migration: workspace, transcript, and memory bytes remain daemon-local.
  */
 import { randomUUID } from 'node:crypto'
+import { daemonSupportsAgent } from '../domain/daemon-features.js'
 import {
   gitRepoLabel,
   type Ack,
@@ -97,6 +98,10 @@ export interface AgentMoveLog {
 
 export interface AgentMoveDeps {
   agents: AgentRepo
+  /** §17.3 activation gate: live advertised features per connected daemon —
+   *  checked at the SEND, so a duty move or reconnect between a route preflight
+   *  and the activate cannot deliver a frame-fatal workspace arm. */
+  daemonFeatures?: (daemonId: string) => readonly string[] | undefined
   assignments: AssignmentRepo
   integrations: IntegrationRepo
   integrationChannels: IntegrationChannelRepo
@@ -1037,6 +1042,12 @@ export class AgentMoveService {
     label: string,
     workspace: Pick<AgentActivate, 'prepareWorkspace' | 'reconcileWorkspace'> = {}
   ): Promise<void> {
+    // §17.3: never send a spec the target cannot decode — the union arm is
+    // frame-fatal there. Checked here, at the activation send, so every caller
+    // (edit, staged recovery, target repair, moves) shares the one gate.
+    if (!daemonSupportsAgent(agent, this.deps.daemonFeatures?.(daemonId))) {
+      throw new AgentMoveConflict('the target daemon lacks a feature this workspace requires — upgrade it first')
+    }
     // Live CRUD EVTs are intentionally not part of move bootstrap: they are
     // unacknowledged and could expose a partially-applied or stale same-ID
     // definition. Activate persists, exact-prunes, reconciles, and warms this

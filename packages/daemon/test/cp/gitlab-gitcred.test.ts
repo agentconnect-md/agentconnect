@@ -1,0 +1,113 @@
+/**
+ * Provider-aware git credentials, daemon side (gitlab-com-integration.md
+ * §13.2/§17.1): the cache keys gitlab grants apart, gates the provider on the
+ * CP's gitcred-provider-v2 advertisement, and rejects a stripped or mismatched
+ * provider echo; the helper parses full-depth gitlab paths; the injection
+ * module pins exactly one managed host per workspace.
+ */
+import { describe, it, expect } from 'vitest'
+import type { GitCredGrant } from '@agentconnect.md/protocol'
+import { GitCredentialCache, GitCredUnavailableError } from '../../src/cp/git-credential.js'
+import { projectFromPath, repoFromPath } from '../../src/gitcred/helper.js'
+import { initGitInjection, managedCredentialHostOf, sessionGitConfig } from '../../src/workspace/git-injection.js'
+
+const AGENT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+
+type Payload = { provider?: string; requestedAccess?: string }
+
+function build(opts: { v2?: boolean; respond: (payload: Payload, n: number) => GitCredGrant }) {
+  let calls = 0
+  const seen: Payload[] = []
+  const cache = new GitCredentialCache({
+    request: async (payload) => {
+      calls += 1
+      seen.push(payload)
+      return opts.respond(payload, calls)
+    },
+    log: { warn: () => {} },
+    monoNow: () => 0,
+    providerV2Supported: () => opts.v2 === true
+  })
+  return { cache, seen, calls: () => calls }
+}
+
+const gitlabGrant: GitCredGrant = {
+  username: 'agentconnect-p4455667',
+  token: 'glpat-1',
+  ttlSec: 3600,
+  expiresAt: '2026-08-22T01:00:00.000Z',
+  repoFullName: 'example-group/example-project',
+  access: 'write',
+  provider: 'gitlab',
+  externalRepoId: '4455667',
+  credentialEpoch: '3',
+  providerExpiresAt: '2026-11-20T00:00:00.000Z'
+}
+
+const githubGrant: GitCredGrant = {
+  username: 'x-access-token',
+  token: 'ghs_1',
+  ttlSec: 3540,
+  expiresAt: '2026-08-22T01:00:00.000Z',
+  repoFullName: 'acme/infra',
+  access: 'write'
+}
+
+describe('GitCredentialCache — gitlab provider (§17.1)', () => {
+  it('keys gitlab apart from github and forwards provider + requestedAccess', async () => {
+    const h = build({ v2: true, respond: (payload) => (payload.provider === 'gitlab' ? gitlabGrant : githubGrant) })
+    const gitlab = await h.cache.get(AGENT, 'clone', { provider: 'gitlab', requestedAccess: 'read' })
+    expect(gitlab.username).toBe('agentconnect-p4455667')
+    const github = await h.cache.get(AGENT, 'clone')
+    expect(github.username).toBe('x-access-token')
+    expect(h.calls()).toBe(2) // distinct cache keys, no cross-provider reuse
+    expect(h.seen[0]).toMatchObject({ provider: 'gitlab', requestedAccess: 'read' })
+    expect(h.seen[1]?.provider).toBeUndefined()
+  })
+
+  it('refuses to name a provider before the CP advertises gitcred-provider-v2', async () => {
+    const h = build({ v2: false, respond: () => gitlabGrant })
+    await expect(h.cache.get(AGENT, 'clone', { provider: 'gitlab' })).rejects.toThrow(GitCredUnavailableError)
+    expect(h.calls()).toBe(0) // never even asked — the frame would be misread
+  })
+
+  it('rejects a stripped provider echo: an old CP answered the wrong workspace grant', async () => {
+    const h = build({ v2: true, respond: () => githubGrant })
+    await expect(h.cache.get(AGENT, 'clone', { provider: 'gitlab' })).rejects.toThrow(/provider github/)
+  })
+})
+
+describe('helper path parsing (§13.2)', () => {
+  it('preserves full gitlab subgroup depth; github stays owner/repo', () => {
+    expect(projectFromPath('group/sub/deeper/project.git')).toBe('group/sub/deeper/project')
+    expect(projectFromPath('/group/project')).toBe('group/project')
+    expect(projectFromPath('Group/Project.git/info/lfs')).toBe('group/project')
+    expect(projectFromPath('just-a-name')).toBeUndefined()
+    expect(repoFromPath('owner/repo.git/info/lfs')).toBe('owner/repo')
+  })
+})
+
+describe('injection host selection (§13.2)', () => {
+  const target = { kind: 'daemon' as const, helper: '/x/helper', configDir: '/x/cfg' }
+  initGitInjection({
+    targetFor: () => target,
+    preWarm: async () => {},
+    capabilityFor: () => 'cap-test'
+  })
+
+  it('derives the managed host from the workspace URL, exactly one per workspace', () => {
+    expect(managedCredentialHostOf('https://gitlab.com/example-group/example-project')).toBe('gitlab.com')
+    expect(managedCredentialHostOf('https://github.com/acme/infra')).toBe('github.com')
+    expect(managedCredentialHostOf('https://code.example.test/x/y')).toBeUndefined()
+    expect(managedCredentialHostOf(undefined)).toBeUndefined()
+  })
+
+  it('pins the session gitconfig to the workspace host only', () => {
+    const gitlab = sessionGitConfig(AGENT, undefined, target, 'gitlab.com')
+    expect(gitlab.content).toContain('[credential "https://gitlab.com"]')
+    expect(gitlab.content).not.toContain('github.com')
+    const github = sessionGitConfig(AGENT, undefined, target)
+    expect(github.content).toContain('[credential "https://github.com"]')
+    expect(github.content).not.toContain('gitlab.com')
+  })
+})

@@ -813,6 +813,8 @@ export function buildContainer(
   )
   const stagedAgentMoves = new AgentMoveService({
     agents: repos.agent,
+    // §17.3 activation gate — same live source as AgentDelivery's projection gate.
+    daemonFeatures: (daemonId) => connReg.get(daemonId)?.capabilities?.features,
     assignments: repos.assignment,
     integrations: repos.integration,
     integrationChannels: repos.integrationChannel,
@@ -971,6 +973,30 @@ export function buildContainer(
           // §11.1: the union every enabled gitlab hook on the project wants.
           desiredWebhookEvents: async (orgId, projectId) =>
             unionGitlabWebhookEvents(await repos.hook.listForOrgKind(OrgId(orgId), 'gitlab'), projectId),
+          // Awaited under the run lease (§17.3 round 3): the durable clone-URL
+          // convergence rides the saga; only the daemon fan-out stays async.
+          syncWorkspacePaths: async (orgId, projectId, projectPath) => {
+            const agentIds = await repos.agent.refreshGitlabWorkspacePath(
+              OrgId(orgId),
+              projectId,
+              `https://gitlab.com/${projectPath}`
+            )
+            for (const agentId of agentIds) {
+              void repos.agent
+                .getUnscoped(agentId)
+                .then(
+                  (agent) =>
+                    agent &&
+                    agentDelivery.upsert(agent, (err, daemonId) =>
+                      http.log.warn(
+                        { err, agentId, daemonId },
+                        'gitlab rename: agent/upsert failed (backstop: reconnect)'
+                      )
+                    )
+                )
+                .catch((err) => http.log.warn({ err, agentId }, 'gitlab rename: agent refresh fan-out failed'))
+            }
+          },
           // Rules embed binding/webhook facts — recompile the project's hooks
           // after every run that may have changed them (assign or remove).
           onConverged: (orgId, projectId) => {
@@ -978,23 +1004,6 @@ export function buildContainer(
               // Rules embed binding/webhook facts — recompile the project's hooks.
               for (const row of await repos.hook.listForOrgKind(OrgId(orgId), 'gitlab')) {
                 if (row.repoId === projectId) await hookService.broadcast(row)
-              }
-              // The projected clone URL is a mutable hint keyed by the numeric id:
-              // a saga path refresh (rename) must reach affected agent specs too,
-              // or the daemon-side grant echo verification starts refusing (§13.2).
-              const binding = await repos.gitlabProjectBinding.byProject(orgId, projectId)
-              if (!binding) return
-              const agentIds = await repos.agent.refreshGitlabWorkspacePath(
-                OrgId(orgId),
-                projectId,
-                `https://gitlab.com/${binding.projectPath}`
-              )
-              for (const agentId of agentIds) {
-                const agent = await repos.agent.getUnscoped(agentId)
-                if (!agent) continue
-                await agentDelivery.upsert(agent, (err, daemonId) => {
-                  http.log.warn({ err, agentId, daemonId }, 'gitlab rename: agent/upsert failed (backstop: reconnect)')
-                })
               }
             })().catch((err) => http.log.warn({ err }, 'gitlab converge fan-out failed'))
           },

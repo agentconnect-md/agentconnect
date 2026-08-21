@@ -66,6 +66,15 @@ async function harness(liveness?: DaemonLiveness) {
     clock: systemClock,
     publicRelayUrl: 'https://relay.example.test',
     desiredWebhookEvents: async () => null,
+    // Mirrors the container: the durable clone-URL convergence is AWAITED
+    // inside the run, under the saga lease.
+    syncWorkspacePaths: async (orgId, projectId, projectPath) => {
+      await new PgAgentRepo(prisma).refreshGitlabWorkspacePath(
+        OrgId(orgId),
+        projectId,
+        `https://gitlab.com/${projectPath}`
+      )
+    },
     fetchImpl: fake.fetch()
   })
   running = buildHttpApp(prisma, { PUBLIC_CP_URL: 'https://api.example.test' }, liveness, undefined, {
@@ -87,7 +96,7 @@ async function harness(liveness?: DaemonLiveness) {
     installerConnectionId: connection.id
   })
   expect(await provisioner.provision(DEFAULT_ORG_ID, binding.id)).toEqual({ state: 'ready' })
-  return { fake, a: running, bindings, binding }
+  return { fake, a: running, bindings, binding, provisioner }
 }
 
 function credService(bindings: PgGitlabProjectBindingRepo) {
@@ -242,6 +251,28 @@ describe('gitlab workspaces — agent create/edit (§8.3)', () => {
         'https://gitlab.com/example-group/renamed-project'
       )
     ).toEqual([])
+  })
+
+  it('the SAGA converges renamed clone URLs durably, inside the leased run (round 3)', async () => {
+    const h = await harness()
+    const created = await h.a.app.inject({
+      method: 'POST',
+      url: `${ORG}/agents`,
+      payload: {
+        name: 'gl-saga-rename',
+        runtime: 'claude',
+        workspace: { mode: 'gitlab', projectId: PROJECT.toString() }
+      }
+    })
+    expect(created.statusCode).toBe(201)
+    const agentId = (created.json() as { id: string }).id
+    // Provider-side rename: the next provisioning run re-reads the path by
+    // numeric id and must land the agent update before the run completes.
+    h.fake.opts.path = 'example-group/project-renamed'
+    expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toEqual({ state: 'ready' })
+    const row = await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })
+    expect(row.gitRepo).toBe('https://gitlab.com/example-group/project-renamed')
+    expect((await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))!.projectPath).toBe('example-group/project-renamed')
   })
 
   it('retargets an existing agent onto the binding through the workspace edit route', async () => {
