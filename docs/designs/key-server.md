@@ -70,7 +70,11 @@ the daemon does not have — a runtime switches models mid-session.
 
 ### 2.1 Daemon configuration
 
-Cloud daemons accept `--key-server <https-url>` and
+Cloud daemons accept `--key-server <url>` — **http or https, the deployment's choice**: the bearer
+is a projected ServiceAccount token, and a daemon that already reaches its control plane over an
+in-cluster `ws://` gains nothing from one hop being stricter than the boundary it sits in. A
+deployment that terminates TLS on this hop simply configures an https address. Also accepted:
+`--key-server-token-path <path>`, and
 `--key-server-token-path <path>`. The equivalent deployment environment names are
 `KEY_SERVER` and `KEY_SERVER_TOKEN_PATH`; explicit CLI values win. A token path
 without a server is rejected, and these options are rejected outside `--k8s`.
