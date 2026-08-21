@@ -2636,6 +2636,9 @@ export interface HookRepo {
     errorCode: string,
     keepWriteMutex?: boolean
   ): Promise<boolean>
+  /** Release a projection that has nothing left to publish, clearing its due time so the
+   *  bounded claim stops returning it. Any later work re-arms `nextAttemptAt`. */
+  settleReviewProjection(projectionId: string, generation: bigint, leaseOwner: string): Promise<boolean>
   /** Permanently tombstone every durable Check owned by one agent/repository
    * grant before that grant is revoked. The reporter may subsequently use only
    * its cleanup capability; delayed HookRun repair must never revive the row. */

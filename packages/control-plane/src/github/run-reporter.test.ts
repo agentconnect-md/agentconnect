@@ -536,6 +536,7 @@ describe('GithubRunReporter', () => {
       advancePendingReviewProjection: vi.fn(async () => null),
       retryProjectionWrite: vi.fn(async () => true),
       blockProjection: vi.fn(async () => true),
+      settleReviewProjection: vi.fn(async () => true),
       getReviewProjection: vi.fn(async () => ({ ...p, observedState: p.desiredState, nextAttemptAt: null })),
       refreshReviewProjectionTarget: vi.fn(async () => true),
       synchronizeReviewSubjects: vi.fn(async () => true),
@@ -950,7 +951,7 @@ describe('GithubRunReporter', () => {
   ] as const)('publishes a Request review action for every active terminal %s Check', async (desiredState, title) => {
     const p = projection({
       desiredState,
-      observedState: desiredState,
+      observedState: 'in_progress',
       checkRunId: '90071992547409931'
     })
     const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
@@ -1424,7 +1425,7 @@ describe('GithubRunReporter', () => {
 
   it('retries the canonical desired state after an authorization block is woken', async () => {
     const p = projection({
-      desiredState: 'queued',
+      desiredState: 'in_progress',
       observedState: 'queued',
       checkRunId: '90071992547409931',
       lastErrorCode: 'repo_authorization',
@@ -1434,7 +1435,7 @@ describe('GithubRunReporter', () => {
       Response.json({
         id: p.checkRunId,
         external_id: p.externalId,
-        status: 'queued',
+        status: 'in_progress',
         conclusion: null,
         output: { summary: JSON.parse(String(init?.body)).output.summary }
       })
@@ -1446,8 +1447,46 @@ describe('GithubRunReporter', () => {
     expect(fetchImpl).toHaveBeenCalledOnce()
     expect(fetchImpl.mock.calls[0]![1]?.method).toBe('PATCH')
     expect(hooks.completeProjectionWrite).toHaveBeenCalledWith(
-      expect.objectContaining({ projectionId: p.id, observedState: 'queued' })
+      expect.objectContaining({ projectionId: p.id, observedState: 'in_progress' })
     )
+  })
+
+  it('settles a projection GitHub already agrees with instead of re-publishing it', async () => {
+    // The claim is a bounded FIFO over everything whose due time has passed, so a row that
+    // never leaves it both re-writes a settled Check and holds up the rows behind it. Observed
+    // live: 3027 of 3680 due rows had nothing to publish, and a genuinely pending one sat
+    // behind 3671 of them.
+    const p = projection({
+      desiredState: 'success',
+      observedState: 'success',
+      checkRunId: '90071992547409931',
+      subjectSyncGeneration: 1n
+    })
+    const fetchImpl = vi.fn(async () => Response.json({}))
+    const { reporter, hooks } = worker(p, fetchImpl)
+
+    await reporter.tick()
+
+    expect(fetchImpl).not.toHaveBeenCalled()
+    expect(hooks.beginProjectionWrite).not.toHaveBeenCalled()
+    expect(hooks.settleReviewProjection).toHaveBeenCalledWith(p.id, p.generation, expect.any(String))
+  })
+
+  it('still publishes when a newer intent is queued behind the state GitHub shows', async () => {
+    const p = projection({
+      desiredState: 'success',
+      observedState: 'success',
+      checkRunId: '90071992547409931',
+      pendingIntent: JSON.stringify({ desiredState: 'failure', generation: '2' })
+    })
+    const { reporter, hooks } = worker(
+      p,
+      vi.fn(async () => Response.json({}))
+    )
+
+    await reporter.tick()
+
+    expect(hooks.settleReviewProjection).not.toHaveBeenCalled()
   })
 
   it('retains the durable mutex after an ambiguous POST and does not complete', async () => {

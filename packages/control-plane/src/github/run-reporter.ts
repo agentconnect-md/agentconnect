@@ -300,6 +300,7 @@ export interface GithubRunReporterDeps {
     | 'advancePendingReviewProjection'
     | 'retryProjectionWrite'
     | 'blockProjection'
+    | 'settleReviewProjection'
     | 'getReviewProjection'
     | 'listReviewSubjects'
     | 'synchronizeReviewSubjects'
@@ -471,6 +472,20 @@ export class GithubRunReporter {
       projection.pendingIntent !== null
     ) {
       await this.advancePending(projection)
+      return
+    }
+    // Settled: GitHub already shows the desired state, no write is in flight, and no newer
+    // intent is queued. Everything below this point mints a token and writes a Check, so a row
+    // that reaches it with nothing to say re-publishes what is already there. Leave the due set
+    // instead — the claim is a bounded FIFO, and rows that never leave it starve the real work
+    // behind them.
+    if (
+      projection.observedState === projection.desiredState &&
+      projection.writePhase === null &&
+      projection.writeMarker === null &&
+      projection.pendingIntent === null
+    ) {
+      await this.deps.hooks.settleReviewProjection(projection.id, projection.generation, this.workerId)
       return
     }
     const settledAssociationError =
