@@ -16,6 +16,8 @@ const mocks = vi.hoisted(() => ({
   agents: [] as unknown[],
   integrations: [] as unknown[],
   daemonsLoading: false,
+  agentsLoading: false,
+  memberSetsLoading: false,
   balance: { data: { orgId: 'org-pool', balanceMicro: 38_740_000 } } as Record<string, unknown>,
   usage: {} as Record<string, unknown>,
   topUps: {} as Record<string, unknown>,
@@ -31,6 +33,8 @@ vi.mock('@/lib/data-context', () => ({
     daemons: mocks.daemons,
     daemonsLoading: mocks.daemonsLoading,
     agents: mocks.agents,
+    agentsLoading: mocks.agentsLoading,
+    memberSetsLoading: mocks.memberSetsLoading,
     integrations: mocks.integrations
   })
 }))
@@ -155,6 +159,8 @@ beforeEach(() => {
   mocks.agents = []
   mocks.integrations = []
   mocks.daemonsLoading = false
+  mocks.agentsLoading = false
+  mocks.memberSetsLoading = false
   mocks.balance = { data: { orgId: 'org-pool', balanceMicro: 38_740_000 } }
   mocks.usage = { data: usageOverPool() }
   mocks.topUps = { data: [] }
@@ -394,7 +400,10 @@ describe('ClusterDetailView — managed (AgentConnect Cloud)', () => {
     // that number is the one thing this card must not do.
     mocks.daemons = [member('p1')]
     mocks.agents = [onPool('a1')]
-    mocks.usage = { data: { ...usageOverPool(), series: { bucket: 'day', points: [] } } }
+    // The split absent on every point — the shape an older CP actually sends (a current CP
+    // never returns an empty series; its bucket count is floored at 1).
+    const noSplit = usageOverPool().series.points.map(({ byAgent: _, ...p }) => p)
+    mocks.usage = { data: { ...usageOverPool(), series: { bucket: 'day' as const, points: noSplit } } }
 
     const html = render()
 

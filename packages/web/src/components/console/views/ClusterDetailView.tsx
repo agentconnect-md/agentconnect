@@ -57,7 +57,8 @@ import { useOrgs } from '@/lib/org-context'
 export default function ClusterDetailView() {
   const { orgPath } = useOrgs()
   const router = useRouter()
-  const { daemons, agents, integrations, orgSetIds, daemonsLoading } = useConsoleData()
+  const { daemons, agents, integrations, orgSetIds, daemonsLoading, agentsLoading, memberSetsLoading } =
+    useConsoleData()
 
   const showPool = featureFlagEnabled('daemon-pool')
   // Whose infrastructure the pool IS decides how the page reads — see the file header.
@@ -216,7 +217,7 @@ export default function ClusterDetailView() {
             report. Neither borrows the other's figure — a plan's included usage cannot be
             derived from load telemetry, and a self-hoster is billed nothing here. */}
         {managed ? (
-          billingOffered && <CloudCreditsCard hosted={hosted} />
+          billingOffered && <CloudCreditsCard hosted={hosted} placementLoading={agentsLoading || memberSetsLoading} />
         ) : (
           <ClusterCapacityCard {...{ capacityLabel, capacityPct, unbounded, cpu, mem }} />
         )}
@@ -307,6 +308,11 @@ function MetaItem({ icon, text, mono = false }: { icon: string; text: string; mo
 // agents can be summed out of it and nothing else is counted. A CP predating that split can
 // only answer for the whole org, so the card reports the figure as unavailable rather than
 // quoting a number this page has just promised it is not.
+//
+// One approximation remains, and it is the axis the rollup does not have: placement is
+// CURRENT-state while the series is historical, so an agent moved onto the pool brings its
+// whole 30 days along (spend it incurred on a self-connected daemon), and one moved off drops
+// its real Cloud spend. Exact scoping needs a placement dimension in the CP's rollup.
 const CREDITS_WINDOW_DAYS = 30
 const DAY_MS = 24 * 60 * 60 * 1000
 // Two series, one shared axis: both are USD, and a second axis scaled to make a $0.40 day
@@ -339,7 +345,7 @@ async function fetchTopUps(orgId: string, sinceMs: number): Promise<BillingCredi
   return credits
 }
 
-function CloudCreditsCard({ hosted }: { hosted: readonly Agent[] }) {
+function CloudCreditsCard({ hosted, placementLoading }: { hosted: readonly Agent[]; placementLoading: boolean }) {
   const { activeOrg } = useOrgs()
   const orgId = activeOrg?.id ?? null
   // Same `billingAccount` key the Billing page reads, so the two pages cannot disagree.
@@ -357,18 +363,30 @@ function CloudCreditsCard({ hosted }: { hosted: readonly Agent[] }) {
     ? points.map((p) => sumAmounts(Object.entries(p.byAgent ?? {}).flatMap(([id, c]) => (poolIds.has(id) ? [c] : []))))
     : []
   const spent = sumAmounts(daily)
-  const days = daily.length || CREDITS_WINDOW_DAYS
-  const spendError = usage.error
-    ? (usage.error as Error).message
-    : usage.data && !scoped
-      ? 'this control plane does not split spend per agent, so the Cloud-only figure cannot be separated from the org total'
-      : undefined
+  // The spend figure needs BOTH sides settled: the series, and the placement that scopes it.
+  // `hosted` is empty while agents load, and worse, group-placed agents classify as pool-placed
+  // while `orgSetIds` is empty — either would render a confident wrong figure for a round trip.
+  const spendLoading = usage.isLoading || placementLoading
+  // An error is the figure's state only while there is nothing to show: SWR keeps `data` across
+  // a failed revalidation, and flipping the header to "unavailable" beside a chart still drawn
+  // from that same retained series would have the card disagree with itself.
+  const spendError =
+    usage.error && !usage.data
+      ? (usage.error as Error).message
+      : usage.data && !scoped
+        ? 'this control plane does not split spend per agent, so the Cloud-only figure cannot be separated from the org total'
+        : undefined
 
   const credits = topUps.data ?? []
+  // The NET of the credit side — a negative adjustment subtracts, which is what the balance
+  // does with it too.
   const toppedUpMicro = credits.reduce((sum, c) => sum + c.amountMicro, 0)
   // A top-up lands on the bucket it posted into: the last one that started at or before it.
+  // Negative credits stay out of the chart: stacked on a positive spend base, a negative
+  // segment draws DOWNWARD over the brand bar — they are in the net total above instead.
   const topUpByDay = new Map<number, number>()
   for (const c of credits) {
+    if (c.amountMicro <= 0) continue
     const at = Date.parse(c.at)
     for (let i = points.length - 1; i >= 0; i--) {
       if (Date.parse(points[i]!.start) <= at) {
@@ -431,17 +449,24 @@ function CloudCreditsCard({ hosted }: { hosted: readonly Agent[] }) {
           label={`Topped up · ${CREDITS_WINDOW_DAYS}d`}
           value={topUps.data ? fmtMicroUsd(toppedUpMicro) : '—'}
           note={topUps.data ? `${credits.length} top-up${credits.length === 1 ? '' : 's'}` : ' '}
-          error={topUps.error ? (topUps.error as Error).message : undefined}
+          error={topUps.error && !topUps.data ? (topUps.error as Error).message : undefined}
           loading={topUps.isLoading}
         />
         <span className="w-px flex-none self-stretch bg-(--border-subtle)" />
         <Figure
           label={`Spent · ${CREDITS_WINDOW_DAYS}d`}
           value={scoped ? fmtDecimalUsd(spent) : '—'}
-          note={scoped ? `avg ${fmtMicroUsd(Math.round((amountToNumber(spent) / days) * 1_000_000))} / day` : ' '}
+          // Divided by the labelled window, not `daily.length`: the CP floors the window's
+          // start to a local day boundary, so a 30-day span is 31 buckets whenever "now" is
+          // not midnight, and the edge two are partial days.
+          note={
+            scoped
+              ? `avg ${fmtMicroUsd(Math.round((amountToNumber(spent) / CREDITS_WINDOW_DAYS) * 1_000_000))} / day`
+              : ' '
+          }
           error={spendError}
           valueClass="text-[20px] text-(--brand) desktop:text-[24px]"
-          loading={usage.isLoading}
+          loading={spendLoading}
         />
         <Figure
           className="ml-auto flex-none text-right"
@@ -450,7 +475,7 @@ function CloudCreditsCard({ hosted }: { hosted: readonly Agent[] }) {
           // Not only unreachability: `assertAccount` throws BillingShapeError on an unexpected
           // shape and lands here too — likely, since this console deploys ahead of the pinned
           // billing image. So the label stays neutral and the service's own message says which.
-          error={account.error ? (account.error as Error).message : undefined}
+          error={account.error && !account.data ? (account.error as Error).message : undefined}
           valueClass="text-[18px]"
           loading={account.isLoading}
           note="USD"
@@ -465,9 +490,9 @@ function CloudCreditsCard({ hosted }: { hosted: readonly Agent[] }) {
           $50 top-up would be the misleading chart. `minPointSize` keeps the small side
           readable — a pixel floor under any nonzero value, and 0 for a day with none, so an
           idle day still draws nothing. */}
-      {(usage.isLoading || chartData.length > 0) && (
+      {(spendLoading || chartData.length > 0) && (
         <>
-          {usage.isLoading ? (
+          {spendLoading ? (
             <SpendSkeleton />
           ) : (
             <div className={`min-h-[140px] flex-1 px-[6px] pb-[6px] text-(--text-tertiary) ${SEG_FILL} ${SERIES_FILL}`}>
