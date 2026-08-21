@@ -243,6 +243,7 @@ vi.mock('@/components/console/PlaygroundProvider', () => ({
     getPgWorktree: () => false,
     isPgBusy: () => false,
     setPgImage: () => {},
+    openPlayground: () => 'pg_new',
     pgSend: () => {},
     getPgQueue: () => [],
     pgCancelQueued: () => {},

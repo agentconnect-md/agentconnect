@@ -18,6 +18,22 @@ vi.mock('next/link', () => ({
   default: ({ children, href }: { children: ReactElement; href: string }) => <a href={href}>{children}</a>
 }))
 
+// The panel's "New session" action opens a playground then routes to it; renderToStaticMarkup has neither a router nor a provider.
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({
+    push: vi.fn(),
+    replace: vi.fn(),
+    prefetch: vi.fn(),
+    back: vi.fn(),
+    forward: vi.fn(),
+    refresh: vi.fn()
+  })
+}))
+
+vi.mock('@/components/console/PlaygroundProvider', () => ({
+  usePlayground: () => ({ openPlayground: vi.fn(() => 'pg_new') })
+}))
+
 import { SessionsPanel, sessionsPanelWouldHide, sessionsTabStatus } from './SessionsPanel'
 import { SessionDock, SessionDockSlot, type DockTab, type DockTabStatus } from './SessionDock'
 import type { Session } from '@/lib/data'
