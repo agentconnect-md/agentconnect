@@ -268,6 +268,22 @@ describe('GitlabProvisioner (§10.2)', () => {
     expect(h.fake.tokens.get(Number(after.externalTokenId))!.revoked).toBe(false)
   })
 
+  it('disconnect reconciles a marked service account even when no local id was recorded', async () => {
+    const h = await harness()
+    await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
+    // Simulate the crash: the account exists at GitLab, the local facts do not.
+    await prisma.gitlabProjectCredential.deleteMany({})
+    await prisma.gitlabProjectBinding.update({
+      where: { id: h.binding.id },
+      data: { serviceAccountUserId: null, serviceAccountUsername: null, webhookId: null }
+    })
+    expect(await h.provisioner.disconnect(DEFAULT_ORG_ID, h.binding.id)).toEqual({ removed: true })
+    // The marker-found account was deleted before the claim released.
+    expect(h.fake.deletedServiceAccounts).toHaveLength(1)
+    expect(h.fake.serviceAccounts).toHaveLength(0)
+    expect(await prisma.codeHostRepositoryClaim.count({ where: { provider: 'gitlab' } })).toBe(0)
+  })
+
   it('incomplete cleanup keeps cleanup_pending and RETAINS the claim (§19.4)', async () => {
     const h = await harness({ failTokenRevoke: true })
     await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)

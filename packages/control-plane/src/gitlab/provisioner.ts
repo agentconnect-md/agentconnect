@@ -468,33 +468,44 @@ export class GitlabProvisioner {
         }
       }
       const credentials = await this.deps.credentials.listForBinding(bindingId)
-      if (credentials.length > 0 || binding.serviceAccountUserId !== null) {
-        // Token revocation and account deletion are group-scoped operations: the
-        // installer OAuth identity manages only the group's service accounts.
-        const project = (await gitlabProject(
+      // Local ids are NOT proof of external absence: a crash between the
+      // service-account create and its id write leaves both empty while the
+      // marked account exists. Cleanup therefore always resolves the root group
+      // and reconciles the deterministic marker before the claim may release.
+      const project = (await gitlabProject(
+        token,
+        binding.projectId,
+        this.deps.fetchImpl
+      )) as GitlabProjectWithNamespace | null
+      if (!project?.namespace) {
+        throw new GitlabApiError('project namespace unavailable for cleanup', 0, 'INTERNAL', true)
+      }
+      const root = await gitlabRootNamespace(token, project.namespace, this.deps.fetchImpl)
+      if (root.kind === 'group') {
+        const marked = await gitlabFindServiceAccount(
           token,
-          binding.projectId,
+          root.id,
+          gitlabServiceAccountUsername(binding.projectId),
           this.deps.fetchImpl
-        )) as GitlabProjectWithNamespace | null
-        if (!project?.namespace) {
-          throw new GitlabApiError('project namespace unavailable for cleanup', 0, 'INTERNAL', true)
-        }
-        const root = await gitlabRootNamespace(token, project.namespace, this.deps.fetchImpl)
-        if (root.kind !== 'group') throw new GitlabApiError('root group unavailable for cleanup', 0, 'INTERNAL', false)
-        if (binding.serviceAccountUserId !== null) {
+        )
+        const accountUserId = binding.serviceAccountUserId ?? (marked ? BigInt(marked.id) : null)
+        if (accountUserId !== null) {
+          // Recorded tokens are revoked individually (belt); deleting the
+          // account then invalidates anything a crash left unrecorded.
           for (const credential of credentials) {
             await gitlabRevokeServiceAccountToken(
               token,
               root.id,
-              binding.serviceAccountUserId,
+              accountUserId,
               credential.externalTokenId,
               this.deps.fetchImpl
             ).catch(swallow404)
           }
-          await gitlabDeleteServiceAccount(token, root.id, binding.serviceAccountUserId, this.deps.fetchImpl).catch(
-            swallow404
-          )
+          await gitlabDeleteServiceAccount(token, root.id, accountUserId, this.deps.fetchImpl).catch(swallow404)
         }
+      } else if (binding.serviceAccountUserId !== null || credentials.length > 0) {
+        // Provider facts exist but their group is unreachable: never release.
+        throw new GitlabApiError('root group unavailable for cleanup', 0, 'INTERNAL', false)
       }
     } catch (e) {
       const reason = e instanceof GitlabApiError ? `gitlab_${e.status || 'unreachable'}` : 'cleanup_failed'
