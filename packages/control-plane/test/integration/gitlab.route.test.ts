@@ -22,8 +22,30 @@ const PUBLIC_CP = 'https://api.example.test'
 
 const cipher = makeSecretCipher({ SECRET_CIPHER: 'none' } as never)
 
-function gitlabFetch(): FetchLike {
+function gitlabFetch(script: { accessLevel?: number } = {}): FetchLike {
   return async (url) => {
+    if (/\/api\/v4\/projects\/\d+\/members\/all\/\d+$/.test(url)) {
+      return Response.json({ access_level: script.accessLevel ?? 50, state: 'active', expires_at: null })
+    }
+    if (/\/api\/v4\/projects\/\d+$/.test(url)) {
+      const id = Number(/projects\/(\d+)$/.exec(url)![1])
+      return Response.json({
+        id,
+        path_with_namespace: 'example-group/example-project',
+        default_branch: 'main',
+        http_url_to_repo: 'https://gitlab.com/example-group/example-project.git'
+      })
+    }
+    if (url.includes('/api/v4/projects?')) {
+      return Response.json([
+        {
+          id: 4455667,
+          path_with_namespace: 'example-group/example-project',
+          default_branch: 'main',
+          last_activity_at: '2026-08-20T00:00:00.000Z'
+        }
+      ])
+    }
     if (url.endsWith('/oauth/token')) {
       return Response.json({
         access_token: 'at-1',
@@ -45,7 +67,7 @@ afterEach(async () => {
   running = undefined
 })
 
-function gitlabApp(): HttpApp {
+function gitlabApp(script: { accessLevel?: number } = {}): HttpApp {
   const oauth = new GitlabOauthService({
     cfg: { clientId: 'client-1', clientSecret: 'secret-1' },
     connections: new PgGitlabConnectionRepo(prisma),
@@ -55,10 +77,10 @@ function gitlabApp(): HttpApp {
     clock: systemClock,
     publicCpUrl: PUBLIC_CP,
     webAppUrl: 'https://console.example.test',
-    fetchImpl: gitlabFetch()
+    fetchImpl: gitlabFetch(script)
   })
   running = buildHttpApp(prisma, { PUBLIC_CP_URL: PUBLIC_CP }, undefined, undefined, {
-    gitlab: { oauth }
+    gitlab: { oauth, fetchImpl: gitlabFetch(script) }
   })
   return running
 }
@@ -153,6 +175,93 @@ describe('gitlab oauth routes', () => {
     expect(res.statusCode).toBe(200)
     expect((res.json() as { state: string }).state).toBe('disconnected')
     expect(await prisma.gitlabConnectionSecret.findUnique({ where: { connectionId } })).toBeNull()
+  })
+
+  it('searches accessible projects through the connection', async () => {
+    const a = gitlabApp()
+    const { connectionId } = await connect(a)
+    const res = await a.app.inject({
+      method: 'GET',
+      url: `${ORG}/gitlab/connections/${connectionId}/projects?search=example`
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual({
+      projects: [
+        {
+          projectId: '4455667',
+          path: 'example-group/example-project',
+          defaultBranch: 'main',
+          lastActivityAt: '2026-08-20T00:00:00.000Z'
+        }
+      ],
+      nextPage: null
+    })
+  })
+
+  it('binds a project: re-fetch, Maintainer gate, claim, provisioning state', async () => {
+    const a = gitlabApp()
+    const { connectionId } = await connect(a)
+    const res = await a.app.inject({
+      method: 'POST',
+      url: `${ORG}/gitlab/projects`,
+      payload: { connectionId, projectId: '4455667' }
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toMatchObject({
+      projectId: '4455667',
+      projectPath: 'example-group/example-project',
+      state: 'provisioning',
+      webhookInstalled: false
+    })
+    // The claim and the provider-qualified catalog row were acquired atomically.
+    const claim = await prisma.codeHostRepositoryClaim.findUniqueOrThrow({
+      where: { provider_externalId: { provider: 'gitlab', externalId: 4455667n } }
+    })
+    expect(claim.orgId).toBe(DEFAULT_ORG_ID)
+    expect(claim.bindingRef).toBeTruthy()
+    await prisma.codeHostRepository.findUniqueOrThrow({
+      where: {
+        orgId_provider_externalId: { orgId: DEFAULT_ORG_ID, provider: 'gitlab', externalId: 4455667n }
+      }
+    })
+    // Same org, same project again: the binding uniqueness answers first.
+    const dup = await a.app.inject({
+      method: 'POST',
+      url: `${ORG}/gitlab/projects`,
+      payload: { connectionId, projectId: '4455667' }
+    })
+    expect(dup.statusCode).toBe(409)
+    const list = await a.app.inject({ method: 'GET', url: `${ORG}/gitlab/projects` })
+    expect((list.json() as { bindings: unknown[] }).bindings).toHaveLength(1)
+  })
+
+  it('refuses managed installation below Maintainer (§10.1)', async () => {
+    const a = gitlabApp({ accessLevel: 30 })
+    const { connectionId } = await connect(a)
+    const res = await a.app.inject({
+      method: 'POST',
+      url: `${ORG}/gitlab/projects`,
+      payload: { connectionId, projectId: '4455667' }
+    })
+    expect(res.statusCode).toBe(403)
+    expect(await prisma.gitlabProjectBinding.count()).toBe(0)
+    expect(await prisma.codeHostRepositoryClaim.count()).toBe(0)
+  })
+
+  it('refuses a project already claimed by another organization, without naming it', async () => {
+    const a = gitlabApp()
+    const { connectionId } = await connect(a)
+    await prisma.codeHostRepositoryClaim.create({
+      data: { provider: 'gitlab', externalId: 4455667n, orgId: 'some-other-org', state: 'active' }
+    })
+    const res = await a.app.inject({
+      method: 'POST',
+      url: `${ORG}/gitlab/projects`,
+      payload: { connectionId, projectId: '4455667' }
+    })
+    expect(res.statusCode).toBe(409)
+    expect((res.json() as { message: string }).message).not.toContain('some-other-org')
+    expect(await prisma.gitlabProjectBinding.count()).toBe(0)
   })
 
   it('404s the whole surface when the deployment has no gitlab oauth app', async () => {

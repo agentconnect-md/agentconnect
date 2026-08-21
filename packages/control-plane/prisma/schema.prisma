@@ -95,6 +95,7 @@ model Org {
   bots                      Bot[]
   githubInstallations       GithubInstallation[]
   gitlabConnections         GitlabConnection[]
+  gitlabProjectBindings     GitlabProjectBinding[]
   slackUserConfigs          SlackUserConfig[]
   inviteLink                OrgInviteLink?
   mcpProviders              McpProvider[]
@@ -953,6 +954,9 @@ model CodeHostRepositoryClaim {
   bindingRef String?  @db.Uuid // owning provider binding (e.g. GitlabProjectBinding), soft reference
   generation BigInt   @default(1) // incremented on ownership transfer
   state      String // provisioning | active | transferring | cleanup_pending — app-layer closed set
+  // Metadata-only cleanup facts (external ids, never secrets) preserved when the
+  // owning binding disappears before external cleanup completed (§10.2/§19.4).
+  tombstone  Json?
   createdAt  DateTime @default(now()) @db.Timestamptz(6)
   updatedAt  DateTime @updatedAt @db.Timestamptz(6)
 
@@ -2485,6 +2489,7 @@ model GitlabConnection {
   org    Org                     @relation(fields: [orgId], references: [id], onDelete: Cascade)
   user   User?                   @relation("GitlabConnectionUser", fields: [userId], references: [id], onDelete: SetNull)
   secret GitlabConnectionSecret?
+  installedBindings GitlabProjectBinding[] @relation("GitlabBindingInstaller")
 
   @@unique([orgId, gitlabUserId])
   @@index([orgId])
@@ -2501,6 +2506,84 @@ model GitlabConnectionSecret {
   connection GitlabConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
 
   @@map("gitlab_connection_secret")
+}
+
+/// One managed GitLab.com project (gitlab-com-integration.md §8.2, §10): the
+/// org-scoped binding that owns the Project Service Account, purpose-separated
+/// credentials, and the managed webhook. `state` is TEXT with the app-layer
+/// closed set: provisioning | ready | admin_degraded | runtime_degraded |
+/// cleanup_pending — never collapsed into one connected boolean (§8.2).
+model GitlabProjectBinding {
+  id                     String    @id @default(uuid()) @db.Uuid
+  orgId                  String
+  projectId              BigInt // numeric GitLab.com project id — the match key
+  projectPath            String // current namespaced path — display only, refreshed by the reconciler
+  defaultBranch          String?
+  // The OAuth connection currently responsible for administration (§7.1); a
+  // different Maintainer/Owner may explicitly take over. SetNull on removal —
+  // the binding then reads admin_degraded, never silently transfers.
+  installerConnectionId  String?   @db.Uuid
+  serviceAccountUserId   BigInt? // Project Service Account numeric user id (§7.2)
+  serviceAccountUsername String?
+  webhookId              BigInt? // the one AgentConnect-managed project webhook (§10.3)
+  desiredEventsHash      String? // hash of the enabled-hook event union the webhook was last converged to
+  credentialEpoch        BigInt    @default(1) // purge fence: bumped on rotation/revocation/disconnect
+  state                  String
+  stateReason            String? // bounded normalized repair category for degraded states
+  createdAt              DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt              DateTime  @updatedAt @db.Timestamptz(6)
+
+  org         Org               @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  installer   GitlabConnection? @relation("GitlabBindingInstaller", fields: [installerConnectionId], references: [id], onDelete: SetNull)
+  credentials GitlabProjectCredential[]
+  webhookSecret GitlabWebhookSecret?
+
+  @@unique([orgId, projectId])
+  @@index([orgId])
+  @@map("gitlab_project_binding")
+}
+
+/// One purpose-separated service-account PAT (§7.3): read | git_write | effect.
+/// Metadata only — the sealed token value lives in the side-table below, read
+/// exclusively through its secret store. Every row records the provider token
+/// id and the explicit 90-day expiry the reconciler validated on create.
+model GitlabProjectCredential {
+  id                String    @id @default(uuid()) @db.Uuid
+  bindingId         String    @db.Uuid
+  purpose           String // read | git_write | effect — app-layer closed set
+  externalTokenId   BigInt // provider PAT id — the revocation/rotation handle
+  scopes            String[]  @default([])
+  providerExpiresAt DateTime  @db.Timestamptz(6)
+  generation        BigInt    @default(1) // rotation counter; the active row is the (binding, purpose) row
+  createdAt         DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime  @updatedAt @db.Timestamptz(6)
+
+  binding GitlabProjectBinding           @relation(fields: [bindingId], references: [id], onDelete: Cascade)
+  secret  GitlabProjectCredentialSecret?
+
+  @@unique([bindingId, purpose])
+  @@map("gitlab_project_credential")
+}
+
+/// Sealed PAT value, 1:1 with its credential row (BotSecret discipline).
+model GitlabProjectCredentialSecret {
+  credentialId String @id @db.Uuid
+  token        String // stored SecretCipher representation
+
+  credential GitlabProjectCredential @relation(fields: [credentialId], references: [id], onDelete: Cascade)
+
+  @@map("gitlab_project_credential_secret")
+}
+
+/// Sealed webhook signing key, 1:1 with the binding (§11.1). Relay-only secret:
+/// compiled into rules, never sent to a daemon.
+model GitlabWebhookSecret {
+  bindingId  String @id @db.Uuid
+  signingKey String // stored SecretCipher representation of the whsec_ form
+
+  binding GitlabProjectBinding @relation(fields: [bindingId], references: [id], onDelete: Cascade)
+
+  @@map("gitlab_webhook_secret")
 }
 
 /// One-shot OAuth authorization state (§9.1): bound to org, user, browser (a
