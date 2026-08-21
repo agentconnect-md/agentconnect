@@ -22,6 +22,21 @@ vi.mock('next/link', () => ({
   default: ({ children, href }: { children: ReactElement; href: string }) => <a href={href}>{children}</a>
 }))
 
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({
+    push: vi.fn(),
+    replace: vi.fn(),
+    prefetch: vi.fn(),
+    back: vi.fn(),
+    forward: vi.fn(),
+    refresh: vi.fn()
+  })
+}))
+
+vi.mock('@/components/console/PlaygroundProvider', () => ({
+  usePlayground: () => ({ openPlayground: vi.fn(() => 'pg_new') })
+}))
+
 // The pin-hydration read, held open so the "still loading" window is a state the test controls rather than a race it hopes to win.
 const detailCalls: Array<(value: unknown) => void> = []
 // Partial: the platform registry SessionsPanel pulls in re-exports much of this module, and replacing it wholesale fails at import time.

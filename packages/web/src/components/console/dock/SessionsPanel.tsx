@@ -4,6 +4,7 @@
 
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import useSWR from 'swr'
 import {
   agentLabel,
@@ -18,7 +19,8 @@ import {
 import { fetchSessionDetail, sessionFromDetailDto, type SessionRelationDto } from '@/lib/api'
 import { useOrgs } from '@/lib/org-context'
 import { useConsoleData } from '@/lib/data-context'
-import { Icon } from '@/components/ui'
+import { Button, Icon } from '@/components/ui'
+import { usePlayground } from '@/components/console/PlaygroundProvider'
 import { AgentIconView, PlatformMark } from '@/components/marks'
 import type { DockTabStatus } from './SessionDock'
 import { groupSessionsByAge } from '@/lib/session-age'
@@ -159,6 +161,15 @@ export function SessionsPanel({
   // Schedule-triggered rows show the schedule's name; `agents` backs the chips.
   const { agents, crons } = useConsoleData()
   const cronName = useCallback((cronId: string) => crons.find((c) => c.id === cronId)?.name, [crons])
+  // A new session starts a fresh playground with the open session's agent — the panel's one forward action, kept beside the escape to the full list.
+  const router = useRouter()
+  const { openPlayground } = usePlayground()
+  const currentAgent = current.agentId ? agents.find((a) => a.id === current.agentId) : undefined
+  const onNewSession = () => {
+    if (!currentAgent) return
+    const pid = openPlayground(currentAgent)
+    router.push(orgPath(`/sessions/${pid}`))
+  }
 
   // Pins are localStorage (lib/session-pins.ts says why not the CP); SSR has none, so they land in an effect to match the first paint.
   const [pins, setPins] = useState<SessionPin[]>([])
@@ -415,9 +426,15 @@ export function SessionsPanel({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col px-[13px] pt-3 pb-[10px]">
-      {/* The tab names the panel, so the header holds only the escape to /sessions, carrying the filter unless that page cannot ask it. */}
-      <div className="mb-[9px] flex flex-none items-center justify-end px-[9px]">
-        <Link className="lnk font-sans text-[12px] font-medium leading-normal" href={allSessionsHref}>
+      {/* The tab names the panel, so the header holds the one forward action plus the escape to /sessions, carrying the filter unless that page cannot ask it. */}
+      <div className="mb-[9px] flex flex-none items-center gap-2 px-[9px]">
+        {currentAgent ? (
+          <Button size="sm" onClick={onNewSession} ariaLabel={`New session with ${agentLabel(currentAgent)}`}>
+            <Icon name="plus" size={14} />
+            New session
+          </Button>
+        ) : null}
+        <Link className="lnk ml-auto font-sans text-[12px] font-medium leading-normal" href={allSessionsHref}>
           All sessions
           <Icon name="arrow-right" size={12} />
         </Link>
