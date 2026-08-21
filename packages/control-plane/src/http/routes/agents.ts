@@ -35,6 +35,7 @@ import type {
   DreamFileReadContent
 } from '@agentconnect.md/protocol'
 import {
+  GITLAB_COM_V1_FEATURE,
   MAX_WORKSPACE_EDIT_BYTES,
   AGENT_CONFIG_REVISION_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
@@ -255,15 +256,28 @@ function configRevisionSupportedOn(daemon: DaemonView | null): boolean {
 /** No assigned organization rows — the shape a minimal/legacy graph resolves to. */
 const NO_ORGANIZATION_ENVIRONMENT: AssignedOrganizationMetadata = { variables: [], secretKeys: [] }
 
-function workspaceToDto(workspace: AgentWorkspace): AgentDtoT['workspace'] {
+function workspaceToDto(workspace: AgentWorkspace, workspaceRepoId?: bigint): AgentDtoT['workspace'] {
   if (workspace.mode === 'scratch') return { mode: 'scratch' }
+  if (workspace.mode === 'gitlab') {
+    return {
+      mode: 'gitlab',
+      worktree: workspace.isolation === 'session',
+      gitRepo: workspace.gitRepo,
+      ...(workspace.gitBranch !== undefined ? { gitBranch: workspace.gitBranch } : {}),
+      ...(workspace.agentDir !== undefined ? { agentDir: workspace.agentDir } : {}),
+      ...(workspaceRepoId !== undefined ? { projectId: workspaceRepoId.toString() } : {}),
+      ...(workspace.gitAccess !== undefined ? { gitAccess: workspace.gitAccess } : {})
+    }
+  }
   return {
     mode: 'github',
     worktree: workspace.isolation === 'session',
     gitRepo: workspace.gitRepo,
     ...(workspace.gitBranch !== undefined ? { gitBranch: workspace.gitBranch } : {}),
     ...(workspace.agentDir !== undefined ? { agentDir: workspace.agentDir } : {}),
-    ...(workspace.installationId !== undefined ? { installationId: workspace.installationId } : {}),
+    ...(workspace.mode === 'github' && workspace.installationId !== undefined
+      ? { installationId: workspace.installationId }
+      : {}),
     ...(workspace.gitAccess !== undefined ? { gitAccess: workspace.gitAccess } : {})
   }
 }
@@ -320,7 +334,7 @@ function toDto(
     daemonName: a.daemonId ? placementView.daemonName : null,
     setId: a.setId,
     placementReady: placementView.ready,
-    workspace: workspaceToDto(a.workspace),
+    workspace: workspaceToDto(a.workspace, a.workspaceRepoId),
     workspaceRepoId: a.workspaceRepoId?.toString() ?? null,
     capabilities: a.capabilities,
     createdAt: a.createdAt.toISOString(),
@@ -1485,10 +1499,40 @@ export function agentRoutes(deps: HttpDeps) {
                 ...(ws.installationId !== undefined ? { installationId: ws.installationId } : {}),
                 ...(ws.gitAccess !== undefined ? { gitAccess: ws.gitAccess } : {})
               }
-            : ws
-              ? { mode: 'scratch', isolation: 'shared' }
-              : undefined
+            : ws?.mode === 'gitlab'
+              ? undefined // resolved below against the managed binding
+              : ws
+                ? { mode: 'scratch', isolation: 'shared' }
+                : undefined
         let workspaceRepoId: bigint | undefined
+        if (ws?.mode === 'gitlab') {
+          if (!deps.gitlab) return conflict('gitlab workspaces are not enabled on this control plane')
+          const projectId = BigInt(ws.projectId)
+          const binding = await deps.repos.gitlabProjectBinding.byProject(orgOf(req), projectId)
+          if (!binding || binding.state === 'cleanup_pending') {
+            return conflict('the project is not a managed GitLab binding in this organization')
+          }
+          // §17.3: a DIRECT placement must advertise the feature NOW — the
+          // delivery/reconcile gates would otherwise strand a 201'd agent
+          // assigned to a daemon that can never materialize it.
+          if (req.body.daemonId !== undefined) {
+            const daemon = await deps.registry.getAvailable(orgOf(req), DaemonId(req.body.daemonId))
+            if (!daemon?.capabilities.features.includes(GITLAB_COM_V1_FEATURE)) {
+              return conflict('the selected daemon does not support GitLab workspaces yet — upgrade it first')
+            }
+          }
+          // The binding, not caller input, is the authority for the clone URL
+          // and, absent an explicit branch, for the default branch.
+          workspace = {
+            mode: 'gitlab',
+            isolation: ws.worktree === false ? 'shared' : 'session',
+            gitRepo: `https://gitlab.com/${binding.projectPath}`,
+            gitBranch: ws.gitBranch ?? binding.defaultBranch ?? 'main',
+            ...(ws.agentDir !== undefined ? { agentDir: ws.agentDir } : {}),
+            gitAccess: ws.gitAccess ?? 'write'
+          }
+          workspaceRepoId = projectId
+        }
         if (ws?.mode === 'github' && ws.installationId === undefined && ws.gitAccess === 'write') {
           return conflict('github write access requires a GitHub App installation')
         }
@@ -2322,6 +2366,36 @@ export function agentRoutes(deps: HttpDeps) {
               gitAccess: req.body.gitAccess
             }
             workspaceRepoId = ref.repoId
+          }
+          if (req.body.mode === 'gitlab') {
+            if (!deps.gitlab) return conflict('gitlab workspaces are not enabled on this control plane')
+            // §17.3: the daemon that will re-activate this workspace must
+            // decode the gitlab spec arm — direct placement or a pool/duty
+            // incumbent alike (the earlier check only proves workspace-edit-v2).
+            const servingId = (await deps.placementResolver.servingDaemon(existing)) ?? existing.daemonId
+            if (servingId) {
+              const serving = await deps.registry.getAvailable(existing.orgId, servingId)
+              if (!serving?.capabilities.features.includes(GITLAB_COM_V1_FEATURE)) {
+                return conflict('the serving daemon does not support GitLab workspaces yet — upgrade it first')
+              }
+            }
+            const projectId = BigInt(req.body.projectId)
+            const binding = await deps.repos.gitlabProjectBinding.byProject(existing.orgId, projectId)
+            if (!binding || binding.state === 'cleanup_pending') {
+              return conflict('the project is not a managed GitLab binding in this organization')
+            }
+            const worktree =
+              req.body.worktree ??
+              (existing.workspace.mode !== 'scratch' ? existing.workspace.isolation === 'session' : true)
+            workspace = {
+              mode: 'gitlab',
+              isolation: worktree ? 'session' : 'shared',
+              gitRepo: `https://gitlab.com/${binding.projectPath}`,
+              gitBranch: req.body.gitBranch ?? binding.defaultBranch ?? 'main',
+              ...(req.body.agentDir ? { agentDir: req.body.agentDir } : {}),
+              gitAccess: req.body.gitAccess
+            }
+            workspaceRepoId = projectId
           }
 
           const writableRepoId =

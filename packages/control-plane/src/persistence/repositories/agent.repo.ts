@@ -206,6 +206,16 @@ function workspaceOf(a: Agent): AgentWorkspace {
       ...(a.installationId !== null ? { installationId: a.installationId, gitAccess: a.gitAccess } : {})
     }
   }
+  if (a.workspaceMode === 'gitlab') {
+    return {
+      mode: 'gitlab',
+      isolation: a.workspaceIsolation,
+      gitRepo: redactGitUrlSecrets(a.gitRepo ?? ''),
+      ...(a.gitBranch !== null ? { gitBranch: a.gitBranch } : {}),
+      ...(a.agentDir !== null ? { agentDir: a.agentDir } : {}),
+      gitAccess: a.gitAccess
+    }
+  }
   return { mode: 'scratch', isolation: a.workspaceIsolation }
 }
 
@@ -371,13 +381,15 @@ export class PgAgentRepo implements AgentRepo {
             ? { createdByUserId: input.createdByUserId, lastModifiedByUserId: input.createdByUserId }
             : {}),
           workspaceMode: ws.mode,
-          workspaceIsolation: ws.mode === 'github' ? (ws.isolation ?? 'session') : 'shared',
-          gitRepo: ws.mode === 'github' ? ws.gitRepo : null,
-          gitBranch: ws.mode === 'github' ? (ws.gitBranch ?? 'main') : null,
-          agentDir: ws.mode === 'github' ? (ws.agentDir ?? null) : null,
+          workspaceIsolation: ws.mode !== 'scratch' ? (ws.isolation ?? 'session') : 'shared',
+          gitRepo: ws.mode !== 'scratch' ? ws.gitRepo : null,
+          gitBranch: ws.mode !== 'scratch' ? (ws.gitBranch ?? 'main') : null,
+          agentDir: ws.mode !== 'scratch' ? (ws.agentDir ?? null) : null,
           installationId: ws.mode === 'github' ? (ws.installationId ?? null) : null,
-          workspaceRepoId: ws.mode === 'github' ? (input.workspaceRepoId ?? null) : null,
-          ...(ws.mode === 'github' && ws.installationId ? { gitAccess: ws.gitAccess ?? 'write' } : {}),
+          workspaceRepoId: ws.mode !== 'scratch' ? (input.workspaceRepoId ?? null) : null,
+          ...((ws.mode === 'github' && ws.installationId) || ws.mode === 'gitlab'
+            ? { gitAccess: ws.gitAccess ?? 'write' }
+            : {}),
           capabilities: input.capabilities ?? [],
           // #536 self-introduce-on-join (dedicated column; absent ⇒ DB default false).
           ...(input.introduceOnJoin !== undefined ? { introduceOnJoin: input.introduceOnJoin } : {}),
@@ -640,13 +652,13 @@ export class PgAgentRepo implements AgentRepo {
           where: { id: agentId, orgId, workspaceMode: expectedMode, lastModifiedAt: expectedLastModifiedAt },
           data: {
             workspaceMode: workspace.mode,
-            workspaceIsolation: workspace.mode === 'github' ? (workspace.isolation ?? 'session') : 'shared',
-            gitRepo: workspace.mode === 'github' ? workspace.gitRepo : null,
-            gitBranch: workspace.mode === 'github' ? (workspace.gitBranch ?? 'main') : null,
-            agentDir: workspace.mode === 'github' ? (workspace.agentDir ?? null) : null,
+            workspaceIsolation: workspace.mode !== 'scratch' ? (workspace.isolation ?? 'session') : 'shared',
+            gitRepo: workspace.mode !== 'scratch' ? workspace.gitRepo : null,
+            gitBranch: workspace.mode !== 'scratch' ? (workspace.gitBranch ?? 'main') : null,
+            agentDir: workspace.mode !== 'scratch' ? (workspace.agentDir ?? null) : null,
             installationId: workspace.mode === 'github' ? (workspace.installationId ?? null) : null,
             workspaceRepoId: workspaceRepoId ?? null,
-            gitAccess: workspace.mode === 'github' ? (workspace.gitAccess ?? 'write') : 'write',
+            gitAccess: workspace.mode !== 'scratch' ? (workspace.gitAccess ?? 'write') : 'write',
             lastModifiedAt: new Date(Math.max(Date.now(), expectedLastModifiedAt.getTime() + 1)),
             ...(byUserId ? { lastModifiedByUserId: byUserId } : {}),
             // `workspace` rides the AgentSpec, so this edit joins the same
@@ -693,13 +705,13 @@ export class PgAgentRepo implements AgentRepo {
           },
           data: {
             workspaceMode: workspace.mode,
-            workspaceIsolation: workspace.mode === 'github' ? (workspace.isolation ?? 'session') : 'shared',
-            gitRepo: workspace.mode === 'github' ? workspace.gitRepo : null,
-            gitBranch: workspace.mode === 'github' ? (workspace.gitBranch ?? 'main') : null,
-            agentDir: workspace.mode === 'github' ? (workspace.agentDir ?? null) : null,
+            workspaceIsolation: workspace.mode !== 'scratch' ? (workspace.isolation ?? 'session') : 'shared',
+            gitRepo: workspace.mode !== 'scratch' ? workspace.gitRepo : null,
+            gitBranch: workspace.mode !== 'scratch' ? (workspace.gitBranch ?? 'main') : null,
+            agentDir: workspace.mode !== 'scratch' ? (workspace.agentDir ?? null) : null,
             installationId: workspace.mode === 'github' ? (workspace.installationId ?? null) : null,
             workspaceRepoId: workspaceRepoId ?? null,
-            gitAccess: workspace.mode === 'github' ? (workspace.gitAccess ?? 'write') : 'write',
+            gitAccess: workspace.mode !== 'scratch' ? (workspace.gitAccess ?? 'write') : 'write',
             lastModifiedAt: new Date(Math.max(Date.now(), expectedLastModifiedAt.getTime() + 1)),
             ...(byUserId ? { lastModifiedByUserId: byUserId } : {}),
             // `workspace` rides the AgentSpec, so this edit joins the same
@@ -714,6 +726,23 @@ export class PgAgentRepo implements AgentRepo {
       if (typeof err === 'object' && err !== null && 'code' in err && err.code === 'P2025') return null
       throw err
     }
+  }
+
+  async refreshGitlabWorkspacePath(orgId: OrgId, projectId: bigint, cloneUrl: string): Promise<AgentId[]> {
+    // The clone URL is a mutable display/transport hint keyed by the immutable
+    // project id (§8.1); a rename refresh must reach every replicated spec, so
+    // the write joins the configRevision ordering domain the daemon fences on.
+    const drifted = await this.db.agent.findMany({
+      where: { orgId, workspaceMode: 'gitlab', workspaceRepoId: projectId, NOT: { gitRepo: cloneUrl } },
+      select: { id: true }
+    })
+    if (drifted.length === 0) return []
+    const ids = drifted.map((row: { id: string }) => row.id)
+    await this.db.agent.updateMany({
+      where: { id: { in: ids }, orgId, workspaceMode: 'gitlab', workspaceRepoId: projectId },
+      data: { gitRepo: cloneUrl, configRevision: { increment: 1 } }
+    })
+    return ids.map((id: string) => AgentId(id))
   }
 
   async setWorkspaceRepoId(agentId: AgentId, repoId: bigint): Promise<boolean> {

@@ -58,6 +58,22 @@ export const AgentWorkspace = z.discriminatedUnion('mode', [
     // the local credential helper — no durable git credential on the host.
     gitCredential: z.enum(['github-app']).optional(),
     additionalRepos: z.array(AgentAdditionalRepo).default([])
+  }),
+  // gitlab-com-integration.md M4: a managed GitLab project binding is the
+  // workspace. FRAME-FATAL on a pre-GitLab daemon (§17.3): the CP never
+  // projects this arm to a daemon that has not advertised gitlab-com-v1 —
+  // reconcile withholds it and AgentDelivery/placement gate on the same
+  // predicate. Credentials are implied managed (binding PATs over gitcred v2);
+  // there is no anonymous gitlab mode.
+  z.object({
+    mode: z.literal('gitlab'),
+    isolation: z.enum(['shared', 'session']).default('shared'),
+    gitRepo: z.string(), // https://gitlab.com/<full/namespaced/path> (subgroups preserved)
+    branch: z.string().default('main'),
+    agentDir: z.string().optional(),
+    // The rename-stable numeric project id — the gitcred v2 request identity.
+    projectId: z.string().regex(/^[1-9]\d*$/),
+    additionalRepos: z.array(AgentAdditionalRepo).default([])
   })
 ])
 export type AgentWorkspace = z.infer<typeof AgentWorkspace>

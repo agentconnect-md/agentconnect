@@ -26,6 +26,7 @@ import { resolveGitlabAppConfig } from './gitlab/config.js'
 import type { FetchLike as GitlabFetchLike } from './gitlab/api.js'
 import { GitlabOauthService } from './gitlab/oauth.service.js'
 import { GitlabProvisioner } from './gitlab/provisioner.js'
+import { GitlabGitcredService } from './gitlab/gitcred.service.js'
 import { GitlabCredentialRotator } from './gitlab/rotator.js'
 import { GitlabMembershipAuthzService } from './gitlab/membership-authz.service.js'
 import { unionGitlabWebhookEvents } from './gitlab/webhook-events.js'
@@ -970,15 +971,39 @@ export function buildContainer(
           // §11.1: the union every enabled gitlab hook on the project wants.
           desiredWebhookEvents: async (orgId, projectId) =>
             unionGitlabWebhookEvents(await repos.hook.listForOrgKind(OrgId(orgId), 'gitlab'), projectId),
+          // Awaited under the run lease (§17.3 round 3): the durable clone-URL
+          // convergence rides the saga; only the daemon fan-out stays async.
+          syncWorkspacePaths: async (orgId, projectId, projectPath) => {
+            const agentIds = await repos.agent.refreshGitlabWorkspacePath(
+              OrgId(orgId),
+              projectId,
+              `https://gitlab.com/${projectPath}`
+            )
+            for (const agentId of agentIds) {
+              void repos.agent
+                .getUnscoped(agentId)
+                .then(
+                  (agent) =>
+                    agent &&
+                    agentDelivery.upsert(agent, (err, daemonId) =>
+                      http.log.warn(
+                        { err, agentId, daemonId },
+                        'gitlab rename: agent/upsert failed (backstop: reconnect)'
+                      )
+                    )
+                )
+                .catch((err) => http.log.warn({ err, agentId }, 'gitlab rename: agent refresh fan-out failed'))
+            }
+          },
           // Rules embed binding/webhook facts — recompile the project's hooks
           // after every run that may have changed them (assign or remove).
           onConverged: (orgId, projectId) => {
-            void repos.hook
-              .listForOrgKind(OrgId(orgId), 'gitlab')
-              .then(async (rows) => {
-                for (const row of rows) if (row.repoId === projectId) await hookService.broadcast(row)
-              })
-              .catch((err) => http.log.warn({ err }, 'gitlab hook rebroadcast failed'))
+            void (async () => {
+              // Rules embed binding/webhook facts — recompile the project's hooks.
+              for (const row of await repos.hook.listForOrgKind(OrgId(orgId), 'gitlab')) {
+                if (row.repoId === projectId) await hookService.broadcast(row)
+              }
+            })().catch((err) => http.log.warn({ err }, 'gitlab converge fan-out failed'))
           },
           ...(opts.gitlabFetch ? { fetchImpl: opts.gitlabFetch } : {}),
           log: { warn: (obj, msg) => http.log.warn(obj, msg) }
@@ -1612,6 +1637,17 @@ export function buildContainer(
     organizationKnowledge: repos.organizationKnowledge,
     externalMemoryConnection: repos.externalMemoryConnection,
     ...(github ? { github } : {}),
+    // gitcred v2 (§13.1): the gitlab arm serves binding PATs; absent ⇒ disabled.
+    ...(gitlab
+      ? {
+          gitlabGitcred: new GitlabGitcredService({
+            bindings: repos.gitlabProjectBinding,
+            credentials: new PgGitlabProjectCredentialRepo(prisma),
+            credentialSecrets: new PgGitlabProjectCredentialSecretStore(prisma, secretCipher),
+            clock
+          })
+        }
+      : {}),
     ...(githubReviewBroker ? { githubReviewBroker } : {}),
     ...(githubRunCoordinator ? { githubRunCoordinator } : {}),
     relayRoster: () => relayRoster.entries(),

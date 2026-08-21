@@ -31,6 +31,7 @@ import type { UsageWriter } from '../usage/writer.js'
 import type { SessionVisibilityPushService } from '../orchestrator/visibilityPush.js'
 import type { DutyAgentBundle, RelayRosterEntry } from '@agentconnect.md/protocol'
 import type { GithubService } from '../github/service.js'
+import type { GitlabGitcredService } from '../gitlab/gitcred.service.js'
 import type { GithubReviewBrokerService } from '../github/review-broker.service.js'
 import type { GithubRunCoordinator } from '../github/run-reporter.js'
 import type { ReconcileService } from '../orchestrator/placement.js'
@@ -129,6 +130,8 @@ export interface DaemonWsDeps {
   externalMemoryConnection?: ExternalMemoryConnectionRepo
   /** github-app workspaces façade; absent ⇒ gitcred/request answers SCOPE_DENIED. */
   github?: GithubService
+  /** gitcred v2 GitLab grants (§13.1); absent ⇒ gitlab workspaces disabled. */
+  gitlabGitcred?: GitlabGitcredService
   /** R1 action-time formal-review broker; absent ⇒ review/start REQs fail closed. */
   githubReviewBroker?: GithubReviewBrokerService
   /** R2a metadata-only lifecycle → informational Check projection. */

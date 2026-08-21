@@ -402,6 +402,48 @@ describe('register handler — authoritative reconcile snapshot + idempotency + 
     expect(ids).not.toContain(OTHER_AGENT)
   })
 
+  it('withholds a gitlab-workspace agent from a daemon that has not advertised gitlab-com-v1 (§17.3)', async () => {
+    await seedReconcileState()
+    const GITLAB_AGENT = 'c3c3c3c3-c3c3-4c3c-8c3c-c3c3c3c3c3c3'
+    await prisma.agent.create({
+      data: {
+        id: GITLAB_AGENT,
+        orgId: DEFAULT_ORG_ID,
+        name: 'gitlab-agent',
+        runtime: 'claude',
+        daemonId: DAEMON,
+        workspaceMode: 'gitlab',
+        gitRepo: 'https://gitlab.com/example-group/example-project',
+        gitBranch: 'main',
+        workspaceRepoId: 4455667n
+      }
+    })
+
+    // No features advertised: the spec would be frame-fatal — the roster omits it.
+    const h = buildWsHarness(prisma)
+    const { stub } = await authThenAwaitOk(h)
+    stub.inject('register', registerPayload(), { id: REG_ID })
+    const ok = await stub.expectFrame('register/ok')
+    if (!isFrame('register/ok')(ok)) throw new Error('expected register/ok')
+    expect(ok.payload.agents.map((a) => a.agentId)).toEqual([AGENT])
+
+    // Advertising the feature delivers the gitlab arm with the numeric identity.
+    const h2 = buildWsHarness(prisma)
+    const { stub: stub2 } = await authThenAwaitOk(h2)
+    const payload = registerPayload()
+    ;(payload.capabilities as { features?: string[] }).features = ['gitlab-com-v1']
+    stub2.inject('register', payload, { id: 'f2f2f2f2-2222-4222-8222-222222222222' })
+    const ok2 = await stub2.expectFrame('register/ok')
+    if (!isFrame('register/ok')(ok2)) throw new Error('expected register/ok')
+    const gitlabSpec = ok2.payload.agents.find((a) => a.agentId === GITLAB_AGENT)
+    expect(ok2.payload.agents.map((a) => a.agentId).sort()).toEqual([AGENT, GITLAB_AGENT].sort())
+    expect(gitlabSpec?.workspace).toMatchObject({
+      mode: 'gitlab',
+      gitRepo: 'https://gitlab.com/example-group/example-project',
+      projectId: '4455667'
+    })
+  })
+
   it('reconcile roster includes a TELEGRAM integration, not just Slack', async () => {
     await seedReconcileState() // AGENT placed on DAEMON
 

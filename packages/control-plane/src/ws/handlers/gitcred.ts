@@ -25,10 +25,30 @@ import type { Handler } from './index.js'
 
 export const handleGitCredRequest: Handler = async (frame, conn, deps) => {
   if (!isFrame('gitcred/request')(frame)) return
-  const { agentId, capabilities, repoFullName, purpose, hookId, forceRefresh } = frame.payload
+  const {
+    agentId,
+    capabilities,
+    repoFullName,
+    purpose,
+    hookId,
+    forceRefresh,
+    provider,
+    externalRepoId,
+    requestedAccess
+  } = frame.payload
 
-  if (!deps.github) {
+  // v2 provider fail-per-value (§17.1): only gitlab has a non-GitHub arm here.
+  if (provider !== undefined && provider !== 'github' && provider !== 'gitlab') {
+    conn.sendError(frame.id, 'SCOPE_DENIED', `unknown git credential provider ${provider}`, false)
+    return
+  }
+  const gitlabRequest = provider === 'gitlab'
+  if (!gitlabRequest && !deps.github) {
     conn.sendError(frame.id, 'SCOPE_DENIED', 'github-app workspaces are not enabled on this control plane', false)
+    return
+  }
+  if (gitlabRequest && !deps.gitlabGitcred) {
+    conn.sendError(frame.id, 'SCOPE_DENIED', 'gitlab workspaces are not enabled on this control plane', false)
     return
   }
 
@@ -49,6 +69,17 @@ export const handleGitCredRequest: Handler = async (frame, conn, deps) => {
   }
 
   try {
+    if (gitlabRequest) {
+      // The binding's PAT under the workspace access clamp (§13.1). No hook
+      // purpose here — the M5 poster gets its own gated path.
+      const grant = await deps.gitlabGitcred!.grantForAgent(
+        agent,
+        externalRepoId !== undefined ? BigInt(externalRepoId) : undefined,
+        requestedAccess
+      )
+      conn.replyTo(frame, 'gitcred/grant', grant)
+      return
+    }
     if (purpose === 'github_hook_reply') {
       const requested = new Set(capabilities)
       const commentOnly =
@@ -76,7 +107,7 @@ export const handleGitCredRequest: Handler = async (frame, conn, deps) => {
         conn.sendError(frame.id, 'SCOPE_DENIED', 'hook is not an enabled github hook of this agent', false)
         return
       }
-      const cred = await deps.github.mintForHookReply(
+      const cred = await deps.github!.mintForHookReply(
         agent,
         repoFullName,
         hook.repoId ?? undefined,
@@ -100,7 +131,7 @@ export const handleGitCredRequest: Handler = async (frame, conn, deps) => {
     // through the agent's explicit AgentRepoAuthorization rows (multi-repo
     // design §2). GithubPoster requests take the purpose-gated path above;
     // general agent git/gh credentials stay constrained by this allowlist.
-    const cred = await deps.github.mintForAgent(
+    const cred = await deps.github!.mintForAgent(
       agent,
       [`daemon:${conn.daemonId}`, `org:${agent.orgId}`],
       capabilities,

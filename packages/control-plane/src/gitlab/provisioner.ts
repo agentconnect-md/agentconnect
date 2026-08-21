@@ -107,6 +107,9 @@ export interface GitlabProvisionerDeps {
   publicRelayUrl?: string
   /** The enabled-hook event union for a project; null ⇒ no webhook wanted (§10.3). */
   desiredWebhookEvents: (orgId: string, projectId: bigint) => Promise<GitlabWebhookEvents | null>
+  /** AWAITED mid-run under the lease: converge dependent workspace clone URLs
+   *  to the freshly read canonical path (agents keyed by this project id). */
+  syncWorkspacePaths?: (orgId: string, projectId: bigint, projectPath: string) => Promise<void>
   /** Fired after any run that may have changed binding/webhook facts — the
    *  container rebroadcasts the project's compiled hook rules (assign or
    *  remove) so relays never keep a rule built from stale facts. */
@@ -223,6 +226,12 @@ export class GitlabProvisioner {
       ...(project.http_url_to_repo ? { cloneUrl: project.http_url_to_repo } : {}),
       ...(project.default_branch ? { defaultBranch: project.default_branch } : {})
     })
+    // AWAITED under the run lease (round 3): the projected agent clone URLs are
+    // a mutable hint keyed by the numeric id, and a fire-and-forget refresh can
+    // be skipped by a crash or reordered by an overlapping callback. Runs never
+    // overlap, so converging here is both durable and ordered; the daemon
+    // fan-out stays best-effort on the container side.
+    await this.deps.syncWorkspacePaths?.(orgId, binding.projectId, project.path_with_namespace)
     if (!project.namespace) return { state: 'admin_degraded', reason: 'project_namespace_unknown' }
     const root = await gitlabRootNamespace(token, project.namespace, fetchImpl)
     // Service accounts hang off a top-level GROUP; a personal namespace has none (§5).

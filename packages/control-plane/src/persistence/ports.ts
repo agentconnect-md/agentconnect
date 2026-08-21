@@ -593,6 +593,17 @@ export type AgentWorkspace =
       /** Ceiling for minted tokens (contents read|write); absent ⇒ 'write'. */
       gitAccess?: 'read' | 'write'
     }
+  | {
+      /** A managed GitLab project binding is the workspace (gitlab-com-integration.md
+       *  §13): credentials come from the binding's purpose-separated PATs, never a
+       *  per-agent installation. `workspaceRepoId` holds the numeric project id. */
+      mode: 'gitlab'
+      isolation?: WorkspaceIsolation
+      gitRepo: string
+      gitBranch?: string
+      agentDir?: string
+      gitAccess?: 'read' | 'write'
+    }
 export type GithubAgentWorkspace = Extract<AgentWorkspace, { mode: 'github' }>
 
 export interface CreateAgentInput {
@@ -853,6 +864,10 @@ export interface AgentRepo {
    *  numeric repo without tombstoning projections: workspace authority remains
    *  live. A concurrently deleted or differently repaired agent is a no-op. */
   setWorkspaceRepoId(agentId: AgentId, repoId: bigint): Promise<boolean>
+  /** Converge gitlab-workspace clone URLs after a binding path refresh (rename)
+   *  — bumps configRevision so the fenced spec push replicates. Returns the
+   *  affected agent ids. */
+  refreshGitlabWorkspacePath(orgId: OrgId, projectId: bigint, cloneUrl: string): Promise<AgentId[]>
   /** Set the visibility + share set (the dedicated `/sharing` write path, kept
    *  separate from content `update`). An org→restricted transition atomically
    *  closes known direct-conversation rows. Stamps the last-modified audit;

@@ -344,6 +344,16 @@ export const AgentWorkspaceBody = z.discriminatedUnion('mode', [
     // Ceiling for minted tokens; only meaningful with installationId. Default 'write' —
     // coding agents push branches; the console offers a read-only toggle.
     gitAccess: z.enum(['read', 'write']).optional()
+  }),
+  // gitlab-com-integration.md M4: the workspace is a managed project binding.
+  z.object({
+    mode: z.literal('gitlab'),
+    worktree: z.boolean(),
+    gitRepo: GitRepoOutput,
+    gitBranch: z.string().optional(),
+    agentDir: z.string().optional(),
+    projectId: z.string().optional(), // numeric project id (workspaceRepoId)
+    gitAccess: z.enum(['read', 'write']).optional()
   })
 ])
 
@@ -394,6 +404,17 @@ const AgentWorkspaceInputBody = z.discriminatedUnion('mode', [
     gitBranch: z.string().optional(),
     agentDir: AgentDirCreateInput.optional(),
     installationId: z.string().uuid().optional(),
+    gitAccess: z.enum(['read', 'write']).optional()
+  }),
+  // The project is named by its rename-stable numeric id and must already be a
+  // managed GitLab binding in the organization; the route derives the clone URL
+  // from the binding — the caller never supplies a gitlab gitRepo directly.
+  z.object({
+    mode: z.literal('gitlab'),
+    worktree: z.boolean().optional(),
+    projectId: z.string().regex(/^[1-9]\d*$/),
+    gitBranch: z.string().optional(),
+    agentDir: AgentDirCreateInput.optional(),
     gitAccess: z.enum(['read', 'write']).optional()
   })
 ])
@@ -682,6 +703,16 @@ export const SetAgentWorkspaceBody = z.discriminatedUnion('mode', [
       mode: z.literal('github'),
       worktree: z.boolean().optional(),
       repoFullName: z.string().regex(/^[^/\s]+\/[^/\s]+$/, 'repoFullName must be owner/repo'),
+      gitBranch: z.string().min(1).optional(),
+      agentDir: AgentDirCreateInput.optional(),
+      gitAccess: z.enum(['read', 'write']).default('read')
+    })
+    .strict(),
+  z
+    .object({
+      mode: z.literal('gitlab'),
+      worktree: z.boolean().optional(),
+      projectId: z.string().regex(/^[1-9]\d*$/),
       gitBranch: z.string().min(1).optional(),
       agentDir: AgentDirCreateInput.optional(),
       gitAccess: z.enum(['read', 'write']).default('read')
