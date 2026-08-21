@@ -56,6 +56,8 @@ export interface PullRequestView {
   title: string
   /** The PR description as plain text; empty while degraded or when GitHub reported none. */
   body: string
+  /** The head commit oid the projection was built from; null while degraded. The merge write pins it. */
+  headOid: string | null
   // Null only while degraded with no Postgres knowledge; degraded 'closed' cannot distinguish merged.
   state: 'open' | 'closed' | 'merged' | null
   isDraft: boolean | null // null only while degraded and the owning run recorded no draft fact
@@ -86,7 +88,7 @@ query PanelPullRequest($owner:String!,$name:String!,$number:Int!,$threads:Int!,$
   repository(owner:$owner,name:$name){
     pullRequest(number:$number){
       number title bodyText state isDraft merged additions deletions url
-      baseRefName headRefName reviewDecision
+      baseRefName headRefName headRefOid reviewDecision
       autoMergeRequest{enabledAt}
       latestReviews(first:$reviews){nodes{state author{login __typename}}}
       commits(last:1){nodes{commit{statusCheckRollup{contexts(first:$checks){pageInfo{hasNextPage} nodes{
@@ -116,6 +118,7 @@ interface GqlAnswer {
       url: string
       baseRefName: string
       headRefName: string
+      headRefOid: string | null
       reviewDecision: 'APPROVED' | 'CHANGES_REQUESTED' | 'REVIEW_REQUIRED' | null
       autoMergeRequest: { enabledAt: string | null } | null
       latestReviews: { nodes: Array<{ state: string; author: { login: string; __typename: string } | null }> | null }
@@ -305,6 +308,7 @@ export class PullRequestViewService {
       pullNumber: identity.pullNumber,
       title: '',
       body: '',
+      headOid: null,
       // Null here, NOT the caller's known facts: this object is CACHED and the cache key is the PR,
       // not the run — two sessions on one PR have different runs, so any run-specific fact baked in
       // here would be served to the other session. The per-caller overlay in view() fills these.
@@ -396,6 +400,7 @@ export class PullRequestViewService {
       ...base,
       title: pr.title,
       body: pr.bodyText ?? '',
+      headOid: pr.headRefOid ?? null,
       state: pr.merged ? 'merged' : pr.state === 'CLOSED' ? 'closed' : 'open',
       isDraft: pr.isDraft,
       url: pr.url || base.url,
@@ -465,12 +470,15 @@ export class PullRequestViewService {
     }
   }
 
-  /** Merge the PR (squash) now, with a token the CALLER minted under the agent's clamp. Idempotent on
-   *  the fresh node read; GitHub declining the merge (not mergeable, checks failing) throws and the
-   *  caller maps it. The cached view is dropped either way so the next read shows the merged state. */
+  /** Merge the PR (squash) now, with a token the CALLER minted under the agent's clamp. `expectedHeadOid`
+   *  pins the merge to the head the operator was shown — GitHub refuses if the head moved, which the
+   *  caller maps to a 409. `setAutoMerge` never had this exposure: GitHub re-evaluates at merge time, so
+   *  arming could not merge a revision nobody reviewed. Idempotent on the fresh node read; the cached
+   *  view is dropped either way so the next read shows the merged state. */
   async merge(
     target: { repoId: bigint; repoFullName: string; pullNumber: number },
-    token: string
+    token: string,
+    expectedHeadOid: string
   ): Promise<{ merged: boolean }> {
     const [owner, name] = target.repoFullName.split('/')
     if (!owner || !name) throw new GithubApiError('malformed repository name', 0, 'LEASE_DENIED', false)
@@ -489,8 +497,8 @@ export class PullRequestViewService {
     try {
       if (pr.merged || pr.state === 'MERGED') return { merged: true }
       await githubGraphql(
-        'mutation($id:ID!){mergePullRequest(input:{pullRequestId:$id,mergeMethod:SQUASH}){clientMutationId}}',
-        { id: pr.id },
+        'mutation($id:ID!,$expectedHeadOid:GitObjectID!){mergePullRequest(input:{pullRequestId:$id,mergeMethod:SQUASH,expectedHeadOid:$expectedHeadOid}){clientMutationId}}',
+        { id: pr.id, expectedHeadOid },
         { ...opts, strictErrors: true }
       )
       return { merged: true }

@@ -1115,6 +1115,7 @@ export function sessionRoutes(deps: HttpDeps) {
           repoId: run.repoId,
           repoFullName: run.repoFullName,
           pullNumber: run.pullNumber,
+          installationId: run.sourceInstallationId,
           agent: run.agentId ? await deps.repos.agent.get(orgOf(req), AgentId(run.agentId)) : null
         }
       }
@@ -1300,9 +1301,26 @@ export function sessionRoutes(deps: HttpDeps) {
         }
         try {
           const cred = await github.mintAutoMergeForAgent(agent, linked.repoId, linked.repoFullName)
+          // Pin the head the operator was shown: the projection is the same cached one the panel renders,
+          // and a commit pushed after it lands makes GitHub refuse rather than merge an unreviewed revision.
+          const projection = await view.view({
+            orgId: orgOf(req),
+            installationId: linked.installationId,
+            repoId: linked.repoId,
+            repoFullName: linked.repoFullName,
+            pullNumber: linked.pullNumber
+          })
+          if (!projection.headOid) {
+            return reply.code(409).send({
+              error: 'Conflict',
+              statusCode: 409,
+              message: 'pull request head unavailable — refresh and retry'
+            })
+          }
           return await view.merge(
             { repoId: linked.repoId, repoFullName: linked.repoFullName, pullNumber: linked.pullNumber },
-            cred.token
+            cred.token,
+            projection.headOid
           )
         } catch (err) {
           const failure = prWriteFailureOf(err)

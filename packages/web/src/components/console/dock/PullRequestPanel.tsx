@@ -325,14 +325,21 @@ export function PullRequestPanel({
     )
   }
 
-  // The direct merge's own in-flight/error state, kept apart from the auto-merge toggle's.
+  // The direct merge's own in-flight/error state, kept apart from the auto-merge toggle's. Two presses:
+  // the first ARMS (reversible), the second (danger) actually merges — a one-click merge is irreversible,
+  // and the box's most prominent control must not spend it.
   const [mergeNow, setMergeNow] = useState<{ busy: boolean; err: string | null }>({ busy: false, err: null })
-  useEffect(() => setMergeNow({ busy: false, err: null }), [sessionId])
+  const [mergeArmed, setMergeArmed] = useState(false)
+  useEffect(() => {
+    setMergeNow({ busy: false, err: null })
+    setMergeArmed(false)
+  }, [sessionId])
   const doMerge = () => {
     setMergeNow({ busy: true, err: null })
     mergeSessionPullRequest(sessionId).then(
       () => {
         setMergeNow({ busy: false, err: null })
+        setMergeArmed(false)
         // The CP invalidated its cached view on the write; the next read shows the merged state.
         setReads((r) => ({ tick: r.tick + 1, force: false }))
       },
@@ -736,21 +743,55 @@ export function PullRequestPanel({
       {!view.degraded && view.state === 'open' ? (
         <div data-pr-merge="" className="flex flex-none flex-col gap-[6px] border-t border-(--border-subtle) px-3 py-2">
           <div className="flex items-center gap-2">
-            <button
-              type="button"
-              data-pr-merge-now=""
-              className="dsbtn dsbtn-primary sm flex-none disabled:pointer-events-none disabled:opacity-50"
-              disabled={!view.canArmAutoMerge || mergeNow.busy}
-              title={
-                view.canArmAutoMerge
-                  ? 'Merge this pull request now (squash)'
-                  : 'The owning agent’s repository access is below write tier, so merging is not available'
-              }
-              onClick={doMerge}
-            >
-              {mergeNow.busy ? <Spinner size={11} /> : <Icon name="git-merge" size={13} />}
-              Merge
-            </button>
+            {mergeArmed ? (
+              <>
+                <button
+                  type="button"
+                  data-pr-merge-cancel=""
+                  className="dsbtn dsbtn-secondary sm flex-none disabled:pointer-events-none disabled:opacity-50"
+                  disabled={mergeNow.busy}
+                  title="Keep the pull request open"
+                  onClick={() => setMergeArmed(false)}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  data-pr-merge-now=""
+                  className="dsbtn dsbtn-danger sm flex-none disabled:pointer-events-none disabled:opacity-50"
+                  disabled={!view.canArmAutoMerge || view.isDraft || mergeNow.busy}
+                  title={
+                    !view.canArmAutoMerge
+                      ? 'The owning agent’s repository access is below write tier, so merging is not available'
+                      : view.isDraft
+                        ? 'Draft pull requests can’t be merged'
+                        : 'Merge this pull request now (squash) — this cannot be undone'
+                  }
+                  onClick={doMerge}
+                >
+                  {mergeNow.busy ? <Spinner size={11} /> : <Icon name="git-merge" size={13} />}
+                  Confirm merge
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                data-pr-merge-arm=""
+                className="dsbtn dsbtn-primary sm flex-none disabled:pointer-events-none disabled:opacity-50"
+                disabled={!view.canArmAutoMerge || view.isDraft === true}
+                title={
+                  !view.canArmAutoMerge
+                    ? 'The owning agent’s repository access is below write tier, so merging is not available'
+                    : view.isDraft
+                      ? 'Draft pull requests can’t be merged'
+                      : 'Merge this pull request now (squash)'
+                }
+                onClick={() => setMergeArmed(true)}
+              >
+                <Icon name="git-merge" size={13} />
+                Merge
+              </button>
+            )}
             {mergeNow.err ? (
               <span
                 data-pr-merge-now-error=""

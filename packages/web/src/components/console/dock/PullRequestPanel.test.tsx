@@ -493,7 +493,7 @@ describe('PullRequestPanel body', () => {
     expect(text()).toContain('No unresolved review threads')
   })
 
-  it('gates M6’s writes: Auto-fix is ABSENT without a live composer, the merge toggle disabled below write tier', async () => {
+  it('gates M6’s writes: Auto-fix is ABSENT without a live composer, merge disabled below write tier or on a draft', async () => {
     // Re-aimed from M5's read-only premise (§9), as that test asked: the writes exist now, but each is
     // earned. No onPostTurn (a hook session with no composer) means NO button — absent, not disabled.
     await render()
@@ -501,12 +501,17 @@ describe('PullRequestPanel body', () => {
     // The write-capable fixture's merge controls are live; a read-tier caller's are disabled, not hidden —
     // the CP's canArmAutoMerge flag is exactly the "disabled control, not a failed call" contract.
     expect(container?.querySelector<HTMLInputElement>('[data-pr-automerge]')?.disabled).toBe(false)
-    expect(container?.querySelector<HTMLButtonElement>('[data-pr-merge-now]')?.disabled).toBe(false)
+    expect(container?.querySelector<HTMLButtonElement>('[data-pr-merge-arm]')?.disabled).toBe(false)
 
     wire.data = pr({ canArmAutoMerge: false })
     await render()
     expect(container?.querySelector<HTMLInputElement>('[data-pr-automerge]')?.disabled).toBe(true)
-    expect(container?.querySelector<HTMLButtonElement>('[data-pr-merge-now]')?.disabled).toBe(true)
+    expect(container?.querySelector<HTMLButtonElement>('[data-pr-merge-arm]')?.disabled).toBe(true)
+
+    // A draft PR is not mergeable — the button stays disabled rather than learning "no" from GitHub.
+    wire.data = pr({ isDraft: true })
+    await render()
+    expect(container?.querySelector<HTMLButtonElement>('[data-pr-merge-arm]')?.disabled).toBe(true)
 
     // No merge box at all where there is nothing to arm: closed/merged PRs and degraded answers.
     wire.data = pr({ state: 'merged' })
@@ -605,22 +610,43 @@ describe('PullRequestPanel body', () => {
     expect(wire.calls).toHaveLength(1) // no re-read: nothing changed behind the failed write
   })
 
+  it('arms the merge on the first press and disarms on cancel — no mutation until the danger press', async () => {
+    await render()
+    // Unarmed: the primary "Merge" arm button, no danger confirm yet.
+    expect(container?.querySelector('[data-pr-merge-arm]')?.textContent).toContain('Merge')
+    expect(container?.querySelector('[data-pr-merge-now]')).toBeNull()
+
+    await press('[data-pr-merge-arm]')
+    // Armed: the danger confirm replaces the arm button, and nothing was sent yet.
+    expect(container?.querySelector('[data-pr-merge-arm]')).toBeNull()
+    expect(container?.querySelector<HTMLButtonElement>('[data-pr-merge-now]')?.textContent).toContain('Confirm merge')
+    expect(wire.mergeNowCalls).toHaveLength(0)
+
+    await press('[data-pr-merge-cancel]')
+    expect(container?.querySelector('[data-pr-merge-arm]')?.textContent).toContain('Merge')
+    expect(container?.querySelector('[data-pr-merge-now]')).toBeNull()
+    expect(wire.mergeNowCalls).toHaveLength(0)
+  })
+
   it('merges now through the CP and re-reads the view it invalidated', async () => {
     await render()
     expect(wire.calls).toHaveLength(1)
+
+    await press('[data-pr-merge-arm]')
+    expect(wire.mergeNowCalls).toHaveLength(0) // arming is local, nothing sent yet
 
     await press('[data-pr-merge-now]')
 
     expect(wire.mergeNowCalls).toEqual(['session-1'])
     expect(wire.calls).toHaveLength(2) // the post-write re-read, riding the CP's own invalidation
-    expect(container?.querySelector<HTMLButtonElement>('[data-pr-merge-now]')?.textContent).toContain('Merge')
   })
 
-  it('surfaces a refused merge as data and keeps the button usable', async () => {
+  it('surfaces a refused merge as data and keeps the armed confirm usable', async () => {
     // GitHub declining the merge (the CP's 409) is an answer the operator acts on, not a crash.
     wire.mergeNowFailure = new Error('Pull request is not mergeable')
     await render()
 
+    await press('[data-pr-merge-arm]')
     await press('[data-pr-merge-now]')
 
     expect(container?.querySelector('[data-pr-merge-now-error]')?.textContent).toContain('not mergeable')

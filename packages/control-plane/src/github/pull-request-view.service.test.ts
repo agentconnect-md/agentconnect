@@ -48,6 +48,7 @@ function fullAnswer(): Record<string, unknown> {
           url: 'https://github.com/acme/repo/pull/7',
           baseRefName: 'main',
           headRefName: 'feat/panel',
+          headRefOid: 'sha_HEAD',
           reviewDecision: 'CHANGES_REQUESTED',
           autoMergeRequest: null,
           latestReviews: {
@@ -157,6 +158,7 @@ describe('projection mapping', () => {
       pullNumber: 7,
       title: 'Ship the panel',
       body: 'Ship the panel body',
+      headOid: 'sha_HEAD',
       state: 'open',
       isDraft: false,
       url: 'https://github.com/acme/repo/pull/7',
@@ -588,7 +590,7 @@ describe('merge (M6)', () => {
     ])
     await service.view(IDENTITY)
 
-    const result = await service.merge(TARGET, 'ghs_write')
+    const result = await service.merge(TARGET, 'ghs_write', 'sha_HEAD')
 
     expect(result).toEqual({ merged: true })
     // The write rides the passed token, never this service's read-floor mint facility.
@@ -596,7 +598,8 @@ describe('merge (M6)', () => {
     const mutation = calls[2]!.body as { query: string; variables: Record<string, unknown> }
     expect(mutation.query).toContain('mergePullRequest')
     expect(mutation.query).toContain('mergeMethod:SQUASH')
-    expect(mutation.variables).toEqual({ id: 'PR_node1' })
+    expect(mutation.query).toContain('expectedHeadOid')
+    expect(mutation.variables).toEqual({ id: 'PR_node1', expectedHeadOid: 'sha_HEAD' })
     // The cached view is gone: the next read asks GitHub again rather than serving the pre-write state.
     await service.view(IDENTITY)
     expect(calls).toHaveLength(4)
@@ -605,14 +608,14 @@ describe('merge (M6)', () => {
   it('is idempotent: an already-merged PR mutates nothing', async () => {
     const { service, calls } = build([mergeNode(true)])
 
-    expect(await service.merge(TARGET, 'ghs_write')).toEqual({ merged: true })
+    expect(await service.merge(TARGET, 'ghs_write', 'sha_HEAD')).toEqual({ merged: true })
     expect(calls).toHaveLength(1) // the node read only — no mutation call scripted, none made
   })
 
   it('throws denied when the installation cannot see the PR', async () => {
     const { service } = build([ok({ data: { repository: { pullRequest: null } } })])
 
-    await expect(service.merge(TARGET, 'ghs_write')).rejects.toMatchObject({ code: 'LEASE_DENIED' })
+    await expect(service.merge(TARGET, 'ghs_write', 'sha_HEAD')).rejects.toMatchObject({ code: 'LEASE_DENIED' })
   })
 
   it('treats a refused merge as FAILURE even when GitHub wraps it in truthy partial data', async () => {
@@ -624,7 +627,7 @@ describe('merge (M6)', () => {
       })
     ])
 
-    await expect(service.merge(TARGET, 'ghs_write')).rejects.toMatchObject({
+    await expect(service.merge(TARGET, 'ghs_write', 'sha_HEAD')).rejects.toMatchObject({
       message: expect.stringContaining('not mergeable')
     })
   })

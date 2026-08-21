@@ -79,6 +79,7 @@ function fullAnswer() {
           url: `https://github.com/${REPO}/pull/${PULL}`,
           baseRefName: 'main',
           headRefName: 'feat/panel',
+          headRefOid: 'sha_HEAD',
           reviewDecision: 'APPROVED',
           latestReviews: { nodes: [{ state: 'APPROVED', author: { login: 'dana', __typename: 'User' } }] },
           commits: {
@@ -589,20 +590,23 @@ describe('POST /sessions/:id/pull-request/merge', () => {
   const post = (running: HttpApp, sessionId: string) =>
     running.app.inject({ method: 'POST', url: `${ORG}/sessions/${sessionId}/pull-request/merge` })
 
-  it('merges end to end under the owning agent\u2019s clamp', async () => {
+  it('merges end to end under the owning agent\u2019s clamp, pinning the head the operator saw', async () => {
     const session = await seedAgentAndSession()
     await seedPullRequestRun(session)
     const github = githubStub([
+      graphqlOk(fullAnswer()), // the projection read, carrying headRefOid
       mergeNode(false),
-      graphqlOk({ data: { mergePullRequest: { clientMutationId: null } } }),
-      graphqlOk(fullAnswer())
+      graphqlOk({ data: { mergePullRequest: { clientMutationId: null } } })
     ])
     const running = app(github.view, undefined, fakeGithub())
 
     const res = await post(running, session)
     expect(res.statusCode).toBe(200)
     expect(res.json()).toEqual({ merged: true })
-    expect((github.calls[1] as { body: { query: string } }).body.query).toContain('mergePullRequest')
+    const mutation = github.calls[2] as { body: { query: string; variables: Record<string, unknown> } }
+    expect(mutation.body.query).toContain('mergePullRequest')
+    expect(mutation.body.query).toContain('expectedHeadOid')
+    expect(mutation.body.variables).toMatchObject({ expectedHeadOid: 'sha_HEAD' })
   })
 
   it('refuses a read-tier agent with 403 before any GitHub call', async () => {
@@ -620,6 +624,7 @@ describe('POST /sessions/:id/pull-request/merge', () => {
     const session = await seedAgentAndSession()
     await seedPullRequestRun(session)
     const github = githubStub([
+      graphqlOk(fullAnswer()),
       mergeNode(false),
       graphqlOk({ data: null, errors: [{ type: 'UNPROCESSABLE', message: 'Pull request is not mergeable' }] })
     ])
@@ -628,6 +633,19 @@ describe('POST /sessions/:id/pull-request/merge', () => {
     const res = await post(running, session)
     expect(res.statusCode).toBe(409)
     expect(res.json().message).toContain('not mergeable')
+  })
+
+  it('409s when the projection carries no head oid — nothing is merged on an unverifiable head', async () => {
+    const session = await seedAgentAndSession()
+    await seedPullRequestRun(session)
+    const degraded = fullAnswer() as { data: { repository: { pullRequest: Record<string, unknown> } } }
+    degraded.data.repository.pullRequest.headRefOid = null
+    const github = githubStub([graphqlOk(degraded)])
+    const running = app(github.view, undefined, fakeGithub())
+
+    const res = await post(running, session)
+    expect(res.statusCode).toBe(409)
+    expect(github.calls).toHaveLength(1) // the projection read only — no mutation issued
   })
 
   it('404s a session with no linked run, with the GET route\u2019s exact body', async () => {
