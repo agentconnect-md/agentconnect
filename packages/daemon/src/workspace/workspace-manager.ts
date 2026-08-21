@@ -33,7 +33,8 @@ import {
   workspaceGitEnvBase,
   workspaceGitLocalEnv,
   workspaceGitRemoteTarget,
-  writeRepoHelperConfig
+  writeRepoHelperConfig,
+  managedCredentialHostOf
 } from './git-injection.js'
 import { LocalGitRunner, type GitRunner } from './git-runner.js'
 import { localWorkspaceFs, type WorkspaceFs, type WorkspacePlacement } from './workspace-fs.js'
@@ -268,6 +269,18 @@ export class WorkspaceManager {
     return agent.workspace.mode === 'git-repo' && agent.workspace.gitCredential === 'github-app'
   }
 
+  /** Which managed credential backs this workspace's remote git; undefined ⇒ anonymous. */
+  managedCredentialProvider(agent: Agent): 'github' | 'gitlab' | undefined {
+    if (agent.workspace.mode !== 'git-repo') return undefined
+    if (agent.workspace.gitCredential === 'github-app') return 'github'
+    if (agent.workspace.gitCredential === 'gitlab') return 'gitlab'
+    return undefined
+  }
+
+  usesManagedCredential(agent: Agent): boolean {
+    return this.managedCredentialProvider(agent) !== undefined
+  }
+
   gitRepoOf(agent: Agent): string {
     if (agent.workspace.mode !== 'git-repo' || !agent.workspace.gitRepo) {
       throw new Error(`workspace clone: agent "${agent.id}" has git-repo mode but no gitRepo configured`)
@@ -292,7 +305,9 @@ export class WorkspaceManager {
       branch: agent.workspace.gitBranch,
       path: mount === undefined ? agent.workspace.path : this.clusterWorkspaceCheckout(agent, mount),
       worktreesPath: this.worktreesPathAt(agent, mount),
-      githubApp: this.usesGithubApp(agent)
+      // The MANAGED-credential flag (name is historical): a gitlab workspace
+      // rides the same helper pin/pre-warm/clone-env paths, host-derived.
+      githubApp: this.usesManagedCredential(agent)
     }
   }
 
@@ -988,7 +1003,11 @@ export class WorkspaceManager {
       // The CP follows repository renames by numeric repo id. Repoint the existing
       // checkout instead of treating that canonical URL refresh as a new workspace.
       await this.convergeWorkspaceOrigin(agent, cwd)
-      await writeRepoHelperConfig(this.runnerFor(agent.id, cwd), agent.id).catch(() => undefined)
+      await writeRepoHelperConfig(
+        this.runnerFor(agent.id, cwd),
+        agent.id,
+        managedCredentialHostOf(root.cloneUrl) ?? 'github.com'
+      ).catch(() => undefined)
     } else {
       // Historical anonymous checkouts may still have credential-bearing or
       // disallowed origins even after their CP row has been sanitized.
@@ -1748,7 +1767,7 @@ export class WorkspaceManager {
     // Validated at the execution boundary, exactly as the local path does: a hand-edited agent.json
     // must not turn daemon-managed git into a local-path or remote-helper launcher.
     const repository = this.gitRepoOf(agent)
-    const githubApp = this.usesGithubApp(agent)
+    const githubApp = this.usesManagedCredential(agent)
 
     // Whether the volume can be PROVEN to hold what the marker would claim. A fresh clone can, by
     // construction (`--branch` at clone time). An existing one has to be interrogated.
@@ -1765,7 +1784,11 @@ export class WorkspaceManager {
       // `.git/config`, whose agent id goes stale when an agent is recreated over a surviving volume.
       await this.convergeOriginInPlace(agent, checkout)
       if (githubApp) {
-        await writeRepoHelperConfig(this.runnerFor(agent.id, checkout), agent.id).catch(() => undefined)
+        await writeRepoHelperConfig(
+          this.runnerFor(agent.id, checkout),
+          agent.id,
+          managedCredentialHostOf(repository) ?? 'github.com'
+        ).catch(() => undefined)
       }
     }
 
@@ -1908,7 +1931,7 @@ export class WorkspaceManager {
   }
 
   async cloneInSandbox(agent: Agent, root: string, repository: string, checkout: string): Promise<void> {
-    const githubApp = this.usesGithubApp(agent)
+    const githubApp = this.usesManagedCredential(agent)
     if (githubApp) await preWarmGitCred(agent.id, 'clone')
     const env = githubApp
       ? { ...workspaceGitEnvBase(repository), ...cloneGitEnv(agent.id, repository) }
@@ -1923,7 +1946,13 @@ export class WorkspaceManager {
       await this.clearSandboxPath(agent.id, checkout)
       throw err
     }
-    if (githubApp) await writeRepoHelperConfig(this.runnerFor(agent.id, checkout), agent.id)
+    if (githubApp) {
+      await writeRepoHelperConfig(
+        this.runnerFor(agent.id, checkout),
+        agent.id,
+        managedCredentialHostOf(repository) ?? 'github.com'
+      )
+    }
   }
 
   resolvePreparedWorkspaceCwd(agent: Agent): string {
@@ -2225,7 +2254,13 @@ export class WorkspaceManager {
       // Pin the repo-local helper so AGENT-run git in this checkout authenticates
       // through the daemon too — the "no credentials on the machine, but the agent
       // can still push" half of the design.
-      if (githubApp) await writeRepoHelperConfig(this.runnerFor(agentId, cwd), agentId)
+      if (githubApp) {
+        await writeRepoHelperConfig(
+          this.runnerFor(agentId, cwd),
+          agentId,
+          managedCredentialHostOf(cloneUrl) ?? 'github.com'
+        )
+      }
     })().finally(() => {
       this.cloneInFlight.delete(key)
     })

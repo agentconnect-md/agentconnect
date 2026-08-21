@@ -62,6 +62,7 @@ import {
   materializeConfigFiles
 } from './shim/config-file-env.js'
 import { writeGhShim } from './cp/gh-shim.js'
+import { writeGlabShim } from './cp/glab-shim.js'
 import { GitCredServer, gitcredShimPath, gitcredSocketPath, writeGitcredShim } from './cp/gitcred-server.js'
 import {
   daemonGitCredentialTarget,
@@ -638,6 +639,7 @@ export class Daemon {
   /** run/bin with the gh wrapper (multi-repo #457) — prepended to github-app
    *  agents' PATH at host spawn; unset ⇒ shim write failed, spawn without it. */
   private ghBinDir?: string
+  private glabBinDir?: string
   /** Spawn-time config warnings per agent (config-file secrets: pointer-var
    *  conflicts, write failures) — flushed into the next dispatched session. */
   private pendingSpawnNotices = new Map<string, string[]>()
@@ -1555,6 +1557,13 @@ export class Daemon {
     })
     this.cfg = cfg
     configureWorkspaceGitOrigins(cfg.security.workspaceGitAllowedOrigins)
+    // §13.2 readiness: an explicit operator policy stays authoritative — but say
+    // plainly when it excludes managed GitLab rather than silently widening it.
+    if (!cfg.security.workspaceGitAllowedOrigins.some((origin) => origin.toLowerCase() === 'https://gitlab.com')) {
+      this.log.warn(
+        'workspace policy: workspaceGitAllowedOrigins excludes https://gitlab.com — managed GitLab workspaces will refuse to clone on this daemon'
+      )
+    }
     return { root, cfg }
   }
 
@@ -1659,7 +1668,8 @@ export class Daemon {
         return client.requestGitCred(payload)
       },
       log: { warn: (m: string) => this.log.warn(m) },
-      actionsSupported: () => this.cpClient?.supportsServerFeature?.('gitcred-actions-v1') ?? false
+      actionsSupported: () => this.cpClient?.supportsServerFeature?.('gitcred-actions-v1') ?? false,
+      providerV2Supported: () => this.cpClient?.supportsServerFeature?.('gitcred-provider-v2') ?? false
     })
     this.gitCredServer = new GitCredServer(this.gitCreds, gitcredSocketPath(root), {
       log: {
@@ -1672,6 +1682,11 @@ export class Daemon {
         const ws = this.agents.get(agentId)?.workspace
         if (ws?.mode !== 'git-repo' || !ws.gitRepo) return undefined
         return gitRepoLabel(ws.gitRepo) ?? undefined
+      },
+      // The REPLICATED SPEC decides the provider — never the helper's host hint.
+      providerOf: (agentId: string) => {
+        const agent = this.agents.get(agentId)
+        return agent ? this.workspaces.managedCredentialProvider(agent) : undefined
       }
     })
     const daemonCredentialTarget = daemonGitCredentialTarget({
@@ -1686,7 +1701,10 @@ export class Daemon {
         this.k8sPlane?.runsInSandbox(agentId) ? sandboxGitCredentialTarget() : daemonCredentialTarget,
       capabilityFor: (agentId) => this.gitCredServer!.capabilityFor(agentId),
       preWarm: async (agentId, reason) => {
-        await this.gitCreds.get(agentId, reason)
+        const agent = this.agents.get(agentId)
+        const provider = agent ? this.workspaces.managedCredentialProvider(agent) : undefined
+        if (provider === 'gitlab') await this.gitCreds.get(agentId, reason, { provider: 'gitlab' })
+        else await this.gitCreds.get(agentId, reason)
       }
     })
     try {
@@ -1696,6 +1714,13 @@ export class Daemon {
       this.ghBinDir = writeGhShim(root, daemonEntryForShims(root))
     } catch (err) {
       this.log.warn(`gitcred: gh wrapper shim write failed — spawning agents without it (${formatErr(err)})`)
+    }
+    try {
+      // glab wrapper (§13.3) — read-only tokens for gitlab workspaces; same
+      // regenerate-per-boot, never-block-startup discipline as gh.
+      this.glabBinDir = writeGlabShim(root, daemonEntryForShims(root))
+    } catch (err) {
+      this.log.warn(`gitcred: glab wrapper shim write failed — spawning agents without it (${formatErr(err)})`)
     }
     this.gitCredServer.start()
     probeGitVersion((m) => this.log.warn(m))
@@ -3054,7 +3079,8 @@ export class Daemon {
     agent: LoadedAgent,
     runtime: RuntimeDef,
     launchEnv: Record<string, string>,
-    githubAppCredentials: boolean
+    githubAppCredentials: boolean,
+    gitlabCredentials: boolean
   ): string[] {
     const configuredMcp = agent.mcpServers.flatMap((name) => {
       const definition = this.mcpDefsForAgent(agent.id)[name]
@@ -3069,6 +3095,15 @@ export class Daemon {
       if (launchEnv.GIT_CONFIG_GLOBAL) paths.push(launchEnv.GIT_CONFIG_GLOBAL)
       const gh = resolveCommandPath('gh', process.env)
       if (gh) executableCommands.push(gh)
+    }
+    if (gitlabCredentials) {
+      // The gitlab twin: same helper socket/shim, the glab wrapper dir, and the
+      // real glab binary for the OS sandbox's read allowlist (§13.3).
+      paths.push(gitcredSocketPath(this.root), gitcredShimPath(this.root))
+      if (this.glabBinDir) paths.push(this.glabBinDir)
+      if (launchEnv.GIT_CONFIG_GLOBAL) paths.push(launchEnv.GIT_CONFIG_GLOBAL)
+      const glab = resolveCommandPath('glab', process.env)
+      if (glab) executableCommands.push(glab)
     }
     return trustedRuntimeReadRoots({
       runtime,
@@ -3380,6 +3415,9 @@ export class Daemon {
     // A GitHub workspace uses this channel for its implicit repo; scratch uses
     // it only for explicitly authorized repos named by git/gh.
     const githubAppCredentials = !excludeAgentToolCredentials && agent.workspace.gitCredential === 'github-app'
+    const gitlabCredentials = !excludeAgentToolCredentials && agent.workspace.gitCredential === 'gitlab'
+    const managedCredentials = githubAppCredentials || gitlabCredentials
+    const managedCredentialHost = gitlabCredentials ? ('gitlab.com' as const) : ('github.com' as const)
     // The Git session policy runs for every configured repository, not only
     // GitHub review: repository hooks/fsmonitor stay disabled without rewriting
     // checkout config. sessionGitEnv additionally supplies GitHub App identity.
@@ -3399,8 +3437,8 @@ export class Daemon {
     // is re-materialized on every spawn, because a resumed Sandbox is a new pod with an empty tmpfs.
     // The daemon-local write (sessionGitEnv) would land the file on this daemon's disk instead.
     const sandboxSessionGit =
-      this.k8sPlane && githubAppCredentials
-        ? sessionGitConfig(agent.id, this.gitCommitIdentity, sandboxGitCredentialTarget())
+      this.k8sPlane && managedCredentials
+        ? sessionGitConfig(agent.id, this.gitCommitIdentity, sandboxGitCredentialTarget(), managedCredentialHost)
         : undefined
     const env: Record<string, string> = {
       ...baseEnv,
@@ -3411,8 +3449,8 @@ export class Daemon {
       ...memoryProviderFor(memoryAgent, runtime, baseEnv, this.externalMemoryAdmission(agent.id)).runtimeEnv(),
       // App identity rides with the CREDENTIAL mode, not the workspace mode: a scratch workspace with
       // authorized repositories needs the capability for its git and gh exactly like a clone does.
-      ...(githubAppCredentials
-        ? (sandboxSessionGit?.env ?? sessionGitEnv(agent.id, this.gitCommitIdentity))
+      ...(managedCredentials
+        ? (sandboxSessionGit?.env ?? sessionGitEnv(agent.id, this.gitCommitIdentity, managedCredentialHost))
         : agent.workspace.mode === 'git-repo'
           ? sessionGitPolicyEnv()
           : {})
@@ -3457,6 +3495,11 @@ export class Daemon {
       env.AC_AGENT_ID = agent.id
       shimDirs.add(this.ghBinDir)
     }
+    if (gitlabCredentials && this.glabBinDir && !this.k8sPlane) {
+      // glab wrapper (§13.3): read-only project tokens for the managed workspace.
+      env.AC_AGENT_ID = agent.id
+      shimDirs.add(this.glabBinDir)
+    }
     if (shimDirs.size > 0) {
       env.PATH = `${[...shimDirs].join(':')}:${env.PATH ?? process.env.PATH ?? ''}`
     }
@@ -3496,7 +3539,8 @@ export class Daemon {
           if (this.codexSessionFloor) applyCodexSessionFloor(target, launchEnv, this.codexSessionFloor)
         },
         runtimeReadRoots: runInSandbox
-          ? (launchEnv) => this.sandboxRuntimeReadRoots(agent, runtime, launchEnv, githubAppCredentials)
+          ? (launchEnv) =>
+              this.sandboxRuntimeReadRoots(agent, runtime, launchEnv, githubAppCredentials, gitlabCredentials)
           : undefined,
         trustedWorkspaceWriteRoots: runInSandbox ? this.workspaces.trustedWorkspaceWriteRoots(agent) : undefined,
         sandboxMechanism: this.sandboxMechanism,

@@ -6,7 +6,14 @@ afterEach(() => configureWorkspaceGitOrigins(DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGI
 
 describe('workspace Git origin policy', () => {
   it('denies an unconfigured host at the daemon boundary', () => {
-    expect(() => authorizeWorkspaceGitUrl('https://gitlab.com/acme/repo.git')).toThrow(
+    expect(() => authorizeWorkspaceGitUrl('https://code.example.test/acme/repo.git')).toThrow(
+      'git clone origin is not allowed'
+    )
+    // §13.2: managed GitLab is HTTPS-only and part of the default policy now.
+    expect(authorizeWorkspaceGitUrl('https://gitlab.com/example-group/example-project.git')).toBe(
+      'https://gitlab.com/example-group/example-project.git'
+    )
+    expect(() => authorizeWorkspaceGitUrl('ssh://git@gitlab.com/example-group/example-project.git')).toThrow(
       'git clone origin is not allowed'
     )
   })

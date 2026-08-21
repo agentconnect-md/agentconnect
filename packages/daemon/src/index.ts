@@ -210,6 +210,20 @@ program
     await runGhToken(agentId, ghArgs)
   })
 
+// glab token fetch (gitlab-com-integration.md §13.3): the gh-token twin —
+// invoked BY the run/bin/glab wrapper once per invocation. Prints ONLY the
+// READ token on stdout; exit 2 = non-gitlab target (wrapper runs real glab).
+program
+  .command('glab-token', { hidden: true })
+  .description('Fetch a read-only GITLAB_TOKEN from the local daemon (glab wrapper backend)')
+  .argument('<agentId>', 'agent whose credentials to serve')
+  .argument('[glabArgs...]', "the agent's glab argv, forwarded verbatim after `--`")
+  .allowUnknownOption()
+  .action(async (agentId: string, glabArgs: string[]) => {
+    const { runGlabToken } = await import('./cli/glab-token.js')
+    await runGlabToken(agentId, glabArgs)
+  })
+
 // Agent business config (identity, status, bindings) is owned by the Control
 // Plane or by hand-editing agent.json — the daemon only reconciles what it finds
 // on disk (docs §4/§5). So the CLI exposes a read-only `list`, not local CRUD.

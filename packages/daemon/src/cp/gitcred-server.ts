@@ -64,6 +64,9 @@ interface GitCredIpcRequest {
   repoFullName?: string
   /** 'gh' ⇒ the widened GH_TOKEN capability set; absent/'git' ⇒ contents-only. */
   plane?: string
+  /** Host-derived hint from the helper ('gitlab' when git asked for gitlab.com).
+   *  ROUTING ONLY: the daemon's own replicated spec decides the real provider. */
+  provider?: string
 }
 
 export interface GitCredServerDeps {
@@ -72,6 +75,9 @@ export interface GitCredServerDeps {
    *  lets a helper request that names the workspace repo share the repo-less
    *  cache key with pre-warm/spawn instead of splitting the cache. */
   workspaceRepoOf?: (agentId: string) => string | undefined
+  /** The agent's managed credential provider from its REPLICATED SPEC — never
+   *  the helper's claim (§13.2). Absent/undefined ⇒ github (the v1 behavior). */
+  providerOf?: (agentId: string) => 'github' | 'gitlab' | undefined
 }
 
 export class GitCredServer {
@@ -79,6 +85,7 @@ export class GitCredServer {
   private readonly capabilities = new Map<string, string>()
   private readonly log: GitCredServerDeps['log']
   private readonly workspaceRepoOf?: (agentId: string) => string | undefined
+  private readonly providerOf?: (agentId: string) => 'github' | 'gitlab' | undefined
 
   constructor(
     private readonly cache: GitCredentialCache,
@@ -87,6 +94,7 @@ export class GitCredServer {
   ) {
     this.log = deps.log
     if (deps.workspaceRepoOf) this.workspaceRepoOf = deps.workspaceRepoOf
+    if (deps.providerOf) this.providerOf = deps.providerOf
   }
 
   start(): void {
@@ -160,7 +168,7 @@ export class GitCredServer {
       this.audit('rejected', req?.agentId, req?.plane === 'gh' ? 'gh' : 'git', req?.repoFullName, true)
       return reply({ ok: false, error: 'local credential capability required' })
     }
-    const plane: CredPlane = req.plane === 'gh' ? 'gh' : 'git'
+    const plane: CredPlane = req.plane === 'gh' ? 'gh' : req.plane === 'glab' ? 'glab' : 'git'
     // Workspace normalization: a request naming the workspace repo folds onto
     // the repo-less key (one cache entry with pre-warm/spawn; and old CPs that
     // strip the wire field keep serving the workspace unchanged).
@@ -179,8 +187,26 @@ export class GitCredServer {
     if (req.op !== 'get') {
       return reply({ ok: false, error: 'unsupported op' })
     }
+    // The SPEC decides the provider; a helper whose host hint disagrees is
+    // asking for another host's credential and gets a clean denial (§13.2).
+    const provider = this.providerOf?.(req.agentId) ?? 'github'
+    if (req.provider !== undefined && req.provider !== provider) {
+      this.audit('denied', req.agentId, plane, repo)
+      return reply({ ok: false, error: `this workspace has no managed ${req.provider} credential` })
+    }
+    if (plane === 'glab' && provider !== 'gitlab') {
+      this.audit('denied', req.agentId, plane, repo)
+      return reply({ ok: false, error: 'glab credentials require a managed GitLab workspace' })
+    }
     try {
-      const cred = await this.cache.get(req.agentId, 'helper', { plane, ...(repo !== undefined ? { repo } : {}) })
+      const cred = await this.cache.get(req.agentId, 'helper', {
+        plane,
+        ...(repo !== undefined ? { repo } : {}),
+        ...(provider === 'gitlab' ? { provider: 'gitlab' as const } : {}),
+        // §13.3: the CLI wrapper is read-only BY DESIGN — a mutating glab
+        // command never receives effect authority and fails at GitLab.
+        ...(plane === 'glab' ? { requestedAccess: 'read' as const } : {})
+      })
       this.audit('served', req.agentId, plane, repo ?? cred.repoFullName)
       return reply({ ok: true, username: cred.username, password: cred.token, repoFullName: cred.repoFullName })
     } catch (e) {
