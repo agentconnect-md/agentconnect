@@ -375,11 +375,29 @@ describe('executeTool: sendMessage (channel post)', () => {
 
     it('neutralizes mention syntax in the caption — it labels a file, it must not ping', async () => {
       const { d, gw } = shareDeps()
-      await executeTool(ctx, 'shareFile', { path: 'out/chart.png', caption: 'cc <@U1> @here' }, d)
+      await executeTool(
+        ctx,
+        'shareFile',
+        { path: 'out/chart.png', caption: 'cc <@U1> @here <at user_id="all">everyone</at>' },
+        d
+      )
       const caption = (gw.uploadFile as ReturnType<typeof vi.fn>).mock.calls[0]![2] as string
       expect(caption).not.toContain('<@U1>')
       expect(caption).not.toContain('@here')
+      expect(caption).not.toContain('<at ')
       expect(caption).toContain('U1')
+    })
+
+    it('reports a failed transcript record as a notice, never as a failed share', async () => {
+      // The image is already in the conversation; a thrown error here would invite the
+      // double-posting retry the outcome vocabulary exists to prevent.
+      const { d } = shareDeps({
+        recordShare: async () => {
+          throw new Error('store closed')
+        }
+      })
+      const res = (await executeTool(ctx, 'shareFile', { path: 'out/chart.png' }, d)) as Record<string, unknown>
+      expect(res).toMatchObject({ ok: true, notice: expect.stringContaining('transcript') })
     })
 
     it('refuses a headless turn — its whole point is that nothing is posted', async () => {

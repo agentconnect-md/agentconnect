@@ -321,7 +321,8 @@ function buildShareFileTool(): ToolDescriptor {
       'the only way to show someone a file you produced or downloaded: your ordinary reply is text-only, and ' +
       '`sendMessage` posts to channel roots, never here. `path` is relative to your workspace root; put files there ' +
       'first. Images only (PNG, JPEG, or WEBP — not GIF), decided from the file bytes, not the name. The optional ' +
-      '`caption` is plain text (max 1000 chars, mentions are neutralized); write everything else in your ordinary ' +
+      '`caption` is plain text (max 1000 chars; mention syntax is neutralized, though a bare Telegram @username ' +
+      'may still notify); write everything else in your ordinary ' +
       'reply. The image posts immediately, so it may appear before your streamed reply finishes. If the result says ' +
       'the upload MAY have been delivered, do NOT retry — report that instead.',
     inputSchema: obj(

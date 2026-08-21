@@ -258,7 +258,9 @@ the posted filename and type come from those bytes too. A GIF is refused by name
 is capped per send and per turn; failures name their rule. A headless turn, a postless
 agent-call session, and a platform that cannot host files are refused before any file is
 read. Captions are bounded, carried as one message, and have their mention syntax
-neutralized — a caption labels a file; it must not page anyone.
+neutralized — Slack/Discord control tokens, Feishu `<at>` tags, and the broadcast words; a
+bare Telegram `@username` is the one form with no inert spelling and may still notify. A
+caption labels a file; it must not page anyone.
 
 The share never seeds or re-anchors a session — the thread already has one — and it posts
 when called, so the image may appear before the streamed reply finishes. The transcript

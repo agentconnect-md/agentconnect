@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import type { SendIdentity, SessionContext } from './context.js'
+import type { SendIdentity, SessionContext, UploadFailReason } from './context.js'
 import type { GatewayDeps } from './gateway.js'
 import { parseArgs, requiredString } from './args.js'
 import { platformLabel } from '../../platforms/read-ports.js'
@@ -77,10 +77,12 @@ export interface ShareFileDeps extends GatewayDeps {
 }
 
 /** Neutralize mention syntax in a model-authored caption (docs §3): Slack/Discord control
- *  tokens and the two broadcast words. A caption labels a file; escaping costs nothing.
- *  Discord additionally suppresses pings natively (allowedMentions), so this is belt only. */
+ *  tokens, Feishu's `<at …>` tag (which pages `user_id="all"` from plain text), and the two
+ *  broadcast words. A caption labels a file; escaping costs nothing. Discord additionally
+ *  suppresses pings natively (allowedMentions). The one form with no inert spelling is a
+ *  bare Telegram `@username` — the tool description says so instead of promising it away. */
 export function escapeCaptionMentions(caption: string): string {
-  return caption.replace(/<(?=[@#!])/g, '<\u200b').replace(/@(everyone|here)\b/g, '@\u200b$1')
+  return caption.replace(/<(?=[@#!]|at[\s>])/gi, '<\u200b').replace(/@(everyone|here)\b/gi, '@\u200b$1')
 }
 
 const READ_REFUSALS: Record<Exclude<ShareReadResult, { ok: true }>['reason'], (path: string, d?: string) => string> = {
@@ -95,7 +97,7 @@ const READ_REFUSALS: Record<Exclude<ShareReadResult, { ok: true }>['reason'], (p
   'too-large': (path, detail) => `shareFile: "${path}" is over the per-file limit${detail ? ` (${detail})` : ''}.`
 }
 
-const UPLOAD_REFUSALS: Record<string, (platform: string) => string> = {
+const UPLOAD_REFUSALS: Record<Exclude<UploadFailReason, 'indeterminate'>, (platform: string) => string> = {
   missing_scope: (p) =>
     `shareFile: the ${p} integration lacks the file-upload permission — an operator has to update the app's scopes.`,
   too_large: (p) => `shareFile: ${p} rejected the file as too large.`,
@@ -170,23 +172,36 @@ export async function shareFile(
         'shareFile: the upload timed out and MAY still have been delivered — do NOT retry; say the image may have gone through instead.'
       )
     }
-    throw new Error(UPLOAD_REFUSALS[outcome.reason]!(platformLabel(target.platform)))
+    throw new Error(UPLOAD_REFUSALS[outcome.reason](platformLabel(target.platform)))
   }
 
   // Provenance (docs §4): the model-chosen path plus what was ACTUALLY published — sniffed
   // type, size, digest — and the bytes for console replay when they fit the transcript cap.
   const marker = `[shared: ${path} (${read.mimeType}, ${read.bytes.byteLength} bytes, sha256:${read.sha256.slice(0, 16)})]`
   const ts = outcome.messageId ?? `local-${deps.now()}`
-  await deps.recordShare?.(ctx, {
-    ts,
-    text: escaped ? `${escaped}\n${marker}` : marker,
-    image: { name: read.name, mimeType: read.mimeType, data: read.bytes }
-  })
+  // The image is already in the conversation past this point, so a store failure must NOT
+  // read as a failed share — a thrown error here would invite the double-posting retry the
+  // whole outcome vocabulary exists to prevent. Degrade to a notice instead.
+  const recorded = await (
+    deps.recordShare?.(ctx, {
+      ts,
+      text: escaped ? `${escaped}\n${marker}` : marker,
+      image: { name: read.name, mimeType: read.mimeType, data: read.bytes }
+    }) ?? Promise.resolve()
+  )
+    .then(() => true)
+    .catch(() => false)
 
+  const notices = [
+    ...(outcome.warning ? [`This send partly failed: ${outcome.warning}.`] : []),
+    ...(recorded
+      ? []
+      : ['The image was posted, but recording it in the transcript failed — the console may not show it.'])
+  ]
   return {
     ok: true,
     shared: { path, mimeType: read.mimeType, bytes: read.bytes.byteLength, sha256: read.sha256 },
     post: { platform: target.platform, channel: target.channel, ts },
-    ...(outcome.warning ? { notice: `This send partly failed: ${outcome.warning}.` } : {})
+    ...(notices.length ? { notice: notices.join(' ') } : {})
   }
 }

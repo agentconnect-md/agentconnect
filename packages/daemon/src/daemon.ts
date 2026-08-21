@@ -2273,7 +2273,12 @@ export class Daemon {
           runtimeRootOf: (id) => this.k8sPlane?.workspaceRootFor(id)
         })
         const acpSessionId = await this.acpSessionIdForToolCall(ctx).catch(() => undefined)
-        const location = await scope.location(ctx.agentId, acpSessionId).catch(() => undefined)
+        // Session-worktree first (an isolated session's files live there), then the agent
+        // root: `location(id, sessionId)` answers ONLY for git-repo agents on isolated
+        // sessions, and the default config (shared isolation, from-scratch) is the other arm.
+        const location =
+          (await scope.location(ctx.agentId, acpSessionId).catch(() => undefined)) ??
+          (await scope.location(ctx.agentId).catch(() => undefined))
         if (!location) return { ok: false, reason: 'not-found' }
         const cap = cfg.limits.maxOutboundFileBytes ?? cfg.limits.maxAttachmentBytes
         let resolved: string | null
