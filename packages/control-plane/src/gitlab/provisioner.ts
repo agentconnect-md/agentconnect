@@ -273,31 +273,49 @@ export class GitlabProvisioner {
       await this.mintCredential(orgId, binding, token, root.id, accountUserId, purpose, owner)
     }
 
-    // 6–7. The managed webhook, converged to the union CURRENT at run end and
-    // re-checked until stable: a hook write landing mid-run finds this run's
-    // lease live and its own kick backs off, so THIS run must not finish on a
-    // union it read before that write.
+    // 6–7. The managed webhook, converged against PROVIDER truth to the union
+    // CURRENT at run end. Each pass re-lists the project's webhooks first: a
+    // crash between a provider delete and the local clear, or a provider-side
+    // deletion, leaves a recorded id that no longer exists — local columns are
+    // never proof. Re-checked until stable because a hook write landing mid-run
+    // finds this run's lease live and its own kick backs off.
+    let applied: string | null = null
     for (let pass = 0; pass < 3; pass++) {
-      const fresh = (await this.deps.bindings.get(orgId, binding.id)) ?? binding
       const events = await this.deps.desiredWebhookEvents(orgId, binding.projectId)
-      const installed = fresh.webhookId === null ? null : fresh.desiredEventsHash
-      if ((events ? JSON.stringify(events) : null) === installed) break
+      const want = events ? JSON.stringify(events) : 'none'
+      if (applied === want) break
+      const fresh = (await this.deps.bindings.get(orgId, binding.id)) ?? binding
+      if (!(await this.renewLease(orgId, fresh, owner))) {
+        return { state: 'admin_degraded', reason: 'claim_fence_lost' }
+      }
+      const hooks = await gitlabListWebhooks(token, binding.projectId, this.deps.fetchImpl)
+      const recordedExists = fresh.webhookId !== null && hooks.some((hook) => BigInt(hook.id) === fresh.webhookId)
+      if (!recordedExists && fresh.webhookId !== null) {
+        // The recorded webhook is gone at the provider: forget it so the
+        // converge below re-adopts by exact URL or creates, never PUTs a 404 id.
+        await this.deps.bindings.update(orgId, binding.id, { webhookId: null, desiredEventsHash: null })
+      }
       if (events) {
-        const outcome = await this.convergeWebhook(orgId, fresh, token, events, owner)
+        const effective = recordedExists ? fresh : { ...fresh, webhookId: null }
+        const outcome = await this.convergeWebhook(orgId, effective, token, events, owner)
         if (outcome) return outcome
       } else {
         // §11.1's inverse: no enabled hook wants ingress any more, so the managed
-        // webhook (ours by recorded id) and its sealed key go. Same per-step lease
-        // discipline as the install path; a 404 counts as already-clean.
-        if (!(await this.renewLease(orgId, fresh, owner))) {
-          return { state: 'admin_degraded', reason: 'claim_fence_lost' }
-        }
-        if (fresh.webhookId !== null) {
-          await gitlabDeleteWebhook(token, binding.projectId, fresh.webhookId, this.deps.fetchImpl).catch(swallow404)
+        // webhook — the recorded id AND any crash-left hook at our exact managed
+        // URL — and its sealed key go. A 404 counts as already-clean.
+        const url = this.deps.publicRelayUrl
+          ? `${this.deps.publicRelayUrl.replace(/\/$/, '')}/webhooks/gitlab`
+          : undefined
+        for (const hook of hooks) {
+          const ours =
+            (recordedExists && BigInt(hook.id) === fresh.webhookId) || (url !== undefined && hook.url === url)
+          if (!ours) continue
+          await gitlabDeleteWebhook(token, binding.projectId, BigInt(hook.id), this.deps.fetchImpl).catch(swallow404)
         }
         await this.deps.webhookSecrets.delete(orgId, binding.id)
         await this.deps.bindings.update(orgId, binding.id, { webhookId: null, desiredEventsHash: null })
       }
+      applied = want
     }
     return { state: 'ready' }
   }

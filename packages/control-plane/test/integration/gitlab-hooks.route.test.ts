@@ -289,6 +289,22 @@ describe('gitlab hooks — binding lifecycle rebroadcast (§11.1/§11.3 round 2)
     )
   })
 
+  it('a provider-side webhook loss is healed on the next converge — local columns are not proof', async () => {
+    const h = await harness()
+    const created = await h.a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: glBody(h.agentId) })
+    expect(created.statusCode).toBe(200)
+    await vi.waitFor(() => expect(h.fake.webhooks.size).toBe(1), { timeout: 15_000 })
+    const staleId = (await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))!.webhookId!
+    // Provider-side deletion (or a crash between the delete and the local
+    // clear): the recorded id and desiredEventsHash both survive locally.
+    h.fake.webhooks.clear()
+    expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toEqual({ state: 'ready' })
+    expect(h.fake.webhooks.size).toBe(1)
+    const healed = (await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))!.webhookId!
+    expect(healed).not.toBe(staleId)
+    expect([...h.fake.webhooks.keys()][0]).toBe(Number(healed))
+  })
+
   it('repair rebroadcasts the project rules with the STABLE signing key', async () => {
     const h = await harness()
     const glab = channel([GITLAB_COM_V1_FEATURE])
