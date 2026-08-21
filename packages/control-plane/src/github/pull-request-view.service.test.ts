@@ -39,6 +39,7 @@ function fullAnswer(): Record<string, unknown> {
         pullRequest: {
           number: 7,
           title: 'Ship the panel',
+          bodyText: 'Ship the panel body',
           state: 'OPEN',
           isDraft: false,
           merged: false,
@@ -47,6 +48,7 @@ function fullAnswer(): Record<string, unknown> {
           url: 'https://github.com/acme/repo/pull/7',
           baseRefName: 'main',
           headRefName: 'feat/panel',
+          headRefOid: 'sha_HEAD',
           reviewDecision: 'CHANGES_REQUESTED',
           autoMergeRequest: null,
           latestReviews: {
@@ -155,6 +157,8 @@ describe('projection mapping', () => {
       repoFullName: 'acme/repo',
       pullNumber: 7,
       title: 'Ship the panel',
+      body: 'Ship the panel body',
+      headOid: 'sha_HEAD',
       state: 'open',
       isDraft: false,
       url: 'https://github.com/acme/repo/pull/7',
@@ -567,6 +571,65 @@ describe('setAutoMerge (M6)', () => {
 
     const degraded = build([ok({ data: null, errors: [{ type: 'RATE_LIMITED', message: 'limit' }] })])
     expect((await degraded.service.view(IDENTITY)).autoMergeArmed).toBeNull()
+  })
+})
+
+describe('merge (M6)', () => {
+  const TARGET = { repoId: IDENTITY.repoId, repoFullName: IDENTITY.repoFullName, pullNumber: IDENTITY.pullNumber }
+  const mergeNode = (merged: boolean) =>
+    ok({
+      data: { repository: { pullRequest: { id: 'PR_node1', state: merged ? 'MERGED' : 'OPEN', merged } } }
+    })
+
+  it('merges with the CALLER-minted token, mutates by node id, and drops the cached view', async () => {
+    const { service, calls, mint } = build([
+      ok(fullAnswer()), // seed the cache via view()
+      mergeNode(false),
+      ok({ data: { mergePullRequest: { clientMutationId: null } } }),
+      ok(fullAnswer()) // the re-read after invalidation
+    ])
+    await service.view(IDENTITY)
+
+    const result = await service.merge(TARGET, 'ghs_write', 'sha_HEAD')
+
+    expect(result).toEqual({ merged: true })
+    // The write rides the passed token, never this service's read-floor mint facility.
+    expect(mint).toHaveBeenCalledTimes(1)
+    const mutation = calls[2]!.body as { query: string; variables: Record<string, unknown> }
+    expect(mutation.query).toContain('mergePullRequest')
+    expect(mutation.query).toContain('mergeMethod:SQUASH')
+    expect(mutation.query).toContain('expectedHeadOid')
+    expect(mutation.variables).toEqual({ id: 'PR_node1', expectedHeadOid: 'sha_HEAD' })
+    // The cached view is gone: the next read asks GitHub again rather than serving the pre-write state.
+    await service.view(IDENTITY)
+    expect(calls).toHaveLength(4)
+  })
+
+  it('is idempotent: an already-merged PR mutates nothing', async () => {
+    const { service, calls } = build([mergeNode(true)])
+
+    expect(await service.merge(TARGET, 'ghs_write', 'sha_HEAD')).toEqual({ merged: true })
+    expect(calls).toHaveLength(1) // the node read only — no mutation call scripted, none made
+  })
+
+  it('throws denied when the installation cannot see the PR', async () => {
+    const { service } = build([ok({ data: { repository: { pullRequest: null } } })])
+
+    await expect(service.merge(TARGET, 'ghs_write', 'sha_HEAD')).rejects.toMatchObject({ code: 'LEASE_DENIED' })
+  })
+
+  it('treats a refused merge as FAILURE even when GitHub wraps it in truthy partial data', async () => {
+    const { service } = build([
+      mergeNode(false),
+      ok({
+        data: { mergePullRequest: null },
+        errors: [{ type: 'UNPROCESSABLE', message: 'Pull request is not mergeable' }]
+      })
+    ])
+
+    await expect(service.merge(TARGET, 'ghs_write', 'sha_HEAD')).rejects.toMatchObject({
+      message: expect.stringContaining('not mergeable')
+    })
   })
 })
 

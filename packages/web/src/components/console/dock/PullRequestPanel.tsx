@@ -10,6 +10,7 @@ import { Icon } from '@/components/ui'
 import {
   ApiError,
   fetchSessionPullRequest,
+  mergeSessionPullRequest,
   setSessionPullRequestAutoMerge,
   type SessionPullRequestCheckDto,
   type SessionPullRequestDto,
@@ -324,6 +325,33 @@ export function PullRequestPanel({
     )
   }
 
+  // The direct merge's own in-flight/error state, kept apart from the auto-merge toggle's. Two presses:
+  // the first ARMS (reversible), the second (danger) actually merges — a one-click merge is irreversible,
+  // and the box's most prominent control must not spend it.
+  const [mergeNow, setMergeNow] = useState<{ busy: boolean; err: string | null }>({ busy: false, err: null })
+  const [mergeArmed, setMergeArmed] = useState(false)
+  useEffect(() => {
+    setMergeNow({ busy: false, err: null })
+    setMergeArmed(false)
+  }, [sessionId])
+  const doMerge = () => {
+    setMergeNow({ busy: true, err: null })
+    mergeSessionPullRequest(sessionId).then(
+      () => {
+        setMergeNow({ busy: false, err: null })
+        setMergeArmed(false)
+        // The CP invalidated its cached view on the write; the next read shows the merged state.
+        setReads((r) => ({ tick: r.tick + 1, force: false }))
+      },
+      (e) => setMergeNow({ busy: false, err: msg(e) })
+    )
+  }
+
+  // The description clamps to a bounded preview so it never pushes checks/reviews below the fold; the
+  // reader can expand it in place.
+  const [bodyExpanded, setBodyExpanded] = useState(false)
+  useEffect(() => setBodyExpanded(false), [sessionId])
+
   // Reported on the EDGE, like every other tab's verdict: the caller's callback is a fresh closure per render, and re-reporting a held verdict would write parent state for nothing.
   const reported = useRef<string | null>(null)
   useEffect(() => {
@@ -605,20 +633,39 @@ export function PullRequestPanel({
         </a>
       </div>
       <div className="flex min-h-0 flex-1 flex-col overflow-auto pb-2">
-        {/* A shared checkout is the agent's ONE tree, which every session on it works in — so the PR on its branch is this session's to see, but not exclusively its work. Said, not implied. */}
+        {/* The PR description, clamped to a bounded preview so a long body never pushes checks/reviews below the fold. */}
+        {view.body ? (
+          <div data-pr-body="" className="flex flex-none flex-col">
+            <div className="flex items-center gap-2 px-3 pt-[10px] pb-[5px] font-sans text-[10.5px] font-semibold tracking-[0.04em] uppercase leading-normal text-(--text-disabled)">
+              Description
+            </div>
+            <div
+              className={`px-3 font-sans text-[12px] font-normal leading-[1.55] whitespace-pre-wrap break-words text-(--text-secondary) ${
+                bodyExpanded ? 'pb-2' : 'max-h-[168px] overflow-hidden pb-1'
+              }`}
+            >
+              {view.body}
+            </div>
+            {view.body.length > 400 ? (
+              <button
+                type="button"
+                data-pr-body-toggle=""
+                className="self-start px-3 pb-2 font-sans text-[11px] font-medium leading-normal text-(--text-link) hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand)"
+                onClick={() => setBodyExpanded((v) => !v)}
+              >
+                {bodyExpanded ? 'Show less' : 'Show more'}
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+        {/* A shared checkout is the agent's ONE tree, so its PR may not be exclusively this session's work — a caveat, not an identity detail, and most relevant beside the Merge button. */}
         {view.linkScope === 'shared' ? (
           <div
             data-pr-link-shared=""
             className="flex items-start gap-2 px-3 pt-[7px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)"
           >
             <Icon name="info" size={13} color="var(--text-tertiary)" className="mt-[2px] flex-none" />
-            <span>
-              {view.linkBranch
-                ? `Found through ${view.linkBranch}, the branch of this agent's shared checkout`
-                : "Found through the branch of this agent's shared checkout"}{' '}
-              — every session on this agent works in that one tree, so this pull request may carry more than this
-              session&rsquo;s work.
-            </span>
+            <span>This pull request may carry work from other sessions on this agent’s shared checkout.</span>
           </div>
         ) : null}
         {/* A branch-resolved link can be ambiguous where a run-linked one never is: the head branch is the whole identity, so several open PRs on it are all equally "this session's". The panel names the pick rather than picking silently. */}
@@ -721,9 +768,68 @@ export function PullRequestPanel({
           </>
         )}
       </div>
-      {/* The merge box (§3.4): the checkbox IS the action — there is no direct-merge route to back a Merge button, so none is drawn. Open PRs only; a degraded read has no armed fact to draw a control over. */}
+      {/* The merge box (§3.4): a direct Merge (squash) plus the auto-merge toggle, both under the same write capability. Open PRs only; a degraded read has no armed fact to draw a control over. */}
       {!view.degraded && view.state === 'open' ? (
-        <div data-pr-merge="" className="flex flex-none flex-col gap-[3px] border-t border-(--border-subtle) px-3 py-2">
+        <div data-pr-merge="" className="flex flex-none flex-col gap-[6px] border-t border-(--border-subtle) px-3 py-2">
+          <div className="flex items-center gap-2">
+            {mergeArmed ? (
+              <>
+                <button
+                  type="button"
+                  data-pr-merge-cancel=""
+                  className="dsbtn dsbtn-secondary sm flex-none disabled:pointer-events-none disabled:opacity-50"
+                  disabled={mergeNow.busy}
+                  title="Keep the pull request open"
+                  onClick={() => setMergeArmed(false)}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  data-pr-merge-now=""
+                  className="dsbtn dsbtn-danger sm flex-none disabled:pointer-events-none disabled:opacity-50"
+                  disabled={!view.canArmAutoMerge || view.isDraft || mergeNow.busy}
+                  title={
+                    !view.canArmAutoMerge
+                      ? 'The owning agent’s repository access is below write tier, so merging is not available'
+                      : view.isDraft
+                        ? 'Draft pull requests can’t be merged'
+                        : 'Merge this pull request now (squash) — this cannot be undone'
+                  }
+                  onClick={doMerge}
+                >
+                  {mergeNow.busy ? <Spinner size={11} /> : <Icon name="git-merge" size={13} />}
+                  Confirm merge
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                data-pr-merge-arm=""
+                className="dsbtn dsbtn-primary sm flex-none disabled:pointer-events-none disabled:opacity-50"
+                disabled={!view.canArmAutoMerge || view.isDraft === true}
+                title={
+                  !view.canArmAutoMerge
+                    ? 'The owning agent’s repository access is below write tier, so merging is not available'
+                    : view.isDraft
+                      ? 'Draft pull requests can’t be merged'
+                      : 'Merge this pull request now (squash)'
+                }
+                onClick={() => setMergeArmed(true)}
+              >
+                <Icon name="git-merge" size={13} />
+                Merge
+              </button>
+            )}
+            {mergeNow.err ? (
+              <span
+                data-pr-merge-now-error=""
+                className="min-w-0 flex-1 font-sans text-[11px] font-normal leading-[1.4] text-(--status-error)"
+              >
+                {mergeNow.err}
+              </span>
+            ) : null}
+          </div>
           <label
             className={`flex items-center gap-[7px] font-sans text-[12px] font-medium leading-normal text-(--text-primary) ${view.canArmAutoMerge ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'}`}
             title={

@@ -14,7 +14,10 @@ const wire = vi.hoisted(() => ({
   hold: null as null | (() => Promise<unknown>),
   // The auto-merge write seam: every POST recorded, failing with `mergeFailure` when set.
   mergeCalls: [] as Array<{ sessionId: string; enabled: boolean }>,
-  mergeFailure: null as null | Error
+  mergeFailure: null as null | Error,
+  // The direct merge seam: every call recorded, failing with `mergeNowFailure` when set.
+  mergeNowCalls: [] as string[],
+  mergeNowFailure: null as null | Error
 }))
 
 vi.mock('@/lib/api', () => {
@@ -39,6 +42,11 @@ vi.mock('@/lib/api', () => {
       wire.mergeCalls.push({ sessionId, enabled })
       if (wire.mergeFailure) return Promise.reject(wire.mergeFailure)
       return Promise.resolve({ armed: enabled })
+    }),
+    mergeSessionPullRequest: vi.fn((sessionId: string) => {
+      wire.mergeNowCalls.push(sessionId)
+      if (wire.mergeNowFailure) return Promise.reject(wire.mergeNowFailure)
+      return Promise.resolve({ merged: true })
     })
   }
 })
@@ -66,6 +74,7 @@ function pr(overrides: Partial<SessionPullRequestDto> = {}): SessionPullRequestD
     repoFullName: 'acme/api',
     pullNumber: 57,
     title: 'Ship the dock',
+    body: 'Fixes the dock flicker and adds the PR panel.',
     state: 'open',
     isDraft: false,
     url: 'https://github.com/acme/api/pull/57',
@@ -108,6 +117,7 @@ function pr(overrides: Partial<SessionPullRequestDto> = {}): SessionPullRequestD
 // The degraded arm as the CP builds it: identity + stored facts survive, every live list is empty.
 function degradedPr(reason: 'rate_limited' | 'denied' | 'unreachable'): SessionPullRequestDto {
   return pr({
+    body: '',
     state: 'closed',
     isDraft: null,
     additions: null,
@@ -169,6 +179,8 @@ beforeEach(() => {
   wire.hold = null
   wire.mergeCalls = []
   wire.mergeFailure = null
+  wire.mergeNowCalls = []
+  wire.mergeNowFailure = null
   verdicts = []
 })
 
@@ -423,17 +435,41 @@ describe('PullRequestPanel body', () => {
     )
   })
 
-  it('says when the link came from the agent’s SHARED checkout, and stays silent for a session worktree', async () => {
-    // The PR is real either way; what differs is whose work it can contain, and the panel says so
-    // rather than letting a shared tree's branch read as this session's alone.
+  it('discloses when the PR came from the agent’s SHARED checkout, and stays silent for a session worktree', async () => {
+    // The caveat is about whose work the PR may contain — most relevant beside the Merge button — not
+    // which checkout answered, so it survives the description block rather than being folded into it.
     await render()
     expect(container?.querySelector('[data-pr-link-shared]')).toBeNull()
 
     wire.data = pr({ linkedBy: 'head-branch', linkBranch: 'main', linkScope: 'shared' })
     await rerender({ sessionId: 'session-2' })
     expect(container?.querySelector('[data-pr-link-shared]')?.textContent).toContain(
-      "Found through main, the branch of this agent's shared checkout"
+      'may carry work from other sessions'
     )
+  })
+
+  it('draws the PR description under its own section, and hides it when empty', async () => {
+    // The body replaces the old "Found through …" shared-checkout note: the description is what the
+    // reader came for, and which checkout resolved the link is an implementation detail.
+    await render()
+    expect(container?.querySelector('[data-pr-body]')?.textContent).toContain('Fixes the dock flicker')
+    expect(text()).toContain('Description')
+
+    wire.data = pr({ body: '' })
+    await rerender({ sessionId: 'session-2' })
+    expect(container?.querySelector('[data-pr-body]')).toBeNull()
+  })
+
+  it('clamps a long description and expands it in place', async () => {
+    wire.data = pr({ body: 'A'.repeat(600) })
+    await render()
+    const toggle = () => container?.querySelector<HTMLButtonElement>('[data-pr-body-toggle]')
+    expect(toggle()?.textContent).toContain('Show more')
+    // Clamping is visual (max-height + overflow), so the full text is still in the DOM.
+    expect(container?.querySelector('[data-pr-body]')?.textContent).toContain('A'.repeat(600))
+
+    await press('[data-pr-body-toggle]')
+    expect(toggle()?.textContent).toContain('Show less')
   })
 
   it('draws each check with its own state marker and a duration only where both ends exist', async () => {
@@ -482,18 +518,25 @@ describe('PullRequestPanel body', () => {
     expect(text()).toContain('No unresolved review threads')
   })
 
-  it('gates M6’s writes: Auto-fix is ABSENT without a live composer, the merge toggle disabled below write tier', async () => {
+  it('gates M6’s writes: Auto-fix is ABSENT without a live composer, merge disabled below write tier or on a draft', async () => {
     // Re-aimed from M5's read-only premise (§9), as that test asked: the writes exist now, but each is
     // earned. No onPostTurn (a hook session with no composer) means NO button — absent, not disabled.
     await render()
     expect(container?.querySelector('[data-pr-autofix]')).toBeNull()
-    // The write-capable fixture's merge toggle is live; a read-tier caller's is disabled, not hidden —
+    // The write-capable fixture's merge controls are live; a read-tier caller's are disabled, not hidden —
     // the CP's canArmAutoMerge flag is exactly the "disabled control, not a failed call" contract.
     expect(container?.querySelector<HTMLInputElement>('[data-pr-automerge]')?.disabled).toBe(false)
+    expect(container?.querySelector<HTMLButtonElement>('[data-pr-merge-arm]')?.disabled).toBe(false)
 
     wire.data = pr({ canArmAutoMerge: false })
     await render()
     expect(container?.querySelector<HTMLInputElement>('[data-pr-automerge]')?.disabled).toBe(true)
+    expect(container?.querySelector<HTMLButtonElement>('[data-pr-merge-arm]')?.disabled).toBe(true)
+
+    // A draft PR is not mergeable — the button stays disabled rather than learning "no" from GitHub.
+    wire.data = pr({ isDraft: true })
+    await render()
+    expect(container?.querySelector<HTMLButtonElement>('[data-pr-merge-arm]')?.disabled).toBe(true)
 
     // No merge box at all where there is nothing to arm: closed/merged PRs and degraded answers.
     wire.data = pr({ state: 'merged' })
@@ -589,6 +632,50 @@ describe('PullRequestPanel body', () => {
 
     expect(container?.querySelector('[data-pr-merge-error]')?.textContent).toContain('clean status')
     expect(container?.querySelector<HTMLInputElement>('[data-pr-automerge]')?.disabled).toBe(false)
+    expect(wire.calls).toHaveLength(1) // no re-read: nothing changed behind the failed write
+  })
+
+  it('arms the merge on the first press and disarms on cancel — no mutation until the danger press', async () => {
+    await render()
+    // Unarmed: the primary "Merge" arm button, no danger confirm yet.
+    expect(container?.querySelector('[data-pr-merge-arm]')?.textContent).toContain('Merge')
+    expect(container?.querySelector('[data-pr-merge-now]')).toBeNull()
+
+    await press('[data-pr-merge-arm]')
+    // Armed: the danger confirm replaces the arm button, and nothing was sent yet.
+    expect(container?.querySelector('[data-pr-merge-arm]')).toBeNull()
+    expect(container?.querySelector<HTMLButtonElement>('[data-pr-merge-now]')?.textContent).toContain('Confirm merge')
+    expect(wire.mergeNowCalls).toHaveLength(0)
+
+    await press('[data-pr-merge-cancel]')
+    expect(container?.querySelector('[data-pr-merge-arm]')?.textContent).toContain('Merge')
+    expect(container?.querySelector('[data-pr-merge-now]')).toBeNull()
+    expect(wire.mergeNowCalls).toHaveLength(0)
+  })
+
+  it('merges now through the CP and re-reads the view it invalidated', async () => {
+    await render()
+    expect(wire.calls).toHaveLength(1)
+
+    await press('[data-pr-merge-arm]')
+    expect(wire.mergeNowCalls).toHaveLength(0) // arming is local, nothing sent yet
+
+    await press('[data-pr-merge-now]')
+
+    expect(wire.mergeNowCalls).toEqual(['session-1'])
+    expect(wire.calls).toHaveLength(2) // the post-write re-read, riding the CP's own invalidation
+  })
+
+  it('surfaces a refused merge as data and keeps the armed confirm usable', async () => {
+    // GitHub declining the merge (the CP's 409) is an answer the operator acts on, not a crash.
+    wire.mergeNowFailure = new Error('Pull request is not mergeable')
+    await render()
+
+    await press('[data-pr-merge-arm]')
+    await press('[data-pr-merge-now]')
+
+    expect(container?.querySelector('[data-pr-merge-now-error]')?.textContent).toContain('not mergeable')
+    expect(container?.querySelector<HTMLButtonElement>('[data-pr-merge-now]')?.disabled).toBe(false)
     expect(wire.calls).toHaveLength(1) // no re-read: nothing changed behind the failed write
   })
 })

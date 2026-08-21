@@ -3245,6 +3245,7 @@ export const SessionPullRequestDto = z.object({
   repoFullName: z.string(),
   pullNumber: z.number().int(),
   title: z.string(),
+  body: z.string(), // the PR description as plain text; empty while degraded
   state: z.enum(['open', 'closed', 'merged']).nullable(), // null only degraded with no Postgres fact
   isDraft: z.boolean().nullable(),
   url: z.string(),
@@ -3283,6 +3284,8 @@ export type SessionPullRequestDtoT = z.infer<typeof SessionPullRequestDto>
 export const SessionPullRequestAutoMergeBodyDto = z.object({ enabled: z.boolean() })
 /** `POST /sessions/:id/pull-request/auto-merge` — the armed state after the call (idempotent). */
 export const SessionPullRequestAutoMergeDto = z.object({ armed: z.boolean() })
+/** `POST /sessions/:id/pull-request/merge` — the merged outcome after the call (idempotent on an already-merged PR). */
+export const SessionPullRequestMergeDto = z.object({ merged: z.boolean() })
 
 /** `GET /agents/:id/tasks` — live tasks first, then the daemon's bounded settled history.
  *  `tracked:false` means the owning daemon holds no lease for this session (a non-Claude

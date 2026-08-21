@@ -3323,6 +3323,7 @@ export interface SessionPullRequestDto {
   repoFullName: string
   pullNumber: number
   title: string
+  body: string // the PR description as plain text; empty while degraded
   state: 'open' | 'closed' | 'merged' | null // null only degraded with no stored fact
   isDraft: boolean | null
   url: string
@@ -3369,6 +3370,12 @@ export async function setSessionPullRequestAutoMerge(sessionId: string, enabled:
   return apiPost<{ armed: boolean }>(`${orgBase()}/sessions/${encodeURIComponent(sessionId)}/pull-request/auto-merge`, {
     enabled
   })
+}
+
+// Merge the session's PR (squash) now, under the owning agent's clamped grant. A 409 relays GitHub
+// declining the merge (not mergeable, checks failing); an already-merged PR succeeds idempotently.
+export async function mergeSessionPullRequest(sessionId: string): Promise<{ merged: boolean }> {
+  return apiPost<{ merged: boolean }>(`${orgBase()}/sessions/${encodeURIComponent(sessionId)}/pull-request/merge`, {})
 }
 
 // ── usage dashboard (GET /usage) — real historical aggregates from the CP's

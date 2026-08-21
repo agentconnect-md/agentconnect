@@ -54,6 +54,10 @@ export interface PullRequestView {
   repoFullName: string
   pullNumber: number
   title: string
+  /** The PR description as plain text; empty while degraded or when GitHub reported none. */
+  body: string
+  /** The head commit oid the projection was built from; null while degraded. The merge write pins it. */
+  headOid: string | null
   // Null only while degraded with no Postgres knowledge; degraded 'closed' cannot distinguish merged.
   state: 'open' | 'closed' | 'merged' | null
   isDraft: boolean | null // null only while degraded and the owning run recorded no draft fact
@@ -83,8 +87,8 @@ const QUERY = `
 query PanelPullRequest($owner:String!,$name:String!,$number:Int!,$threads:Int!,$checks:Int!,$reviews:Int!){
   repository(owner:$owner,name:$name){
     pullRequest(number:$number){
-      number title state isDraft merged additions deletions url
-      baseRefName headRefName reviewDecision
+      number title bodyText state isDraft merged additions deletions url
+      baseRefName headRefName headRefOid reviewDecision
       autoMergeRequest{enabledAt}
       latestReviews(first:$reviews){nodes{state author{login __typename}}}
       commits(last:1){nodes{commit{statusCheckRollup{contexts(first:$checks){pageInfo{hasNextPage} nodes{
@@ -105,6 +109,7 @@ interface GqlAnswer {
     pullRequest: {
       number: number
       title: string
+      bodyText: string
       state: 'OPEN' | 'CLOSED' | 'MERGED'
       isDraft: boolean
       merged: boolean
@@ -113,6 +118,7 @@ interface GqlAnswer {
       url: string
       baseRefName: string
       headRefName: string
+      headRefOid: string | null
       reviewDecision: 'APPROVED' | 'CHANGES_REQUESTED' | 'REVIEW_REQUIRED' | null
       autoMergeRequest: { enabledAt: string | null } | null
       latestReviews: { nodes: Array<{ state: string; author: { login: string; __typename: string } | null }> | null }
@@ -301,6 +307,8 @@ export class PullRequestViewService {
       repoFullName: identity.repoFullName,
       pullNumber: identity.pullNumber,
       title: '',
+      body: '',
+      headOid: null,
       // Null here, NOT the caller's known facts: this object is CACHED and the cache key is the PR,
       // not the run — two sessions on one PR have different runs, so any run-specific fact baked in
       // here would be served to the other session. The per-caller overlay in view() fills these.
@@ -391,6 +399,8 @@ export class PullRequestViewService {
     return {
       ...base,
       title: pr.title,
+      body: pr.bodyText ?? '',
+      headOid: pr.headRefOid ?? null,
       state: pr.merged ? 'merged' : pr.state === 'CLOSED' ? 'closed' : 'open',
       isDraft: pr.isDraft,
       url: pr.url || base.url,
@@ -459,8 +469,49 @@ export class PullRequestViewService {
       this.invalidate(target.repoId, target.pullNumber)
     }
   }
+
+  /** Merge the PR (squash) now, with a token the CALLER minted under the agent's clamp. `expectedHeadOid`
+   *  pins the merge to the head the operator was shown — GitHub refuses if the head moved, which the
+   *  caller maps to a 409. `setAutoMerge` never had this exposure: GitHub re-evaluates at merge time, so
+   *  arming could not merge a revision nobody reviewed. Idempotent on the fresh node read; the cached
+   *  view is dropped either way so the next read shows the merged state. */
+  async merge(
+    target: { repoId: bigint; repoFullName: string; pullNumber: number },
+    token: string,
+    expectedHeadOid: string
+  ): Promise<{ merged: boolean }> {
+    const [owner, name] = target.repoFullName.split('/')
+    if (!owner || !name) throw new GithubApiError('malformed repository name', 0, 'LEASE_DENIED', false)
+    const opts = {
+      auth: token,
+      ...(this.fetchImpl ? { fetchImpl: this.fetchImpl } : {}),
+      ...(this.baseUrl ? { baseUrl: this.baseUrl } : {})
+    }
+    const node = await githubGraphql<MergeNodeAnswer>(
+      'query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){id state merged}}}',
+      { owner, name, number: target.pullNumber },
+      opts
+    )
+    const pr = node.repository?.pullRequest
+    if (!pr) throw new GithubApiError('pull request not visible to the installation', 200, 'LEASE_DENIED', false)
+    try {
+      if (pr.merged || pr.state === 'MERGED') return { merged: true }
+      await githubGraphql(
+        'mutation($id:ID!,$expectedHeadOid:GitObjectID!){mergePullRequest(input:{pullRequestId:$id,mergeMethod:SQUASH,expectedHeadOid:$expectedHeadOid}){clientMutationId}}',
+        { id: pr.id, expectedHeadOid },
+        { ...opts, strictErrors: true }
+      )
+      return { merged: true }
+    } finally {
+      this.invalidate(target.repoId, target.pullNumber)
+    }
+  }
 }
 
 interface AutoMergeNodeAnswer {
   repository: { pullRequest: { id: string; autoMergeRequest: { enabledAt: string | null } | null } | null } | null
+}
+
+interface MergeNodeAnswer {
+  repository: { pullRequest: { id: string; state: string; merged: boolean } | null } | null
 }

@@ -18,13 +18,13 @@ Today the session detail page is `[nav · body · rail]`, where the rail is a fi
 250px **session list** (`SessionRail.tsx`). The design turns that rail into a
 **resizable, tabbed dock** — the session list becomes one of five panels:
 
-| Tab      | Icon                    | Badge              | Header action   | What it shows                                                                                                                                                                                                   |
-| -------- | ----------------------- | ------------------ | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Sessions | `messages-square`       | —                  | `plus`          | today / yesterday / previous-7-days session groups + agent filter chips                                                                                                                                         |
-| Files    | `folder-tree`           | —                  | `refresh-cw`    | workspace tree with git status tags, path search, branch + workdir header                                                                                                                                       |
-| Git      | `git-commit-horizontal` | changed count      | `refresh-cw`    | branch + ahead/behind, staged / unstaged with `+/−` and per-row stage toggle, commit box with AI message generation, commit log                                                                                 |
-| PR       | `git-pull-request`      | unresolved threads | `external-link` | PR state, head→base, checks, reviews, unresolved threads with a single Auto-fix action, merge box with auto-merge — or, with no linked PR, the branch's upstream state and a Create-pull-request action (§12.6) |
-| Tasks    | `list-checks`           | running count      | `refresh-cw`    | background tasks with state and elapsed, read-only (§3.5 — no per-task cancel exists to wire)                                                                                                                   |
+| Tab      | Icon                    | Badge              | Header action   | What it shows                                                                                                                                                                                                                        |
+| -------- | ----------------------- | ------------------ | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Sessions | `messages-square`       | —                  | `plus`          | today / yesterday / previous-7-days session groups + agent filter chips                                                                                                                                                              |
+| Files    | `folder-tree`           | —                  | `refresh-cw`    | workspace tree with git status tags, path search, branch + workdir header                                                                                                                                                            |
+| Git      | `git-commit-horizontal` | changed count      | `refresh-cw`    | branch + ahead/behind, staged / unstaged with `+/−` and per-row stage toggle, commit box with AI message generation, commit log                                                                                                      |
+| PR       | `git-pull-request`      | unresolved threads | `external-link` | PR state, description, head→base, checks, reviews, unresolved threads with a single Auto-fix action, merge box with Merge + auto-merge — or, with no linked PR, the branch's upstream state and a Create-pull-request action (§12.6) |
+| Tasks    | `list-checks`           | running count      | `refresh-cw`    | background tasks with state and elapsed, read-only (§3.5 — no per-task cancel exists to wire)                                                                                                                                        |
 
 Dock geometry: width **380–760px, default 480px**, drag handle on the left edge
 (brand-colored while dragging), tab strip with zero gap between tabs. Tab labels
@@ -421,6 +421,7 @@ All following the existing workspace-route shape in `agents.ts`: `getOrgAgent` �
 | GET    | `/agents/:id/tasks`                                                          | `task/list`                             |
 | GET    | `/sessions/:id/pull-request`                                                 | Postgres identity + GitHub REST/GraphQL |
 | POST   | `/sessions/:id/pull-request/auto-merge`                                      | GraphQL `enablePullRequestAutoMerge`    |
+| POST   | `/sessions/:id/pull-request/merge`                                           | GraphQL `mergePullRequest`              |
 
 **`GET /agents/:id/tasks` does NOT use `canReadWorkspaceScope`**, and this
 paragraph's earlier claim that it would was wrong. That gate requires
@@ -995,18 +996,19 @@ the review, hand it to the agent, arm the merge — works end to end.
 
 Decisions recorded while building it:
 
-- **No Merge button.** The route table backs exactly one write —
-  `POST /sessions/:id/pull-request/auto-merge` — so the merge box draws the
-  checkbox as the action and nothing else; a direct-merge button would be
-  unbacked and M3's rule (absent rather than inert) applies. The checkbox is
-  disabled below write tier via the read projection's per-caller
-  `canArmAutoMerge` flag (Postgres-only, computed in the route like the overlay
-  facts — never cached), and GitHub declining the state change (a PR whose
-  checks already pass) relays as a 409 the box shows as data. The CP route is
-  idempotent — a fresh node read decides whether the mutation runs — and the
-  mint carries `contents: write` beside `pull_requests: write` because GitHub
-  performs the eventual merge under the same grant; the additional-repo comment
-  tier is deliberately excluded (arming merges code).
+- **A Merge button beside auto-merge, both under one write capability.** The
+  merge box draws a direct Merge (squash, `mergePullRequest`) next to the
+  Merge-when-ready checkbox (`enablePullRequestAutoMerge`), each backed by its
+  own route — `POST /sessions/:id/pull-request/merge` and
+  `POST /sessions/:id/pull-request/auto-merge`. Both are disabled below write
+  tier via the read projection's per-caller `canArmAutoMerge` flag
+  (Postgres-only, computed in the route like the overlay facts — never cached),
+  and GitHub declining either write — arming on a PR whose checks already pass,
+  or merging one that is not mergeable — relays as a 409 the box shows as data.
+  Both routes are idempotent — a fresh node read decides whether the mutation
+  runs — and the mint carries `contents: write` beside `pull_requests: write`
+  because GitHub performs the eventual merge under the same grant; the
+  additional-repo comment tier is deliberately excluded (merging code).
 - **Auto-fix's only follow-up is one forced re-read on the turn's falling
   edge.** The panel never watches the turn; it takes a `turnActive` prop, and a
   pressed Auto-fix arms a per-scope wait that the next falling edge consumes —
@@ -1059,7 +1061,7 @@ mutation.
 | Git rows       | static                       | click opens the diff; hover `+`/`−` stages the file                                   |
 | Commit box     | plain textarea               | AI generate button with loading state                                                 |
 | PR threads     | static text                  | four-state auto-fix machine per thread — **scoped down to one Auto-fix action, §5.2** |
-| PR merge       | plain Merge button           | Merge-when-ready checkbox → armed auto-merge                                          |
+| PR merge       | plain Merge button           | Merge button (squash) **and** Merge-when-ready checkbox → armed auto-merge            |
 | Tasks          | progress bar per task        | no progress bar                                                                       |
 | Dock min width | 360px                        | 380px                                                                                 |
 | Tab gap        | 2px                          | 0px                                                                                   |
@@ -1168,7 +1170,7 @@ list; `HookRun`'s recorded review appears only as the degraded-arm fallback
      ANY session would hand an old one the newest session's pull request, whose
      branch replaced the one that carried its work. So the primary tree is read
      for the agent's most recently active session only, and `linkScope: shared`
-     makes the panel say the PR may carry more than this session's work. A purged
+     records that the answering checkout is the agent's primary tree. A purged
      session, a non-checkout workspace, and no daemon serving the agent all skip
      the daemon read entirely, so a session that can never resolve a PR spends
      none of the installation's quota. The daemon comes from the PLACEMENT
