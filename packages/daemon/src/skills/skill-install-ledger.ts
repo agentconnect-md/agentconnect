@@ -4,7 +4,7 @@ import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { under } from '../fs/contained-path.js'
 import { inspectLocalSkillSource } from './skill-source-snapshot.js'
-import { runSkillWorkspaceMutation } from './skill-workspace-mutator.js'
+import { canonicalSkillMutationRoot, runSkillWorkspaceMutation } from './skill-workspace-mutator.js'
 import { withSkillMutationHelperLease, type SkillMutationHelperLease } from './skill-workspace-lock-lease.js'
 
 // An applying/cleanup journal can contain two complete receipt sets: up to 64
@@ -123,12 +123,16 @@ export interface ReconcileSkillBundlesOptions {
   legacyOwned?: string[]
   /** The caller already holds `withSkillWorkspaceLock` across acquisition. */
   lockHeld?: boolean
+  /** Reports a bundle skipped because its destination is not this ledger's to write. */
+  warn?: (message: string) => void
 }
 
 export interface ReconcileSkillBundlesResult {
   installed: string[]
   removed: string[]
   skipped: 'unchanged' | null
+  /** Destinations left untouched because they are not owned by this ledger. */
+  conflicts: string[]
 }
 
 export class SkillLedgerSafetyError extends Error {
@@ -305,6 +309,48 @@ export async function recoverSkillLedger(
   }
 }
 
+// Two harnesses name one root differently (.agents/skills vs .claude/skills, commonly symlinked), so key ownership by the real directory.
+async function canonicalizeRelativeRoot(cwd: string, relativeRoot: string): Promise<string> {
+  try {
+    const canonical = await canonicalSkillMutationRoot(cwd, relativeRoot)
+    if (canonical === relativeRoot) return relativeRoot
+    validateRelativeRoot(canonical)
+    return canonical
+  } catch {
+    // An alias that escapes the workspace is still refused where it is written, so keeping the original defers to that check.
+    return relativeRoot
+  }
+}
+
+async function canonicalizeCandidates(
+  cwd: string,
+  candidates: CandidateSkillBundle[]
+): Promise<CandidateSkillBundle[]> {
+  const resolved: CandidateSkillBundle[] = []
+  for (const candidate of candidates) {
+    resolved.push({ ...candidate, relativeRoot: await canonicalizeRelativeRoot(cwd, candidate.relativeRoot) })
+  }
+  return resolved
+}
+
+async function canonicalizeOwned(cwd: string, owned: OwnedSkillBundle[]): Promise<OwnedSkillBundle[]> {
+  const resolved: OwnedSkillBundle[] = []
+  for (const entry of owned) {
+    resolved.push({ ...entry, relativeRoot: await canonicalizeRelativeRoot(cwd, entry.relativeRoot) })
+  }
+  return resolved
+}
+
+async function destinationOccupied(cwd: string, relativeRoot: string): Promise<boolean> {
+  try {
+    await fsp.lstat(join(cwd, ...relativeRoot.split('/')))
+    return true
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+    throw error
+  }
+}
+
 export async function reconcileSkillBundles(
   options: ReconcileSkillBundlesOptions
 ): Promise<ReconcileSkillBundlesResult> {
@@ -329,34 +375,41 @@ async function reconcileSkillBundlesLocked(
       ledger.fingerprint === options.fingerprint &&
       (await installedBundlesIntact(options.cwd, ledger.owned, location.workspaceIdentity))
     ) {
-      return { installed: [], removed: [], skipped: 'unchanged' }
+      return { installed: [], removed: [], skipped: 'unchanged', conflicts: [] }
     }
 
-    const candidates = dedupeCandidates(options.candidates)
+    const deduped = dedupeCandidates(await canonicalizeCandidates(options.cwd, options.candidates))
     const gitResolutions = validateGitResolutions(options.gitResolutions ?? [])
-    for (const candidate of candidates) {
+    for (const candidate of deduped) {
       validateCandidate(candidate)
       if (!(await bundleIdentity(candidate.sourceDir, candidate))) {
         throw safety(`candidate skill receipt does not match ${candidate.relativeRoot}`)
       }
     }
 
-    const prior = ledger?.owned ?? []
+    // Canonicalize the recorded set too: a ledger written under another harness names the same directory by its other root.
+    const prior = await canonicalizeOwned(options.cwd, ledger?.owned ?? [])
     const priorByPath = new Map(prior.map((entry) => [entry.relativeRoot, entry]))
-    const legacyHints = new Set(options.legacyOwned ?? [])
-    for (const candidate of candidates) {
-      if (priorByPath.has(candidate.relativeRoot)) continue
-      const target = join(options.cwd, ...candidate.relativeRoot.split('/'))
-      try {
-        await fsp.lstat(target)
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
-        throw error
+    const legacyHints = new Set<string>()
+    for (const hint of options.legacyOwned ?? []) {
+      legacyHints.add(await canonicalizeRelativeRoot(options.cwd, hint))
+    }
+    const conflicts: string[] = []
+    const candidates: CandidateSkillBundle[] = []
+    for (const candidate of deduped) {
+      if (
+        priorByPath.has(candidate.relativeRoot) ||
+        !(await destinationOccupied(options.cwd, candidate.relativeRoot))
+      ) {
+        candidates.push(candidate)
+        continue
       }
       const detail = legacyHints.has(candidate.relativeRoot)
         ? 'legacy workspace marker is not trusted; remove or migrate it explicitly'
         : 'the path is not owned by this daemon ledger'
-      throw safety(`refusing to overwrite unowned skill ${candidate.relativeRoot}: ${detail}`)
+      // Skipping leaves the path untouched, which is what refusing wanted; one foreign bundle must not stop every other skill.
+      conflicts.push(candidate.relativeRoot)
+      options.warn?.(`skills: skipped unowned skill ${candidate.relativeRoot}: ${detail}`)
     }
 
     const paths = [
@@ -461,7 +514,8 @@ async function reconcileSkillBundlesLocked(
       agentId: options.agentId,
       runtime: options.runtime,
       cliVersion: options.cliVersion,
-      fingerprint: options.fingerprint,
+      // A skipped conflict leaves the plan unmet, so keep the fingerprint non-matching and let the next preparation retry once the path is clear.
+      fingerprint: conflicts.length > 0 ? `conflicts:${randomUUID()}` : options.fingerprint,
       owned,
       gitResolutions,
       cleanup: { operations, prior }
@@ -478,7 +532,8 @@ async function reconcileSkillBundlesLocked(
     return {
       installed: candidates.map((entry) => entry.relativeRoot),
       removed: prior.map((entry) => entry.relativeRoot),
-      skipped: null
+      skipped: null,
+      conflicts
     }
   } catch (error) {
     if (recoveryLedger && location) {
