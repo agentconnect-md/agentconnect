@@ -514,7 +514,8 @@ async function reconcileSkillBundlesLocked(
       agentId: options.agentId,
       runtime: options.runtime,
       cliVersion: options.cliVersion,
-      fingerprint: options.fingerprint,
+      // A skipped conflict leaves the plan unmet, so keep the fingerprint non-matching and let the next preparation retry once the path is clear.
+      fingerprint: conflicts.length > 0 ? `conflicts:${randomUUID()}` : options.fingerprint,
       owned,
       gitResolutions,
       cleanup: { operations, prior }

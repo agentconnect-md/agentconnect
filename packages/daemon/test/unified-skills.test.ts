@@ -182,6 +182,30 @@ describe.skipIf(!hasBwrap)('unified isolated skill installation', () => {
     // The foreign bytes stay untouched, and one conflict does not cost the agent its other skills.
     expect(await readFile(join(cwd, '.runtime/skills/taken/SKILL.md'), 'utf8')).toBe('not ours')
     expect(existsSync(join(cwd, '.runtime/skills/fresh/SKILL.md'))).toBe(true)
+
+    // An unmet plan must not be recorded as satisfied: the conflict has to keep being reported and retried.
+    const repeated = await installSkills({ id: 'a1', runtime: 'claude', skills: [] }, cwd, {
+      stateDir,
+      localSkills: [
+        { kind: 'dream', key: 'dream:taken', name: 'taken', sourceDir: takenDir },
+        { kind: 'dream', key: 'dream:fresh', name: 'fresh', sourceDir: freshDir }
+      ],
+      runCli: cli.run
+    })
+    expect(repeated.skipped).toBeNull()
+    expect(repeated.errors).toHaveLength(1)
+
+    await rm(join(cwd, '.runtime/skills/taken'), { recursive: true })
+    const cleared = await installSkills({ id: 'a1', runtime: 'claude', skills: [] }, cwd, {
+      stateDir,
+      localSkills: [
+        { kind: 'dream', key: 'dream:taken', name: 'taken', sourceDir: takenDir },
+        { kind: 'dream', key: 'dream:fresh', name: 'fresh', sourceDir: freshDir }
+      ],
+      runCli: cli.run
+    })
+    expect(cleared.errors).toEqual([])
+    expect(await readFile(join(cwd, '.runtime/skills/taken/SKILL.md'), 'utf8')).toContain('# ours')
   }, 120_000)
 
   it('refuses a skill-root alias that resolves outside the workspace', async () => {
