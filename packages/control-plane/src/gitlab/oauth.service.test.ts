@@ -4,7 +4,6 @@ import type {
   GitlabConnectionRecord,
   GitlabConnectionRepo,
   GitlabConnectionSecretStore,
-  GitlabConnectionState,
   GitlabOauthStateRecord,
   GitlabOauthStateStore
 } from '../persistence/ports.js'
@@ -43,6 +42,7 @@ class MemStates implements GitlabOauthStateStore {
 class MemConnections implements GitlabConnectionRepo {
   rows = new Map<string, GitlabConnectionRecord>()
   private seq = 0
+  constructor(private readonly secrets: MemSecrets) {}
   async upsertOnCallback(input: {
     orgId: string
     userId: string
@@ -50,6 +50,7 @@ class MemConnections implements GitlabConnectionRepo {
     gitlabUsername: string
     scopes: string[]
     accessExpiresAt: Date | null
+    sealedPair: { accessToken: string; refreshToken: string }
   }): Promise<GitlabConnectionRecord> {
     const existing = [...this.rows.values()].find(
       (r) => r.orgId === input.orgId && r.gitlabUserId === input.gitlabUserId
@@ -68,6 +69,7 @@ class MemConnections implements GitlabConnectionRepo {
       createdAt: existing?.createdAt ?? new Date(0)
     }
     this.rows.set(record.id, record)
+    this.secrets.rows.set(record.id, { ...input.sealedPair })
     return record
   }
   async get(orgId: string, id: string): Promise<GitlabConnectionRecord | null> {
@@ -77,10 +79,18 @@ class MemConnections implements GitlabConnectionRepo {
   async listForOrg(orgId: string): Promise<GitlabConnectionRecord[]> {
     return [...this.rows.values()].filter((r) => r.orgId === orgId)
   }
-  async setState(orgId: string, id: string, state: GitlabConnectionState): Promise<boolean> {
+  async markReauthRequired(id: string, expectedVersion: bigint): Promise<boolean> {
+    const row = this.rows.get(id)
+    if (!row || row.tokenVersion !== expectedVersion) return false
+    row.state = 'reauth_required'
+    return true
+  }
+  async disconnect(orgId: string, id: string): Promise<boolean> {
     const row = this.rows.get(id)
     if (!row || row.orgId !== orgId) return false
-    row.state = state
+    row.state = 'disconnected'
+    row.tokenVersion += 1n
+    this.secrets.rows.delete(id)
     return true
   }
   leases = new Map<string, { owner: string; until: Date }>()
@@ -93,29 +103,30 @@ class MemConnections implements GitlabConnectionRepo {
   async releaseRefreshLease(id: string, owner: string): Promise<void> {
     if (this.leases.get(id)?.owner === owner) this.leases.delete(id)
   }
-  async advanceTokenVersion(id: string, expected: bigint, accessExpiresAt: Date | null): Promise<boolean> {
+  async commitRefresh(
+    id: string,
+    expected: bigint,
+    accessExpiresAt: Date | null,
+    sealedPair: { accessToken: string; refreshToken: string }
+  ): Promise<boolean> {
     const row = this.rows.get(id)
-    if (!row || row.tokenVersion !== expected) return false
+    if (!row || row.tokenVersion !== expected || row.state !== 'connected') return false
     row.tokenVersion += 1n
     row.accessExpiresAt = accessExpiresAt
-    row.state = 'connected'
+    this.secrets.rows.set(id, { ...sealedPair })
     return true
   }
 }
 
 class MemSecrets implements GitlabConnectionSecretStore {
   rows = new Map<string, { accessToken: string; refreshToken: string }>()
-  async put(_orgId: string, id: string, pair: { accessToken: string; refreshToken: string }): Promise<void> {
-    this.rows.set(id, { ...pair })
-  }
   async get(_orgId: string, id: string): Promise<{ accessToken: string; refreshToken: string } | null> {
     const row = this.rows.get(id)
-    return row ? { ...row } : null
-  }
-  async delete(_orgId: string, id: string): Promise<void> {
-    this.rows.delete(id)
+    // Mirror the Pg store: values were sealed by the writer, opened on read.
+    return row ? { accessToken: unseal(row.accessToken), refreshToken: unseal(row.refreshToken) } : null
   }
 }
+const unseal = (value: string) => value.replace(/^sealed:/, '')
 
 interface Scripted {
   tokenStatus?: number
@@ -150,10 +161,11 @@ function gitlabFetch(script: Scripted = {}): FetchLike {
   }
 }
 
-function harness(opts: { script?: Scripted; now?: number } = {}) {
+function harness(opts: { script?: Scripted; now?: number; member?: { ok: boolean } } = {}) {
   const states = new MemStates()
-  const connections = new MemConnections()
   const secrets = new MemSecrets()
+  const connections = new MemConnections(secrets)
+  const member = opts.member ?? { ok: true }
   const clockNow = { value: opts.now ?? Date.parse('2026-08-22T00:00:00.000Z') }
   const service = new GitlabOauthService({
     cfg: { clientId: 'client-1', clientSecret: 'secret-1' },
@@ -164,9 +176,10 @@ function harness(opts: { script?: Scripted; now?: number } = {}) {
     clock: { now: () => clockNow.value } as never,
     publicCpUrl: 'https://api.example.test',
     webAppUrl: 'https://console.example.test',
+    isOrgMember: async () => member.ok,
     fetchImpl: gitlabFetch(opts.script ?? {})
   })
-  return { service, states, connections, secrets, clockNow }
+  return { service, states, connections, secrets, clockNow, member }
 }
 
 async function connectedHarness(opts: { script?: Scripted } = {}) {
@@ -230,7 +243,7 @@ describe('GitlabOauthService (§9)', () => {
     const record = [...connections.rows.values()][0]!
     expect(record.userId).toBe(USER)
     expect(record.gitlabUserId).toBe(4242n)
-    expect(secrets.rows.get(record.id)).toEqual({ accessToken: 'at-1', refreshToken: 'rt-1' })
+    expect(secrets.rows.get(record.id)).toEqual({ accessToken: 'sealed:at-1', refreshToken: 'sealed:rt-1' })
     expect(service.redirectTarget('/settings', 'connected')).toBe(
       'https://console.example.test/settings?gitlab=connected'
     )
@@ -256,8 +269,8 @@ describe('GitlabOauthService (§9)', () => {
     const versionBefore = h.connections.rows.get(h.record.id)!.tokenVersion
     expect(await h.service.withAccessToken(ORG, h.record.id)).toBe('at-refreshed-1')
     expect(h.secrets.rows.get(h.record.id)).toEqual({
-      accessToken: 'at-refreshed-1',
-      refreshToken: 'rt-refreshed-1'
+      accessToken: 'sealed:at-refreshed-1',
+      refreshToken: 'sealed:rt-refreshed-1'
     })
     expect(h.connections.rows.get(h.record.id)!.tokenVersion).toBe(versionBefore + 1n)
     expect(script.refreshCount).toBe(1)
@@ -287,6 +300,24 @@ describe('GitlabOauthService (§9)', () => {
     expect(tokens.length).toBeGreaterThanOrEqual(1)
     for (const token of tokens) expect(token).toBe('at-refreshed-1')
     expect(script.refreshCount).toBe(1)
+  })
+
+  it('refuses the callback when the starter is no longer an org member (§9.4)', async () => {
+    const h = harness({ member: { ok: true } })
+    const { url } = await h.service.start(ORG, USER)
+    const nonce = new URL(url).searchParams.get('state')!
+    const begun = (await h.service.begin(nonce))!
+    h.member.ok = false
+    const done = await h.service.callback(nonce, 'code-1', begun.browserNonce)
+    expect(done.result).toBe('state_invalid')
+    expect(h.connections.rows.size).toBe(0)
+  })
+
+  it('a stale refresh failure cannot overwrite a newer committed version', async () => {
+    const h = await connectedHarness()
+    // A reconnect (or any newer commit) advanced the version after this refresh read it.
+    expect(await h.connections.markReauthRequired(h.record.id, h.record.tokenVersion - 1n)).toBe(false)
+    expect(h.connections.rows.get(h.record.id)!.state).toBe('connected')
   })
 
   it('disconnect removes the pair and flips state while keeping the row', async () => {

@@ -10,6 +10,7 @@ import type { GitlabConnection, PrismaClient } from '../../generated/prisma/clie
 import type { PrismaLike } from '../prisma.js'
 import type {
   GitlabConnectionRecord,
+  GitlabSealedTokenPair,
   GitlabConnectionRepo,
   GitlabConnectionSecretStore,
   GitlabConnectionState,
@@ -53,6 +54,7 @@ export class PgGitlabConnectionRepo implements GitlabConnectionRepo {
     gitlabUsername: string
     scopes: string[]
     accessExpiresAt: Date | null
+    sealedPair: GitlabSealedTokenPair
   }): Promise<GitlabConnectionRecord> {
     const facts = {
       userId: input.userId,
@@ -62,13 +64,23 @@ export class PgGitlabConnectionRepo implements GitlabConnectionRepo {
       state: 'connected',
       lastSyncAt: new Date()
     }
-    const row = await this.prisma.gitlabConnection.upsert({
-      where: { orgId_gitlabUserId: { orgId: input.orgId, gitlabUserId: input.gitlabUserId } },
-      create: { orgId: input.orgId, gitlabUserId: input.gitlabUserId, ...facts },
-      // Reconnect rotates the pair (caller re-seals it), so the version advances.
-      update: { ...facts, tokenVersion: { increment: 1n } }
+    // Metadata and the sealed pair land in ONE transaction: no reader can see a
+    // connected row whose side-table pair is absent or stale.
+    return this.prisma.$transaction(async (tx) => {
+      const row = await tx.gitlabConnection.upsert({
+        where: { orgId_gitlabUserId: { orgId: input.orgId, gitlabUserId: input.gitlabUserId } },
+        create: { orgId: input.orgId, gitlabUserId: input.gitlabUserId, ...facts },
+        // Reconnect rotates the pair, so the version advances and any in-flight
+        // refresh CAS on the old version loses.
+        update: { ...facts, tokenVersion: { increment: 1n } }
+      })
+      await tx.gitlabConnectionSecret.upsert({
+        where: { connectionId: row.id },
+        create: { connectionId: row.id, ...input.sealedPair },
+        update: input.sealedPair
+      })
+      return toRecord(row)
     })
-    return toRecord(row)
   }
 
   async get(orgId: string, connectionId: string): Promise<GitlabConnectionRecord | null> {
@@ -81,9 +93,26 @@ export class PgGitlabConnectionRepo implements GitlabConnectionRepo {
     return rows.map(toRecord)
   }
 
-  async setState(orgId: string, connectionId: string, state: GitlabConnectionState): Promise<boolean> {
-    const res = await this.prisma.gitlabConnection.updateMany({ where: { id: connectionId, orgId }, data: { state } })
+  async markReauthRequired(connectionId: string, expectedVersion: bigint): Promise<boolean> {
+    const res = await this.prisma.gitlabConnection.updateMany({
+      where: { id: connectionId, tokenVersion: expectedVersion },
+      data: { state: 'reauth_required' }
+    })
     return res.count === 1
+  }
+
+  async disconnect(orgId: string, connectionId: string): Promise<boolean> {
+    return this.prisma.$transaction(async (tx) => {
+      const res = await tx.gitlabConnection.updateMany({
+        where: { id: connectionId, orgId },
+        // The version bump defeats any in-flight refresh CAS, so a raced refresh
+        // cannot resurrect the pair this transaction deletes.
+        data: { state: 'disconnected', tokenVersion: { increment: 1n } }
+      })
+      if (res.count !== 1) return false
+      await tx.gitlabConnectionSecret.deleteMany({ where: { connectionId } })
+      return true
+    })
   }
 
   async claimRefreshLease(connectionId: string, owner: string, until: Date, now: Date): Promise<boolean> {
@@ -108,12 +137,27 @@ export class PgGitlabConnectionRepo implements GitlabConnectionRepo {
     })
   }
 
-  async advanceTokenVersion(connectionId: string, expected: bigint, accessExpiresAt: Date | null): Promise<boolean> {
-    const res = await this.prisma.gitlabConnection.updateMany({
-      where: { id: connectionId, tokenVersion: expected },
-      data: { tokenVersion: { increment: 1n }, accessExpiresAt, state: 'connected' }
+  async commitRefresh(
+    connectionId: string,
+    expectedVersion: bigint,
+    accessExpiresAt: Date | null,
+    sealedPair: GitlabSealedTokenPair
+  ): Promise<boolean> {
+    // CAS and the sealed pair commit together or not at all: success is only
+    // ever published with the matching tokens already in place.
+    return this.prisma.$transaction(async (tx) => {
+      const res = await tx.gitlabConnection.updateMany({
+        where: { id: connectionId, tokenVersion: expectedVersion, state: 'connected' },
+        data: { tokenVersion: { increment: 1n }, accessExpiresAt, state: 'connected' }
+      })
+      if (res.count !== 1) return false
+      await tx.gitlabConnectionSecret.upsert({
+        where: { connectionId },
+        create: { connectionId, ...sealedPair },
+        update: sealedPair
+      })
+      return true
     })
-    return res.count === 1
   }
 }
 
@@ -122,23 +166,6 @@ export class PgGitlabConnectionSecretStore implements GitlabConnectionSecretStor
     private readonly db: PrismaLike,
     private readonly cipher: SecretCipher
   ) {}
-
-  async put(orgId: string, connectionId: string, pair: { accessToken: string; refreshToken: string }): Promise<void> {
-    // Keyed by connectionId alone — check the parent's org once (HookSecret pattern).
-    if ((await this.db.gitlabConnection.count({ where: { id: connectionId, orgId } })) === 0) {
-      throw new Error('gitlab connection secret write outside its organization')
-    }
-    const scope = orgScope(OrgId(orgId))
-    const sealed = {
-      accessToken: await this.cipher.seal(pair.accessToken, scope),
-      refreshToken: await this.cipher.seal(pair.refreshToken, scope)
-    }
-    await this.db.gitlabConnectionSecret.upsert({
-      where: { connectionId },
-      create: { connectionId, ...sealed },
-      update: sealed
-    })
-  }
 
   async get(orgId: string, connectionId: string): Promise<{ accessToken: string; refreshToken: string } | null> {
     const row = await this.db.gitlabConnectionSecret.findFirst({
@@ -150,10 +177,6 @@ export class PgGitlabConnectionSecretStore implements GitlabConnectionSecretStor
       accessToken: await this.cipher.open(row.accessToken, scope),
       refreshToken: await this.cipher.open(row.refreshToken, scope)
     }
-  }
-
-  async delete(orgId: string, connectionId: string): Promise<void> {
-    await this.db.gitlabConnectionSecret.deleteMany({ where: { connectionId, connection: { orgId } } })
   }
 }
 

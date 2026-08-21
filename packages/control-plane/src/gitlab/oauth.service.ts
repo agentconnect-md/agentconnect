@@ -70,6 +70,8 @@ export interface GitlabOauthServiceDeps {
   publicCpUrl: string
   /** Console origin for the final redirect; absent ⇒ redirect stays on the CP origin. */
   webAppUrl?: string
+  /** §9.4: a departed starter must not complete a pending flow; checked at the callback. */
+  isOrgMember: (orgId: string, userId: string) => Promise<boolean>
   fetchImpl?: FetchLike
   log?: { warn(obj: object, msg: string): void }
 }
@@ -147,18 +149,25 @@ export class GitlabOauthService {
         },
         this.deps.fetchImpl
       )
+      // §9.4: OAuth authority must not survive organization membership — a
+      // starter removed while the browser was at GitLab cannot (re)connect.
+      if (!(await this.deps.isOrgMember(row.orgId, row.userId))) {
+        return { redirectPath, result: 'state_invalid' }
+      }
       const user = await gitlabCurrentUser(grant.access_token, this.deps.fetchImpl)
-      const connection = await this.deps.connections.upsertOnCallback({
+      const scope = orgScope(OrgId(row.orgId))
+      await this.deps.connections.upsertOnCallback({
         orgId: row.orgId,
         userId: row.userId,
         gitlabUserId: BigInt(user.id),
         gitlabUsername: user.username,
         scopes: grant.scope ? grant.scope.split(/[ ,]+/).filter(Boolean) : ['api'],
-        accessExpiresAt: accessExpiry(grant.created_at, grant.expires_in, now)
-      })
-      await this.deps.secrets.put(row.orgId, connection.id, {
-        accessToken: grant.access_token,
-        refreshToken: grant.refresh_token
+        accessExpiresAt: accessExpiry(grant.created_at, grant.expires_in, now),
+        // Sealed here so metadata and pair commit in ONE repo transaction.
+        sealedPair: {
+          accessToken: await this.deps.cipher.seal(grant.access_token, scope),
+          refreshToken: await this.deps.cipher.seal(grant.refresh_token, scope)
+        }
       })
       return { redirectPath, result: 'connected' }
     } catch (e) {
@@ -242,27 +251,29 @@ export class GitlabOauthService {
       } catch (e) {
         // Deterministic rejection or ambiguous outcome alike: the old pair may
         // already be invalid, so never blind-retry — require human reconnection.
-        await this.deps.connections.setState(orgId, record.id, 'reauth_required')
+        // Version-fenced: a reconnect committed meanwhile keeps its fresh state.
+        await this.deps.connections.markReauthRequired(record.id, current.tokenVersion)
         this.deps.log?.warn(
           { connectionId: record.id, status: e instanceof GitlabApiError ? e.status : undefined },
           'gitlab token refresh failed; connection requires reconnection'
         )
         throw new GitlabOauthDenied('gitlab connection requires reconnection (reauth_required)', 409)
       }
-      const advanced = await this.deps.connections.advanceTokenVersion(
+      const scope = orgScope(OrgId(orgId))
+      const committed = await this.deps.connections.commitRefresh(
         record.id,
         current.tokenVersion,
-        accessExpiry(grant.created_at, grant.expires_in, now)
+        accessExpiry(grant.created_at, grant.expires_in, now),
+        {
+          accessToken: await this.deps.cipher.seal(grant.access_token, scope),
+          refreshToken: await this.deps.cipher.seal(grant.refresh_token, scope)
+        }
       )
-      if (!advanced) {
-        // Lost the CAS despite the lease — fail closed rather than overwrite a
-        // newer committed pair with this one.
+      if (!committed) {
+        // Lost the CAS (reconnect or disconnect won) — fail closed rather than
+        // resurrect a pair newer intent already replaced or removed.
         throw new GitlabOauthDenied('gitlab token refresh version conflict — retry shortly', 409)
       }
-      await this.deps.secrets.put(orgId, record.id, {
-        accessToken: grant.access_token,
-        refreshToken: grant.refresh_token
-      })
       return grant.access_token
     } finally {
       await this.deps.connections.releaseRefreshLease(record.id, owner)
@@ -296,8 +307,8 @@ export class GitlabOauthService {
         // Best-effort: local removal is the authority; the provider grant ages out.
       }
     }
-    await this.deps.secrets.delete(orgId, connectionId)
-    return this.deps.connections.setState(orgId, connectionId, 'disconnected')
+    // Atomic local removal: state, version fence, and pair in one transaction.
+    return this.deps.connections.disconnect(orgId, connectionId)
   }
 }
 

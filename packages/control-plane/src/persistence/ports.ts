@@ -3047,8 +3047,16 @@ export interface GitlabConnectionRecord {
   createdAt: Date
 }
 
+/** A sealed (SecretCipher representation) access+refresh pair. */
+export interface GitlabSealedTokenPair {
+  accessToken: string
+  refreshToken: string
+}
+
 export interface GitlabConnectionRepo {
-  /** Callback upsert (§9.2): keyed by (org, numeric GitLab user); reconnect refreshes facts. */
+  /** Callback upsert (§9.2), atomic with its sealed pair: a reader can never
+   *  observe the new version/expiry with an old or missing pair. Reconnect
+   *  advances the version, so any in-flight refresh CAS loses. */
   upsertOnCallback(input: {
     orgId: string
     userId: string
@@ -3056,23 +3064,34 @@ export interface GitlabConnectionRepo {
     gitlabUsername: string
     scopes: string[]
     accessExpiresAt: Date | null
+    sealedPair: GitlabSealedTokenPair
   }): Promise<GitlabConnectionRecord>
   get(orgId: string, connectionId: string): Promise<GitlabConnectionRecord | null>
   listForOrg(orgId: string): Promise<GitlabConnectionRecord[]>
-  /** Disconnect: token pair removed by the caller via the secret store; state flips here. */
-  setState(orgId: string, connectionId: string, state: GitlabConnectionState): Promise<boolean>
   /** Refresh single-writer (§9.3): claim a short lease iff free/expired/own. */
   claimRefreshLease(connectionId: string, owner: string, until: Date, now: Date): Promise<boolean>
   releaseRefreshLease(connectionId: string, owner: string): Promise<void>
-  /** Token-version CAS: true iff `expected` was current (caller then persists the sealed pair). */
-  advanceTokenVersion(connectionId: string, expected: bigint, accessExpiresAt: Date | null): Promise<boolean>
+  /** One atomic refresh commit: the tokenVersion CAS and the sealed pair land in
+   *  the same transaction, or not at all. False ⇒ the caller lost (reconnect,
+   *  disconnect, or another writer advanced the version) and must not retry. */
+  commitRefresh(
+    connectionId: string,
+    expectedVersion: bigint,
+    accessExpiresAt: Date | null,
+    sealedPair: GitlabSealedTokenPair
+  ): Promise<boolean>
+  /** Version-fenced failure transition: a stale refresh outcome (older version)
+   *  can never overwrite newer user intent such as a completed reconnect. */
+  markReauthRequired(connectionId: string, expectedVersion: bigint): Promise<boolean>
+  /** Atomic disconnect: state flip, version bump (defeats in-flight refresh CAS),
+   *  and sealed-pair deletion in one transaction. The row stays as history. */
+  disconnect(orgId: string, connectionId: string): Promise<boolean>
 }
 
-/** Sealed OAuth pair (per-org key scope). Never joined by DTO queries. */
+/** Sealed OAuth pair reads (per-org key scope). Writes ride the connection
+ *  repo's atomic transitions; never joined by DTO queries. */
 export interface GitlabConnectionSecretStore {
-  put(orgId: string, connectionId: string, pair: { accessToken: string; refreshToken: string }): Promise<void>
   get(orgId: string, connectionId: string): Promise<{ accessToken: string; refreshToken: string } | null>
-  delete(orgId: string, connectionId: string): Promise<void>
 }
 
 export interface GitlabOauthStateRecord {

@@ -732,6 +732,23 @@ export class PgUserRepo implements UserRepo {
       for (const table of RESOURCE_AUDIENCE_TABLES) {
         await tx.$executeRaw(removeMemberFromResourceAudiencesSql(table, orgId, userId, replacementUserId))
       }
+      // OAuth authority must not survive organization membership
+      // (gitlab-com-integration.md §9.4): local disconnect in the SAME
+      // transition — state, version fence (defeats any in-flight refresh CAS),
+      // and the sealed pair — so a departed member's grant is unusable at once.
+      const departedConnections = await tx.gitlabConnection.findMany({
+        where: { orgId, userId },
+        select: { id: true }
+      })
+      if (departedConnections.length > 0) {
+        const ids = departedConnections.map((connection) => connection.id)
+        await tx.gitlabConnection.updateMany({
+          where: { id: { in: ids } },
+          data: { state: 'disconnected', tokenVersion: { increment: 1n } }
+        })
+        await tx.gitlabConnectionSecret.deleteMany({ where: { connectionId: { in: ids } } })
+      }
+
       // The row is still locked here; deletion completes the same transaction.
       await tx.membership.delete({ where: { orgId_userId: { orgId, userId } } })
     })

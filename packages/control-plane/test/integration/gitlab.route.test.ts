@@ -55,6 +55,7 @@ function gitlabApp(): HttpApp {
     clock: systemClock,
     publicCpUrl: PUBLIC_CP,
     webAppUrl: 'https://console.example.test',
+    isOrgMember: async (orgId, userId) => (await prisma.membership.count({ where: { orgId, userId } })) > 0,
     fetchImpl: gitlabFetch()
   })
   running = buildHttpApp(prisma, { PUBLIC_CP_URL: PUBLIC_CP }, undefined, undefined, {
