@@ -51,8 +51,9 @@ const MAX_NAMED_CHECKS = 3
  * treating "not computed yet" as "no conflicts" is how a merge-when-ready lands a broken tree.
  */
 export function readiness(pr: PrSnapshot): Readiness {
+  // Both terminal states are answered by `tick` before it gets here, so these two arms are for a
+  // DIRECT caller (and for the tests that pin the rule) rather than for the loop.
   if (pr.state === 'MERGED') return { ready: false, waitingOn: 'already merged' }
-  // Terminal, not "waiting": see `tick`. A closed pull request has outlived the intent to merge it.
   if (pr.state === 'CLOSED') return { ready: false, waitingOn: 'the pull request is closed' }
   if (pr.isDraft) return { ready: false, waitingOn: 'the pull request is a draft' }
   if (pr.reviewDecision === 'CHANGES_REQUESTED') return { ready: false, waitingOn: 'changes requested' }
