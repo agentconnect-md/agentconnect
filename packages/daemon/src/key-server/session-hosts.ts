@@ -54,9 +54,9 @@ export interface ModelSessionHostPoolOptions {
 }
 
 /** True for an http address whose host is not obviously inside the cluster — a Service name (with
- *  or without its namespace/`.svc` suffix), the local node, or the cluster domain. Deliberately a
- *  shape test rather than a resolver: this runs at construction, and a warning that needed DNS
- *  would be a startup dependency. */
+ *  or without its namespace/`.svc` suffix), the local node, the cluster domain, or a private
+ *  network. Deliberately a shape test rather than a resolver: this runs at construction, and a
+ *  warning that needed DNS would be a startup dependency. */
 export function offClusterPlaintext(address: string): boolean {
   let url: URL
   try {
@@ -66,7 +66,22 @@ export function offClusterPlaintext(address: string): boolean {
   }
   if (url.protocol !== 'http:') return false
   const host = url.hostname
-  if (host === 'localhost' || host === '127.0.0.1' || host === '::1') return false
+  if (host === 'localhost') return false
+  // IPv6 literals arrive bracketed; classifying one by shape is more than this warning is worth.
+  if (host.startsWith('[')) return false
+  const octets = host.split('.')
+  if (octets.length === 4 && octets.every((o) => /^\d{1,3}$/.test(o) && Number(o) < 256)) {
+    const [a, b = 0] = octets.map(Number)
+    // Loopback, RFC1918, and the CGNAT range CNIs hand pod and Service IPs out of are this cluster
+    // or the network it sits on; any other literal is an address on the open internet.
+    const internal =
+      a === 127 ||
+      a === 10 ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) ||
+      (a === 100 && b >= 64 && b <= 127)
+    return !internal
+  }
   // `.local` covers the default cluster domain (`…svc.cluster.local`) as well as an mDNS name,
   // which is a LAN rather than the internet and not what this warning is about.
   if (host.endsWith('.svc') || host.endsWith('.local')) return false
@@ -97,11 +112,9 @@ export class ModelSessionHostPool {
         'key-server-token-path is set with no key-server address: no credential will be requested and the token file is unused'
       )
     }
-    // The mirror image, and the more expensive mistake: with no token source the client sends the
-    // request with NO Authorization header at all — silently. A server that reviews its callers
-    // answers 401 to every mint, so every new session fails and the only evidence is per-session.
-    // Still a warning and not a refusal: a key server may be configured to trust its callers by
-    // network position, and that is its operator's call to make rather than this client's.
+    // The mirror image, and the more expensive one: with no token source every mint goes out with
+    // no Authorization header at all, and a server that reviews its callers 401s each one. Still a
+    // warning — a key server may trust its callers by network position, which is its operator's call.
     if (opts.address && !opts.tokenPath && !opts.client) {
       this.log.warn(
         `key-server ${opts.address} is configured with no key-server-token-path: requests will carry no credential, which a server that reviews its callers refuses`
@@ -110,10 +123,8 @@ export class ModelSessionHostPool {
     this.keyServer =
       opts.client ??
       (opts.address ? new KeyServerClient(opts.address, { tokenPath: opts.tokenPath, now: opts.now }) : undefined)
-    // The scheme is the deployment's to choose, so plaintext is not refused — but plaintext to an
-    // address that is NOT plainly in-cluster sends this daemon's bearer token across whatever lies
-    // between, which is the one case worth saying out loud. Said once, at construction, because it
-    // is a configuration fact rather than a per-request one.
+    // Plaintext is not refused, but plaintext to an address that is not plainly in-cluster sends
+    // this daemon's bearer across whatever lies between — said once here, being a config fact.
     if (opts.address && offClusterPlaintext(opts.address)) {
       this.log.warn(
         `key-server ${opts.address} is plaintext and does not look in-cluster: the bearer token will cross the network in the clear`

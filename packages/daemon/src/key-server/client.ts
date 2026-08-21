@@ -44,13 +44,10 @@ export class KeyServerClient {
     } = {}
   ) {
     this.baseUrl = new URL(address)
-    // http and https both, because the SCHEME is the deployment's decision and not this client's.
-    // The bearer this sends is a projected ServiceAccount token, and every other credential this
-    // process carries already crosses the same cluster in the clear — the control-plane socket is
-    // `ws://` in-cluster and carries a token of the same kind. Refusing http here made one hop
-    // stricter than the boundary it lives in, which bought nothing and forced a private CA (and a
-    // certificate, and its rotation) on the one service dialled directly rather than through the
-    // edge. A deployment that terminates TLS itself simply configures an https address.
+    // The scheme is the deployment's decision, not this client's: the bearer is a projected
+    // ServiceAccount token, and the same process already carries one over an in-cluster `ws://`
+    // socket to the control plane. Refusing http made one hop stricter than the boundary it lives
+    // in, at the price of a private CA on the one service dialled directly rather than via the edge.
     if (this.baseUrl.protocol !== 'https:' && this.baseUrl.protocol !== 'http:') {
       throw new Error(`key-server address must be http or https, got ${this.baseUrl.protocol}`)
     }

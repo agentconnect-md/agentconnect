@@ -293,14 +293,25 @@ describe('the plaintext key-server warning', () => {
       'http://test-agentconnect-aigw-hub.agentconnect-test.svc:8080',
       'http://test-agentconnect-aigw-hub.agentconnect-test.svc.cluster.local:8080',
       'http://localhost:8080',
-      'http://127.0.0.1:8080'
+      'http://127.0.0.1:8080',
+      'http://[::1]:8080',
+      'http://10.96.3.4:8080',
+      'http://172.20.0.5:8080',
+      'http://192.168.1.9:8080',
+      'http://100.72.4.1:8080'
     ]) {
       expect(offClusterPlaintext(address), address).toBe(false)
     }
   })
 
   it('warns for plaintext to a name that is not cluster-shaped', () => {
-    for (const address of ['http://keys.example.com', 'http://keys.example.com:8080', 'http://a.b.c']) {
+    for (const address of [
+      'http://keys.example.com',
+      'http://keys.example.com:8080',
+      'http://a.b.c',
+      'http://203.0.113.5:8080',
+      'http://172.32.0.5:8080'
+    ]) {
       expect(offClusterPlaintext(address), address).toBe(true)
     }
   })

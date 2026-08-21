@@ -87,10 +87,8 @@ describe('KeyServerClient', () => {
   })
 
   it("takes either scheme — that is the deployment's call — and rejects credentials in the address", () => {
-    // http is not a downgrade this client gets to veto: the bearer it sends is a projected
-    // ServiceAccount token, and the same process already carries one over an in-cluster `ws://`
-    // socket to the control plane. Refusing it here made one hop stricter than its boundary and
-    // forced a private CA onto the one service dialled directly instead of through the edge.
+    // http is not a downgrade this client gets to veto: the bearer is a projected ServiceAccount
+    // token, and the same process already carries one over an in-cluster `ws://` socket to the CP.
     expect(() => new KeyServerClient('http://keys.example')).not.toThrow()
     expect(() => new KeyServerClient('https://keys.example')).not.toThrow()
     expect(() => new KeyServerClient('ftp://keys.example')).toThrow(/http or https/)
