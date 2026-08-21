@@ -169,8 +169,14 @@ describe('workspace git origin policy', () => {
       normalizeAllowedWorkspaceGitUrl('git@github.com:acme/infra.git', DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS)
     ).toBe('git@github.com:acme/infra.git')
 
+    // §13.2: https://gitlab.com is a DEFAULT origin now (HTTPS only) — ssh
+    // gitlab and lookalike/port-widened hosts still refuse.
+    expect(
+      normalizeAllowedWorkspaceGitUrl('https://gitlab.com/group/repo', DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS)
+    ).toBe('https://gitlab.com/group/repo')
     for (const url of [
-      'https://gitlab.com/group/repo',
+      'ssh://git@gitlab.com/group/repo',
+      'https://gitlab.com.evil.example/group/repo',
       'https://github.com.evil.example/acme/infra',
       'https://github.com:8443/acme/infra',
       'ssh://git@github.com:2222/acme/infra'
