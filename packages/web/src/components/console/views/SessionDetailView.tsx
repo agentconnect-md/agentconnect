@@ -3803,8 +3803,10 @@ export default function SessionDetailView() {
           present (`desktop:max-wide:`), `-mr-[30px]` bleeds the scroller's edge to the page edge so
           the scrollbar reaches it — PAIRED with `pr-[30px]`, which re-insets the content by the same
           30px so only the scrollbar moves and the transcript stays exactly where it was. At `wide:`
-          the track (its own −30px bleed) owns that edge and the scroller stops flush against it, and
-          on mobile `.content` has no side padding to cross. */}
+          the track (its own −30px bleed) owns that edge and the scroller stops flush against it —
+          `wide:pr-[10px]` insets the content by the scrollbar's own 10px so a tight transcript
+          column never puts avatars under the thumb — and on mobile `.content` has no side padding
+          to cross. */}
       {/* Column: fixed header chrome ABOVE the scrolling transcript pane. The header lives OUTSIDE
       the scroller (no `sticky`), so it never scrolls away and the pane below can be virtualized. */}
       <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
@@ -4089,7 +4091,7 @@ export default function SessionDetailView() {
           className={
             viewerOpen
               ? 'flex min-h-0 min-w-0 flex-1 flex-col desktop:pt-[10px]'
-              : 'flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto desktop:max-wide:-mr-[30px] desktop:pt-[10px] desktop:max-wide:pr-[30px]'
+              : 'flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto desktop:max-wide:-mr-[30px] desktop:pt-[10px] desktop:max-wide:pr-[30px] wide:pr-[10px]'
           }
         >
           {/* One growing inner wrapper = the scroller's single child useStickToBottom watches; in
@@ -4524,7 +4526,9 @@ export default function SessionDetailView() {
                 gone — the column's overflow would clip it — so the composer rests on the scroller's
                 bottom edge and the `.content` inset below reads as a clean margin. A top gradient
                 softens the seam where the transcript slides underneath. */}
-                    <div className="sticky bottom-0 z-10 bg-(--surface-app) pt-2 desktop:pt-3">
+                    {/* `pb-1` lifts the composer 4px off the scroller's clip edge so its shadow and
+                3px focus ring draw complete instead of being cut flat at the bottom. */}
+                    <div className="sticky bottom-0 z-10 bg-(--surface-app) pt-2 pb-1 desktop:pt-3">
                       <div
                         aria-hidden="true"
                         className="pointer-events-none absolute inset-x-0 -top-5 h-5 bg-gradient-to-b from-transparent to-(--surface-app)"
