@@ -2901,6 +2901,30 @@ export class PgHookRepo implements HookRepo {
     })
   }
 
+  /** Nothing left to publish: drop the row out of the due set instead of leaving it to be
+   *  claimed, re-written, and claimed again. Not a failure, so `lastErrorCode` clears too. */
+  async settleReviewProjection(projectionId: string, generation: bigint, leaseOwner: string): Promise<boolean> {
+    return this.transaction(async (tx) => {
+      const current = await this.lockReviewProjectionById(tx, projectionId)
+      if (!current || current.generation !== generation || current.leaseOwner !== leaseOwner) return false
+      // Re-read under the row lock: a converge that landed while this worker held the lease has
+      // already re-armed the row, and clearing its due time would strand the new intent.
+      if (
+        current.desiredState !== current.observedState ||
+        current.pendingIntent !== null ||
+        current.writePhase !== null ||
+        current.writeMarker !== null
+      ) {
+        return false
+      }
+      const changed = await tx.hookReviewProjection.updateMany({
+        where: { id: projectionId, generation, leaseOwner },
+        data: { nextAttemptAt: null, leaseOwner: null, leaseUntil: null, lastErrorCode: null, attempts: 0 }
+      })
+      return changed.count === 1
+    })
+  }
+
   async blockProjection(
     projectionId: string,
     generation: bigint,
