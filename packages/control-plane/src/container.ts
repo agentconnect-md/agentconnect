@@ -691,7 +691,13 @@ export function buildContainer(
   )
 
   // The fan-out that rides the resolver (orchestrator/agentDelivery.ts).
-  const agentDelivery = new AgentDelivery({ control: sender, specs: agentSpecs, placement: placementResolver })
+  const agentDelivery = new AgentDelivery({
+    control: sender,
+    specs: agentSpecs,
+    placement: placementResolver,
+    // §17.3 projection gate: live advertised features; unknown daemon reads fail-closed.
+    daemonFeatures: (daemonId) => connReg.get(daemonId)?.capabilities?.features
+  })
 
   // The projections that BAKE IN the serving daemon — hook rules, HTTP-bot assignment, the
   // collaboration snapshot. A duty grant or release moves who serves an agent exactly as a
