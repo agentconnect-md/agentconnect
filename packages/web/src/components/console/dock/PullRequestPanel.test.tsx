@@ -435,6 +435,19 @@ describe('PullRequestPanel body', () => {
     )
   })
 
+  it('discloses when the PR came from the agent’s SHARED checkout, and stays silent for a session worktree', async () => {
+    // The caveat is about whose work the PR may contain — most relevant beside the Merge button — not
+    // which checkout answered, so it survives the description block rather than being folded into it.
+    await render()
+    expect(container?.querySelector('[data-pr-link-shared]')).toBeNull()
+
+    wire.data = pr({ linkedBy: 'head-branch', linkBranch: 'main', linkScope: 'shared' })
+    await rerender({ sessionId: 'session-2' })
+    expect(container?.querySelector('[data-pr-link-shared]')?.textContent).toContain(
+      'may carry work from other sessions'
+    )
+  })
+
   it('draws the PR description under its own section, and hides it when empty', async () => {
     // The body replaces the old "Found through …" shared-checkout note: the description is what the
     // reader came for, and which checkout resolved the link is an implementation detail.

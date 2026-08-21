@@ -658,6 +658,16 @@ export function PullRequestPanel({
             ) : null}
           </div>
         ) : null}
+        {/* A shared checkout is the agent's ONE tree, so its PR may not be exclusively this session's work — a caveat, not an identity detail, and most relevant beside the Merge button. */}
+        {view.linkScope === 'shared' ? (
+          <div
+            data-pr-link-shared=""
+            className="flex items-start gap-2 px-3 pt-[7px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)"
+          >
+            <Icon name="info" size={13} color="var(--text-tertiary)" className="mt-[2px] flex-none" />
+            <span>This pull request may carry work from other sessions on this agent’s shared checkout.</span>
+          </div>
+        ) : null}
         {/* A branch-resolved link can be ambiguous where a run-linked one never is: the head branch is the whole identity, so several open PRs on it are all equally "this session's". The panel names the pick rather than picking silently. */}
         {view.linkAmbiguous ? (
           <div
