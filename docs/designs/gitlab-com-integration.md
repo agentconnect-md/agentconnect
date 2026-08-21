@@ -492,7 +492,7 @@ lifecycle.
 
 ### 9.1 Start
 
-`POST /api/v1/gitlab/oauth/start`:
+`POST /api/v1/orgs/:orgId/gitlab/oauth/start`:
 
 1. authenticates the AgentConnect user and organization;
 2. generates a random, single-use state nonce, PKCE verifier, and S256
@@ -778,8 +778,13 @@ through the new provider-neutral frame in Section 17.2, differing only in
 sending numeric user and project IDs instead of logins and a repository path.
 For comments, issue and merge-request lifecycle events, and external merge
 requests, the relay sends only project ID, hook fences, and sender/author
-numeric user ID to the Control Plane; only pushes and the binding's own
-same-project merge-request revisions stay relay-trusted. The Control Plane
+numeric user ID to the Control Plane; only pushes, the binding's own
+same-project merge-request revisions, and the relay-authored
+maintenance-delivery family (Section 12) stay relay-trusted. Maintenance
+deliveries carry cleanup-only work and never open a model turn, so they bypass
+the actor gate exactly as GitHub's cleanup branch does today — an unavailable
+membership lookup or a low-role closing actor must not leave a session
+worktree behind. The Control Plane
 performs a current target-project membership lookup
 with the project effect identity using
 `GET /projects/:id/members/all/:user_id`, or a semantic equivalent that includes
@@ -851,10 +856,16 @@ cannot advertise `gitlab-com-v1` and cannot receive a GitLab assignment.
 Turn admission reuses GitHub's per-revision lane. Within one
 (hook, project, MR IID) lane the newest relay-fired head supersedes queued
 turns and preempts an active older-head turn with the normalized `superseded`
-outcome, a re-request burst coalesces into one generation pinned to its head,
-and the diff-note deliveries of one submitted review batch into a single turn
-as GitHub submitted-review comments do. An interrupted review attempt still
-follows Section 15.1's fail-closed publication ownership rules.
+outcome, and a re-request burst coalesces into one generation pinned to its
+head. One-turn batching of a submitted review's diff notes is deliberately out
+of scope for GitLab v1: GitHub batches on the webhook's durable review
+identifier, and GitLab's Note Hook payload and bulk-publish response expose no
+equivalent batch key, so batching would require a same-author time-window
+heuristic this design refuses. Each GitLab note delivery is therefore its own
+turn, serialized on the per-thread session; under mention-only cadence a
+multi-comment review still yields one turn per mentioning note. An interrupted
+review attempt still follows Section 15.1's fail-closed publication ownership
+rules.
 
 The relay sends only bounded excerpts. The daemon wraps them in the same
 explicit untrusted-content boundary used for GitHub. The agent reads current
