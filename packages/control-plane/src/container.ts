@@ -813,8 +813,6 @@ export function buildContainer(
   )
   const stagedAgentMoves = new AgentMoveService({
     agents: repos.agent,
-    // §17.3 activation gate — same live source as AgentDelivery's projection gate.
-    daemonFeatures: (daemonId) => connReg.get(daemonId)?.capabilities?.features,
     assignments: repos.assignment,
     integrations: repos.integration,
     integrationChannels: repos.integrationChannel,
