@@ -136,7 +136,7 @@ The daemon does not implement these, but interacts with them through the section
 | `--max-agents <n>`               | `limits.maxAgents`             | Capacity reported to CP + local hard limit.                                                                                                        |
 | `--require-sandbox`              | `security.requireSandbox=true` | Require every agent to run in the Linux SRT sandbox; refuse daemon startup on unsupported or failed hosts.                                         |
 | `--k8s`                          | n/a (mode switch)              | Run runtimes in cluster sandbox pods instead of on this host; see section 2.6 for what that changes.                                               |
-| `--key-server <url>`             | `KEY_SERVER`                   | Cloud-only HTTPS service for session-scoped model credentials; see [key-server.md](key-server.md).                                                 |
+| `--key-server <url>`             | `KEY_SERVER`                   | Cloud-only service for session-scoped model credentials, http or https as the deployment chooses; see [key-server.md](key-server.md).              |
 | `--key-server-token-path <path>` | `KEY_SERVER_TOKEN_PATH`        | File re-read as the key-server bearer token on every request.                                                                                      |
 | `--dry-run`                      | n/a                            | Load and validate all configuration and print the reconcile plan without opening connections/processes.                                            |
 

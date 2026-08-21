@@ -46,9 +46,9 @@ export const IssueKeyRequest = z
 export type IssueKeyRequest = z.infer<typeof IssueKeyRequest>
 
 // Responses parse tolerantly (unknown fields stripped, not rejected), unlike the `.strict()`
-// requests: the daemon reads many issuers it does not ship with, so a field an issuer still
-// sends (the retired `baseUrl`) or adds later must not fail every issuance. Base URLs are
-// deployment topology and come only from the daemon's own configuration.
+// requests: the daemon reads issuers it does not ship with, so a field one adds later must not
+// fail every issuance. A base URL is not among the fields it may usefully add — that is
+// deployment topology and comes only from the daemon's own configuration.
 export const IssueKeyResponse = z
   .object({
     // Opaque handle for RevokeKey and audit; the key value never travels again. It names

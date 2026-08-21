@@ -70,10 +70,18 @@ the daemon does not have — a runtime switches models mid-session.
 
 ### 2.1 Daemon configuration
 
-Cloud daemons accept `--key-server <https-url>` and
+Cloud daemons accept `--key-server <url>` — **http or https, the deployment's choice**: the bearer
+is a projected ServiceAccount token, and a daemon that already reaches its control plane over an
+in-cluster `ws://` gains nothing from one hop being stricter than the boundary it sits in. A
+deployment that terminates TLS on this hop simply configures an https address. Beside it they accept
 `--key-server-token-path <path>`. The equivalent deployment environment names are
 `KEY_SERVER` and `KEY_SERVER_TOKEN_PATH`; explicit CLI values win. A token path
-without a server is rejected, and these options are rejected outside `--k8s`.
+without a server does nothing and says so, as does a server without a token — that one sends every
+request with no `Authorization` header at all, which a server that reviews its callers refuses. Both
+are warnings rather than refusals: a key server may be configured to trust its callers by network
+position, and that is its operator's call to make. A key server itself does require `--k8s`, because
+the credential it mints is only usable with the `*_MODEL_BASE_URL` pair that aims it at this
+install's gateway, and that pair is cloud-mode configuration.
 
 The bearer file is read for every IssueKey and RevokeKey request. The kubelet or
 another credential agent can therefore rotate the file without restarting the daemon.
@@ -121,15 +129,13 @@ neither completes the other:
   neither, whatever credential the runtime environment already carries.
 - **the base URL** is deployment topology — which gateway this install's runtimes talk
   to — so it always comes from the daemon's own configuration, key server or not. The
-  contract no longer defines a `baseUrl`; responses parse tolerantly, so an issuer
-  still sending the retired field (or adding one later) is stripped, never rejected.
+  contract defines no `baseUrl`, and an issuer that sends one is stripped rather than
+  rejected (responses parse tolerantly).
 
-The earlier rule was the opposite: the response pair was atomic, so a key server that
-fronted a gateway had to name it and one that did not had to stay silent. That made
-every issuer restate a fact it does not own — the address is the same for every session
-the install ever runs, and it is already written down where the gateway is deployed.
-Restating it invites the two copies to disagree, and the disagreement surfaces as a
-runtime aimed somewhere the deployment never put a gateway.
+An issuer naming the address would be restating a fact it does not own: the address is
+the same for every session the install ever runs, and it is already written down where
+the gateway is deployed. Two copies of it invite disagreement, and the disagreement
+surfaces as a runtime aimed somewhere the deployment never put a gateway.
 
 What remains beneath both is the runtime's own environment, including the pod's
 `AC_*_BASE_URL` floor the shim fills in: a daemon with no base URL configured for a
