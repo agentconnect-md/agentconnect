@@ -225,6 +225,16 @@ export class GithubInstallationClaimConflict extends Error {
   }
 }
 
+/** The OAuth callback lost the race with a membership removal (§9.4): the
+ * starting user is no longer a member, so no connection may be (re)created. */
+export class GitlabMembershipGone extends Error {
+  readonly code = 'GITLAB_MEMBERSHIP_GONE' as const
+  constructor(orgless?: string) {
+    super(orgless ?? 'the starting user is no longer a member of the organization')
+    this.name = 'GitlabMembershipGone'
+  }
+}
+
 /** A numeric repository is already the agent's implicit workspace authority,
  * so persisting a second "additional repository" grant would be redundant and
  * could later make grant deletion look like a real authority revocation. */

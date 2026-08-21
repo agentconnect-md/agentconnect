@@ -3026,6 +3026,93 @@ export interface CodeHostRepositoryRepo {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
+// GitLab.com OAuth connections (gitlab-com-integration.md §8.2, §9) — the
+// administration identity. Sealed token material lives ONLY behind
+// GitlabConnectionSecretStore; DTO reads never join it.
+// ───────────────────────────────────────────────────────────────────────────
+
+export type GitlabConnectionState = 'connected' | 'reauth_required' | 'disconnected'
+
+export interface GitlabConnectionRecord {
+  id: string
+  orgId: string
+  userId: string | null
+  gitlabUserId: bigint
+  gitlabUsername: string
+  scopes: string[]
+  accessExpiresAt: Date | null
+  state: GitlabConnectionState
+  tokenVersion: bigint
+  lastSyncAt: Date | null
+  createdAt: Date
+}
+
+/** A sealed (SecretCipher representation) access+refresh pair. */
+export interface GitlabSealedTokenPair {
+  accessToken: string
+  refreshToken: string
+}
+
+export interface GitlabConnectionRepo {
+  /** Callback upsert (§9.2), atomic with its sealed pair: a reader can never
+   *  observe the new version/expiry with an old or missing pair. Reconnect
+   *  advances the version, so any in-flight refresh CAS loses. */
+  upsertOnCallback(input: {
+    orgId: string
+    userId: string
+    gitlabUserId: bigint
+    gitlabUsername: string
+    scopes: string[]
+    accessExpiresAt: Date | null
+    sealedPair: GitlabSealedTokenPair
+  }): Promise<GitlabConnectionRecord>
+  get(orgId: string, connectionId: string): Promise<GitlabConnectionRecord | null>
+  listForOrg(orgId: string): Promise<GitlabConnectionRecord[]>
+  /** Refresh single-writer (§9.3): claim a short lease iff free/expired/own. */
+  claimRefreshLease(connectionId: string, owner: string, until: Date, now: Date): Promise<boolean>
+  releaseRefreshLease(connectionId: string, owner: string): Promise<void>
+  /** One atomic refresh commit: the tokenVersion CAS and the sealed pair land in
+   *  the same transaction, or not at all. False ⇒ the caller lost (reconnect,
+   *  disconnect, or another writer advanced the version) and must not retry. */
+  commitRefresh(
+    connectionId: string,
+    expectedVersion: bigint,
+    accessExpiresAt: Date | null,
+    sealedPair: GitlabSealedTokenPair
+  ): Promise<boolean>
+  /** Version-fenced failure transition: a stale refresh outcome (older version)
+   *  can never overwrite newer user intent such as a completed reconnect. */
+  markReauthRequired(connectionId: string, expectedVersion: bigint): Promise<boolean>
+  /** Atomic disconnect: state flip, version bump (defeats in-flight refresh CAS),
+   *  and sealed-pair deletion in one transaction. The row stays as history. */
+  disconnect(orgId: string, connectionId: string): Promise<boolean>
+}
+
+/** Sealed OAuth pair reads (per-org key scope). Writes ride the connection
+ *  repo's atomic transitions; never joined by DTO queries. */
+export interface GitlabConnectionSecretStore {
+  get(orgId: string, connectionId: string): Promise<{ accessToken: string; refreshToken: string } | null>
+}
+
+export interface GitlabOauthStateRecord {
+  nonce: string
+  orgId: string
+  userId: string
+  browserHash: string | null
+  returnPath: string
+  verifier: string // sealed PKCE verifier
+  expiresAt: Date
+}
+
+export interface GitlabOauthStateStore {
+  put(input: Omit<GitlabOauthStateRecord, 'browserHash'>): Promise<void>
+  /** Begin hop: stamp the browser-binding hash exactly once (null → value). */
+  bindBrowser(nonce: string, browserHash: string, now: Date): Promise<GitlabOauthStateRecord | null>
+  /** Callback: atomically delete and return the row — single use; null ⇒ replay/unknown/expired. */
+  consume(nonce: string, now: Date): Promise<GitlabOauthStateRecord | null>
+}
+
+// ───────────────────────────────────────────────────────────────────────────
 // AgentRepoAuthorizationRepo — explicit repo grants per agent
 // (issue #457, agent-multi-repo-authorization.md). Anchored on the AGENT, never
 // derived from hooks; `repoId` is the rename-immune match key. Subordinate to

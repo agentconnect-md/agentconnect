@@ -94,6 +94,7 @@ model Org {
   integrations              Integration[]
   bots                      Bot[]
   githubInstallations       GithubInstallation[]
+  gitlabConnections         GitlabConnection[]
   slackUserConfigs          SlackUserConfig[]
   inviteLink                OrgInviteLink?
   mcpProviders              McpProvider[]
@@ -151,6 +152,7 @@ model User {
   createdHooks                     HookDef[]                  @relation("HookCreatedBy")
   modifiedHooks                    HookDef[]                  @relation("HookModifiedBy")
   createdRepoAuths                 AgentRepoAuthorization[]   @relation("AgentRepoAuthCreatedBy")
+  gitlabConnections                GitlabConnection[]         @relation("GitlabConnectionUser")
   slackConfigs                     SlackUserConfig[]
   createdInviteLinks               OrgInviteLink[]            @relation("OrgInviteLinkCreatedBy")
   inviteRedemptions                OrgInviteRedemption[]
@@ -2451,6 +2453,73 @@ model GithubInstallState {
   createdAt DateTime @default(now()) @db.Timestamptz(6)
 
   @@map("github_install_state")
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// GitLab.com integration (gitlab-com-integration.md §8.2, §9) — the OAuth
+// administration identity. Metadata here; sealed token material lives ONLY in
+// the side-tables read through their secret stores (BotSecret discipline).
+// ───────────────────────────────────────────────────────────────────────────
+
+/// One org member's GitLab.com OAuth connection — the ADMINISTRATION identity
+/// (project discovery, provisioning); never a runtime credential. `state` is
+/// TEXT with the app-layer closed set: connected | reauth_required | disconnected.
+model GitlabConnection {
+  id              String    @id @default(uuid()) @db.Uuid
+  orgId           String
+  userId          String? // the AgentConnect user who connected; null after user deletion
+  gitlabUserId    BigInt // numeric GitLab.com user id — the stable identity
+  gitlabUsername  String // display only, refreshed on sync
+  scopes          String[]  @default([])
+  accessExpiresAt DateTime? @db.Timestamptz(6) // access-token expiry (observability; refresh is authoritative)
+  state           String
+  // Refresh single-writer (§9.3): one process claims the lease, refreshes, and
+  // commits both sealed tokens under a tokenVersion CAS; others reload.
+  tokenVersion    BigInt    @default(1)
+  refreshLeaseOwner String?
+  refreshLeaseUntil DateTime? @db.Timestamptz(6)
+  lastSyncAt      DateTime? @db.Timestamptz(6)
+  createdAt       DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt       DateTime  @updatedAt @db.Timestamptz(6)
+
+  org    Org                     @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user   User?                   @relation("GitlabConnectionUser", fields: [userId], references: [id], onDelete: SetNull)
+  secret GitlabConnectionSecret?
+
+  @@unique([orgId, gitlabUserId])
+  @@index([orgId])
+  @@map("gitlab_connection")
+}
+
+/// Sealed OAuth access+refresh pair, 1:1 with GitlabConnection. BotSecret
+/// discipline: list/DTO queries never join it; read ONLY via the secret store.
+model GitlabConnectionSecret {
+  connectionId String @id @db.Uuid
+  accessToken  String // stored SecretCipher representation
+  refreshToken String // stored SecretCipher representation
+
+  connection GitlabConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  @@map("gitlab_connection_secret")
+}
+
+/// One-shot OAuth authorization state (§9.1): bound to org, user, browser (a
+/// cookie-nonce hash stamped at the begin hop), exact return path, and the
+/// sealed PKCE verifier. Consumed exactly once at the callback; expired rows
+/// are garbage. The `state` sent to GitLab is exactly `nonce` — opaque, no
+/// embedded ids or reusable claims.
+model GitlabOauthState {
+  nonce       String   @id // random 128-bit, base64url
+  orgId       String
+  userId      String
+  browserHash String? // sha256 of the begin-hop browser cookie nonce; null until begin
+  returnPath  String // allowlisted local console path for the final redirect
+  verifier    String // sealed PKCE verifier (SecretCipher representation)
+  expiresAt   DateTime @db.Timestamptz(6)
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([expiresAt])
+  @@map("gitlab_oauth_state")
 }
 
 // ───────────────────────────────────────────────────────────────────────────

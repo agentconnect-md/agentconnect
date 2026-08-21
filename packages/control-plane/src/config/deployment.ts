@@ -16,6 +16,8 @@ const MANAGED_KEYS = [
   'GITHUB_APP_SLUG',
   'GITHUB_APP_CLIENT_ID',
   'GITHUB_APP_PRIVATE_KEY_B64',
+  'GITLAB_CLIENT_ID',
+  'GITLAB_CLIENT_SECRET',
   'SLACK_PLATFORM_APP_ID',
   'SLACK_PLATFORM_CLIENT_ID',
   'SLACK_PLATFORM_CLIENT_SECRET',
@@ -54,6 +56,11 @@ export function applyDeploymentEnvironment(
     set('GITHUB_APP_SLUG', values.github.slug)
     set('GITHUB_APP_CLIENT_ID', values.github.clientId)
     set('GITHUB_APP_PRIVATE_KEY_B64', secrets['github.privateKeyB64'])
+  }
+
+  if (values.gitlab) {
+    set('GITLAB_CLIENT_ID', values.gitlab.clientId)
+    set('GITLAB_CLIENT_SECRET', secrets['gitlab.clientSecret'])
   }
 
   if (values.slack) {

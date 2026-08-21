@@ -732,6 +732,9 @@ export class PgUserRepo implements UserRepo {
       for (const table of RESOURCE_AUDIENCE_TABLES) {
         await tx.$executeRaw(removeMemberFromResourceAudiencesSql(table, orgId, userId, replacementUserId))
       }
+      // GitLab OAuth authority ends with membership (§9.4) via the database
+      // trigger on membership deletes — the same transition for EVERY removal
+      // path, including account deletions that never reach this method.
       // The row is still locked here; deletion completes the same transaction.
       await tx.membership.delete({ where: { orgId_userId: { orgId, userId } } })
     })
