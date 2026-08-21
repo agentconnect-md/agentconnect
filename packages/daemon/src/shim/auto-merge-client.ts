@@ -19,6 +19,13 @@ export class ShimAutoMergeClient implements AutoMergeSandbox {
     return this.request({ ...call, op: 'state' })
   }
 
+  /** Whether ANY watcher is armed in this pod — the sandbox keep-alive's question, asked of the
+   *  registry that owns the answer rather than of a daemon-side index a restart would empty. */
+  async anyArmed(agentId: string): Promise<boolean> {
+    const answer = await this.request({ agentId, op: 'list' })
+    return answer.armed
+  }
+
   private async request(payload: Record<string, unknown>): Promise<SandboxState> {
     try {
       const answer = (await this.requester.request('automerge', payload)) as SandboxState

@@ -3302,6 +3302,17 @@ export const SessionPullRequestAutoMergeDto = z.object({
   waitingOn: z.string().nullable(),
   error: z.string().nullable()
 })
+/** `POST /sessions/:id/sandbox-keep-alive` — whether the agent's pod is being held for this page,
+ *  and why. `held:false` with no reasons is the ordinary answer for a clean tree and no armed merge;
+ *  `asleep` means the pod is already suspended (a keep-alive never wakes one). */
+export const SessionSandboxKeepAliveDto = z.object({
+  held: z.boolean(),
+  reasons: z.array(z.enum(['uncommitted-files', 'auto-merge-armed'])),
+  ttlMs: z.number().int().positive().nullable(),
+  placement: z.enum(['sandbox', 'daemon']).nullable(),
+  asleep: z.boolean()
+})
+
 /** `POST /sessions/:id/pull-request/merge` — the merged outcome after the call (idempotent on an already-merged PR). */
 export const SessionPullRequestMergeDto = z.object({ merged: z.boolean() })
 

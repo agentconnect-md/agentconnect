@@ -86,7 +86,15 @@ export function FilesPanel({
   const { dirs, root, expanded, toggleDir, loadMoreDir } = useWorkspaceTree(agentId, sessionId, tick)
   const { git, outcome, primaryBranch } = useWorkspaceGitStatus(agentId, sessionId, tick)
   const retryRoot = useCallback(() => setWakeTick((current) => current + 1), [])
-  useDockRefresh({ active, turnActive, intervalMs: DOCK_POLL_MS, onRefresh: () => setAutoTick((n) => n + 1) })
+  // `pollWhileHidden`: the page keeps its workspace fresh whatever tab is selected — the whole open
+  // page is what the operator left watching, and the same visibility fence gates the sandbox hold.
+  useDockRefresh({
+    active,
+    turnActive,
+    pollWhileHidden: true,
+    intervalMs: DOCK_POLL_MS,
+    onRefresh: () => setAutoTick((n) => n + 1)
+  })
   const wake = useSandboxWake(agentId, workspaceRootReadState(root), retryRoot, { active })
   const [query, setQuery] = useState('')
   const scope = `${agentId}:${sessionId ?? 'primary'}`

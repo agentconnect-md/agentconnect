@@ -109,6 +109,19 @@ describe('in-sandbox automerge handler', () => {
     await expect(old(ARM)).rejects.toThrow(/ships no in-sandbox/)
   })
 
+  it('answers `list` with whether ANYTHING is armed in this pod — the keep-alive’s question', async () => {
+    const { handler, spawned } = build()
+    const list = { op: 'list' as const, agentId: 'agent-1' }
+    expect(await handler(list)).toEqual({ armed: false })
+
+    await handler(ARM)
+    expect(await handler(list)).toEqual({ armed: true })
+
+    // The pod is the source of truth: once the watcher exits, `list` says so on the next ask.
+    spawned[0]!.child.emit('exit', 0)
+    expect(await handler(list)).toEqual({ armed: false })
+  })
+
   it('answers `state` for a pull request nobody armed without spawning anything', async () => {
     const { handler, spawned } = build()
     expect(await handler(READ)).toEqual({ armed: false })

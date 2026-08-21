@@ -20,7 +20,12 @@ import { AgentId, DaemonId, HookId, OrgId, SessionId } from '../../domain/ids.js
 import { orgOf, ctxOf, denyNonOwner } from '../rbac.js'
 import { decodeConversationKey, encodeConversationKey } from '../conversation-key.js'
 import { canChangeSessionVisibility, canContinueSession, canView, canViewSession } from '../../authorization/policy.js'
-import { AUTO_MERGE_FEATURE, AutoMergeErrorReason, originKindOf } from '@agentconnect.md/protocol'
+import {
+  AUTO_MERGE_FEATURE,
+  AutoMergeErrorReason,
+  SANDBOX_KEEP_ALIVE_FEATURE,
+  originKindOf
+} from '@agentconnect.md/protocol'
 import { makeSessionAccessResolver } from '../session-access.js'
 import { resolveContinuationHost } from '../session-continuation.js'
 import { Tag } from '../plugins/openapi.js'
@@ -47,6 +52,7 @@ import {
   SessionPullRequestAutoMergeBodyDto,
   SessionPullRequestAutoMergeDto,
   SessionPullRequestMergeDto,
+  SessionSandboxKeepAliveDto,
   type SessionPullRequestDtoT,
   SetSessionVisibilityBody,
   SessionVisibilityDto,
@@ -1406,6 +1412,62 @@ export function sessionRoutes(deps: HttpDeps) {
           )
         } catch (err) {
           const failure = prWriteFailureOf(err)
+          if (!failure) throw err
+          return reply.code(failure.statusCode).send(failure)
+        }
+      }
+    )
+
+    // ── POST /sessions/:id/sandbox-keep-alive ────────────────────────────────
+    // An open console page renewing its lease on the agent's pod. The CP relays and stores nothing:
+    // the daemon decides whether to hold, and the lease lapses on its own once the page stops asking.
+    r.post(
+      '/sessions/:id/sandbox-keep-alive',
+      {
+        schema: {
+          tags: [Tag.Sessions],
+          summary: 'Hold this session’s sandbox while its page is open',
+          description:
+            'Renews an open console page’s lease on the agent’s sandbox pod, so the idle sweep does not suspend work the page is watching. The DAEMON decides whether to hold, from facts the console cannot assert: uncommitted files in this session’s worktree, or an armed merge-when-ready watcher — which for a cluster agent is a process inside that very pod, so a suspend would silently disarm it. The answer says which reasons applied and for how long the hold stands; the console renews inside that window while its document is visible, and the hold lapses within one TTL when the page closes, the tab goes to the background, or the machine sleeps. Nothing is persisted, there is nothing to release, and a suspended pod is never woken by this call (`asleep: true`). `placement: daemon` means the agent runs no sandbox at all, which is an answer rather than an error. 404 mirrors the session reads; 409 when no daemon serves the agent or it is too old to hold a lease; 503 when its daemon is unreachable.',
+          operationId: 'keepSessionSandboxAlive',
+          params: IdParam,
+          response: { 200: SessionSandboxKeepAliveDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const absent = () => reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'session not found' })
+        const owned = await getOrgViewableSession(req, req.params.id)
+        if (!owned) return absent()
+        const agent = await deps.repos.agent.get(orgOf(req), owned.session.agentId)
+        if (!agent) return absent()
+        if (!agent.daemonId) {
+          return reply
+            .code(409)
+            .send({ error: 'Conflict', statusCode: 409, message: 'no daemon serves this agent', code: 'NO_DAEMON' })
+        }
+        const daemon = await deps.registry.getAvailable(orgOf(req), DaemonId(agent.daemonId))
+        if (!daemon?.capabilities.features.includes(SANDBOX_KEEP_ALIVE_FEATURE)) {
+          return reply.code(409).send({
+            error: 'Conflict',
+            statusCode: 409,
+            message: 'this agent’s daemon does not hold sandboxes for an open page; upgrade its daemon',
+            code: 'DAEMON_FEATURE_MISSING'
+          })
+        }
+        try {
+          const held = await deps.control.sandboxKeepAlive(agent.daemonId, orgOf(req), {
+            agentId: agent.id,
+            sessionId: owned.session.id
+          })
+          return {
+            held: held.held,
+            reasons: held.reasons,
+            ttlMs: held.ttlMs ?? null,
+            placement: held.placement ?? null,
+            asleep: held.asleep === true
+          }
+        } catch (err) {
+          const failure = autoMergeEdgeFailureOf(err)
           if (!failure) throw err
           return reply.code(failure.statusCode).send(failure)
         }

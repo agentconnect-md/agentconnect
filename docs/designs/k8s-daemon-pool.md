@@ -232,6 +232,39 @@ took the launch when the shared store records no activity. So a Running pod
 has exactly one member that owns its idleness, an ex-holder can never suspend
 a successor's pod, and a rollout leaves no pod without a candidate to suspend it.
 
+**An open console page can hold a pod against the sweep, for as long as it is
+looking.** The sweep's clock is MESSAGE activity, which is the right rule for a
+conversation and the wrong one for a page: a session whose worktree holds
+uncommitted edits, or whose pull request is armed to merge when ready, has live
+state in that pod that a suspend throws away — the edits go with the volume's
+process, and the in-pod merge watcher
+([webchat-side-panels.md](webchat-side-panels.md) §M6) dies with it. So the
+session page renews a LEASE (`POST /sessions/:id/sandbox-keep-alive` →
+`sandbox/keepalive` → `k8s/sandbox-hold.ts`) while its document is visible, and
+`sweepIdleSandboxes` skips an agent whose lease is live.
+
+Three properties make that safe to hand a browser:
+
+- **The daemon decides, never the caller.** The page asks; the daemon reads the
+  worktree's own dirtiness and its own merge-when-ready registry
+  (`cp/sandbox-keepalive.ts`). A caller that could assert "dirty" could pin a
+  pod indefinitely, and this answer authorizes cost.
+- **A lease, not a switch.** There is nothing to release: renewals stop when the
+  page closes, the tab goes to the background, or the machine sleeps, and the
+  hold lapses within one TTL (180 s, several times the 60 s renewal cadence, so
+  one dropped poll never suspends a pod out from under a page still watching).
+  Document visibility is the same fence the dock's polling uses — a page that
+  stops refreshing is a page that stops holding. A clean tree with nothing armed
+  RELEASES rather than lapses, so committing makes the pod suspendable on the
+  sweep's own schedule.
+- **A suspended pod is held, never woken.** Keep-alive reads nothing from a pod
+  that is down and answers `asleep`. Resurrecting a sandbox from a keep-alive
+  poll would invert the rule the sweep exists to serve.
+
+Nothing about this is persisted anywhere — not in the CP, which only relays the
+frame, and not on the pod's volume. A daemon restart forgets every lease, and
+the page's next renewal re-takes the one it still wants.
+
 A sleeping agent still belongs to a duty group (§6), and if that group
 contains a daemon-held bot the group stays claimed while the agent sleeps —
 that held duty is precisely what lets the wake message arrive. A singleton

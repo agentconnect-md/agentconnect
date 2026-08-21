@@ -3396,6 +3396,27 @@ export async function setSessionPullRequestAutoMerge(
   )
 }
 
+/** What the edge is holding this session's sandbox for, and for how long. */
+export interface SessionSandboxKeepAliveDto {
+  held: boolean
+  reasons: Array<'uncommitted-files' | 'auto-merge-armed'>
+  ttlMs: number | null
+  placement: 'sandbox' | 'daemon' | null
+  asleep: boolean
+}
+
+// Renew this page's lease on the session agent's sandbox pod, so the idle sweep does not suspend work
+// the page is watching. The DAEMON decides whether to hold — uncommitted files in this session's
+// worktree, or an armed merge-when-ready watcher, which for a cluster agent lives inside that very pod.
+// A lease, not a flag: there is nothing to release, and it lapses within one TTL once this stops being
+// called (page closed, tab backgrounded, machine asleep). Never wakes a suspended pod.
+export async function keepSessionSandboxAlive(sessionId: string): Promise<SessionSandboxKeepAliveDto> {
+  return apiPost<SessionSandboxKeepAliveDto>(
+    `${orgBase()}/sessions/${encodeURIComponent(sessionId)}/sandbox-keep-alive`,
+    {}
+  )
+}
+
 // Merge the session's PR (squash) now, under the owning agent's clamped grant. A 409 relays GitHub
 // declining the merge (not mergeable, checks failing); an already-merged PR succeeds idempotently.
 export async function mergeSessionPullRequest(sessionId: string): Promise<{ merged: boolean }> {

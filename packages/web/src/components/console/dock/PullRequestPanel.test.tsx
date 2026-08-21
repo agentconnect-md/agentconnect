@@ -856,22 +856,25 @@ describe('PullRequestPanel degraded answers', () => {
     expect(wire.calls[1]).toMatchObject({ refresh: false })
   })
 
-  it('polls nothing while its tab is hidden, and still takes a turn’s edge — the badge is on screen', async () => {
-    // A hidden panel is a request nobody is looking at; its BADGE is not — the unresolved count sits in
-    // the tab strip either way, so the one signal that reaches a hidden panel is a turn settling.
+  it('polls behind its own tab, and still takes a turn’s edge — the badge is on screen', async () => {
+    // Its badge is on screen whatever tab is selected, and so is the armed merge-when-ready fact the
+    // daemon holds the sandbox for — so this panel keeps its slow cadence while hidden, and a turn's
+    // falling edge still reaches it. Only a background DOCUMENT stops it (`auto-refresh.test.tsx`).
     vi.useFakeTimers()
     wire.data = pr()
     await render({ active: false, sessionStatus: 'online' })
     expect(wire.calls).toHaveLength(1)
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(10 * PR_POLL_MS)
+      await vi.advanceTimersByTimeAsync(2 * PR_POLL_MS)
     })
-    expect(wire.calls).toHaveLength(1)
+    // The count, not the exact number of ticks: what matters is that a hidden tab keeps reading.
+    expect(wire.calls.length).toBeGreaterThan(1)
+    const polled = wire.calls.length
 
     await rerender({ active: false, sessionStatus: 'online', turnActive: true })
     await rerender({ active: false, sessionStatus: 'online', turnActive: false })
-    expect(wire.calls).toHaveLength(2)
-    expect(wire.calls[1]).toMatchObject({ refresh: true })
+    expect(wire.calls).toHaveLength(polled + 1)
+    expect(wire.calls[polled]).toMatchObject({ refresh: true })
   })
 
   it('links a pull request the agent opened mid-turn, without anyone pressing refresh', async () => {

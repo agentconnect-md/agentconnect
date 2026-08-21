@@ -15,6 +15,8 @@ import type {
   AutoMergeSetReq,
   AutoMergeState,
   AutoMergeStateReq,
+  SandboxKeepAlive,
+  SandboxKeepAliveReq,
   AgentLaunched,
   AgentUpsert,
   AgentRemove,
@@ -499,6 +501,19 @@ export class ControlSender {
   async cronRun(daemonId: string, r: CronRunNow): Promise<Ack> {
     const c = this.must(daemonId)
     return c.conn.request<Ack>('cron/run', r, { epoch: c.sessionEpoch })
+  }
+
+  /**
+   * Renew an open console page's hold on a cluster agent's sandbox (REQ → `sandbox/keepalive/result`).
+   *
+   * A LEASE the page renews on a timer, never a flag the CP stores: the daemon decides whether to
+   * hold — from the session worktree's own dirtiness and its armed merge-when-ready watchers — and
+   * the hold lapses within one TTL once the page stops asking. Nothing here is persisted, and a
+   * suspended pod is held rather than woken.
+   */
+  async sandboxKeepAlive(daemonId: string, orgId: string, req: SandboxKeepAliveReq): Promise<SandboxKeepAlive> {
+    const c = this.must(daemonId)
+    return c.conn.request<SandboxKeepAlive>('sandbox/keepalive', req, { epoch: c.sessionEpoch }, undefined, orgId)
   }
 
   /**

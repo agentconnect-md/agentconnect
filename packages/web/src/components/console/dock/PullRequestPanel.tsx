@@ -300,6 +300,12 @@ export function PullRequestPanel({
     active,
     turnActive,
     whileHidden: true,
+    // The page's state, not the selected tab's — but ONLY once a pull request is actually linked: its
+    // badge is on screen either way, and an armed merge-when-ready watcher is one of the two facts the
+    // daemon holds the session's sandbox for. A session with NO pull request keeps the old rule, since
+    // re-asking a 404 behind a hidden tab costs a daemon read and, for a pushed branch, a GitHub list
+    // — that bounded ladder is the surface for finding a PR that appears later, not a poll.
+    pollWhileHidden: answer === 'linked',
     intervalMs: PR_POLL_MS,
     onRefresh: (reason) => {
       if (reason === 'turn') {

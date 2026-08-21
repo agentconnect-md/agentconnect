@@ -21,6 +21,9 @@ export interface AutoMergeSandbox {
   arm(target: SandboxCall): Promise<SandboxState>
   disarm(target: SandboxCall): Promise<SandboxState>
   state(target: SandboxCall): Promise<SandboxState>
+  /** Whether anything at all is armed in that pod — asked by the sandbox keep-alive, which holds a
+   *  pod whose in-pod watcher a suspend would kill. */
+  anyArmed(agentId: string): Promise<boolean>
 }
 
 export interface SandboxCall {
@@ -85,6 +88,17 @@ export class AutoMergeWatcher {
     const loop = this.local.get(keyOf(target))
     if (!loop) return this.project(target, undefined, { armed: false })
     return this.project(target, 'daemon', this.fromLoop(target, loop))
+  }
+
+  /** Whether ANY pull request is armed for this agent, wherever its watcher lives. The sandbox
+   *  keep-alive's question: suspending a pod with an armed watcher in it silently disarms the box. */
+  async armedFor(agentId: string): Promise<boolean> {
+    const sandbox = this.deps.sandboxFor(agentId)
+    if (sandbox) return sandbox.anyArmed(agentId)
+    for (const [key, loop] of this.local) {
+      if (key.startsWith(`${agentId}|`) && loop.armed()) return true
+    }
+    return false
   }
 
   /** Drop every local loop — daemon shutdown, and the reason nothing survives a restart. */

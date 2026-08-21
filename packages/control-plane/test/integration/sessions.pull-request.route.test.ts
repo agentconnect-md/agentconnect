@@ -16,7 +16,7 @@ import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
 import { PgSessionRepo } from '../../src/persistence/repositories/session.repo.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 import { systemClock } from '../../src/domain/clock.js'
-import { AUTO_MERGE_FEATURE } from '@agentconnect.md/protocol'
+import { AUTO_MERGE_FEATURE, SANDBOX_KEEP_ALIVE_FEATURE } from '@agentconnect.md/protocol'
 import type { ControlSender } from '../../src/orchestrator/outbound.js'
 import { ProtocolError } from '../../src/domain/errors.js'
 
@@ -675,6 +675,100 @@ describe('POST /sessions/:id/pull-request/auto-merge', () => {
     const res = await post(running, priv)
     expect(res.statusCode).toBe(404)
     expect(res.json()).toEqual(NOT_FOUND)
+    expect(edge.calls).toHaveLength(0)
+  })
+})
+
+// The sandbox keep-alive: an open page renewing a lease the DAEMON decides on. The CP relays and
+// stores nothing, so every assertion here is about what it forwards and how it maps a refusal.
+describe('POST /sessions/:id/sandbox-keep-alive', () => {
+  const KEEP_ALIVE_CAPABILITIES = { ...EDGE_CAPABILITIES, features: [SANDBOX_KEEP_ALIVE_FEATURE] }
+  const post = (running: HttpApp, sessionId: string) =>
+    running.app.inject({ method: 'POST', url: `${ORG}/sessions/${sessionId}/sandbox-keep-alive`, payload: {} })
+
+  function fakeKeepAlive(answer: Record<string, unknown> | Error) {
+    const calls: Array<{ agentId: string; sessionId?: string }> = []
+    const control = {
+      sandboxKeepAlive: async (_d: string, _o: string, req: { agentId: string; sessionId?: string }) => {
+        calls.push(req)
+        if (answer instanceof Error) throw answer
+        return { agentId: req.agentId, ...answer }
+      }
+    }
+    return { control: control as unknown as ControlSender, calls }
+  }
+
+  it('relays the daemon’s hold, naming the session whose worktree decides it', async () => {
+    await seedDaemon(prisma, DAEMON, { capabilities: KEEP_ALIVE_CAPABILITIES })
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    const session = await seedSessionMeta(prisma, randomUUID(), AGENT, { daemonId: DAEMON })
+    const edge = fakeKeepAlive({
+      held: true,
+      reasons: ['uncommitted-files', 'auto-merge-armed'],
+      ttlMs: 180_000,
+      placement: 'sandbox'
+    })
+    const running = app(githubStub([]).view, undefined, undefined, undefined, edge.control)
+
+    const res = await post(running, session)
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual({
+      held: true,
+      reasons: ['uncommitted-files', 'auto-merge-armed'],
+      ttlMs: 180_000,
+      placement: 'sandbox',
+      asleep: false
+    })
+    expect(edge.calls).toEqual([{ agentId: AGENT, sessionId: session }])
+  })
+
+  it('passes an unheld answer through unchanged — a clean tree is not an error', async () => {
+    await seedDaemon(prisma, DAEMON, { capabilities: KEEP_ALIVE_CAPABILITIES })
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    const session = await seedSessionMeta(prisma, randomUUID(), AGENT, { daemonId: DAEMON })
+    const edge = fakeKeepAlive({ held: false, reasons: [], placement: 'sandbox', asleep: true })
+    const running = app(githubStub([]).view, undefined, undefined, undefined, edge.control)
+
+    expect((await post(running, session)).json()).toEqual({
+      held: false,
+      reasons: [],
+      ttlMs: null,
+      placement: 'sandbox',
+      asleep: true
+    })
+  })
+
+  it('409s a daemon too old to hold a lease, without asking it', async () => {
+    await seedDaemon(prisma, DAEMON)
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    const session = await seedSessionMeta(prisma, randomUUID(), AGENT, { daemonId: DAEMON })
+    const edge = fakeKeepAlive({ held: true, reasons: ['uncommitted-files'] })
+    const running = app(githubStub([]).view, undefined, undefined, undefined, edge.control)
+
+    const res = await post(running, session)
+    expect(res.statusCode).toBe(409)
+    expect(res.json().code).toBe('DAEMON_FEATURE_MISSING')
+    expect(edge.calls).toHaveLength(0)
+  })
+
+  it('503s an offline daemon — the page simply stops holding', async () => {
+    await seedDaemon(prisma, DAEMON, { capabilities: KEEP_ALIVE_CAPABILITIES })
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    const session = await seedSessionMeta(prisma, randomUUID(), AGENT, { daemonId: DAEMON })
+    const edge = fakeKeepAlive(new Error('connection closed'))
+    const running = app(githubStub([]).view, undefined, undefined, undefined, edge.control)
+
+    expect((await post(running, session)).statusCode).toBe(503)
+  })
+
+  it('hides another member’s private session behind a 404, spending nothing', async () => {
+    const edge = fakeKeepAlive({ held: true, reasons: ['uncommitted-files'] })
+    const running = app(githubStub([]).view, undefined, undefined, undefined, edge.control)
+    const owner = await makeUser(`owner-${randomUUID().slice(0, 8)}`)
+    const priv = await seedAgentAndSession({ visibility: 'private', ownerIdentity: `user:${owner}` })
+
+    const res = await post(running, priv)
+    expect(res.statusCode).toBe(404)
     expect(edge.calls).toHaveLength(0)
   })
 })

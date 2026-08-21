@@ -94,6 +94,13 @@ export const TASK_LIST_FEATURE = 'task-list-v1'
  * daemon without it rather than offering a control that can never arm. */
 export const AUTO_MERGE_FEATURE = 'auto-merge-v1'
 
+/** Daemon serves `sandbox/keepalive` — an open console page holding a cluster agent's pod against the
+ * idle sweep while its worktree is dirty or a merge-when-ready watcher is armed in it. Checked before
+ * sending, like every other new frame: an older daemon ignores it silently, so the REQ would burn its
+ * retransmit budget and then read as an offline daemon. A console that gets no answer simply stops
+ * renewing — the sweep's own rules then apply, which is the pre-feature behaviour. */
+export const SANDBOX_KEEP_ALIVE_FEATURE = 'sandbox-keep-alive-v1'
+
 /** Daemon serves `runtime/commands` — the slash commands an agent's ACP runtime advertised it can be
  * asked to run. Checked before sending: an older daemon ignores an unknown frame silently, so the REQ
  * would burn its retransmit budget and then read as an offline daemon. */

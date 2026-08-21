@@ -18,10 +18,13 @@ import { SANDBOX_AUTO_MERGE_ENTRY, SANDBOX_TUNNEL_PATHS } from './sandbox-paths.
  * signal — `armed` is "the process is alive", not a boolean this side maintains.
  */
 export const AutoMergePayloadSchema = z.object({
-  op: z.enum(['arm', 'disarm', 'state']),
+  // `list` asks about the POD rather than one pull request — a pod serves one agent, so "anything
+  // armed here" is exactly the question the sandbox keep-alive needs answered, and answering it from
+  // the registry beats a daemon-side index that a restart would silently empty.
+  op: z.enum(['arm', 'disarm', 'state', 'list']),
   agentId: z.string().min(1),
-  repoFullName: z.string().min(3),
-  prNumber: z.number().int().positive(),
+  repoFullName: z.string().min(3).optional(), // required for every op but `list`
+  prNumber: z.number().int().positive().optional(),
   /** The agent's runtime-only gitcred capability, so the child can fetch its own gh token per
    *  tick. Required to arm; never logged, and passed to the child through env, not argv. */
   capability: z.string().min(1).optional()
@@ -69,10 +72,12 @@ export function createAutoMergeHandler(
     deps.spawnChild ??
     ((args, env) => spawn(process.execPath, [entryPath, ...args], { env, stdio: ['ignore', 'pipe', 'pipe'] }))
 
-  const key = (p: AutoMergePayload) => `${p.repoFullName.toLowerCase()}#${p.prNumber}`
+  const key = (p: AutoMergePayload) => `${(p.repoFullName ?? '').toLowerCase()}#${p.prNumber ?? 0}`
 
   return async (payload: unknown): Promise<AutoMergeHandlerState> => {
     const p = AutoMergePayloadSchema.parse(payload)
+    if (p.op === 'list') return { armed: [...entries.values()].some((entry) => entry.status.armed) }
+    if (!p.repoFullName || !p.prNumber) throw new AutoMergeRefusedError('this operation names a pull request')
     const id = key(p)
     const entry = entries.get(id)
 

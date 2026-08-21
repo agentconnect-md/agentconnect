@@ -423,6 +423,7 @@ All following the existing workspace-route shape in `agents.ts`: `getOrgAgent` �
 | GET    | `/sessions/:id/pull-request`                                                 | Postgres identity + GitHub REST/GraphQL + `automerge/state` |
 | POST   | `/sessions/:id/pull-request/auto-merge`                                      | `automerge/set` (edge watcher)                              |
 | POST   | `/sessions/:id/pull-request/merge`                                           | GraphQL `mergePullRequest`                                  |
+| POST   | `/sessions/:id/sandbox-keep-alive`                                           | `sandbox/keepalive` (edge lease)                            |
 
 **`GET /agents/:id/tasks` does NOT use `canReadWorkspaceScope`**, and this
 paragraph's earlier claim that it would was wrong. That gate requires
@@ -1048,6 +1049,20 @@ Decisions recorded while building it:
   nobody could be asked — an offline daemon, or one too old — which the panel
   draws differently from a confident "not armed". A lost overlay never fails the
   panel read; it costs the toggle its state and nothing else.
+- **An open page holds its agent's sandbox, and the same reads decide it.** The
+  dock's Files, Git and pull-request panels now poll while the DOCUMENT is
+  visible rather than only while their own tab is selected (`pollWhileHidden` in
+  `auto-refresh.ts`), because the page's whole state is what an operator leaves
+  open — and because two of those reads are what the daemon holds the session's
+  pod for: an uncommitted worktree, or an armed merge-when-ready watcher, which
+  for a cluster agent is a process inside that pod. The hold itself is a separate
+  lease the page renews (`POST /sessions/:id/sandbox-keep-alive`, 60 s inside the
+  daemon's 180 s TTL); the DAEMON decides whether to hold, so the console asserts
+  nothing, and the lease lapses on its own when the page closes. See
+  [k8s-daemon-pool.md](k8s-daemon-pool.md) §4. The PR panel opts in only once a
+  pull request is actually LINKED: re-asking a 404 behind a hidden tab costs a
+  daemon read and, for a pushed branch, a GitHub list, and the bounded retry
+  ladder already covers a pull request that appears later.
 - **Auto-fix's only follow-up is one forced re-read on the turn's falling
   edge.** The panel never watches the turn; it takes a `turnActive` prop, and a
   pressed Auto-fix arms a per-scope wait that the next falling edge consumes —

@@ -96,6 +96,7 @@ import {
 } from './frames/workspace.js'
 import { TaskListReq, TaskList } from './frames/task.js'
 import { AutoMergeSetReq, AutoMergeStateReq, AutoMergeState } from './frames/automerge.js'
+import { SandboxKeepAliveReq, SandboxKeepAlive } from './frames/sandbox-keepalive.js'
 import {
   MemoryChannelsReq,
   MemoryChannelsPage,
@@ -359,6 +360,9 @@ export const FRAME_SCHEMAS = {
   'automerge/set/result': AutoMergeState,
   'automerge/state': AutoMergeStateReq,
   'automerge/state/result': AutoMergeState,
+  // ── sandbox keep-alive: an open console page renewing a lease on its agent's pod.
+  'sandbox/keepalive': SandboxKeepAliveReq,
+  'sandbox/keepalive/result': SandboxKeepAlive,
   'memory/channels': MemoryChannelsReq,
   'memory/channels/page': MemoryChannelsPage,
   'memory/list': MemoryListReq,
@@ -603,6 +607,8 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('automerge/set/result', FRAME_SCHEMAS['automerge/set/result']),
   frame('automerge/state', FRAME_SCHEMAS['automerge/state']),
   frame('automerge/state/result', FRAME_SCHEMAS['automerge/state/result']),
+  frame('sandbox/keepalive', FRAME_SCHEMAS['sandbox/keepalive']),
+  frame('sandbox/keepalive/result', FRAME_SCHEMAS['sandbox/keepalive/result']),
   frame('memory/channels', FRAME_SCHEMAS['memory/channels']),
   frame('memory/channels/page', FRAME_SCHEMAS['memory/channels/page']),
   frame('memory/list', FRAME_SCHEMAS['memory/list']),

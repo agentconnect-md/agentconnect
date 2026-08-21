@@ -129,6 +129,10 @@ function fakeSandbox(): AutoMergeSandbox & { ops: string[] } {
     state: async (c) => {
       ops.push(`state ${key(c)}`)
       return armed.has(key(c)) ? { armed: true, waitingOn: 'checks running: build' } : { armed: false }
+    },
+    anyArmed: async () => {
+      ops.push('list')
+      return armed.size > 0
     }
   }
 }
@@ -180,6 +184,38 @@ describe('AutoMergeWatcher', () => {
     // Disarming drops the entry, and the state read then answers a plain "not armed".
     expect(await watcher.set(TARGET, false)).toEqual({ ...TARGET, armed: false })
     expect(await watcher.state(TARGET)).toEqual({ ...TARGET, armed: false })
+  })
+
+  it('answers `armedFor` from the POD for a sandbox agent, and from its own map for a local one', async () => {
+    // The sandbox keep-alive's question. Asked of the pod because that is where the armed set lives:
+    // a daemon-side index would answer `false` after a restart while the pod was still merging.
+    const sandbox = fakeSandbox()
+    const cluster = new AutoMergeWatcher({
+      knownAgent: () => true,
+      sandboxFor: () => sandbox,
+      capabilityFor: () => 'cap',
+      tokenFor: async () => 'ghs_x'
+    })
+    expect(await cluster.armedFor('agent-1')).toBe(false)
+    await cluster.set(TARGET, true)
+    expect(await cluster.armedFor('agent-1')).toBe(true)
+    expect(sandbox.ops).toContain('list')
+
+    const github = githubStub([prAnswer([{ __typename: 'CheckRun', name: 'build', status: 'QUEUED' }])])
+    const { timers } = fakeTimers()
+    const local = new AutoMergeWatcher({
+      knownAgent: () => true,
+      sandboxFor: () => undefined,
+      capabilityFor: () => 'cap',
+      tokenFor: async () => 'ghs_x',
+      fetchImpl: github.fetchImpl,
+      timers
+    })
+    expect(await local.armedFor('agent-1')).toBe(false)
+    await local.set(TARGET, true)
+    expect(await local.armedFor('agent-1')).toBe(true)
+    // Keyed per agent: another agent's armed watcher is not this one's reason to hold a pod.
+    expect(await local.armedFor('agent-2')).toBe(false)
   })
 
   it('refuses an agent this daemon does not hold, with the machine reason the CP maps to a status', async () => {
