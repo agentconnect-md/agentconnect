@@ -177,6 +177,7 @@ export function useSessionTranscript(input: UseSessionTranscriptInput): UseSessi
     setMsgErr(null)
     setMsgs(null)
     setMsgPaging(false)
+    setHasEarlier(false)
     olderCursorRef.current = null
     // Load only the NEWEST page; older history comes in on demand via loadEarlier (a "Load earlier
     // activity" button), so a long session no longer walks its whole backlog at open.
@@ -386,6 +387,10 @@ export function useSessionTranscript(input: UseSessionTranscriptInput): UseSessi
       setPagingEarlier(true)
       try {
         const page = await fetchSessionMessages(sid, { cursor })
+        // Fence on the session: a navigation before this resolves would otherwise splice these rows
+        // into the NEW session and re-point its cursor at the old one (tailSessionRef tracks the open
+        // session, like refreshTail's guard).
+        if (tailSessionRef.current !== sid) return
         setMsgs((current) => [...page.messages, ...(current ?? [])])
         olderCursorRef.current = page.nextCursor ?? null
         setHasEarlier(page.nextCursor != null)
