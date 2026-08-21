@@ -301,6 +301,86 @@ describe('GitlabProvisioner (§10.2)', () => {
     expect(await prisma.codeHostRepositoryClaim.count({ where: { provider: 'gitlab' } })).toBe(0)
   })
 
+  it('rotates near-expiry credentials create-before-revoke; far ones untouched (§7.4)', async () => {
+    const h = await harness()
+    await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
+    const creds = new PgGitlabProjectCredentialRepo(prisma)
+    const store = new PgGitlabProjectCredentialSecretStore(prisma, cipher)
+    const before = (await creds.get(h.binding.id, 'read'))!
+    const sealedBefore = await store.get(DEFAULT_ORG_ID, before.id)
+    // Only the read credential nears expiry; the other two stay far out.
+    await prisma.gitlabProjectCredential.update({
+      where: { id: before.id },
+      data: { providerExpiresAt: new Date(Date.now() + 3 * 86_400_000) }
+    })
+    await h.provisioner.rotateDueCredentials(14 * 86_400_000)
+    const after = (await creds.get(h.binding.id, 'read'))!
+    expect(after.generation).toBe(before.generation + 1n)
+    expect(after.externalTokenId).not.toBe(before.externalTokenId)
+    expect(await store.get(DEFAULT_ORG_ID, after.id)).not.toBe(sealedBefore)
+    // Create-before-revoke: the OLD provider token is revoked, the new one is not.
+    expect(h.fake.tokens.get(Number(before.externalTokenId))!.revoked).toBe(true)
+    expect(h.fake.tokens.get(Number(after.externalTokenId))!.revoked).toBe(false)
+    // The far-from-expiry credentials were not touched.
+    expect((await creds.get(h.binding.id, 'effect'))!.generation).toBe(1n)
+    expect((await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))!.state).toBe('ready')
+    // The run lease was released.
+    expect(
+      await h.bindings.markProviderMutationStarted(
+        DEFAULT_ORG_ID,
+        h.binding.id,
+        PROJECT,
+        'follow-up',
+        new Date(Date.now() + 600_000),
+        new Date()
+      )
+    ).toBe(true)
+  })
+
+  it('rotation without a working admin connection degrades and keeps the old credential (§7.4)', async () => {
+    const h = await harness()
+    await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
+    const creds = new PgGitlabProjectCredentialRepo(prisma)
+    const before = (await creds.get(h.binding.id, 'read'))!
+    await prisma.gitlabProjectCredential.update({
+      where: { id: before.id },
+      data: { providerExpiresAt: new Date(Date.now() + 3 * 86_400_000) }
+    })
+    // The admin connection loses its pair (e.g. revoked): rotation cannot run.
+    await prisma.gitlabConnectionSecret.deleteMany({})
+    await h.provisioner.rotateDueCredentials(14 * 86_400_000)
+    const binding = (await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))!
+    expect(binding.state).toBe('admin_degraded')
+    // The existing credential is untouched — runtime continues until it expires.
+    expect((await creds.get(h.binding.id, 'read'))!.externalTokenId).toBe(before.externalTokenId)
+    expect(h.fake.tokens.get(Number(before.externalTokenId))!.revoked).toBe(false)
+  })
+
+  it('a live foreign run lease defers rotation to the next sweep (§10.2)', async () => {
+    const h = await harness()
+    await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
+    const creds = new PgGitlabProjectCredentialRepo(prisma)
+    const before = (await creds.get(h.binding.id, 'read'))!
+    await prisma.gitlabProjectCredential.update({
+      where: { id: before.id },
+      data: { providerExpiresAt: new Date(Date.now() + 3 * 86_400_000) }
+    })
+    expect(
+      await h.bindings.markProviderMutationStarted(
+        DEFAULT_ORG_ID,
+        h.binding.id,
+        PROJECT,
+        'foreign-run',
+        new Date(Date.now() + 600_000),
+        new Date()
+      )
+    ).toBe(true)
+    await h.provisioner.rotateDueCredentials(14 * 86_400_000)
+    // Untouched and NOT degraded — the holder is presumed alive.
+    expect((await creds.get(h.binding.id, 'read'))!.externalTokenId).toBe(before.externalTokenId)
+    expect((await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))!.state).toBe('ready')
+  })
+
   it('incomplete cleanup keeps cleanup_pending and RETAINS the claim (§19.4)', async () => {
     const h = await harness({ failTokenRevoke: true })
     await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)

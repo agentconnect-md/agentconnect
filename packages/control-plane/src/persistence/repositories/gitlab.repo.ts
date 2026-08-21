@@ -544,6 +544,15 @@ export class PgGitlabProjectCredentialRepo implements GitlabProjectCredentialRep
     return rows.map((r) => this.toRecord(r))
   }
 
+  async listExpiring(before: Date): Promise<Array<{ credential: GitlabProjectCredentialRecord; orgId: string }>> {
+    const rows = await this.prisma.gitlabProjectCredential.findMany({
+      orderBy: { providerExpiresAt: 'asc' },
+      where: { providerExpiresAt: { lt: before } },
+      include: { binding: { select: { orgId: true } } }
+    })
+    return rows.map((row) => ({ credential: this.toRecord(row), orgId: row.binding.orgId }))
+  }
+
   async remove(bindingId: string, purpose: GitlabCredentialPurpose): Promise<void> {
     await this.prisma.gitlabProjectCredential.deleteMany({ where: { bindingId, purpose } })
   }

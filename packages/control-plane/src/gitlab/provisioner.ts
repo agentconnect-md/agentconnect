@@ -432,6 +432,85 @@ export class GitlabProvisioner {
   }
 
   /**
+   * §7.4 rotation: create the replacement BEFORE revoking the old PAT — GitLab's
+   * rotate-in-place invalidates immediately, so the overlap lives on our side.
+   * The replacement rides the same validation + atomic commit as first mint,
+   * under the same exclusive run lease as provision (§10.2) — a live peer
+   * refuses and the next sweep retries. Only after commit is the previous
+   * provider token revoked (best-effort: it carries a finite expiry anyway).
+   */
+  async rotateDueCredentials(horizonMs: number): Promise<void> {
+    const due = await this.deps.credentials.listExpiring(new Date(this.deps.clock.now() + horizonMs))
+    const failedBindings = new Set<string>()
+    for (const { credential, orgId } of due) {
+      if (failedBindings.has(credential.bindingId)) continue
+      const binding = await this.deps.bindings.get(orgId, credential.bindingId)
+      if (!binding || binding.state === 'cleanup_pending') continue
+      if (!binding.installerConnectionId) {
+        failedBindings.add(binding.id)
+        await this.degrade(orgId, binding.id, 'admin_degraded', 'rotation_admin_unavailable')
+        continue
+      }
+      const owner = randomBytes(9).toString('base64url')
+      const nowMs = this.deps.clock.now()
+      const acquired = await this.deps.bindings.markProviderMutationStarted(
+        orgId,
+        binding.id,
+        binding.projectId,
+        owner,
+        new Date(nowMs + PROVISION_LEASE_MS),
+        new Date(nowMs)
+      )
+      if (!acquired) continue
+      try {
+        const token = await this.deps.oauth.withAccessToken(orgId, binding.installerConnectionId)
+        const project = (await gitlabProject(
+          token,
+          binding.projectId,
+          this.deps.fetchImpl
+        )) as GitlabProjectWithNamespace | null
+        if (!project?.namespace || binding.serviceAccountUserId === null) {
+          failedBindings.add(binding.id)
+          await this.degrade(orgId, binding.id, 'admin_degraded', 'rotation_identity_missing')
+          continue
+        }
+        const root = await gitlabRootNamespace(token, project.namespace, this.deps.fetchImpl)
+        const previousTokenId = credential.externalTokenId
+        const serviceAccountUserId = binding.serviceAccountUserId
+        await this.mintCredential(orgId, binding, token, root.id, serviceAccountUserId, credential.purpose, owner)
+        await gitlabRevokeServiceAccountToken(
+          token,
+          root.id,
+          serviceAccountUserId,
+          previousTokenId,
+          this.deps.fetchImpl
+        ).catch(() => {
+          this.deps.log?.warn(
+            { bindingId: binding.id, purpose: credential.purpose },
+            'gitlab rotation could not revoke the previous token (it still expires on schedule)'
+          )
+        })
+      } catch (e) {
+        // The Console warns while administration is unavailable; runtime keeps
+        // working until the existing credential expires (§7.4).
+        failedBindings.add(binding.id)
+        const reason =
+          e instanceof GitlabClaimFenceLost
+            ? 'claim_fence_lost'
+            : e instanceof GitlabTokenPolicyViolation
+              ? 'out_of_policy_token'
+              : e instanceof GitlabApiError
+                ? `rotation_gitlab_${e.status || 'unreachable'}`
+                : 'rotation_admin_unavailable'
+        this.deps.log?.warn({ bindingId: binding.id, reason }, 'gitlab credential rotation failed')
+        await this.degrade(orgId, binding.id, 'admin_degraded', reason)
+      } finally {
+        await this.deps.bindings.endProviderMutation(orgId, binding.id, binding.projectId, owner).catch(() => {})
+      }
+    }
+  }
+
+  /**
    * §19.4 disconnect: local authority off first (epoch bump), then external
    * cleanup — webhook, PAT revocations, service account. Complete cleanup
    * removes the binding and releases the deployment-global claim; anything

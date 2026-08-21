@@ -26,6 +26,7 @@ import { resolveGitlabAppConfig } from './gitlab/config.js'
 import type { FetchLike as GitlabFetchLike } from './gitlab/api.js'
 import { GitlabOauthService } from './gitlab/oauth.service.js'
 import { GitlabProvisioner } from './gitlab/provisioner.js'
+import { GitlabCredentialRotator } from './gitlab/rotator.js'
 import { resolveSlackPlatformAppConfig } from './config/slack-platform.js'
 import { resolveFeishuPlatformApps } from './config/feishu-platform.js'
 import type { FetchLike } from './github/api.js'
@@ -965,6 +966,14 @@ export function buildContainer(
         })
       }
     : undefined
+  // §7.4 PAT-rotation sweep; armed only by startBackground().
+  const gitlabRotator = gitlab
+    ? new GitlabCredentialRotator({
+        provisioner: gitlab.provisioner,
+        clock,
+        log: { warn: (obj, msg) => http.log.warn(obj, msg) }
+      })
+    : undefined
 
   // The console PR panel's read projection — long-lived so its short TTL cache actually absorbs mounts.
   const pullRequestView = github ? new PullRequestViewService(github.tokens, clock, opts.githubFetch) : undefined
@@ -1885,6 +1894,7 @@ export function buildContainer(
       webchatMcpOperationReaper.start()
       githubRunReporter?.start()
       hookRedeliveryReconciler?.start()
+      gitlabRotator?.start()
       for (const reaper of pendingInstallReapers) reaper.start()
       relaySweeper.start()
       dutyRecompute.start()
@@ -1901,6 +1911,7 @@ export function buildContainer(
       const webchatMcpOperationSettled = webchatMcpOperationReaper.stopAndSettle()
       githubRunReporter?.stop()
       hookRedeliveryReconciler?.stop()
+      gitlabRotator?.stop()
       installationDoorbell?.stop()
       for (const reaper of pendingInstallReapers) reaper.stop()
       relaySweeper.stop()
