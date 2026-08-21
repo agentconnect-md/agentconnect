@@ -553,7 +553,7 @@ export class SessionManager {
           slackSelfId:
             msg.platform === 'slack' && integrationId ? this.deps.slackBotUserIdFor?.(integrationId) : undefined,
           thread,
-          acpSessionId: rec?.acpSessionId,
+          sessionId: rec?.sessionId,
           parentSessionId: effectiveOriginSessionId,
           envSecretNames: secretNames.filter((n) => !fileSecretNames.has(n)),
           fileSecrets: fileSecrets.map((m) => ({ sourceVar: m.sourceVar, pointerVar: m.convention.pointerVar })),

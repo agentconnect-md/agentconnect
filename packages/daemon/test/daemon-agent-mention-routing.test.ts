@@ -936,6 +936,8 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
         channel: 'C1',
         thread: '1720000000.000100',
         acpSessionId: 'acp-parent-1',
+        // Lineage travels by the OUTWARD id (session-concept.md §1.1), so seed one that differs.
+        sessionId: 'sid-parent-1',
         state: 'idle',
         lastDeliveredTs: null,
         updatedAt: Date.now()
@@ -945,7 +947,7 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
       expect(calls).toHaveLength(1)
       expect(calls[0]!.callMeta).toMatchObject({
         callFrom: 'bot-a',
-        originSessionId: 'acp-parent-1',
+        originSessionId: 'sid-parent-1',
         needsReply: true
       })
       expect(await (daemon as any).store.getActivation(pairingKey(daemon))).toMatchObject({

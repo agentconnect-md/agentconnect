@@ -6372,7 +6372,7 @@ export class Daemon {
     // policy above still apply. A missing session NAKs `not_found`, mirroring the
     // local replyToSession contract — SessionTarget never creates a session.
     if (msg.lineageReplyTo !== undefined) {
-      const origin = await this.store.getSessionByAcpIdForAgent(msg.toAgentId, msg.lineageReplyTo)
+      const origin = await this.store.getSessionByOutwardId(msg.lineageReplyTo, msg.toAgentId)
       if (!origin) return record(nak('not_found'))
       // Reply transport from the SESSION's own scope (mirrors replyToSession's local branch).
       const replyIntegrationId = this.integrationIdForSessionTransport(

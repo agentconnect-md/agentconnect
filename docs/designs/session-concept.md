@@ -94,6 +94,15 @@ transcript page, a workspace read, a webchat delivery target. A daemon that rece
 its slot by the outward id (falling back to the ACP id, which is what a pre-v12 session was
 reported under) and works internally in ACP terms from there.
 
+LINEAGE is outward for the same reason, and it is the case where the ACP id fails hardest: an
+`originSessionId`, a `lineageReplyTo`, a `sendMessage` SessionTarget and a reported
+`parentSessionId` all name a session to someone who is not its runtime — another agent, another
+daemon, the CP. A lineage link written in the runtime's name matches nothing on the other side:
+the control plane keys its session rows by the outward id, so a child reporting an ACP-named
+parent is a child whose parent "does not exist" — no console lineage, and no visibility to
+inherit (session-visibility.md §5.1). The `Session` and `Parent session` lines of the `# Agent`
+block are the same id, which is what makes them usable as a SessionTarget at all.
+
 What this rules out, in both directions:
 
 - Reporting the ACP id (or anything derived from `sessionKey`, such as a hash of
