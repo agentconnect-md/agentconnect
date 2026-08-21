@@ -50,11 +50,17 @@ describe('SlackConnection.uploadFile', () => {
 
     const bytes = Buffer.from('PNGBYTES')
     await expect(
-      conn.uploadFile('C1', { bytes, name: 'shot.png' }, 'from telegram', '111.1', {
-        username: 'Scout',
-        icon_url: 'https://example.test/a.png'
-      })
-    ).resolves.toEqual({ fileId: 'F1' })
+      conn.uploadFile(
+        'C1',
+        { bytes, name: 'shot.png' },
+        'from telegram',
+        { thread: '111.1' },
+        {
+          username: 'Scout',
+          icon_url: 'https://example.test/a.png'
+        }
+      )
+    ).resolves.toEqual({ ok: true })
 
     expect(getUploadURLExternal).toHaveBeenCalledWith({ filename: 'shot.png', length: bytes.byteLength })
     expect(undici.fetch).toHaveBeenCalledWith(
@@ -91,7 +97,7 @@ describe('SlackConnection.uploadFile', () => {
 
     await expect(
       conn.uploadFile('C1', { bytes: Buffer.from('x'), name: 'a.png' }, 'hi', undefined, { username: 'Scout' })
-    ).resolves.toEqual({ fileId: 'F1' })
+    ).resolves.toEqual({ ok: true })
     expect(completeUploadExternal).toHaveBeenCalledTimes(2)
     expect(completeUploadExternal.mock.calls[1]![0]).not.toHaveProperty('username')
   })
@@ -114,17 +120,37 @@ describe('SlackConnection.uploadFile', () => {
     const completeUploadExternal = vi.fn(async () => ({ files: [] }))
     const conn = connWith({ getUploadURLExternal: async () => ({}), completeUploadExternal })
 
-    await expect(conn.uploadFile('C1', { bytes: Buffer.from('x'), name: 'a.png' })).resolves.toBeUndefined()
+    await expect(conn.uploadFile('C1', { bytes: Buffer.from('x'), name: 'a.png' })).resolves.toEqual({
+      ok: false,
+      reason: 'platform_error'
+    })
     expect(completeUploadExternal).not.toHaveBeenCalled()
   })
 
-  it('reports failure instead of throwing into the send path', async () => {
+  it('classifies failures instead of throwing into the send path', async () => {
     const conn = connWith({
       getUploadURLExternal: async () => {
         throw new Error('slack down')
       },
       completeUploadExternal: async () => ({ files: [] })
     })
-    await expect(conn.uploadFile('C1', { bytes: Buffer.from('x'), name: 'a.png' })).resolves.toBeUndefined()
+    await expect(conn.uploadFile('C1', { bytes: Buffer.from('x'), name: 'a.png' })).resolves.toEqual({
+      ok: false,
+      reason: 'platform_error'
+    })
+  })
+
+  it('classifies a missing files:write scope, the likeliest first-run failure', async () => {
+    // Operator-fixable, so the reason must be distinguishable from a deleted thread root.
+    const conn = connWith({
+      getUploadURLExternal: async () => {
+        throw Object.assign(new Error('missing_scope'), { data: { error: 'missing_scope', needed: 'files:write' } })
+      },
+      completeUploadExternal: async () => ({ files: [] })
+    })
+    await expect(conn.uploadFile('C1', { bytes: Buffer.from('x'), name: 'a.png' })).resolves.toEqual({
+      ok: false,
+      reason: 'missing_scope'
+    })
   })
 })

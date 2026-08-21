@@ -14,7 +14,8 @@ import { integrationCore, platformIntegrationConfig } from '../platforms/integra
 import type { ReplyAttributionInfo } from '../messages/attribution.js'
 import type { NormalizedMessage } from '../messages/normalized.js'
 import type { Logger } from '../log.js'
-import { PlatformSendQueue } from '../platforms/send-queue.js'
+import { isSendQueueTimeout, PlatformSendQueue } from '../platforms/send-queue.js'
+import type { UploadAnchor, UploadFailReason, UploadOutcome } from '../mcp/ops/context.js'
 import { feishuEventToMessageLike, normalizeFeishuMessage, type FeishuRawEvent } from './normalize.js'
 import {
   buildCompletedReplyCard,
@@ -161,6 +162,14 @@ export interface FeishuApi {
   ): Promise<{ id: string; name?: string; realName?: string; isBot?: boolean; avatarUrl?: string }>
   /** GET /open-apis/bot/v3/info — the bot's own open_id + display name. */
   getBotInfo(): Promise<{ openId?: string; name?: string }>
+}
+
+/** Map a Feishu send error to the port's typed failure vocabulary via the permission sniffer. */
+function classifyFeishuUploadError(err: unknown): UploadFailReason {
+  const issue = feishuPermissionIssueFrom(err)
+  if (issue === 'app-permissions') return 'missing_scope'
+  if (issue) return 'forbidden'
+  return 'platform_error'
 }
 
 /** Opaque turn-local reference returned after the CardKit entity is visible in chat. */
@@ -986,18 +995,27 @@ export class FeishuConnection implements PlatformConnection {
     channel: string,
     file: { bytes: Buffer; name: string; mimeType?: string },
     comment?: string,
-    threadAnchor?: string
-  ): Promise<{ messageId?: string } | undefined> {
+    anchor?: UploadAnchor,
+    _identity?: unknown
+  ): Promise<UploadOutcome> {
     if (file.mimeType && !file.mimeType.startsWith('image/')) {
       this.deps.log?.debug(`feishu: uploadFile refused ${file.name} (${file.mimeType}) — images only`)
-      return undefined
+      return { ok: false, reason: 'platform_error' }
     }
-    return this.queue.enqueue(async () => {
+    // REFUSE an anchor this platform cannot honor rather than repurpose it: `sendImage`
+    // prefix-sniffs, so an unrecognized anchor would silently become a chat-ROOT post — in
+    // topic mode a brand-new topic reported as success. A DM's anchor is its chat id.
+    const threadAnchor = anchor?.thread
+    if (threadAnchor !== undefined && !threadAnchor.startsWith('om_') && threadAnchor !== channel) {
+      this.deps.log?.debug(`feishu: uploadFile refused unhonorable anchor (ch=${channel})`)
+      return { ok: false, reason: 'not_found' }
+    }
+    const task: Promise<UploadOutcome> = this.queue.enqueue(async () => {
       try {
         const { imageKey } = await this.handle.api.uploadImage(file.bytes)
         if (!imageKey) {
           this.deps.log?.debug(`feishu: uploadFile got no image key for ${file.name}`)
-          return undefined
+          return { ok: false, reason: 'platform_error' }
         }
         let sent: { messageId?: string }
         try {
@@ -1005,31 +1023,35 @@ export class FeishuConnection implements PlatformConnection {
         } catch (err) {
           this.rememberPermissionIssue(err, channel)
           this.deps.log?.debug(`feishu: uploadFile ${file.name} → ch=${channel} failed: ${(err as Error).message}`)
-          return undefined
+          return { ok: false, reason: classifyFeishuUploadError(err) }
         }
-        const anchor = sent.messageId !== undefined ? { messageId: sent.messageId } : {}
+        const posted = { ok: true as const, ...(sent.messageId !== undefined ? { messageId: sent.messageId } : {}) }
         // A long caption is several messages, so the warning has to say whether NONE or only
         // SOME of it landed: an agent told the whole caption failed would re-send all of it and
         // duplicate the chunks that did post — the very duplication the ordering above avoids.
-        let posted = 0
+        let landed = 0
         try {
           for (const chunk of comment ? chunkForFeishu(comment) : []) {
             await this.sendChunk(channel, threadAnchor, chunk)
-            posted += 1
+            landed += 1
           }
-          return anchor
+          return posted
         } catch (err) {
           this.rememberPermissionIssue(err, channel)
           this.deps.log?.debug(`feishu: uploadFile caption failed (ch=${channel}): ${(err as Error).message}`)
-          const lost = posted > 0 ? 'part of its caption' : 'its caption'
-          return { ...anchor, warning: `the image was sent, but ${lost} did not post` }
+          const lost = landed > 0 ? 'part of its caption' : 'its caption'
+          return { ...posted, warning: `the image was sent, but ${lost} did not post` }
         }
       } catch (err) {
         this.rememberPermissionIssue(err, channel)
         this.deps.log?.debug(`feishu: uploadFile ${file.name} → ch=${channel} failed: ${(err as Error).message}`)
-        return undefined
+        return { ok: false, reason: classifyFeishuUploadError(err) }
       }
     })
+    return task.catch((err) => ({
+      ok: false,
+      reason: isSendQueueTimeout(err) ? 'indeterminate' : 'platform_error'
+    }))
   }
 
   /**

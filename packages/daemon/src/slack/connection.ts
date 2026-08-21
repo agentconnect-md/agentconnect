@@ -12,7 +12,8 @@ import { integrationCore, platformIntegrationConfig } from '../platforms/integra
 import { normalizeSlackEvent, toAttachment, type SlackFile, type SlackMessageEvent } from './normalize.js'
 import type { Attachment, NormalizedMessage } from '../messages/normalized.js'
 import type { Logger } from '../log.js'
-import { PlatformSendQueue } from '../platforms/send-queue.js'
+import { isSendQueueTimeout, PlatformSendQueue } from '../platforms/send-queue.js'
+import type { UploadAnchor, UploadFailReason, UploadOutcome } from '../mcp/ops/context.js'
 import {
   STATUS_ACTION,
   ELICIT_ACTION_PREFIX,
@@ -500,6 +501,17 @@ const CUSTOM_USERNAME_REPROBE_MS = 5 * 60_000
 /** Per-request bound on every Slack egress call. Shared with the byte upload, which rides the
  *  same serial queue and would otherwise block all delivery on undici's 300 s defaults. */
 const SLACK_API_TIMEOUT_MS = 30_000
+
+/** Map a Slack API error to the port's typed failure vocabulary — every arm already had the
+ *  raw material (`missing_scope` payloads, stable error codes); this only names them. */
+function classifySlackUploadError(err: unknown): UploadFailReason {
+  if (missingScopesFrom(err).length > 0) return 'missing_scope'
+  const code = slackApiErrorCode(err)
+  if (code === 'message_not_found' || code === 'channel_not_found' || code === 'thread_not_found') return 'not_found'
+  if (code === 'not_in_channel' || code === 'restricted_action' || code === 'access_denied') return 'forbidden'
+  if (code === 'file_size_limit_exceeded' || code === 'too_large') return 'too_large'
+  return 'platform_error'
+}
 
 function proxyDispatcher(): ProxyAgent | undefined {
   const url = process.env.HTTPS_PROXY ?? process.env.HTTP_PROXY
@@ -1253,18 +1265,20 @@ export class SlackConnection implements PlatformConnection {
    * message here — `comment` rides as `initial_comment`, and the agent's conversational
    * identity as username/icon, exactly as {@link postChatMessage} applies it to a text post.
    *
-   * Undefined means the share FAILED and nothing is in the conversation. Success carries no
-   * `messageId`: Slack answers with the file and no ts, so a shared file is the one post kind
-   * that cannot anchor a session seed or a paired wake. `fileId` is diagnostic only.
+   * `ok: false` means the share FAILED and nothing is in the conversation, with a typed
+   * reason — `indeterminate` alone means the queue abandoned a still-running upload that may
+   * yet land. Success carries no `messageId`: Slack answers with the file and no ts, so a
+   * shared file is the one post kind that cannot anchor a session seed or a paired wake.
    */
   async uploadFile(
     channel: string,
     file: { bytes: Buffer; name: string; mimeType?: string },
     comment?: string,
-    threadTs?: string,
+    anchor?: UploadAnchor,
     options?: SlackPostOptions
-  ): Promise<{ messageId?: string; fileId?: string } | undefined> {
-    return this.queue.enqueue(async () => {
+  ): Promise<UploadOutcome> {
+    const threadTs = anchor?.thread
+    const task: Promise<UploadOutcome> = this.queue.enqueue(async () => {
       try {
         const reserved = await this.app.client.files.getUploadURLExternal({
           filename: file.name,
@@ -1274,9 +1288,10 @@ export class SlackConnection implements PlatformConnection {
         const fileId = reserved.file_id
         if (!uploadUrl || !fileId) {
           this.deps.log?.debug(`slack: uploadFile got no upload url for ${file.name}`)
-          return undefined
+          return { ok: false, reason: 'platform_error' }
         }
-        if (!(await this.putUploadBytes(uploadUrl, file))) return undefined
+        const put = await this.putUploadBytes(uploadUrl, file)
+        if (!put.ok) return put
         // Sharing is what makes the file a message; without `channel_id` it stays a private
         // upload nobody can see. `thread_ts` must be the PARENT's ts, never a reply's.
         // A CAPTION IS MRKDWN HERE, unlike every other send in this file. `postMessage` renders
@@ -1292,19 +1307,28 @@ export class SlackConnection implements PlatformConnection {
           ...(comment ? { initial_comment: comment } : {})
         }
         await this.completeUpload(share, options)
-        return { fileId }
+        return { ok: true }
       } catch (err) {
         this.rememberMissingScopes(err)
         this.deps.log?.debug(`slack: uploadFile ${file.name} → ch=${channel} failed: ${(err as Error).message}`)
-        return undefined
+        return { ok: false, reason: classifySlackUploadError(err) }
       }
     })
+    // The queue abandons a task at 30 s but the task KEEPS RUNNING — the share may still
+    // land, so this must not read as "nothing was sent" (a retry would double-post).
+    return task.catch((err) => ({
+      ok: false,
+      reason: isSendQueueTimeout(err) ? 'indeterminate' : 'platform_error'
+    }))
   }
 
   /** Step 2 of the upload: POST the bytes to the reserved URL. It is NOT a Slack API
    *  endpoint (no token, no JSON envelope), so it goes out through undici with the same
    *  proxy dispatcher the Web API client uses rather than through `this.app.client`. */
-  private async putUploadBytes(uploadUrl: string, file: { bytes: Buffer; name: string }): Promise<boolean> {
+  private async putUploadBytes(
+    uploadUrl: string,
+    file: { bytes: Buffer; name: string }
+  ): Promise<{ ok: true } | { ok: false; reason: UploadFailReason }> {
     const form = new FormData()
     form.append('file', new Blob([new Uint8Array(file.bytes)]), file.name)
     // This runs inside the serial send queue, so it carries the same bound the WebClient
@@ -1327,9 +1351,9 @@ export class SlackConnection implements PlatformConnection {
       await res.body?.cancel().catch(() => {})
       if (!res.ok) {
         this.deps.log?.debug(`slack: uploadFile byte POST for ${file.name} → HTTP ${res.status}`)
-        return false
+        return { ok: false, reason: res.status === 413 ? 'too_large' : 'platform_error' }
       }
-      return true
+      return { ok: true }
     } finally {
       // Unlike the two long-lived clients, this agent serves one request — closing it keeps
       // a proxied deployment from leaking a keep-alive socket pool per forward.

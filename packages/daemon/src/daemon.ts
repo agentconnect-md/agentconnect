@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { basename, dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { mkdtemp } from 'node:fs/promises'
+import { mkdtemp, readFile, stat } from 'node:fs/promises'
 import { watch as chokidarWatch, type FSWatcher } from 'chokidar'
 import { loadConfig, persistDaemonId, persistRelays, type FlatOverrides } from './config/load-config.js'
 import { readCliEntry, runCliUpgrade } from './lifecycle/cli-upgrade.js'
@@ -50,7 +50,7 @@ import { maskableSecrets, maskSecretsDeep } from './session/secret-mask.js'
 import { monotonicTs } from './store/monotonic-ts.js'
 import { StoreRetentionSweeper, resolveStoreRetentionSettings } from './store/retention.js'
 import { TranscriptRecorder, type TranscriptEvent } from './session/transcript-recorder.js'
-import { attachmentMention } from './session/attachment-block.js'
+import { attachmentMention, sniffImageMimeType } from './session/attachment-block.js'
 import { McpControlServer } from './mcp/control-server.js'
 import { RemoteWebchatGrantManager } from './mcp/remote-webchat-grant.js'
 import type { SetSessionTitleReq } from './mcp/ops.js'
@@ -285,11 +285,16 @@ import {
   originKindOf,
   SessionPurgeReason,
   RD_ACK_NOT_HOLDER,
-  RuntimeCommand
+  RuntimeCommand,
+  SessionImageAttachment as SessionImageAttachmentSchema,
+  WEBCHAT_IMAGE_MAX_BYTES
 } from '@agentconnect.md/protocol'
 import { z } from 'zod'
 import { isNoResponseBody } from './session/no-response.js'
 import { WorkspaceConflictError } from './cp/workspace-reader.js'
+import { createWorkspaceScope } from './cp/workspace-scope.js'
+import { canonicalWorkspacePath, WorkspaceViolationError } from './workspace/workspace-files.js'
+import type { ShareReadResult, ShareTargetResult } from './mcp/ops/share-file.js'
 import { TaskViolationError } from './cp/task-reader.js'
 import {
   createMemoryProvider,
@@ -2243,6 +2248,99 @@ export class Daemon {
         return found
           ? { bytes: Buffer.from(found.data, 'base64'), name: found.name, mimeType: found.mimeType }
           : undefined
+      },
+      // shareFile (agent-authored-attachments.md): the trusted target, the fenced read, the
+      // synchronous budget, and the provenance row. All coordinates come from the active
+      // turn — the model supplies only a workspace-relative path and a caption.
+      shareTarget: (ctx): ShareTargetResult => {
+        const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
+        const t = this.activeTurnShare.get(key)
+        if (!t) return { ok: false, reason: 'no-turn' }
+        // §3.2's two coordinate gates, checked BEFORE any file I/O: a headless turn must
+        // post nothing, and a postless A2A child has no conversation despite a live gateway.
+        if (t.headless) return { ok: false, reason: 'headless' }
+        if (t.synthetic) return { ok: false, reason: 'no-conversation' }
+        const { headless: _headless, synthetic: _synthetic, ...target } = t
+        return { ok: true, ...target }
+      },
+      readWorkspaceImage: async (ctx, rel): Promise<ShareReadResult> => {
+        // Phase 2 (pod workspaces over the workspace-fs channel) is designed, not built.
+        if (this.k8sPlane?.workspaceRootFor(ctx.agentId) !== undefined) return { ok: false, reason: 'sandboxed' }
+        const scope = createWorkspaceScope({
+          workspaces: this.workspaces,
+          agentOf: (id) => this.agents.get(id),
+          sessionOf: (id, acpSessionId) => this.store.getSessionByAcpIdForAgent(id, acpSessionId),
+          runtimeRootOf: (id) => this.k8sPlane?.workspaceRootFor(id)
+        })
+        const acpSessionId = await this.acpSessionIdForToolCall(ctx).catch(() => undefined)
+        const location = await scope.location(ctx.agentId, acpSessionId).catch(() => undefined)
+        if (!location) return { ok: false, reason: 'not-found' }
+        const cap = cfg.limits.maxOutboundFileBytes ?? cfg.limits.maxAttachmentBytes
+        let resolved: string | null
+        try {
+          resolved = await canonicalWorkspacePath(location.root, rel)
+        } catch (err) {
+          return { ok: false, reason: err instanceof WorkspaceViolationError ? 'escape' : 'not-found' }
+        }
+        if (!resolved) return { ok: false, reason: 'not-found' }
+        const info = await stat(resolved).catch(() => undefined)
+        if (!info?.isFile()) return { ok: false, reason: 'not-found' }
+        if (info.size > cap) return { ok: false, reason: 'too-large', detail: `${info.size} bytes > ${cap}-byte cap` }
+        // Single-shot (§4): one read; the sniff, the cap re-check, and the upload all
+        // consume this buffer. The re-check closes the stat→read race on a growing file.
+        const bytes = await readFile(resolved).catch(() => undefined)
+        if (!bytes) return { ok: false, reason: 'not-found' }
+        if (bytes.byteLength > cap) {
+          return { ok: false, reason: 'too-large', detail: `${bytes.byteLength} bytes > ${cap}-byte cap` }
+        }
+        const sniffed = sniffImageMimeType(bytes)
+        if (!sniffed) {
+          const head = bytes.subarray(0, 6).toString('latin1')
+          // GIF gets a refusal that NAMES it (§4) — a plausible find-me-images result whose
+          // animation sendPhoto would silently strip; deferred behind the enum widening.
+          if (head === 'GIF87a' || head === 'GIF89a') return { ok: false, reason: 'gif' }
+          return { ok: false, reason: 'not-image' }
+        }
+        // Outbound name + MIME from the SNIFFED type, never the model-supplied path (§4):
+        // Discord renders by extension alone, so `out/chart` must not land extensionless.
+        const ext = sniffed === 'image/png' ? 'png' : sniffed === 'image/jpeg' ? 'jpg' : 'webp'
+        const stem = basename(rel).replace(/\.[A-Za-z0-9]+$/, '') || 'image'
+        const sha256 = createHash('sha256').update(bytes).digest('hex')
+        return { ok: true, bytes, name: `${stem}.${ext}`, mimeType: sniffed, sha256 }
+      },
+      chargeShareBudget: (ctx, bytes) => {
+        const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
+        const perFile = cfg.limits.maxOutboundFileBytes ?? cfg.limits.maxAttachmentBytes
+        const perTurn = cfg.limits.maxOutboundFileBytesPerTurn ?? 2 * perFile
+        const used = this.shareBudgetByTurn.get(key) ?? 0
+        // Check + reserve in one synchronous step, so concurrent tool calls cannot both pass.
+        if (used + bytes > perTurn) return { ok: false }
+        this.shareBudgetByTurn.set(key, used + bytes)
+        return {
+          ok: true,
+          release: () => this.shareBudgetByTurn.set(key, Math.max(0, (this.shareBudgetByTurn.get(key) ?? 0) - bytes))
+        }
+      },
+      recordShare: async (ctx, row) => {
+        // Provenance row (§4). The bytes ride along exactly as an inbound image's do when
+        // they fit the transcript cap, so the console can render what the agent shared.
+        const image =
+          row.image && row.image.data.byteLength <= WEBCHAT_IMAGE_MAX_BYTES
+            ? SessionImageAttachmentSchema.safeParse({
+                name: row.image.name,
+                mimeType: row.image.mimeType,
+                data: row.image.data.toString('base64')
+              })
+            : undefined
+        await this.store.appendTranscript({
+          channel: transcriptChannelKey(ctx.channel, ctx.transportScope),
+          thread: ctx.thread,
+          ts: row.ts,
+          sender: ctx.agentId,
+          kind: 'text',
+          text: row.text,
+          ...(image?.success ? { attachments: [image.data] } : {})
+        })
       },
       recordOutbound: async (ctx, channel, thread, text, ts, integrationId) =>
         await this.store.appendTranscript({
@@ -9198,6 +9296,19 @@ export class Daemon {
     // §6.7 active-turn context: expose THIS turn's trusted callMeta by logical sessionKey so
     // a nested messageAgent made during the turn can auto-inherit hop/origin + reply-correlation.
     if (callMeta) this.activeTurnCallMeta.set(key, callMeta)
+    // shareFile's trusted post target (§3.1): the turn plan's coordinates plus the reply
+    // anchor Telegram places by. Installed per turn because headless-ness and the reply
+    // target are TURN facts, not session facts.
+    const shareReplyTo = this.telegramReplyTarget(entry.msg)
+    this.activeTurnShare.set(key, {
+      platform: plan.platform,
+      ...(plan.integrationId !== undefined ? { integrationId: plan.integrationId } : {}),
+      channel: plan.channel,
+      ...(plan.thread !== undefined ? { thread: plan.thread } : {}),
+      ...(shareReplyTo !== undefined ? { replyTo: shareReplyTo } : {}),
+      headless: entry.msg.headless === true,
+      synthetic: isSyntheticA2aChannel(plan.channel)
+    })
     const activeGithub = await this.githubReviews.prepareGithubTurn(entry, sessionId).catch((err) => {
       this.log.warn(`github review: turn setup failed (${formatErr(err)})`)
       return undefined
@@ -10098,6 +10209,8 @@ export class Daemon {
     // only inherit while the turn is in flight). Only clear if THIS turn owns the entry —
     // the map is keyed by sessionKey and the gate guarantees one active turn per key.
     if (callMeta) this.activeTurnCallMeta.delete(key)
+    this.activeTurnShare.delete(key)
+    this.shareBudgetByTurn.delete(key)
     const activeGithub = activeTurn.github
     const activeGithubReplyBatch = activeTurn.githubReplyBatch
     if (activeGithub && this.activeGithubTurnMeta.get(key) === activeGithub) this.activeGithubTurnMeta.delete(key)
@@ -10993,6 +11106,26 @@ export class Daemon {
    * makes is a fresh call (hopCount 0, no inherited correlation).
    */
   private activeTurnCallMeta = new Map<string, CallMeta>()
+
+  /** The active turn's trusted `shareFile` post target, by logical sessionKey — the
+   *  coordinate + per-platform anchor the tool may NOT receive from the model
+   *  (agent-authored-attachments.md §3.1), plus the two coordinate refusals (§3.2). */
+  private activeTurnShare = new Map<
+    string,
+    {
+      platform: string
+      integrationId?: string
+      channel: string
+      thread?: string
+      replyTo?: number
+      headless: boolean
+      synthetic: boolean
+    }
+  >()
+
+  /** Bytes `shareFile` has uploaded this turn, by the same key — the synchronous per-turn
+   *  reservation of agent-authored-attachments.md §5. */
+  private shareBudgetByTurn = new Map<string, number>()
 
   /**
    * Post a chronological boundary message SERIALIZED on the turn's apply chain, returning

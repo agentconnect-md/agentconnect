@@ -403,20 +403,20 @@ export class VirtualSlackConnection implements PlatformConnection {
     channel: string,
     _file: { bytes: Buffer; name: string; mimeType?: string },
     comment?: string,
-    threadTs?: string,
+    anchor?: { thread?: string; replyTo?: number },
     options?: VirtualPostOptions
-  ): Promise<{ messageId?: string } | undefined> {
+  ): Promise<{ ok: true; messageId?: string; warning?: string }> {
     const result = await this.world.recordOutbound({
       kind: 'reply',
       platform: 'slack',
       integrationId: this.integrationId,
       channel,
-      ...(threadTs !== undefined ? { thread: threadTs } : {}),
+      ...(anchor?.thread !== undefined ? { thread: anchor.thread } : {}),
       ...(identityOf(options) ? { identity: identityOf(options)! } : {}),
       text: comment ?? ''
     })
     if (result.status !== 'delivered') throw new VirtualDeliveryRejected(result)
-    return {}
+    return { ok: true }
   }
 }
 

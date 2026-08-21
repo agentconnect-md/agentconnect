@@ -591,13 +591,21 @@ export async function sendMessage(
     // A file share IS the message — the caption is `body`, not a second post. It anchors like
     // any other post where the platform answers with a message id; Slack's does not, and that
     // arm degrades on the path a gateway returning no id already takes. A failed share is
-    // raised rather than reported as sent: nothing reached the conversation.
+    // raised rather than reported as sent — except `indeterminate`, the queue abandoning a
+    // still-running upload, which must say "may have landed" or a retry double-posts.
     if (attachment) {
       const shared = await gw.uploadFile?.(postChannel, attachment, body, undefined, identity)
-      // `undefined` is the port's "nothing was posted" — the only case that may claim so.
-      if (!shared) {
+      if (!shared || !shared.ok) {
+        const reason = shared && !shared.ok ? shared.reason : 'platform_error'
+        if (reason === 'indeterminate') {
+          throw new Error(
+            `sendMessage: the ${platformLabel(wantPlatform)} file share for "${attachment.name}" timed out and ` +
+              'MAY still have been delivered — do NOT retry; say the send may have gone through instead.'
+          )
+        }
         throw new Error(
-          `sendMessage: ${platformLabel(wantPlatform)} rejected the file "${attachment.name}" — nothing was sent.`
+          `sendMessage: ${platformLabel(wantPlatform)} rejected the file "${attachment.name}" ` +
+            `(${reason.replace('_', ' ')}) — nothing was sent.`
         )
       }
       providerPostId = shared.messageId
