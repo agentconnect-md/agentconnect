@@ -33,9 +33,11 @@ import { LoadingState } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 
 // `.row` is a bare grid — the column template is the caller's, as a full literal.
-// Design columns: direction chip · description · amount · posted. Mobile scrolls the
-// card sideways (globals' `.card:has(.row)`), so one fixed template serves both.
-const TX_GRID = 'grid-cols-[34px_minmax(0,1fr)_132px_168px] gap-2'
+// Design columns: direction chip · description · amount · spacer · posted.
+// Every track but the description is a fixed width: each `.row` is its own grid, so an
+// `auto` track sizes per-row and pulls the header out of line with the body below it.
+// Mobile scrolls the card sideways (globals' `.card:has(.row)`), so one template serves both.
+const TX_GRID = 'grid-cols-[34px_minmax(0,1fr)_132px_24px_190px] gap-2'
 
 const KIND_LABEL: Record<string, string> = {
   purchase: 'Credit purchase',
@@ -51,10 +53,20 @@ const STATE_PILL: Record<NonNullable<BillingAccount['state']>, { label: string; 
   unknown: { label: 'Unconfirmed', color: 'var(--status-info)' }
 }
 
-/** Design's Posted (UTC) column: `YYYY-MM-DD HH:mm`. */
-function fmtPostedUtc(iso: string): string {
+// Design's Posted column, `YYYY-MM-DD HH:mm` in the viewer's own timezone. sv-SE is the
+// locale whose short form already is that shape, so no manual part assembly.
+const LOCAL_TZ = Intl.DateTimeFormat().resolvedOptions().timeZone
+function fmtPostedLocal(iso: string): string {
   const d = new Date(iso)
-  return Number.isNaN(d.getTime()) ? iso : d.toISOString().slice(0, 16).replace('T', ' ')
+  return Number.isNaN(d.getTime())
+    ? iso
+    : d.toLocaleString('sv-SE', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit'
+      })
 }
 
 const PRESETS_USD = [10, 50, 100]
@@ -636,7 +648,7 @@ export default function BillingView() {
                 <div className="mt-5 flex gap-[26px] border-t border-(--border-subtle) pt-4">
                   <div>
                     <div className="eyebrow">Last deduction</div>
-                    <div className="mono mt-[5px] text-[13px]">{lastDebit ? fmtPostedUtc(lastDebit.at) : '—'}</div>
+                    <div className="mono mt-[5px] text-[13px]">{lastDebit ? fmtPostedLocal(lastDebit.at) : '—'}</div>
                   </div>
                   <div>
                     <div className="eyebrow">Alert threshold</div>
@@ -699,7 +711,10 @@ export default function BillingView() {
                   <span />
                   <span>Description</span>
                   <span className="text-right">Amount</span>
-                  <span>Posted (UTC)</span>
+                  <span />
+                  <span className="truncate" title={LOCAL_TZ}>
+                    Posted ({LOCAL_TZ})
+                  </span>
                 </div>
                 {txItems.map((t) => {
                   const credit = t.type === 'credit'
@@ -730,6 +745,17 @@ export default function BillingView() {
                         >
                           {credit ? t.kind : 'usage'}
                         </span>
+                        {credit && t.receiptUrl && (
+                          <a
+                            className="inline-flex flex-none items-center gap-0.5 font-sans text-[12px] font-medium text-(--text-brand) hover:underline"
+                            href={t.receiptUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                          >
+                            Receipt
+                            <Icon name="arrow-up-right" size={11} />
+                          </a>
+                        )}
                       </span>
                       {/* A debit is recorded as a positive amount that was taken away, so the
                           sign belongs here. The rounded figure carries the exact wire string
@@ -748,7 +774,8 @@ export default function BillingView() {
                           </span>
                         </span>
                       )}
-                      <span className="mono text-[12px] text-(--text-secondary)">{fmtPostedUtc(t.at)}</span>
+                      <span />
+                      <span className="mono text-[12px] text-(--text-secondary)">{fmtPostedLocal(t.at)}</span>
                     </div>
                   )
                 })}
