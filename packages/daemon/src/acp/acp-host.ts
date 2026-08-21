@@ -212,8 +212,10 @@ const PROVIDER_QUOTA_CODES = new Set([
 ])
 
 const PROVIDER_QUOTA_MESSAGES = [
-  /\b(?:you(?:'|’)ve|you have) hit your (?:[a-z]+ )?usage limit\b/i,
-  /\busage limit (?:has been )?(?:reached|exceeded)\b/i,
+  // A spend limit is a quota, not a transient rate limit, however the provider phrases the
+  // possessive in between: "You've hit your org's monthly spend limit".
+  /\b(?:you(?:'|’)ve|you have) hit your\b[\s\S]{0,60}\b(?:usage|spend) limit\b/i,
+  /\b(?:usage|spend) limit (?:has been )?(?:reached|exceeded)\b/i,
   /\b(?:you(?:'|’)ve|you have) hit your limit\b[\s\S]{0,120}\bresets?\b/i,
   /\b(?:credit|credits) balance (?:is )?(?:too low|depleted|exhausted)\b/i,
   /\b(?:insufficient|not enough|no) (?:api )?credits?(?: (?:remaining|available))?\b/i,
