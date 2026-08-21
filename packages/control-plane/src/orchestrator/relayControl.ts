@@ -19,6 +19,7 @@ import type {
   RcMemoryConnectionAssign,
   RcMemoryConnectionUnassign
 } from '@agentconnect.md/protocol'
+import { GITLAB_COM_V1_FEATURE } from '@agentconnect.md/protocol'
 import type { RelayChannel, RelayRegistry } from '../ws/relay-registry.js'
 
 export class RelayControlSender {
@@ -35,9 +36,14 @@ export class RelayControlSender {
   }
 
   /** Upsert one compiled hook rule on every connected relay (the frame is NEVER
-   *  logged — it carries the hook's hmacSecret). */
+   *  logged — it carries the hook's hmacSecret). A gitlab rule goes only to
+   *  relays advertising the feature: the widened `kind` is frame-fatal on an
+   *  older relay's decoder (§17.3), so gating here IS the negotiation. */
   hookAssign(rule: RcHookAssign): void {
-    this.broadcast((ch) => ch.send('rc/hook-assign', rule))
+    this.broadcast((ch) => {
+      if (rule.kind === 'gitlab' && !ch.features?.includes(GITLAB_COM_V1_FEATURE)) return
+      ch.send('rc/hook-assign', rule)
+    })
   }
 
   /** Drop one hook rule pool-wide (hook disabled / deleted / agent unplaced). */

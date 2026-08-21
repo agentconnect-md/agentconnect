@@ -26,7 +26,10 @@ export class FakeGitlab {
     FakeGitlabOptions
   serviceAccounts: { id: number; username: string; name: string }[] = []
   tokens = new Map<number, { name: string; scopes: string[]; expires_at: string; revoked: boolean; user_id: number }>()
-  webhooks = new Map<number, { url: string; token: string; events: Record<string, boolean>; tested: number }>()
+  webhooks = new Map<
+    number,
+    { projectId: number; url: string; token: string; events: Record<string, boolean>; tested: number }
+  >()
   members = new Map<number, number>() // userId → access_level
   deletedServiceAccounts: number[] = []
   private nextId = 5000
@@ -84,12 +87,20 @@ export class FakeGitlab {
       }
 
       if (/\/api\/v4\/projects\/\d+\/hooks\?/.test(url) && method === 'GET') {
-        return Response.json([...this.webhooks.entries()].map(([id, hook]) => ({ id, url: hook.url })))
+        const projectId = Number(/projects\/(\d+)\//.exec(url)![1])
+        // Real GitLab scopes the listing to the addressed project.
+        return Response.json(
+          [...this.webhooks.entries()]
+            .filter(([, hook]) => hook.projectId === projectId)
+            .map(([id, hook]) => ({ id, url: hook.url }))
+        )
       }
       if (/\/api\/v4\/projects\/\d+\/hooks$/.test(url) && method === 'POST') {
+        const projectId = Number(/projects\/(\d+)\//.exec(url)![1])
         const id = ++this.nextId
         const payload = json()
         this.webhooks.set(id, {
+          projectId,
           url: String(payload.url),
           token: String(payload.signing_token),
           events: payload as Record<string, boolean>,
@@ -105,14 +116,20 @@ export class FakeGitlab {
         return Response.json({})
       }
       if (/\/api\/v4\/projects\/\d+\/hooks\/\d+$/.test(url)) {
+        const projectId = Number(/projects\/(\d+)\//.exec(url)![1])
         const id = Number(/hooks\/(\d+)$/.exec(url)![1])
+        // Project-scoped authority: another project's hook id resolves 404.
+        if (this.webhooks.get(id)?.projectId !== projectId) {
+          return Response.json({ message: 'Not Found' }, { status: 404 })
+        }
         if (method === 'DELETE') {
-          if (!this.webhooks.delete(id)) return Response.json({ message: 'Not Found' }, { status: 404 })
+          this.webhooks.delete(id)
           return Response.json({})
         }
         if (method === 'PUT') {
           const payload = json()
           this.webhooks.set(id, {
+            projectId,
             url: String(payload.url),
             token: String(payload.signing_token),
             events: payload as Record<string, boolean>,
