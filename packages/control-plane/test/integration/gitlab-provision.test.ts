@@ -162,6 +162,28 @@ describe('GitlabProvisioner (§10.2)', () => {
     expect(h.fake.deletedServiceAccounts).toHaveLength(1)
   })
 
+  it('provision loses to a concurrent cleanup: no provider write after the fence flips (§10.2)', async () => {
+    const h = await harness()
+    // Cleanup entered first: the fence is gone before provision's first write.
+    await h.bindings.beginCleanup(DEFAULT_ORG_ID, h.binding.id, PROJECT)
+    const outcome = await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
+    expect(outcome).toEqual({ state: 'admin_degraded', reason: 'claim_fence_lost' })
+    // Nothing was created against the provider.
+    expect(h.fake.serviceAccounts).toHaveLength(0)
+    expect(h.fake.tokens.size).toBe(0)
+  })
+
+  it('the fence methods disagree deterministically with cleanup ordering', async () => {
+    const h = await harness()
+    // Fence held after marking; lost the moment cleanup begins.
+    expect(await h.bindings.markProviderMutationStarted(DEFAULT_ORG_ID, h.binding.id, PROJECT)).toBe(true)
+    expect(await h.bindings.claimFenceHeld(DEFAULT_ORG_ID, h.binding.id, PROJECT)).toBe(true)
+    await h.bindings.beginCleanup(DEFAULT_ORG_ID, h.binding.id, PROJECT)
+    expect(await h.bindings.claimFenceHeld(DEFAULT_ORG_ID, h.binding.id, PROJECT)).toBe(false)
+    // And cleanup-first refuses a late marker too.
+    expect(await h.bindings.markProviderMutationStarted(DEFAULT_ORG_ID, h.binding.id, PROJECT)).toBe(false)
+  })
+
   it('incomplete cleanup keeps cleanup_pending and RETAINS the claim (§19.4)', async () => {
     const h = await harness({ failTokenRevoke: true })
     await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)

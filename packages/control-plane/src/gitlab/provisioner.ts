@@ -65,6 +65,14 @@ const PURPOSE_SCOPES: Record<GitlabCredentialPurpose, string[]> = {
   effect: ['api']
 }
 
+/** §10.2: the claim fence was lost mid-run (cleanup or takeover won). */
+export class GitlabClaimFenceLost extends Error {
+  constructor() {
+    super('the deployment-global project claim fence was lost')
+    this.name = 'GitlabClaimFenceLost'
+  }
+}
+
 /** §7.3: the provider returned a token outside the requested policy. */
 export class GitlabTokenPolicyViolation extends Error {
   constructor(readonly purpose: GitlabCredentialPurpose) {
@@ -122,11 +130,13 @@ export class GitlabProvisioner {
       return outcome
     } catch (e) {
       const reason =
-        e instanceof GitlabTokenPolicyViolation
-          ? 'out_of_policy_token'
-          : e instanceof GitlabApiError
-            ? `gitlab_${e.status || 'unreachable'}`
-            : 'admin_unavailable'
+        e instanceof GitlabClaimFenceLost
+          ? 'claim_fence_lost'
+          : e instanceof GitlabTokenPolicyViolation
+            ? 'out_of_policy_token'
+            : e instanceof GitlabApiError
+              ? `gitlab_${e.status || 'unreachable'}`
+              : 'admin_unavailable'
       this.deps.log?.warn({ bindingId, reason }, 'gitlab provisioning failed')
       return this.degrade(orgId, bindingId, 'admin_degraded', reason)
     }
@@ -166,13 +176,20 @@ export class GitlabProvisioner {
 
     // §10.2 fence, durable BEFORE the first provider write: from here on, a
     // disappearing binding must tombstone the claim, never release it — even if
-    // the crash lands before any external id is recorded locally.
-    await this.deps.bindings.markProviderMutationStarted(orgId, binding.id, binding.projectId)
+    // the crash lands before any external id is recorded locally. Losing the
+    // fence (claim gone, detached, or entering cleanup) forbids provider writes.
+    if (!(await this.deps.bindings.markProviderMutationStarted(orgId, binding.id, binding.projectId))) {
+      return { state: 'admin_degraded', reason: 'claim_fence_lost' }
+    }
 
     // 2–3. Find-or-create the marked service account; ensure Developer membership.
     const username = gitlabServiceAccountUsername(binding.projectId)
     let account = await gitlabFindServiceAccount(token, root.id, username, fetchImpl)
     if (!account) {
+      // §10.2 per-step check: never create against the provider once cleanup began.
+      if (!(await this.deps.bindings.claimFenceHeld(orgId, binding.id, binding.projectId))) {
+        return { state: 'admin_degraded', reason: 'claim_fence_lost' }
+      }
       try {
         account = await gitlabCreateServiceAccount(
           token,
@@ -229,6 +246,10 @@ export class GitlabProvisioner {
   ): Promise<void> {
     const scopes = PURPOSE_SCOPES[purpose]
     const expiresAt = expiresAtDate(this.deps.clock.now())
+    // §10.2 per-step check before every provider create.
+    if (!(await this.deps.bindings.claimFenceHeld(orgId, binding.id, binding.projectId))) {
+      throw new GitlabClaimFenceLost()
+    }
     const grant = await gitlabCreateServiceAccountToken(
       token,
       groupId,
@@ -287,6 +308,10 @@ export class GitlabProvisioner {
     if (!this.deps.publicRelayUrl) {
       return { state: 'admin_degraded', reason: 'relay_url_unconfigured' }
     }
+    // §10.2 per-step check before the webhook create/update.
+    if (!(await this.deps.bindings.claimFenceHeld(orgId, binding.id, binding.projectId))) {
+      return { state: 'admin_degraded', reason: 'claim_fence_lost' }
+    }
     const url = `${this.deps.publicRelayUrl.replace(/\/$/, '')}/webhooks/gitlab`
     const signingToken = `whsec_${randomBytes(32).toString('base64')}`
     const fresh = binding.webhookId === null
@@ -331,6 +356,10 @@ export class GitlabProvisioner {
   async disconnect(orgId: string, bindingId: string): Promise<{ removed: boolean; reason?: string }> {
     const binding = await this.deps.bindings.get(orgId, bindingId)
     if (!binding) return { removed: false, reason: 'binding_missing' }
+    // Mutual exclusion with provision/repair (§10.2): entering cleanup flips the
+    // claim out of `active`, so a concurrent run loses its fence before its
+    // next provider write. Local authority goes with it.
+    await this.deps.bindings.beginCleanup(orgId, bindingId, binding.projectId)
     await this.deps.bindings.bumpCredentialEpoch(orgId, bindingId)
     if (!binding.installerConnectionId) {
       await this.deps.bindings.update(orgId, bindingId, {

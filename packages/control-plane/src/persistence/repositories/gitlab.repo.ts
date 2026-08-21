@@ -374,12 +374,33 @@ export class PgGitlabProjectBindingRepo implements GitlabProjectBindingRepo {
     return this.get(orgId, bindingId)
   }
 
-  async markProviderMutationStarted(orgId: string, bindingId: string, projectId: bigint): Promise<void> {
-    // Idempotent: only the first provisioning run flips it; `active` then means
-    // "provider state may exist" for the rest of the claim's life.
-    await this.prisma.codeHostRepositoryClaim.updateMany({
-      where: { provider: 'gitlab', externalId: projectId, orgId, bindingRef: bindingId, state: 'provisioning' },
+  async markProviderMutationStarted(orgId: string, bindingId: string, projectId: bigint): Promise<boolean> {
+    // Idempotent for reruns (`active` stays `active`); false the moment the
+    // claim is gone, detached, or entering cleanup — the fence is REQUIRED.
+    const res = await this.prisma.codeHostRepositoryClaim.updateMany({
+      where: {
+        provider: 'gitlab',
+        externalId: projectId,
+        orgId,
+        bindingRef: bindingId,
+        state: { in: ['provisioning', 'active'] }
+      },
       data: { state: 'active' }
+    })
+    return res.count === 1
+  }
+
+  async claimFenceHeld(orgId: string, bindingId: string, projectId: bigint): Promise<boolean> {
+    const held = await this.prisma.codeHostRepositoryClaim.count({
+      where: { provider: 'gitlab', externalId: projectId, orgId, bindingRef: bindingId, state: 'active' }
+    })
+    return held === 1
+  }
+
+  async beginCleanup(orgId: string, bindingId: string, projectId: bigint): Promise<void> {
+    await this.prisma.codeHostRepositoryClaim.updateMany({
+      where: { provider: 'gitlab', externalId: projectId, orgId, bindingRef: bindingId },
+      data: { state: 'cleanup_pending' }
     })
   }
 
