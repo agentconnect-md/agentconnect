@@ -75,7 +75,7 @@ async function harness(options: FakeGitlabOptions = {}, webhookEvents: GitlabWeb
     projectPath: 'example-group/example-project',
     installerConnectionId: connection.id
   })
-  return { fake, bindings, provisioner, binding }
+  return { fake, bindings, oauth, provisioner, binding }
 }
 
 describe('GitlabProvisioner (§10.2)', () => {
@@ -354,6 +354,63 @@ describe('GitlabProvisioner (§10.2)', () => {
     // The existing credential is untouched — runtime continues until it expires.
     expect((await creds.get(h.binding.id, 'read'))!.externalTokenId).toBe(before.externalTokenId)
     expect(h.fake.tokens.get(Number(before.externalTokenId))!.revoked).toBe(false)
+  })
+
+  it('revalidates the worklist under the lease: a peer-rotated credential is skipped untouched', async () => {
+    const h = await harness()
+    await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
+    const creds = new PgGitlabProjectCredentialRepo(prisma)
+    const before = (await creds.get(h.binding.id, 'read'))!
+    // A stale pre-lease snapshot: generation 0 with a near expiry, while the
+    // DB row (a peer's committed rotation) is already current and far out.
+    const stale = {
+      credential: {
+        ...before,
+        generation: before.generation - 1n,
+        providerExpiresAt: new Date(Date.now() + 3 * 86_400_000)
+      },
+      orgId: DEFAULT_ORG_ID
+    }
+    const proxied = new GitlabProvisioner({
+      oauth: h.oauth,
+      bindings: h.bindings,
+      credentials: Object.assign(Object.create(creds), { listExpiring: async () => [stale] }),
+      credentialSecrets: new PgGitlabProjectCredentialSecretStore(prisma, cipher),
+      webhookSecrets: new PgGitlabWebhookSecretStore(prisma, cipher),
+      catalog: new PgCodeHostRepositoryRepo(prisma),
+      cipher,
+      clock: systemClock,
+      publicRelayUrl: 'https://relay.example.test',
+      desiredWebhookEvents: async () => null,
+      fetchImpl: h.fake.fetch()
+    })
+    const tokensBefore = h.fake.tokens.size
+    await proxied.rotateDueCredentials(14 * 86_400_000)
+    // Nothing minted, nothing revoked — the peer's current token stays tracked.
+    expect(h.fake.tokens.size).toBe(tokensBefore)
+    expect(h.fake.tokens.get(Number(before.externalTokenId))!.revoked).toBe(false)
+    expect((await creds.get(h.binding.id, 'read'))!.generation).toBe(before.generation)
+  })
+
+  it('a successful rotation heals a rotation-owned degradation', async () => {
+    const h = await harness()
+    await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
+    const creds = new PgGitlabProjectCredentialRepo(prisma)
+    const before = (await creds.get(h.binding.id, 'read'))!
+    await prisma.gitlabProjectCredential.update({
+      where: { id: before.id },
+      data: { providerExpiresAt: new Date(Date.now() + 3 * 86_400_000) }
+    })
+    // A previous sweep's transient failure left the rotation-owned mark.
+    await prisma.gitlabProjectBinding.update({
+      where: { id: h.binding.id },
+      data: { state: 'admin_degraded', stateReason: 'rotation_gitlab_503' }
+    })
+    await h.provisioner.rotateDueCredentials(14 * 86_400_000)
+    const binding = (await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))!
+    expect(binding.state).toBe('ready')
+    expect(binding.stateReason).toBeNull()
+    expect((await creds.get(h.binding.id, 'read'))!.generation).toBe(before.generation + 1n)
   })
 
   it('a live foreign run lease defers rotation to the next sweep (§10.2)', async () => {

@@ -475,7 +475,20 @@ export class GitlabProvisioner {
           continue
         }
         const root = await gitlabRootNamespace(token, project.namespace, this.deps.fetchImpl)
-        const previousTokenId = credential.externalTokenId
+        // Revalidate UNDER the lease: the worklist is a pre-lease snapshot, so a
+        // peer sweep may have rotated this row already. A changed generation or
+        // a no-longer-due expiry skips; the reloaded predecessor (never the
+        // snapshot's) is what gets revoked — revoking the snapshot's id here
+        // would strand the peer's freshly minted token untracked.
+        const current = await this.deps.credentials.get(credential.bindingId, credential.purpose)
+        if (
+          !current ||
+          current.generation !== credential.generation ||
+          current.providerExpiresAt.getTime() >= this.deps.clock.now() + horizonMs
+        ) {
+          continue
+        }
+        const previousTokenId = current.externalTokenId
         const serviceAccountUserId = binding.serviceAccountUserId
         await this.mintCredential(orgId, binding, token, root.id, serviceAccountUserId, credential.purpose, owner)
         await gitlabRevokeServiceAccountToken(
@@ -490,15 +503,22 @@ export class GitlabProvisioner {
             'gitlab rotation could not revoke the previous token (it still expires on schedule)'
           )
         })
+        // A rotation-owned degradation heals on the first successful rotation:
+        // nothing else clears it, and repair should not be the only way out.
+        if (binding.state === 'admin_degraded' && binding.stateReason?.startsWith('rotation_')) {
+          await this.deps.bindings.update(orgId, binding.id, { state: 'ready', stateReason: null })
+        }
       } catch (e) {
         // The Console warns while administration is unavailable; runtime keeps
         // working until the existing credential expires (§7.4).
         failedBindings.add(binding.id)
+        // Every rotation-set reason is rotation_-prefixed: that namespace is
+        // exactly what a later successful sweep may clear.
         const reason =
           e instanceof GitlabClaimFenceLost
-            ? 'claim_fence_lost'
+            ? 'rotation_claim_fence_lost'
             : e instanceof GitlabTokenPolicyViolation
-              ? 'out_of_policy_token'
+              ? 'rotation_out_of_policy_token'
               : e instanceof GitlabApiError
                 ? `rotation_gitlab_${e.status || 'unreachable'}`
                 : 'rotation_admin_unavailable'
