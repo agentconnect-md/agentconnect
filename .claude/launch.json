@@ -14,7 +14,13 @@
       "runtimeArgs": ["--filter", "@agentconnect.md/web", "dev"],
       "port": 3000,
       "autoPort": true,
-      "env": { "NEXT_PUBLIC_MOCK": "1" }
+      "env": {
+        "NEXT_PUBLIC_MOCK": "1",
+        "LOGTO_ENDPOINT": "",
+        "LOGTO_APP_ID": "",
+        "LOGTO_API_RESOURCE": "",
+        "CP_INTERNAL_URL": ""
+      }
     },
     {
       "name": "control-plane",
