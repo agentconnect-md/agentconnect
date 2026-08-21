@@ -245,7 +245,7 @@ export class ShimMemoryFs implements MemoryFs {
    * DECODED separately before concatenation, because independently-encoded slices carry
    * their own padding and their joined strings are not one valid base64 stream.
    *
-   * `maxBytes` refuses from the FIRST reply's size — a bounded refusal, not a transfer.
+   * `maxBytes` refuses from the FIRST reply's size — one frame, not a whole transfer.
    */
   async readFileBytes(
     rel: string,

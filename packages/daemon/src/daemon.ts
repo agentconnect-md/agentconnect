@@ -2311,7 +2311,17 @@ export class Daemon {
           } catch (err) {
             return { ok: false, reason: err instanceof WorkspaceViolationError ? 'escape' : 'not-found' }
           }
-          const read = await placement.fs.readFileBytes(resolved, cap).catch(() => undefined)
+          // A transport failure must NOT read as absence: "the channel dropped" mid-read is
+          // not evidence the file is missing, and the agent would act on it (regenerate, or
+          // give up). ShimWorkspaceFs already folds true refusals into undefined, so anything
+          // it THROWS is the channel — answer "sandbox unreachable", which invites a retry.
+          let read: Awaited<ReturnType<typeof placement.fs.readFileBytes>> | 'channel-lost'
+          try {
+            read = await placement.fs.readFileBytes(resolved, cap)
+          } catch {
+            read = 'channel-lost'
+          }
+          if (read === 'channel-lost') return { ok: false, reason: 'sandboxed' }
           if (!read) return { ok: false, reason: 'not-found' }
           if ('tooLarge' in read) {
             return { ok: false, reason: 'too-large', detail: `${read.tooLarge} bytes > ${cap}-byte cap` }
