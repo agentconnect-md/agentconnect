@@ -1150,6 +1150,16 @@ export class PgSessionRepo implements SessionRepo {
     return row !== null
   }
 
+  async latestSessionIdForAgent(orgId: OrgId, agentId: AgentId): Promise<SessionId | null> {
+    // Same tie-break as every session listing, so "latest" means one thing across the CP.
+    const row = await this.db.sessionMeta.findFirst({
+      where: { orgId, agentId },
+      orderBy: [{ lastActivityAt: 'desc' }, { startedAt: 'desc' }, { id: 'desc' }],
+      select: { id: true }
+    })
+    return row ? SessionId(row.id) : null
+  }
+
   async listFacets(q: SessionFacetQuery): Promise<SessionFacetIndex> {
     if (queryAgentIds(q).length === 0) return { agents: [], integrations: [], channels: [], triggers: [] }
 

@@ -3272,6 +3272,9 @@ export const SessionPullRequestDto = z.object({
   linkedBy: z.enum(['run', 'head-branch']),
   // The head branch a `head-branch` link resolved through; null for a run-linked PR.
   linkBranch: z.string().nullable(),
+  // Whose checkout that branch was read from: this session's own worktree, or the agent's `shared`
+  // primary tree, where every session on the agent works and the PR is not exclusively this session's.
+  linkScope: z.enum(['session', 'shared']).nullable(),
   // true ⇒ that branch has more than one OPEN pull request and this is the first of them.
   linkAmbiguous: z.boolean()
 })

@@ -369,9 +369,15 @@ function toSessionPullRequestDto(
   view: PullRequestView,
   canArmAutoMerge: boolean,
   // How this PR was found. Defaulted to the run, which is the only source that existed before §12.6.
-  link: { linkedBy: 'run' | 'head-branch'; linkBranch: string | null; linkAmbiguous: boolean } = {
+  link: {
+    linkedBy: 'run' | 'head-branch'
+    linkBranch: string | null
+    linkScope: 'session' | 'shared' | null
+    linkAmbiguous: boolean
+  } = {
     linkedBy: 'run',
     linkBranch: null,
+    linkScope: null,
     linkAmbiguous: false
   }
 ): SessionPullRequestDtoT {
@@ -1108,7 +1114,7 @@ export function sessionRoutes(deps: HttpDeps) {
           tags: [Tag.Sessions],
           summary: 'Get the session’s pull request',
           description:
-            'This session’s pull request: identity (repo, number, url, head/base) plus live state (checks, current reviews, unresolved review threads) proxied from GitHub in one GraphQL read. Identity comes from the owning hook run where one exists (`linkedBy: run`, which also carries the review facts a rate-limited answer falls back on); otherwise from the session worktree’s own head branch (`linkedBy: head-branch`, `linkBranch`), so a pull request the agent opened mid-conversation is linked too — `linkAmbiguous` says the branch has more than one open pull request and this is the first of them. GitHub being rate limited, denying the installation, or unreachable is data — `degraded` names which, identity survives, and the live lists are empty — because a panel that still names its PR beats an empty one. 404 when neither source names a pull request (no run and no pull request for the branch, a shared or purged workspace, an offline daemon) or when the deployment has no GitHub App configured; the console then draws its branch state and a create action instead. Review thread bodies are user content: proxied, never stored.',
+            'This session’s pull request: identity (repo, number, url, head/base) plus live state (checks, current reviews, unresolved review threads) proxied from GitHub in one GraphQL read. Identity comes from the owning hook run where one exists (`linkedBy: run`, which also carries the review facts a rate-limited answer falls back on); otherwise from the head branch of the checkout this session works in (`linkedBy: head-branch`, `linkBranch`, `linkScope`), so a pull request the agent opened mid-conversation is linked too — `linkScope: shared` means the branch came from the agent’s primary checkout, which every session on a shared-workspace agent works in, so the pull request is real but not exclusively this session’s; `linkAmbiguous` says the branch has more than one open pull request and this is the first of them. GitHub being rate limited, denying the installation, or unreachable is data — `degraded` names which, identity survives, and the live lists are empty — because a panel that still names its PR beats an empty one. 404 when neither source names a pull request (no run and no pull request for that branch, a purged session, a workspace that is not a checkout, no daemon serving the agent) or when the deployment has no GitHub App configured; the console then draws its branch state and a create action instead. Review thread bodies are user content: proxied, never stored.',
           operationId: 'getSessionPullRequest',
           params: IdParam,
           querystring: SessionPullRequestQueryDto,
@@ -1146,7 +1152,12 @@ export function sessionRoutes(deps: HttpDeps) {
               req.query.refresh === true
             ),
             canArmBranch,
-            { linkedBy: 'head-branch', linkBranch: link.branch, linkAmbiguous: link.ambiguous }
+            {
+              linkedBy: 'head-branch',
+              linkBranch: link.branch,
+              linkScope: link.scope,
+              linkAmbiguous: link.ambiguous
+            }
           )
         }
         // The subject's own open/draft facts feed the degraded arm, so a rate-limited panel still names them.

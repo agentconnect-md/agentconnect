@@ -605,6 +605,22 @@ export function PullRequestPanel({
         </a>
       </div>
       <div className="flex min-h-0 flex-1 flex-col overflow-auto pb-2">
+        {/* A shared checkout is the agent's ONE tree, which every session on it works in — so the PR on its branch is this session's to see, but not exclusively its work. Said, not implied. */}
+        {view.linkScope === 'shared' ? (
+          <div
+            data-pr-link-shared=""
+            className="flex items-start gap-2 px-3 pt-[7px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)"
+          >
+            <Icon name="info" size={13} color="var(--text-tertiary)" className="mt-[2px] flex-none" />
+            <span>
+              {view.linkBranch
+                ? `Found through ${view.linkBranch}, the branch of this agent's shared checkout`
+                : "Found through the branch of this agent's shared checkout"}{' '}
+              — every session on this agent works in that one tree, so this pull request may carry more than this
+              session&rsquo;s work.
+            </span>
+          </div>
+        ) : null}
         {/* A branch-resolved link can be ambiguous where a run-linked one never is: the head branch is the whole identity, so several open PRs on it are all equally "this session's". The panel names the pick rather than picking silently. */}
         {view.linkAmbiguous ? (
           <div

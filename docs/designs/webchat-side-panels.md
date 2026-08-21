@@ -1161,11 +1161,20 @@ list; `HookRun`'s recorded review appears only as the degraded-arm fallback
      lookup resolves `null` — the degraded arm needs a PR to NAME, and identity
      that never resolved has none. The panel keeps its no-PR state for all of
      them.
-   - **Only a session worktree.** A shared checkout is the agent's primary tree
-     and its branch is no session's work; a purged session has no worktree left.
-     Both skip the daemon read entirely, as does an offline or too-old daemon —
-     so a session that can never resolve a PR spends none of the installation's
-     quota.
+   - **Two checkouts, and the shared one only for the session using it.** A
+     session worktree's branch IS that session's work. A shared-workspace agent
+     has no per-session worktree at all, and refusing to read its primary tree
+     left this tab permanently empty for every such agent — while reading it for
+     ANY session would hand an old one the newest session's pull request, whose
+     branch replaced the one that carried its work. So the primary tree is read
+     for the agent's most recently active session only, and `linkScope: shared`
+     makes the panel say the PR may carry more than this session's work. A purged
+     session, a non-checkout workspace, and no daemon serving the agent all skip
+     the daemon read entirely, so a session that can never resolve a PR spends
+     none of the installation's quota. The daemon comes from the PLACEMENT
+     (`servingDaemon`), like every workspace route: a pool- or cluster-placed
+     agent has no `agent.daemonId`, and reading that column resolved no branch at
+     all for exactly the deployments where every agent is placed that way.
    - **The ambiguity is reported, not hidden.** Several open PRs on one head are
      all equally "this session's": the lowest number wins (the first opened for
      the branch is the canonical review) and `linkAmbiguous` makes the panel say

@@ -423,6 +423,19 @@ describe('PullRequestPanel body', () => {
     )
   })
 
+  it('says when the link came from the agent’s SHARED checkout, and stays silent for a session worktree', async () => {
+    // The PR is real either way; what differs is whose work it can contain, and the panel says so
+    // rather than letting a shared tree's branch read as this session's alone.
+    await render()
+    expect(container?.querySelector('[data-pr-link-shared]')).toBeNull()
+
+    wire.data = pr({ linkedBy: 'head-branch', linkBranch: 'main', linkScope: 'shared' })
+    await rerender({ sessionId: 'session-2' })
+    expect(container?.querySelector('[data-pr-link-shared]')?.textContent).toContain(
+      "Found through main, the branch of this agent's shared checkout"
+    )
+  })
+
   it('draws each check with its own state marker and a duration only where both ends exist', async () => {
     await render()
     const checks = Array.from(container?.querySelectorAll<HTMLElement>('[data-pr-check]') ?? [])

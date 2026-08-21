@@ -6,6 +6,10 @@
 // Failure to establish identity is an ABSENCE, never a degraded view — the degraded arm needs a PR to
 // name, and here there is none — so every unreachable, denied or rate-limited answer reads `null` and
 // is cached as a miss rather than re-asked on the next panel mount.
+// Two checkouts can answer: a session's own worktree, whose branch IS that session's work, and — for a
+// shared-workspace agent, which has no per-session worktree — the agent's primary tree, but only for
+// the session currently using it. That second arm is what keeps the tab from being permanently empty
+// on a shared workspace without handing an old session the newest one's pull request.
 import { githubRequest, type FetchLike } from './api.js'
 import type { GithubService } from './service.js'
 import type { InstallationTokenService } from './installation-token.service.js'
@@ -25,6 +29,11 @@ export const SESSION_PR_LINK_CACHE_MAX = 512
 // bound on a branch's own history of reopened/closed PRs, not on the repository's.
 const HEAD_PULL_LIMIT = 20
 
+/** Which checkout's branch a link resolved through. `shared` is the agent's PRIMARY tree, which every
+ *  session on a shared-workspace agent works in — the same checkout the Files and Git tabs already
+ *  show for such a session, so the PR is real but is not exclusively this session's work. */
+export type SessionPullRequestLinkScope = 'session' | 'shared'
+
 /** The durable half of a branch-resolved PR — the same facts a hook run would have carried. */
 export interface SessionPullRequestLink {
   repoId: bigint
@@ -33,6 +42,8 @@ export interface SessionPullRequestLink {
   pullNumber: number
   /** The head branch this resolved through, so the panel can say what it matched on. */
   branch: string
+  /** Whose checkout that branch was read from, so the panel can say that too. */
+  scope: SessionPullRequestLinkScope
   /** true ⇒ the branch has more than one OPEN pull request and this is the first of them. */
   ambiguous: boolean
 }
@@ -72,10 +83,17 @@ export interface SessionPullRequestLinkDeps {
   clock: Clock
   github: GithubService
   tokens: InstallationTokenService
-  /** The owning daemon's read of THIS session's worktree, reduced to its checked-out branch. `null`
-   *  for everything the caller cannot read a session branch from: no live daemon, a daemon too old to
+  /** The serving daemon's read of the checkout named by `scope`, reduced to its branch. `null` for
+   *  everything the caller cannot read a branch from: no daemon serving the agent, a daemon too old to
    *  serve session worktrees, a non-repo workspace, a detached HEAD, or a failed read. */
-  readSessionBranch: (agent: AgentRecord, session: SessionMetaRecord) => Promise<string | null>
+  readSessionBranch: (
+    agent: AgentRecord,
+    session: SessionMetaRecord,
+    scope: SessionPullRequestLinkScope
+  ) => Promise<string | null>
+  /** The agent's most recently active session. Only the SHARED arm asks: one checkout has one branch,
+   *  and that branch describes the session using it now — not the ones that ran in it last week. */
+  latestSessionIdOfAgent: (agent: AgentRecord) => Promise<string | null>
   fetchImpl?: FetchLike
   baseUrl?: string
   log?: { warn?: (obj: unknown, msg: string) => void }
@@ -140,13 +158,22 @@ export class SessionPullRequestLinkService {
   }
 
   private async read(agent: AgentRecord, session: SessionMetaRecord): Promise<SessionPullRequestLink | null> {
-    // A shared checkout is the agent's PRIMARY tree, whose branch is no session's work — the same gate
-    // the console applies before it draws branch facts in this tab. A purged session has no worktree
-    // left to read either, so neither reaches the daemon.
-    if (session.workspaceIsolation !== 'session' || session.contentPurgedAt) return null
+    // A purged session's worktree is gone with its content, so there is nothing to read.
+    if (session.contentPurgedAt) return null
+    // Which checkout to ask about. A session worktree has a branch of its OWN; a shared-workspace
+    // session works in the agent's primary tree — which is exactly the checkout the Files and Git tabs
+    // beside this one already show it, so refusing to read it here left the tab permanently empty for
+    // every shared-workspace agent rather than protecting anything. It is read, and the link says
+    // which checkout answered so the panel can say the PR is not exclusively this session's.
+    const scope: SessionPullRequestLinkScope = session.workspaceIsolation === 'session' ? 'session' : 'shared'
+    // A shared tree has ONE branch, which moves with whatever the agent is doing now — so it speaks
+    // for the session using it and for no other. An older session would otherwise be handed the
+    // NEWEST session's pull request, checks and threads, which is worse than an empty tab: the branch
+    // that carried its own work is long gone from that checkout and nothing here can find it.
+    if (scope === 'shared' && (await this.deps.latestSessionIdOfAgent(agent)) !== session.id) return null
     // The branch first, deliberately: no branch ⇒ no GitHub call at all, which keeps the sessions
     // that can never resolve a PR (scratch workspaces, offline daemons) off the installation's quota.
-    const branch = await this.deps.readSessionBranch(agent, session)
+    const branch = await this.deps.readSessionBranch(agent, session, scope)
     if (!branch) return null
     const repo = await this.deps.github.resolveWorkspaceRepo(agent)
     if (!repo) return null
@@ -173,6 +200,7 @@ export class SessionPullRequestLinkService {
         installationId: repo.installationId,
         pullNumber: chosen.pullNumber,
         branch,
+        scope,
         ambiguous: chosen.ambiguous
       }
     } catch (err) {
