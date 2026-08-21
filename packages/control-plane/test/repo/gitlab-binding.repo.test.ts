@@ -152,7 +152,14 @@ describe('credential + webhook secret stores (§7.3)', () => {
     // tombstone, never release.
     const orgC = await otherOrg()
     const bound = await bindings().createWithClaim(await withConnection(orgC))
-    await bindings().markProviderMutationStarted(orgC, bound.id, PROJECT)
+    await bindings().markProviderMutationStarted(
+      orgC,
+      bound.id,
+      PROJECT,
+      'crashed-run',
+      new Date(Date.now() + 600_000),
+      new Date()
+    )
     await prisma.org.delete({ where: { id: orgC } })
     const claim = await prisma.codeHostRepositoryClaim.findUniqueOrThrow({
       where: { provider_externalId: { provider: 'gitlab', externalId: PROJECT } }
