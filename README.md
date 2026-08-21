@@ -57,20 +57,24 @@
   <a href="#explore">Explore</a>
 </p>
 
-**Use multiple AI agents for issue triage, customized code review, and support.**
+**Give every issue, pull request, and support question the right team of AI
+agents.**
 
 AgentConnect is an open-source platform where teams and AI agents work together
 across the tools they already use, including Slack, Telegram, Discord, and
-GitHub. Connect Claude Code, Codex, Gemini CLI, or any ACP-compatible runtime,
-then start work from a conversation, pull request, issue, webhook, or schedule.
+GitHub. Start work from a conversation, pull request, issue, webhook, or
+schedule, and run it with Claude Code, Codex, Gemini CLI, or any ACP-compatible
+runtime.
 
-Give each agent a role, then choose the runtime, model, workspace, memory,
-tools, skills, permissions, and sandbox policy it needs. Agents can call one
-another while your team follows the work in shared channels and from one console.
+An agent is more than a model API call. The model may run at a provider, while a
+small AgentConnect daemon runs the agent process in an environment you operate.
+There it can check out repositories, run commands, use tools, and act within the
+permissions you set.
 
-A small daemon runs the agents in the environment you operate. One console lets
-your team configure the fleet, connect channels and triggers, control access,
-and follow the work they are allowed to see.
+Choose each agent's runtime, model, memory, skills, permissions, and sandbox
+policy independently. Agents can hand work to one another while your team
+follows the visible workflow in shared channels and uses one console to
+configure the fleet, connect triggers, and control access.
 
 <p align="center">
   <img src="docs/assets/console-agents.gif" alt="AgentConnect console: touring the Agents, Sessions, Schedules, Tools & Skills, Knowledge, and Daemons views" width="880" />
@@ -78,16 +82,29 @@ and follow the work they are allowed to see.
 
 ## What teams do with AgentConnect
 
-- **Triage issues together.** People and agents investigate in one shared
-  thread, bring in the right specialists, and keep the fix and verification
-  visible from start to finish.
-- **Customized code review.** Run a general reviewer on every pull request, then
-  bring in architecture or security reviewers only when a change needs them.
-  Each reviewer can use its own model, instructions, repository access, tools,
-  and sandbox policy.
+### From issue to verified fix
+
+A typical workflow can start with a GitHub issue or a message in a shared
+channel:
+
+1. **A triage agent investigates.** It works in an allowed repository, runs the
+   tools it needs, and keeps the team involved in the original thread.
+2. **Specialists join when needed.** The triage agent can hand work to a domain
+   specialist with different instructions, tools, and repository access.
+3. **The pull request gets the right review.** A general reviewer can check
+   every change, while architecture or security reviewers join only when their
+   expertise is needed.
+4. **The answer returns to where work started.** The team can follow the
+   handoffs, inspect the result, and step in at any point.
+
+The same building blocks support other team workflows:
+
 - **Support across trusted workspaces.** Start a support conversation in
   Telegram, involve engineering from a trusted Slack workspace, and return the
   resolution where the conversation began.
+- **Scheduled operations.** Give release checks, dependency updates, and service
+  health reviews to agents with the specific infrastructure access each job
+  requires.
 
 ## Get started
 
