@@ -47,7 +47,7 @@
     "@agentconnect.md/k8s-client": "workspace:*",
     "@agentconnect.md/message": "workspace:*",
     "@agentconnect.md/protocol": "workspace:*",
-    "@anthropic-ai/sandbox-runtime": "0.0.67",
+    "@anthropic-ai/sandbox-runtime": "0.0.73",
     "@larksuiteoapi/node-sdk": "^1.71.1",
     "@modelcontextprotocol/client": "2.0.0",
     "@modelcontextprotocol/server": "2.0.0",
