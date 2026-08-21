@@ -54,6 +54,8 @@ export interface PullRequestView {
   repoFullName: string
   pullNumber: number
   title: string
+  /** The PR description as plain text; empty while degraded or when GitHub reported none. */
+  body: string
   // Null only while degraded with no Postgres knowledge; degraded 'closed' cannot distinguish merged.
   state: 'open' | 'closed' | 'merged' | null
   isDraft: boolean | null // null only while degraded and the owning run recorded no draft fact
@@ -83,7 +85,7 @@ const QUERY = `
 query PanelPullRequest($owner:String!,$name:String!,$number:Int!,$threads:Int!,$checks:Int!,$reviews:Int!){
   repository(owner:$owner,name:$name){
     pullRequest(number:$number){
-      number title state isDraft merged additions deletions url
+      number title bodyText state isDraft merged additions deletions url
       baseRefName headRefName reviewDecision
       autoMergeRequest{enabledAt}
       latestReviews(first:$reviews){nodes{state author{login __typename}}}
@@ -105,6 +107,7 @@ interface GqlAnswer {
     pullRequest: {
       number: number
       title: string
+      bodyText: string
       state: 'OPEN' | 'CLOSED' | 'MERGED'
       isDraft: boolean
       merged: boolean
@@ -301,6 +304,7 @@ export class PullRequestViewService {
       repoFullName: identity.repoFullName,
       pullNumber: identity.pullNumber,
       title: '',
+      body: '',
       // Null here, NOT the caller's known facts: this object is CACHED and the cache key is the PR,
       // not the run — two sessions on one PR have different runs, so any run-specific fact baked in
       // here would be served to the other session. The per-caller overlay in view() fills these.
@@ -391,6 +395,7 @@ export class PullRequestViewService {
     return {
       ...base,
       title: pr.title,
+      body: pr.bodyText ?? '',
       state: pr.merged ? 'merged' : pr.state === 'CLOSED' ? 'closed' : 'open',
       isDraft: pr.isDraft,
       url: pr.url || base.url,

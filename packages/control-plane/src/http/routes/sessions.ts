@@ -389,6 +389,7 @@ function toSessionPullRequestDto(
     repoFullName: view.repoFullName,
     pullNumber: view.pullNumber,
     title: view.title,
+    body: view.body,
     state: view.state,
     isDraft: view.isDraft,
     url: view.url,

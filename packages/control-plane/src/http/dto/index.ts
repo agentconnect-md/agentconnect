@@ -3245,6 +3245,7 @@ export const SessionPullRequestDto = z.object({
   repoFullName: z.string(),
   pullNumber: z.number().int(),
   title: z.string(),
+  body: z.string(), // the PR description as plain text; empty while degraded
   state: z.enum(['open', 'closed', 'merged']).nullable(), // null only degraded with no Postgres fact
   isDraft: z.boolean().nullable(),
   url: z.string(),
