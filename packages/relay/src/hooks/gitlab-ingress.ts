@@ -81,7 +81,10 @@ interface GitlabPayload {
   labels?: Array<{ title?: string }>
   changes?: {
     labels?: { previous?: unknown[]; current?: unknown[] }
-    reviewers?: { previous?: Array<{ id?: number }>; current?: Array<{ id?: number }> }
+    reviewers?: {
+      previous?: Array<{ id?: number }>
+      current?: Array<{ id?: number; re_requested?: boolean }>
+    }
     draft?: { previous?: boolean; current?: boolean }
     work_in_progress?: { previous?: boolean; current?: boolean }
   }
@@ -202,10 +205,16 @@ export function normalizeGitlabEvent(payload: GitlabPayload): GitlabMatchCtx | u
         return {
           ...base,
           eventAction: 'merge_request:review_requested',
+          // A request is a NEWLY ADDED reviewer, or a native re-request — which
+          // keeps the reviewer in both arrays and flags the current entry with
+          // `re_requested: true`. Ordinary submitted-review state changes carry
+          // neither and stay inert.
           serviceAccountReviewerRequested: (serviceAccountUserId) =>
             currentReviewers.some(
               (reviewer) =>
-                reviewer.id !== undefined && String(reviewer.id) === serviceAccountUserId && !previous.has(reviewer.id)
+                reviewer.id !== undefined &&
+                String(reviewer.id) === serviceAccountUserId &&
+                (!previous.has(reviewer.id) || reviewer.re_requested === true)
             )
         }
       }
@@ -217,6 +226,10 @@ export function normalizeGitlabEvent(payload: GitlabPayload): GitlabMatchCtx | u
   }
   if (kind === 'note') {
     if (!attrs || attrs.system === true) return undefined
+    // §12 edit veto: GitLab Note Hooks also fire on comment EDITS with
+    // action 'update' and a fresh webhook-id — never a new turn. Absent action
+    // (legacy payloads) keeps meaning creation.
+    if (attrs.action !== undefined && attrs.action !== 'create') return undefined
     const subject = payload.issue ?? payload.merge_request
     const family = payload.issue ? ('issues' as const) : payload.merge_request ? ('merge_request' as const) : undefined
     if (!subject || subject.iid === undefined || !family) return undefined
@@ -560,8 +573,15 @@ export function registerGitlabIngress(app: FastifyInstance, deps: GitlabIngressD
       // revision event leaves a durable, actionable run row instead.
       const isLifecycle = ctx.family === 'issues' || ctx.family === 'merge_request'
       // Lifecycle events authorize the subject author; comments authorize the
-      // commenter, plus the subject author on unmentioned thread continuation.
-      const actorId = isLifecycle ? (ctx.subjectAuthorId ?? ctx.actorId) : ctx.actorId
+      // commenter. A reviewer request/re-request instead authorizes the
+      // ASSIGNING actor — the MR author is deliberately untrusted on the
+      // explicit external start path (§12.2).
+      const actorId =
+        ctx.eventAction === 'merge_request:review_requested'
+          ? ctx.actorId
+          : isLifecycle
+            ? (ctx.subjectAuthorId ?? ctx.actorId)
+            : ctx.actorId
       // Only a denied MR REVISION leaves the durable actionable row (§12.2) —
       // the same two events GitHub treats as first-review material.
       const onDenied: 'skip' | 'request-review' =

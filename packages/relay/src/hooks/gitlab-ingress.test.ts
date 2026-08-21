@@ -301,14 +301,16 @@ describe('gitlab ingress', () => {
   it('assigning the service account as reviewer is the explicit start path', async () => {
     h.table.upsert(rule({}, { events: ['merge_request:opened'] }))
     const assigned = mrPayload({
-      object_attributes: { action: 'update' },
+      object_attributes: { action: 'update', author_id: 7999 },
+      user: { id: 7005, username: 'maintainer' },
       changes: { reviewers: { previous: [], current: [{ id: SA_USER }] } }
     })
     expect((await post(h, assigned)).statusCode).toBe(202)
     await flush()
     expect(h.authzRequests).toHaveLength(1)
-    // The assigning ACTOR is authorized, not the MR author.
-    expect(h.authzRequests[0]?.actorExternalId).toBe('7001')
+    // The ASSIGNING actor is authorized — never the (untrusted) MR author.
+    expect(h.authzRequests[0]?.actorExternalId).toBe('7005')
+    expect(h.authzRequests[0]?.subjectAuthorExternalId).toBeUndefined()
     expect(h.sent).toHaveLength(1)
     const msg = h.sent[0] as RdMsgHook
     expect(msg.event).toBe('merge_request:review_requested')
@@ -416,8 +418,38 @@ describe('gitlab ingress', () => {
         }) as never
       )
     ).toBeUndefined()
-    // System notes are never turns.
+    // System notes are never turns, and neither are comment EDITS (§12 veto):
+    // a Note Hook update arrives with a fresh webhook-id and must not open a
+    // duplicate turn. An absent action keeps meaning creation.
     expect(normalizeGitlabEvent(notePayload({ object_attributes: { system: true } }) as never)).toBeUndefined()
+    expect(normalizeGitlabEvent(notePayload({ object_attributes: { action: 'update' } }) as never)).toBeUndefined()
+    expect(normalizeGitlabEvent(notePayload({ object_attributes: { action: 'create' } }) as never)).toBeDefined()
+    expect(normalizeGitlabEvent(notePayload() as never)).toBeDefined()
+  })
+
+  it('a native reviewer RE-request (same reviewer, re_requested flag) is a start path too', async () => {
+    h.table.upsert(rule({}, { events: ['merge_request:opened'] }))
+    const rerequested = mrPayload({
+      object_attributes: { action: 'update', author_id: 7999 },
+      user: { id: 7005, username: 'maintainer' },
+      changes: {
+        reviewers: { previous: [{ id: SA_USER }], current: [{ id: SA_USER, re_requested: true }] }
+      }
+    })
+    expect((await post(h, rerequested)).statusCode).toBe(202)
+    await flush()
+    expect(h.sent).toHaveLength(1)
+    expect((h.sent[0] as RdMsgHook).event).toBe('merge_request:review_requested')
+    // An unchanged reviewer set WITHOUT the flag (e.g. a submitted-review state
+    // change) stays inert.
+    h.sent.length = 0
+    const inert = mrPayload({
+      object_attributes: { action: 'update', author_id: 7999 },
+      changes: { reviewers: { previous: [{ id: SA_USER }], current: [{ id: SA_USER }] } }
+    })
+    expect((await post(h, inert, { 'webhook-id': 'msg_delivery_2' })).statusCode).toBe(202)
+    await flush()
+    expect(h.sent).toHaveLength(0)
   })
 
   it('verdict is pure: label filter and event patterns gate before authz', async () => {
