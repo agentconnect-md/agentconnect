@@ -459,8 +459,46 @@ export class PullRequestViewService {
       this.invalidate(target.repoId, target.pullNumber)
     }
   }
+
+  /** Merge the PR (squash) now, with a token the CALLER minted under the agent's clamp. Idempotent on
+   *  the fresh node read; GitHub declining the merge (not mergeable, checks failing) throws and the
+   *  caller maps it. The cached view is dropped either way so the next read shows the merged state. */
+  async merge(
+    target: { repoId: bigint; repoFullName: string; pullNumber: number },
+    token: string
+  ): Promise<{ merged: boolean }> {
+    const [owner, name] = target.repoFullName.split('/')
+    if (!owner || !name) throw new GithubApiError('malformed repository name', 0, 'LEASE_DENIED', false)
+    const opts = {
+      auth: token,
+      ...(this.fetchImpl ? { fetchImpl: this.fetchImpl } : {}),
+      ...(this.baseUrl ? { baseUrl: this.baseUrl } : {})
+    }
+    const node = await githubGraphql<MergeNodeAnswer>(
+      'query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){id state merged}}}',
+      { owner, name, number: target.pullNumber },
+      opts
+    )
+    const pr = node.repository?.pullRequest
+    if (!pr) throw new GithubApiError('pull request not visible to the installation', 200, 'LEASE_DENIED', false)
+    try {
+      if (pr.merged || pr.state === 'MERGED') return { merged: true }
+      await githubGraphql(
+        'mutation($id:ID!){mergePullRequest(input:{pullRequestId:$id,mergeMethod:SQUASH}){clientMutationId}}',
+        { id: pr.id },
+        { ...opts, strictErrors: true }
+      )
+      return { merged: true }
+    } finally {
+      this.invalidate(target.repoId, target.pullNumber)
+    }
+  }
 }
 
 interface AutoMergeNodeAnswer {
   repository: { pullRequest: { id: string; autoMergeRequest: { enabledAt: string | null } | null } | null } | null
+}
+
+interface MergeNodeAnswer {
+  repository: { pullRequest: { id: string; state: string; merged: boolean } | null } | null
 }

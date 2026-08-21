@@ -577,6 +577,69 @@ describe('POST /sessions/:id/pull-request/auto-merge', () => {
   })
 })
 
+// The direct merge (§3.4): the same identity and the same clamped write grant as auto-merge, but the
+// mutation is mergePullRequest — one press merges now rather than arming GitHub to merge later.
+describe('POST /sessions/:id/pull-request/merge', () => {
+  const mergeNode = (merged: boolean) =>
+    graphqlOk({
+      data: { repository: { pullRequest: { id: 'PR_node1', state: merged ? 'MERGED' : 'OPEN', merged } } }
+    })
+  const post = (running: HttpApp, sessionId: string) =>
+    running.app.inject({ method: 'POST', url: `${ORG}/sessions/${sessionId}/pull-request/merge` })
+
+  it('merges end to end under the owning agent\u2019s clamp', async () => {
+    const session = await seedAgentAndSession()
+    await seedPullRequestRun(session)
+    const github = githubStub([
+      mergeNode(false),
+      graphqlOk({ data: { mergePullRequest: { clientMutationId: null } } }),
+      graphqlOk(fullAnswer())
+    ])
+    const running = app(github.view, undefined, fakeGithub())
+
+    const res = await post(running, session)
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual({ merged: true })
+    expect((github.calls[1] as { body: { query: string } }).body.query).toContain('mergePullRequest')
+  })
+
+  it('refuses a read-tier agent with 403 before any GitHub call', async () => {
+    const session = await seedAgentAndSession()
+    await seedPullRequestRun(session)
+    const github = githubStub([graphqlOk(fullAnswer())])
+    const running = app(github.view, undefined, fakeGithub('SCOPE_DENIED'))
+
+    const res = await post(running, session)
+    expect(res.statusCode).toBe(403)
+    expect(github.calls).toHaveLength(0)
+  })
+
+  it('relays GitHub declining the merge as 409, not a 5xx', async () => {
+    const session = await seedAgentAndSession()
+    await seedPullRequestRun(session)
+    const github = githubStub([
+      mergeNode(false),
+      graphqlOk({ data: null, errors: [{ type: 'UNPROCESSABLE', message: 'Pull request is not mergeable' }] })
+    ])
+    const running = app(github.view, undefined, fakeGithub())
+
+    const res = await post(running, session)
+    expect(res.statusCode).toBe(409)
+    expect(res.json().message).toContain('not mergeable')
+  })
+
+  it('404s a session with no linked run, with the GET route\u2019s exact body', async () => {
+    const github = githubStub([])
+    const running = app(github.view, undefined, fakeGithub())
+    const bare = await seedAgentAndSession()
+
+    const res = await post(running, bare)
+    expect(res.statusCode).toBe(404)
+    expect(res.json()).toEqual(NOT_FOUND)
+    expect(github.calls).toHaveLength(0)
+  })
+})
+
 // §12.6's SECOND identity source: the pull request this session worktree's own head branch has, for a
 // session no pull-request run owns — the case a PR the agent opened mid-conversation always lands in.
 describe('GET /sessions/:id/pull-request — the head-branch link', () => {

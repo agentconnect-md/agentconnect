@@ -3283,6 +3283,8 @@ export type SessionPullRequestDtoT = z.infer<typeof SessionPullRequestDto>
 export const SessionPullRequestAutoMergeBodyDto = z.object({ enabled: z.boolean() })
 /** `POST /sessions/:id/pull-request/auto-merge` — the armed state after the call (idempotent). */
 export const SessionPullRequestAutoMergeDto = z.object({ armed: z.boolean() })
+/** `POST /sessions/:id/pull-request/merge` — the merged outcome after the call (idempotent on an already-merged PR). */
+export const SessionPullRequestMergeDto = z.object({ merged: z.boolean() })
 
 /** `GET /agents/:id/tasks` — live tasks first, then the daemon's bounded settled history.
  *  `tracked:false` means the owning daemon holds no lease for this session (a non-Claude

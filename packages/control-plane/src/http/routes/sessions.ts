@@ -45,6 +45,7 @@ import {
   SessionPullRequestQueryDto,
   SessionPullRequestAutoMergeBodyDto,
   SessionPullRequestAutoMergeDto,
+  SessionPullRequestMergeDto,
   type SessionPullRequestDtoT,
   SetSessionVisibilityBody,
   SessionVisibilityDto,
@@ -1104,6 +1105,21 @@ export function sessionRoutes(deps: HttpDeps) {
       return link ? { ...link, agent } : null
     }
 
+    // The write arms' identity, in the GET's order: the owning run's PR, else the branch link — plus the
+    // agent whose grant the write rides (the RUN's agent for a run link, the SESSION's for a branch link).
+    const pullRequestWriteLink = async (req: FastifyRequest, session: SessionMetaRecord) => {
+      const run = await deps.repos.hook.latestPullRequestRunForSession(orgOf(req), session.id)
+      if (run?.pullNumber && run.repoId && run.repoFullName && run.sourceInstallationId) {
+        return {
+          repoId: run.repoId,
+          repoFullName: run.repoFullName,
+          pullNumber: run.pullNumber,
+          agent: run.agentId ? await deps.repos.agent.get(orgOf(req), AgentId(run.agentId)) : null
+        }
+      }
+      return branchPullRequestLink(req, session, false)
+    }
+
     // The session's PR (§3.4): identity from the owning run — or, with no run, from the session
     // worktree's own head branch (§12.6) — and live state from GitHub; a GitHub failure is DATA
     // (`degraded`), and only a session neither source can name a PR for 404s (hides the tab).
@@ -1219,18 +1235,7 @@ export function sessionRoutes(deps: HttpDeps) {
         const view = deps.pullRequestView
         const github = deps.github
         if (!view || !github) return absent()
-        const run = await deps.repos.hook.latestPullRequestRunForSession(orgOf(req), owned.session.id)
-        // Same two sources as the GET, in the same order — the arm mirrors what the panel is showing.
-        const linked =
-          run?.pullNumber && run.repoId && run.repoFullName && run.sourceInstallationId
-            ? {
-                repoId: run.repoId,
-                repoFullName: run.repoFullName,
-                pullNumber: run.pullNumber,
-                // The capability is the RUN's agent — the write rides that agent's authorization, not the viewer's.
-                agent: run.agentId ? await deps.repos.agent.get(orgOf(req), AgentId(run.agentId)) : null
-              }
-            : await branchPullRequestLink(req, owned.session, false)
+        const linked = await pullRequestWriteLink(req, owned.session)
         if (!linked) return absent()
         const agent = linked.agent
         if (!agent) {
@@ -1246,7 +1251,60 @@ export function sessionRoutes(deps: HttpDeps) {
             req.body.enabled
           )
         } catch (err) {
-          const failure = autoMergeFailureOf(err)
+          const failure = prWriteFailureOf(err)
+          if (!failure) throw err
+          return reply.code(failure.statusCode).send(failure)
+        }
+      }
+    )
+
+    // ── POST /sessions/:id/pull-request/merge ────────────────────────────────
+    // The direct merge: the same identity and the same clamped write grant as auto-merge, but the
+    // mutation is mergePullRequest — one press merges now rather than arming GitHub to merge later.
+    r.post(
+      '/sessions/:id/pull-request/merge',
+      {
+        schema: {
+          tags: [Tag.Sessions],
+          summary: 'Merge the session’s pull request',
+          description:
+            'Merges this session’s pull request (squash) — the same identity the GET resolves, from the owning run or the session branch — using an installation token clamped to the owning agent’s repository tier (the write requires `pull_requests: write`, so a read- or comment-tier agent is refused 403). Idempotent: an already-merged pull request succeeds without a mutation. 404 mirrors the GET; 409 relays GitHub declining the merge (not mergeable, checks failing); 429 is GitHub rate limiting; 502 is GitHub unreachable.',
+          operationId: 'mergeSessionPullRequest',
+          params: IdParam,
+          response: {
+            200: SessionPullRequestMergeDto,
+            403: ErrorDto,
+            404: ErrorDto,
+            409: ErrorDto,
+            429: ErrorDto,
+            502: ErrorDto
+          }
+        }
+      },
+      async (req, reply) => {
+        const absent = () =>
+          reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'pull request not found' })
+        const owned = await getOrgViewableSession(req, req.params.id)
+        if (!owned) return absent()
+        const view = deps.pullRequestView
+        const github = deps.github
+        if (!view || !github) return absent()
+        const linked = await pullRequestWriteLink(req, owned.session)
+        if (!linked) return absent()
+        const agent = linked.agent
+        if (!agent) {
+          return reply
+            .code(403)
+            .send({ error: 'Forbidden', statusCode: 403, message: 'the owning agent no longer exists' })
+        }
+        try {
+          const cred = await github.mintAutoMergeForAgent(agent, linked.repoId, linked.repoFullName)
+          return await view.merge(
+            { repoId: linked.repoId, repoFullName: linked.repoFullName, pullNumber: linked.pullNumber },
+            cred.token
+          )
+        } catch (err) {
+          const failure = prWriteFailureOf(err)
           if (!failure) throw err
           return reply.code(failure.statusCode).send(failure)
         }
@@ -1256,11 +1314,9 @@ export function sessionRoutes(deps: HttpDeps) {
 }
 
 // GitHub/clamp failures onto HTTP, as DATA: capability and installation denials are 403, rate limits
-// 429, GitHub down 502 — and GitHub declining the state change itself (clean status, closed PR) is a
-// 409, not a 5xx. Null means "not ours" and the caller rethrows.
-function autoMergeFailureOf(
-  err: unknown
-): { error: string; statusCode: 403 | 409 | 429 | 502; message: string } | null {
+// 429, GitHub down 502 — and GitHub declining the write itself (clean status, not mergeable, closed PR)
+// is a 409, not a 5xx. Null means "not ours" and the caller rethrows.
+function prWriteFailureOf(err: unknown): { error: string; statusCode: 403 | 409 | 429 | 502; message: string } | null {
   const failure = (statusCode: 403 | 409 | 429 | 502, error: string) => ({
     error,
     statusCode,

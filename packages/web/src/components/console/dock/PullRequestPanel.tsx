@@ -10,6 +10,7 @@ import { Icon } from '@/components/ui'
 import {
   ApiError,
   fetchSessionPullRequest,
+  mergeSessionPullRequest,
   setSessionPullRequestAutoMerge,
   type SessionPullRequestCheckDto,
   type SessionPullRequestDto,
@@ -321,6 +322,21 @@ export function PullRequestPanel({
         setReads((r) => ({ tick: r.tick + 1, force: false }))
       },
       (e) => setMerge({ busy: false, err: msg(e) })
+    )
+  }
+
+  // The direct merge's own in-flight/error state, kept apart from the auto-merge toggle's.
+  const [mergeNow, setMergeNow] = useState<{ busy: boolean; err: string | null }>({ busy: false, err: null })
+  useEffect(() => setMergeNow({ busy: false, err: null }), [sessionId])
+  const doMerge = () => {
+    setMergeNow({ busy: true, err: null })
+    mergeSessionPullRequest(sessionId).then(
+      () => {
+        setMergeNow({ busy: false, err: null })
+        // The CP invalidated its cached view on the write; the next read shows the merged state.
+        setReads((r) => ({ tick: r.tick + 1, force: false }))
+      },
+      (e) => setMergeNow({ busy: false, err: msg(e) })
     )
   }
 
@@ -721,9 +737,34 @@ export function PullRequestPanel({
           </>
         )}
       </div>
-      {/* The merge box (§3.4): the checkbox IS the action — there is no direct-merge route to back a Merge button, so none is drawn. Open PRs only; a degraded read has no armed fact to draw a control over. */}
+      {/* The merge box (§3.4): a direct Merge (squash) plus the auto-merge toggle, both under the same write capability. Open PRs only; a degraded read has no armed fact to draw a control over. */}
       {!view.degraded && view.state === 'open' ? (
-        <div data-pr-merge="" className="flex flex-none flex-col gap-[3px] border-t border-(--border-subtle) px-3 py-2">
+        <div data-pr-merge="" className="flex flex-none flex-col gap-[6px] border-t border-(--border-subtle) px-3 py-2">
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              data-pr-merge-now=""
+              className="dsbtn dsbtn-primary sm flex-none disabled:pointer-events-none disabled:opacity-50"
+              disabled={!view.canArmAutoMerge || mergeNow.busy}
+              title={
+                view.canArmAutoMerge
+                  ? 'Merge this pull request now (squash)'
+                  : 'The owning agent’s repository access is below write tier, so merging is not available'
+              }
+              onClick={doMerge}
+            >
+              {mergeNow.busy ? <Spinner size={11} /> : <Icon name="git-merge" size={13} />}
+              Merge
+            </button>
+            {mergeNow.err ? (
+              <span
+                data-pr-merge-now-error=""
+                className="min-w-0 flex-1 font-sans text-[11px] font-normal leading-[1.4] text-(--status-error)"
+              >
+                {mergeNow.err}
+              </span>
+            ) : null}
+          </div>
           <label
             className={`flex items-center gap-[7px] font-sans text-[12px] font-medium leading-normal text-(--text-primary) ${view.canArmAutoMerge ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'}`}
             title={

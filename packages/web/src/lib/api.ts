@@ -3371,6 +3371,12 @@ export async function setSessionPullRequestAutoMerge(sessionId: string, enabled:
   })
 }
 
+// Merge the session's PR (squash) now, under the owning agent's clamped grant. A 409 relays GitHub
+// declining the merge (not mergeable, checks failing); an already-merged PR succeeds idempotently.
+export async function mergeSessionPullRequest(sessionId: string): Promise<{ merged: boolean }> {
+  return apiPost<{ merged: boolean }>(`${orgBase()}/sessions/${encodeURIComponent(sessionId)}/pull-request/merge`, {})
+}
+
 // ── usage dashboard (GET /usage) — real historical aggregates from the CP's
 // persisted per-session usage store, summed over a window this client computes. ──
 /** The console's window presets. The ROUTE takes an explicit `[from, to)`; these are

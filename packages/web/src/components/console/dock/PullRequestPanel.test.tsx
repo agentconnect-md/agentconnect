@@ -14,7 +14,10 @@ const wire = vi.hoisted(() => ({
   hold: null as null | (() => Promise<unknown>),
   // The auto-merge write seam: every POST recorded, failing with `mergeFailure` when set.
   mergeCalls: [] as Array<{ sessionId: string; enabled: boolean }>,
-  mergeFailure: null as null | Error
+  mergeFailure: null as null | Error,
+  // The direct merge seam: every call recorded, failing with `mergeNowFailure` when set.
+  mergeNowCalls: [] as string[],
+  mergeNowFailure: null as null | Error
 }))
 
 vi.mock('@/lib/api', () => {
@@ -39,6 +42,11 @@ vi.mock('@/lib/api', () => {
       wire.mergeCalls.push({ sessionId, enabled })
       if (wire.mergeFailure) return Promise.reject(wire.mergeFailure)
       return Promise.resolve({ armed: enabled })
+    }),
+    mergeSessionPullRequest: vi.fn((sessionId: string) => {
+      wire.mergeNowCalls.push(sessionId)
+      if (wire.mergeNowFailure) return Promise.reject(wire.mergeNowFailure)
+      return Promise.resolve({ merged: true })
     })
   }
 })
@@ -169,6 +177,8 @@ beforeEach(() => {
   wire.hold = null
   wire.mergeCalls = []
   wire.mergeFailure = null
+  wire.mergeNowCalls = []
+  wire.mergeNowFailure = null
   verdicts = []
 })
 
@@ -487,13 +497,15 @@ describe('PullRequestPanel body', () => {
     // earned. No onPostTurn (a hook session with no composer) means NO button — absent, not disabled.
     await render()
     expect(container?.querySelector('[data-pr-autofix]')).toBeNull()
-    // The write-capable fixture's merge toggle is live; a read-tier caller's is disabled, not hidden —
+    // The write-capable fixture's merge controls are live; a read-tier caller's are disabled, not hidden —
     // the CP's canArmAutoMerge flag is exactly the "disabled control, not a failed call" contract.
     expect(container?.querySelector<HTMLInputElement>('[data-pr-automerge]')?.disabled).toBe(false)
+    expect(container?.querySelector<HTMLButtonElement>('[data-pr-merge-now]')?.disabled).toBe(false)
 
     wire.data = pr({ canArmAutoMerge: false })
     await render()
     expect(container?.querySelector<HTMLInputElement>('[data-pr-automerge]')?.disabled).toBe(true)
+    expect(container?.querySelector<HTMLButtonElement>('[data-pr-merge-now]')?.disabled).toBe(true)
 
     // No merge box at all where there is nothing to arm: closed/merged PRs and degraded answers.
     wire.data = pr({ state: 'merged' })
@@ -589,6 +601,29 @@ describe('PullRequestPanel body', () => {
 
     expect(container?.querySelector('[data-pr-merge-error]')?.textContent).toContain('clean status')
     expect(container?.querySelector<HTMLInputElement>('[data-pr-automerge]')?.disabled).toBe(false)
+    expect(wire.calls).toHaveLength(1) // no re-read: nothing changed behind the failed write
+  })
+
+  it('merges now through the CP and re-reads the view it invalidated', async () => {
+    await render()
+    expect(wire.calls).toHaveLength(1)
+
+    await press('[data-pr-merge-now]')
+
+    expect(wire.mergeNowCalls).toEqual(['session-1'])
+    expect(wire.calls).toHaveLength(2) // the post-write re-read, riding the CP's own invalidation
+    expect(container?.querySelector<HTMLButtonElement>('[data-pr-merge-now]')?.textContent).toContain('Merge')
+  })
+
+  it('surfaces a refused merge as data and keeps the button usable', async () => {
+    // GitHub declining the merge (the CP's 409) is an answer the operator acts on, not a crash.
+    wire.mergeNowFailure = new Error('Pull request is not mergeable')
+    await render()
+
+    await press('[data-pr-merge-now]')
+
+    expect(container?.querySelector('[data-pr-merge-now-error]')?.textContent).toContain('not mergeable')
+    expect(container?.querySelector<HTMLButtonElement>('[data-pr-merge-now]')?.disabled).toBe(false)
     expect(wire.calls).toHaveLength(1) // no re-read: nothing changed behind the failed write
   })
 })
