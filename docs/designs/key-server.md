@@ -78,9 +78,11 @@ deployment that terminates TLS on this hop simply configures an https address. A
 `--key-server-token-path <path>`. The equivalent deployment environment names are
 `KEY_SERVER` and `KEY_SERVER_TOKEN_PATH`; explicit CLI values win. A token path
 without a server does nothing and says so, as does a server without a token — that one sends every
-request with no `Authorization` header at all, which a server that reviews its callers refuses; neither option requires `--k8s`, because where a runtime
-runs and where its key comes from are different questions — the launch path applies a minted
-credential to whatever environment it is building, cluster sandbox or local child alike.
+request with no `Authorization` header at all, which a server that reviews its callers refuses. Both
+are warnings rather than refusals: a key server may be configured to trust its callers by network
+position, and that is its operator's call to make. A key server itself does require `--k8s`, because
+the credential it mints is only usable with the `*_MODEL_BASE_URL` pair that aims it at this
+install's gateway, and that pair is cloud-mode configuration.
 
 The bearer file is read for every IssueKey and RevokeKey request. The kubelet or
 another credential agent can therefore rotate the file without restarting the daemon.

@@ -22,12 +22,13 @@ function harness(grants: Array<Record<string, unknown>>) {
 const agent = { id: 'agent-a', runtime: 'claude' }
 
 describe('daemon model-key session lifecycle', () => {
-  it('takes key-server configuration outside cloud mode, and does not refuse a lone token path', () => {
-    // Where a runtime RUNS and where its key comes FROM are different questions: the launch path
-    // applies a minted credential to whatever environment it is building. And a token path with no
-    // server is a configuration that does nothing — worth a warning, not a refusal to start a
-    // daemon whose every other agent is fine.
-    expect(() => new Daemon({ keyServerClient: {} as never })).not.toThrow()
+  it('refuses a key server outside cloud mode, and never demands a token path', () => {
+    // A minted key is only usable with the `*_MODEL_BASE_URL` pair that aims it at this install's
+    // gateway, and that pair is cloud-mode configuration — so a non-cloud key server is refused.
+    // Its credential is a separate question: with or without a token path, both directions are a
+    // warning rather than a refusal to start a daemon whose every other agent is fine.
+    expect(() => new Daemon({ keyServerClient: {} as never })).toThrow(/--k8s/)
+    expect(() => new Daemon({ k8s: true, keyServerClient: {} as never })).not.toThrow()
     expect(() => new Daemon({ k8s: true, keyServerTokenPath: '/token' })).not.toThrow()
     expect(() => new Daemon({ keyServerTokenPath: '/token' })).not.toThrow()
   })

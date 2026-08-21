@@ -1153,6 +1153,7 @@ export class Daemon {
     this.clock = opts.clock ?? systemClock
     const modelKeyNow = opts.clock ? () => this.clock.now() : () => performance.timeOrigin + performance.now()
     this.modelSessions = new ModelSessionHostPool(this.modelSessionPoolHost(), {
+      k8s: this.k8s,
       address: opts.keyServer?.trim() || process.env.KEY_SERVER?.trim(),
       tokenPath: opts.keyServerTokenPath?.trim() || process.env.KEY_SERVER_TOKEN_PATH?.trim(),
       ...(opts.keyServerClient ? { client: opts.keyServerClient } : {}),
@@ -1160,12 +1161,8 @@ export class Daemon {
     })
     // Base URLs are deployment topology and always come from here, key server or not; an issuer
     // supplies the key alone.
-    // Read regardless of `--k8s`, because these are deployment configuration and both are absent
-    // unless a deployment sets them. It also completes the key server outside cloud mode: a minted
-    // credential carries the KEY, and the endpoint it is minted for comes from this pair — gated on
-    // the flag, a non-cloud daemon would aim a gateway credential at the provider's own address.
-    this.modelSessions.staticModelCredentials = configuredModelCredentials(process.env)
-    this.codexSessionFloor = configuredCodexSessionFloor(process.env)
+    this.modelSessions.staticModelCredentials = this.k8s ? configuredModelCredentials(process.env) : undefined
+    this.codexSessionFloor = this.k8s ? configuredCodexSessionFloor(process.env) : undefined
     this.evalHooks = new DaemonEvaluationHooks(this.evaluationHost(), opts.evaluation)
     this.sessionMetadataOutbox = new SessionMetadataOutbox(this.sessionMetadataHost())
     this.observedChannelsSync = new ObservedChannelsSync(this.observedChannelsSyncHost())
@@ -3489,10 +3486,7 @@ export class Daemon {
         // A dream host materializes nothing: it has no cleanup path and needs none of these secrets.
         ...(excludeAgentToolCredentials ? {} : { configFileDir: agent.dir }),
         finalizeLaunchEnv: (launchEnv) => {
-          // Not gated on `--k8s`: a minted credential belongs in whatever environment this is
-          // building, cluster sandbox or local child alike. The two branches below are inert
-          // outside a cloud daemon anyway — both maps are populated only there.
-          if (!target) return
+          if (!this.k8s || !target) return
           if (opts.modelCredential) applyModelCredential(target, launchEnv, opts.modelCredential.credential)
           else {
             const configured = this.modelSessions.staticCredential(target.runtime)

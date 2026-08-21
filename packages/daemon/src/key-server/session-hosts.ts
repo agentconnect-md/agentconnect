@@ -41,10 +41,12 @@ export interface ModelSessionHostPoolHost {
   cleanupAgentConfigFiles(agentId: string): void
 }
 
-/** No `--k8s` field, deliberately: a key server is a credential SOURCE, and where a runtime runs is
- *  a different question from where its key comes from. The launch path applies a minted credential
- *  to whatever environment it is building, cluster sandbox or local child alike. */
 export interface ModelSessionHostPoolOptions {
+  /** Cloud mode. A key server is refused without it — not because minting needs a cluster, but
+   *  because the credential it mints is only usable with the `*_MODEL_BASE_URL` pair that aims it
+   *  at this install's gateway, and that pair is cloud-mode configuration. A key minted for a
+   *  gateway and sent to the provider's own address is a 401 with no hint as to why. */
+  k8s: boolean
   address?: string
   tokenPath?: string
   client?: KeyServerClient
@@ -85,6 +87,9 @@ export class ModelSessionHostPool {
     private readonly host: ModelSessionHostPoolHost,
     private readonly opts: ModelSessionHostPoolOptions
   ) {
+    if ((opts.address || opts.client) && !opts.k8s) {
+      throw new Error('key-server is supported only by cloud daemons running with --k8s')
+    }
     // A token path with no server is a configuration that does nothing — say so and carry on, rather
     // than refusing to start a daemon whose every other agent is fine.
     if (opts.tokenPath && !opts.address && !opts.client) {
@@ -284,7 +289,7 @@ export class ModelSessionHostPool {
   boundTarget(sessionKey: string, agentId: string): ModelProviderTarget | undefined {
     const credentialHost = this.entries.get(sessionKey)
     if (credentialHost) return credentialHost.target
-    if (this.keyServer || !this.staticModelCredentials) return undefined
+    if (this.keyServer || !this.opts.k8s || !this.staticModelCredentials) return undefined
     const agent = this.host.agent(agentId)
     const runtime = agent ? this.host.runtime(agent.runtime) : undefined
     const target = agent && runtime ? modelProviderTarget(agent, runtime) : undefined
