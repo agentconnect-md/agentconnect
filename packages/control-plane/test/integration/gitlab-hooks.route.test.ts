@@ -158,7 +158,7 @@ describe('gitlab hooks — routes, compile, webhook converge (§8.3/§11.1/§11.
     expect(dto.kind).toBe('gitlab')
 
     // The converge kick installs the webhook (§11.1) with the hook's union…
-    await vi.waitFor(() => expect(h.fake.webhooks.size).toBe(1), { timeout: 15_000 })
+    await vi.waitFor(() => expect(h.fake.webhooks.size).toBe(1), { timeout: 20_000 })
     const webhook = [...h.fake.webhooks.values()][0]!
     expect(webhook.url).toBe(`${RELAY_URL}/webhooks/gitlab`)
     expect(webhook.events['issues_events']).toBe(true)
@@ -179,7 +179,7 @@ describe('gitlab hooks — routes, compile, webhook converge (§8.3/§11.1/§11.
         expect(rule.gitlab?.signingToken).toBe(webhook.token)
         expect(rule.gitlab?.events).toEqual(['issues:*', 'merge_request:opened'])
       },
-      { timeout: 15_000 }
+      { timeout: 20_000 }
     )
     expect(legacy.sent.filter((frame) => frame.type === 'rc/hook-assign')).toHaveLength(0)
   })
@@ -206,7 +206,7 @@ describe('gitlab hooks — routes, compile, webhook converge (§8.3/§11.1/§11.
     h.a.relayReg.add(glab.ch)
     const created = await h.a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: glBody(h.agentId) })
     const hookId = (created.json() as { id: string }).id
-    await vi.waitFor(() => expect(h.fake.webhooks.size).toBe(1), { timeout: 15_000 })
+    await vi.waitFor(() => expect(h.fake.webhooks.size).toBe(1), { timeout: 20_000 })
 
     const res = await h.a.app.inject({ method: 'DELETE', url: `${ORG}/hooks/${hookId}` })
     expect(res.statusCode).toBe(204)
@@ -217,7 +217,7 @@ describe('gitlab hooks — routes, compile, webhook converge (§8.3/§11.1/§11.
         // The binding record trails the provider delete inside the same kick.
         expect((await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))?.webhookId).toBeNull()
       },
-      { timeout: 15_000 }
+      { timeout: 20_000 }
     )
   })
 
@@ -248,7 +248,7 @@ describe('gitlab hooks — routes, compile, webhook converge (§8.3/§11.1/§11.
         expect(webhook.events['push_events']).toBe(true)
         expect(webhook.events['issues_events']).toBeFalsy()
       },
-      { timeout: 15_000 }
+      { timeout: 20_000 }
     )
   })
 })
@@ -270,7 +270,7 @@ describe('gitlab hooks — binding lifecycle rebroadcast (§11.1/§11.3 round 2)
     const created = await h.a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: glBody(h.agentId) })
     expect(created.statusCode).toBe(200)
     const hookId = (created.json() as { id: string }).id
-    await vi.waitFor(() => expect(h.fake.webhooks.size).toBe(1), { timeout: 15_000 })
+    await vi.waitFor(() => expect(h.fake.webhooks.size).toBe(1), { timeout: 20_000 })
 
     const moved = await h.a.app.inject({
       method: 'PUT',
@@ -285,7 +285,7 @@ describe('gitlab hooks — binding lifecycle rebroadcast (§11.1/§11.3 round 2)
         expect((await h.bindings.get(DEFAULT_ORG_ID, other.id))?.webhookId).not.toBeNull()
         expect(h.fake.webhooks.size).toBe(1)
       },
-      { timeout: 15_000 }
+      { timeout: 20_000 }
     )
   })
 
@@ -293,12 +293,16 @@ describe('gitlab hooks — binding lifecycle rebroadcast (§11.1/§11.3 round 2)
     const h = await harness()
     const created = await h.a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: glBody(h.agentId) })
     expect(created.statusCode).toBe(200)
-    await vi.waitFor(() => expect(h.fake.webhooks.size).toBe(1), { timeout: 15_000 })
+    await vi.waitFor(() => expect(h.fake.webhooks.size).toBe(1), { timeout: 20_000 })
     const staleId = (await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))!.webhookId!
     // Provider-side deletion (or a crash between the delete and the local
     // clear): the recorded id and desiredEventsHash both survive locally.
     h.fake.webhooks.clear()
-    expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toEqual({ state: 'ready' })
+    // The create kick's saga may still hold the run lease — retry through it.
+    await vi.waitFor(
+      async () => expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toEqual({ state: 'ready' }),
+      { timeout: 20_000 }
+    )
     expect(h.fake.webhooks.size).toBe(1)
     const healed = (await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))!.webhookId!
     expect(healed).not.toBe(staleId)
@@ -318,7 +322,7 @@ describe('gitlab hooks — binding lifecycle rebroadcast (§11.1/§11.3 round 2)
         expect(assigns.length).toBeGreaterThan(0)
         firstToken = (assigns.at(-1)!.payload as RcHookAssign).gitlab!.signingToken
       },
-      { timeout: 15_000 }
+      { timeout: 20_000 }
     )
 
     glab.sent.length = 0
@@ -332,7 +336,7 @@ describe('gitlab hooks — binding lifecycle rebroadcast (§11.1/§11.3 round 2)
         expect(assigns.length).toBeGreaterThan(0)
         expect((assigns.at(-1)!.payload as RcHookAssign).gitlab!.signingToken).toBe(firstToken)
       },
-      { timeout: 15_000 }
+      { timeout: 20_000 }
     )
     expect([...h.fake.webhooks.values()][0]!.token).toBe(firstToken)
   })

@@ -127,9 +127,11 @@ export function hookRoutes(deps: HttpDeps) {
         .then(async (binding) => {
           if (!binding) return
           let outcome = await gitlab.provisioner.provision(orgId, binding.id)
-          // 8s × 90 outlasts a full 10-minute peer lease plus slack.
-          for (let attempt = 0; outcome.state === 'busy' && attempt < 90; attempt++) {
-            await new Promise((resolve) => setTimeout(resolve, 8_000))
+          // Exponential backoff capped at 8s; ~92 attempts outlast a full
+          // 10-minute peer lease plus slack, while back-to-back writes (the
+          // common case: the peer run finishes in seconds) converge fast.
+          for (let attempt = 0; outcome.state === 'busy' && attempt < 92; attempt++) {
+            await new Promise((resolve) => setTimeout(resolve, Math.min(8_000, 1_000 * 2 ** attempt)))
             outcome = await gitlab.provisioner.provision(orgId, binding.id)
           }
           if (outcome.state === 'busy') {
