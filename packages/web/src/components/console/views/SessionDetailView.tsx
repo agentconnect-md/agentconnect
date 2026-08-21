@@ -1756,8 +1756,8 @@ export default function SessionDetailView() {
     tailReady,
     transcriptSessionId,
     conversationOffline,
-    conversationHasEarlier,
-    conversationPagingEarlier,
+    hasEarlier,
+    pagingEarlier,
     conversationLoadedKey,
     loadEarlier: loadEarlierConversation,
     refreshTail,
@@ -2262,6 +2262,7 @@ export default function SessionDetailView() {
   const visibleMsgPaging = wantTranscript && transcriptMatchesSession && msgPaging
   const visibleMsgErr = wantTranscript && transcriptMatchesSession ? msgErr : null
   const visibleTailReady = wantTranscript && transcriptMatchesSession && tailReady
+  const visibleHasEarlier = wantTranscript && transcriptMatchesSession && hasEarlier
   const agentNameById = useMemo(() => new Map(agents.map((a) => [a.id, agentLabel(a)])), [agents])
   const memberNameByIdentity = useMemo(() => {
     const names = new Map<string, string>()
@@ -3278,15 +3279,21 @@ export default function SessionDetailView() {
     focusedLiveActivityStats.lastMs,
     pgBusy && headerFocusAgentId === session.agentId && durationFirst != null ? nowMs : null
   )
-  const displayDuration =
-    durationFirst != null && durationLast != null
+  // With older history unloaded the transcript is only the newest page, so a transcript-derived
+  // Duration/Tool-calls would describe ~50 rows and CLIMB on every "Load earlier" — show `—` instead
+  // of a wrong, growing number until the whole session is loaded (the DTO carries no session total).
+  const displayDuration = visibleHasEarlier
+    ? '—'
+    : durationFirst != null && durationLast != null
       ? fmtTranscriptDuration(durationLast - durationFirst)
       : (focusedSession?.duration ?? '—')
-  const displayToolCount = focusedTranscriptStats
-    ? fmtCountCompact(focusedTranscriptStats.toolCalls + focusedLiveActivityStats.toolCalls)
-    : focusedLiveActivityStats.toolCalls > 0 || isPg
-      ? fmtCountCompact(focusedLiveActivityStats.toolCalls)
-      : (focusedSession?.toolCount ?? '—')
+  const displayToolCount = visibleHasEarlier
+    ? '—'
+    : focusedTranscriptStats
+      ? fmtCountCompact(focusedTranscriptStats.toolCalls + focusedLiveActivityStats.toolCalls)
+      : focusedLiveActivityStats.toolCalls > 0 || isPg
+        ? fmtCountCompact(focusedLiveActivityStats.toolCalls)
+        : (focusedSession?.toolCount ?? '—')
 
   // Token-usage breakdown for the detail card — only the fields the runtime reported.
   const u = focusedSession?.usage
@@ -3860,14 +3867,14 @@ export default function SessionDetailView() {
                 </div>
               )}
 
-              {conversationKey && conversationHasEarlier && (
+              {visibleHasEarlier && (
                 <div className="flex items-center justify-center pt-[10px] font-sans text-[11.5px] font-medium leading-normal text-(--text-tertiary) desktop:pt-1 desktop:pb-3">
                   <button
                     className="lnk text-[12px]"
                     onClick={() => void loadEarlierConversation()}
-                    disabled={conversationPagingEarlier}
+                    disabled={pagingEarlier}
                   >
-                    {conversationPagingEarlier ? 'Loading earlier activity…' : 'Load earlier activity'}
+                    {pagingEarlier ? 'Loading earlier activity…' : 'Load earlier activity'}
                   </button>
                 </div>
               )}

@@ -80,8 +80,8 @@ export interface UseSessionTranscriptResult {
   tailReady: boolean
   transcriptSessionId: string | null
   conversationOffline: number
-  conversationHasEarlier: boolean
-  conversationPagingEarlier: boolean
+  hasEarlier: boolean
+  pagingEarlier: boolean
   conversationLoadedKey: string | null
   loadEarlier: () => Promise<void>
   refreshTail: () => Promise<void>
@@ -128,8 +128,12 @@ export function useSessionTranscript(input: UseSessionTranscriptInput): UseSessi
   // Owning member agent of a merged-conversation row — a background-task wake from a peer member
   // must render as THAT agent's work, not the representative's.
   const conversationSourceAgentByMessageRef = useRef(new WeakMap<SessionMessageDto, string>())
-  const [conversationHasEarlier, setConversationHasEarlier] = useState(false)
-  const [conversationPagingEarlier, setConversationPagingEarlier] = useState(false)
+  // "Load earlier" state, unified across single-session and merged-conversation mode.
+  const [hasEarlier, setHasEarlier] = useState(false)
+  const [pagingEarlier, setPagingEarlier] = useState(false)
+  // Single-session strictly-older cursor; conversation mode uses the per-source `older` map on
+  // conversationSourcesRef instead.
+  const olderCursorRef = useRef<string | null>(null)
   // Which conversation key the CURRENT fan-out state belongs to — the focus effect's readiness
   // signal. Null while a (new) key is loading, so a key-to-key navigation in the persistent layout
   // can never act on the previous conversation's leftover msgs/cursors.
@@ -161,7 +165,10 @@ export function useSessionTranscript(input: UseSessionTranscriptInput): UseSessi
 
   useEffect(() => {
     if (!wantTranscript || !sid || !aid) return
+    // `active` ignores late results; `ac` cancels the in-flight request itself on a session switch or
+    // unmount, so a superseded fan-out stops occupying the CP proxy instead of running to completion.
     let active = true
+    const ac = new AbortController()
     setTranscriptSessionId(sid)
     tailSessionRef.current = sid
     tailReadyRef.current = false
@@ -173,10 +180,10 @@ export function useSessionTranscript(input: UseSessionTranscriptInput): UseSessi
     setMsgErr(null)
     setMsgs(null)
     setMsgPaging(false)
-    // Pull the WHOLE history, not just the newest frame-budgeted page: render the first (newest)
-    // page immediately, then keep paging strictly older via nextCursor, prepending each page.
-    // Bounded so a pathological session can't keep the proxy busy forever.
-    const MAX_PAGES = 40
+    setHasEarlier(false)
+    olderCursorRef.current = null
+    // Load only the NEWEST page; older history comes in on demand via loadEarlier (a "Load earlier
+    // activity" button), so a long session no longer walks its whole backlog at open.
     if (conversationKey) {
       // Merged conversation (merged-conversation-view.md §4/§6): pull every member's history through
       // the SAME bounded per-session reads, then render mergeConversation() over the union. A member
@@ -194,8 +201,8 @@ export function useSessionTranscript(input: UseSessionTranscriptInput): UseSessi
           sources.map(async (src) => {
             try {
               // Newest window only — one page per member (C3 §5.2). Older history loads on demand via
-              // the per-source cursors below, capping a cold open at N requests instead of N × MAX_PAGES.
-              const page = await fetchSessionMessages(src.sessionId, {})
+              // the per-source cursors below, so a cold open is one request per member.
+              const page = await fetchSessionMessages(src.sessionId, { signal: ac.signal })
               if (!active) return
               cursors.set(src.sessionId, page.liveCursor ?? null)
               older.set(src.sessionId, page.nextCursor ?? null)
@@ -207,7 +214,7 @@ export function useSessionTranscript(input: UseSessionTranscriptInput): UseSessi
         )
         if (!active) return
         conversationSourcesRef.current = { rows: rowsBySession, cursors, older }
-        setConversationHasEarlier([...older.values()].some((cursor) => cursor !== null))
+        setHasEarlier([...older.values()].some((cursor) => cursor !== null))
         setConversationLoadedKey(conversationKey)
         setConversationOffline(failed)
         // Exact post matching uses every participant row; fuzzy prompt matching stays representative-only.
@@ -235,6 +242,7 @@ export function useSessionTranscript(input: UseSessionTranscriptInput): UseSessi
       })
       return () => {
         active = false
+        ac.abort()
         if (tailSessionRef.current === sid) {
           tailSessionRef.current = null
           tailReadyRef.current = false
@@ -242,32 +250,17 @@ export function useSessionTranscript(input: UseSessionTranscriptInput): UseSessi
       }
     }
     ;(async () => {
-      let all: SessionMessageDto[] = []
-      let cursor: string | undefined
-      let liveCursor: string | null = null
-      for (let i = 0; i < MAX_PAGES; i++) {
-        const page = await fetchSessionMessages(sid, { ...(cursor ? { cursor } : {}) })
-        if (!active) return
-        if (i === 0) liveCursor = page.liveCursor ?? null
-        all = [...page.messages, ...all]
-        setMsgs(all)
-        setMsgLoading(false)
-        if (!page.nextCursor) {
-          setMsgPaging(false)
-          liveCursorRef.current = liveCursor
-          tailReadyRef.current = true
-          setTailReady(true)
-          if (!sessionBusyRef.current) reconcileLiveSteps(sid, all, aid)
-          return
-        }
-        cursor = page.nextCursor
-        setMsgPaging(true)
-      }
+      const page = await fetchSessionMessages(sid, { signal: ac.signal })
+      if (!active) return
+      olderCursorRef.current = page.nextCursor ?? null
+      setHasEarlier(page.nextCursor != null)
+      liveCursorRef.current = page.liveCursor ?? null
+      setMsgs(page.messages)
+      setMsgLoading(false)
       setMsgPaging(false)
-      liveCursorRef.current = liveCursor
       tailReadyRef.current = true
       setTailReady(true)
-      if (!sessionBusyRef.current) reconcileLiveSteps(sid, all, aid)
+      if (!sessionBusyRef.current) reconcileLiveSteps(sid, page.messages, aid)
     })().catch((e) => {
       if (!active) return
       setMsgErr(e instanceof Error ? e.message : String(e))
@@ -276,6 +269,7 @@ export function useSessionTranscript(input: UseSessionTranscriptInput): UseSessi
     })
     return () => {
       active = false
+      ac.abort()
       if (tailSessionRef.current === sid) {
         tailSessionRef.current = null
         tailReadyRef.current = false
@@ -388,13 +382,37 @@ export function useSessionTranscript(input: UseSessionTranscriptInput): UseSessi
     return run
   }, [wantTranscript, sid, aid, sessionPlatform, reconcileLiveSteps, conversationKey])
 
-  // C3 §5.2 cross-source "load earlier": one strictly-older page per member that still has history,
-  // prepended per source, then re-merged.
+  // "Load earlier": one strictly-older page, prepended. Single-session pages `sid` off its own
+  // cursor; conversation mode (C3 §5.2) pages one older page per member and re-merges the union.
   const loadEarlier = useCallback(async (): Promise<void> => {
-    if (!conversationKey || conversationPagingEarlier) return
+    if (pagingEarlier) return
+    if (!conversationKey) {
+      const cursor = olderCursorRef.current
+      if (!sid || !cursor) return
+      setPagingEarlier(true)
+      try {
+        const page = await fetchSessionMessages(sid, { cursor })
+        // Fence on the session: a navigation before this resolves would otherwise splice these rows
+        // into the NEW session and re-point its cursor at the old one (tailSessionRef tracks the open
+        // session, like refreshTail's guard).
+        if (tailSessionRef.current !== sid) return
+        // Upsert, not concat: a Slack warm-thread backfill can make this older read overlap rows the
+        // tail already added, so a raw prepend would duplicate them (and their React keys).
+        setMsgs((current) =>
+          mergeSessionMessages(current ?? [], page.messages, platformTranscriptOrdering(sessionPlatform))
+        )
+        olderCursorRef.current = page.nextCursor ?? null
+        setHasEarlier(page.nextCursor != null)
+      } catch {
+        // Keep the window; the button stays for a retry.
+      } finally {
+        setPagingEarlier(false)
+      }
+      return
+    }
     const sources = conversationMembersRef.current ?? []
     const state = conversationSourcesRef.current
-    setConversationPagingEarlier(true)
+    setPagingEarlier(true)
     try {
       await Promise.all(
         sources.map(async (src) => {
@@ -419,11 +437,11 @@ export function useSessionTranscript(input: UseSessionTranscriptInput): UseSessi
           conversationSourceAgentByMessageRef.current
         )
       )
-      setConversationHasEarlier([...state.older.values()].some((cursor) => cursor !== null))
+      setHasEarlier([...state.older.values()].some((cursor) => cursor !== null))
     } finally {
-      setConversationPagingEarlier(false)
+      setPagingEarlier(false)
     }
-  }, [conversationKey, conversationPagingEarlier])
+  }, [conversationKey, pagingEarlier, sid, sessionPlatform])
 
   return {
     msgs,
@@ -433,8 +451,8 @@ export function useSessionTranscript(input: UseSessionTranscriptInput): UseSessi
     tailReady,
     transcriptSessionId,
     conversationOffline,
-    conversationHasEarlier,
-    conversationPagingEarlier,
+    hasEarlier,
+    pagingEarlier,
     conversationLoadedKey,
     loadEarlier,
     refreshTail,

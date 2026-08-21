@@ -1342,8 +1342,8 @@ async function authenticatedFetch(
   return retried
 }
 
-async function apiGet<T>(path: string): Promise<T> {
-  const res = await authenticatedFetch(path, { cache: 'no-store' })
+async function apiGet<T>(path: string, init?: Omit<RequestInit, 'headers'>): Promise<T> {
+  const res = await authenticatedFetch(path, { cache: 'no-store', ...init })
   // Parse the denial body like the write helpers do: reads carry machine-readable
   // `code`s too (e.g. DAEMON_FEATURE_MISSING on a capability-gated route), and a
   // status-only ApiError silently drops them.
@@ -2348,12 +2348,15 @@ export function putSessionExternalAccess(
 // SessionMeta. Content ownership stays pinned there when the agent moves.
 export async function fetchSessionMessages(
   sessionId: string,
-  options: { cursor?: string; after?: string; limit?: number } = {}
+  options: { cursor?: string; after?: string; limit?: number; signal?: AbortSignal } = {}
 ): Promise<SessionHistoryDto> {
   const q = new URLSearchParams({ limit: String(options.limit ?? 50) })
   if (options.cursor) q.set('cursor', options.cursor)
   if (options.after) q.set('after', options.after)
-  return apiGet<SessionHistoryDto>(`${orgBase()}/sessions/${encodeURIComponent(sessionId)}/messages?${q.toString()}`)
+  return apiGet<SessionHistoryDto>(
+    `${orgBase()}/sessions/${encodeURIComponent(sessionId)}/messages?${q.toString()}`,
+    options.signal ? { signal: options.signal } : undefined
+  )
 }
 
 // One frame-budgeted byte slice of a tool call's FULL ToolBody JSON (mirrors the
