@@ -19,6 +19,11 @@ export { PgAgentRepo } from './repositories/agent.repo.js'
 export { PgGithubInstallationRepo, PgGithubInstallStateStore } from './repositories/github.repo.js'
 export { PgAgentRepoAuthorizationRepo } from './repositories/agent-repo-auth.repo.js'
 export { PgCodeHostRepositoryRepo } from './repositories/code-host-repository.repo.js'
+export {
+  PgGitlabConnectionRepo,
+  PgGitlabConnectionSecretStore,
+  PgGitlabOauthStateStore
+} from './repositories/gitlab.repo.js'
 export { PgSocialIdentityMutationGate } from './repositories/social-identity-mutation.gate.js'
 export { PgAssignmentRepo } from './repositories/assignment.repo.js'
 export { PgSessionRepo } from './repositories/session.repo.js'

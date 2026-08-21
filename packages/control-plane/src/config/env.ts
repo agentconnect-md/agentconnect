@@ -199,6 +199,12 @@ const CoreConfigShape = {
   // Optional; when set the App JWT uses iss=client_id (GitHub's current
   // recommendation). Unset ⇒ iss=GITHUB_APP_ID (still supported).
   GITHUB_APP_CLIENT_ID: z.string().optional(),
+  // ── GitLab.com OAuth application (gitlab-com-integration.md §18.3) ──
+  // Both must be set to enable the GitLab integration; either unset ⇒ the
+  // gitlab module is not assembled and its routes 404. Plain env is the
+  // no-document fallback; the typed deployment document overlays these.
+  GITLAB_CLIENT_ID: z.string().optional(),
+  GITLAB_CLIENT_SECRET: z.string().optional(),
   // ── Logto Management API (identity metadata + Profile social sign-in methods) ──
   // The ONE deliberate Logto coupling: it resolves GitHub identity metadata for
   // repo authorization and manages the signed-in user's own social identities.

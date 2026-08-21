@@ -3026,6 +3026,74 @@ export interface CodeHostRepositoryRepo {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
+// GitLab.com OAuth connections (gitlab-com-integration.md §8.2, §9) — the
+// administration identity. Sealed token material lives ONLY behind
+// GitlabConnectionSecretStore; DTO reads never join it.
+// ───────────────────────────────────────────────────────────────────────────
+
+export type GitlabConnectionState = 'connected' | 'reauth_required' | 'disconnected'
+
+export interface GitlabConnectionRecord {
+  id: string
+  orgId: string
+  userId: string | null
+  gitlabUserId: bigint
+  gitlabUsername: string
+  scopes: string[]
+  accessExpiresAt: Date | null
+  state: GitlabConnectionState
+  tokenVersion: bigint
+  lastSyncAt: Date | null
+  createdAt: Date
+}
+
+export interface GitlabConnectionRepo {
+  /** Callback upsert (§9.2): keyed by (org, numeric GitLab user); reconnect refreshes facts. */
+  upsertOnCallback(input: {
+    orgId: string
+    userId: string
+    gitlabUserId: bigint
+    gitlabUsername: string
+    scopes: string[]
+    accessExpiresAt: Date | null
+  }): Promise<GitlabConnectionRecord>
+  get(orgId: string, connectionId: string): Promise<GitlabConnectionRecord | null>
+  listForOrg(orgId: string): Promise<GitlabConnectionRecord[]>
+  /** Disconnect: token pair removed by the caller via the secret store; state flips here. */
+  setState(orgId: string, connectionId: string, state: GitlabConnectionState): Promise<boolean>
+  /** Refresh single-writer (§9.3): claim a short lease iff free/expired/own. */
+  claimRefreshLease(connectionId: string, owner: string, until: Date, now: Date): Promise<boolean>
+  releaseRefreshLease(connectionId: string, owner: string): Promise<void>
+  /** Token-version CAS: true iff `expected` was current (caller then persists the sealed pair). */
+  advanceTokenVersion(connectionId: string, expected: bigint, accessExpiresAt: Date | null): Promise<boolean>
+}
+
+/** Sealed OAuth pair (per-org key scope). Never joined by DTO queries. */
+export interface GitlabConnectionSecretStore {
+  put(orgId: string, connectionId: string, pair: { accessToken: string; refreshToken: string }): Promise<void>
+  get(orgId: string, connectionId: string): Promise<{ accessToken: string; refreshToken: string } | null>
+  delete(orgId: string, connectionId: string): Promise<void>
+}
+
+export interface GitlabOauthStateRecord {
+  nonce: string
+  orgId: string
+  userId: string
+  browserHash: string | null
+  returnPath: string
+  verifier: string // sealed PKCE verifier
+  expiresAt: Date
+}
+
+export interface GitlabOauthStateStore {
+  put(input: Omit<GitlabOauthStateRecord, 'browserHash'>): Promise<void>
+  /** Begin hop: stamp the browser-binding hash exactly once (null → value). */
+  bindBrowser(nonce: string, browserHash: string, now: Date): Promise<GitlabOauthStateRecord | null>
+  /** Callback: atomically delete and return the row — single use; null ⇒ replay/unknown/expired. */
+  consume(nonce: string, now: Date): Promise<GitlabOauthStateRecord | null>
+}
+
+// ───────────────────────────────────────────────────────────────────────────
 // AgentRepoAuthorizationRepo — explicit repo grants per agent
 // (issue #457, agent-multi-repo-authorization.md). Anchored on the AGENT, never
 // derived from hooks; `repoId` is the rename-immune match key. Subordinate to

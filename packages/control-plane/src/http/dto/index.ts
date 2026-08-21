@@ -1736,6 +1736,24 @@ export const SlackBotRefreshDto = z.object({
 
 // ── github app (github-app workspaces) ────────────────────────────────────
 /** Deployment GitHub App status + the org-bound install deep link. NEVER key material. */
+/** One organization GitLab.com OAuth connection — administration identity, no token material. */
+export const GitlabConnectionDto = z.object({
+  id: z.string(),
+  gitlabUserId: z.string(), // numeric GitLab.com user id, losslessly as a string
+  gitlabUsername: z.string(),
+  state: z.enum(['connected', 'reauth_required', 'disconnected']),
+  scopes: z.array(z.string()),
+  connectedBy: z.string().nullable(), // AgentConnect user id; null after user deletion
+  accessExpiresAt: z.string().nullable(),
+  createdAt: z.string()
+})
+export type GitlabConnectionDtoT = z.infer<typeof GitlabConnectionDto>
+
+export const GitlabConnectionListDto = z.object({ connections: z.array(GitlabConnectionDto) })
+
+/** The begin URL the browser must visit to continue the OAuth flow on GitLab.com. */
+export const GitlabOauthStartDto = z.object({ url: z.string() })
+
 export const GithubAppDto = z.object({
   enabled: z.boolean(),
   /** github.com/apps/<slug>; null when the feature is disabled. */

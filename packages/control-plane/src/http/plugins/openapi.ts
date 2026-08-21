@@ -75,7 +75,8 @@ export const Tag = {
   Hooks: 'Hooks',
   Usage: 'Usage',
   Stream: 'Stream',
-  GitHub: 'GitHub'
+  GitHub: 'GitHub',
+  GitLab: 'GitLab'
 } as const
 
 /** Group order + blurbs for the docs sidebar (OpenAPI top-level `tags`). */
@@ -131,6 +132,10 @@ const TAG_DESCRIPTIONS: ReadonlyArray<{ name: string; description: string }> = [
   {
     name: Tag.GitHub,
     description: 'GitHub App installations powering github-app workspaces (repo picker + short-lived git credentials).'
+  },
+  {
+    name: Tag.GitLab,
+    description: 'GitLab.com OAuth connections — the administration identity for project discovery and provisioning.'
   }
 ]
 

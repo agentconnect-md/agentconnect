@@ -119,6 +119,15 @@ const GithubAppSchema = z.preprocess(
   })
 )
 
+const GitlabAppSchema = z.preprocess(
+  withoutProviderUrlSnapshot,
+  z.strictObject({
+    // GitLab.com OAuth application id (gitlab-com-integration.md §18.3); the
+    // client secret is the write-only 'gitlab.clientSecret' deployment secret.
+    clientId: z.string().trim().min(1)
+  })
+)
+
 const SlackAppSchema = z.preprocess(
   withoutProviderUrlSnapshot,
   z.strictObject({
@@ -132,6 +141,7 @@ export const DeploymentConfigValuesV1Schema = z
   .strictObject({
     auth: AuthSchema,
     github: GithubAppSchema.nullable(),
+    gitlab: GitlabAppSchema.nullable().optional(),
     slack: SlackAppSchema.nullable(),
     /** Regional Login Apps used as the tenant anchor for Bot App admission. */
     feishu: RegionalLoginAppSchema.nullable().optional(),
@@ -203,6 +213,7 @@ export const DEPLOYMENT_SECRET_KEYS = [
   // GitHub returns this only once during App creation. The CP does not consume
   // it today, but Logto's GitHub connector setup does, so it must not be lost.
   'github.clientSecret',
+  'gitlab.clientSecret',
   'slack.clientSecret',
   'slack.signingSecret',
   'feishu.loginAppSecret',
@@ -357,6 +368,7 @@ export function deploymentSecretsRequiringRefresh(
   const githubClientChanged =
     next.github !== null && next.github.clientId !== null && previous?.github?.clientId !== next.github.clientId
   const githubWebhookEnabled = next.github !== null && next.github.webhookEnabled !== false
+  const gitlabClientChanged = next.gitlab != null && previous?.gitlab?.clientId !== next.gitlab.clientId
   const slackIdentityChanged =
     next.slack && (previous?.slack?.appId !== next.slack.appId || previous?.slack?.clientId !== next.slack.clientId)
   const feishuIdentityChanged = next.feishu && previous?.feishu?.loginAppId !== next.feishu.loginAppId
@@ -372,6 +384,7 @@ export function deploymentSecretsRequiringRefresh(
     ...(githubAppChanged ? (['github.privateKeyB64'] as const) : []),
     ...(next.github && githubWebhookEnabled && githubAppChanged ? (['github.webhookSecret'] as const) : []),
     ...(githubClientChanged ? (['github.clientSecret'] as const) : []),
+    ...(gitlabClientChanged ? (['gitlab.clientSecret'] as const) : []),
     ...(slackIdentityChanged ? (['slack.clientSecret', 'slack.signingSecret'] as const) : []),
     ...(feishuIdentityChanged ? (['feishu.loginAppSecret'] as const) : []),
     ...(larkIdentityChanged ? (['lark.loginAppSecret'] as const) : []),
@@ -385,6 +398,7 @@ function requiredSecrets(values: DeploymentConfigValuesV1): DeploymentSecretKey[
   return [
     ...(values.github ? (['github.privateKeyB64'] as const) : []),
     ...(values.github && values.github.webhookEnabled !== false ? (['github.webhookSecret'] as const) : []),
+    ...(values.gitlab ? (['gitlab.clientSecret'] as const) : []),
     ...(values.slack ? (['slack.clientSecret', 'slack.signingSecret'] as const) : []),
     ...(values.feishu ? (['feishu.loginAppSecret'] as const) : []),
     ...(values.lark ? (['lark.loginAppSecret'] as const) : []),

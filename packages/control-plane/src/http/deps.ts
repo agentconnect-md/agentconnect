@@ -48,6 +48,7 @@ import type {
   GithubInstallationRepo,
   AgentRepoAuthorizationRepo,
   CodeHostRepositoryRepo,
+  GitlabConnectionRepo,
   DaemonLifecycleOpRepo,
   OAuthRepo,
   WebchatMcpOperationRepo
@@ -55,6 +56,7 @@ import type {
 import type { Clock } from '../domain/clock.js'
 import type { OAuthService } from '../registry/oauthService.js'
 import type { GithubService } from '../github/service.js'
+import type { GitlabOauthService } from '../gitlab/oauth.service.js'
 import type { PullRequestViewService } from '../github/pull-request-view.service.js'
 import type { SessionPullRequestLinkService } from '../github/session-pull-request-link.service.js'
 import type { GithubUserAuthzService } from '../github/user-authz.js'
@@ -236,6 +238,8 @@ export interface HttpDeps {
     agentRepoAuth: AgentRepoAuthorizationRepo
     /** Provider-qualified repository catalog (gitlab-com-integration.md §8.1) — readers-first write side. */
     codeHostRepository: CodeHostRepositoryRepo
+    /** GitLab.com OAuth connection metadata (§8.2); token pair lives behind its secret store. */
+    gitlabConnection: GitlabConnectionRepo
     /** Append-only events feed (§3.12) — WebUI CRUD writes land here (`cron_change`, …). */
     audit: AuditRepo
     /** Durable browser-confirmed delegated MCP operation ledger. */
@@ -366,6 +370,8 @@ export interface HttpDeps {
   /** github-app workspaces façade; absent ⇒ feature disabled (GITHUB_APP_* unset) and
    *  every github route 404s. */
   github?: GithubService
+  /** GitLab.com OAuth surface (gitlab-com-integration.md §9); absent ⇒ routes 404. */
+  gitlab?: { oauth: GitlabOauthService }
   /** The PR panel's read projection; absent like {@link github} ⇒ the route 404s, hiding the tab. */
   pullRequestView?: PullRequestViewService
   /** The panel's second identity source: the PR a session's own head branch has, for the sessions no

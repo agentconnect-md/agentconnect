@@ -22,6 +22,9 @@ import {
 
 import { type AppConfig, resolveWebAppUrl } from './config/env.js'
 import { resolveGithubAppConfig } from './github/config.js'
+import { resolveGitlabAppConfig } from './gitlab/config.js'
+import type { FetchLike as GitlabFetchLike } from './gitlab/api.js'
+import { GitlabOauthService } from './gitlab/oauth.service.js'
 import { resolveSlackPlatformAppConfig } from './config/slack-platform.js'
 import { resolveFeishuPlatformApps } from './config/feishu-platform.js'
 import type { FetchLike } from './github/api.js'
@@ -89,6 +92,9 @@ import {
   PgGithubInstallStateStore,
   PgAgentRepoAuthorizationRepo,
   PgCodeHostRepositoryRepo,
+  PgGitlabConnectionRepo,
+  PgGitlabConnectionSecretStore,
+  PgGitlabOauthStateStore,
   PgSocialIdentityMutationGate,
   PgCronRepo,
   PgDutyGroupRepo,
@@ -256,6 +262,8 @@ export interface ContainerOpts {
   fastify?: FastifyServerOptions
   /** GitHub REST fetch override — integration tests stub the API without network. */
   githubFetch?: FetchLike
+  /** GitLab HTTP edge stub for tests (mirrors githubFetch). */
+  gitlabFetch?: GitlabFetchLike
   /** Slack Web API fetch override for Session membership checks. */
   slackFetch?: FetchLike
   /** Feishu/Lark Open Platform fetch override for Session membership checks. */
@@ -409,7 +417,9 @@ export function buildContainer(
     githubInstallation: new PgGithubInstallationRepo(prisma),
     githubInstallState: new PgGithubInstallStateStore(prisma),
     agentRepoAuth: new PgAgentRepoAuthorizationRepo(prisma),
-    codeHostRepository: new PgCodeHostRepositoryRepo(prisma)
+    codeHostRepository: new PgCodeHostRepositoryRepo(prisma),
+    gitlabConnection: new PgGitlabConnectionRepo(prisma),
+    gitlabOauthState: new PgGitlabOauthStateStore(prisma)
   }
 
   // ── C3/C4/C5 services ─────────────────────────────────────────────────────
@@ -904,6 +914,33 @@ export function buildContainer(
         ...(opts.githubFetch ? { fetchImpl: opts.githubFetch } : {})
       })
     : undefined
+  // GitLab.com OAuth administration (opt-in, gitlab-com-integration.md §9):
+  // assembled only when GITLAB_CLIENT_ID/SECRET are configured AND the public
+  // origin is known (the begin/callback URLs derive from it); absent ⇒ routes 404.
+  const gitlabAppCfg = resolveGitlabAppConfig(config)
+  if (gitlabAppCfg && !config.PUBLIC_CP_URL) {
+    // A deploy mistake, not a mode: the begin/callback URLs derive from the public origin.
+    throw new Error('GITLAB_CLIENT_ID/SECRET are set but PUBLIC_CP_URL is not — set it or unset both')
+  }
+  const gitlabWebAppUrl = resolveWebAppUrl(config)
+  const gitlab =
+    gitlabAppCfg && config.PUBLIC_CP_URL
+      ? {
+          oauth: new GitlabOauthService({
+            cfg: gitlabAppCfg,
+            connections: repos.gitlabConnection,
+            secrets: new PgGitlabConnectionSecretStore(prisma, secretCipher),
+            states: repos.gitlabOauthState,
+            cipher: secretCipher,
+            clock,
+            publicCpUrl: config.PUBLIC_CP_URL,
+            ...(gitlabWebAppUrl ? { webAppUrl: gitlabWebAppUrl } : {}),
+            ...(opts.gitlabFetch ? { fetchImpl: opts.gitlabFetch } : {}),
+            log: { warn: (obj, msg) => http.log.warn(obj, msg) }
+          })
+        }
+      : undefined
+
   // The console PR panel's read projection — long-lived so its short TTL cache actually absorbs mounts.
   const pullRequestView = github ? new PullRequestViewService(github.tokens, clock, opts.githubFetch) : undefined
   // §12.6's second identity source for that panel: the PR a session's own head branch has, for the
@@ -1159,6 +1196,7 @@ export function buildContainer(
       githubInstallation: repos.githubInstallation,
       agentRepoAuth: repos.agentRepoAuth,
       codeHostRepository: repos.codeHostRepository,
+      gitlabConnection: repos.gitlabConnection,
       audit: repos.audit,
       webchatMcpOperation: repos.webchatMcpOperation,
       oauth: repos.oauth
@@ -1203,6 +1241,7 @@ export function buildContainer(
     searchSkillRegistry,
     resolvePublicRepo: createPublicRepoResolver(),
     ...(github ? { github } : {}),
+    ...(gitlab ? { gitlab } : {}),
     ...(pullRequestView ? { pullRequestView } : {}),
     ...(sessionPullRequestLink ? { sessionPullRequestLink } : {}),
     ...(githubUserAuthz ? { githubUserAuthz } : {}),
