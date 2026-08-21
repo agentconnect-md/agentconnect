@@ -165,36 +165,91 @@ describe('GitlabProvisioner (§10.2)', () => {
   it('provision loses to a concurrent cleanup: no provider write after the fence flips (§10.2)', async () => {
     const h = await harness()
     // Cleanup entered first: the fence is gone before provision's first write.
-    await h.bindings.beginCleanup(DEFAULT_ORG_ID, h.binding.id, PROJECT)
+    await h.bindings.beginCleanup(DEFAULT_ORG_ID, h.binding.id, PROJECT, new Date())
     const outcome = await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
-    expect(outcome).toEqual({ state: 'admin_degraded', reason: 'claim_fence_lost' })
+    expect(outcome).toEqual({ state: 'busy', reason: 'provisioning_or_cleanup_in_progress' })
     // Nothing was created against the provider.
     expect(h.fake.serviceAccounts).toHaveLength(0)
     expect(h.fake.tokens.size).toBe(0)
   })
 
-  it('the reservation is mutually exclusive with cleanup, in both orders', async () => {
+  it('the lease is exclusive, run-owned, and mutually exclusive with cleanup', async () => {
     const h = await harness()
-    // Reservation held: cleanup must wait — no check-to-write window exists.
-    expect(await h.bindings.markProviderMutationStarted(DEFAULT_ORG_ID, h.binding.id, PROJECT)).toBe(true)
-    expect(await h.bindings.beginCleanup(DEFAULT_ORG_ID, h.binding.id, PROJECT)).toBe(false)
-    expect(await h.bindings.claimFenceHeld(DEFAULT_ORG_ID, h.binding.id, PROJECT)).toBe(true)
-    // Released: cleanup wins, and a late marker/fence check refuses.
-    await h.bindings.endProviderMutation(DEFAULT_ORG_ID, h.binding.id, PROJECT)
-    expect(await h.bindings.beginCleanup(DEFAULT_ORG_ID, h.binding.id, PROJECT)).toBe(true)
-    expect(await h.bindings.claimFenceHeld(DEFAULT_ORG_ID, h.binding.id, PROJECT)).toBe(false)
-    expect(await h.bindings.markProviderMutationStarted(DEFAULT_ORG_ID, h.binding.id, PROJECT)).toBe(false)
+    const now = new Date()
+    const until = new Date(Date.now() + 600_000)
+    // Acquired by A: a live foreign acquire (B) refuses; same-owner re-acquire holds.
+    expect(await h.bindings.markProviderMutationStarted(DEFAULT_ORG_ID, h.binding.id, PROJECT, 'A', until, now)).toBe(
+      true
+    )
+    expect(await h.bindings.markProviderMutationStarted(DEFAULT_ORG_ID, h.binding.id, PROJECT, 'B', until, now)).toBe(
+      false
+    )
+    expect(await h.bindings.markProviderMutationStarted(DEFAULT_ORG_ID, h.binding.id, PROJECT, 'A', until, now)).toBe(
+      true
+    )
+    // Cleanup must wait while the lease is live; a foreign release does nothing.
+    expect(await h.bindings.beginCleanup(DEFAULT_ORG_ID, h.binding.id, PROJECT, now)).toBe(false)
+    await h.bindings.endProviderMutation(DEFAULT_ORG_ID, h.binding.id, PROJECT, 'B')
+    expect(await h.bindings.claimFenceHeld(DEFAULT_ORG_ID, h.binding.id, PROJECT, 'A', now)).toBe(true)
+    // Only the owner's release frees it; then cleanup wins and late checks refuse.
+    await h.bindings.endProviderMutation(DEFAULT_ORG_ID, h.binding.id, PROJECT, 'A')
+    expect(await h.bindings.beginCleanup(DEFAULT_ORG_ID, h.binding.id, PROJECT, now)).toBe(true)
+    expect(await h.bindings.claimFenceHeld(DEFAULT_ORG_ID, h.binding.id, PROJECT, 'A', now)).toBe(false)
+    expect(await h.bindings.markProviderMutationStarted(DEFAULT_ORG_ID, h.binding.id, PROJECT, 'A', until, now)).toBe(
+      false
+    )
   })
 
-  it('disconnect during a held reservation is refused, then succeeds after release', async () => {
+  it('an expired lease is reclaimable by a new run and by cleanup (crash recovery)', async () => {
+    const h = await harness()
+    const now = new Date()
+    const expired = new Date(Date.now() - 1_000)
+    expect(
+      await h.bindings.markProviderMutationStarted(DEFAULT_ORG_ID, h.binding.id, PROJECT, 'dead', expired, now)
+    ).toBe(true)
+    // The dead run's lease no longer blocks either successor.
+    expect(
+      await h.bindings.markProviderMutationStarted(
+        DEFAULT_ORG_ID,
+        h.binding.id,
+        PROJECT,
+        'next',
+        new Date(Date.now() + 600_000),
+        now
+      )
+    ).toBe(true)
+    await h.bindings.endProviderMutation(DEFAULT_ORG_ID, h.binding.id, PROJECT, 'next')
+    expect(
+      await h.bindings.markProviderMutationStarted(DEFAULT_ORG_ID, h.binding.id, PROJECT, 'dead2', expired, now)
+    ).toBe(true)
+    expect(await h.bindings.beginCleanup(DEFAULT_ORG_ID, h.binding.id, PROJECT, now)).toBe(true)
+  })
+
+  it('two concurrent provisions: exactly one runs, the other observes busy', async () => {
+    const h = await harness()
+    const [a, b] = await Promise.all([
+      h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id),
+      h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
+    ])
+    const states = [a.state, b.state].sort()
+    expect(states).toEqual(['busy', 'ready'])
+    // Exactly one set of provider resources was created.
+    expect(h.fake.serviceAccounts).toHaveLength(1)
+    expect(h.fake.tokens.size).toBe(3)
+  })
+
+  it('disconnect during a held lease is refused, then succeeds after release', async () => {
     const h = await harness()
     await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
-    expect(await h.bindings.markProviderMutationStarted(DEFAULT_ORG_ID, h.binding.id, PROJECT)).toBe(true)
+    const until = new Date(Date.now() + 600_000)
+    expect(
+      await h.bindings.markProviderMutationStarted(DEFAULT_ORG_ID, h.binding.id, PROJECT, 'live', until, new Date())
+    ).toBe(true)
     expect(await h.provisioner.disconnect(DEFAULT_ORG_ID, h.binding.id)).toEqual({
       removed: false,
       reason: 'provisioning_in_progress'
     })
-    await h.bindings.endProviderMutation(DEFAULT_ORG_ID, h.binding.id, PROJECT)
+    await h.bindings.endProviderMutation(DEFAULT_ORG_ID, h.binding.id, PROJECT, 'live')
     expect(await h.provisioner.disconnect(DEFAULT_ORG_ID, h.binding.id)).toEqual({ removed: true })
   })
 

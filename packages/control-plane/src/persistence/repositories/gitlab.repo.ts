@@ -374,41 +374,61 @@ export class PgGitlabProjectBindingRepo implements GitlabProjectBindingRepo {
     return this.get(orgId, bindingId)
   }
 
-  async markProviderMutationStarted(orgId: string, bindingId: string, projectId: bigint): Promise<boolean> {
-    // Idempotent for reruns (`active` stays `active`); false the moment the
-    // claim is gone, detached, or entering cleanup — the fence is REQUIRED.
-    // The RESERVATION: durable before any provider write, and the mutual-
-    // exclusion edge — beginCleanup refuses while it is held. Idempotent for
-    // the same owner (a crashed run's stale reservation is re-acquired here).
+  async markProviderMutationStarted(
+    orgId: string,
+    bindingId: string,
+    projectId: bigint,
+    owner: string,
+    until: Date,
+    now: Date
+  ): Promise<boolean> {
+    // EXCLUSIVE run-owned lease, CAS-acquired: free, same-owner, or expired —
+    // never a live foreign lease, so two runs can never both hold the fence.
     const res = await this.prisma.codeHostRepositoryClaim.updateMany({
       where: {
         provider: 'gitlab',
         externalId: projectId,
         orgId,
         bindingRef: bindingId,
-        state: { in: ['provisioning', 'active'] }
+        state: { in: ['provisioning', 'active'] },
+        OR: [{ opOwner: null }, { opOwner: owner }, { opLeaseUntil: { lt: now } }]
       },
-      data: { state: 'active', opInFlight: true }
+      data: { state: 'active', opOwner: owner, opLeaseUntil: until }
     })
     return res.count === 1
   }
 
-  async endProviderMutation(orgId: string, bindingId: string, projectId: bigint): Promise<void> {
+  async endProviderMutation(orgId: string, bindingId: string, projectId: bigint, owner: string): Promise<void> {
+    // Only the owning run releases; a finished run can never clear a peer's lease.
     await this.prisma.codeHostRepositoryClaim.updateMany({
-      where: { provider: 'gitlab', externalId: projectId, orgId, bindingRef: bindingId },
-      data: { opInFlight: false }
+      where: { provider: 'gitlab', externalId: projectId, orgId, bindingRef: bindingId, opOwner: owner },
+      data: { opOwner: null, opLeaseUntil: null }
     })
   }
 
-  async claimFenceHeld(orgId: string, bindingId: string, projectId: bigint): Promise<boolean> {
+  async claimFenceHeld(
+    orgId: string,
+    bindingId: string,
+    projectId: bigint,
+    owner: string,
+    now: Date
+  ): Promise<boolean> {
     const held = await this.prisma.codeHostRepositoryClaim.count({
-      where: { provider: 'gitlab', externalId: projectId, orgId, bindingRef: bindingId, state: 'active' }
+      where: {
+        provider: 'gitlab',
+        externalId: projectId,
+        orgId,
+        bindingRef: bindingId,
+        state: 'active',
+        opOwner: owner,
+        opLeaseUntil: { gte: now }
+      }
     })
     return held === 1
   }
 
-  async beginCleanup(orgId: string, bindingId: string, projectId: bigint): Promise<boolean> {
-    // Refused while a provisioning reservation is held: cleanup must WAIT, so
+  async beginCleanup(orgId: string, bindingId: string, projectId: bigint, now: Date): Promise<boolean> {
+    // Refused while a LIVE provisioning lease is held: cleanup must wait, so
     // there is no window between a fence check and its provider write. When no
     // claim row is attached at all (already tombstoned), cleanup may proceed.
     const attached = await this.prisma.codeHostRepositoryClaim.count({
@@ -416,8 +436,14 @@ export class PgGitlabProjectBindingRepo implements GitlabProjectBindingRepo {
     })
     if (attached === 0) return true
     const res = await this.prisma.codeHostRepositoryClaim.updateMany({
-      where: { provider: 'gitlab', externalId: projectId, orgId, bindingRef: bindingId, opInFlight: false },
-      data: { state: 'cleanup_pending' }
+      where: {
+        provider: 'gitlab',
+        externalId: projectId,
+        orgId,
+        bindingRef: bindingId,
+        OR: [{ opOwner: null }, { opLeaseUntil: { lt: now } }]
+      },
+      data: { state: 'cleanup_pending', opOwner: null, opLeaseUntil: null }
     })
     return res.count === 1
   }

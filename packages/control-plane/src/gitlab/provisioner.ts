@@ -57,6 +57,9 @@ import {
 } from './api.js'
 import type { GitlabOauthService } from './oauth.service.js'
 
+/** The exclusive provisioning lease a run holds across its provider writes. */
+export const PROVISION_LEASE_MS = 10 * 60 * 1000
+
 /** §7.3 v1 policy: every PAT is created with exactly this lifetime. */
 export const PAT_LIFETIME_DAYS = 90
 
@@ -82,7 +85,12 @@ export class GitlabTokenPolicyViolation extends Error {
   }
 }
 
-export type ProvisionOutcome = { state: 'ready' } | { state: 'admin_degraded' | 'runtime_degraded'; reason: string }
+export type ProvisionOutcome =
+  | { state: 'ready' }
+  | { state: 'admin_degraded' | 'runtime_degraded'; reason: string }
+  // A live peer owns the claim (provisioning or cleanup in progress): nothing
+  // was written and no binding state was overwritten; the caller observes.
+  | { state: 'busy'; reason: string }
 
 export interface GitlabProvisionerDeps {
   oauth: GitlabOauthService
@@ -120,12 +128,30 @@ export class GitlabProvisioner {
     if (!binding.installerConnectionId) {
       return this.degrade(orgId, bindingId, 'admin_degraded', 'no_admin_connection')
     }
+    // The run's exclusive lease identity (§10.2): CAS-acquired before any
+    // provider write; a live foreign lease refuses, so runs never overlap.
+    const owner = randomBytes(9).toString('base64url')
+    const nowMs = this.deps.clock.now()
+    if (
+      !(await this.deps.bindings.markProviderMutationStarted(
+        orgId,
+        bindingId,
+        binding.projectId,
+        owner,
+        new Date(nowMs + PROVISION_LEASE_MS),
+        new Date(nowMs)
+      ))
+    ) {
+      // Held by a live peer, or the claim is gone/detached/in-cleanup: no
+      // provider writes, and no state overwrite of whatever is in progress.
+      return { state: 'busy', reason: 'provisioning_or_cleanup_in_progress' }
+    }
     try {
       const token = await this.deps.oauth.withAccessToken(orgId, binding.installerConnectionId)
-      const outcome = await this.converge(orgId, binding, token)
+      const outcome = await this.converge(orgId, binding, token, owner)
       if (outcome.state === 'ready') {
         await this.deps.bindings.update(orgId, bindingId, { state: 'ready', stateReason: null })
-      } else {
+      } else if (outcome.state !== 'busy') {
         await this.deps.bindings.update(orgId, bindingId, { state: outcome.state, stateReason: outcome.reason })
       }
       return outcome
@@ -141,9 +167,9 @@ export class GitlabProvisioner {
       this.deps.log?.warn({ bindingId, reason }, 'gitlab provisioning failed')
       return this.degrade(orgId, bindingId, 'admin_degraded', reason)
     } finally {
-      // Release the reservation whatever happened: every external resource is
-      // deterministically marked, so the next same-owner run reconciles it.
-      await this.deps.bindings.endProviderMutation(orgId, bindingId, binding.projectId).catch(() => {})
+      // Release THIS run's lease whatever happened: every external resource is
+      // deterministically marked, so the next run reconciles it.
+      await this.deps.bindings.endProviderMutation(orgId, bindingId, binding.projectId, owner).catch(() => {})
     }
   }
 
@@ -157,7 +183,22 @@ export class GitlabProvisioner {
     return { state, reason }
   }
 
-  private async converge(orgId: string, binding: GitlabProjectBindingRecord, token: string): Promise<ProvisionOutcome> {
+  private fenceHeld(orgId: string, binding: GitlabProjectBindingRecord, owner: string): Promise<boolean> {
+    return this.deps.bindings.claimFenceHeld(
+      orgId,
+      binding.id,
+      binding.projectId,
+      owner,
+      new Date(this.deps.clock.now())
+    )
+  }
+
+  private async converge(
+    orgId: string,
+    binding: GitlabProjectBindingRecord,
+    token: string,
+    owner: string
+  ): Promise<ProvisionOutcome> {
     const { fetchImpl } = this.deps
     // 1. Refresh the mutable facts by numeric id (rename-proof, §10.2 step 1).
     const project = (await gitlabProject(token, binding.projectId, fetchImpl)) as GitlabProjectWithNamespace | null
@@ -179,20 +220,12 @@ export class GitlabProvisioner {
     // Service accounts hang off a top-level GROUP; a personal namespace has none (§5).
     if (root.kind !== 'group') return { state: 'admin_degraded', reason: 'personal_namespace_unsupported' }
 
-    // §10.2 fence, durable BEFORE the first provider write: from here on, a
-    // disappearing binding must tombstone the claim, never release it — even if
-    // the crash lands before any external id is recorded locally. Losing the
-    // fence (claim gone, detached, or entering cleanup) forbids provider writes.
-    if (!(await this.deps.bindings.markProviderMutationStarted(orgId, binding.id, binding.projectId))) {
-      return { state: 'admin_degraded', reason: 'claim_fence_lost' }
-    }
-
     // 2–3. Find-or-create the marked service account; ensure Developer membership.
     const username = gitlabServiceAccountUsername(binding.projectId)
     let account = await gitlabFindServiceAccount(token, root.id, username, fetchImpl)
     if (!account) {
-      // §10.2 per-step check: never create against the provider once cleanup began.
-      if (!(await this.deps.bindings.claimFenceHeld(orgId, binding.id, binding.projectId))) {
+      // §10.2 per-step belt: the run must still own a live lease.
+      if (!(await this.fenceHeld(orgId, binding, owner))) {
         return { state: 'admin_degraded', reason: 'claim_fence_lost' }
       }
       try {
@@ -229,13 +262,13 @@ export class GitlabProvisioner {
         existing.providerExpiresAt.getTime() > this.deps.clock.now() &&
         (await this.deps.credentialSecrets.get(orgId, existing.id)) !== null
       if (stillValid) continue
-      await this.mintCredential(orgId, binding, token, root.id, accountUserId, purpose)
+      await this.mintCredential(orgId, binding, token, root.id, accountUserId, purpose, owner)
     }
 
     // 6–7. The managed webhook, only when an enabled hook wants events (§10.3).
     const events = await this.deps.desiredWebhookEvents(orgId, binding.projectId)
     if (events) {
-      const outcome = await this.convergeWebhook(orgId, binding, token, events)
+      const outcome = await this.convergeWebhook(orgId, binding, token, events, owner)
       if (outcome) return outcome
     }
     return { state: 'ready' }
@@ -247,14 +280,13 @@ export class GitlabProvisioner {
     token: string,
     groupId: number,
     serviceAccountUserId: bigint,
-    purpose: GitlabCredentialPurpose
+    purpose: GitlabCredentialPurpose,
+    owner: string
   ): Promise<void> {
     const scopes = PURPOSE_SCOPES[purpose]
     const expiresAt = expiresAtDate(this.deps.clock.now())
-    // §10.2 per-step belt under the reservation.
-    if (!(await this.deps.bindings.claimFenceHeld(orgId, binding.id, binding.projectId))) {
-      throw new GitlabClaimFenceLost()
-    }
+    // §10.2 per-step belt under the lease.
+    if (!(await this.fenceHeld(orgId, binding, owner))) throw new GitlabClaimFenceLost()
     // Ambiguous-create recovery (§10.2): a marked token we did not record has a
     // lost plaintext — revoke it before minting, sparing the recorded one
     // (rotation's create-before-revoke overlap shares the name deliberately).
@@ -328,13 +360,14 @@ export class GitlabProvisioner {
     orgId: string,
     binding: GitlabProjectBindingRecord,
     token: string,
-    events: GitlabWebhookEvents
+    events: GitlabWebhookEvents,
+    owner: string
   ): Promise<ProvisionOutcome | null> {
     if (!this.deps.publicRelayUrl) {
       return { state: 'admin_degraded', reason: 'relay_url_unconfigured' }
     }
-    // §10.2 per-step check before the webhook create/update.
-    if (!(await this.deps.bindings.claimFenceHeld(orgId, binding.id, binding.projectId))) {
+    // §10.2 per-step belt before the webhook create/update.
+    if (!(await this.fenceHeld(orgId, binding, owner))) {
       return { state: 'admin_degraded', reason: 'claim_fence_lost' }
     }
     const url = `${this.deps.publicRelayUrl.replace(/\/$/, '')}/webhooks/gitlab`
@@ -382,8 +415,10 @@ export class GitlabProvisioner {
     const binding = await this.deps.bindings.get(orgId, bindingId)
     if (!binding) return { removed: false, reason: 'binding_missing' }
     // Mutual exclusion with provision/repair (§10.2): cleanup may not begin
-    // while a provisioning reservation is held — the caller retries later.
-    if (!(await this.deps.bindings.beginCleanup(orgId, bindingId, binding.projectId))) {
+    // while a LIVE provisioning lease is held — the caller retries later.
+    if (
+      !(await this.deps.bindings.beginCleanup(orgId, bindingId, binding.projectId, new Date(this.deps.clock.now())))
+    ) {
       return { removed: false, reason: 'provisioning_in_progress' }
     }
     await this.deps.bindings.bumpCredentialEpoch(orgId, bindingId)

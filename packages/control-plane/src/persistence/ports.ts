@@ -3156,18 +3156,25 @@ export interface GitlabProjectBindingRepo {
   ): Promise<GitlabProjectBindingRecord | null>
   /** Purge fence: every rotation/revocation/disconnect bumps it (§7.4/§19.4). */
   bumpCredentialEpoch(orgId: string, bindingId: string): Promise<bigint | null>
-  /** §10.2 RESERVATION, durable before the first provider write: flips the
-   *  attached claim out of `provisioning` and holds the in-flight reservation
-   *  cleanup must respect. False ⇒ gone/detached/in-cleanup: NO provider writes. */
-  markProviderMutationStarted(orgId: string, bindingId: string, projectId: bigint): Promise<boolean>
-  /** Releases the reservation once the run's provider writes have settled. */
-  endProviderMutation(orgId: string, bindingId: string, projectId: bigint): Promise<void>
-  /** Per-step belt under the reservation: attached and still `active`. */
-  claimFenceHeld(orgId: string, bindingId: string, projectId: bigint): Promise<boolean>
-  /** Cleanup entry — MUTUALLY EXCLUSIVE with the reservation: false while a
-   *  provisioning run holds it (cleanup retries later); flips the attached
-   *  claim to `cleanup_pending` so a late marker/fence check refuses. */
-  beginCleanup(orgId: string, bindingId: string, projectId: bigint): Promise<boolean>
+  /** §10.2 EXCLUSIVE run-owned provisioning lease, CAS-acquired before the
+   *  first provider write: free, same-owner, or expired only — a live foreign
+   *  lease refuses, so two runs can never both write. False also when the claim
+   *  is gone, detached, or in cleanup. */
+  markProviderMutationStarted(
+    orgId: string,
+    bindingId: string,
+    projectId: bigint,
+    owner: string,
+    until: Date,
+    now: Date
+  ): Promise<boolean>
+  /** Releases ONLY the owning run's lease. */
+  endProviderMutation(orgId: string, bindingId: string, projectId: bigint, owner: string): Promise<void>
+  /** Per-step belt under the lease: attached, `active`, owned by this run, unexpired. */
+  claimFenceHeld(orgId: string, bindingId: string, projectId: bigint, owner: string, now: Date): Promise<boolean>
+  /** Cleanup entry — mutually exclusive with a LIVE lease: false while one is
+   *  held (cleanup retries later); flips the attached claim to `cleanup_pending`. */
+  beginCleanup(orgId: string, bindingId: string, projectId: bigint, now: Date): Promise<boolean>
   /** Verified-complete cleanup only (§10.2/§19.4): the binding, its cascaded
    *  local rows, and the deployment-global claim are removed in ONE
    *  transaction. Anything short of verified cleanup keeps both. */
