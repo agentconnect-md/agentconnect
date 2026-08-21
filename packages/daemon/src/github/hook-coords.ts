@@ -1,5 +1,6 @@
 import type {
   GithubHookMetadata,
+  GitlabHookMetadata,
   GithubPublishedComment,
   GithubReviewAuthorized,
   HookConfigSnapshot,
@@ -91,6 +92,8 @@ export interface HookDispatchContext {
   event?: string
   snapshot?: HookConfigSnapshot
   github?: GithubHookMetadata
+  /** GitLab twin of `github` — the trusted subject discriminator (§12.3). */
+  gitlab?: GitlabHookMetadata
   githubReply?: GithubReplyTarget
   githubReviewBatch?: GithubReviewBatch
   turnStartedAt?: string
@@ -248,13 +251,20 @@ export function compareGithubPullRevisionRecency(a: HookDispatchContext, b: Hook
  * opening a model turn. Pair the normalized event with trusted subject metadata
  * so an old or malformed frame cannot turn an ordinary hook into maintenance. */
 export function githubThreadWorktreeCleanup(
-  hook: Pick<HookDispatchContext, 'event' | 'github'> | undefined
+  hook: Pick<HookDispatchContext, 'event' | 'github' | 'gitlab'> | undefined
 ): GithubThreadWorktreeCleanup | undefined {
   if (hook?.event === 'pull_request:merged' && hook.github?.subjectKind === 'pull_request') {
     return 'pull_request_merged'
   }
   if (hook?.event === 'issues:closed' && hook.github?.subjectKind === 'issue') return 'issue_closed'
   if (hook?.event === 'issues:deleted' && hook.github?.subjectKind === 'issue') return 'issue_deleted'
+  // The GitLab counterpart (gitlab-com-integration.md §12): merged MRs and
+  // closed issues retire the per-thread checkout, fenced on the SAME pairing of
+  // normalized event + trusted subject metadata.
+  if (hook?.event === 'merge_request:merged' && hook.gitlab?.target.kind === 'merge_request') {
+    return 'pull_request_merged'
+  }
+  if (hook?.event === 'issues:closed' && hook.gitlab?.target.kind === 'issue') return 'issue_closed'
   return undefined
 }
 
