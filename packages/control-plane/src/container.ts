@@ -26,6 +26,7 @@ import { resolveGitlabAppConfig } from './gitlab/config.js'
 import type { FetchLike as GitlabFetchLike } from './gitlab/api.js'
 import { GitlabOauthService } from './gitlab/oauth.service.js'
 import { GitlabProvisioner } from './gitlab/provisioner.js'
+import { GitlabGitcredService } from './gitlab/gitcred.service.js'
 import { GitlabCredentialRotator } from './gitlab/rotator.js'
 import { GitlabMembershipAuthzService } from './gitlab/membership-authz.service.js'
 import { unionGitlabWebhookEvents } from './gitlab/webhook-events.js'
@@ -1612,6 +1613,17 @@ export function buildContainer(
     organizationKnowledge: repos.organizationKnowledge,
     externalMemoryConnection: repos.externalMemoryConnection,
     ...(github ? { github } : {}),
+    // gitcred v2 (§13.1): the gitlab arm serves binding PATs; absent ⇒ disabled.
+    ...(gitlab
+      ? {
+          gitlabGitcred: new GitlabGitcredService({
+            bindings: repos.gitlabProjectBinding,
+            credentials: new PgGitlabProjectCredentialRepo(prisma),
+            credentialSecrets: new PgGitlabProjectCredentialSecretStore(prisma, secretCipher),
+            clock
+          })
+        }
+      : {}),
     ...(githubReviewBroker ? { githubReviewBroker } : {}),
     ...(githubRunCoordinator ? { githubRunCoordinator } : {}),
     relayRoster: () => relayRoster.entries(),

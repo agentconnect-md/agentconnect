@@ -180,7 +180,8 @@ function sameWorkspaceDefinition(left: AgentWorkspace, right: AgentWorkspace): b
     gitRepoLabel(left.gitRepo).toLowerCase() === gitRepoLabel(right.gitRepo).toLowerCase() &&
     (left.gitBranch ?? 'main') === (right.gitBranch ?? 'main') &&
     (left.agentDir ?? '') === (right.agentDir ?? '') &&
-    left.installationId === right.installationId &&
+    (left.mode === 'github' ? left.installationId : undefined) ===
+      (right.mode === 'github' ? right.installationId : undefined) &&
     (left.gitAccess ?? 'write') === (right.gitAccess ?? 'write')
   )
 }

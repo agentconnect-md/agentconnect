@@ -664,7 +664,7 @@ export function pruneMovedAgentDependents(
 }
 
 /** Map a CP workspace mode onto the daemon's AgentSchema workspace mode. */
-function mapWorkspaceMode(mode: 'scratch' | 'github'): 'from-scratch' | 'git-repo' {
+function mapWorkspaceMode(mode: 'scratch' | 'github' | 'gitlab'): 'from-scratch' | 'git-repo' {
   return mode === 'scratch' ? 'from-scratch' : 'git-repo'
 }
 
@@ -839,6 +839,15 @@ export function applySpecFields(
     // AgentSpec carries the complete workspace state. Root/scratch therefore
     // clears a previously replicated cwd rather than preserving a stale local value.
     delete existing.agentDir
+    if (ws.mode === 'gitlab') {
+      // §17.3: the CP never sends this arm unless the daemon advertised
+      // gitlab-com-v1 (the M5 slice). Decoding it stays total so a compile-time
+      // union widening cannot strand register; managed credentials arrive with
+      // the credential slice, so until then the URL is treated like any remote.
+      existing.gitRepo = normalizeGitCloneUrl(redactGitUrlSecrets(ws.gitRepo))
+      existing.gitBranch = ws.branch
+      if (ws.agentDir !== undefined) existing.agentDir = ws.agentDir
+    }
     if (ws.mode === 'github') {
       // Keep old CPs safe too: strip historical URL secrets, then reject any
       // transport a current daemon would refuse. Origin authorization remains
@@ -863,7 +872,7 @@ export function applySpecFields(
     }
     // Credential mode is CP-derived config and also applies to scratch
     // workspaces with explicit repo grants. Mirror it exactly, including clear.
-    if (ws.gitCredential !== undefined) existing.gitCredential = ws.gitCredential
+    if (ws.mode !== 'gitlab' && ws.gitCredential !== undefined) existing.gitCredential = ws.gitCredential
     else delete existing.gitCredential
     // The CP is the authority on the additional-repository allowlist and always ships
     // the full set, so mirror it exactly — [] must replicate as a cleared list.

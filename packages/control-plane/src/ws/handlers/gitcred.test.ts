@@ -170,6 +170,60 @@ describe('handleGitCredRequest — repoFullName passthrough (issue #457)', () =>
     )
   })
 
+  it('routes a provider=gitlab request to the gitlab grant path (§17.1)', async () => {
+    const grantForAgent = vi.fn(async () => ({
+      username: 'agentconnect-p4455667',
+      token: 'glpat-secret',
+      ttlSec: 3600,
+      expiresAt: '2026-07-11T01:00:00.000Z',
+      repoFullName: 'example-group/example-project',
+      access: 'write' as const,
+      provider: 'gitlab',
+      externalRepoId: '4455667',
+      credentialEpoch: '3',
+      providerExpiresAt: '2026-10-01T00:00:00.000Z'
+    }))
+    const mintForAgent = vi.fn()
+    const deps = {
+      agent: { get: async () => PLACED_AGENT },
+      github: { mintForAgent },
+      gitlabGitcred: { grantForAgent }
+    } as unknown as DaemonWsDeps
+    const conn = fakeConn()
+    const frame = gitcredFrame({ provider: 'gitlab', externalRepoId: '4455667' })
+
+    await handleGitCredRequest(frame, conn, deps)
+
+    expect(grantForAgent).toHaveBeenCalledWith(PLACED_AGENT, 4455667n)
+    expect(mintForAgent).not.toHaveBeenCalled()
+    expect(conn.replyTo).toHaveBeenCalledWith(
+      frame,
+      'gitcred/grant',
+      expect.objectContaining({ provider: 'gitlab', username: 'agentconnect-p4455667' })
+    )
+  })
+
+  it('fails a gitlab request closed when the seam is absent, and refuses unknown providers per-value', async () => {
+    const deps = { agent: { get: async () => PLACED_AGENT }, github: {} } as unknown as DaemonWsDeps
+    const conn = fakeConn()
+    await handleGitCredRequest(gitcredFrame({ provider: 'gitlab' }), conn, deps)
+    expect(conn.sendError).toHaveBeenCalledWith(
+      expect.anything(),
+      'SCOPE_DENIED',
+      'gitlab workspaces are not enabled on this control plane',
+      false
+    )
+    conn.sendError.mockClear()
+    await handleGitCredRequest(gitcredFrame({ provider: 'bitbucket' }), conn, deps)
+    expect(conn.sendError).toHaveBeenCalledWith(
+      expect.anything(),
+      'SCOPE_DENIED',
+      'unknown git credential provider bitbucket',
+      false
+    )
+    expect(conn.replyTo).not.toHaveBeenCalled()
+  })
+
   it('maps a GitCredDeniedError onto a correlated error REP (code + retryable preserved)', async () => {
     const deps = {
       agent: { get: async () => PLACED_AGENT },

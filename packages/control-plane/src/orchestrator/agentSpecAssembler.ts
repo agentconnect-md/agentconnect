@@ -233,7 +233,24 @@ export function agentRecordToSpec(
           ...(a.workspace.installationId !== undefined ? { gitCredential: 'github-app' as const } : {}),
           additionalRepos
         }
-      : { mode: 'scratch', isolation: a.workspace.isolation ?? 'shared', gitCredential: 'github-app', additionalRepos }
+      : a.workspace.mode === 'gitlab'
+        ? {
+            // §17.3: this arm is frame-fatal on a pre-GitLab daemon; every
+            // projection path gates on daemonSupportsAgent before sending it.
+            mode: 'gitlab',
+            isolation: a.workspace.isolation ?? 'shared',
+            gitRepo: normalizeGitCloneUrl(redactGitUrlSecrets(a.workspace.gitRepo)),
+            branch: a.workspace.gitBranch ?? 'main',
+            ...(a.workspace.agentDir !== undefined ? { agentDir: a.workspace.agentDir } : {}),
+            projectId: (a.workspaceRepoId ?? 0n).toString(),
+            additionalRepos
+          }
+        : {
+            mode: 'scratch',
+            isolation: a.workspace.isolation ?? 'shared',
+            gitCredential: 'github-app',
+            additionalRepos
+          }
   return {
     agentId: a.id,
     orgId: a.orgId,

@@ -655,6 +655,7 @@ model RuntimeProfile {
 enum WorkspaceMode {
   scratch // fresh empty working dir, no repo
   github // clone gitRepo @ gitBranch, run in agentDir
+  gitlab // clone a managed GitLab project binding @ gitBranch, run in agentDir
 }
 
 enum WorkspaceIsolation {

@@ -255,15 +255,28 @@ function configRevisionSupportedOn(daemon: DaemonView | null): boolean {
 /** No assigned organization rows — the shape a minimal/legacy graph resolves to. */
 const NO_ORGANIZATION_ENVIRONMENT: AssignedOrganizationMetadata = { variables: [], secretKeys: [] }
 
-function workspaceToDto(workspace: AgentWorkspace): AgentDtoT['workspace'] {
+function workspaceToDto(workspace: AgentWorkspace, workspaceRepoId?: bigint): AgentDtoT['workspace'] {
   if (workspace.mode === 'scratch') return { mode: 'scratch' }
+  if (workspace.mode === 'gitlab') {
+    return {
+      mode: 'gitlab',
+      worktree: workspace.isolation === 'session',
+      gitRepo: workspace.gitRepo,
+      ...(workspace.gitBranch !== undefined ? { gitBranch: workspace.gitBranch } : {}),
+      ...(workspace.agentDir !== undefined ? { agentDir: workspace.agentDir } : {}),
+      ...(workspaceRepoId !== undefined ? { projectId: workspaceRepoId.toString() } : {}),
+      ...(workspace.gitAccess !== undefined ? { gitAccess: workspace.gitAccess } : {})
+    }
+  }
   return {
     mode: 'github',
     worktree: workspace.isolation === 'session',
     gitRepo: workspace.gitRepo,
     ...(workspace.gitBranch !== undefined ? { gitBranch: workspace.gitBranch } : {}),
     ...(workspace.agentDir !== undefined ? { agentDir: workspace.agentDir } : {}),
-    ...(workspace.installationId !== undefined ? { installationId: workspace.installationId } : {}),
+    ...(workspace.mode === 'github' && workspace.installationId !== undefined
+      ? { installationId: workspace.installationId }
+      : {}),
     ...(workspace.gitAccess !== undefined ? { gitAccess: workspace.gitAccess } : {})
   }
 }
@@ -320,7 +333,7 @@ function toDto(
     daemonName: a.daemonId ? placementView.daemonName : null,
     setId: a.setId,
     placementReady: placementView.ready,
-    workspace: workspaceToDto(a.workspace),
+    workspace: workspaceToDto(a.workspace, a.workspaceRepoId),
     workspaceRepoId: a.workspaceRepoId?.toString() ?? null,
     capabilities: a.capabilities,
     createdAt: a.createdAt.toISOString(),
@@ -1485,10 +1498,30 @@ export function agentRoutes(deps: HttpDeps) {
                 ...(ws.installationId !== undefined ? { installationId: ws.installationId } : {}),
                 ...(ws.gitAccess !== undefined ? { gitAccess: ws.gitAccess } : {})
               }
-            : ws
-              ? { mode: 'scratch', isolation: 'shared' }
-              : undefined
+            : ws?.mode === 'gitlab'
+              ? undefined // resolved below against the managed binding
+              : ws
+                ? { mode: 'scratch', isolation: 'shared' }
+                : undefined
         let workspaceRepoId: bigint | undefined
+        if (ws?.mode === 'gitlab') {
+          if (!deps.gitlab) return conflict('gitlab workspaces are not enabled on this control plane')
+          const projectId = BigInt(ws.projectId)
+          const binding = await deps.repos.gitlabProjectBinding.byProject(orgOf(req), projectId)
+          if (!binding || binding.state === 'cleanup_pending') {
+            return conflict('the project is not a managed GitLab binding in this organization')
+          }
+          // The binding, not caller input, is the authority for the clone URL.
+          workspace = {
+            mode: 'gitlab',
+            isolation: ws.worktree === false ? 'shared' : 'session',
+            gitRepo: `https://gitlab.com/${binding.projectPath}`,
+            ...(ws.gitBranch !== undefined ? { gitBranch: ws.gitBranch } : {}),
+            ...(ws.agentDir !== undefined ? { agentDir: ws.agentDir } : {}),
+            gitAccess: ws.gitAccess ?? 'write'
+          }
+          workspaceRepoId = projectId
+        }
         if (ws?.mode === 'github' && ws.installationId === undefined && ws.gitAccess === 'write') {
           return conflict('github write access requires a GitHub App installation')
         }
@@ -2322,6 +2355,26 @@ export function agentRoutes(deps: HttpDeps) {
               gitAccess: req.body.gitAccess
             }
             workspaceRepoId = ref.repoId
+          }
+          if (req.body.mode === 'gitlab') {
+            if (!deps.gitlab) return conflict('gitlab workspaces are not enabled on this control plane')
+            const projectId = BigInt(req.body.projectId)
+            const binding = await deps.repos.gitlabProjectBinding.byProject(existing.orgId, projectId)
+            if (!binding || binding.state === 'cleanup_pending') {
+              return conflict('the project is not a managed GitLab binding in this organization')
+            }
+            const worktree =
+              req.body.worktree ??
+              (existing.workspace.mode !== 'scratch' ? existing.workspace.isolation === 'session' : true)
+            workspace = {
+              mode: 'gitlab',
+              isolation: worktree ? 'session' : 'shared',
+              gitRepo: `https://gitlab.com/${binding.projectPath}`,
+              gitBranch: req.body.gitBranch ?? binding.defaultBranch ?? 'main',
+              ...(req.body.agentDir ? { agentDir: req.body.agentDir } : {}),
+              gitAccess: req.body.gitAccess
+            }
+            workspaceRepoId = projectId
           }
 
           const writableRepoId =

@@ -593,6 +593,17 @@ export type AgentWorkspace =
       /** Ceiling for minted tokens (contents read|write); absent ⇒ 'write'. */
       gitAccess?: 'read' | 'write'
     }
+  | {
+      /** A managed GitLab project binding is the workspace (gitlab-com-integration.md
+       *  §13): credentials come from the binding's purpose-separated PATs, never a
+       *  per-agent installation. `workspaceRepoId` holds the numeric project id. */
+      mode: 'gitlab'
+      isolation?: WorkspaceIsolation
+      gitRepo: string
+      gitBranch?: string
+      agentDir?: string
+      gitAccess?: 'read' | 'write'
+    }
 export type GithubAgentWorkspace = Extract<AgentWorkspace, { mode: 'github' }>
 
 export interface CreateAgentInput {
