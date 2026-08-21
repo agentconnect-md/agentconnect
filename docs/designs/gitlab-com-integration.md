@@ -1578,7 +1578,115 @@ assignments, and leaves existing GitHub behavior untouched. Existing GitLab
 bindings remain visible for repair or disconnect; rollback must not orphan
 external credentials by deleting only local metadata.
 
-## 22. Validation
+## 22. Implementation Plan
+
+Milestones are merge order, not calendar. Each milestone is several small,
+independently mergeable PRs; GitHub behavior stays green at every merge; each
+Section 6.5 contract member is extracted in the same change that adds its
+GitLab implementer; a feature string is advertised only when its complete
+slice is live. The dependency spine is M0 → M1 → M2 → (M3 ∥ M4) → M5 → M6 →
+M7.
+
+### M0 — Provider-neutral identity and protocol
+
+- Protocol: `CodeHostRepository` reference types and provider-qualified
+  repository identity; gitcred v2 request/grant schemas behind
+  `gitcred-provider-v2`; the provider-neutral membership-authorization frame;
+  `hook/start`'s provider member becomes a one-of; the provider-neutral
+  published-output report member; every new frame organization-scoped.
+- Control Plane: `CodeHostRepository` and `CodeHostRepositoryClaim` tables,
+  with the GitHub numeric-identity backfill done readers-first — read both
+  shapes, write both, then cut writers over.
+- The Section 17.3 snapshot projection gate and its mixed-version decode
+  tests land here, before any GitLab-shaped value exists to leak.
+- Exit: GitHub behavior unchanged; tolerant-reader and mixed-version tests
+  green.
+
+### M1 — Control Plane OAuth connection
+
+- Deployment-document keys with the env fallback (Section 18.3);
+  `GitlabConnection` and its secret; OAuth start/callback; the refresh
+  single-writer lease and CAS; disconnect semantics (Section 9). Routes stay
+  hidden — no Console entry yet.
+- Exit: state/PKCE binding and refresh-transition unit tests; sealing and
+  metadata-only DTO integration tests.
+
+### M2 — Control Plane project bindings and reconciliation
+
+- Binding, credential, and webhook-secret models; the global-claim
+  transaction; the provisioning saga — service account, three PATs with
+  expiry validation, webhook install and test; repair/transfer/delete routes;
+  binding lifecycle states (Section 10).
+- Contract member: the Control-Plane code-host provider, extracted beside the
+  GitHub service — identity refresh and credential-minting shapes generalize
+  here.
+- Test infrastructure: a local fake GitLab API server for integration tests,
+  following the existing fake-server precedent; the real-GitLab.com contract
+  suite remains Section 23's job.
+- Exit: claim-race, saga-recovery, and PAT-expiry-policy integration tests.
+
+### M3 — Relay ingress
+
+- Extract the shared code-host verification-and-dispatch skeleton from the
+  GitHub ingress and add the GitLab module in the same change: Standard
+  Webhooks verification, event mapping, the veto/gate table, loop prevention,
+  and the membership-authorization round trip through the new frame, with the
+  Control-Plane comment-authorization service generalized to answer it.
+- Rule compilation gains the `gitlab` member with the inline signing token;
+  relays advertise their feature.
+- Depends on M2 for real signing tokens; the skeleton extraction itself can
+  start against fixtures once M0 lands.
+- Exit: signature, timestamp, and multi-signature units; two-relay
+  redelivery; mixed-version fail-closed integration tests.
+
+### M4 — Daemon credentials, workspace, and sessions
+
+- gitcred v2 end to end: the Control Plane serves GitLab grants from binding
+  credentials; the daemon helper becomes provider-aware — origin allowlist,
+  subgroup paths, echo verification, all three injection paths — with the
+  readiness check against the operator origin policy (Section 13.2).
+- The `glab` shim; session-key recompute with the transport-scope pin; the
+  hook-normalization member; maintenance-event worktree cleanup (Section 12).
+- Contract members: the credential/CLI profile and hook normalization,
+  extracted beside their GitHub implementations.
+- Exit: helper and session-disjointness units; cleanup integration test.
+
+### M5 — Daemon outputs: poster, broker, status note
+
+- The GitLab turn-final surface with the publish barrier (Section 14.1); the
+  structured mutation broker allowlist (Section 14.2); the daemon-owned note
+  projection with its desired/result frames behind
+  `codehost-note-projection-v1` (Section 16); handover reporting.
+- Exit: single-writer, ambiguous-reconciliation, and offline-pending
+  integration tests. Daemons carrying M4 and M5 may now advertise
+  `gitlab-com-v1`.
+
+### M6 — Formal reviews
+
+- The `submitCodeReview` promotion with the GitHub alias and prompt
+  migration; the GitLab review adapter behind `codehost-review-v1`:
+  publication lease and fence tables, the draft/publish/postcondition
+  pipeline, the approval SHA fence, ambiguous classification (Section 15),
+  and revision-lane admission reuse.
+- Contract member: the review adapter, extracted from the GitHub review
+  orchestrator.
+- Exit: the Section 15 review matrix in Section 23 — the largest test surface
+  in this plan; budget it accordingly.
+
+### M7 — Console, docs, general availability
+
+- The thin web code-host module — connect entry, project picker, binding
+  status fragments, mark; provider-aware hook configuration; the Run again
+  action and its rerun route; runtime-config availability; user docs.
+- Pilot and general enablement per Section 21 steps 6 and 7.
+
+Two disciplines hold throughout. No big-bang refactor PR exists anywhere in
+this plan — every extraction ships inside the milestone that needs it.
+Migrating GitHub onto the new neutral surfaces beyond what each extraction
+itself requires is separate, later work; this plan only forbids GitLab from
+duplicating what an extraction can share.
+
+## 23. Validation
 
 Use focused unit tests for pure boundaries only:
 
@@ -1671,7 +1779,7 @@ Validation must also scan source, generated examples, fixtures, logs, and PR
 prose for real deployment addresses, account identifiers, OAuth application
 IDs, tokens, and signing secrets.
 
-## 23. References
+## 24. References
 
 - [GitLab OAuth 2.0 identity provider API](https://docs.gitlab.com/api/oauth2/)
 - [GitLab service accounts](https://docs.gitlab.com/user/profile/service_accounts/)
