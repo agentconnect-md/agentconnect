@@ -25,6 +25,7 @@ import { resolveGithubAppConfig } from './github/config.js'
 import { resolveGitlabAppConfig } from './gitlab/config.js'
 import type { FetchLike as GitlabFetchLike } from './gitlab/api.js'
 import { GitlabOauthService } from './gitlab/oauth.service.js'
+import { GitlabProvisioner } from './gitlab/provisioner.js'
 import { resolveSlackPlatformAppConfig } from './config/slack-platform.js'
 import { resolveFeishuPlatformApps } from './config/feishu-platform.js'
 import type { FetchLike } from './github/api.js'
@@ -95,6 +96,9 @@ import {
   PgGitlabConnectionRepo,
   PgGitlabProjectBindingRepo,
   PgGitlabConnectionSecretStore,
+  PgGitlabProjectCredentialRepo,
+  PgGitlabProjectCredentialSecretStore,
+  PgGitlabWebhookSecretStore,
   PgGitlabOauthStateStore,
   PgSocialIdentityMutationGate,
   PgCronRepo,
@@ -925,24 +929,42 @@ export function buildContainer(
     throw new Error('GITLAB_CLIENT_ID/SECRET are set but PUBLIC_CP_URL is not — set it or unset both')
   }
   const gitlabWebAppUrl = resolveWebAppUrl(config)
-  const gitlab =
+  const gitlabOauthService =
     gitlabAppCfg && config.PUBLIC_CP_URL
-      ? {
+      ? new GitlabOauthService({
+          cfg: gitlabAppCfg,
+          connections: repos.gitlabConnection,
+          secrets: new PgGitlabConnectionSecretStore(prisma, secretCipher),
+          states: repos.gitlabOauthState,
+          cipher: secretCipher,
+          clock,
+          publicCpUrl: config.PUBLIC_CP_URL,
+          ...(gitlabWebAppUrl ? { webAppUrl: gitlabWebAppUrl } : {}),
           ...(opts.gitlabFetch ? { fetchImpl: opts.gitlabFetch } : {}),
-          oauth: new GitlabOauthService({
-            cfg: gitlabAppCfg,
-            connections: repos.gitlabConnection,
-            secrets: new PgGitlabConnectionSecretStore(prisma, secretCipher),
-            states: repos.gitlabOauthState,
-            cipher: secretCipher,
-            clock,
-            publicCpUrl: config.PUBLIC_CP_URL,
-            ...(gitlabWebAppUrl ? { webAppUrl: gitlabWebAppUrl } : {}),
-            ...(opts.gitlabFetch ? { fetchImpl: opts.gitlabFetch } : {}),
-            log: { warn: (obj, msg) => http.log.warn(obj, msg) }
-          })
-        }
+          log: { warn: (obj, msg) => http.log.warn(obj, msg) }
+        })
       : undefined
+  const gitlab = gitlabOauthService
+    ? {
+        ...(opts.gitlabFetch ? { fetchImpl: opts.gitlabFetch } : {}),
+        oauth: gitlabOauthService,
+        provisioner: new GitlabProvisioner({
+          oauth: gitlabOauthService,
+          bindings: repos.gitlabProjectBinding,
+          credentials: new PgGitlabProjectCredentialRepo(prisma),
+          credentialSecrets: new PgGitlabProjectCredentialSecretStore(prisma, secretCipher),
+          webhookSecrets: new PgGitlabWebhookSecretStore(prisma, secretCipher),
+          catalog: repos.codeHostRepository,
+          cipher: secretCipher,
+          clock,
+          ...(config.PUBLIC_RELAY_URL ? { publicRelayUrl: config.PUBLIC_RELAY_URL } : {}),
+          // No GitLab hook kind exists yet (M3): no binding wants a webhook.
+          desiredWebhookEvents: async () => null,
+          ...(opts.gitlabFetch ? { fetchImpl: opts.gitlabFetch } : {}),
+          log: { warn: (obj, msg) => http.log.warn(obj, msg) }
+        })
+      }
+    : undefined
 
   // The console PR panel's read projection — long-lived so its short TTL cache actually absorbs mounts.
   const pullRequestView = github ? new PullRequestViewService(github.tokens, clock, opts.githubFetch) : undefined

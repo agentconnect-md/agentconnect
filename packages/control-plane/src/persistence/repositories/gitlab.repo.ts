@@ -374,6 +374,99 @@ export class PgGitlabProjectBindingRepo implements GitlabProjectBindingRepo {
     return this.get(orgId, bindingId)
   }
 
+  async markProviderMutationStarted(
+    orgId: string,
+    bindingId: string,
+    projectId: bigint,
+    owner: string,
+    until: Date,
+    now: Date
+  ): Promise<boolean> {
+    // EXCLUSIVE run-owned lease, CAS-acquired: free, same-owner, or expired —
+    // never a live foreign lease, so two runs can never both hold the fence.
+    const res = await this.prisma.codeHostRepositoryClaim.updateMany({
+      where: {
+        provider: 'gitlab',
+        externalId: projectId,
+        orgId,
+        bindingRef: bindingId,
+        state: { in: ['provisioning', 'active'] },
+        OR: [{ opOwner: null }, { opOwner: owner }, { opLeaseUntil: { lt: now } }]
+      },
+      data: { state: 'active', opOwner: owner, opLeaseUntil: until }
+    })
+    return res.count === 1
+  }
+
+  async endProviderMutation(orgId: string, bindingId: string, projectId: bigint, owner: string): Promise<void> {
+    // Only the owning run releases; a finished run can never clear a peer's lease.
+    await this.prisma.codeHostRepositoryClaim.updateMany({
+      where: { provider: 'gitlab', externalId: projectId, orgId, bindingRef: bindingId, opOwner: owner },
+      data: { opOwner: null, opLeaseUntil: null }
+    })
+  }
+
+  async renewProviderLease(
+    orgId: string,
+    bindingId: string,
+    projectId: bigint,
+    owner: string,
+    until: Date
+  ): Promise<boolean> {
+    // Owner-matched atomic extension: renewal and the liveness check are one
+    // write, so the lease cannot lapse between a check and its provider call.
+    // Owner match alone suffices — an expired-but-unreclaimed lease renews,
+    // a reclaimed one has a different owner and refuses.
+    const res = await this.prisma.codeHostRepositoryClaim.updateMany({
+      where: {
+        provider: 'gitlab',
+        externalId: projectId,
+        orgId,
+        bindingRef: bindingId,
+        state: 'active',
+        opOwner: owner
+      },
+      data: { opLeaseUntil: until }
+    })
+    return res.count === 1
+  }
+
+  async beginCleanup(orgId: string, bindingId: string, projectId: bigint, now: Date): Promise<boolean> {
+    // Refused while a LIVE provisioning lease is held: cleanup must wait, so
+    // there is no window between a fence check and its provider write. When no
+    // claim row is attached at all (already tombstoned), cleanup may proceed.
+    const attached = await this.prisma.codeHostRepositoryClaim.count({
+      where: { provider: 'gitlab', externalId: projectId, orgId, bindingRef: bindingId }
+    })
+    if (attached === 0) return true
+    const res = await this.prisma.codeHostRepositoryClaim.updateMany({
+      where: {
+        provider: 'gitlab',
+        externalId: projectId,
+        orgId,
+        bindingRef: bindingId,
+        OR: [{ opOwner: null }, { opLeaseUntil: { lt: now } }]
+      },
+      data: { state: 'cleanup_pending', opOwner: null, opLeaseUntil: null }
+    })
+    return res.count === 1
+  }
+
+  async removeWithClaim(orgId: string, bindingId: string, projectId: bigint): Promise<boolean> {
+    // Claim FIRST: the binding-delete trigger preserves any still-attached claim
+    // as cleanup_pending, which is exactly wrong here — this path is only taken
+    // after verified-complete external cleanup, so the claim releases with it.
+    return this.prisma.$transaction(async (tx) => {
+      const owned = await tx.gitlabProjectBinding.count({ where: { id: bindingId, orgId } })
+      if (owned !== 1) return false
+      await tx.codeHostRepositoryClaim.deleteMany({
+        where: { provider: 'gitlab', externalId: projectId, orgId, bindingRef: bindingId }
+      })
+      await tx.gitlabProjectBinding.deleteMany({ where: { id: bindingId, orgId } })
+      return true
+    })
+  }
+
   async bumpCredentialEpoch(orgId: string, bindingId: string): Promise<bigint | null> {
     const res = await this.prisma.gitlabProjectBinding.updateMany({
       where: { id: bindingId, orgId },

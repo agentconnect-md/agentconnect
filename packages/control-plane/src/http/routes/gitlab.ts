@@ -267,7 +267,11 @@ export function gitlabRoutes(deps: HttpDeps) {
             ...(project.http_url_to_repo ? { cloneUrl: project.http_url_to_repo } : {}),
             installerConnectionId: connection.id
           })
-          return bindingToDto(binding)
+          // The §10.2 saga converges the external resources; the binding records
+          // the outcome state either way and repair re-runs it.
+          await gitlab.provisioner.provision(orgId, binding.id)
+          const converged = await deps.repos.gitlabProjectBinding.get(orgId, binding.id)
+          return bindingToDto(converged ?? binding)
         } catch (e) {
           if (e instanceof GitlabProjectClaimConflict) {
             // The deployment-global claim (§7.2): one managing organization per
@@ -283,6 +287,68 @@ export function gitlabRoutes(deps: HttpDeps) {
           }
           throw e
         }
+      }
+    )
+
+    r.post(
+      '/gitlab/projects/:id/repair',
+      {
+        schema: {
+          tags: [Tag.GitLab],
+          summary: 'Repair a managed GitLab project',
+          description:
+            'Re-runs the §10.2 provisioning convergence: refresh identity, service account, credentials, and the managed webhook.',
+          operationId: 'repairGitlabProject',
+          params: IdParam,
+          response: { 200: GitlabProjectBindingDto, 403: ErrorDto, 404: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        if (denyViewerWrite(req, reply)) return
+        const orgId = orgOf(req)
+        if (!(await deps.repos.gitlabProjectBinding.get(orgId, req.params.id))) {
+          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'gitlab project not found' })
+        }
+        await gitlab.provisioner.provision(orgId, req.params.id)
+        const binding = await deps.repos.gitlabProjectBinding.get(orgId, req.params.id)
+        if (!binding) {
+          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'gitlab project not found' })
+        }
+        return bindingToDto(binding)
+      }
+    )
+
+    r.delete(
+      '/gitlab/projects/:id',
+      {
+        schema: {
+          tags: [Tag.GitLab],
+          summary: 'Disconnect a managed GitLab project',
+          description:
+            'Disables local authority, then removes the managed webhook, revokes the managed tokens, and deletes the Project Service Account (§19.4). Incomplete external cleanup leaves the binding cleanup_pending and keeps the deployment-global claim.',
+          operationId: 'deleteGitlabProject',
+          params: IdParam,
+          response: {
+            200: z.object({
+              removed: z.boolean(),
+              state: GitlabProjectBindingDto.shape.state.optional(),
+              stateReason: z.string().nullable().optional()
+            }),
+            403: ErrorDto,
+            404: ErrorDto
+          }
+        }
+      },
+      async (req, reply) => {
+        if (denyViewerWrite(req, reply)) return
+        const orgId = orgOf(req)
+        if (!(await deps.repos.gitlabProjectBinding.get(orgId, req.params.id))) {
+          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'gitlab project not found' })
+        }
+        const outcome = await gitlab.provisioner.disconnect(orgId, req.params.id)
+        if (outcome.removed) return { removed: true }
+        const binding = await deps.repos.gitlabProjectBinding.get(orgId, req.params.id)
+        return { removed: false, state: binding?.state, stateReason: binding?.stateReason ?? outcome.reason ?? null }
       }
     )
 

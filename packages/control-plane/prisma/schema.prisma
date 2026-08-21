@@ -957,6 +957,11 @@ model CodeHostRepositoryClaim {
   // Metadata-only cleanup facts (external ids, never secrets) preserved when the
   // owning binding disappears before external cleanup completed (§10.2/§19.4).
   tombstone  Json?
+  // §10.2 mutual exclusion: an EXCLUSIVE run-owned provisioning lease. Acquired
+  // CAS-style before any provider write; cleanup refuses while it is live; only
+  // the owning run releases it, and only expiry lets another run reclaim.
+  opOwner      String?
+  opLeaseUntil DateTime? @db.Timestamptz(6)
   createdAt  DateTime @default(now()) @db.Timestamptz(6)
   updatedAt  DateTime @updatedAt @db.Timestamptz(6)
 

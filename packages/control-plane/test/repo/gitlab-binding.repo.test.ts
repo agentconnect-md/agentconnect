@@ -146,6 +146,28 @@ describe('credential + webhook secret stores (§7.3)', () => {
     })
   })
 
+  it('a crash before any external id lands still tombstones once mutation was marked (§10.2)', async () => {
+    // The saga durably flips the claim out of `provisioning` BEFORE its first
+    // provider write; a binding that dies with all-null external ids must then
+    // tombstone, never release.
+    const orgC = await otherOrg()
+    const bound = await bindings().createWithClaim(await withConnection(orgC))
+    await bindings().markProviderMutationStarted(
+      orgC,
+      bound.id,
+      PROJECT,
+      'crashed-run',
+      new Date(Date.now() + 600_000),
+      new Date()
+    )
+    await prisma.org.delete({ where: { id: orgC } })
+    const claim = await prisma.codeHostRepositoryClaim.findUniqueOrThrow({
+      where: { provider_externalId: { provider: 'gitlab', externalId: PROJECT } }
+    })
+    expect(claim.state).toBe('cleanup_pending')
+    expect(claim.bindingRef).toBeNull()
+  })
+
   it('seals the webhook signing key behind its store, org-fenced', async () => {
     const binding = await bindings().createWithClaim(await withConnection(DEFAULT_ORG_ID))
     const store = new PgGitlabWebhookSecretStore(prisma, cipher)

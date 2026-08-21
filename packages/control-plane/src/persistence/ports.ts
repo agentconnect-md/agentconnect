@@ -3156,6 +3156,31 @@ export interface GitlabProjectBindingRepo {
   ): Promise<GitlabProjectBindingRecord | null>
   /** Purge fence: every rotation/revocation/disconnect bumps it (§7.4/§19.4). */
   bumpCredentialEpoch(orgId: string, bindingId: string): Promise<bigint | null>
+  /** §10.2 EXCLUSIVE run-owned provisioning lease, CAS-acquired before the
+   *  first provider write: free, same-owner, or expired only — a live foreign
+   *  lease refuses, so two runs can never both write. False also when the claim
+   *  is gone, detached, or in cleanup. */
+  markProviderMutationStarted(
+    orgId: string,
+    bindingId: string,
+    projectId: bigint,
+    owner: string,
+    until: Date,
+    now: Date
+  ): Promise<boolean>
+  /** Releases ONLY the owning run's lease. */
+  endProviderMutation(orgId: string, bindingId: string, projectId: bigint, owner: string): Promise<void>
+  /** Per-step ATOMIC renewal before every provider mutation: still attached,
+   *  `active`, and owned by this run — and the lease is extended so it cannot
+   *  expire while the provider request is in flight. */
+  renewProviderLease(orgId: string, bindingId: string, projectId: bigint, owner: string, until: Date): Promise<boolean>
+  /** Cleanup entry — mutually exclusive with a LIVE lease: false while one is
+   *  held (cleanup retries later); flips the attached claim to `cleanup_pending`. */
+  beginCleanup(orgId: string, bindingId: string, projectId: bigint, now: Date): Promise<boolean>
+  /** Verified-complete cleanup only (§10.2/§19.4): the binding, its cascaded
+   *  local rows, and the deployment-global claim are removed in ONE
+   *  transaction. Anything short of verified cleanup keeps both. */
+  removeWithClaim(orgId: string, bindingId: string, projectId: bigint): Promise<boolean>
 }
 
 export type GitlabCredentialPurpose = 'read' | 'git_write' | 'effect'

@@ -8,12 +8,18 @@ import { prisma } from '../setup.db.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { GitlabOauthService } from '../../src/gitlab/oauth.service.js'
-import type { FetchLike } from '../../src/gitlab/api.js'
 import {
   PgGitlabConnectionRepo,
   PgGitlabConnectionSecretStore,
-  PgGitlabOauthStateStore
+  PgGitlabOauthStateStore,
+  PgGitlabProjectBindingRepo,
+  PgGitlabProjectCredentialRepo,
+  PgGitlabProjectCredentialSecretStore,
+  PgGitlabWebhookSecretStore
 } from '../../src/persistence/repositories/gitlab.repo.js'
+import { PgCodeHostRepositoryRepo } from '../../src/persistence/repositories/code-host-repository.repo.js'
+import { GitlabProvisioner } from '../../src/gitlab/provisioner.js'
+import { FakeGitlab, type FakeGitlabOptions } from '../fakes/gitlab-api.js'
 import { makeSecretCipher } from '../../src/secrets/cipher.js'
 import { systemClock } from '../../src/domain/clock.js'
 
@@ -22,52 +28,14 @@ const PUBLIC_CP = 'https://api.example.test'
 
 const cipher = makeSecretCipher({ SECRET_CIPHER: 'none' } as never)
 
-function gitlabFetch(script: { accessLevel?: number } = {}): FetchLike {
-  return async (url) => {
-    if (/\/api\/v4\/projects\/\d+\/members\/all\/\d+$/.test(url)) {
-      return Response.json({ access_level: script.accessLevel ?? 50, state: 'active', expires_at: null })
-    }
-    if (/\/api\/v4\/projects\/\d+$/.test(url)) {
-      const id = Number(/projects\/(\d+)$/.exec(url)![1])
-      return Response.json({
-        id,
-        path_with_namespace: 'example-group/example-project',
-        default_branch: 'main',
-        http_url_to_repo: 'https://gitlab.com/example-group/example-project.git'
-      })
-    }
-    if (url.includes('/api/v4/projects?')) {
-      return Response.json([
-        {
-          id: 4455667,
-          path_with_namespace: 'example-group/example-project',
-          default_branch: 'main',
-          last_activity_at: '2026-08-20T00:00:00.000Z'
-        }
-      ])
-    }
-    if (url.endsWith('/oauth/token')) {
-      return Response.json({
-        access_token: 'at-1',
-        refresh_token: 'rt-1',
-        expires_in: 7200,
-        created_at: Math.floor(Date.now() / 1000),
-        scope: 'api'
-      })
-    }
-    if (url.endsWith('/user')) return Response.json({ id: 4242, username: 'example-admin' })
-    if (url.endsWith('/oauth/revoke')) return Response.json({})
-    throw new Error(`unexpected gitlab call: ${url}`)
-  }
-}
-
 let running: HttpApp | undefined
 afterEach(async () => {
   await running?.close()
   running = undefined
 })
 
-function gitlabApp(script: { accessLevel?: number } = {}): HttpApp {
+function gitlabApp(options: FakeGitlabOptions = {}): HttpApp {
+  const fake = new FakeGitlab(options)
   const oauth = new GitlabOauthService({
     cfg: { clientId: 'client-1', clientSecret: 'secret-1' },
     connections: new PgGitlabConnectionRepo(prisma),
@@ -77,10 +45,23 @@ function gitlabApp(script: { accessLevel?: number } = {}): HttpApp {
     clock: systemClock,
     publicCpUrl: PUBLIC_CP,
     webAppUrl: 'https://console.example.test',
-    fetchImpl: gitlabFetch(script)
+    fetchImpl: fake.fetch()
+  })
+  const provisioner = new GitlabProvisioner({
+    oauth,
+    bindings: new PgGitlabProjectBindingRepo(prisma),
+    credentials: new PgGitlabProjectCredentialRepo(prisma),
+    credentialSecrets: new PgGitlabProjectCredentialSecretStore(prisma, cipher),
+    webhookSecrets: new PgGitlabWebhookSecretStore(prisma, cipher),
+    catalog: new PgCodeHostRepositoryRepo(prisma),
+    cipher,
+    clock: systemClock,
+    publicRelayUrl: 'https://relay.example.test',
+    desiredWebhookEvents: async () => null,
+    fetchImpl: fake.fetch()
   })
   running = buildHttpApp(prisma, { PUBLIC_CP_URL: PUBLIC_CP }, undefined, undefined, {
-    gitlab: { oauth, fetchImpl: gitlabFetch(script) }
+    gitlab: { oauth, provisioner, fetchImpl: fake.fetch() }
   })
   return running
 }
@@ -210,7 +191,8 @@ describe('gitlab oauth routes', () => {
     expect(res.json()).toMatchObject({
       projectId: '4455667',
       projectPath: 'example-group/example-project',
-      state: 'provisioning',
+      state: 'ready',
+      serviceAccountUsername: 'agentconnect-p4455667',
       webhookInstalled: false
     })
     // The claim and the provider-qualified catalog row were acquired atomically.
