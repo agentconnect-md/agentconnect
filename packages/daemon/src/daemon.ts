@@ -1274,7 +1274,11 @@ export class Daemon {
         await this.dispatch(agentId, msg, integrationId, undefined, undefined, { isQueueCmd: true })
       },
       replyConnFor: (agentId, integrationId) => this.replyConnFor(agentId, integrationId),
-      sessionLink: (acpSessionId, source) => this.sessionLink(acpSessionId, source),
+      sessionLink: (sessionId, source) => this.sessionLink(sessionId, source),
+      outwardSessionId: async (agentId, acpSessionId) => {
+        const slot = await this.store.getSessionByAcpIdForAgent(agentId, acpSessionId)
+        return slot ? await this.store.ensureOutwardSessionId(slot.key, agentId, this.clock.now()) : undefined
+      },
       sessionLinkSource: (platform, integrationId) => this.sessionLinkSource(platform, integrationId),
       threadOwner: async (channel, thread, transportScope) =>
         await this.sessions.threadOwner(channel, thread, transportScope),
@@ -3761,7 +3765,8 @@ export class Daemon {
       orgForAgent: (agentId) => this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId),
       modelOverride: async (sessionKey) => await this.store.getModelOverride(sessionKey),
       acpSessionId: async (sessionKey) => (await this.store.getSession(sessionKey))?.acpSessionId,
-      outwardSessionId: async (sessionKey, agentId) => await this.store.ensureOutwardSessionId(sessionKey, agentId),
+      outwardSessionId: async (sessionKey, agentId) =>
+        await this.store.ensureOutwardSessionId(sessionKey, agentId, this.clock.now()),
       sessionKeyForAcpId: async (agentId, acpSessionId) =>
         (await this.store.getSessionByAcpIdForAgent(agentId, acpSessionId))?.key,
       sessionSdkQuiescent: (agentId, acpSessionId) => this.sessionSdkQuiescent(agentId, acpSessionId),
@@ -6619,7 +6624,11 @@ export class Daemon {
       activeGithubTurn: (key) => this.activeGithubTurnMeta.get(key),
       activeGithubReplyBatch: (key) => this.activeGithubReplyBatchMeta.get(key),
       agentLink: (agentId) => this.agentLink(agentId),
-      sessionLink: (acpSessionId, source) => this.sessionLink(acpSessionId, source),
+      sessionLink: (sessionId, source) => this.sessionLink(sessionId, source),
+      outwardSessionId: async (agentId, acpSessionId) => {
+        const slot = await this.store.getSessionByAcpIdForAgent(agentId, acpSessionId)
+        return slot ? await this.store.ensureOutwardSessionId(slot.key, agentId, this.clock.now()) : undefined
+      },
       runtimeNames: () => this.runtimeFacts.runtimeNames(),
       hostForStoredSession: async (agentId, acpSessionId) =>
         await this.modelSessions.hostForStoredSession(agentId, acpSessionId)
@@ -9070,7 +9079,14 @@ export class Daemon {
     const pendingWebchat = webchat
       ? Object.assign(webchat, { index: 0, replyText: '', heldText: '', messageEmitted: false })
       : undefined
-    const p = this.buildPending(run, { conv, rec, sessionId, webchat: pendingWebchat })
+    // Resolved once for the turn: the console addresses this session by its outward id (§1.1),
+    // and most of the turn's link/status producers are synchronous.
+    const outwardSessionId = await this.store.ensureOutwardSessionId(
+      run.plan.sessionKey,
+      run.entry.agentId,
+      this.clock.now()
+    )
+    const p = this.buildPending(run, { conv, rec, sessionId, outwardSessionId, webchat: pendingWebchat })
     const activeTurn = await this.installActiveTurnContext(run, sessionId)
     const settlement: TurnSettlement = { finalPhase: 'end', propagatingTurnError: false }
     let turnModel: string | undefined
@@ -9396,11 +9412,17 @@ export class Daemon {
   /** Build this turn's live record from its plan and register it as the session's Pending turn. */
   private buildPending(
     run: TurnRun,
-    turn: { conv: DaemonConverger; rec: TranscriptRecorder; sessionId: string; webchat: Pending['webchat'] }
+    turn: {
+      conv: DaemonConverger
+      rec: TranscriptRecorder
+      sessionId: string
+      outwardSessionId: string
+      webchat: Pending['webchat']
+    }
   ): Pending {
     const { entry, plan } = run
     const { agentId, callMeta, githubReply } = entry
-    const { conv, rec, sessionId } = turn
+    const { conv, rec, sessionId, outwardSessionId } = turn
     let resolveDone!: () => void
     const done = new Promise<void>((r) => (resolveDone = r))
     if (!entry.selectedHost) {
@@ -9432,6 +9454,7 @@ export class Daemon {
       builtinSystemToolCallIds: new Set(),
       hiddenSessionTitleToolCallIds: new Set(),
       acpSessionId: sessionId,
+      outwardSessionId,
       ...(entry.selectedHost ? { selectedHost: entry.selectedHost } : {}),
       turnState: plan.turnSurface.initialTurnState(plan.turnCtx),
       conn: run.replyConn,
@@ -10088,7 +10111,7 @@ export class Daemon {
   ): Promise<void> {
     if (p.webchat && !p.webchat.continuation) return
     const { plan } = run
-    const link = plan.showFooter ? this.sessionLink(sessionId) : undefined
+    const link = plan.showFooter ? this.sessionLink(p.outwardSessionId) : undefined
     const finalAttributionInfo = plan.showFooter ? await currentAttributionInfo() : undefined
     // A runtime may only publish its final session-scoped model during prompt.
     // Refresh before enqueueing the final body so any not-yet-sent section is born
@@ -10534,7 +10557,7 @@ export class Daemon {
       botUrl: this.agentLink(entry.agentId),
       runtime: this.runtimeFacts.runtimeNames()[agent.runtime] ?? agent.runtime,
       model: (await this.buildStatusInfo(p)).model ?? turnModel ?? 'default',
-      sessionUrl: this.sessionLink(sessionId, this.sessionLinkSource(plan.platform, plan.integrationId)),
+      sessionUrl: this.sessionLink(p.outwardSessionId, this.sessionLinkSource(plan.platform, plan.integrationId)),
       ...(plan.hopLimitNotice ? { notice: plan.hopLimitNotice } : {})
     }
   }
@@ -10930,7 +10953,7 @@ export class Daemon {
         recordReplySegment: (turn, text) => this.recordReplySegment(turn as Pending, text),
         appendTranscript: async (row) => await this.store.appendTranscript(row),
         sessionUrl: (turn) =>
-          this.sessionLink(turn.acpSessionId, this.sessionLinkSource(turn.plan.platform, turn.plan.integrationId))
+          this.sessionLink(turn.outwardSessionId, this.sessionLinkSource(turn.plan.platform, turn.plan.integrationId))
       },
       p,
       turnState<FeishuTurnState>(p),
@@ -10958,9 +10981,11 @@ export class Daemon {
    *  (`DEFAULT_WEB_APP_URL`). The console is org-scoped, so the org slug is inserted when
    *  known; without it the link falls back to `<base>/sessions/<id>`. Provider-rendered
    *  links carry a presentation-only source hint for the generic 404 profile-linking action. */
-  private sessionLink(acpSessionId: string, source?: string): string {
+  /** The console deep link to a session. Takes its OUTWARD id (session-concept.md §1.1) — the
+   *  console resolves what the CP stored, and the CP stores this one. */
+  private sessionLink(sessionId: string, source?: string): string {
     const orgSeg = this.cpOrgSlug ? `/${encodeURIComponent(this.cpOrgSlug)}` : ''
-    const link = `${this.webAppBase()}${orgSeg}/sessions/${encodeURIComponent(acpSessionId)}`
+    const link = `${this.webAppBase()}${orgSeg}/sessions/${encodeURIComponent(sessionId)}`
     return source ? `${link}?source=${source}` : link
   }
 
@@ -11020,6 +11045,9 @@ export class Daemon {
   ): Promise<StatusBarInfo> {
     const agent = this.agents.get(agentId)
     const usage = await this.store.getUsage(sessionKey)
+    const outwardSessionId = acpSessionId
+      ? await this.store.ensureOutwardSessionId(sessionKey, agentId, this.clock.now())
+      : undefined
     // `?.()` guards a host stub without the method (test fakes); real AcpHosts always have it.
     const host = acpSessionId
       ? await this.modelSessions.hostForStoredSession(agentId, acpSessionId)
@@ -11099,7 +11127,8 @@ export class Daemon {
           }
         : {}),
       ...(allowRuntimeChangesInChat && fast ? { fastModeAvailable: true } : {}),
-      ...(acpSessionId ? { sessionId: acpSessionId } : {})
+      // The console deep-links from this, so it is the session's outward id (§1.1), not the hop's.
+      ...(outwardSessionId ? { sessionId: outwardSessionId } : {})
     }
   }
 
@@ -11127,7 +11156,8 @@ export class Daemon {
       ...(iconUrl ? { iconUrl } : {}),
       ...(sessionTitle ? { sessionTitle } : {})
     }
-    const link = rec.acpSessionId ? this.sessionLink(rec.acpSessionId, 'slack') : undefined
+    const outward = rec.sessionId ?? rec.acpSessionId
+    const link = outward ? this.sessionLink(outward, 'slack') : undefined
     const pending = [...this.pending.values()].find((turn) => turn.plan.sessionKey === sessionKey)
     const cancellable = pending?.chrome.statusCancellable ?? this.inflight.has(sessionKey)
     return { info, identity, ...(link ? { link } : {}), cancellable }
@@ -11191,7 +11221,7 @@ export class Daemon {
       // runtimes only advertise the model after the first prompt). It fills in via edits
       // as usage_update / turn-end land.
       p.chrome.lastStatusBar = key
-      const link = this.sessionLink(p.acpSessionId, 'slack')
+      const link = this.sessionLink(p.outwardSessionId, 'slack')
       const sessionTarget = this.httpSlackSessionTarget(p)
       const shared =
         sessionTarget && p.plan.integrationId
@@ -11417,7 +11447,7 @@ export class Daemon {
     const observedModel = await this.store.getObservedModel(key)
     // The wire carries the outward id (§1.1) — the same one the gateway's metered rows carry, so
     // both sources of a session's spend land on one row instead of two.
-    const outwardSessionId = await this.store.ensureOutwardSessionId(key, agentId)
+    const outwardSessionId = await this.store.ensureOutwardSessionId(key, agentId, this.clock.now())
     try {
       this.cpClient?.emitUsageReport({
         sessionId: outwardSessionId,

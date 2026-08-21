@@ -138,13 +138,22 @@ async function activity(daemon: Daemon): Promise<{ kind: string; sender: string;
   }))
 }
 
+// The footer deep-links the console, which knows the session by its OUTWARD id (§1.1) — a
+// minted UUID, not the runtime's `acp-1`. Matched loosely on that segment alone: the exact value
+// belongs to the store, and daemon-message-agent covers what it must be.
+const SESSION_URL = /https:\/\/app\.example\.com\/sessions\/[0-9a-f-]{36}\?source=slack/
+
 function classicFooter(botName = 'bot-a', runtime = 'claude', model = 'default') {
   return {
     type: 'context',
     elements: [
       {
         type: 'mrkdwn',
-        text: `sent by <https://app.example.com/agents/bot-a|${botName}> (${runtime} · ${model}) · <https://app.example.com/sessions/acp-1?source=slack|open in session>`
+        text: expect.stringMatching(
+          new RegExp(
+            `^sent by <https://app\\.example\\.com/agents/bot-a\\|${botName}> \\(${runtime} · ${model}\\) · <${SESSION_URL.source}\\|open in session>$`
+          )
+        )
       }
     ]
   }

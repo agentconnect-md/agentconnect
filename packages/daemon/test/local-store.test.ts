@@ -755,6 +755,38 @@ describe('LocalStore session/transcript read-back (session/list, session/history
     await s.close()
   })
 
+  it('a pre-session mint stages itself, leaving no half-built session behind', async () => {
+    const s = await store()
+    // The pool also issues credentials for keys that never become sessions at all.
+    const internal = await s.ensureOutwardSessionId('internal:memory:bot-a', 'bot-a')
+    expect(await s.getSession('internal:memory:bot-a')).toBeUndefined()
+    expect(await s.listSessions()).toEqual([])
+    expect(await s.ensureOutwardSessionId('internal:memory:bot-a', 'bot-a')).toBe(internal)
+
+    // A real slot mints the same way, and the turn's own insert adopts it — coordinates and all.
+    const minted = await s.ensureOutwardSessionId('k1', 'bot-a')
+    expect(await s.getSession('k1')).toBeUndefined()
+    await seed(s, 'k1', 'bot-a', 'acp-1', 100)
+    expect(await s.getSession('k1')).toMatchObject({
+      sessionId: minted,
+      platform: 'slack',
+      channel: 'C1',
+      thread: 'k1'
+    })
+    await s.close()
+  })
+
+  it('a purged slot does not hand its identity to the next session on the same key', async () => {
+    const s = await store()
+    await seed(s, 'k1', 'bot-a', 'acp-1', 100)
+    const first = (await s.getSession('k1'))!.sessionId
+    expect(await s.deleteSession('k1', { reason: 'retention', at: 1_000 })).toBe(true)
+    // The receipt just reported `first` as purged; reusing it would resurrect a dead row upstream.
+    await seed(s, 'k1', 'bot-a', 'acp-2', 200)
+    expect((await s.getSession('k1'))!.sessionId).not.toBe(first)
+    await s.close()
+  })
+
   it('getSessionByOutwardId resolves the outward id, and falls back to the ACP one', async () => {
     const s = await store()
     await seed(s, 'k1', 'bot-a', 'acp-1', 100)

@@ -265,7 +265,10 @@ export function createSessionReader(
         // for legacy rows without moving platform branches into this reader.
         const threadUrl = r.threadUrl ?? threadUrlFor?.(r)
         return {
-          sessionId: r.acpSessionId!, // listSessions filters out null acpSessionId
+          // The console addresses what it is shown, and the CP stores the row under this id
+          // (session-concept.md §1.1). A row from before the column answers with its ACP id,
+          // which is exactly what such a session was reported under.
+          sessionId: r.sessionId ?? r.acpSessionId!,
           ...(r.originSessionId ? { parentSessionId: r.originSessionId } : {}),
           // store `platform` is a free string; the daemon only ever writes a valid Platform.
           sessionKey: { platform: r.platform as Platform, channel: r.channel, thread: r.thread },

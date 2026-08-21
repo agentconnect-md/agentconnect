@@ -99,13 +99,15 @@ export class SessionMetadataOutbox {
     // live send still depends on a constructed client.
     if (!cpClient && !this.host.controlPlaneConfigured()) return
     const now = new Date(this.host.clock().now()).toISOString()
-    const row = await this.sessionListProjection(input.sessionId, input.agentId)
-    const key = row?.sessionKey
-    // Callers hold the ACP hop's id; the wire carries the session's outward one (session-concept.md §1.1).
+    // Callers hold the ACP hop's id; the wire carries the session's outward one (§1.1).
     const slot = await store.getSessionByAcpIdForAgent(input.agentId, input.sessionId)
     // An unresolvable slot keeps the id it was given — the same thing a pre-v12 daemon would have sent.
     const outwardSessionId =
-      slot?.sessionId ?? (slot ? await store.ensureOutwardSessionId(slot.key, input.agentId) : input.sessionId)
+      slot?.sessionId ??
+      (slot ? await store.ensureOutwardSessionId(slot.key, input.agentId, this.host.clock().now()) : input.sessionId)
+    // The projection speaks the same outward language the wire does, so it is looked up that way.
+    const row = await this.sessionListProjection(outwardSessionId, input.agentId)
+    const key = row?.sessionKey
     const event: EventSession = {
       sessionId: outwardSessionId,
       agentId: input.agentId,

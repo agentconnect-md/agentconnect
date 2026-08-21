@@ -511,9 +511,12 @@ export interface Pending {
    *  session metadata, but housekeeping must not appear in platform/webchat output
    *  or the persisted user-visible activity log. */
   hiddenSessionTitleToolCallIds: Set<string>
-  /** The live ACP session id for this turn (part of the `this.pending` map key) — surfaced
-   *  in the status bar so the console can deep-link to the session detail page. */
+  /** The live ACP session id for this turn (part of the `this.pending` map key). */
   acpSessionId: string
+  /** The same session's OUTWARD id (session-concept.md §1.1) — what the console knows it by, so
+   *  every deep link and status payload this turn produces addresses a row the CP actually has.
+   *  Stamped once here because most of those producers are synchronous. */
+  outwardSessionId: string
   /** The exact host selected for this turn, including its full cleanup boundary. */
   selectedHost?: SelectedTurnHost
   /** Once an operator pause or loop trip targets this turn, no subsequent ACP update

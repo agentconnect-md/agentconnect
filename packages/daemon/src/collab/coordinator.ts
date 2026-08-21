@@ -402,7 +402,7 @@ export class CollabCoordinator {
     // the CP. originCoords are its landing coords for cross-daemon reply routing.
     const callerSession = await this.host.store().getSession(callerKey)
     const originSessionId = callerSession
-      ? await this.host.store().ensureOutwardSessionId(callerKey, req.callerAgentId)
+      ? await this.host.store().ensureOutwardSessionId(callerKey, req.callerAgentId, this.host.clock().now())
       : undefined
     // These two read the caller's LOCAL rows, which are keyed by the runtime's id.
     const callerAcpSessionId = callerSession?.acpSessionId ?? undefined
@@ -802,7 +802,7 @@ export class CollabCoordinator {
     // replier's own local rows stay keyed by the runtime's.
     const replierAcpSessionId = callerRec?.acpSessionId ?? undefined
     const replierSessionId = callerRec
-      ? await this.host.store().ensureOutwardSessionId(callerKey, req.callerAgentId)
+      ? await this.host.store().ensureOutwardSessionId(callerKey, req.callerAgentId, this.host.clock().now())
       : undefined
     const externalOrigin = await this.host.externalOriginForSession(req.callerAgentId, replierAcpSessionId)
     const replyOriginCoords: CallMeta['originCoords'] = {
@@ -1007,7 +1007,7 @@ export class CollabCoordinator {
     // The caller names ITSELF the way lineage does — outwardly (§1.1) — because that is what the
     // durable parent link, the admission link and the CP's ownership check are all written in.
     const callerSessionId = (await this.host.store().getSession(callerKey))
-      ? await this.host.store().ensureOutwardSessionId(callerKey, req.callerAgentId)
+      ? await this.host.store().ensureOutwardSessionId(callerKey, req.callerAgentId, this.host.clock().now())
       : undefined
     // A caller with no session id of its own has no lineage to check against — refuse rather than
     // fall through to a link lookup that could match an `undefined` parent.
@@ -1368,7 +1368,7 @@ export class CollabCoordinator {
     const originRec = await this.host.store().getSession(originKey)
     const originAcpSessionId = originRec?.acpSessionId ?? undefined
     const originSessionId = originRec
-      ? await this.host.store().ensureOutwardSessionId(originKey, req.agentId)
+      ? await this.host.store().ensureOutwardSessionId(originKey, req.agentId, this.host.clock().now())
       : undefined
     const externalOrigin = await this.host.externalOriginForSession(req.agentId, originAcpSessionId)
     const originCoordPlatform = originPlatform

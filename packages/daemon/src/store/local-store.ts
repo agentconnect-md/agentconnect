@@ -859,6 +859,12 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean }) => Promise<v
     await db.exec(`
       ALTER TABLE sessions ADD COLUMN sessionId TEXT;
       UPDATE sessions SET sessionId = acpSessionId WHERE acpSessionId IS NOT NULL;
+      CREATE TABLE IF NOT EXISTS session_outward_ids (
+        key TEXT PRIMARY KEY,
+        agentId TEXT,
+        sessionId TEXT NOT NULL,
+        mintedAt INTEGER NOT NULL
+      );
     `)
 ]
 
@@ -1010,6 +1016,16 @@ export class LocalStore {
         ON session_metadata_outbox (queuedAt);
       CREATE INDEX IF NOT EXISTS session_metadata_outbox_attempt
         ON session_metadata_outbox (nextAttemptAt, queuedAt);
+      -- Outward session ids minted BEFORE their session row exists — a credential is issued to
+      -- start the runtime, and the turn writes the session only once it dispatches (§1.1). The
+      -- insert adopts the mint, so this table holds only what has not become a session yet: an
+      -- in-flight slot, or an internal:* key (dream / memory / commit) that never will.
+      CREATE TABLE IF NOT EXISTS session_outward_ids (
+        key TEXT PRIMARY KEY,
+        agentId TEXT,
+        sessionId TEXT NOT NULL,
+        mintedAt INTEGER NOT NULL
+      );
       -- Retention-GC receipts (#485): sessions this daemon has already deleted
       -- locally, still owed to the CP as an event/session-purged report. Durable
       -- because the local row is GONE — unlike every other D→C report, an
@@ -1462,29 +1478,32 @@ export class LocalStore {
 
   /**
    * The slot's OUTWARD session id (§1.1), minted on first ask and stable for the slot's life.
-   * Asked before a credential is issued — earlier than the runtime, so earlier than any ACP id.
+   * Asked before a credential is issued — earlier than the runtime, so earlier than any ACP id,
+   * and usually earlier than the session ROW, which the turn writes only once it dispatches.
    *
-   * Idempotent without depending on a driver's `changes`: a pool's members share one store and
-   * two of them can reach this for one slot at the same instant, so each step is a no-op for the
-   * loser and the final read settles who won. `upsertSession` keeps an existing id, so the
-   * skeleton row a first mint may create survives the turn that writes the session proper.
+   * A mint therefore lands in `session_outward_ids`, never in a half-built `sessions` row: the
+   * turn's own insert adopts it, and a key that never becomes a session — the pool also runs
+   * dream / memory / commit work under `internal:*` keys — leaves nothing behind that looks like
+   * one. Idempotent without depending on a driver's `changes`, since a pool's members share one
+   * store: each step is a no-op for the loser and the final read settles who won.
    */
-  async ensureOutwardSessionId(key: string, agentId?: string): Promise<string> {
-    const read = async (): Promise<string | undefined> =>
-      (
-        (await this.db.prepare('SELECT sessionId FROM sessions WHERE key = ?').get(key)) as
-          { sessionId: string | null } | undefined
-      )?.sessionId ?? undefined
-    const existing = await read()
-    if (existing) return existing
-    const minted = randomUUID()
-    // The row may not exist yet: a brand-new session mints its credential before the turn writes
-    // the session. Carry the agent so even that momentary row is attributable.
+  async ensureOutwardSessionId(key: string, agentId?: string, now = Date.now()): Promise<string> {
+    const onSession = (
+      (await this.db.prepare('SELECT sessionId FROM sessions WHERE key = ?').get(key)) as
+        { sessionId: string | null } | undefined
+    )?.sessionId
+    if (onSession) return onSession
     await this.db
-      .prepare('INSERT OR IGNORE INTO sessions (key, agentId, sessionId, updatedAt) VALUES (?, ?, ?, ?)')
-      .run(key, agentId ?? null, minted, Date.now())
+      .prepare('INSERT OR IGNORE INTO session_outward_ids (key, agentId, sessionId, mintedAt) VALUES (?, ?, ?, ?)')
+      .run(key, agentId ?? null, randomUUID(), now)
+    const minted = (
+      (await this.db.prepare('SELECT sessionId FROM session_outward_ids WHERE key = ?').get(key)) as
+        { sessionId: string } | undefined
+    )?.sessionId
+    if (!minted) throw new Error(`could not mint an outward session id for ${key}`)
+    // A session row written before this column existed adopts the mint rather than a second name.
     await this.db.prepare('UPDATE sessions SET sessionId = ? WHERE key = ? AND sessionId IS NULL').run(minted, key)
-    return (await read()) ?? minted
+    return minted
   }
 
   async createPermissionRequest(record: PermissionRequestRecord): Promise<void> {
@@ -1786,15 +1805,17 @@ export class LocalStore {
 
   /** Addressable session ids whose authorized transcript scope may have changed. */
   async sessionIdsForTranscript(agentId: string, channel: string, thread: string): Promise<string[]> {
+    // Outward ids (§1.1): the only consumer is the CP's transcript-activity signal, and the CP
+    // invalidates by the id it filed the session under. A pre-v12 row answers with its ACP id.
     const rows = (await this.db
       .prepare(
-        `SELECT DISTINCT acpSessionId, channel, transportScope FROM sessions
+        `SELECT DISTINCT COALESCE(sessionId, acpSessionId) AS sessionId, channel, transportScope FROM sessions
          WHERE agentId = ? AND thread = ? AND acpSessionId IS NOT NULL`
       )
-      .all(agentId, thread)) as { acpSessionId: string; channel: string; transportScope: string | null }[]
+      .all(agentId, thread)) as { sessionId: string; channel: string; transportScope: string | null }[]
     return rows
       .filter((row) => transcriptChannelKey(row.channel, row.transportScope) === channel)
-      .map((row) => row.acpSessionId)
+      .map((row) => row.sessionId)
   }
 
   async currentTranscriptRevision(agentId?: string, orgId?: string): Promise<number> {
@@ -2030,13 +2051,20 @@ export class LocalStore {
             externalProvider, externalRealmKey, externalResourceKind, externalResourceKey, externalIntegrationId,
             externalOriginJson, sourceBindingKind)
          VALUES
-           (@key, @sessionId, @agentId, @platform, @channel, @thread, @transportScope, @acpSessionId, @state, @lastDeliveredTs, @updatedAt,
+           (@key, COALESCE((SELECT sessionId FROM session_outward_ids WHERE key = @key), @sessionId), @agentId, @platform, @channel, @thread, @transportScope, @acpSessionId, @state, @lastDeliveredTs, @updatedAt,
             CASE WHEN EXISTS (SELECT 1 FROM session_mutes WHERE key = @key) THEN 1 ELSE NULL END,
             @triggeredBy, @threadUrl, @memoryProvider, @workspaceIsolation, @originSessionId, @needsParentReply,
             @externalProvider, @externalRealmKey, @externalResourceKind, @externalResourceKey, @externalIntegrationId,
             @externalOriginJson, @sourceBindingKind)
          ON CONFLICT(key) DO UPDATE SET
            sessionId=COALESCE(sessions.sessionId, excluded.sessionId),
+           -- The key's own components. A row this daemon minted an outward id into before the
+           -- session existed (ensureOutwardSessionId) carries none of them, and they are immutable
+           -- once written, so COALESCE hydrates that skeleton exactly once and never rewrites a
+           -- real row. Without this the session could not be read back from its own coordinates.
+           platform=COALESCE(sessions.platform, excluded.platform),
+           channel=COALESCE(sessions.channel, excluded.channel),
+           thread=COALESCE(sessions.thread, excluded.thread),
            acpSessionId=excluded.acpSessionId, state=excluded.state,
            lastDeliveredTs=excluded.lastDeliveredTs, updatedAt=excluded.updatedAt,
            transportScope=excluded.transportScope,
@@ -2713,6 +2741,9 @@ export class LocalStore {
           .run(rec.agentId, outward, purge.reason, purge.at, purge.ownerId ?? null, purge.at)
       }
       await tx.prepare('DELETE FROM sessions WHERE key = ?').run(key)
+      // Its identity goes with it: the receipt just reported this id as purged, so the next
+      // session on the same slot must be a new one, not this one's name reused.
+      await tx.prepare('DELETE FROM session_outward_ids WHERE key = ?').run(key)
       await tx.prepare('DELETE FROM session_mutes WHERE key = ?').run(key)
       await tx.prepare('DELETE FROM inbox WHERE sessionKey = ? AND terminalReport IS NULL').run(key)
       if (rec.acpSessionId) {
