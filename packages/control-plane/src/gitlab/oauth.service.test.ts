@@ -10,6 +10,7 @@ import type {
 import type { SecretCipher } from '../secrets/cipher.js'
 import type { FetchLike } from './api.js'
 import { GitlabOauthDenied, GitlabOauthService, normalizeReturnPath } from './oauth.service.js'
+import { GitlabMembershipGone } from '../persistence/errors.js'
 
 const ORG = 'org-1'
 const USER = 'user-1'
@@ -41,6 +42,7 @@ class MemStates implements GitlabOauthStateStore {
 
 class MemConnections implements GitlabConnectionRepo {
   rows = new Map<string, GitlabConnectionRecord>()
+  membershipGone = false
   private seq = 0
   constructor(private readonly secrets: MemSecrets) {}
   async upsertOnCallback(input: {
@@ -52,6 +54,7 @@ class MemConnections implements GitlabConnectionRepo {
     accessExpiresAt: Date | null
     sealedPair: { accessToken: string; refreshToken: string }
   }): Promise<GitlabConnectionRecord> {
+    if (this.membershipGone) throw new GitlabMembershipGone()
     const existing = [...this.rows.values()].find(
       (r) => r.orgId === input.orgId && r.gitlabUserId === input.gitlabUserId
     )
@@ -161,11 +164,10 @@ function gitlabFetch(script: Scripted = {}): FetchLike {
   }
 }
 
-function harness(opts: { script?: Scripted; now?: number; member?: { ok: boolean } } = {}) {
+function harness(opts: { script?: Scripted; now?: number } = {}) {
   const states = new MemStates()
   const secrets = new MemSecrets()
   const connections = new MemConnections(secrets)
-  const member = opts.member ?? { ok: true }
   const clockNow = { value: opts.now ?? Date.parse('2026-08-22T00:00:00.000Z') }
   const service = new GitlabOauthService({
     cfg: { clientId: 'client-1', clientSecret: 'secret-1' },
@@ -176,10 +178,9 @@ function harness(opts: { script?: Scripted; now?: number; member?: { ok: boolean
     clock: { now: () => clockNow.value } as never,
     publicCpUrl: 'https://api.example.test',
     webAppUrl: 'https://console.example.test',
-    isOrgMember: async () => member.ok,
     fetchImpl: gitlabFetch(opts.script ?? {})
   })
-  return { service, states, connections, secrets, clockNow, member }
+  return { service, states, connections, secrets, clockNow }
 }
 
 async function connectedHarness(opts: { script?: Scripted } = {}) {
@@ -303,11 +304,11 @@ describe('GitlabOauthService (§9)', () => {
   })
 
   it('refuses the callback when the starter is no longer an org member (§9.4)', async () => {
-    const h = harness({ member: { ok: true } })
+    const h = harness()
     const { url } = await h.service.start(ORG, USER)
     const nonce = new URL(url).searchParams.get('state')!
     const begun = (await h.service.begin(nonce))!
-    h.member.ok = false
+    h.connections.membershipGone = true
     const done = await h.service.callback(nonce, 'code-1', begun.browserNonce)
     expect(done.result).toBe('state_invalid')
     expect(h.connections.rows.size).toBe(0)

@@ -12,6 +12,7 @@ import {
   PgGitlabConnectionSecretStore
 } from '../../src/persistence/repositories/gitlab.repo.js'
 import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
+import { GitlabMembershipGone } from '../../src/persistence/errors.js'
 import { makeSecretCipher } from '../../src/secrets/cipher.js'
 
 const cipher = makeSecretCipher({ SECRET_CIPHER: 'none' } as never)
@@ -95,5 +96,66 @@ describe('PgGitlabConnectionRepo transitions', () => {
     expect(await store().get(DEFAULT_ORG_ID, record.id)).toBeNull()
     // The version bump also fences any refresh that was in flight at removal time.
     expect(await repo().commitRefresh(record.id, record.tokenVersion, null, pair('late'))).toBe(false)
+  })
+
+  it('a raw membership delete disconnects too — the trigger, not the repo method, is the authority', async () => {
+    const users = new PgUserRepo(prisma)
+    const member = await users.addMemberByEmail(DEFAULT_ORG_ID, 'raw-departing@example.test', 'collaborator')
+    const record = await repo().upsertOnCallback({
+      orgId: DEFAULT_ORG_ID,
+      userId: member.userId,
+      gitlabUserId: 778n,
+      gitlabUsername: 'raw-departing',
+      scopes: ['api'],
+      accessExpiresAt: null,
+      sealedPair: pair('raw')
+    })
+    await prisma.membership.delete({
+      where: { orgId_userId: { orgId: DEFAULT_ORG_ID, userId: member.userId } }
+    })
+    const after = (await repo().get(DEFAULT_ORG_ID, record.id))!
+    expect(after.state).toBe('disconnected')
+    expect(await store().get(DEFAULT_ORG_ID, record.id)).toBeNull()
+  })
+
+  it('account deletion (cascade path the repo never sees) disconnects as well (§9.4)', async () => {
+    const users = new PgUserRepo(prisma)
+    const member = await users.addMemberByEmail(DEFAULT_ORG_ID, 'deleted-account@example.test', 'collaborator')
+    const record = await repo().upsertOnCallback({
+      orgId: DEFAULT_ORG_ID,
+      userId: member.userId,
+      gitlabUserId: 779n,
+      gitlabUsername: 'deleted-account',
+      scopes: ['api'],
+      accessExpiresAt: null,
+      sealedPair: pair('gone')
+    })
+    // The external admin app deletes app_user directly: memberships cascade,
+    // the connection userId SET-NULLs — both triggers close both orderings.
+    await prisma.user.delete({ where: { id: member.userId } })
+    const after = (await repo().get(DEFAULT_ORG_ID, record.id))!
+    expect(after.state).toBe('disconnected')
+    expect(after.userId).toBeNull()
+    expect(await store().get(DEFAULT_ORG_ID, record.id)).toBeNull()
+  })
+
+  it('the callback upsert refuses a departed starter inside the same transaction', async () => {
+    const users = new PgUserRepo(prisma)
+    const member = await users.addMemberByEmail(DEFAULT_ORG_ID, 'toctou@example.test', 'collaborator')
+    await prisma.membership.delete({
+      where: { orgId_userId: { orgId: DEFAULT_ORG_ID, userId: member.userId } }
+    })
+    await expect(
+      repo().upsertOnCallback({
+        orgId: DEFAULT_ORG_ID,
+        userId: member.userId,
+        gitlabUserId: 780n,
+        gitlabUsername: 'toctou',
+        scopes: ['api'],
+        accessExpiresAt: null,
+        sealedPair: pair('never')
+      })
+    ).rejects.toThrow(GitlabMembershipGone)
+    expect(await prisma.gitlabConnection.count({ where: { gitlabUserId: 780n } })).toBe(0)
   })
 })

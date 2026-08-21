@@ -8,6 +8,7 @@
  */
 import type { GitlabConnection, PrismaClient } from '../../generated/prisma/client.js'
 import type { PrismaLike } from '../prisma.js'
+import { GitlabMembershipGone } from '../errors.js'
 import type {
   GitlabConnectionRecord,
   GitlabSealedTokenPair,
@@ -67,6 +68,14 @@ export class PgGitlabConnectionRepo implements GitlabConnectionRepo {
     // Metadata and the sealed pair land in ONE transaction: no reader can see a
     // connected row whose side-table pair is absent or stale.
     return this.prisma.$transaction(async (tx) => {
+      // §9.4, serialized: FOR SHARE pins the membership row for the length of
+      // this transaction, so a concurrent removal either waits for this commit
+      // (and its trigger then disconnects the fresh row) or wins first (and
+      // this locked read finds nothing) — a deterministic winner either way.
+      const membership = await tx.$queryRaw<{ userId: string }[]>`
+        SELECT "userId" FROM "membership"
+         WHERE "orgId" = ${input.orgId} AND "userId" = ${input.userId} FOR SHARE`
+      if (membership.length === 0) throw new GitlabMembershipGone()
       const row = await tx.gitlabConnection.upsert({
         where: { orgId_gitlabUserId: { orgId: input.orgId, gitlabUserId: input.gitlabUserId } },
         create: { orgId: input.orgId, gitlabUserId: input.gitlabUserId, ...facts },

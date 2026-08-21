@@ -52,3 +52,42 @@ CREATE TABLE "gitlab_oauth_state" (
 );
 
 CREATE INDEX "gitlab_oauth_state_expiresAt_idx" ON "gitlab_oauth_state"("expiresAt");
+
+-- §9.4 enforcement at the database layer: OAuth authority must not survive
+-- organization membership, HOWEVER membership ends — the repository method, a
+-- raw membership delete, or an app_user deletion cascading its memberships.
+-- The trigger runs inside the same transaction as the removal, and the version
+-- bump defeats any in-flight refresh CAS.
+CREATE OR REPLACE FUNCTION gitlab_connection_disconnect_on_membership_delete() RETURNS trigger AS $$
+BEGIN
+    UPDATE "gitlab_connection"
+       SET "state" = 'disconnected', "tokenVersion" = "tokenVersion" + 1
+     WHERE "orgId" = OLD."orgId" AND "userId" = OLD."userId" AND "state" <> 'disconnected';
+    DELETE FROM "gitlab_connection_secret" s
+     USING "gitlab_connection" c
+     WHERE s."connectionId" = c."id" AND c."orgId" = OLD."orgId" AND c."userId" = OLD."userId";
+    RETURN OLD;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER gitlab_connection_membership_guard
+AFTER DELETE ON "membership"
+FOR EACH ROW EXECUTE FUNCTION gitlab_connection_disconnect_on_membership_delete();
+
+-- Account deletion sets userId NULL through the FK; the membership trigger may
+-- fire before or after that action, so this second guard closes the other
+-- ordering: an owning user disappearing disconnects the row regardless.
+CREATE OR REPLACE FUNCTION gitlab_connection_disconnect_on_user_detach() RETURNS trigger AS $$
+BEGIN
+    IF NEW."userId" IS NULL AND OLD."userId" IS NOT NULL AND NEW."state" <> 'disconnected' THEN
+        NEW."state" := 'disconnected';
+        NEW."tokenVersion" := OLD."tokenVersion" + 1;
+        DELETE FROM "gitlab_connection_secret" WHERE "connectionId" = OLD."id";
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER gitlab_connection_user_detach_guard
+BEFORE UPDATE OF "userId" ON "gitlab_connection"
+FOR EACH ROW EXECUTE FUNCTION gitlab_connection_disconnect_on_user_detach();

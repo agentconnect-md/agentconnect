@@ -26,6 +26,7 @@ import type {
 } from '../persistence/ports.js'
 import type { SecretCipher } from '../secrets/cipher.js'
 import { orgScope } from '../secrets/scope.js'
+import { GitlabMembershipGone } from '../persistence/errors.js'
 import { GitlabApiError, gitlabCurrentUser, gitlabExchangeCode, gitlabRefreshToken, type FetchLike } from './api.js'
 import { GITLAB_HOST, GITLAB_OAUTH_BEGIN_PATH, GITLAB_OAUTH_CALLBACK_PATH, type GitlabAppConfig } from './config.js'
 
@@ -70,8 +71,6 @@ export interface GitlabOauthServiceDeps {
   publicCpUrl: string
   /** Console origin for the final redirect; absent ⇒ redirect stays on the CP origin. */
   webAppUrl?: string
-  /** §9.4: a departed starter must not complete a pending flow; checked at the callback. */
-  isOrgMember: (orgId: string, userId: string) => Promise<boolean>
   fetchImpl?: FetchLike
   log?: { warn(obj: object, msg: string): void }
 }
@@ -149,11 +148,6 @@ export class GitlabOauthService {
         },
         this.deps.fetchImpl
       )
-      // §9.4: OAuth authority must not survive organization membership — a
-      // starter removed while the browser was at GitLab cannot (re)connect.
-      if (!(await this.deps.isOrgMember(row.orgId, row.userId))) {
-        return { redirectPath, result: 'state_invalid' }
-      }
       const user = await gitlabCurrentUser(grant.access_token, this.deps.fetchImpl)
       const scope = orgScope(OrgId(row.orgId))
       await this.deps.connections.upsertOnCallback({
@@ -171,6 +165,9 @@ export class GitlabOauthService {
       })
       return { redirectPath, result: 'connected' }
     } catch (e) {
+      // §9.4: the starter lost their membership mid-flow — the repo's serialized
+      // check refused the upsert; nothing was created.
+      if (e instanceof GitlabMembershipGone) return { redirectPath, result: 'state_invalid' }
       // Status/code only — never the code, state, or upstream response body.
       this.deps.log?.warn(
         { status: e instanceof GitlabApiError ? e.status : undefined },

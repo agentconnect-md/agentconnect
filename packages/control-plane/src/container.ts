@@ -934,7 +934,6 @@ export function buildContainer(
             cipher: secretCipher,
             clock,
             publicCpUrl: config.PUBLIC_CP_URL,
-            isOrgMember: async (orgId, userId) => (await repos.org.roleOf(orgId, userId)) !== null,
             ...(gitlabWebAppUrl ? { webAppUrl: gitlabWebAppUrl } : {}),
             ...(opts.gitlabFetch ? { fetchImpl: opts.gitlabFetch } : {}),
             log: { warn: (obj, msg) => http.log.warn(obj, msg) }
