@@ -18,13 +18,13 @@ Today the session detail page is `[nav · body · rail]`, where the rail is a fi
 250px **session list** (`SessionRail.tsx`). The design turns that rail into a
 **resizable, tabbed dock** — the session list becomes one of five panels:
 
-| Tab      | Icon                    | Badge              | Header action   | What it shows                                                                                                                                                                                                   |
-| -------- | ----------------------- | ------------------ | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Sessions | `messages-square`       | —                  | `plus`          | today / yesterday / previous-7-days session groups + agent filter chips                                                                                                                                         |
-| Files    | `folder-tree`           | —                  | `refresh-cw`    | workspace tree with git status tags, path search, branch + workdir header                                                                                                                                       |
-| Git      | `git-commit-horizontal` | changed count      | `refresh-cw`    | branch + ahead/behind, staged / unstaged with `+/−` and per-row stage toggle, commit box with AI message generation, commit log                                                                                 |
-| PR       | `git-pull-request`      | unresolved threads | `external-link` | PR state, head→base, checks, reviews, unresolved threads with a single Auto-fix action, merge box with auto-merge — or, with no linked PR, the branch's upstream state and a Create-pull-request action (§12.6) |
-| Tasks    | `list-checks`           | running count      | `refresh-cw`    | background tasks with state and elapsed, read-only (§3.5 — no per-task cancel exists to wire)                                                                                                                   |
+| Tab      | Icon                    | Badge              | Header action   | What it shows                                                                                                                                                                                                                |
+| -------- | ----------------------- | ------------------ | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Sessions | `messages-square`       | —                  | `plus`          | today / yesterday / previous-7-days session groups + agent filter chips                                                                                                                                                      |
+| Files    | `folder-tree`           | —                  | `refresh-cw`    | workspace tree with git status tags, path search, branch + workdir header                                                                                                                                                    |
+| Git      | `git-commit-horizontal` | changed count      | `refresh-cw`    | branch + ahead/behind, staged / unstaged with `+/−` and per-row stage toggle, commit box with AI message generation, commit log                                                                                              |
+| PR       | `git-pull-request`      | unresolved threads | `external-link` | PR state, description, head→base, checks, reviews, unresolved threads with a single Auto-fix action, merge box with auto-merge — or, with no linked PR, the branch's upstream state and a Create-pull-request action (§12.6) |
+| Tasks    | `list-checks`           | running count      | `refresh-cw`    | background tasks with state and elapsed, read-only (§3.5 — no per-task cancel exists to wire)                                                                                                                                |
 
 Dock geometry: width **380–760px, default 480px**, drag handle on the left edge
 (brand-colored while dragging), tab strip with zero gap between tabs. Tab labels
@@ -1168,7 +1168,7 @@ list; `HookRun`'s recorded review appears only as the degraded-arm fallback
      ANY session would hand an old one the newest session's pull request, whose
      branch replaced the one that carried its work. So the primary tree is read
      for the agent's most recently active session only, and `linkScope: shared`
-     makes the panel say the PR may carry more than this session's work. A purged
+     records that the answering checkout is the agent's primary tree. A purged
      session, a non-checkout workspace, and no daemon serving the agent all skip
      the daemon read entirely, so a session that can never resolve a PR spends
      none of the installation's quota. The daemon comes from the PLACEMENT

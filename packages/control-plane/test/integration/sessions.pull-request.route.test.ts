@@ -70,6 +70,7 @@ function fullAnswer() {
         pullRequest: {
           number: PULL,
           title: 'Ship the panel',
+          bodyText: 'Ship the panel body',
           state: 'OPEN',
           isDraft: false,
           merged: false,
@@ -217,6 +218,7 @@ describe('GET /sessions/:id/pull-request', () => {
       repoFullName: REPO,
       pullNumber: PULL,
       title: 'Ship the panel',
+      body: 'Ship the panel body',
       state: 'open',
       isDraft: false,
       url: `https://github.com/${REPO}/pull/${PULL}`,

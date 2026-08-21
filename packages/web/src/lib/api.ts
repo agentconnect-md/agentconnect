@@ -3323,6 +3323,7 @@ export interface SessionPullRequestDto {
   repoFullName: string
   pullNumber: number
   title: string
+  body: string // the PR description as plain text; empty while degraded
   state: 'open' | 'closed' | 'merged' | null // null only degraded with no stored fact
   isDraft: boolean | null
   url: string

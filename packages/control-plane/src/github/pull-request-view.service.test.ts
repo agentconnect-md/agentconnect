@@ -39,6 +39,7 @@ function fullAnswer(): Record<string, unknown> {
         pullRequest: {
           number: 7,
           title: 'Ship the panel',
+          bodyText: 'Ship the panel body',
           state: 'OPEN',
           isDraft: false,
           merged: false,
@@ -155,6 +156,7 @@ describe('projection mapping', () => {
       repoFullName: 'acme/repo',
       pullNumber: 7,
       title: 'Ship the panel',
+      body: 'Ship the panel body',
       state: 'open',
       isDraft: false,
       url: 'https://github.com/acme/repo/pull/7',

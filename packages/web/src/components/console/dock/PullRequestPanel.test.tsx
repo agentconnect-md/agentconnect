@@ -66,6 +66,7 @@ function pr(overrides: Partial<SessionPullRequestDto> = {}): SessionPullRequestD
     repoFullName: 'acme/api',
     pullNumber: 57,
     title: 'Ship the dock',
+    body: 'Fixes the dock flicker and adds the PR panel.',
     state: 'open',
     isDraft: false,
     url: 'https://github.com/acme/api/pull/57',
@@ -108,6 +109,7 @@ function pr(overrides: Partial<SessionPullRequestDto> = {}): SessionPullRequestD
 // The degraded arm as the CP builds it: identity + stored facts survive, every live list is empty.
 function degradedPr(reason: 'rate_limited' | 'denied' | 'unreachable'): SessionPullRequestDto {
   return pr({
+    body: '',
     state: 'closed',
     isDraft: null,
     additions: null,
@@ -423,17 +425,16 @@ describe('PullRequestPanel body', () => {
     )
   })
 
-  it('says when the link came from the agent’s SHARED checkout, and stays silent for a session worktree', async () => {
-    // The PR is real either way; what differs is whose work it can contain, and the panel says so
-    // rather than letting a shared tree's branch read as this session's alone.
+  it('draws the PR description under its own section, and hides it when empty', async () => {
+    // The body replaces the old "Found through …" shared-checkout note: the description is what the
+    // reader came for, and which checkout resolved the link is an implementation detail.
     await render()
-    expect(container?.querySelector('[data-pr-link-shared]')).toBeNull()
+    expect(container?.querySelector('[data-pr-body]')?.textContent).toContain('Fixes the dock flicker')
+    expect(text()).toContain('Description')
 
-    wire.data = pr({ linkedBy: 'head-branch', linkBranch: 'main', linkScope: 'shared' })
+    wire.data = pr({ body: '' })
     await rerender({ sessionId: 'session-2' })
-    expect(container?.querySelector('[data-pr-link-shared]')?.textContent).toContain(
-      "Found through main, the branch of this agent's shared checkout"
-    )
+    expect(container?.querySelector('[data-pr-body]')).toBeNull()
   })
 
   it('draws each check with its own state marker and a duration only where both ends exist', async () => {
