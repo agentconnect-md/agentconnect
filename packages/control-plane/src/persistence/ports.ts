@@ -3104,6 +3104,100 @@ export interface GitlabOauthStateRecord {
   expiresAt: Date
 }
 
+export type GitlabBindingState = 'provisioning' | 'ready' | 'admin_degraded' | 'runtime_degraded' | 'cleanup_pending'
+
+export interface GitlabProjectBindingRecord {
+  id: string
+  orgId: string
+  projectId: bigint
+  projectPath: string
+  defaultBranch: string | null
+  installerConnectionId: string | null
+  serviceAccountUserId: bigint | null
+  serviceAccountUsername: string | null
+  webhookId: bigint | null
+  desiredEventsHash: string | null
+  credentialEpoch: bigint
+  state: GitlabBindingState
+  stateReason: string | null
+  createdAt: Date
+}
+
+export interface GitlabProjectBindingRepo {
+  /** §10.2 desired-state transaction: acquire the deployment-global claim, upsert
+   *  the catalog row, and create the `provisioning` binding — atomically. A claim
+   *  uniqueness loser throws GitlabProjectClaimConflict and mutates nothing. */
+  createWithClaim(input: {
+    orgId: string
+    projectId: bigint
+    projectPath: string
+    defaultBranch?: string
+    cloneUrl?: string
+    installerConnectionId: string
+  }): Promise<GitlabProjectBindingRecord>
+  get(orgId: string, bindingId: string): Promise<GitlabProjectBindingRecord | null>
+  byProject(orgId: string, projectId: bigint): Promise<GitlabProjectBindingRecord | null>
+  listForOrg(orgId: string): Promise<GitlabProjectBindingRecord[]>
+  /** Saga/reconciler facts (service account, webhook, path refresh, lifecycle). */
+  update(
+    orgId: string,
+    bindingId: string,
+    patch: Partial<{
+      projectPath: string
+      defaultBranch: string | null
+      installerConnectionId: string | null
+      serviceAccountUserId: bigint | null
+      serviceAccountUsername: string | null
+      webhookId: bigint | null
+      desiredEventsHash: string | null
+      state: GitlabBindingState
+      stateReason: string | null
+    }>
+  ): Promise<GitlabProjectBindingRecord | null>
+  /** Purge fence: every rotation/revocation/disconnect bumps it (§7.4/§19.4). */
+  bumpCredentialEpoch(orgId: string, bindingId: string): Promise<bigint | null>
+}
+
+export type GitlabCredentialPurpose = 'read' | 'git_write' | 'effect'
+
+export interface GitlabProjectCredentialRecord {
+  id: string
+  bindingId: string
+  purpose: GitlabCredentialPurpose
+  externalTokenId: bigint
+  scopes: string[]
+  providerExpiresAt: Date
+  generation: bigint
+}
+
+export interface GitlabProjectCredentialRepo {
+  /** Replace-in-place per (binding, purpose): rotation advances `generation`. */
+  upsert(input: {
+    bindingId: string
+    purpose: GitlabCredentialPurpose
+    externalTokenId: bigint
+    scopes: string[]
+    providerExpiresAt: Date
+  }): Promise<GitlabProjectCredentialRecord>
+  get(bindingId: string, purpose: GitlabCredentialPurpose): Promise<GitlabProjectCredentialRecord | null>
+  listForBinding(bindingId: string): Promise<GitlabProjectCredentialRecord[]>
+  remove(bindingId: string, purpose: GitlabCredentialPurpose): Promise<void>
+}
+
+/** Sealed PAT values (per-org key scope); read only through this store. */
+export interface GitlabProjectCredentialSecretStore {
+  put(orgId: string, credentialId: string, token: string): Promise<void>
+  get(orgId: string, credentialId: string): Promise<string | null>
+  delete(orgId: string, credentialId: string): Promise<void>
+}
+
+/** Sealed webhook signing key (whsec_ form); relay-only secret. */
+export interface GitlabWebhookSecretStore {
+  put(orgId: string, bindingId: string, signingKey: string): Promise<void>
+  get(orgId: string, bindingId: string): Promise<string | null>
+  delete(orgId: string, bindingId: string): Promise<void>
+}
+
 export interface GitlabOauthStateStore {
   put(input: Omit<GitlabOauthStateRecord, 'browserHash'>): Promise<void>
   /** Begin hop: stamp the browser-binding hash exactly once (null → value). */

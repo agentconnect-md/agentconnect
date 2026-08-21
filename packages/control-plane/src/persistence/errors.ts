@@ -225,6 +225,17 @@ export class GithubInstallationClaimConflict extends Error {
   }
 }
 
+/** The deployment-global project claim (gitlab-com-integration.md §8.1/§10.2):
+ * one managing organization per numeric GitLab project. A uniqueness loser may
+ * not begin any provider mutation. */
+export class GitlabProjectClaimConflict extends Error {
+  readonly code = 'GITLAB_PROJECT_CLAIM_CONFLICT' as const
+  constructor(readonly projectId: bigint) {
+    super(`gitlab project ${projectId} is already claimed by another organization`)
+    this.name = 'GitlabProjectClaimConflict'
+  }
+}
+
 /** The OAuth callback lost the race with a membership removal (§9.4): the
  * starting user is no longer a member, so no connection may be (re)created. */
 export class GitlabMembershipGone extends Error {

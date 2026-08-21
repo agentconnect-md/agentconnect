@@ -1754,6 +1754,41 @@ export const GitlabConnectionListDto = z.object({ connections: z.array(GitlabCon
 /** The begin URL the browser must visit to continue the OAuth flow on GitLab.com. */
 export const GitlabOauthStartDto = z.object({ url: z.string() })
 
+/** One accessible GitLab.com project for the picker — metadata only (§10.1). */
+export const GitlabProjectDto = z.object({
+  projectId: z.string(), // numeric id, losslessly as a string
+  path: z.string(), // current namespaced path — display only
+  defaultBranch: z.string().nullable(),
+  lastActivityAt: z.string().nullable()
+})
+
+export const GitlabProjectPageDto = z.object({
+  projects: z.array(GitlabProjectDto),
+  nextPage: z.number().int().nullable()
+})
+
+/** One managed project binding — §8.2 lifecycle states, no secret material. */
+export const GitlabProjectBindingDto = z.object({
+  id: z.string(),
+  projectId: z.string(),
+  projectPath: z.string(),
+  defaultBranch: z.string().nullable(),
+  state: z.enum(['provisioning', 'ready', 'admin_degraded', 'runtime_degraded', 'cleanup_pending']),
+  stateReason: z.string().nullable(),
+  serviceAccountUsername: z.string().nullable(),
+  webhookInstalled: z.boolean(),
+  credentialEpoch: z.string(),
+  createdAt: z.string()
+})
+export type GitlabProjectBindingDtoT = z.infer<typeof GitlabProjectBindingDto>
+
+export const GitlabProjectBindingListDto = z.object({ bindings: z.array(GitlabProjectBindingDto) })
+
+export const CreateGitlabProjectBody = z.object({
+  connectionId: z.string().uuid(),
+  projectId: z.string().regex(/^[1-9]\d*$/) // numeric id as a string; the server re-fetches and validates
+})
+
 export const GithubAppDto = z.object({
   enabled: z.boolean(),
   /** github.com/apps/<slug>; null when the feature is disabled. */

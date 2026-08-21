@@ -22,7 +22,11 @@ export { PgCodeHostRepositoryRepo } from './repositories/code-host-repository.re
 export {
   PgGitlabConnectionRepo,
   PgGitlabConnectionSecretStore,
-  PgGitlabOauthStateStore
+  PgGitlabOauthStateStore,
+  PgGitlabProjectBindingRepo,
+  PgGitlabProjectCredentialRepo,
+  PgGitlabProjectCredentialSecretStore,
+  PgGitlabWebhookSecretStore
 } from './repositories/gitlab.repo.js'
 export { PgSocialIdentityMutationGate } from './repositories/social-identity-mutation.gate.js'
 export { PgAssignmentRepo } from './repositories/assignment.repo.js'

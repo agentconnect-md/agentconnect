@@ -6,17 +6,31 @@
  * consume is an atomic delete-returning read. Refresh coordination is data
  * here, policy in the service: a short lease row claim plus a tokenVersion CAS.
  */
-import type { GitlabConnection, PrismaClient } from '../../generated/prisma/client.js'
-import type { PrismaLike } from '../prisma.js'
-import { GitlabMembershipGone } from '../errors.js'
 import type {
+  GitlabConnection,
+  GitlabProjectBinding,
+  GitlabProjectCredential,
+  PrismaClient
+} from '../../generated/prisma/client.js'
+import { Prisma } from '../../generated/prisma/client.js'
+import type { PrismaLike } from '../prisma.js'
+import { GitlabMembershipGone, GitlabProjectClaimConflict } from '../errors.js'
+import type {
+  GitlabBindingState,
   GitlabConnectionRecord,
-  GitlabSealedTokenPair,
   GitlabConnectionRepo,
   GitlabConnectionSecretStore,
   GitlabConnectionState,
+  GitlabCredentialPurpose,
   GitlabOauthStateRecord,
-  GitlabOauthStateStore
+  GitlabOauthStateStore,
+  GitlabProjectBindingRecord,
+  GitlabProjectBindingRepo,
+  GitlabProjectCredentialRecord,
+  GitlabProjectCredentialRepo,
+  GitlabProjectCredentialSecretStore,
+  GitlabSealedTokenPair,
+  GitlabWebhookSecretStore
 } from '../ports.js'
 import type { SecretCipher } from '../../secrets/cipher.js'
 import { orgScope } from '../../secrets/scope.js'
@@ -225,5 +239,268 @@ export class PgGitlabOauthStateStore implements GitlabOauthStateStore {
     } catch {
       return null
     }
+  }
+}
+
+// ── §8.2/§10 project bindings ────────────────────────────────────────────────
+
+const BINDING_STATES: readonly GitlabBindingState[] = [
+  'provisioning',
+  'ready',
+  'admin_degraded',
+  'runtime_degraded',
+  'cleanup_pending'
+]
+
+function toBindingState(value: string): GitlabBindingState {
+  // Unknown persisted state fails toward "needs runtime repair", never toward ready.
+  return (BINDING_STATES as readonly string[]).includes(value) ? (value as GitlabBindingState) : 'runtime_degraded'
+}
+
+function toBindingRecord(r: GitlabProjectBinding): GitlabProjectBindingRecord {
+  return {
+    id: r.id,
+    orgId: r.orgId,
+    projectId: r.projectId,
+    projectPath: r.projectPath,
+    defaultBranch: r.defaultBranch,
+    installerConnectionId: r.installerConnectionId,
+    serviceAccountUserId: r.serviceAccountUserId,
+    serviceAccountUsername: r.serviceAccountUsername,
+    webhookId: r.webhookId,
+    desiredEventsHash: r.desiredEventsHash,
+    credentialEpoch: r.credentialEpoch,
+    state: toBindingState(r.state),
+    stateReason: r.stateReason,
+    createdAt: r.createdAt
+  }
+}
+
+export class PgGitlabProjectBindingRepo implements GitlabProjectBindingRepo {
+  constructor(private readonly prisma: PrismaClient) {}
+
+  async createWithClaim(input: {
+    orgId: string
+    projectId: bigint
+    projectPath: string
+    defaultBranch?: string
+    cloneUrl?: string
+    installerConnectionId: string
+  }): Promise<GitlabProjectBindingRecord> {
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        // The deployment-global single-owner claim (§8.1): the unique
+        // (provider, externalId) insert selects one winner BEFORE any provider
+        // mutation may begin; a loser aborts the whole transaction.
+        const claim = await tx.codeHostRepositoryClaim.create({
+          data: { provider: 'gitlab', externalId: input.projectId, orgId: input.orgId, state: 'provisioning' }
+        })
+        await tx.codeHostRepository.upsert({
+          where: {
+            orgId_provider_externalId: { orgId: input.orgId, provider: 'gitlab', externalId: input.projectId }
+          },
+          create: {
+            orgId: input.orgId,
+            provider: 'gitlab',
+            externalId: input.projectId,
+            displayPath: input.projectPath,
+            cloneUrl: input.cloneUrl ?? null,
+            defaultBranch: input.defaultBranch ?? null
+          },
+          update: {
+            displayPath: input.projectPath,
+            ...(input.cloneUrl !== undefined ? { cloneUrl: input.cloneUrl } : {}),
+            ...(input.defaultBranch !== undefined ? { defaultBranch: input.defaultBranch } : {})
+          }
+        })
+        const binding = await tx.gitlabProjectBinding.create({
+          data: {
+            orgId: input.orgId,
+            projectId: input.projectId,
+            projectPath: input.projectPath,
+            defaultBranch: input.defaultBranch ?? null,
+            installerConnectionId: input.installerConnectionId,
+            state: 'provisioning'
+          }
+        })
+        await tx.codeHostRepositoryClaim.update({ where: { id: claim.id }, data: { bindingRef: binding.id } })
+        return toBindingRecord(binding)
+      })
+    } catch (e) {
+      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+        throw new GitlabProjectClaimConflict(input.projectId)
+      }
+      throw e
+    }
+  }
+
+  async get(orgId: string, bindingId: string): Promise<GitlabProjectBindingRecord | null> {
+    const row = await this.prisma.gitlabProjectBinding.findFirst({ where: { id: bindingId, orgId } })
+    return row ? toBindingRecord(row) : null
+  }
+
+  async byProject(orgId: string, projectId: bigint): Promise<GitlabProjectBindingRecord | null> {
+    const row = await this.prisma.gitlabProjectBinding.findUnique({
+      where: { orgId_projectId: { orgId, projectId } }
+    })
+    return row ? toBindingRecord(row) : null
+  }
+
+  async listForOrg(orgId: string): Promise<GitlabProjectBindingRecord[]> {
+    const rows = await this.prisma.gitlabProjectBinding.findMany({
+      orderBy: { createdAt: 'asc' },
+      where: { orgId }
+    })
+    return rows.map(toBindingRecord)
+  }
+
+  async update(
+    orgId: string,
+    bindingId: string,
+    patch: Partial<{
+      projectPath: string
+      defaultBranch: string | null
+      installerConnectionId: string | null
+      serviceAccountUserId: bigint | null
+      serviceAccountUsername: string | null
+      webhookId: bigint | null
+      desiredEventsHash: string | null
+      state: GitlabBindingState
+      stateReason: string | null
+    }>
+  ): Promise<GitlabProjectBindingRecord | null> {
+    const res = await this.prisma.gitlabProjectBinding.updateMany({ where: { id: bindingId, orgId }, data: patch })
+    if (res.count !== 1) return null
+    return this.get(orgId, bindingId)
+  }
+
+  async bumpCredentialEpoch(orgId: string, bindingId: string): Promise<bigint | null> {
+    const res = await this.prisma.gitlabProjectBinding.updateMany({
+      where: { id: bindingId, orgId },
+      data: { credentialEpoch: { increment: 1n } }
+    })
+    if (res.count !== 1) return null
+    const row = await this.prisma.gitlabProjectBinding.findUnique({ where: { id: bindingId } })
+    return row?.credentialEpoch ?? null
+  }
+}
+
+export class PgGitlabProjectCredentialRepo implements GitlabProjectCredentialRepo {
+  constructor(private readonly prisma: PrismaClient) {}
+
+  private toRecord(r: GitlabProjectCredential): GitlabProjectCredentialRecord {
+    return {
+      id: r.id,
+      bindingId: r.bindingId,
+      // Purpose is written only from the closed union; a foreign value cannot round-trip.
+      purpose: r.purpose as GitlabCredentialPurpose,
+      externalTokenId: r.externalTokenId,
+      scopes: r.scopes,
+      providerExpiresAt: r.providerExpiresAt,
+      generation: r.generation
+    }
+  }
+
+  async upsert(input: {
+    bindingId: string
+    purpose: GitlabCredentialPurpose
+    externalTokenId: bigint
+    scopes: string[]
+    providerExpiresAt: Date
+  }): Promise<GitlabProjectCredentialRecord> {
+    const facts = {
+      externalTokenId: input.externalTokenId,
+      scopes: input.scopes,
+      providerExpiresAt: input.providerExpiresAt
+    }
+    const row = await this.prisma.gitlabProjectCredential.upsert({
+      where: { bindingId_purpose: { bindingId: input.bindingId, purpose: input.purpose } },
+      create: { bindingId: input.bindingId, purpose: input.purpose, ...facts },
+      update: { ...facts, generation: { increment: 1n } }
+    })
+    return this.toRecord(row)
+  }
+
+  async get(bindingId: string, purpose: GitlabCredentialPurpose): Promise<GitlabProjectCredentialRecord | null> {
+    const row = await this.prisma.gitlabProjectCredential.findUnique({
+      where: { bindingId_purpose: { bindingId, purpose } }
+    })
+    return row ? this.toRecord(row) : null
+  }
+
+  async listForBinding(bindingId: string): Promise<GitlabProjectCredentialRecord[]> {
+    const rows = await this.prisma.gitlabProjectCredential.findMany({
+      orderBy: { purpose: 'asc' },
+      where: { bindingId }
+    })
+    return rows.map((r) => this.toRecord(r))
+  }
+
+  async remove(bindingId: string, purpose: GitlabCredentialPurpose): Promise<void> {
+    await this.prisma.gitlabProjectCredential.deleteMany({ where: { bindingId, purpose } })
+  }
+}
+
+export class PgGitlabProjectCredentialSecretStore implements GitlabProjectCredentialSecretStore {
+  constructor(
+    private readonly db: PrismaLike,
+    private readonly cipher: SecretCipher
+  ) {}
+
+  async put(orgId: string, credentialId: string, token: string): Promise<void> {
+    if (
+      (await this.db.gitlabProjectCredential.count({
+        where: { id: credentialId, binding: { orgId } }
+      })) === 0
+    ) {
+      throw new Error('gitlab credential secret write outside its organization')
+    }
+    const sealed = await this.cipher.seal(token, orgScope(OrgId(orgId)))
+    await this.db.gitlabProjectCredentialSecret.upsert({
+      where: { credentialId },
+      create: { credentialId, token: sealed },
+      update: { token: sealed }
+    })
+  }
+
+  async get(orgId: string, credentialId: string): Promise<string | null> {
+    const row = await this.db.gitlabProjectCredentialSecret.findFirst({
+      where: { credentialId, credential: { binding: { orgId } } }
+    })
+    return row ? this.cipher.open(row.token, orgScope(OrgId(orgId))) : null
+  }
+
+  async delete(orgId: string, credentialId: string): Promise<void> {
+    await this.db.gitlabProjectCredentialSecret.deleteMany({
+      where: { credentialId, credential: { binding: { orgId } } }
+    })
+  }
+}
+
+export class PgGitlabWebhookSecretStore implements GitlabWebhookSecretStore {
+  constructor(
+    private readonly db: PrismaLike,
+    private readonly cipher: SecretCipher
+  ) {}
+
+  async put(orgId: string, bindingId: string, signingKey: string): Promise<void> {
+    if ((await this.db.gitlabProjectBinding.count({ where: { id: bindingId, orgId } })) === 0) {
+      throw new Error('gitlab webhook secret write outside its organization')
+    }
+    const sealed = await this.cipher.seal(signingKey, orgScope(OrgId(orgId)))
+    await this.db.gitlabWebhookSecret.upsert({
+      where: { bindingId },
+      create: { bindingId, signingKey: sealed },
+      update: { signingKey: sealed }
+    })
+  }
+
+  async get(orgId: string, bindingId: string): Promise<string | null> {
+    const row = await this.db.gitlabWebhookSecret.findFirst({ where: { bindingId, binding: { orgId } } })
+    return row ? this.cipher.open(row.signingKey, orgScope(OrgId(orgId))) : null
+  }
+
+  async delete(orgId: string, bindingId: string): Promise<void> {
+    await this.db.gitlabWebhookSecret.deleteMany({ where: { bindingId, binding: { orgId } } })
   }
 }

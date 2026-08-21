@@ -21,7 +21,27 @@ import type { HttpDeps } from '../deps.js'
 import { orgOf, denyViewerWrite } from '../rbac.js'
 import { Tag } from '../plugins/openapi.js'
 import { GitlabOauthDenied, OAUTH_BROWSER_COOKIE } from '../../gitlab/oauth.service.js'
-import { ErrorDto, GitlabConnectionDto, GitlabConnectionListDto, GitlabOauthStartDto, IdParam } from '../dto/index.js'
+import {
+  GITLAB_ACCESS_MAINTAINER,
+  GitlabApiError,
+  gitlabEffectiveMembership,
+  gitlabListProjects,
+  gitlabProject,
+  membershipSatisfies
+} from '../../gitlab/api.js'
+import { GitlabProjectClaimConflict } from '../../persistence/errors.js'
+import {
+  CreateGitlabProjectBody,
+  ErrorDto,
+  GitlabConnectionDto,
+  GitlabConnectionListDto,
+  GitlabOauthStartDto,
+  GitlabProjectBindingDto,
+  GitlabProjectBindingListDto,
+  GitlabProjectPageDto,
+  IdParam
+} from '../dto/index.js'
+import type { GitlabProjectBindingRecord } from '../../persistence/ports.js'
 import type { GitlabConnectionRecord } from '../../persistence/ports.js'
 
 function toDto(r: GitlabConnectionRecord) {
@@ -38,6 +58,26 @@ function toDto(r: GitlabConnectionRecord) {
 }
 
 /** The begin-hop browser cookie, parsed by hand (no cookie plugin dependency). */
+function bindingToDto(r: GitlabProjectBindingRecord) {
+  return {
+    id: r.id,
+    projectId: r.projectId.toString(),
+    projectPath: r.projectPath,
+    defaultBranch: r.defaultBranch,
+    state: r.state,
+    stateReason: r.stateReason,
+    serviceAccountUsername: r.serviceAccountUsername,
+    webhookInstalled: r.webhookId !== null,
+    credentialEpoch: r.credentialEpoch.toString(),
+    createdAt: r.createdAt.toISOString()
+  }
+}
+
+/** Upstream trouble is upstream trouble, not policy: 429 stays 429, the rest 502. */
+function gitlabUpstream(e: GitlabApiError): { status: 429 | 502; message: string } {
+  return { status: e.status === 429 ? 429 : 502, message: `gitlab: ${e.message}` }
+}
+
 function browserCookie(req: FastifyRequest): string | undefined {
   const header = req.headers.cookie
   if (!header) return undefined
@@ -96,6 +136,153 @@ export function gitlabRoutes(deps: HttpDeps) {
       async (req) => {
         const rows = await deps.repos.gitlabConnection.listForOrg(orgOf(req))
         return { connections: rows.map(toDto) }
+      }
+    )
+
+    r.get(
+      '/gitlab/connections/:id/projects',
+      {
+        schema: {
+          tags: [Tag.GitLab],
+          summary: 'Search accessible GitLab.com projects',
+          description:
+            "Server-side paginated search of the connection's accessible projects (§10.1). Metadata only; installability is enforced at project selection.",
+          operationId: 'listGitlabConnectionProjects',
+          params: IdParam,
+          querystring: z.object({
+            search: z.string().max(256).optional(),
+            page: z.coerce.number().int().positive().optional()
+          }),
+          response: {
+            200: GitlabProjectPageDto,
+            400: ErrorDto,
+            404: ErrorDto,
+            409: ErrorDto,
+            429: ErrorDto,
+            502: ErrorDto
+          }
+        }
+      },
+      async (req, reply) => {
+        try {
+          const token = await gitlab.oauth.withAccessToken(orgOf(req), req.params.id)
+          const { projects, nextPage } = await gitlabListProjects(
+            token,
+            {
+              ...(req.query.search ? { search: req.query.search } : {}),
+              ...(req.query.page ? { page: req.query.page } : {})
+            },
+            gitlab.fetchImpl
+          )
+          return {
+            projects: projects.map((project) => ({
+              projectId: String(project.id),
+              path: project.path_with_namespace,
+              defaultBranch: project.default_branch ?? null,
+              lastActivityAt: project.last_activity_at ?? null
+            })),
+            nextPage
+          }
+        } catch (e) {
+          if (e instanceof GitlabOauthDenied) {
+            return reply.code(e.status).send({ error: 'Conflict', statusCode: e.status, message: e.message })
+          }
+          if (e instanceof GitlabApiError) {
+            const up = gitlabUpstream(e)
+            return reply.code(up.status).send({ error: 'Bad Gateway', statusCode: up.status, message: up.message })
+          }
+          throw e
+        }
+      }
+    )
+
+    r.get(
+      '/gitlab/projects',
+      {
+        schema: {
+          tags: [Tag.GitLab],
+          summary: 'List managed GitLab projects',
+          description: 'The organization-owned project bindings with their §8.2 lifecycle states.',
+          operationId: 'listGitlabProjects',
+          response: { 200: GitlabProjectBindingListDto }
+        }
+      },
+      async (req) => {
+        const rows = await deps.repos.gitlabProjectBinding.listForOrg(orgOf(req))
+        return { bindings: rows.map(bindingToDto) }
+      }
+    )
+
+    r.post(
+      '/gitlab/projects',
+      {
+        schema: {
+          tags: [Tag.GitLab],
+          summary: 'Bind a GitLab.com project',
+          description:
+            'Re-fetches the selected project, requires current Maintainer-or-Owner effective membership, acquires the deployment-global project claim, and creates the binding in the provisioning state (§10.1–§10.2).',
+          operationId: 'createGitlabProject',
+          body: CreateGitlabProjectBody,
+          response: {
+            200: GitlabProjectBindingDto,
+            400: ErrorDto,
+            403: ErrorDto,
+            404: ErrorDto,
+            409: ErrorDto,
+            429: ErrorDto,
+            502: ErrorDto
+          }
+        }
+      },
+      async (req, reply) => {
+        if (denyViewerWrite(req, reply)) return
+        const orgId = orgOf(req)
+        const projectId = BigInt(req.body.projectId)
+        const err = (status: 400 | 403 | 404 | 409, message: string) =>
+          reply.code(status).send({ error: 'Conflict', statusCode: status, message })
+        const connection = await deps.repos.gitlabConnection.get(orgId, req.body.connectionId)
+        if (!connection) return err(404, 'gitlab connection not found')
+        if (await deps.repos.gitlabProjectBinding.byProject(orgId, projectId)) {
+          return err(409, 'project is already bound in this organization')
+        }
+        try {
+          const token = await gitlab.oauth.withAccessToken(orgId, connection.id)
+          // The server re-fetches; the client-supplied id is never trusted for facts (§10.1).
+          const project = await gitlabProject(token, projectId, gitlab.fetchImpl)
+          if (!project) return err(400, 'project is not accessible through this connection')
+          const membership = await gitlabEffectiveMembership(
+            token,
+            projectId,
+            connection.gitlabUserId,
+            gitlab.fetchImpl
+          )
+          if (!membershipSatisfies(membership, GITLAB_ACCESS_MAINTAINER, Date.now())) {
+            return err(403, 'Maintainer or Owner access to the project is required for managed installation')
+          }
+          const binding = await deps.repos.gitlabProjectBinding.createWithClaim({
+            orgId,
+            projectId,
+            projectPath: project.path_with_namespace,
+            ...(project.default_branch ? { defaultBranch: project.default_branch } : {}),
+            ...(project.http_url_to_repo ? { cloneUrl: project.http_url_to_repo } : {}),
+            installerConnectionId: connection.id
+          })
+          return bindingToDto(binding)
+        } catch (e) {
+          if (e instanceof GitlabProjectClaimConflict) {
+            // The deployment-global claim (§7.2): one managing organization per
+            // project; never disclose WHICH organization holds it.
+            return err(409, 'project is already claimed by another organization')
+          }
+          if (e instanceof GitlabOauthDenied) {
+            return reply.code(e.status).send({ error: 'Conflict', statusCode: e.status, message: e.message })
+          }
+          if (e instanceof GitlabApiError) {
+            const up = gitlabUpstream(e)
+            return reply.code(up.status).send({ error: 'Bad Gateway', statusCode: up.status, message: up.message })
+          }
+          throw e
+        }
       }
     )
 

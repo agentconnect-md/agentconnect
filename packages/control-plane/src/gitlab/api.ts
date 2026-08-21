@@ -166,3 +166,103 @@ export async function gitlabCurrentUser(accessToken: string, fetchImpl?: FetchLi
   }
   return user
 }
+
+/** One accessible project row for the picker (§10.1) — metadata only. */
+export interface GitlabProjectSummary {
+  id: number
+  path_with_namespace: string
+  default_branch?: string
+  http_url_to_repo?: string
+  last_activity_at?: string
+}
+
+/** Server-side paginated membership project search (§10.1). */
+export async function gitlabListProjects(
+  accessToken: string,
+  opts: { search?: string; page?: number; perPage?: number },
+  fetchImpl?: FetchLike
+): Promise<{ projects: GitlabProjectSummary[]; nextPage: number | null }> {
+  const params = new URLSearchParams({
+    membership: 'true',
+    order_by: 'last_activity_at',
+    per_page: String(Math.min(opts.perPage ?? 30, 100)),
+    page: String(opts.page ?? 1)
+  })
+  if (opts.search) params.set('search', opts.search)
+  const impl = fetchImpl ?? (fetch as FetchLike)
+  let res: Response
+  try {
+    res = await impl(`${GITLAB_HOST}/api/v4/projects?${params.toString()}`, {
+      headers: { accept: 'application/json', authorization: `Bearer ${accessToken}` },
+      signal: AbortSignal.timeout(TIMEOUT_MS)
+    })
+  } catch (e) {
+    throw new GitlabApiError(`gitlab unreachable: ${(e as Error).message}`, 0, 'INTERNAL', true)
+  }
+  if (!res.ok) {
+    throw new GitlabApiError(`gitlab ${res.status}`, res.status, codeFor(res.status), res.status >= 500)
+  }
+  const nextHeader = res.headers.get('x-next-page')
+  const nextPage = nextHeader && /^\d+$/.test(nextHeader) ? Number(nextHeader) : null
+  return { projects: (await res.json()) as GitlabProjectSummary[], nextPage }
+}
+
+/** One project by numeric id; null on a definitive 404 (out of grant / gone). */
+export async function gitlabProject(
+  accessToken: string,
+  projectId: bigint,
+  fetchImpl?: FetchLike
+): Promise<GitlabProjectSummary | null> {
+  try {
+    return await gitlabRequest<GitlabProjectSummary>(`/projects/${projectId}`, { auth: accessToken, fetchImpl })
+  } catch (e) {
+    if (e instanceof GitlabApiError && e.code === 'NOT_FOUND') return null
+    throw e
+  }
+}
+
+/** GitLab access levels this integration reasons about. */
+export const GITLAB_ACCESS_DEVELOPER = 30
+export const GITLAB_ACCESS_MAINTAINER = 40
+
+export interface GitlabEffectiveMembership {
+  access_level: number
+  state: string
+  expires_at: string | null
+}
+
+/** Effective membership including direct, ancestor-group, and invited-group
+ *  paths (`/members/all/:user_id`, §12.2). Null on a definitive 404 (no membership). */
+export async function gitlabEffectiveMembership(
+  accessToken: string,
+  projectId: bigint,
+  userId: bigint,
+  fetchImpl?: FetchLike
+): Promise<GitlabEffectiveMembership | null> {
+  try {
+    return await gitlabRequest<GitlabEffectiveMembership>(`/projects/${projectId}/members/all/${userId}`, {
+      auth: accessToken,
+      fetchImpl
+    })
+  } catch (e) {
+    if (e instanceof GitlabApiError && e.code === 'NOT_FOUND') return null
+    throw e
+  }
+}
+
+/** §12.2 acceptance predicate: active, unexpired (UTC date), and at/above the bar.
+ *  Anything missing, ambiguous, or below fails closed. */
+export function membershipSatisfies(
+  membership: GitlabEffectiveMembership | null,
+  minAccessLevel: number,
+  nowUtcMs: number
+): boolean {
+  if (!membership) return false
+  if (membership.state !== 'active') return false
+  if (typeof membership.access_level !== 'number' || membership.access_level < minAccessLevel) return false
+  if (membership.expires_at) {
+    const expires = Date.parse(`${membership.expires_at}T00:00:00.000Z`)
+    if (!Number.isFinite(expires) || expires <= nowUtcMs) return false
+  }
+  return true
+}

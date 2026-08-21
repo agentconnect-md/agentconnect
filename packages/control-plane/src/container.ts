@@ -93,6 +93,7 @@ import {
   PgAgentRepoAuthorizationRepo,
   PgCodeHostRepositoryRepo,
   PgGitlabConnectionRepo,
+  PgGitlabProjectBindingRepo,
   PgGitlabConnectionSecretStore,
   PgGitlabOauthStateStore,
   PgSocialIdentityMutationGate,
@@ -419,6 +420,7 @@ export function buildContainer(
     agentRepoAuth: new PgAgentRepoAuthorizationRepo(prisma),
     codeHostRepository: new PgCodeHostRepositoryRepo(prisma),
     gitlabConnection: new PgGitlabConnectionRepo(prisma),
+    gitlabProjectBinding: new PgGitlabProjectBindingRepo(prisma),
     gitlabOauthState: new PgGitlabOauthStateStore(prisma)
   }
 
@@ -926,6 +928,7 @@ export function buildContainer(
   const gitlab =
     gitlabAppCfg && config.PUBLIC_CP_URL
       ? {
+          ...(opts.gitlabFetch ? { fetchImpl: opts.gitlabFetch } : {}),
           oauth: new GitlabOauthService({
             cfg: gitlabAppCfg,
             connections: repos.gitlabConnection,
@@ -1197,6 +1200,7 @@ export function buildContainer(
       agentRepoAuth: repos.agentRepoAuth,
       codeHostRepository: repos.codeHostRepository,
       gitlabConnection: repos.gitlabConnection,
+      gitlabProjectBinding: repos.gitlabProjectBinding,
       audit: repos.audit,
       webchatMcpOperation: repos.webchatMcpOperation,
       oauth: repos.oauth
