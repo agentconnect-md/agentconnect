@@ -1486,6 +1486,13 @@ export class LocalStore {
    * dream / memory / commit work under `internal:*` keys — leaves nothing behind that looks like
    * one. Idempotent without depending on a driver's `changes`, since a pool's members share one
    * store: each step is a no-op for the loser and the final read settles who won.
+   *
+   * THE SESSION ROW WINS. A full insert can land between the first read and the stage — its own
+   * id already generated, since the stage it would have adopted did not exist yet — and the
+   * adopting UPDATE below then finds nothing to fill. Answering with the stage there would split
+   * one session's identity in two: the credential under one name, its metadata and usage under
+   * another, which is the very failure this column exists to end. So the row is re-read after the
+   * UPDATE, and where it disagrees the stage is settled onto it.
    */
   async ensureOutwardSessionId(key: string, agentId?: string, now = Date.now()): Promise<string> {
     const onSession = (
@@ -1503,6 +1510,14 @@ export class LocalStore {
     if (!minted) throw new Error(`could not mint an outward session id for ${key}`)
     // A session row written before this column existed adopts the mint rather than a second name.
     await this.db.prepare('UPDATE sessions SET sessionId = ? WHERE key = ? AND sessionId IS NULL').run(minted, key)
+    const settled = (
+      (await this.db.prepare('SELECT sessionId FROM sessions WHERE key = ?').get(key)) as
+        { sessionId: string | null } | undefined
+    )?.sessionId
+    if (settled && settled !== minted) {
+      await this.db.prepare('UPDATE session_outward_ids SET sessionId = ? WHERE key = ?').run(settled, key)
+      return settled
+    }
     return minted
   }
 

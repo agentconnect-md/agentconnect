@@ -621,7 +621,9 @@ export class GithubReviewOrchestrator {
       hookId: hook.hookId,
       agentId: hook.agentId,
       deliveryKey: hook.deliveryKey,
-      sessionId,
+      // The CP files the run against `session_meta.id` and deep-links the console from it, so
+      // this is the session's outward id (§1.1) — the caller holds the ACP hop's.
+      sessionId: (await this.host.outwardSessionId(hook.agentId, sessionId)) ?? sessionId,
       ...(hook.event ? { event: hook.event } : {}),
       github: { ...trusted, reportSha: trusted.reportSha ?? trusted.headSha },
       ...snapshot

@@ -1275,10 +1275,7 @@ export class Daemon {
       },
       replyConnFor: (agentId, integrationId) => this.replyConnFor(agentId, integrationId),
       sessionLink: (sessionId, source) => this.sessionLink(sessionId, source),
-      outwardSessionId: async (agentId, acpSessionId) => {
-        const slot = await this.store.getSessionByAcpIdForAgent(agentId, acpSessionId)
-        return slot ? await this.store.ensureOutwardSessionId(slot.key, agentId, this.clock.now()) : undefined
-      },
+      outwardSessionId: (agentId, acpSessionId) => this.outwardSessionIdForAcp(agentId, acpSessionId),
       sessionLinkSource: (platform, integrationId) => this.sessionLinkSource(platform, integrationId),
       threadOwner: async (channel, thread, transportScope) =>
         await this.sessions.threadOwner(channel, thread, transportScope),
@@ -6625,10 +6622,7 @@ export class Daemon {
       activeGithubReplyBatch: (key) => this.activeGithubReplyBatchMeta.get(key),
       agentLink: (agentId) => this.agentLink(agentId),
       sessionLink: (sessionId, source) => this.sessionLink(sessionId, source),
-      outwardSessionId: async (agentId, acpSessionId) => {
-        const slot = await this.store.getSessionByAcpIdForAgent(agentId, acpSessionId)
-        return slot ? await this.store.ensureOutwardSessionId(slot.key, agentId, this.clock.now()) : undefined
-      },
+      outwardSessionId: (agentId, acpSessionId) => this.outwardSessionIdForAcp(agentId, acpSessionId),
       runtimeNames: () => this.runtimeFacts.runtimeNames(),
       hostForStoredSession: async (agentId, acpSessionId) =>
         await this.modelSessions.hostForStoredSession(agentId, acpSessionId)
@@ -7821,12 +7815,19 @@ export class Daemon {
     owner?: HookCompletionOwner
   ): Promise<void> {
     if (owner?.hookTerminalReceipt) return
+    // Every caller here holds the runtime's session id; the CP files the run against
+    // `session_meta.id` and deep-links the console from it, which is the outward one (§1.1).
+    // Translating at this one boundary is what keeps a later caller from getting it wrong.
+    const attributed =
+      extra.sessionId === undefined
+        ? extra
+        : { ...extra, sessionId: (await this.outwardSessionIdForAcp(hook.agentId, extra.sessionId)) ?? extra.sessionId }
     // Interrupt reasons are local vocabulary, but the CP turns THIS one into maintainer-facing
     // Check text, so it crosses as the shared normalized code rather than the internal word.
     const report = this.buildHookReport(
       hook,
       status,
-      extra.reason === 'handover' ? { ...extra, reason: HOOK_REPORT_REASON_AGENT_HANDOVER } : extra
+      attributed.reason === 'handover' ? { ...attributed, reason: HOOK_REPORT_REASON_AGENT_HANDOVER } : attributed
     )
     let reportInboxId: string | undefined
     if (owner?.inboxId) {
@@ -8186,7 +8187,8 @@ export class Daemon {
       admissionWait?: Promise<boolean>
       /** Delay observed-inbound persistence until admissionWait succeeds. */
       deferObservedInbound?: boolean
-      /** Best-effort notification once the ACP session exists, before prompt. */
+      /** Best-effort notification once the session exists, before prompt. Carries its OUTWARD
+       *  id (session-concept.md §1.1) — every consumer of this reports it onward. */
       onSessionReady?: (sessionId: string) => void
     },
     githubReply?: GithubReplyTarget,
@@ -9403,7 +9405,9 @@ export class Daemon {
       await this.observedChannelsSync.refreshObservedChannels()
     }
     try {
-      onSessionReady?.(sessionId)
+      // The one consumer is the CP's cron report, a console deep link — so the callback is
+      // handed the session's outward id (§1.1), not the runtime's.
+      onSessionReady?.((await this.outwardSessionIdForAcp(agentId, sessionId)) ?? sessionId)
     } catch (err) {
       this.log.warn(`dispatch: session-ready notification failed (${formatErr(err)})`)
     }
@@ -10987,6 +10991,13 @@ export class Daemon {
     const orgSeg = this.cpOrgSlug ? `/${encodeURIComponent(this.cpOrgSlug)}` : ''
     const link = `${this.webAppBase()}${orgSeg}/sessions/${encodeURIComponent(sessionId)}`
     return source ? `${link}?source=${source}` : link
+  }
+
+  /** The OUTWARD id of the session an ACP id names (session-concept.md §1.1) — for the reporting
+   *  boundaries that hold only the runtime's. Undefined when this daemon has no such session. */
+  private async outwardSessionIdForAcp(agentId: string, acpSessionId: string): Promise<string | undefined> {
+    const slot = await this.store.getSessionByAcpIdForAgent(agentId, acpSessionId)
+    return slot ? await this.store.ensureOutwardSessionId(slot.key, agentId, this.clock.now()) : undefined
   }
 
   /** The console deep link to an agent: `<base>/<orgSlug>/agents/<agentId>`. Same
@@ -14899,6 +14910,8 @@ export class Daemon {
     report()
     let readySessionId: string | undefined
     try {
+      // A cron run is a console deep link on the CP side, so every id it reports is the outward
+      // one (§1.1). The ready callback already delivers that; `fireTrigger`'s return is the ACP id.
       const sessionId = await this.fireTrigger(
         agentId,
         msg,
@@ -14916,7 +14929,7 @@ export class Daemon {
         report({
           status: 'success',
           durationMs: Math.max(0, this.clock.now() - firedAt),
-          sessionId
+          sessionId: (await this.outwardSessionIdForAcp(agentId, sessionId)) ?? sessionId
         })
     } catch (err) {
       report({

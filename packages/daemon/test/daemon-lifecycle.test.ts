@@ -987,12 +987,16 @@ describe('Daemon session lifecycle (#118)', () => {
     await vi.waitFor(() => expect(blocked.host.prompt).toHaveBeenCalledWith('acp-1', expect.any(Array)), WAIT)
     expect(emitCronReport).toHaveBeenCalledTimes(2)
     expect(emitCronReport.mock.calls[0]![0]).not.toHaveProperty('sessionId')
-    expect(emitCronReport.mock.calls[1]![0]).toMatchObject({ sessionId: 'acp-1' })
+    // A cron run is a console deep link on the CP side, so it is reported under the session's
+    // outward id (session-concept.md §1.1) — the same one on the ready report and the close.
+    const outward = (await (daemon as any).store.getSessionByAcpId('acp-1'))!.sessionId
+    expect(outward).not.toBe('acp-1')
+    expect(emitCronReport.mock.calls[1]![0]).toMatchObject({ sessionId: outward })
     expect(emitCronReport.mock.calls[1]![0]).not.toHaveProperty('status')
 
     blocked.release()
     await run
-    expect(emitCronReport.mock.calls[2]![0]).toMatchObject({ status: 'success', sessionId: 'acp-1' })
+    expect(emitCronReport.mock.calls[2]![0]).toMatchObject({ status: 'success', sessionId: outward })
     await daemon.stop()
   }, 15_000)
 

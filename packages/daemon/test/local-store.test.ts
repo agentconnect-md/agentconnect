@@ -776,6 +776,37 @@ describe('LocalStore session/transcript read-back (session/list, session/history
     await s.close()
   })
 
+  it('settles on the session row when a full insert lands mid-mint', async () => {
+    const s = await store()
+    // The interleaving the staging table makes possible: the mint reads no session, the turn's
+    // own insert commits with an id of its own (the stage it would have adopted did not exist
+    // yet), and only then does the mint stage its. Answering with the stage would split one
+    // session's identity — credential under one name, metadata and usage under another.
+    const reads: string[] = []
+    const realGet = (s as any).db.prepare.bind((s as any).db)
+    ;(s as any).db.prepare = (sql: string) => {
+      const stmt = realGet(sql)
+      if (!sql.startsWith('SELECT sessionId FROM sessions')) return stmt
+      return {
+        ...stmt,
+        get: async (...args: unknown[]) => {
+          const row = await stmt.get(...args)
+          reads.push(sql)
+          // Exactly once, between the mint's first read and its stage, the turn writes the row.
+          if (reads.length === 1) await seed(s, 'k1', 'bot-a', 'acp-1', 100)
+          return row
+        }
+      }
+    }
+    const minted = await s.ensureOutwardSessionId('k1', 'bot-a')
+    ;(s as any).db.prepare = realGet
+    const row = (await s.getSession('k1'))!.sessionId
+    expect(minted).toBe(row)
+    // ...and the stage is settled onto it, so the next ask cannot revive the losing name.
+    expect(await s.ensureOutwardSessionId('k1', 'bot-a')).toBe(row)
+    await s.close()
+  })
+
   it('a purged slot does not hand its identity to the next session on the same key', async () => {
     const s = await store()
     await seed(s, 'k1', 'bot-a', 'acp-1', 100)
