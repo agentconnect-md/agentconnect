@@ -62,6 +62,38 @@ sessionId                                                // Stable opaque addres
   also the value shown on the `Session` line of the `# Agent` block in section
   2.3. A model treats it as opaque.
 
+**`sessionId` and `acpSessionId` are two NAMES for one session, each used in its
+own scope — never two concepts, and never interchangeable words for the same
+scope.** Which name is correct is decided by who is being addressed:
+
+- **`sessionId`** is the session's identity everywhere OUTSIDE the ACP hop: the
+  wire to the control plane, the console and its deep links, `sendMessage`
+  targets, the `# Agent` block, and the model-credential claims the gateway
+  verifies. It must exist BEFORE the runtime does — a credential is minted to
+  start the runtime, so an identity that only appears afterwards cannot be in it.
+- **`acpSessionId`** is the identity the RUNTIME knows the session by, and it is
+  needed in both directions on that hop: the daemon keys `session/prompt`,
+  `session/cancel` and `session/set_config_option` by it, and the runtime keys
+  every `session/update`, permission and elicitation notification by it. The
+  daemon can never discard it.
+
+The two normally hold the SAME value: the daemon mints the id when the session
+slot is first resolved — before any credential is issued — and proposes it to
+the runtime on `session/new`, which a cooperating adapter adopts. A runtime that
+insists on its own id does not break the doctrine: the daemon then stores both,
+uses `acpSessionId` for the ACP hop alone, and keeps answering the rest of the
+world with `sessionId`. Translation happens at that one boundary and nowhere
+else.
+
+What this rules out, in both directions:
+
+- Reporting the ACP id (or anything derived from `sessionKey`, such as a hash of
+  it) as the outward identity. `sessionKey` carries platform coordinates —
+  channel and thread — which must not leave the daemon, and the ACP id does not
+  exist early enough to be minted into a credential.
+- Sending the outward id to the runtime as if it were the ACP id when the
+  runtime did not adopt it.
+
 The session's `platform` is where the owner agent receives and sends. It may
 differ from a target platform operated on by one message. See
 [case 3 in section 7.4](#74-case-3-send-from-telegram-to-a-slack-channel-without-mentioning-another-agent).

@@ -175,6 +175,12 @@ export class ModelSessionHostPool {
     return await this.keyServer.issue({
       orgId,
       agentId: agent.id,
+      // DOCTRINE DEBT (session-concept.md §1.1): this should be the session's outward
+      // `sessionId`, and it is neither — the ACP id does not exist yet when a credential is
+      // minted, so this hashes the slot key instead. The hash is stable and hides the platform
+      // coordinates `sessionKey` carries, but nothing outside the daemon can resolve it back to
+      // a session, so gateway-metered spend lands under an identity the console cannot match.
+      // Fixed by minting the outward id here, before issuance, and proposing it on session/new.
       sessionId: createHash('sha256').update(sessionKey).digest('hex'),
       provider: target.provider,
       ttlSeconds: DEFAULT_MODEL_KEY_TTL_SECONDS
