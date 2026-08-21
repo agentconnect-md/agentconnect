@@ -906,16 +906,25 @@ export function buildContainer(
           clock,
           github,
           tokens: github.tokens,
-          readSessionBranch: async (agent, session) => {
-            if (!agent.daemonId) return null
-            const daemon = await registry.getAvailable(agent.orgId, agent.daemonId)
-            // An older daemon drops the frame silently, so the REQ would burn its retransmit budget
-            // and then read as an offline daemon — refuse first, exactly as the workspace routes do.
-            if (!daemon?.capabilities.features.includes(WORKSPACE_SESSION_READ_FEATURE)) return null
+          readSessionBranch: async (agent, session, scope) => {
+            // Through the PLACEMENT, like every workspace route (`getServingAgent`): a pool- or
+            // cluster-placed agent has no `agent.daemonId` at all, so reading that column instead
+            // resolved no branch for exactly the deployments where every agent is placed that way.
+            const daemonId = (await placementResolver.servingDaemon(agent)) ?? agent.daemonId
+            if (!daemonId) return null
+            const daemon = await registry.getAvailable(agent.orgId, daemonId)
+            if (!daemon) return null
+            // An older daemon drops an unknown frame silently, so the REQ would burn its retransmit
+            // budget and then read as an offline daemon — refuse first, exactly as the workspace
+            // routes do. Only the session-worktree read needs it; the primary checkout is the read
+            // every daemon has always answered.
+            if (scope === 'session' && !daemon.capabilities.features.includes(WORKSPACE_SESSION_READ_FEATURE)) {
+              return null
+            }
             try {
-              const status = await sender.workspaceGitStatus(agent.daemonId, {
+              const status = await sender.workspaceGitStatus(daemonId, {
                 agentId: agent.id,
-                sessionId: session.id
+                ...(scope === 'session' ? { sessionId: session.id } : {})
               })
               return status.isRepo ? (status.branch ?? null) : null
             } catch {
@@ -924,6 +933,7 @@ export function buildContainer(
               return null
             }
           },
+          latestSessionIdOfAgent: (agent) => repos.session.latestSessionIdForAgent(agent.orgId, agent.id),
           log: { warn: (obj, message) => http.log.warn(obj, message) },
           ...(opts.githubFetch ? { fetchImpl: opts.githubFetch } : {})
         })

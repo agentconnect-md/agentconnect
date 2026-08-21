@@ -13,6 +13,7 @@ import { GitCredDeniedError, type GithubService } from '../../src/github/service
 import type { InstallationTokenService } from '../../src/github/installation-token.service.js'
 import type { FetchLike } from '../../src/github/api.js'
 import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
+import { PgSessionRepo } from '../../src/persistence/repositories/session.repo.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 import { systemClock } from '../../src/domain/clock.js'
 
@@ -246,6 +247,7 @@ describe('GET /sessions/:id/pull-request', () => {
       agentReview: null,
       linkedBy: 'run',
       linkBranch: null,
+      linkScope: null,
       linkAmbiguous: false
     })
     expect(github.calls).toHaveLength(1)
@@ -581,7 +583,7 @@ describe('GET /sessions/:id/pull-request — the head-branch link', () => {
   const BRANCH = 'dev/jane/panel'
 
   // The link service as the route sees it: a scripted daemon branch read plus the `pulls` REST list.
-  function linkStub(opts: { branch?: string | null; pulls?: unknown[] } = {}) {
+  function linkStub(opts: { branch?: string | null; pulls?: unknown[]; latestSessionId?: string | null } = {}) {
     const calls: string[] = []
     const fetch: FetchLike = async (url) => {
       calls.push(String(url))
@@ -596,7 +598,16 @@ describe('GET /sessions/:id/pull-request — the head-branch link', () => {
         resolveWorkspaceRepo: async () => ({ repoId: REPO_ID, repoFullName: REPO, installationId: INSTALLATION })
       } as unknown as GithubService,
       tokens: { mintPullRequestRead: async () => ({ token: 'ghs_link' }) } as unknown as InstallationTokenService,
-      readSessionBranch: async () => (opts.branch === undefined ? BRANCH : opts.branch),
+      readSessionBranch: async (_agent, _session, scope) => {
+        calls.push(`branch:${scope}`)
+        return opts.branch === undefined ? BRANCH : opts.branch
+      },
+      // Real repo read by default, so the shared arm's "is this the session using the checkout now"
+      // question is answered by Postgres exactly as it is in production.
+      latestSessionIdOfAgent: async (agent) =>
+        opts.latestSessionId !== undefined
+          ? opts.latestSessionId
+          : new PgSessionRepo(prisma).latestSessionIdForAgent(agent.orgId, agent.id),
       fetchImpl: fetch
     })
     return { links, calls }
@@ -624,11 +635,12 @@ describe('GET /sessions/:id/pull-request — the head-branch link', () => {
       degraded: false,
       linkedBy: 'head-branch',
       linkBranch: BRANCH,
+      linkScope: 'session',
       linkAmbiguous: false
     })
     // One REST list for identity, then the same single GraphQL projection a run-linked PR spends.
-    expect(link.calls).toHaveLength(1)
-    expect(link.calls[0]).toContain(`head=${encodeURIComponent(`acme:${BRANCH}`)}`)
+    expect(link.calls.filter((call) => call.startsWith('https'))).toHaveLength(1)
+    expect(link.calls.at(-1)).toContain(`head=${encodeURIComponent(`acme:${BRANCH}`)}`)
     expect(github.calls).toHaveLength(1)
   })
 
@@ -646,6 +658,48 @@ describe('GET /sessions/:id/pull-request — the head-branch link', () => {
     const res = await running.app.inject({ method: 'GET', url: `${ORG}/sessions/${session}/pull-request` })
 
     expect(res.json()).toMatchObject({ pullNumber: PULL, linkAmbiguous: true, linkBranch: BRANCH })
+  })
+
+  it('links a SHARED-workspace session through the agent’s primary checkout, and says which', async () => {
+    // Every session on a shared-workspace agent works in that one checkout — the same one the Files
+    // and Git tabs show them — so the pull request on its branch is this session's to see, labelled.
+    const session = await seedAgentAndSession()
+    await prisma.sessionMeta.update({ where: { id: session }, data: { workspaceIsolation: 'shared' } })
+    const github = githubStub([graphqlOk(fullAnswer())])
+    const link = linkStub()
+    const running = app(github.view, undefined, undefined, link.links)
+
+    const res = await running.app.inject({ method: 'GET', url: `${ORG}/sessions/${session}/pull-request` })
+
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toMatchObject({ pullNumber: PULL, linkedBy: 'head-branch', linkScope: 'shared' })
+    // The branch was read from the PRIMARY checkout, not from a session worktree that does not exist.
+    expect(link.calls[0]).toBe('branch:shared')
+  })
+
+  it('404s an OLDER shared-workspace session — the tree moved on and its branch is gone', async () => {
+    // Real Postgres ordering decides "the session using it now": the newer row wins, so the older
+    // session is not handed the newer one's pull request, checks and threads.
+    const older = await seedAgentAndSession()
+    await prisma.sessionMeta.update({
+      where: { id: older },
+      data: { workspaceIsolation: 'shared', lastActivityAt: new Date('2026-08-01T00:00:00Z') }
+    })
+    await seedSessionMeta(prisma, randomUUID(), AGENT, {
+      daemonId: DAEMON,
+      lastActivityAt: new Date('2026-08-20T00:00:00Z')
+    })
+    const github = githubStub([])
+    const link = linkStub()
+    const running = app(github.view, undefined, undefined, link.links)
+
+    const res = await running.app.inject({ method: 'GET', url: `${ORG}/sessions/${older}/pull-request` })
+
+    expect(res.statusCode).toBe(404)
+    expect(res.json()).toEqual(NOT_FOUND)
+    // Refused before the daemon read, so a stale session costs nothing at all.
+    expect(link.calls).toHaveLength(0)
+    expect(github.calls).toHaveLength(0)
   })
 
   it('still 404s when the branch has no pull request — the panel keeps its create action', async () => {
@@ -670,7 +724,7 @@ describe('GET /sessions/:id/pull-request — the head-branch link', () => {
 
     const res = await running.app.inject({ method: 'GET', url: `${ORG}/sessions/${session}/pull-request` })
 
-    expect(res.json()).toMatchObject({ linkedBy: 'run', linkBranch: null })
+    expect(res.json()).toMatchObject({ linkedBy: 'run', linkBranch: null, linkScope: null })
     expect(link.calls).toHaveLength(0)
   })
 

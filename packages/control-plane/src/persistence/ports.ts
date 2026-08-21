@@ -1319,6 +1319,10 @@ export interface SessionRepo {
    *  (no visibility predicate), safe to return to any org member: it reveals nothing
    *  about sessions the caller can't see. Drives the getting-started conversation step. */
   orgHasAny(orgId: OrgId): Promise<boolean>
+  /** The most recently active session of one agent, org-fenced. For the shared-checkout PR link: an
+   *  agent with one checkout has one branch, so that branch only speaks for the session using it now
+   *  (webchat-side-panels.md §12.6). Rides `session_meta_agent_activity_page_idx`. */
+  latestSessionIdForAgent(orgId: OrgId, agentId: AgentId): Promise<SessionId | null>
   /** One latest representative per distinct facet value after applying every
    *  other active facet. The database reduces the full history before returning
    *  this compact index to the HTTP layer. */

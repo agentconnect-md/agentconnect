@@ -3347,6 +3347,8 @@ export interface SessionPullRequestDto {
   linkedBy?: 'run' | 'head-branch'
   /** The head branch a `head-branch` link resolved through; null for a run-linked PR. */
   linkBranch?: string | null
+  /** Whose checkout that branch was read from: this session's own worktree, or the agent's `shared` primary tree, where every session on the agent works. */
+  linkScope?: 'session' | 'shared' | null
   /** true ⇒ that branch has more than one OPEN pull request and this is the first of them. */
   linkAmbiguous?: boolean
 }
