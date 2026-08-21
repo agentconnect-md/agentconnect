@@ -86,7 +86,7 @@ type SessionFacetIndex = Awaited<ReturnType<HttpDeps['repos']['session']['listFa
 type HookSessionRow = Pick<SessionPageRow, 'agentId' | 'platform' | 'channel' | 'triggeredBy'>
 type HookSessionMetadata = {
   agentId: string | null
-  kind: 'webhook' | 'github'
+  kind: 'webhook' | 'github' | 'gitlab'
   name: string
   repoId: bigint | null
 }
@@ -238,7 +238,7 @@ function sessionFacets(
       value: string
       integration: string
       name: string | null
-      hookKind: 'webhook' | 'github' | null
+      hookKind: 'webhook' | 'github' | 'gitlab' | null
       githubRepoId: string | null
     }
   >()

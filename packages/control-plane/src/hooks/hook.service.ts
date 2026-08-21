@@ -16,11 +16,13 @@
  * holds is always dispatchable. Compiled rules carry the hook's hmacSecret:
  * NEVER log.
  */
-import type { RcHookAssign } from '@agentconnect.md/protocol'
+import { GITLAB_COM_V1_FEATURE, type RcHookAssign } from '@agentconnect.md/protocol'
 import type { AgentId, OrgId } from '../domain/ids.js'
 import type {
   AgentRecord,
   GithubInstallationRepo,
+  GitlabProjectBindingRepo,
+  GitlabWebhookSecretStore,
   HookRecord,
   HookRepo,
   HookSecretStore
@@ -55,7 +57,12 @@ export class HookService {
      *  broadcast mention handle (P3). The agent record supplies the targeted
      *  handle. */
     private readonly appSlug?: string,
-    private readonly log?: HookServiceLog
+    private readonly log?: HookServiceLog,
+    /** gitlab-kind compile sources (gitlab-com-integration.md §11.3): the org's
+     *  managed bindings and the sealed signing keys. Absent ⇒ gitlab hooks never
+     *  compile (deployment without the GitLab OAuth app). */
+    private readonly gitlabBindings?: Pick<GitlabProjectBindingRepo, 'byProject'>,
+    private readonly gitlabWebhookSecrets?: GitlabWebhookSecretStore
   ) {}
 
   /**
@@ -120,6 +127,43 @@ export class HookService {
         }
       }
     }
+    if (hook.kind === 'gitlab') {
+      // gitlab (§11.3): the rule carries the binding's runtime identity and the
+      // inline signing token. A binding without a working ingress (no webhook,
+      // no signing key, no service account, or entering cleanup) must leave the
+      // pool — a rule the relay holds is always verifiable and dispatchable.
+      if (hook.repoId === null || !this.gitlabBindings || !this.gitlabWebhookSecrets) return null
+      const binding = await this.gitlabBindings.byProject(hook.orgId, hook.repoId)
+      if (!binding || binding.state === 'cleanup_pending') return null
+      if (binding.serviceAccountUserId === null || !binding.serviceAccountUsername || binding.webhookId === null) {
+        return null
+      }
+      const signingToken = await this.gitlabWebhookSecrets.get(hook.orgId, binding.id)
+      if (!signingToken) return null
+      return {
+        ...base,
+        kind: 'gitlab',
+        gitlab: {
+          projectId: hook.repoId.toString(),
+          projectPath: binding.projectPath,
+          sessionKeyPrefix: hook.githubSessionKey ?? `gitlab:${hook.repoId}`,
+          events: hook.events,
+          ...(hook.commentFamilies.length > 0
+            ? {
+                commentFamilies: hook.commentFamilies.filter(
+                  (family): family is 'issues' | 'merge_request' => family !== 'pull_request'
+                )
+              }
+            : {}),
+          labelFilter: hook.labelFilter,
+          mentionOnly: hook.mentionOnly,
+          agentName: agent.name,
+          serviceAccountUserId: binding.serviceAccountUserId.toString(),
+          serviceAccountUsername: binding.serviceAccountUsername,
+          signingToken
+        }
+      }
+    }
     // github (P2): the rule carries the org's VALID installation ids — the
     // relay's runtime attribution gate. Suspended/revoked installations are
     // excluded; an empty set means no event could ever prove attribution, so
@@ -137,7 +181,14 @@ export class HookService {
         events: hook.events,
         // Empty is the published API's legacy repo-wide comment behavior; omit
         // the optional wire field so older persisted rows keep that meaning.
-        ...(hook.commentFamilies.length > 0 ? { commentFamilies: hook.commentFamilies } : {}),
+        // The filter is a type proof: a github row only ever stores its own vocabulary.
+        ...(hook.commentFamilies.length > 0
+          ? {
+              commentFamilies: hook.commentFamilies.filter(
+                (family): family is 'issues' | 'pull_request' => family !== 'merge_request'
+              )
+            }
+          : {}),
         labelFilter: hook.labelFilter,
         // P3: the App slug broadcasts to every matching rule; the immutable
         // agent slug targets this rule. Thread actors also pass live maintainer auth.
@@ -190,6 +241,8 @@ export class HookService {
     for (const hook of await this.hooks.listEnabled()) {
       try {
         const rule = await this.compile(hook)
+        // The §17.3 negotiation gate, per channel (mirrors RelayControlSender).
+        if (rule?.kind === 'gitlab' && !ch.features?.includes(GITLAB_COM_V1_FEATURE)) continue
         if (rule) ch.send('rc/hook-assign', rule)
       } catch (err) {
         this.log?.warn({ hookId: hook.id, err }, 'hook replay: compile/send failed — skipped')

@@ -2066,9 +2066,11 @@ export interface CronRepo {
 //   HookDef rows into rc/hook-assign rules; event payloads never land here.
 // ───────────────────────────────────────────────────────────────────────────
 
-export type HookKind = 'webhook' | 'github'
+export type HookKind = 'webhook' | 'github' | 'gitlab'
 export type HookSessionMode = 'perDelivery' | 'perThread' | 'shared'
 export type GithubCommentFamily = 'issues' | 'pull_request'
+/** The stored comment-family vocabulary across code hosts; rows carry one host's subset. */
+export type HookCommentFamily = GithubCommentFamily | 'merge_request'
 export type HookReviewPolicy = 'off' | 'comment' | 'request_changes' | 'full'
 export type HookReportingMode = 'off' | 'check' | 'status'
 export type HookGateMode = 'informational' | 'required'
@@ -2099,7 +2101,7 @@ export interface UpsertHookInput {
   repoFullName?: string
   events?: string[]
   /** Empty preserves the published API's legacy repo-wide issue_comment semantics. */
-  commentFamilies?: GithubCommentFamily[]
+  commentFamilies?: HookCommentFamily[]
   labelFilter?: string[]
   mentionOnly?: boolean
   reviewPolicy?: HookReviewPolicy
@@ -2135,7 +2137,7 @@ export interface HookRecord {
   githubSessionKey?: string | null
   events: string[]
   /** Empty = legacy repo-wide comments; non-empty scopes comments to these subjects. */
-  commentFamilies: GithubCommentFamily[]
+  commentFamilies: HookCommentFamily[]
   labelFilter: string[]
   mentionOnly: boolean
   configRevision: bigint

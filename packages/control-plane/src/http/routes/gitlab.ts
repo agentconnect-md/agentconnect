@@ -41,8 +41,7 @@ import {
   GitlabProjectPageDto,
   IdParam
 } from '../dto/index.js'
-import type { GitlabProjectBindingRecord } from '../../persistence/ports.js'
-import type { GitlabConnectionRecord } from '../../persistence/ports.js'
+import type { GitlabConnectionRecord, GitlabProjectBindingRecord } from '../../persistence/ports.js'
 
 function toDto(r: GitlabConnectionRecord) {
   return {

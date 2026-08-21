@@ -273,6 +273,16 @@ export class GitlabProvisioner {
     if (events) {
       const outcome = await this.convergeWebhook(orgId, binding, token, events, owner)
       if (outcome) return outcome
+    } else if (binding.webhookId !== null) {
+      // §11.1's inverse: no enabled hook wants ingress any more, so the managed
+      // webhook (ours by recorded id) and its sealed key go. Same per-step lease
+      // discipline as the install path; a 404 counts as already-clean.
+      if (!(await this.renewLease(orgId, binding, owner))) {
+        return { state: 'admin_degraded', reason: 'claim_fence_lost' }
+      }
+      await gitlabDeleteWebhook(token, binding.projectId, binding.webhookId, this.deps.fetchImpl).catch(swallow404)
+      await this.deps.webhookSecrets.delete(orgId, binding.id)
+      await this.deps.bindings.update(orgId, binding.id, { webhookId: null })
     }
     return { state: 'ready' }
   }

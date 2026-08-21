@@ -35,6 +35,7 @@ import {
   PgCodeHostRepositoryRepo,
   PgGitlabConnectionRepo,
   PgGitlabProjectBindingRepo,
+  PgGitlabWebhookSecretStore,
   PgOrgRepo,
   PgOrgInviteLinkRepo,
   PgWaitlistRepo,
@@ -475,6 +476,7 @@ export function buildHttpApp(
     agentMutations: new AgentMutationGate(),
     sessionOwners: connReg,
     // The installations repo feeds the github-kind compile — same graph as prod.
+    // gitlab-kind compile sources appear exactly when the test wires a gitlab seam.
     hooks: new HookService(
       hookRepo,
       hookSecretStore,
@@ -482,7 +484,10 @@ export function buildHttpApp(
       relayControl,
       placementResolver,
       githubInstallationRepo,
-      'agentconnect-test'
+      'agentconnect-test',
+      undefined,
+      depsOverrides?.gitlab ? new PgGitlabProjectBindingRepo(prisma) : undefined,
+      depsOverrides?.gitlab ? new PgGitlabWebhookSecretStore(prisma, cipher) : undefined
     ),
     auth: new DaemonAuthService(
       codec,

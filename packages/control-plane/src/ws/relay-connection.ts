@@ -17,6 +17,7 @@
 import type {
   RcAuth,
   RcDeploymentConfig,
+  RcCodeHostMembershipAuthz,
   RcGithubCommentAuthz,
   RcGithubRerequest,
   RcGithubRerequestResult,
@@ -108,11 +109,15 @@ export interface RelayConnDeps {
   /** Resolve an App-owned informational Check Run rerequest to one current hook
    *  delivery. Operational failures become a retryable correlated error. */
   authorizeGithubRerequest: (req: RcGithubRerequest) => Promise<RcGithubRerequestResult>
+  /** Provider-neutral live membership re-check (gitlab-com-integration.md §12.2).
+   *  A thrown store/provider error becomes a retryable correlated error. */
+  authorizeCodeHostMembership: (req: RcCodeHostMembershipAuthz) => Promise<boolean>
 }
 
 export class RelayConnection implements RelayChannel {
   state: RelayState = 'AUTHENTICATING'
   relayId = ''
+  features: readonly string[] = []
 
   constructor(
     private readonly transport: Transport,
@@ -158,6 +163,9 @@ export class RelayConnection implements RelayChannel {
           return
         case 'rc/github-comment-authz':
           await this.handleGithubCommentAuthz(frame, frame.payload)
+          return
+        case 'rc/codehost-membership-authz':
+          await this.handleCodeHostMembershipAuthz(frame, frame.payload)
           return
         case 'rc/github-rerequest':
           await this.handleGithubRerequest(frame, frame.payload)
@@ -211,6 +219,7 @@ export class RelayConnection implements RelayChannel {
           type === 'rc/heartbeat' ||
           type === 'rc/verify' ||
           type === 'rc/github-comment-authz' ||
+          type === 'rc/codehost-membership-authz' ||
           type === 'rc/github-rerequest' ||
           type === 'rc/run-report' ||
           type === 'rc/set-channel-agent' ||
@@ -256,6 +265,7 @@ export class RelayConnection implements RelayChannel {
     // dead connection. Bail: the durable row is harmless (the sweeper ages it out).
     if (this.state === 'CLOSED') return
     this.relayId = row.id
+    this.features = req.features
     // Supersede a stale connection for the same relayId (a restarted pod reclaims its
     // id by name), then register THIS socket so the CP can push rc/daemon-revoke to it.
     const prev = this.deps.relayReg.get(row.id)
@@ -380,6 +390,19 @@ export class RelayConnection implements RelayChannel {
       return
     }
     this.reply(frame, 'rc/github-comment-authz/ok', { allowed })
+  }
+
+  private async handleCodeHostMembershipAuthz(frame: RelayCpFrame, req: RcCodeHostMembershipAuthz): Promise<void> {
+    // Same discipline as the GitHub arm: definitive denials stay distinct from
+    // transient failures; the relay fails closed on both.
+    let allowed: boolean
+    try {
+      allowed = await this.deps.authorizeCodeHostMembership(req)
+    } catch {
+      this.sendError(frame.id, 'INTERNAL', 'code host membership authorization failed', true)
+      return
+    }
+    this.reply(frame, 'rc/codehost-membership-authz/ok', { allowed })
   }
 
   private async handleGithubRerequest(frame: RelayCpFrame, req: RcGithubRerequest): Promise<void> {

@@ -27,6 +27,8 @@ import type { FetchLike as GitlabFetchLike } from './gitlab/api.js'
 import { GitlabOauthService } from './gitlab/oauth.service.js'
 import { GitlabProvisioner } from './gitlab/provisioner.js'
 import { GitlabCredentialRotator } from './gitlab/rotator.js'
+import { GitlabMembershipAuthzService } from './gitlab/membership-authz.service.js'
+import { unionGitlabWebhookEvents } from './gitlab/webhook-events.js'
 import { resolveSlackPlatformAppConfig } from './config/slack-platform.js'
 import { resolveFeishuPlatformApps } from './config/feishu-platform.js'
 import type { FetchLike } from './github/api.js'
@@ -147,7 +149,7 @@ import { WebchatMcpGrantTokenCodec } from './registry/webchatMcpGrantToken.js'
 import { OrgInviteLinkCodec } from './registry/orgInviteLink.js'
 import { OrgInviteLinkService } from './registry/orgInviteLinkService.js'
 import { WaitlistService } from './registry/waitlistService.js'
-import { AgentId, DaemonId, HookId, type OrgId } from './domain/ids.js'
+import { AgentId, DaemonId, HookId, OrgId } from './domain/ids.js'
 import { HookService } from './hooks/hook.service.js'
 import { RelayAuthService } from './registry/relayAuthService.js'
 import { DaemonRegistryService } from './registry/registryService.js'
@@ -667,6 +669,10 @@ export function buildContainer(
   // Hook compiler/converger (webhook-triggers-and-github-events.md): CRUD routes
   // broadcast through it, and a (re)registering relay gets the full-set replay.
   // The installation repo feeds the github-kind compile (installationIds gate).
+  // GitLab OAuth app config resolves here (not at the service block below) so the
+  // hook compiler can receive its gitlab-kind sources; absent ⇒ gitlab hooks never compile.
+  const gitlabAppCfg = resolveGitlabAppConfig(config)
+  const gitlabWebhookSecretStore = gitlabAppCfg ? new PgGitlabWebhookSecretStore(prisma, secretCipher) : undefined
   const hookService = new HookService(
     repos.hook,
     repos.hookSecret,
@@ -674,7 +680,10 @@ export function buildContainer(
     relayControl,
     placementResolver,
     githubAppCfg ? repos.githubInstallation : undefined,
-    githubAppCfg?.slug
+    githubAppCfg?.slug,
+    undefined,
+    gitlabAppCfg ? repos.gitlabProjectBinding : undefined,
+    gitlabWebhookSecretStore
   )
 
   // The single fencing site (allocates seq, stamps epoch/launchId on C→D frames).
@@ -924,7 +933,6 @@ export function buildContainer(
   // GitLab.com OAuth administration (opt-in, gitlab-com-integration.md §9):
   // assembled only when GITLAB_CLIENT_ID/SECRET are configured AND the public
   // origin is known (the begin/callback URLs derive from it); absent ⇒ routes 404.
-  const gitlabAppCfg = resolveGitlabAppConfig(config)
   if (gitlabAppCfg && !config.PUBLIC_CP_URL) {
     // A deploy mistake, not a mode: the begin/callback URLs derive from the public origin.
     throw new Error('GITLAB_CLIENT_ID/SECRET are set but PUBLIC_CP_URL is not — set it or unset both')
@@ -954,13 +962,14 @@ export function buildContainer(
           bindings: repos.gitlabProjectBinding,
           credentials: new PgGitlabProjectCredentialRepo(prisma),
           credentialSecrets: new PgGitlabProjectCredentialSecretStore(prisma, secretCipher),
-          webhookSecrets: new PgGitlabWebhookSecretStore(prisma, secretCipher),
+          webhookSecrets: gitlabWebhookSecretStore!,
           catalog: repos.codeHostRepository,
           cipher: secretCipher,
           clock,
           ...(config.PUBLIC_RELAY_URL ? { publicRelayUrl: config.PUBLIC_RELAY_URL } : {}),
-          // No GitLab hook kind exists yet (M3): no binding wants a webhook.
-          desiredWebhookEvents: async () => null,
+          // §11.1: the union every enabled gitlab hook on the project wants.
+          desiredWebhookEvents: async (orgId, projectId) =>
+            unionGitlabWebhookEvents(await repos.hook.listForOrgKind(OrgId(orgId), 'gitlab'), projectId),
           ...(opts.gitlabFetch ? { fetchImpl: opts.gitlabFetch } : {}),
           log: { warn: (obj, msg) => http.log.warn(obj, msg) }
         })
@@ -972,6 +981,19 @@ export function buildContainer(
         provisioner: gitlab.provisioner,
         clock,
         log: { warn: (obj, msg) => http.log.warn(obj, msg) }
+      })
+    : undefined
+
+  // The GitLab arm of rc/codehost-membership-authz (§12.2): live effective
+  // membership through the binding's read PAT. Absent configuration fails closed.
+  const gitlabMembershipAuthz = gitlab
+    ? new GitlabMembershipAuthzService({
+        hooks: repos.hook,
+        bindings: repos.gitlabProjectBinding,
+        credentials: new PgGitlabProjectCredentialRepo(prisma),
+        credentialSecrets: new PgGitlabProjectCredentialSecretStore(prisma, secretCipher),
+        clock,
+        ...(opts.gitlabFetch ? { fetchImpl: opts.gitlabFetch } : {})
       })
     : undefined
 
@@ -1639,6 +1661,7 @@ export function buildContainer(
     // Missing GitHub configuration fails closed.
     authorizeGithubComment: async (req) => (githubCommentAuthz ? githubCommentAuthz.allowed(req) : false),
     authorizeGithubRerequest: async (req) => (githubRerequest ? githubRerequest.resolve(req) : { allowed: false }),
+    authorizeCodeHostMembership: async (req) => (gitlabMembershipAuthz ? gitlabMembershipAuthz.allowed(req) : false),
     // A relay just (re)registered — refresh every daemon's roster, (re)assign every
     // HTTP bots' ingress + routes (§5, idempotent), AND replay the compiled hook
     // rules to the fresh connection (its table is a memory copy). All fire-and-forget,

@@ -14,6 +14,8 @@ import type { z } from 'zod'
 /** The minimal channel the registry / revoke-sender holds — no `ws` knowledge. */
 export interface RelayChannel {
   readonly relayId: string
+  /** The features this relay advertised on register (rc/register.features). */
+  readonly features?: readonly string[]
   /** Fire-and-forget C→R EVT (e.g. `rc/daemon-revoke`). */
   send<T extends RelayCpFrameType>(type: T, payload: z.input<(typeof RELAY_CP_SCHEMAS)[T]>): void
   close(code: number, reason: string): void

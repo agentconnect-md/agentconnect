@@ -773,7 +773,7 @@ export const AgentDto = z.object({
   // Distinct kinds of ENABLED inbound triggers (hooks) on this agent — the list
   // view's integrations cell renders a mark per kind (github repo subscriptions,
   // generic webhooks) without an org-wide hook list existing anywhere.
-  hookKinds: z.array(z.enum(['webhook', 'github']))
+  hookKinds: z.array(z.enum(['webhook', 'github', 'gitlab']))
 })
 export const AgentListDto = z.array(AgentDto)
 
@@ -2362,7 +2362,29 @@ export const CreateGithubHookBody = HookBodyBase.extend({
   gateMode: HookGateModeEnum.default('informational')
 })
 
-export const CreateHookBody = z.discriminatedUnion('kind', [CreateWebhookHookBody, CreateGithubHookBody])
+/** GitLab family:action patterns (§12): the three subscribed families only. */
+export const GitlabHookEventPattern = /^(issues|merge_request|push):([a-z_]+|\*)$/
+export const GitlabCommentFamily = z.enum(['issues', 'merge_request'])
+
+export const CreateGitlabHookBody = HookBodyBase.extend({
+  kind: z.literal('gitlab'),
+  // perThread by definition, like github (one issue/MR continues one session).
+  // The project must already be a managed binding in this organization; the
+  // numeric id is validated against it server-side (never trusted for facts).
+  projectId: z.string().regex(/^[1-9]\d*$/),
+  events: z.array(z.string().regex(GitlabHookEventPattern)).min(1).max(20),
+  // Note events for the selected subject families (§12); empty = no comments.
+  commentFamilies: z.array(GitlabCommentFamily).max(2).default([]),
+  labelFilter: z.array(z.string().trim().min(1).max(100)).max(20).default([]),
+  mentionOnly: z.boolean().default(false)
+  // No review/reporting knobs yet: the M6 review slice adds them; rows default off.
+})
+
+export const CreateHookBody = z.discriminatedUnion('kind', [
+  CreateWebhookHookBody,
+  CreateGithubHookBody,
+  CreateGitlabHookBody
+])
 
 // PUT: `kind` discriminates the body but STAYS OPTIONAL for webhook updates —
 // the P1-published contract had no `kind` on PUT, and a versioned surface must
@@ -2374,6 +2396,11 @@ export const CreateHookBody = z.discriminatedUnion('kind', [CreateWebhookHookBod
 // secret rotation is a delete/re-create. The github repo IS re-targetable
 // (repoId re-resolved).
 export const UpdateHookBody = z.union([
+  CreateGitlabHookBody.extend({
+    enabled: z.boolean().optional(),
+    commentFamilies: z.array(GitlabCommentFamily).max(2).optional(),
+    mentionOnly: z.boolean().optional()
+  }),
   // mentionOnly OPTIONAL on update (unlike create's default-false): a pre-P3
   // client echoing a hook back must not silently downgrade mention mode — the
   // route falls back to the stored value when the key is absent.
@@ -2399,7 +2426,7 @@ export const HookDto = z.object({
   id: z.string(),
   orgId: z.string(),
   agentId: z.string().nullable(), // null ⇒ legacy inert row
-  kind: z.enum(['webhook', 'github']),
+  kind: z.enum(['webhook', 'github', 'gitlab']),
   name: z.string(),
   sessionMode: HookSessionModeEnum,
   enabled: z.boolean(),
@@ -2414,7 +2441,8 @@ export const HookDto = z.object({
   repoId: z.string().nullable(), // rename-proof GitHub numeric id; null for webhook kind
   repoFullName: z.string().nullable(),
   events: z.array(z.string()),
-  commentFamilies: GithubCommentFamilies,
+  // The stored union across code hosts; each row carries its own host's subset.
+  commentFamilies: z.array(z.enum(['issues', 'pull_request', 'merge_request'])),
   labelFilter: z.array(z.string()),
   mentionOnly: z.boolean(),
   configRevision: z.string(),
@@ -2492,7 +2520,7 @@ export const SessionDto = z.object({
   triggeredBy: z.string().nullable(),
   // Stable source kind for hook-triggered sessions. null for non-hook or a
   // deleted/legacy hook whose definition can no longer be resolved.
-  hookKind: z.enum(['webhook', 'github']).nullable(),
+  hookKind: z.enum(['webhook', 'github', 'gitlab']).nullable(),
   // Daemon-resolved display names (pure passthrough — the raw ids above stay
   // canonical; null when the daemon hasn't resolved them).
   channelName: z.string().nullable(),
@@ -2544,7 +2572,7 @@ export const SessionFacetsDto = z.object({
       value: z.string(),
       integration: z.string(),
       name: z.string().nullable(),
-      hookKind: z.enum(['webhook', 'github']).nullable(),
+      hookKind: z.enum(['webhook', 'github', 'gitlab']).nullable(),
       githubRepoId: z.string().nullable()
     })
   )
@@ -2628,7 +2656,7 @@ export const SessionDetailDto = z.object({
   lastActivityAt: z.string(),
   usage: SessionUsageDto.nullable(),
   triggeredBy: z.string().nullable(),
-  hookKind: z.enum(['webhook', 'github']).nullable(),
+  hookKind: z.enum(['webhook', 'github', 'gitlab']).nullable(),
   channelName: z.string().nullable(),
   triggeredByName: z.string().nullable(),
   threadUrl: z.string().nullable(),

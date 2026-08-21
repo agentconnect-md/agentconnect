@@ -5,7 +5,7 @@ import { BindMatch, IntegrationChannel } from './integration.js'
 import { CronTarget } from './cron.js'
 import { Platform } from './route.js'
 import { CollabRoutesSnapshot } from './collab.js'
-import { GithubHookMetadata, HookBigIntString, OptionalHookConfigSnapshot } from './hook.js'
+import { GithubHookMetadata, GitlabHookMetadata, HookBigIntString, OptionalHookConfigSnapshot } from './hook.js'
 import { WebchatRemoteMcpEntitlement } from './remote-mcp.js'
 import { buildEnvelopeRaw, decodeEnvelopeWith, type BuildOpts, type DecodeResultOf } from '../wire.js'
 
@@ -311,7 +311,7 @@ export type RcGithubRerequestResult = z.infer<typeof RcGithubRerequestResult>
 export const RcHookAssign = z
   .object({
     hookId: z.string().uuid(),
-    kind: z.enum(['webhook', 'github']),
+    kind: z.enum(['webhook', 'github', 'gitlab']),
     agentId: z.string().uuid(),
     daemonId: z.string().uuid(), // the agent's CURRENT placement; re-sent on moves
     // R1/R2a rolling fields. Partial/absent remains decodable, but the relay
@@ -357,6 +357,27 @@ export const RcHookAssign = z
         // The org's valid installation ids (BigInt as string) — the runtime
         // attribution gate: an event fires only if payload.installation.id ∈ set.
         installationIds: z.array(z.string())
+      })
+      .optional(),
+    // kind=gitlab (gitlab-com-integration.md §11.3) — required for that kind.
+    // The signing token rides inline exactly as the generic webhook's HMAC
+    // secret does; the rule is NEVER logged.
+    gitlab: z
+      .object({
+        projectId: z.string().regex(/^[1-9]\d*$/), // numeric project id — the match key
+        projectPath: z.string().min(1), // display/logs only; never matched on
+        sessionKeyPrefix: z.string().min(1), // rename-stable per-thread namespace: gitlab:<projectId>
+        events: z.array(z.string()), // 'issues:*' / 'merge_request:*' / 'push:*' …
+        labelFilter: z.array(z.string()),
+        commentFamilies: z.array(z.enum(['issues', 'merge_request'])).optional(),
+        mentionOnly: z.boolean(),
+        agentName: z.string().optional(),
+        // The binding's runtime identity: loop prevention (§12.1) and the
+        // mention/reviewer targets.
+        serviceAccountUserId: z.string().regex(/^[1-9]\d*$/),
+        serviceAccountUsername: z.string().min(1),
+        // whsec_ Standard Webhooks signing key for §11.2 verification.
+        signingToken: z.string().min(1)
       })
       .optional()
   })
@@ -421,6 +442,7 @@ export const RcRunReport = z
     ...OptionalHookConfigSnapshot.shape,
     event: z.string().min(1).optional(), // 'issues:opened' etc (github); absent for webhook kind
     github: GithubHookMetadata.optional(),
+    gitlab: GitlabHookMetadata.optional(),
     status: z.enum(['accepted', 'failed']),
     reason: z.string().optional() // delivery-stage reason; use isRetryableHookDeliveryReason before redelivery
   })
