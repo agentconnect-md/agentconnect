@@ -38,4 +38,10 @@ describe('gitcred v2 (gitlab-com-integration.md §17.1)', () => {
     expect(GitCredRequest.safeParse({ ...v1Request, externalRepoId: 'example/project' }).success).toBe(false)
     expect(GitCredGrant.safeParse({ ...v1Grant, username: '' }).success).toBe(false)
   })
+
+  it('keeps the GitHub username fence: provider-absent and github grants pin the literal', () => {
+    expect(GitCredGrant.safeParse({ ...v1Grant, username: 'oauth2' }).success).toBe(false)
+    expect(GitCredGrant.safeParse({ ...v1Grant, provider: 'github', username: 'oauth2' }).success).toBe(false)
+    expect(GitCredGrant.safeParse({ ...v1Grant, provider: 'github' }).success).toBe(true)
+  })
 })

@@ -86,29 +86,41 @@ export const GitCredRequest = z.object({
 })
 export type GitCredRequest = z.infer<typeof GitCredRequest>
 
-export const GitCredGrant = z.object({
-  // C→D, REP (plaintext token — never log)
-  // Pre-v2 daemons pin the GitHub literal 'x-access-token', so every GitHub grant
-  // still carries exactly that value; only a feature-gated v2 (GitLab) grant may
-  // name another basic-auth username (the binding's service-account login).
-  username: z.string().min(1),
-  token: z.string(), // ghs_… — new stateless format runs ~520 chars; never assume a length
-  ttlSec: z.number().int(), // CP-computed remaining life, 60s clock-skew allowance already shaved.
-  // Daemons MUST track expiry as monotonic receivedAt+ttlSec (a skewed local
-  // clock must never resurrect a dead token); `expiresAt` is observability only.
-  expiresAt: z.string().datetime(),
-  repoFullName: z.string(), // owner/repo (github) or namespaced project path (gitlab) — helper path-match + diagnostics
-  access: z.enum(['read', 'write']),
-  // ── gitcred v2 echo (gitlab-com-integration.md §17.1) — negotiated fields ──
-  // Absent ⇒ GitHub v1 grant. A v2 consumer MUST verify provider and
-  // externalRepoId against its request before returning the password: an older
-  // CP answers without them, and a mismatched echo is a wrong-repo credential.
-  provider: CodeHostProviderString.optional(),
-  externalRepoId: CodeHostExternalId.optional(),
-  // Purge fence: a grant is dead the moment the CP broadcasts a newer epoch.
-  credentialEpoch: CodeHostExternalId.optional(),
-  // Provider-side expiry of the UNDERLYING credential (observability only; the
-  // local lease above is always the shorter authority).
-  providerExpiresAt: z.string().datetime().optional()
-})
+export const GitCredGrant = z
+  .object({
+    // C→D, REP (plaintext token — never log)
+    // GitHub grants (provider absent or 'github') keep the exact installation-token
+    // literal 'x-access-token' — enforced below, so the v1 validation fence stands;
+    // only a provider-qualified non-GitHub v2 grant may name another basic-auth
+    // username (the binding's service-account login).
+    username: z.string().min(1),
+    token: z.string(), // ghs_… — new stateless format runs ~520 chars; never assume a length
+    ttlSec: z.number().int(), // CP-computed remaining life, 60s clock-skew allowance already shaved.
+    // Daemons MUST track expiry as monotonic receivedAt+ttlSec (a skewed local
+    // clock must never resurrect a dead token); `expiresAt` is observability only.
+    expiresAt: z.string().datetime(),
+    repoFullName: z.string(), // owner/repo (github) or namespaced project path (gitlab) — helper path-match + diagnostics
+    access: z.enum(['read', 'write']),
+    // ── gitcred v2 echo (gitlab-com-integration.md §17.1) — negotiated fields ──
+    // Absent ⇒ GitHub v1 grant. A v2 consumer MUST verify provider and
+    // externalRepoId against its request before returning the password: an older
+    // CP answers without them, and a mismatched echo is a wrong-repo credential.
+    provider: CodeHostProviderString.optional(),
+    externalRepoId: CodeHostExternalId.optional(),
+    // Purge fence: a grant is dead the moment the CP broadcasts a newer epoch.
+    credentialEpoch: CodeHostExternalId.optional(),
+    // Provider-side expiry of the UNDERLYING credential (observability only; the
+    // local lease above is always the shorter authority).
+    providerExpiresAt: z.string().datetime().optional()
+  })
+  .superRefine((grant, ctx) => {
+    const isGithub = grant.provider === undefined || grant.provider === 'github'
+    if (isGithub && grant.username !== 'x-access-token') {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['username'],
+        message: 'a GitHub grant carries the fixed installation-token username'
+      })
+    }
+  })
 export type GitCredGrant = z.infer<typeof GitCredGrant>
