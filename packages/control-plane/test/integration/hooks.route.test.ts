@@ -344,6 +344,15 @@ describe('hooks REST — CRUD, ingress gating, secret echo, runs, audit', () => 
       expect(row.githubSessionKey).toBe(`github:${REPO_ID}`)
       expect(row.commentFamilies).toEqual(['issues'])
       expect(row.urlToken).toBeNull()
+      // Readers-first catalog convergence (gitlab-com-integration.md §8.1): the
+      // resolved reference lands in the provider-qualified catalog with canonical hints.
+      const catalog = await prisma.codeHostRepository.findUniqueOrThrow({
+        where: {
+          orgId_provider_externalId: { orgId: DEFAULT_ORG_ID, provider: 'github', externalId: BigInt(REPO_ID) }
+        }
+      })
+      expect(catalog.displayPath).toBe('acme/infra')
+      expect(catalog.cloneUrl).toBe('https://github.com/acme/infra')
     })
 
     it('POST and PUT reject reserved required/status modes without persisting them', async () => {

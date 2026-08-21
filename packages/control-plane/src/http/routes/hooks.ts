@@ -159,6 +159,15 @@ export function hookRoutes(deps: HttpDeps) {
       try {
         const ref = await deps.github.repoRefFor(ins, owner, repo)
         if (!ref) return notCovered
+        // Readers-first catalog convergence (gitlab-com-integration.md §8.1).
+        await deps.repos.codeHostRepository.upsert({
+          orgId,
+          provider: 'github',
+          externalId: ref.repoId,
+          displayPath: ref.fullName,
+          cloneUrl: `https://github.com/${ref.fullName}`,
+          defaultBranch: ref.defaultBranch
+        })
         return { ok: true, repoId: ref.repoId, repoFullName: ref.fullName }
       } catch (e) {
         if (e instanceof GithubApiError) return { ok: false, ...githubUpstream(e) }

@@ -47,6 +47,7 @@ import type {
   PresetAgentStore,
   GithubInstallationRepo,
   AgentRepoAuthorizationRepo,
+  CodeHostRepositoryRepo,
   DaemonLifecycleOpRepo,
   OAuthRepo,
   WebchatMcpOperationRepo
@@ -233,6 +234,8 @@ export interface HttpDeps {
     /** Explicit non-workspace repo grants per agent (issue #457) — the agent
      *  Repositories card + the github-hook watch-repo gate. */
     agentRepoAuth: AgentRepoAuthorizationRepo
+    /** Provider-qualified repository catalog (gitlab-com-integration.md §8.1) — readers-first write side. */
+    codeHostRepository: CodeHostRepositoryRepo
     /** Append-only events feed (§3.12) — WebUI CRUD writes land here (`cron_change`, …). */
     audit: AuditRepo
     /** Durable browser-confirmed delegated MCP operation ledger. */

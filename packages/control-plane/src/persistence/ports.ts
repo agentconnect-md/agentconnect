@@ -2995,6 +2995,37 @@ export interface GithubInstallStateStore {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
+// CodeHostRepositoryRepo — the provider-qualified repository catalog
+// (gitlab-com-integration.md §8.1). Readers-first: writers converge referenced
+// repos into it while legacy github columns stay the read path; GitLab readers
+// join it from day one.
+// ───────────────────────────────────────────────────────────────────────────
+
+export interface CodeHostRepositoryRecord {
+  id: string
+  orgId: string
+  provider: string // 'github' | 'gitlab' — app-layer closed set
+  externalId: bigint // numeric repo/project id — the rename-immune match key
+  displayPath: string // mutable display hint, never matched on
+  cloneUrl: string | null
+  defaultBranch: string | null
+}
+
+export interface CodeHostRepositoryRepo {
+  /** Convergent catalog write: insert or refresh the mutable hints for one referenced repo. */
+  upsert(input: {
+    orgId: string
+    provider: string
+    externalId: bigint
+    displayPath: string
+    cloneUrl?: string
+    defaultBranch?: string
+  }): Promise<CodeHostRepositoryRecord>
+  byExternalId(orgId: string, provider: string, externalId: bigint): Promise<CodeHostRepositoryRecord | null>
+  listForOrg(orgId: string): Promise<CodeHostRepositoryRecord[]>
+}
+
+// ───────────────────────────────────────────────────────────────────────────
 // AgentRepoAuthorizationRepo — explicit repo grants per agent
 // (issue #457, agent-multi-repo-authorization.md). Anchored on the AGENT, never
 // derived from hooks; `repoId` is the rename-immune match key. Subordinate to

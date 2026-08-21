@@ -57,6 +57,19 @@ export function agentRepoRoutes(deps: HttpDeps) {
       if (!agent || !canView(agent, ctxOf(req))) return null
       return agent
     }
+    // Readers-first catalog convergence (gitlab-com-integration.md §8.1).
+    const catalogGithubRepo = (
+      orgId: string,
+      ref: { repoId: bigint; fullName: string; defaultBranch: string }
+    ): Promise<unknown> =>
+      deps.repos.codeHostRepository.upsert({
+        orgId,
+        provider: 'github',
+        externalId: ref.repoId,
+        displayPath: ref.fullName,
+        cloneUrl: `https://github.com/${ref.fullName}`,
+        defaultBranch: ref.defaultBranch
+      })
     /** Lazily pin a legacy github workspace to its rename-proof numeric id.
      * PgAgentRepo performs the pin and redundant-grant cleanup atomically under
      * the shared (agent, repo) projection lock. */
@@ -71,6 +84,7 @@ export function agentRepoRoutes(deps: HttpDeps) {
       if (!installation || installation.suspendedAt) return undefined
       const ref = await deps.github.repoRefFor(installation, owner, repo)
       if (!ref) return undefined
+      await catalogGithubRepo(agent.orgId, ref)
       if (await deps.repos.agent.setWorkspaceRepoId(agent.id, ref.repoId)) return ref.repoId
       return (await deps.repos.agent.get(agent.orgId, agent.id))?.workspaceRepoId
     }
@@ -189,6 +203,7 @@ export function agentRepoRoutes(deps: HttpDeps) {
               message: "repository is not covered by one of this organization's GitHub App installations"
             })
           }
+          await catalogGithubRepo(agent.orgId, ref)
           const workspaceRepoId =
             agent.workspace.mode === 'github' && !manualWorkspace ? await ensureWorkspaceRepoId(agent) : undefined
           if (workspaceRepoId === ref.repoId) {

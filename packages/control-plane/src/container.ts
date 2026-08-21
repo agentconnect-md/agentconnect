@@ -88,6 +88,7 @@ import {
   PgGithubInstallationRepo,
   PgGithubInstallStateStore,
   PgAgentRepoAuthorizationRepo,
+  PgCodeHostRepositoryRepo,
   PgSocialIdentityMutationGate,
   PgCronRepo,
   PgDutyGroupRepo,
@@ -407,7 +408,8 @@ export function buildContainer(
     waitlist: new PgWaitlistRepo(prisma, config.PRESET_AGENTS_ENABLED, presetPool),
     githubInstallation: new PgGithubInstallationRepo(prisma),
     githubInstallState: new PgGithubInstallStateStore(prisma),
-    agentRepoAuth: new PgAgentRepoAuthorizationRepo(prisma)
+    agentRepoAuth: new PgAgentRepoAuthorizationRepo(prisma),
+    codeHostRepository: new PgCodeHostRepositoryRepo(prisma)
   }
 
   // ── C3/C4/C5 services ─────────────────────────────────────────────────────
@@ -1150,6 +1152,7 @@ export function buildContainer(
       presetAgent: repos.presetAgent,
       githubInstallation: repos.githubInstallation,
       agentRepoAuth: repos.agentRepoAuth,
+      codeHostRepository: repos.codeHostRepository,
       audit: repos.audit,
       webchatMcpOperation: repos.webchatMcpOperation,
       oauth: repos.oauth

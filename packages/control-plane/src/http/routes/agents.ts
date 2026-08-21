@@ -1512,6 +1512,15 @@ export function agentRoutes(deps: HttpDeps) {
               return conflict(`${owner}/${repo} is not granted to the installation — re-select it on GitHub`)
             }
             workspaceRepoId = ref.repoId
+            // Readers-first catalog convergence (gitlab-com-integration.md §8.1).
+            await deps.repos.codeHostRepository.upsert({
+              orgId: orgOf(req),
+              provider: 'github',
+              externalId: ref.repoId,
+              displayPath: ref.fullName,
+              cloneUrl: `https://github.com/${ref.fullName}`,
+              defaultBranch: ref.defaultBranch
+            })
             // The installation lookup, not the caller's clone host/path, is the
             // authority for an App-backed workspace.
             workspace = {
@@ -2282,6 +2291,15 @@ export function agentRoutes(deps: HttpDeps) {
             }
             const ref = await deps.github.repoRefFor(installation, owner, repo)
             if (!ref) return conflict(`${owner}/${repo} is not granted to the GitHub installation`)
+            // Readers-first catalog convergence (gitlab-com-integration.md §8.1).
+            await deps.repos.codeHostRepository.upsert({
+              orgId: existing.orgId,
+              provider: 'github',
+              externalId: ref.repoId,
+              displayPath: ref.fullName,
+              cloneUrl: `https://github.com/${ref.fullName}`,
+              defaultBranch: ref.defaultBranch
+            })
             if (deps.githubUserAuthz) {
               await deps.githubUserAuthz.assertAccess(
                 req.principal!.userId,

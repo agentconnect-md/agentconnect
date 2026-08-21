@@ -89,6 +89,7 @@ model Org {
   memberSets                MemberSet[]
   crons                     CronDef[]
   hooks                     HookDef[]
+  codeHostRepositories      CodeHostRepository[]
   apiKeys                   ApiKey[]
   integrations              Integration[]
   bots                      Bot[]
@@ -906,6 +907,56 @@ model AgentRepoAuthorization {
   @@unique([agentId, repoId])
   @@index([agentId])
   @@map("agent_repo_authorization")
+}
+
+/// Provider-qualified repository catalog (gitlab-com-integration.md §8.1) — the
+/// org-scoped identity every code-host reference converges on. `provider` is
+/// TEXT, not an enum (the platform-text precedent above): a new host id must be
+/// storable without a migration, with the closed-set guard at the application
+/// layer. `externalId` (numeric, rename-immune) is the authority; `displayPath`
+/// and `cloneUrl` are mutable hints refreshed from the provider. GitHub rows are
+/// backfilled readers-first: legacy `repoId`/`repoFullName` columns stay the
+/// read path until writers cut over.
+model CodeHostRepository {
+  id            String   @id @default(uuid()) @db.Uuid
+  orgId         String
+  provider      String // 'github' | 'gitlab' — app-layer closed set
+  externalId    BigInt // numeric repo/project id — the match key
+  displayPath   String // "owner/repo" / "group/subgroup/project" — display only
+  cloneUrl      String? // canonical HTTPS clone URL
+  defaultBranch String?
+  createdAt     DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt     DateTime @updatedAt @db.Timestamptz(6)
+
+  org Org @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, provider, externalId])
+  @@index([orgId])
+  @@map("code_host_repository")
+}
+
+/// Deployment-GLOBAL single-owner claim over one external repository/project
+/// (§8.1): within one deployment, one numeric project has at most one managing
+/// organization. Acquired transactionally BEFORE any provider mutation; a
+/// uniqueness loser may not begin provisioning. Deliberately org-relation-free
+/// and binding-relation-free (`bindingRef` is a soft pointer): the claim must
+/// survive owner deletion so `cleanup_pending` external state is never orphaned
+/// silently, and release requires provider-verified cleanup, never elapsed time.
+/// GitHub keeps its existing installation claim; only GitLab rows live here in v1.
+model CodeHostRepositoryClaim {
+  id         String   @id @default(uuid()) @db.Uuid
+  provider   String
+  externalId BigInt
+  orgId      String // owning organization — soft reference, see above
+  bindingRef String?  @db.Uuid // owning provider binding (e.g. GitlabProjectBinding), soft reference
+  generation BigInt   @default(1) // incremented on ownership transfer
+  state      String // provisioning | active | transferring | cleanup_pending — app-layer closed set
+  createdAt  DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt  DateTime @updatedAt @db.Timestamptz(6)
+
+  @@unique([provider, externalId])
+  @@index([orgId])
+  @@map("code_host_repository_claim")
 }
 
 // ───────────────────────────────────────────────────────────────────────────
