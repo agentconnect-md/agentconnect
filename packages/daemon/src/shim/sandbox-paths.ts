@@ -14,6 +14,11 @@ export const SANDBOX_GIT_CREDENTIAL_HELPER = '/opt/agentconnect/bin/git-credenti
 /** The gh wrapper's token fetch in the pod — the in-sandbox twin of the daemon's hidden `gh-token` subcommand. */
 export const SANDBOX_GH_TOKEN_ENTRY = '/opt/agentconnect/shim/gh-token.js'
 
+/** The in-pod merge-when-ready watcher the shim spawns per armed pull request — one process, killed
+ *  on disarm and gone with the pod. Its presence is REPORTED by the automerge handler rather than
+ *  assumed: an image built before it ships none, and the daemon must read that skew, not guess. */
+export const SANDBOX_AUTO_MERGE_ENTRY = '/opt/agentconnect/shim/auto-merge.js'
+
 /** The AgentConnect tool server the agent's harness spawns in the pod, reached over the `mcp` tunnel.
  *  Reported to the daemon by the probe rather than assumed: an image built before it ships none. */
 export const SANDBOX_MCP_BRIDGE_ENTRY = '/opt/agentconnect/shim/mcp-bridge.js'

@@ -918,7 +918,9 @@ describe('GitPanel auto refresh', () => {
     expect(wire.logCalls).toHaveLength(2)
   })
 
-  it('polls while its tab is on screen, and not while it is hidden', async () => {
+  it('keeps polling behind another tab — its status is what holds the sandbox', async () => {
+    // Not just freshness: this status is one of the two facts the daemon holds a cluster agent's pod
+    // for (an uncommitted tree), so it must keep being read while the page is open behind another tab.
     vi.useFakeTimers()
     await render({ active: true })
     await act(async () => {
@@ -928,9 +930,10 @@ describe('GitPanel auto refresh', () => {
 
     await rerender({ active: false })
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(DOCK_POLL_MS * 4)
+      await vi.advanceTimersByTimeAsync(DOCK_POLL_MS * 2)
     })
-    expect(wire.statusCalls).toBe(2)
+    // The count, not the exact number of ticks: what matters is that a hidden tab keeps reading.
+    expect(wire.statusCalls).toBeGreaterThan(2)
   })
 
   it('skips an automatic read while one of its OWN writes is in flight', async () => {

@@ -41,6 +41,11 @@ export const ShimCapabilitySchema = z.enum([
   /** Run the ACP runtime and relay its stdio as a stream (its own channel: ACP is already
    *  a complete protocol, and reinterpreting it here would add a second place to break). */
   'acp',
+  /** Run the merge-when-ready watcher in the pod, so the armed set lives and dies with the
+   *  sandbox. Its own capability rather than a widening of `exec`: that channel is git-only and
+   *  enforced in-pod on purpose, and reaching `gh` through it would turn a deliberate boundary
+   *  into an arbitrary-execution surface. */
+  'automerge',
   /** Report which runtimes this image actually provides, by asking them. The daemon cannot learn
    *  this any other way: `--k8s` runs no local runtime, and anything it states from its own
    *  configuration is a claim about an image it never opened. */

@@ -76,6 +76,8 @@ import { CONTROL_HANDLERS, type ControlDeps } from './control/registry.js'
 import type { SessionControlDeps } from './control/session.js'
 import type { SkillsControlDeps } from './control/skills.js'
 import type { TaskControlDeps } from './control/task.js'
+import type { AutoMergeControlDeps } from './control/automerge.js'
+import type { SandboxKeepAliveDeps } from './control/sandbox-keepalive.js'
 import { GitMessagePasses, type WorkspaceReadDeps } from './control/workspace.js'
 import type { ConfigApply } from './config-apply.js'
 import type { Logger } from '../log.js'
@@ -122,6 +124,8 @@ export interface CpClientDeps
     SessionControlDeps,
     SkillsControlDeps,
     TaskControlDeps,
+    AutoMergeControlDeps,
+    SandboxKeepAliveDeps,
     WorkspaceReadDeps {
   url: string
   /** The CP API key. Absent on an in-cluster daemon, which presents
@@ -271,6 +275,8 @@ export class CpClient {
       workspaceRead: deps.workspaceRead,
       workspaceGit: deps.workspaceGit,
       taskReader: deps.taskReader,
+      autoMerge: deps.autoMerge,
+      sandboxKeepAlive: deps.sandboxKeepAlive,
       agentWake: deps.agentWake,
       memoryReader: deps.memoryReader,
       dreamReader: deps.dreamReader,

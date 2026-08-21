@@ -2,6 +2,7 @@
 /** The in-sandbox shim executable. Lives at a fixed path in the runtime image
  *  (`/opt/agentconnect/shim`), root-owned and read-only, with tini as PID 1. */
 import { ShimClient } from './client.js'
+import { createAutoMergeHandler } from './auto-merge-handler.js'
 import { createExecHandler } from './exec-handler.js'
 import { resolveCommandInPath } from './path-resolve.js'
 import {
@@ -26,6 +27,9 @@ async function main(): Promise<number> {
   }
   const workspaceRoot = process.env[SHIM_WORKSPACE_ROOT_ENV] ?? DEFAULT_SHIM_WORKSPACE_ROOT
   const exec = createExecHandler({ workspaceRoot, log })
+  // Its own handler beside exec: it owns child processes with a pod-long lifetime rather than
+  // answering one request, and it must never be reachable through the git-only exec inventory.
+  const automerge = createAutoMergeHandler({ log })
   const server = new ShimServer({ log })
   // Tunnel listeners follow pod lifetime so credential renewal cannot break client sockets.
   const tunnels = new TunnelHost({ emit: (streamId, event) => client.emit(streamId, event), log })
@@ -41,7 +45,11 @@ async function main(): Promise<number> {
     // trusting that the daemon sent only permitted subcommands; tunnels are served separately
     // because they own long-lived sockets rather than answering one request.
     handle: (capability, payload, abort) =>
-      capability === 'tunnel' ? tunnels.handle(payload) : exec(capability, payload, abort),
+      capability === 'tunnel'
+        ? tunnels.handle(payload)
+        : capability === 'automerge'
+          ? automerge(payload)
+          : exec(capability, payload, abort),
     // Reported in the hello so daemon-built pod paths are anchored on this filesystem.
     workspaceRoot,
     log

@@ -41,7 +41,7 @@ vi.mock('@/lib/api', () => {
     setSessionPullRequestAutoMerge: vi.fn((sessionId: string, enabled: boolean) => {
       wire.mergeCalls.push({ sessionId, enabled })
       if (wire.mergeFailure) return Promise.reject(wire.mergeFailure)
-      return Promise.resolve({ armed: enabled })
+      return Promise.resolve({ armed: enabled, placement: enabled ? 'daemon' : null, waitingOn: null, error: null })
     }),
     mergeSessionPullRequest: vi.fn((sessionId: string) => {
       wire.mergeNowCalls.push(sessionId)
@@ -604,18 +604,38 @@ describe('PullRequestPanel body', () => {
     expect(container?.querySelector<HTMLButtonElement>('[data-pr-autofix]')?.disabled).toBe(false)
   })
 
-  it('arms auto-merge through the CP and re-reads the view it invalidated', async () => {
+  it('draws an UNKNOWN armed state as indeterminate and inert, not as an empty box', async () => {
+    // `autoMergeArmed: null` means nobody could be asked — the daemon is offline or too old. An
+    // enabled empty box would invite a click whose write fails anyway, and `canArmAutoMerge` is a
+    // Postgres fact that knows nothing about reachability.
+    wire.data = pr({ autoMergeArmed: null })
+    await render()
+    const box = container?.querySelector<HTMLInputElement>('[data-pr-automerge]')
+    expect(box?.hasAttribute('data-pr-automerge-unknown')).toBe(true)
+    expect(box?.indeterminate).toBe(true)
+    expect(box?.disabled).toBe(true)
+    expect(text()).toContain('can’t read whether anything is watching')
+  })
+
+  it('arms the edge watcher through the CP and re-reads the view it invalidated', async () => {
     await render()
     expect(wire.calls).toHaveLength(1)
 
-    wire.data = pr({ autoMergeArmed: true })
+    // Armable in a state GitHub's own auto-merge refuses outright: a check still running, and a
+    // review asking for changes. That refusal is what the edge watcher exists to replace.
+    wire.data = pr({
+      autoMergeArmed: true,
+      autoMergePlacement: 'sandbox',
+      autoMergeWaitingOn: 'checks running: ci/lint'
+    })
     await press('[data-pr-automerge]')
 
     expect(wire.mergeCalls).toEqual([{ sessionId: 'session-1', enabled: true }])
     expect(wire.calls).toHaveLength(2) // the post-write re-read, riding the CP's own invalidation
     expect(container?.querySelector<HTMLInputElement>('[data-pr-automerge]')?.checked).toBe(true)
-    expect(text()).toContain('Auto-merge armed')
-    expect(text()).toContain('after checks + approvals')
+    expect(text()).toContain('Watching')
+    // The watcher's own verdict, which is the answer to "why has this not merged yet".
+    expect(text()).toContain('waiting on checks running: ci/lint')
 
     // Unchecking disarms with the same round trip.
     wire.data = pr({ autoMergeArmed: false })
@@ -849,22 +869,25 @@ describe('PullRequestPanel degraded answers', () => {
     expect(wire.calls[1]).toMatchObject({ refresh: false })
   })
 
-  it('polls nothing while its tab is hidden, and still takes a turn’s edge — the badge is on screen', async () => {
-    // A hidden panel is a request nobody is looking at; its BADGE is not — the unresolved count sits in
-    // the tab strip either way, so the one signal that reaches a hidden panel is a turn settling.
+  it('polls behind its own tab, and still takes a turn’s edge — the badge is on screen', async () => {
+    // Its badge is on screen whatever tab is selected, and so is the armed merge-when-ready fact the
+    // daemon holds the sandbox for — so this panel keeps its slow cadence while hidden, and a turn's
+    // falling edge still reaches it. Only a background DOCUMENT stops it (`auto-refresh.test.tsx`).
     vi.useFakeTimers()
     wire.data = pr()
     await render({ active: false, sessionStatus: 'online' })
     expect(wire.calls).toHaveLength(1)
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(10 * PR_POLL_MS)
+      await vi.advanceTimersByTimeAsync(2 * PR_POLL_MS)
     })
-    expect(wire.calls).toHaveLength(1)
+    // The count, not the exact number of ticks: what matters is that a hidden tab keeps reading.
+    expect(wire.calls.length).toBeGreaterThan(1)
+    const polled = wire.calls.length
 
     await rerender({ active: false, sessionStatus: 'online', turnActive: true })
     await rerender({ active: false, sessionStatus: 'online', turnActive: false })
-    expect(wire.calls).toHaveLength(2)
-    expect(wire.calls[1]).toMatchObject({ refresh: true })
+    expect(wire.calls).toHaveLength(polled + 1)
+    expect(wire.calls[polled]).toMatchObject({ refresh: true })
   })
 
   it('links a pull request the agent opened mid-turn, without anyone pressing refresh', async () => {

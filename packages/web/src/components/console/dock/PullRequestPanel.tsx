@@ -1,6 +1,6 @@
 'use client'
 
-// The dock's PR tab (§3.4): the pull request this session was dispatched for — state, head→base, checks, current reviews and unresolved threads — plus M6's two writes: ONE Auto-fix post over the whole unresolved set (§5.2, a webchat turn, no CP route) and the Merge-when-ready auto-merge toggle.
+// The dock's PR tab (§3.4): the pull request this session was dispatched for — state, head→base, checks, current reviews and unresolved threads — plus M6's writes: ONE Auto-fix post over the whole unresolved set (§5.2, a webchat turn, no CP route), a direct squash Merge, and the Merge-when-ready toggle over the EDGE's own watcher (not GitHub auto-merge, which refuses any PR that is not BLOCKED).
 // Identity comes from the CP's own records and live state from GitHub through the CP's short-TTL projection; thread bodies are proxied, never stored (§2). A rate-limited, denied or unreachable GitHub is DATA: the panel still names its PR and says why the live lists are missing.
 // A 404 from the probe is PROVISIONAL on a bounded ladder (the session→run link can commit after the status flip, or with no flip at all), then the absence is believed and drawn: the branch's state and a Create-pull-request action, which is another one-turn post on the same path as Auto-fix.
 
@@ -300,6 +300,12 @@ export function PullRequestPanel({
     active,
     turnActive,
     whileHidden: true,
+    // The page's state, not the selected tab's — but ONLY once a pull request is actually linked: its
+    // badge is on screen either way, and an armed merge-when-ready watcher is one of the two facts the
+    // daemon holds the session's sandbox for. A session with NO pull request keeps the old rule, since
+    // re-asking a 404 behind a hidden tab costs a daemon read and, for a pushed branch, a GitHub list
+    // — that bounded ladder is the surface for finding a PR that appears later, not a poll.
+    pollWhileHidden: answer === 'linked',
     intervalMs: PR_POLL_MS,
     onRefresh: (reason) => {
       if (reason === 'turn') {
@@ -310,6 +316,13 @@ export function PullRequestPanel({
     }
   })
 
+  // `indeterminate` is the one checkbox state no prop expresses, and it has to be re-applied AFTER
+  // every render: React writes `checked` on commit, which clears it. A dependency-less effect runs on
+  // each commit, which is exactly the cadence the DOM property needs.
+  const armedBox = useRef<HTMLInputElement | null>(null)
+  useEffect(() => {
+    if (armedBox.current) armedBox.current.indeterminate = view?.autoMergeArmed === null
+  })
   // The auto-merge toggle's own in-flight/error state; the armed FACT stays on the view, re-read after every write.
   const [merge, setMerge] = useState<{ busy: boolean; err: string | null }>({ busy: false, err: null })
   useEffect(() => setMerge({ busy: false, err: null }), [sessionId])
@@ -768,7 +781,7 @@ export function PullRequestPanel({
           </>
         )}
       </div>
-      {/* The merge box (§3.4): a direct Merge (squash) plus the auto-merge toggle, both under the same write capability. Open PRs only; a degraded read has no armed fact to draw a control over. */}
+      {/* The merge box (§3.4): a direct Merge (squash) for a pull request that is ready now, plus the merge-when-ready toggle for one that is not — the watcher runs at the EDGE, so unlike GitHub's auto-merge it arms in any state. Open PRs only; a degraded read has no armed fact to draw a control over. */}
       {!view.degraded && view.state === 'open' ? (
         <div data-pr-merge="" className="flex flex-none flex-col gap-[6px] border-t border-(--border-subtle) px-3 py-2">
           <div className="flex items-center gap-2">
@@ -830,33 +843,75 @@ export function PullRequestPanel({
               </span>
             ) : null}
           </div>
+          {/* The box is armable in EVERY state a pull request can be in — running checks, requested
+              changes, conflicts. That is the point of moving the watcher to the edge: GitHub's own
+              auto-merge refused all of them, which is what made this control look broken. */}
+          {/* `autoMergeArmed: null` is UNKNOWN, not "off": nobody could be asked, because the owning
+              daemon is offline or too old to answer. Drawn indeterminate and inert rather than as an
+              empty box — an enabled empty box invites a click whose write would fail anyway, and
+              `canArmAutoMerge` is a Postgres fact that knows nothing about the daemon's reachability. */}
           <label
-            className={`flex items-center gap-[7px] font-sans text-[12px] font-medium leading-normal text-(--text-primary) ${view.canArmAutoMerge ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'}`}
+            className={`flex items-center gap-[7px] font-sans text-[12px] font-medium leading-normal text-(--text-primary) ${view.canArmAutoMerge && view.autoMergeArmed !== null ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'}`}
             title={
-              view.canArmAutoMerge
-                ? 'GitHub merges automatically once checks and approvals pass'
-                : 'The owning agent’s repository access is below write tier, so arming the merge is not available'
+              view.autoMergeArmed === null
+                ? 'Whether a merge-when-ready watcher is armed can’t be read right now — its daemon is offline or too old to answer'
+                : view.canArmAutoMerge
+                  ? 'Watch this pull request and squash-merge it once checks pass, nobody has requested changes, and it has no conflicts'
+                  : 'The owning agent’s repository access is below write tier, so arming the merge is not available'
             }
           >
             <input
               type="checkbox"
               data-pr-automerge=""
+              data-pr-automerge-unknown={view.autoMergeArmed === null ? '' : undefined}
+              ref={armedBox}
               className="accent-(--brand)"
               checked={view.autoMergeArmed ?? false}
-              disabled={!view.canArmAutoMerge || merge.busy}
+              disabled={!view.canArmAutoMerge || view.autoMergeArmed === null || merge.busy}
               onChange={(event) => toggleAutoMerge(event.target.checked)}
             />
             Merge when ready
             {merge.busy ? <Spinner size={11} /> : null}
             {view.autoMergeArmed ? (
-              <span className="flex-none rounded-full bg-(--brand-soft) px-[7px] py-px font-sans text-[10.5px] font-semibold leading-normal text-(--brand)">
-                Auto-merge armed
+              <span
+                data-pr-automerge-armed=""
+                className="flex-none rounded-full bg-(--brand-soft) px-[7px] py-px font-sans text-[10.5px] font-semibold leading-normal text-(--brand)"
+                title={
+                  view.autoMergePlacement === 'sandbox'
+                    ? 'Watched in the agent’s sandbox — reclaiming the sandbox stops it'
+                    : view.autoMergePlacement === 'daemon'
+                      ? 'Watched by the agent’s daemon — restarting the daemon stops it'
+                      : undefined
+                }
+              >
+                Watching
               </span>
             ) : null}
           </label>
-          <div className="font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
-            {view.autoMergeArmed ? 'Squash · after checks + approvals' : 'Squash and merge'}
+          {/* What the watcher is actually holding for, in its own words — the answer GitHub's
+              auto-merge never gave, and the reason an armed box is not a black hole. */}
+          <div
+            data-pr-automerge-status=""
+            className="font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)"
+          >
+            {view.autoMergeArmed === null
+              ? 'Squash · can’t read whether anything is watching'
+              : view.autoMergeArmed
+                ? view.autoMergeWaitingOn
+                  ? `Squash · waiting on ${view.autoMergeWaitingOn}`
+                  : 'Squash · once checks pass and nothing blocks it'
+                : 'Squash and merge'}
           </div>
+          {/* A failed tick keeps the watcher ARMED: the usual cure is the next commit, so this is a
+              status line rather than a dead end, and it is drawn apart from the toggle's own error. */}
+          {view.autoMergeArmed && view.autoMergeError ? (
+            <div
+              data-pr-automerge-error=""
+              className="font-sans text-[11px] font-normal leading-[1.5] text-(--status-paused)"
+            >
+              Last check: {view.autoMergeError}
+            </div>
+          ) : null}
           {merge.err ? (
             <div
               data-pr-merge-error=""
