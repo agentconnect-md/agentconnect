@@ -1713,6 +1713,9 @@ export class Daemon {
     // clamped credential path the agent's own gh does.
     this.autoMergeWatcher = new AutoMergeWatcher({
       knownAgent: (agentId) => this.agents.has(agentId),
+      // A `--k8s` daemon runs every agent in a pod (the plane refuses to run one locally), so the
+      // plane's presence — not a channel's attachment — is what decides where a watcher may live.
+      clusterPlaced: () => this.k8sPlane !== undefined,
       sandboxFor: (agentId) => this.k8sPlane?.autoMergeFor(agentId),
       capabilityFor: (agentId) => this.gitCredServer!.capabilityFor(agentId),
       tokenFor: async (agentId, repoFullName) =>

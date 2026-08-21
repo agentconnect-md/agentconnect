@@ -1,6 +1,7 @@
 // The armed set at the edge: the loop's lifetime, and the watcher's placement dispatch. Nothing here
 // touches a disk, because nothing about merge-when-ready is persisted — a restart forgetting the
 // intent IS the contract, and these tests pin the behaviour that projects it honestly.
+import { MAX_AUTO_MERGE_DETAIL } from '@agentconnect.md/protocol'
 import { describe, expect, it, vi } from 'vitest'
 import { AutoMergeLoop } from '../src/github/auto-merge/loop.js'
 import { AutoMergeViolationError, AutoMergeWatcher, type AutoMergeSandbox } from '../src/github/auto-merge/watcher.js'
@@ -89,6 +90,38 @@ describe('AutoMergeLoop', () => {
     await vi.waitFor(() => expect(loop.current().merged).toBe(true))
   })
 
+  it('stops when the pull request is CLOSED, and reads back unarmed', async () => {
+    const github = githubStub([
+      {
+        data: {
+          repository: {
+            pullRequest: {
+              id: 'PR_1',
+              headRefOid: 'sha_head',
+              state: 'CLOSED',
+              isDraft: false,
+              mergeable: 'MERGEABLE',
+              reviewDecision: null,
+              commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [] } } } }] }
+            }
+          }
+        }
+      }
+    ])
+    const { timers } = fakeTimers()
+    const loop = new AutoMergeLoop({
+      access: { token: async () => 'ghs_x', fetchImpl: github.fetchImpl },
+      repoFullName: 'acme/repo',
+      prNumber: 7,
+      timers
+    })
+
+    loop.start()
+    await vi.waitFor(() => expect(loop.current().closed).toBe(true))
+    expect(loop.armed()).toBe(false)
+    expect(loop.current().waitingOn).toBe('the pull request was closed')
+  })
+
   it('does not stack ticks behind a slow GitHub', async () => {
     let release: ((value: Response) => void) | undefined
     const fetchImpl = vi.fn(() => new Promise<Response>((resolve) => (release = resolve)))
@@ -144,6 +177,7 @@ describe('AutoMergeWatcher', () => {
     const sandbox = fakeSandbox()
     const watcher = new AutoMergeWatcher({
       knownAgent: () => true,
+      clusterPlaced: () => true,
       sandboxFor: () => sandbox,
       capabilityFor: () => 'cap_secret',
       tokenFor: async () => 'ghs_x'
@@ -169,7 +203,9 @@ describe('AutoMergeWatcher', () => {
     const { timers } = fakeTimers()
     const watcher = new AutoMergeWatcher({
       knownAgent: () => true,
-      sandboxFor: () => undefined, // no pod: a locally-placed agent
+      clusterPlaced: () => false,
+      clusterPlaced: () => false, // a daemon that runs no sandboxes at all
+      sandboxFor: () => undefined,
       capabilityFor: () => 'cap_secret',
       // The daemon's own clamped credential path is what a local loop polls with.
       tokenFor: async () => 'ghs_x',
@@ -192,6 +228,7 @@ describe('AutoMergeWatcher', () => {
     const sandbox = fakeSandbox()
     const cluster = new AutoMergeWatcher({
       knownAgent: () => true,
+      clusterPlaced: () => true,
       sandboxFor: () => sandbox,
       capabilityFor: () => 'cap',
       tokenFor: async () => 'ghs_x'
@@ -205,6 +242,7 @@ describe('AutoMergeWatcher', () => {
     const { timers } = fakeTimers()
     const local = new AutoMergeWatcher({
       knownAgent: () => true,
+      clusterPlaced: () => false,
       sandboxFor: () => undefined,
       capabilityFor: () => 'cap',
       tokenFor: async () => 'ghs_x',
@@ -221,6 +259,7 @@ describe('AutoMergeWatcher', () => {
   it('refuses an agent this daemon does not hold, with the machine reason the CP maps to a status', async () => {
     const watcher = new AutoMergeWatcher({
       knownAgent: () => false,
+      clusterPlaced: () => false,
       sandboxFor: () => undefined,
       capabilityFor: () => 'cap',
       tokenFor: async () => 'ghs_x'
@@ -230,11 +269,93 @@ describe('AutoMergeWatcher', () => {
     await expect(watcher.state(TARGET)).rejects.toBeInstanceOf(AutoMergeViolationError)
   })
 
+  it('refuses to arm a cluster agent whose sandbox is asleep, rather than starting a loop elsewhere', async () => {
+    // The split-brain this predicate exists to prevent: `sandboxFor` answers on ATTACHMENT, and a
+    // suspended sandbox is an ordinary state. Arming a daemon-local loop here would leave it polling
+    // — and merging — where the next `state`/`disarm` (taken once the pod attaches) could not see it.
+    const github = githubStub([prAnswer([{ __typename: 'CheckRun', name: 'build', status: 'QUEUED' }])])
+    const watcher = new AutoMergeWatcher({
+      knownAgent: () => true,
+      clusterPlaced: () => true,
+      sandboxFor: () => undefined, // cluster-placed, but its pod is not up
+      capabilityFor: () => 'cap',
+      tokenFor: async () => 'ghs_x',
+      fetchImpl: github.fetchImpl
+    })
+
+    await expect(watcher.set(TARGET, true)).rejects.toMatchObject({ reason: 'sandbox-asleep' })
+    // And the reads agree: nothing is watching, which is the truth for a pod that is down.
+    expect(await watcher.state(TARGET)).toEqual({ ...TARGET, armed: false })
+    expect(await watcher.set(TARGET, false)).toEqual({ ...TARGET, armed: false })
+    expect(await watcher.armedFor('agent-1')).toBe(false)
+  })
+
+  it('refuses to arm a pull request that is mergeable NOW — one click must not squash-merge', async () => {
+    // The loop's first tick is immediate, so arming a green pull request would merge it inside one
+    // round trip. The direct Merge button is that action, and it takes two presses.
+    const github = githubStub([prAnswer()])
+    const watcher = new AutoMergeWatcher({
+      knownAgent: () => true,
+      clusterPlaced: () => false,
+      sandboxFor: () => undefined,
+      capabilityFor: () => 'cap',
+      tokenFor: async () => 'ghs_x',
+      fetchImpl: github.fetchImpl
+    })
+
+    await expect(watcher.set(TARGET, true)).rejects.toMatchObject({ reason: 'already-mergeable' })
+    expect(await watcher.state(TARGET)).toEqual({ ...TARGET, armed: false })
+  })
+
+  it('arms anyway when the pre-arm probe cannot reach GitHub — an unreachable GitHub is not unarmable', async () => {
+    const { timers } = fakeTimers()
+    const watcher = new AutoMergeWatcher({
+      knownAgent: () => true,
+      clusterPlaced: () => false,
+      sandboxFor: () => undefined,
+      capabilityFor: () => 'cap',
+      tokenFor: async () => {
+        throw new Error('no gh credentials')
+      },
+      timers
+    })
+
+    expect(await watcher.set(TARGET, true)).toMatchObject({ armed: true, placement: 'daemon' })
+  })
+
+  it('clamps a long GitHub message — an over-long reply would fail the CP’s strict decode', async () => {
+    // The OAuth-App-access-restriction message is ~350 chars, and `AutoMergeState` bounds these at 300.
+    // Unclamped, the whole REP is rejected: a 503 on the arm and `null` on every read after, over a
+    // watcher that is armed and merging.
+    const long = 'x'.repeat(400)
+    const github = githubStub([
+      prAnswer([{ __typename: 'CheckRun', name: 'build', status: 'QUEUED' }]),
+      { data: null, errors: [{ message: long }] }
+    ])
+    const { timers } = fakeTimers()
+    const watcher = new AutoMergeWatcher({
+      knownAgent: () => true,
+      clusterPlaced: () => false,
+      sandboxFor: () => undefined,
+      capabilityFor: () => 'cap',
+      tokenFor: async () => 'ghs_x',
+      fetchImpl: github.fetchImpl,
+      timers
+    })
+
+    await watcher.set(TARGET, true)
+    await vi.waitFor(async () => {
+      const state = await watcher.state(TARGET)
+      expect(state.lastError?.length).toBe(MAX_AUTO_MERGE_DETAIL)
+    })
+  })
+
   it('reports nothing armed after stop() — the restart the console projects as an unchecked box', async () => {
     const github = githubStub([prAnswer([{ __typename: 'CheckRun', name: 'build', status: 'QUEUED' }])])
     const { timers } = fakeTimers()
     const watcher = new AutoMergeWatcher({
       knownAgent: () => true,
+      clusterPlaced: () => false,
       sandboxFor: () => undefined,
       capabilityFor: () => 'cap',
       tokenFor: async () => 'ghs_x',

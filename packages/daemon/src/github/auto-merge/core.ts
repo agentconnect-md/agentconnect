@@ -52,6 +52,7 @@ const MAX_NAMED_CHECKS = 3
  */
 export function readiness(pr: PrSnapshot): Readiness {
   if (pr.state === 'MERGED') return { ready: false, waitingOn: 'already merged' }
+  // Terminal, not "waiting": see `tick`. A closed pull request has outlived the intent to merge it.
   if (pr.state === 'CLOSED') return { ready: false, waitingOn: 'the pull request is closed' }
   if (pr.isDraft) return { ready: false, waitingOn: 'the pull request is a draft' }
   if (pr.reviewDecision === 'CHANGES_REQUESTED') return { ready: false, waitingOn: 'changes requested' }
@@ -196,7 +197,13 @@ export async function squashMerge(access: GithubAccess, pr: PrSnapshot): Promise
 }
 
 /** What one tick did, for the caller to project as `waitingOn` / `lastError` / `merged`. */
-export type TickOutcome = { kind: 'merged' } | { kind: 'waiting'; waitingOn: string } | { kind: 'error'; error: string }
+export type TickOutcome =
+  | { kind: 'merged' }
+  /** Terminal for a reason that is not a merge: the pull request was CLOSED. The intent expired with
+   *  it, and a watcher left polling would merge it if the branch were ever reopened. */
+  | { kind: 'closed' }
+  | { kind: 'waiting'; waitingOn: string }
+  | { kind: 'error'; error: string }
 
 /** One poll: read, judge, and merge if the verdict says so. Never throws — a tick's failure is
  *  DATA the watcher keeps armed through, because the usual cure is the next commit. */
@@ -204,6 +211,9 @@ export async function tick(access: GithubAccess, repoFullName: string, prNumber:
   try {
     const pr = await fetchSnapshot(access, repoFullName, prNumber)
     if (pr.state === 'MERGED') return { kind: 'merged' }
+    // Closed without merging ends the watch. Keeping it armed would leave a poll running for the life
+    // of the pod and, worse, merge the pull request if it were ever reopened.
+    if (pr.state === 'CLOSED') return { kind: 'closed' }
     const verdict = readiness(pr)
     if (!verdict.ready) return { kind: 'waiting', waitingOn: verdict.waitingOn }
     await squashMerge(access, pr)

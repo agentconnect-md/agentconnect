@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { existsSync } from 'node:fs'
+import { MAX_AUTO_MERGE_DETAIL } from '@agentconnect.md/protocol'
 import { z } from 'zod'
 import { GITCRED_CAPABILITY_ENV, GITCRED_SOCKET_ENV } from '../gitcred/env.js'
 import { SANDBOX_AUTO_MERGE_ENTRY, SANDBOX_TUNNEL_PATHS } from './sandbox-paths.js'
@@ -54,6 +55,11 @@ export interface AutoMergeHandlerDeps {
   entryPath?: string
 }
 
+/** The refusal text an image with no watcher answers with. Exported because a shim response carries a
+ *  STRING and nothing else, so the daemon side matches on it to turn this into a typed reason — one
+ *  constant both halves import beats the substring literal each side would otherwise carry. */
+export const AUTO_MERGE_UNSUPPORTED_IMAGE = 'this runtime image ships no in-sandbox merge-when-ready watcher'
+
 /** Raised for a request this pod cannot serve at all, as opposed to one whose answer is "waiting".
  *  The shim maps it to a failed response and the daemon relays the reason as data. */
 export class AutoMergeRefusedError extends Error {
@@ -96,7 +102,7 @@ export function createAutoMergeHandler(
     // Reported rather than assumed: whether THIS image ships the watcher is a fact of this
     // filesystem, and an older image is version skew the daemon has to read, not guess.
     if (!existsSync(entryPath)) {
-      throw new AutoMergeRefusedError('this runtime image ships no in-sandbox merge-when-ready watcher')
+      throw new AutoMergeRefusedError(AUTO_MERGE_UNSUPPORTED_IMAGE)
     }
 
     const child = spawnChild([p.agentId, p.repoFullName, String(p.prNumber)], {
@@ -109,7 +115,7 @@ export function createAutoMergeHandler(
     child.stdout?.on('data', (chunk: Buffer) => absorb(created, chunk.toString('utf8')))
     child.stderr?.on('data', (chunk: Buffer) => {
       const text = chunk.toString('utf8').trim()
-      if (text) created.status = { ...created.status, lastError: text.slice(0, 300) }
+      if (text) created.status = { ...created.status, lastError: text.slice(0, MAX_AUTO_MERGE_DETAIL) }
     })
     // A watcher that exited merged the pull request or died; either way nothing is watching now,
     // so the entry goes and the next `state` answers `armed:false` truthfully.
@@ -139,8 +145,8 @@ function absorb(entry: Entry, text: string): void {
       const status = JSON.parse(line) as { waitingOn?: string; lastError?: string; merged?: boolean }
       entry.status = {
         armed: !status.merged,
-        ...(status.waitingOn ? { waitingOn: status.waitingOn.slice(0, 300) } : {}),
-        ...(status.lastError ? { lastError: status.lastError.slice(0, 300) } : {}),
+        ...(status.waitingOn ? { waitingOn: status.waitingOn.slice(0, MAX_AUTO_MERGE_DETAIL) } : {}),
+        ...(status.lastError ? { lastError: status.lastError.slice(0, MAX_AUTO_MERGE_DETAIL) } : {}),
         ...(status.merged ? { merged: true } : {})
       }
     } catch {

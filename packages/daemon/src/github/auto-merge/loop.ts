@@ -14,6 +14,9 @@ export interface AutoMergeStatus {
   waitingOn?: string
   lastError?: string
   merged: boolean
+  /** The pull request was closed without merging — terminal, like `merged`, and for the same reason:
+   *  nothing is watching any more, so the console must not draw an armed box over it. */
+  closed?: boolean
 }
 
 export interface AutoMergeLoopDeps {
@@ -57,9 +60,10 @@ export class AutoMergeLoop {
     this.handle = undefined
   }
 
-  /** True until the merge lands; the host drops the entry on the falling edge. */
+  /** True until the watch ENDS — a merge, or the pull request being closed. The host drops the entry
+   *  on that falling edge; either way nothing is watching and the box must read unchecked. */
   armed(): boolean {
-    return this.handle !== undefined && !this.status.merged
+    return this.handle !== undefined && !this.status.merged && !this.status.closed
   }
 
   current(): AutoMergeStatus {
@@ -84,6 +88,11 @@ export class AutoMergeLoop {
   private apply(outcome: TickOutcome): void {
     if (outcome.kind === 'merged') {
       this.status = { merged: true }
+      this.stop()
+      return
+    }
+    if (outcome.kind === 'closed') {
+      this.status = { merged: false, closed: true, waitingOn: 'the pull request was closed' }
       this.stop()
       return
     }

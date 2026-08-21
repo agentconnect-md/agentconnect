@@ -1,5 +1,7 @@
+import { MAX_AUTO_MERGE_DETAIL } from '@agentconnect.md/protocol'
 import type { AutoMergeSandbox, SandboxCall, SandboxState } from '../github/auto-merge/watcher.js'
 import { AutoMergeViolationError } from '../github/auto-merge/watcher.js'
+import { AUTO_MERGE_UNSUPPORTED_IMAGE } from './auto-merge-handler.js'
 import { ShimChannelLostError, type ShimRequester } from './channels.js'
 
 /** The daemon side of the `automerge` channel: three ops on one bound shim, keyed by the pull
@@ -35,8 +37,17 @@ export class ShimAutoMergeClient implements AutoMergeSandbox {
       // nothing is watching any more. An image that ships no watcher is a refusal the console shows.
       if (err instanceof ShimChannelLostError) return { armed: false }
       const message = err instanceof Error ? err.message : String(err)
-      if (message.includes('runtime image ships no in-sandbox')) {
+      if (message.includes(AUTO_MERGE_UNSUPPORTED_IMAGE)) {
         throw new AutoMergeViolationError('unsupported-image', message)
+      }
+      // A pod BOUND before this daemon learned the capability carries no `automerge` grant, so its
+      // shim refuses with `not granted` (shim/client.ts). That is the same operator fix as an old
+      // image — relaunch the agent onto a fresh binding — so it gets the same 409, not a 503.
+      if (message.includes('not granted')) {
+        throw new AutoMergeViolationError(
+          'unsupported-image',
+          'this agent’s sandbox was bound before merge-when-ready — restart the agent to pick it up'
+        )
       }
       throw err
     }
@@ -46,8 +57,8 @@ export class ShimAutoMergeClient implements AutoMergeSandbox {
 function pick(answer: SandboxState | undefined): Partial<SandboxState> {
   if (!answer) return {}
   return {
-    ...(answer.waitingOn ? { waitingOn: String(answer.waitingOn).slice(0, 300) } : {}),
-    ...(answer.lastError ? { lastError: String(answer.lastError).slice(0, 300) } : {}),
+    ...(answer.waitingOn ? { waitingOn: String(answer.waitingOn).slice(0, MAX_AUTO_MERGE_DETAIL) } : {}),
+    ...(answer.lastError ? { lastError: String(answer.lastError).slice(0, MAX_AUTO_MERGE_DETAIL) } : {}),
     ...(answer.merged ? { merged: true } : {})
   }
 }

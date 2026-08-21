@@ -1,5 +1,5 @@
-import type { AutoMergeState, AutoMergeTarget } from '@agentconnect.md/protocol'
-import { AUTO_MERGE_POLL_MS, type FetchLike, type GithubAccess } from './core.js'
+import { MAX_AUTO_MERGE_DETAIL, type AutoMergeState, type AutoMergeTarget } from '@agentconnect.md/protocol'
+import { AUTO_MERGE_POLL_MS, fetchSnapshot, readiness, type FetchLike, type GithubAccess } from './core.js'
 import { AutoMergeLoop } from './loop.js'
 
 /**
@@ -44,7 +44,7 @@ export interface SandboxState {
  *  status the console can branch on instead of the 503 that reads as an offline daemon. */
 export class AutoMergeViolationError extends Error {
   constructor(
-    readonly reason: 'unknown-agent' | 'unsupported-image',
+    readonly reason: 'unknown-agent' | 'unsupported-image' | 'sandbox-asleep' | 'already-mergeable',
     message: string
   ) {
     super(message)
@@ -55,7 +55,18 @@ export class AutoMergeViolationError extends Error {
 export interface AutoMergeWatcherDeps {
   /** Whether this daemon holds an agent by that id at all. */
   knownAgent: (agentId: string) => boolean
-  /** The agent's pod channel when its work runs in a sandbox, undefined for a local agent. */
+  /**
+   * Whether this agent's work belongs in a POD — a property of the daemon, not of the channel.
+   *
+   * This is the fix for the split-brain the two-predicate version had: `sandboxFor` answers on
+   * ATTACHMENT (`runsInSandbox` is `sessionFor(agentId)?.isAttached()`), and a suspended sandbox is a
+   * perfectly ordinary state for a cluster agent. Arming while detached would start a daemon-local
+   * loop that a later `state`/`disarm` — taken while attached — could no longer see or stop, leaving
+   * it polling and eventually merging behind an unchecked box. One predicate decides where an entry
+   * may live, for every op, for the whole lifetime of the entry.
+   */
+  clusterPlaced: (agentId: string) => boolean
+  /** The agent's pod channel while its sandbox is attached; undefined when it is asleep. */
   sandboxFor: (agentId: string) => AutoMergeSandbox | undefined
   /** The agent's runtime-only gitcred capability, so the POD's watcher can fetch its own token. */
   capabilityFor: (agentId: string) => string
@@ -83,8 +94,13 @@ export class AutoMergeWatcher {
 
   async state(target: AutoMergeTarget): Promise<AutoMergeState> {
     this.require(target)
-    const sandbox = this.deps.sandboxFor(target.agentId)
-    if (sandbox) return this.project(target, 'sandbox', await sandbox.state(this.call(target)))
+    if (this.deps.clusterPlaced(target.agentId)) {
+      const sandbox = this.deps.sandboxFor(target.agentId)
+      // Asleep is an ANSWER: the watcher lived in that pod, so nothing is watching now. It is also
+      // never a local entry — `arm` refuses rather than starting one somewhere this read cannot see.
+      if (!sandbox) return this.project(target, undefined, { armed: false })
+      return this.project(target, 'sandbox', await sandbox.state(this.call(target)))
+    }
     const loop = this.local.get(keyOf(target))
     if (!loop) return this.project(target, undefined, { armed: false })
     return this.project(target, 'daemon', this.fromLoop(target, loop))
@@ -93,8 +109,10 @@ export class AutoMergeWatcher {
   /** Whether ANY pull request is armed for this agent, wherever its watcher lives. The sandbox
    *  keep-alive's question: suspending a pod with an armed watcher in it silently disarms the box. */
   async armedFor(agentId: string): Promise<boolean> {
-    const sandbox = this.deps.sandboxFor(agentId)
-    if (sandbox) return sandbox.anyArmed(agentId)
+    if (this.deps.clusterPlaced(agentId)) {
+      const sandbox = this.deps.sandboxFor(agentId)
+      return sandbox ? sandbox.anyArmed(agentId) : false
+    }
     for (const [key, loop] of this.local) {
       if (key.startsWith(`${agentId}|`) && loop.armed()) return true
     }
@@ -108,14 +126,22 @@ export class AutoMergeWatcher {
   }
 
   private async arm(target: AutoMergeTarget): Promise<AutoMergeState> {
-    const sandbox = this.deps.sandboxFor(target.agentId)
-    if (sandbox) {
+    if (this.deps.clusterPlaced(target.agentId)) {
+      const sandbox = this.deps.sandboxFor(target.agentId)
+      if (!sandbox) {
+        throw new AutoMergeViolationError(
+          'sandbox-asleep',
+          'this agent’s sandbox is not running — start it, then arm merge-when-ready'
+        )
+      }
+      await this.refuseIfMergeableNow(target)
       const answer = await sandbox.arm({ ...this.call(target), capability: this.deps.capabilityFor(target.agentId) })
       return this.project(target, 'sandbox', answer)
     }
     const key = keyOf(target)
     const held = this.local.get(key)
     if (held) return this.project(target, 'daemon', this.fromLoop(target, held))
+    await this.refuseIfMergeableNow(target)
     const access: GithubAccess = {
       token: () => this.deps.tokenFor(target.agentId, target.repoFullName),
       ...(this.deps.fetchImpl ? { fetchImpl: this.deps.fetchImpl } : {})
@@ -139,8 +165,13 @@ export class AutoMergeWatcher {
   }
 
   private async disarm(target: AutoMergeTarget): Promise<AutoMergeState> {
-    const sandbox = this.deps.sandboxFor(target.agentId)
-    if (sandbox) return this.project(target, undefined, await sandbox.disarm(this.call(target)))
+    if (this.deps.clusterPlaced(target.agentId)) {
+      const sandbox = this.deps.sandboxFor(target.agentId)
+      // A pod that went away took its watcher with it: there is nothing to disarm and saying so is
+      // the truth, not a silent failure.
+      if (!sandbox) return this.project(target, undefined, { armed: false })
+      return this.project(target, undefined, await sandbox.disarm(this.call(target)))
+    }
     const key = keyOf(target)
     this.local.get(key)?.stop()
     this.local.delete(key)
@@ -155,6 +186,35 @@ export class AutoMergeWatcher {
 
   private call(target: AutoMergeTarget): SandboxCall {
     return { agentId: target.agentId, repoFullName: target.repoFullName, prNumber: target.prNumber }
+  }
+
+  /**
+   * Refuse to arm a pull request that is mergeable RIGHT NOW.
+   *
+   * The loop's first tick is immediate by design, so arming an already-green pull request would
+   * squash-merge it inside one round trip — irreversible, from a single click on a checkbox whose
+   * label promises a wait, while the box's own Merge button deliberately takes two presses (#1337).
+   * The rule is evaluated HERE, with the same `readiness` the loop uses, so there is no second
+   * definition of "ready" anywhere. A probe that cannot reach GitHub does not block arming: the loop
+   * reports that failure itself, and refusing on it would make an unreachable GitHub unarmable.
+   */
+  private async refuseIfMergeableNow(target: AutoMergeTarget): Promise<void> {
+    const access: GithubAccess = {
+      token: () => this.deps.tokenFor(target.agentId, target.repoFullName),
+      ...(this.deps.fetchImpl ? { fetchImpl: this.deps.fetchImpl } : {})
+    }
+    let ready = false
+    try {
+      ready = readiness(await fetchSnapshot(access, target.repoFullName, target.prNumber)).ready
+    } catch {
+      return
+    }
+    if (ready) {
+      throw new AutoMergeViolationError(
+        'already-mergeable',
+        'this pull request can be merged now — use Merge, which confirms before it merges'
+      )
+    }
   }
 
   private fromLoop(target: AutoMergeTarget, loop: AutoMergeLoop): SandboxState {
@@ -180,11 +240,19 @@ export class AutoMergeWatcher {
       // Placement is stated only while something is actually armed there: it answers "where is this
       // being watched", and naming a placement for an unwatched pull request would invent a watcher.
       ...(s.armed && placement ? { placement } : {}),
-      ...(s.waitingOn ? { waitingOn: s.waitingOn } : {}),
-      ...(s.lastError ? { lastError: s.lastError } : {}),
+      // Clamped HERE, for both placements: `AutoMergeState` bounds these at MAX_AUTO_MERGE_DETAIL and
+      // the daemon does not validate on send, so one long GitHub message (the OAuth-App-restriction
+      // one is ~350 chars) would fail the CP's strict decode — reported as a rejected reply, i.e. a
+      // 503 on the arm and `null` on every read after, over a watcher that is armed and merging.
+      ...(s.waitingOn ? { waitingOn: clamp(s.waitingOn) } : {}),
+      ...(s.lastError ? { lastError: clamp(s.lastError) } : {}),
       ...(s.merged ? { merged: true } : {})
     }
   }
+}
+
+function clamp(detail: string): string {
+  return detail.length > MAX_AUTO_MERGE_DETAIL ? detail.slice(0, MAX_AUTO_MERGE_DETAIL) : detail
 }
 
 function keyOf(target: AutoMergeTarget): string {

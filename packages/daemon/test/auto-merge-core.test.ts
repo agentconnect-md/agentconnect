@@ -135,6 +135,14 @@ describe('tick', () => {
     })
   })
 
+  it('ends the watch on a CLOSED pull request rather than polling it forever', async () => {
+    // The operator's intent expired with the pull request. A watcher left armed would poll for the
+    // life of the pod and — worse — merge the thing if anyone reopened it weeks later.
+    const fetchImpl = vi.fn(async () => json(answer({ state: 'CLOSED' })))
+    expect(await tick({ token: async () => 'ghs_x', fetchImpl }, 'acme/repo', 7)).toEqual({ kind: 'closed' })
+    expect(fetchImpl).toHaveBeenCalledTimes(1) // no mutation, and no second look
+  })
+
   it('reports a GitHub refusal as DATA rather than throwing — the watcher stays armed through it', async () => {
     const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) =>
       json(

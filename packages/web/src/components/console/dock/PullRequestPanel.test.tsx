@@ -604,6 +604,19 @@ describe('PullRequestPanel body', () => {
     expect(container?.querySelector<HTMLButtonElement>('[data-pr-autofix]')?.disabled).toBe(false)
   })
 
+  it('draws an UNKNOWN armed state as indeterminate and inert, not as an empty box', async () => {
+    // `autoMergeArmed: null` means nobody could be asked — the daemon is offline or too old. An
+    // enabled empty box would invite a click whose write fails anyway, and `canArmAutoMerge` is a
+    // Postgres fact that knows nothing about reachability.
+    wire.data = pr({ autoMergeArmed: null })
+    await render()
+    const box = container?.querySelector<HTMLInputElement>('[data-pr-automerge]')
+    expect(box?.hasAttribute('data-pr-automerge-unknown')).toBe(true)
+    expect(box?.indeterminate).toBe(true)
+    expect(box?.disabled).toBe(true)
+    expect(text()).toContain('can’t read whether anything is watching')
+  })
+
   it('arms the edge watcher through the CP and re-reads the view it invalidated', async () => {
     await render()
     expect(wire.calls).toHaveLength(1)

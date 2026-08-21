@@ -631,6 +631,23 @@ describe('POST /sessions/:id/pull-request/auto-merge', () => {
     expect(res.json().code).toBe('AUTO_MERGE_UNSUPPORTED_IMAGE')
   })
 
+  it('relays a sleeping sandbox and an already-mergeable pull request as their own 409 codes', async () => {
+    const session = await seedAgentAndSession()
+    await seedPullRequestRun(session)
+    for (const [reason, code] of [
+      ['sandbox-asleep', 'AUTO_MERGE_SANDBOX_ASLEEP'],
+      ['already-mergeable', 'AUTO_MERGE_ALREADY_MERGEABLE']
+    ] as const) {
+      const edge = fakeEdge({
+        fail: new ProtocolError('BAD_PAYLOAD', `automerge/set failed: ${reason}`, { details: { reason } })
+      })
+      const running = app(githubStub([]).view, undefined, fakeGithub(), undefined, edge.control)
+      const res = await post(running, session)
+      expect(res.statusCode).toBe(409)
+      expect(res.json().code).toBe(code)
+    }
+  })
+
   it('reads back autoMergeArmed:null when the edge cannot be asked — unknown, not "off"', async () => {
     const session = await seedAgentAndSession()
     await seedPullRequestRun(session)

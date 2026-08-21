@@ -316,6 +316,13 @@ export function PullRequestPanel({
     }
   })
 
+  // `indeterminate` is the one checkbox state no prop expresses, and it has to be re-applied AFTER
+  // every render: React writes `checked` on commit, which clears it. A dependency-less effect runs on
+  // each commit, which is exactly the cadence the DOM property needs.
+  const armedBox = useRef<HTMLInputElement | null>(null)
+  useEffect(() => {
+    if (armedBox.current) armedBox.current.indeterminate = view?.autoMergeArmed === null
+  })
   // The auto-merge toggle's own in-flight/error state; the armed FACT stays on the view, re-read after every write.
   const [merge, setMerge] = useState<{ busy: boolean; err: string | null }>({ busy: false, err: null })
   useEffect(() => setMerge({ busy: false, err: null }), [sessionId])
@@ -839,20 +846,28 @@ export function PullRequestPanel({
           {/* The box is armable in EVERY state a pull request can be in — running checks, requested
               changes, conflicts. That is the point of moving the watcher to the edge: GitHub's own
               auto-merge refused all of them, which is what made this control look broken. */}
+          {/* `autoMergeArmed: null` is UNKNOWN, not "off": nobody could be asked, because the owning
+              daemon is offline or too old to answer. Drawn indeterminate and inert rather than as an
+              empty box — an enabled empty box invites a click whose write would fail anyway, and
+              `canArmAutoMerge` is a Postgres fact that knows nothing about the daemon's reachability. */}
           <label
-            className={`flex items-center gap-[7px] font-sans text-[12px] font-medium leading-normal text-(--text-primary) ${view.canArmAutoMerge ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'}`}
+            className={`flex items-center gap-[7px] font-sans text-[12px] font-medium leading-normal text-(--text-primary) ${view.canArmAutoMerge && view.autoMergeArmed !== null ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'}`}
             title={
-              view.canArmAutoMerge
-                ? 'Watch this pull request and squash-merge it once checks pass, nobody has requested changes, and it has no conflicts'
-                : 'The owning agent’s repository access is below write tier, so arming the merge is not available'
+              view.autoMergeArmed === null
+                ? 'Whether a merge-when-ready watcher is armed can’t be read right now — its daemon is offline or too old to answer'
+                : view.canArmAutoMerge
+                  ? 'Watch this pull request and squash-merge it once checks pass, nobody has requested changes, and it has no conflicts'
+                  : 'The owning agent’s repository access is below write tier, so arming the merge is not available'
             }
           >
             <input
               type="checkbox"
               data-pr-automerge=""
+              data-pr-automerge-unknown={view.autoMergeArmed === null ? '' : undefined}
+              ref={armedBox}
               className="accent-(--brand)"
               checked={view.autoMergeArmed ?? false}
-              disabled={!view.canArmAutoMerge || merge.busy}
+              disabled={!view.canArmAutoMerge || view.autoMergeArmed === null || merge.busy}
               onChange={(event) => toggleAutoMerge(event.target.checked)}
             />
             Merge when ready
@@ -879,11 +894,13 @@ export function PullRequestPanel({
             data-pr-automerge-status=""
             className="font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)"
           >
-            {view.autoMergeArmed
-              ? view.autoMergeWaitingOn
-                ? `Squash · waiting on ${view.autoMergeWaitingOn}`
-                : 'Squash · once checks pass and nothing blocks it'
-              : 'Squash and merge'}
+            {view.autoMergeArmed === null
+              ? 'Squash · can’t read whether anything is watching'
+              : view.autoMergeArmed
+                ? view.autoMergeWaitingOn
+                  ? `Squash · waiting on ${view.autoMergeWaitingOn}`
+                  : 'Squash · once checks pass and nothing blocks it'
+                : 'Squash and merge'}
           </div>
           {/* A failed tick keeps the watcher ARMED: the usual cure is the next commit, so this is a
               status line rather than a dead end, and it is drawn apart from the toggle's own error. */}

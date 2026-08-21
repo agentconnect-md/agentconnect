@@ -1041,6 +1041,33 @@ Decisions recorded while building it:
   intent nothing will act on. The image ships the entry, so a pod created from an
   older image answers `unsupported-image`, which the CP relays as a 409 naming
   the resume rather than a 503 that would read as "try again".
+- **One predicate decides where a watcher may live, for every op.** `sandboxFor`
+  answers on channel ATTACHMENT (`runsInSandbox` is `sessionFor(id)?.isAttached()`)
+  and a suspended sandbox is an ordinary state for a cluster agent, so dispatching
+  on it would let "arm while detached, read while attached" split the armed set:
+  a daemon-local loop nothing could later see or stop, still polling and
+  eventually merging behind an unchecked box. The watcher therefore dispatches on
+  `clusterPlaced` — a property of the DAEMON (`--k8s` runs every agent in a pod)
+  — and a cluster agent with no live channel refuses to arm with `sandbox-asleep`
+  rather than arming somewhere else; the console's own wake action is the fix.
+- **Arming refuses a pull request that is mergeable NOW (`already-mergeable`).**
+  The loop's first tick is immediate, so arming a green pull request would
+  squash-merge it inside one round trip — irreversible, from a single click on a
+  checkbox whose label promises a wait, while the box's own Merge button
+  deliberately takes two presses. The refusal is evaluated with the same
+  `readiness` the loop uses, so "ready" has one definition; a probe that cannot
+  reach GitHub does not block arming, since refusing on it would make an
+  unreachable GitHub unarmable.
+- **A closed pull request ends the watch, like a merge does.** `CLOSED` is
+  terminal rather than "waiting": the operator's intent expired with the pull
+  request, and a watcher left polling would merge it if the branch were reopened
+  weeks later.
+- **Both status strings are clamped where they are PROJECTED, not per hop.**
+  `AutoMergeState` bounds `waitingOn`/`lastError` at `MAX_AUTO_MERGE_DETAIL` and
+  the daemon does not validate on send, so one long GitHub message (the
+  OAuth-App-restriction one is ~350 chars) would fail the CP's strict decode —
+  surfacing as a 503 on the arm and `null` on every read after, over a watcher
+  that is armed and merging.
 - **The CP relays merge-when-ready and stores none of it.** No table, no
   migration, no background loop, no register-time replay: `automerge/set` and
   `automerge/state` are scoped request/reply frames like `task/list`, gated on

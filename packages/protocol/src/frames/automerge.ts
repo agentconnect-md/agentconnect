@@ -21,7 +21,14 @@ import { z } from 'zod'
  *  daemon. Everything else — waiting, refused by GitHub, no watcher — is DATA. */
 export const AutoMergeErrorReason = z.enum([
   'unknown-agent', // no such agent on this daemon
-  'unsupported-image' // a cluster agent whose runtime image ships no in-sandbox watcher
+  'unsupported-image', // a cluster agent whose runtime image ships no in-sandbox watcher
+  /** A cluster agent whose sandbox is not up. Its watcher belongs IN that pod, so there is nowhere to
+   *  arm one until the sandbox is started — the console's own wake action is the fix, and answering
+   *  this beats arming a loop somewhere the operator's next read would not find it. */
+  'sandbox-asleep',
+  /** The PR is mergeable RIGHT NOW, so arming would merge it on the first tick with no confirmation.
+   *  The direct Merge button is the surface for that, and it deliberately takes two presses. */
+  'already-mergeable'
 ])
 export type AutoMergeErrorReason = z.infer<typeof AutoMergeErrorReason>
 
@@ -32,7 +39,7 @@ export const MAX_AUTO_MERGE_DETAIL = 300
 /** The pull request a watcher is addressed by. Not a session: the watcher outlives any one
  *  turn, and two sessions on one agent's shared checkout can name the same pull request. */
 export const AutoMergeTarget = z.object({
-  agentId: z.string().min(1), // local agent id (NOT a wire UUID)
+  agentId: z.string().min(1), // the agent id the CP addresses this daemon's agents by, as `agent/wake` does
   repoFullName: z.string().min(3).max(200), // "owner/repo"
   prNumber: z.number().int().positive()
 })
