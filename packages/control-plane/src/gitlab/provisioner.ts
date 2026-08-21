@@ -45,7 +45,7 @@ import {
   gitlabEnsureDeveloperMember,
   gitlabFindServiceAccount,
   gitlabProject,
-  gitlabRevokeToken,
+  gitlabRevokeServiceAccountToken,
   gitlabRootNamespace,
   gitlabServiceAccountUsername,
   gitlabTestWebhook,
@@ -164,6 +164,11 @@ export class GitlabProvisioner {
     // Service accounts hang off a top-level GROUP; a personal namespace has none (§5).
     if (root.kind !== 'group') return { state: 'admin_degraded', reason: 'personal_namespace_unsupported' }
 
+    // §10.2 fence, durable BEFORE the first provider write: from here on, a
+    // disappearing binding must tombstone the claim, never release it — even if
+    // the crash lands before any external id is recorded locally.
+    await this.deps.bindings.markProviderMutationStarted(orgId, binding.id, binding.projectId)
+
     // 2–3. Find-or-create the marked service account; ensure Developer membership.
     const username = gitlabServiceAccountUsername(binding.projectId)
     let account = await gitlabFindServiceAccount(token, root.id, username, fetchImpl)
@@ -245,7 +250,13 @@ export class GitlabProvisioner {
       // Out-of-policy token: revoke by id immediately and fail closed. An
       // id-less response is recorded as restricted cleanup debt.
       if (typeof grant.id === 'number') {
-        await gitlabRevokeToken(token, BigInt(grant.id), this.deps.fetchImpl).catch(() => {
+        await gitlabRevokeServiceAccountToken(
+          token,
+          groupId,
+          serviceAccountUserId,
+          BigInt(grant.id),
+          this.deps.fetchImpl
+        ).catch(() => {
           this.deps.log?.warn(
             { bindingId: binding.id, purpose, tokenId: grant.id },
             'gitlab out-of-policy token revocation is unconfirmed (restricted cleanup debt)'
@@ -333,22 +344,33 @@ export class GitlabProvisioner {
       if (binding.webhookId !== null) {
         await gitlabDeleteWebhook(token, binding.projectId, binding.webhookId, this.deps.fetchImpl).catch(swallow404)
       }
-      for (const credential of await this.deps.credentials.listForBinding(bindingId)) {
-        await gitlabRevokeToken(token, credential.externalTokenId, this.deps.fetchImpl).catch(swallow404)
-      }
-      if (binding.serviceAccountUserId !== null) {
+      const credentials = await this.deps.credentials.listForBinding(bindingId)
+      if (credentials.length > 0 || binding.serviceAccountUserId !== null) {
+        // Token revocation and account deletion are group-scoped operations: the
+        // installer OAuth identity manages only the group's service accounts.
         const project = (await gitlabProject(
           token,
           binding.projectId,
           this.deps.fetchImpl
         )) as GitlabProjectWithNamespace | null
-        if (project?.namespace) {
-          const root = await gitlabRootNamespace(token, project.namespace, this.deps.fetchImpl)
-          if (root.kind === 'group') {
-            await gitlabDeleteServiceAccount(token, root.id, binding.serviceAccountUserId, this.deps.fetchImpl).catch(
-              swallow404
-            )
+        if (!project?.namespace) {
+          throw new GitlabApiError('project namespace unavailable for cleanup', 0, 'INTERNAL', true)
+        }
+        const root = await gitlabRootNamespace(token, project.namespace, this.deps.fetchImpl)
+        if (root.kind !== 'group') throw new GitlabApiError('root group unavailable for cleanup', 0, 'INTERNAL', false)
+        if (binding.serviceAccountUserId !== null) {
+          for (const credential of credentials) {
+            await gitlabRevokeServiceAccountToken(
+              token,
+              root.id,
+              binding.serviceAccountUserId,
+              credential.externalTokenId,
+              this.deps.fetchImpl
+            ).catch(swallow404)
           }
+          await gitlabDeleteServiceAccount(token, root.id, binding.serviceAccountUserId, this.deps.fetchImpl).catch(
+            swallow404
+          )
         }
       }
     } catch (e) {

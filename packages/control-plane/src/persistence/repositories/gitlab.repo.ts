@@ -374,6 +374,15 @@ export class PgGitlabProjectBindingRepo implements GitlabProjectBindingRepo {
     return this.get(orgId, bindingId)
   }
 
+  async markProviderMutationStarted(orgId: string, bindingId: string, projectId: bigint): Promise<void> {
+    // Idempotent: only the first provisioning run flips it; `active` then means
+    // "provider state may exist" for the rest of the claim's life.
+    await this.prisma.codeHostRepositoryClaim.updateMany({
+      where: { provider: 'gitlab', externalId: projectId, orgId, bindingRef: bindingId, state: 'provisioning' },
+      data: { state: 'active' }
+    })
+  }
+
   async removeWithClaim(orgId: string, bindingId: string, projectId: bigint): Promise<boolean> {
     // Claim FIRST: the binding-delete trigger preserves any still-attached claim
     // as cleanup_pending, which is exactly wrong here — this path is only taken

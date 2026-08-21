@@ -88,7 +88,7 @@ export class FakeGitlab {
         const payload = json()
         this.webhooks.set(id, {
           url: String(payload.url),
-          token: String(payload.token),
+          token: String(payload.signing_token),
           events: payload as Record<string, boolean>,
           tested: 0
         })
@@ -111,7 +111,7 @@ export class FakeGitlab {
           const payload = json()
           this.webhooks.set(id, {
             url: String(payload.url),
-            token: String(payload.token),
+            token: String(payload.signing_token),
             events: payload as Record<string, boolean>,
             tested: this.webhooks.get(id)?.tested ?? 0
           })
@@ -189,14 +189,24 @@ export class FakeGitlab {
           { status: 201 }
         )
       }
-      if (/\/api\/v4\/personal_access_tokens\?/.test(url)) {
-        return Response.json([...this.tokens.entries()].map(([id, t]) => ({ id, ...t, active: !t.revoked })))
+      if (/\/api\/v4\/groups\/\d+\/service_accounts\/\d+\/personal_access_tokens\?/.test(url)) {
+        const userId = Number(/service_accounts\/(\d+)\//.exec(url)![1])
+        return Response.json(
+          [...this.tokens.entries()]
+            .filter(([, t]) => t.user_id === userId)
+            .map(([id, t]) => ({ id, ...t, active: !t.revoked }))
+        )
       }
-      if (/\/api\/v4\/personal_access_tokens\/\d+$/.test(url) && method === 'DELETE') {
+      if (
+        /\/api\/v4\/groups\/\d+\/service_accounts\/\d+\/personal_access_tokens\/\d+$/.test(url) &&
+        method === 'DELETE'
+      ) {
         if (this.opts.failTokenRevoke) return Response.json({ message: 'error' }, { status: 500 })
+        const userId = Number(/service_accounts\/(\d+)\//.exec(url)![1])
         const id = Number(/personal_access_tokens\/(\d+)$/.exec(url)![1])
         const token = this.tokens.get(id)
-        if (!token) return Response.json({ message: 'Not Found' }, { status: 404 })
+        // Group-scoped authority: only the owning service account's tokens resolve.
+        if (!token || token.user_id !== userId) return Response.json({ message: 'Not Found' }, { status: 404 })
         token.revoked = true
         return new Response(null, { status: 204 })
       }

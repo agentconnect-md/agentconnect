@@ -415,20 +415,33 @@ export async function gitlabCreateServiceAccountToken(
   )
 }
 
-/** List the account's PATs (marker recovery); values are never returned here. */
+/** List the account's PATs (marker recovery); values are never returned here.
+ *  Group-scoped on purpose: the installer OAuth identity is not an instance
+ *  admin on GitLab.com and can manage ONLY the group's service-account tokens. */
 export async function gitlabListServiceAccountTokens(
   accessToken: string,
+  groupId: number,
   serviceAccountUserId: bigint,
   fetchImpl?: FetchLike
 ): Promise<GitlabPatGrant[]> {
-  return gitlabRequest<GitlabPatGrant[]>(`/personal_access_tokens?user_id=${serviceAccountUserId}&per_page=100`, {
-    auth: accessToken,
-    fetchImpl
-  })
+  return gitlabRequest<GitlabPatGrant[]>(
+    `/groups/${groupId}/service_accounts/${serviceAccountUserId}/personal_access_tokens?per_page=100`,
+    { auth: accessToken, fetchImpl }
+  )
 }
 
-export async function gitlabRevokeToken(accessToken: string, tokenId: bigint, fetchImpl?: FetchLike): Promise<void> {
-  await gitlabRequest<void>(`/personal_access_tokens/${tokenId}`, { method: 'DELETE', auth: accessToken, fetchImpl })
+/** Revoke one service-account PAT through the group endpoint (same reason as above). */
+export async function gitlabRevokeServiceAccountToken(
+  accessToken: string,
+  groupId: number,
+  serviceAccountUserId: bigint,
+  tokenId: bigint,
+  fetchImpl?: FetchLike
+): Promise<void> {
+  await gitlabRequest<void>(
+    `/groups/${groupId}/service_accounts/${serviceAccountUserId}/personal_access_tokens/${tokenId}`,
+    { method: 'DELETE', auth: accessToken, fetchImpl }
+  )
 }
 
 export interface GitlabWebhook {
@@ -452,7 +465,9 @@ export async function gitlabCreateWebhook(
   return gitlabRequest<GitlabWebhook>(`/projects/${projectId}/hooks`, {
     method: 'POST',
     auth: accessToken,
-    body: { url: input.url, token: input.signingToken, enable_ssl_verification: true, ...input.events },
+    // `signing_token` is the whsec HMAC key producing `webhook-signature`;
+    // `token` would configure the legacy X-Gitlab-Token header instead (§11.1).
+    body: { url: input.url, signing_token: input.signingToken, enable_ssl_verification: true, ...input.events },
     fetchImpl
   })
 }
@@ -467,7 +482,7 @@ export async function gitlabUpdateWebhook(
   return gitlabRequest<GitlabWebhook>(`/projects/${projectId}/hooks/${webhookId}`, {
     method: 'PUT',
     auth: accessToken,
-    body: { url: input.url, token: input.signingToken, enable_ssl_verification: true, ...input.events },
+    body: { url: input.url, signing_token: input.signingToken, enable_ssl_verification: true, ...input.events },
     fetchImpl
   })
 }

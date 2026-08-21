@@ -3156,6 +3156,10 @@ export interface GitlabProjectBindingRepo {
   ): Promise<GitlabProjectBindingRecord | null>
   /** Purge fence: every rotation/revocation/disconnect bumps it (§7.4/§19.4). */
   bumpCredentialEpoch(orgId: string, bindingId: string): Promise<bigint | null>
+  /** §10.2 durable fence, written BEFORE the first provider write: flips the
+   *  attached claim out of `provisioning`, so the claim guard can never read a
+   *  crash between an external create and its local id write as "unmutated". */
+  markProviderMutationStarted(orgId: string, bindingId: string, projectId: bigint): Promise<void>
   /** Verified-complete cleanup only (§10.2/§19.4): the binding, its cascaded
    *  local rows, and the deployment-global claim are removed in ONE
    *  transaction. Anything short of verified cleanup keeps both. */
