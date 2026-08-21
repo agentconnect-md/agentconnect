@@ -399,11 +399,13 @@ describe('ClusterDetailView — managed (AgentConnect Cloud)', () => {
     mocks.agents = [onPool('a1')]
     mocks.usage = { data: usageOverPool(), error: new Error('fetch failed') }
     mocks.topUps = { data: [credit(4, 20_000_000)], error: new Error('fetch failed') }
+    mocks.balance = { data: { orgId: 'org-pool', balanceMicro: 38_740_000 }, error: new Error('fetch failed') }
 
     const html = render()
 
     expect(html).toContain('$8.00')
     expect(html).toContain('$20.00')
+    expect(html).toContain('$38.74')
     expect(html).not.toContain('unavailable')
   })
 
