@@ -1756,8 +1756,8 @@ export default function SessionDetailView() {
     tailReady,
     transcriptSessionId,
     conversationOffline,
-    conversationHasEarlier,
-    conversationPagingEarlier,
+    hasEarlier,
+    pagingEarlier,
     conversationLoadedKey,
     loadEarlier: loadEarlierConversation,
     refreshTail,
@@ -3860,14 +3860,14 @@ export default function SessionDetailView() {
                 </div>
               )}
 
-              {conversationKey && conversationHasEarlier && (
+              {hasEarlier && (
                 <div className="flex items-center justify-center pt-[10px] font-sans text-[11.5px] font-medium leading-normal text-(--text-tertiary) desktop:pt-1 desktop:pb-3">
                   <button
                     className="lnk text-[12px]"
                     onClick={() => void loadEarlierConversation()}
-                    disabled={conversationPagingEarlier}
+                    disabled={pagingEarlier}
                   >
-                    {conversationPagingEarlier ? 'Loading earlier activity…' : 'Load earlier activity'}
+                    {pagingEarlier ? 'Loading earlier activity…' : 'Load earlier activity'}
                   </button>
                 </div>
               )}
