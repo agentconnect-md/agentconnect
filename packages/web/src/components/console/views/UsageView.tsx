@@ -7,7 +7,8 @@ import { SEG_FILL, bucketLabel, tickInterval } from '@/lib/spend-chart'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { fetchUsage, fmtCost, fmtCountCompact as fmtCompact, type UsageRange } from '@/lib/api'
 import { amountToNumber, sumAmounts } from '@/lib/amount'
-import { agentLabel, modelLabel, runtimeLabel } from '@/lib/data'
+import { agentLabel, isPoolPlacementKind, modelLabel, runtimeLabel } from '@/lib/data'
+import { featureFlagEnabled } from '@/lib/feature-flags'
 import { useConsoleData } from '@/lib/data-context'
 import { AgentIconView, ModelMark, Spinner } from '@/components/marks'
 import { useOrgs } from '@/lib/org-context'
@@ -30,6 +31,12 @@ const MOBILE_RANGES: { key: UsageRange; label: string }[] = [
 ]
 
 const GRID = 'grid-cols-[2fr_1fr_1fr_1fr_1.4fr]'
+
+// Placement filter: Cloud = agents on the install-wide pool, Daemons = everything else.
+// Client-side over the per-agent aggregate — the API's `source` param means metering
+// ingress (daemon EVT vs gateway collector), NOT where the agent runs, so it can't
+// answer this. Only offered where the pool exists (`daemon-pool` flag).
+type SourceFilter = 'all' | 'cloud' | 'daemons'
 
 // How the usage table is broken down. Runtime is derived from the per-agent
 // aggregate; model comes from the server's per-session execution snapshots so
@@ -54,6 +61,7 @@ export default function UsageView() {
   const parsed: UsageRange = raw === 'd1' || raw === 'd7' || raw === 'd90' ? raw : 'd30'
   const range: UsageRange = isMobile && parsed === 'd90' ? 'd30' : parsed
 
+  const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all')
   const [groupBy, setGroupBy] = useState<GroupBy>('agent')
   // Chart-legend series filter. Keys are group-specific (agent ids vs model names),
   // so switching the rollup clears it rather than stranding a hidden key.
@@ -62,8 +70,25 @@ export default function UsageView() {
     setGroupBy(k)
     setHiddenKeys([])
   }
+  // The pool only exists behind the flag; without it every agent is daemon-placed
+  // and the filter would be a control with one meaningful segment.
+  const showSourceFilter = featureFlagEnabled('daemon-pool')
+  const sourceOptions: { key: SourceFilter; label: string }[] = [
+    { key: 'all', label: 'All' },
+    // Same split the placement picker uses: the pool is the product on managed,
+    // the operator's own cluster elsewhere.
+    { key: 'cloud', label: featureFlagEnabled('managed') ? 'Cloud' : 'Cluster' },
+    { key: 'daemons', label: 'Daemons' }
+  ]
+  // The model rollup comes pre-aggregated across ALL agents, so it can't follow a
+  // client-side placement filter — fall back to the agent rollup while filtered.
+  const selectSource = (k: SourceFilter) => {
+    setSourceFilter(k)
+    setHiddenKeys([])
+    if (k !== 'all' && groupBy === 'model') setGroupBy('agent')
+  }
 
-  const { agents } = useConsoleData()
+  const { agents, orgSetIds } = useConsoleData()
   const waitingForOrg = orgLoading || (!activeOrg && orgs.length > 0)
   const usageKey = consoleKeys.usage(waitingForOrg ? null : activeOrg?.id, range)
   const { data, error, isLoading } = useSWR(usageKey, ([, orgId, , requestedRange]) =>
@@ -78,17 +103,6 @@ export default function UsageView() {
   // Skeleton bar count = the range's real bucket count, so placeholder bar widths
   // match the incoming chart and swapping skeleton→data causes no layout shift.
   const skelBars = range === 'd1' ? 24 : range === 'd7' ? 7 : range === 'd90' ? 90 : 30
-  const totalTokens = data?.totals.totalTokens ?? 0
-  // Amounts arrive as exact decimal strings; a number appears only where the value is
-  // being formatted or turned into pixels, never where two amounts are added.
-  const totalSpend = amountToNumber(data?.totals.costAmount ?? '0')
-  const totalSessions = data?.totals.sessions ?? 0
-  // Currency reported for this workspace's sessions (null when none/mixed → the
-  // formatter falls back to USD). Amounts are summed as-is, so a mixed-currency
-  // workspace shows an unlabeled total — acceptable until per-currency rollups.
-  const currency = data?.totals.costCurrency ?? undefined
-  const avgLabel = totalSessions > 0 ? `${fmtCost(totalSpend / totalSessions, currency)} avg / session` : '—'
-
   // Join the CP aggregate (agentId + numbers) with the console's agent list for
   // the display name/runtime; fall back to a short id if the agent isn't loaded.
   const enriched = (data?.agents ?? []).map((a) => {
@@ -98,11 +112,31 @@ export default function UsageView() {
       name: meta ? agentLabel(meta) : a.agentId.length > 12 ? a.agentId.slice(0, 8) : a.agentId,
       icon: meta?.icon,
       runtime: meta?.runtime || meta?.model || '',
+      // Pool-placed = Cloud. An agent no longer in the console list reads as daemon-side.
+      cloud: meta ? isPoolPlacementKind(meta.placementKind, meta.setId, orgSetIds) : false,
       totalTokens: a.totalTokens,
       sessions: a.sessions,
       costAmount: a.costAmount
     }
   })
+  const filtered = sourceFilter === 'all' ? enriched : enriched.filter((e) => e.cloud === (sourceFilter === 'cloud'))
+
+  // Unfiltered, the server totals are authoritative; filtered, re-sum the visible
+  // agents (a session belongs to one agent, so session counts add cleanly).
+  const totalTokens =
+    sourceFilter === 'all' ? (data?.totals.totalTokens ?? 0) : filtered.reduce((s, e) => s + e.totalTokens, 0)
+  const totalSessions =
+    sourceFilter === 'all' ? (data?.totals.sessions ?? 0) : filtered.reduce((s, e) => s + e.sessions, 0)
+  // Amounts arrive as exact decimal strings; a number appears only where the value is
+  // being formatted or turned into pixels, never where two amounts are added.
+  const totalSpend = amountToNumber(
+    sourceFilter === 'all' ? (data?.totals.costAmount ?? '0') : sumAmounts(filtered.map((e) => e.costAmount))
+  )
+  // Currency reported for this workspace's sessions (null when none/mixed → the
+  // formatter falls back to USD). Amounts are summed as-is, so a mixed-currency
+  // workspace shows an unlabeled total — acceptable until per-currency rollups.
+  const currency = data?.totals.costCurrency ?? undefined
+  const avgLabel = totalSessions > 0 ? `${fmtCost(totalSpend / totalSessions, currency)} avg / session` : '—'
 
   // Roll up to the selected grouping. Grouped rows omit `navId`, so only raw
   // Agent rows navigate. Model rows arrive pre-aggregated from session metadata.
@@ -132,7 +166,7 @@ export default function UsageView() {
     }))
   } else if (groupBy === 'runtime') {
     const byRuntime = new Map<string, Entry>()
-    for (const e of enriched) {
+    for (const e of filtered) {
       const rt = e.runtime || 'unknown'
       const g = byRuntime.get(rt) ?? {
         key: `runtime:${rt}`,
@@ -151,7 +185,7 @@ export default function UsageView() {
     }
     entries = [...byRuntime.values()].sort((a, b) => b.totalTokens - a.totalTokens)
   } else {
-    entries = enriched.map((e) => ({ ...e, key: e.agentId, kind: 'agent', navId: e.agentId, model: '' }))
+    entries = filtered.map((e) => ({ ...e, key: e.agentId, kind: 'agent', navId: e.agentId, model: '' }))
   }
 
   // Two bar geometries from one map: `pct` is the desktop share (percent of the
@@ -183,6 +217,19 @@ export default function UsageView() {
         <div className="flex-1">
           <p className="psub mt-0">Tokens and spend across agents. Metered by the daemon per session.</p>
         </div>
+        {showSourceFilter && (
+          <div className="pillbar">
+            {sourceOptions.map((s) => (
+              <button
+                key={s.key}
+                className={sourceFilter === s.key ? 'pill on' : 'pill'}
+                onClick={() => selectSource(s.key)}
+              >
+                {s.label}
+              </button>
+            ))}
+          </div>
+        )}
         <div className="pillbar">
           {RANGES.map((r) => (
             <button key={r.key} className={range === r.key ? 'pill on' : 'pill'} onClick={() => selectRange(r.key)}>
@@ -211,6 +258,28 @@ export default function UsageView() {
           )
         })}
       </div>
+
+      {/* Mobile source-filter segmented control (mirrors the desktop pillbar) */}
+      {showSourceFilter && (
+        <div className="mx-4 mt-2 grid h-11 grid-cols-3 gap-1 rounded-md border border-(--border-subtle) bg-(--gray-100) p-1 desktop:hidden">
+          {sourceOptions.map((s) => {
+            const on = sourceFilter === s.key
+            return (
+              <button
+                key={s.key}
+                onClick={() => selectSource(s.key)}
+                className={`cursor-pointer rounded-sm border-0 font-sans text-[14px] leading-normal ${
+                  on
+                    ? 'bg-(--surface-card) font-semibold text-(--text-primary) shadow-(--shadow-xs)'
+                    : 'font-medium text-(--text-secondary)'
+                }`}
+              >
+                {s.label}
+              </button>
+            )
+          })}
+        </div>
+      )}
 
       {/* Mobile compact 3-metric strip (Sessions / Tokens / Spend — no fabricated
           p95 latency, it's not in the UsageDto) */}
@@ -297,12 +366,21 @@ export default function UsageView() {
           // place in this view where a cost is allowed to be a float.
           const plot = (by: Record<string, string>): Record<string, number> =>
             Object.fromEntries(Object.entries(by).map(([k, v]) => [k, amountToNumber(v)]))
+          // Placement filter applied per bucket: keep only the visible agents' deltas.
+          const allowed = sourceFilter === 'all' ? null : new Set(filtered.map((e) => e.agentId))
+          const scopedByAgent = (p: (typeof pts)[number]): Record<string, number> => {
+            const rec = plot(p.byAgent ?? {})
+            if (!allowed) return rec
+            return Object.fromEntries(Object.entries(rec).filter(([id]) => allowed.has(id)))
+          }
           const recs = pts.map((p) => {
             if (!hasBreakdown) return { '': amountToNumber(p.costAmount) }
+            // The model split can't be placement-filtered; selectSource forces the
+            // rollup off 'model' whenever the filter is active.
             if (groupBy === 'model') return plot(p.byModel ?? {})
-            if (groupBy === 'agent') return plot(p.byAgent ?? {})
+            if (groupBy === 'agent') return scopedByAgent(p)
             const rec: Record<string, number> = {}
-            for (const [id, v] of Object.entries(plot(p.byAgent ?? {}))) {
+            for (const [id, v] of Object.entries(scopedByAgent(p))) {
               const rt = agentMeta.get(id)?.runtime || 'unknown'
               rec[rt] = (rec[rt] ?? 0) + v
             }
@@ -338,7 +416,9 @@ export default function UsageView() {
           const chartData = recs.map((rec, i) => {
             const row: Record<string, number | string> = {
               label: bucketLabel(pts[i]!.start, data.series!.bucket),
-              __total: amountToNumber(pts[i]!.costAmount)
+              // Filtered, the bucket's server total covers hidden agents too — report
+              // the visible agents' net sum instead (signed, before the clamp below).
+              __total: allowed ? Object.values(rec).reduce((s, v) => s + v, 0) : amountToNumber(pts[i]!.costAmount)
             }
             stackKeys.forEach((k, si) => {
               row[`s${si}`] =
@@ -479,11 +559,22 @@ export default function UsageView() {
         {/* Group-by toolbar (both form factors): switch the rollup dimension. */}
         <div className="flex items-center gap-3 border-b border-(--border-subtle) px-4 py-3 desktop:px-[18px] desktop:py-[10px]">
           <div className="pillbar">
-            {GROUPS.map((g) => (
-              <button key={g.key} className={groupBy === g.key ? 'pill on' : 'pill'} onClick={() => selectGroup(g.key)}>
-                {g.label}
-              </button>
-            ))}
+            {GROUPS.map((g) => {
+              const off = g.key === 'model' && sourceFilter !== 'all'
+              return (
+                <button
+                  key={g.key}
+                  className={`${groupBy === g.key ? 'pill on' : 'pill'} disabled:cursor-not-allowed disabled:opacity-45`}
+                  disabled={off}
+                  title={
+                    off ? 'The model breakdown spans all agents, so it can’t follow the placement filter' : undefined
+                  }
+                  onClick={() => selectGroup(g.key)}
+                >
+                  {g.label}
+                </button>
+              )
+            })}
           </div>
         </div>
 
