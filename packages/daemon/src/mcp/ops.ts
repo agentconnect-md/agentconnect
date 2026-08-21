@@ -31,6 +31,7 @@ import {
   type MemoryOpsDeps
 } from './ops/memory.js'
 import { sendMessage, type MessagingDeps } from './ops/messaging.js'
+import { shareFile, type ShareFileDeps } from './ops/share-file.js'
 import {
   cancelOrchestration,
   getOrchestration,
@@ -100,6 +101,7 @@ export interface OpsDeps
     OrchestrationDeps,
     GithubReviewDeps,
     MemoryOpsDeps,
+    ShareFileDeps,
     PlatformReadDeps {
   /** Fail-closed turn gate checked before every daemon bridge tool. Used to make
    *  pause/cancel/loop interrupts terminal even while the runtime is still unwinding. */
@@ -122,6 +124,7 @@ export interface OpsDeps
  */
 const HANDLERS: Map<string, ToolHandler<OpsDeps>> = new Map<string, ToolHandler<OpsDeps>>([
   ['setSessionTitle', setSessionTitle],
+  ['shareFile', shareFile],
   ['viewSessionStatus', viewSessionStatus],
   ['readMemory', readMemory],
   ['writeMemory', writeMemory],

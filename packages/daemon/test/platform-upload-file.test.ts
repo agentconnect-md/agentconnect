@@ -25,30 +25,45 @@ describe('outbound file sends', () => {
       return { conn, api }
     }
 
-    it('sends an image as a photo so it previews inline, captioned and threaded', async () => {
+    it('sends an image as a photo so it previews inline, captioned, topic-threaded, and by reply', async () => {
+      // `replyTo` is what PLACES the post in a non-forum group — without it the file lands at
+      // the chat ROOT, the outcome the design's §2 exists to rule out.
       const { conn, api } = connection()
-      await expect(conn.uploadFile('-100123', png, 'from slack', '77')).resolves.toEqual({ messageId: '11' })
+      await expect(conn.uploadFile('-100123', png, 'from slack', { thread: '77', replyTo: 41 })).resolves.toEqual({
+        ok: true,
+        messageId: '11'
+      })
       expect(api.sendPhoto).toHaveBeenCalledWith('-100123', expect.anything(), {
         message_thread_id: 77,
+        reply_parameters: { message_id: 41, allow_sending_without_reply: true },
         caption: 'from slack'
       })
       expect(api.sendDocument).not.toHaveBeenCalled()
       expect(api.sendMessage).not.toHaveBeenCalled()
     })
 
+    it('ignores a non-numeric thread (the tg:/dm session keys address nothing)', async () => {
+      const { conn, api } = connection()
+      await conn.uploadFile('-100123', png, undefined, { thread: 'tg:99', replyTo: 99 })
+      expect(api.sendPhoto).toHaveBeenCalledWith('-100123', expect.anything(), {
+        reply_parameters: { message_id: 99, allow_sending_without_reply: true }
+      })
+    })
+
     it('sends anything else as a document, the only form that preserves the bytes', async () => {
       const { conn, api } = connection()
-      await expect(conn.uploadFile('-100123', zip, 'logs')).resolves.toEqual({ messageId: '12' })
+      await expect(conn.uploadFile('-100123', zip, 'logs')).resolves.toEqual({ ok: true, messageId: '12' })
       expect(api.sendDocument).toHaveBeenCalledOnce()
       expect(api.sendPhoto).not.toHaveBeenCalled()
     })
 
-    it('posts an over-cap caption as its own message, after the file', async () => {
+    it('posts an over-cap caption as its own message, after the file and with the same placement', async () => {
       const { conn, api } = connection()
       const long = 'x'.repeat(1025)
-      await conn.uploadFile('-100123', png, long)
-      expect(api.sendMessage).toHaveBeenCalledWith('-100123', long, {})
-      expect(api.sendPhoto.mock.calls[0]![2]).toEqual({})
+      await conn.uploadFile('-100123', png, long, { replyTo: 41 })
+      expect(api.sendMessage).toHaveBeenCalledWith('-100123', long, {
+        reply_parameters: { message_id: 41, allow_sending_without_reply: true }
+      })
       // File first: a photo Telegram rejects must not leave a caption standing alone.
       expect(api.sendPhoto.mock.invocationCallOrder[0]!).toBeLessThan(api.sendMessage.mock.invocationCallOrder[0]!)
     })
@@ -57,15 +72,16 @@ describe('outbound file sends', () => {
       const { conn, api } = connection()
       api.sendMessage.mockRejectedValueOnce(new Error('rate limited'))
       await expect(conn.uploadFile('-100123', png, 'x'.repeat(1025))).resolves.toEqual({
+        ok: true,
         messageId: '11',
         warning: expect.stringContaining('caption')
       })
     })
 
-    it('reports a refused send instead of throwing into the caller', async () => {
+    it('classifies a refused send instead of throwing into the caller', async () => {
       const { conn, api } = connection()
-      api.sendPhoto.mockRejectedValueOnce(new Error('chat not found'))
-      await expect(conn.uploadFile('-100123', png, 'hi')).resolves.toBeUndefined()
+      api.sendPhoto.mockRejectedValueOnce(Object.assign(new Error('Bad Request'), { description: 'chat not found' }))
+      await expect(conn.uploadFile('-100123', png, 'hi')).resolves.toEqual({ ok: false, reason: 'not_found' })
     })
   })
 
@@ -78,17 +94,20 @@ describe('outbound file sends', () => {
         sendIntervalMs: 0
       })
       let n = 0
-      const channel = { send: vi.fn(async () => ({ id: `m${++n}` })) }
+      const channel = { send: vi.fn(async (_payload: unknown) => ({ id: `m${++n}` })) }
       ;(conn as unknown as { client: unknown }).client = { channels: { fetch: async () => channel } }
       return { conn, channel }
     }
 
-    it('carries the bytes on the message itself, so the caption and file are one post', async () => {
+    it('carries the bytes on the message itself, with every ping suppressed', async () => {
+      // allowedMentions parse:[] is the platform-native half of caption-mention escaping —
+      // a model-authored caption must not be able to ping.
       const { conn, channel } = connection()
-      await expect(conn.uploadFile('C1', png, 'look at this')).resolves.toEqual({ messageId: 'm1' })
+      await expect(conn.uploadFile('C1', png, 'look at this')).resolves.toEqual({ ok: true, messageId: 'm1' })
       expect(channel.send).toHaveBeenCalledWith({
         content: 'look at this',
-        files: [{ attachment: png.bytes, name: 'shot.png' }]
+        files: [{ attachment: png.bytes, name: 'shot.png' }],
+        allowedMentions: { parse: [] }
       })
     })
 
@@ -104,15 +123,22 @@ describe('outbound file sends', () => {
       const { conn, channel } = connection()
       channel.send.mockImplementationOnce(async () => ({ id: 'm1' })).mockRejectedValueOnce(new Error('boom'))
       await expect(conn.uploadFile('C1', png, 'y'.repeat(2500))).resolves.toEqual({
+        ok: true,
         messageId: 'm1',
         warning: expect.stringContaining('caption')
       })
     })
 
-    it('reports an unreachable channel rather than claiming delivery', async () => {
+    it('classifies an unreachable channel rather than claiming delivery', async () => {
       const { conn } = connection()
       ;(conn as unknown as { client: unknown }).client = { channels: { fetch: async () => null } }
-      await expect(conn.uploadFile('C1', png, 'hi')).resolves.toBeUndefined()
+      await expect(conn.uploadFile('C1', png, 'hi')).resolves.toEqual({ ok: false, reason: 'not_found' })
+    })
+
+    it('classifies an over-limit attachment from Discord’s own error code', async () => {
+      const { conn, channel } = connection()
+      channel.send.mockRejectedValueOnce(Object.assign(new Error('Request entity too large'), { code: 40005 }))
+      await expect(conn.uploadFile('C1', png, 'hi')).resolves.toEqual({ ok: false, reason: 'too_large' })
     })
   })
 
@@ -153,24 +179,19 @@ describe('outbound file sends', () => {
     })
 
     it('sends the image before the caption, and anchors on it', async () => {
-      // Order is the whole point: the caption is a second message, so putting it first would
-      // strand it in the chat whenever the image send then failed.
       const { conn, api } = connection()
-      await expect(conn.uploadFile('oc_1', png, 'from slack')).resolves.toEqual({ messageId: 'om_img' })
+      await expect(conn.uploadFile('oc_1', png, 'from slack')).resolves.toEqual({ ok: true, messageId: 'om_img' })
       expect(api.createText).toHaveBeenCalledWith('oc_1', 'from slack')
       expect(api.createImage.mock.invocationCallOrder[0]!).toBeLessThan(api.createText.mock.invocationCallOrder[0]!)
-    })
-
-    it('anchors on the image when there is no caption at all', async () => {
-      const { conn, api } = connection()
-      await expect(conn.uploadFile('oc_1', png)).resolves.toEqual({ messageId: 'om_img' })
-      expect(api.createText).not.toHaveBeenCalled()
     })
 
     it('reports nothing-sent when the image fails, without having posted the caption', async () => {
       const { conn, api } = connection()
       api.createImage.mockRejectedValueOnce(new Error('bad key'))
-      await expect(conn.uploadFile('oc_1', png, 'from slack')).resolves.toBeUndefined()
+      await expect(conn.uploadFile('oc_1', png, 'from slack')).resolves.toEqual({
+        ok: false,
+        reason: 'platform_error'
+      })
       expect(api.createText).not.toHaveBeenCalled()
     })
 
@@ -178,20 +199,20 @@ describe('outbound file sends', () => {
       const { conn, api } = connection()
       api.createText.mockRejectedValueOnce(new Error('rate limited'))
       await expect(conn.uploadFile('oc_1', png, 'from slack')).resolves.toEqual({
+        ok: true,
         messageId: 'om_img',
         warning: 'the image was sent, but its caption did not post'
       })
     })
 
     it('says PART of the caption when earlier chunks already landed', async () => {
-      // Whole-vs-part decides whether re-sending duplicates: an agent told the whole caption
-      // failed would post the chunks that did land a second time.
       const { conn, api } = connection()
       api.createText
         .mockImplementationOnce(async () => ({ messageId: 'om_text' }))
         .mockRejectedValueOnce(new Error('rate limited'))
       const long = 'z'.repeat(6000)
       await expect(conn.uploadFile('oc_1', png, long)).resolves.toEqual({
+        ok: true,
         messageId: 'om_img',
         warning: 'the image was sent, but part of its caption did not post'
       })
@@ -199,14 +220,34 @@ describe('outbound file sends', () => {
 
     it('threads both messages off a topic anchor', async () => {
       const { conn, api } = connection()
-      await conn.uploadFile('oc_1', png, 'hi', 'om_root')
+      await conn.uploadFile('oc_1', png, 'hi', { thread: 'om_root' })
       expect(api.replyText).toHaveBeenCalledWith('om_root', 'hi')
       expect(api.replyImage).toHaveBeenCalledWith('om_root', 'img_1')
     })
 
+    it('treats a DM anchor (the chat id) as the root post it is', async () => {
+      const { conn, api } = connection()
+      await expect(conn.uploadFile('oc_1', png, undefined, { thread: 'oc_1' })).resolves.toEqual({
+        ok: true,
+        messageId: 'om_img'
+      })
+      expect(api.createImage).toHaveBeenCalledWith('oc_1', 'img_1')
+    })
+
+    it('REFUSES an anchor it cannot honor instead of silently posting at the chat root', async () => {
+      // sendImage prefix-sniffs; an unrecognized anchor (a hook turn's hookId:deliveryKey)
+      // would otherwise become a brand-new topic reported as success.
+      const { conn, api } = connection()
+      await expect(conn.uploadFile('oc_1', png, 'hi', { thread: 'hook-1:d-2' })).resolves.toEqual({
+        ok: false,
+        reason: 'not_found'
+      })
+      expect(api.uploadImage).not.toHaveBeenCalled()
+    })
+
     it('refuses a non-image, which its file endpoint cannot type honestly', async () => {
       const { conn, api } = connection()
-      await expect(conn.uploadFile('oc_1', zip, 'logs')).resolves.toBeUndefined()
+      await expect(conn.uploadFile('oc_1', zip, 'logs')).resolves.toEqual({ ok: false, reason: 'platform_error' })
       expect(api.uploadImage).not.toHaveBeenCalled()
     })
   })

@@ -13,6 +13,12 @@
  * abandoned call's promise still settles in the background; the caller just sees a
  * timeout rejection (which, for a progress/plan post, the daemon treats as "no ts").
  */
+/** True for the queue's own abandonment rejection — the task KEEPS RUNNING and may still land,
+ *  so a caller must report "may have been sent", never "nothing was sent". */
+export function isSendQueueTimeout(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && (err as { sendQueueTimeout?: unknown }).sendQueueTimeout === true
+}
+
 export class PlatformSendQueue {
   private chain: Promise<unknown> = Promise.resolve()
   // -inf so the very first task never waits, regardless of the clock's origin.
@@ -48,7 +54,11 @@ export class PlatformSendQueue {
       const timer = setTimeout(() => {
         if (settled) return
         settled = true
-        reject(new Error(`PlatformSendQueue: task exceeded ${this.taskTimeoutMs}ms — abandoned`))
+        reject(
+          Object.assign(new Error(`PlatformSendQueue: task exceeded ${this.taskTimeoutMs}ms — abandoned`), {
+            sendQueueTimeout: true
+          })
+        )
       }, this.taskTimeoutMs)
       p.then(
         (v) => {

@@ -257,7 +257,13 @@ export const ConfigSchema = z.object({
       maxAttachmentBytes: z
         .number()
         .int()
-        .default(8 * 1024 * 1024)
+        .default(8 * 1024 * 1024),
+      // Hard cap (bytes) for ONE outbound file share (shareFile / sendMessage attachment).
+      // Its own knob because the two directions differ: inbound overflow degrades to a
+      // resource_link, outbound overflow is a refusal. Unset ⇒ follows maxAttachmentBytes.
+      maxOutboundFileBytes: z.number().int().positive().optional(),
+      // Total outbound file bytes ONE turn may upload. Unset ⇒ 2× the per-file cap.
+      maxOutboundFileBytesPerTurn: z.number().int().positive().optional()
     })
     .default({
       maxAgents: 32,

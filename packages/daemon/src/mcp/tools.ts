@@ -84,10 +84,10 @@ function buildSendMessageTool(platforms: string[]): ToolDescriptor {
     minLength: 1,
     description:
       'Optional. Forward an IMAGE this conversation received, by its name exactly as the `[attached: …]` ' +
-      'marker spells it — this is how a picture reaches another platform. Images only, and only the one ' +
-      'retained per message: a document, or a second image on the same message, is listed in the marker but ' +
-      'cannot be forwarded. The daemon posts the bytes itself with `message` as the caption; you can neither ' +
-      'attach a file you were not sent nor produce one from what you saw. The copy sent may be smaller than ' +
+      'marker spells it — this is how a RECEIVED picture reaches another platform. Images only, and only the ' +
+      'one retained per message: a document, or a second image on the same message, is listed in the marker ' +
+      'but cannot be forwarded. The daemon posts the bytes itself with `message` as the caption. To send a ' +
+      'file you PRODUCED, use `shareFile` (current conversation only). The copy sent may be smaller than ' +
       'the original.'
   }
 
@@ -261,7 +261,8 @@ function buildSendMessageTool(platforms: string[]): ToolDescriptor {
       'with no recipient, or the parent-session reply.\n' +
       'TO SPEAK IN THE CONVERSATION YOU ARE ALREADY IN — including to address a peer agent or a human there — do ' +
       'NOT use this tool. Write your ordinary turn reply and @-mention them in it (use `listAgents` to get an ' +
-      'agent’s exact `mention` token). That reply already goes to the right thread as you. This tool is only for ' +
+      'agent’s exact `mention` token); to put an IMAGE there, use `shareFile`. That reply already goes to the ' +
+      'right thread as you. This tool is only for ' +
       'what it cannot do: reaching a DIFFERENT conversation, a direct message, a postless agent call, or a reply ' +
       'into the parent session.\n' +
       '- toAgent — wake exactly one AgentConnect agent (id from listAgents or your own # Agent ID; never a ' +
@@ -283,8 +284,8 @@ function buildSendMessageTool(platforms: string[]): ToolDescriptor {
       'root without waking anyone or @-mentioning anyone; add `platform` or `integrationId` only when needed.\n' +
       '- attachment (with `toUser` or `channel`) — forward an image this conversation received: ' +
       '`{"channel":"<channel id>","attachment":"<file name>","message":"..."}`. The name is the one in the ' +
-      '`[attached: …]` marker. This is the ONLY way to put an image on another platform; describing what you saw ' +
-      'is not the same thing.\n' +
+      '`[attached: …]` marker. This is the only way a RECEIVED image reaches another platform; for an image you ' +
+      'produced, `shareFile` posts it into the current conversation.\n' +
       '- Parent session reply: `{"sessionId":"<Parent session>","message":"..."}` — relay an answer back to whoever ' +
       'asked this way, never by posting it at their channel root.\n' +
       'Every visible send lands at the channel ROOT and opens a NEW conversation of your own there. Write ' +
@@ -305,6 +306,45 @@ function buildSendMessageTool(platforms: string[]): ToolDescriptor {
  * file downloads by whichever platforms declare that read port
  * ({@link attachmentReadToolsFor}).
  */
+/**
+ * `shareFile` — post a workspace image into the CURRENT conversation
+ * (docs/designs/agent-authored-attachments.md §3). The one visible send that is NOT
+ * `sendMessage`'s job: every `sendMessage` post lands at a channel ROOT, while this places
+ * a file in the thread the agent is already answering. No coordinates by construction —
+ * the daemon posts from the trusted active-turn context.
+ */
+function buildShareFileTool(): ToolDescriptor {
+  return {
+    name: 'shareFile',
+    description:
+      'Post an IMAGE from your workspace into THIS conversation — the thread you are answering right now. This is ' +
+      'the only way to show someone a file you produced or downloaded: your ordinary reply is text-only, and ' +
+      '`sendMessage` posts to channel roots, never here. `path` is relative to your workspace root; put files there ' +
+      'first. Images only (PNG, JPEG, or WEBP — not GIF), decided from the file bytes, not the name. The optional ' +
+      '`caption` is plain text (max 1000 chars; mention syntax is neutralized, though a bare Telegram @username ' +
+      'may still notify); write everything else in your ordinary ' +
+      'reply. The image posts immediately, so it may appear before your streamed reply finishes. If the result says ' +
+      'the upload MAY have been delivered, do NOT retry — report that instead.',
+    inputSchema: obj(
+      {
+        path: {
+          type: 'string',
+          minLength: 1,
+          description:
+            'Workspace-relative path to the image (e.g. `out/chart.png`). Absolute paths and `..` are rejected.'
+        },
+        caption: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 1000,
+          description: 'Optional short plain-text caption posted with the image.'
+        }
+      },
+      ['path']
+    )
+  }
+}
+
 function buildReadTools(platforms: string[]): ToolDescriptor[] {
   const platform = {
     type: 'string',
@@ -656,6 +696,7 @@ export const ALL_TOOL_NAMES = [
       // platform-neutral tools — descriptors are built per-agent, but the names
       // are stable and belong in the permission auto-allow set.
       buildSendMessageTool([]),
+      buildShareFileTool(),
       ...buildReadTools([]),
       // Every platform's credentialed attachment tool, whatever this agent has:
       // the auto-allow set is about NAMES, and a name a platform can inject must
@@ -710,6 +751,10 @@ export function toolsForIntegrations(
   // Platform read helpers only make sense once the agent has at least one integration.
   if (platforms.length > 0) {
     add(buildReadTools(platforms))
+    // The current-conversation file share (docs/designs/agent-authored-attachments.md §3):
+    // platform-gated like the read tools; sessions without a file-hosting gateway get a
+    // clean refusal at call time (port probe / coordinate gates).
+    add([buildShareFileTool()])
   }
   // Per-platform CREDENTIALED attachment reads. A platform contributes its own
   // descriptor by declaring the read port (`platforms/read-ports.ts`); core does

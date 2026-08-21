@@ -37,6 +37,18 @@ export interface SendIdentity {
   }
 }
 
+/** Where inside a conversation a file post lands — see {@link MessageGateway.uploadFile}. */
+export interface UploadAnchor {
+  thread?: string
+  replyTo?: number
+}
+
+/** Why an upload posted nothing. `indeterminate` alone means "may have landed — do not retry". */
+export type UploadFailReason =
+  'missing_scope' | 'too_large' | 'not_found' | 'forbidden' | 'indeterminate' | 'platform_error'
+
+export type UploadOutcome = { ok: true; messageId?: string; warning?: string } | { ok: false; reason: UploadFailReason }
+
 export interface MessageGateway {
   /** Layer-1 `openDirectMessage`: resolve one platform user to the app's real
    *  direct-message conversation. Optional because it is a declared read port,
@@ -62,23 +74,31 @@ export interface MessageGateway {
   /** The mirror of {@link downloadFile}: put BYTES into a conversation, introduced by
    *  `comment`. Optional — only a platform that can host a file offers it.
    *
-   *  THE CONTRACT IS `undefined` ⇔ NOTHING WAS POSTED. Two platforms cannot express a
-   *  file and its caption as one message, so they send two — and an implementation must
-   *  order them so the FILE goes first. Then a failure before anything lands returns
-   *  `undefined`, and a caption lost after it reports `warning` on an otherwise successful
-   *  send. Conflating the two would tell an agent nothing was sent while its words sat in
-   *  the chat, and the retry would duplicate them.
+   *  THE CONTRACT IS `ok: false` ⇔ NOTHING WAS POSTED — except `reason: 'indeterminate'`,
+   *  the send queue abandoning a still-running upload, which means MAY HAVE LANDED and
+   *  must never be retried. Two platforms cannot express a file and its caption as one
+   *  message, so they send two — and an implementation must order them so the FILE goes
+   *  first. Then a failure before anything lands really did land nothing, and a caption
+   *  lost after it reports `warning` on an otherwise successful send. Conflating the two
+   *  would tell an agent nothing was sent while its words sat in the chat, and the retry
+   *  would duplicate them.
    *
-   *  A result carries the post anchor when the platform's file send produces one; Slack's
+   *  `anchor` places the post inside the conversation the caller is already in: `thread`
+   *  is the platform's own thread coordinate (Slack thread_ts / Discord thread channel /
+   *  Feishu om_ root — which an implementation must REFUSE rather than repurpose when it
+   *  cannot honor it), and `replyTo` is the reply-target message id on platforms that
+   *  place by reply (Telegram non-forum groups). Absent ⇒ a channel-root post.
+   *
+   *  A success carries the post anchor when the platform's file send produces one; Slack's
    *  does not (it answers with the file, no ts), so there `messageId` is absent on success
    *  and the caller degrades exactly as it does for a post that returned no id. */
   uploadFile?(
     channel: string,
     file: { bytes: Buffer; name: string; mimeType: string },
     comment?: string,
-    threadTs?: string,
+    anchor?: UploadAnchor,
     identity?: SendIdentity
-  ): Promise<{ messageId?: string; warning?: string } | undefined>
+  ): Promise<UploadOutcome>
 }
 
 /**

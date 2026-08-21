@@ -3,9 +3,20 @@ import type { Agent } from '../agents/agent-schema.js'
 import { platformIntegrationConfig } from '../platforms/integration-config.js'
 import type { NormalizedMessage } from '../messages/normalized.js'
 import type { Logger } from '../log.js'
-import { PlatformSendQueue } from '../platforms/send-queue.js'
+import { isSendQueueTimeout, PlatformSendQueue } from '../platforms/send-queue.js'
+import type { UploadAnchor, UploadFailReason, UploadOutcome } from '../mcp/ops/context.js'
 import { isTelegramMembershipServiceMessage, normalizeTelegramMessage, type TelegramMessage } from './normalize.js'
 import type { PlatformConnection } from '../platforms/contract.js'
+
+/** Map a Telegram Bot API error to the port's typed failure vocabulary, from its description. */
+function classifyTelegramUploadError(err: unknown): UploadFailReason {
+  const text = `${(err as { description?: string }).description ?? ''} ${(err as Error).message ?? ''}`
+  if (/not found|not enough rights to send|chat not found/i.test(text) && /chat|topic|thread|message/i.test(text))
+    return 'not_found'
+  if (/too (big|large)|file is too|entity too large/i.test(text)) return 'too_large'
+  if (/not enough rights|forbidden|bot was kicked|have no rights/i.test(text)) return 'forbidden'
+  return 'platform_error'
+}
 
 /** Telegram truncates a caption past this instead of rejecting it, so we never send one longer. */
 const TELEGRAM_CAPTION_LIMIT = 1024
@@ -152,12 +163,20 @@ export interface TelegramApi {
   sendPhoto(
     chatId: number | string,
     photo: InputFile,
-    opts?: { message_thread_id?: number; caption?: string }
+    opts?: {
+      message_thread_id?: number
+      caption?: string
+      reply_parameters?: { message_id: number; allow_sending_without_reply?: boolean }
+    }
   ): Promise<{ message_id: number }>
   sendDocument(
     chatId: number | string,
     document: InputFile,
-    opts?: { message_thread_id?: number; caption?: string }
+    opts?: {
+      message_thread_id?: number
+      caption?: string
+      reply_parameters?: { message_id: number; allow_sending_without_reply?: boolean }
+    }
   ): Promise<{ message_id: number }>
   answerCallbackQuery(callbackQueryId: string, opts?: { text?: string }): Promise<unknown>
   sendChatAction(chatId: number | string, action: string): Promise<unknown>
@@ -359,41 +378,54 @@ export class TelegramConnection implements PlatformConnection {
    * dimensions, over the size cap) leaves the chat untouched instead of stranding a caption
    * for an image that never arrived. It reads below the image; that is the cost.
    *
-   * Returns the FILE message's id — the post a reply to this send threads from.
+   * `anchor.replyTo` is what PLACES the post in a non-forum group — the session thread key
+   * there is deliberately non-numeric and cannot address anything — while a numeric
+   * `anchor.thread` selects a forum topic. Both apply to the file and the overflow caption
+   * alike. Returns the FILE message's id — the post a reply to this send threads from.
    */
   async uploadFile(
     channel: string,
     file: { bytes: Buffer; name: string; mimeType?: string },
     comment?: string,
-    threadTs?: string
-  ): Promise<{ messageId?: string } | undefined> {
-    const thread = threadTs != null && /^\d+$/.test(threadTs) ? Number(threadTs) : undefined
-    const threadOpt = thread !== undefined ? { message_thread_id: thread } : {}
+    anchor?: UploadAnchor,
+    _identity?: unknown
+  ): Promise<UploadOutcome> {
+    const thread = anchor?.thread != null && /^\d+$/.test(anchor.thread) ? Number(anchor.thread) : undefined
+    const placeOpt = {
+      ...(thread !== undefined ? { message_thread_id: thread } : {}),
+      ...(anchor?.replyTo !== undefined
+        ? { reply_parameters: { message_id: anchor.replyTo, allow_sending_without_reply: true } }
+        : {})
+    }
     const inCaption = comment && comment.length <= TELEGRAM_CAPTION_LIMIT ? comment : undefined
     const asOwnMessage = comment && !inCaption ? comment : undefined
-    return this.queue.enqueue(async () => {
+    const task: Promise<UploadOutcome> = this.queue.enqueue(async () => {
       let sentId: string | undefined
       try {
         const input = new InputFile(file.bytes, file.name)
-        const opts = { ...threadOpt, ...(inCaption ? { caption: inCaption } : {}) }
+        const opts = { ...placeOpt, ...(inCaption ? { caption: inCaption } : {}) }
         const res = file.mimeType?.startsWith('image/')
           ? await this.bot.api.sendPhoto(channel, input, opts)
           : await this.bot.api.sendDocument(channel, input, opts)
         sentId = res?.message_id != null ? String(res.message_id) : undefined
       } catch (err) {
         this.deps.log?.debug(`telegram: uploadFile ${file.name} → ch=${channel} failed: ${(err as Error).message}`)
-        return undefined
+        return { ok: false, reason: classifyTelegramUploadError(err) }
       }
-      const anchor = sentId !== undefined ? { messageId: sentId } : {}
-      if (!asOwnMessage) return anchor
+      const posted = { ok: true as const, ...(sentId !== undefined ? { messageId: sentId } : {}) }
+      if (!asOwnMessage) return posted
       try {
-        await this.bot.api.sendMessage(channel, asOwnMessage, threadOpt)
-        return anchor
+        await this.bot.api.sendMessage(channel, asOwnMessage, placeOpt)
+        return posted
       } catch (err) {
         this.deps.log?.debug(`telegram: uploadFile caption failed (ch=${channel}): ${(err as Error).message}`)
-        return { ...anchor, warning: 'the file was sent, but its caption was too long to attach and did not post' }
+        return { ...posted, warning: 'the file was sent, but its caption was too long to attach and did not post' }
       }
     })
+    return task.catch((err) => ({
+      ok: false,
+      reason: isSendQueueTimeout(err) ? 'indeterminate' : 'platform_error'
+    }))
   }
 
   /**

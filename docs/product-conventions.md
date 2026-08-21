@@ -243,6 +243,33 @@ best-effort edge: a target on another daemon whose call policy terminally reject
 caller can still leave a visible post, because that policy verdict is only known on the
 target's daemon after the post is made.
 
+### Sharing a produced file into the current conversation
+
+`shareFile` posts an image from the agent's workspace into the conversation the agent is
+answering — the one visible send that is not `sendMessage`'s job, since every `sendMessage`
+post lands at a channel root. The model supplies only a workspace-relative path and an
+optional plain-text caption; every coordinate comes from the trusted active turn, so the
+image lands in the thread that asked, threaded the way that platform threads (Slack
+`thread_ts`, Telegram reply placement, Discord thread channel, Feishu topic root — which is
+refused rather than repurposed when it cannot be honored).
+
+Images only — PNG, JPEG, or WEBP, decided from the file bytes, never the file name — and
+the posted filename and type come from those bytes too. A GIF is refused by name. The file
+is capped per send and per turn; failures name their rule. A headless turn, a postless
+agent-call session, and a platform that cannot host files are refused before any file is
+read. Captions are bounded, carried as one message, and have their mention syntax
+neutralized — Slack/Discord control tokens, Feishu `<at>` tags, and the broadcast words; a
+bare Telegram `@username` is the one form with no inert spelling and may still notify. A
+caption labels a file; it must not page anyone.
+
+The share never seeds or re-anchors a session — the thread already has one — and it posts
+when called, so the image may appear before the streamed reply finishes. The transcript
+records the share with its provenance (path, sniffed type, size, digest) and, when the
+bytes fit the transcript budget, the image itself, so the console renders what the agent
+shared exactly as it renders what a user uploaded. An upload the platform abandoned
+mid-flight is reported as "may have been delivered — do not retry", never as a failure a
+retry could double-post.
+
 ### Forwarding a received file
 
 A `toUser` or bare-`channel` send may carry `attachment`, naming a file **this
