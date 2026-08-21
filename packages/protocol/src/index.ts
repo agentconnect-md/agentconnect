@@ -11,6 +11,10 @@
 export {
   AGENT_CONFIG_REVISION_FEATURE,
   AGENT_WAKE_FEATURE,
+  CODEHOST_NOTE_PROJECTION_V1_FEATURE,
+  CODEHOST_REVIEW_V1_FEATURE,
+  GITCRED_PROVIDER_V2_FEATURE,
+  GITLAB_COM_V1_FEATURE,
   DAEMON_BOOTSTRAP_PROTOCOL_VERSION,
   DAEMON_BOOTSTRAP_UPGRADE_FEATURE,
   CLOUD_DAEMON_SA_NAME,
@@ -51,6 +55,9 @@ export {
 
 // ── normalized platform-message wire contract ──
 export * from './normalized-message.js'
+
+// Code-host provider identity (gitlab-com-integration.md §8.1)
+export * from './code-host.js'
 
 // ── envelope + control extension ──
 export { Envelope, ControlExt, NIL_UUID } from './envelope.js'

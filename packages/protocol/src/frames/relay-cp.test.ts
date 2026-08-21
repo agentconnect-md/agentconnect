@@ -227,6 +227,55 @@ describe('relay↔CP wire — skeleton frame codec (shared-bot-relay.md §7.1)',
     expect(decoded.ok).toBe(false)
   })
 
+  it('round-trips correlated rc/codehost-membership-authz → its one-bit reply', () => {
+    const payload = {
+      hookId: HOOK_ID,
+      provider: 'gitlab',
+      repoExternalId: '4455667',
+      actorExternalId: '778899',
+      subjectAuthorExternalId: '221133',
+      configRevision: '7',
+      dispatchRevision: '9',
+      siblingFences: [{ hookId: '99999999-9999-4999-8999-999999999999', configRevision: '11', dispatchRevision: '13' }]
+    }
+    const req = buildRelayCpFrame('rc/codehost-membership-authz', payload)
+    const decodedReq = decodeRelayCpFrame(JSON.stringify(req))
+    expect(decodedReq.ok).toBe(true)
+    if (!decodedReq.ok || decodedReq.frame.type !== 'rc/codehost-membership-authz') {
+      throw new Error('expected membership authz req')
+    }
+    expect(decodedReq.frame.payload).toEqual(payload)
+
+    const rep = buildRelayCpFrame('rc/codehost-membership-authz/ok', { allowed: false }, { corr: req.id })
+    const decodedRep = decodeRelayCpFrame(JSON.stringify(rep))
+    expect(decodedRep.ok).toBe(true)
+    if (!decodedRep.ok || decodedRep.frame.type !== 'rc/codehost-membership-authz/ok') {
+      throw new Error('expected membership authz rep')
+    }
+    expect(decodedRep.frame.corr).toBe(req.id)
+    expect(decodedRep.frame.payload).toEqual({ allowed: false })
+  })
+
+  it('rc/codehost-membership-authz keys on numeric identity, never a display path', () => {
+    const base = {
+      hookId: HOOK_ID,
+      provider: 'gitlab',
+      repoExternalId: '4455667',
+      actorExternalId: '778899',
+      configRevision: '7',
+      dispatchRevision: '9'
+    }
+    expect(decodeRelayCpFrame(envelope('rc/codehost-membership-authz', base)).ok).toBe(true)
+    expect(
+      decodeRelayCpFrame(
+        envelope('rc/codehost-membership-authz', { ...base, repoExternalId: 'example-group/example-project' })
+      ).ok
+    ).toBe(false)
+    expect(
+      decodeRelayCpFrame(envelope('rc/codehost-membership-authz', { ...base, actorExternalId: 'octocat' })).ok
+    ).toBe(false)
+  })
+
   it('round-trips correlated rc/github-rerequest metadata and its fenced dispatch result', () => {
     const request = {
       checkRunId: '86617583005',

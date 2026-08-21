@@ -287,3 +287,24 @@ export const POD_TEMPLATE_HASH_ENV = 'AC_POD_TEMPLATE_HASH'
  *  asks before collecting a leaked sandbox object; a daemon that does not see it
  *  skips the sweep rather than emit a frame an older CP rejects as `UNKNOWN_FRAME`. */
 export const AGENT_EXISTS_FEATURE = 'agent-exists-v1'
+
+// ── GitLab.com code-host features (gitlab-com-integration.md §17.3) ─────────
+// Each string is advertised only when its COMPLETE slice is live; the CP must
+// never place a GitLab-shaped workspace, grant, or hook on a peer without it.
+
+/** Daemon/relay serves the complete GitLab.com slice: hook normalization, credential
+ *  routing, poster, and (relay) signed ingress. Gate for placement, snapshot projection,
+ *  and rule broadcast — a GitLab-shaped value sent without it is frame-fatal downstream. */
+export const GITLAB_COM_V1_FEATURE = 'gitlab-com-v1'
+
+/** CP serves provider-qualified gitcred v2 request/grant fields. A daemon must not name a
+ *  provider before seeing this, and must reject a grant whose provider or numeric repository
+ *  id differs from its request (an older CP strips new fields and answers GitHub-shaped). */
+export const GITCRED_PROVIDER_V2_FEATURE = 'gitcred-provider-v2'
+
+/** Provider-routed formal-review surface (`submitCodeReview` and the provider-neutral
+ *  review authorization/result frames). */
+export const CODEHOST_REVIEW_V1_FEATURE = 'codehost-review-v1'
+
+/** Daemon-owned informational status-note projection (desired/result frame pair). */
+export const CODEHOST_NOTE_PROJECTION_V1_FEATURE = 'codehost-note-projection-v1'

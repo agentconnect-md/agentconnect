@@ -2298,7 +2298,7 @@ describe('gitcred frames (github-app workspace credentials)', () => {
     expect(decoded.frame.corr).toBeDefined()
   })
 
-  it('rejects a gitcred/grant with a foreign username (single fixed basic-auth user)', () => {
+  it('rejects a gitcred/grant with a foreign username on the GitHub branch (v2 opens it per provider only)', () => {
     const f = buildEnvelope('gitcred/grant', {
       username: 'x-access-token',
       token: 'ghs_x',
