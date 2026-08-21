@@ -52,6 +52,12 @@ export class GitlabGitcredService {
         false
       )
     }
+    // §19.3: runtime drift stops NEW authority — no fresh local lease until a
+    // repair reconverges. admin_degraded (§19.2) keeps serving existing runtime
+    // credentials; only the admin plane is broken there.
+    if (binding.state === 'runtime_degraded') {
+      throw new GitCredDeniedError('the project binding is runtime-degraded — repair it', 'LEASE_DENIED', true)
+    }
     if (binding.serviceAccountUsername === null || binding.serviceAccountUserId === null) {
       throw new GitCredDeniedError('the project binding has no service account yet — repair it', 'LEASE_DENIED', true)
     }

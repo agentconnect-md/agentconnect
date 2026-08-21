@@ -728,6 +728,23 @@ export class PgAgentRepo implements AgentRepo {
     }
   }
 
+  async refreshGitlabWorkspacePath(orgId: OrgId, projectId: bigint, cloneUrl: string): Promise<AgentId[]> {
+    // The clone URL is a mutable display/transport hint keyed by the immutable
+    // project id (§8.1); a rename refresh must reach every replicated spec, so
+    // the write joins the configRevision ordering domain the daemon fences on.
+    const drifted = await this.db.agent.findMany({
+      where: { orgId, workspaceMode: 'gitlab', workspaceRepoId: projectId, NOT: { gitRepo: cloneUrl } },
+      select: { id: true }
+    })
+    if (drifted.length === 0) return []
+    const ids = drifted.map((row: { id: string }) => row.id)
+    await this.db.agent.updateMany({
+      where: { id: { in: ids }, orgId, workspaceMode: 'gitlab', workspaceRepoId: projectId },
+      data: { gitRepo: cloneUrl, configRevision: { increment: 1 } }
+    })
+    return ids.map((id: string) => AgentId(id))
+  }
+
   async setWorkspaceRepoId(agentId: AgentId, repoId: bigint): Promise<boolean> {
     return this.transaction(async (tx) => {
       // Serialize with additional-grant create/revoke and projection creation.

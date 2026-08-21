@@ -26,6 +26,10 @@ import {
 import type { AgentRecord } from '../../src/persistence/ports.js'
 import { makeSecretCipher } from '../../src/secrets/cipher.js'
 import { systemClock } from '../../src/domain/clock.js'
+import { seedDaemon } from '../fixtures/seed.js'
+import type { DaemonLiveness } from '../../src/ports.js'
+import { PgAgentRepo } from '../../src/persistence/index.js'
+import { OrgId } from '../../src/domain/ids.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
 const PROJECT = 4455667n
@@ -37,7 +41,7 @@ afterEach(async () => {
   running = undefined
 })
 
-async function harness() {
+async function harness(liveness?: DaemonLiveness) {
   const fake = new FakeGitlab()
   const bindings = new PgGitlabProjectBindingRepo(prisma)
   const connections = new PgGitlabConnectionRepo(prisma)
@@ -64,7 +68,7 @@ async function harness() {
     desiredWebhookEvents: async () => null,
     fetchImpl: fake.fetch()
   })
-  running = buildHttpApp(prisma, { PUBLIC_CP_URL: 'https://api.example.test' }, undefined, undefined, {
+  running = buildHttpApp(prisma, { PUBLIC_CP_URL: 'https://api.example.test' }, liveness, undefined, {
     gitlab: { oauth, provisioner, fetchImpl: fake.fetch() }
   })
   const connection = await connections.upsertOnCallback({
@@ -151,6 +155,95 @@ describe('gitlab workspaces — agent create/edit (§8.3)', () => {
     expect(disabled.statusCode).toBe(409)
   })
 
+  it('refuses a DIRECT placement on a daemon that has not advertised gitlab-com-v1 (§17.3)', async () => {
+    const h = await harness()
+    const OLD_DAEMON = 'd1d1d1d1-dddd-4ddd-8ddd-dddddddddddd'
+    const NEW_DAEMON = 'd2d2d2d2-dddd-4ddd-8ddd-dddddddddddd'
+    await seedDaemon(prisma, OLD_DAEMON)
+    await seedDaemon(prisma, NEW_DAEMON, {
+      capabilities: { platforms: [], runtimes: ['claude'], acp: true, features: ['gitlab-com-v1'] }
+    })
+    const payload = (daemonId: string) => ({
+      name: `gl-${daemonId.slice(0, 4)}`,
+      runtime: 'claude',
+      daemonId,
+      workspace: { mode: 'gitlab', projectId: PROJECT.toString() }
+    })
+    expect(
+      (await h.a.app.inject({ method: 'POST', url: `${ORG}/agents`, payload: payload(OLD_DAEMON) })).statusCode
+    ).toBe(409)
+    expect(
+      (await h.a.app.inject({ method: 'POST', url: `${ORG}/agents`, payload: payload(NEW_DAEMON) })).statusCode
+    ).toBe(201)
+  })
+
+  it('creation inherits the binding default branch when the caller names none', async () => {
+    const h = await harness()
+    await prisma.gitlabProjectBinding.update({ where: { id: h.binding.id }, data: { defaultBranch: 'develop' } })
+    const res = await h.a.app.inject({
+      method: 'POST',
+      url: `${ORG}/agents`,
+      payload: { name: 'gl-branch', runtime: 'claude', workspace: { mode: 'gitlab', projectId: PROJECT.toString() } }
+    })
+    expect(res.statusCode).toBe(201)
+    const row = await prisma.agent.findUniqueOrThrow({ where: { id: (res.json() as { id: string }).id } })
+    expect(row.gitBranch).toBe('develop')
+  })
+
+  it('a workspace edit toward gitlab refuses a serving daemon without the feature (§17.3)', async () => {
+    const DAEMON = 'd3d3d3d3-dddd-4ddd-8ddd-dddddddddddd'
+    const h = await harness({
+      get: (id: string) => (id === DAEMON ? { state: 'READY', reachable: true, sessionEpoch: 1 } : undefined)
+    })
+    await seedDaemon(prisma, DAEMON, {
+      capabilities: { platforms: [], runtimes: ['claude'], acp: true, features: ['workspace-edit-v2'] }
+    })
+    const created = await h.a.app.inject({
+      method: 'POST',
+      url: `${ORG}/agents`,
+      payload: { name: 'placed-bot', runtime: 'claude', daemonId: DAEMON }
+    })
+    expect(created.statusCode).toBe(201)
+    const agentId = (created.json() as { id: string }).id
+    const res = await h.a.app.inject({
+      method: 'PUT',
+      url: `${ORG}/agents/${agentId}/workspace`,
+      payload: { mode: 'gitlab', projectId: PROJECT.toString() }
+    })
+    expect(res.statusCode).toBe(409)
+    expect((res.json() as { message: string }).message).toContain('does not support GitLab workspaces')
+  })
+
+  it('a binding path refresh converges affected agent clone URLs with a revision bump', async () => {
+    const h = await harness()
+    const created = await h.a.app.inject({
+      method: 'POST',
+      url: `${ORG}/agents`,
+      payload: { name: 'gl-rename', runtime: 'claude', workspace: { mode: 'gitlab', projectId: PROJECT.toString() } }
+    })
+    expect(created.statusCode).toBe(201)
+    const agentId = (created.json() as { id: string }).id
+    const before = await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })
+    const agents = new PgAgentRepo(prisma)
+    const refreshed = await agents.refreshGitlabWorkspacePath(
+      OrgId(DEFAULT_ORG_ID),
+      PROJECT,
+      'https://gitlab.com/example-group/renamed-project'
+    )
+    expect(refreshed).toEqual([agentId])
+    const after = await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })
+    expect(after.gitRepo).toBe('https://gitlab.com/example-group/renamed-project')
+    expect(after.configRevision).toBe(before.configRevision + 1n)
+    // Idempotent: an unchanged path touches nothing.
+    expect(
+      await agents.refreshGitlabWorkspacePath(
+        OrgId(DEFAULT_ORG_ID),
+        PROJECT,
+        'https://gitlab.com/example-group/renamed-project'
+      )
+    ).toEqual([])
+  })
+
   it('retargets an existing agent onto the binding through the workspace edit route', async () => {
     const h = await harness()
     const created = await h.a.app.inject({
@@ -222,6 +315,18 @@ describe('gitcred v2 GitLab grants (§13.1/§17.1)', () => {
     ).rejects.toThrowError(GitCredDeniedError)
     await prisma.gitlabProjectBinding.update({ where: { id: h.binding.id }, data: { state: 'cleanup_pending' } })
     await expect(service.grantForAgent(gitlabAgent())).rejects.toThrowError(GitCredDeniedError)
+  })
+
+  it('runtime_degraded stops NEW authority (§19.3); admin_degraded keeps serving', async () => {
+    const h = await harness()
+    const service = credService(h.bindings)
+    await prisma.gitlabProjectBinding.update({ where: { id: h.binding.id }, data: { state: 'admin_degraded' } })
+    expect((await service.grantForAgent(gitlabAgent())).provider).toBe('gitlab')
+    await prisma.gitlabProjectBinding.update({ where: { id: h.binding.id }, data: { state: 'runtime_degraded' } })
+    const denial = await service.grantForAgent(gitlabAgent()).catch((e: GitCredDeniedError) => e)
+    expect(denial).toBeInstanceOf(GitCredDeniedError)
+    expect((denial as GitCredDeniedError).code).toBe('LEASE_DENIED')
+    expect((denial as GitCredDeniedError).retryable).toBe(true)
   })
 
   it('refuses an expired underlying PAT instead of serving a dead token', async () => {

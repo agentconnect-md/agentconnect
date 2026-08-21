@@ -974,12 +974,29 @@ export function buildContainer(
           // Rules embed binding/webhook facts — recompile the project's hooks
           // after every run that may have changed them (assign or remove).
           onConverged: (orgId, projectId) => {
-            void repos.hook
-              .listForOrgKind(OrgId(orgId), 'gitlab')
-              .then(async (rows) => {
-                for (const row of rows) if (row.repoId === projectId) await hookService.broadcast(row)
-              })
-              .catch((err) => http.log.warn({ err }, 'gitlab hook rebroadcast failed'))
+            void (async () => {
+              // Rules embed binding/webhook facts — recompile the project's hooks.
+              for (const row of await repos.hook.listForOrgKind(OrgId(orgId), 'gitlab')) {
+                if (row.repoId === projectId) await hookService.broadcast(row)
+              }
+              // The projected clone URL is a mutable hint keyed by the numeric id:
+              // a saga path refresh (rename) must reach affected agent specs too,
+              // or the daemon-side grant echo verification starts refusing (§13.2).
+              const binding = await repos.gitlabProjectBinding.byProject(orgId, projectId)
+              if (!binding) return
+              const agentIds = await repos.agent.refreshGitlabWorkspacePath(
+                OrgId(orgId),
+                projectId,
+                `https://gitlab.com/${binding.projectPath}`
+              )
+              for (const agentId of agentIds) {
+                const agent = await repos.agent.getUnscoped(agentId)
+                if (!agent) continue
+                await agentDelivery.upsert(agent, (err, daemonId) => {
+                  http.log.warn({ err, agentId, daemonId }, 'gitlab rename: agent/upsert failed (backstop: reconnect)')
+                })
+              }
+            })().catch((err) => http.log.warn({ err }, 'gitlab converge fan-out failed'))
           },
           ...(opts.gitlabFetch ? { fetchImpl: opts.gitlabFetch } : {}),
           log: { warn: (obj, msg) => http.log.warn(obj, msg) }

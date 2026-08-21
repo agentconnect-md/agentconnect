@@ -35,6 +35,7 @@ import type {
   DreamFileReadContent
 } from '@agentconnect.md/protocol'
 import {
+  GITLAB_COM_V1_FEATURE,
   MAX_WORKSPACE_EDIT_BYTES,
   AGENT_CONFIG_REVISION_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
@@ -1511,12 +1512,22 @@ export function agentRoutes(deps: HttpDeps) {
           if (!binding || binding.state === 'cleanup_pending') {
             return conflict('the project is not a managed GitLab binding in this organization')
           }
-          // The binding, not caller input, is the authority for the clone URL.
+          // §17.3: a DIRECT placement must advertise the feature NOW — the
+          // delivery/reconcile gates would otherwise strand a 201'd agent
+          // assigned to a daemon that can never materialize it.
+          if (req.body.daemonId !== undefined) {
+            const daemon = await deps.registry.getAvailable(orgOf(req), DaemonId(req.body.daemonId))
+            if (!daemon?.capabilities.features.includes(GITLAB_COM_V1_FEATURE)) {
+              return conflict('the selected daemon does not support GitLab workspaces yet — upgrade it first')
+            }
+          }
+          // The binding, not caller input, is the authority for the clone URL
+          // and, absent an explicit branch, for the default branch.
           workspace = {
             mode: 'gitlab',
             isolation: ws.worktree === false ? 'shared' : 'session',
             gitRepo: `https://gitlab.com/${binding.projectPath}`,
-            ...(ws.gitBranch !== undefined ? { gitBranch: ws.gitBranch } : {}),
+            gitBranch: ws.gitBranch ?? binding.defaultBranch ?? 'main',
             ...(ws.agentDir !== undefined ? { agentDir: ws.agentDir } : {}),
             gitAccess: ws.gitAccess ?? 'write'
           }
@@ -2358,6 +2369,16 @@ export function agentRoutes(deps: HttpDeps) {
           }
           if (req.body.mode === 'gitlab') {
             if (!deps.gitlab) return conflict('gitlab workspaces are not enabled on this control plane')
+            // §17.3: the daemon that will re-activate this workspace must
+            // decode the gitlab spec arm — direct placement or a pool/duty
+            // incumbent alike (the earlier check only proves workspace-edit-v2).
+            const servingId = (await deps.placementResolver.servingDaemon(existing)) ?? existing.daemonId
+            if (servingId) {
+              const serving = await deps.registry.getAvailable(existing.orgId, servingId)
+              if (!serving?.capabilities.features.includes(GITLAB_COM_V1_FEATURE)) {
+                return conflict('the serving daemon does not support GitLab workspaces yet — upgrade it first')
+              }
+            }
             const projectId = BigInt(req.body.projectId)
             const binding = await deps.repos.gitlabProjectBinding.byProject(existing.orgId, projectId)
             if (!binding || binding.state === 'cleanup_pending') {

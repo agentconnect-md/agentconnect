@@ -864,6 +864,10 @@ export interface AgentRepo {
    *  numeric repo without tombstoning projections: workspace authority remains
    *  live. A concurrently deleted or differently repaired agent is a no-op. */
   setWorkspaceRepoId(agentId: AgentId, repoId: bigint): Promise<boolean>
+  /** Converge gitlab-workspace clone URLs after a binding path refresh (rename)
+   *  — bumps configRevision so the fenced spec push replicates. Returns the
+   *  affected agent ids. */
+  refreshGitlabWorkspacePath(orgId: OrgId, projectId: bigint, cloneUrl: string): Promise<AgentId[]>
   /** Set the visibility + share set (the dedicated `/sharing` write path, kept
    *  separate from content `update`). An org→restricted transition atomically
    *  closes known direct-conversation rows. Stamps the last-modified audit;
