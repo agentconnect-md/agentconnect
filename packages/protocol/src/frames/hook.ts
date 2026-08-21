@@ -190,7 +190,7 @@ export type PublishedHookOutput = z.infer<typeof PublishedHookOutput>
  * (P2) are untrusted third-party content the daemon fences in the prompt.
  */
 export const HookContext = z.object({
-  source: z.enum(['webhook', 'github']),
+  source: z.enum(['webhook', 'github', 'gitlab']),
   // ── github (P2) ──
   event: z.string().optional(), // 'issues' | 'pull_request' | 'issue_comment'
   action: z.string().optional(), // 'opened' | 'synchronize' | 'created' | …

@@ -1,0 +1,430 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import Fastify, { type FastifyInstance } from 'fastify'
+import { createHmac, randomBytes } from 'node:crypto'
+import { FakeClock } from '@agentconnect.md/connection'
+import {
+  GITLAB_COM_V1_FEATURE,
+  HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED,
+  type RcCodeHostMembershipAuthz,
+  type RcHookAssign,
+  type RcRunReport,
+  type RdAck,
+  type RdMsg,
+  type RdMsgHook
+} from '@agentconnect.md/protocol'
+import { HookTable } from './hook-table.js'
+import { HookRateLimiter } from './rate-limit.js'
+import { registerGitlabIngress, gitlabRuleVerdict, normalizeGitlabEvent } from './gitlab-ingress.js'
+
+const HOOK = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+const HOOK_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+const AGENT = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+const DAEMON = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
+const PROJECT = 4455667
+const SA_USER = 9042
+const KEY = randomBytes(32)
+const TOKEN = `whsec_${KEY.toString('base64')}`
+
+const log = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+
+function rule(
+  overrides: Partial<RcHookAssign> = {},
+  gitlab: Partial<NonNullable<RcHookAssign['gitlab']>> = {}
+): RcHookAssign {
+  return {
+    hookId: HOOK,
+    kind: 'gitlab',
+    agentId: AGENT,
+    daemonId: DAEMON,
+    configRevision: '3',
+    dispatchRevision: '5',
+    dispatchDaemonId: DAEMON,
+    reviewPolicy: 'off',
+    reportingMode: 'off',
+    gateMode: 'informational',
+    sessionMode: 'perThread',
+    gitlab: {
+      projectId: String(PROJECT),
+      projectPath: 'example-group/example-project',
+      sessionKeyPrefix: `gitlab:${PROJECT}`,
+      events: ['issues:opened'],
+      labelFilter: [],
+      mentionOnly: false,
+      serviceAccountUserId: String(SA_USER),
+      serviceAccountUsername: `agentconnect-p${PROJECT}`,
+      signingToken: TOKEN,
+      ...gitlab
+    },
+    ...overrides
+  }
+}
+
+function issuePayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    object_kind: 'issue',
+    user: { id: 7001, username: 'alice', avatar_url: 'https://gitlab.com/a.png' },
+    project: { id: PROJECT, path_with_namespace: 'example-group/example-project' },
+    object_attributes: {
+      iid: 42,
+      title: 'db down',
+      description: 'the primary is unreachable',
+      action: 'open',
+      author_id: 7001,
+      url: 'https://gitlab.com/example-group/example-project/-/issues/42',
+      ...((overrides.object_attributes as Record<string, unknown> | undefined) ?? {})
+    },
+    labels: [{ title: 'bug' }],
+    ...Object.fromEntries(Object.entries(overrides).filter(([k]) => k !== 'object_attributes'))
+  }
+}
+
+function mrPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    object_kind: 'merge_request',
+    user: { id: 7001, username: 'alice' },
+    project: { id: PROJECT, path_with_namespace: 'example-group/example-project' },
+    object_attributes: {
+      iid: 77,
+      title: 'tighten retry',
+      description: 'please review',
+      action: 'open',
+      author_id: 7001,
+      source_project_id: PROJECT,
+      target_project_id: PROJECT,
+      last_commit: { id: 'a'.repeat(40) },
+      draft: false,
+      url: 'https://gitlab.com/example-group/example-project/-/merge_requests/77',
+      ...((overrides.object_attributes as Record<string, unknown> | undefined) ?? {})
+    },
+    ...Object.fromEntries(Object.entries(overrides).filter(([k]) => k !== 'object_attributes'))
+  }
+}
+
+function notePayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    object_kind: 'note',
+    user: { id: 7001, username: 'alice' },
+    project: { id: PROJECT, path_with_namespace: 'example-group/example-project' },
+    object_attributes: {
+      note: 'what is the rollout plan?',
+      noteable_type: 'Issue',
+      url: 'https://gitlab.com/example-group/example-project/-/issues/42#note_1',
+      ...((overrides.object_attributes as Record<string, unknown> | undefined) ?? {})
+    },
+    issue: { iid: 42, title: 'db down', labels: [{ title: 'bug' }], author_id: 7002 },
+    ...Object.fromEntries(Object.entries(overrides).filter(([k]) => k !== 'object_attributes'))
+  }
+}
+
+interface Harness {
+  app: FastifyInstance
+  table: HookTable
+  clock: FakeClock
+  sent: RdMsg[]
+  reports: RcRunReport[]
+  authzRequests: RcCodeHostMembershipAuthz[]
+  authzResult: boolean | ((request: RcCodeHostMembershipAuthz) => boolean | Promise<boolean>)
+  ack: RdAck
+  offline: boolean
+  gitlabSupported: boolean
+}
+
+function makeHarness(): Harness {
+  const clock = new FakeClock()
+  const h: Partial<Harness> & Pick<Harness, 'sent' | 'reports' | 'authzRequests'> = {
+    sent: [],
+    reports: [],
+    authzRequests: [],
+    authzResult: true,
+    ack: { msgId: 'x', accepted: true },
+    offline: false,
+    gitlabSupported: true
+  }
+  const app = Fastify()
+  const table = new HookTable()
+  registerGitlabIngress(app, {
+    table,
+    daemons: () => ({
+      get: () => {
+        if (h.offline) return undefined
+        return {
+          supports: (capability: string) => (capability === GITLAB_COM_V1_FEATURE ? h.gitlabSupported === true : true),
+          sendMsg: async (msg: RdMsg) => {
+            h.sent.push(msg)
+            return h.ack!
+          }
+        } as never
+      }
+    }),
+    report: (r) => h.reports.push(r),
+    authorizeMembership: async (request) => {
+      h.authzRequests.push(request)
+      return typeof h.authzResult === 'function' ? h.authzResult(request) : h.authzResult!
+    },
+    authzLimiter: new HookRateLimiter(clock, { capacity: 20, refillPerSec: 0 }),
+    limiter: new HookRateLimiter(clock, { capacity: 5, refillPerSec: 0 }),
+    clock,
+    log
+  })
+  h.app = app
+  h.table = table
+  h.clock = clock
+  return h as Harness
+}
+
+async function flush(): Promise<void> {
+  await new Promise((r) => setTimeout(r, 0))
+}
+
+function post(h: Harness, payload: Record<string, unknown>, overrides: Record<string, string | undefined> = {}) {
+  const body = JSON.stringify(payload)
+  const ts = String(Math.floor(h.clock.now() / 1000))
+  const id = overrides['webhook-id'] ?? 'msg_delivery_1'
+  const signature =
+    overrides['webhook-signature'] ?? `v1,${createHmac('sha256', KEY).update(`${id}.${ts}.${body}`).digest('base64')}`
+  return h.app.inject({
+    method: 'POST',
+    url: '/webhooks/gitlab',
+    headers: {
+      'content-type': 'application/json',
+      'webhook-id': id,
+      'webhook-timestamp': overrides['webhook-timestamp'] ?? ts,
+      'webhook-signature': signature
+    },
+    payload: body
+  })
+}
+
+describe('gitlab ingress', () => {
+  let h: Harness
+  beforeEach(() => {
+    h = makeHarness()
+  })
+  afterEach(async () => {
+    await h.app.close()
+  })
+
+  it('verified issue open → membership authz → dispatch with the §12.3 key and trusted metadata', async () => {
+    h.table.upsert(rule())
+    const res = await post(h, issuePayload())
+    expect(res.statusCode).toBe(202)
+    await flush()
+    expect(h.authzRequests).toEqual([
+      expect.objectContaining({
+        provider: 'gitlab',
+        repoExternalId: String(PROJECT),
+        actorExternalId: '7001',
+        configRevision: '3',
+        dispatchRevision: '5'
+      })
+    ])
+    expect(h.sent).toHaveLength(1)
+    const msg = h.sent[0] as RdMsgHook
+    expect(msg.sessionKey).toBe(`gitlab:${PROJECT}:issue:42`)
+    expect(msg.msgId).toBe(`${HOOK}:msg_delivery_1`)
+    expect(msg.event).toBe('issues:opened')
+    expect(msg.gitlab).toEqual({
+      projectId: String(PROJECT),
+      projectPath: 'example-group/example-project',
+      target: { kind: 'issue', iid: 42 }
+    })
+    expect(msg.context?.source).toBe('gitlab')
+    expect(msg.context?.bodyExcerpt).toBe('the primary is unreachable')
+    expect(h.reports.map((r) => r.status)).toEqual(['accepted'])
+  })
+
+  it('uniform 404: bad signature, stale timestamp, unknown project, malformed body, missing headers', async () => {
+    h.table.upsert(rule())
+    const bad = await post(h, issuePayload(), { 'webhook-signature': `v1,${'x'.repeat(43)}=` })
+    expect(bad.statusCode).toBe(404)
+    const stale = await post(h, issuePayload(), { 'webhook-timestamp': '100' })
+    expect(stale.statusCode).toBe(404)
+    const unknown = await post(h, issuePayload({ project: { id: 999 } }))
+    expect(unknown.statusCode).toBe(404)
+    const malformed = await h.app.inject({
+      method: 'POST',
+      url: '/webhooks/gitlab',
+      headers: { 'content-type': 'application/json' },
+      payload: 'not-json'
+    })
+    expect(malformed.statusCode).toBe(404)
+    await flush()
+    expect(h.sent).toHaveLength(0)
+  })
+
+  it('membership denial skips silently for issues; nothing reaches the daemon', async () => {
+    h.authzResult = false
+    h.table.upsert(rule())
+    expect((await post(h, issuePayload())).statusCode).toBe(202)
+    await flush()
+    expect(h.sent).toHaveLength(0)
+    expect(h.reports).toHaveLength(0)
+  })
+
+  it('a denied MR revision leaves the durable review-request-required row (§12.2)', async () => {
+    h.authzResult = false
+    h.table.upsert(rule({}, { events: ['merge_request:*'] }))
+    const external = mrPayload({
+      object_attributes: { author_id: 7999, source_project_id: 12345 },
+      user: { id: 7999, username: 'mallory' }
+    })
+    expect((await post(h, external)).statusCode).toBe(202)
+    await flush()
+    expect(h.sent).toHaveLength(0)
+    expect(h.reports).toEqual([
+      expect.objectContaining({ status: 'failed', reason: HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED })
+    ])
+  })
+
+  it('§12.1: service-account-authored events are vetoed, except its own same-project MR revision', async () => {
+    h.table.upsert(rule({}, { events: ['issues:opened', 'merge_request:*'] }))
+    const saIssue = issuePayload({ user: { id: SA_USER, username: `agentconnect-p${PROJECT}` } })
+    expect((await post(h, saIssue)).statusCode).toBe(202)
+    const saNote = notePayload({ user: { id: SA_USER, username: `agentconnect-p${PROJECT}` } })
+    expect((await post(h, saNote)).statusCode).toBe(202)
+    await flush()
+    expect(h.sent).toHaveLength(0)
+
+    // The internal CI lane: same-project revision authored by the SA is
+    // TRUSTED — no membership call, straight to dispatch.
+    const internal = mrPayload({
+      object_attributes: { action: 'update', oldrev: 'c'.repeat(40), author_id: SA_USER },
+      user: { id: SA_USER, username: `agentconnect-p${PROJECT}` }
+    })
+    expect((await post(h, internal)).statusCode).toBe(202)
+    await flush()
+    expect(h.authzRequests).toHaveLength(0)
+    expect(h.sent).toHaveLength(1)
+    expect((h.sent[0] as RdMsgHook).event).toBe('merge_request:synchronize')
+  })
+
+  it('assigning the service account as reviewer is the explicit start path', async () => {
+    h.table.upsert(rule({}, { events: ['merge_request:opened'] }))
+    const assigned = mrPayload({
+      object_attributes: { action: 'update' },
+      changes: { reviewers: { previous: [], current: [{ id: SA_USER }] } }
+    })
+    expect((await post(h, assigned)).statusCode).toBe(202)
+    await flush()
+    expect(h.authzRequests).toHaveLength(1)
+    // The assigning ACTOR is authorized, not the MR author.
+    expect(h.authzRequests[0]?.actorExternalId).toBe('7001')
+    expect(h.sent).toHaveLength(1)
+    const msg = h.sent[0] as RdMsgHook
+    expect(msg.event).toBe('merge_request:review_requested')
+    expect(msg.gitlab?.target).toMatchObject({ kind: 'merge_request', iid: 77, explicitReviewRequest: true })
+  })
+
+  it('push is relay-trusted, matches only push:*, and keys the session by ref', async () => {
+    h.table.upsert(rule({}, { events: ['push:*'] }))
+    h.table.upsert(rule({ hookId: HOOK_B }, { events: ['issues:opened'] }))
+    const push = {
+      object_kind: 'push',
+      ref: 'refs/heads/main',
+      user_id: 7001,
+      user_username: 'alice',
+      project: { id: PROJECT, path_with_namespace: 'example-group/example-project' },
+      project_id: PROJECT,
+      commits: [{ message: 'fix: retry' }]
+    }
+    expect((await post(h, push)).statusCode).toBe(202)
+    await flush()
+    expect(h.authzRequests).toHaveLength(0)
+    expect(h.sent).toHaveLength(1)
+    const msg = h.sent[0] as RdMsgHook
+    expect(msg.hookId).toBe(HOOK)
+    expect(msg.sessionKey).toBe(`gitlab:${PROJECT}:push:refs/heads/main`)
+    expect(msg.gitlab?.target).toEqual({ kind: 'push', ref: 'refs/heads/main' })
+  })
+
+  it('merged MRs and closed issues fan out as maintenance cleanup, bypassing the actor gate', async () => {
+    h.authzResult = false // the gate would deny — cleanup must not care
+    h.table.upsert(rule({}, { events: ['merge_request:*'] }))
+    const merged = mrPayload({ object_attributes: { action: 'merge', state: 'merged' } })
+    expect((await post(h, merged)).statusCode).toBe(202)
+    await flush()
+    expect(h.authzRequests).toHaveLength(0)
+    expect(h.sent).toHaveLength(1)
+    expect((h.sent[0] as RdMsgHook).event).toBe('merge_request:merged')
+    expect((h.sent[0] as RdMsgHook).sessionKey).toBe(`gitlab:${PROJECT}:merge_request:77`)
+  })
+
+  it('comment families scope notes; a summon narrows the fan-out to the mentioned agent', async () => {
+    h.table.upsert(rule({}, { commentFamilies: ['issues'], agentName: 'oncall' }))
+    h.table.upsert(rule({ hookId: HOOK_B, agentId: 'ffffffff-ffff-4fff-8fff-ffffffffffff' }, { agentName: 'deploy' }))
+    // HOOK matches via its selected family; HOOK_B has no families and no summon.
+    expect((await post(h, notePayload())).statusCode).toBe(202)
+    await flush()
+    expect(h.sent.map((m) => (m as RdMsgHook).hookId)).toEqual([HOOK])
+
+    h.sent.length = 0
+    h.authzRequests.length = 0
+    // An @mention of one agent name narrows a would-be fan-out.
+    const mention = notePayload({ object_attributes: { note: '@oncall please look' } })
+    expect((await post(h, mention, { 'webhook-id': 'msg_delivery_2' })).statusCode).toBe(202)
+    await flush()
+    expect(h.sent.map((m) => (m as RdMsgHook).hookId)).toEqual([HOOK])
+    // The summoned path authorizes the commenter only.
+    expect(h.authzRequests[0]?.subjectAuthorExternalId).toBeUndefined()
+  })
+
+  it('an unmentioned continuation also fences the subject author (§12.2)', async () => {
+    h.table.upsert(rule({}, { commentFamilies: ['issues'] }))
+    expect((await post(h, notePayload())).statusCode).toBe(202)
+    await flush()
+    expect(h.authzRequests).toEqual([
+      expect.objectContaining({ actorExternalId: '7001', subjectAuthorExternalId: '7002' })
+    ])
+  })
+
+  it('mention-only rules stay silent without a summon', async () => {
+    h.table.upsert(rule({}, { mentionOnly: true, commentFamilies: ['issues'], agentName: 'oncall' }))
+    expect((await post(h, notePayload())).statusCode).toBe(202)
+    await flush()
+    expect(h.sent).toHaveLength(0)
+    const summoned = notePayload({ object_attributes: { note: `@agentconnect-p${PROJECT} plan?` } })
+    expect((await post(h, summoned, { 'webhook-id': 'msg_delivery_2' })).statusCode).toBe(202)
+    await flush()
+    expect(h.sent).toHaveLength(1)
+  })
+
+  it('a daemon without gitlab-com-v1 fails the dispatch closed', async () => {
+    h.gitlabSupported = false
+    h.table.upsert(rule({}, { events: ['push:*'] }))
+    const push = {
+      object_kind: 'push',
+      ref: 'refs/heads/main',
+      user_id: 7001,
+      project: { id: PROJECT, path_with_namespace: 'example-group/example-project' }
+    }
+    expect((await post(h, push)).statusCode).toBe(202)
+    await flush()
+    expect(h.sent).toHaveLength(0)
+    expect(h.reports).toEqual([expect.objectContaining({ status: 'failed', reason: 'rejected:unsupported' })])
+  })
+
+  it('lifecycle noise never fires: edits, reopens, unmerged closes, draft toggles', async () => {
+    h.table.upsert(rule({}, { events: ['issues:*', 'merge_request:*'] }))
+    expect(normalizeGitlabEvent(issuePayload({ object_attributes: { action: 'update' } }) as never)).toBeUndefined()
+    expect(normalizeGitlabEvent(issuePayload({ object_attributes: { action: 'reopen' } }) as never)).toBeUndefined()
+    expect(normalizeGitlabEvent(mrPayload({ object_attributes: { action: 'close' } }) as never)).toBeUndefined()
+    expect(
+      normalizeGitlabEvent(
+        mrPayload({
+          object_attributes: { action: 'update' },
+          changes: { draft: { previous: true, current: false } }
+        }) as never
+      )
+    ).toBeUndefined()
+    // System notes are never turns.
+    expect(normalizeGitlabEvent(notePayload({ object_attributes: { system: true } }) as never)).toBeUndefined()
+  })
+
+  it('verdict is pure: label filter and event patterns gate before authz', async () => {
+    const ctx = normalizeGitlabEvent(issuePayload() as never)!
+    expect(gitlabRuleVerdict(rule({}, { labelFilter: ['bug'] }), ctx)).toBe('needs-authz')
+    expect(gitlabRuleVerdict(rule({}, { labelFilter: ['ops'] }), ctx)).toBe('no-match')
+    expect(gitlabRuleVerdict(rule({}, { events: ['merge_request:*'] }), ctx)).toBe('no-match')
+    expect(gitlabRuleVerdict(rule({ kind: 'github' }), ctx)).toBe('no-match')
+  })
+})
