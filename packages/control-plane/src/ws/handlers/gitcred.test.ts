@@ -194,7 +194,7 @@ describe('handleGitCredRequest — repoFullName passthrough (issue #457)', () =>
 
     await handleGitCredRequest(frame, conn, deps)
 
-    expect(grantForAgent).toHaveBeenCalledWith(PLACED_AGENT, 4455667n)
+    expect(grantForAgent).toHaveBeenCalledWith(PLACED_AGENT, 4455667n, undefined)
     expect(mintForAgent).not.toHaveBeenCalled()
     expect(conn.replyTo).toHaveBeenCalledWith(
       frame,
