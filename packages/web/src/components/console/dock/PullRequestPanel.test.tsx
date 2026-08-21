@@ -41,7 +41,7 @@ vi.mock('@/lib/api', () => {
     setSessionPullRequestAutoMerge: vi.fn((sessionId: string, enabled: boolean) => {
       wire.mergeCalls.push({ sessionId, enabled })
       if (wire.mergeFailure) return Promise.reject(wire.mergeFailure)
-      return Promise.resolve({ armed: enabled })
+      return Promise.resolve({ armed: enabled, placement: enabled ? 'daemon' : null, waitingOn: null, error: null })
     }),
     mergeSessionPullRequest: vi.fn((sessionId: string) => {
       wire.mergeNowCalls.push(sessionId)
@@ -604,18 +604,25 @@ describe('PullRequestPanel body', () => {
     expect(container?.querySelector<HTMLButtonElement>('[data-pr-autofix]')?.disabled).toBe(false)
   })
 
-  it('arms auto-merge through the CP and re-reads the view it invalidated', async () => {
+  it('arms the edge watcher through the CP and re-reads the view it invalidated', async () => {
     await render()
     expect(wire.calls).toHaveLength(1)
 
-    wire.data = pr({ autoMergeArmed: true })
+    // Armable in a state GitHub's own auto-merge refuses outright: a check still running, and a
+    // review asking for changes. That refusal is what the edge watcher exists to replace.
+    wire.data = pr({
+      autoMergeArmed: true,
+      autoMergePlacement: 'sandbox',
+      autoMergeWaitingOn: 'checks running: ci/lint'
+    })
     await press('[data-pr-automerge]')
 
     expect(wire.mergeCalls).toEqual([{ sessionId: 'session-1', enabled: true }])
     expect(wire.calls).toHaveLength(2) // the post-write re-read, riding the CP's own invalidation
     expect(container?.querySelector<HTMLInputElement>('[data-pr-automerge]')?.checked).toBe(true)
-    expect(text()).toContain('Auto-merge armed')
-    expect(text()).toContain('after checks + approvals')
+    expect(text()).toContain('Watching')
+    // The watcher's own verdict, which is the answer to "why has this not merged yet".
+    expect(text()).toContain('waiting on checks running: ci/lint')
 
     // Unchecking disarms with the same round trip.
     wire.data = pr({ autoMergeArmed: false })

@@ -212,9 +212,10 @@ on the session route carries the _hook_, not the _run_), and the entire
   Cancel/Reopen and a per-row patch count); **that is deliberately not being
   built** — see §5.2. Threads render read-only; a single Auto-fix hands the set
   to the agent as one turn.
-- **Merge when ready** checkbox → GitHub auto-merge, flipping the button from
-  "Merge" to "Auto-merge armed" and the hint from "Squash and merge" to
-  "Squash · after checks + approvals".
+- **Merge when ready** checkbox → an EDGE watcher (not GitHub auto-merge — see
+  the M6 decision below for why that mutation cannot back this control),
+  labelling the box "Watching" and replacing the hint with what the watcher is
+  holding for ("Squash · waiting on checks running: build").
 
 §5.2 covers how auto-fix has to be built. Storage rule stays: cache PR **status
 and counts** briefly in memory (rate-limit pressure), never persist **review
@@ -412,16 +413,16 @@ All following the existing workspace-route shape in `agents.ts`: `getOrgAgent` �
 `toDto`. Every route needs `tags`, `summary`, `description`, and a unique
 `operationId` or it renders nameless in the OpenAPI docs.
 
-| Method | Path                                                                         | Backing                                 |
-| ------ | ---------------------------------------------------------------------------- | --------------------------------------- |
-| GET    | `/agents/:id/workspace/gitdiff`                                              | `workspace/gitdiff`                     |
-| GET    | `/agents/:id/workspace/gitlog`                                               | `workspace/gitlog`                      |
-| POST   | `/agents/:id/workspace/gitstage` \| `gitunstage` \| `gitcommit` \| `gitpush` | write frames                            |
-| POST   | `/agents/:id/workspace/gitmessage`                                           | `workspace/gitmessage`                  |
-| GET    | `/agents/:id/tasks`                                                          | `task/list`                             |
-| GET    | `/sessions/:id/pull-request`                                                 | Postgres identity + GitHub REST/GraphQL |
-| POST   | `/sessions/:id/pull-request/auto-merge`                                      | GraphQL `enablePullRequestAutoMerge`    |
-| POST   | `/sessions/:id/pull-request/merge`                                           | GraphQL `mergePullRequest`              |
+| Method | Path                                                                         | Backing                                                     |
+| ------ | ---------------------------------------------------------------------------- | ----------------------------------------------------------- |
+| GET    | `/agents/:id/workspace/gitdiff`                                              | `workspace/gitdiff`                                         |
+| GET    | `/agents/:id/workspace/gitlog`                                               | `workspace/gitlog`                                          |
+| POST   | `/agents/:id/workspace/gitstage` \| `gitunstage` \| `gitcommit` \| `gitpush` | write frames                                                |
+| POST   | `/agents/:id/workspace/gitmessage`                                           | `workspace/gitmessage`                                      |
+| GET    | `/agents/:id/tasks`                                                          | `task/list`                                                 |
+| GET    | `/sessions/:id/pull-request`                                                 | Postgres identity + GitHub REST/GraphQL + `automerge/state` |
+| POST   | `/sessions/:id/pull-request/auto-merge`                                      | `automerge/set` (edge watcher)                              |
+| POST   | `/sessions/:id/pull-request/merge`                                           | GraphQL `mergePullRequest`                                  |
 
 **`GET /agents/:id/tasks` does NOT use `canReadWorkspaceScope`**, and this
 paragraph's earlier claim that it would was wrong. That gate requires
@@ -649,7 +650,7 @@ the panel that needs it lands — `messages-square`, `folder-tree`,
 | Prototype                      | Token                                                  | Use                                                                 |
 | ------------------------------ | ------------------------------------------------------ | ------------------------------------------------------------------- |
 | `#c62a78`                      | `--brand`                                              | active tab, indicator, links, resize handle, primary button         |
-| `#fdeef5`                      | `--brand-soft`                                         | active tab badge, selected chip, armed auto-merge                   |
+| `#fdeef5`                      | `--brand-soft`                                         | active tab badge, selected chip, watching merge-when-ready          |
 | `#11161d`                      | `--text-primary`                                       | titles, row text                                                    |
 | `#6c7480` / `#8a919c`          | `--text-secondary` / `--text-tertiary`                 | labels, meta                                                        |
 | `#98a0ab` / `#c2c7cf`          | `--text-disabled` / `--border-strong`                  | eyebrows, line numbers, checkbox borders                            |
@@ -940,7 +941,7 @@ which changes what M5 has to build:
   unbackable without one. M5 therefore adds a minimal `githubGraphql` helper
   beside `githubRequest` (same installation auth, same timeout, same error
   mapping, POST to `/graphql`). M6 needs it regardless for
-  `resolveReviewThread` and `enablePullRequestAutoMerge`, so this is not
+  `resolveReviewThread` and `mergePullRequest`, so this is not
   speculative plumbing — but it was missing from this plan's route table, which
   named both mutations as though the capability already existed.
 - **`HookRun.sessionId` is not indexed.** The lookup this route is built on — a
@@ -989,26 +990,64 @@ finishing the inherited wip:
   `knownAgentReview`) are overlaid per return path, in-flight merges included.
 
 **M6 — PR actions.** The single Auto-fix button over the webchat turn path
-(§5.2), and `Merge when ready` (`enablePullRequestAutoMerge`) gated on the
-clamped token actually carrying write. _Exit:_ the design's headline loop — read
+(§5.2), a direct squash Merge, and `Merge when ready` over an edge-run watcher,
+all gated on the clamped token actually carrying write. _Exit:_ the design's headline loop — read
 the review, hand it to the agent, arm the merge — works end to end.
 **Landed.**
 
 Decisions recorded while building it:
 
-- **A Merge button beside auto-merge, both under one write capability.** The
-  merge box draws a direct Merge (squash, `mergePullRequest`) next to the
-  Merge-when-ready checkbox (`enablePullRequestAutoMerge`), each backed by its
-  own route — `POST /sessions/:id/pull-request/merge` and
+- **A Merge button beside merge-when-ready, both under one write capability.**
+  The merge box draws a direct Merge (squash, `mergePullRequest`) next to the
+  Merge-when-ready checkbox, each backed by its own route —
+  `POST /sessions/:id/pull-request/merge` and
   `POST /sessions/:id/pull-request/auto-merge`. Both are disabled below write
   tier via the read projection's per-caller `canArmAutoMerge` flag
-  (Postgres-only, computed in the route like the overlay facts — never cached),
-  and GitHub declining either write — arming on a PR whose checks already pass,
-  or merging one that is not mergeable — relays as a 409 the box shows as data.
-  Both routes are idempotent — a fresh node read decides whether the mutation
-  runs — and the mint carries `contents: write` beside `pull_requests: write`
-  because GitHub performs the eventual merge under the same grant; the
-  additional-repo comment tier is deliberately excluded (merging code).
+  (Postgres-only, computed in the route like the overlay facts — never cached).
+  The Merge route is idempotent on a fresh node read, pins `expectedHeadOid` to
+  the head the operator was shown, and relays GitHub declining it as a 409 the
+  box shows as data; the mint carries `contents: write` beside
+  `pull_requests: write` because the merge needs both, and the additional-repo
+  comment tier is deliberately excluded (merging code).
+- **`enablePullRequestAutoMerge` cannot back Merge-when-ready, so the watcher is
+  ours and it runs at the EDGE.** GitHub refuses that mutation for any pull
+  request whose `mergeStateStatus` is not `BLOCKED` — "Pull request is in clean
+  status" once the checks pass, "unstable status" while they run on a repository
+  with no REQUIRED status checks. On such a repository (the common case, this
+  one included) there is no state in which the box can be armed at all, which is
+  what made the control look broken rather than unavailable. Merge-when-ready is
+  therefore an AgentConnect watcher: it polls the pull request and squash-merges
+  once it is open, undrafted, conflict-free, has no failing or running check and
+  nobody has requested changes. `REVIEW_REQUIRED` deliberately does NOT block —
+  the operator ticking the box is the approval, and a repository with no required
+  reviewers reports it forever. Each tick judges the CURRENT head and pins the
+  merge to it, because merge-when-ready must allow the fix commit that turns the
+  checks green; a failing tick keeps the watcher ARMED and surfaces its reason
+  (`autoMergeWaitingOn` / `autoMergeError`), since the usual cure is that next
+  commit.
+- **Where the watcher runs, and why nothing is stored.** A cluster-placed agent's
+  watcher is a process IN ITS POD: a new `automerge` shim capability
+  (`src/shim/auto-merge-handler.ts`) spawns one `/opt/agentconnect/shim/auto-merge.js`
+  per armed pull request, which fetches its own clamped `gh` token per tick over
+  the existing gitcred tunnel. A locally-placed agent has no pod, so the loop
+  runs in its daemon (`github/auto-merge/watcher.ts` dispatches on the same
+  `runsInSandbox` predicate the git runner uses). Its own capability rather than
+  a widening of `exec`: that channel is git-only and enforced IN the pod on
+  purpose, and reaching `gh` through it would convert a deliberate boundary into
+  an arbitrary-execution surface. The armed set is IN MEMORY at both placements
+  and is never persisted — a reclaimed sandbox or a restarted daemon genuinely
+  stops watching, and the box must read back unchecked rather than claim an
+  intent nothing will act on. The image ships the entry, so a pod created from an
+  older image answers `unsupported-image`, which the CP relays as a 409 naming
+  the resume rather than a 503 that would read as "try again".
+- **The CP relays merge-when-ready and stores none of it.** No table, no
+  migration, no background loop, no register-time replay: `automerge/set` and
+  `automerge/state` are scoped request/reply frames like `task/list`, gated on
+  the daemon advertising `auto-merge-v1`. The GET overlays the live answer onto
+  the projection per caller (never cached), and `autoMergeArmed: null` means
+  nobody could be asked — an offline daemon, or one too old — which the panel
+  draws differently from a confident "not armed". A lost overlay never fails the
+  panel read; it costs the toggle its state and nothing else.
 - **Auto-fix's only follow-up is one forced re-read on the turn's falling
   edge.** The panel never watches the turn; it takes a `turnActive` prop, and a
   pressed Auto-fix arms a per-scope wait that the next falling edge consumes —
@@ -1054,17 +1093,17 @@ mutation.
 
 ## 11. What changed from revision 1
 
-| Area           | Revision 1                   | Revision 2                                                                            |
-| -------------- | ---------------------------- | ------------------------------------------------------------------------------------- |
-| Left pane      | transcript only              | transcript **or** file/diff viewer, mutually exclusive                                |
-| Git header     | Fetch / Pull / Stash buttons | branch + ahead/behind only; pull has no UI home                                       |
-| Git rows       | static                       | click opens the diff; hover `+`/`−` stages the file                                   |
-| Commit box     | plain textarea               | AI generate button with loading state                                                 |
-| PR threads     | static text                  | four-state auto-fix machine per thread — **scoped down to one Auto-fix action, §5.2** |
-| PR merge       | plain Merge button           | Merge button (squash) **and** Merge-when-ready checkbox → armed auto-merge            |
-| Tasks          | progress bar per task        | no progress bar                                                                       |
-| Dock min width | 360px                        | 380px                                                                                 |
-| Tab gap        | 2px                          | 0px                                                                                   |
+| Area           | Revision 1                   | Revision 2                                                                                           |
+| -------------- | ---------------------------- | ---------------------------------------------------------------------------------------------------- |
+| Left pane      | transcript only              | transcript **or** file/diff viewer, mutually exclusive                                               |
+| Git header     | Fetch / Pull / Stash buttons | branch + ahead/behind only; pull has no UI home                                                      |
+| Git rows       | static                       | click opens the diff; hover `+`/`−` stages the file                                                  |
+| Commit box     | plain textarea               | AI generate button with loading state                                                                |
+| PR threads     | static text                  | four-state auto-fix machine per thread — **scoped down to one Auto-fix action, §5.2**                |
+| PR merge       | plain Merge button           | Merge button (squash) **and** Merge-when-ready checkbox → an edge watcher that says what it waits on |
+| Tasks          | progress bar per task        | no progress bar                                                                                      |
+| Dock min width | 360px                        | 380px                                                                                                |
+| Tab gap        | 2px                          | 0px                                                                                                  |
 
 Two revision-1 open questions are now settled by the design itself: the Tasks
 progress bar is gone (it was unbackable), and `workspace/gitpull` no longer needs

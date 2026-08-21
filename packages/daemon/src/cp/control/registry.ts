@@ -62,6 +62,7 @@ import {
 } from './session.js'
 import { runtimeCommands, skillsLocal, type SkillsControlDeps } from './skills.js'
 import { taskList, type TaskControlDeps } from './task.js'
+import { autoMergeSet, autoMergeState, type AutoMergeControlDeps } from './automerge.js'
 import {
   workspaceDelete,
   workspaceGitCommit,
@@ -97,6 +98,7 @@ export interface ControlDeps
     SessionControlDeps,
     SkillsControlDeps,
     TaskControlDeps,
+    AutoMergeControlDeps,
     WorkspaceControlDeps {}
 
 /** Every dispatchable C→D control frame kind, by wire type. A type absent here is ignored. */
@@ -151,6 +153,8 @@ export const CONTROL_HANDLERS: Map<string, ControlHandler<ControlDeps>> = new Ma
   ['workspace/gitpush', workspaceGitPush],
   ['workspace/gitmessage', workspaceGitMessage],
   ['task/list', taskList],
+  ['automerge/set', autoMergeSet],
+  ['automerge/state', autoMergeState],
   ['agent/wake', agentWake],
   ['memory/channels', memoryChannels],
   ['memory/list', memoryList],

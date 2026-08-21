@@ -63,6 +63,7 @@ import {
 } from './shim/config-file-env.js'
 import { writeGhShim } from './cp/gh-shim.js'
 import { GitCredServer, gitcredShimPath, gitcredSocketPath, writeGitcredShim } from './cp/gitcred-server.js'
+import { AutoMergeWatcher } from './github/auto-merge/watcher.js'
 import {
   daemonGitCredentialTarget,
   initGitInjection,
@@ -269,6 +270,7 @@ import {
   MAX_TASK_DETAIL,
   MAX_TASK_LIST_TASKS,
   TASK_LIST_FEATURE,
+  AUTO_MERGE_FEATURE,
   RUNTIME_COMMANDS_FEATURE,
   AGENT_WAKE_FEATURE,
   WORKSPACE_GIT_MESSAGE_FEATURE,
@@ -635,6 +637,10 @@ export class Daemon {
   /** Public commit attribution selected by the CP deployment's GitHub App. */
   private gitCommitIdentity?: GitCommitIdentity
   private gitCredServer?: GitCredServer
+  /** Merge-when-ready's in-memory armed set (github/auto-merge). Built with the credential server,
+   *  because a watcher that cannot mint a gh token has nothing to poll with. Never persisted: this
+   *  process going away is what unchecks the box. */
+  private autoMergeWatcher?: AutoMergeWatcher
   /** run/bin with the gh wrapper (multi-repo #457) — prepended to github-app
    *  agents' PATH at host spawn; unset ⇒ shim write failed, spawn without it. */
   private ghBinDir?: string
@@ -1698,6 +1704,17 @@ export class Daemon {
       this.log.warn(`gitcred: gh wrapper shim write failed — spawning agents without it (${formatErr(err)})`)
     }
     this.gitCredServer.start()
+    // The watcher dispatches on placement: a cluster agent's pod gets the `automerge` channel and
+    // owns the loop, a local agent gets a loop in this process. Both read a token through the same
+    // clamped credential path the agent's own gh does.
+    this.autoMergeWatcher = new AutoMergeWatcher({
+      knownAgent: (agentId) => this.agents.has(agentId),
+      sandboxFor: (agentId) => this.k8sPlane?.autoMergeFor(agentId),
+      capabilityFor: (agentId) => this.gitCredServer!.capabilityFor(agentId),
+      tokenFor: async (agentId, repoFullName) =>
+        (await this.gitCreds.get(agentId, 'helper', { plane: 'gh', repo: repoFullName })).token,
+      log: { info: (m) => this.log.info(m), warn: (m) => this.log.warn(m) }
+    })
     probeGitVersion((m) => this.log.warn(m))
   }
 
@@ -3621,6 +3638,7 @@ export class Daemon {
       WORKSPACE_SESSION_READ_FEATURE,
       WORKSPACE_REPO_SCOPE_FEATURE,
       TASK_LIST_FEATURE,
+      AUTO_MERGE_FEATURE,
       RUNTIME_COMMANDS_FEATURE,
       // Only a cluster daemon has a sandbox to wake; elsewhere the CP answers `unsupported` unsent.
       ...(this.k8s ? [AGENT_WAKE_FEATURE] : []),
@@ -14488,6 +14506,7 @@ export class Daemon {
       sessionThreadUrl: (session) => this.sessionThreadUrl(session),
       childSessionStatusProbe: (probe) => this.collab.childSessionStatusProbe(probe),
       listBackgroundTasks: (req) => this.listBackgroundTasks(req),
+      autoMerge: () => this.autoMergeWatcher,
       withWorkspaceFileWrite: <T>(agentId: string, write: () => Promise<T>): Promise<T> =>
         this.withWorkspaceFileWrite(agentId, write),
       withWorkspaceIndexWrite: <T>(agentId: string, write: () => Promise<T>): Promise<T> =>
@@ -15474,6 +15493,8 @@ export class Daemon {
     // so server.close() isn't left waiting on a live bridge connection.
     await Promise.resolve(this.mcp?.stop()).catch((e) => errors.push(e))
     this.gitCredServer?.stop()
+    // Local loops end with the process; dropping them here just makes the timers stop promptly.
+    this.autoMergeWatcher?.stop()
     if (this.dataPlane) await this.dataPlane.close().catch((e) => errors.push(e))
     else await this.store?.close()
     if (errors.length) throw new AggregateError(errors, 'stop: partial failure')

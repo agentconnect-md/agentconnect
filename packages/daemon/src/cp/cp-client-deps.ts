@@ -44,6 +44,7 @@ import type { SessionMetadataOutbox } from '../store/session-metadata-outbox.js'
 import type { WebchatMcpRevocations } from '../webchat/mcp-revocations.js'
 import type { WorkspaceManager } from '../workspace/workspace-manager.js'
 import type { K8sRuntimePlane } from '../k8s/runtime-plane.js'
+import type { AutoMergeWatcher } from '../github/auto-merge/watcher.js'
 import type { SystemMetrics } from '../metrics/system-metrics.js'
 import type { ReadinessGate } from '../readiness.js'
 import type { MemoryFs } from '../memory/store.js'
@@ -135,6 +136,8 @@ export interface CpClientSeamHost {
   sessionThreadUrl(session: SessionRecord): string | undefined
   childSessionStatusProbe(probe: ChildSessionStatusProbe): Promise<ChildSessionStatus>
   listBackgroundTasks(req: TaskListReq): TaskList
+  /** The edge's in-memory merge-when-ready registry, or undefined before agents are loaded. */
+  autoMerge(): AutoMergeWatcher | undefined
   withWorkspaceFileWrite<T>(agentId: string, write: () => Promise<T>): Promise<T>
   withWorkspaceIndexWrite<T>(agentId: string, write: () => Promise<T>): Promise<T>
   runCommitMessagePass: CommitMessagePass
@@ -319,6 +322,9 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
     // A pure projection of the in-memory lease — no I/O, no runtime, and nothing it can do to a
     // reclaim decision, so it needs neither of the workspace coordinators.
     taskReader: { list: async (req) => host.listBackgroundTasks(req) },
+    // Merge-when-ready lives at the EDGE and nowhere else — the CP relays these two frames and
+    // stores nothing, so an unarmed answer is the truth about this process, not a lost row.
+    ...(host.autoMerge() ? { autoMerge: host.autoMerge()! } : {}),
     // The console's "start this agent's sandbox": duty claim + channel bind, no host — the same
     // condition the file reader serves on, reached without a turn. Local daemons have no plane.
     agentWake: createAgentWaker({

@@ -87,6 +87,13 @@ export const WORKSPACE_GIT_MESSAGE_FEATURE = 'workspace-git-message-v1'
  * hides the Tasks tab on a daemon without it rather than showing a tab that can never answer. */
 export const TASK_LIST_FEATURE = 'task-list-v1'
 
+/** Daemon serves `automerge/set` + `automerge/state` — the PR panel's merge-when-ready watcher, run at
+ * the edge because GitHub's own auto-merge refuses every pull request that is not BLOCKED. Checked
+ * before sending, like every other new frame: an older daemon ignores it silently, so the REQ would
+ * burn its retransmit budget and then read as an offline daemon. The console disables the box on a
+ * daemon without it rather than offering a control that can never arm. */
+export const AUTO_MERGE_FEATURE = 'auto-merge-v1'
+
 /** Daemon serves `runtime/commands` — the slash commands an agent's ACP runtime advertised it can be
  * asked to run. Checked before sending: an older daemon ignores an unknown frame silently, so the REQ
  * would burn its retransmit budget and then read as an offline daemon. */

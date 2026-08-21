@@ -12,6 +12,9 @@ import { createHash } from 'node:crypto'
 import type {
   Ack,
   AgentLaunch,
+  AutoMergeSetReq,
+  AutoMergeState,
+  AutoMergeStateReq,
   AgentLaunched,
   AgentUpsert,
   AgentRemove,
@@ -496,6 +499,27 @@ export class ControlSender {
   async cronRun(daemonId: string, r: CronRunNow): Promise<Ack> {
     const c = this.must(daemonId)
     return c.conn.request<Ack>('cron/run', r, { epoch: c.sessionEpoch })
+  }
+
+  /**
+   * Arm or disarm the EDGE's merge-when-ready watcher (REQ → `automerge/set/result`).
+   *
+   * A relay, not a record: the CP stores no armed intent, runs no loop and replays nothing on
+   * reconnect. The watcher is in the agent's sandbox (cluster placement) or its daemon's memory
+   * (local), so a reclaimed pod or a restarted daemon forgets — and the console's next read says
+   * so instead of showing a box armed against nothing. Explicit orgId for the same reason the
+   * agent frames take one: a pool member resolves the org from the agents it was told about.
+   */
+  async autoMergeSet(daemonId: string, orgId: string, req: AutoMergeSetReq): Promise<AutoMergeState> {
+    const c = this.must(daemonId)
+    return c.conn.request<AutoMergeState>('automerge/set', req, { epoch: c.sessionEpoch }, undefined, orgId)
+  }
+
+  /** Read that same watcher's live state (REQ → `automerge/state/result`) — armed, what it is
+   *  waiting on, and where it runs. Read-only and stored nowhere. */
+  async autoMergeState(daemonId: string, orgId: string, req: AutoMergeStateReq): Promise<AutoMergeState> {
+    const c = this.must(daemonId)
+    return c.conn.request<AutoMergeState>('automerge/state', req, { epoch: c.sessionEpoch }, undefined, orgId)
   }
 
   /** Read a daemon's local session projection (REQ → `session/list/page`).

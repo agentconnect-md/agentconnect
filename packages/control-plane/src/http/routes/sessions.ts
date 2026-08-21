@@ -16,11 +16,11 @@ import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { z } from 'zod'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
-import { AgentId, HookId, OrgId, SessionId } from '../../domain/ids.js'
+import { AgentId, DaemonId, HookId, OrgId, SessionId } from '../../domain/ids.js'
 import { orgOf, ctxOf, denyNonOwner } from '../rbac.js'
 import { decodeConversationKey, encodeConversationKey } from '../conversation-key.js'
 import { canChangeSessionVisibility, canContinueSession, canView, canViewSession } from '../../authorization/policy.js'
-import { originKindOf } from '@agentconnect.md/protocol'
+import { AUTO_MERGE_FEATURE, AutoMergeErrorReason, originKindOf } from '@agentconnect.md/protocol'
 import { makeSessionAccessResolver } from '../session-access.js'
 import { resolveContinuationHost } from '../session-continuation.js'
 import { Tag } from '../plugins/openapi.js'
@@ -32,6 +32,7 @@ import type { PullRequestView } from '../../github/pull-request-view.service.js'
 import type { SessionMetaRecord } from '../../persistence/ports.js'
 import { GithubApiError } from '../../github/api.js'
 import { GitCredDeniedError } from '../../github/service.js'
+import { ProtocolError } from '../../domain/errors.js'
 import {
   SessionListPageDto,
   SessionFacetsDto,
@@ -365,10 +366,21 @@ function agentReviewOf(event: string | null): 'approved' | 'changes_requested' |
   return null
 }
 
-// Service view -> HTTP body, 1:1 plus the caller's write capability; degradation judgements are the service's.
+/** What the EDGE said about its watcher, or null when nobody could be asked (no live daemon, or one
+ *  too old to serve the frame) — which the panel draws differently from a confident "not armed". */
+export interface AutoMergeOverlay {
+  armed: boolean
+  placement?: 'sandbox' | 'daemon'
+  waitingOn?: string
+  lastError?: string
+}
+
+// Service view -> HTTP body, 1:1 plus the caller's write capability and the edge's watcher state;
+// degradation judgements are the service's.
 function toSessionPullRequestDto(
   view: PullRequestView,
   canArmAutoMerge: boolean,
+  autoMerge: AutoMergeOverlay | null,
   // How this PR was found. Defaulted to the run, which is the only source that existed before §12.6.
   link: {
     linkedBy: 'run' | 'head-branch'
@@ -385,7 +397,10 @@ function toSessionPullRequestDto(
   return {
     ...link,
     canArmAutoMerge,
-    autoMergeArmed: view.autoMergeArmed,
+    autoMergeArmed: autoMerge ? autoMerge.armed : null,
+    autoMergePlacement: autoMerge?.placement ?? null,
+    autoMergeWaitingOn: autoMerge?.waitingOn ?? null,
+    autoMergeError: autoMerge?.lastError ?? null,
     repoFullName: view.repoFullName,
     pullNumber: view.pullNumber,
     title: view.title,
@@ -1122,6 +1137,43 @@ export function sessionRoutes(deps: HttpDeps) {
       return branchPullRequestLink(req, session, false)
     }
 
+    /**
+     * Ask the edge what its merge-when-ready watcher holds for this pull request.
+     *
+     * A live read on every panel poll, because the armed set is in memory at the edge and there is
+     * no row anywhere to read instead — that is the design, not a gap: a sandbox that was reclaimed
+     * or a daemon that restarted is genuinely no longer watching, and the box must go back to
+     * unchecked. null (not `false`) whenever nobody could be asked, so the panel can say "unknown"
+     * rather than assert a state it never heard.
+     */
+    const autoMergeOverlay = async (
+      req: FastifyRequest,
+      agent: { id: AgentId; daemonId: string | null } | null,
+      repoFullName: string,
+      pullNumber: number
+    ): Promise<AutoMergeOverlay | null> => {
+      if (!agent?.daemonId) return null
+      const daemon = await deps.registry.getAvailable(orgOf(req), DaemonId(agent.daemonId))
+      if (!daemon?.capabilities.features.includes(AUTO_MERGE_FEATURE)) return null
+      try {
+        const state = await deps.control.autoMergeState(agent.daemonId, orgOf(req), {
+          agentId: agent.id,
+          repoFullName,
+          prNumber: pullNumber
+        })
+        return {
+          armed: state.armed,
+          ...(state.placement ? { placement: state.placement } : {}),
+          ...(state.waitingOn ? { waitingOn: state.waitingOn } : {}),
+          ...(state.lastError ? { lastError: state.lastError } : {})
+        }
+      } catch {
+        // An offline or refusing daemon costs the panel its toggle state and nothing else — the
+        // whole pull request read must not fail over a control's decoration.
+        return null
+      }
+    }
+
     // The session's PR (§3.4): identity from the owning run — or, with no run, from the session
     // worktree's own head branch (§12.6) — and live state from GitHub; a GitHub failure is DATA
     // (`degraded`), and only a session neither source can name a PR for 404s (hides the tab).
@@ -1170,6 +1222,7 @@ export function sessionRoutes(deps: HttpDeps) {
               req.query.refresh === true
             ),
             canArmBranch,
+            await autoMergeOverlay(req, link.agent, link.repoFullName, link.pullNumber),
             {
               linkedBy: 'head-branch',
               linkBranch: link.branch,
@@ -1200,7 +1253,8 @@ export function sessionRoutes(deps: HttpDeps) {
             },
             req.query.refresh === true
           ),
-          canArm
+          canArm,
+          await autoMergeOverlay(req, agent, run.repoFullName, run.pullNumber)
         )
       }
     )
@@ -1215,7 +1269,7 @@ export function sessionRoutes(deps: HttpDeps) {
           tags: [Tag.Sessions],
           summary: 'Arm or disarm auto-merge on the session’s pull request',
           description:
-            'Enables or disables GitHub auto-merge (squash) for this session’s pull request — the same identity the GET resolves, from the owning run or the session branch — using an installation token clamped to the owning agent’s repository tier — the write requires that clamp to actually carry `pull_requests: write`, so a read- or comment-tier agent is refused (403) rather than escalated. Idempotent: asking for the state the PR is already in succeeds without a mutation. 404 mirrors the GET; 409 relays GitHub declining the state change (for example a pull request whose checks already pass, which GitHub arms nothing for); 429 is GitHub rate limiting; 502 is GitHub unreachable.',
+            'Arms or disarms merge-when-ready (squash) for this session’s pull request. The watcher runs at the EDGE — in the agent’s sandbox when its work runs in a pod, otherwise in the owning daemon’s process — and polls GitHub until the pull request is open, undrafted, conflict-free, with no failing or running check and no requested changes, then squash-merges the head it judged. It is deliberately NOT GitHub’s own auto-merge: `enablePullRequestAutoMerge` refuses every pull request that is not BLOCKED, so on a repository without required status checks it can never be armed at all. Nothing is persisted: the armed set is in memory at the edge, so a reclaimed sandbox or a restarted daemon forgets it and the box reads back unchecked. Arming needs the owning agent’s clamped grant to carry `pull_requests: write`, so a read- or comment-tier agent is refused (403); idempotent — asking for the state it is already in returns that state. 404 mirrors the GET; 409 when no daemon serves the agent or its runtime image ships no watcher; 503 when the daemon is unreachable.',
           operationId: 'setSessionPullRequestAutoMerge',
           params: IdParam,
           body: SessionPullRequestAutoMergeBodyDto,
@@ -1224,8 +1278,7 @@ export function sessionRoutes(deps: HttpDeps) {
             403: ErrorDto,
             404: ErrorDto,
             409: ErrorDto,
-            429: ErrorDto,
-            502: ErrorDto
+            503: ErrorDto
           }
         }
       },
@@ -1234,9 +1287,8 @@ export function sessionRoutes(deps: HttpDeps) {
           reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'pull request not found' })
         const owned = await getOrgViewableSession(req, req.params.id)
         if (!owned) return absent()
-        const view = deps.pullRequestView
         const github = deps.github
-        if (!view || !github) return absent()
+        if (!github) return absent()
         const linked = await pullRequestWriteLink(req, owned.session)
         if (!linked) return absent()
         const agent = linked.agent
@@ -1245,15 +1297,45 @@ export function sessionRoutes(deps: HttpDeps) {
             .code(403)
             .send({ error: 'Forbidden', statusCode: 403, message: 'the owning agent no longer exists' })
         }
+        // The capability gate is unchanged even though the CP performs no mutation here: the edge
+        // merges under this same clamped grant, so a read- or comment-tier agent must be refused at
+        // the door rather than arming a watcher whose merge would be denied a minute later.
+        if (!(await github.canArmAutoMerge(agent, linked.repoId, linked.repoFullName))) {
+          return reply.code(403).send({
+            error: 'Forbidden',
+            statusCode: 403,
+            message: 'the owning agent’s repository access is below write tier'
+          })
+        }
+        if (!agent.daemonId) {
+          return reply
+            .code(409)
+            .send({ error: 'Conflict', statusCode: 409, message: 'no daemon serves this agent', code: 'NO_DAEMON' })
+        }
+        const daemon = await deps.registry.getAvailable(orgOf(req), agent.daemonId)
+        if (!daemon?.capabilities.features.includes(AUTO_MERGE_FEATURE)) {
+          return reply.code(409).send({
+            error: 'Conflict',
+            statusCode: 409,
+            message: 'this agent’s daemon does not serve merge-when-ready; upgrade its daemon',
+            code: 'DAEMON_FEATURE_MISSING'
+          })
+        }
         try {
-          const cred = await github.mintAutoMergeForAgent(agent, linked.repoId, linked.repoFullName)
-          return await view.setAutoMerge(
-            { repoId: linked.repoId, repoFullName: linked.repoFullName, pullNumber: linked.pullNumber },
-            cred.token,
-            req.body.enabled
-          )
+          const state = await deps.control.autoMergeSet(agent.daemonId, orgOf(req), {
+            agentId: agent.id,
+            repoFullName: linked.repoFullName,
+            prNumber: linked.pullNumber,
+            enabled: req.body.enabled
+          })
+          return {
+            armed: state.armed,
+            placement: state.placement ?? null,
+            waitingOn: state.waitingOn ?? null,
+            error: state.lastError ?? null
+          }
         } catch (err) {
-          const failure = prWriteFailureOf(err)
+          const failure = autoMergeEdgeFailureOf(err)
           if (!failure) throw err
           return reply.code(failure.statusCode).send(failure)
         }
@@ -1335,6 +1417,37 @@ export function sessionRoutes(deps: HttpDeps) {
 // GitHub/clamp failures onto HTTP, as DATA: capability and installation denials are 403, rate limits
 // 429, GitHub down 502 — and GitHub declining the write itself (clean status, not mergeable, closed PR)
 // is a 409, not a 5xx. Null means "not ours" and the caller rethrows.
+/**
+ * A merge-when-ready failure at the EDGE, as a status the console can act on.
+ *
+ * `unsupported-image` is a 409 rather than a 503: the daemon answered, and the answer is that this
+ * agent's runtime image predates the in-sandbox watcher — a resume onto the current image fixes it,
+ * where "try again later" would be a lie. An unknown agent is a stale placement (409 too: the
+ * console's own read will re-resolve it), and an offline or refusing daemon is a 503.
+ */
+function autoMergeEdgeFailureOf(
+  err: unknown
+): { error: string; statusCode: 409 | 503; message: string; code?: string } | null {
+  if (err instanceof ProtocolError && err.code === 'BAD_PAYLOAD') {
+    const reason = AutoMergeErrorReason.safeParse(err.details?.reason)
+    if (reason.success) {
+      return {
+        error: 'Conflict',
+        statusCode: 409,
+        message: err.message,
+        code: `AUTO_MERGE_${reason.data.toUpperCase().replaceAll('-', '_')}`
+      }
+    }
+  }
+  if (err instanceof NoConnection || (err instanceof Error && err.message === 'connection closed')) {
+    return { error: 'Service Unavailable', statusCode: 503, message: 'owning daemon is offline' }
+  }
+  if (err instanceof ProtocolError) {
+    return { error: 'Service Unavailable', statusCode: 503, message: `daemon rejected the request: ${err.message}` }
+  }
+  return null
+}
+
 function prWriteFailureOf(err: unknown): { error: string; statusCode: 403 | 409 | 429 | 502; message: string } | null {
   const failure = (statusCode: 403 | 409 | 429 | 502, error: string) => ({
     error,

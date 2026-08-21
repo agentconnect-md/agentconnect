@@ -1,6 +1,6 @@
 'use client'
 
-// The dock's PR tab (§3.4): the pull request this session was dispatched for — state, head→base, checks, current reviews and unresolved threads — plus M6's two writes: ONE Auto-fix post over the whole unresolved set (§5.2, a webchat turn, no CP route) and the Merge-when-ready auto-merge toggle.
+// The dock's PR tab (§3.4): the pull request this session was dispatched for — state, head→base, checks, current reviews and unresolved threads — plus M6's writes: ONE Auto-fix post over the whole unresolved set (§5.2, a webchat turn, no CP route), a direct squash Merge, and the Merge-when-ready toggle over the EDGE's own watcher (not GitHub auto-merge, which refuses any PR that is not BLOCKED).
 // Identity comes from the CP's own records and live state from GitHub through the CP's short-TTL projection; thread bodies are proxied, never stored (§2). A rate-limited, denied or unreachable GitHub is DATA: the panel still names its PR and says why the live lists are missing.
 // A 404 from the probe is PROVISIONAL on a bounded ladder (the session→run link can commit after the status flip, or with no flip at all), then the absence is believed and drawn: the branch's state and a Create-pull-request action, which is another one-turn post on the same path as Auto-fix.
 
@@ -768,7 +768,7 @@ export function PullRequestPanel({
           </>
         )}
       </div>
-      {/* The merge box (§3.4): a direct Merge (squash) plus the auto-merge toggle, both under the same write capability. Open PRs only; a degraded read has no armed fact to draw a control over. */}
+      {/* The merge box (§3.4): a direct Merge (squash) for a pull request that is ready now, plus the merge-when-ready toggle for one that is not — the watcher runs at the EDGE, so unlike GitHub's auto-merge it arms in any state. Open PRs only; a degraded read has no armed fact to draw a control over. */}
       {!view.degraded && view.state === 'open' ? (
         <div data-pr-merge="" className="flex flex-none flex-col gap-[6px] border-t border-(--border-subtle) px-3 py-2">
           <div className="flex items-center gap-2">
@@ -830,11 +830,14 @@ export function PullRequestPanel({
               </span>
             ) : null}
           </div>
+          {/* The box is armable in EVERY state a pull request can be in — running checks, requested
+              changes, conflicts. That is the point of moving the watcher to the edge: GitHub's own
+              auto-merge refused all of them, which is what made this control look broken. */}
           <label
             className={`flex items-center gap-[7px] font-sans text-[12px] font-medium leading-normal text-(--text-primary) ${view.canArmAutoMerge ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'}`}
             title={
               view.canArmAutoMerge
-                ? 'GitHub merges automatically once checks and approvals pass'
+                ? 'Watch this pull request and squash-merge it once checks pass, nobody has requested changes, and it has no conflicts'
                 : 'The owning agent’s repository access is below write tier, so arming the merge is not available'
             }
           >
@@ -849,14 +852,43 @@ export function PullRequestPanel({
             Merge when ready
             {merge.busy ? <Spinner size={11} /> : null}
             {view.autoMergeArmed ? (
-              <span className="flex-none rounded-full bg-(--brand-soft) px-[7px] py-px font-sans text-[10.5px] font-semibold leading-normal text-(--brand)">
-                Auto-merge armed
+              <span
+                data-pr-automerge-armed=""
+                className="flex-none rounded-full bg-(--brand-soft) px-[7px] py-px font-sans text-[10.5px] font-semibold leading-normal text-(--brand)"
+                title={
+                  view.autoMergePlacement === 'sandbox'
+                    ? 'Watched in the agent’s sandbox — reclaiming the sandbox stops it'
+                    : view.autoMergePlacement === 'daemon'
+                      ? 'Watched by the agent’s daemon — restarting the daemon stops it'
+                      : undefined
+                }
+              >
+                Watching
               </span>
             ) : null}
           </label>
-          <div className="font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
-            {view.autoMergeArmed ? 'Squash · after checks + approvals' : 'Squash and merge'}
+          {/* What the watcher is actually holding for, in its own words — the answer GitHub's
+              auto-merge never gave, and the reason an armed box is not a black hole. */}
+          <div
+            data-pr-automerge-status=""
+            className="font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)"
+          >
+            {view.autoMergeArmed
+              ? view.autoMergeWaitingOn
+                ? `Squash · waiting on ${view.autoMergeWaitingOn}`
+                : 'Squash · once checks pass and nothing blocks it'
+              : 'Squash and merge'}
           </div>
+          {/* A failed tick keeps the watcher ARMED: the usual cure is the next commit, so this is a
+              status line rather than a dead end, and it is drawn apart from the toggle's own error. */}
+          {view.autoMergeArmed && view.autoMergeError ? (
+            <div
+              data-pr-automerge-error=""
+              className="font-sans text-[11px] font-normal leading-[1.5] text-(--status-paused)"
+            >
+              Last check: {view.autoMergeError}
+            </div>
+          ) : null}
           {merge.err ? (
             <div
               data-pr-merge-error=""

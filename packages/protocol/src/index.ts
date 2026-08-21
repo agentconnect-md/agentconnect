@@ -41,6 +41,7 @@ export {
   SESSION_VISIBILITY_FEATURE,
   SLACK_SESSION_AUDIENCE_FEATURE,
   TASK_LIST_FEATURE,
+  AUTO_MERGE_FEATURE,
   WORKSPACE_GIT_MESSAGE_BUDGET_MS,
   WORKSPACE_GIT_MESSAGE_FEATURE,
   WORKSPACE_GIT_REVIEW_FEATURE,
@@ -75,6 +76,7 @@ export * from './frames/session.js'
 export * from './frames/channel.js'
 export * from './frames/workspace.js'
 export * from './frames/task.js'
+export * from './frames/automerge.js'
 export * from './frames/memory.js'
 export * from './frames/organization-knowledge.js'
 export * from './frames/telemetry.js'

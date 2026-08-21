@@ -50,7 +50,6 @@ function fullAnswer(): Record<string, unknown> {
           headRefName: 'feat/panel',
           headRefOid: 'sha_HEAD',
           reviewDecision: 'CHANGES_REQUESTED',
-          autoMergeRequest: null,
           latestReviews: {
             nodes: [
               { state: 'APPROVED', author: { login: 'dana', __typename: 'User' } },
@@ -196,7 +195,6 @@ describe('projection mapping', () => {
       ],
       unresolvedCount: 2,
       threadsTruncated: false,
-      autoMergeArmed: false,
       degraded: false,
       degradedReason: null,
       agentReview: null
@@ -508,72 +506,6 @@ describe('cache keying and eviction', () => {
   })
 })
 
-describe('setAutoMerge (M6)', () => {
-  const TARGET = { repoId: IDENTITY.repoId, repoFullName: IDENTITY.repoFullName, pullNumber: IDENTITY.pullNumber }
-  const nodeAnswer = (armed: boolean) =>
-    ok({
-      data: { repository: { pullRequest: { id: 'PR_node1', autoMergeRequest: armed ? { enabledAt: 'now' } : null } } }
-    })
-
-  it('arms with the CALLER-minted token, mutates by node id, and drops the cached view', async () => {
-    const { service, calls, mint } = build([
-      ok(fullAnswer()), // seed the cache via view()
-      nodeAnswer(false),
-      ok({ data: { enablePullRequestAutoMerge: { clientMutationId: null } } }),
-      ok(fullAnswer()) // the re-read after invalidation
-    ])
-    await service.view(IDENTITY)
-
-    const result = await service.setAutoMerge(TARGET, 'ghs_write', true)
-
-    expect(result).toEqual({ armed: true })
-    // The write rides the passed token, never this service's read-floor mint facility.
-    expect(mint).toHaveBeenCalledTimes(1)
-    const mutation = calls[2]!.body as { query: string; variables: Record<string, unknown> }
-    expect(mutation.query).toContain('enablePullRequestAutoMerge')
-    expect(mutation.query).toContain('mergeMethod:SQUASH')
-    expect(mutation.variables).toEqual({ id: 'PR_node1' })
-    // The cached view is gone: the next read asks GitHub again rather than serving the pre-write state.
-    await service.view(IDENTITY)
-    expect(calls).toHaveLength(4)
-  })
-
-  it('disarms via disablePullRequestAutoMerge', async () => {
-    const { service, calls } = build([
-      nodeAnswer(true),
-      ok({ data: { disablePullRequestAutoMerge: { clientMutationId: null } } })
-    ])
-
-    expect(await service.setAutoMerge(TARGET, 'ghs_write', false)).toEqual({ armed: false })
-    expect((calls[1]!.body as { query: string }).query).toContain('disablePullRequestAutoMerge')
-  })
-
-  it('is idempotent: asking for the state the PR is already in mutates nothing', async () => {
-    const { service, calls } = build([nodeAnswer(true)])
-
-    expect(await service.setAutoMerge(TARGET, 'ghs_write', true)).toEqual({ armed: true })
-    expect(calls).toHaveLength(1) // the node read only — no mutation call scripted, none made
-  })
-
-  it('throws denied when the installation cannot see the PR', async () => {
-    const { service } = build([ok({ data: { repository: { pullRequest: null } } })])
-
-    await expect(service.setAutoMerge(TARGET, 'ghs_write', true)).rejects.toMatchObject({ code: 'LEASE_DENIED' })
-  })
-
-  it('projects autoMergeRequest onto autoMergeArmed, and degraded answers carry null', async () => {
-    const armed = fullAnswer()
-    ;(armed as { data: { repository: { pullRequest: Record<string, unknown> } } }).data.repository.pullRequest[
-      'autoMergeRequest'
-    ] = { enabledAt: '2026-08-11T00:00:00Z' }
-    const { service } = build([ok(armed)])
-    expect((await service.view(IDENTITY)).autoMergeArmed).toBe(true)
-
-    const degraded = build([ok({ data: null, errors: [{ type: 'RATE_LIMITED', message: 'limit' }] })])
-    expect((await degraded.service.view(IDENTITY)).autoMergeArmed).toBeNull()
-  })
-})
-
 describe('merge (M6)', () => {
   const TARGET = { repoId: IDENTITY.repoId, repoFullName: IDENTITY.repoFullName, pullNumber: IDENTITY.pullNumber }
   const mergeNode = (merged: boolean) =>
@@ -637,18 +569,18 @@ describe('write-side correctness (M6 review findings)', () => {
   const TARGET = { repoId: IDENTITY.repoId, repoFullName: IDENTITY.repoFullName, pullNumber: IDENTITY.pullNumber }
 
   it('treats a refused mutation as FAILURE even when GitHub wraps it in truthy partial data', async () => {
-    // GitHub rejects a mutation as `{ data: { enablePullRequestAutoMerge: null }, errors: [...] }` —
-    // reporting `{ armed: true }` off the truthy half would claim a write that never happened.
+    // GitHub rejects a mutation as `{ data: { mergePullRequest: null }, errors: [...] }` — reporting
+    // `{ merged: true }` off the truthy half would claim a write that never happened.
     const { service } = build([
-      ok({ data: { repository: { pullRequest: { id: 'PR_node1', autoMergeRequest: null } } } }),
+      ok({ data: { repository: { pullRequest: { id: 'PR_node1', state: 'OPEN', merged: false } } } }),
       ok({
-        data: { enablePullRequestAutoMerge: null },
-        errors: [{ type: 'UNPROCESSABLE', message: 'Pull request is in clean status' }]
+        data: { mergePullRequest: null },
+        errors: [{ type: 'UNPROCESSABLE', message: 'Head branch was modified' }]
       })
     ])
 
-    await expect(service.setAutoMerge(TARGET, 'ghs_write', true)).rejects.toMatchObject({
-      message: expect.stringContaining('clean status')
+    await expect(service.merge(TARGET, 'ghs_write', 'sha_HEAD')).rejects.toMatchObject({
+      message: expect.stringContaining('Head branch was modified')
     })
   })
 
