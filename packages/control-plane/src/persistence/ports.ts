@@ -3209,6 +3209,8 @@ export interface GitlabProjectCredentialRepo {
   }): Promise<GitlabProjectCredentialRecord>
   get(bindingId: string, purpose: GitlabCredentialPurpose): Promise<GitlabProjectCredentialRecord | null>
   listForBinding(bindingId: string): Promise<GitlabProjectCredentialRecord[]>
+  /** Rotation worklist (§7.4): credentials whose provider expiry is before the horizon. */
+  listExpiring(before: Date): Promise<Array<{ credential: GitlabProjectCredentialRecord; orgId: string }>>
   remove(bindingId: string, purpose: GitlabCredentialPurpose): Promise<void>
 }
 
