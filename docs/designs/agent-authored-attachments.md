@@ -1,6 +1,6 @@
 # Agent-Authored Attachments
 
-**Status:** Proposed
+**Status:** Implemented through phase 2 (§7's deferrals stand)
 
 [#1323](https://github.com/agentconnect-md/agentconnect/pull/1323) gave the daemon an
 outbound byte path: every chat platform implements `MessageGateway.uploadFile`, and

@@ -34,6 +34,10 @@ export interface WorkspaceFs {
   /** The file's text, or undefined when it is absent or unreadable — every caller reads a marker
    *  it is willing to find missing. */
   readFile(path: string): Promise<string | undefined>
+  /** The file's BYTES, bounded: over `maxBytes` answers `{tooLarge}` without transferring, and
+   *  absent/unreadable answers undefined. The binary sibling of {@link readFile}, added for the
+   *  outbound file share (agent-authored-attachments.md §6). */
+  readFileBytes(path: string, maxBytes: number): Promise<{ bytes: Buffer } | { tooLarge: number } | undefined>
   /** Atomic: staged beside the target, then published by one rename. */
   writeFile(path: string, content: string, options?: { mode?: number }): Promise<void>
   rename(from: string, to: string): Promise<void>
@@ -87,6 +91,20 @@ export class LocalWorkspaceFs implements WorkspaceFs {
   async readFile(path: string): Promise<string | undefined> {
     try {
       return readFileSync(path, 'utf8')
+    } catch {
+      return undefined
+    }
+  }
+
+  async readFileBytes(path: string, maxBytes: number): Promise<{ bytes: Buffer } | { tooLarge: number } | undefined> {
+    try {
+      const stats = lstatSync(path)
+      if (!stats.isFile()) return undefined
+      if (stats.size > maxBytes) return { tooLarge: stats.size }
+      const bytes = readFileSync(path)
+      // Re-check on the read bytes: the stat→read race on a growing file must refuse, not overrun.
+      if (bytes.byteLength > maxBytes) return { tooLarge: bytes.byteLength }
+      return { bytes }
     } catch {
       return undefined
     }

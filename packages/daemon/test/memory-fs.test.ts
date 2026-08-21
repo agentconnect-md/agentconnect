@@ -103,6 +103,29 @@ describe('ShimMemoryFs over the read capability (the port over a sandbox volume)
     expect(requester.frames).toContain('memory-commit')
   })
 
+  it('reads BYTES in frame-safe base64 chunks, decoded per chunk, and refuses over-cap from the first reply', async () => {
+    const { root, fs, requester } = pod()
+    // Binary, non-UTF-8, larger than one base64-safe chunk (~189 KB) — forces reassembly and
+    // would corrupt under either of the two traps: a REPLY_BUDGET-sized request (4/3 expansion
+    // over-frames the reply) or joining independently-padded base64 strings before decoding.
+    const bytes = Buffer.alloc(400_000)
+    for (let i = 0; i < bytes.length; i++) bytes[i] = i % 251
+    mkdirSync(join(root, 'ws'), { recursive: true })
+    writeFileSync(join(root, 'ws', 'chart.png'), bytes)
+
+    const read = await fs.readFileBytes('ws/chart.png', 1_000_000)
+    if (read === null || 'tooLarge' in read!) throw new Error('expected bytes')
+    expect(read.bytes.equals(bytes)).toBe(true)
+    expect(requester.frames.filter((op) => op === 'memory-read').length).toBeGreaterThan(1)
+
+    // The cap refuses from the FIRST reply's size — one frame, no transfer.
+    const before = requester.frames.length
+    expect(await fs.readFileBytes('ws/chart.png', 100_000)).toEqual({ tooLarge: 400_000 })
+    expect(requester.frames.length - before).toBe(1)
+
+    expect(await fs.readFileBytes('ws/absent.png', 1_000_000)).toBeNull()
+  })
+
   it('reassembles a file larger than one frame and stages an oversized write as chunks', async () => {
     const { fs, requester } = pod()
     const big = 'é'.repeat(300_000) // 600 KB, multi-byte, more than two reply budgets

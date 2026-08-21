@@ -293,7 +293,7 @@ import { z } from 'zod'
 import { isNoResponseBody } from './session/no-response.js'
 import { WorkspaceConflictError } from './cp/workspace-reader.js'
 import { createWorkspaceScope } from './cp/workspace-scope.js'
-import { canonicalWorkspacePath, WorkspaceViolationError } from './workspace/workspace-files.js'
+import { canonicalWorkspacePath, containedWorkspacePath, WorkspaceViolationError } from './workspace/workspace-files.js'
 import type { ShareReadResult, ShareTargetResult } from './mcp/ops/share-file.js'
 import { TaskViolationError } from './cp/task-reader.js'
 import {
@@ -2264,8 +2264,6 @@ export class Daemon {
         return { ok: true, ...target }
       },
       readWorkspaceImage: async (ctx, rel): Promise<ShareReadResult> => {
-        // Phase 2 (pod workspaces over the workspace-fs channel) is designed, not built.
-        if (this.k8sPlane?.workspaceRootFor(ctx.agentId) !== undefined) return { ok: false, reason: 'sandboxed' }
         const scope = createWorkspaceScope({
           workspaces: this.workspaces,
           agentOf: (id) => this.agents.get(id),
@@ -2276,11 +2274,51 @@ export class Daemon {
         // Session-worktree first (an isolated session's files live there), then the agent
         // root: `location(id, sessionId)` answers ONLY for git-repo agents on isolated
         // sessions, and the default config (shared isolation, from-scratch) is the other arm.
+        // For a cluster agent the scope composes the root in POD coordinates.
         const location =
           (await scope.location(ctx.agentId, acpSessionId).catch(() => undefined)) ??
           (await scope.location(ctx.agentId).catch(() => undefined))
         if (!location) return { ok: false, reason: 'not-found' }
         const cap = cfg.limits.maxOutboundFileBytes ?? cfg.limits.maxAttachmentBytes
+        // Sniff + name + digest, shared by both arms: outbound name and MIME come from the
+        // SNIFFED bytes, never the model-supplied path (§4) — Discord renders by extension
+        // alone, so `out/chart` must not land extensionless.
+        const imageOf = (bytes: Buffer): ShareReadResult => {
+          const sniffed = sniffImageMimeType(bytes)
+          if (!sniffed) {
+            const head = bytes.subarray(0, 6).toString('latin1')
+            // GIF gets a refusal that NAMES it (§4) — a plausible find-me-images result whose
+            // animation sendPhoto would silently strip; deferred behind the enum widening.
+            if (head === 'GIF87a' || head === 'GIF89a') return { ok: false, reason: 'gif' }
+            return { ok: false, reason: 'not-image' }
+          }
+          const ext = sniffed === 'image/png' ? 'png' : sniffed === 'image/jpeg' ? 'jpg' : 'webp'
+          const stem = basename(rel).replace(/\.[A-Za-z0-9]+$/, '') || 'image'
+          const sha256 = createHash('sha256').update(bytes).digest('hex')
+          return { ok: true, bytes, name: `${stem}.${ext}`, mimeType: sniffed, sha256 }
+        }
+
+        // Pod arm (design §6): the workspace lives on the sandbox volume, reached over the
+        // fd-anchored workspace-fs channel. The daemon contributes the LEXICAL fence (which
+        // carries the `.git` rule the pod-side check lacks); the symlink guarantee is the
+        // pod's own fd-anchored descent — there is nothing daemon-side to realpath.
+        if (this.k8sPlane?.workspaceRootFor(ctx.agentId) !== undefined) {
+          const placement = this.k8sPlane.workspaceFsFor(ctx.agentId)
+          if (!placement) return { ok: false, reason: 'sandboxed' }
+          let resolved: string
+          try {
+            resolved = containedWorkspacePath(location.root, rel)
+          } catch (err) {
+            return { ok: false, reason: err instanceof WorkspaceViolationError ? 'escape' : 'not-found' }
+          }
+          const read = await placement.fs.readFileBytes(resolved, cap).catch(() => undefined)
+          if (!read) return { ok: false, reason: 'not-found' }
+          if ('tooLarge' in read) {
+            return { ok: false, reason: 'too-large', detail: `${read.tooLarge} bytes > ${cap}-byte cap` }
+          }
+          return imageOf(read.bytes)
+        }
+
         let resolved: string | null
         try {
           resolved = await canonicalWorkspacePath(location.root, rel)
@@ -2298,20 +2336,7 @@ export class Daemon {
         if (bytes.byteLength > cap) {
           return { ok: false, reason: 'too-large', detail: `${bytes.byteLength} bytes > ${cap}-byte cap` }
         }
-        const sniffed = sniffImageMimeType(bytes)
-        if (!sniffed) {
-          const head = bytes.subarray(0, 6).toString('latin1')
-          // GIF gets a refusal that NAMES it (§4) — a plausible find-me-images result whose
-          // animation sendPhoto would silently strip; deferred behind the enum widening.
-          if (head === 'GIF87a' || head === 'GIF89a') return { ok: false, reason: 'gif' }
-          return { ok: false, reason: 'not-image' }
-        }
-        // Outbound name + MIME from the SNIFFED type, never the model-supplied path (§4):
-        // Discord renders by extension alone, so `out/chart` must not land extensionless.
-        const ext = sniffed === 'image/png' ? 'png' : sniffed === 'image/jpeg' ? 'jpg' : 'webp'
-        const stem = basename(rel).replace(/\.[A-Za-z0-9]+$/, '') || 'image'
-        const sha256 = createHash('sha256').update(bytes).digest('hex')
-        return { ok: true, bytes, name: `${stem}.${ext}`, mimeType: sniffed, sha256 }
+        return imageOf(bytes)
       },
       chargeShareBudget: (ctx, bytes) => {
         const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)

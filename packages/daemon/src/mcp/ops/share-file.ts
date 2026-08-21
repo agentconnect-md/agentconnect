@@ -87,7 +87,7 @@ export function escapeCaptionMentions(caption: string): string {
 
 const READ_REFUSALS: Record<Exclude<ShareReadResult, { ok: true }>['reason'], (path: string, d?: string) => string> = {
   sandboxed: () =>
-    'shareFile: not yet available for sandboxed (cluster) agents — the daemon cannot reach this workspace file yet.',
+    "shareFile: this agent's sandbox is not reachable right now, so its workspace cannot be read — try again shortly.",
   'not-found': (path) => `shareFile: no file at "${path}" in this workspace.`,
   escape: (path) =>
     `shareFile: "${path}" is not a workspace-relative path — only files inside the workspace can be shared.`,
