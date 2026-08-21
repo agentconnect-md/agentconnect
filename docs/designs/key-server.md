@@ -128,15 +128,13 @@ neither completes the other:
   neither, whatever credential the runtime environment already carries.
 - **the base URL** is deployment topology — which gateway this install's runtimes talk
   to — so it always comes from the daemon's own configuration, key server or not. The
-  contract no longer defines a `baseUrl`; responses parse tolerantly, so an issuer
-  still sending the retired field (or adding one later) is stripped, never rejected.
+  contract defines no `baseUrl`, and an issuer that sends one is stripped rather than
+  rejected (responses parse tolerantly).
 
-The earlier rule was the opposite: the response pair was atomic, so a key server that
-fronted a gateway had to name it and one that did not had to stay silent. That made
-every issuer restate a fact it does not own — the address is the same for every session
-the install ever runs, and it is already written down where the gateway is deployed.
-Restating it invites the two copies to disagree, and the disagreement surfaces as a
-runtime aimed somewhere the deployment never put a gateway.
+An issuer naming the address would be restating a fact it does not own: the address is
+the same for every session the install ever runs, and it is already written down where
+the gateway is deployed. Two copies of it invite disagreement, and the disagreement
+surfaces as a runtime aimed somewhere the deployment never put a gateway.
 
 What remains beneath both is the runtime's own environment, including the pod's
 `AC_*_BASE_URL` floor the shim fills in: a daemon with no base URL configured for a

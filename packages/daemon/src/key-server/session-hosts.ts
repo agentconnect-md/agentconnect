@@ -145,7 +145,8 @@ export class ModelSessionHostPool {
     return this.staticModelCredentials?.[runtime]
   }
 
-  /** The deployment's base for a target, the only source of one — an IssueKey `baseUrl` is not read. */
+  /** The deployment's base for a target, and the only source of one: the contract defines no
+   *  `baseUrl`, and an issuer that sends one is stripped rather than read. */
   staticBaseUrl(target: ModelProviderTarget): { baseUrl?: string } {
     const baseUrl = this.staticModelCredentials?.[target.runtime]?.baseUrl
     return baseUrl ? { baseUrl } : {}
