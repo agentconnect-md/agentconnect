@@ -266,3 +266,236 @@ export function membershipSatisfies(
   }
   return true
 }
+
+// ── administration surface for the provisioning saga (§10.2, §7.2–§7.4, §11.1) ──
+
+export interface GitlabNamespaceRef {
+  id: number
+  parent_id: number | null
+  kind: string // 'group' | 'user'
+  full_path: string
+}
+
+/** Project namespace facts ride the project payload. */
+export interface GitlabProjectWithNamespace extends GitlabProjectSummary {
+  namespace?: GitlabNamespaceRef
+}
+
+/** Walk to the ROOT namespace (service accounts hang off the top-level group).
+ *  A personal (`user`) namespace has no service accounts — the caller reports it. */
+export async function gitlabRootNamespace(
+  accessToken: string,
+  start: GitlabNamespaceRef,
+  fetchImpl?: FetchLike
+): Promise<GitlabNamespaceRef> {
+  let current = start
+  for (let depth = 0; depth < 20 && current.parent_id !== null; depth++) {
+    current = await gitlabRequest<GitlabNamespaceRef>(`/namespaces/${current.parent_id}`, {
+      auth: accessToken,
+      fetchImpl
+    })
+  }
+  return current
+}
+
+export interface GitlabServiceAccount {
+  id: number
+  username: string
+  name: string
+}
+
+/** The binding's deterministic, non-secret service-account marker (§10.2). */
+export function gitlabServiceAccountUsername(projectId: bigint): string {
+  return `agentconnect-p${projectId}`
+}
+
+/** Find the marked account among the top-level group's service accounts. */
+export async function gitlabFindServiceAccount(
+  accessToken: string,
+  groupId: number,
+  username: string,
+  fetchImpl?: FetchLike
+): Promise<GitlabServiceAccount | null> {
+  const accounts = await gitlabRequest<GitlabServiceAccount[]>(`/groups/${groupId}/service_accounts?per_page=100`, {
+    auth: accessToken,
+    fetchImpl
+  })
+  return accounts.find((account) => account.username === username) ?? null
+}
+
+export async function gitlabCreateServiceAccount(
+  accessToken: string,
+  groupId: number,
+  input: { username: string; name: string },
+  fetchImpl?: FetchLike
+): Promise<GitlabServiceAccount> {
+  return gitlabRequest<GitlabServiceAccount>(`/groups/${groupId}/service_accounts`, {
+    method: 'POST',
+    auth: accessToken,
+    body: { username: input.username, name: input.name },
+    fetchImpl
+  })
+}
+
+export async function gitlabDeleteServiceAccount(
+  accessToken: string,
+  groupId: number,
+  userId: bigint,
+  fetchImpl?: FetchLike
+): Promise<void> {
+  await gitlabRequest<void>(`/groups/${groupId}/service_accounts/${userId}`, {
+    method: 'DELETE',
+    auth: accessToken,
+    fetchImpl
+  })
+}
+
+export interface GitlabMember {
+  id: number
+  access_level: number
+  state: string
+}
+
+/** Ensure the service account is a Developer member (§7.2): add, or raise a lower
+ *  direct membership to exactly Developer. Never raises beyond it. */
+export async function gitlabEnsureDeveloperMember(
+  accessToken: string,
+  projectId: bigint,
+  userId: bigint,
+  fetchImpl?: FetchLike
+): Promise<void> {
+  try {
+    await gitlabRequest<GitlabMember>(`/projects/${projectId}/members`, {
+      method: 'POST',
+      auth: accessToken,
+      body: { user_id: Number(userId), access_level: GITLAB_ACCESS_DEVELOPER },
+      fetchImpl
+    })
+    return
+  } catch (e) {
+    // 409: already a member — verify the effective level below.
+    if (!(e instanceof GitlabApiError) || (e.status !== 409 && e.status !== 400)) throw e
+  }
+  const membership = await gitlabEffectiveMembership(accessToken, projectId, userId, fetchImpl)
+  if (membershipSatisfies(membership, GITLAB_ACCESS_DEVELOPER, Date.now())) return
+  await gitlabRequest<GitlabMember>(`/projects/${projectId}/members/${userId}`, {
+    method: 'PUT',
+    auth: accessToken,
+    body: { access_level: GITLAB_ACCESS_DEVELOPER },
+    fetchImpl
+  })
+}
+
+export interface GitlabPatGrant {
+  id: number
+  name: string
+  scopes: string[]
+  active: boolean
+  revoked?: boolean
+  expires_at: string | null
+  token?: string // present ONLY on create/rotate responses — never log
+  user_id?: number
+}
+
+export async function gitlabCreateServiceAccountToken(
+  accessToken: string,
+  groupId: number,
+  serviceAccountUserId: bigint,
+  input: { name: string; scopes: string[]; expiresAt: string },
+  fetchImpl?: FetchLike
+): Promise<GitlabPatGrant> {
+  return gitlabRequest<GitlabPatGrant>(
+    `/groups/${groupId}/service_accounts/${serviceAccountUserId}/personal_access_tokens`,
+    {
+      method: 'POST',
+      auth: accessToken,
+      body: { name: input.name, scopes: input.scopes, expires_at: input.expiresAt },
+      fetchImpl
+    }
+  )
+}
+
+/** List the account's PATs (marker recovery); values are never returned here. */
+export async function gitlabListServiceAccountTokens(
+  accessToken: string,
+  serviceAccountUserId: bigint,
+  fetchImpl?: FetchLike
+): Promise<GitlabPatGrant[]> {
+  return gitlabRequest<GitlabPatGrant[]>(`/personal_access_tokens?user_id=${serviceAccountUserId}&per_page=100`, {
+    auth: accessToken,
+    fetchImpl
+  })
+}
+
+export async function gitlabRevokeToken(accessToken: string, tokenId: bigint, fetchImpl?: FetchLike): Promise<void> {
+  await gitlabRequest<void>(`/personal_access_tokens/${tokenId}`, { method: 'DELETE', auth: accessToken, fetchImpl })
+}
+
+export interface GitlabWebhook {
+  id: number
+  url: string
+}
+
+export interface GitlabWebhookEvents {
+  push_events: boolean
+  issues_events: boolean
+  merge_requests_events: boolean
+  note_events: boolean
+}
+
+export async function gitlabCreateWebhook(
+  accessToken: string,
+  projectId: bigint,
+  input: { url: string; signingToken: string; events: GitlabWebhookEvents },
+  fetchImpl?: FetchLike
+): Promise<GitlabWebhook> {
+  return gitlabRequest<GitlabWebhook>(`/projects/${projectId}/hooks`, {
+    method: 'POST',
+    auth: accessToken,
+    body: { url: input.url, token: input.signingToken, enable_ssl_verification: true, ...input.events },
+    fetchImpl
+  })
+}
+
+export async function gitlabUpdateWebhook(
+  accessToken: string,
+  projectId: bigint,
+  webhookId: bigint,
+  input: { url: string; signingToken: string; events: GitlabWebhookEvents },
+  fetchImpl?: FetchLike
+): Promise<GitlabWebhook> {
+  return gitlabRequest<GitlabWebhook>(`/projects/${projectId}/hooks/${webhookId}`, {
+    method: 'PUT',
+    auth: accessToken,
+    body: { url: input.url, token: input.signingToken, enable_ssl_verification: true, ...input.events },
+    fetchImpl
+  })
+}
+
+export async function gitlabDeleteWebhook(
+  accessToken: string,
+  projectId: bigint,
+  webhookId: bigint,
+  fetchImpl?: FetchLike
+): Promise<void> {
+  await gitlabRequest<void>(`/projects/${projectId}/hooks/${webhookId}`, {
+    method: 'DELETE',
+    auth: accessToken,
+    fetchImpl
+  })
+}
+
+/** Fire one provider test delivery at a newly created or repaired webhook (§10.2 step 7). */
+export async function gitlabTestWebhook(
+  accessToken: string,
+  projectId: bigint,
+  webhookId: bigint,
+  trigger: 'push_events' | 'issues_events' | 'merge_requests_events' | 'note_events',
+  fetchImpl?: FetchLike
+): Promise<void> {
+  await gitlabRequest<void>(`/projects/${projectId}/hooks/${webhookId}/test/${trigger}`, {
+    method: 'POST',
+    auth: accessToken,
+    fetchImpl
+  })
+}

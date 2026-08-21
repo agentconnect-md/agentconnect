@@ -3156,6 +3156,10 @@ export interface GitlabProjectBindingRepo {
   ): Promise<GitlabProjectBindingRecord | null>
   /** Purge fence: every rotation/revocation/disconnect bumps it (§7.4/§19.4). */
   bumpCredentialEpoch(orgId: string, bindingId: string): Promise<bigint | null>
+  /** Verified-complete cleanup only (§10.2/§19.4): the binding, its cascaded
+   *  local rows, and the deployment-global claim are removed in ONE
+   *  transaction. Anything short of verified cleanup keeps both. */
+  removeWithClaim(orgId: string, bindingId: string, projectId: bigint): Promise<boolean>
 }
 
 export type GitlabCredentialPurpose = 'read' | 'git_write' | 'effect'

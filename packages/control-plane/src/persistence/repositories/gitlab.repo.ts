@@ -374,6 +374,21 @@ export class PgGitlabProjectBindingRepo implements GitlabProjectBindingRepo {
     return this.get(orgId, bindingId)
   }
 
+  async removeWithClaim(orgId: string, bindingId: string, projectId: bigint): Promise<boolean> {
+    // Claim FIRST: the binding-delete trigger preserves any still-attached claim
+    // as cleanup_pending, which is exactly wrong here — this path is only taken
+    // after verified-complete external cleanup, so the claim releases with it.
+    return this.prisma.$transaction(async (tx) => {
+      const owned = await tx.gitlabProjectBinding.count({ where: { id: bindingId, orgId } })
+      if (owned !== 1) return false
+      await tx.codeHostRepositoryClaim.deleteMany({
+        where: { provider: 'gitlab', externalId: projectId, orgId, bindingRef: bindingId }
+      })
+      await tx.gitlabProjectBinding.deleteMany({ where: { id: bindingId, orgId } })
+      return true
+    })
+  }
+
   async bumpCredentialEpoch(orgId: string, bindingId: string): Promise<bigint | null> {
     const res = await this.prisma.gitlabProjectBinding.updateMany({
       where: { id: bindingId, orgId },
