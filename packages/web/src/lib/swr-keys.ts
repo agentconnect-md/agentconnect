@@ -44,6 +44,9 @@ export const consoleKeys = {
    *  are org-scoped like everything else here, so they key the same way. */
   billingAccount: (orgId: string | null | undefined) => consoleKey(orgId, 'billing-account'),
   billingTransactions: (orgId: string | null | undefined) => consoleKey(orgId, 'billing-transactions'),
+  /** The credit rows of the last 30 days — paged out of the same feed, so it keys apart
+   *  from the first page `billingTransactions` serves the Billing table. */
+  billingTopUps: (orgId: string | null | undefined) => consoleKey(orgId, 'billing-top-ups'),
   sessions: (
     orgId: string | null | undefined,
     cursor: string,
