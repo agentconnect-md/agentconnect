@@ -23,10 +23,20 @@
 import { useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import useSWR from 'swr'
-import { isPoolPlacementKind, poolFleetStatus, poolLabel, status, type DaemonRow } from '@/lib/data'
+import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis } from 'recharts'
+import { isPoolPlacementKind, poolFleetStatus, poolLabel, status, type Agent, type DaemonRow } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { consoleKeys } from '@/lib/swr-keys'
-import { fetchBillingAccount, fmtMicroUsd } from '@/lib/billing-api'
+import { fetchUsage } from '@/lib/api'
+import { amountToNumber, sumAmounts } from '@/lib/amount'
+import { SEG_FILL, bucketLabel, tickInterval } from '@/lib/spend-chart'
+import {
+  fetchBillingAccount,
+  fetchBillingTransactions,
+  fmtDecimalUsd,
+  fmtMicroUsd,
+  type BillingCredit
+} from '@/lib/billing-api'
 import { featureFlagEnabled } from '@/lib/feature-flags'
 import { NotFound } from '@/components/console/NotFound'
 import {
@@ -198,7 +208,7 @@ export default function ClusterDetailView() {
       </div>
 
       <div
-        className={`mb-[18px] grid grid-cols-1 items-start gap-[18px] ${
+        className={`mb-[18px] grid grid-cols-1 gap-[18px] ${
           managed && !billingOffered ? '' : 'desktop:grid-cols-[1.15fr_1fr]'
         }`}
       >
@@ -206,7 +216,7 @@ export default function ClusterDetailView() {
             report. Neither borrows the other's figure — a plan's included usage cannot be
             derived from load telemetry, and a self-hoster is billed nothing here. */}
         {managed ? (
-          billingOffered && <CloudCreditsCard />
+          billingOffered && <CloudCreditsCard hosted={hosted} />
         ) : (
           <ClusterCapacityCard {...{ capacityLabel, capacityPct, unbounded, cpu, mem }} />
         )}
@@ -286,152 +296,296 @@ function MetaItem({ icon, text, mono = false }: { icon: string; text: string; mo
   )
 }
 
-// The BALANCE here is live. The 30-day figures and the chart are sample data, and the card says
-// so — the two are separated because the balance endpoint already works today, and a fabricated
-// balance beside a "Manage billing" link to the real one would read as headroom the org has.
+// Every figure here is live, and the two halves of "credits" come from two services because
+// that is where they live: the balance and the top-ups are the billing service's ledger, the
+// daily spend is the CP's usage rollup.
 //
-// What is missing is the daily series: the billing service's debits carry a `period` of
-// `YYYY-MM`, so they are MONTHLY aggregates and no per-day spend can be recovered from them.
-// So the card's shape ships and those numbers wait. Wiring them is a mechanical swap:
+// The spend is NOT read off the billing debits, and scope is the whole reason. A debit's
+// `period` is `YYYY-MM`, so it is a monthly aggregate of the org's ENTIRE usage — quoting it
+// here would contradict this page's own footnote about agents on daemons you connected
+// yourself. `fetchUsage('d30')` buckets cost per day with a `byAgent` split, so the pool's
+// agents can be summed out of it and nothing else is counted. A CP predating that split can
+// only answer for the whole org, so the card reports the figure as unavailable rather than
+// quoting a number this page has just promised it is not.
+const CREDITS_WINDOW_DAYS = 30
+const DAY_MS = 24 * 60 * 60 * 1000
+// Two series, one shared axis: both are USD, and a second axis scaled to make a $0.40 day
+// look like a $50 top-up would be the misleading chart. SVG `fill` can't take a `var()`
+// attribute, so the hues are descendant rules on the wrapper — the trick `SEG_FILL` uses.
+const SERIES_FILL = '[&_.bar-spend_path]:fill-(--brand) [&_.bar-topup_path]:fill-(--green-500)'
+// The window goes to the service as `from`, so a long ledger costs one page here instead of
+// however many it takes to walk back 30 days. The client-side cut stays: a billing image that
+// predates the parameter ignores it and answers with everything, and this console deploys
+// ahead of that image — summing what came back would then quote the wrong figure, silently.
 //
-//   TOPPED UP · 30D  → the credit rows in the transaction feed, summed over the window
-//   SPENT · 30D      → needs a DAILY spend series the service does not expose yet
-//   the bars         → the same daily series, with credits placed on the day they posted
-//
-// Scope matters when that lands: the spend has to cover only what ran on Cloud, or the card
-// contradicts this page's own footnote about agents on daemons you connected yourself. The usage
-// API is the likely source — `fetchUsage('d30')` already buckets cost per day with a `byAgent`
-// split, which is what makes the Cloud-only scoping possible.
-const SAMPLE_TOPPED_UP_MICRO = 1_800_000_000
-// Daily spend in cents. Fixed, never generated: a random walk would redraw on every render and
-// read as live data.
-const SAMPLE_SPEND = [
-  3_780, 4_240, 3_960, 4_680, 5_120, 3_540, 2_980, 4_320, 5_040, 5_480, 6_120, 5_260, 4_880, 3_240, 2_760, 5_180, 5_720,
-  6_040, 6_680, 5_840, 4_620, 3_880, 3_420, 5_560, 6_240, 6_920, 5_380, 4_740, 5_020, 5_960
-]
-const SAMPLE_TOP_UP_DAYS = new Set([4, 14, 25])
-const MICRO_PER_CENT = 10_000
-// Derived, not stated: the total and the bars come from ONE series once this is wired, so the
-// placeholder has to satisfy that invariant too — otherwise whoever wires it has no reference to
-// check their work against.
-const SAMPLE_SPENT_MICRO = SAMPLE_SPEND.reduce((sum, cents) => sum + cents, 0) * MICRO_PER_CENT
+// The page cap is a runaway guard, not a policy: an org that tops up more times than this in
+// 30 days under-reports rather than paging its whole ledger for one total.
+const TOPUP_MAX_PAGES = 10
 
-function CloudCreditsCard() {
+async function fetchTopUps(orgId: string, sinceMs: number): Promise<BillingCredit[]> {
+  const from = new Date(sinceMs).toISOString()
+  const credits: BillingCredit[] = []
+  let cursor: string | undefined
+  for (let page = 0; page < TOPUP_MAX_PAGES; page++) {
+    const { items, nextCursor } = await fetchBillingTransactions(orgId, cursor, { from })
+    // Rows are newest-first, so the window ends at the first row older than it. An unparseable
+    // `at` compares false and stays — a row this side cannot date must not silently truncate
+    // the ones behind it.
+    const older = items.findIndex((t) => Date.parse(t.at) < sinceMs)
+    for (const row of older < 0 ? items : items.slice(0, older)) if (row.type === 'credit') credits.push(row)
+    if (older >= 0 || !nextCursor) break
+    cursor = nextCursor
+  }
+  return credits
+}
+
+function CloudCreditsCard({ hosted }: { hosted: readonly Agent[] }) {
   const { activeOrg } = useOrgs()
   const orgId = activeOrg?.id ?? null
-  const account = useSWR(orgId ? consoleKeys.billingAccount(orgId) : null, () => fetchBillingAccount(orgId!))
-  const peak = Math.max(...SAMPLE_SPEND)
+  // Same `billingAccount` key the Billing page reads, so the two pages cannot disagree.
+  const account = useSWR(consoleKeys.billingAccount(orgId), () => fetchBillingAccount(orgId!))
+  const usage = useSWR(consoleKeys.usage(orgId, 'd30'), () => fetchUsage('d30', orgId!))
+  const topUps = useSWR(consoleKeys.billingTopUps(orgId), () =>
+    fetchTopUps(orgId!, Date.now() - CREDITS_WINDOW_DAYS * DAY_MS)
+  )
+
+  const points = usage.data?.series?.points ?? []
+  const poolIds = new Set(hosted.map((a) => a.id))
+  // `byAgent` is optional on the wire; without it there is no Cloud-only figure to quote.
+  const scoped = points.some((p) => p.byAgent)
+  const daily = scoped
+    ? points.map((p) => sumAmounts(Object.entries(p.byAgent ?? {}).flatMap(([id, c]) => (poolIds.has(id) ? [c] : []))))
+    : []
+  const spent = sumAmounts(daily)
+  const days = daily.length || CREDITS_WINDOW_DAYS
+  const spendError = usage.error
+    ? (usage.error as Error).message
+    : usage.data && !scoped
+      ? 'this control plane does not split spend per agent, so the Cloud-only figure cannot be separated from the org total'
+      : undefined
+
+  const credits = topUps.data ?? []
+  const toppedUpMicro = credits.reduce((sum, c) => sum + c.amountMicro, 0)
+  // A top-up lands on the bucket it posted into: the last one that started at or before it.
+  const topUpByDay = new Map<number, number>()
+  for (const c of credits) {
+    const at = Date.parse(c.at)
+    for (let i = points.length - 1; i >= 0; i--) {
+      if (Date.parse(points[i]!.start) <= at) {
+        topUpByDay.set(i, (topUpByDay.get(i) ?? 0) + c.amountMicro)
+        break
+      }
+    }
+  }
+
+  // One recharts row per bucket. `spend` is geometry, so the amount becomes a number here and
+  // nowhere else; the exact string is what `spent` above was summed from.
+  const bucket = usage.data?.series?.bucket ?? 'day'
+  const chartData = daily.map((amount, day) => ({
+    label: bucketLabel(points[day]!.start, bucket),
+    spend: amountToNumber(amount),
+    topUp: (topUpByDay.get(day) ?? 0) / 1_000_000
+  }))
+
+  // Pixel floor for a nonzero segment, so a cent beside a $50 top-up is still visible — and 0
+  // for a segment with nothing, so it draws nothing. The callback reads the row's own field:
+  // in a stack, recharts hands it the segment's cumulative TOP, so a zero top-up capping a
+  // nonzero spend would otherwise inherit the spend's "nonzero" and get floored into a green
+  // cap on a day nothing was topped up.
+  const minBar = (key: 'spend' | 'topUp') => (_: number | null | undefined, index: number) =>
+    (chartData[index]?.[key] ?? 0) > 0 ? 3 : 0
+
+  type TipRow = { payload: (typeof chartData)[number] }
+  const Tip = ({ active, payload }: { active?: boolean; payload?: TipRow[] }) => {
+    const row = active ? payload?.[0]?.payload : undefined
+    if (!row) return null
+    return (
+      <div className="rounded-md border border-(--border-subtle) bg-(--surface-card) px-2.5 py-2 shadow-(--shadow-md)">
+        <div className="mono text-[11px] font-semibold text-(--text-primary)">{row.label}</div>
+        <div className="mt-1 flex items-center gap-[6px] font-sans text-[11px] leading-normal text-(--text-secondary)">
+          <span className="h-[9px] w-[9px] flex-none rounded-[2px] bg-(--brand)" />
+          spent <span className="mono text-(--text-primary)">{fmtMicroUsd(Math.round(row.spend * 1_000_000))}</span>
+        </div>
+        {row.topUp > 0 && (
+          <div className="mt-1 flex items-center gap-[6px] font-sans text-[11px] leading-normal text-(--text-secondary)">
+            <span className="h-[9px] w-[9px] flex-none rounded-[2px] bg-(--green-500)" />
+            topped up{' '}
+            <span className="mono text-(--text-primary)">{fmtMicroUsd(Math.round(row.topUp * 1_000_000))}</span>
+          </div>
+        )}
+      </div>
+    )
+  }
 
   return (
-    <div className="card">
+    // `min-w-0`: recharts measures this box, and a grid item's auto min-width would otherwise
+    // let the plot widen its own column.
+    <div className="card flex min-w-0 flex-col">
       <div className="cardhead">
         <span className="cardtitle">Credits</span>
-        <span className="mono ml-auto text-[11px] text-(--text-tertiary)">last 30 days</span>
+        <span className="mono ml-auto text-[11px] text-(--text-tertiary)">last {CREDITS_WINDOW_DAYS} days</span>
       </div>
 
       <div className="flex flex-wrap items-start gap-x-4 gap-y-3 px-4 pt-[15px] pb-[13px] desktop:gap-x-5">
-        <div className="min-w-0">
-          <div className="eyebrow flex items-center gap-[6px]">
-            Topped up · 30d
-            <SampleChip />
-          </div>
-          <div className="mono mt-[6px] text-[20px] leading-none font-semibold tracking-[-.02em] desktop:text-[24px]">
-            {fmtMicroUsd(SAMPLE_TOPPED_UP_MICRO)}
-          </div>
-          <div className="mt-[7px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-            {SAMPLE_TOP_UP_DAYS.size} top-ups
-          </div>
-        </div>
+        <Figure
+          label={`Topped up · ${CREDITS_WINDOW_DAYS}d`}
+          value={topUps.data ? fmtMicroUsd(toppedUpMicro) : '—'}
+          note={topUps.data ? `${credits.length} top-up${credits.length === 1 ? '' : 's'}` : ' '}
+          error={topUps.error ? (topUps.error as Error).message : undefined}
+          loading={topUps.isLoading}
+        />
         <span className="w-px flex-none self-stretch bg-(--border-subtle)" />
-        <div className="min-w-0">
-          <div className="eyebrow flex items-center gap-[6px]">
-            Spent · 30d
-            <SampleChip />
-          </div>
-          <div className="mono mt-[6px] text-[20px] leading-none font-semibold tracking-[-.02em] text-(--brand) desktop:text-[24px]">
-            {fmtMicroUsd(SAMPLE_SPENT_MICRO)}
-          </div>
-          <div className="mt-[7px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-            avg {fmtMicroUsd(Math.round(SAMPLE_SPENT_MICRO / SAMPLE_SPEND.length))} / day
-          </div>
-        </div>
-        {/* The one live figure, and the reason the others are chipped: this is the same
-            `billingAccount` key the Billing page reads, so the two pages cannot disagree. */}
-        <div className="ml-auto flex-none text-right">
-          <div className="eyebrow">Balance</div>
-          {account.error ? (
-            // Not only unreachability: `assertAccount` throws BillingShapeError on an unexpected
-            // shape and lands here too — likely, since this console deploys ahead of the pinned
-            // billing image. So the label stays neutral and the service's own message says which.
-            <div
-              className="mt-[6px] inline-flex items-center gap-[6px] font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary)"
-              title={(account.error as Error).message}
-            >
-              <Icon name="triangle-alert" size={14} color="var(--status-error)" />
-              unavailable
-            </div>
+        <Figure
+          label={`Spent · ${CREDITS_WINDOW_DAYS}d`}
+          value={scoped ? fmtDecimalUsd(spent) : '—'}
+          note={scoped ? `avg ${fmtMicroUsd(Math.round((amountToNumber(spent) / days) * 1_000_000))} / day` : ' '}
+          error={spendError}
+          valueClass="text-[20px] text-(--brand) desktop:text-[24px]"
+          loading={usage.isLoading}
+        />
+        <Figure
+          className="ml-auto flex-none text-right"
+          label="Balance"
+          value={account.data ? fmtMicroUsd(account.data.balanceMicro) : '—'}
+          // Not only unreachability: `assertAccount` throws BillingShapeError on an unexpected
+          // shape and lands here too — likely, since this console deploys ahead of the pinned
+          // billing image. So the label stays neutral and the service's own message says which.
+          error={account.error ? (account.error as Error).message : undefined}
+          valueClass="text-[18px]"
+          loading={account.isLoading}
+          note="USD"
+        />
+      </div>
+
+      {/* Two series on one shared axis, STACKED rather than grouped: a grouped pair reserves
+          half of every day's band for a top-up, on all 30 days, and top-ups happen on three of
+          them — so both bars end up half-width for nothing. Stacked, a day is one full-width
+          bar, which is the design's proportion, and a day with no top-up is simply all spend.
+          One axis on purpose: both are USD, and a second axis scaled so a $0.40 day matched a
+          $50 top-up would be the misleading chart. `minPointSize` keeps the small side
+          readable — a pixel floor under any nonzero value, and 0 for a day with none, so an
+          idle day still draws nothing. */}
+      {(usage.isLoading || chartData.length > 0) && (
+        <>
+          {usage.isLoading ? (
+            <SpendSkeleton />
           ) : (
-            <div className="mono mt-[6px] text-[18px] leading-none font-semibold">
-              {account.data ? fmtMicroUsd(account.data.balanceMicro) : '—'}
+            <div className={`min-h-[140px] flex-1 px-[6px] pb-[6px] text-(--text-tertiary) ${SEG_FILL} ${SERIES_FILL}`}>
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={chartData} margin={{ top: 4, right: 8, bottom: 0, left: 8 }} barCategoryGap="12%">
+                  <XAxis
+                    dataKey="label"
+                    interval={tickInterval(chartData.length)}
+                    tickLine={false}
+                    axisLine={false}
+                    tickMargin={6}
+                    tick={{ fill: 'currentColor', fontSize: 10.5 }}
+                    className="mono"
+                  />
+                  <Tooltip content={<Tip />} cursor={{ fill: 'var(--surface-hover)' }} />
+                  {/* Spend on the baseline, the top-up capping it — and the radius on both, so
+                      whichever segment ends up on top of a given day is the rounded one. */}
+                  <Bar
+                    dataKey="spend"
+                    name="daily spend"
+                    className="bar-spend"
+                    stackId="day"
+                    radius={[3, 3, 0, 0]}
+                    minPointSize={minBar('spend')}
+                  />
+                  <Bar
+                    dataKey="topUp"
+                    name="top-up"
+                    className="bar-topup"
+                    stackId="day"
+                    radius={[3, 3, 0, 0]}
+                    minPointSize={minBar('topUp')}
+                  />
+                </BarChart>
+              </ResponsiveContainer>
             </div>
           )}
-        </div>
-      </div>
 
-      {/* Decoration until the series is real, so it is aria-hidden rather than announced as a
-          figure a reader could act on. Every bar is spend: a top-up is a tick UNDER the axis, not
-          a recoloured bar, because a green bar whose HEIGHT is that day's spend reads as the
-          top-up's amount — and this shape is what gets wired. */}
-      <div aria-hidden className="px-4">
-        <div className="flex h-[96px] items-end gap-[3px]">
-          {SAMPLE_SPEND.map((cents, day) => (
-            <span
-              key={day}
-              className="min-w-0 flex-1 rounded-t-[2px] bg-(--brand)"
-              style={{ height: `${Math.max(6, Math.round((cents / peak) * 100))}%` }}
-            />
-          ))}
-        </div>
-        <div className="mt-[3px] flex gap-[3px] border-t border-(--border-subtle) pt-[3px]">
-          {SAMPLE_SPEND.map((_, day) => (
-            <span
-              key={day}
-              className="h-[3px] min-w-0 flex-1 rounded-[1px]"
-              style={{ background: SAMPLE_TOP_UP_DAYS.has(day) ? 'var(--green-500)' : 'transparent' }}
-            />
-          ))}
-        </div>
-      </div>
-
-      {/* Relative, not dated: "Jul 21 / Aug 20" would be right today and wrong tomorrow, and a
-          reader who reads the chip as covering the figures need not extend it to the axis. */}
-      <div className="flex items-center gap-3 px-4 pt-[9px] pb-[13px]">
-        <span className="mono text-[11px] text-(--text-tertiary)">30 days ago</span>
-        <span className="mx-auto flex items-center gap-3">
-          <span className="inline-flex items-center gap-[6px] font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-            <span className="dot h-[7px] w-[7px] bg-(--brand)" />
-            daily spend
-          </span>
-          <span className="inline-flex items-center gap-[6px] font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-            <span className="h-[3px] w-[10px] rounded-[1px] bg-(--green-500)" />
-            top-up day
-          </span>
-        </span>
-        <span className="mono text-[11px] text-(--text-tertiary)">today</span>
-      </div>
+          <div className="flex items-center justify-center gap-3 px-4 pb-[13px]">
+            <span className="inline-flex items-center gap-[6px] font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+              <span className="h-[9px] w-[9px] rounded-[2px] bg-(--brand)" />
+              daily spend
+            </span>
+            <span className="inline-flex items-center gap-[6px] font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+              <span className="h-[9px] w-[9px] rounded-[2px] bg-(--green-500)" />
+              top-up
+            </span>
+          </div>
+        </>
+      )}
     </div>
   )
 }
 
-/** Marks one figure as sample data. Per-figure, because the Balance beside them is live. */
-function SampleChip() {
+/** First-load stand-in for the chart: the same 140px body, so data landing shifts nothing.
+ *  Heights are a fixed pattern, never random — a random walk redraws on every render. */
+function SpendSkeleton() {
   return (
-    <span
-      className="badge bg-(--surface-active) text-(--text-tertiary)"
-      title="Sample data — billing cannot serve a daily spend series yet"
-    >
-      sample
-    </span>
+    <div className="flex min-h-[140px] flex-1 animate-pulse items-end gap-[3px] px-[14px] pt-3 pb-[26px]">
+      {Array.from({ length: CREDITS_WINDOW_DAYS }, (_, i) => (
+        <span
+          key={i}
+          className="min-w-0 max-w-[22px] flex-1 rounded-t-[3px] bg-(--surface-active)"
+          style={{ height: `${24 + ((i * 23 + 13) % 60)}%` }}
+        />
+      ))}
+    </div>
+  )
+}
+
+/** One figure in the Credits header. Each has its own source, so each fails on its own: a
+ *  dash where a request failed would read as zero, which is a number the org could act on. */
+function Figure({
+  label,
+  value,
+  note,
+  error,
+  loading = false,
+  valueClass = 'text-[20px] desktop:text-[24px]',
+  className = ''
+}: {
+  label: string
+  value: string
+  note?: string
+  error?: string
+  loading?: boolean
+  valueClass?: string
+  className?: string
+}) {
+  return (
+    <div className={`min-w-0 ${className}`}>
+      <div className="eyebrow">{label}</div>
+      {loading ? (
+        <>
+          <span className="mt-[6px] inline-block h-[22px] w-24 animate-pulse rounded-md bg-(--surface-active)" />
+          <div className="mt-[9px]">
+            <span className="inline-block h-[10px] w-16 animate-pulse rounded-full bg-(--surface-active)" />
+          </div>
+        </>
+      ) : error ? (
+        <div
+          className="mt-[6px] inline-flex items-center gap-[6px] font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary)"
+          title={error}
+        >
+          <Icon name="triangle-alert" size={14} color="var(--status-error)" />
+          unavailable
+        </div>
+      ) : (
+        <>
+          <div className={`mono mt-[6px] leading-none font-semibold tracking-[-.02em] ${valueClass}`}>{value}</div>
+          {note && (
+            <div className="mt-[7px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+              {note}
+            </div>
+          )}
+        </>
+      )}
+    </div>
   )
 }
 

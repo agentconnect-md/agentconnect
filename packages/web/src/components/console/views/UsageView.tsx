@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import useSWR from 'swr'
 import { Bar, BarChart, Legend, ResponsiveContainer, Tooltip, XAxis } from 'recharts'
+import { SEG_FILL, bucketLabel, tickInterval } from '@/lib/spend-chart'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { fetchUsage, fmtCost, fmtCountCompact as fmtCompact, type UsageRange } from '@/lib/api'
 import { amountToNumber, sumAmounts } from '@/lib/amount'
@@ -28,32 +29,6 @@ const MOBILE_RANGES: { key: UsageRange; label: string }[] = [
   { key: 'd30', label: '30 days' }
 ]
 
-// SVG `fill` can't take a `var()` presentation attribute, so the stacked-bar hues
-// are applied as descendant CSS rules on the chart wrapper (a real declaration
-// out-ranks recharts' own `fill` attribute) — that keeps the bars theme-reactive
-// with no JS reading computed styles. Literal strings so Tailwind can see them.
-const SEG_FILL = [
-  '[&_.seg-0_path]:fill-(--chart-1)',
-  '[&_.seg-1_path]:fill-(--chart-2)',
-  '[&_.seg-2_path]:fill-(--chart-3)',
-  '[&_.seg-3_path]:fill-(--chart-4)',
-  '[&_.seg-4_path]:fill-(--chart-5)',
-  '[&_.seg-5_path]:fill-(--chart-6)',
-  '[&_.seg-6_path]:fill-(--chart-other)',
-  '[&_.seg-flat_path]:fill-(--brand)',
-  // recharts' accessibility layer makes the chart surface focusable, so clicking a
-  // bar leaves a UA focus ring around the whole plot. Drop the default outline but
-  // keep a themed one for :focus-visible, so keyboard users still see where focus is.
-  '[&_.recharts-wrapper]:outline-none',
-  '[&_.recharts-surface]:outline-none',
-  '[&_.recharts-wrapper:focus-visible]:outline-2',
-  '[&_.recharts-wrapper:focus-visible]:outline-offset-2',
-  '[&_.recharts-wrapper:focus-visible]:outline-(--border-focus)',
-  '[&_.recharts-surface:focus-visible]:outline-2',
-  '[&_.recharts-surface:focus-visible]:outline-offset-2',
-  '[&_.recharts-surface:focus-visible]:outline-(--border-focus)'
-].join(' ')
-
 const GRID = 'grid-cols-[2fr_1fr_1fr_1fr_1.4fr]'
 
 // How the usage table is broken down. Runtime is derived from the per-agent
@@ -65,16 +40,6 @@ const GROUPS: { key: GroupBy; label: string }[] = [
   { key: 'runtime', label: 'By runtime' },
   { key: 'model', label: 'By model' }
 ]
-
-// Buckets are aligned to the viewer's local day/hour (the CP flooring uses the
-// tz offset we send), so `start` is the UTC instant of a local boundary — label
-// it in local time to read as that local date/hour.
-function bucketLabel(iso: string, bucket: 'hour' | 'day'): string {
-  const d = new Date(iso)
-  return bucket === 'hour'
-    ? `${String(d.getHours()).padStart(2, '0')}:00`
-    : d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
-}
 
 export default function UsageView() {
   const { orgPath, activeOrg, orgs, loading: orgLoading, error: orgError } = useOrgs()
@@ -317,7 +282,6 @@ export default function UsageView() {
       {data?.series &&
         (() => {
           const pts = data.series.points
-          const labelEvery = Math.max(1, Math.ceil(pts.length / 8))
           const unit = (currency ?? 'USD').toUpperCase()
           // Full IANA zone name (e.g. "Asia/Shanghai") — the buckets are aligned to
           // this zone, so tell the viewer. Client-only: the chart never renders on
@@ -472,7 +436,7 @@ export default function UsageView() {
                   <BarChart data={chartData} margin={{ top: 0, right: 8, bottom: 0, left: 8 }} barCategoryGap="18%">
                     <XAxis
                       dataKey="label"
-                      interval={labelEvery - 1}
+                      interval={tickInterval(pts.length)}
                       tickLine={false}
                       axisLine={false}
                       tickMargin={6}

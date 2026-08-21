@@ -254,8 +254,22 @@ export async function fetchBillingAccount(orgId: string): Promise<BillingAccount
   return body
 }
 
-export async function fetchBillingTransactions(orgId: string, cursor?: string): Promise<BillingTransactionsPage> {
-  const query = cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''
+/** `window` narrows the feed to a half-open `[from, to)` on the row's own instant, the same
+ *  shape the CP's usage query takes; both ends are optional and an omitted one is open.
+ *
+ *  It is a REQUEST, not a guarantee: a billing image that predates the parameters ignores
+ *  them and answers with the whole ledger, and this console routinely runs ahead of that
+ *  image. A caller that needs the window to hold must still check `at` on the rows it keeps. */
+export async function fetchBillingTransactions(
+  orgId: string,
+  cursor?: string,
+  window?: { from?: string; to?: string }
+): Promise<BillingTransactionsPage> {
+  const params = new URLSearchParams()
+  if (cursor) params.set('cursor', cursor)
+  if (window?.from) params.set('from', window.from)
+  if (window?.to) params.set('to', window.to)
+  const query = params.size > 0 ? `?${params}` : ''
   const body = await request<unknown>(`${orgPath(orgId)}/transactions${query}`)
   assertTransactionsPage(body)
   // Normalised here so the tolerance stops at this boundary: a service that predates the

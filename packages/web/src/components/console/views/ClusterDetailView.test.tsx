@@ -17,6 +17,8 @@ const mocks = vi.hoisted(() => ({
   integrations: [] as unknown[],
   daemonsLoading: false,
   balance: { data: { orgId: 'org-pool', balanceMicro: 38_740_000 } } as Record<string, unknown>,
+  usage: {} as Record<string, unknown>,
+  topUps: {} as Record<string, unknown>,
   push: vi.fn()
 }))
 
@@ -33,8 +35,17 @@ vi.mock('@/lib/data-context', () => ({
   })
 }))
 vi.mock('@/lib/acp-registry', () => ({ useAcpRegistry: () => ({}), acpRuntime: () => undefined }))
-// The Credits card's Balance is live; nothing else on the page fetches.
-vi.mock('swr', () => ({ default: () => mocks.balance }))
+// The Credits card is the page's only fetcher, and it reads three independent sources, so
+// the stub answers per KEY — one shared response would hide a card that wired the wrong one.
+vi.mock('swr', () => ({
+  default: (key: unknown) => {
+    const resource = Array.isArray(key) ? key[2] : null
+    if (resource === 'billing-account') return mocks.balance
+    if (resource === 'usage') return mocks.usage
+    if (resource === 'billing-top-ups') return mocks.topUps
+    return {}
+  }
+}))
 
 const ClusterDetailView = (await import('./ClusterDetailView')).default
 
@@ -93,6 +104,35 @@ const onPool = (id: string, over: Partial<Agent> = {}): Agent =>
     ...over
   }) as Agent
 
+/** A 30-day spend series where only SOME of the cost is the pool's — the other agent is the
+ *  whole point: a card that summed the org's total would pass against a single-agent series. */
+function usageOverPool(pool: Record<number, string> = { 3: '1.50', 10: '4.00', 29: '2.50' }) {
+  return {
+    from: '',
+    to: '',
+    totals: { sessions: 0, totalTokens: 0, costAmount: '0', costCurrency: 'USD' },
+    agents: [],
+    models: [],
+    sources: [],
+    series: {
+      bucket: 'day' as const,
+      points: Array.from({ length: 30 }, (_, day) => ({
+        start: new Date(Date.UTC(2026, 6, 22 + day)).toISOString(),
+        costAmount: '9.99',
+        byAgent: { ...(pool[day] ? { a1: pool[day] } : {}), 'not-on-pool': '7.00' }
+      }))
+    }
+  }
+}
+
+const credit = (day: number, amountMicro: number) => ({
+  type: 'credit' as const,
+  id: `c${day}`,
+  kind: 'purchase' as const,
+  amountMicro,
+  at: new Date(Date.UTC(2026, 6, 22 + day, 9)).toISOString()
+})
+
 function render(): string {
   const host = document.createElement('div')
   document.body.appendChild(host)
@@ -116,6 +156,8 @@ beforeEach(() => {
   mocks.integrations = []
   mocks.daemonsLoading = false
   mocks.balance = { data: { orgId: 'org-pool', balanceMicro: 38_740_000 } }
+  mocks.usage = { data: usageOverPool() }
+  mocks.topUps = { data: [] }
   mocks.push.mockClear()
   setFlags('daemon-pool')
 })
@@ -292,35 +334,81 @@ describe('ClusterDetailView — managed (AgentConnect Cloud)', () => {
     expect(html).not.toContain('pool-member-p1')
   })
 
-  it('shows the REAL balance and chips only the figures it cannot serve', () => {
-    // A fabricated balance beside a "Manage billing" link to the real one reads as headroom the
-    // org has, so the one figure billing can already answer is live and the rest are marked.
+  it('bills the org for what ran on the POOL, not for what the org spent', () => {
+    // The footnote right below this card promises agents on your own daemons are never billed
+    // here, so the spend is the `byAgent` split filtered to the pool — never the bucket total.
     mocks.daemons = [member('p1')]
+    mocks.agents = [onPool('a1')]
 
     const html = render()
 
     expect(html).toContain('Credits')
+    expect(html).toContain('$8.00')
+    // 30 buckets × $7.00 belonging to an agent that does not run here.
+    expect(html).not.toContain('$218.00')
+    expect(html).not.toContain('$210.00')
+  })
+
+  it('shows the REAL balance beside them', () => {
+    mocks.daemons = [member('p1')]
+    mocks.agents = [onPool('a1')]
+
+    const html = render()
+
     expect(html).toContain('$38.74')
-    expect(html).toContain('sample')
     expect(html).toContain('Manage billing')
-    // Decoration, not a figure a reader could act on.
-    expect(html).toContain('aria-hidden')
     // A plan's included usage is not derivable from load telemetry, so no bar pretends it is.
     expect(html).not.toContain('included')
   })
 
-  it('keeps the sample total and the sample bars consistent with each other', () => {
-    // They come from ONE series once wired, so the placeholder satisfies that invariant already.
+  it('sums the credit rows that fall inside the window', () => {
     mocks.daemons = [member('p1')]
+    mocks.agents = [onPool('a1')]
+    mocks.topUps = { data: [credit(4, 20_000_000), credit(25, 30_000_000)] }
 
-    // 146,600 cents across the 30 bars.
-    expect(render()).toContain('$1,466.00')
+    const html = render()
+
+    expect(html).toContain('$50.00')
+    expect(html).toContain('2 top-ups')
   })
 
-  it('lets the balance failure say which failure it was', () => {
+  it("holds the chart's footprint while the first load is in flight", () => {
+    // A card that collapsed to its figures and grew a chart underneath would shove the page
+    // down the moment the series lands.
+    mocks.daemons = [member('p1')]
+    mocks.agents = [onPool('a1')]
+    mocks.usage = { isLoading: true }
+    mocks.topUps = { isLoading: true }
+    mocks.balance = { isLoading: true }
+
+    const html = render()
+
+    expect(html).toContain('animate-pulse')
+    expect(html).toContain('min-h-[140px]')
+    // Nothing is claimed while it loads — not even a zero.
+    expect(html).not.toContain('$0.00')
+  })
+
+  it('refuses to quote a spend it cannot scope to the pool', () => {
+    // A CP predating the `byAgent` split can only answer for the whole org, and answering with
+    // that number is the one thing this card must not do.
+    mocks.daemons = [member('p1')]
+    mocks.agents = [onPool('a1')]
+    mocks.usage = { data: { ...usageOverPool(), series: { bucket: 'day', points: [] } } }
+
+    const html = render()
+
+    expect(html).toContain('unavailable')
+    expect(html).toContain('does not split spend per agent')
+    // The balance is a different source and still answers.
+    expect(html).toContain('$38.74')
+  })
+
+  it('lets each figure fail on its own', () => {
     // A shape mismatch throws BillingShapeError into the same slot as an unreachable service, and
     // this console deploys ahead of the pinned billing image — so blaming the network guesses.
     mocks.daemons = [member('p1')]
+    mocks.agents = [onPool('a1')]
     mocks.balance = { error: new Error('billing sent an unexpected account — the console may be out of date') }
 
     const html = render()
@@ -328,21 +416,8 @@ describe('ClusterDetailView — managed (AgentConnect Cloud)', () => {
     expect(html).toContain('unavailable')
     expect(html).toContain('may be out of date')
     expect(html).not.toContain('Could not reach')
-  })
-
-  it('dates the axis relatively, so it cannot go stale', () => {
-    mocks.daemons = [member('p1')]
-
-    const html = render()
-
-    expect(html).toContain('30 days ago')
-    expect(html).toContain('today')
-  })
-
-  it('never generates the placeholder series, so it cannot read as live data', () => {
-    mocks.daemons = [member('p1')]
-
-    expect(render()).toBe(render())
+    // A failed balance is not a failed spend: the CP's figure still renders.
+    expect(html).toContain('$8.00')
   })
 
   it('offers no billing surface where the deployment has none', () => {

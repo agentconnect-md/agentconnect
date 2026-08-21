@@ -3,12 +3,13 @@
 // hypothetical. These checks pin the one property that makes the copy tolerable:
 // a response that does not match is REFUSED at the boundary, so the page shows
 // its error card instead of rendering `$NaN` where a balance belongs.
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   assertAccount,
   assertPurchase,
   assertPurchaseCreated,
   assertTransactionsPage,
+  fetchBillingTransactions,
   fmtDecimalUsd,
   BillingShapeError,
   fmtMicroUsd
@@ -194,5 +195,58 @@ describe('fmtDecimalUsd', () => {
   it('keeps the sign outside the symbol, matching fmtMicroUsd', () => {
     expect(fmtDecimalUsd('-0.5')).toBe('-$0.50')
     expect(fmtDecimalUsd('-0.001234')).toBe('-$0.001234')
+  })
+})
+
+// Auth is not what these check; stub it so `request` builds a URL instead of a token.
+vi.mock('@/lib/auth', () => ({
+  getToken: async () => null,
+  getUser: async () => null,
+  getIdTokenRaw: async () => null
+}))
+
+describe('fetchBillingTransactions', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs()
+    vi.unstubAllGlobals()
+  })
+
+  const urls: string[] = []
+  const stub = () => {
+    urls.length = 0
+    vi.stubEnv('BILLING_URL', 'https://billing.test')
+    vi.stubGlobal('fetch', async (url: string) => {
+      urls.push(url)
+      return { ok: true, json: async () => ({ items: [], nextCursor: null }) }
+    })
+  }
+
+  it('sends the window as the service names it, so the filter runs in SQL', async () => {
+    // A misspelled parameter is invisible from the console: the service ignores what it does
+    // not know, the caller's own cut still trims the rows, and the page stays correct while
+    // paging the whole ledger to get there.
+    stub()
+
+    await fetchBillingTransactions('org1', undefined, { from: '2026-07-21T00:00:00.000Z' })
+
+    expect(urls[0]).toBe('https://billing.test/api/v1/orgs/org1/billing/transactions?from=2026-07-21T00%3A00%3A00.000Z')
+  })
+
+  it('carries the cursor and both ends together', async () => {
+    stub()
+
+    await fetchBillingTransactions('org1', 'c1', { from: '2026-07-21T00:00:00.000Z', to: '2026-08-20T00:00:00.000Z' })
+
+    expect(urls[0]).toContain('cursor=c1')
+    expect(urls[0]).toContain('from=2026-07-21')
+    expect(urls[0]).toContain('to=2026-08-20')
+  })
+
+  it('asks for no window at all when it has none, rather than an empty one', async () => {
+    stub()
+
+    await fetchBillingTransactions('org1')
+
+    expect(urls[0]).toBe('https://billing.test/api/v1/orgs/org1/billing/transactions')
   })
 })
