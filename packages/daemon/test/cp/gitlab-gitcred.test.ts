@@ -75,6 +75,20 @@ describe('GitCredentialCache — gitlab provider (§17.1)', () => {
     const h = build({ v2: true, respond: () => githubGrant })
     await expect(h.cache.get(AGENT, 'clone', { provider: 'gitlab' })).rejects.toThrow(/provider github/)
   })
+
+  it('rejects a wrong-project numeric echo (§17.1) and evicts by the provider-qualified key on erase', async () => {
+    const h = build({ v2: true, respond: () => gitlabGrant })
+    await expect(h.cache.get(AGENT, 'clone', { provider: 'gitlab', externalRepoId: '999' })).rejects.toThrow(
+      /project 4455667 for project 999/
+    )
+
+    // Erase must hit the SAME provider-qualified key the get stored under.
+    const cached = await h.cache.get(AGENT, 'clone', { provider: 'gitlab', externalRepoId: '4455667' })
+    expect(cached.token).toBe('glpat-1')
+    h.cache.invalidate(AGENT, 'glpat-1', { provider: 'gitlab' })
+    await h.cache.get(AGENT, 'clone', { provider: 'gitlab', externalRepoId: '4455667' })
+    expect(h.calls()).toBe(3) // eviction forced a fresh CP ask
+  })
 })
 
 describe('helper path parsing (§13.2)', () => {
@@ -84,6 +98,20 @@ describe('helper path parsing (§13.2)', () => {
     expect(projectFromPath('Group/Project.git/info/lfs')).toBe('group/project')
     expect(projectFromPath('just-a-name')).toBeUndefined()
     expect(repoFromPath('owner/repo.git/info/lfs')).toBe('owner/repo')
+  })
+})
+
+describe('managed origin convergence trust (round 2)', () => {
+  it('a managed root trusts exactly ITS provider host', async () => {
+    const { WorkspaceManager } = await import('../../src/workspace/workspace-manager.js')
+    const wm = new WorkspaceManager()
+    const gitlabRoot = 'https://gitlab.com/example-group/example-project'
+    expect(wm.isTrustedManagedOrigin('https://gitlab.com/example-group/example-project.git', gitlabRoot)).toBe(true)
+    expect(wm.isTrustedManagedOrigin('git@gitlab.com:example-group/example-project.git', gitlabRoot)).toBe(true)
+    expect(wm.isTrustedManagedOrigin('https://github.com/acme/infra.git', gitlabRoot)).toBe(false)
+    const githubRoot = 'https://github.com/acme/infra'
+    expect(wm.isTrustedManagedOrigin('https://github.com/acme/infra.git', githubRoot)).toBe(true)
+    expect(wm.isTrustedManagedOrigin('https://gitlab.com/g/p.git', githubRoot)).toBe(false)
   })
 })
 

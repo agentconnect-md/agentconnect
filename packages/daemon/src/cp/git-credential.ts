@@ -92,6 +92,7 @@ export interface GitCredentialCacheDeps {
     hookId?: string
     forceRefresh?: boolean
     provider?: 'gitlab'
+    externalRepoId?: string
     requestedAccess?: 'read' | 'write'
   }) => Promise<GitCredGrant>
   log: { warn: (msg: string) => void }
@@ -135,7 +136,13 @@ export class GitCredentialCache {
   async get(
     agentId: string,
     reason: 'clone' | 'fetch' | 'pull' | 'push' | 'helper',
-    opts: { plane?: CredPlane; repo?: string; provider?: 'gitlab'; requestedAccess?: 'read' | 'write' } = {}
+    opts: {
+      plane?: CredPlane
+      repo?: string
+      provider?: 'gitlab'
+      externalRepoId?: string
+      requestedAccess?: 'read' | 'write'
+    } = {}
   ): Promise<Entry> {
     const plane = opts.plane ?? 'git'
     if (opts.provider === 'gitlab' && this.deps.providerV2Supported?.() !== true) {
@@ -154,6 +161,7 @@ export class GitCredentialCache {
         : {}),
       ...(opts.repo !== undefined ? { repoFullName: opts.repo } : {}),
       ...(opts.provider !== undefined ? { provider: opts.provider } : {}),
+      ...(opts.externalRepoId !== undefined ? { externalRepoId: opts.externalRepoId } : {}),
       ...(opts.requestedAccess !== undefined ? { requestedAccess: opts.requestedAccess } : {})
     })
   }
@@ -242,10 +250,14 @@ export class GitCredentialCache {
    * fresh grant from being wiped by a stale erase. `repo` routes the erase to
    * the same key the `get` used; absent ⇒ the workspace git-plane entry.
    */
-  invalidate(agentId: string, presentedPassword?: string, opts: { plane?: CredPlane; repo?: string } = {}): void {
+  invalidate(
+    agentId: string,
+    presentedPassword?: string,
+    opts: { plane?: CredPlane; repo?: string; provider?: 'gitlab' } = {}
+  ): void {
     const plane = opts.plane ?? 'git'
     const cachePlane = plane === 'gh' && this.deps.actionsSupported?.() === true ? 'gh-actions' : plane
-    const key = keyOf(agentId, cachePlane, opts.repo)
+    const key = keyOf(agentId, cachePlane, opts.repo, opts.provider)
     const entry = this.entries.get(key)
     if (!entry) return
     if (presentedPassword !== undefined && entry.token !== presentedPassword) return
@@ -301,6 +313,14 @@ export class GitCredentialCache {
     if (payload.provider !== undefined && grant.provider !== payload.provider) {
       throw new GitCredUnavailableError(
         `control plane answered provider ${grant.provider ?? 'github'} for a ${payload.provider} request`,
+        false
+      )
+    }
+    // …and a mismatched numeric identity is a wrong-project credential: local
+    // replica and CP record disagree — fail, never serve.
+    if (payload.externalRepoId !== undefined && grant.externalRepoId !== payload.externalRepoId) {
+      throw new GitCredUnavailableError(
+        `control plane answered project ${grant.externalRepoId ?? 'unknown'} for project ${payload.externalRepoId}`,
         false
       )
     }

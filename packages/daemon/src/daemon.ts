@@ -1687,6 +1687,10 @@ export class Daemon {
       providerOf: (agentId: string) => {
         const agent = this.agents.get(agentId)
         return agent ? this.workspaces.managedCredentialProvider(agent) : undefined
+      },
+      projectIdOf: (agentId: string) => {
+        const ws = this.agents.get(agentId)?.workspace
+        return ws?.mode === 'git-repo' ? ws.gitlabProjectId : undefined
       }
     })
     const daemonCredentialTarget = daemonGitCredentialTarget({
@@ -1703,8 +1707,13 @@ export class Daemon {
       preWarm: async (agentId, reason) => {
         const agent = this.agents.get(agentId)
         const provider = agent ? this.workspaces.managedCredentialProvider(agent) : undefined
-        if (provider === 'gitlab') await this.gitCreds.get(agentId, reason, { provider: 'gitlab' })
-        else await this.gitCreds.get(agentId, reason)
+        if (provider === 'gitlab') {
+          const projectId = agent?.workspace.mode === 'git-repo' ? agent.workspace.gitlabProjectId : undefined
+          await this.gitCreds.get(agentId, reason, {
+            provider: 'gitlab',
+            ...(projectId !== undefined ? { externalRepoId: projectId } : {})
+          })
+        } else await this.gitCreds.get(agentId, reason)
       }
     })
     try {
@@ -3545,7 +3554,9 @@ export class Daemon {
         trustedWorkspaceWriteRoots: runInSandbox ? this.workspaces.trustedWorkspaceWriteRoots(agent) : undefined,
         sandboxMechanism: this.sandboxMechanism,
         mcpSocketPath: mcpSocketPath(this.root),
-        allowModelToolUnixSockets: githubAppCredentials,
+        // Inner tool sandboxes must CONNECT to the daemon socket for either
+        // managed provider — read permission on the path alone is insufficient.
+        allowModelToolUnixSockets: managedCredentials,
         // The pod is the isolation boundary AND a different filesystem, so this daemon's env
         // must not travel with the launch.
         ...(this.k8s ? { k8s: true as const } : {})

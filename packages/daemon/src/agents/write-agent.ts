@@ -872,9 +872,16 @@ export function applySpecFields(
     }
     // Credential mode is CP-derived config and also applies to scratch
     // workspaces with explicit repo grants. Mirror it exactly, including clear.
-    if (ws.mode === 'gitlab') existing.gitCredential = 'gitlab'
-    else if (ws.gitCredential !== undefined) existing.gitCredential = ws.gitCredential
-    else delete existing.gitCredential
+    if (ws.mode === 'gitlab') {
+      existing.gitCredential = 'gitlab'
+      // The rename-stable identity rides the spec (§17.1); the grant consumer
+      // verifies every echo against it.
+      existing.gitlabProjectId = ws.projectId
+    } else {
+      if (ws.gitCredential !== undefined) existing.gitCredential = ws.gitCredential
+      else delete existing.gitCredential
+      delete existing.gitlabProjectId
+    }
     // The CP is the authority on the additional-repository allowlist and always ships
     // the full set, so mirror it exactly — [] must replicate as a cleared list.
     existing.additionalRepos = ws.additionalRepos

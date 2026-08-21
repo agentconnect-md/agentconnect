@@ -723,6 +723,22 @@ export class WorkspaceManager {
     }
   }
 
+  /** A managed root's origin must stay on ITS provider host, derived from the
+   *  authorized clone URL (github.com unless the root is a gitlab.com one). */
+  isTrustedManagedOrigin(input: string, cloneUrl: string): boolean {
+    const host = managedCredentialHostOf(cloneUrl) ?? 'github.com'
+    const raw = input.trim()
+    if (raw.includes('\\')) return false
+    const scp = /^[\w.-]+@([\w.-]+):/.exec(raw)
+    if (scp) return scp[1]!.toLowerCase() === host
+    if (!/^(?:https|ssh):\/\//i.test(raw)) return false
+    try {
+      return new URL(normalizeGitCloneUrl(redactGitUrlSecrets(raw))).hostname.toLowerCase() === host
+    } catch {
+      return false
+    }
+  }
+
   isTrustedGithubOrigin(input: string): boolean {
     const raw = input.trim()
     if (raw.includes('\\')) return false
@@ -809,7 +825,9 @@ export class WorkspaceManager {
       if (root.githubApp) throw new UntrustedGithubWorkspaceOriginError({ cause })
       return
     }
-    if (root.githubApp && !this.isTrustedGithubOrigin(current)) {
+    // Managed roots trust exactly their provider's host: a gitlab root's
+    // origin must be gitlab.com, a github one github.com (§13.2).
+    if (root.githubApp && !this.isTrustedManagedOrigin(current, root.cloneUrl)) {
       throw new UntrustedGithubWorkspaceOriginError()
     }
     const normalizedCurrent = normalizeGitUrl(current)

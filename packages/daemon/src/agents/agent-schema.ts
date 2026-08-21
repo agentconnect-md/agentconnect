@@ -215,6 +215,12 @@ export const AgentSchema = z.object({
     // clone/fetch/push authenticate via the local credential helper backed by
     // CP-minted short-lived installation tokens — nothing durable on this host.
     gitCredential: z.enum(['github-app', 'gitlab']).optional(),
+    // gitlab mode: the v2 rename-stable numeric project id (gitlab-com-integration.md
+    // §17.1) — the identity the credential consumer verifies against every grant echo.
+    gitlabProjectId: z
+      .string()
+      .regex(/^[1-9]\d*$/)
+      .optional(),
     // The agent's additional-repository allowlist, replicated from the CP
     // (multi-repository-workspaces.md decision 2). A later phase materializes these
     // as secondary workspace roots; nothing reads the list yet. `repoId` is GitHub's
