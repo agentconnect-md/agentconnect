@@ -60,6 +60,10 @@ export interface BillingCredit {
   amountMicro: number
   /** ISO 8601 instant. */
   at: string
+  // Stripe-hosted receipt, on a `purchase` row only, and optional for the same reason
+  // `type` is: a service that predates it omits it, and the console runs ahead of that
+  // image. Absent or null ⇒ the row renders with no receipt link, never a broken one.
+  receiptUrl?: string | null
 }
 
 export interface BillingDebit {
@@ -211,6 +215,9 @@ export function assertTransactionsPage(
       // this build has not heard of renders with its raw value as the label, and
       // refusing the whole page over one unknown label would be the worse failure.
       if (typeof t.kind !== 'string') throw new BillingShapeError('transaction')
+      // A non-string, non-null receipt is a shape error; ABSENT is the older contract.
+      if (!(t.receiptUrl === undefined || t.receiptUrl === null || typeof t.receiptUrl === 'string'))
+        throw new BillingShapeError('transaction')
     } else if (t.type === 'debit') {
       // A string, and never coerced to a number here — the exact value is what the
       // service sent, and only the display rounds it.
@@ -277,8 +284,12 @@ export async function fetchBillingTransactions(
   // switch on it without knowing that history.
   // Keyed on `debit` rather than on the absence of `type`, so the credit arm is stamped
   // the same way whether the service sent it or not.
+  // The receipt is dropped unless it is `https:` — it becomes an `href`, and a payload
+  // that reached this line is remote input, so nothing else may become a link.
   const items: BillingTransaction[] = body.items.map((row) =>
-    row.type === 'debit' ? row : { ...row, type: 'credit' as const }
+    row.type === 'debit'
+      ? row
+      : { ...row, type: 'credit' as const, receiptUrl: row.receiptUrl?.startsWith('https://') ? row.receiptUrl : null }
   )
   return { items, nextCursor: body.nextCursor }
 }
