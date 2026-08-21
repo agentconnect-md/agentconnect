@@ -230,7 +230,8 @@ export class GithubReviewOrchestrator {
       firedAt: msg.firedAt,
       ...(msg.event ? { event: msg.event } : {}),
       ...(snapshot ? { snapshot } : {}),
-      ...(msg.github ? { github: msg.github } : {})
+      ...(msg.github ? { github: msg.github } : {}),
+      ...(msg.gitlab ? { gitlab: msg.gitlab } : {})
     }
     if (cleanup || deleted) {
       const key = sessionKey(nmsg.platform, nmsg.channel, nmsg.thread ?? nmsg.msgId, msg.agentId, nmsg.transportScope)
