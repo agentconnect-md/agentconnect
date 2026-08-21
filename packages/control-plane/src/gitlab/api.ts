@@ -487,6 +487,15 @@ export async function gitlabUpdateWebhook(
   })
 }
 
+/** The project's webhooks — crash-left create reconciliation (exact-URL adoption). */
+export async function gitlabListWebhooks(
+  accessToken: string,
+  projectId: bigint,
+  fetchImpl?: FetchLike
+): Promise<GitlabWebhook[]> {
+  return gitlabRequest<GitlabWebhook[]>(`/projects/${projectId}/hooks?per_page=100`, { auth: accessToken, fetchImpl })
+}
+
 export async function gitlabDeleteWebhook(
   accessToken: string,
   projectId: bigint,

@@ -46,6 +46,7 @@ import {
   gitlabFindServiceAccount,
   gitlabProject,
   gitlabListServiceAccountTokens,
+  gitlabListWebhooks,
   gitlabRevokeServiceAccountToken,
   gitlabRootNamespace,
   gitlabServiceAccountUsername,
@@ -183,13 +184,15 @@ export class GitlabProvisioner {
     return { state, reason }
   }
 
-  private fenceHeld(orgId: string, binding: GitlabProjectBindingRecord, owner: string): Promise<boolean> {
-    return this.deps.bindings.claimFenceHeld(
+  private renewLease(orgId: string, binding: GitlabProjectBindingRecord, owner: string): Promise<boolean> {
+    // Atomic owner-matched extension: liveness check and renewal are one write,
+    // with fresh validity covering the provider request that follows.
+    return this.deps.bindings.renewProviderLease(
       orgId,
       binding.id,
       binding.projectId,
       owner,
-      new Date(this.deps.clock.now())
+      new Date(this.deps.clock.now() + PROVISION_LEASE_MS)
     )
   }
 
@@ -224,8 +227,8 @@ export class GitlabProvisioner {
     const username = gitlabServiceAccountUsername(binding.projectId)
     let account = await gitlabFindServiceAccount(token, root.id, username, fetchImpl)
     if (!account) {
-      // §10.2 per-step belt: the run must still own a live lease.
-      if (!(await this.fenceHeld(orgId, binding, owner))) {
+      // §10.2 per-step atomic renewal: the run must still own the lease.
+      if (!(await this.renewLease(orgId, binding, owner))) {
         return { state: 'admin_degraded', reason: 'claim_fence_lost' }
       }
       try {
@@ -285,8 +288,8 @@ export class GitlabProvisioner {
   ): Promise<void> {
     const scopes = PURPOSE_SCOPES[purpose]
     const expiresAt = expiresAtDate(this.deps.clock.now())
-    // §10.2 per-step belt under the lease.
-    if (!(await this.fenceHeld(orgId, binding, owner))) throw new GitlabClaimFenceLost()
+    // §10.2 per-step atomic renewal under the lease.
+    if (!(await this.renewLease(orgId, binding, owner))) throw new GitlabClaimFenceLost()
     // Ambiguous-create recovery (§10.2): a marked token we did not record has a
     // lost plaintext — revoke it before minting, sparing the recorded one
     // (rotation's create-before-revoke overlap shares the name deliberately).
@@ -366,30 +369,50 @@ export class GitlabProvisioner {
     if (!this.deps.publicRelayUrl) {
       return { state: 'admin_degraded', reason: 'relay_url_unconfigured' }
     }
-    // §10.2 per-step belt before the webhook create/update.
-    if (!(await this.fenceHeld(orgId, binding, owner))) {
+    // §10.2 per-step atomic renewal before the webhook create/update: the lease
+    // is extended so it cannot expire while the provider request is in flight.
+    if (!(await this.renewLease(orgId, binding, owner))) {
       return { state: 'admin_degraded', reason: 'claim_fence_lost' }
     }
     const url = `${this.deps.publicRelayUrl.replace(/\/$/, '')}/webhooks/gitlab`
     const signingToken = `whsec_${randomBytes(32).toString('base64')}`
-    const fresh = binding.webhookId === null
+    // Seal the signing intent BEFORE any provider call: a crash after the
+    // create still leaves us the key the created hook carries.
+    await this.deps.webhookSecrets.put(orgId, binding.id, signingToken)
+    let fresh = binding.webhookId === null
     let webhookId: bigint
     if (fresh) {
-      const created = await gitlabCreateWebhook(
-        token,
-        binding.projectId,
-        { url, signingToken, events },
-        this.deps.fetchImpl
+      // Crash-left create reconciliation: an existing hook at OUR exact managed
+      // URL for this project is ours (the URL is this deployment's endpoint) —
+      // re-key it in place instead of creating a duplicate. A merely similar
+      // URL never matches (§10.3).
+      const existing = (await gitlabListWebhooks(token, binding.projectId, this.deps.fetchImpl)).find(
+        (hook) => hook.url === url
       )
-      webhookId = BigInt(created.id)
+      if (existing) {
+        webhookId = BigInt(existing.id)
+        await gitlabUpdateWebhook(
+          token,
+          binding.projectId,
+          webhookId,
+          { url, signingToken, events },
+          this.deps.fetchImpl
+        )
+        fresh = false
+      } else {
+        const created = await gitlabCreateWebhook(
+          token,
+          binding.projectId,
+          { url, signingToken, events },
+          this.deps.fetchImpl
+        )
+        webhookId = BigInt(created.id)
+      }
     } else {
       // Ownership = stored id + marker URL (§10.3); never adopt by URL alone.
       webhookId = binding.webhookId!
       await gitlabUpdateWebhook(token, binding.projectId, webhookId, { url, signingToken, events }, this.deps.fetchImpl)
     }
-    // Seal BEFORE recording the webhook as converged: a crash between leaves a
-    // webhook we own and re-key on the next convergence, never a key we lost.
-    await this.deps.webhookSecrets.put(orgId, binding.id, signingToken)
     await this.deps.bindings.update(orgId, binding.id, {
       webhookId,
       desiredEventsHash: JSON.stringify(events)
@@ -433,6 +456,16 @@ export class GitlabProvisioner {
       const token = await this.deps.oauth.withAccessToken(orgId, binding.installerConnectionId)
       if (binding.webhookId !== null) {
         await gitlabDeleteWebhook(token, binding.projectId, binding.webhookId, this.deps.fetchImpl).catch(swallow404)
+      } else if (this.deps.publicRelayUrl) {
+        // A crash-left create may exist without a recorded id: our exact managed
+        // URL identifies it (the URL is this deployment's endpoint), so cleanup
+        // retires it rather than orphaning it.
+        const url = `${this.deps.publicRelayUrl.replace(/\/$/, '')}/webhooks/gitlab`
+        for (const hook of await gitlabListWebhooks(token, binding.projectId, this.deps.fetchImpl)) {
+          if (hook.url === url) {
+            await gitlabDeleteWebhook(token, binding.projectId, BigInt(hook.id), this.deps.fetchImpl).catch(swallow404)
+          }
+        }
       }
       const credentials = await this.deps.credentials.listForBinding(bindingId)
       if (credentials.length > 0 || binding.serviceAccountUserId !== null) {

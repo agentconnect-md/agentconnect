@@ -83,6 +83,9 @@ export class FakeGitlab {
         return Response.json({ id: userId, access_level: json().access_level, state: 'active' })
       }
 
+      if (/\/api\/v4\/projects\/\d+\/hooks\?/.test(url) && method === 'GET') {
+        return Response.json([...this.webhooks.entries()].map(([id, hook]) => ({ id, url: hook.url })))
+      }
       if (/\/api\/v4\/projects\/\d+\/hooks$/.test(url) && method === 'POST') {
         const id = ++this.nextId
         const payload = json()

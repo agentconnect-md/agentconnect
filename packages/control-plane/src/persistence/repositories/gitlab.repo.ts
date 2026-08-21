@@ -406,25 +406,29 @@ export class PgGitlabProjectBindingRepo implements GitlabProjectBindingRepo {
     })
   }
 
-  async claimFenceHeld(
+  async renewProviderLease(
     orgId: string,
     bindingId: string,
     projectId: bigint,
     owner: string,
-    now: Date
+    until: Date
   ): Promise<boolean> {
-    const held = await this.prisma.codeHostRepositoryClaim.count({
+    // Owner-matched atomic extension: renewal and the liveness check are one
+    // write, so the lease cannot lapse between a check and its provider call.
+    // Owner match alone suffices — an expired-but-unreclaimed lease renews,
+    // a reclaimed one has a different owner and refuses.
+    const res = await this.prisma.codeHostRepositoryClaim.updateMany({
       where: {
         provider: 'gitlab',
         externalId: projectId,
         orgId,
         bindingRef: bindingId,
         state: 'active',
-        opOwner: owner,
-        opLeaseUntil: { gte: now }
-      }
+        opOwner: owner
+      },
+      data: { opLeaseUntil: until }
     })
-    return held === 1
+    return res.count === 1
   }
 
   async beginCleanup(orgId: string, bindingId: string, projectId: bigint, now: Date): Promise<boolean> {

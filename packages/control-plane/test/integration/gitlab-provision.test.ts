@@ -190,11 +190,11 @@ describe('GitlabProvisioner (§10.2)', () => {
     // Cleanup must wait while the lease is live; a foreign release does nothing.
     expect(await h.bindings.beginCleanup(DEFAULT_ORG_ID, h.binding.id, PROJECT, now)).toBe(false)
     await h.bindings.endProviderMutation(DEFAULT_ORG_ID, h.binding.id, PROJECT, 'B')
-    expect(await h.bindings.claimFenceHeld(DEFAULT_ORG_ID, h.binding.id, PROJECT, 'A', now)).toBe(true)
+    expect(await h.bindings.renewProviderLease(DEFAULT_ORG_ID, h.binding.id, PROJECT, 'A', until)).toBe(true)
     // Only the owner's release frees it; then cleanup wins and late checks refuse.
     await h.bindings.endProviderMutation(DEFAULT_ORG_ID, h.binding.id, PROJECT, 'A')
     expect(await h.bindings.beginCleanup(DEFAULT_ORG_ID, h.binding.id, PROJECT, now)).toBe(true)
-    expect(await h.bindings.claimFenceHeld(DEFAULT_ORG_ID, h.binding.id, PROJECT, 'A', now)).toBe(false)
+    expect(await h.bindings.renewProviderLease(DEFAULT_ORG_ID, h.binding.id, PROJECT, 'A', until)).toBe(false)
     expect(await h.bindings.markProviderMutationStarted(DEFAULT_ORG_ID, h.binding.id, PROJECT, 'A', until, now)).toBe(
       false
     )

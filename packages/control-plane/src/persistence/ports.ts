@@ -3170,8 +3170,10 @@ export interface GitlabProjectBindingRepo {
   ): Promise<boolean>
   /** Releases ONLY the owning run's lease. */
   endProviderMutation(orgId: string, bindingId: string, projectId: bigint, owner: string): Promise<void>
-  /** Per-step belt under the lease: attached, `active`, owned by this run, unexpired. */
-  claimFenceHeld(orgId: string, bindingId: string, projectId: bigint, owner: string, now: Date): Promise<boolean>
+  /** Per-step ATOMIC renewal before every provider mutation: still attached,
+   *  `active`, and owned by this run — and the lease is extended so it cannot
+   *  expire while the provider request is in flight. */
+  renewProviderLease(orgId: string, bindingId: string, projectId: bigint, owner: string, until: Date): Promise<boolean>
   /** Cleanup entry — mutually exclusive with a LIVE lease: false while one is
    *  held (cleanup retries later); flips the attached claim to `cleanup_pending`. */
   beginCleanup(orgId: string, bindingId: string, projectId: bigint, now: Date): Promise<boolean>
