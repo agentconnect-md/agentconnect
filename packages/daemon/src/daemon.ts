@@ -1160,8 +1160,12 @@ export class Daemon {
     })
     // Base URLs are deployment topology and always come from here, key server or not; an issuer
     // supplies the key alone.
-    this.modelSessions.staticModelCredentials = this.k8s ? configuredModelCredentials(process.env) : undefined
-    this.codexSessionFloor = this.k8s ? configuredCodexSessionFloor(process.env) : undefined
+    // Read regardless of `--k8s`, because these are deployment configuration and both are absent
+    // unless a deployment sets them. It also completes the key server outside cloud mode: a minted
+    // credential carries the KEY, and the endpoint it is minted for comes from this pair — gated on
+    // the flag, a non-cloud daemon would aim a gateway credential at the provider's own address.
+    this.modelSessions.staticModelCredentials = configuredModelCredentials(process.env)
+    this.codexSessionFloor = configuredCodexSessionFloor(process.env)
     this.evalHooks = new DaemonEvaluationHooks(this.evaluationHost(), opts.evaluation)
     this.sessionMetadataOutbox = new SessionMetadataOutbox(this.sessionMetadataHost())
     this.observedChannelsSync = new ObservedChannelsSync(this.observedChannelsSyncHost())

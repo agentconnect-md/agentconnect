@@ -41,6 +41,9 @@ export interface ModelSessionHostPoolHost {
   cleanupAgentConfigFiles(agentId: string): void
 }
 
+/** No `--k8s` field, deliberately: a key server is a credential SOURCE, and where a runtime runs is
+ *  a different question from where its key comes from. The launch path applies a minted credential
+ *  to whatever environment it is building, cluster sandbox or local child alike. */
 export interface ModelSessionHostPoolOptions {
   address?: string
   tokenPath?: string
@@ -48,8 +51,6 @@ export interface ModelSessionHostPoolOptions {
   now: () => number
 }
 
-/** Owns the per-session model-credential state machine: the key-server handle, the issued grants,
- *  and the confined hosts started against them. */
 /** True for an http address whose host is not obviously inside the cluster — a Service name (with
  *  or without its namespace/`.svc` suffix), the local node, or the cluster domain. Deliberately a
  *  shape test rather than a resolver: this runs at construction, and a warning that needed DNS
@@ -64,12 +65,16 @@ export function offClusterPlaintext(address: string): boolean {
   if (url.protocol !== 'http:') return false
   const host = url.hostname
   if (host === 'localhost' || host === '127.0.0.1' || host === '::1') return false
-  if (host.endsWith('.svc') || host.endsWith('.svc.cluster.local') || host.endsWith('.local')) return false
+  // `.local` covers the default cluster domain (`…svc.cluster.local`) as well as an mDNS name,
+  // which is a LAN rather than the internet and not what this warning is about.
+  if (host.endsWith('.svc') || host.endsWith('.local')) return false
   // A bare label (`my-service`) or `service.namespace` is in-cluster addressing; a public name has
   // a registrable domain, which needs at least three labels here (`a.b.c`) not to be one of those.
   return host.split('.').length > 2
 }
 
+/** Owns the per-session model-credential state machine: the key-server handle, the issued grants,
+ *  and the confined hosts started against them. */
 export class ModelSessionHostPool {
   private readonly entries = new Map<string, ModelSessionHost>()
   readonly keyServer?: KeyServerClient
@@ -80,9 +85,6 @@ export class ModelSessionHostPool {
     private readonly host: ModelSessionHostPoolHost,
     private readonly opts: ModelSessionHostPoolOptions
   ) {
-    // No `--k8s` requirement: a key server is a credential SOURCE, and where a runtime runs is a
-    // different question from where its key comes from. The launch path applies a minted credential
-    // to whatever environment it is building, cluster sandbox or local child alike.
     // A token path with no server is a configuration that does nothing — say so and carry on, rather
     // than refusing to start a daemon whose every other agent is fine.
     if (opts.tokenPath && !opts.address && !opts.client) {
