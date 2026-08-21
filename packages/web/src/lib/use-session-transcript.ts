@@ -165,7 +165,10 @@ export function useSessionTranscript(input: UseSessionTranscriptInput): UseSessi
 
   useEffect(() => {
     if (!wantTranscript || !sid || !aid) return
+    // `active` ignores late results; `ac` cancels the in-flight request itself on a session switch or
+    // unmount, so a superseded fan-out stops occupying the CP proxy instead of running to completion.
     let active = true
+    const ac = new AbortController()
     setTranscriptSessionId(sid)
     tailSessionRef.current = sid
     tailReadyRef.current = false
@@ -199,7 +202,7 @@ export function useSessionTranscript(input: UseSessionTranscriptInput): UseSessi
             try {
               // Newest window only — one page per member (C3 §5.2). Older history loads on demand via
               // the per-source cursors below, so a cold open is one request per member.
-              const page = await fetchSessionMessages(src.sessionId, {})
+              const page = await fetchSessionMessages(src.sessionId, { signal: ac.signal })
               if (!active) return
               cursors.set(src.sessionId, page.liveCursor ?? null)
               older.set(src.sessionId, page.nextCursor ?? null)
@@ -239,6 +242,7 @@ export function useSessionTranscript(input: UseSessionTranscriptInput): UseSessi
       })
       return () => {
         active = false
+        ac.abort()
         if (tailSessionRef.current === sid) {
           tailSessionRef.current = null
           tailReadyRef.current = false
@@ -246,7 +250,7 @@ export function useSessionTranscript(input: UseSessionTranscriptInput): UseSessi
       }
     }
     ;(async () => {
-      const page = await fetchSessionMessages(sid, {})
+      const page = await fetchSessionMessages(sid, { signal: ac.signal })
       if (!active) return
       olderCursorRef.current = page.nextCursor ?? null
       setHasEarlier(page.nextCursor != null)
@@ -265,6 +269,7 @@ export function useSessionTranscript(input: UseSessionTranscriptInput): UseSessi
     })
     return () => {
       active = false
+      ac.abort()
       if (tailSessionRef.current === sid) {
         tailSessionRef.current = null
         tailReadyRef.current = false
