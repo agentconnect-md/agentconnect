@@ -25,7 +25,17 @@ import type { Handler } from './index.js'
 
 export const handleGitCredRequest: Handler = async (frame, conn, deps) => {
   if (!isFrame('gitcred/request')(frame)) return
-  const { agentId, capabilities, repoFullName, purpose, hookId, forceRefresh, provider, externalRepoId } = frame.payload
+  const {
+    agentId,
+    capabilities,
+    repoFullName,
+    purpose,
+    hookId,
+    forceRefresh,
+    provider,
+    externalRepoId,
+    requestedAccess
+  } = frame.payload
 
   // v2 provider fail-per-value (§17.1): only gitlab has a non-GitHub arm here.
   if (provider !== undefined && provider !== 'github' && provider !== 'gitlab') {
@@ -64,7 +74,8 @@ export const handleGitCredRequest: Handler = async (frame, conn, deps) => {
       // purpose here — the M5 poster gets its own gated path.
       const grant = await deps.gitlabGitcred!.grantForAgent(
         agent,
-        externalRepoId !== undefined ? BigInt(externalRepoId) : undefined
+        externalRepoId !== undefined ? BigInt(externalRepoId) : undefined,
+        requestedAccess
       )
       conn.replyTo(frame, 'gitcred/grant', grant)
       return

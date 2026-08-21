@@ -82,7 +82,11 @@ export const GitCredRequest = z.object({
   provider: CodeHostProviderString.optional(),
   // Rename-stable numeric repository/project identity for the named provider;
   // display paths are never a v2 match key.
-  externalRepoId: CodeHostExternalId.optional()
+  externalRepoId: CodeHostExternalId.optional(),
+  // v2 access floor (§17.1): request LESS than the workspace clamp — the
+  // read-only CLI wrapper asks for 'read' even on a write workspace, so a
+  // mutating command cannot ride its token. Absent ⇒ the clamp itself.
+  requestedAccess: z.enum(['read', 'write']).optional()
 })
 export type GitCredRequest = z.infer<typeof GitCredRequest>
 

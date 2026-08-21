@@ -30,7 +30,11 @@ export interface GitlabGitcredDeps {
 export class GitlabGitcredService {
   constructor(private readonly deps: GitlabGitcredDeps) {}
 
-  async grantForAgent(agent: AgentRecord, requestedExternalRepoId?: bigint): Promise<GitCredGrant> {
+  async grantForAgent(
+    agent: AgentRecord,
+    requestedExternalRepoId?: bigint,
+    requestedAccess?: 'read' | 'write'
+  ): Promise<GitCredGrant> {
     if (agent.workspace.mode !== 'gitlab' || agent.workspaceRepoId === undefined) {
       throw new GitCredDeniedError('agent workspace is not a managed GitLab project', 'SCOPE_DENIED', false)
     }
@@ -53,8 +57,11 @@ export class GitlabGitcredService {
     }
     // Access clamp (§13.1): the workspace gitAccess ceiling picks the purpose —
     // read → the read PAT, write → the git_write PAT. The effect PAT is never
-    // served through this path (it backs daemon-owned effects, M5).
-    const access: 'read' | 'write' = agent.workspace.gitAccess === 'read' ? 'read' : 'write'
+    // served through this path (it backs daemon-owned effects, M5). A v2
+    // `requestedAccess` may only NARROW the clamp (§17.1): the read-only CLI
+    // wrapper asks for read even on a write workspace.
+    const clamp: 'read' | 'write' = agent.workspace.gitAccess === 'read' ? 'read' : 'write'
+    const access: 'read' | 'write' = requestedAccess === 'read' ? 'read' : clamp
     const purpose = access === 'read' ? 'read' : 'git_write'
     const credential = await this.deps.credentials.get(binding.id, purpose)
     if (!credential) {

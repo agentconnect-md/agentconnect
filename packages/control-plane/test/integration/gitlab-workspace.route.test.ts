@@ -201,6 +201,16 @@ describe('gitcred v2 GitLab grants (§13.1/§17.1)', () => {
     const readCred = (await creds.get(h.binding.id, 'read'))!
     expect(read.token).toBe(await store.get(DEFAULT_ORG_ID, readCred.id))
     expect(read.access).toBe('read')
+
+    // §17.1: requestedAccess narrows a write clamp to the read PAT (the CLI
+    // wrapper's ask) — and can never widen a read clamp.
+    const narrowed = await service.grantForAgent(gitlabAgent(), undefined, 'read')
+    expect(narrowed.access).toBe('read')
+    expect(narrowed.token).toBe(await store.get(DEFAULT_ORG_ID, readCred.id))
+    const readAgent = gitlabAgent({
+      workspace: { mode: 'gitlab', gitRepo: 'https://gitlab.com/example-group/example-project', gitAccess: 'read' }
+    } as Partial<AgentRecord>)
+    expect((await service.grantForAgent(readAgent, undefined, 'write')).access).toBe('read')
   })
 
   it('denies a foreign project, a non-gitlab workspace, and a binding entering cleanup', async () => {
