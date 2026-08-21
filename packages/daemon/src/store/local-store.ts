@@ -3370,7 +3370,11 @@ export class LocalStore {
   > {
     const rows = (await this.db
       .prepare(
-        `SELECT acpSessionId AS sessionId, channel, thread, transportScope, updatedAt FROM sessions
+        // Outward ids (§1.1): these become the citations the model grounds a skill candidate in,
+        // and from there the dream's durable, CP-visible provenance. A pre-v12 row answers with
+        // its ACP id, which is what that session was reported under.
+        `SELECT COALESCE(sessionId, acpSessionId) AS sessionId, channel, thread, transportScope, updatedAt
+         FROM sessions
          WHERE agentId = ? AND acpSessionId IS NOT NULL AND platform <> 'dream'
          ORDER BY updatedAt DESC LIMIT ?`
       )

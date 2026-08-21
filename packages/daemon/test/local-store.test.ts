@@ -438,8 +438,12 @@ describe('LocalStore', () => {
       updatedAt: 2
     })
 
+    // A source is named the way the dream will report it — outwardly (§1.1), since the citation
+    // becomes durable provenance the console reads back.
+    const outward = (await s.getSession(sessionKey('slack', 'C1', 'T1', 'bot-a')))!.sessionId
+    expect(outward).not.toBe('source-session')
     expect(await s.dreamSessionSources('bot-a', 20)).toEqual([
-      { sessionId: 'source-session', channel: 'C1', thread: 'T1', updatedAt: 1 }
+      { sessionId: outward, channel: 'C1', thread: 'T1', updatedAt: 1 }
     ])
     await s.close()
   })
@@ -815,6 +819,23 @@ describe('LocalStore session/transcript read-back (session/list, session/history
     // The receipt just reported `first` as purged; reusing it would resurrect a dead row upstream.
     await seed(s, 'k1', 'bot-a', 'acp-2', 200)
     expect((await s.getSession('k1'))!.sessionId).not.toBe(first)
+    await s.close()
+  })
+
+  it('a record that outlives its session keeps the name it was written with', async () => {
+    const s = await store()
+    await seed(s, 'k1', 'bot-a', 'acp-1', 100)
+    const outward = (await s.getSession('k1'))!.sessionId!
+    // What a durable record (a dream, an advertisement) stores at write time.
+    const written = (await s.dreamSessionSources('bot-a', 10))[0]!.sessionId
+    expect(written).toBe(outward)
+
+    // Retention takes the session AND the staging row with it, so nothing can map acp → outward
+    // any more. A record that had resolved at READ time would answer with a different id from
+    // here on; one written with the outward name does not change.
+    expect(await s.deleteSession('k1', { reason: 'retention', at: 1_000 })).toBe(true)
+    expect(await s.getSessionByOutwardId(outward)).toBeUndefined()
+    expect(written).toBe(outward)
     await s.close()
   })
 

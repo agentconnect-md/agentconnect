@@ -86,6 +86,14 @@ class FakeStore implements DreamStorePort {
       (d) => agentIds.includes(d.agentId) && (d.status === 'pending' || d.status === 'running')
     )
   }
+  // A dream's durable records name their sessions outwardly (§1.1): the fake keeps the mapping
+  // explicit so a regression that stores the runtime's id instead is visible in the assertions.
+  async getSessionByAcpIdForAgent(_agentId: string, acpSessionId: string): Promise<{ key: string } | undefined> {
+    return { key: `key-of-${acpSessionId}` }
+  }
+  async ensureOutwardSessionId(key: string): Promise<string> {
+    return key.replace(/^key-of-/, 'sid-of-')
+  }
   async completedDreams(agentId: string): Promise<DreamInfo[]> {
     return [...this.dreams.values()].filter((d) => d.agentId === agentId && d.status === 'completed')
   }
@@ -420,7 +428,7 @@ describe('DreamRunner pipeline', () => {
 
     expect(done).toMatchObject({
       status: 'completed',
-      executionSessionId: 'dream-session-1',
+      executionSessionId: 'sid-of-dream-session-1',
       runtime: 'codex',
       model: 'gpt-5.6',
       stopReason: 'end_turn',
@@ -435,7 +443,7 @@ describe('DreamRunner pipeline', () => {
     expect(done.usage?.inputBytes).toBeGreaterThan(0)
     expect(done.usage?.outputBytes).toBeGreaterThan(0)
     expect(events.map((event) => event.type)).toEqual(['memory.dream.started', 'memory.dream.completed'])
-    expect(events[1]?.dream.executionSessionId).toBe('dream-session-1')
+    expect(events[1]?.dream.executionSessionId).toBe('sid-of-dream-session-1')
   })
 
   it('rejects a second dream while one is in flight and when dreaming is disabled', async () => {
@@ -1545,7 +1553,7 @@ describe('DreamRunner store persistence', () => {
       trigger: 'manual',
       sessionIds: ['s1'],
       snapshotDigest: 'sha256:abc',
-      executionSessionId: 'dream-session-1',
+      executionSessionId: 'sid-of-dream-session-1',
       runtime: 'codex',
       model: 'gpt-5.6',
       stopReason: 'end_turn',
@@ -1561,7 +1569,7 @@ describe('DreamRunner store persistence', () => {
     }
     await store.insertDream(dream)
     expect(await store.getDream('a1', 'drm-store-1')).toMatchObject({
-      executionSessionId: 'dream-session-1',
+      executionSessionId: 'sid-of-dream-session-1',
       runtime: 'codex',
       model: 'gpt-5.6',
       stopReason: 'end_turn',

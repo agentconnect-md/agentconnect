@@ -4535,7 +4535,9 @@ export class Daemon {
     if (dream) {
       await this.store.updateDream({
         ...dream,
-        executionSessionId: sessionId,
+        // Stored outwardly (§1.1), not resolved at read time: the dream outlives its session, and
+        // a record whose identity changes when the session is purged is worse than no link.
+        executionSessionId: await this.store.ensureOutwardSessionId(executionKey, agentId, this.clock.now()),
         runtime: agent.runtime,
         ...(model ? { model } : {})
       })
@@ -4754,7 +4756,7 @@ export class Daemon {
     })
 
     if (!dream.executionSessionId || event.type === 'memory.dream.started') return
-    const rec = await this.store.getSessionByAcpIdForAgent(dream.agentId, dream.executionSessionId)
+    const rec = await this.store.getSessionByOutwardId(dream.executionSessionId, dream.agentId)
     if (!rec) return
     const message: Partial<Record<DreamLifecycleEvent['type'], string>> = {
       'memory.dream.completed': 'Dream completed. The staged memory is ready for review.',
@@ -4776,7 +4778,8 @@ export class Daemon {
     }
     await this.store.setSessionState(rec.key, 'idle', this.clock.now())
     await this.sessionMetadataOutbox.emitSessionMetadataSnapshot({
-      sessionId: dream.executionSessionId,
+      // The outbox takes the ACP hop's id and translates; the dream row holds the outward one.
+      sessionId: rec.acpSessionId ?? dream.executionSessionId,
       agentId: dream.agentId,
       phase: event.type === 'memory.dream.failed' ? 'problem' : 'end',
       platform: 'dream',
@@ -10996,7 +10999,9 @@ export class Daemon {
   /** The OUTWARD id of the session an ACP id names (session-concept.md §1.1) — for the reporting
    *  boundaries that hold only the runtime's. Undefined when this daemon has no such session. */
   private async outwardSessionIdForAcp(agentId: string, acpSessionId: string): Promise<string | undefined> {
-    const slot = await this.store.getSessionByAcpIdForAgent(agentId, acpSessionId)
+    // `store` is absent only in bare test harnesses constructed without start() — the same guard
+    // the advertisement's own persist makes one line later.
+    const slot = await this.store?.getSessionByAcpIdForAgent(agentId, acpSessionId)
     return slot ? await this.store.ensureOutwardSessionId(slot.key, agentId, this.clock.now()) : undefined
   }
 
@@ -11667,7 +11672,14 @@ export class Daemon {
       const host = this.hosts.get(agentId)
       const owned = host?.hasSession(sessionId) || host?.isLoadingSession(sessionId)
       if (owned && !this.internalPassSessions.has(extractionKey)) {
-        const entry = this.runtimeCommands.record(agentId, sessionId, update, this.clock.now())
+        // Recorded under the session's OUTWARD id (§1.1): the row survives the session, so a name
+        // resolved later would change once retention drops the mapping.
+        const entry = this.runtimeCommands.record(
+          agentId,
+          (await this.outwardSessionIdForAcp(agentId, sessionId)) ?? sessionId,
+          update,
+          this.clock.now()
+        )
         // Persisted so a restart/upgrade serves the last-known list instead of "nothing yet".
         // `store` is absent only in bare test harnesses constructed without start().
         if (entry && this.store) {

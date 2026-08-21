@@ -11,19 +11,14 @@ export interface RuntimeCommandsReader {
 
 export function createRuntimeCommandsReader(
   commands: RuntimeCommandsCache,
-  knowsAgent: (agentId: string) => boolean,
-  outward: (agentId: string, acpSessionId: string) => Promise<string>
+  knowsAgent: (agentId: string) => boolean
 ): RuntimeCommandsReader {
   return {
     // An agent this daemon does not run reads as "nothing advertised yet" rather than as another
-    // agent's cache entry surviving a move.
+    // agent's cache entry surviving a move. The advertising session is already named outwardly —
+    // recorded that way (session-concept.md §1.1), because the row outlives the session.
     async list(req) {
-      if (!knowsAgent(req.agentId)) return { reported: false, commands: [] }
-      const entry = commands.get(req.agentId)
-      // The cache remembers which runtime session advertised the set; the frame names that session
-      // the way everyone outside the ACP hop does (session-concept.md §1.1).
-      if (entry.sessionId === undefined) return entry
-      return { ...entry, sessionId: await outward(req.agentId, entry.sessionId) }
+      return knowsAgent(req.agentId) ? commands.get(req.agentId) : { reported: false, commands: [] }
     }
   }
 }

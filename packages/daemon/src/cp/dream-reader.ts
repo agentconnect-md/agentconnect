@@ -6,7 +6,6 @@
  * (UTF-8 boundary + encoded-frame budget). Never log staged contents.
  */
 import type {
-  DreamInfo,
   DreamStartReq,
   DreamCancelReq,
   DreamListReq,
@@ -30,9 +29,6 @@ import type {
 import { fitToBudget, utf8Boundary } from '../wire-slice.js'
 import type { DreamRunner } from '../dream/runner.js'
 
-/** Resolves the OUTWARD id of the session an ACP id names (session-concept.md §1.1). */
-export type OutwardSessionIds = (agentId: string, acpSessionId: string) => Promise<string>
-
 export interface DreamReader {
   start(req: DreamStartReq): Promise<DreamState>
   cancel(req: DreamCancelReq): Promise<DreamState>
@@ -51,60 +47,41 @@ export interface DreamReader {
   organizationSuggestionReview(req: OrganizationSuggestionReviewReq): Promise<Ack>
 }
 
-export function createDreamReader(runner: DreamRunner, outward: OutwardSessionIds): DreamReader {
-  // A dream names sessions to the console — the execution session it deep-links as "Open session",
-  // and the sources it distilled — so both cross as outward ids (session-concept.md §1.1) even
-  // though the runner stores what the runtime called them.
-  const named = async (dream: DreamInfo): Promise<DreamInfo> => {
-    const executionSessionId = dream.executionSessionId
-      ? await outward(dream.agentId, dream.executionSessionId)
-      : undefined
-    return {
-      ...dream,
-      sessionIds: await Promise.all(dream.sessionIds.map(async (id) => await outward(dream.agentId, id))),
-      ...(executionSessionId ? { executionSessionId } : {})
-    }
-  }
-  const allNamed = async (dreams: DreamInfo[]): Promise<DreamInfo[]> =>
-    await Promise.all(dreams.map(async (dream) => await named(dream)))
+export function createDreamReader(runner: DreamRunner): DreamReader {
   return {
     async start(req) {
       return {
-        dream: await named(
-          await runner.start(req.agentId, {
-            trigger: req.trigger,
-            ...(req.sessionWindow !== undefined ? { sessionWindow: req.sessionWindow } : {}),
-            ...(req.instructions !== undefined ? { instructions: req.instructions } : {})
-          })
-        )
+        dream: await runner.start(req.agentId, {
+          trigger: req.trigger,
+          ...(req.sessionWindow !== undefined ? { sessionWindow: req.sessionWindow } : {}),
+          ...(req.instructions !== undefined ? { instructions: req.instructions } : {})
+        })
       }
     },
 
     async cancel(req) {
-      return { dream: await named(await runner.cancel(req.agentId, req.dreamId)) }
+      return { dream: await runner.cancel(req.agentId, req.dreamId) }
     },
 
     async list(req) {
       return {
         agentId: req.agentId,
-        dreams: await allNamed(
-          req.pendingSkills
-            ? await runner.listPendingSkills(req.agentId, req.limit)
-            : await runner.list(req.agentId, req.limit)
-        )
+        dreams: req.pendingSkills
+          ? await runner.listPendingSkills(req.agentId, req.limit)
+          : await runner.list(req.agentId, req.limit)
       }
     },
 
     async get(req) {
-      return { dream: await named(await runner.get(req.agentId, req.dreamId)) }
+      return { dream: await runner.get(req.agentId, req.dreamId) }
     },
 
     async adopt(req) {
-      return { dream: await named(await runner.adopt(req.agentId, req.dreamId, req.force, req.reviewToken)) }
+      return { dream: await runner.adopt(req.agentId, req.dreamId, req.force, req.reviewToken) }
     },
 
     async discard(req) {
-      return { dream: await named(await runner.discard(req.agentId, req.dreamId)) }
+      return { dream: await runner.discard(req.agentId, req.dreamId) }
     },
 
     async files(req) {
