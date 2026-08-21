@@ -62,6 +62,17 @@ export class ShimWorkspaceFs implements WorkspaceFs {
     }
   }
 
+  async readFileBytes(path: string, maxBytes: number): Promise<{ bytes: Buffer } | { tooLarge: number } | undefined> {
+    try {
+      const read = await this.files.readFileBytes(this.rel(path), maxBytes)
+      if (read === null) return undefined
+      return 'tooLarge' in read ? { tooLarge: read.tooLarge } : { bytes: read.bytes }
+    } catch (err) {
+      if (err instanceof MemoryPathError) return undefined
+      throw err
+    }
+  }
+
   async writeFile(path: string, content: string, options: { mode?: number } = {}): Promise<void> {
     // Staged as appended chunks beside the target and published by one rename, on the pod.
     await this.files.writeFile(this.rel(path), content, options)

@@ -85,6 +85,18 @@ for (const { name, fs, root } of subjects()) {
       expect(await fs.readFile(join(dir, 'missing.txt'))).toBeUndefined()
     })
 
+    it('reads bytes bounded by a cap that refuses instead of transferring', async () => {
+      const dir = join(root, 'bytes')
+      await fs.mkdir(dir)
+      const binary = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff, 0x01, 0x02])
+      writeFileSync(join(dir, 'img.bin'), binary)
+      const read = await fs.readFileBytes(join(dir, 'img.bin'), 1024)
+      if (read === undefined || 'tooLarge' in read) throw new Error('expected bytes')
+      expect(read.bytes.equals(binary)).toBe(true)
+      expect(await fs.readFileBytes(join(dir, 'img.bin'), 4)).toEqual({ tooLarge: 8 })
+      expect(await fs.readFileBytes(join(dir, 'absent.bin'), 1024)).toBeUndefined()
+    })
+
     it('publishes a write atomically and leaves no staging file behind', async () => {
       const dir = join(root, 'write')
       await fs.mkdir(dir)

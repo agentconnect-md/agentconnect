@@ -21,6 +21,13 @@ export class PodWorkspaceFs implements WorkspaceFs {
     for (const dir of seedDirs) this.dirs.add(dir)
   }
 
+  async readFileBytes(path: string, maxBytes: number): Promise<{ bytes: Buffer } | { tooLarge: number } | undefined> {
+    const content = this.files.get(path)
+    if (content === undefined) return undefined
+    const bytes = Buffer.from(content, 'utf8')
+    return bytes.byteLength > maxBytes ? { tooLarge: bytes.byteLength } : { bytes }
+  }
+
   async stat(path: string): Promise<WorkspaceFsKind> {
     if (this.links.has(path)) return 'other'
     if (this.dirs.has(path)) return 'dir'

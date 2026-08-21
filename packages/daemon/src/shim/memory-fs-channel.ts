@@ -186,6 +186,10 @@ const WRITE_CHUNK_BYTES = 128 * 1024
 /** How often a whole-file read restarts when the file changed underneath its slices. */
 const READ_RESTARTS = 3
 
+/** Raw bytes per base64 read chunk: fits `REPLY_BUDGET` after 4/3 expansion, and a multiple
+ *  of 3 so every chunk encodes pad-free (decoded per chunk regardless — belt and braces). */
+const BASE64_READ_LIMIT = Math.floor(REPLY_BUDGET / 4) * 3
+
 /** A bound shim channel that knows which agent it serves (a `ShimSession`). */
 export type ShimMemoryChannel = ShimRequester & { readonly agentId: string }
 
@@ -229,6 +233,49 @@ export class ShimMemoryFs implements MemoryFs {
 
   private run<T>(payload: MemoryFsPayload, schema: z.ZodType<T>): Promise<T> {
     return requestMemoryFs(this.channel, payload, schema, this.timeoutMs)
+  }
+
+  /**
+   * The file's BYTES, chunked over the same read op with `encoding: 'base64'`.
+   *
+   * Two things the text read does not need: the per-chunk request is sized to
+   * {@link BASE64_READ_LIMIT} raw bytes, because the POD base64-encodes exactly the
+   * requested slice with no budget fitting of its own — a `REPLY_BUDGET` request would
+   * expand 4/3 past the frame and lose the channel instead of refusing; and each chunk is
+   * DECODED separately before concatenation, because independently-encoded slices carry
+   * their own padding and their joined strings are not one valid base64 stream.
+   *
+   * `maxBytes` refuses from the FIRST reply's size — one frame, not a whole transfer.
+   */
+  async readFileBytes(
+    rel: string,
+    maxBytes: number
+  ): Promise<{ bytes: Buffer; size: number; mtime: string } | { tooLarge: number } | null> {
+    const read = (offset: number) =>
+      this.run(
+        { op: 'memory-read', root: this.root, rel, offset, limit: BASE64_READ_LIMIT, encoding: 'base64' },
+        ReadReplySchema
+      )
+    for (let attempt = 0; attempt < READ_RESTARTS; attempt++) {
+      const first = await read(0)
+      if (!first.exists) return null
+      if (first.size > maxBytes) return { tooLarge: first.size }
+      const parts = [Buffer.from(first.content, 'base64')]
+      let offset = first.nextOffset
+      let stale = false
+      while (offset < first.size) {
+        const next = await read(offset)
+        // A slice from a different version of the file would splice two files together: start over.
+        if (!next.exists || next.mtime !== first.mtime || next.size !== first.size || next.nextOffset <= offset) {
+          stale = true
+          break
+        }
+        parts.push(Buffer.from(next.content, 'base64'))
+        offset = next.nextOffset
+      }
+      if (!stale) return { bytes: Buffer.concat(parts), size: first.size, mtime: first.mtime }
+    }
+    throw new MemoryConflictError('the file kept changing while it was read')
   }
 
   async readFile(rel: string, encoding: MemoryFsEncoding = 'utf8'): Promise<MemoryFsFile | null> {
