@@ -102,9 +102,8 @@ describe('organization suggestion review card', () => {
     await render({ ...BASE, contentAvailable: false })
 
     expect(button('Reject').disabled).toBe(true)
-    // The primary action still reads as the inspect step, and it is disabled too: there is
-    // no source to read the body from.
-    expect(button('Inspect to accept').disabled).toBe(true)
+    expect(button('Accept').disabled).toBe(true)
+    expect(button('Inspect').disabled).toBe(true) // nothing to read the body from
     expect(host.textContent).toContain('paused for safety')
     expect(fetchMock).not.toHaveBeenCalled()
   })
@@ -125,11 +124,12 @@ describe('organization suggestion review card', () => {
     })
     vi.stubGlobal('fetch', fetchMock)
     const onReviewed = await render(BASE)
-    // Before inspection the primary action is the inspect step: accepting binds to the
-    // inspected snapshot, and only the content read mints that token.
-    expect(button('Inspect to accept').disabled).toBe(false)
+    // Accept is disabled until the body renders — it binds to the inspected snapshot — and the
+    // step that unlocks it sits right beside it.
+    expect(button('Accept').disabled).toBe(true)
+    expect(button('Inspect').disabled).toBe(false)
     expect(fetchMock).not.toHaveBeenCalled()
-    await act(async () => button('Inspect staged content').click())
+    await act(async () => button('Inspect').click())
     await settleUntil(() => fetchMock.mock.calls.length === 1)
     await act(async () => {
       releaseContent(
@@ -146,7 +146,7 @@ describe('organization suggestion review card', () => {
         )
       )
     })
-    await settleUntil(() => !button('Accept').disabled)
+    await settleUntil(() => host.textContent?.includes('Run every gate.') === true)
 
     expect(host.textContent).toContain('# Deployment')
     expect(host.textContent).toContain('Run every gate.')
@@ -161,9 +161,9 @@ describe('organization suggestion review card', () => {
     expect(onReviewed).toHaveBeenCalledTimes(1)
   })
 
-  it('the primary action inspects first, then accepts — it never posts a review unseen', async () => {
-    // The reported confusion: Accept looked broken until you found "Inspect staged content".
-    // It now performs that step itself, and still cannot accept before the body renders.
+  it('inspects from the header, then accepts — the inspect click never posts a review', async () => {
+    // The reported confusion: Accept looked broken until you found "Inspect staged content"
+    // in the panel below. The step now sits beside Accept, and still gates it.
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       if (String(input).endsWith('/content')) {
         return new Response(
@@ -186,7 +186,7 @@ describe('organization suggestion review card', () => {
     vi.stubGlobal('fetch', fetchMock)
     const onReviewed = await render(BASE)
 
-    await act(async () => button('Inspect to accept').click())
+    await act(async () => button('Inspect').click())
     await settleUntil(() => host.textContent?.includes('Deployment') === true)
     // That click fetched the body; it did NOT review anything.
     expect(fetchMock.mock.calls.every(([input]) => !String(input).endsWith('/review'))).toBe(true)
@@ -241,7 +241,7 @@ describe('organization suggestion review card', () => {
     vi.stubGlobal('fetch', fetchMock)
     await render({ ...BASE, kind: 'skill', title: 'safe-deploy' })
     expect(fetchMock).not.toHaveBeenCalled()
-    await act(async () => button('Inspect staged content').click())
+    await act(async () => button('Inspect').click())
     await settleUntil(() => host.textContent?.includes('echo ready') === true)
 
     expect(host.textContent).toContain('SKILL.md')
