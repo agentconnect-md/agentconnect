@@ -156,7 +156,7 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
   const workspaceScope = createWorkspaceScope({
     workspaces: host.workspaces(),
     agentOf: (id) => host.agents().get(id),
-    sessionOf: (id, acpSessionId) => host.store().getSessionByAcpIdForAgent(id, acpSessionId),
+    sessionOf: (id, sessionId) => host.store().getSessionByOutwardId(sessionId, id),
     runtimeRootOf: (id) => host.k8sPlane()?.workspaceRootFor(id)
   })
 

@@ -50,6 +50,27 @@ describe('SessionReader', () => {
     await s.close()
   })
 
+  it('reads a session under the OUTWARD id the control plane knows it by', async () => {
+    const s = await store()
+    await seedHistorySession(s)
+    const key = sessionKey('slack', 'C1', 'T1', AGENT)
+    const outward = (await s.getSession(key))!.sessionId!
+    // The id the console holds came from this daemon's own metadata frame, and it is not the
+    // runtime's (session-concept.md §1.1) — a read that only knew ACP ids would answer empty.
+    expect(outward).not.toBe('acp-1')
+    const reader = await createSessionReader(s, undefined, {
+      transcriptPageForAgentByEventTime: async () => ({ rows: [], hasMore: false, cursor: 5 }),
+      transcriptPageForAgent: async () => ({ rows: [], hasMore: false, cursor: 5 }),
+      transcriptTailForAgent: async () => ({ rows: [], hasMore: false, cursor: 5 }),
+      currentTranscriptRevision: async () => 5,
+      getToolBodyForAgent: async () => undefined
+    } as never)
+    expect((await reader.history({ agentId: AGENT, sessionId: outward, limit: 20 })).liveCursor).toBe('5')
+    // A pre-v12 session was reported under its ACP id, so that still resolves.
+    expect((await reader.history({ agentId: AGENT, sessionId: 'acp-1', limit: 20 })).liveCursor).toBe('5')
+    await s.close()
+  })
+
   it('reads only the transcript namespace persisted on the session', async () => {
     const s = await store()
     await s.upsertSession({

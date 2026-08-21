@@ -144,10 +144,11 @@ function parseUsage(raw: string | null): SessionUsage | undefined {
   }
 }
 
-/** Current CPs send the authorized owner. The unscoped branch preserves rolling
- * compatibility only while a newly upgraded daemon is still connected to an old CP. */
+/** The console addresses a session by its OUTWARD id (session-concept.md §1.1), so that is what
+ *  a read resolves. Current CPs send the authorized owner; the unscoped branch preserves rolling
+ *  compatibility only while a newly upgraded daemon is still connected to an old CP. */
 async function sessionForRead(store: LocalStore, agentId: string | undefined, sessionId: string) {
-  return agentId ? await store.getSessionByAcpIdForAgent(agentId, sessionId) : await store.getSessionByAcpId(sessionId)
+  return await store.getSessionByOutwardId(sessionId, agentId)
 }
 
 /** Rough character budget to trim a free-form value to when shrinking a preview. A

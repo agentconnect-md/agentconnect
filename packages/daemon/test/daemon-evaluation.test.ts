@@ -7,6 +7,12 @@ import { Daemon } from '../src/daemon.js'
 import { MEMORY_DISTILLATION_SYSTEM_PROMPT } from '../src/memory/distill.js'
 import { EvaluationEventCollector } from '../src/evaluation/index.js'
 
+// The outward `sessionId` a frame carries for the slot behind an ACP hop id (session-concept.md §1.1).
+const outwardId = async (daemon: any, acpSessionId: string): Promise<string> => {
+  const slot = await daemon.store.getSessionByAcpId(acpSessionId)
+  return slot!.sessionId ?? (await daemon.store.ensureOutwardSessionId(slot!.key, slot!.agentId ?? undefined))
+}
+
 // vi.waitFor defaults to a 1000ms budget — too tight on a loaded CI runner, where a
 // cold session boot (workspace + host + session/new) can stall well past a second.
 // Give every poll in this file the same generous budget instead.
@@ -279,7 +285,7 @@ describe('Daemon evaluation surface', () => {
     // the teardown window is covered by the ignore-cancel test below.
     expect((daemon as any).memoryExtractionQuarantines.size).toBe(0)
     expect(usageReports.at(-1)).toMatchObject({
-      sessionId: 'dream-session-1',
+      sessionId: await outwardId(daemon, 'dream-session-1'),
       agentId: AGENT_ID,
       platform: 'dream',
       channel: 'memory'

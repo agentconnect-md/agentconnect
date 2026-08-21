@@ -77,13 +77,22 @@ scope.** Which name is correct is decided by who is being addressed:
   every `session/update`, permission and elicitation notification by it. The
   daemon can never discard it.
 
-The two normally hold the SAME value: the daemon mints the id when the session
-slot is first resolved — before any credential is issued — and proposes it to
-the runtime on `session/new`, which a cooperating adapter adopts. A runtime that
-insists on its own id does not break the doctrine: the daemon then stores both,
-uses `acpSessionId` for the ACP hop alone, and keeps answering the rest of the
-world with `sessionId`. Translation happens at that one boundary and nowhere
+The daemon mints the outward id when the session slot is first resolved — before
+any credential is issued, so a credential can carry it. Where a runtime adopts
+the id proposed on `session/new`, the two hold the same value; our adapters do
+not propose it yet, so today they normally differ, and a runtime is always free
+to insist on its own id. That does not break the doctrine: the daemon stores
+both, uses `acpSessionId` for the ACP hop alone, and keeps answering the rest of
+the world with `sessionId`. Translation happens at that one boundary and nowhere
 else.
+
+The field name is the contract, and it is readable from the frame alone: a field named
+`acpSessionId` carries the runtime's id, because what it addresses lives on that hop and dies
+with it — an ACP lease, a `session/update` stream. A field named `sessionId` carries the outward
+one, whoever is asking: session metadata, usage, a purge receipt, a credential's claims, a
+transcript page, a workspace read, a webchat delivery target. A daemon that receives one resolves
+its slot by the outward id (falling back to the ACP id, which is what a pre-v12 session was
+reported under) and works internally in ACP terms from there.
 
 What this rules out, in both directions:
 

@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
 import { FakeClock } from '@agentconnect.md/connection'
 import { Daemon } from '../src/daemon.js'
@@ -14,7 +13,12 @@ function harness(grants: Array<Record<string, unknown>>) {
   const starts = vi.fn().mockResolvedValueOnce(firstHost).mockResolvedValueOnce(secondHost)
   ;(daemon as any).runtimes = { claude: { command: 'claude-agent-acp', args: [], env: [] } }
   ;(daemon as any).cpAgents = { orgForAgent: () => 'org-a' }
-  ;(daemon as any).store = { getSession: () => undefined, getModelOverride: () => undefined }
+  ;(daemon as any).store = {
+    getSession: () => undefined,
+    getModelOverride: () => undefined,
+    // The credential names the session by its outward id, minted here on first use.
+    ensureOutwardSessionId: async (key: string) => `outward-of-${key}`
+  }
   ;(daemon as any).startModelSessionRuntime = starts
   return { clock, daemon: daemon as any, issue, revoke, starts, firstHost, secondHost }
 }
@@ -44,7 +48,7 @@ describe('daemon model-key session lifecycle', () => {
     expect(h.issue).toHaveBeenCalledWith({
       orgId: 'org-a',
       agentId: 'agent-a',
-      sessionId: createHash('sha256').update('slack:C:T:agent-a').digest('hex'),
+      sessionId: 'outward-of-slack:C:T:agent-a',
       provider: 'anthropic',
       ttlSeconds: 3_600
     })

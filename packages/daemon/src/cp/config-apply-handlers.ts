@@ -841,13 +841,16 @@ export async function applySessionVisibility(
   host: ConfigApplyCoreHost,
   p: SessionVisibilityPush
 ): Promise<'applied' | 'superseded'> {
-  // A CP too old to name the agent leaves only the runtime-local ACP id: use the
-  // sole local holder, and where there is none leave the gate closed (still ACKed).
+  // A CP too old to name the agent leaves only the id: use the sole local holder, and where
+  // there is none leave the gate closed (still ACKed).
   const agentId = p.agentId ?? (await host.store().soleAgentForAcpSession(p.sessionId))
   if (!agentId) return 'superseded'
+  // The push names the session outwardly; the gate is keyed by the runtime's id.
+  const slot = await host.store().getSessionByOutwardId(p.sessionId, agentId)
+  const acpSessionId = slot?.acpSessionId ?? p.sessionId
   return host
     .store()
-    .applyCpCaptureGate(agentId, p.sessionId, p.sharedMemoryExcluded ?? p.visibility === 'private', p.visibilityRev)
+    .applyCpCaptureGate(agentId, acpSessionId, p.sharedMemoryExcluded ?? p.visibility === 'private', p.visibilityRev)
 }
 
 /** Wire the handlers into the seam — member order mirrors the `ConfigApply` contract. */

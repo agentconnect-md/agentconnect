@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto'
 import type { AcpHost } from '../acp/acp-host.js'
 import type { LoadedAgent } from '../agents/load-agents.js'
 import type { RuntimeDef } from '../config/config-schema.js'
@@ -30,6 +29,8 @@ export interface ModelSessionHostPoolHost {
   orgForAgent(agentId: string): string | undefined
   modelOverride(sessionKey: string): Promise<string | undefined>
   acpSessionId(sessionKey: string): Promise<string | null | undefined>
+  /** The slot's OUTWARD session id, minted on first ask — see session-concept.md §1.1. */
+  outwardSessionId(sessionKey: string, agentId: string): Promise<string>
   sessionKeyForAcpId(agentId: string, acpSessionId: string): Promise<string | undefined>
   sessionSdkQuiescent(agentId: string, acpSessionId: string | null | undefined): boolean
   releaseSdkLease(agentId: string, acpSessionId: string): void
@@ -172,16 +173,13 @@ export class ModelSessionHostPool {
     const orgId = this.host.orgForAgent(agent.id)
     if (!orgId) throw new Error(`cannot resolve organization for agent ${agent.id}`)
     if (!this.keyServer) throw new Error('key-server is not configured')
+    // Minted here if this is the slot's first credential — which is why the outward id cannot be
+    // the ACP one: this call starts the runtime, so the runtime's id does not exist yet (§1.1).
+    const sessionId = await this.host.outwardSessionId(sessionKey, agent.id)
     return await this.keyServer.issue({
       orgId,
       agentId: agent.id,
-      // DOCTRINE DEBT (session-concept.md §1.1): this should be the session's outward
-      // `sessionId`, and it is neither — the ACP id does not exist yet when a credential is
-      // minted, so this hashes the slot key instead. The hash is stable and hides the platform
-      // coordinates `sessionKey` carries, but nothing outside the daemon can resolve it back to
-      // a session, so gateway-metered spend lands under an identity the console cannot match.
-      // Fixed by minting the outward id here, before issuance, and proposing it on session/new.
-      sessionId: createHash('sha256').update(sessionKey).digest('hex'),
+      sessionId,
       provider: target.provider,
       ttlSeconds: DEFAULT_MODEL_KEY_TTL_SECONDS
     })

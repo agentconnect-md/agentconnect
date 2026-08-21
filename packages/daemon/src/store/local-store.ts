@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import type { SQLInputValue } from 'node:sqlite'
 import { chmodSync, mkdirSync, statSync } from 'node:fs'
 import { dirname } from 'node:path'
@@ -199,7 +200,11 @@ export interface SessionRecord {
   thread: string
   /** Opaque physical-bot scope for transcript/session lookup isolation. */
   transportScope?: string | null
+  /** What the RUNTIME knows this session by, used on the ACP hop alone (§1.1). Null until it exists. */
   acpSessionId: string | null
+  /** The session's OUTWARD identity (§1.1), minted when the slot resolves — so it exists before
+   *  the runtime does. Null only on a pre-v12 row that had no ACP id to backfill from. */
+  sessionId?: string | null
   // §7.3 session lifecycle. `prompting` ⇒ a turn is in flight; `cancelling` ⇒
   // a `!stop` was issued and we're awaiting the agent (with a force backstop);
   // `resuming` ⇒ re-attaching a persisted session after a restart/host eviction;
@@ -729,7 +734,7 @@ function restrictPath(path: string, mode: number): void {
  * change that edits a `CREATE TABLE` below, and append the matching step to
  * {@link SCHEMA_MIGRATIONS}.
  */
-const SCHEMA_VERSION = 11
+const SCHEMA_VERSION = 12
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -847,7 +852,14 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean }) => Promise<v
       DROP TABLE transcript_recipient;
       ALTER TABLE transcript_recipient_orged RENAME TO transcript_recipient;
     `)
-  }
+  },
+  // The outward id (§1.1), split from the ACP hop's. Existing sessions are backfilled with the id
+  // they already answer to, so nothing the CP or the console knows changes name.
+  async (db) =>
+    await db.exec(`
+      ALTER TABLE sessions ADD COLUMN sessionId TEXT;
+      UPDATE sessions SET sessionId = acpSessionId WHERE acpSessionId IS NOT NULL;
+    `)
 ]
 
 export class LocalStore {
@@ -938,7 +950,7 @@ export class LocalStore {
     await this.db.exec(`
       CREATE TABLE IF NOT EXISTS sessions (
         key TEXT PRIMARY KEY, agentId TEXT, platform TEXT, channel TEXT, thread TEXT,
-        transportScope TEXT, acpSessionId TEXT, state TEXT, lastDeliveredTs TEXT, updatedAt INTEGER,
+        transportScope TEXT, acpSessionId TEXT, sessionId TEXT, state TEXT, lastDeliveredTs TEXT, updatedAt INTEGER,
         usage TEXT, muted INTEGER, triggeredBy TEXT, title TEXT, threadUrl TEXT, modelOverride TEXT,
         observedModel TEXT, observedModelSet INTEGER NOT NULL DEFAULT 0,
         effortOverride TEXT, permissionModeOverride TEXT, fastModeOverride INTEGER,
@@ -1448,6 +1460,33 @@ export class LocalStore {
     return (await this.db.prepare('SELECT * FROM sessions WHERE key = ?').get(key)) as SessionRecord | undefined
   }
 
+  /**
+   * The slot's OUTWARD session id (§1.1), minted on first ask and stable for the slot's life.
+   * Asked before a credential is issued — earlier than the runtime, so earlier than any ACP id.
+   *
+   * Idempotent without depending on a driver's `changes`: a pool's members share one store and
+   * two of them can reach this for one slot at the same instant, so each step is a no-op for the
+   * loser and the final read settles who won. `upsertSession` keeps an existing id, so the
+   * skeleton row a first mint may create survives the turn that writes the session proper.
+   */
+  async ensureOutwardSessionId(key: string, agentId?: string): Promise<string> {
+    const read = async (): Promise<string | undefined> =>
+      (
+        (await this.db.prepare('SELECT sessionId FROM sessions WHERE key = ?').get(key)) as
+          { sessionId: string | null } | undefined
+      )?.sessionId ?? undefined
+    const existing = await read()
+    if (existing) return existing
+    const minted = randomUUID()
+    // The row may not exist yet: a brand-new session mints its credential before the turn writes
+    // the session. Carry the agent so even that momentary row is attributable.
+    await this.db
+      .prepare('INSERT OR IGNORE INTO sessions (key, agentId, sessionId, updatedAt) VALUES (?, ?, ?, ?)')
+      .run(key, agentId ?? null, minted, Date.now())
+    await this.db.prepare('UPDATE sessions SET sessionId = ? WHERE key = ? AND sessionId IS NULL').run(minted, key)
+    return (await read()) ?? minted
+  }
+
   async createPermissionRequest(record: PermissionRequestRecord): Promise<void> {
     await this.db
       .prepare(
@@ -1681,6 +1720,17 @@ export class LocalStore {
     return (await this.db
       .prepare('SELECT * FROM sessions WHERE agentId = ? AND acpSessionId = ?')
       .get(agentId, acpSessionId)) as SessionRecord | undefined
+  }
+
+  /** Resolve a slot from the id the OUTSIDE world addresses it by (session-concept.md §1.1).
+   *  Falls back to the ACP id so a caller still holding the runtime's name — and a control
+   *  plane that recorded one before the outward column existed — still lands on the session. */
+  async getSessionByOutwardId(sessionId: string, agentId?: string): Promise<SessionRecord | undefined> {
+    const scope = agentId === undefined ? '' : ' AND agentId = @agentId'
+    const params = { sessionId, ...(agentId === undefined ? {} : { agentId }) }
+    return ((await this.db.prepare(`SELECT * FROM sessions WHERE sessionId = @sessionId${scope}`).get(params)) ??
+      (await this.db.prepare(`SELECT * FROM sessions WHERE acpSessionId = @sessionId${scope}`).get(params))) as
+      SessionRecord | undefined
   }
 
   /**
@@ -1976,16 +2026,17 @@ export class LocalStore {
     await this.db
       .prepare(
         `INSERT INTO sessions
-           (key, agentId, platform, channel, thread, transportScope, acpSessionId, state, lastDeliveredTs, updatedAt, muted, triggeredBy, threadUrl, memoryProvider, workspaceIsolation, originSessionId, needsParentReply,
+           (key, sessionId, agentId, platform, channel, thread, transportScope, acpSessionId, state, lastDeliveredTs, updatedAt, muted, triggeredBy, threadUrl, memoryProvider, workspaceIsolation, originSessionId, needsParentReply,
             externalProvider, externalRealmKey, externalResourceKind, externalResourceKey, externalIntegrationId,
             externalOriginJson, sourceBindingKind)
          VALUES
-           (@key, @agentId, @platform, @channel, @thread, @transportScope, @acpSessionId, @state, @lastDeliveredTs, @updatedAt,
+           (@key, @sessionId, @agentId, @platform, @channel, @thread, @transportScope, @acpSessionId, @state, @lastDeliveredTs, @updatedAt,
             CASE WHEN EXISTS (SELECT 1 FROM session_mutes WHERE key = @key) THEN 1 ELSE NULL END,
             @triggeredBy, @threadUrl, @memoryProvider, @workspaceIsolation, @originSessionId, @needsParentReply,
             @externalProvider, @externalRealmKey, @externalResourceKind, @externalResourceKey, @externalIntegrationId,
             @externalOriginJson, @sourceBindingKind)
          ON CONFLICT(key) DO UPDATE SET
+           sessionId=COALESCE(sessions.sessionId, excluded.sessionId),
            acpSessionId=excluded.acpSessionId, state=excluded.state,
            lastDeliveredTs=excluded.lastDeliveredTs, updatedAt=excluded.updatedAt,
            transportScope=excluded.transportScope,
@@ -2020,6 +2071,7 @@ export class LocalStore {
       )
       .run({
         key: rec.key,
+        sessionId: rec.sessionId ?? randomUUID(),
         agentId: rec.agentId,
         platform: rec.platform,
         channel: rec.channel,
@@ -2127,10 +2179,13 @@ export class LocalStore {
 
   /** The one agent holding this ACP id locally, or undefined when none or several
    *  do — how a push from a CP too old to name the agent is attributed. */
-  async soleAgentForAcpSession(acpSessionId: string): Promise<string | undefined> {
+  async soleAgentForAcpSession(sessionId: string): Promise<string | undefined> {
     const rows = (await this.db
-      .prepare('SELECT DISTINCT agentId FROM sessions WHERE acpSessionId = ? AND agentId IS NOT NULL LIMIT 2')
-      .all(acpSessionId)) as { agentId: string }[]
+      .prepare(
+        `SELECT DISTINCT agentId FROM sessions
+         WHERE (sessionId = @sessionId OR acpSessionId = @sessionId) AND agentId IS NOT NULL LIMIT 2`
+      )
+      .all({ sessionId })) as { agentId: string }[]
     return rows.length === 1 ? rows[0]!.agentId : undefined
   }
 
@@ -2642,17 +2697,20 @@ export class LocalStore {
       // fact "this session's content is gone" must not be able to exist without
       // the report that carries it, in either direction. Only a session that bound
       // an ACP id was ever reported to the CP, so only that one has a row to mark.
+      // How the CONTROL PLANE knows this session (§1.1): the id its receipt marks and its outbox
+      // row is keyed by. A pre-v12 row answers with its ACP id, which is what it was reported under.
+      const outward = rec.sessionId ?? rec.acpSessionId
       // OR IGNORE keeps the FIRST stamp if a still-unacked receipt is somehow
       // re-created for the same id — the console should show when the content
       // actually went away, not when the daemon last retried.
       if (purge && rec.acpSessionId) {
-        // Stamped to the deleting member on a shared store: its drain owns the receipt.
+        // Stamped to the deleting member on a shared store: its drain owns it.
         await tx
           .prepare(
             `INSERT OR IGNORE INTO session_purges (agentId, sessionId, reason, purgedAt, ownerId, claimedAt)
              VALUES (?, ?, ?, ?, ?, ?)`
           )
-          .run(rec.agentId, rec.acpSessionId, purge.reason, purge.at, purge.ownerId ?? null, purge.at)
+          .run(rec.agentId, outward, purge.reason, purge.at, purge.ownerId ?? null, purge.at)
       }
       await tx.prepare('DELETE FROM sessions WHERE key = ?').run(key)
       await tx.prepare('DELETE FROM session_mutes WHERE key = ?').run(key)
@@ -2663,7 +2721,7 @@ export class LocalStore {
         // obsolete snapshot; an existing CP row is handled by session_purges.
         await tx
           .prepare('DELETE FROM session_metadata_outbox WHERE agentId = ? AND sessionId = ?')
-          .run(rec.agentId, rec.acpSessionId)
+          .run(rec.agentId, outward)
         await tx
           .prepare('DELETE FROM session_gates WHERE agentId = ? AND acpSessionId = ?')
           .run(rec.agentId, rec.acpSessionId)

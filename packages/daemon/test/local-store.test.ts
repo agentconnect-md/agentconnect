@@ -101,6 +101,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     old.exec('ALTER TABLE session_metadata_outbox DROP COLUMN ownerId')
     old.exec('ALTER TABLE session_metadata_outbox DROP COLUMN claimedAt')
     dropTranscriptOrg(old)
+    old.exec('ALTER TABLE sessions DROP COLUMN sessionId')
     old.exec('PRAGMA user_version = 1')
     old.close()
 
@@ -128,7 +129,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     expect(cronColumns).toContain('definition')
     // Purge receipts are leased per pool member (#1032).
     expect(purgeColumns).toEqual(expect.arrayContaining(['ownerId', 'claimedAt']))
-    expect(userVersion(path)).toBe(11)
+    expect(userVersion(path)).toBe(12)
   })
 
   it.skipIf(pg)('never persists the CP routing map on a shared store, and still does on an owned one', async () => {
@@ -175,6 +176,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     old.exec('ALTER TABLE session_metadata_outbox DROP COLUMN ownerId')
     old.exec('ALTER TABLE session_metadata_outbox DROP COLUMN claimedAt')
     dropTranscriptOrg(old)
+    old.exec('ALTER TABLE sessions DROP COLUMN sessionId')
     old.exec('PRAGMA user_version = 5')
     old.close()
 
@@ -190,7 +192,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     expect(await upgraded.isCaptureExcluded('bot-c', 'acp-2')).toBe(true)
     await upgraded.close()
 
-    expect(userVersion(path)).toBe(11)
+    expect(userVersion(path)).toBe(12)
   })
 
   it('re-keys the runtime catalog cache on its owning member when upgrading a v7 store', async () => {
@@ -219,6 +221,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     old.exec('ALTER TABLE session_metadata_outbox DROP COLUMN ownerId')
     old.exec('ALTER TABLE session_metadata_outbox DROP COLUMN claimedAt')
     dropTranscriptOrg(old)
+    old.exec('ALTER TABLE sessions DROP COLUMN sessionId')
     old.exec('PRAGMA user_version = 7')
     old.close()
 
@@ -240,7 +243,30 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
         .map((column) => column.name)
     expect(primaryKey(metaColumns)).toEqual(['ownerId', 'runtimeId'])
     expect(primaryKey(capColumns)).toEqual(['ownerId', 'runtimeId', 'modelId'])
-    expect(userVersion(path)).toBe(11)
+    expect(userVersion(path)).toBe(12)
+  })
+
+  it('backfills a v11 store with the outward id its sessions were already reported under', async () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-v11-')), 'local.sqlite')
+    await (await LocalStore.open(path)).close()
+    const old = new DatabaseSync(path)
+    old.exec('ALTER TABLE sessions DROP COLUMN sessionId')
+    old.exec(`INSERT INTO sessions (key, agentId, platform, channel, thread, acpSessionId, state, updatedAt)
+      VALUES ('k1', 'bot-a', 'slack', 'C1', 'T1', 'acp-1', 'idle', 100)`)
+    // A session that never launched has no id to inherit — it gets one when it next needs one.
+    old.exec(`INSERT INTO sessions (key, agentId, platform, channel, thread, acpSessionId, state, updatedAt)
+      VALUES ('k2', 'bot-a', 'slack', 'C1', 'T2', NULL, 'idle', 100)`)
+    old.exec('PRAGMA user_version = 11')
+    old.close()
+
+    const upgraded = await LocalStore.open(path)
+    // The control plane already knows this session by its ACP id: renaming it would orphan the row.
+    expect((await upgraded.getSession('k1'))?.sessionId).toBe('acp-1')
+    expect((await upgraded.getSessionByOutwardId('acp-1'))?.key).toBe('k1')
+    expect((await upgraded.getSession('k2'))?.sessionId).toBeNull()
+    expect(await upgraded.ensureOutwardSessionId('k2', 'bot-a')).toMatch(/^[0-9a-f-]{36}$/)
+    await upgraded.close()
+    expect(userVersion(path)).toBe(12)
   })
 
   it('refuses a store written by a newer daemon WITHOUT touching it first', async () => {
@@ -706,6 +732,40 @@ describe('LocalStore session/transcript read-back (session/list, session/history
     expect((await s.getSessionByAcpIdForAgent('bot-a', 'shared-acp-id'))?.key).toBe('k1')
     expect((await s.getSessionByAcpIdForAgent('bot-b', 'shared-acp-id'))?.key).toBe('k2')
     expect(await s.getSessionByAcpIdForAgent('bot-c', 'shared-acp-id')).toBeUndefined()
+    await s.close()
+  })
+
+  it('mints one outward id per slot, before the session row and across every later upsert', async () => {
+    const s = await store()
+    // A credential is issued before the turn writes the session, so the id must exist first.
+    const minted = await s.ensureOutwardSessionId('k1', 'bot-a')
+    expect(minted).toMatch(/^[0-9a-f-]{36}$/)
+    expect(await s.ensureOutwardSessionId('k1', 'bot-a')).toBe(minted)
+    await seed(s, 'k1', 'bot-a', 'acp-1', 100)
+    // The session proper landing on the skeleton row keeps the id the credential already carries.
+    expect((await s.getSession('k1'))?.sessionId).toBe(minted)
+    await seed(s, 'k1', 'bot-a', 'acp-rebuilt', 200)
+    // A rebuilt ACP hop is a new runtime instance of the SAME session: outward id unchanged.
+    expect((await s.getSession('k1'))?.sessionId).toBe(minted)
+    // A slot the daemon never issued a credential for gets its id from the upsert itself.
+    await seed(s, 'k2', 'bot-a', 'acp-2', 100)
+    const other = (await s.getSession('k2'))!.sessionId
+    expect(other).toMatch(/^[0-9a-f-]{36}$/)
+    expect(other).not.toBe(minted)
+    await s.close()
+  })
+
+  it('getSessionByOutwardId resolves the outward id, and falls back to the ACP one', async () => {
+    const s = await store()
+    await seed(s, 'k1', 'bot-a', 'acp-1', 100)
+    const outward = (await s.getSession('k1'))!.sessionId!
+    expect((await s.getSessionByOutwardId(outward))?.key).toBe('k1')
+    expect((await s.getSessionByOutwardId(outward, 'bot-a'))?.key).toBe('k1')
+    // Scoped to the agent that owns it, so a peer cannot read another org's session.
+    expect(await s.getSessionByOutwardId(outward, 'bot-b')).toBeUndefined()
+    // A caller still holding the runtime's name — or a CP row written before v12 — still lands.
+    expect((await s.getSessionByOutwardId('acp-1'))?.key).toBe('k1')
+    expect(await s.getSessionByOutwardId('nope')).toBeUndefined()
     await s.close()
   })
 
@@ -1381,26 +1441,41 @@ describe('LocalStore session retention GC (#485)', () => {
     // is no metadata row to mark and no receipt to keep.
     await seed(s, 'unbound', 'closed', 100, null)
 
+    // The receipt addresses the session by its outward id, not the ACP hop's.
+    const outward = (await s.getSession('gone'))!.sessionId!
     await s.deleteSession('gone', { reason: 'retention', at: 1_700 })
     await s.deleteSession('unbound', { reason: 'retention', at: 1_800 })
 
     expect(await s.listSessionPurges(10, 0)).toEqual([
-      { agentId: 'bot-a', sessionId: 'acp-gone', reason: 'retention', purgedAt: 1_700 }
+      { agentId: 'bot-a', sessionId: outward, reason: 'retention', purgedAt: 1_700 }
     ])
     await s.close()
   })
 
   it('a purge receipt survives until acknowledged, and only for the reported agent', async () => {
     const s = await store()
-    await seed(s, 'a', 'closed', 100)
+    // Both rows carry the SAME outward id — the shape a v11 store leaves behind, where the
+    // backfill took each session's runtime-local ACP id. The ACK fence is the agent, not the id.
+    await s.upsertSession({
+      key: 'a',
+      agentId: 'bot-a',
+      platform: 'slack',
+      channel: 'C1',
+      thread: 'a',
+      acpSessionId: 'acp-a',
+      sessionId: 'acp-a',
+      state: 'closed',
+      lastDeliveredTs: null,
+      updatedAt: 100
+    })
     await s.upsertSession({
       key: 'b',
       agentId: 'bot-b',
       platform: 'slack',
       channel: 'C1',
       thread: 'b',
-      // ACP ids are runtime-local: two agents can each have purged an `acp-1`.
       acpSessionId: 'acp-a',
+      sessionId: 'acp-a',
       state: 'closed',
       lastDeliveredTs: null,
       updatedAt: 100
@@ -1899,7 +1974,7 @@ describe('LocalStore recovery scope on a shared store (daemon pool)', () => {
   // member exactly like the hook-completion outbox — a peer's live row is never
   // offered, claimed, or released by anyone but its owner.
   const LEASE_MS = 2 * 60 * 1_000
-  const purged = async (s: LocalStore, key: string, agentId: string, ownerId: string, at: number) => {
+  const purged = async (s: LocalStore, key: string, agentId: string, ownerId: string, at: number): Promise<string> => {
     await s.upsertSession({
       key,
       agentId,
@@ -1911,7 +1986,9 @@ describe('LocalStore recovery scope on a shared store (daemon pool)', () => {
       lastDeliveredTs: null,
       updatedAt: 0
     })
+    const outward = (await s.getSession(key))!.sessionId!
     expect(await s.deleteSession(key, { reason: 'retention', at, ownerId })).toBe(true)
+    return outward
   }
   const ids = (rows: { sessionId: string }[]) => rows.map((row) => row.sessionId)
 
@@ -1919,19 +1996,19 @@ describe('LocalStore recovery scope on a shared store (daemon pool)', () => {
     const path = sharedPath()
     const a = await member(path, 'store-a')
     const b = await member(path, 'store-b')
-    await purged(a, 'from-a', 'agent-a', 'daemon-a', 1_000)
-    await purged(b, 'from-b', 'agent-b', 'daemon-b', 1_000)
+    const fromA = await purged(a, 'from-a', 'agent-a', 'daemon-a', 1_000)
+    const fromB = await purged(b, 'from-b', 'agent-b', 'daemon-b', 1_000)
 
-    expect(ids(await a.listSessionPurges(10, 1500, 'daemon-a', ['agent-a']))).toEqual(['acp-from-a'])
+    expect(ids(await a.listSessionPurges(10, 1500, 'daemon-a', ['agent-a']))).toEqual([fromA])
     // B serves both agents and still may not touch A's row: A's claim is live.
-    expect(ids(await b.listSessionPurges(10, 1500, 'daemon-b', ['agent-a', 'agent-b']))).toEqual(['acp-from-b'])
-    expect(await b.claimSessionPurges('agent-a', ['acp-from-a'], 'daemon-b', 1_500)).toEqual([])
+    expect(ids(await b.listSessionPurges(10, 1500, 'daemon-b', ['agent-a', 'agent-b']))).toEqual([fromB])
+    expect(await b.claimSessionPurges('agent-a', [fromA], 'daemon-b', 1_500)).toEqual([])
     // Nor release it: the ACK fence is the claim holder.
-    await b.acknowledgeSessionPurges('agent-a', ['acp-from-a'], 'daemon-b')
-    expect(ids(await a.listSessionPurges(10, 1500, 'daemon-a', []))).toEqual(['acp-from-a'])
+    await b.acknowledgeSessionPurges('agent-a', [fromA], 'daemon-b')
+    expect(ids(await a.listSessionPurges(10, 1500, 'daemon-a', []))).toEqual([fromA])
     // The owner renews and settles its own row.
-    expect(await a.claimSessionPurges('agent-a', ['acp-from-a'], 'daemon-a', 1_500)).toEqual(['acp-from-a'])
-    await a.acknowledgeSessionPurges('agent-a', ['acp-from-a'], 'daemon-a')
+    expect(await a.claimSessionPurges('agent-a', [fromA], 'daemon-a', 1_500)).toEqual([fromA])
+    await a.acknowledgeSessionPurges('agent-a', [fromA], 'daemon-a')
     expect(await a.listSessionPurges(10, 1_500, 'daemon-a', [])).toEqual([])
     await a.close()
     await b.close()
@@ -1941,16 +2018,16 @@ describe('LocalStore recovery scope on a shared store (daemon pool)', () => {
     const path = sharedPath()
     const a = await member(path, 'store-a')
     const b = await member(path, 'store-b')
-    await purged(a, 'from-a', 'agent-a', 'daemon-a', 1_000)
+    const fromA = await purged(a, 'from-a', 'agent-a', 'daemon-a', 1_000)
     const lapsed = 1_000 + LEASE_MS + 1
 
     // Still not B's to take while B does not serve the agent.
     expect(await b.listSessionPurges(10, lapsed, 'daemon-b', ['agent-b'])).toEqual([])
-    expect(ids(await b.listSessionPurges(10, lapsed, 'daemon-b', ['agent-a']))).toEqual(['acp-from-a'])
-    expect(await b.claimSessionPurges('agent-a', ['acp-from-a'], 'daemon-b', lapsed)).toEqual(['acp-from-a'])
+    expect(ids(await b.listSessionPurges(10, lapsed, 'daemon-b', ['agent-a']))).toEqual([fromA])
+    expect(await b.claimSessionPurges('agent-a', [fromA], 'daemon-b', lapsed)).toEqual([fromA])
     // The takeover is exclusive: the dead owner's id no longer holds the row.
     expect(await a.listSessionPurges(10, lapsed, 'daemon-a', [])).toEqual([])
-    expect(await a.claimSessionPurges('agent-a', ['acp-from-a'], 'daemon-a', lapsed)).toEqual([])
+    expect(await a.claimSessionPurges('agent-a', [fromA], 'daemon-a', lapsed)).toEqual([])
     await a.close()
     await b.close()
   })
@@ -1968,10 +2045,11 @@ describe('LocalStore recovery scope on a shared store (daemon pool)', () => {
       lastDeliveredTs: null,
       updatedAt: 0
     })
+    const outward = (await s.getSession('k'))!.sessionId!
     await s.deleteSession('k', { reason: 'retention', at: 1_000 })
-    expect(ids(await s.listSessionPurges(10, 1500, 'daemon-a', []))).toEqual(['acp-k'])
-    expect(await s.claimSessionPurges('agent-1', ['acp-k'], undefined, 1_500)).toEqual(['acp-k'])
-    await s.acknowledgeSessionPurges('agent-1', ['acp-k'])
+    expect(ids(await s.listSessionPurges(10, 1500, 'daemon-a', []))).toEqual([outward])
+    expect(await s.claimSessionPurges('agent-1', [outward], undefined, 1_500)).toEqual([outward])
+    await s.acknowledgeSessionPurges('agent-1', [outward])
     expect(await s.listSessionPurges(10, 1_500)).toEqual([])
     await s.close()
   })
@@ -2276,6 +2354,7 @@ describe.skipIf(pg)('transcript org migration from a v10 store', () => {
     old.exec(`INSERT INTO transcript (channel, thread, ts, sender, kind, text, recipient, eventTimeUs, revision)
       VALUES ('C1', 'T1', '1', 'U', 'text', 'kept', 'agent-a', 1000000, 1)`)
     old.exec("INSERT INTO transcript_recipient (channel, thread, ts, agentId) VALUES ('C1', 'T1', '1', 'agent-b')")
+    old.exec('ALTER TABLE sessions DROP COLUMN sessionId')
     old.exec('PRAGMA user_version = 10')
     old.close()
     return path

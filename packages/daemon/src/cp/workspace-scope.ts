@@ -27,7 +27,8 @@ export interface WorkspaceScopeSession {
 export interface WorkspaceScopeDeps {
   workspaces: WorkspaceManager
   agentOf: (agentId: string) => Agent | undefined
-  sessionOf: (agentId: string, acpSessionId: string) => Promise<WorkspaceScopeSession | undefined>
+  /** Resolve a slot from the id the console addresses it by — its outward one (session-concept.md §1.1). */
+  sessionOf: (agentId: string, sessionId: string) => Promise<WorkspaceScopeSession | undefined>
   /** The sandbox volume root a cluster agent's workspace lives on; undefined for a local daemon. */
   runtimeRootOf: (agentId: string) => string | undefined
 }

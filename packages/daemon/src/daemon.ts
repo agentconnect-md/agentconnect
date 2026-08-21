@@ -2326,7 +2326,7 @@ export class Daemon {
         const scope = createWorkspaceScope({
           workspaces: this.workspaces,
           agentOf: (id) => this.agents.get(id),
-          sessionOf: (id, acpSessionId) => this.store.getSessionByAcpIdForAgent(id, acpSessionId),
+          sessionOf: (id, sessionId) => this.store.getSessionByOutwardId(sessionId, id),
           runtimeRootOf: (id) => this.k8sPlane?.workspaceRootFor(id)
         })
         const acpSessionId = await this.acpSessionIdForToolCall(ctx).catch(() => undefined)
@@ -3761,6 +3761,7 @@ export class Daemon {
       orgForAgent: (agentId) => this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId),
       modelOverride: async (sessionKey) => await this.store.getModelOverride(sessionKey),
       acpSessionId: async (sessionKey) => (await this.store.getSession(sessionKey))?.acpSessionId,
+      outwardSessionId: async (sessionKey, agentId) => await this.store.ensureOutwardSessionId(sessionKey, agentId),
       sessionKeyForAcpId: async (agentId, acpSessionId) =>
         (await this.store.getSessionByAcpIdForAgent(agentId, acpSessionId))?.key,
       sessionSdkQuiescent: (agentId, acpSessionId) => this.sessionSdkQuiescent(agentId, acpSessionId),
@@ -11414,9 +11415,12 @@ export class Daemon {
     const usage = await this.store.getUsage(key)
     if (Object.keys(usage).length === 0) return
     const observedModel = await this.store.getObservedModel(key)
+    // The wire carries the outward id (§1.1) — the same one the gateway's metered rows carry, so
+    // both sources of a session's spend land on one row instead of two.
+    const outwardSessionId = await this.store.ensureOutwardSessionId(key, agentId)
     try {
       this.cpClient?.emitUsageReport({
-        sessionId,
+        sessionId: outwardSessionId,
         agentId,
         platform,
         channel,

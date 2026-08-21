@@ -2151,7 +2151,12 @@ describe('Daemon session retention GC (#485)', () => {
     await (daemon as any).sweepSessionRetention()
   }
 
-  const seedSession = async (daemon: Daemon, key: string, state: 'idle' | 'prompting' | 'closed', updatedAt: number) =>
+  const seedSession = async (
+    daemon: Daemon,
+    key: string,
+    state: 'idle' | 'prompting' | 'closed',
+    updatedAt: number
+  ): Promise<string> => {
     await (daemon as any).store.upsertSession({
       key,
       agentId: 'bot-a',
@@ -2163,6 +2168,8 @@ describe('Daemon session retention GC (#485)', () => {
       lastDeliveredTs: null,
       updatedAt
     })
+    return (await (daemon as any).store.getSession(key))!.sessionId!
+  }
 
   it('the idle sweep deletes expired sessions but spares live turns and gate-owned keys', async () => {
     const clock = new FakeClock()
@@ -2223,21 +2230,20 @@ describe('Daemon session retention GC (#485)', () => {
     const emitSessionPurged = vi.fn(async () => 'acknowledged' as const)
     ;(daemon as any).cpClient = { emitSessionPurged, state: 'READY', stop: vi.fn(async () => {}) }
 
-    await seedSession(daemon, 'expired-a', 'closed', 0)
-    await seedSession(daemon, 'expired-b', 'idle', 0)
+    const expiredA = await seedSession(daemon, 'expired-a', 'closed', 0)
+    const expiredB = await seedSession(daemon, 'expired-b', 'idle', 0)
     clock.advance(8 * 24 * 3_600_000)
     await sweepRetention(daemon)
     await vi.waitFor(() => expect(emitSessionPurged).toHaveBeenCalledOnce(), WAIT)
 
-    // One frame per agent, carrying the ACP session ids — the only session
-    // identity the CP knows.
+    // One frame per agent, carrying the sessions' outward ids — the identity the CP knows.
     expect(emitSessionPurged.mock.calls[0]![0]).toMatchObject({
       agentId: 'bot-a',
       reason: 'retention'
     })
-    expect(emitSessionPurged.mock.calls[0]![0].sessionIds.sort()).toEqual(['acp-expired-a', 'acp-expired-b'])
-    // ACKed ⇒ the durable receipts are released.
-    expect(await (daemon as any).store.listSessionPurges(10, 0)).toEqual([])
+    expect([...emitSessionPurged.mock.calls[0]![0].sessionIds].sort()).toEqual([expiredA, expiredB].sort())
+    // ACKed ⇒ the durable receipts are released, which the drain does after the report returns.
+    await vi.waitFor(async () => expect(await (daemon as any).store.listSessionPurges(10, 0)).toEqual([]), WAIT)
 
     await daemon.stop()
   }, 15_000)
@@ -2259,11 +2265,11 @@ describe('Daemon session retention GC (#485)', () => {
     // agent + reason + timestamp for all the sessions it carries, so a row may
     // never ride in a frame that would mislabel when (or by whom) it was purged.
     await store.deleteSession('x', { reason: 'retention', at: 1_000 }) // absent row — no receipt
-    await seedSession(daemon, 'sweep-1a', 'closed', 0)
-    await seedSession(daemon, 'sweep-1b', 'closed', 0)
+    const sweep1a = await seedSession(daemon, 'sweep-1a', 'closed', 0)
+    const sweep1b = await seedSession(daemon, 'sweep-1b', 'closed', 0)
     await store.deleteSession('sweep-1a', { reason: 'retention', at: 1_000 })
     await store.deleteSession('sweep-1b', { reason: 'retention', at: 1_000 })
-    await seedSession(daemon, 'sweep-2', 'closed', 0)
+    const sweep2 = await seedSession(daemon, 'sweep-2', 'closed', 0)
     await store.deleteSession('sweep-2', { reason: 'retention', at: 2_000 })
 
     await (daemon as any).drainSessionPurges()
@@ -2272,9 +2278,9 @@ describe('Daemon session retention GC (#485)', () => {
     const frames = emitSessionPurged.mock.calls
       .map((call) => call[0])
       .sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts))
-    expect(frames[0]!.sessionIds.sort()).toEqual(['acp-sweep-1a', 'acp-sweep-1b'])
+    expect([...frames[0]!.sessionIds].sort()).toEqual([sweep1a, sweep1b].sort())
     expect(frames[0]!.ts).toBe(new Date(1_000).toISOString())
-    expect(frames[1]!.sessionIds).toEqual(['acp-sweep-2'])
+    expect(frames[1]!.sessionIds).toEqual([sweep2])
     expect(frames[1]!.ts).toBe(new Date(2_000).toISOString())
     expect(await store.listSessionPurges(10, 0)).toEqual([])
 
@@ -2322,13 +2328,13 @@ describe('Daemon session retention GC (#485)', () => {
       stop: vi.fn()
     }
 
-    await seedSession(daemon, 'expired-a', 'closed', 0)
+    const expiredA = await seedSession(daemon, 'expired-a', 'closed', 0)
     clock.advance(8 * 24 * 3_600_000)
     await sweepRetention(daemon)
     await (daemon as any).drainSessionPurges()
 
     expect(await (daemon as any).store.listSessionPurges(10, 0)).toMatchObject([
-      { agentId: 'bot-a', sessionId: 'acp-expired-a', reason: 'retention' }
+      { agentId: 'bot-a', sessionId: expiredA, reason: 'retention' }
     ])
 
     // ...and a reporting failure is equally non-destructive.
