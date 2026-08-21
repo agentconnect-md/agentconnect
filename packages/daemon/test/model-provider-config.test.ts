@@ -47,14 +47,16 @@ describe('modelProviderTarget', () => {
 })
 
 describe('applyModelCredential', () => {
-  it('uses Claude gateway bearer-token variables', () => {
-    const env = { ANTHROPIC_API_KEY: 'old' }
+  it('writes the Claude key slot and clears any bearer-token variable', () => {
+    // Both stale variables present: exactly one credential may survive, in the x-api-key slot —
+    // the same slot the sandbox shim's AC_CLAUDE_API_KEY fill-in targets, so it stays blocked.
+    const env = { ANTHROPIC_API_KEY: 'old', ANTHROPIC_AUTH_TOKEN: 'old-bearer' }
     applyModelCredential({ provider: 'anthropic', runtime: 'claude' }, env, {
       key: 'issued',
       baseUrl: 'https://gateway.example/anthropic'
     })
     expect(env).toEqual({
-      ANTHROPIC_AUTH_TOKEN: 'issued',
+      ANTHROPIC_API_KEY: 'issued',
       ANTHROPIC_BASE_URL: 'https://gateway.example/anthropic'
     })
   })

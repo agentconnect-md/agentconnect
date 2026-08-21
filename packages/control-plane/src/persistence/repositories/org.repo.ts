@@ -6,13 +6,17 @@
  */
 import type { PrismaLike } from '../prisma.js'
 import { Prisma, type PrismaClient } from '../../generated/prisma/client.js'
-import type { AgentCallPolicy, OrgRepo, OrgRecord, OrgMemberRole } from '../ports.js'
+import type { AgentCallPolicy, OrgRepo, OrgRecord, OrgMemberRole, OrgTelemetryRow } from '../ports.js'
 import type { AgentIcon } from '@agentconnect.md/protocol'
 import { OrgId } from '../../domain/ids.js'
 import { PgHookRepo } from './hook.repo.js'
 import { parseAgentIcon, randomGlyphIcon } from '../../agents/agent-icon.js'
 import { provisionPresetAgents, type PresetPoolPlacement } from '../preset-agents.js'
 import { OrgCreationLimitReached } from '../errors.js'
+
+/** The session-start windows the org gauges report beside the lifetime total. */
+const SESSION_WINDOW_30D_MS = 30 * 24 * 60 * 60 * 1000
+const SESSION_WINDOW_24H_MS = 24 * 60 * 60 * 1000
 
 export class PgOrgRepo implements OrgRepo {
   constructor(
@@ -167,6 +171,40 @@ export class PgOrgRepo implements OrgRepo {
   async slugById(orgId: string): Promise<string | null> {
     const org = await this.db.org.findUnique({ where: { id: orgId }, select: { slug: true } })
     return org?.slug ?? null
+  }
+
+  async orgTelemetry(now: Date): Promise<OrgTelemetryRow[]> {
+    const since30d = new Date(now.getTime() - SESSION_WINDOW_30D_MS)
+    const since24h = new Date(now.getTime() - SESSION_WINDOW_24H_MS)
+    // Each table is aggregated ONCE and joined, never read per org: a correlated subquery here
+    // would re-scan `session_meta` for every org, turning one cheap pass into N.
+    return this.db.$queryRaw<OrgTelemetryRow[]>(Prisma.sql`
+      WITH d AS (
+        SELECT "orgId", count(*)::int AS n FROM "daemon" WHERE "orgId" IS NOT NULL GROUP BY "orgId"
+      ),
+      a AS (
+        SELECT "orgId", count(*)::int AS n FROM "agent" GROUP BY "orgId"
+      ),
+      s AS (
+        SELECT "orgId",
+               count(*)::int AS total,
+               count(*) FILTER (WHERE "startedAt" >= ${since30d})::int AS d30,
+               count(*) FILTER (WHERE "startedAt" >= ${since24h})::int AS d24
+        FROM "session_meta" GROUP BY "orgId"
+      )
+      -- Driven from "org" so an org holding nothing still reports its zeros.
+      SELECT o.id AS "orgId",
+             COALESCE(d.n, 0)::int AS "daemons",
+             COALESCE(a.n, 0)::int AS "agents",
+             COALESCE(s.total, 0)::int AS "sessionsTotal",
+             COALESCE(s.d30, 0)::int AS "sessions30d",
+             COALESCE(s.d24, 0)::int AS "sessions24h"
+      FROM "org" o
+      LEFT JOIN d ON d."orgId" = o.id
+      LEFT JOIN a ON a."orgId" = o.id
+      LEFT JOIN s ON s."orgId" = o.id
+      ORDER BY o.id
+    `)
   }
 
   async delete(orgId: string): ReturnType<OrgRepo['delete']> {

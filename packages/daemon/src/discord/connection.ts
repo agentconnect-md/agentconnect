@@ -12,7 +12,8 @@ import type { Agent } from '../agents/agent-schema.js'
 import { platformIntegrationConfig } from '../platforms/integration-config.js'
 import type { NormalizedMessage } from '../messages/normalized.js'
 import type { Logger } from '../log.js'
-import { PlatformSendQueue } from '../platforms/send-queue.js'
+import { isSendQueueTimeout, PlatformSendQueue } from '../platforms/send-queue.js'
+import type { UploadAnchor, UploadFailReason, UploadOutcome } from '../mcp/ops/context.js'
 import { normalizeDiscordMessage, type DiscordMessageLike } from './normalize.js'
 import { DISCORD_APP_COMMANDS } from './app-commands.js'
 import {
@@ -106,19 +107,27 @@ const DEFAULT_MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
 const CHANNEL_CAP = 200
 const PERMISSION_NOTICE_RETRY_MS = 5 * 60_000
 
-// Keep this permission set in lock-step with packages/web/src/lib/discord-invite.ts.
-// It covers reactions, channel visibility, messages, embeds/files/history, and public
-// thread creation + replies. Discord permission bitfields exceed 32 bits.
+// Keep this permission set in lock-step with packages/web/src/components/console/platforms/discord/invite.ts.
 const DISCORD_BOT_PERMISSIONS = (
-  (1n << 6n) |
-  (1n << 10n) |
-  (1n << 11n) |
-  (1n << 14n) |
-  (1n << 15n) |
-  (1n << 16n) |
-  (1n << 34n) |
+  (1n << 6n) | // ADD_REACTIONS
+  (1n << 10n) | // VIEW_CHANNEL
+  (1n << 11n) | // SEND_MESSAGES
+  (1n << 14n) | // EMBED_LINKS
+  (1n << 15n) | // ATTACH_FILES
+  (1n << 16n) | // READ_MESSAGE_HISTORY
+  (1n << 35n) | // CREATE_PUBLIC_THREADS
   (1n << 38n)
-).toString()
+) // SEND_MESSAGES_IN_THREADS
+  .toString()
+
+/** Map a Discord send error to the port's typed failure vocabulary. 40005 = entity too large. */
+function classifyDiscordUploadError(err: unknown): UploadFailReason {
+  const code = (err as { code?: unknown })?.code
+  if (code === 40005) return 'too_large'
+  if (code === 50013 || code === 50001) return 'forbidden'
+  if (code === 10003 || code === 10008) return 'not_found'
+  return 'platform_error'
+}
 
 type DiscordPermissionIssue = 'missing-access' | 'missing-permissions' | 'missing-oauth-scope'
 
@@ -150,6 +159,10 @@ function discordPermissionIssueFrom(err: unknown): DiscordPermissionIssue | null
 type SendPayload = {
   content?: string
   components?: DiscordComponents
+  /** Discord carries bytes on the message itself — no separate upload call. */
+  files?: { attachment: Buffer; name: string }[]
+  /** `parse: []` suppresses every ping a model-authored caption could carry. */
+  allowedMentions?: { parse: never[] }
 }
 type Sendable = Channel & {
   send: (payload: SendPayload) => Promise<Message>
@@ -510,6 +523,66 @@ export class DiscordConnection implements PlatformConnection {
       await this.postPermissionUpdateNotice(target, ch)
       return firstId
     })
+  }
+
+  /**
+   * Put a file into a channel — the mirror of {@link downloadFile}. Discord carries bytes on
+   * the message itself, so the file and its caption are ONE post and the id it returns
+   * anchors like any other. Over-cap text keeps the existing chunking, with the file riding
+   * the first chunk so the caption reads above it.
+   */
+  async uploadFile(
+    channel: string,
+    file: { bytes: Buffer; name: string; mimeType?: string },
+    comment?: string,
+    anchor?: UploadAnchor,
+    _identity?: unknown
+  ): Promise<UploadOutcome> {
+    const target = this.replyTarget(channel, anchor?.thread)
+    const task: Promise<UploadOutcome> = this.queue.enqueue(async () => {
+      const ch = await this.sendableChannel(target)
+      if (!ch) {
+        await this.postPermissionUpdateNotice(target, ch)
+        return { ok: false, reason: 'not_found' }
+      }
+      const chunks = comment ? chunkForDiscord(comment) : ['']
+      let firstId: string | undefined
+      let attached = false
+      let dropped = false
+      let firstErr: unknown
+      for (const chunk of chunks) {
+        const payload: SendPayload = {
+          ...(chunk ? { content: chunk } : {}),
+          ...(attached ? {} : { files: [{ attachment: file.bytes, name: file.name }] }),
+          // A model-authored caption must not be able to ping — <@id>/@everyone resolve in
+          // plain content, and suppression is Discord-native rather than string surgery.
+          allowedMentions: { parse: [] }
+        }
+        const sent = await ch.send(payload).catch((err: Error) => {
+          firstErr = err
+          this.rememberPermissionIssue(err, target)
+          this.deps.log?.debug(`discord: uploadFile failed (ch=${target}): ${err.message}`)
+          return null
+        })
+        // Nothing posted yet ⇒ nothing landed at all — the `ok: false` contract. A later
+        // chunk failing is a partial: the file is in the chat, so say what was lost rather
+        // than claim the send never happened.
+        if (!sent && !attached) return { ok: false, reason: classifyDiscordUploadError(firstErr) }
+        if (!sent) dropped = true
+        attached = true
+        if (sent && firstId === undefined) firstId = sent.id
+      }
+      await this.postPermissionUpdateNotice(target, ch)
+      return {
+        ok: true,
+        ...(firstId !== undefined ? { messageId: firstId } : {}),
+        ...(dropped ? { warning: 'the file was sent, but part of its caption did not post' } : {})
+      }
+    })
+    return task.catch((err) => ({
+      ok: false,
+      reason: isSendQueueTimeout(err) ? 'indeterminate' : 'platform_error'
+    }))
   }
 
   /**

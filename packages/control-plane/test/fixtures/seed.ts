@@ -135,6 +135,8 @@ export async function seedSessionMeta(
     channel?: string
     parentSessionId?: string
     lastActivityAt?: Date
+    /** When the session BEGAN; defaults to now. What the per-org session-rate windows read. */
+    startedAt?: Date
     model?: string
     /** Owning organization; defaults to the seeded one (multi-org tests pass their own). */
     orgId?: string
@@ -149,6 +151,7 @@ export async function seedSessionMeta(
       channel: opts.channel ?? '#general',
       phase: 'start',
       lastActivityAt: opts.lastActivityAt ?? new Date(),
+      ...(opts.startedAt ? { startedAt: opts.startedAt } : {}),
       ...(opts.visibility ? { visibility: opts.visibility } : {}),
       ...(opts.ownerIdentity ? { ownerIdentity: opts.ownerIdentity } : {}),
       ...(opts.daemonId ? { daemonId: opts.daemonId } : {}),

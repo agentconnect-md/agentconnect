@@ -14,7 +14,8 @@ import { integrationCore, platformIntegrationConfig } from '../platforms/integra
 import type { ReplyAttributionInfo } from '../messages/attribution.js'
 import type { NormalizedMessage } from '../messages/normalized.js'
 import type { Logger } from '../log.js'
-import { PlatformSendQueue } from '../platforms/send-queue.js'
+import { isSendQueueTimeout, PlatformSendQueue } from '../platforms/send-queue.js'
+import type { UploadAnchor, UploadFailReason, UploadOutcome } from '../mcp/ops/context.js'
 import { feishuEventToMessageLike, normalizeFeishuMessage, type FeishuRawEvent } from './normalize.js'
 import {
   buildCompletedReplyCard,
@@ -142,6 +143,12 @@ export interface FeishuApi {
   updateText(messageId: string, text: string): Promise<void>
   /** im.messageResource.get(...).writeFile(destPath) — auth'd resource download. */
   downloadResource(messageId: string, fileKey: string, type: 'image' | 'file', destPath: string): Promise<void>
+  /** im.image.create — host bytes and get the `image_key` a message can then reference.
+   *  Feishu splits hosting from sending, so an outbound image is always two calls. */
+  uploadImage(bytes: Buffer): Promise<{ imageKey?: string }>
+  /** im.message.create/reply (msg_type 'image') for an already-hosted `image_key`. */
+  createImage(chatId: string, imageKey: string): Promise<{ messageId?: string }>
+  replyImage(messageId: string, imageKey: string): Promise<{ messageId?: string }>
   /** im.chat.get. */
   getChat(chatId: string): Promise<{ id: string; name?: string; chatMode?: string }>
   /** im.chatMembers.get (capped). */
@@ -155,6 +162,14 @@ export interface FeishuApi {
   ): Promise<{ id: string; name?: string; realName?: string; isBot?: boolean; avatarUrl?: string }>
   /** GET /open-apis/bot/v3/info — the bot's own open_id + display name. */
   getBotInfo(): Promise<{ openId?: string; name?: string }>
+}
+
+/** Map a Feishu send error to the port's typed failure vocabulary via the permission sniffer. */
+function classifyFeishuUploadError(err: unknown): UploadFailReason {
+  const issue = feishuPermissionIssueFrom(err)
+  if (issue === 'app-permissions') return 'missing_scope'
+  if (issue) return 'forbidden'
+  return 'platform_error'
 }
 
 /** Opaque turn-local reference returned after the CardKit entity is visible in chat. */
@@ -210,7 +225,7 @@ function defaultFactory(appId: string, appSecret: string, region: FeishuRegion):
 
   const createMessage = async (
     chatId: string,
-    msgType: 'text' | 'interactive',
+    msgType: 'text' | 'interactive' | 'image',
     content: Record<string, unknown>
   ): Promise<{ messageId?: string }> => {
     const res = (await client.im.message.create({
@@ -222,7 +237,7 @@ function defaultFactory(appId: string, appSecret: string, region: FeishuRegion):
 
   const replyMessage = async (
     messageId: string,
-    msgType: 'text' | 'interactive',
+    msgType: 'text' | 'interactive' | 'image',
     content: Record<string, unknown>
   ): Promise<{ messageId?: string }> => {
     const res = (await client.im.message.reply({
@@ -237,6 +252,14 @@ function defaultFactory(appId: string, appSecret: string, region: FeishuRegion):
     createCard: (chatId, card) => createMessage(chatId, 'interactive', card),
     replyText: (messageId, text) => replyMessage(messageId, 'text', { text }),
     replyCard: (messageId, card) => replyMessage(messageId, 'interactive', card),
+    createImage: (chatId, imageKey) => createMessage(chatId, 'image', { image_key: imageKey }),
+    replyImage: (messageId, imageKey) => replyMessage(messageId, 'image', { image_key: imageKey }),
+    async uploadImage(bytes) {
+      const res = (await client.im.image.create({
+        data: { image_type: 'message', image: bytes }
+      })) as { data?: { image_key?: string } }
+      return { imageKey: res?.data?.image_key }
+    },
     async createCardEntity(card) {
       const res = assertApiSuccess(
         await client.cardkit.v1.card.create({
@@ -697,6 +720,12 @@ export class FeishuConnection implements PlatformConnection {
       : this.handle.api.createText(channel, text)
   }
 
+  private sendImage(channel: string, anchor: string | undefined, imageKey: string): Promise<{ messageId?: string }> {
+    return anchor && anchor.startsWith('om_')
+      ? this.handle.api.replyImage(anchor, imageKey)
+      : this.handle.api.createImage(channel, imageKey)
+  }
+
   private sendPermissionCard(
     channel: string,
     anchor: string | undefined,
@@ -949,6 +978,80 @@ export class FeishuConnection implements PlatformConnection {
       await this.postPermissionUpdateCard(channel, threadAnchor)
       return firstId
     })
+  }
+
+  /**
+   * Put a file into a chat — the mirror of {@link downloadFile}. Feishu splits hosting from
+   * sending, so this is `im.image.create` for the bytes and then a `msg_type: image` message
+   * that references the returned key.
+   *
+   * An image message carries NO caption, so `comment` is a second message — sent AFTER the
+   * image, so a failed image leaves the chat untouched rather than stranding a caption for a
+   * picture that never arrived. The image is therefore the anchor. Images only: everything
+   * forwardable today is one, and Feishu's file endpoint needs a `file_type` this has no
+   * honest value for.
+   */
+  async uploadFile(
+    channel: string,
+    file: { bytes: Buffer; name: string; mimeType?: string },
+    comment?: string,
+    anchor?: UploadAnchor,
+    _identity?: unknown
+  ): Promise<UploadOutcome> {
+    if (file.mimeType && !file.mimeType.startsWith('image/')) {
+      this.deps.log?.debug(`feishu: uploadFile refused ${file.name} (${file.mimeType}) — images only`)
+      return { ok: false, reason: 'platform_error' }
+    }
+    // REFUSE an anchor this platform cannot honor rather than repurpose it: `sendImage`
+    // prefix-sniffs, so an unrecognized anchor would silently become a chat-ROOT post — in
+    // topic mode a brand-new topic reported as success. A DM's anchor is its chat id.
+    const threadAnchor = anchor?.thread
+    if (threadAnchor !== undefined && !threadAnchor.startsWith('om_') && threadAnchor !== channel) {
+      this.deps.log?.debug(`feishu: uploadFile refused unhonorable anchor (ch=${channel})`)
+      return { ok: false, reason: 'not_found' }
+    }
+    const task: Promise<UploadOutcome> = this.queue.enqueue(async () => {
+      try {
+        const { imageKey } = await this.handle.api.uploadImage(file.bytes)
+        if (!imageKey) {
+          this.deps.log?.debug(`feishu: uploadFile got no image key for ${file.name}`)
+          return { ok: false, reason: 'platform_error' }
+        }
+        let sent: { messageId?: string }
+        try {
+          sent = await this.sendImage(channel, threadAnchor, imageKey)
+        } catch (err) {
+          this.rememberPermissionIssue(err, channel)
+          this.deps.log?.debug(`feishu: uploadFile ${file.name} → ch=${channel} failed: ${(err as Error).message}`)
+          return { ok: false, reason: classifyFeishuUploadError(err) }
+        }
+        const posted = { ok: true as const, ...(sent.messageId !== undefined ? { messageId: sent.messageId } : {}) }
+        // A long caption is several messages, so the warning has to say whether NONE or only
+        // SOME of it landed: an agent told the whole caption failed would re-send all of it and
+        // duplicate the chunks that did post — the very duplication the ordering above avoids.
+        let landed = 0
+        try {
+          for (const chunk of comment ? chunkForFeishu(comment) : []) {
+            await this.sendChunk(channel, threadAnchor, chunk)
+            landed += 1
+          }
+          return posted
+        } catch (err) {
+          this.rememberPermissionIssue(err, channel)
+          this.deps.log?.debug(`feishu: uploadFile caption failed (ch=${channel}): ${(err as Error).message}`)
+          const lost = landed > 0 ? 'part of its caption' : 'its caption'
+          return { ...posted, warning: `the image was sent, but ${lost} did not post` }
+        }
+      } catch (err) {
+        this.rememberPermissionIssue(err, channel)
+        this.deps.log?.debug(`feishu: uploadFile ${file.name} → ch=${channel} failed: ${(err as Error).message}`)
+        return { ok: false, reason: classifyFeishuUploadError(err) }
+      }
+    })
+    return task.catch((err) => ({
+      ok: false,
+      reason: isSendQueueTimeout(err) ? 'indeterminate' : 'platform_error'
+    }))
   }
 
   /**

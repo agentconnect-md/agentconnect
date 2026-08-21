@@ -206,7 +206,7 @@ export default function ClusterDetailView() {
             report. Neither borrows the other's figure — a plan's included usage cannot be
             derived from load telemetry, and a self-hoster is billed nothing here. */}
         {managed ? (
-          billingOffered && <CloudBillingCard />
+          billingOffered && <CloudCreditsCard />
         ) : (
           <ClusterCapacityCard {...{ capacityLabel, capacityPct, unbounded, cpu, mem }} />
         )}
@@ -286,41 +286,152 @@ function MetaItem({ icon, text, mono = false }: { icon: string; text: string; mo
   )
 }
 
-// What Cloud costs, on the one figure billing stands behind. NOT the design's "included usage"
-// bar: this deployment sells prepaid credit, so there is no quota to fill a track with and
-// drawing one from load telemetry would read as a real ceiling. Shares the Billing page's SWR key.
-function CloudBillingCard() {
+// The BALANCE here is live. The 30-day figures and the chart are sample data, and the card says
+// so — the two are separated because the balance endpoint already works today, and a fabricated
+// balance beside a "Manage billing" link to the real one would read as headroom the org has.
+//
+// What is missing is the daily series: the billing service's debits carry a `period` of
+// `YYYY-MM`, so they are MONTHLY aggregates and no per-day spend can be recovered from them.
+// So the card's shape ships and those numbers wait. Wiring them is a mechanical swap:
+//
+//   TOPPED UP · 30D  → the credit rows in the transaction feed, summed over the window
+//   SPENT · 30D      → needs a DAILY spend series the service does not expose yet
+//   the bars         → the same daily series, with credits placed on the day they posted
+//
+// Scope matters when that lands: the spend has to cover only what ran on Cloud, or the card
+// contradicts this page's own footnote about agents on daemons you connected yourself. The usage
+// API is the likely source — `fetchUsage('d30')` already buckets cost per day with a `byAgent`
+// split, which is what makes the Cloud-only scoping possible.
+const SAMPLE_TOPPED_UP_MICRO = 1_800_000_000
+// Daily spend in cents. Fixed, never generated: a random walk would redraw on every render and
+// read as live data.
+const SAMPLE_SPEND = [
+  3_780, 4_240, 3_960, 4_680, 5_120, 3_540, 2_980, 4_320, 5_040, 5_480, 6_120, 5_260, 4_880, 3_240, 2_760, 5_180, 5_720,
+  6_040, 6_680, 5_840, 4_620, 3_880, 3_420, 5_560, 6_240, 6_920, 5_380, 4_740, 5_020, 5_960
+]
+const SAMPLE_TOP_UP_DAYS = new Set([4, 14, 25])
+const MICRO_PER_CENT = 10_000
+// Derived, not stated: the total and the bars come from ONE series once this is wired, so the
+// placeholder has to satisfy that invariant too — otherwise whoever wires it has no reference to
+// check their work against.
+const SAMPLE_SPENT_MICRO = SAMPLE_SPEND.reduce((sum, cents) => sum + cents, 0) * MICRO_PER_CENT
+
+function CloudCreditsCard() {
   const { activeOrg } = useOrgs()
   const orgId = activeOrg?.id ?? null
   const account = useSWR(orgId ? consoleKeys.billingAccount(orgId) : null, () => fetchBillingAccount(orgId!))
+  const peak = Math.max(...SAMPLE_SPEND)
 
   return (
     <div className="card">
       <div className="cardhead">
-        <span className="cardtitle">Billing</span>
-        <span className="mono ml-auto text-[11px] text-(--text-tertiary)">prepaid balance</span>
+        <span className="cardtitle">Credits</span>
+        <span className="mono ml-auto text-[11px] text-(--text-tertiary)">last 30 days</span>
       </div>
-      <div className="px-4 py-[15px]">
-        {account.error ? (
-          // Not only unreachability: `assertAccount` throws BillingShapeError on an unexpected
-          // shape and lands here too — likely, since this console deploys ahead of the pinned
-          // billing image. So the label stays neutral and the service's own message says which.
-          <div className="flex items-start gap-2 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary)">
-            <Icon name="triangle-alert" size={15} color="var(--status-error)" />
-            Balance unavailable — {(account.error as Error).message}
+
+      <div className="flex flex-wrap items-start gap-x-4 gap-y-3 px-4 pt-[15px] pb-[13px] desktop:gap-x-5">
+        <div className="min-w-0">
+          <div className="eyebrow flex items-center gap-[6px]">
+            Topped up · 30d
+            <SampleChip />
           </div>
-        ) : account.data ? (
-          <>
-            <div className="mono text-[22px] leading-none font-semibold">{fmtMicroUsd(account.data.balanceMicro)}</div>
-            <p className="mt-[10px] font-sans text-[12.5px] font-normal leading-[1.6] text-(--text-secondary)">
-              Sessions that run on Cloud draw down this balance. Top it up on the Billing page.
-            </p>
-          </>
-        ) : (
-          <div className="mono text-[22px] leading-none font-semibold text-(--text-tertiary)">—</div>
-        )}
+          <div className="mono mt-[6px] text-[20px] leading-none font-semibold tracking-[-.02em] desktop:text-[24px]">
+            {fmtMicroUsd(SAMPLE_TOPPED_UP_MICRO)}
+          </div>
+          <div className="mt-[7px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+            {SAMPLE_TOP_UP_DAYS.size} top-ups
+          </div>
+        </div>
+        <span className="w-px flex-none self-stretch bg-(--border-subtle)" />
+        <div className="min-w-0">
+          <div className="eyebrow flex items-center gap-[6px]">
+            Spent · 30d
+            <SampleChip />
+          </div>
+          <div className="mono mt-[6px] text-[20px] leading-none font-semibold tracking-[-.02em] text-(--brand) desktop:text-[24px]">
+            {fmtMicroUsd(SAMPLE_SPENT_MICRO)}
+          </div>
+          <div className="mt-[7px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+            avg {fmtMicroUsd(Math.round(SAMPLE_SPENT_MICRO / SAMPLE_SPEND.length))} / day
+          </div>
+        </div>
+        {/* The one live figure, and the reason the others are chipped: this is the same
+            `billingAccount` key the Billing page reads, so the two pages cannot disagree. */}
+        <div className="ml-auto flex-none text-right">
+          <div className="eyebrow">Balance</div>
+          {account.error ? (
+            // Not only unreachability: `assertAccount` throws BillingShapeError on an unexpected
+            // shape and lands here too — likely, since this console deploys ahead of the pinned
+            // billing image. So the label stays neutral and the service's own message says which.
+            <div
+              className="mt-[6px] inline-flex items-center gap-[6px] font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary)"
+              title={(account.error as Error).message}
+            >
+              <Icon name="triangle-alert" size={14} color="var(--status-error)" />
+              unavailable
+            </div>
+          ) : (
+            <div className="mono mt-[6px] text-[18px] leading-none font-semibold">
+              {account.data ? fmtMicroUsd(account.data.balanceMicro) : '—'}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Decoration until the series is real, so it is aria-hidden rather than announced as a
+          figure a reader could act on. Every bar is spend: a top-up is a tick UNDER the axis, not
+          a recoloured bar, because a green bar whose HEIGHT is that day's spend reads as the
+          top-up's amount — and this shape is what gets wired. */}
+      <div aria-hidden className="px-4">
+        <div className="flex h-[96px] items-end gap-[3px]">
+          {SAMPLE_SPEND.map((cents, day) => (
+            <span
+              key={day}
+              className="min-w-0 flex-1 rounded-t-[2px] bg-(--brand)"
+              style={{ height: `${Math.max(6, Math.round((cents / peak) * 100))}%` }}
+            />
+          ))}
+        </div>
+        <div className="mt-[3px] flex gap-[3px] border-t border-(--border-subtle) pt-[3px]">
+          {SAMPLE_SPEND.map((_, day) => (
+            <span
+              key={day}
+              className="h-[3px] min-w-0 flex-1 rounded-[1px]"
+              style={{ background: SAMPLE_TOP_UP_DAYS.has(day) ? 'var(--green-500)' : 'transparent' }}
+            />
+          ))}
+        </div>
+      </div>
+
+      {/* Relative, not dated: "Jul 21 / Aug 20" would be right today and wrong tomorrow, and a
+          reader who reads the chip as covering the figures need not extend it to the axis. */}
+      <div className="flex items-center gap-3 px-4 pt-[9px] pb-[13px]">
+        <span className="mono text-[11px] text-(--text-tertiary)">30 days ago</span>
+        <span className="mx-auto flex items-center gap-3">
+          <span className="inline-flex items-center gap-[6px] font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+            <span className="dot h-[7px] w-[7px] bg-(--brand)" />
+            daily spend
+          </span>
+          <span className="inline-flex items-center gap-[6px] font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+            <span className="h-[3px] w-[10px] rounded-[1px] bg-(--green-500)" />
+            top-up day
+          </span>
+        </span>
+        <span className="mono text-[11px] text-(--text-tertiary)">today</span>
       </div>
     </div>
+  )
+}
+
+/** Marks one figure as sample data. Per-figure, because the Balance beside them is live. */
+function SampleChip() {
+  return (
+    <span
+      className="badge bg-(--surface-active) text-(--text-tertiary)"
+      title="Sample data — billing cannot serve a daily spend series yet"
+    >
+      sample
+    </span>
   )
 }
 

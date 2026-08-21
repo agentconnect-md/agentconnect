@@ -56,7 +56,7 @@ describe('Discord permission update notice', () => {
     expect(url.pathname).toBe('/oauth2/authorize')
     expect(url.searchParams.get('client_id')).toBe('123456789012345678')
     expect(url.searchParams.get('scope')).toBe('bot applications.commands')
-    expect(url.searchParams.get('permissions')).toBe('292057893952')
+    expect(url.searchParams.get('permissions')).toBe('309237763136')
 
     resolveNotice({ id: 'notice-1' })
     await Promise.all([first, second])

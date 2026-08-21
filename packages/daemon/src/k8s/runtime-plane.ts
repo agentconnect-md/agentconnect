@@ -1,7 +1,7 @@
 import { K8sHttp, loadInClusterConfig } from '@agentconnect.md/k8s-client'
 import { K8sDriver } from './driver.js'
 import type { LaunchGenerations } from './launch-registry.js'
-import { PROBE_GRANTS } from './sandbox-identity.js'
+import { PROBE_GRANTS, RUNTIME_GRANTS, poolRuntimeImage } from './sandbox-identity.js'
 import { SandboxApi } from './sandbox-api.js'
 import { PROBE_CLAIM_EXPIRES_ANNOTATION, PROBE_CLAIM_LABEL, PROBE_CLAIM_TTL_MS, probeAgentId } from './probe-claim.js'
 import { clusterMetrics } from '../metrics/cluster-metrics.js'
@@ -112,16 +112,28 @@ export function k8sPlaneSettings(env: NodeJS.ProcessEnv): K8sPlaneSettings {
   return resolveK8sPlaneSettings({ env })
 }
 
+/** Extra work for the held probe sandbox, given the identity that routes a launch into it and the
+ *  cwd a session must use — the POD's mount, never a path on the daemon's disk. */
+export type ProbeSandboxSweep = (table: K8sRuntimeTable, sandbox: { agentId: string; cwd: string }) => Promise<void>
+
 export interface K8sRuntimePlane {
   driver: K8sDriver
   dialer: ShimDialer
+  /** This member's stable identity — one half of the pool-wide probe election. */
+  memberId: string
+  /** The runtime image the pool's template pins: the same answer for every member at a given
+   *  moment, and what the probe's published result is keyed on. */
+  runtimeImage: () => Promise<string>
   /** Bring an agent's Sandbox up and bind its channel WITHOUT starting a runtime, so the
    *  workspace can be prepared on the pod's own volume before the runtime looks at it. */
   ensureChannel: (agentId: string) => Promise<void>
   /** Run `work` while holding the agent's Sandbox against the ordinary idle sweep. */
   withSandbox: <T>(agentId: string, work: () => Promise<T>) => Promise<T>
-  /** Ask a sandbox which runtimes the image actually provides, and tear it down again. */
-  probeRuntimes: () => Promise<K8sRuntimeTable>
+  /** Ask a sandbox which runtimes the image actually provides, and tear it down again. `sweep` runs
+   *  while that same sandbox is still held and bound, which is what lets the credentialed model
+   *  probe reuse this pod instead of claiming a second one. A caller that arrives while a probe is
+   *  already in flight awaits ITS table and its own sweep is skipped — the pod is gone by then. */
+  probeRuntimes: (sweep?: ProbeSandboxSweep) => Promise<K8sRuntimeTable>
   /** A git runner for an agent whose workspace lives on its sandbox pod, or undefined when this
    *  daemon has no channel for it — the caller then keeps its local behaviour. */
   gitRunnerFor: (agentId: string, cwd?: string, abort?: AbortSignal) => GitRunner | undefined
@@ -226,6 +238,9 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
     orgForAgent: (agentId) => (agentId === runtimeProbeAgentId ? 'install' : options.orgForAgent?.(agentId)),
     warmPoolName: settings.warmPoolName,
     generations: options.generations,
+    // The probe runs an ACP runtime through this same driver, whose `launch` binds a channel of its
+    // own — without this it would bind that pod with the full agent grant set.
+    grantsForAgent: (agentId) => (agentId === runtimeProbeAgentId ? PROBE_GRANTS : RUNTIME_GRANTS),
     claimMetadataForAgent: (agentId) =>
       agentId === runtimeProbeAgentId
         ? {
@@ -246,7 +261,7 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
 
   let probeInFlight: Promise<K8sRuntimeTable> | undefined
 
-  function probeRuntimes(): Promise<K8sRuntimeTable> {
+  function probeRuntimes(sweep?: ProbeSandboxSweep): Promise<K8sRuntimeTable> {
     if (probeInFlight) return probeInFlight
     probeInFlight = (async () => {
       // Reset this member's deterministic claim so a container restart cannot adopt its leaked probe.
@@ -258,7 +273,16 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
           const session = driver.sessionFor(runtimeProbeAgentId)
           if (!session) throw new Error('probe sandbox bound no session')
           const raw = await session.request('probe', {}, { timeoutMs: PROBE_TIMEOUT_MS })
-          return K8sRuntimeTableSchema.parse(raw)
+          const table = K8sRuntimeTableSchema.parse(raw)
+          // Reported, never raised: the table is the half the member cannot serve without, and a
+          // sweep that fails costs model detail, not the runtimes themselves.
+          if (sweep) {
+            const cwd = driver.workspaceRootFor(runtimeProbeAgentId) ?? DEFAULT_SHIM_WORKSPACE_ROOT
+            await sweep(table, { agentId: runtimeProbeAgentId, cwd }).catch((err: unknown) => {
+              options.log?.warn(`k8s: probe sandbox sweep failed: ${(err as Error).message}`)
+            })
+          }
+          return table
         })
       } finally {
         // Best-effort: a claim left behind here expires and the orphan reconciler collects it.
@@ -284,6 +308,8 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
   return {
     driver,
     dialer,
+    memberId: settings.memberId,
+    runtimeImage: () => poolRuntimeImage(api, settings.warmPoolName),
     ensureChannel: async (agentId) => {
       await driver.ensureBoundChannel(agentId)
     },

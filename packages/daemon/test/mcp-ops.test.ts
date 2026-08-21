@@ -204,6 +204,281 @@ describe('executeTool: sendMessage (channel post)', () => {
     expect(gw.postMessage).toHaveBeenCalledWith('C_OTHER', 'yo', undefined, authorIdentity)
   })
 
+  // Forwarding a file the conversation RECEIVED. This is the only way an image crosses
+  // platforms: the bytes are resolved daemon-side from what already arrived, never produced
+  // by the model, and a file share is its own message kind rather than a decorated post.
+  describe('attachment forward', () => {
+    const bytes = Buffer.from('PNGBYTES')
+    const resolved = { bytes, name: 'shot.png', mimeType: 'image/png' }
+    // Slack's share answers with the file and no ts; the other three answer with a message.
+    const anchorless = () => fakeGateway({ uploadFile: vi.fn(async () => ({ ok: true as const })) })
+    const anchoring = () => fakeGateway({ uploadFile: vi.fn(async () => ({ ok: true as const, messageId: 'ts-999' })) })
+    const resolves = () => ({
+      resolveAttachment: vi.fn(async (_c: SessionContext, name: string) => (name === 'shot.png' ? resolved : undefined))
+    })
+
+    it('uploads the received bytes with `message` as the caption instead of posting text', async () => {
+      const gw = anchorless()
+      const { deps: d, recorded } = deps(gw)
+      Object.assign(d, resolves())
+
+      const res = (await executeTool(
+        ctx,
+        'sendMessage',
+        { channel: 'C_OTHER', attachment: 'shot.png', message: 'from telegram' },
+        d
+      )) as Record<string, unknown>
+
+      expect(gw.uploadFile).toHaveBeenCalledWith('C_OTHER', resolved, 'from telegram', undefined, authorIdentity)
+      expect(gw.postMessage).not.toHaveBeenCalled()
+      // No anchor came back, so the send records under a synthetic id and seeds no
+      // channel-root session — the path a gateway returning no id already took.
+      expect(res).toMatchObject({ ok: true, post: { channel: 'C_OTHER', ts: 'local-1000' } })
+      expect(recorded).toEqual([{ channel: 'C_OTHER', thread: undefined, text: 'from telegram', ts: 'local-1000' }])
+    })
+
+    it('anchors the forward like any other post when the platform answers with a message id', async () => {
+      // Slack is the outlier here: Telegram, Discord and Feishu all return the message their
+      // file send created, so a forward there threads and seeds exactly like a text post.
+      const gw = anchoring()
+      const { deps: d, recorded } = deps(gw)
+      Object.assign(d, resolves())
+
+      const res = (await executeTool(
+        ctx,
+        'sendMessage',
+        { channel: 'C_OTHER', attachment: 'shot.png', message: 'look' },
+        d
+      )) as Record<string, unknown>
+
+      expect(res).toMatchObject({ ok: true, post: { channel: 'C_OTHER', ts: 'ts-999' } })
+      expect(recorded).toEqual([{ channel: 'C_OTHER', thread: 'ts-999', text: 'look', ts: 'ts-999' }])
+    })
+
+    it('surfaces a partial send as a notice rather than as success or failure', async () => {
+      // The file landed and the caption did not. Neither "sent" nor "nothing was sent" is
+      // true, and only the agent can decide what to do about it inside this turn.
+      const gw = fakeGateway({
+        uploadFile: vi.fn(async () => ({ ok: true as const, messageId: 'ts-999', warning: 'its caption did not post' }))
+      })
+      const { deps: d } = deps(gw)
+      Object.assign(d, resolves())
+      const res = (await executeTool(
+        ctx,
+        'sendMessage',
+        { channel: 'C_OTHER', attachment: 'shot.png', message: 'look' },
+        d
+      )) as Record<string, unknown>
+      expect(res).toMatchObject({ ok: true, notice: expect.stringContaining('its caption did not post') })
+    })
+
+    it('raises a refused share instead of reporting it as sent', async () => {
+      // Nothing reached the conversation, so this must not read as a delivered message —
+      // a silently dropped image is the one outcome the agent cannot detect on its own.
+      const gw = fakeGateway({
+        uploadFile: vi.fn(async () => ({ ok: false as const, reason: 'forbidden' as const }))
+      })
+      const { deps: d, recorded } = deps(gw)
+      Object.assign(d, resolves())
+      await expect(
+        executeTool(ctx, 'sendMessage', { channel: 'C_OTHER', attachment: 'shot.png', message: 'hi' }, d)
+      ).rejects.toThrow(/rejected the file "shot.png" \(forbidden\)/)
+      expect(recorded).toEqual([])
+    })
+
+    it('refuses an unforwardable name without blaming the spelling, posting nothing', async () => {
+      const gw = anchorless()
+      const { deps: d } = deps(gw)
+      Object.assign(d, resolves())
+      await expect(
+        executeTool(ctx, 'sendMessage', { channel: 'C_OTHER', attachment: 'nope.png', message: 'hi' }, d)
+      ).rejects.toThrow(/"nope.png" is not forwardable/)
+      expect(gw.uploadFile).not.toHaveBeenCalled()
+      expect(gw.postMessage).not.toHaveBeenCalled()
+    })
+
+    it('refuses a target platform with no upload port rather than sending the caption alone', async () => {
+      const gw = fakeGateway()
+      const { deps: d } = deps(gw)
+      Object.assign(d, resolves())
+      await expect(
+        executeTool(ctx, 'sendMessage', { channel: 'C_OTHER', attachment: 'shot.png', message: 'hi' }, d)
+      ).rejects.toThrow(/cannot post files/)
+      expect(gw.postMessage).not.toHaveBeenCalled()
+    })
+  })
+
+  // shareFile (agent-authored-attachments.md §3): the produced-file share into the CURRENT
+  // conversation — coordinate-less, fenced, budgeted, and never a session seed.
+  describe('shareFile', () => {
+    const image = {
+      ok: true as const,
+      bytes: Buffer.from('PNGBYTES'),
+      name: 'chart.png',
+      mimeType: 'image/png',
+      sha256: 'a'.repeat(64)
+    }
+    const target = {
+      ok: true as const,
+      platform: 'slack',
+      integrationId: 'int-1',
+      channel: 'C_CURRENT',
+      thread: '111.1',
+      replyTo: 41
+    }
+    function shareDeps(over: Partial<OpsDeps> = {}) {
+      const gw = fakeGateway({ uploadFile: vi.fn(async () => ({ ok: true as const, messageId: 'ts-42' })) })
+      const shares: unknown[] = []
+      const d = makeDeps({
+        gatewayFor: () => gw,
+        shareTarget: () => target,
+        readWorkspaceImage: async (_c, path) => (path === 'out/chart.png' ? image : { ok: false, reason: 'not-found' }),
+        chargeShareBudget: vi.fn(() => ({ ok: true as const, release: vi.fn() })),
+        recordShare: async (_c, row) => {
+          shares.push(row)
+        },
+        ...over
+      })
+      return { d, gw, shares }
+    }
+
+    it('posts into the active turn’s own conversation with the trusted anchor and identity', async () => {
+      const { d, gw, shares } = shareDeps()
+      const res = (await executeTool(
+        ctx,
+        'shareFile',
+        { path: 'out/chart.png', caption: 'revenue by week' },
+        d
+      )) as Record<string, unknown>
+
+      expect(gw.uploadFile).toHaveBeenCalledWith(
+        'C_CURRENT',
+        { bytes: image.bytes, name: 'chart.png', mimeType: 'image/png' },
+        'revenue by week',
+        { thread: '111.1', replyTo: 41 },
+        authorIdentity
+      )
+      expect(res).toMatchObject({
+        ok: true,
+        shared: { path: 'out/chart.png', mimeType: 'image/png', bytes: image.bytes.byteLength },
+        post: { platform: 'slack', channel: 'C_CURRENT', ts: 'ts-42' }
+      })
+      // Provenance row: caption + the [shared: …] marker, with the bytes for console replay.
+      expect(shares).toEqual([
+        expect.objectContaining({
+          ts: 'ts-42',
+          text: expect.stringContaining('[shared: out/chart.png (image/png, 8 bytes, sha256:aaaaaaaaaaaaaaaa)]'),
+          image: expect.objectContaining({ mimeType: 'image/png' })
+        })
+      ])
+    })
+
+    it('neutralizes mention syntax in the caption — it labels a file, it must not ping', async () => {
+      const { d, gw } = shareDeps()
+      await executeTool(
+        ctx,
+        'shareFile',
+        { path: 'out/chart.png', caption: 'cc <@U1> @here <at user_id="all">everyone</at>' },
+        d
+      )
+      const caption = (gw.uploadFile as ReturnType<typeof vi.fn>).mock.calls[0]![2] as string
+      expect(caption).not.toContain('<@U1>')
+      expect(caption).not.toContain('@here')
+      expect(caption).not.toContain('<at ')
+      expect(caption).toContain('U1')
+    })
+
+    it('reports a failed transcript record as a notice, never as a failed share', async () => {
+      // The image is already in the conversation; a thrown error here would invite the
+      // double-posting retry the outcome vocabulary exists to prevent.
+      const { d } = shareDeps({
+        recordShare: async () => {
+          throw new Error('store closed')
+        }
+      })
+      const res = (await executeTool(ctx, 'shareFile', { path: 'out/chart.png' }, d)) as Record<string, unknown>
+      expect(res).toMatchObject({ ok: true, notice: expect.stringContaining('transcript') })
+    })
+
+    it('refuses a headless turn — its whole point is that nothing is posted', async () => {
+      const { d, gw } = shareDeps({ shareTarget: () => ({ ok: false, reason: 'headless' }) })
+      await expect(executeTool(ctx, 'shareFile', { path: 'out/chart.png' }, d)).rejects.toThrow(/headless/)
+      expect(gw.uploadFile).not.toHaveBeenCalled()
+    })
+
+    it('refuses a postless A2A child, whose live gateway would otherwise pass the port probe', async () => {
+      const { d } = shareDeps({ shareTarget: () => ({ ok: false, reason: 'no-conversation' }) })
+      await expect(executeTool(ctx, 'shareFile', { path: 'out/chart.png' }, d)).rejects.toThrow(
+        /no platform conversation/
+      )
+    })
+
+    it('refuses before any file I/O when the platform cannot host files', async () => {
+      const reads = vi.fn(async () => image)
+      const { d } = shareDeps({ gatewayFor: () => fakeGateway(), readWorkspaceImage: reads })
+      await expect(executeTool(ctx, 'shareFile', { path: 'out/chart.png' }, d)).rejects.toThrow(/cannot host files/)
+      expect(reads).not.toHaveBeenCalled()
+    })
+
+    it('names GIF in its refusal — a plausible find-me-images result, not a generic non-image', async () => {
+      const { d } = shareDeps({ readWorkspaceImage: async () => ({ ok: false, reason: 'gif' }) })
+      await expect(executeTool(ctx, 'shareFile', { path: 'anim.gif' }, d)).rejects.toThrow(/GIF is not supported/)
+    })
+
+    it('refuses over the per-turn budget and never uploads', async () => {
+      const { d, gw } = shareDeps({ chargeShareBudget: () => ({ ok: false }) })
+      await expect(executeTool(ctx, 'shareFile', { path: 'out/chart.png' }, d)).rejects.toThrow(/upload budget/)
+      expect(gw.uploadFile).not.toHaveBeenCalled()
+    })
+
+    it('releases the budget charge when the upload is refused, and names the reason', async () => {
+      const release = vi.fn()
+      const { d } = shareDeps({
+        gatewayFor: () =>
+          fakeGateway({ uploadFile: vi.fn(async () => ({ ok: false as const, reason: 'missing_scope' as const })) }),
+        chargeShareBudget: () => ({ ok: true, release })
+      })
+      await expect(executeTool(ctx, 'shareFile', { path: 'out/chart.png' }, d)).rejects.toThrow(
+        /file-upload permission/
+      )
+      expect(release).toHaveBeenCalledOnce()
+    })
+
+    it('says MAY-have-landed on an indeterminate outcome, and forbids the retry', async () => {
+      const { d, shares } = shareDeps({
+        gatewayFor: () =>
+          fakeGateway({ uploadFile: vi.fn(async () => ({ ok: false as const, reason: 'indeterminate' as const })) })
+      })
+      await expect(executeTool(ctx, 'shareFile', { path: 'out/chart.png' }, d)).rejects.toThrow(/do NOT retry/)
+      expect(shares).toEqual([])
+    })
+
+    it('refuses an over-long caption up front, before anything is read or sent', async () => {
+      const reads = vi.fn(async () => image)
+      const { d } = shareDeps({ readWorkspaceImage: reads })
+      await expect(
+        executeTool(ctx, 'shareFile', { path: 'out/chart.png', caption: 'x'.repeat(1001) }, d)
+      ).rejects.toThrow(/1000 characters/)
+      expect(reads).not.toHaveBeenCalled()
+    })
+
+    it('surfaces a partial send (caption lost after the file) as a notice on success', async () => {
+      const { d } = shareDeps({
+        gatewayFor: () =>
+          fakeGateway({
+            uploadFile: vi.fn(async () => ({ ok: true as const, warning: 'part of its caption did not post' }))
+          })
+      })
+      const res = (await executeTool(ctx, 'shareFile', { path: 'out/chart.png', caption: 'hi' }, d)) as Record<
+        string,
+        unknown
+      >
+      expect(res).toMatchObject({ ok: true, notice: expect.stringContaining('part of its caption') })
+      // No message id came back (Slack), so the transcript ts is synthesized like sendMessage's.
+      expect(res).toMatchObject({ post: expect.objectContaining({ ts: 'local-1000' }) })
+    })
+  })
+
   describe('root post: one canonical thread key for every consumer', () => {
     // A post whose key differs from what the next inbound reply resolves to opens a session that
     // reply can never reach. threadKeyForPost is the ONE place a post becomes a thread segment,

@@ -258,6 +258,78 @@ best-effort edge: a target on another daemon whose call policy terminally reject
 caller can still leave a visible post, because that policy verdict is only known on the
 target's daemon after the post is made.
 
+### Sharing a produced file into the current conversation
+
+`shareFile` posts an image from the agent's workspace into the conversation the agent is
+answering — the one visible send that is not `sendMessage`'s job, since every `sendMessage`
+post lands at a channel root. The model supplies only a workspace-relative path and an
+optional plain-text caption; every coordinate comes from the trusted active turn, so the
+image lands in the thread that asked, threaded the way that platform threads (Slack
+`thread_ts`, Telegram reply placement, Discord thread channel, Feishu topic root — which is
+refused rather than repurposed when it cannot be honored).
+
+Images only — PNG, JPEG, or WEBP, decided from the file bytes, never the file name — and
+the posted filename and type come from those bytes too. A GIF is refused by name. The file
+is capped per send and per turn; failures name their rule. A headless turn, a postless
+agent-call session, and a platform that cannot host files are refused before any file is
+read. Captions are bounded, carried as one message, and have their mention syntax
+neutralized — Slack/Discord control tokens, Feishu `<at>` tags, and the broadcast words; a
+bare Telegram `@username` is the one form with no inert spelling and may still notify. A
+caption labels a file; it must not page anyone.
+
+The share never seeds or re-anchors a session — the thread already has one — and it posts
+when called, so the image may appear before the streamed reply finishes. The transcript
+records the share with its provenance (path, sniffed type, size, digest) and, when the
+bytes fit the transcript budget, the image itself, so the console renders what the agent
+shared exactly as it renders what a user uploaded. An upload the platform abandoned
+mid-flight is reported as "may have been delivered — do not retry", never as a failure a
+retry could double-post.
+
+### Forwarding a received file
+
+A `toUser` or bare-`channel` send may carry `attachment`, naming a file **this
+conversation received** exactly as the agent's `[attached: …]` marker spells it. This is
+the only way a shared image reaches another platform: an agent can describe what it saw,
+but it cannot produce the bytes, and no send accepts model-supplied file content.
+
+The daemon resolves the name against its own transcript for the caller's conversation, so
+an agent can forward only what was delivered to it, and the bytes never pass through the
+model. It forwards the bounded copy already retained for console replay rather than
+re-fetching the original, so a forwarded image can be smaller than the one that arrived.
+
+**Only that retained copy is forwardable — one image per message.** The `[attached: …]`
+marker lists every file on a message, but a document, a second image on the same message,
+and an image too large to retain have no bytes to forward. Naming one is refused as _not
+forwardable_ rather than as an unknown name, because the agent read the name correctly and
+would otherwise retry it.
+
+A file share is its own message on the receiving platform, not a decorated text post: the
+send's `message` becomes the file's caption, and each platform sends it the way that
+platform shows a file — an image previews inline where the platform can do that, and a
+caption too long for the platform's limit becomes its own message instead of being
+truncated.
+
+Such a send anchors like any other channel-root post, and so seeds a session, wherever the
+platform answers with the message it created. Slack is the exception: its file share
+returns the file and no message id, so a Slack forward anchors nothing and seeds no
+session. Nothing else depends on which case applies — the send degrades to the same
+behaviour as a post whose id never came back.
+
+An unresolvable name, a target platform that cannot host files, or a share that posted
+nothing fails the whole send rather than reporting an image as sent.
+
+One caption limitation is worth stating because it contradicts the rest of the product: on
+Slack a forwarded caption is **mrkdwn**, not the CommonMark every other message is written
+in, so `**bold**` and `[label](url)` read literally there. Slack's file share ignores rich
+blocks whenever a comment is supplied and offers no separate notification text, so the
+alternative would cost every forwarded file its notification preview.
+
+Where a platform cannot carry a file and its caption as one message it sends two, and it
+sends the **file first** — so a failure before anything lands really did land nothing, and
+a caption lost after it is reported as a notice on an otherwise successful send rather than
+as a failure. The agent is never told nothing was sent while its words sit in the
+conversation, because it would retry and post them twice.
+
 ## Self-authored channel roots
 
 When an agent uses `sendMessage` to publish a new channel-root message without waking
@@ -828,17 +900,20 @@ and revision ordering survive daemon restarts.
 
 ## GitHub maintainer trigger authorization
 
-GitHub Issue and pull-request integrations treat current repository permission—not the
-webhook's `author_association` label—as trigger authority. An Issue or pull request whose
-author lacks current `write` or `admin` permission does not start an Agent automatically,
-even when its body mentions the Agent or App. A current `write`/`admin` maintainer can
+GitHub Issue and pull-request integrations treat the actor's current repository role—not the
+webhook's `author_association` label—as trigger authority. A **trigger-authorized role** is
+`admin`, `write`, or `triage`: GitHub reports `maintain` as `write`, and `triage` is the role a
+repository gives a trusted contributor to manage Issues and pull requests—requesting a pull
+request review is one of its listed permissions—so it authorizes a trigger while granting no
+push access. An Issue or pull request whose author holds none of those roles does not start an
+Agent automatically, even when its body mentions the Agent or App. A trigger-authorized user can
 explicitly `@` the Agent or App in a comment to request the first turn on that external
 thread; the same mention from a read-only user does nothing.
 
 Every comment author is checked live from the comment object; for edit/delete actions,
 the top-level webhook sender is not treated as the content author. An unmentioned
 comment follows the configured cadence only when both the commenter and the Issue/PR
-author still have `write` or `admin` permission. This keeps automatic follow-ups on
+author still hold a trigger-authorized role. This keeps automatic follow-ups on
 maintainer-owned threads while requiring an explicit maintainer summon for externally
 authored threads. Native review requests and Check reruns use the same
 current-maintainer boundary. For an external pull request waiting on its first
@@ -849,7 +924,9 @@ pull-request revision into one review generation.
 
 Trigger authorization is separate from effect authorization. A formal PR review still
 requires the active HookRun, review policy, Agent repository grant, and GitHub App
-permission checks at the moment the review is submitted.
+permission checks at the moment the review is submitted. Binding a repository to an Agent is a
+separate, stricter gate: it asks the console user for `write` or `admin` and never accepts
+`triage`.
 
 ## GitHub review mention routing
 
@@ -908,6 +985,14 @@ file-browser header shows the current workspace-relative breadcrumb on the left
 and `Add file`, `Edit`, and `Delete` actions on the right. New-file naming happens
 in that breadcrumb; completed slash-separated directory names become breadcrumb
 segments. The preview pane does not repeat the file name, path, or workspace label.
+
+A Markdown preview renders a leading YAML frontmatter block as a keyed table above
+the document, the way GitHub does — a memory topic file, a `SKILL.md`, and a
+knowledge body all open with one, and CommonMark would otherwise read it as a
+thematic break plus a setext heading. A sequence renders as a row of cells and a
+nested mapping as its own table. A block that is not a readable mapping is hidden
+rather than shown as prose, and the document body still renders; the raw text stays
+visible through the preview's Code toggle. Editing always shows the file verbatim.
 
 The managed and native Memory file browser uses the same shared inline file editor,
 breadcrumb naming field, and header actions as Workspace. It must not introduce a

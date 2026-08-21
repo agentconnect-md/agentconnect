@@ -290,10 +290,8 @@ export function githubRuleVerdict(rule: RcHookAssign, ctx: GithubMatchCtx): Gith
   // Decision 6(a): the org-attribution gate. An event that cannot prove its
   // installation does not fire.
   if (!ctx.installationId || !rule.github.installationIds.includes(ctx.installationId)) return 'no-match'
-  // GitHub's native reviewer control is an explicit maintainer action. It
-  // bypasses cadence, label, and mention filters, but only when this App bot
-  // was the requested reviewer and only after the caller performs live write
-  // permission authorization.
+  // GitHub's native reviewer control bypasses cadence, label, and mention filters, but only for
+  // this App bot as the requested reviewer and only after live repository-role authorization.
   if (ctx.eventAction === 'pull_request:review_requested') {
     return requestsGithubAppReviewer(ctx.requestedReviewerLogin, rule.github.appSlug) &&
       githubRuleSupportsPullRequests(rule)
@@ -352,9 +350,8 @@ export function githubRuleVerdict(rule: RcHookAssign, ctx: GithubMatchCtx): Gith
   if (rule.github.labelFilter.length > 0 && !ctx.labels.some((l) => rule.github!.labelFilter.includes(l)))
     return 'no-match'
 
-  // GitHub's relationship labels are descriptive, not an authorization proof:
-  // MEMBER and COLLABORATOR may still have only read/triage access. Every
-  // numbered-thread event therefore resolves current write/admin authority.
+  // GitHub's relationship labels are descriptive, not an authorization proof: MEMBER and
+  // COLLABORATOR may still hold read only. Every numbered-thread event resolves the live role.
   return ctx.event === 'push' || isInternalAppPullRequest(rule, ctx) ? 'trusted' : 'needs-authz'
 }
 
@@ -768,8 +765,8 @@ async function dispatchGithubRerequest(
   await Promise.all(dispatches)
 }
 
-function pullRequestNeedsMaintainer(ctx: GithubMatchCtx, prAuthorCanWrite: boolean): boolean {
-  return ctx.event === 'pull_request' && ctx.eventAction !== 'pull_request:review_requested' && !prAuthorCanWrite
+function pullRequestNeedsMaintainer(ctx: GithubMatchCtx, prAuthorAuthorized: boolean): boolean {
+  return ctx.event === 'pull_request' && ctx.eventAction !== 'pull_request:review_requested' && !prAuthorAuthorized
 }
 
 function reportReviewRequestRequired(deps: GithubIngressDeps, rule: RcHookAssign, msg: RdMsgHook): void {
@@ -903,7 +900,7 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
       const fallbackSessionKeyPrefix = payload.repository?.full_name ?? String(repoId)
       const firedAt = new Date(deps.clock.now()).toISOString()
 
-      const dispatchRule = (rule: RcHookAssign, prAuthorCanWrite = false): void => {
+      const dispatchRule = (rule: RcHookAssign, prAuthorAuthorized = false): void => {
         // Post-match per-hook budget: a drop is a skip + metadata log, never a 429
         // (GitHub treats non-2xx as a dead delivery) and never a run row (a storm
         // must not flood hook_run).
@@ -926,7 +923,7 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
           context,
           ...(rule.target ? { target: rule.target } : {})
         }
-        if (!cleanupEvent && pullRequestNeedsMaintainer(ctx, prAuthorCanWrite)) {
+        if (!cleanupEvent && pullRequestNeedsMaintainer(ctx, prAuthorAuthorized)) {
           // No third-party-authored PR lifecycle payload reaches the daemon.
           // Revision events still create a durable, actionable informational
           // Check so a maintainer can request the first review explicitly.
@@ -1059,7 +1056,13 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
           // transient CP/GitHub failures all fail closed.
           deps.log.warn(`github ingress: authz failed ${representative.hookId}:${deliveryKey}: ${String(err)}`)
         }
-        if (!allowed && onDenied === 'skip') return
+        // A silent skip is indistinguishable from "GitHub never delivered it" without this line.
+        if (!allowed && onDenied === 'skip') {
+          deps.log.info(
+            `github ingress: authz denied ${representative.hookId}:${deliveryKey} (${ctx.eventAction} actor ${actors.senderLogin})`
+          )
+          return
+        }
 
         // Authorization waited on at least two remote calls. Re-read the table so a
         // remove/reconfigure/reassignment during that window cannot dispatch
@@ -1082,6 +1085,12 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
       const matched = candidates
         .map((rule) => ({ rule, verdict: githubRuleVerdict(rule, ctx) }))
         .filter((candidate) => candidate.verdict !== 'no-match')
+      // A native reviewer request is an explicit maintainer action; a drop always deserves a line.
+      if (ctx.eventAction === 'pull_request:review_requested' && matched.length === 0) {
+        deps.log.info(
+          `github ingress: reviewer request matched no rule ${deliveryKey} (reviewer ${ctx.requestedReviewerLogin ?? 'none'} github:${repoId}#${thread})`
+        )
+      }
       if (
         ctx.event === 'issues' ||
         (ctx.event === 'pull_request' && ctx.eventAction !== 'pull_request:review_requested')

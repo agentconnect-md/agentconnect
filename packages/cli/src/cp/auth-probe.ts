@@ -5,7 +5,7 @@
  * a `4401` close, a correlated `error`, a dial failure, or a timeout. It always
  * closes the socket and never leaves a connection open.
  */
-import { buildEnvelope, CP_SUBPROTOCOL, CP_WS_PATH, decodeEnvelope, encode, isFrame } from '@agentconnect.md/protocol'
+import { buildEnvelope, CP_SUBPROTOCOL, CP_WS_PATH, decodeCpEnvelope, encode, isFrame } from '@agentconnect.md/protocol'
 import { ClientTransport, type Transport } from '@agentconnect.md/connection'
 
 export interface ProbeResult {
@@ -62,7 +62,7 @@ export async function probeAuth(opts: ProbeOpts): Promise<ProbeResult> {
     )
 
     transport.onMessage((text) => {
-      const decoded = decodeEnvelope(text)
+      const decoded = decodeCpEnvelope(text)
       if (!decoded.ok) return
       const f = decoded.frame
       if (f.corr !== frame.id) return

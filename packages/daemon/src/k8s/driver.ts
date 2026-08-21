@@ -32,6 +32,10 @@ export interface K8sDriverDeps {
   revokeChannel?: (agentId: string) => void
   /** Prepares a freshly bound channel before anything runs on it; failures degrade, never fail the bind. */
   onChannelReady?: (agentId: string, session: ShimSession) => Promise<void>
+  /** Capabilities this agent's channel is bound with; omit for {@link RUNTIME_GRANTS}. Resolved per
+   *  agent because `launch` binds on its own — a member's runtime probe runs an ACP runtime through
+   *  the same driver and must not thereby receive an agent's workspace and tunnel authority. */
+  grantsForAgent?: (agentId: string) => ShimCapability[]
   clock?: Clock
   log: { info: (m: string) => void; warn: (m: string) => void; debug?: (m: string) => void }
   /** How long to wait for a pod to become Ready and its shim to bind. */
@@ -243,13 +247,14 @@ export class K8sDriver implements SpawnDriver {
 
   // Bring the Sandbox up and bind its shim WITHOUT starting a runtime: for a cluster agent a
   // "prepared workspace" is cloned onto the sandbox's own volume, before the runtime starts.
-  async ensureBoundChannel(
-    agentId: string,
-    timer?: LaunchTimer,
-    grants: ShimCapability[] = RUNTIME_GRANTS
-  ): Promise<ShimConnection> {
+  async ensureBoundChannel(agentId: string, timer?: LaunchTimer, grants?: ShimCapability[]): Promise<ShimConnection> {
     const launch = await this.ensureSandbox(agentId, timer)
-    return await this.binder.bindChannel(agentId, launch, timer, grants)
+    return await this.binder.bindChannel(agentId, launch, timer, grants ?? this.grantsFor(agentId))
+  }
+
+  /** What this agent's channel may do. */
+  private grantsFor(agentId: string): ShimCapability[] {
+    return this.deps.grantsForAgent?.(agentId) ?? RUNTIME_GRANTS
   }
 
   /** The bound session for an agent, so the workspace seam reaches the same channel the runtime does. */

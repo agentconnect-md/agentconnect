@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { basename, dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { mkdtemp } from 'node:fs/promises'
+import { mkdtemp, readFile, stat } from 'node:fs/promises'
 import { watch as chokidarWatch, type FSWatcher } from 'chokidar'
 import { loadConfig, persistDaemonId, persistRelays, type FlatOverrides } from './config/load-config.js'
 import { readCliEntry, runCliUpgrade } from './lifecycle/cli-upgrade.js'
@@ -50,7 +50,7 @@ import { maskableSecrets, maskSecretsDeep } from './session/secret-mask.js'
 import { monotonicTs } from './store/monotonic-ts.js'
 import { StoreRetentionSweeper, resolveStoreRetentionSettings } from './store/retention.js'
 import { TranscriptRecorder, type TranscriptEvent } from './session/transcript-recorder.js'
-import { attachmentMention } from './session/attachment-block.js'
+import { attachmentMention, sniffImageMimeType } from './session/attachment-block.js'
 import { McpControlServer } from './mcp/control-server.js'
 import { RemoteWebchatGrantManager } from './mcp/remote-webchat-grant.js'
 import type { SetSessionTitleReq } from './mcp/ops.js'
@@ -192,19 +192,35 @@ import {
   selectGithubReviewBatchLeader
 } from './github/queue-admission.js'
 import { resolveRuntimeCatalog, type ResolvedRuntimeCatalog } from './runtimes/registry.js'
+import {
+  internalPassSlot,
+  InternalPassSessions,
+  isAvailableCommandsUpdate,
+  RuntimeCommandsCache
+} from './runtimes/runtime-commands.js'
 import { installedRuntimeCatalog, installedRuntimes, resolveCommandPath } from './runtimes/probe.js'
 import { startK8sRuntimePlane, type K8sRuntimePlane } from './k8s/runtime-plane.js'
 import { declaredRuntimeCatalog, loadK8sRuntimeTable, type K8sRuntimeAcpSnapshot } from './runtimes/k8s-runtimes.js'
+import {
+  K8S_PROBE_CLAIM_TTL_MS,
+  K8S_PROBE_FRESH_MS,
+  K8S_PROBE_POLL_MS,
+  K8S_PROBE_WAIT_MS,
+  parseK8sProbePayload,
+  probeClusterRuntimes,
+  type K8sProbePayload
+} from './runtimes/cluster-probe.js'
 import { ensureNodeBinOnPath } from './runtimes/exec-path.js'
 import {
   isAuthRequiredError,
   sweepStaleProbeRoots,
+  type ProbeHostFactory,
   type ProbeOptions,
   type RuntimeProbeResult
 } from './runtimes/runtime-prober.js'
 import { ModelCatalogService } from './runtimes/model-catalog.js'
 import { makeModelEnumerator } from './runtimes/model-enumerator.js'
-import { defaultProbeHostFactory } from './acp/probe-host-factory.js'
+import { clusterProbeHostFactory, defaultProbeHostFactory } from './acp/probe-host-factory.js'
 import { runtimeHomePath } from './runtimes/runtime-home.js'
 import { npmRepairEnv, planRuntimeInstallRepair, repairRuntimeInstall } from './runtimes/runtime-install-repair.js'
 import {
@@ -253,6 +269,7 @@ import {
   MAX_TASK_DETAIL,
   MAX_TASK_LIST_TASKS,
   TASK_LIST_FEATURE,
+  RUNTIME_COMMANDS_FEATURE,
   AGENT_WAKE_FEATURE,
   WORKSPACE_GIT_MESSAGE_FEATURE,
   WORKSPACE_GIT_REVIEW_FEATURE,
@@ -268,10 +285,17 @@ import {
   manifestFor,
   originKindOf,
   SessionPurgeReason,
-  RD_ACK_NOT_HOLDER
+  RD_ACK_NOT_HOLDER,
+  RuntimeCommand,
+  SessionImageAttachment as SessionImageAttachmentSchema,
+  WEBCHAT_IMAGE_MAX_BYTES
 } from '@agentconnect.md/protocol'
+import { z } from 'zod'
 import { isNoResponseBody } from './session/no-response.js'
 import { WorkspaceConflictError } from './cp/workspace-reader.js'
+import { createWorkspaceScope } from './cp/workspace-scope.js'
+import { canonicalWorkspacePath, WorkspaceViolationError } from './workspace/workspace-files.js'
+import type { ShareReadResult, ShareTargetResult } from './mcp/ops/share-file.js'
 import { TaskViolationError } from './cp/task-reader.js'
 import {
   createMemoryProvider,
@@ -1026,6 +1050,10 @@ export class Daemon {
   private readonly observedChannelsSync: ObservedChannelsSync
   private readonly webchatTransport: WebchatTransport
   private readonly webchatMcpRevocations: WebchatMcpRevocations
+  // What each agent's runtime last advertised it can be asked to run (ACP available_commands_update).
+  private readonly runtimeCommands = new RuntimeCommandsCache()
+  // The ACP sessions this daemon opened for its own passes, whose advertisement describes a temp dir.
+  private readonly internalPassSessions = new InternalPassSessions()
   // In-conversation command execution (commands/handlers.ts), behind the delegates below.
   private readonly commands: CommandHandlers
   // §7.3 force-cancel backstops, keyed by (agentId, acpSessionId); cleared at turn end.
@@ -1076,6 +1104,9 @@ export class Daemon {
         runtimes: Record<string, import('./config/config-schema.js').RuntimeDef>,
         opts: ProbeOptions
       ) => Promise<RuntimeProbeResult[]>
+      /** Seam for the `--k8s` sandbox model probe's ACP client, so a test can exercise the sweep
+       *  without a cluster. Defaults to the real one, which launches through the cluster driver. */
+      probeHostFactory?: ProbeHostFactory
       /** Seam for the k8s execution plane. `--k8s` builds it from the pod's own in-cluster
        *  config and REFUSES to boot without one — running runtimes on the daemon's host is the
        *  outcome the mode exists to prevent, so it must not be a fallback. Tests override this
@@ -2039,6 +2070,9 @@ export class Daemon {
     for (const a of this.effectiveAgents()) {
       this.agents.set(a.id, a)
       this.prefetchClone(a)
+      // Same reason as the clone: the picker's command list must survive a restart, and this
+      // path never goes through reconcile's toStart.
+      void this.hydrateRuntimeCommands(a.id)
     }
   }
 
@@ -2212,6 +2246,115 @@ export class Daemon {
         return !(await this.store.isCaptureExcluded(ctx.agentId, await this.acpSessionIdForToolCall(ctx)))
       },
       memoryScope: (ctx) => this.memoryScope(ctx.agentId, ctx.channel, ctx.transportScope),
+      resolveAttachment: async (ctx, name) => {
+        const found = await this.store.transcriptAttachmentByName(
+          transcriptChannelKey(ctx.channel, ctx.transportScope),
+          ctx.thread,
+          ctx.agentId,
+          name
+        )
+        return found
+          ? { bytes: Buffer.from(found.data, 'base64'), name: found.name, mimeType: found.mimeType }
+          : undefined
+      },
+      // shareFile (agent-authored-attachments.md): the trusted target, the fenced read, the
+      // synchronous budget, and the provenance row. All coordinates come from the active
+      // turn — the model supplies only a workspace-relative path and a caption.
+      shareTarget: (ctx): ShareTargetResult => {
+        const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
+        const t = this.activeTurnShare.get(key)
+        if (!t) return { ok: false, reason: 'no-turn' }
+        // §3.2's two coordinate gates, checked BEFORE any file I/O: a headless turn must
+        // post nothing, and a postless A2A child has no conversation despite a live gateway.
+        if (t.headless) return { ok: false, reason: 'headless' }
+        if (t.synthetic) return { ok: false, reason: 'no-conversation' }
+        const { headless: _headless, synthetic: _synthetic, ...target } = t
+        return { ok: true, ...target }
+      },
+      readWorkspaceImage: async (ctx, rel): Promise<ShareReadResult> => {
+        // Phase 2 (pod workspaces over the workspace-fs channel) is designed, not built.
+        if (this.k8sPlane?.workspaceRootFor(ctx.agentId) !== undefined) return { ok: false, reason: 'sandboxed' }
+        const scope = createWorkspaceScope({
+          workspaces: this.workspaces,
+          agentOf: (id) => this.agents.get(id),
+          sessionOf: (id, acpSessionId) => this.store.getSessionByAcpIdForAgent(id, acpSessionId),
+          runtimeRootOf: (id) => this.k8sPlane?.workspaceRootFor(id)
+        })
+        const acpSessionId = await this.acpSessionIdForToolCall(ctx).catch(() => undefined)
+        // Session-worktree first (an isolated session's files live there), then the agent
+        // root: `location(id, sessionId)` answers ONLY for git-repo agents on isolated
+        // sessions, and the default config (shared isolation, from-scratch) is the other arm.
+        const location =
+          (await scope.location(ctx.agentId, acpSessionId).catch(() => undefined)) ??
+          (await scope.location(ctx.agentId).catch(() => undefined))
+        if (!location) return { ok: false, reason: 'not-found' }
+        const cap = cfg.limits.maxOutboundFileBytes ?? cfg.limits.maxAttachmentBytes
+        let resolved: string | null
+        try {
+          resolved = await canonicalWorkspacePath(location.root, rel)
+        } catch (err) {
+          return { ok: false, reason: err instanceof WorkspaceViolationError ? 'escape' : 'not-found' }
+        }
+        if (!resolved) return { ok: false, reason: 'not-found' }
+        const info = await stat(resolved).catch(() => undefined)
+        if (!info?.isFile()) return { ok: false, reason: 'not-found' }
+        if (info.size > cap) return { ok: false, reason: 'too-large', detail: `${info.size} bytes > ${cap}-byte cap` }
+        // Single-shot (§4): one read; the sniff, the cap re-check, and the upload all
+        // consume this buffer. The re-check closes the stat→read race on a growing file.
+        const bytes = await readFile(resolved).catch(() => undefined)
+        if (!bytes) return { ok: false, reason: 'not-found' }
+        if (bytes.byteLength > cap) {
+          return { ok: false, reason: 'too-large', detail: `${bytes.byteLength} bytes > ${cap}-byte cap` }
+        }
+        const sniffed = sniffImageMimeType(bytes)
+        if (!sniffed) {
+          const head = bytes.subarray(0, 6).toString('latin1')
+          // GIF gets a refusal that NAMES it (§4) — a plausible find-me-images result whose
+          // animation sendPhoto would silently strip; deferred behind the enum widening.
+          if (head === 'GIF87a' || head === 'GIF89a') return { ok: false, reason: 'gif' }
+          return { ok: false, reason: 'not-image' }
+        }
+        // Outbound name + MIME from the SNIFFED type, never the model-supplied path (§4):
+        // Discord renders by extension alone, so `out/chart` must not land extensionless.
+        const ext = sniffed === 'image/png' ? 'png' : sniffed === 'image/jpeg' ? 'jpg' : 'webp'
+        const stem = basename(rel).replace(/\.[A-Za-z0-9]+$/, '') || 'image'
+        const sha256 = createHash('sha256').update(bytes).digest('hex')
+        return { ok: true, bytes, name: `${stem}.${ext}`, mimeType: sniffed, sha256 }
+      },
+      chargeShareBudget: (ctx, bytes) => {
+        const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
+        const perFile = cfg.limits.maxOutboundFileBytes ?? cfg.limits.maxAttachmentBytes
+        const perTurn = cfg.limits.maxOutboundFileBytesPerTurn ?? 2 * perFile
+        const used = this.shareBudgetByTurn.get(key) ?? 0
+        // Check + reserve in one synchronous step, so concurrent tool calls cannot both pass.
+        if (used + bytes > perTurn) return { ok: false }
+        this.shareBudgetByTurn.set(key, used + bytes)
+        return {
+          ok: true,
+          release: () => this.shareBudgetByTurn.set(key, Math.max(0, (this.shareBudgetByTurn.get(key) ?? 0) - bytes))
+        }
+      },
+      recordShare: async (ctx, row) => {
+        // Provenance row (§4). The bytes ride along exactly as an inbound image's do when
+        // they fit the transcript cap, so the console can render what the agent shared.
+        const image =
+          row.image && row.image.data.byteLength <= WEBCHAT_IMAGE_MAX_BYTES
+            ? SessionImageAttachmentSchema.safeParse({
+                name: row.image.name,
+                mimeType: row.image.mimeType,
+                data: row.image.data.toString('base64')
+              })
+            : undefined
+        await this.store.appendTranscript({
+          channel: transcriptChannelKey(ctx.channel, ctx.transportScope),
+          thread: ctx.thread,
+          ts: row.ts,
+          sender: ctx.agentId,
+          kind: 'text',
+          text: row.text,
+          ...(image?.success ? { attachments: [image.data] } : {})
+        })
+      },
       recordOutbound: async (ctx, channel, thread, text, ts, integrationId) =>
         await this.store.appendTranscript({
           channel: transcriptChannelKey(channel, this.transportScopeForIntegrationIds([integrationId])),
@@ -2252,6 +2395,8 @@ export class Daemon {
       // single preparation rather than starting a warm preparation afterward.
       isHostRunning: (agentId) => this.readyHosts.has(agentId),
       agentById: (id) => this.agents.get(id),
+      // Skill-invocation translation reads what the runtime itself advertised (runtime-commands.ts).
+      advertisedCommandsFor: (agentId) => this.runtimeCommands.get(agentId).commands,
       prepareWorkspace: (agent, expectedWarmHost, request) =>
         this.prepareAgentWorkspace(agent, expectedWarmHost, request),
       // Cluster agents resolve to POD coordinates — the local resolver would hand back the
@@ -2699,6 +2844,8 @@ export class Daemon {
       this.dreamScheduler.unregister(id)
       this.gitCreds.remove(id)
       this.gitCredServer?.revoke(id)
+      this.runtimeCommands.forget(id)
+      void this.store.deleteRuntimeCommands(id).catch(() => undefined)
       // Use the one generation-safe teardown path: it evicts the host synchronously,
       // publishes hostStopping, and fences every older startup/retry generation.
       await this.stopHost(id)
@@ -2763,6 +2910,11 @@ export class Daemon {
         const wasDraining = this.drainingAgents.has(a.id)
         this.drainingAgents.add(a.id)
         await this.interruptAgentTurns(a.id, 'stop')
+        // The advertised command list belongs to the runtime and workspace being torn down — both
+        // are in hostSpawnSig, so a runtime switch would otherwise keep serving the old harness's
+        // commands until some later session/new replaced them.
+        this.runtimeCommands.forget(a.id)
+        void this.store.deleteRuntimeCommands(a.id).catch(() => undefined)
         if (workspaceNeedsColdRecovery) {
           this.gitCreds.remove(a.id)
           this.gitCredServer?.revoke(a.id)
@@ -2810,6 +2962,9 @@ export class Daemon {
       // New agent: warm its git-repo checkout in the background now (e.g. on daemon
       // start every agent is a toStart), so the repo is cloned ahead of the first message.
       this.prefetchClone(a as LoadedAgent)
+      // And the picker's command list, from the persisted last advertisement — a restart
+      // must not read as "this agent has never run" until a session happens to start.
+      void this.hydrateRuntimeCommands(a.id)
       await this.syncAgentSchedules(a)
     }
     // Reconcile exactly once from the final live roster. The close phase is strict:
@@ -3431,6 +3586,7 @@ export class Daemon {
       WORKSPACE_SESSION_READ_FEATURE,
       WORKSPACE_REPO_SCOPE_FEATURE,
       TASK_LIST_FEATURE,
+      RUNTIME_COMMANDS_FEATURE,
       // Only a cluster daemon has a sandbox to wake; elsewhere the CP answers `unsupported` unsent.
       ...(this.k8s ? [AGENT_WAKE_FEATURE] : []),
       WORKSPACE_GIT_MESSAGE_FEATURE,
@@ -3775,8 +3931,13 @@ export class Daemon {
         sessionId = trusted
           ? await host.newSession(cwd, mcpServers, undefined, MEMORY_DISTILLATION_SYSTEM_PROMPT)
           : await host.newSession(cwd, mcpServers)
+        // Synchronous on purpose: the runtime advertises its commands on a timer right after this
+        // resolves, and a registration behind one more await loses that race (#1310 review).
+        const passKey = pendingTurnKey(agentId, sessionId)
+        this.internalPassSessions.add(internalPassSlot.distill(cacheKey), passKey)
         if (!(await host.setSessionPermissionMode(sessionId, readOnlyMode))) {
           host.discardSession(sessionId)
+          this.internalPassSessions.delete(passKey)
           this.memoryExtractionUnavailable.add(host)
           throw new Error('runtime lacks a verified read-only memory-extraction mode')
         }
@@ -3802,6 +3963,10 @@ export class Daemon {
         if (this.memoryExtractionSessions.get(cacheKey) === sessionId) {
           this.memoryExtractionSessions.delete(cacheKey)
           this.releaseMemoryExtractionToken(cacheKey)
+          // Uncached means abandoned: leaving it in `live` leaks an ACP session on the warm host,
+          // and its temp-dir list would be recorded the moment a later pass took this slot.
+          host.discardSession(sessionId)
+          this.internalPassSessions.delete(key)
         }
         throw err
       } finally {
@@ -3879,6 +4044,8 @@ export class Daemon {
         ? await host.newSession(cwd, [], undefined, systemPrompt)
         : await host.newSession(cwd, [])
       const key = pendingTurnKey(agentId, sessionId)
+      // Synchronous on purpose: see the distillation pass — the advertisement is already on a timer.
+      this.internalPassSessions.add(internalPassSlot.commit(agentId, sessionId), key)
       try {
         if (!(await host.setSessionPermissionMode(sessionId, readOnlyMode))) {
           throw new Error('runtime rejected the read-only/plan mode')
@@ -3920,6 +4087,7 @@ export class Daemon {
         }
       } finally {
         host.discardSession(sessionId)
+        this.internalPassSessions.delete(key)
         if (modelSessionKey) {
           await this.modelSessions.release(modelSessionKey)
           this.memoryExtractionQuarantines.delete(key)
@@ -4182,6 +4350,9 @@ export class Daemon {
         ? await host.newSession(cwd, mcpServers, undefined, systemPrompt)
         : await host.newSession(cwd, mcpServers)
       ref.sessionId = sessionId
+      // Redundant while the dream owns a dedicated host the gate already excludes, but it keeps one
+      // rule: every session the daemon opens for itself is registered, synchronously, right here.
+      this.internalPassSessions.add(internalPassSlot.dream(agentId), pendingTurnKey(agentId, sessionId))
       const result = await this.runDreamExtractionSession(
         host,
         agent,
@@ -4411,6 +4582,7 @@ export class Daemon {
         ...(extractionMode ? { permissionMode: extractionMode } : {})
       })
       host.discardSession(sessionId)
+      this.internalPassSessions.delete(pendingTurnKey(agentId, sessionId))
     }
   }
 
@@ -8461,6 +8633,19 @@ export class Daemon {
     )
   }
 
+  /** Seed the in-memory command cache from the persisted advertisement; a live one always wins. */
+  private async hydrateRuntimeCommands(agentId: string): Promise<void> {
+    try {
+      const row = await this.store.getRuntimeCommands(agentId)
+      if (!row) return
+      const parsed = z.array(RuntimeCommand).safeParse(JSON.parse(row.payload))
+      if (!parsed.success) return
+      this.runtimeCommands.seed(agentId, { sessionId: row.sessionId, updatedAt: row.updatedAt, commands: parsed.data })
+    } catch {
+      // Corrupt or unreadable persisted copy — the next live advertisement rewrites it.
+    }
+  }
+
   private withWorkspaceFileWrite<T>(agentId: string, write: () => Promise<T>): Promise<T> {
     // Admission into the shared mutation tail is synchronous: a preparation or
     // second publication accepted in the next call stack can only run after this
@@ -9139,6 +9324,19 @@ export class Daemon {
     // §6.7 active-turn context: expose THIS turn's trusted callMeta by logical sessionKey so
     // a nested messageAgent made during the turn can auto-inherit hop/origin + reply-correlation.
     if (callMeta) this.activeTurnCallMeta.set(key, callMeta)
+    // shareFile's trusted post target (§3.1): the turn plan's coordinates plus the reply
+    // anchor Telegram places by. Installed per turn because headless-ness and the reply
+    // target are TURN facts, not session facts.
+    const shareReplyTo = this.telegramReplyTarget(entry.msg)
+    this.activeTurnShare.set(key, {
+      platform: plan.platform,
+      ...(plan.integrationId !== undefined ? { integrationId: plan.integrationId } : {}),
+      channel: plan.channel,
+      ...(plan.thread !== undefined ? { thread: plan.thread } : {}),
+      ...(shareReplyTo !== undefined ? { replyTo: shareReplyTo } : {}),
+      headless: entry.msg.headless === true,
+      synthetic: isSyntheticA2aChannel(plan.channel)
+    })
     const activeGithub = await this.githubReviews.prepareGithubTurn(entry, sessionId).catch((err) => {
       this.log.warn(`github review: turn setup failed (${formatErr(err)})`)
       return undefined
@@ -10039,6 +10237,8 @@ export class Daemon {
     // only inherit while the turn is in flight). Only clear if THIS turn owns the entry —
     // the map is keyed by sessionKey and the gate guarantees one active turn per key.
     if (callMeta) this.activeTurnCallMeta.delete(key)
+    this.activeTurnShare.delete(key)
+    this.shareBudgetByTurn.delete(key)
     const activeGithub = activeTurn.github
     const activeGithubReplyBatch = activeTurn.githubReplyBatch
     if (activeGithub && this.activeGithubTurnMeta.get(key) === activeGithub) this.activeGithubTurnMeta.delete(key)
@@ -10935,6 +11135,26 @@ export class Daemon {
    */
   private activeTurnCallMeta = new Map<string, CallMeta>()
 
+  /** The active turn's trusted `shareFile` post target, by logical sessionKey — the
+   *  coordinate + per-platform anchor the tool may NOT receive from the model
+   *  (agent-authored-attachments.md §3.1), plus the two coordinate refusals (§3.2). */
+  private activeTurnShare = new Map<
+    string,
+    {
+      platform: string
+      integrationId?: string
+      channel: string
+      thread?: string
+      replyTo?: number
+      headless: boolean
+      synthetic: boolean
+    }
+  >()
+
+  /** Bytes `shareFile` has uploaded this turn, by the same key — the synchronous per-turn
+   *  reservation of agent-authored-attachments.md §5. */
+  private shareBudgetByTurn = new Map<string, number>()
+
   /**
    * Post a chronological boundary message SERIALIZED on the turn's apply chain, returning
    * its id (undefined on a failed post), then mark live chrome to continue below it. A direct
@@ -11213,6 +11433,32 @@ export class Daemon {
             costCurrency: update.cost?.currency ?? undefined
           })
           await this.emitStoredUsageReport(sessionId, agentId, rec.platform, rec.channel, rec.key, true)
+        }
+      }
+      return
+    }
+    // Recorded before the pending-turn gate below, because an advertisement arrives outside a turn.
+    // It lands right after the session/new that caused it — before the collector returns above exist
+    // — so both guards are ordering-proof by construction rather than by arrival time. The host must
+    // own the session: a dream's dedicated AcpHost never enters `hosts`, and `isLoadingSession`
+    // covers the session/load window, where the session is this host's but `live` does not hold it
+    // yet. And the session must not be one this daemon opened for a pass of its OWN: those run on
+    // the agent's warm host over a temp dir, whose list is missing its project skills (#1310 review).
+    if (isAvailableCommandsUpdate(update)) {
+      const host = this.hosts.get(agentId)
+      const owned = host?.hasSession(sessionId) || host?.isLoadingSession(sessionId)
+      if (owned && !this.internalPassSessions.has(extractionKey)) {
+        const entry = this.runtimeCommands.record(agentId, sessionId, update, this.clock.now())
+        // Persisted so a restart/upgrade serves the last-known list instead of "nothing yet".
+        // `store` is absent only in bare test harnesses constructed without start().
+        if (entry && this.store) {
+          void this.store
+            .setRuntimeCommands(agentId, {
+              sessionId: entry.sessionId,
+              updatedAt: entry.updatedAt,
+              payload: JSON.stringify(entry.commands)
+            })
+            .catch((err) => this.log.debug(`runtime-commands persist failed for ${agentId}: ${formatErr(err)}`))
         }
       }
       return
@@ -14201,6 +14447,7 @@ export class Daemon {
       k8sPlane: () => this.k8sPlane,
       memory: () => this.memory,
       dreamRunner: () => this.dreamRunner(),
+      runtimeCommands: () => this.runtimeCommands,
       memoryFsFor: (agentId) => this.memoryFsFor(agentId),
       gitCommitIdentity: () => this.gitCommitIdentity,
       sessionThreadUrl: (session) => this.sessionThreadUrl(session),
@@ -14685,34 +14932,39 @@ export class Daemon {
     const plane = this.k8sPlane
     const resolved = this.k8sResolvedCatalog
     if (!plane || !resolved) return
+    let claimed: string | undefined
     try {
-      this.log.info('runtimes: probing a sandbox for the runtimes this image provides')
-      const table = await plane.probeRuntimes()
-      // The image's answer about its own filesystem, which is the only place this can be known:
-      // the tool-server spec is copied from it verbatim, and a spec assembled here instead gave
-      // the pod's runtime a module to retry forever. Absent means an image from before the bridge
-      // shipped — no tools rather than a server that cannot start.
-      this.k8sMcpBridge = table.mcpBridge
-      if (!table.mcpBridge) {
-        this.log.warn(
-          'mcp: this runtime image ships no in-pod tool bridge — cluster agents get no agent tools, memory distillation or knowledge browsing until it is updated'
-        )
+      // Who probes: one member per runtime image, not one per replica.
+      const imageRef = await this.poolRuntimeImageRef(plane)
+      if (imageRef && (await this.adoptPublishedK8sProbe(imageRef, resolved))) return
+      if (imageRef) {
+        if (await this.claimK8sProbe(imageRef, plane.memberId)) claimed = imageRef
+        else {
+          this.log.info(`runtimes: another member is probing ${imageRef} — waiting for its answer`)
+          if (await this.awaitPublishedK8sProbe(imageRef, resolved)) return
+          // The wait ends exactly when that claim becomes retakeable, so this take-over is the
+          // crash path: a holder that died must not leave the whole pool advertising nothing.
+          this.log.warn('runtimes: the probing member published nothing in time — probing this member instead')
+          if (await this.claimK8sProbe(imageRef, plane.memberId)) claimed = imageRef
+        }
       }
-      const catalog = this.projectDeclaredRuntimes(resolved, table)
-      this.runtimeCatalog = catalog
-      // The profile reports these, and they come from the catalog entry rather than the table —
-      // so without this refresh the version the image just told us about would be reported as the
-      // registry's, or as an empty string.
-      this.runtimeFacts.noteImageCatalog(catalog.entries)
-      this.runtimeFacts.applyDeclaredFacts(this.k8sDeclaredModels, this.k8sDeclaredAcp)
-      // The half of readiness only this call can settle: before it the member advertises nothing
-      // and the CP would assign it nothing, so it is not servable however healthy it looks.
-      this.k8sRuntimeProbed = true
-      this.readiness?.refresh()
-      this.log.info(
-        `runtimes ready (probed): ${table.runtimes.map((entry) => `${entry.id}@${entry.version}`).join(', ') || '(none)'}`
-      )
-      this.runtimeFacts.emitFacts()
+      this.log.info('runtimes: probing a sandbox for the runtimes this image provides')
+      let adopted = false
+      let published = false
+      // The model probe rides the SAME held sandbox: a second claim would cost another pod for an
+      // answer this one can already give.
+      const table = await plane.probeRuntimes(async (probed, sandbox) => {
+        this.adoptK8sRuntimeTable(probed, resolved)
+        adopted = true
+        const results = await this.probeK8sRuntimeModels(sandbox)
+        if (imageRef) published = await this.publishK8sProbe(imageRef, probed, results)
+      })
+      // A probe already in flight served this call its table without running the sweep above.
+      if (!adopted) this.adoptK8sRuntimeTable(table, resolved)
+      // ONLY a landed payload keeps the claim: neither a swallowed publish failure nor a swept
+      // sandbox that failed quietly leaves an answer behind, and holding the claim through either
+      // is what would make the pool wait out the whole stale window for nothing.
+      if (published) claimed = undefined
     } catch (err) {
       // Advertising nothing is the honest outcome: the Control Plane then assigns no agent, which
       // is better than assigning one to a daemon that cannot launch it.
@@ -14726,7 +14978,182 @@ export class Daemon {
           ? `runtimes: the runtime image does not serve the probe capability — pin one built with it (${message})`
           : `runtimes: sandbox probe failed — advertising none (${message})`
       )
+    } finally {
+      // A failed probe hands the claim back rather than making the pool wait out its whole stale
+      // window: the next member to try is a better bet than this one's next restart.
+      if (claimed) await this.releaseK8sProbeClaim(claimed, plane.memberId)
     }
+  }
+
+  /** The image the pool's template pins, or undefined when it cannot be read (RBAC, a template
+   *  mid-edit). Undefined means this member probes for itself: the old behaviour, always correct,
+   *  just not shared. */
+  private async poolRuntimeImageRef(plane: K8sRuntimePlane): Promise<string | undefined> {
+    try {
+      return await plane.runtimeImage()
+    } catch (err) {
+      this.log.warn(`runtimes: could not resolve the pool's runtime image — probing alone (${formatErr(err)})`)
+      return undefined
+    }
+  }
+
+  /** Adopt an answer another member already published for this image, if there is one. */
+  private async adoptPublishedK8sProbe(imageRef: string, resolved: ResolvedRuntimeCatalog): Promise<boolean> {
+    const published = await this.store.readRuntimeImageProbe(imageRef).catch((err: unknown) => {
+      this.log.warn(`runtimes: could not read the published probe for ${imageRef}: ${formatErr(err)}`)
+      return undefined
+    })
+    if (!published) return false
+    // An image reference is not always an immutable identity, and the answer also depends on the
+    // deployment's credentials — so an old one is re-asked rather than inherited. See
+    // K8S_PROBE_FRESH_MS for what each staleness would otherwise cost.
+    if (this.clock.now() - published.probedAt > K8S_PROBE_FRESH_MS) {
+      this.log.info(`runtimes: the pool's probe of ${imageRef} is stale — probing again`)
+      return false
+    }
+    const payload = parseK8sProbePayload(published.payload)
+    if (!payload) {
+      this.log.warn(`runtimes: the published probe for ${imageRef} is unreadable — probing this member instead`)
+      return false
+    }
+    this.adoptK8sRuntimeTable(payload.table, resolved)
+    // Folded exactly as this member's own sweep would fold them: the pod that produced them runs
+    // THIS image, which is what the key guarantees and the only thing that makes them ours to use.
+    for (const result of payload.results) await this.runtimeFacts.applySandboxProbe(result)
+    this.log.info(
+      `runtimes: adopted the pool's probe of ${imageRef} (${payload.results.filter((r) => r.models.length > 0).length}/${payload.results.length} runtime(s) with models)`
+    )
+    return true
+  }
+
+  /** Win the right to probe this image for the whole pool. A stale claim is retakeable, so one
+   *  member dying mid-probe cannot leave the pool without an answer forever. */
+  private async claimK8sProbe(imageRef: string, memberId: string): Promise<boolean> {
+    try {
+      const now = this.clock.now()
+      return await this.store.claimRuntimeImageProbe({
+        imageRef,
+        memberId,
+        now,
+        staleBefore: now - K8S_PROBE_CLAIM_TTL_MS
+      })
+    } catch (err) {
+      // Unclaimable is not unprobeable: fall back to this member probing for itself.
+      this.log.warn(`runtimes: could not claim the pool probe for ${imageRef}: ${formatErr(err)}`)
+      return true
+    }
+  }
+
+  /** Hand the claim back after a failed probe, so the pool retries through another member now
+   *  rather than after the stale window. */
+  private async releaseK8sProbeClaim(imageRef: string, memberId: string): Promise<void> {
+    await this.store
+      .releaseRuntimeImageProbe(imageRef, memberId)
+      .catch((err: unknown) => this.log.debug(`runtimes: could not release the probe claim: ${formatErr(err)}`))
+  }
+
+  /** Wait out the member that won the claim, then adopt what it published. */
+  private async awaitPublishedK8sProbe(imageRef: string, resolved: ResolvedRuntimeCatalog): Promise<boolean> {
+    const deadline = this.clock.now() + K8S_PROBE_WAIT_MS
+    for (;;) {
+      await new Promise<void>((resolve) => this.clock.setTimeout(() => resolve(), K8S_PROBE_POLL_MS))
+      if (this.draining || this.shutdownDraining) return false
+      if (await this.adoptPublishedK8sProbe(imageRef, resolved)) return true
+      if (this.clock.now() >= deadline) return false
+    }
+  }
+
+  /** Publish this member's probe for the rest of the pool, reporting whether it landed. Best
+   *  effort for THIS member — it has already probed for itself — but the answer decides whether
+   *  the claim is handed back, so a failure must not read as a published answer. */
+  private async publishK8sProbe(
+    imageRef: string,
+    table: import('./runtimes/k8s-runtimes.js').K8sRuntimeTable,
+    results: RuntimeProbeResult[]
+  ): Promise<boolean> {
+    try {
+      await this.store.publishRuntimeImageProbe({
+        imageRef,
+        payload: JSON.stringify({ table, results } satisfies K8sProbePayload),
+        now: this.clock.now()
+      })
+      this.log.info(`runtimes: published this probe of ${imageRef} for the pool`)
+      return true
+    } catch (err) {
+      this.log.warn(`runtimes: could not publish the probe of ${imageRef}: ${formatErr(err)}`)
+      return false
+    }
+  }
+
+  /** Advertise what the image just said it provides. Idempotent: every caller of the probe applies
+   *  the same table, and the facts frame is a fenced REPLACE. */
+  private adoptK8sRuntimeTable(
+    table: import('./runtimes/k8s-runtimes.js').K8sRuntimeTable,
+    resolved: ResolvedRuntimeCatalog
+  ): void {
+    // The image's answer about its own filesystem, which is the only place this can be known:
+    // the tool-server spec is copied from it verbatim, and a spec assembled here instead gave
+    // the pod's runtime a module to retry forever. Absent means an image from before the bridge
+    // shipped — no tools rather than a server that cannot start.
+    this.k8sMcpBridge = table.mcpBridge
+    if (!table.mcpBridge) {
+      this.log.warn(
+        'mcp: this runtime image ships no in-pod tool bridge — cluster agents get no agent tools, memory distillation or knowledge browsing until it is updated'
+      )
+    }
+    const catalog = this.projectDeclaredRuntimes(resolved, table)
+    this.runtimeCatalog = catalog
+    // The profile reports these, and they come from the catalog entry rather than the table —
+    // so without this refresh the version the image just told us about would be reported as the
+    // registry's, or as an empty string.
+    this.runtimeFacts.noteImageCatalog(catalog.entries)
+    this.runtimeFacts.applyDeclaredFacts(this.k8sDeclaredModels, this.k8sDeclaredAcp)
+    // The half of readiness only this call can settle: before it the member advertises nothing
+    // and the CP would assign it nothing, so it is not servable however healthy it looks.
+    this.k8sRuntimeProbed = true
+    this.readiness?.refresh()
+    this.log.info(
+      `runtimes ready (probed): ${table.runtimes.map((entry) => `${entry.id}@${entry.version}`).join(', ') || '(none)'}`
+    )
+    this.runtimeFacts.emitFacts()
+  }
+
+  /**
+   * Read the models each declared runtime actually offers, by running it — with credentials — in
+   * the probe sandbox the image table just came from.
+   *
+   * The table itself cannot carry this: it is generated at image build time with no provider
+   * credentials, so it publishes no model list and the console shows an empty picker for every
+   * cluster runtime. The credentials are the whole difference, and they exist in exactly two
+   * places this launch reaches: the deployment's own pair on the daemon, and the pod's `AC_*`
+   * fill-in on the SandboxTemplate.
+   */
+  private async probeK8sRuntimeModels(sandbox: { agentId: string; cwd: string }): Promise<RuntimeProbeResult[]> {
+    const plane = this.k8sPlane
+    if (!plane) return []
+    this.refreshAdmittedRuntimes()
+    const runtimes = this.runtimes
+    if (Object.keys(runtimes).length === 0) return []
+    this.log.info(`probe: reading models from the sandbox for ${Object.keys(runtimes).join(', ')}`)
+    const results = await probeClusterRuntimes({
+      runtimes,
+      agentId: sandbox.agentId,
+      cwd: sandbox.cwd,
+      hostFactory:
+        this.opts.probeHostFactory ??
+        clusterProbeHostFactory({
+          driver: plane.driver,
+          log: this.log,
+          isolateAccountApps: this.cfg.security.isolateAccountApps
+        }),
+      staticCredential: (kind) => this.modelSessions.staticCredential(kind),
+      ...(this.codexSessionFloor ? { codexSessionFloor: this.codexSessionFloor } : {}),
+      log: this.log,
+      onResult: (result) => this.runtimeFacts.applySandboxProbe(result)
+    })
+    const withModels = results.filter((result) => result.models.length > 0).length
+    this.log.info(`probe: sandbox sweep complete — ${withModels}/${results.length} runtime(s) advertised models`)
+    return results
   }
 
   /**

@@ -6,6 +6,7 @@ import {
   type Sandbox,
   type SandboxApi
 } from './sandbox-api.js'
+import { poolRuntimeImage } from './sandbox-identity.js'
 
 const MAX_MODE_ATTEMPTS = 5
 
@@ -167,24 +168,7 @@ export class SandboxLease {
     sandboxName: string,
     sandbox: Sandbox
   ): Promise<{ containerIndex: number; observedName: string; observedImage: string; targetImage: string }> {
-    const pool = await this.deps.api.getWarmPool(this.deps.warmPoolName)
-    const templateName = pool.spec?.sandboxTemplateRef?.name
-    if (!templateName?.trim()) {
-      throw new Error(`sandbox warm pool ${this.deps.warmPoolName} has no sandboxTemplateRef.name`)
-    }
-    if (templateName.trim() !== templateName) {
-      throw new Error(`sandbox warm pool ${this.deps.warmPoolName} has invalid sandboxTemplateRef.name`)
-    }
-    const template = await this.deps.api.getSandboxTemplate(templateName)
-    const targetContainers = (template.spec?.podTemplate?.spec?.containers ?? []).filter(
-      (container) => container.name === 'runtime'
-    )
-    if (targetContainers.length > 1) throw new Error(`sandbox template ${templateName} has multiple runtime containers`)
-    const targetImage = targetContainers[0]?.image
-    if (!targetImage?.trim()) throw new Error(`sandbox template ${templateName} runtime container has no image`)
-    if (targetImage.trim() !== targetImage) {
-      throw new Error(`sandbox template ${templateName} runtime container has invalid image`)
-    }
+    const targetImage = await poolRuntimeImage(this.deps.api, this.deps.warmPoolName)
     const containers = sandbox.spec?.podTemplate?.spec?.containers ?? []
     const containerIndexes = containers.flatMap((container, index) => (container.name === 'runtime' ? [index] : []))
     if (containerIndexes.length === 0) throw new Error(`sandbox ${sandboxName} has no runtime container`)

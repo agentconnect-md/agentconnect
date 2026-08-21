@@ -55,7 +55,7 @@ import type {
 } from '@agentconnect.md/protocol'
 import {
   buildEnvelope,
-  decodeEnvelope,
+  decodeCpEnvelope,
   encode,
   MAX_FRAME_BYTES,
   SESSION_LIVE_TAIL_FEATURE,
@@ -275,6 +275,7 @@ export class CpClient {
       memoryReader: deps.memoryReader,
       dreamReader: deps.dreamReader,
       localSkillsReader: deps.localSkillsReader,
+      runtimeCommandsReader: deps.runtimeCommandsReader,
       gitMessagePasses: new GitMessagePasses(),
       noteLeasesGranted: (groupIds) => this.noteLeasesGranted(groupIds),
       forgetLeaseDeadlines: (groupIds) => this.forgetLeaseDeadlines(groupIds),
@@ -1039,7 +1040,8 @@ export class CpClient {
     // A superseded socket must not settle the current connection's correlator or
     // enter its post-register FIFO.
     if (source !== this.transport) return
-    const decoded = decodeEnvelope(text)
+    // The CP authors every frame on this socket, so read it tolerantly: a field it added must strip, not fail.
+    const decoded = decodeCpEnvelope(text)
     if (!decoded.ok) {
       const code = this.decodeErrorCode(decoded.msg)
       this.sendError(decoded.id, code, decoded.msg, false)

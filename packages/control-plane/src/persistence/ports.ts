@@ -3911,6 +3911,28 @@ export interface OrgRecord {
   updatedAt: Date
 }
 
+/** One org's footprint, for the per-org gauges (observability/org-metrics.ts). */
+export interface OrgTelemetryRow {
+  /** What the gauge labels the series with. The slug is deliberately NOT read here: it is mutable,
+   *  and a personal org's is built from its owner's display name or email. */
+  orgId: string
+  /** Daemons registered to the org, any status. An install-wide pool member belongs to NO org
+   *  (`daemon.orgId IS NULL`) and is counted for none of them — a pool-backed org reads zero here
+   *  however much of the pool it occupies, which `duty_group` is the ledger for. */
+  daemons: number
+  /** Agents defined in the org, any status — including inactive and unplaced ones. A brand-new org
+   *  reads 1, not 0: `provisionPresetAgents` gives every org the `agentconnect` preset at creation
+   *  unless the install sets `PRESET_AGENTS_ENABLED=false`. */
+  agents: number
+  /** Sessions the org has ever started. `session_meta` has no retention sweep, so this is a
+   *  lifetime total that only grows; the windows below are what carry a trend. */
+  sessionsTotal: number
+  /** Sessions STARTED in the last 30 days / 24 hours — a rate, not an occupancy: a long-running
+   *  session is counted once, in the window it began. */
+  sessions30d: number
+  sessions24h: number
+}
+
 export interface OrgDeleteResult {
   status: 'deleted' | 'review_cleanup_pending' | 'daemons_present'
   /** Hook rules made inert by the same transaction; callers remove them from
@@ -4063,6 +4085,12 @@ export interface OrgRepo {
   /** The org's slug (its URL segment in the console), or null when the org is absent.
    *  Used to build org-scoped session deep links (`<webAppUrl>/<slug>/sessions/<id>`). */
   slugById(orgId: string): Promise<string | null>
+
+  /** Per-org daemon/agent/session counts, for the org gauges (observability/org-metrics.ts).
+   *  EVERY org is returned, including one holding nothing: a series that vanishes on the way to
+   *  zero is invisible on a dashboard, so the zeros have to be stated. `now` fixes the window
+   *  boundaries at the caller's clock rather than the database's. */
+  orgTelemetry(now: Date): Promise<OrgTelemetryRow[]>
 
   /**
    * Hard-delete an org. Cascades memberships, agents, crons, integrations,

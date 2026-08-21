@@ -163,6 +163,11 @@ describe('AcpHost session/load update filtering', () => {
   it('allows only latest-wins metadata through during load', () => {
     expect(shouldForwardUpdateDuringLoad({ sessionUpdate: 'session_info_update', title: 'Restored' })).toBe(true)
     expect(shouldForwardUpdateDuringLoad({ sessionUpdate: 'usage_update', used: 1, size: 10 } as any)).toBe(true)
+    // The adapter advertises the command list AFTER a load's replay — the only one a resumed
+    // session makes, so dropping it would leave the console blind until the next new session.
+    expect(shouldForwardUpdateDuringLoad({ sessionUpdate: 'available_commands_update', availableCommands: [] })).toBe(
+      true
+    )
     expect(
       shouldForwardUpdateDuringLoad({
         sessionUpdate: 'agent_message_chunk',

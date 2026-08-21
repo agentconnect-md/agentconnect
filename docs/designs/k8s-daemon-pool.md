@@ -168,6 +168,27 @@ on one probe claim. Probe claims carry a dedicated label and a 15-minute expiry;
 the orphan reconciler (§4) collects an expired one, so a missed teardown cannot
 retain a Sandbox and volume forever.
 
+**One member per runtime image actually probes.** The probe describes the image the
+pool's SandboxTemplate pins, not the member asking, so members elect through the
+shared store: a claim keyed on the image reference, and the winner publishes its
+whole answer (the image's runtime table plus the credentialed model results) for
+the others to adopt. A pool therefore spends ONE probe sandbox rather than one per
+replica, and the member-hashed claim name above is what keeps a genuine election
+tie — or a fallback probe — from colliding. The image is the key because it is what
+the answer is about: a template bump is a different row, so no member is ever served
+a previous image's runtimes, and members mid-rollout simply ask separate questions.
+The claim's stale window and a waiting member's patience are ONE number, derived from
+a whole sweep's ceiling (a probe pod's cold boot, the image's table, and one
+credentialed session per runtime it can ship): a follower that gave up earlier would
+claim a sandbox of its own and spend exactly the pods the election saves, so it waits
+precisely until the claim it is waiting on becomes retakeable. A holder that dies
+therefore costs one slow startup rather than a pool that advertises nothing. A
+published answer is adopted only while it is fresh (one hour): an image reference is
+not always an immutable identity — a template pinned to a moving tag keeps one key
+across rebuilds — and the answer also depends on the deployment's credentials, so a
+newly configured provider pair must be able to take effect. Nothing re-probes on a
+timer; freshness only decides whether a member STARTING now inherits the answer.
+
 **The control plane carries one bit, not a namespace.** `DAEMON_POOL_ENABLED=true`
 says "this deployment runs a daemon pool": the control plane loads its in-cluster
 config from its own pod's ServiceAccount (fail-loud outside a pod) and accepts pool

@@ -209,7 +209,7 @@ describe('GroupDetailView', () => {
     expect(html).not.toContain('>a3<')
   })
 
-  it('unions the runtimes over the SERVING members only', () => {
+  it('reads the runtimes over the SERVING members only', () => {
     mocks.memberSets = [group({ memberDaemonIds: ['d1', 'd2'] })]
     mocks.daemons = [
       daemon('d1', {
@@ -224,11 +224,94 @@ describe('GroupDetailView', () => {
 
     const html = render()
 
-    expect(html).toContain('Runtimes across the group')
+    expect(html).toContain('Runtimes the whole group can run')
     expect(html).toContain('v0.54.1')
-    // A member that stopped answering can no longer offer a runtime.
+    // A member that stopped answering can no longer offer a runtime, so it constrains nothing.
     expect(html).not.toContain('v1.0.0')
     expect(html).toContain('1 agent')
+  })
+
+  it('lists only the runtimes EVERY serving member offers', () => {
+    // An agent placed here lands on whichever member is serving, so a runtime one of them lacks
+    // is not one the group can run — advertising it promises a placement that fails.
+    mocks.memberSets = [group({ memberDaemonIds: ['d1', 'd2'] })]
+    mocks.daemons = [
+      daemon('d1', {
+        runtimeModels: [
+          { runtime: 'claude', version: '0.54.1', models: ['opus', 'sonnet'], acpProtocolVersion: 1 },
+          { runtime: 'codex', version: '1.0.0', models: ['gpt-5'], acpProtocolVersion: 1 }
+        ]
+      }),
+      daemon('d2', {
+        runtimeModels: [{ runtime: 'claude', version: '0.54.1', models: ['opus'], acpProtocolVersion: 1 }]
+      })
+    ] as unknown[]
+
+    const html = render()
+
+    expect(html).toContain('Claude')
+    // Only d1 has codex, so the group cannot run it.
+    expect(html).not.toContain('Codex')
+    // ... and the same rule applies one level down: only d1 offers sonnet.
+    expect(html).toContain('1 model')
+    expect(html).not.toContain('2 models')
+    // The Routing card counts what the group can run, not what its members have between them.
+    expect(html).toContain('>1<')
+  })
+
+  it('lists only the MCP servers EVERY serving member configures', () => {
+    // Same argument as the runtimes, one row above it in the same fact list: a server only one
+    // member has is a tool missing from every run that lands on another.
+    mocks.memberSets = [group({ memberDaemonIds: ['d1', 'd2'] })]
+    mocks.daemons = [
+      daemon('d1', {
+        mcpServers: [
+          { name: 'shared', transport: 'stdio' },
+          { name: 'only-d1', transport: 'stdio' }
+        ]
+      }),
+      daemon('d2', { mcpServers: [{ name: 'shared', transport: 'stdio' }] })
+    ] as unknown[]
+
+    const html = render()
+
+    // "MCP servers 1" — `shared` counts, `only-d1` does not.
+    expect(html).toContain('MCP servers')
+    expect(html).toContain('>1<')
+  })
+
+  it('says "mixed" rather than picking one member’s version', () => {
+    mocks.memberSets = [group({ memberDaemonIds: ['d1', 'd2'] })]
+    mocks.daemons = [
+      daemon('d1', {
+        runtimeModels: [{ runtime: 'claude', version: '0.54.1', models: ['opus'], acpProtocolVersion: 1 }]
+      }),
+      daemon('d2', {
+        runtimeModels: [{ runtime: 'claude', version: '0.60.0', models: ['opus'], acpProtocolVersion: 1 }]
+      })
+    ] as unknown[]
+
+    const html = render()
+
+    expect(html).toContain('mixed')
+    expect(html).not.toContain('v0.54.1')
+    expect(html).not.toContain('v0.60.0')
+  })
+
+  it('says members share no runtime, rather than that none reported one', () => {
+    mocks.memberSets = [group({ memberDaemonIds: ['d1', 'd2'] })]
+    mocks.daemons = [
+      daemon('d1', {
+        runtimeModels: [{ runtime: 'claude', version: '0.54.1', models: ['opus'], acpProtocolVersion: 1 }]
+      }),
+      daemon('d2', {
+        runtimeModels: [{ runtime: 'codex', version: '1.0.0', models: ['gpt-5'], acpProtocolVersion: 1 }]
+      })
+    ] as unknown[]
+
+    const html = render()
+
+    expect(html).toContain('No runtime is on every serving member')
   })
 
   it('lists the connections the group’s agents hold', () => {

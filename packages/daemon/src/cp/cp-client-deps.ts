@@ -26,6 +26,8 @@ import { createAgentWaker } from './agent-wake.js'
 import { createMemoryReader, type AgentMemoryAdminResolver } from './memory-reader.js'
 import { createDreamReader } from './dream-reader.js'
 import { createLocalSkillsReader } from './local-skills-reader.js'
+import { createRuntimeCommandsReader } from './runtime-commands-reader.js'
+import type { RuntimeCommandsCache } from '../runtimes/runtime-commands.js'
 import type { CpAgentRegistry } from './cp-agent-registry.js'
 import type { CpIntegrationRegistry } from './cp-integration-registry.js'
 import type { CpCronRegistry } from './cp-cron.js'
@@ -127,6 +129,7 @@ export interface CpClientSeamHost {
   k8sPlane(): K8sRuntimePlane | undefined
   memory(): AgentMemoryAdminResolver
   dreamRunner(): DreamRunner
+  runtimeCommands(): RuntimeCommandsCache
   memoryFsFor(agentId: string): MemoryFs | undefined
   gitCommitIdentity(): GitCommitIdentity | undefined
   sessionThreadUrl(session: SessionRecord): string | undefined
@@ -343,6 +346,7 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
       join(host.daemonRoot(), 'skill-installs'),
       (id) => host.k8sPlane()?.workspaceFilesFor(id)
     ),
+    runtimeCommandsReader: createRuntimeCommandsReader(host.runtimeCommands(), (id) => host.agents().has(id)),
     // webchat is no longer a CP control-WS integration (milestone A4) — it rides the
     // relay's rd/* wire, wired through RelayManager.onRelayMsg.
     clock: systemClock,

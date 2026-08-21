@@ -2471,6 +2471,34 @@ export async function fetchAgentLocalSkills(agentId: string): Promise<LocalSkill
   return apiGet<LocalSkillsDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/skills/local`)
 }
 
+// ── runtime slash commands ──────────────────────────────────────────────────
+// One command the agent's ACP runtime advertised it can be asked to run
+// (GET /agents/:id/commands) — skills, plugin skills and the harness's own
+// built-ins arrive in one list, so this is what the runtime actually exposes
+// rather than what a workspace scan finds.
+export interface RuntimeCommandDto {
+  name: string
+  description: string
+  /** Argument hint, or null when the command takes no argument. */
+  hint: string | null
+  /** Record-time skill classification (daemon-side, pre-truncation); absent on older daemons. */
+  skill?: boolean
+}
+
+// `reported:false` means no session has advertised a list yet, so an empty list
+// then means "unknown", not "no commands". Proxied live from the owning daemon;
+// 409 when the daemon predates this read, 503 when it is offline.
+export interface RuntimeCommandsDto {
+  reported: boolean
+  updatedAt?: string
+  sessionId?: string
+  commands: RuntimeCommandDto[]
+}
+
+export async function fetchAgentRuntimeCommands(agentId: string): Promise<RuntimeCommandsDto> {
+  return apiGet<RuntimeCommandsDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/commands`)
+}
+
 // One slice of a workspace file (GET /agents/:id/workspace/file), proxied live
 // from the owning daemon like the listing — file bytes never touch the CP store.
 // 503 when the daemon is offline / the agent is unplaced.

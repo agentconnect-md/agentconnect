@@ -62,6 +62,16 @@ describe('hookRuntimeProjectionState', () => {
     expect(hookSkippedCheckGuidance(HOOK_REPORT_REASON_AGENT_HANDOVER)).not.toContain('comment `@')
   })
 
+  it('names every role that can actually start a review, on both guidance paths', () => {
+    // This copy is the Checks tab, where a triage collaborator decides whether the button is for
+    // them. Copy that undersells the gate turns the feature off in the only place it is read.
+    for (const reason of [HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED, HOOK_REPORT_REASON_AGENT_HANDOVER]) {
+      const guidance = hookSkippedCheckGuidance(reason, 'example-app')
+      expect(guidance).toContain('triage, write, or admin access')
+      expect(guidance).not.toMatch(/needs write or admin/)
+    }
+  })
+
   it('preserves the existing success and running mappings', () => {
     expect(hookRuntimeProjectionState({ status: 'success' })).toBe('neutral')
     expect(hookRuntimeProjectionState({ status: 'running' })).toBeNull()

@@ -40,6 +40,7 @@ import {
 import { useOrgs } from '@/lib/org-context'
 import { randomUuid } from '@/lib/random-uuid'
 import { resolveRoster, typedMentionIds, wireMentions } from '@/lib/conversation-addressing'
+import { leadingCommandToken } from '@/components/console/runtime-command-menu'
 import { sessionAfterModelSelection } from '@/lib/session-runtime-controls'
 import { reconcilePersistedLiveSteps } from '@/lib/session-transcript'
 import {
@@ -103,7 +104,11 @@ interface PlaygroundData {
     participants?: Array<{ agentId: string; name: string; primary?: boolean }>,
     /** Overrides the staged composer image — for callers (Home) that mint the
      *  session id in the same tick, before setPgImage state could land. */
-    image?: SessionImage
+    image?: SessionImage,
+    /** A `/` pick's owner. Honored only while the picked token still LEADS the outgoing text and
+     *  the owner is a participant — then it joins `mentions[]`, narrowing the turn to the one
+     *  agent whose runtime has the skill instead of waking the roster to decline. */
+    commandPick?: { agentId: string; name: string }
   ) => boolean
   /** Mark `id` (a CP session id) as a session-targeted continuation: the socket
    *  mints through the session-target token route and the daemon dispatches
@@ -154,6 +159,8 @@ export interface QueuedTurn {
   agentId: string
   conversationId?: string
   participants?: Array<{ agentId: string; name: string; primary?: boolean }>
+  /** A `/` pick's owner, revalidated at dispatch — see sendTurn. */
+  commandPick?: { agentId: string; name: string }
 }
 
 // Synthetic playground session ids start with `pg_`; real CP session ids do not.
@@ -1249,7 +1256,8 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       text: string,
       image: SessionImage | undefined,
       conversationId?: string,
-      knownParticipants?: Array<{ agentId: string; name: string; primary?: boolean }>
+      knownParticipants?: Array<{ agentId: string; name: string; primary?: boolean }>,
+      commandPick?: { agentId: string; name: string }
     ): void => {
       const requestedTurnId = randomUuid()
       pushStep(id, { kind: 'msg', who: '@you', turnId: requestedTurnId, text, ...(image ? { image } : {}) })
@@ -1281,7 +1289,15 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       if (!session && knownParticipants && knownParticipants.length > 1 && !rosterNames.current.has(id)) {
         rosterNames.current.set(id, new Map(knownParticipants.map((p) => [p.agentId, p.name])))
       }
-      const mentions = typedMentionIds(roster, text)
+      const typed = typedMentionIds(roster, text)
+      const commandTarget =
+        commandPick &&
+        roster.some((p) => p.agentId === commandPick.agentId) &&
+        leadingCommandToken(text) === commandPick.name &&
+        !typed.includes(commandPick.agentId)
+          ? [commandPick.agentId]
+          : []
+      const mentions = [...typed, ...commandTarget]
       const targets = roster.length > 1 ? (mentions.length ? mentions : roster.map((p) => p.agentId)) : [agentForId]
       // Membership is a standing mention — a bare multi-agent send materializes it as
       // the whole roster in structured `mentions` (see wireMentions), the same wire
@@ -1357,7 +1373,8 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       textArg?: string,
       conversationId?: string,
       knownParticipants?: Array<{ agentId: string; name: string; primary?: boolean }>,
-      imageArg?: SessionImage
+      imageArg?: SessionImage,
+      commandPick?: { agentId: string; name: string }
     ) => {
       const text = String(textArg ?? pgDrafts.current[id] ?? '').trim()
       const image = imageArg ?? pgImageBy[id]
@@ -1373,6 +1390,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
           text,
           ...(image ? { image } : {}),
           agentId: agentForId,
+          ...(commandPick ? { commandPick } : {}),
           ...(conversationId ? { conversationId } : {}),
           ...(knownParticipants ? { participants: knownParticipants } : {})
         }
@@ -1380,7 +1398,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
         setPgQueueBy((cur) => ({ ...cur, [id]: [...(cur[id] ?? NO_QUEUE), queued] }))
         return true
       }
-      sendTurn(id, agentForId, text, image, conversationId, knownParticipants)
+      sendTurn(id, agentForId, text, image, conversationId, knownParticipants, commandPick)
       return true
     },
     [pgImageBy, sendTurn, setPgImage, setPgInput]
@@ -1400,7 +1418,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       dispatchedQueueIds.current.add(next.queueId)
       pgQueueRef.current[id] = (pgQueueRef.current[id] ?? NO_QUEUE).filter((q) => q.queueId !== next.queueId)
       setPgQueueBy((cur) => ({ ...cur, [id]: (cur[id] ?? NO_QUEUE).filter((q) => q.queueId !== next.queueId) }))
-      sendTurn(id, next.agentId, next.text, next.image, next.conversationId, next.participants)
+      sendTurn(id, next.agentId, next.text, next.image, next.conversationId, next.participants, next.commandPick)
     }
   }, [pgQueueBy, pgBusyBy, sendTurn])
 

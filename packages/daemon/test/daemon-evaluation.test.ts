@@ -602,18 +602,20 @@ describe('Daemon evaluation surface', () => {
 
 describe('managed memory auto-distillation runtime support (#653)', () => {
   // A fake host whose distillation session emits the given JSON as its answer.
-  function distillHost(opts: { usesMetaSystemPrompt: boolean; modes?: string[] }) {
+  function distillHost(opts: { usesMetaSystemPrompt: boolean; modes?: string[]; promptFails?: boolean }) {
     let onUpdate!: (sessionId: string, update: unknown) => void
+    const discarded = new Set<string>()
     const host = {
       start: vi.fn(async () => {}),
       newSession: vi.fn(async () => 'distill-session-1'),
-      hasSession: vi.fn(() => true),
+      hasSession: vi.fn((id: string) => !discarded.has(id)),
       usesMetaSystemPrompt: vi.fn(() => opts.usesMetaSystemPrompt),
       modelOptions: vi.fn(() => ({ current: 'test-model', models: ['test-model'] })),
       permissionModeOptions: vi.fn(() => ({ modes: opts.modes ?? ['read-only'] })),
       setSessionPermissionMode: vi.fn(async () => true),
-      discardSession: vi.fn(),
+      discardSession: vi.fn((id: string) => void discarded.add(id)),
       prompt: vi.fn(async (sessionId: string) => {
+        if (opts.promptFails) throw new Error('runtime exploded')
         onUpdate(sessionId, {
           sessionUpdate: 'agent_message_chunk',
           content: { type: 'text', text: '{"memories":[]}' }
@@ -661,6 +663,19 @@ describe('managed memory auto-distillation runtime support (#653)', () => {
     )
     // Trusted: the prompt carries only the turn data, not the inline policy.
     expect(host.prompt.mock.calls[0][1][0].text).toBe('DISTILL THIS')
+    await daemon.stop()
+  }, 15_000)
+
+  it('abandons the session of a failed pass instead of leaving it live on the warm host', async () => {
+    const { host, daemon } = distillHost({ usesMetaSystemPrompt: false, promptFails: true })
+    await daemon.start()
+    await expect((daemon as any).runMemoryExtraction(AGENT_ID, 'DISTILL THIS')).rejects.toThrow('runtime exploded')
+    // Dropping the session from the cache is not enough: it stays in the host's `live` set, where it
+    // is an orphaned ACP session and — once a later pass takes its registry slot — a `hasSession`
+    // that would let its temp-dir command list be read as the agent's.
+    expect(host.discardSession).toHaveBeenCalledWith('distill-session-1')
+    expect(host.hasSession('distill-session-1')).toBe(false)
+    expect((daemon as any).internalPassSessions.size).toBe(0)
     await daemon.stop()
   }, 15_000)
 

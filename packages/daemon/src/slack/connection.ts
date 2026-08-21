@@ -12,7 +12,8 @@ import { integrationCore, platformIntegrationConfig } from '../platforms/integra
 import { normalizeSlackEvent, toAttachment, type SlackFile, type SlackMessageEvent } from './normalize.js'
 import type { Attachment, NormalizedMessage } from '../messages/normalized.js'
 import type { Logger } from '../log.js'
-import { PlatformSendQueue } from '../platforms/send-queue.js'
+import { isSendQueueTimeout, PlatformSendQueue } from '../platforms/send-queue.js'
+import type { UploadAnchor, UploadFailReason, UploadOutcome } from '../mcp/ops/context.js'
 import {
   STATUS_ACTION,
   ELICIT_ACTION_PREFIX,
@@ -351,6 +352,12 @@ export type AppLike = {
       update: (a: unknown) => Promise<{ ts?: string }>
       delete: (a: unknown) => Promise<unknown>
     }
+    // The external upload flow (`files:write`). chat.postMessage cannot carry bytes at
+    // all, so this three-step dance is the ONLY way to put a file in a conversation.
+    files: {
+      getUploadURLExternal: (a: unknown) => Promise<{ upload_url?: string; file_id?: string }>
+      completeUploadExternal: (a: unknown) => Promise<{ files?: { id?: string }[] }>
+    }
     conversations: {
       open: (a: unknown) => Promise<{ channel?: { id?: string } }>
       info: (a: unknown) => Promise<{
@@ -491,6 +498,21 @@ function slackApiErrorCode(err: unknown): string | undefined {
 // call per message for installations that have not been upgraded yet.
 const CUSTOM_USERNAME_REPROBE_MS = 5 * 60_000
 
+/** Per-request bound on every Slack egress call. Shared with the byte upload, which rides the
+ *  same serial queue and would otherwise block all delivery on undici's 300 s defaults. */
+const SLACK_API_TIMEOUT_MS = 30_000
+
+/** Map a Slack API error to the port's typed failure vocabulary — every arm already had the
+ *  raw material (`missing_scope` payloads, stable error codes); this only names them. */
+function classifySlackUploadError(err: unknown): UploadFailReason {
+  if (missingScopesFrom(err).length > 0) return 'missing_scope'
+  const code = slackApiErrorCode(err)
+  if (code === 'message_not_found' || code === 'channel_not_found' || code === 'thread_not_found') return 'not_found'
+  if (code === 'not_in_channel' || code === 'restricted_action' || code === 'access_denied') return 'forbidden'
+  if (code === 'file_size_limit_exceeded' || code === 'too_large') return 'too_large'
+  return 'platform_error'
+}
+
 function proxyDispatcher(): ProxyAgent | undefined {
   const url = process.env.HTTPS_PROXY ?? process.env.HTTP_PROXY
   return url ? new ProxyAgent(url) : undefined
@@ -507,7 +529,7 @@ function sendOnlyApp(botToken: string): AppLike {
   const dispatcher = proxyDispatcher()
   const client = new WebClient(botToken, {
     ...(dispatcher ? { fetch: fetchWithDispatcher(dispatcher) } : {}),
-    timeout: 30_000,
+    timeout: SLACK_API_TIMEOUT_MS,
     retryConfig: { retries: 2 }
   })
   return {
@@ -537,7 +559,7 @@ function realSocketModeApp(o: { token: string; appToken: string }, boltDebug?: b
     // let one transient failure block all delivery for a whole turn. 30s is a
     // compromise: long enough for auth.test and sends to survive a slow/VPN link,
     // yet still bounded so a stuck call cannot wedge the queue indefinitely.
-    timeout: 30_000,
+    timeout: SLACK_API_TIMEOUT_MS,
     retryConfig: { retries: 2 }
   }
   const logLevel = boltDebug ? LogLevel.DEBUG : undefined
@@ -1233,6 +1255,134 @@ export class SlackConnection implements PlatformConnection {
       if (window?.throwOnError) throw err
     }
     return out
+  }
+
+  /**
+   * Put a file INTO a conversation — Slack's three-step external upload (`files:write`).
+   *
+   * `chat.postMessage` cannot carry bytes at all: it can only reference an image by public
+   * URL or by the id of a file already hosted in Slack. So the completion call IS the
+   * message here — `comment` rides as `initial_comment`, and the agent's conversational
+   * identity as username/icon, exactly as {@link postChatMessage} applies it to a text post.
+   *
+   * `ok: false` means the share FAILED and nothing is in the conversation, with a typed
+   * reason — `indeterminate` alone means the queue abandoned a still-running upload that may
+   * yet land. Success carries no `messageId`: Slack answers with the file and no ts, so a
+   * shared file is the one post kind that cannot anchor a session seed or a paired wake.
+   */
+  async uploadFile(
+    channel: string,
+    file: { bytes: Buffer; name: string; mimeType?: string },
+    comment?: string,
+    anchor?: UploadAnchor,
+    options?: SlackPostOptions
+  ): Promise<UploadOutcome> {
+    const threadTs = anchor?.thread
+    const task: Promise<UploadOutcome> = this.queue.enqueue(async () => {
+      try {
+        const reserved = await this.app.client.files.getUploadURLExternal({
+          filename: file.name,
+          length: file.bytes.byteLength
+        })
+        const uploadUrl = reserved.upload_url
+        const fileId = reserved.file_id
+        if (!uploadUrl || !fileId) {
+          this.deps.log?.debug(`slack: uploadFile got no upload url for ${file.name}`)
+          return { ok: false, reason: 'platform_error' }
+        }
+        const put = await this.putUploadBytes(uploadUrl, file)
+        if (!put.ok) return put
+        // Sharing is what makes the file a message; without `channel_id` it stays a private
+        // upload nobody can see. `thread_ts` must be the PARENT's ts, never a reply's.
+        // A CAPTION IS MRKDWN HERE, unlike every other send in this file. `postMessage` renders
+        // through a Block Kit `markdown` block, but this method documents `blocks` as IGNORED
+        // whenever `initial_comment` is set — and it has no separate `text` argument, so
+        // blocks-only would buy CommonMark at the price of the notification preview for every
+        // forwarded file. Keeping the comment is the better half of that trade; the cost is
+        // that `**bold**` and `[label](url)` read literally on a forward.
+        const share: Record<string, unknown> = {
+          files: [{ id: fileId, title: file.name }],
+          channel_id: channel,
+          ...(threadTs ? { thread_ts: threadTs } : {}),
+          ...(comment ? { initial_comment: comment } : {})
+        }
+        await this.completeUpload(share, options)
+        return { ok: true }
+      } catch (err) {
+        this.rememberMissingScopes(err)
+        this.deps.log?.debug(`slack: uploadFile ${file.name} → ch=${channel} failed: ${(err as Error).message}`)
+        return { ok: false, reason: classifySlackUploadError(err) }
+      }
+    })
+    // The queue abandons a task at 30 s but the task KEEPS RUNNING — the share may still
+    // land, so this must not read as "nothing was sent" (a retry would double-post).
+    return task.catch((err) => ({
+      ok: false,
+      reason: isSendQueueTimeout(err) ? 'indeterminate' : 'platform_error'
+    }))
+  }
+
+  /** Step 2 of the upload: POST the bytes to the reserved URL. It is NOT a Slack API
+   *  endpoint (no token, no JSON envelope), so it goes out through undici with the same
+   *  proxy dispatcher the Web API client uses rather than through `this.app.client`. */
+  private async putUploadBytes(
+    uploadUrl: string,
+    file: { bytes: Buffer; name: string }
+  ): Promise<{ ok: true } | { ok: false; reason: UploadFailReason }> {
+    const form = new FormData()
+    form.append('file', new Blob([new Uint8Array(file.bytes)]), file.name)
+    // This runs inside the serial send queue, so it carries the same bound the WebClient
+    // does: a stuck upload must not wedge every other message on this connection.
+    const dispatcher = proxyDispatcher()
+    try {
+      // Same cast seam as `fetchWithDispatcher`: undici's own FormData/RequestInit types and
+      // the Node globals are structurally identical but nominally distinct.
+      const init = {
+        method: 'POST',
+        body: form,
+        signal: AbortSignal.timeout(SLACK_API_TIMEOUT_MS),
+        ...(dispatcher ? { dispatcher } : {})
+      }
+      const res = await undiciFetch(uploadUrl, init as Parameters<typeof undiciFetch>[1])
+      // Only `ok` is read, so the body is never drained — and an unread body leaves the
+      // request in flight, which is exactly what the graceful `close()` below waits for. That
+      // wait sits inside the send queue and outside the signal's reach, so it would trade the
+      // socket-pool leak for the wedge the timeout was added to prevent.
+      await res.body?.cancel().catch(() => {})
+      if (!res.ok) {
+        this.deps.log?.debug(`slack: uploadFile byte POST for ${file.name} → HTTP ${res.status}`)
+        return { ok: false, reason: res.status === 413 ? 'too_large' : 'platform_error' }
+      }
+      return { ok: true }
+    } finally {
+      // Unlike the two long-lived clients, this agent serves one request — closing it keeps
+      // a proxied deployment from leaking a keep-alive socket pool per forward.
+      await dispatcher?.close()
+    }
+  }
+
+  /** Step 3 of the upload, with the same `chat:write.customize` fallback the text send has:
+   *  an installation without the scope still shares the file, under the app's own identity. */
+  private async completeUpload(share: Record<string, unknown>, options?: SlackPostOptions): Promise<void> {
+    const customize: Record<string, unknown> = {}
+    const username = options?.username?.trim()
+    const iconUrl = options?.icon_url?.trim()
+    if (username) customize.username = username
+    if (iconUrl) customize.icon_url = iconUrl
+    if (Object.keys(customize).length === 0 || Date.now() < this.customUsernameRetryAt) {
+      await this.app.client.files.completeUploadExternal(share)
+      return
+    }
+    try {
+      await this.app.client.files.completeUploadExternal({ ...share, ...customize })
+      this.customUsernameRetryAt = 0
+    } catch (err) {
+      this.rememberMissingScopes(err)
+      if (!isMissingCustomizeScope(err)) throw err
+      this.customUsernameRetryAt = Date.now() + CUSTOM_USERNAME_REPROBE_MS
+      this.deps.log?.debug('slack: chat:write.customize missing — sharing the file with the app default identity')
+      await this.app.client.files.completeUploadExternal(share)
+    }
   }
 
   /**

@@ -17,7 +17,13 @@
       "import": "./dist/slack-app-manifest.js",
       "default": "./dist/slack-app-manifest.js"
     },
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./runtime-command": {
+      "development": "./src/frames/runtime-command.ts",
+      "types": "./dist/frames/runtime-command.d.ts",
+      "import": "./dist/frames/runtime-command.js",
+      "default": "./dist/frames/runtime-command.js"
+    }
   },
   "main": "dist/index.js",
   "module": "dist/index.js",

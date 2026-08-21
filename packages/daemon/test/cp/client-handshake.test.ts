@@ -116,6 +116,75 @@ describe('CpClient handshake', () => {
     expect(applied).toHaveLength(1)
   })
 
+  it('registers against a register/ok carrying a field this build predates', async () => {
+    // One field added to a nested spec used to fail the whole snapshot, so the handshake retried the same failure forever.
+    const t = new FakeTransport()
+    const applied: any[] = []
+    const client = new CpClient(
+      makeDeps(t, {
+        configApply: {
+          applyConfigPush() {},
+          applyReconcileSnapshot: (s) => applied.push(s),
+          upsertCron() {},
+          removeCron() {},
+          applyRouteAssign() {},
+          applyRouteUpdate() {}
+        }
+      })
+    )
+    client.start()
+    await tick()
+    const auth = t.lastSent()
+    t.pushInbound(
+      JSON.stringify(
+        buildEnvelope(
+          'auth/ok',
+          { daemonId: DAEMON_ID, sessionEpoch: 7, heartbeatSec: 20, serverTime: '2026-06-26T00:00:00.000Z' },
+          { corr: auth.id }
+        )
+      )
+    )
+    await tick()
+    const reg = t.lastSent()
+    t.pushInbound(
+      JSON.stringify(
+        buildEnvelope(
+          'register/ok',
+          {
+            routingEpoch: 3,
+            assignments: [],
+            crons: [],
+            leases: [],
+            memoryConnections: [
+              {
+                connectionId: '44444444-4444-4444-8444-444444444444',
+                revision: 1,
+                config: {},
+                secretKeys: [],
+                pin: { pluginId: 'mem0', profileMajor: 1, secretHeaders: [] },
+                transport: 'streamable-http',
+                relayUrl: 'https://relay.example.test/mcp',
+                grantKey: 'grant-1',
+                addedByANewerControlPlane: 'org-1'
+              }
+            ],
+            drop: { assignments: [], crons: [] },
+            somethingNewer: true
+          },
+          { corr: reg.id }
+        )
+      )
+    )
+    await tick()
+
+    expect(client.state).toBe('READY')
+    expect(applied).toHaveLength(1)
+    // Read tolerantly, not blindly: the unread field is stripped before the snapshot is applied.
+    expect(applied[0].memoryConnections[0].connectionId).toBe('44444444-4444-4444-8444-444444444444')
+    expect(applied[0].memoryConnections[0]).not.toHaveProperty('addedByANewerControlPlane')
+    expect(applied[0]).not.toHaveProperty('somethingNewer')
+  })
+
   it('joins a blocked reconcile snapshot on stop and never transitions that connection to READY', async () => {
     const t = new FakeTransport()
     let releaseSnapshot!: () => void

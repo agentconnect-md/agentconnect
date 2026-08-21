@@ -3,6 +3,7 @@ import { chmodSync, mkdirSync, statSync } from 'node:fs'
 import { dirname } from 'node:path'
 import {
   QuotedMessageSchema,
+  SessionImageAttachment as SessionImageAttachmentSchema,
   type DreamInfo,
   type ExternalSessionOrigin,
   type QuotedMessage,
@@ -751,6 +752,10 @@ const SCHEMA_VERSION = 11
  * in the `CREATE` block, which runs afterwards and is `IF NOT EXISTS`, so it
  * covers fresh and upgraded stores from the one description.
  */
+/** How long a probed image's published answer outlives its last publish. A rollback inside the
+ *  window costs nothing; past it, one member probes the image again. */
+const RUNTIME_IMAGE_PROBE_RETENTION_MS = 30 * 24 * 60 * 60_000
+
 const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean }) => Promise<void>)[] = [
   async (db) => await db.exec('ALTER TABLE permission_requests ADD COLUMN ownerId TEXT'),
   async (db) =>
@@ -1293,6 +1298,15 @@ export class LocalStore {
       -- can tell "never fully discovered" from "last-good on file".
       -- ownerId leads both keys (#1039): the cache describes an image, so on a store every
       -- pool member shares, two rollout generations would re-probe and prune each other.
+      -- The last slash-command list each agent's runtime advertised (ACP
+      -- available_commands_update), so a daemon restart/upgrade does not blind the
+      -- console's skill picker until the next session happens to start.
+      CREATE TABLE IF NOT EXISTS runtime_commands (
+        agentId TEXT PRIMARY KEY,
+        sessionId TEXT NOT NULL,
+        updatedAt TEXT NOT NULL,          -- ISO timestamp of the advertisement
+        payload TEXT NOT NULL             -- JSON RuntimeCommand[]
+      );
       CREATE TABLE IF NOT EXISTS runtime_catalog_meta (
         ownerId TEXT NOT NULL DEFAULT '', -- the owning member; '' is the single-daemon store
         runtimeId TEXT NOT NULL,
@@ -1305,6 +1319,18 @@ export class LocalStore {
         modelsHash TEXT,                  -- hash of probed models[] at last complete discovery
         observedAt INTEGER NOT NULL,
         PRIMARY KEY (ownerId, runtimeId)
+      );
+      -- The pool-wide runtime probe's published answer, keyed on the runtime IMAGE it describes
+      -- (docs/designs/daemon-detailed-design.md §2.6). One member claims a key and probes; every
+      -- member reads the payload and advertises it, so a pool runs ONE probe sandbox rather than
+      -- one per replica. The image is the key because that is what the answer is about: a template
+      -- bump is a different row, and no member can be served a previous image's models.
+      CREATE TABLE IF NOT EXISTS runtime_image_probe (
+        imageRef TEXT PRIMARY KEY,
+        claimedBy TEXT,                   -- member currently probing; the claim goes stale on its own
+        claimedAt INTEGER,
+        probedAt INTEGER,                 -- when a payload landed; NULL while only claimed
+        payload TEXT                      -- JSON {table, results} — the image table and probe results
       );
       CREATE TABLE IF NOT EXISTS runtime_model_catalog (
         ownerId TEXT NOT NULL DEFAULT '',
@@ -3955,6 +3981,42 @@ export class LocalStore {
   }
 
   /**
+   * The bytes of an inline transcript image in one thread, by the file NAME the agent read
+   * in its `[attached: …]` marker. Latest wins — the same name can legitimately recur.
+   *
+   * Backs forwarding a received file: the copy already kept for console replay is reused, so
+   * no second fetch hits the source platform and the bytes never pass through the model. That
+   * copy is BOUNDED (and may be a smaller rendition), so a forward can be lower-resolution
+   * than what arrived. Bounded scan depth for the same reason the copy is bounded.
+   */
+  async transcriptAttachmentByName(
+    channel: string,
+    thread: string,
+    agentId: string | undefined,
+    name: string
+  ): Promise<SessionImageAttachment | undefined> {
+    const rows = (await this.db
+      .prepare(
+        `SELECT attachmentsJson FROM transcript
+          WHERE orgId = ? AND channel = ? AND thread = ? AND attachmentsJson IS NOT NULL
+          ORDER BY seq DESC LIMIT 100`
+      )
+      .all(this.orgFor(agentId), channel, thread)) as unknown as { attachmentsJson: string }[]
+    for (const row of rows) {
+      let raw: unknown
+      try {
+        raw = JSON.parse(row.attachmentsJson)
+      } catch {
+        continue
+      }
+      const parsed = SessionImageAttachmentSchema.array().safeParse(raw)
+      const match = parsed.success ? parsed.data.find((attachment) => attachment.name === name) : undefined
+      if (match) return match
+    }
+    return undefined
+  }
+
+  /**
    * The session thread a Telegram message belongs to, recovered from the transcript
    * (every conversational `text` row carries its platform message id in `ts`, and
    * Telegram message ids are unique per chat). Backs reply-based session continuity:
@@ -4264,6 +4326,29 @@ export class LocalStore {
   }
 
   /** Whether an integration's first channel snapshot has been baselined (seeded). */
+  /** Persist one agent's advertised slash-command list (latest-wins, whole list). */
+  async setRuntimeCommands(agentId: string, row: { sessionId: string; updatedAt: string; payload: string }) {
+    await this.db
+      .prepare(
+        `INSERT INTO runtime_commands (agentId, sessionId, updatedAt, payload) VALUES (?, ?, ?, ?)
+         ON CONFLICT(agentId) DO UPDATE SET sessionId=excluded.sessionId, updatedAt=excluded.updatedAt, payload=excluded.payload`
+      )
+      .run(agentId, row.sessionId, row.updatedAt, row.payload)
+  }
+
+  async getRuntimeCommands(
+    agentId: string
+  ): Promise<{ sessionId: string; updatedAt: string; payload: string } | undefined> {
+    const row = (await this.db
+      .prepare('SELECT sessionId, updatedAt, payload FROM runtime_commands WHERE agentId = ?')
+      .get(agentId)) as { sessionId: string; updatedAt: string; payload: string } | undefined
+    return row ?? undefined
+  }
+
+  async deleteRuntimeCommands(agentId: string): Promise<void> {
+    await this.db.prepare('DELETE FROM runtime_commands WHERE agentId = ?').run(agentId)
+  }
+
   async isChannelIntroSeeded(integrationId: string): Promise<boolean> {
     return (
       (await this.db.prepare('SELECT 1 FROM channel_intro_seed WHERE integrationId = ?').get(integrationId)) !==
@@ -5625,6 +5710,66 @@ export class LocalStore {
       caps: parseJsonColumn<RuntimeModelCapRecord['caps']>(row.capsJson) ?? {},
       observedAt: row.observedAt
     }))
+  }
+
+  /**
+   * Try to become the member that probes this runtime image. One atomic upsert decides it, so two
+   * members starting together cannot both win: the loser reads the winner's payload instead. A
+   * claim whose holder died is retaken once it goes stale — otherwise one crashed member would
+   * leave the pool with no probe at all.
+   */
+  async claimRuntimeImageProbe(input: {
+    imageRef: string
+    memberId: string
+    now: number
+    staleBefore: number
+  }): Promise<boolean> {
+    const row = (await this.db
+      .prepare(
+        `INSERT INTO runtime_image_probe (imageRef, claimedBy, claimedAt)
+         VALUES (@imageRef, @memberId, @now)
+         ON CONFLICT(imageRef) DO UPDATE SET claimedBy = @memberId, claimedAt = @now
+           WHERE runtime_image_probe.claimedBy IS NULL
+              OR runtime_image_probe.claimedBy = @memberId
+              OR COALESCE(runtime_image_probe.claimedAt, 0) <= @staleBefore
+         RETURNING claimedBy`
+      )
+      .get(input)) as { claimedBy: string | null } | undefined
+    return row?.claimedBy === input.memberId
+  }
+
+  /** The published answer for an image, if one has landed. */
+  async readRuntimeImageProbe(imageRef: string): Promise<{ payload: string; probedAt: number } | undefined> {
+    const row = (await this.db
+      .prepare('SELECT payload, probedAt FROM runtime_image_probe WHERE imageRef = ?')
+      .get(imageRef)) as { payload: string | null; probedAt: number | null } | undefined
+    if (!row?.payload || row.probedAt === null) return undefined
+    return { payload: row.payload, probedAt: row.probedAt }
+  }
+
+  /** Hand a claim back without an answer: this member tried and failed, and the pool should not
+   *  have to wait out the whole stale window before another member does. */
+  async releaseRuntimeImageProbe(imageRef: string, memberId: string): Promise<void> {
+    await this.db
+      .prepare('UPDATE runtime_image_probe SET claimedBy = NULL, claimedAt = NULL WHERE imageRef = ? AND claimedBy = ?')
+      .run(imageRef, memberId)
+  }
+
+  /** Publish what this member's probe found, and release the claim with it. Rows for images the
+   *  pool has long stopped running are dropped on the way past: one per image tag ever deployed
+   *  would otherwise accumulate for the life of the deployment. */
+  async publishRuntimeImageProbe(input: { imageRef: string; payload: string; now: number }): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT INTO runtime_image_probe (imageRef, claimedBy, claimedAt, probedAt, payload)
+         VALUES (@imageRef, NULL, NULL, @now, @payload)
+         ON CONFLICT(imageRef) DO UPDATE SET claimedBy = NULL, claimedAt = NULL,
+           probedAt = @now, payload = @payload`
+      )
+      .run(input)
+    await this.db
+      .prepare('DELETE FROM runtime_image_probe WHERE imageRef <> ? AND COALESCE(probedAt, claimedAt, 0) < ?')
+      .run(input.imageRef, input.now - RUNTIME_IMAGE_PROBE_RETENTION_MS)
   }
 
   /** Next shim-binding generation for an agent's sandbox: one atomic upsert, so two members cannot tie. */

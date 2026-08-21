@@ -32,6 +32,7 @@ export {
   ORGANIZATION_KNOWLEDGE_FEATURE,
   ORGANIZATION_SUGGESTION_REVIEW_FEATURE,
   RESERVED_RESTART_CODE,
+  RUNTIME_COMMANDS_FEATURE,
   K8S_SUPERVISOR,
   AGENT_EXISTS_FEATURE,
   SESSION_LIVE_TAIL_FEATURE,
@@ -67,6 +68,7 @@ export * from './frames/integration.js'
 export * from './frames/mcpserver.js'
 export * from './frames/memory-connection.js'
 export * from './frames/skill.js'
+export * from './frames/runtime-command.js'
 export * from './frames/gitcred.js'
 export * from './frames/secrets.js'
 export * from './frames/session.js'
@@ -104,8 +106,11 @@ export function isFrame<T extends FrameType>(type: T) {
 export { isFrameType as isKnownFrameType }
 
 // ── wire codec (shared by daemon + control-plane) ──
-export { decodeEnvelope, buildEnvelope, encode, MAX_FRAME_BYTES } from './codec.js'
+export { decodeEnvelope, decodeCpEnvelope, buildEnvelope, encode, MAX_FRAME_BYTES } from './codec.js'
 export type { DecodeResult, BuildOpts, InboundControlExt } from './codec.js'
+
+// ── tolerant reading of a peer-authored payload, for a wire that needs its own reader ──
+export { tolerantReader, tolerantSchemas } from './tolerant.js'
 
 // ── which frames carry an organization (k8s-daemon-pool.md M4) ──
 export {

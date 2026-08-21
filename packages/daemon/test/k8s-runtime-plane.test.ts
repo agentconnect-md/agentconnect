@@ -208,7 +208,9 @@ describe('k8s runtime plane assembly', () => {
       }
     })
     await inFlight
-    expect(plane.dialer.connectionsFor(probeAgentId('member-a'))[0]?.binding.grants ?? []).toEqual(['probe'])
+    // `probe` asks the image what it provides; `acp` runs those runtimes to read the models they
+    // advertise. Nothing else: no workspace, no tunnel, no materialized secret.
+    expect(plane.dialer.connectionsFor(probeAgentId('member-a'))[0]?.binding.grants ?? []).toEqual(['probe', 'acp'])
     answer({ runtimes: [{ id: 'claude-acp', version: '0.66.0', acp: { protocolVersion: 1 } }] })
     const table = await probing
     expect(table.runtimes.map((entry) => `${entry.id}@${entry.version}`)).toEqual(['claude-acp@0.66.0'])
