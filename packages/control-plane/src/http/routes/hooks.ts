@@ -115,26 +115,26 @@ export function hookRoutes(deps: HttpDeps) {
 
     // gitlab-kind writes also (re)converge the managed project webhook (§11.1):
     // the saga recomputes the desired event union and updates/installs/removes
-    // it. Fire-and-forget for the same reason as the relay push above.
-    const convergeGitlabWebhook = (orgId: OrgId, hook: HookRecord): void => {
+    // it, then its onConverged rebroadcasts the project's compiled rules.
+    // `busy` means a peer run holds the §10.2 lease — that run re-checks the
+    // union at ITS end, but only for writes that landed before its final read,
+    // so this writer must outwait the lease rather than drop the change.
+    const convergeGitlabWebhook = (orgId: OrgId, projectId: bigint | null): void => {
       const gitlab = deps.gitlab
-      const projectId = hook.repoId
       if (!gitlab || projectId === null) return
       void deps.repos.gitlabProjectBinding
         .byProject(orgId, projectId)
         .then(async (binding) => {
           if (!binding) return
-          // Back-to-back writes contend on the saga's run lease: a `busy` loser
-          // would silently drop this union change, so retry briefly.
           let outcome = await gitlab.provisioner.provision(orgId, binding.id)
-          for (let attempt = 0; outcome.state === 'busy' && attempt < 5; attempt++) {
-            await new Promise((resolve) => setTimeout(resolve, 1_000))
+          // 8s × 90 outlasts a full 10-minute peer lease plus slack.
+          for (let attempt = 0; outcome.state === 'busy' && attempt < 90; attempt++) {
+            await new Promise((resolve) => setTimeout(resolve, 8_000))
             outcome = await gitlab.provisioner.provision(orgId, binding.id)
           }
-          // The compiled rule embeds the webhook + signing facts the saga just
-          // converged — re-push it (deleted hooks read null and stay removed).
-          const fresh = await deps.repos.hook.get(orgId, hook.id)
-          if (fresh) converge(fresh)
+          if (outcome.state === 'busy') {
+            app.log.warn({ projectId: projectId.toString() }, 'gitlab webhook converge still busy — gave up')
+          }
         })
         .catch((err) => app.log.warn({ projectId: projectId.toString(), err }, 'gitlab webhook converge failed'))
     }
@@ -509,7 +509,7 @@ export function hookRoutes(deps: HttpDeps) {
         // Re-read so hmacConfigured reflects the secret written above.
         const fresh = (await deps.repos.hook.get(orgId, hookId)) ?? hook
         converge(fresh)
-        if (fresh.kind === 'gitlab') convergeGitlabWebhook(orgId, fresh)
+        if (fresh.kind === 'gitlab') convergeGitlabWebhook(orgId, fresh.repoId)
         return { ...toDto(fresh, deps.config.PUBLIC_RELAY_URL), hmacSecret }
       }
     )
@@ -775,7 +775,14 @@ export function hookRoutes(deps: HttpDeps) {
           })
           .catch(() => {})
         converge(hook)
-        if (hook.kind === 'gitlab') convergeGitlabWebhook(orgOf(req), hook)
+        if (hook.kind === 'gitlab') {
+          convergeGitlabWebhook(orgOf(req), hook.repoId)
+          // A retarget moved this hook off `existing.repoId`: the source
+          // binding's union shrank too, so converge BOTH distinct projects.
+          if (existing.repoId !== null && existing.repoId !== hook.repoId) {
+            convergeGitlabWebhook(orgOf(req), existing.repoId)
+          }
+        }
         return toDto(hook, deps.config.PUBLIC_RELAY_URL)
       }
     )
@@ -813,7 +820,7 @@ export function hookRoutes(deps: HttpDeps) {
           })
           .catch(() => {})
         deps.hooks.remove(existing.id)
-        if (existing.kind === 'gitlab') convergeGitlabWebhook(orgOf(req), existing)
+        if (existing.kind === 'gitlab') convergeGitlabWebhook(orgOf(req), existing.repoId)
         return reply.code(204).send(null)
       }
     )

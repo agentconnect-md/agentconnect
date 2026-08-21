@@ -68,9 +68,17 @@ async function harness(options: FakeGitlabOptions = {}) {
     cipher,
     clock: systemClock,
     publicRelayUrl: RELAY_URL,
-    // The production union (container wiring): the enabled gitlab hook set.
+    // The production union + rebroadcast (container wiring): the enabled
+    // gitlab hook set, recompiled through the app's HookService after runs.
     desiredWebhookEvents: async (orgId, projectId) =>
       unionGitlabWebhookEvents(await hookRepo.listForOrgKind(OrgId(orgId), 'gitlab'), projectId),
+    onConverged: (orgId, projectId) => {
+      const app = running
+      if (!app) return
+      void hookRepo.listForOrgKind(OrgId(orgId), 'gitlab').then(async (rows) => {
+        for (const row of rows) if (row.repoId === projectId) await app.deps.hooks.broadcast(row)
+      })
+    },
     fetchImpl: fake.fetch()
   })
   running = buildHttpApp(
@@ -242,6 +250,75 @@ describe('gitlab hooks — routes, compile, webhook converge (§8.3/§11.1/§11.
       },
       { timeout: 15_000 }
     )
+  })
+})
+
+describe('gitlab hooks — binding lifecycle rebroadcast (§11.1/§11.3 round 2)', () => {
+  it("retargeting the last hook A→B uninstalls A's webhook and installs B's", async () => {
+    const h = await harness()
+    // A second managed binding (the fake serves any project id it is asked for).
+    const OTHER = 999n
+    const connection = await prisma.gitlabConnection.findFirstOrThrow({ where: { orgId: DEFAULT_ORG_ID } })
+    const other = await h.bindings.createWithClaim({
+      orgId: DEFAULT_ORG_ID,
+      projectId: OTHER,
+      projectPath: 'example-group/other-project',
+      installerConnectionId: connection.id
+    })
+    expect(await h.provisioner.provision(DEFAULT_ORG_ID, other.id)).toEqual({ state: 'ready' })
+
+    const created = await h.a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: glBody(h.agentId) })
+    expect(created.statusCode).toBe(200)
+    const hookId = (created.json() as { id: string }).id
+    await vi.waitFor(() => expect(h.fake.webhooks.size).toBe(1), { timeout: 15_000 })
+
+    const moved = await h.a.app.inject({
+      method: 'PUT',
+      url: `${ORG}/hooks/${hookId}`,
+      payload: glBody(h.agentId, { projectId: OTHER.toString() })
+    })
+    expect(moved.statusCode).toBe(200)
+    // BOTH bindings converge: A's webhook and key retire, B's install.
+    await vi.waitFor(
+      async () => {
+        expect((await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))?.webhookId).toBeNull()
+        expect((await h.bindings.get(DEFAULT_ORG_ID, other.id))?.webhookId).not.toBeNull()
+        expect(h.fake.webhooks.size).toBe(1)
+      },
+      { timeout: 15_000 }
+    )
+  })
+
+  it('repair rebroadcasts the project rules with the STABLE signing key', async () => {
+    const h = await harness()
+    const glab = channel([GITLAB_COM_V1_FEATURE])
+    h.a.relayReg.add(glab.ch)
+    const created = await h.a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: glBody(h.agentId) })
+    expect(created.statusCode).toBe(200)
+    let firstToken = ''
+    await vi.waitFor(
+      () => {
+        const assigns = glab.sent.filter((frame) => frame.type === 'rc/hook-assign')
+        expect(assigns.length).toBeGreaterThan(0)
+        firstToken = (assigns.at(-1)!.payload as RcHookAssign).gitlab!.signingToken
+      },
+      { timeout: 15_000 }
+    )
+
+    glab.sent.length = 0
+    const repair = await h.a.app.inject({ method: 'POST', url: `${ORG}/gitlab/projects/${h.binding.id}/repair` })
+    expect(repair.statusCode).toBe(200)
+    // The saga's onConverged re-pushes the compiled rule; the key is reused,
+    // never rotated, so live rules stay verifiable across repairs.
+    await vi.waitFor(
+      () => {
+        const assigns = glab.sent.filter((frame) => frame.type === 'rc/hook-assign')
+        expect(assigns.length).toBeGreaterThan(0)
+        expect((assigns.at(-1)!.payload as RcHookAssign).gitlab!.signingToken).toBe(firstToken)
+      },
+      { timeout: 15_000 }
+    )
+    expect([...h.fake.webhooks.values()][0]!.token).toBe(firstToken)
   })
 })
 

@@ -970,6 +970,16 @@ export function buildContainer(
           // §11.1: the union every enabled gitlab hook on the project wants.
           desiredWebhookEvents: async (orgId, projectId) =>
             unionGitlabWebhookEvents(await repos.hook.listForOrgKind(OrgId(orgId), 'gitlab'), projectId),
+          // Rules embed binding/webhook facts — recompile the project's hooks
+          // after every run that may have changed them (assign or remove).
+          onConverged: (orgId, projectId) => {
+            void repos.hook
+              .listForOrgKind(OrgId(orgId), 'gitlab')
+              .then(async (rows) => {
+                for (const row of rows) if (row.repoId === projectId) await hookService.broadcast(row)
+              })
+              .catch((err) => http.log.warn({ err }, 'gitlab hook rebroadcast failed'))
+          },
           ...(opts.gitlabFetch ? { fetchImpl: opts.gitlabFetch } : {}),
           log: { warn: (obj, msg) => http.log.warn(obj, msg) }
         })

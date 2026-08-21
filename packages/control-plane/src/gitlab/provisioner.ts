@@ -107,6 +107,10 @@ export interface GitlabProvisionerDeps {
   publicRelayUrl?: string
   /** The enabled-hook event union for a project; null ⇒ no webhook wanted (§10.3). */
   desiredWebhookEvents: (orgId: string, projectId: bigint) => Promise<GitlabWebhookEvents | null>
+  /** Fired after any run that may have changed binding/webhook facts — the
+   *  container rebroadcasts the project's compiled hook rules (assign or
+   *  remove) so relays never keep a rule built from stale facts. */
+  onConverged?: (orgId: string, projectId: bigint) => void
   fetchImpl?: FetchLike
   log?: { warn(obj: object, msg: string): void }
 }
@@ -155,6 +159,7 @@ export class GitlabProvisioner {
       } else if (outcome.state !== 'busy') {
         await this.deps.bindings.update(orgId, bindingId, { state: outcome.state, stateReason: outcome.reason })
       }
+      this.deps.onConverged?.(orgId, binding.projectId)
       return outcome
     } catch (e) {
       const reason =
@@ -268,21 +273,31 @@ export class GitlabProvisioner {
       await this.mintCredential(orgId, binding, token, root.id, accountUserId, purpose, owner)
     }
 
-    // 6–7. The managed webhook, only when an enabled hook wants events (§10.3).
-    const events = await this.deps.desiredWebhookEvents(orgId, binding.projectId)
-    if (events) {
-      const outcome = await this.convergeWebhook(orgId, binding, token, events, owner)
-      if (outcome) return outcome
-    } else if (binding.webhookId !== null) {
-      // §11.1's inverse: no enabled hook wants ingress any more, so the managed
-      // webhook (ours by recorded id) and its sealed key go. Same per-step lease
-      // discipline as the install path; a 404 counts as already-clean.
-      if (!(await this.renewLease(orgId, binding, owner))) {
-        return { state: 'admin_degraded', reason: 'claim_fence_lost' }
+    // 6–7. The managed webhook, converged to the union CURRENT at run end and
+    // re-checked until stable: a hook write landing mid-run finds this run's
+    // lease live and its own kick backs off, so THIS run must not finish on a
+    // union it read before that write.
+    for (let pass = 0; pass < 3; pass++) {
+      const fresh = (await this.deps.bindings.get(orgId, binding.id)) ?? binding
+      const events = await this.deps.desiredWebhookEvents(orgId, binding.projectId)
+      const installed = fresh.webhookId === null ? null : fresh.desiredEventsHash
+      if ((events ? JSON.stringify(events) : null) === installed) break
+      if (events) {
+        const outcome = await this.convergeWebhook(orgId, fresh, token, events, owner)
+        if (outcome) return outcome
+      } else {
+        // §11.1's inverse: no enabled hook wants ingress any more, so the managed
+        // webhook (ours by recorded id) and its sealed key go. Same per-step lease
+        // discipline as the install path; a 404 counts as already-clean.
+        if (!(await this.renewLease(orgId, fresh, owner))) {
+          return { state: 'admin_degraded', reason: 'claim_fence_lost' }
+        }
+        if (fresh.webhookId !== null) {
+          await gitlabDeleteWebhook(token, binding.projectId, fresh.webhookId, this.deps.fetchImpl).catch(swallow404)
+        }
+        await this.deps.webhookSecrets.delete(orgId, binding.id)
+        await this.deps.bindings.update(orgId, binding.id, { webhookId: null, desiredEventsHash: null })
       }
-      await gitlabDeleteWebhook(token, binding.projectId, binding.webhookId, this.deps.fetchImpl).catch(swallow404)
-      await this.deps.webhookSecrets.delete(orgId, binding.id)
-      await this.deps.bindings.update(orgId, binding.id, { webhookId: null })
     }
     return { state: 'ready' }
   }
@@ -388,10 +403,16 @@ export class GitlabProvisioner {
       return { state: 'admin_degraded', reason: 'claim_fence_lost' }
     }
     const url = `${this.deps.publicRelayUrl.replace(/\/$/, '')}/webhooks/gitlab`
-    const signingToken = `whsec_${randomBytes(32).toString('base64')}`
-    // Seal the signing intent BEFORE any provider call: a crash after the
-    // create still leaves us the key the created hook carries.
-    await this.deps.webhookSecrets.put(orgId, binding.id, signingToken)
+    // The signing key is STABLE across converges — compiled rules carry it
+    // inline, so a fresh key per run would strand every live rule until a
+    // rebroadcast. Generate only when absent, sealing the intent BEFORE any
+    // provider call: a crash after the create still leaves us the created
+    // hook's key.
+    let signingToken = await this.deps.webhookSecrets.get(orgId, binding.id)
+    if (!signingToken) {
+      signingToken = `whsec_${randomBytes(32).toString('base64')}`
+      await this.deps.webhookSecrets.put(orgId, binding.id, signingToken)
+    }
     let fresh = binding.webhookId === null
     let webhookId: bigint
     if (fresh) {
@@ -557,6 +578,9 @@ export class GitlabProvisioner {
       return { removed: false, reason: 'provisioning_in_progress' }
     }
     await this.deps.bindings.bumpCredentialEpoch(orgId, bindingId)
+    // The binding just left the servable states — pull the project's compiled
+    // rules off the relay pool now, not when cleanup eventually completes.
+    this.deps.onConverged?.(orgId, binding.projectId)
     if (!binding.installerConnectionId) {
       await this.deps.bindings.update(orgId, bindingId, {
         state: 'cleanup_pending',
