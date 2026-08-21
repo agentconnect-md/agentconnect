@@ -284,6 +284,23 @@ describe('GitlabProvisioner (§10.2)', () => {
     expect(await prisma.codeHostRepositoryClaim.count({ where: { provider: 'gitlab' } })).toBe(0)
   })
 
+  it('disconnect retires BOTH a stale recorded id and a crash-left marked replacement', async () => {
+    const h = await harness()
+    await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
+    // Recovery sequence: recorded account A was removed externally; a repair
+    // created marker-matching replacement B and crashed before persisting it.
+    const bindingRow = await prisma.gitlabProjectBinding.findUniqueOrThrow({ where: { id: h.binding.id } })
+    const recordedId = Number(bindingRow.serviceAccountUserId)
+    h.fake.serviceAccounts = h.fake.serviceAccounts.filter((account) => account.id !== recordedId)
+    h.fake.serviceAccounts.push({ id: 99999, username: 'agentconnect-p4455667', name: 'AgentConnect (replacement)' })
+    expect(await h.provisioner.disconnect(DEFAULT_ORG_ID, h.binding.id)).toEqual({ removed: true })
+    // The union was reconciled: the marked replacement is gone too, and the
+    // claim released only after the marker read came back absent.
+    expect(h.fake.serviceAccounts).toHaveLength(0)
+    expect(h.fake.deletedServiceAccounts).toContain(99999)
+    expect(await prisma.codeHostRepositoryClaim.count({ where: { provider: 'gitlab' } })).toBe(0)
+  })
+
   it('incomplete cleanup keeps cleanup_pending and RETAINS the claim (§19.4)', async () => {
     const h = await harness({ failTokenRevoke: true })
     await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)

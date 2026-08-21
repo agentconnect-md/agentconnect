@@ -310,6 +310,9 @@ export class GitlabProvisioner {
         this.deps.log?.warn({ bindingId: binding.id, purpose }, 'gitlab stray token revocation is unconfirmed')
       )
     }
+    // Renew again right before the create: the stray sweep above may have
+    // spent a chunk of the lease on sequential provider calls.
+    if (!(await this.renewLease(orgId, binding, owner))) throw new GitlabClaimFenceLost()
     const grant = await gitlabCreateServiceAccountToken(
       token,
       groupId,
@@ -482,14 +485,15 @@ export class GitlabProvisioner {
       }
       const root = await gitlabRootNamespace(token, project.namespace, this.deps.fetchImpl)
       if (root.kind === 'group') {
-        const marked = await gitlabFindServiceAccount(
-          token,
-          root.id,
-          gitlabServiceAccountUsername(binding.projectId),
-          this.deps.fetchImpl
-        )
-        const accountUserId = binding.serviceAccountUserId ?? (marked ? BigInt(marked.id) : null)
-        if (accountUserId !== null) {
+        const username = gitlabServiceAccountUsername(binding.projectId)
+        const marked = await gitlabFindServiceAccount(token, root.id, username, this.deps.fetchImpl)
+        // The UNION of the recorded id and the marker result: a stale recorded
+        // account and a crash-left marked replacement can be two distinct
+        // accounts, and both must be gone before the claim may release.
+        const candidates = new Set<bigint>()
+        if (binding.serviceAccountUserId !== null) candidates.add(binding.serviceAccountUserId)
+        if (marked) candidates.add(BigInt(marked.id))
+        for (const accountUserId of candidates) {
           // Recorded tokens are revoked individually (belt); deleting the
           // account then invalidates anything a crash left unrecorded.
           for (const credential of credentials) {
@@ -502,6 +506,10 @@ export class GitlabProvisioner {
             ).catch(swallow404)
           }
           await gitlabDeleteServiceAccount(token, root.id, accountUserId, this.deps.fetchImpl).catch(swallow404)
+        }
+        // Release only on positive evidence: the deterministic marker is absent.
+        if (await gitlabFindServiceAccount(token, root.id, username, this.deps.fetchImpl)) {
+          throw new GitlabApiError('marked service account still present after cleanup', 0, 'INTERNAL', true)
         }
       } else if (binding.serviceAccountUserId !== null || credentials.length > 0) {
         // Provider facts exist but their group is unreachable: never release.
