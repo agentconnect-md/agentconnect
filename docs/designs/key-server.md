@@ -77,7 +77,9 @@ deployment that terminates TLS on this hop simply configures an https address. A
 `--key-server-token-path <path>`, and
 `--key-server-token-path <path>`. The equivalent deployment environment names are
 `KEY_SERVER` and `KEY_SERVER_TOKEN_PATH`; explicit CLI values win. A token path
-without a server is rejected, and these options are rejected outside `--k8s`.
+without a server does nothing and says so; neither option requires `--k8s`, because where a runtime
+runs and where its key comes from are different questions — the launch path applies a minted
+credential to whatever environment it is building, cluster sandbox or local child alike.
 
 The bearer file is read for every IssueKey and RevokeKey request. The kubelet or
 another credential agent can therefore rotate the file without restarting the daemon.

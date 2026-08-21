@@ -1153,7 +1153,6 @@ export class Daemon {
     this.clock = opts.clock ?? systemClock
     const modelKeyNow = opts.clock ? () => this.clock.now() : () => performance.timeOrigin + performance.now()
     this.modelSessions = new ModelSessionHostPool(this.modelSessionPoolHost(), {
-      k8s: this.k8s,
       address: opts.keyServer?.trim() || process.env.KEY_SERVER?.trim(),
       tokenPath: opts.keyServerTokenPath?.trim() || process.env.KEY_SERVER_TOKEN_PATH?.trim(),
       ...(opts.keyServerClient ? { client: opts.keyServerClient } : {}),
@@ -3486,7 +3485,10 @@ export class Daemon {
         // A dream host materializes nothing: it has no cleanup path and needs none of these secrets.
         ...(excludeAgentToolCredentials ? {} : { configFileDir: agent.dir }),
         finalizeLaunchEnv: (launchEnv) => {
-          if (!this.k8s || !target) return
+          // Not gated on `--k8s`: a minted credential belongs in whatever environment this is
+          // building, cluster sandbox or local child alike. The two branches below are inert
+          // outside a cloud daemon anyway — both maps are populated only there.
+          if (!target) return
           if (opts.modelCredential) applyModelCredential(target, launchEnv, opts.modelCredential.credential)
           else {
             const configured = this.modelSessions.staticCredential(target.runtime)
