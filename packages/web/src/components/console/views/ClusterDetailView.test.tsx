@@ -378,6 +378,49 @@ describe('ClusterDetailView — managed (AgentConnect Cloud)', () => {
     expect(html).toContain('2 top-ups')
   })
 
+  it('claims nothing while placement is still loading, even with the series in hand', () => {
+    // `hosted` is empty while agents load — and group-placed agents classify as pool-placed
+    // while the set ids load — so a figure rendered now would be a confident wrong number.
+    mocks.daemons = [member('p1')]
+    mocks.agents = [onPool('a1')]
+    mocks.agentsLoading = true
+
+    const html = render()
+
+    expect(html).toContain('animate-pulse')
+    expect(html).not.toContain('$8.00')
+    expect(html).not.toContain('$0.00 / day')
+  })
+
+  it('keeps the stale figure through a failed revalidation instead of contradicting the chart', () => {
+    // SWR retains `data` when a revalidation fails; the chart below still draws that series,
+    // so the header must not flip to "unavailable" beside it.
+    mocks.daemons = [member('p1')]
+    mocks.agents = [onPool('a1')]
+    mocks.usage = { data: usageOverPool(), error: new Error('fetch failed') }
+    mocks.topUps = { data: [credit(4, 20_000_000)], error: new Error('fetch failed') }
+
+    const html = render()
+
+    expect(html).toContain('$8.00')
+    expect(html).toContain('$20.00')
+    expect(html).not.toContain('unavailable')
+  })
+
+  it('keeps a negative credit in the net total but out of the chart and the count', () => {
+    // Stacked on a positive spend base, a negative segment draws downward over the brand bar —
+    // and it is not a "top-up", so the note counts only the positive rows the chart marks.
+    mocks.daemons = [member('p1')]
+    mocks.agents = [onPool('a1')]
+    mocks.topUps = { data: [credit(4, 20_000_000), { ...credit(25, -5_000_000), kind: 'adjustment' as const }] }
+
+    const html = render()
+
+    expect(html).toContain('$15.00')
+    expect(html).toContain('1 top-up')
+    expect(html).not.toContain('2 top-ups')
+  })
+
   it("holds the chart's footprint while the first load is in flight", () => {
     // A card that collapsed to its figures and grew a chart underneath would shove the page
     // down the moment the series lands.
