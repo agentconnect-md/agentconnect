@@ -2173,6 +2173,11 @@ export function agentRoutes(deps: HttpDeps) {
           }
           await pushExternalMemoryBeforeAgent(agent)
           await replicateUpsert(agent)
+          // Pause decides whether this agent's hooks belong in the relay pool at all, so a toggle
+          // needs the rule convergence a placement change gets — nothing else recomputes it.
+          if ((existing.pause === true) !== (agent.pause === true)) {
+            await deps.hooks.rebroadcastForAgent(AgentId(agent.id))
+          }
           if (req.body.icon !== undefined) void syncAgentBotIcons(deps, agent, app.log)
           await removeUnusedExternalMemoryAfterAgent(existing, agent)
           // Provision/drop MCP proxy defs for an enable-list change with the placement
