@@ -420,6 +420,8 @@ ordered after it. Which is also why the intent's PRESENCE is the gate rather tha
 names: at that point the volume matches no definition, and the one that arrives next is as likely
 to be the rollback as a retry of the edit.
 
-What this does not cover is a **session-isolated** (worktree) git-repo workspace: that needs
-`worktree add` in the sandbox and a retention GC that reads the pod's tree, and is still refused
-by name at session preparation.
+Session-isolated (worktree) workspaces are covered the same way: the WorkspaceFs seam
+(`workspace-fs-channel.ts`) and the shim's exec allowlist (`worktree add`/prune) materialize a
+session's own worktree on the pod's volume at `<mount>/worktrees/<sid>`, and the same retention GC
+that retires worktrees locally reads the pod's tree through the same seam
+([multi-repository-workspaces.md](multi-repository-workspaces.md) Phase 7).
