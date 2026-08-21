@@ -21,6 +21,7 @@ import type { CronUpsert, IntegrationSpec } from '@agentconnect.md/protocol'
 import type { AgentSpecAssembler } from './agentSpecAssembler.js'
 import type { ControlSender } from './outbound.js'
 import { PLACEMENT_ONLY, type PlacementResolver, type ResolvableAgent } from './placementResolver.js'
+import { daemonSupportsAgent } from '../domain/daemon-features.js'
 import type { AgentRecord } from '../persistence/ports.js'
 
 export type { DutyHolderReader } from './placementResolver.js'
@@ -39,6 +40,9 @@ export class AgentDelivery {
       specs: AgentSpecAssembler
       /** Absent (tests / no pool) ⇒ placement alone, which is the pre-duty behavior. */
       placement?: PlacementResolver
+      /** Live advertised features per connected daemon (§17.3 projection gate).
+       *  Absent or unknown reads as "no features" — fail-closed for gated agents. */
+      daemonFeatures?: (daemonId: string) => readonly string[] | undefined
     }
   ) {}
 
@@ -91,7 +95,11 @@ export class AgentDelivery {
   /** Push an edited spec to every delivery target. The spec is assembled ONCE:
    *  the targets replicate the same agent, and two assemblies could disagree. */
   async upsert(agent: AgentRecord, onError: DeliveryErrorHandler): Promise<void> {
-    const targets = await this.daemonsFor(agent)
+    // §17.3 projection gate: a target that has not advertised the agent's required
+    // features is skipped rather than sent a frame it cannot decode.
+    const targets = (await this.daemonsFor(agent)).filter((daemonId) =>
+      daemonSupportsAgent(agent, this.deps.daemonFeatures?.(daemonId))
+    )
     if (targets.length === 0) return
     const spec = await this.deps.specs.assemble(agent)
     await this.fanOut(targets, onError, (daemonId) =>
