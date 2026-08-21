@@ -957,6 +957,9 @@ model CodeHostRepositoryClaim {
   // Metadata-only cleanup facts (external ids, never secrets) preserved when the
   // owning binding disappears before external cleanup completed (§10.2/§19.4).
   tombstone  Json?
+  // §10.2 mutual exclusion: true while a provisioning run may write to the
+  // provider. beginCleanup refuses while set; the same owner's next run resets it.
+  opInFlight Boolean  @default(false)
   createdAt  DateTime @default(now()) @db.Timestamptz(6)
   updatedAt  DateTime @updatedAt @db.Timestamptz(6)
 

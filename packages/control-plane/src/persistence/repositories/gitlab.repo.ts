@@ -377,6 +377,9 @@ export class PgGitlabProjectBindingRepo implements GitlabProjectBindingRepo {
   async markProviderMutationStarted(orgId: string, bindingId: string, projectId: bigint): Promise<boolean> {
     // Idempotent for reruns (`active` stays `active`); false the moment the
     // claim is gone, detached, or entering cleanup — the fence is REQUIRED.
+    // The RESERVATION: durable before any provider write, and the mutual-
+    // exclusion edge — beginCleanup refuses while it is held. Idempotent for
+    // the same owner (a crashed run's stale reservation is re-acquired here).
     const res = await this.prisma.codeHostRepositoryClaim.updateMany({
       where: {
         provider: 'gitlab',
@@ -385,9 +388,16 @@ export class PgGitlabProjectBindingRepo implements GitlabProjectBindingRepo {
         bindingRef: bindingId,
         state: { in: ['provisioning', 'active'] }
       },
-      data: { state: 'active' }
+      data: { state: 'active', opInFlight: true }
     })
     return res.count === 1
+  }
+
+  async endProviderMutation(orgId: string, bindingId: string, projectId: bigint): Promise<void> {
+    await this.prisma.codeHostRepositoryClaim.updateMany({
+      where: { provider: 'gitlab', externalId: projectId, orgId, bindingRef: bindingId },
+      data: { opInFlight: false }
+    })
   }
 
   async claimFenceHeld(orgId: string, bindingId: string, projectId: bigint): Promise<boolean> {
@@ -397,11 +407,19 @@ export class PgGitlabProjectBindingRepo implements GitlabProjectBindingRepo {
     return held === 1
   }
 
-  async beginCleanup(orgId: string, bindingId: string, projectId: bigint): Promise<void> {
-    await this.prisma.codeHostRepositoryClaim.updateMany({
-      where: { provider: 'gitlab', externalId: projectId, orgId, bindingRef: bindingId },
+  async beginCleanup(orgId: string, bindingId: string, projectId: bigint): Promise<boolean> {
+    // Refused while a provisioning reservation is held: cleanup must WAIT, so
+    // there is no window between a fence check and its provider write. When no
+    // claim row is attached at all (already tombstoned), cleanup may proceed.
+    const attached = await this.prisma.codeHostRepositoryClaim.count({
+      where: { provider: 'gitlab', externalId: projectId, orgId, bindingRef: bindingId }
+    })
+    if (attached === 0) return true
+    const res = await this.prisma.codeHostRepositoryClaim.updateMany({
+      where: { provider: 'gitlab', externalId: projectId, orgId, bindingRef: bindingId, opInFlight: false },
       data: { state: 'cleanup_pending' }
     })
+    return res.count === 1
   }
 
   async removeWithClaim(orgId: string, bindingId: string, projectId: bigint): Promise<boolean> {

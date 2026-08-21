@@ -45,6 +45,7 @@ import {
   gitlabEnsureDeveloperMember,
   gitlabFindServiceAccount,
   gitlabProject,
+  gitlabListServiceAccountTokens,
   gitlabRevokeServiceAccountToken,
   gitlabRootNamespace,
   gitlabServiceAccountUsername,
@@ -139,6 +140,10 @@ export class GitlabProvisioner {
               : 'admin_unavailable'
       this.deps.log?.warn({ bindingId, reason }, 'gitlab provisioning failed')
       return this.degrade(orgId, bindingId, 'admin_degraded', reason)
+    } finally {
+      // Release the reservation whatever happened: every external resource is
+      // deterministically marked, so the next same-owner run reconciles it.
+      await this.deps.bindings.endProviderMutation(orgId, bindingId, binding.projectId).catch(() => {})
     }
   }
 
@@ -246,9 +251,29 @@ export class GitlabProvisioner {
   ): Promise<void> {
     const scopes = PURPOSE_SCOPES[purpose]
     const expiresAt = expiresAtDate(this.deps.clock.now())
-    // §10.2 per-step check before every provider create.
+    // §10.2 per-step belt under the reservation.
     if (!(await this.deps.bindings.claimFenceHeld(orgId, binding.id, binding.projectId))) {
       throw new GitlabClaimFenceLost()
+    }
+    // Ambiguous-create recovery (§10.2): a marked token we did not record has a
+    // lost plaintext — revoke it before minting, sparing the recorded one
+    // (rotation's create-before-revoke overlap shares the name deliberately).
+    const recorded = await this.deps.credentials.get(binding.id, purpose)
+    const name = patName(binding.projectId, purpose)
+    const strays = (
+      await gitlabListServiceAccountTokens(token, groupId, serviceAccountUserId, this.deps.fetchImpl)
+    ).filter((t) => t.name === name && t.active !== false && t.revoked !== true)
+    for (const stray of strays) {
+      if (recorded && BigInt(stray.id) === recorded.externalTokenId) continue
+      await gitlabRevokeServiceAccountToken(
+        token,
+        groupId,
+        serviceAccountUserId,
+        BigInt(stray.id),
+        this.deps.fetchImpl
+      ).catch(() =>
+        this.deps.log?.warn({ bindingId: binding.id, purpose }, 'gitlab stray token revocation is unconfirmed')
+      )
     }
     const grant = await gitlabCreateServiceAccountToken(
       token,
@@ -356,10 +381,11 @@ export class GitlabProvisioner {
   async disconnect(orgId: string, bindingId: string): Promise<{ removed: boolean; reason?: string }> {
     const binding = await this.deps.bindings.get(orgId, bindingId)
     if (!binding) return { removed: false, reason: 'binding_missing' }
-    // Mutual exclusion with provision/repair (§10.2): entering cleanup flips the
-    // claim out of `active`, so a concurrent run loses its fence before its
-    // next provider write. Local authority goes with it.
-    await this.deps.bindings.beginCleanup(orgId, bindingId, binding.projectId)
+    // Mutual exclusion with provision/repair (§10.2): cleanup may not begin
+    // while a provisioning reservation is held — the caller retries later.
+    if (!(await this.deps.bindings.beginCleanup(orgId, bindingId, binding.projectId))) {
+      return { removed: false, reason: 'provisioning_in_progress' }
+    }
     await this.deps.bindings.bumpCredentialEpoch(orgId, bindingId)
     if (!binding.installerConnectionId) {
       await this.deps.bindings.update(orgId, bindingId, {

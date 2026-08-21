@@ -173,15 +173,44 @@ describe('GitlabProvisioner (§10.2)', () => {
     expect(h.fake.tokens.size).toBe(0)
   })
 
-  it('the fence methods disagree deterministically with cleanup ordering', async () => {
+  it('the reservation is mutually exclusive with cleanup, in both orders', async () => {
     const h = await harness()
-    // Fence held after marking; lost the moment cleanup begins.
+    // Reservation held: cleanup must wait — no check-to-write window exists.
     expect(await h.bindings.markProviderMutationStarted(DEFAULT_ORG_ID, h.binding.id, PROJECT)).toBe(true)
+    expect(await h.bindings.beginCleanup(DEFAULT_ORG_ID, h.binding.id, PROJECT)).toBe(false)
     expect(await h.bindings.claimFenceHeld(DEFAULT_ORG_ID, h.binding.id, PROJECT)).toBe(true)
-    await h.bindings.beginCleanup(DEFAULT_ORG_ID, h.binding.id, PROJECT)
+    // Released: cleanup wins, and a late marker/fence check refuses.
+    await h.bindings.endProviderMutation(DEFAULT_ORG_ID, h.binding.id, PROJECT)
+    expect(await h.bindings.beginCleanup(DEFAULT_ORG_ID, h.binding.id, PROJECT)).toBe(true)
     expect(await h.bindings.claimFenceHeld(DEFAULT_ORG_ID, h.binding.id, PROJECT)).toBe(false)
-    // And cleanup-first refuses a late marker too.
     expect(await h.bindings.markProviderMutationStarted(DEFAULT_ORG_ID, h.binding.id, PROJECT)).toBe(false)
+  })
+
+  it('disconnect during a held reservation is refused, then succeeds after release', async () => {
+    const h = await harness()
+    await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
+    expect(await h.bindings.markProviderMutationStarted(DEFAULT_ORG_ID, h.binding.id, PROJECT)).toBe(true)
+    expect(await h.provisioner.disconnect(DEFAULT_ORG_ID, h.binding.id)).toEqual({
+      removed: false,
+      reason: 'provisioning_in_progress'
+    })
+    await h.bindings.endProviderMutation(DEFAULT_ORG_ID, h.binding.id, PROJECT)
+    expect(await h.provisioner.disconnect(DEFAULT_ORG_ID, h.binding.id)).toEqual({ removed: true })
+  })
+
+  it('an unrecorded marked token (crash after create) is revoked before re-minting (§10.2)', async () => {
+    const h = await harness()
+    await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
+    const creds = new PgGitlabProjectCredentialRepo(prisma)
+    const before = (await creds.get(h.binding.id, 'read'))!
+    // Simulate the crash: the provider token exists but our record is gone.
+    await prisma.gitlabProjectCredential.delete({ where: { id: before.id } })
+    await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
+    // The stray was revoked; a fresh token took its place.
+    expect(h.fake.tokens.get(Number(before.externalTokenId))!.revoked).toBe(true)
+    const after = (await creds.get(h.binding.id, 'read'))!
+    expect(after.externalTokenId).not.toBe(before.externalTokenId)
+    expect(h.fake.tokens.get(Number(after.externalTokenId))!.revoked).toBe(false)
   })
 
   it('incomplete cleanup keeps cleanup_pending and RETAINS the claim (§19.4)', async () => {

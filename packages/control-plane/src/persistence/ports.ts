@@ -3156,16 +3156,18 @@ export interface GitlabProjectBindingRepo {
   ): Promise<GitlabProjectBindingRecord | null>
   /** Purge fence: every rotation/revocation/disconnect bumps it (§7.4/§19.4). */
   bumpCredentialEpoch(orgId: string, bindingId: string): Promise<bigint | null>
-  /** §10.2 durable fence, written BEFORE the first provider write: flips the
-   *  attached claim out of `provisioning`. False ⇒ the claim is gone, detached,
-   *  or already in cleanup — the caller must NOT touch the provider. */
+  /** §10.2 RESERVATION, durable before the first provider write: flips the
+   *  attached claim out of `provisioning` and holds the in-flight reservation
+   *  cleanup must respect. False ⇒ gone/detached/in-cleanup: NO provider writes. */
   markProviderMutationStarted(orgId: string, bindingId: string, projectId: bigint): Promise<boolean>
-  /** Per-step §10.2 check before EVERY provider create: the claim is still
-   *  attached to this binding and still `active` (not entering cleanup). */
+  /** Releases the reservation once the run's provider writes have settled. */
+  endProviderMutation(orgId: string, bindingId: string, projectId: bigint): Promise<void>
+  /** Per-step belt under the reservation: attached and still `active`. */
   claimFenceHeld(orgId: string, bindingId: string, projectId: bigint): Promise<boolean>
-  /** Cleanup entry: flips the attached claim to `cleanup_pending` so any
-   *  concurrent provision/repair loses its fence before its next provider write. */
-  beginCleanup(orgId: string, bindingId: string, projectId: bigint): Promise<void>
+  /** Cleanup entry — MUTUALLY EXCLUSIVE with the reservation: false while a
+   *  provisioning run holds it (cleanup retries later); flips the attached
+   *  claim to `cleanup_pending` so a late marker/fence check refuses. */
+  beginCleanup(orgId: string, bindingId: string, projectId: bigint): Promise<boolean>
   /** Verified-complete cleanup only (§10.2/§19.4): the binding, its cascaded
    *  local rows, and the deployment-global claim are removed in ONE
    *  transaction. Anything short of verified cleanup keeps both. */

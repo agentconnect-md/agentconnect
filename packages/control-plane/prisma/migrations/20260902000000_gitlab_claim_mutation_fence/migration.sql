@@ -40,3 +40,9 @@ BEGIN
     RETURN OLD;
 END;
 $$ LANGUAGE plpgsql;
+
+-- §10.2 mutual exclusion between provisioning and cleanup: a provisioning run
+-- RESERVES the claim before any provider write; cleanup may not begin while the
+-- reservation is held, and a held fence cannot be re-acquired by cleanup racing
+-- the check-to-write window.
+ALTER TABLE "code_host_repository_claim" ADD COLUMN "opInFlight" BOOLEAN NOT NULL DEFAULT false;
