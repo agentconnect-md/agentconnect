@@ -391,7 +391,11 @@ export function useSessionTranscript(input: UseSessionTranscriptInput): UseSessi
         // into the NEW session and re-point its cursor at the old one (tailSessionRef tracks the open
         // session, like refreshTail's guard).
         if (tailSessionRef.current !== sid) return
-        setMsgs((current) => [...page.messages, ...(current ?? [])])
+        // Upsert, not concat: a Slack warm-thread backfill can make this older read overlap rows the
+        // tail already added, so a raw prepend would duplicate them (and their React keys).
+        setMsgs((current) =>
+          mergeSessionMessages(current ?? [], page.messages, platformTranscriptOrdering(sessionPlatform))
+        )
         olderCursorRef.current = page.nextCursor ?? null
         setHasEarlier(page.nextCursor != null)
       } catch {
@@ -432,7 +436,7 @@ export function useSessionTranscript(input: UseSessionTranscriptInput): UseSessi
     } finally {
       setPagingEarlier(false)
     }
-  }, [conversationKey, pagingEarlier, sid])
+  }, [conversationKey, pagingEarlier, sid, sessionPlatform])
 
   return {
     msgs,
