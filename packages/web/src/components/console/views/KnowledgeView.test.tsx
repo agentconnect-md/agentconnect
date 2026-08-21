@@ -103,6 +103,7 @@ describe('organization suggestion review card', () => {
 
     expect(button('Reject').disabled).toBe(true)
     expect(button('Accept').disabled).toBe(true)
+    expect(button('Inspect').disabled).toBe(true) // nothing to read the body from
     expect(host.textContent).toContain('paused for safety')
     expect(fetchMock).not.toHaveBeenCalled()
   })
@@ -123,9 +124,12 @@ describe('organization suggestion review card', () => {
     })
     vi.stubGlobal('fetch', fetchMock)
     const onReviewed = await render(BASE)
+    // Accept is disabled until the body renders — it binds to the inspected snapshot — and the
+    // step that unlocks it sits right beside it.
     expect(button('Accept').disabled).toBe(true)
+    expect(button('Inspect').disabled).toBe(false)
     expect(fetchMock).not.toHaveBeenCalled()
-    await act(async () => button('Inspect staged content').click())
+    await act(async () => button('Inspect').click())
     await settleUntil(() => fetchMock.mock.calls.length === 1)
     await act(async () => {
       releaseContent(
@@ -142,7 +146,7 @@ describe('organization suggestion review card', () => {
         )
       )
     })
-    await settleUntil(() => !button('Accept').disabled)
+    await settleUntil(() => host.textContent?.includes('Run every gate.') === true)
 
     expect(host.textContent).toContain('# Deployment')
     expect(host.textContent).toContain('Run every gate.')
@@ -155,6 +159,62 @@ describe('organization suggestion review card', () => {
       snapshotToken: `sha256:${'b'.repeat(64)}`
     })
     expect(onReviewed).toHaveBeenCalledTimes(1)
+  })
+
+  it('inspects from the header, then accepts — the inspect click never posts a review', async () => {
+    // The reported confusion: Accept looked broken until you found "Inspect staged content"
+    // in the panel below. The step now sits beside Accept, and still gates it.
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith('/content')) {
+        return new Response(
+          JSON.stringify({
+            kind: 'knowledge',
+            digest: BASE.digest,
+            snapshotToken: `sha256:${'c'.repeat(64)}`,
+            content: '# Deployment',
+            summary: BASE.summary,
+            tags: BASE.tags
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } }
+        )
+      }
+      return new Response(JSON.stringify({ ...BASE, state: 'accepted' }), {
+        status: init?.method === 'POST' ? 200 : 500,
+        headers: { 'content-type': 'application/json' }
+      })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const onReviewed = await render(BASE)
+
+    await act(async () => button('Inspect').click())
+    await settleUntil(() => host.textContent?.includes('Deployment') === true)
+    // That click fetched the body; it did NOT review anything.
+    expect(fetchMock.mock.calls.every(([input]) => !String(input).endsWith('/review'))).toBe(true)
+
+    await act(async () => button('Accept').click())
+    await settleUntil(() => onReviewed.mock.calls.length === 1)
+    const reviewCall = fetchMock.mock.calls.find(([input]) => String(input).endsWith('/review'))
+    expect(JSON.parse(String(reviewCall?.[1]?.body))).toEqual({
+      decision: 'accept',
+      snapshotToken: `sha256:${'c'.repeat(64)}`
+    })
+  })
+
+  it('rejects without inspecting: nothing is installed, so no snapshot is needed', async () => {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response(JSON.stringify({ ...BASE, state: 'rejected' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' }
+        })
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    const onReviewed = await render(BASE)
+    await act(async () => button('Reject').click())
+    await settleUntil(() => onReviewed.mock.calls.length === 1)
+    const reviewCall = fetchMock.mock.calls.find(([input]) => String(input).endsWith('/review'))
+    expect(JSON.parse(String(reviewCall?.[1]?.body))).toEqual({ decision: 'reject' })
+    expect(fetchMock.mock.calls.every(([input]) => !String(input).endsWith('/content'))).toBe(true)
   })
 
   it('renders every text file and identifies binary assets in a complete skill tree', async () => {
@@ -181,7 +241,7 @@ describe('organization suggestion review card', () => {
     vi.stubGlobal('fetch', fetchMock)
     await render({ ...BASE, kind: 'skill', title: 'safe-deploy' })
     expect(fetchMock).not.toHaveBeenCalled()
-    await act(async () => button('Inspect staged content').click())
+    await act(async () => button('Inspect').click())
     await settleUntil(() => host.textContent?.includes('echo ready') === true)
 
     expect(host.textContent).toContain('SKILL.md')

@@ -41,7 +41,12 @@ The console gains a separate top-level **Knowledge** destination at
    name, rendered Markdown or complete file tree, proposing agent, source Dream
    and sessions, operation (`create` or `update`), creation time, and review
    state. Owners may accept or reject a pending item. Rejected items remain in
-   history.
+   history. The body is fetched from the source daemon only on inspection, and
+   acceptance carries the token that inspection mints (§7.3), so the card offers
+   `Inspect` beside the two decisions and keeps `Accept` disabled until the
+   complete body has rendered. Each control keeps one meaning, so a stray second
+   click cannot land on a decision the first click armed. Rejecting needs no
+   inspection: it installs nothing.
 
 Managed organization skills appear in the existing **Skills library** card on
 Tools & Skills, alongside Git-backed sources. A managed tile is labeled as an

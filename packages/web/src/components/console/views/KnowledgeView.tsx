@@ -124,9 +124,11 @@ export function SuggestionCard({
     inspect && suggestion.state === 'pending' && suggestion.contentAvailable
       ? ['organization-suggestion-content', suggestion.id]
       : null
-  const { data: content, error: contentError } = useSWR(contentKey, () =>
-    fetchOrganizationSuggestionContent(suggestion.id)
-  )
+  const {
+    data: content,
+    error: contentError,
+    mutate
+  } = useSWR(contentKey, () => fetchOrganizationSuggestionContent(suggestion.id))
 
   const review = async (decision: 'accept' | 'reject') => {
     const inspectedSnapshotToken = content?.snapshotToken
@@ -205,6 +207,20 @@ export function SuggestionCard({
         </div>
         {suggestion.state === 'pending' && (
           <div className="flex flex-none items-center gap-2">
+            {/* Accept's token comes only from the content read, so that step sits beside it — and every
+                button keeps ONE meaning, so a stray second click cannot land on a decision. */}
+            <Button
+              variant="secondary"
+              size="xs"
+              disabled={!!busy || !suggestion.contentAvailable}
+              onClick={() => {
+                setInspect(true)
+                if (contentError) void mutate()
+              }}
+            >
+              <Icon name="eye" size={13} />
+              Inspect
+            </Button>
             <Button
               variant="secondary"
               size="xs"
@@ -241,16 +257,11 @@ export function SuggestionCard({
             the source agent. The staged body remains there until that source is ready again.
           </div>
         ) : !inspect ? (
-          <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-(--border-subtle) bg-(--surface-sunken) px-3 py-3">
-            <p className="font-sans text-[12px] text-(--text-secondary)">
-              The staged body is fetched from its source daemon only when you inspect it. Acceptance stays disabled
-              until the complete body renders.
-            </p>
-            <Button variant="secondary" size="xs" onClick={() => setInspect(true)}>
-              <Icon name="eye" size={13} />
-              Inspect staged content
-            </Button>
-          </div>
+          <p className="rounded-md border border-(--border-subtle) bg-(--surface-sunken) px-3 py-3 font-sans text-[12px] text-(--text-secondary)">
+            Choose <strong>Inspect</strong> above to fetch the staged body from its source daemon. Accepting binds to
+            the body you inspected, so it stays disabled until that body renders in full. Rejecting needs no inspection
+            — it installs nothing.
+          </p>
         ) : contentError ? (
           <div className="font-sans text-[12px] text-(--status-error)">
             {contentError instanceof Error ? contentError.message : 'Could not load this suggestion.'}
