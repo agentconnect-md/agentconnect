@@ -3480,7 +3480,10 @@ export default function SessionDetailView() {
           the track (its own −30px bleed) owns that edge and the scroller stops flush against it —
           `wide:pr-[10px]` insets the content by the scrollbar's own 10px so a tight transcript
           column never puts avatars under the thumb — and on mobile `.content` has no side padding
-          to cross. */}
+          to cross. On the LEFT the same bleed-and-reinset (`desktop:-ml-1` + `desktop:pl-1`) moves
+          the overflow clip edge 4px into `.content`'s padding so the composer's 3px focus ring
+          draws complete instead of being cut flat where the 880px column meets the scroller; the
+          mobile gutter (`p-3`) already keeps the ring clear there. */}
       {/* Column: fixed header chrome ABOVE the scrolling transcript pane. The header lives OUTSIDE
       the scroller (no `sticky`), so it never scrolls away and the pane below can be virtualized. */}
       <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
@@ -3765,7 +3768,7 @@ export default function SessionDetailView() {
           className={
             viewerOpen
               ? 'flex min-h-0 min-w-0 flex-1 flex-col desktop:pt-[10px]'
-              : 'flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto desktop:max-wide:-mr-[30px] desktop:pt-[10px] desktop:max-wide:pr-[30px] wide:pr-[10px]'
+              : 'flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto desktop:max-wide:-mr-[30px] desktop:-ml-1 desktop:pt-[10px] desktop:pl-1 desktop:max-wide:pr-[30px] wide:pr-[10px]'
           }
         >
           {/* One growing inner wrapper = the scroller's single child useStickToBottom watches; in
