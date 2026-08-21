@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
 import { FakeClock } from '@agentconnect.md/connection'
 import { Daemon } from '../src/daemon.js'
+import { offClusterPlaintext } from '../src/key-server/session-hosts.js'
 
 function harness(grants: Array<Record<string, unknown>>) {
   const clock = new FakeClock(1_000)
@@ -271,5 +272,34 @@ describe('daemon model-key session lifecycle', () => {
     await released
     expect(h.firstHost.stop).toHaveBeenCalledOnce()
     expect(h.revoke).toHaveBeenCalledWith('key-1')
+  })
+})
+
+describe('the plaintext key-server warning', () => {
+  it('says nothing for TLS, and nothing for the in-cluster shapes a deployment actually writes', () => {
+    // The scheme is the deployment's to choose, so this is a warning about ONE case — a bearer
+    // crossing something that is not obviously the cluster — not a rule about schemes.
+    for (const address of [
+      'https://keys.example.com',
+      'https://hub.agentconnect-test.svc:8080',
+      'http://test-agentconnect-aigw-hub:8080',
+      'http://test-agentconnect-aigw-hub.agentconnect-test:8080',
+      'http://test-agentconnect-aigw-hub.agentconnect-test.svc:8080',
+      'http://test-agentconnect-aigw-hub.agentconnect-test.svc.cluster.local:8080',
+      'http://localhost:8080',
+      'http://127.0.0.1:8080'
+    ]) {
+      expect(offClusterPlaintext(address), address).toBe(false)
+    }
+  })
+
+  it('warns for plaintext to a name that is not cluster-shaped', () => {
+    for (const address of ['http://keys.example.com', 'http://keys.example.com:8080', 'http://a.b.c']) {
+      expect(offClusterPlaintext(address), address).toBe(true)
+    }
+  })
+
+  it('says nothing about an address it cannot parse — the client already refuses that', () => {
+    expect(offClusterPlaintext('not a url')).toBe(false)
   })
 })

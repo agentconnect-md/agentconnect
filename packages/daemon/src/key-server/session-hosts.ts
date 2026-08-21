@@ -51,6 +51,26 @@ export interface ModelSessionHostPoolOptions {
 
 /** Owns the per-session model-credential state machine: the key-server handle, the issued grants,
  *  and the confined hosts started against them. */
+/** True for an http address whose host is not obviously inside the cluster — a Service name (with
+ *  or without its namespace/`.svc` suffix), the local node, or the cluster domain. Deliberately a
+ *  shape test rather than a resolver: this runs at construction, and a warning that needed DNS
+ *  would be a startup dependency. */
+export function offClusterPlaintext(address: string): boolean {
+  let url: URL
+  try {
+    url = new URL(address)
+  } catch {
+    return false
+  }
+  if (url.protocol !== 'http:') return false
+  const host = url.hostname
+  if (host === 'localhost' || host === '127.0.0.1' || host === '::1') return false
+  if (host.endsWith('.svc') || host.endsWith('.svc.cluster.local') || host.endsWith('.local')) return false
+  // A bare label (`my-service`) or `service.namespace` is in-cluster addressing; a public name has
+  // a registrable domain, which needs at least three labels here (`a.b.c`) not to be one of those.
+  return host.split('.').length > 2
+}
+
 export class ModelSessionHostPool {
   private readonly entries = new Map<string, ModelSessionHost>()
   readonly keyServer?: KeyServerClient
@@ -68,6 +88,15 @@ export class ModelSessionHostPool {
     this.keyServer =
       opts.client ??
       (opts.address ? new KeyServerClient(opts.address, { tokenPath: opts.tokenPath, now: opts.now }) : undefined)
+    // The scheme is the deployment's to choose, so plaintext is not refused — but plaintext to an
+    // address that is NOT plainly in-cluster sends this daemon's bearer token across whatever lies
+    // between, which is the one case worth saying out loud. Said once, at construction, because it
+    // is a configuration fact rather than a per-request one.
+    if (opts.address && offClusterPlaintext(opts.address)) {
+      this.log.warn(
+        `key-server ${opts.address} is plaintext and does not look in-cluster: the bearer token will cross the network in the clear`
+      )
+    }
   }
 
   private get log(): Logger {
