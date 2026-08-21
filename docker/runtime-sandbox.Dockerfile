@@ -91,7 +91,7 @@ FROM node:24-bookworm-slim AS runtime-sandbox
 # The ACP runtimes this image declares it provides. Pinned exactly: the published runtime table
 # names these versions, and a floating tag would make the table a claim about the past.
 ARG CLAUDE_ACP_VERSION=0.66.0
-ARG CODEX_ACP_VERSION=1.1.14
+ARG CODEX_ACP_VERSION=1.6.2-agentconnect.1
 ARG OPENCODE_VERSION=1.18.16
 ARG DEEPSEEK_HARNESS_ACP_VERSION=0.4.9
 
@@ -115,7 +115,7 @@ RUN ln -sf /usr/bin/python3 /usr/local/bin/python
 # so no --ignore-scripts here; claude/codex resolve their binaries from optionalDeps instead.
 RUN npm install --global --no-fund --no-audit \
   "@agentclientprotocol/claude-agent-acp@${CLAUDE_ACP_VERSION}" \
-  "@agentclientprotocol/codex-acp@${CODEX_ACP_VERSION}" \
+  "@agentconnect.md/codex-acp@${CODEX_ACP_VERSION}" \
   "opencode-ai@${OPENCODE_VERSION}" \
   "@openma/deepseek-harness-acp@${DEEPSEEK_HARNESS_ACP_VERSION}" \
   && opencode --version \
