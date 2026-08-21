@@ -45,7 +45,10 @@ authorization facts, secrets, and body-free run metadata.
 6. Reuse the existing repository authorization, hook fencing, per-thread
    session, ordinary-reply, formal-review, and durable run-projection
    semantics through a provider adapter. Do not build an unrelated second
-   automation stack.
+   automation stack. GitLab makes the code-host seam a two-implementer seam,
+   and Section 6.5 defines the per-host provider contract extracted from the
+   GitHub implementation at that moment — deliberately narrower than the
+   chat-platform module contracts.
 7. Represent run state on a merge request with one bot-authored, updatable
    status note. Do not use commit statuses by default because they create or
    mutate pipeline jobs, and do not depend on Ultimate-only external status
@@ -242,6 +245,48 @@ The agent may receive:
 The agent never receives the OAuth token, webhook signing token, or API-effect
 token. Targets for a hook reply or formal review are not model-controlled tool
 arguments.
+
+### 6.5 Code-Host Modules, Not Platform Modules
+
+GitLab turns the code-host seam into a two-implementer seam, and that is the
+moment it earns its own provider contract — extracted from the working GitHub
+implementation while the GitLab implementation is written against it, never
+speculatively before. Code hosts still do not adopt the four-contract
+chat-platform module shape: they have no bot connection, no chat ingress, no
+read port, and no wizard identity. What the two providers share is narrower,
+and each surface below enters the contract only because both implement it:
+
+| Host          | Contract surface                                                                           | A code-host module owns                                                                                                                                                                        |
+| ------------- | ------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| daemon        | turn-final surface (published), review adapter, credential/CLI profile, hook normalization | final poster, formal-review publication steps, Git credential host rules, read-only CLI shim, session-key recompute and transport-scope pin, maintenance-event handling                        |
+| relay         | code-host ingress module behind a shared pipeline skeleton                                 | signature scheme, event-to-semantic-event mapping, veto and gate table, membership-authorization request construction, delivery-key extraction                                                 |
+| control plane | code-host provider                                                                         | repository identity refresh, membership authorization, credential minting, provisioning/reconciliation loops, projection write strategy, provider routes at the org and public-callback scopes |
+| web           | thin code-host module                                                                      | connect entry, project-picker source, binding status fragments, mark                                                                                                                           |
+
+The daemon already runs the first slice: the GitHub final poster implements
+the published Layer-2 turn-final surface, registered per provider, which is
+what removed the hardcoded GitHub case from the dispatch path. GitLab extends
+the same pattern everywhere: core reads a provider off `CodeHostRepository`,
+a frame's discriminated member, or a registry entry — never a provider-name
+comparison in core code. There is no code-host manifest: unlike chat
+platforms, code hosts have no pre-dispatch capability reads, so every
+behavioral difference is a contract member or strategy function in one host.
+Directory conventions follow each host's existing ones — the daemon's
+surfaces live in per-provider `platforms/<id>/` directories (GitHub's
+turn-final surface already does), relay ingress modules move under
+`hooks/<id>/` behind the shared verification-and-dispatch skeleton, and the
+Control Plane gains a per-provider directory beside the GitHub one behind one
+contract file.
+
+Three things deliberately stay outside the contract because the providers
+genuinely diverge: the bot identity and claim lifecycle (a GitHub App
+installation versus a Project Service Account; Section 8.1 keeps their claims
+separate), webhook-secret distribution (one deployment-wide App secret versus
+a per-binding signing token in the compiled rule), and GitHub-only product
+surfaces (the workflow-approval start path and the session merge-request
+panel, both explicitly scoped out elsewhere). Forcing any of these behind one
+interface would be guessing at an abstraction from two data points that
+disagree.
 
 ## 7. Identity and Credential Model
 
@@ -1522,6 +1567,11 @@ Residual risks are explicit:
 6. Run a private contract pilot on GitLab.com Free and Premium.
 7. Enable project creation generally; keep Ultimate-specific and self-managed
    options absent.
+
+Contract extraction rides these phases rather than preceding them: each
+code-host contract member (Section 6.5) is extracted from the working GitHub
+implementation in the same change that adds its GitLab implementer, so there
+is no big-bang refactor phase to destabilize GitHub.
 
 Rollback disables new GitLab project creation, removes GitLab relay
 assignments, and leaves existing GitHub behavior untouched. Existing GitLab
