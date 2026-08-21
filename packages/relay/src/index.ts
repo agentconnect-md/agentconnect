@@ -27,6 +27,7 @@ import { HookTable } from './hooks/hook-table.js'
 import { HookRateLimiter } from './hooks/rate-limit.js'
 import { registerHookIngress } from './hooks/ingress.js'
 import { registerGithubIngress } from './hooks/github-ingress.js'
+import { registerGitlabIngress } from './hooks/gitlab-ingress.js'
 import { McpBindingTable } from './mcp/binding-table.js'
 import { registerMcpProxy, registerMemoryPluginProxy } from './mcp/proxy.js'
 import { MemoryConnectionBindingTable } from './memory/binding-table.js'
@@ -246,6 +247,20 @@ async function main(): Promise<void> {
     clock: systemClock,
     log,
     webhookSecret: () => deploymentConfig.githubWebhookSecret
+  })
+
+  // GitLab project webhooks (gitlab-com-integration.md §11.2): rule-carried
+  // signing tokens, live membership through the CP, same shared run limiter.
+  const gitlabAuthzLimiter = new HookRateLimiter(systemClock, { capacity: 10, refillPerSec: 0.25 })
+  registerGitlabIngress(server, {
+    table: hookTable,
+    daemons: () => held.rdServer,
+    report: (r) => client.emitRunReport(r),
+    authorizeMembership: (request) => client.authorizeCodeHostMembership(request),
+    authzLimiter: gitlabAuthzLimiter,
+    limiter,
+    clock: systemClock,
+    log
   })
 
   // MCP reverse proxy (ALL /mcp/:providerId) — resolves a grant to its upstream, SSRF-guards

@@ -15,6 +15,7 @@
 import {
   buildRelayCpFrame,
   decodeRelayCpFrame,
+  GITLAB_COM_V1_FEATURE,
   WEBCHAT_SESSION_CONTINUATION_FEATURE,
   type RelayCpFrame,
   type RcAuthOk,
@@ -22,6 +23,7 @@ import {
   type RcRegistered,
   type RcVerify,
   type RcVerifyResult,
+  type RcCodeHostMembershipAuthz,
   type RcGithubCommentAuthz,
   type RcGithubRerequest,
   type RcGithubRerequestResult,
@@ -272,6 +274,19 @@ export class RelayCpClient {
    * request is never retransmitted on the same connection (GitHub deliveries are
    * already deduplicated by delivery id), only re-issued once after a reconnect.
    */
+  /** §12.2 live effective-membership gate — the provider-neutral successor to
+   * the GitHub comment authz REQ. Fail-closed at the caller on any error. */
+  async authorizeCodeHostMembership(request: RcCodeHostMembershipAuthz): Promise<boolean> {
+    const rep = await this.authorizationRequest(
+      () => buildRelayCpFrame('rc/codehost-membership-authz', request),
+      'rc/codehost-membership-authz'
+    )
+    if (rep.type !== 'rc/codehost-membership-authz/ok') {
+      throw new WireError('INTERNAL', `expected rc/codehost-membership-authz/ok, got ${rep.type}`, false)
+    }
+    return rep.payload.allowed
+  }
+
   async authorizeGithubComment(request: RcGithubCommentAuthz): Promise<boolean> {
     const rep = await this.authorizationRequest(
       () => buildRelayCpFrame('rc/github-comment-authz', request),
@@ -506,7 +521,9 @@ export class RelayCpClient {
         daemonUrl: this.deps.daemonUrl,
         // This relay preserves RdMsgWebchat.targetSessionId end to end; the CP
         // gates session-targeted mints on every live relay advertising it.
-        features: [WEBCHAT_SESSION_CONTINUATION_FEATURE]
+        // gitlab-com-v1: this relay verifies and routes GitLab project
+        // webhooks, so the CP may send it gitlab-kind compiled rules (§17.3).
+        features: [WEBCHAT_SESSION_CONTINUATION_FEATURE, GITLAB_COM_V1_FEATURE]
       })
     )
     this.relayId = (registered.payload as RcRegistered).relayId
