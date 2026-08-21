@@ -2298,7 +2298,7 @@ describe('gitcred frames (github-app workspace credentials)', () => {
     expect(decoded.frame.corr).toBeDefined()
   })
 
-  it('rejects a gitcred/grant with a foreign username (single fixed basic-auth user)', () => {
+  it('rejects a gitcred/grant with an empty username (open since gitcred v2, but never blank)', () => {
     const f = buildEnvelope('gitcred/grant', {
       username: 'x-access-token',
       token: 'ghs_x',
@@ -2308,7 +2308,7 @@ describe('gitcred frames (github-app workspace credentials)', () => {
       access: 'read'
     })
     const raw = JSON.parse(encode(f)) as Record<string, unknown>
-    ;(raw.payload as Record<string, unknown>).username = 'oauth2'
+    ;(raw.payload as Record<string, unknown>).username = ''
     const decoded = decodeEnvelope(JSON.stringify(raw))
     expect(decoded.ok).toBe(false)
   })

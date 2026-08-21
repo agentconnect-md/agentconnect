@@ -198,6 +198,39 @@ export type RcGithubCommentAuthz = z.infer<typeof RcGithubCommentAuthz>
 export const RcGithubCommentAuthzResult = z.object({ allowed: z.boolean() }).strict()
 export type RcGithubCommentAuthzResult = z.infer<typeof RcGithubCommentAuthzResult>
 
+/** Neutral alias: the fence shape was never GitHub-specific. */
+export const RcHookFence = RcGithubHookFence
+export type RcHookFence = RcGithubHookFence
+
+// R→C REQ → rc/codehost-membership-authz/ok — the provider-neutral successor to
+// rc/github-comment-authz for hosts whose actor identity is numeric
+// (gitlab-com-integration.md §12.2, §17.2). Same discipline: metadata-only, the
+// CP re-resolves live membership and never trusts webhook-carried relationship
+// labels; authored content never crosses this wire. Deliberately NOT `.strict()`
+// — the GitHub frame's strictness is exactly why it could not be extended in
+// place. An older CP answers UNKNOWN_FRAME and the relay fails closed.
+export const RcCodeHostMembershipAuthz = z.object({
+  hookId: z.string().uuid(),
+  provider: z.string().min(1), // 'gitlab' today; open string so a new host degrades per-value
+  repoExternalId: z.string().regex(/^[1-9]\d*$/), // numeric project/repository id — the match key
+  actorExternalId: z.string().regex(/^[1-9]\d*$/), // sender/actor numeric user id
+  // Unmentioned thread continuation also requires the subject author's current
+  // membership; an explicit maintainer summon omits this second actor.
+  subjectAuthorExternalId: z
+    .string()
+    .regex(/^[1-9]\d*$/)
+    .optional(),
+  // Fence authorization to the exact compiled rule that accepted the delivery.
+  configRevision: HookBigIntString,
+  dispatchRevision: HookBigIntString,
+  siblingFences: z.array(RcHookFence).min(1).optional()
+})
+export type RcCodeHostMembershipAuthz = z.infer<typeof RcCodeHostMembershipAuthz>
+
+// C→R REP (corr = rc/codehost-membership-authz id). One bit, same as GitHub.
+export const RcCodeHostMembershipAuthzResult = z.object({ allowed: z.boolean() })
+export type RcCodeHostMembershipAuthzResult = z.infer<typeof RcCodeHostMembershipAuthzResult>
+
 // R→C REQ — signature-verified Check identity, suite identity, or waiting external-PR workflow control.
 const GithubNumericId = z.string().regex(/^[1-9]\d*$/)
 export const RcGithubRerequest = z.union([
@@ -945,6 +978,8 @@ export const RELAY_CP_SCHEMAS = {
   'rc/verify/ok': RcVerifyResult,
   'rc/github-comment-authz': RcGithubCommentAuthz,
   'rc/github-comment-authz/ok': RcGithubCommentAuthzResult,
+  'rc/codehost-membership-authz': RcCodeHostMembershipAuthz,
+  'rc/codehost-membership-authz/ok': RcCodeHostMembershipAuthzResult,
   'rc/github-rerequest': RcGithubRerequest,
   'rc/github-rerequest/ok': RcGithubRerequestResult,
   'rc/hook-assign': RcHookAssign,
@@ -992,6 +1027,8 @@ export const RelayCpFrame = z.discriminatedUnion('type', [
   frameSchema('rc/verify/ok', RELAY_CP_SCHEMAS['rc/verify/ok']),
   frameSchema('rc/github-comment-authz', RELAY_CP_SCHEMAS['rc/github-comment-authz']),
   frameSchema('rc/github-comment-authz/ok', RELAY_CP_SCHEMAS['rc/github-comment-authz/ok']),
+  frameSchema('rc/codehost-membership-authz', RELAY_CP_SCHEMAS['rc/codehost-membership-authz']),
+  frameSchema('rc/codehost-membership-authz/ok', RELAY_CP_SCHEMAS['rc/codehost-membership-authz/ok']),
   frameSchema('rc/github-rerequest', RELAY_CP_SCHEMAS['rc/github-rerequest']),
   frameSchema('rc/github-rerequest/ok', RELAY_CP_SCHEMAS['rc/github-rerequest/ok']),
   frameSchema('rc/hook-assign', RELAY_CP_SCHEMAS['rc/hook-assign']),
