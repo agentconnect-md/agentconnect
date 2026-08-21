@@ -80,32 +80,70 @@ describe('PgGitlabProjectBindingRepo (§10.2 claim transaction)', () => {
 })
 
 describe('credential + webhook secret stores (§7.3)', () => {
-  it('rotation replaces per (binding, purpose) and advances the generation', async () => {
+  it('rotation commits metadata, sealed value, and the epoch fence atomically', async () => {
     const binding = await bindings().createWithClaim(await withConnection(DEFAULT_ORG_ID))
     const creds = new PgGitlabProjectCredentialRepo(prisma)
     const store = new PgGitlabProjectCredentialSecretStore(prisma, cipher)
-    const first = await creds.upsert({
+    const first = await creds.commitRotation({
       bindingId: binding.id,
       purpose: 'read',
       externalTokenId: 111n,
       scopes: ['read_api', 'read_repository'],
-      providerExpiresAt: new Date('2026-11-20T00:00:00.000Z')
+      providerExpiresAt: new Date('2026-11-20T00:00:00.000Z'),
+      sealedToken: 'glpat-read-1'
     })
-    await store.put(DEFAULT_ORG_ID, first.id, 'glpat-read-1')
-    const rotated = await creds.upsert({
+    expect(await store.get(DEFAULT_ORG_ID, first.id)).toBe('glpat-read-1')
+    const rotated = await creds.commitRotation({
       bindingId: binding.id,
       purpose: 'read',
       externalTokenId: 222n,
       scopes: ['read_api', 'read_repository'],
-      providerExpiresAt: new Date('2027-02-18T00:00:00.000Z')
+      providerExpiresAt: new Date('2027-02-18T00:00:00.000Z'),
+      sealedToken: 'glpat-read-2'
     })
     expect(rotated.id).toBe(first.id)
     expect(rotated.generation).toBe(first.generation + 1n)
-    await store.put(DEFAULT_ORG_ID, first.id, 'glpat-read-2')
+    expect(rotated.externalTokenId).toBe(222n)
     expect(await store.get(DEFAULT_ORG_ID, first.id)).toBe('glpat-read-2')
+    // Each rotation advanced the binding's purge fence with it.
+    const after = (await bindings().get(DEFAULT_ORG_ID, binding.id))!
+    expect(after.credentialEpoch).toBe(binding.credentialEpoch + 2n)
     // Org fence on the sealed value.
     expect(await store.get('not-the-org', first.id)).toBeNull()
     expect((await creds.listForBinding(binding.id)).map((c) => c.purpose)).toEqual(['read'])
+  })
+
+  it('organization deletion releases an unmutated claim and tombstones a mutated one', async () => {
+    // Unmutated: no provider resource was ever created — the claim frees the project.
+    const orgA = await otherOrg()
+    await bindings().createWithClaim(await withConnection(orgA))
+    await prisma.org.delete({ where: { id: orgA } })
+    expect(await prisma.codeHostRepositoryClaim.count({ where: { provider: 'gitlab', externalId: PROJECT } })).toBe(0)
+
+    // Mutated: provider facts exist — the claim survives, detached, with the
+    // metadata-only cleanup tombstone (§10.2/§19.4).
+    const orgB = await otherOrg()
+    const bound = await bindings().createWithClaim(await withConnection(orgB))
+    await bindings().update(orgB, bound.id, { serviceAccountUserId: 9042n, webhookId: 7n })
+    await new PgGitlabProjectCredentialRepo(prisma).commitRotation({
+      bindingId: bound.id,
+      purpose: 'effect',
+      externalTokenId: 333n,
+      scopes: ['api'],
+      providerExpiresAt: new Date('2026-11-20T00:00:00.000Z'),
+      sealedToken: 'glpat-effect'
+    })
+    await prisma.org.delete({ where: { id: orgB } })
+    const claim = await prisma.codeHostRepositoryClaim.findUniqueOrThrow({
+      where: { provider_externalId: { provider: 'gitlab', externalId: PROJECT } }
+    })
+    expect(claim.state).toBe('cleanup_pending')
+    expect(claim.bindingRef).toBeNull()
+    expect(claim.tombstone).toMatchObject({
+      serviceAccountUserId: '9042',
+      webhookId: '7',
+      externalTokenIds: [333]
+    })
   })
 
   it('seals the webhook signing key behind its store, org-fenced', async () => {

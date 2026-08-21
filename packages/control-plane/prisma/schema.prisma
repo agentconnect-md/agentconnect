@@ -954,6 +954,9 @@ model CodeHostRepositoryClaim {
   bindingRef String?  @db.Uuid // owning provider binding (e.g. GitlabProjectBinding), soft reference
   generation BigInt   @default(1) // incremented on ownership transfer
   state      String // provisioning | active | transferring | cleanup_pending — app-layer closed set
+  // Metadata-only cleanup facts (external ids, never secrets) preserved when the
+  // owning binding disappears before external cleanup completed (§10.2/§19.4).
+  tombstone  Json?
   createdAt  DateTime @default(now()) @db.Timestamptz(6)
   updatedAt  DateTime @updatedAt @db.Timestamptz(6)
 

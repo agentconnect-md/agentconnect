@@ -401,24 +401,39 @@ export class PgGitlabProjectCredentialRepo implements GitlabProjectCredentialRep
     }
   }
 
-  async upsert(input: {
+  async commitRotation(input: {
     bindingId: string
     purpose: GitlabCredentialPurpose
     externalTokenId: bigint
     scopes: string[]
     providerExpiresAt: Date
+    sealedToken: string
   }): Promise<GitlabProjectCredentialRecord> {
     const facts = {
       externalTokenId: input.externalTokenId,
       scopes: input.scopes,
       providerExpiresAt: input.providerExpiresAt
     }
-    const row = await this.prisma.gitlabProjectCredential.upsert({
-      where: { bindingId_purpose: { bindingId: input.bindingId, purpose: input.purpose } },
-      create: { bindingId: input.bindingId, purpose: input.purpose, ...facts },
-      update: { ...facts, generation: { increment: 1n } }
+    // Metadata/generation, the sealed value, and the binding's purge fence land
+    // in ONE transaction: a reader can never open an old token under new
+    // metadata, and a crash between them cannot lose the provider token id.
+    return this.prisma.$transaction(async (tx) => {
+      const row = await tx.gitlabProjectCredential.upsert({
+        where: { bindingId_purpose: { bindingId: input.bindingId, purpose: input.purpose } },
+        create: { bindingId: input.bindingId, purpose: input.purpose, ...facts },
+        update: { ...facts, generation: { increment: 1n } }
+      })
+      await tx.gitlabProjectCredentialSecret.upsert({
+        where: { credentialId: row.id },
+        create: { credentialId: row.id, token: input.sealedToken },
+        update: { token: input.sealedToken }
+      })
+      await tx.gitlabProjectBinding.updateMany({
+        where: { id: input.bindingId },
+        data: { credentialEpoch: { increment: 1n } }
+      })
+      return this.toRecord(row)
     })
-    return this.toRecord(row)
   }
 
   async get(bindingId: string, purpose: GitlabCredentialPurpose): Promise<GitlabProjectCredentialRecord | null> {
@@ -447,33 +462,11 @@ export class PgGitlabProjectCredentialSecretStore implements GitlabProjectCreden
     private readonly cipher: SecretCipher
   ) {}
 
-  async put(orgId: string, credentialId: string, token: string): Promise<void> {
-    if (
-      (await this.db.gitlabProjectCredential.count({
-        where: { id: credentialId, binding: { orgId } }
-      })) === 0
-    ) {
-      throw new Error('gitlab credential secret write outside its organization')
-    }
-    const sealed = await this.cipher.seal(token, orgScope(OrgId(orgId)))
-    await this.db.gitlabProjectCredentialSecret.upsert({
-      where: { credentialId },
-      create: { credentialId, token: sealed },
-      update: { token: sealed }
-    })
-  }
-
   async get(orgId: string, credentialId: string): Promise<string | null> {
     const row = await this.db.gitlabProjectCredentialSecret.findFirst({
       where: { credentialId, credential: { binding: { orgId } } }
     })
     return row ? this.cipher.open(row.token, orgScope(OrgId(orgId))) : null
-  }
-
-  async delete(orgId: string, credentialId: string): Promise<void> {
-    await this.db.gitlabProjectCredentialSecret.deleteMany({
-      where: { credentialId, credential: { binding: { orgId } } }
-    })
   }
 }
 

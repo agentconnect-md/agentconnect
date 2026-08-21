@@ -3171,24 +3171,25 @@ export interface GitlabProjectCredentialRecord {
 }
 
 export interface GitlabProjectCredentialRepo {
-  /** Replace-in-place per (binding, purpose): rotation advances `generation`. */
-  upsert(input: {
+  /** One atomic rotation commit per (binding, purpose): credential metadata and
+   *  generation, the SEALED value, and the binding's credential-epoch purge
+   *  fence land in the same transaction, or not at all (§7.4). */
+  commitRotation(input: {
     bindingId: string
     purpose: GitlabCredentialPurpose
     externalTokenId: bigint
     scopes: string[]
     providerExpiresAt: Date
+    sealedToken: string
   }): Promise<GitlabProjectCredentialRecord>
   get(bindingId: string, purpose: GitlabCredentialPurpose): Promise<GitlabProjectCredentialRecord | null>
   listForBinding(bindingId: string): Promise<GitlabProjectCredentialRecord[]>
   remove(bindingId: string, purpose: GitlabCredentialPurpose): Promise<void>
 }
 
-/** Sealed PAT values (per-org key scope); read only through this store. */
+/** Sealed PAT value reads (per-org key scope); writes ride the rotation commit. */
 export interface GitlabProjectCredentialSecretStore {
-  put(orgId: string, credentialId: string, token: string): Promise<void>
   get(orgId: string, credentialId: string): Promise<string | null>
-  delete(orgId: string, credentialId: string): Promise<void>
 }
 
 /** Sealed webhook signing key (whsec_ form); relay-only secret. */
