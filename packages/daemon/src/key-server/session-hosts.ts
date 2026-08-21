@@ -90,6 +90,16 @@ export class ModelSessionHostPool {
         'key-server-token-path is set with no key-server address: no credential will be requested and the token file is unused'
       )
     }
+    // The mirror image, and the more expensive mistake: with no token source the client sends the
+    // request with NO Authorization header at all — silently. A server that reviews its callers
+    // answers 401 to every mint, so every new session fails and the only evidence is per-session.
+    // Still a warning and not a refusal: a key server may be configured to trust its callers by
+    // network position, and that is its operator's call to make rather than this client's.
+    if (opts.address && !opts.tokenPath && !opts.client) {
+      this.log.warn(
+        `key-server ${opts.address} is configured with no key-server-token-path: requests will carry no credential, which a server that reviews its callers refuses`
+      )
+    }
     this.keyServer =
       opts.client ??
       (opts.address ? new KeyServerClient(opts.address, { tokenPath: opts.tokenPath, now: opts.now }) : undefined)

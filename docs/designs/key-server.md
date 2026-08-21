@@ -77,7 +77,8 @@ deployment that terminates TLS on this hop simply configures an https address. A
 `--key-server-token-path <path>`, and
 `--key-server-token-path <path>`. The equivalent deployment environment names are
 `KEY_SERVER` and `KEY_SERVER_TOKEN_PATH`; explicit CLI values win. A token path
-without a server does nothing and says so; neither option requires `--k8s`, because where a runtime
+without a server does nothing and says so, as does a server without a token — that one sends every
+request with no `Authorization` header at all, which a server that reviews its callers refuses; neither option requires `--k8s`, because where a runtime
 runs and where its key comes from are different questions — the launch path applies a minted
 credential to whatever environment it is building, cluster sandbox or local child alike.
 
