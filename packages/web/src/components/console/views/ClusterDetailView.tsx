@@ -381,6 +381,9 @@ function CloudCreditsCard({ hosted, placementLoading }: { hosted: readonly Agent
   // The NET of the credit side — a negative adjustment subtracts, which is what the balance
   // does with it too.
   const toppedUpMicro = credits.reduce((sum, c) => sum + c.amountMicro, 0)
+  // The note counts what the word means and the chart marks — the positive rows. A negative
+  // adjustment stays in the net value above but is not a "top-up" and draws no bar.
+  const topUpCount = credits.filter((c) => c.amountMicro > 0).length
   // A top-up lands on the bucket it posted into: the last one that started at or before it.
   // Negative credits stay out of the chart: stacked on a positive spend base, a negative
   // segment draws DOWNWARD over the brand bar — they are in the net total above instead.
@@ -448,7 +451,7 @@ function CloudCreditsCard({ hosted, placementLoading }: { hosted: readonly Agent
         <Figure
           label={`Topped up · ${CREDITS_WINDOW_DAYS}d`}
           value={topUps.data ? fmtMicroUsd(toppedUpMicro) : '—'}
-          note={topUps.data ? `${credits.length} top-up${credits.length === 1 ? '' : 's'}` : ' '}
+          note={topUps.data ? `${topUpCount} top-up${topUpCount === 1 ? '' : 's'}` : ' '}
           error={topUps.error && !topUps.data ? (topUps.error as Error).message : undefined}
           loading={topUps.isLoading}
         />
