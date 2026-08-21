@@ -347,6 +347,11 @@ export function PullRequestPanel({
     )
   }
 
+  // The description clamps to a bounded preview so it never pushes checks/reviews below the fold; the
+  // reader can expand it in place.
+  const [bodyExpanded, setBodyExpanded] = useState(false)
+  useEffect(() => setBodyExpanded(false), [sessionId])
+
   // Reported on the EDGE, like every other tab's verdict: the caller's callback is a fresh closure per render, and re-reporting a held verdict would write parent state for nothing.
   const reported = useRef<string | null>(null)
   useEffect(() => {
@@ -628,15 +633,29 @@ export function PullRequestPanel({
         </a>
       </div>
       <div className="flex min-h-0 flex-1 flex-col overflow-auto pb-2">
-        {/* The PR description, plain text and scrollable with the panel — a long body is the norm, not an edge case. */}
+        {/* The PR description, clamped to a bounded preview so a long body never pushes checks/reviews below the fold. */}
         {view.body ? (
           <div data-pr-body="" className="flex flex-none flex-col">
             <div className="flex items-center gap-2 px-3 pt-[10px] pb-[5px] font-sans text-[10.5px] font-semibold tracking-[0.04em] uppercase leading-normal text-(--text-disabled)">
               Description
             </div>
-            <div className="px-3 pb-2 font-sans text-[12px] font-normal leading-[1.55] whitespace-pre-wrap break-words text-(--text-secondary)">
+            <div
+              className={`px-3 font-sans text-[12px] font-normal leading-[1.55] whitespace-pre-wrap break-words text-(--text-secondary) ${
+                bodyExpanded ? 'pb-2' : 'max-h-[168px] overflow-hidden pb-1'
+              }`}
+            >
               {view.body}
             </div>
+            {view.body.length > 400 ? (
+              <button
+                type="button"
+                data-pr-body-toggle=""
+                className="self-start px-3 pb-2 font-sans text-[11px] font-medium leading-normal text-(--text-link) hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand)"
+                onClick={() => setBodyExpanded((v) => !v)}
+              >
+                {bodyExpanded ? 'Show less' : 'Show more'}
+              </button>
+            ) : null}
           </div>
         ) : null}
         {/* A branch-resolved link can be ambiguous where a run-linked one never is: the head branch is the whole identity, so several open PRs on it are all equally "this session's". The panel names the pick rather than picking silently. */}

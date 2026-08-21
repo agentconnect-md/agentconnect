@@ -447,6 +447,18 @@ describe('PullRequestPanel body', () => {
     expect(container?.querySelector('[data-pr-body]')).toBeNull()
   })
 
+  it('clamps a long description and expands it in place', async () => {
+    wire.data = pr({ body: 'A'.repeat(600) })
+    await render()
+    const toggle = () => container?.querySelector<HTMLButtonElement>('[data-pr-body-toggle]')
+    expect(toggle()?.textContent).toContain('Show more')
+    // Clamping is visual (max-height + overflow), so the full text is still in the DOM.
+    expect(container?.querySelector('[data-pr-body]')?.textContent).toContain('A'.repeat(600))
+
+    await press('[data-pr-body-toggle]')
+    expect(toggle()?.textContent).toContain('Show less')
+  })
+
   it('draws each check with its own state marker and a duration only where both ends exist', async () => {
     await render()
     const checks = Array.from(container?.querySelectorAll<HTMLElement>('[data-pr-check]') ?? [])
