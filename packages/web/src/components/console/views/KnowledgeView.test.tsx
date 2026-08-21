@@ -102,7 +102,9 @@ describe('organization suggestion review card', () => {
     await render({ ...BASE, contentAvailable: false })
 
     expect(button('Reject').disabled).toBe(true)
-    expect(button('Accept').disabled).toBe(true)
+    // The primary action still reads as the inspect step, and it is disabled too: there is
+    // no source to read the body from.
+    expect(button('Inspect to accept').disabled).toBe(true)
     expect(host.textContent).toContain('paused for safety')
     expect(fetchMock).not.toHaveBeenCalled()
   })
@@ -123,7 +125,9 @@ describe('organization suggestion review card', () => {
     })
     vi.stubGlobal('fetch', fetchMock)
     const onReviewed = await render(BASE)
-    expect(button('Accept').disabled).toBe(true)
+    // Before inspection the primary action is the inspect step: accepting binds to the
+    // inspected snapshot, and only the content read mints that token.
+    expect(button('Inspect to accept').disabled).toBe(false)
     expect(fetchMock).not.toHaveBeenCalled()
     await act(async () => button('Inspect staged content').click())
     await settleUntil(() => fetchMock.mock.calls.length === 1)
@@ -155,6 +159,62 @@ describe('organization suggestion review card', () => {
       snapshotToken: `sha256:${'b'.repeat(64)}`
     })
     expect(onReviewed).toHaveBeenCalledTimes(1)
+  })
+
+  it('the primary action inspects first, then accepts — it never posts a review unseen', async () => {
+    // The reported confusion: Accept looked broken until you found "Inspect staged content".
+    // It now performs that step itself, and still cannot accept before the body renders.
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith('/content')) {
+        return new Response(
+          JSON.stringify({
+            kind: 'knowledge',
+            digest: BASE.digest,
+            snapshotToken: `sha256:${'c'.repeat(64)}`,
+            content: '# Deployment',
+            summary: BASE.summary,
+            tags: BASE.tags
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } }
+        )
+      }
+      return new Response(JSON.stringify({ ...BASE, state: 'accepted' }), {
+        status: init?.method === 'POST' ? 200 : 500,
+        headers: { 'content-type': 'application/json' }
+      })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const onReviewed = await render(BASE)
+
+    await act(async () => button('Inspect to accept').click())
+    await settleUntil(() => host.textContent?.includes('Deployment') === true)
+    // That click fetched the body; it did NOT review anything.
+    expect(fetchMock.mock.calls.every(([input]) => !String(input).endsWith('/review'))).toBe(true)
+
+    await act(async () => button('Accept').click())
+    await settleUntil(() => onReviewed.mock.calls.length === 1)
+    const reviewCall = fetchMock.mock.calls.find(([input]) => String(input).endsWith('/review'))
+    expect(JSON.parse(String(reviewCall?.[1]?.body))).toEqual({
+      decision: 'accept',
+      snapshotToken: `sha256:${'c'.repeat(64)}`
+    })
+  })
+
+  it('rejects without inspecting: nothing is installed, so no snapshot is needed', async () => {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response(JSON.stringify({ ...BASE, state: 'rejected' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' }
+        })
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    const onReviewed = await render(BASE)
+    await act(async () => button('Reject').click())
+    await settleUntil(() => onReviewed.mock.calls.length === 1)
+    const reviewCall = fetchMock.mock.calls.find(([input]) => String(input).endsWith('/review'))
+    expect(JSON.parse(String(reviewCall?.[1]?.body))).toEqual({ decision: 'reject' })
+    expect(fetchMock.mock.calls.every(([input]) => !String(input).endsWith('/content'))).toBe(true)
   })
 
   it('renders every text file and identifies binary assets in a complete skill tree', async () => {

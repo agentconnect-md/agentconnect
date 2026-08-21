@@ -214,14 +214,15 @@ export function SuggestionCard({
               <Icon name="x" size={13} />
               {busy === 'reject' ? 'Rejecting…' : 'Reject'}
             </Button>
+            {/* Only the content read mints the token accept needs, so offer that step rather than sit disabled. */}
             <Button
               variant="primary"
               size="xs"
-              disabled={!!busy || !suggestion.contentAvailable || !content}
-              onClick={() => void review('accept')}
+              disabled={!!busy || !suggestion.contentAvailable || (inspect && !content)}
+              onClick={() => (content ? void review('accept') : setInspect(true))}
             >
-              <Icon name="check" size={13} />
-              {busy === 'accept' ? 'Accepting…' : 'Accept'}
+              <Icon name={content ? 'check' : 'eye'} size={13} />
+              {busy === 'accept' ? 'Accepting…' : content ? 'Accept' : 'Inspect to accept'}
             </Button>
           </div>
         )}
@@ -243,8 +244,9 @@ export function SuggestionCard({
         ) : !inspect ? (
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-(--border-subtle) bg-(--surface-sunken) px-3 py-3">
             <p className="font-sans text-[12px] text-(--text-secondary)">
-              The staged body is fetched from its source daemon only when you inspect it. Acceptance stays disabled
-              until the complete body renders.
+              The staged body is fetched from its source daemon only when you inspect it. Accepting binds to the body
+              you inspected, so it stays unavailable until the complete body renders. Rejecting needs no inspection — it
+              installs nothing.
             </p>
             <Button variant="secondary" size="xs" onClick={() => setInspect(true)}>
               <Icon name="eye" size={13} />
