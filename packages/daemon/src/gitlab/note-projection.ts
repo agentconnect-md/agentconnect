@@ -3,6 +3,7 @@
 // generations, reconciled by a hidden marker before any retry, reported back as identity + outcome.
 // The note carries fixed control fields only: never agent output, review text, issue/MR text, or logs.
 import type { CodeHostNoteDesired, CodeHostNoteResult, CodeHostNoteState } from '@agentconnect.md/protocol'
+import type { PosterScheduler } from '../github/poster.js'
 import { parseGitlabJson, type BrokerCapability } from './broker.js'
 
 /** The fixed §16 lifecycle labels; the note shows one of these and nothing else as its heading. */
@@ -35,6 +36,9 @@ const SHORT_SHA_CHARS = 8
 const LIST_PAGE_SIZE = 100
 const MAX_LIST_PAGES = 5
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000
+/** Unsettled rows retry on the projector's own clock: a healthy control socket never triggers a sweep. */
+const DEFAULT_RESWEEP_BASE_MS = 30_000
+const DEFAULT_RESWEEP_CAP_MS = 300_000
 const DEFAULT_BASE_URL = 'https://gitlab.com/api/v4'
 /** The projection is a comment-class effect, so the hook-authorized lease must clamp at least here. */
 const REQUIRED_CAPABILITY: BrokerCapability = 'comment'
@@ -118,6 +122,8 @@ export interface NoteProjectionRow {
   body: string
   noteId?: string
   credentialEpoch: string
+  /** The stable daemon identity that owns this write — the one the placement fence names. */
+  daemonId: string
   phase: NoteProjectionPhase
   /** Set with `settled_unreported`: the outcome and code the replay re-sends verbatim. */
   outcome?: NoteProjectionOutcome
@@ -125,7 +131,7 @@ export interface NoteProjectionRow {
 }
 
 export interface NoteProjectionStore {
-  getNoteProjection(projectionKey: string): Promise<NoteProjectionRow | undefined>
+  getNoteProjection(daemonId: string, projectionKey: string): Promise<NoteProjectionRow | undefined>
   beginNoteProjectionWrite(row: NoteProjectionRow, now: number): Promise<void>
   recordNoteProjectionOutcome(
     row: NoteProjectionRow,
@@ -133,8 +139,9 @@ export interface NoteProjectionStore {
     code: string | undefined,
     now: number
   ): Promise<void>
-  markNoteProjectionReported(projectionKey: string, writeMarker: string, now: number): Promise<void>
-  listUnsettledNoteProjections(): Promise<NoteProjectionRow[]>
+  markNoteProjectionReported(daemonId: string, projectionKey: string, writeMarker: string, now: number): Promise<void>
+  /** Scoped to the stable daemon identity, so a restart recovers its own rows and no peer's. */
+  listUnsettledNoteProjections(daemonId: string): Promise<NoteProjectionRow[]>
 }
 
 export interface NoteProjectionLease {
@@ -157,6 +164,10 @@ export interface CodeHostNoteProjectorDeps {
   report: (result: CodeHostNoteResult, orgId?: string) => Promise<void>
   log: { warn: (message: string) => void }
   now?: () => number
+  /** Timer seam for the self-scheduled resweep; tests drive it, production uses real timers. */
+  scheduler?: PosterScheduler
+  resweepBaseMs?: number
+  resweepCapMs?: number
   baseUrl?: string
   fetchImpl?: typeof fetch
   requestTimeoutMs?: number
@@ -175,8 +186,26 @@ type ProviderAnswer = { kind: 'answered'; status: number; body: string } | { kin
 export class CodeHostNoteProjector {
   /** One mutation at a time per projection key: two generations must never race the same note. */
   private readonly chains = new Map<string, Promise<void>>()
+  private readonly sched: PosterScheduler
+  private resweepHandle?: unknown
+  /** Consecutive sweeps that still left work behind; resets to zero the moment nothing is owed. */
+  private resweepAttempt = 0
+  private sweeping = false
+  private stopped = false
 
-  constructor(private readonly deps: CodeHostNoteProjectorDeps) {}
+  constructor(private readonly deps: CodeHostNoteProjectorDeps) {
+    this.sched = deps.scheduler ?? {
+      now: () => Date.now(),
+      setTimeout: (fn, ms) => setTimeout(fn, ms),
+      clearTimeout: (h) => clearTimeout(h as NodeJS.Timeout)
+    }
+  }
+
+  /** Drop the pending resweep so a shutting-down daemon leaves no timer behind. */
+  stop(): void {
+    this.stopped = true
+    this.disarm()
+  }
 
   /** Converge one desired generation and report exactly one result. Never rejects. */
   apply(desired: CodeHostNoteDesired, orgId?: string): Promise<void> {
@@ -191,14 +220,68 @@ export class CodeHostNoteProjector {
    * dropped `codehost/note-result` cannot leave the control plane's write mutex held forever.
    */
   async reconcilePending(): Promise<void> {
+    if (this.sweeping) return
+    this.sweeping = true
+    try {
+      const remaining = await this.sweepOnce()
+      // Keep the projector's own clock running while anything is owed, and go quiet the moment
+      // nothing is: an unreachable provider must not depend on a control-plane reconnect to retry.
+      if (remaining === undefined) return
+      if (remaining > 0) this.arm()
+      else this.disarm()
+    } finally {
+      this.sweeping = false
+    }
+  }
+
+  /** One pass over what this daemon identity owes; the count still unsettled after it, or undefined. */
+  private async sweepOnce(): Promise<number | undefined> {
+    const daemonId = this.deps.daemonId()
+    // Before the control plane adopts an id there is no identity to recover rows under; retry later.
+    if (!daemonId) return 0
     let rows: NoteProjectionRow[]
     try {
-      rows = await this.deps.store.listUnsettledNoteProjections()
+      rows = await this.deps.store.listUnsettledNoteProjections(daemonId)
     } catch (err) {
       this.warn(`note projection: pending write scan failed (${String(err)})`)
-      return
+      return undefined
     }
+    if (rows.length === 0) return 0
     for (const row of rows) await this.serialize(row.projectionKey, () => this.settlePending(row))
+    try {
+      return (await this.deps.store.listUnsettledNoteProjections(daemonId)).length
+    } catch {
+      // The pass ran; an unreadable follow-up count just keeps the backoff armed.
+      return rows.length
+    }
+  }
+
+  /** Arm the next resweep on exponential backoff, capped. An armed timer is never restarted early. */
+  private arm(): void {
+    if (this.stopped || this.resweepHandle !== undefined) return
+    const base = this.deps.resweepBaseMs ?? DEFAULT_RESWEEP_BASE_MS
+    const cap = this.deps.resweepCapMs ?? DEFAULT_RESWEEP_CAP_MS
+    const delay = Math.min(base * 2 ** Math.min(this.resweepAttempt, 16), cap)
+    this.resweepAttempt += 1
+    try {
+      this.resweepHandle = this.sched.setTimeout(() => {
+        this.resweepHandle = undefined
+        void this.reconcilePending()
+      }, delay)
+    } catch (err) {
+      this.warn(`note projection: resweep scheduling failed (${String(err)})`)
+    }
+  }
+
+  private disarm(): void {
+    this.resweepAttempt = 0
+    if (this.resweepHandle === undefined) return
+    try {
+      this.sched.clearTimeout(this.resweepHandle)
+    } catch {
+      // A failed clear only leaves a sweep that finds nothing to do.
+    }
+    this.resweepHandle = undefined
   }
 
   private serialize(key: string, run: () => Promise<void>): Promise<void> {
@@ -217,13 +300,14 @@ export class CodeHostNoteProjector {
   private async converge(desired: CodeHostNoteDesired, orgId?: string): Promise<void> {
     const fence = this.fenceFailure(desired)
     // A refusal this daemon does not own leaves no local row: there is nothing here to replay.
-    if (fence) {
+    if (fence.kind === 'refused') {
       await this.send(refusal(desired, fence.outcome, fence.code, this.now()), orgId)
       return
     }
+    const daemonId = fence.daemonId
     let stored: NoteProjectionRow | undefined
     try {
-      stored = await this.deps.store.getNoteProjection(desired.projectionKey)
+      stored = await this.deps.store.getNoteProjection(daemonId, desired.projectionKey)
     } catch (err) {
       this.warn(`note projection: ledger read failed for ${desired.projectionKey} (${String(err)})`)
       await this.send(refusal(desired, 'failed', 'ledger_unavailable', this.now()), orgId)
@@ -254,6 +338,7 @@ export class CodeHostNoteProjector {
       body: renderProjectionNote(desired),
       ...(noteId ? { noteId } : {}),
       credentialEpoch: desired.credentialEpoch,
+      daemonId,
       phase: 'in_flight'
     }
     // An earlier write of this projection never reached a definite outcome, so the note's identity
@@ -276,14 +361,20 @@ export class CodeHostNoteProjector {
 
   /** Send one definite result and stop replaying it only once the control plane has taken it. */
   private async deliver(row: NoteProjectionRow, outcome: WriteOutcome, orgId?: string): Promise<void> {
-    // An ambiguous outcome keeps its in-flight row, which the sweep reconciles; nothing to retire.
+    // An ambiguous outcome keeps its in-flight row: arm the resweep that will reconcile it, because
+    // a provider timeout says nothing about the control socket that would otherwise be the trigger.
     if (outcome.kind === 'ambiguous') {
       await this.send(settled(row, outcome, this.now()), orgId)
+      this.arm()
       return
     }
-    if (!(await this.send(settled(row, outcome, this.now()), orgId))) return
+    if (!(await this.send(settled(row, outcome, this.now()), orgId))) {
+      // The outcome is durable but unreported; the sweep replays it until the control plane takes it.
+      this.arm()
+      return
+    }
     try {
-      await this.deps.store.markNoteProjectionReported(row.projectionKey, row.writeMarker, this.now())
+      await this.deps.store.markNoteProjectionReported(row.daemonId, row.projectionKey, row.writeMarker, this.now())
     } catch (err) {
       // Harmless: the row simply replays an identical result, which the control plane answers once.
       this.warn(`note projection: ledger ack failed for ${row.projectionKey} (${String(err)})`)
@@ -291,17 +382,19 @@ export class CodeHostNoteProjector {
   }
 
   /** Placement, credential and renderability fences — all of them refuse BEFORE any provider call. */
-  private fenceFailure(desired: CodeHostNoteDesired): { outcome: 'skipped' | 'failed'; code: string } | undefined {
-    if (desired.provider !== 'gitlab') return { outcome: 'skipped', code: 'provider_unsupported' }
+  private fenceFailure(
+    desired: CodeHostNoteDesired
+  ): { kind: 'owned'; daemonId: string } | { kind: 'refused'; outcome: 'skipped' | 'failed'; code: string } {
+    const refused = (outcome: 'skipped' | 'failed', code: string) => ({ kind: 'refused', outcome, code }) as const
+    if (desired.provider !== 'gitlab') return refused('skipped', 'provider_unsupported')
     const daemonId = this.deps.daemonId()
     // No adopted id yet, or a fence naming another member: this daemon is not the writer.
-    if (!daemonId || desired.snapshot.dispatchDaemonId !== daemonId)
-      return { outcome: 'skipped', code: 'not_dispatch_owner' }
+    if (!daemonId || desired.snapshot.dispatchDaemonId !== daemonId) return refused('skipped', 'not_dispatch_owner')
     const leaseUntil = Date.parse(desired.leaseUntil)
-    if (!Number.isFinite(leaseUntil) || leaseUntil <= this.now()) return { outcome: 'skipped', code: 'lease_expired' }
-    if (!PROJECTION_KEY.test(desired.projectionKey)) return { outcome: 'failed', code: 'invalid_projection_key' }
-    if (!DECIMAL_ID.test(desired.projectId)) return { outcome: 'failed', code: 'invalid_project_id' }
-    return undefined
+    if (!Number.isFinite(leaseUntil) || leaseUntil <= this.now()) return refused('skipped', 'lease_expired')
+    if (!PROJECTION_KEY.test(desired.projectionKey)) return refused('failed', 'invalid_projection_key')
+    if (!DECIMAL_ID.test(desired.projectId)) return refused('failed', 'invalid_project_id')
+    return { kind: 'owned', daemonId }
   }
 
   /** What the durable ledger already knows refuses a frame the local record has moved past. */

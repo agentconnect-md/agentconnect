@@ -12,14 +12,18 @@ import {
   type CodeHostNoteState
 } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
+import { DatabaseSync } from 'node:sqlite'
 import { CodeHostNoteProjector, projectionMarker, renderProjectionNote } from '../src/gitlab/note-projection.js'
+import type { PosterScheduler } from '../src/github/poster.js'
 import { LocalStore } from '../src/store/local-store.js'
+import { SqliteAsyncDatabase } from '../src/store/sqlite-async-database.js'
 import { statePath } from '../src/paths.js'
 
 const DAEMON = 'dddddddd-dddd-4ddd-8ddd-ddddddddddd1'
 const AGENT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1'
 const HOOK = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1'
 const PROJECTION = 'cccccccc-cccc-4ccc-8ccc-ccccccccccc1'
+const PROJECTION_B = 'cccccccc-cccc-4ccc-8ccc-ccccccccccc2'
 const MARKER_A = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee1'
 const MARKER_B = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee2'
 const PROJECT = '4455667'
@@ -28,6 +32,8 @@ const HEAD = 'abc123def4567890abc123def4567890abc123de'
 const NOW = Date.parse('2026-08-22T10:00:00.000Z')
 /** The credential purge fence the desired frame and the effect grant must agree on. */
 const EPOCH = '3'
+const RESWEEP_BASE_MS = 30_000
+const RESWEEP_CAP_MS = 120_000
 
 function desiredFrame(over: Partial<CodeHostNoteDesired> = {}): CodeHostNoteDesired {
   return {
@@ -59,6 +65,37 @@ function desiredFrame(over: Partial<CodeHostNoteDesired> = {}): CodeHostNoteDesi
     credentialEpoch: '3',
     leaseUntil: '2026-08-22T10:02:00.000Z',
     ...over
+  }
+}
+
+/** A hand-driven timer seam: the resweep is armed on it and fired only when a test says so. */
+function fakeScheduler() {
+  let nextId = 1
+  const pending = new Map<number, { fn: () => void; at: number }>()
+  const delays: number[] = []
+  const sched: PosterScheduler = {
+    now: () => NOW,
+    setTimeout: (fn, ms) => {
+      const id = nextId++
+      delays.push(ms)
+      pending.set(id, { fn, at: ms })
+      return id
+    },
+    clearTimeout: (handle) => {
+      pending.delete(handle as number)
+    }
+  }
+  return {
+    sched,
+    delays: () => [...delays],
+    armed: () => pending.size,
+    /** Fire the single armed timer, as the event loop would. */
+    fire: () => {
+      const [id, entry] = [...pending.entries()][0] ?? []
+      if (id === undefined || !entry) throw new Error('no resweep is armed')
+      pending.delete(id)
+      entry.fn()
+    }
   }
 }
 
@@ -121,22 +158,27 @@ function projector(
     /** Reject this many reports before the fake control plane starts accepting them. */
     reportRejections?: number
     reportRetryable?: boolean
+    /** A store other than the per-test one — the shared-store restart cases open their own. */
+    store?: LocalStore
+    scheduler?: ReturnType<typeof fakeScheduler>
   } = {}
 ) {
   const results: Array<{ result: CodeHostNoteResult; orgId?: string }> = []
   const invalidated: string[] = []
   const tokens = over.leaseTokens ?? ['glpat-1', 'glpat-2']
+  const db = over.store ?? store
+  const clock = over.scheduler ?? fakeScheduler()
   let mint = 0
   let rejections = over.reportRejections ?? 0
   const projector = new CodeHostNoteProjector({
     daemonId: () => over.daemonId ?? DAEMON,
     store: {
-      getNoteProjection: (key) => store.getNoteProjection(key),
-      beginNoteProjectionWrite: (row, now) => store.beginNoteProjectionWrite(row, now),
-      recordNoteProjectionOutcome: (row, outcome, code, now) =>
-        store.recordNoteProjectionOutcome(row, outcome, code, now),
-      markNoteProjectionReported: (key, marker, now) => store.markNoteProjectionReported(key, marker, now),
-      listUnsettledNoteProjections: () => store.listUnsettledNoteProjections()
+      getNoteProjection: (daemonId, key) => db.getNoteProjection(daemonId, key),
+      beginNoteProjectionWrite: (row, now) => db.beginNoteProjectionWrite(row, now),
+      recordNoteProjectionOutcome: (row, outcome, code, now) => db.recordNoteProjectionOutcome(row, outcome, code, now),
+      markNoteProjectionReported: (daemonId, key, marker, now) =>
+        db.markNoteProjectionReported(daemonId, key, marker, now),
+      listUnsettledNoteProjections: (daemonId) => db.listUnsettledNoteProjections(daemonId)
     },
     lease: async () => {
       if (over.leaseThrows) throw new Error('effect lease refused')
@@ -156,10 +198,13 @@ function projector(
     },
     log: { warn: () => undefined },
     now: () => NOW,
+    scheduler: clock.sched,
+    resweepBaseMs: RESWEEP_BASE_MS,
+    resweepCapMs: RESWEEP_CAP_MS,
     baseUrl: 'https://gitlab.example.test/api/v4',
     fetchImpl
   })
-  return { projector, results, invalidated, mints: () => mint }
+  return { projector, results, invalidated, clock, mints: () => mint }
 }
 
 describe('the run-projection note (gitlab-com-integration.md §16)', () => {
@@ -187,7 +232,7 @@ describe('the run-projection note (gitlab-com-integration.md §16)', () => {
         orgId: 'org-1'
       }
     ])
-    const row = await store.getNoteProjection(PROJECTION)
+    const row = await store.getNoteProjection(DAEMON, PROJECTION)
     expect(row?.phase).toBe('settled')
     expect(row?.noteId).toBe('12345')
   })
@@ -221,7 +266,7 @@ describe('the run-projection note (gitlab-com-integration.md §16)', () => {
     await p.apply(desiredFrame())
 
     expect(results[0]!.result.noteId).toBe(bigId)
-    expect((await store.getNoteProjection(PROJECTION))?.noteId).toBe(bigId)
+    expect((await store.getNoteProjection(DAEMON, PROJECTION))?.noteId).toBe(bigId)
   })
 
   it('reports ambiguous and keeps the row in flight when the request never resolved', async () => {
@@ -233,7 +278,7 @@ describe('the run-projection note (gitlab-com-integration.md §16)', () => {
     expect(calls).toHaveLength(1)
     expect(results[0]!.result).toMatchObject({ outcome: 'ambiguous', code: 'request_unresolved' })
     expect(results[0]!.result.noteId).toBeUndefined()
-    const row = await store.getNoteProjection(PROJECTION)
+    const row = await store.getNoteProjection(DAEMON, PROJECTION)
     expect(row?.phase).toBe('in_flight')
     expect(row?.writeMarker).toBe(MARKER_A)
   })
@@ -241,7 +286,7 @@ describe('the run-projection note (gitlab-com-integration.md §16)', () => {
   it('reconciles an interrupted write by LISTING the notes and adopting the marker match', async () => {
     const interrupted = fakeFetch([{ throws: true }])
     await projector(interrupted.fetchImpl).projector.apply(desiredFrame())
-    expect((await store.getNoteProjection(PROJECTION))?.phase).toBe('in_flight')
+    expect((await store.getNoteProjection(DAEMON, PROJECTION))?.phase).toBe('in_flight')
 
     // A fresh process opens the same store and finds the write marker the crash left behind.
     const listed = JSON.stringify([
@@ -258,7 +303,7 @@ describe('the run-projection note (gitlab-com-integration.md §16)', () => {
     expect(restarted.calls.map((c) => c.method)).toEqual(['GET', 'PUT'])
     expect(restarted.calls[1]!.url.endsWith('/notes/12345')).toBe(true)
     expect(b.results[0]!.result).toMatchObject({ outcome: 'written', noteId: '12345', observedState: 'queued' })
-    expect((await store.getNoteProjection(PROJECTION))?.phase).toBe('settled')
+    expect((await store.getNoteProjection(DAEMON, PROJECTION))?.phase).toBe('settled')
   })
 
   it('creates exactly once when reconciliation finds no marker — the interrupted write had no effect', async () => {
@@ -284,7 +329,7 @@ describe('the run-projection note (gitlab-com-integration.md §16)', () => {
     expect(calls).toHaveLength(0)
     expect(mints()).toBe(0)
     expect(results[0]!.result).toMatchObject({ outcome: 'skipped', code: 'not_dispatch_owner' })
-    expect(await store.getNoteProjection(PROJECTION)).toBeUndefined()
+    expect(await store.getNoteProjection(DAEMON, PROJECTION)).toBeUndefined()
   })
 
   it('skips without any provider call when the write lease has already expired', async () => {
@@ -352,7 +397,7 @@ describe('authority and outcome fences (round-2 review)', () => {
     expect(calls).toHaveLength(0)
     expect(results[0]!.result).toMatchObject({ outcome: 'skipped', code: 'stale_credential_epoch' })
     // Stale authority must not leave a claim on the note either.
-    expect((await store.getNoteProjection(PROJECTION))?.noteId).toBeUndefined()
+    expect((await store.getNoteProjection(DAEMON, PROJECTION))?.noteId).toBeUndefined()
   })
 
   it('re-checks the epoch after the auth refresh, so a purge mid-write stops the retry', async () => {
@@ -381,7 +426,7 @@ describe('authority and outcome fences (round-2 review)', () => {
     await a.projector.apply(desiredFrame())
 
     expect(a.results[0]!.result).toMatchObject({ outcome: 'ambiguous', code: 'create_id_unreadable' })
-    expect((await store.getNoteProjection(PROJECTION))?.phase).toBe('in_flight')
+    expect((await store.getNoteProjection(DAEMON, PROJECTION))?.phase).toBe('in_flight')
 
     const listed = JSON.stringify([{ id: 777, body: `${projectionMarker(PROJECTION)}\n**AgentConnect run**` }])
     const recovered = fakeFetch([
@@ -416,7 +461,7 @@ describe('authority and outcome fences (round-2 review)', () => {
     expect(calls).toHaveLength(2)
     // The refreshed POST may well have created the note, so only reconciliation may decide.
     expect(results[0]!.result).toMatchObject({ outcome: 'ambiguous', code: 'http_500' })
-    expect((await store.getNoteProjection(PROJECTION))?.phase).toBe('in_flight')
+    expect((await store.getNoteProjection(DAEMON, PROJECTION))?.phase).toBe('in_flight')
   })
 
   it('keeps an answered 4xx on the retried attempt deterministic — the negative control', async () => {
@@ -426,7 +471,7 @@ describe('authority and outcome fences (round-2 review)', () => {
 
     expect(results[0]!.result).toMatchObject({ outcome: 'failed', code: 'http_422' })
     // Definite: the outcome was persisted, reported, and acknowledged in one pass.
-    expect(await store.getNoteProjection(PROJECTION)).toMatchObject({ phase: 'settled', outcome: 'failed' })
+    expect(await store.getNoteProjection(DAEMON, PROJECTION)).toMatchObject({ phase: 'settled', outcome: 'failed' })
   })
 
   it('replays a dropped result until the control plane takes it, exactly once in effect', async () => {
@@ -436,7 +481,7 @@ describe('authority and outcome fences (round-2 review)', () => {
 
     // The note exists and the outcome is durable, but the control plane never heard it.
     expect(a.results).toHaveLength(0)
-    const pending = await store.getNoteProjection(PROJECTION)
+    const pending = await store.getNoteProjection(DAEMON, PROJECTION)
     expect(pending).toMatchObject({ phase: 'settled_unreported', outcome: 'written', noteId: '12345' })
 
     const replay = fakeFetch([])
@@ -453,7 +498,7 @@ describe('authority and outcome fences (round-2 review)', () => {
       noteId: '12345',
       observedState: 'queued'
     })
-    expect((await store.getNoteProjection(PROJECTION))?.phase).toBe('settled')
+    expect((await store.getNoteProjection(DAEMON, PROJECTION))?.phase).toBe('settled')
 
     // Acknowledged means retired: a later sweep re-sends nothing.
     const after = projector(fakeFetch([]).fetchImpl)
@@ -465,14 +510,135 @@ describe('authority and outcome fences (round-2 review)', () => {
     const wrote = fakeFetch([{ status: 201, body: '{"id":12345}' }])
     const a = projector(wrote.fetchImpl, { reportRejections: 1 })
     await a.projector.apply(desiredFrame())
-    expect((await store.getNoteProjection(PROJECTION))?.phase).toBe('settled_unreported')
+    expect((await store.getNoteProjection(DAEMON, PROJECTION))?.phase).toBe('settled_unreported')
 
     const refused = projector(fakeFetch([]).fetchImpl, { reportRejections: 1, reportRetryable: false })
     await refused.projector.reconcilePending()
 
     // The control plane already moved past this generation; the row must not keep asking.
     expect(refused.results).toHaveLength(0)
-    expect((await store.getNoteProjection(PROJECTION))?.phase).toBe('settled')
+    expect((await store.getNoteProjection(DAEMON, PROJECTION))?.phase).toBe('settled')
+  })
+})
+
+/** Answers by METHOD rather than call order, so a multi-row sweep is not order-sensitive. */
+function markerFetch(projectionKeys: string[]) {
+  const calls: Call[] = []
+  const listed = JSON.stringify(projectionKeys.map((key, i) => ({ id: 900 + i, body: projectionMarker(key) })))
+  const fetchImpl = (async (url: string, init?: RequestInit) => {
+    const method = init?.method ?? 'GET'
+    calls.push({ method, url: String(url) })
+    if (method === 'GET') return new Response(listed, { status: 200 })
+    return new Response('{"id":900}', { status: 200 })
+  }) as typeof fetch
+  return { fetchImpl, calls }
+}
+
+/** One shared-store handle, as a pool member (or a restarted one) opens it. */
+async function sharedStore(path: string, ownerId: string): Promise<LocalStore> {
+  return await LocalStore.open({
+    database: SqliteAsyncDatabase.adopt(new DatabaseSync(path)),
+    shared: true,
+    ownerId,
+    orgForAgent: () => 'org-1'
+  })
+}
+
+describe('recovery scheduling and ownership (round-3 review)', () => {
+  it('reconciles an ambiguous write on its own backoff, with no control-plane reconnect', async () => {
+    const listed = JSON.stringify([{ id: 12345, body: projectionMarker(PROJECTION) }])
+    const { fetchImpl, calls } = fakeFetch([
+      { throws: true },
+      { status: 200, body: listed },
+      { status: 200, body: '{"id":12345}' }
+    ])
+    const { projector: p, results, clock } = projector(fetchImpl)
+    await p.apply(desiredFrame())
+
+    expect(results[0]!.result).toMatchObject({ outcome: 'ambiguous' })
+    // The provider timed out while the control socket stayed healthy, so the writer arms its own retry.
+    expect(clock.armed()).toBe(1)
+    expect(clock.delays()).toEqual([RESWEEP_BASE_MS])
+
+    clock.fire()
+    await vi.waitFor(() => expect(results).toHaveLength(2))
+
+    expect(calls.map((c) => c.method)).toEqual(['POST', 'GET', 'PUT'])
+    expect(results[1]!.result).toMatchObject({ outcome: 'written', noteId: '12345' })
+    expect(await store.getNoteProjection(DAEMON, PROJECTION)).toMatchObject({ phase: 'settled' })
+    // Nothing is owed any more, so the writer goes quiet instead of polling forever.
+    expect(clock.armed()).toBe(0)
+  })
+
+  it('backs off exponentially to a cap while work remains, then stops once it settles', async () => {
+    const listed = JSON.stringify([{ id: 12345, body: projectionMarker(PROJECTION) }])
+    const { fetchImpl } = fakeFetch([
+      { throws: true },
+      { status: 500 },
+      { status: 500 },
+      { status: 500 },
+      { status: 200, body: listed },
+      { status: 200, body: '{"id":12345}' }
+    ])
+    const { projector: p, results, clock } = projector(fetchImpl)
+    await p.apply(desiredFrame())
+
+    for (let sweep = 0; sweep < 3; sweep += 1) {
+      const before = results.length
+      clock.fire()
+      await vi.waitFor(() => expect(results.length).toBeGreaterThan(before))
+    }
+    // 30s, 60s, then pinned at the 120s cap — a wedged projection never becomes a hot loop.
+    expect(clock.delays()).toEqual([RESWEEP_BASE_MS, 60_000, RESWEEP_CAP_MS, RESWEEP_CAP_MS])
+
+    clock.fire()
+    await vi.waitFor(() => expect(results).toHaveLength(5))
+    expect(results[4]!.result).toMatchObject({ outcome: 'written', noteId: '12345' })
+    expect(clock.armed()).toBe(0)
+  })
+
+  it('recovers a previous incarnation’s rows on a shared store, and only its own daemon’s', async () => {
+    const poolRoot = mkdtempSync(join(tmpdir(), 'note-projection-pool-'))
+    const path = statePath(poolRoot)
+    await (await LocalStore.open(path)).close()
+    const first = await sharedStore(path, 'incarnation-1')
+
+    // One write left in flight, and one whose definite outcome the control plane never acknowledged.
+    const stalled = projector(fakeFetch([{ throws: true }]).fetchImpl, { store: first })
+    await stalled.projector.apply(desiredFrame())
+    const unreported = projector(fakeFetch([{ status: 201, body: '{"id":901}' }]).fetchImpl, {
+      store: first,
+      reportRejections: 1
+    })
+    await unreported.projector.apply(desiredFrame({ projectionId: PROJECTION_B, projectionKey: PROJECTION_B }))
+    expect(await first.getNoteProjection(DAEMON, PROJECTION)).toMatchObject({ phase: 'in_flight' })
+    expect(await first.getNoteProjection(DAEMON, PROJECTION_B)).toMatchObject({ phase: 'settled_unreported' })
+
+    // A RESTART: same daemon identity, a brand-new process incarnation over the same database.
+    const second = await sharedStore(path, 'incarnation-2')
+
+    // The negative control runs first, while both rows are still owed: a pool peer sees neither.
+    const peerFetch = markerFetch([PROJECTION])
+    const peer = projector(peerFetch.fetchImpl, { store: second, daemonId: 'peer-daemon-id' })
+    await peer.projector.reconcilePending()
+    expect(peer.results).toHaveLength(0)
+    expect(peerFetch.calls).toHaveLength(0)
+    expect(peer.clock.armed()).toBe(0)
+
+    const recovery = markerFetch([PROJECTION, PROJECTION_B])
+    const restarted = projector(recovery.fetchImpl, { store: second })
+    await restarted.projector.reconcilePending()
+
+    // Both rows are this daemon identity's to finish, whatever process started them.
+    expect(restarted.results).toHaveLength(2)
+    expect(restarted.results.map((r) => r.result.outcome)).toEqual(['written', 'written'])
+    expect(await second.getNoteProjection(DAEMON, PROJECTION)).toMatchObject({ phase: 'settled' })
+    expect(await second.getNoteProjection(DAEMON, PROJECTION_B)).toMatchObject({ phase: 'settled', noteId: '901' })
+    expect(restarted.clock.armed()).toBe(0)
+
+    await second.close()
+    await first.close()
+    rmSync(poolRoot, { recursive: true, force: true })
   })
 })
 

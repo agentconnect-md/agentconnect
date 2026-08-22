@@ -1695,12 +1695,13 @@ export class Daemon {
     this.noteProjector = new CodeHostNoteProjector({
       daemonId: () => this.cfg.daemonId,
       store: {
-        getNoteProjection: (key) => this.store.getNoteProjection(key),
+        getNoteProjection: (daemonId, key) => this.store.getNoteProjection(daemonId, key),
         beginNoteProjectionWrite: (row, now) => this.store.beginNoteProjectionWrite(row, now),
         recordNoteProjectionOutcome: (row, outcome, code, now) =>
           this.store.recordNoteProjectionOutcome(row, outcome, code, now),
-        markNoteProjectionReported: (key, marker, now) => this.store.markNoteProjectionReported(key, marker, now),
-        listUnsettledNoteProjections: () => this.store.listUnsettledNoteProjections()
+        markNoteProjectionReported: (daemonId, key, marker, now) =>
+          this.store.markNoteProjectionReported(daemonId, key, marker, now),
+        listUnsettledNoteProjections: (daemonId) => this.store.listUnsettledNoteProjections(daemonId)
       },
       lease: async (target) => {
         const entry = await this.gitCreds.getGitlabEffectToken(target.agentId, target.projectId, target.hookId)
@@ -15650,6 +15651,8 @@ export class Daemon {
     // so server.close() isn't left waiting on a live bridge connection.
     await Promise.resolve(this.mcp?.stop()).catch((e) => errors.push(e))
     this.gitCredServer?.stop()
+    // The projection resweep runs on its own clock, so it must be disarmed before the store closes.
+    this.noteProjector?.stop()
     if (this.dataPlane) await this.dataPlane.close().catch((e) => errors.push(e))
     else await this.store?.close()
     if (errors.length) throw new AggregateError(errors, 'stop: partial failure')
