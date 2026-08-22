@@ -329,6 +329,11 @@ eligibility, author/committer restrictions, and protected-resource rules still
 apply. AgentConnect never raises the role automatically to bypass project
 policy.
 
+Its username is the rename-stable machine marker; its display name is the
+project's own last path segment plus `-bot`, sanitized and capped, which
+reconciliation backfills onto an account still carrying a default name and never
+onto one an administrator renamed.
+
 The account is shared by all AgentConnect agents connected to that project.
 Agent identity is recorded in the generated note/review marker and
 AgentConnect audit metadata, not represented as another GitLab user.

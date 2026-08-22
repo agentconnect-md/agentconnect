@@ -87,6 +87,11 @@ describe('GitlabProvisioner (§10.2)', () => {
     const binding = (await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))!
     expect(binding.state).toBe('ready')
     expect(binding.serviceAccountUsername).toBe(gitlabServiceAccountUsernameForTests(PROJECT))
+    // The rename-stable username stays machine; only the human label reads as the project.
+    expect(h.fake.serviceAccounts[0]).toMatchObject({
+      username: gitlabServiceAccountUsernameForTests(PROJECT),
+      name: 'example-project-bot'
+    })
     expect(binding.credentialEpoch).toBe(h.binding.credentialEpoch + 3n)
     // Developer, never higher (§7.2).
     expect(h.fake.members.get(Number(binding.serviceAccountUserId))).toBe(30)
@@ -223,6 +228,38 @@ describe('GitlabProvisioner (§10.2)', () => {
       await h.bindings.markProviderMutationStarted(DEFAULT_ORG_ID, h.binding.id, PROJECT, 'dead2', expired, now)
     ).toBe(true)
     expect(await h.bindings.beginCleanup(DEFAULT_ORG_ID, h.binding.id, PROJECT, now)).toBe(true)
+  })
+
+  it('repair backfills a default display name onto an account that already exists', async () => {
+    const h = await harness()
+    const username = gitlabServiceAccountUsernameForTests(PROJECT)
+    // Both default forms an account can carry: the retired label and the bare username.
+    for (const stale of [`AgentConnect (example-group/example-project)`, username]) {
+      h.fake.serviceAccounts = [{ id: 7000, username, name: stale }]
+      expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toEqual({ state: 'ready' })
+      expect(h.fake.serviceAccounts[0]).toMatchObject({ id: 7000, username, name: 'example-project-bot' })
+    }
+    // The identity itself never moved: one account, same username, same id.
+    expect(h.fake.serviceAccounts).toHaveLength(1)
+    expect((await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))!.serviceAccountUsername).toBe(username)
+  })
+
+  it('leaves a display name a person chose alone', async () => {
+    const h = await harness()
+    const username = gitlabServiceAccountUsernameForTests(PROJECT)
+    h.fake.serviceAccounts = [{ id: 7001, username, name: 'Release Robot' }]
+    expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toEqual({ state: 'ready' })
+    expect(h.fake.serviceAccounts[0]).toMatchObject({ name: 'Release Robot' })
+  })
+
+  it('a refused rename is cosmetic: the run still converges to ready', async () => {
+    const h = await harness({ refuseServiceAccountRename: true })
+    const username = gitlabServiceAccountUsernameForTests(PROJECT)
+    h.fake.serviceAccounts = [{ id: 7002, username, name: username }]
+    expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toEqual({ state: 'ready' })
+    expect(h.fake.serviceAccounts[0]).toMatchObject({ name: username })
+    // The credentials the run exists for landed anyway.
+    expect(await new PgGitlabProjectCredentialRepo(prisma).listForBinding(h.binding.id)).toHaveLength(3)
   })
 
   it('two concurrent provisions: exactly one runs, the other observes busy', async () => {

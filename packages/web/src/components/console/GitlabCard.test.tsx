@@ -358,6 +358,19 @@ describe('GitlabCard', () => {
     expect(buttonIn(host, 'Repair')).toBeTruthy()
   })
 
+  it('links the bot chip to the service account’s GitLab profile', async () => {
+    mocks.fetchConnections.mockResolvedValue({ enabled: true, connections: [CONNECTION] })
+    mocks.fetchProjects.mockResolvedValue([BINDING])
+    await render()
+
+    const chip = host.querySelector('[data-gitlab-project] a') as HTMLAnchorElement
+    expect(chip.textContent).toBe('bot @project_4711_bot')
+    expect(chip.getAttribute('href')).toBe('https://gitlab.com/project_4711_bot')
+    // A new tab, and never one that can reach back into the console.
+    expect(chip.getAttribute('target')).toBe('_blank')
+    expect(chip.getAttribute('rel')).toBe('noopener noreferrer')
+  })
+
   it('says where projects come from when a connection has none', async () => {
     mocks.fetchConnections.mockResolvedValue({ enabled: true, connections: [CONNECTION] })
     await render()

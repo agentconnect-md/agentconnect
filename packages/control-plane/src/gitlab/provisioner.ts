@@ -51,8 +51,11 @@ import {
   gitlabListWebhooks,
   gitlabRevokeServiceAccountToken,
   gitlabRootNamespace,
+  gitlabServiceAccountDisplayName,
+  gitlabServiceAccountNameIsDefault,
   gitlabServiceAccountUsername,
   gitlabTestWebhook,
+  gitlabUpdateServiceAccount,
   gitlabUpdateWebhook,
   membershipSatisfies,
   type FetchLike,
@@ -326,6 +329,7 @@ export class GitlabProvisioner {
 
     // 2–3. Find-or-create the marked service account; ensure Developer membership.
     const username = gitlabServiceAccountUsername(binding.projectId)
+    const displayName = gitlabServiceAccountDisplayName(project.path_with_namespace, username)
     let account = await gitlabFindServiceAccount(token, root.id, username, fetchImpl)
     if (!account) {
       // §10.2 per-step atomic renewal: the run must still own the lease.
@@ -333,12 +337,7 @@ export class GitlabProvisioner {
         return { state: 'admin_degraded', reason: 'claim_fence_lost' }
       }
       try {
-        account = await gitlabCreateServiceAccount(
-          token,
-          root.id,
-          { username, name: `AgentConnect (${project.path_with_namespace})` },
-          fetchImpl
-        )
+        account = await gitlabCreateServiceAccount(token, root.id, { username, name: displayName }, fetchImpl)
       } catch (e) {
         // Ambiguous create (§10.2): list by the deterministic marker before failing.
         account = await gitlabFindServiceAccount(token, root.id, username, fetchImpl)
@@ -349,6 +348,22 @@ export class GitlabProvisioner {
           }
           throw e
         }
+      }
+    }
+    // Repair backfills the friendly name onto an account still carrying a default
+    // one; a name a person chose is left alone, and a refused rename never fails
+    // the run — the account and its credentials matter, its label does not.
+    if (account.name !== displayName && gitlabServiceAccountNameIsDefault(account.name, username)) {
+      if (!(await this.renewLease(orgId, binding, owner))) {
+        return { state: 'admin_degraded', reason: 'claim_fence_lost' }
+      }
+      try {
+        account = await gitlabUpdateServiceAccount(token, root.id, BigInt(account.id), { name: displayName }, fetchImpl)
+      } catch (e) {
+        this.deps.log?.warn(
+          { bindingId: binding.id, status: e instanceof GitlabApiError ? e.status : undefined },
+          'gitlab service account rename failed'
+        )
       }
     }
     const accountUserId = BigInt(account.id)

@@ -35,7 +35,7 @@ function codeFor(status: number): GitlabErrorCode {
 }
 
 export interface GitlabRequestOpts {
-  method?: 'GET' | 'POST' | 'PUT' | 'DELETE'
+  method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
   /** OAuth or PAT bearer. Pass null only for the token endpoint itself. */
   auth: string | null
   body?: unknown
@@ -309,6 +309,24 @@ export function gitlabServiceAccountUsername(projectId: bigint): string {
   return `agentconnect-p${projectId}`
 }
 
+/** The account's human display name: the project's own last path segment plus
+ *  `-bot`, folded to a conservative ASCII set and capped so no name we write can
+ *  be refused. Falls back to the machine username when nothing survives (§7.2). */
+export function gitlabServiceAccountDisplayName(projectPath: string, username: string): string {
+  const segment = (projectPath.split('/').pop() ?? '')
+    .replace(/[^A-Za-z0-9._-]+/g, '-')
+    .replace(/^[-._]+|[-._]+$/g, '')
+    .slice(0, 48)
+  return segment ? `${segment}-bot` : username
+}
+
+/** "Still the default": empty, the machine username itself, or the `AgentConnect
+ *  (<path>)` form earlier versions wrote — never a name a person chose. */
+export function gitlabServiceAccountNameIsDefault(name: string | undefined, username: string): boolean {
+  const trimmed = (name ?? '').trim()
+  return trimmed === '' || trimmed === username || /^AgentConnect \(.*\)$/.test(trimmed)
+}
+
 /** Find the marked account among the top-level group's service accounts. */
 export async function gitlabFindServiceAccount(
   accessToken: string,
@@ -333,6 +351,22 @@ export async function gitlabCreateServiceAccount(
     method: 'POST',
     auth: accessToken,
     body: { username: input.username, name: input.name },
+    fetchImpl
+  })
+}
+
+/** Rename an existing account (display name only — the username is the §7.2 identity). */
+export async function gitlabUpdateServiceAccount(
+  accessToken: string,
+  groupId: number,
+  userId: bigint,
+  input: { name: string },
+  fetchImpl?: FetchLike
+): Promise<GitlabServiceAccount> {
+  return gitlabRequest<GitlabServiceAccount>(`/groups/${groupId}/service_accounts/${userId}`, {
+    method: 'PATCH',
+    auth: accessToken,
+    body: { name: input.name },
     fetchImpl
   })
 }
