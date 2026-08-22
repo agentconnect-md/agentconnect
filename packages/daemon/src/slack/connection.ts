@@ -361,6 +361,9 @@ export type AppLike = {
     // so this is the ONLY way to put a file in a conversation.
     files: {
       uploadV2: (a: unknown) => Promise<unknown>
+      info: (a: unknown) => Promise<{
+        file?: { shares?: { public?: SlackFileShares; private?: SlackFileShares } }
+      }>
     }
     conversations: {
       open: (a: unknown) => Promise<{ channel?: { id?: string } }>
@@ -526,6 +529,12 @@ const SLACK_API_TIMEOUT_MS = 30_000
 
 /** Map a Slack API error to the port's typed failure vocabulary — every arm already had the
  *  raw material (`missing_scope` payloads, stable error codes); this only names them. */
+/** The `files.info` share record, keyed by channel id (docs: `shares.public|private`). */
+type SlackFileShares = Record<string, { ts?: string }[] | undefined>
+
+/** `uploadV2` answers with one `completeUploadExternal` response per file. */
+type SlackUploadV2Result = { files?: { files?: { id?: string }[] }[] } | undefined
+
 /** The provider's own words, for the arm that has no category: without this a refusal
  *  reports only `platform error`, which no operator can act on. */
 function slackErrorDetail(err: unknown): { detail?: string } {
@@ -1380,14 +1389,16 @@ export class SlackConnection implements PlatformConnection {
         // `text` argument, so blocks-only would buy CommonMark at the price of the
         // notification preview for every forwarded file. Keeping the comment is the better
         // half of that trade; the cost is that `**bold**` and `[label](url)` read literally.
-        await this.app.client.files.uploadV2({
+        const done = (await this.app.client.files.uploadV2({
           file: file.bytes,
           filename: file.name,
           channel_id: channel,
           ...(threadTs ? { thread_ts: threadTs } : {}),
           ...(comment ? { initial_comment: comment } : {})
-        })
-        return { ok: true }
+        })) as SlackUploadV2Result
+        // `uploadV2` answers with one completion response per file, each carrying the FILE.
+        const fileId = done?.files?.[0]?.files?.[0]?.id
+        return { ok: true, ...(await this.shareMessageTs(fileId, channel)) }
       } catch (err) {
         this.rememberMissingScopes(err)
         this.deps.log?.debug(`slack: uploadFile ${file.name} → ch=${channel} failed: ${(err as Error).message}`)
@@ -1408,6 +1419,31 @@ export class SlackConnection implements PlatformConnection {
       ok: false,
       reason: isSendQueueTimeout(err) ? 'indeterminate' : 'platform_error'
     }))
+  }
+
+  /**
+   * The ts of the message a shared file became. Slack's completion answers with the FILE, not
+   * the message, so a share has no timestamp of its own — and a post the daemon cannot name is
+   * not an ANCHOR: replying under it lands in a thread whose root the daemon does not
+   * recognize as its own, so the reply wakes nobody. `files.info` publishes the share record
+   * that does carry the ts, which is why the file post costs one extra read.
+   *
+   * Best-effort by construction: the file is already in the conversation by the time this
+   * runs, so a failure here must degrade to an unanchored share, never to a failed one.
+   */
+  private async shareMessageTs(fileId: string | undefined, channel: string): Promise<{ messageId?: string }> {
+    if (!fileId) return {}
+    try {
+      const info = await this.app.client.files.info({ file: fileId })
+      const shares = info.file?.shares
+      // A share is filed under the channel's own visibility, so read both arms by channel id.
+      const ts = (shares?.public?.[channel] ?? shares?.private?.[channel])?.[0]?.ts
+      if (!ts) this.deps.log?.debug(`slack: uploadFile share of ${fileId} carried no ts for ${channel}`)
+      return ts ? { messageId: ts } : {}
+    } catch (err) {
+      this.deps.log?.debug(`slack: uploadFile could not read the share ts of ${fileId}: ${(err as Error).message}`)
+      return {}
+    }
   }
 
   /**
