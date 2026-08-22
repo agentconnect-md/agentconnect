@@ -928,6 +928,13 @@ describe('GithubService.mintForAgent — capabilities forwarding (P2.5)', () => 
     // writes coupled to contents writes.
     await svc.mintForAgent(agent, [])
     expect(bodies[1]!.permissions).toEqual({ metadata: 'read', contents: 'write', workflows: 'write' })
+
+    // §17.1 access floor: a caller may ask for LESS than the write tier, and the read it gets back
+    // drops the coupled workflows write with it. 'write' is a no-op — the tier is already the ceiling.
+    await svc.mintForAgent(agent, [], ['contents', 'issues'], undefined, 'read')
+    expect(bodies[2]!.permissions).toEqual({ metadata: 'read', contents: 'read', issues: 'read' })
+    await svc.mintForAgent(agent, [], ['contents'], undefined, 'write')
+    expect(bodies).toHaveLength(3) // no new mint: it landed on the grant the absent-access ask cached
   })
 })
 
@@ -1147,7 +1154,8 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
     // the grant ECHOES the requested name (not the row's stored casing) so the
     // daemon's identity guard is a clean equality check.
     const grant = await svc.mintForAgent(AGENT, [], CONTENTS, 'acme/tools')
-    expect(grant).toMatchObject({ repoFullName: 'acme/tools', access: 'read' })
+    // …and reports that numeric id back, which is what a provider-qualified grant echoes.
+    expect(grant).toMatchObject({ repoFullName: 'acme/tools', access: 'read', repoId: 111n })
     expect(mintBodies[0]).toMatchObject({
       repository_ids: [111],
       permissions: { metadata: 'read', contents: 'read' }

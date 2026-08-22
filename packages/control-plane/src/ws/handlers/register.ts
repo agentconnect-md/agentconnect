@@ -16,6 +16,7 @@ import {
   CODEHOST_NOTE_PROJECTION_V1_FEATURE,
   CODEHOST_REVIEW_V1_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
+  GITCRED_GITHUB_V2_FEATURE,
   GITCRED_PROVIDER_V2_FEATURE,
   GITLAB_EFFECT_V1_FEATURE,
   SESSION_LIVE_TAIL_FEATURE,
@@ -89,6 +90,9 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
       // §17.1: this CP decodes provider-qualified gitcred v2 requests. A daemon
       // may name provider 'gitlab' only after seeing this.
       GITCRED_PROVIDER_V2_FEATURE,
+      // §17.3: …and decodes an explicitly github-qualified request, echoing the provider back so a
+      // daemon can verify a GitHub grant the same way it verifies every other provider's.
+      GITCRED_GITHUB_V2_FEATURE,
       // §14.2: …and decodes purpose 'gitlab_effect', the broker's action-time effect lease.
       GITLAB_EFFECT_V1_FEATURE,
       // §15.1/§17.2: this CP serves the provider-neutral review authorization, the

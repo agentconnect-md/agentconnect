@@ -308,6 +308,9 @@ export const GITLAB_RERUN_V1_FEATURE = 'gitlab-rerun-v1'
  *  id differs from its request (an older CP strips new fields and answers GitHub-shaped). */
 export const GITCRED_PROVIDER_V2_FEATURE = 'gitcred-provider-v2'
 
+/** CP accepts an explicitly github-qualified credential request and echoes `provider: 'github'` back. */
+export const GITCRED_GITHUB_V2_FEATURE = 'gitcred-github-v2'
+
 /** Provider-routed formal-review surface (`submitCodeReview` and the provider-neutral
  *  review authorization/result frames). */
 export const CODEHOST_REVIEW_V1_FEATURE = 'codehost-review-v1'

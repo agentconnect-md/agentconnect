@@ -55,7 +55,9 @@ export type CredPlane = 'git' | 'gh' | 'glab'
 type CachePlane = CredPlane | 'gh-actions'
 
 /** Cache key — NUL-joined so no owner/repo string can collide across fields
- *  (the GH_KEY precedent). */
+ *  (the GH_KEY precedent). GitHub is the EMPTY provider segment whether the request went out
+ *  v1-shaped or github-qualified: one logical credential must stay one entry across a CP up- or
+ *  downgrade, and the request shape is a wire negotiation, not part of the credential's identity. */
 const keyOf = (agentId: string, plane: CachePlane, repo?: string, provider?: 'gitlab'): string =>
   `${plane}\u0000${agentId}\u0000${repo?.toLowerCase() ?? ''}\u0000${provider ?? ''}`
 
@@ -103,7 +105,7 @@ export interface GitCredentialCacheDeps {
     purpose?: 'github_hook_reply' | 'gitlab_hook_reply' | 'gitlab_effect'
     hookId?: string
     forceRefresh?: boolean
-    provider?: 'gitlab'
+    provider?: 'github' | 'gitlab'
     externalRepoId?: string
     requestedAccess?: 'read' | 'write'
   }) => Promise<GitCredGrant>
@@ -116,6 +118,10 @@ export interface GitCredentialCacheDeps {
    *  gitcred-provider-v2 — an older CP would strip the field and answer a
    *  GitHub workspace grant for the wrong provider. */
   providerV2Supported?: () => boolean
+  /** §17.3 negotiation: GitHub requests carry `provider: 'github'` only after the CP advertises
+   *  gitcred-github-v2 — an older CP strips the field and answers an unqualified grant, which the
+   *  echo check below would then have to refuse. Never part of the cache key (see keyOf). */
+  githubV2Supported?: () => boolean
   /** §17.3 negotiation: `purpose: 'gitlab_effect'` is a NEW ENUM VALUE, so naming it to an
    *  older CP is frame-fatal rather than silently stripped — ask only after gitlab-effect-v1. */
   gitlabEffectSupported?: () => boolean
@@ -175,7 +181,7 @@ export class GitCredentialCache {
         ? { capabilities: [...GH_TOKEN_CAPABILITIES, ...(withActions ? (['actions'] as const) : [])] }
         : {}),
       ...(opts.repo !== undefined ? { repoFullName: opts.repo } : {}),
-      ...(opts.provider !== undefined ? { provider: opts.provider } : {}),
+      ...(opts.provider !== undefined ? { provider: opts.provider } : this.githubProvider()),
       ...(opts.externalRepoId !== undefined ? { externalRepoId: opts.externalRepoId } : {}),
       ...(opts.requestedAccess !== undefined ? { requestedAccess: opts.requestedAccess } : {})
     })
@@ -199,6 +205,7 @@ export class GitCredentialCache {
       repoFullName: repo,
       purpose: 'github_hook_reply',
       hookId,
+      ...this.githubProvider(),
       ...(forceRefresh ? { forceRefresh: true } : {})
     })
     if (forceRefresh) this.refreshPosts.delete(key)
@@ -278,6 +285,11 @@ export class GitCredentialCache {
    *  presented token avoids deleting a newer grant that won a concurrent race. */
   invalidatePost(agentId: string, repo: string, presentedToken?: string): void {
     this.dropCached(POST_KEY(agentId, repo), presentedToken)
+  }
+
+  /** The provider field a GitHub request may name: present once the CP advertises it, absent before. */
+  private githubProvider(): { provider?: 'github' } {
+    return this.deps.githubV2Supported?.() === true ? { provider: 'github' } : {}
   }
 
   private async getKeyed(
@@ -395,11 +407,11 @@ export class GitCredentialCache {
         false
       )
     }
-    // v2 echo verification (§17.1): a stripped provider means an older CP
-    // answered a GitHub workspace grant — never serve it for another provider.
+    // v2 echo verification (§17.1/§17.3): a stripped provider means the CP answered unqualified —
+    // an older peer, or one that never saw our provider. Never serve that for a request that named one.
     if (payload.provider !== undefined && grant.provider !== payload.provider) {
       throw new GitCredUnavailableError(
-        `control plane answered provider ${grant.provider ?? 'github'} for a ${payload.provider} request`,
+        `control plane answered provider ${grant.provider ?? 'github (unqualified)'} for a ${payload.provider} request`,
         false
       )
     }

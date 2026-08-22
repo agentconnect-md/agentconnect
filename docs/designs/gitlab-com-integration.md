@@ -1371,6 +1371,10 @@ New capabilities are gated by explicit features, including:
 
 - `gitlab-com-v1`;
 - `gitcred-provider-v2`;
+- `gitcred-github-v2` — the Control Plane accepts an explicitly github-qualified
+  credential request and echoes the provider back, so the daemon verifies a GitHub
+  grant the same way it verifies every other provider's. Absent, GitHub requests keep
+  the implicit pre-v2 shape, which the Control Plane accepts indefinitely;
 - `codehost-review-v1`; and
 - `codehost-note-projection-v1`.
 

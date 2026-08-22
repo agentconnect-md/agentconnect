@@ -79,17 +79,17 @@ export const GitCredRequest = z.object({
   // verify grant.repoFullName against what they asked for before trusting it.
   repoFullName: z.string().optional(),
   // ── gitcred v2 (gitlab-com-integration.md §17.1) — negotiated fields ──
-  // Absent ⇒ GitHub v1, byte-identical to the pre-v2 wire. A daemon may name a
-  // provider only after the CP advertises GITCRED_PROVIDER_V2_FEATURE: an older
-  // CP strips both fields and answers a GitHub workspace grant, so the consumer
-  // MUST verify the grant's provider echo before trusting it (see GitCredGrant).
+  // Absent ⇒ GitHub, the pre-v2 wire user-installed daemons keep sending for a long time yet.
+  // 'gitlab' may be named only after GITCRED_PROVIDER_V2_FEATURE and an explicit 'github' only
+  // after GITCRED_GITHUB_V2_FEATURE; an older CP strips the field and answers a GitHub workspace
+  // grant, so a consumer that named one MUST verify the echo before trusting it (see GitCredGrant).
   provider: CodeHostProviderString.optional(),
-  // Rename-stable numeric repository/project identity for the named provider;
-  // display paths are never a v2 match key.
+  // Rename-stable numeric repository/project identity for the named provider; display paths are
+  // never a v2 match key. The GitHub arm still RESOLVES by name, so there it is verify-if-present.
   externalRepoId: CodeHostExternalId.optional(),
-  // v2 access floor (§17.1): request LESS than the workspace clamp — the
-  // read-only CLI wrapper asks for 'read' even on a write workspace, so a
-  // mutating command cannot ride its token. Absent ⇒ the clamp itself.
+  // v2 access floor (§17.1): request LESS than the workspace clamp — the read-only CLI wrapper asks
+  // for 'read' even on a write workspace, so a mutating command cannot ride its token. Honored on
+  // both provider arms; absent ⇒ the clamp itself, which is what every GitHub caller asks for today.
   requestedAccess: z.enum(['read', 'write']).optional()
 })
 export type GitCredRequest = z.infer<typeof GitCredRequest>
@@ -112,9 +112,9 @@ export const GitCredGrant = z
     // operation and rides only a gitlab grant (fenced below), so the GitHub v1 wire stays read|write.
     access: z.enum(['read', 'comment', 'write']),
     // ── gitcred v2 echo (gitlab-com-integration.md §17.1) — negotiated fields ──
-    // Absent ⇒ GitHub v1 grant. A v2 consumer MUST verify provider and
-    // externalRepoId against its request before returning the password: an older
-    // CP answers without them, and a mismatched echo is a wrong-repo credential.
+    // Absent ⇒ an unqualified GitHub grant: an older CP, or the answer to an absent-provider
+    // request. A consumer that named a provider MUST verify provider and externalRepoId against
+    // its request before returning the password — a mismatched echo is a wrong-repo credential.
     provider: CodeHostProviderString.optional(),
     externalRepoId: CodeHostExternalId.optional(),
     // Purge fence: a grant is dead the moment the CP broadcasts a newer epoch.
