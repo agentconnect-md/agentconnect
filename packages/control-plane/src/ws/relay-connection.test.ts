@@ -14,7 +14,7 @@ import {
   type RcVerifyResult
 } from '@agentconnect.md/protocol'
 import { RelayConnection } from './relay-connection.js'
-import { RelayRegistry } from './relay-registry.js'
+import { RelayNotWritten, RelayRegistry } from './relay-registry.js'
 import type { Transport } from './transport.js'
 import { RelayAuthService } from '../registry/relayAuthService.js'
 import { ApiKeyCodec } from '../registry/apiKey.js'
@@ -1081,6 +1081,25 @@ describe('correlated C→R request (rc/hook-rerun admission, §16.1)', () => {
     await expect(silent.conn.request('rc/hook-rerun', RERUN, 5)).rejects.toThrow(/no relay reply/)
     // A lapsed deadline still leaves exactly one frame on the wire.
     expect(silent.transport.sent.filter((f) => f.type === 'rc/hook-rerun')).toHaveLength(1)
+  })
+
+  it('refuses BEFORE the write when the socket is past READY, so the caller may ask a peer', async () => {
+    const { conn, transport } = build({ clock: timerClock })
+    // Not registered yet: a send here would be swallowed and only ever time out.
+    await expect(conn.request('rc/hook-rerun', RERUN)).rejects.toBeInstanceOf(RelayNotWritten)
+    expect(transport.sent.filter((f) => f.type === 'rc/hook-rerun')).toHaveLength(0)
+
+    await toReady(transport)
+    transport.simulateClose(1006)
+    await expect(conn.request('rc/hook-rerun', RERUN)).rejects.toBeInstanceOf(RelayNotWritten)
+    expect(transport.sent.filter((f) => f.type === 'rc/hook-rerun')).toHaveLength(0)
+  })
+
+  it('marks a lost answer as WRITTEN — a deadline is never a pre-write failure', async () => {
+    const { conn, transport } = build({ clock: timerClock })
+    await toReady(transport)
+    await expect(conn.request('rc/hook-rerun', RERUN, 5)).rejects.not.toBeInstanceOf(RelayNotWritten)
+    expect(transport.sent.filter((f) => f.type === 'rc/hook-rerun')).toHaveLength(1)
   })
 
   it('never dispatches a correlated reply as a fresh inbound frame', async () => {

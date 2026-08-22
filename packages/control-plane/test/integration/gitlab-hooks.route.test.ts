@@ -36,6 +36,7 @@ import {
   type RcHookRerun,
   type RcHookRerunResult
 } from '@agentconnect.md/protocol'
+import { RelayNotWritten } from '../../src/ws/relay-registry.js'
 import type { RelayChannel } from '../../src/ws/relay-registry.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
@@ -601,43 +602,72 @@ describe('gitlab hook rerun — the Console "Run again" route (§16.1/§18.2)', 
     ['rule_mismatch', 409],
     ['limiter_exhausted', 429]
   ] as const) {
-    it(`never reports a ${code} refusal as started, and opens no run row`, async () => {
+    it(`returns a ${code} refusal as-is without asking another relay`, async () => {
       const { h, glab, hookId } = await rerunHarness({ admitted: false, code })
+      // A peer's rule table converges on its own schedule: after a disable or a
+      // revision bump it may still hold the replica this refusal reflects being
+      // gone. Asking it would dispatch under revoked authority.
+      const spare = channel(RERUN_FEATURES)
+      h.a.relayReg.add(spare.ch)
+
       const res = await rerun(h.a, hookId, { kind: 'merge_request', iid: MR_IID })
       expect(res.statusCode).toBe(status)
       const body = res.json() as { code: string; message: string }
       expect(body.code).toBe('RELAY_REJECTED')
       // Human prose, never the wire category.
       expect(body.message).not.toContain(code)
-      // The relay WAS asked — and answered no.
+      // The relay WAS asked — and answered no. Its verdict is final.
       expect(reruns(glab.requests)).toHaveLength(1)
+      expect(reruns(spare.requests)).toHaveLength(0)
       expect(await runsFor(hookId)).toHaveLength(0)
     })
   }
 
-  it('asks the next eligible relay after a definitive refusal, and stops on an ambiguous one', async () => {
-    const { h, glab, hookId } = await rerunHarness({ admitted: false, code: 'replay_pending' })
-    const second = channel(RERUN_FEATURES)
-    h.a.relayReg.add(second.ch)
-
-    const res = await rerun(h.a, hookId, { kind: 'merge_request', iid: MR_IID })
-    expect(res.statusCode).toBe(200)
-    // Both were asked; the one that admitted decided the answer.
-    expect(reruns(glab.requests)).toHaveLength(1)
-    expect(reruns(second.requests)).toHaveLength(1)
-
-    // A relay that goes quiet may already have dispatched — the walk stops there
-    // rather than risking a second turn on the same delivery key.
+  it('stops at a relay that went quiet after the frame was written', async () => {
+    const { h, hookId } = await rerunHarness()
+    // A relay that answers nothing may already have dispatched, so the walk ends
+    // there rather than risking a second turn on the same delivery key.
     const quiet = channel(RERUN_FEATURES, () => {
-      throw new Error('socket closed')
+      throw new Error('socket closed mid-request')
     })
     for (const ch of h.a.relayReg.all()) h.a.relayReg.remove(ch.relayId, ch)
     h.a.relayReg.add(quiet.ch)
     const spare = channel(RERUN_FEATURES)
     h.a.relayReg.add(spare.ch)
-    const ambiguous = await rerun(h.a, hookId, { kind: 'merge_request', iid: MR_IID })
-    expect(ambiguous.statusCode).toBe(503)
-    expect((ambiguous.json() as { code: string }).code).toBe('RELAY_AMBIGUOUS')
+
+    const res = await rerun(h.a, hookId, { kind: 'merge_request', iid: MR_IID })
+    expect(res.statusCode).toBe(503)
+    expect((res.json() as { code: string }).code).toBe('RELAY_AMBIGUOUS')
+    expect(reruns(quiet.requests)).toHaveLength(1)
     expect(reruns(spare.requests)).toHaveLength(0)
+  })
+
+  it('moves to the next relay only when the frame never reached the wire', async () => {
+    const { h, hookId } = await rerunHarness()
+    // Nothing was written, so nothing could have been admitted — unlike a lost
+    // answer, this leaves the next relay safe to ask.
+    const dead = channel(RERUN_FEATURES, () => {
+      throw new RelayNotWritten('relay is CLOSED')
+    })
+    for (const ch of h.a.relayReg.all()) h.a.relayReg.remove(ch.relayId, ch)
+    h.a.relayReg.add(dead.ch)
+    const live = channel(RERUN_FEATURES)
+    h.a.relayReg.add(live.ch)
+
+    const res = await rerun(h.a, hookId, { kind: 'merge_request', iid: MR_IID })
+    expect(res.statusCode).toBe(200)
+    expect(reruns(dead.requests)).toHaveLength(1)
+    expect(reruns(live.requests)).toHaveLength(1)
+
+    // Every relay unwritable ⇒ nothing was asked at all.
+    for (const ch of h.a.relayReg.all()) h.a.relayReg.remove(ch.relayId, ch)
+    h.a.relayReg.add(
+      channel(RERUN_FEATURES, () => {
+        throw new RelayNotWritten('relay is CLOSED')
+      }).ch
+    )
+    const none = await rerun(h.a, hookId, { kind: 'merge_request', iid: MR_IID })
+    expect(none.statusCode).toBe(503)
+    expect((none.json() as { code: string }).code).toBe('RELAY_UNAVAILABLE')
   })
 })

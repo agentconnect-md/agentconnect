@@ -45,6 +45,7 @@ import type { Transport } from './transport.js'
 import type { RelayAuthService } from '../registry/relayAuthService.js'
 import type { RelayRepo } from '../persistence/ports.js'
 import type { Clock } from '../domain/clock.js'
+import { RelayNotWritten } from './relay-registry.js'
 import type { RelayChannel, RelayRegistry } from './relay-registry.js'
 
 type RelayState = 'AUTHENTICATING' | 'REGISTERING' | 'READY' | 'CLOSED'
@@ -469,6 +470,11 @@ export class RelayConnection implements RelayChannel {
     payload: z.input<(typeof RELAY_CP_SCHEMAS)[T]>,
     timeoutMs = RELAY_REQUEST_TIMEOUT_MS
   ): Promise<unknown> {
+    // A socket past READY swallows sends silently, so it would only ever time
+    // out — refuse now, while the caller can still tell nothing was written.
+    if (this.state !== 'READY') {
+      return Promise.reject(new RelayNotWritten(`relay ${this.relayId || '(unregistered)'} is ${this.state}`))
+    }
     const frame = buildRelayCpFrame(type, payload)
     return new Promise<unknown>((resolve, reject) => {
       const timer = this.deps.clock.setTimeout(() => {
@@ -488,7 +494,7 @@ export class RelayConnection implements RelayChannel {
       try {
         this.transport.send(JSON.stringify(frame))
       } catch (e) {
-        this.pending.get(frame.id)?.reject(e)
+        this.pending.get(frame.id)?.reject(new RelayNotWritten(`relay send failed: ${(e as Error).message}`))
         this.pending.delete(frame.id)
       }
     })

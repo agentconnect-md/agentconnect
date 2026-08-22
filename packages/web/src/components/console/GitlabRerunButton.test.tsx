@@ -157,6 +157,33 @@ describe('GitlabRerunButton', () => {
     expect(errorText()).toBe('Could not run this trigger again')
   })
 
+  it('tells the three relay refusals apart, including the spent per-hook budget', async () => {
+    setFlags('gitlab')
+    await render(gitlabSession)
+    for (const [relayCode, copy] of [
+      ['replay_pending', 'This trigger is still loading — try again shortly'],
+      ['rule_mismatch', 'This trigger changed while the run was starting — try again'],
+      ['limiter_exhausted', 'This trigger has run too many times just now — try again later']
+    ] as const) {
+      mocks.rerunGitlabHook.mockRejectedValueOnce(
+        new ApiError('refused', 429, 'RELAY_REJECTED', { relayCode }) as never
+      )
+      await act(async () => {
+        button()?.click()
+      })
+      expect(errorText()).toBe(copy)
+      // The wire category itself never reaches the surface.
+      expect(errorText()).not.toContain(relayCode)
+    }
+
+    // A RELAY_REJECTED with no category still reads as something a human can act on.
+    mocks.rerunGitlabHook.mockRejectedValueOnce(new ApiError('refused', 409, 'RELAY_REJECTED') as never)
+    await act(async () => {
+      button()?.click()
+    })
+    expect(errorText()).toBe('The run was not accepted — try again shortly')
+  })
+
   it('renders pristine for the next session and drops the previous one’s late reply', async () => {
     setFlags('gitlab')
     type Reply = Awaited<ReturnType<typeof mocks.rerunGitlabHook>>

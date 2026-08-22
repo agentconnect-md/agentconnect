@@ -42,9 +42,19 @@ const REFUSAL: Record<string, string> = {
   RELAY_UNAVAILABLE: 'Nothing is connected to run this trigger'
 }
 
+// A RELAY_REJECTED body also names WHICH refusal, which is the difference between
+// "still loading" and "you have run this enough for now".
+const RELAY_REFUSAL: Record<string, string> = {
+  replay_pending: 'This trigger is still loading — try again shortly',
+  rule_mismatch: 'This trigger changed while the run was starting — try again',
+  limiter_exhausted: 'This trigger has run too many times just now — try again later'
+}
+
 function refusalText(e: unknown): string {
-  const code = e instanceof ApiError ? e.code : undefined
-  return (code && REFUSAL[code]) || 'Could not run this trigger again'
+  if (!(e instanceof ApiError)) return 'Could not run this trigger again'
+  const relayCode = e.details?.relayCode
+  if (typeof relayCode === 'string' && RELAY_REFUSAL[relayCode]) return RELAY_REFUSAL[relayCode]
+  return (e.code && REFUSAL[e.code]) || 'Could not run this trigger again'
 }
 
 interface RerunState {
