@@ -59,13 +59,13 @@ export function useGitlabProjects(active: boolean, query: string): GitlabProject
   const [provisioning, setProvisioning] = useState<string | null>(null)
   const [provisionError, setProvisionError] = useState<string | null>(null)
   const busy = useRef(false)
-  // A ref, not state: a "already started" flag that re-rendered would re-run this
-  // effect and its own cleanup would then discard the answer it was waiting for.
-  const started = useRef(false)
 
+  // One request per active lifecycle, and no one-shot guard: the guard would
+  // survive the cleanup that abandons its own request, so Strict Mode's
+  // setup/cleanup/setup — or leaving the pane mid-load — would strand the
+  // spinner on an answer nobody is listening for.
   useEffect(() => {
-    if (!active || started.current) return
-    started.current = true
+    if (!active) return
     let alive = true
     setError(null)
     Promise.all([fetchGitlabProjects(), fetchGitlabConnections()]).then(
