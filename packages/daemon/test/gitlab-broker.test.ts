@@ -233,6 +233,60 @@ describe('each operation calls exactly one allowlisted endpoint', () => {
   })
 })
 
+describe('draft markers normalize in both directions', () => {
+  // GitLab carries draft state in the title, and recognizes each of these prefixes.
+  const MARKED = [
+    'Draft: Add x',
+    '[Draft] Add x',
+    '(Draft) Add x',
+    'draft: Add x',
+    '[draft] Add x',
+    'WIP: Add x',
+    '[WIP] Add x',
+    '(WIP) Add x'
+  ]
+
+  it.each(MARKED)('clears %s on a merge-request update', async (title) => {
+    const { calls } = await run({ kind: 'updateMergeRequest', iid: 77, title, draft: false })
+    expect((calls[0]?.body as { title: string }).title).toBe('Add x')
+  })
+
+  it.each(MARKED)('re-marks %s exactly once when a merge request is created as a draft', async (title) => {
+    const { calls } = await run({
+      kind: 'createMergeRequest',
+      sourceBranch: 'feature/x',
+      targetBranch: 'main',
+      title,
+      draft: true
+    })
+    expect((calls[0]?.body as { title: string }).title).toBe('Draft: Add x')
+  })
+
+  it.each(MARKED)('re-marks %s exactly once on a merge-request update', async (title) => {
+    const { calls } = await run({ kind: 'updateMergeRequest', iid: 77, title, draft: true })
+    expect((calls[0]?.body as { title: string }).title).toBe('Draft: Add x')
+  })
+
+  it('marks an unmarked title and clears a title that carries several markers', async () => {
+    const marked = await run({
+      kind: 'createMergeRequest',
+      sourceBranch: 'feature/x',
+      targetBranch: 'main',
+      title: 'Add x',
+      draft: true
+    })
+    expect((marked.calls[0]?.body as { title: string }).title).toBe('Draft: Add x')
+
+    const cleared = await run({ kind: 'updateMergeRequest', iid: 77, title: 'Draft: [WIP] Add x', draft: false })
+    expect((cleared.calls[0]?.body as { title: string }).title).toBe('Add x')
+  })
+
+  it('leaves the title untouched when the flag is absent', async () => {
+    const { calls } = await run({ kind: 'updateMergeRequest', iid: 77, title: '[Draft] Add x' })
+    expect((calls[0]?.body as { title: string }).title).toBe('[Draft] Add x')
+  })
+})
+
 describe('capability classes are enforced against the clamped grant', () => {
   const comment: GitlabBrokerOperation = { kind: 'createComment', subject: 'issue', iid: 12, body: 'hi' }
   const write: GitlabBrokerOperation = { kind: 'controlPipeline', action: 'retry_pipeline', pipelineId: '31' }

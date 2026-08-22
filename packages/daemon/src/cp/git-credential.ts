@@ -354,6 +354,12 @@ export class GitCredentialCache {
     } catch (e) {
       const code = (e as { code?: string }).code
       if (code === 'SCOPE_DENIED') {
+        // §14.2: an effect lease is re-resolved live on every call and hook/binding lifecycle changes
+        // never replicate an agent spec, so its refusal is never durable — the next call asks again.
+        if (payload.purpose === 'gitlab_effect') {
+          this.entries.delete(key)
+          throw new GitCredUnavailableError((e as Error).message, false)
+        }
         if (payload.repoFullName !== undefined) {
           // Repo-keyed: negative-cache and retry in a minute — the operator may
           // be authorizing the repo in the console right now.

@@ -269,11 +269,15 @@ function limited(limit: number | undefined): string {
   return String(Math.min(Math.max(limit ?? MAX_LIST_ITEMS, 1), MAX_LIST_ITEMS))
 }
 
-/** Draft state is a title prefix in GitLab, so the bounded `draft` flag normalizes the title. */
+/** Every draft marker GitLab recognizes, case-insensitively: `Draft:`, `[Draft]`, `(Draft)` and the legacy WIP forms. */
+const DRAFT_MARKER = /^\s*(?:\[\s*(?:draft|wip)\s*\]|\(\s*(?:draft|wip)\s*\)|(?:draft|wip)\s*:)\s*/i
+
+/** Draft state is a title prefix in GitLab, so the bounded `draft` flag normalizes the title both ways. */
 function draftTitle(title: string, draft: boolean | undefined): string {
   if (draft === undefined) return title
-  const bare = title.replace(/^\s*(draft:\s*|wip:\s*)+/i, '').trim()
-  return draft ? `Draft: ${bare}` : bare
+  let bare = title
+  while (DRAFT_MARKER.test(bare)) bare = bare.replace(DRAFT_MARKER, '')
+  return (draft ? `Draft: ${bare.trim()}` : bare).trim()
 }
 
 export class GitlabBroker {
