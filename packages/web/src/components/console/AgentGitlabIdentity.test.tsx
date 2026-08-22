@@ -57,13 +57,13 @@ let host: HTMLDivElement
 let root: Root
 
 // No default argument: "SWR has no data yet" IS one of the cases, and a default would swallow it.
-async function render(data: Read, consumerCount = 1): Promise<void> {
+async function render(data: Read, consumers: readonly string[] = ['example-group/example-project']): Promise<void> {
   swrData = data
   host = document.createElement('div')
   document.body.appendChild(host)
   root = createRoot(host)
   await act(async () => {
-    root.render(<AgentGitlabIdentity agentId="agent-1" consumerCount={consumerCount} />)
+    root.render(<AgentGitlabIdentity agentId="agent-1" consumerProjectPaths={consumers} />)
   })
 }
 
@@ -173,44 +173,76 @@ describe('AgentGitlabIdentity', () => {
     expect(host.textContent).not.toContain('some_internal_category')
   })
   it('keys the read by the consumer set, so binding a project cannot read the pre-bind entry', async () => {
-    await render({ enabled: true, accounts: [] }, 0)
+    await render({ enabled: true, accounts: [] }, [])
     const beforeBind = JSON.stringify(lastCall!.key)
 
-    await render({ enabled: true, accounts: [] }, 1)
+    await render({ enabled: true, accounts: [] }, ['example-group/example-project'])
     const afterBind = JSON.stringify(lastCall!.key)
 
     // The CP creates the account behind hook CRUD, so the old entry must be unreachable.
     expect(afterBind).not.toBe(beforeBind)
     expect(afterBind).toContain('agent-1')
+
+    // Swapping one project for another in a different group is also a change, at equal count.
+    await render({ enabled: true, accounts: [] }, ['other-group/example-project'])
+    expect(JSON.stringify(lastCall!.key)).not.toBe(afterBind)
   })
 
   it('polls while convergence is still in flight and rests once it has landed', async () => {
     // A consumer exists but its account does not yet — the saga runs after hook CRUD returned.
-    await render({ enabled: true, accounts: [] }, 1)
+    await render({ enabled: true, accounts: [] })
     expect(pollInterval()).toBeGreaterThan(0)
 
     // Still provisioning is equally in flight.
-    await render({ enabled: true, accounts: [{ ...ACCOUNT, state: 'provisioning' }] }, 1)
+    await render({ enabled: true, accounts: [{ ...ACCOUNT, state: 'provisioning' }] })
     expect(pollInterval()).toBeGreaterThan(0)
 
     // The last consumer went away but the identity is still listed: retirement in flight.
-    await render({ enabled: true, accounts: [ACCOUNT] }, 0)
+    await render({ enabled: true, accounts: [ACCOUNT] }, [])
     expect(pollInterval()).toBeGreaterThan(0)
 
-    // Agreed: an account for the consumer that has one, and nothing transient left.
-    await render({ enabled: true, accounts: [ACCOUNT] }, 1)
+    // Agreed: an account for the group that has one, and nothing transient left.
+    await render({ enabled: true, accounts: [ACCOUNT] })
     expect(pollInterval()).toBe(0)
 
     // No consumer and no account is equally settled — the common agent must not poll at all.
-    await render({ enabled: true, accounts: [] }, 0)
+    await render({ enabled: true, accounts: [] }, [])
+    expect(pollInterval()).toBe(0)
+  })
+
+  it('counts top-level groups, not consumers: two projects in one group settle at one account', async () => {
+    // A second project under the SAME group shares the one account — already settled.
+    await render({ enabled: true, accounts: [ACCOUNT] }, [
+      'example-group/example-project',
+      'example-group/another-project'
+    ])
+    expect(pollInterval()).toBe(0)
+  })
+
+  it('keeps polling until the SECOND group’s account arrives', async () => {
+    const consumers = ['example-group/example-project', 'other-group/example-project']
+    // One of two groups has landed: stopping here would hide the second identity until a reload.
+    await render({ enabled: true, accounts: [ACCOUNT] }, consumers)
+    expect(pollInterval()).toBeGreaterThan(0)
+
+    await render({ enabled: true, accounts: [ACCOUNT, { ...ACCOUNT, id: 'acct-2', rootGroupId: '901' }] }, consumers)
+    expect(pollInterval()).toBe(0)
+  })
+
+  it('keeps polling while ONE of several accounts is still retiring', async () => {
+    // Dropping to one group: the surviving account alone is the settled shape.
+    await render({ enabled: true, accounts: [ACCOUNT, { ...ACCOUNT, id: 'acct-2', rootGroupId: '901' }] })
+    expect(pollInterval()).toBeGreaterThan(0)
+
+    await render({ enabled: true, accounts: [ACCOUNT] })
     expect(pollInterval()).toBe(0)
   })
 
   it('stops polling on a refused account: a quota refusal rests until someone repairs it', async () => {
-    await render(
-      { enabled: true, accounts: [{ ...ACCOUNT, state: 'admin_degraded', stateReason: 'service_account_quota' }] },
-      1
-    )
+    await render({
+      enabled: true,
+      accounts: [{ ...ACCOUNT, state: 'admin_degraded', stateReason: 'service_account_quota' }]
+    })
     expect(pollInterval()).toBe(0)
   })
 })

@@ -81,32 +81,41 @@ function AccountChip({ account }: { account: GitlabAgentAccountDto }) {
   )
 }
 
-/** Whether what we fetched already agrees with what the agent's consumers imply.
- *  Convergence is transient; a refused account is a resting state we stop polling. */
-function settled(data: AccountsRead | undefined, hasConsumer: boolean): boolean {
+/** The top-level groups a set of consumed project paths implies — one bot account each (§7.2).
+ *  A GitLab project always sits under a group, so the leading path segment IS that group. */
+function rootGroupsOf(projectPaths: readonly string[]): string[] {
+  return [...new Set(projectPaths.map((path) => path.split('/')[0]).filter((seg): seg is string => !!seg))].sort()
+}
+
+/** Whether the fetched accounts already match what the consumers imply, with nothing transient left.
+ *  Counting GROUPS, not consumers: two projects in one group share one account, two groups earn two. */
+function settled(data: AccountsRead | undefined, expectedGroups: number): boolean {
   if (!data) return false
-  if (data.accounts.length > 0 !== hasConsumer) return false
+  if (data.accounts.length !== expectedGroups) return false
+  // A refused account rests here on purpose: a group out of service accounts needs a repair, not a poll.
   return data.accounts.every((a) => a.lifecycle === 'active' && a.state !== 'provisioning')
 }
 
 export function AgentGitlabIdentity({
   agentId,
-  consumerCount,
+  consumerProjectPaths,
   className = ''
 }: {
   agentId: string
-  /** Enabled GitLab hooks plus a GitLab workspace — what the CP counts as consumers. */
-  consumerCount: number
+  /** Paths of the projects this agent consumes: its enabled GitLab hooks plus a GitLab workspace. */
+  consumerProjectPaths: readonly string[]
   className?: string
 }) {
   const { activeOrg } = useOrgs()
-  // The consumer count is part of the key: binding or unbinding a project makes the
-  // stale entry unreachable, so no mutation site has to remember to invalidate it.
-  const accountsKey = MOCK_MODE ? null : consoleKeys.agentGitlabAccounts(activeOrg?.id, agentId, consumerCount)
+  const rootGroups = rootGroupsOf(consumerProjectPaths)
+  // The consumer set is part of the key, so binding or unbinding a project makes the entry
+  // recorded under the old set unreachable and no mutation site has to invalidate it.
+  const signature = `${consumerProjectPaths.length}:${rootGroups.join(',')}`
+  const accountsKey = MOCK_MODE ? null : consoleKeys.agentGitlabAccounts(activeOrg?.id, agentId, signature)
   const { data } = useSWR(accountsKey, ([, , , id]) => fetchGitlabAgentAccounts(id as string), {
-    // The CP returns from hook CRUD BEFORE the saga creates or retires the account,
-    // so one immediate read would race it. Poll until the two agree, then rest.
-    refreshInterval: (latest) => (settled(latest, consumerCount > 0) ? 0 : CONVERGENCE_POLL_MS),
+    // The CP returns from hook CRUD BEFORE the saga creates or retires an account, so one
+    // immediate read would race it. Poll until the accounts match the groups, then rest.
+    refreshInterval: (latest) => (settled(latest, rootGroups.length) ? 0 : CONVERGENCE_POLL_MS),
     shouldRetryOnError: false
   })
 

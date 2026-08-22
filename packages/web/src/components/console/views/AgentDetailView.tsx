@@ -237,9 +237,13 @@ export default function AgentDetailView() {
   const webhookHooks = agentHooks.filter((h) => h.kind === 'webhook')
   const githubHooks = agentHooks.filter((h) => h.kind === 'github')
   const gitlabHooks = agentHooks.filter((h) => h.kind === 'gitlab')
-  // What earns this agent a GitLab bot account (§7.2): its enabled GitLab hooks plus a GitLab workspace.
-  const gitlabConsumerCount =
-    gitlabHooks.filter((h) => h.enabled).length + (getAgent(id)?.workspace?.mode === 'gitlab' ? 1 : 0)
+  // What earns this agent a GitLab bot account (§7.2): its enabled GitLab hooks plus a GitLab
+  // workspace. Paths, not a count — the account is per TOP-LEVEL GROUP, which the path names.
+  const gitlabWorkspace = getAgent(id)?.workspace
+  const gitlabConsumerPaths = [
+    ...gitlabHooks.filter((h) => h.enabled).map((h) => h.repoFullName),
+    gitlabWorkspace?.mode === 'gitlab' && isGitWorkspace(gitlabWorkspace) ? gitlabWorkspace.repo : null
+  ].filter((path): path is string => typeof path === 'string' && path.length > 0)
   const githubInstallationsKey =
     activeOrg && githubHooks.length > 0 ? (['github-review-installations', activeOrg.id] as const) : null
   const { data: githubInstallationsData } = useSWR<GithubInstallationDto[]>(githubInstallationsKey, () =>
@@ -1853,7 +1857,7 @@ export default function AgentDetailView() {
             {/* Absent unless this agent has a GitLab project bound — it renders its own nothing. */}
             <AgentGitlabIdentity
               agentId={da.id}
-              consumerCount={gitlabConsumerCount}
+              consumerProjectPaths={gitlabConsumerPaths}
               className="max-desktop:rounded-lg"
             />
             {da.canEdit && !da.name.startsWith(MOCK_PREFIX) && (
