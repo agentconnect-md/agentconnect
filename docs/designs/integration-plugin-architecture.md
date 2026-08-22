@@ -32,9 +32,9 @@ contracts**, so that:
    implement a published interface instead of duck-typing internals of an
    18k-line class.
 
-Two upcoming designs pay the current scatter cost imminently —
-[linear-integration.md](linear-integration.md) and
-[gitlab-com-integration.md](gitlab-com-integration.md) are both Proposed —
+Two designs pay the current scatter cost —
+[linear-integration.md](linear-integration.md) is still Proposed and
+[gitlab-com-integration.md](gitlab-com-integration.md) is now Implemented —
 so the refactor amortizes immediately.
 
 **Scope decision (honest goal):** this design delivers **first-party
@@ -61,10 +61,12 @@ design toward generality nobody can consume yet.
   connection, CP conversation tables, MCP delegation) and shares almost
   nothing with external chat-platform transports.
 - **GitHub/GitLab do not adopt the full platform contract.** They remain on
-  the webhook/code-host seam (`relay/src/hooks/`, `control-plane/src/github/`,
-  the daemon poster). They _do_ participate in the narrower Layer-2 output
-  surface (§7.6) so the dispatch path stops carrying a hardcoded GitHub
-  special case.
+  the webhook/code-host seam (`relay/src/hooks/`,
+  `control-plane/src/{codehost,github,gitlab}/`,
+  `daemon/src/{codehost,github,gitlab}/`). They _do_ participate in the
+  narrower Layer-2 output surface (§7.6) so the dispatch path stops carrying a
+  hardcoded GitHub special case, and in the review-adapter member the seam
+  gained when GitLab became its second implementer.
 - **No product-behavior changes.** The contracts are a structural seam; where
   a platform's behavior differs, that difference is a manifest field or a
   strategy function, never a core branch.
@@ -94,8 +96,9 @@ Two rules keep the seam from eroding:
    capability flag with better branding and belongs in a host contract (§5.2).
 
 GitHub and GitLab are deliberately outside this set — they have no chat
-ingress and implement only the narrower Layer-2 turn-output surface (§2,
-§7.6). Webchat is core-owned for the same class of reason.
+ingress and implement only the narrower code-host surface: Layer-2 turn output
+(§2, §7.6) plus the review adapter. Webchat is core-owned for the same class of
+reason.
 
 ## 4. Decision Summary
 
@@ -754,10 +757,10 @@ Two decisions specific to this host:
 Routing rules and the mention ladder, bot arbitration, thread-affinity maps
 and their CP legs, session keys and fencing, visibility, cron/hook
 scheduling, the webhook ingress seam (shared signature primitives), webchat
-end-to-end, GitHub/GitLab services (participating only via Layer 2), the
-drain/lease machinery, and the common CP create skeleton. The registries
-themselves are core files; adding a platform edits exactly one line per
-host.
+end-to-end, GitHub/GitLab services (participating via Layer 2 and the review
+adapter), the drain/lease machinery, and the common CP create skeleton. The
+registries themselves are core files; adding a platform edits exactly one line
+per host.
 
 ## 13. Third-Party Extensibility: Deferred, Not Foreclosed
 
