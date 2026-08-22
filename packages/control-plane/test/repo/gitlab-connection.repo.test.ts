@@ -21,6 +21,18 @@ const store = () => new PgGitlabConnectionSecretStore(prisma, cipher)
 
 const pair = (tag: string) => ({ accessToken: `at-${tag}`, refreshToken: `rt-${tag}` })
 
+/** One provisioning binding administered by `installerConnectionId`. */
+const binding = (installerConnectionId: string) => ({
+  orgId: DEFAULT_ORG_ID,
+  projectId: 4455667n,
+  projectPath: 'example-group/example-project',
+  installerConnectionId,
+  state: 'provisioning'
+})
+
+/** Let the other transaction reach its lock before this one asks for it. */
+const tick = () => new Promise((resolve) => setTimeout(resolve, 150))
+
 async function connected() {
   return repo().upsertOnCallback({
     orgId: DEFAULT_ORG_ID,
@@ -71,11 +83,52 @@ describe('PgGitlabConnectionRepo transitions', () => {
 
   it('remove is state-fenced: only an already-released row goes (§9.4)', async () => {
     const record = await connected()
-    expect(await repo().remove(DEFAULT_ORG_ID, record.id)).toBe(false)
+    expect(await repo().remove(DEFAULT_ORG_ID, record.id)).toEqual({ outcome: 'not_disconnected' })
     expect((await repo().get(DEFAULT_ORG_ID, record.id))!.state).toBe('connected')
     await repo().disconnect(DEFAULT_ORG_ID, record.id)
-    expect(await repo().remove(DEFAULT_ORG_ID, record.id)).toBe(true)
+    expect(await repo().remove(DEFAULT_ORG_ID, record.id)).toEqual({ outcome: 'removed' })
     expect(await repo().get(DEFAULT_ORG_ID, record.id)).toBeNull()
+    expect(await repo().remove(DEFAULT_ORG_ID, record.id)).toEqual({ outcome: 'missing' })
+  })
+
+  it('a binding attached mid-removal meets the refusal, not a silent detach (§9.4)', async () => {
+    const record = await connected()
+    await repo().disconnect(DEFAULT_ORG_ID, record.id)
+
+    // Transaction A inserts a binding and holds its installer FK lock open.
+    let release = () => {}
+    const held = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const inserting = prisma.$transaction(
+      async (tx) => {
+        await tx.gitlabProjectBinding.create({ data: binding(record.id) })
+        await held
+      },
+      { timeout: 20_000 }
+    )
+    await tick()
+
+    // Transaction B wants the row: FOR UPDATE waits for A, then counts what A added.
+    const removing = repo().remove(DEFAULT_ORG_ID, record.id)
+    await tick()
+    release()
+    await inserting
+
+    expect(await removing).toEqual({ outcome: 'blocked', assignedProjects: 1 })
+    const row = await prisma.gitlabProjectBinding.findFirstOrThrow({ where: { orgId: DEFAULT_ORG_ID } })
+    expect(row.installerConnectionId).toBe(record.id)
+  })
+
+  it('negative control: the unfenced state-only delete detaches that binding instead', async () => {
+    const record = await connected()
+    await repo().disconnect(DEFAULT_ORG_ID, record.id)
+    await prisma.gitlabProjectBinding.create({ data: binding(record.id) })
+    // The shape `remove` deliberately is not: no lock, no count, so ON DELETE SET
+    // NULL quietly orphans an administered project.
+    await prisma.gitlabConnection.deleteMany({ where: { id: record.id, state: 'disconnected' } })
+    const row = await prisma.gitlabProjectBinding.findFirstOrThrow({ where: { orgId: DEFAULT_ORG_ID } })
+    expect(row.installerConnectionId).toBeNull()
   })
 
   it('markReauthRequired is version-fenced: a stale outcome keeps newer state', async () => {

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import type {
   GitlabConnectionRecord,
+  GitlabConnectionRemoval,
   GitlabConnectionRepo,
   GitlabConnectionSecretStore,
   GitlabOauthStateRecord,
@@ -96,11 +97,12 @@ class MemConnections implements GitlabConnectionRepo {
     this.secrets.rows.delete(id)
     return true
   }
-  async remove(orgId: string, id: string): Promise<boolean> {
+  async remove(orgId: string, id: string): Promise<GitlabConnectionRemoval> {
     const row = this.rows.get(id)
-    if (!row || row.orgId !== orgId || row.state !== 'disconnected') return false
+    if (!row || row.orgId !== orgId) return { outcome: 'missing' }
+    if (row.state !== 'disconnected') return { outcome: 'not_disconnected' }
     this.rows.delete(id)
-    return true
+    return { outcome: 'removed' }
   }
   leases = new Map<string, { owner: string; until: Date }>()
   async claimRefreshLease(id: string, owner: string, until: Date, now: Date): Promise<boolean> {

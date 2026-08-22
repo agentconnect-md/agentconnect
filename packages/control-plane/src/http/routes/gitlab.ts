@@ -361,7 +361,7 @@ export function gitlabRoutes(deps: HttpDeps) {
           tags: [Tag.GitLab],
           summary: 'Disconnect or remove a GitLab.com connection',
           description:
-            'On a live connection: revokes the OAuth grant when possible, removes the stored token pair, and keeps the row so its projects can still be listed — project bindings are never deleted implicitly (§9.4). On an already-disconnected connection that administers no projects: removes the row. Removal is refused with 409 while any project is still assigned to it.',
+            'On a live connection: revokes the OAuth grant when possible, removes the stored token pair, and keeps the row so its projects can still be listed — project bindings are never deleted implicitly (§9.4). On an already-disconnected connection that administers no projects: removes the row, under a lock that makes a racing project create meet the refusal rather than be detached. Removal is refused with 409 while any project is still assigned to it.',
           operationId: 'disconnectGitlabConnection',
           params: IdParam,
           response: { 200: GitlabConnectionDeleteDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
@@ -372,24 +372,26 @@ export function gitlabRoutes(deps: HttpDeps) {
         const orgId = orgOf(req)
         const notFound = () =>
           reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'gitlab connection not found' })
+        const conflict = (message: string) => reply.code(409).send({ error: 'Conflict', statusCode: 409, message })
         const existing = await deps.repos.gitlabConnection.get(orgId, req.params.id)
         if (!existing) return notFound()
-        const assigned = (await deps.repos.gitlabProjectBinding.countByInstaller(orgId))[existing.id] ?? 0
         // Second delete on a released row finishes the job the first one started.
+        // The repository re-checks state and count under its own lock; this read
+        // only decides which of the two meanings the request has.
         if (existing.state === 'disconnected') {
-          if (assigned > 0) {
-            return reply.code(409).send({
-              error: 'Conflict',
-              statusCode: 409,
-              message: `connection still administers ${assigned} managed project${assigned === 1 ? '' : 's'}`
-            })
+          const removal = await deps.repos.gitlabConnection.remove(orgId, existing.id)
+          if (removal.outcome === 'removed') return { removed: true, connection: null }
+          if (removal.outcome === 'missing') return notFound()
+          if (removal.outcome === 'blocked') {
+            const n = removal.assignedProjects
+            return conflict(`connection still administers ${n} managed project${n === 1 ? '' : 's'}`)
           }
-          if (!(await deps.repos.gitlabConnection.remove(orgId, existing.id))) return notFound()
-          return { removed: true, connection: null }
+          return conflict('gitlab connection is connected again — reload and try once more')
         }
         if (!(await gitlab.oauth.disconnect(orgId, existing.id))) return notFound()
         const record = await deps.repos.gitlabConnection.get(orgId, existing.id)
         if (!record) return notFound()
+        const assigned = (await deps.repos.gitlabProjectBinding.countByInstaller(orgId))[existing.id] ?? 0
         return { removed: false, connection: toDto(record, assigned) }
       }
     )

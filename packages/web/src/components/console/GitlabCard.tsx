@@ -138,8 +138,13 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
     try {
       const outcome = await deleteGitlabProject(binding.id)
       // Incomplete external cleanup keeps the row, in its reported state — GitLab still holds something.
-      if (outcome.removed) setProjects((current) => current.filter((p) => p.id !== binding.id))
-      else
+      if (outcome.removed) {
+        setProjects((current) => current.filter((p) => p.id !== binding.id))
+        // The count that gates connection removal lives on the connection row, so
+        // freeing the last project has to be read back before Remove can appear.
+        const fresh = await fetchGitlabConnections().catch(() => null)
+        if (fresh) setConnections(fresh.connections)
+      } else
         setProjects((current) =>
           current.map((p) =>
             p.id === binding.id

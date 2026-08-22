@@ -202,6 +202,32 @@ describe('GitlabCard', () => {
     expect(row.textContent).not.toContain('assignedProjects')
   })
 
+  it('completes the guided removal: the blocked line clears when the last project goes', async () => {
+    const blocked = { ...CONNECTION, state: 'disconnected' as const, assignedProjects: 1 }
+    mocks.fetchConnections.mockResolvedValueOnce({ enabled: true, connections: [blocked] })
+    // The removal frees the connection, and the card reads the new count back.
+    mocks.fetchConnections.mockResolvedValue({
+      enabled: true,
+      connections: [{ ...blocked, assignedProjects: 0 }]
+    })
+    mocks.fetchProjects.mockResolvedValue([BINDING])
+    mocks.deleteProject.mockResolvedValue({ removed: true })
+    await render()
+
+    expect(connectionRow('conn-1').textContent).toContain('still administers 1 project')
+    expect(() => buttonIn(connectionRow('conn-1'), 'Remove')).toThrow()
+
+    // Remove the one project that blocks it — the project row's button, then the modal's.
+    await click('Remove', host.querySelector('[data-gitlab-project]')!)
+    await click('Remove', modal())
+    expect(mocks.deleteProject).toHaveBeenCalledWith('bind-1')
+
+    // No reload: the connection now offers its own removal.
+    expect(host.querySelectorAll('[data-gitlab-project]')).toHaveLength(0)
+    expect(connectionRow('conn-1').textContent).not.toContain('still administers')
+    expect(buttonIn(connectionRow('conn-1'), 'Remove')).toBeTruthy()
+  })
+
   it('repairs and removes the project it was invoked on', async () => {
     mocks.fetchConnections.mockResolvedValue({ enabled: true, connections: [CONNECTION] })
     mocks.fetchProjects.mockResolvedValue([BINDING])

@@ -19,6 +19,7 @@ import type {
   GitlabBindingState,
   GitlabConnectionRecord,
   GitlabConnectionRepo,
+  GitlabConnectionRemoval,
   GitlabConnectionSecretStore,
   GitlabConnectionState,
   GitlabCredentialPurpose,
@@ -138,13 +139,24 @@ export class PgGitlabConnectionRepo implements GitlabConnectionRepo {
     })
   }
 
-  async remove(orgId: string, connectionId: string): Promise<boolean> {
-    // State-fenced (§9.4): only an already-released row goes, so a reconnect that
-    // landed between the read and this call keeps its live connection.
-    const res = await this.prisma.gitlabConnection.deleteMany({
-      where: { id: connectionId, orgId, state: 'disconnected' }
+  async remove(orgId: string, connectionId: string): Promise<GitlabConnectionRemoval> {
+    // Lock, check, delete in ONE transaction (§9.4). FOR UPDATE conflicts with the
+    // FOR KEY SHARE that inserting a binding takes on its installer, so a racing
+    // project create either commits first and is counted, or waits and then fails
+    // its foreign key — it can never be silently detached by ON DELETE SET NULL.
+    return this.prisma.$transaction(async (tx) => {
+      const locked = await tx.$queryRaw<{ state: string }[]>`
+        SELECT "state" FROM "gitlab_connection"
+         WHERE "id" = ${connectionId}::uuid AND "orgId" = ${orgId} FOR UPDATE`
+      if (locked.length === 0) return { outcome: 'missing' }
+      if (locked[0]!.state !== 'disconnected') return { outcome: 'not_disconnected' }
+      const assignedProjects = await tx.gitlabProjectBinding.count({
+        where: { orgId, installerConnectionId: connectionId }
+      })
+      if (assignedProjects > 0) return { outcome: 'blocked', assignedProjects }
+      await tx.gitlabConnection.delete({ where: { id: connectionId } })
+      return { outcome: 'removed' }
     })
-    return res.count === 1
   }
 
   async claimRefreshLease(connectionId: string, owner: string, until: Date, now: Date): Promise<boolean> {
