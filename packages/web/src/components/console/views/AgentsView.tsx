@@ -7,6 +7,7 @@ import {
   agentLabel,
   agentModelDisplay,
   effectiveAgentStatus,
+  isGitWorkspace,
   runtimeLabel,
   status,
   type Agent
@@ -16,7 +17,7 @@ import { amountToNumber } from '@/lib/amount'
 import { useConsoleData } from '@/lib/data-context'
 import { IntegrationMarks } from '@/components/console/IntegrationMarks'
 import { useModal } from '@/components/console/ModalProvider'
-import { AgentIconView, GithubMark, LoadingState, PlatformMark } from '@/components/marks'
+import { AgentIconView, GithubMark, GitlabMark, LoadingState, PlatformMark } from '@/components/marks'
 import { BuiltinBadge } from '@/components/console/BuiltinBadge'
 import { RestrictedLock } from '@/components/console/VisibilityField'
 import { Avatar, Button, Icon } from '@/components/ui'
@@ -100,7 +101,7 @@ export default function AgentsView() {
   // Creator names remain available to sorting and assistive text; rows show only avatars.
   const memberById = useMemo(() => new Map(members.map((m) => [m.userId, m])), [members])
   const creatorText = (a: Agent) => creatorLabel(a.createdBy || null, me)
-  const repoText = (a: Agent) => (a.workspace.mode === 'github' ? a.repo : 'scratch')
+  const repoText = (a: Agent) => (isGitWorkspace(a.workspace) ? a.repo : 'scratch')
   const onlineCount = agents.filter(
     (a) =>
       effectiveAgentStatus(
@@ -436,6 +437,8 @@ export default function AgentsView() {
                     <span className="flex h-4 w-4 flex-none items-center justify-center">
                       {(a.hookKinds ?? []).includes('github') ? (
                         <GithubMark />
+                      ) : (a.hookKinds ?? []).includes('gitlab') ? (
+                        <GitlabMark />
                       ) : (
                         <Icon name="webhook" size={14} color="var(--text-secondary)" />
                       )}
@@ -561,9 +564,13 @@ export default function AgentsView() {
             const agentInts = integrations.filter((i) => i.agentId === a.id)
             const hookKinds = a.hookKinds ?? []
             const totalIntegrations = agentInts.length + hookKinds.length
-            const repoIcon =
-              a.workspace.mode === 'github' ? (a.workspace.installationId ? 'lock' : 'book-marked') : 'folder'
-            const repoLabel = a.workspace.mode === 'github' ? a.repo : 'scratch'
+            // Only a GitHub App checkout can promise privacy, so every other clone takes the neutral repo glyph.
+            const repoIcon = !isGitWorkspace(a.workspace)
+              ? 'folder'
+              : a.workspace.mode === 'github' && a.workspace.installationId
+                ? 'lock'
+                : 'book-marked'
+            const repoLabel = isGitWorkspace(a.workspace) ? a.repo : 'scratch'
             return (
               <Link
                 key={a.id}

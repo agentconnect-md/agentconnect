@@ -8,6 +8,7 @@ import { useCallback, useEffect, useState, type ReactNode } from 'react'
 import { Button, Icon } from '@/components/ui'
 import { GitlabMark, LoadingState } from '@/components/marks'
 import { useOrgs } from '@/lib/org-context'
+import { GITLAB_PROJECT_STATE } from '@/lib/gitlab-projects'
 import {
   createGitlabProject,
   deleteGitlabProject,
@@ -19,18 +20,8 @@ import {
   startGitlabOauth,
   type GitlabConnectionDto,
   type GitlabProjectBindingDto,
-  type GitlabProjectBindingState,
   type GitlabProjectDto
 } from '@/lib/api'
-
-// The user-facing word for each lifecycle state: it names the broken half, not the internal state id.
-const PROJECT_STATE: Record<GitlabProjectBindingState, { label: string; badge: string }> = {
-  provisioning: { label: 'setting up', badge: 'bg-(--status-info-soft) text-(--status-info)' },
-  ready: { label: 'ready', badge: 'bg-(--status-online-soft) text-(--status-online)' },
-  admin_degraded: { label: 'setup incomplete', badge: 'bg-(--status-paused-soft) text-(--amber-500)' },
-  runtime_degraded: { label: 'bot access degraded', badge: 'bg-(--status-paused-soft) text-(--amber-500)' },
-  cleanup_pending: { label: 'removal incomplete', badge: 'bg-(--status-error-soft) text-(--status-error)' }
-}
 
 // The CP records a machine category in `stateReason`; these are the ones a user can act on, in GitLab
 // vocabulary. Every rotation_* variant collapses to one line — the tail (rotation_gitlab_<status>) is open-ended.
@@ -281,7 +272,9 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
           >
             <div className="flex min-w-0 flex-wrap items-center gap-[10px]">
               <span className="mono min-w-0 truncate text-[12.5px]">{p.projectPath}</span>
-              <span className={`badge ${PROJECT_STATE[p.state].badge}`}>{PROJECT_STATE[p.state].label}</span>
+              <span className={`badge ${GITLAB_PROJECT_STATE[p.state].badge}`}>
+                {GITLAB_PROJECT_STATE[p.state].label}
+              </span>
               {p.serviceAccountUsername && (
                 <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
                   bot @{p.serviceAccountUsername}

@@ -253,6 +253,17 @@ export type AgentWorkspaceDto =
       installationId?: string
       gitAccess?: 'read' | 'write'
     }
+  | {
+      // A managed GitLab project binding. `projectId` is what a caller sends; the
+      // clone address comes back derived from the binding and is never supplied.
+      mode: 'gitlab'
+      worktree?: boolean
+      projectId?: string
+      gitRepo?: string
+      gitBranch?: string
+      agentDir?: string
+      gitAccess?: 'read' | 'write'
+    }
 
 export interface ExternalMemoryRecallPolicy {
   mode: 'auto' | 'tool-only'
@@ -343,7 +354,7 @@ export interface AgentDto {
   runInSandbox: boolean // #642: persisted per-agent Run in sandbox preference
   sandboxSupported: boolean // #642: whether the placed daemon can provide an OS sandbox
   sandboxRequired: boolean // #642: whether daemon policy forces the effective value on
-  hookKinds: ('webhook' | 'github')[] // distinct kinds of enabled inbound triggers (list-view marks)
+  hookKinds: HookKind[] // distinct kinds of enabled inbound triggers (list-view marks)
 }
 
 /** The `PUT /{agents,daemons,crons}/:id/sharing` request body. */
@@ -403,7 +414,7 @@ export interface SessionDto {
   externalProvider?: string | null
   externalResolution?: 'pending' | 'settled' | 'invalid' | null
   triggeredBy: string | null
-  hookKind?: 'webhook' | 'github' | null
+  hookKind?: HookKind | null
   // Daemon-resolved display names; null until the daemon has resolved them.
   channelName: string | null
   triggeredByName: string | null
@@ -446,7 +457,7 @@ export interface SessionFacetsDto {
     value: string
     integration: string
     name: string | null
-    hookKind: 'webhook' | 'github' | null
+    hookKind: HookKind | null
     githubRepoId: string | null
   }>
 }
@@ -513,7 +524,7 @@ export interface SessionFacets {
     value: string
     name?: string
     platform: string
-    hookKind?: 'webhook' | 'github'
+    hookKind?: HookKind
     githubRepoId?: string
   }>
 }
@@ -554,7 +565,7 @@ export interface SessionDetailDto {
   usage: SessionUsageDto | null
   triggeredBy: string | null
   /** Stable source kind for hook-backed sessions. Absent on older Control Planes. */
-  hookKind?: 'webhook' | 'github' | null
+  hookKind?: HookKind | null
   channelName: string | null
   triggeredByName: string | null
   threadUrl: string | null
@@ -968,6 +979,16 @@ export type SetAgentWorkspaceInput =
       worktree?: boolean
       repoFullName: string
       /** Absent lets the server use GitHub's current default branch. */
+      gitBranch?: string
+      agentDir?: string
+      gitAccess: 'read' | 'write'
+    }
+  | {
+      mode: 'gitlab'
+      worktree?: boolean
+      /** Numeric GitLab project id of a managed binding in this organization. */
+      projectId: string
+      /** Absent lets the server use the project's current default branch. */
       gitBranch?: string
       agentDir?: string
       gitAccess: 'read' | 'write'
@@ -1711,6 +1732,26 @@ export function repoWebUrl(gitRepo: string): string | undefined {
 // The CP does not surface git state (commit/pull/dirty/files), so those render
 // as placeholders / empty until a daemon read model exists.
 function workspaceFromDto(w: AgentWorkspaceDto, workspaceRepoId?: string | null): Workspace {
+  if (w.mode === 'gitlab') {
+    // The clone address is the binding's, so the namespaced path is what it labels.
+    const gitRepo = w.gitRepo ?? ''
+    return {
+      mode: 'gitlab',
+      worktree: w.worktree === true,
+      ...((w.projectId ?? workspaceRepoId) ? { projectId: (w.projectId ?? workspaceRepoId)! } : {}),
+      repo: repoLabel(gitRepo),
+      ...(repoWebUrl(gitRepo) ? { repoUrl: repoWebUrl(gitRepo) } : {}),
+      ...(w.gitAccess ? { gitAccess: w.gitAccess } : {}),
+      branch: w.gitBranch || 'main',
+      agentDir: w.agentDir || '/',
+      lastPull: PLACEHOLDER,
+      commit: PLACEHOLDER,
+      commitMsg: '',
+      commitTime: '',
+      clean: true,
+      files: []
+    }
+  }
   if (w.mode === 'github') {
     return {
       mode: 'github',
@@ -1828,8 +1869,8 @@ export function agentFromDto(d: AgentDto): Agent {
     daemon: placementValueOf(d) ?? PLACEHOLDER,
     ...(d.daemonName ? { daemonName: d.daemonName } : {}),
     region: PLACEHOLDER,
-    repo: ws.mode === 'github' ? ws.repo : PLACEHOLDER,
-    workdir: ws.mode === 'github' ? ws.agentDir : PLACEHOLDER,
+    repo: ws.mode !== 'scratch' ? ws.repo : PLACEHOLDER,
+    workdir: ws.mode !== 'scratch' ? ws.agentDir : PLACEHOLDER,
     // A paused agent reads as "paused" regardless of placement — pause is a deliberate
     // operator state, orthogonal to online/offline. Gives the "Paused" filter tab meaning.
     status: d.pause ? 'paused' : toStatusKey(d.status),
@@ -3782,7 +3823,12 @@ export async function deleteIntegration(id: string): Promise<void> {
 
 // A hook definition row. `url` is the full public ingress URL (relay-pool based),
 // a capability URL the CP surfaces only to callers with edit rights.
+export type HookKind = 'webhook' | 'github' | 'gitlab'
 export type GithubCommentFamily = 'issues' | 'pull_request'
+/** GitLab's own note families — the merge-request counterpart of a pull request. */
+export type GitlabCommentFamily = 'issues' | 'merge_request'
+/** The stored union across code hosts; each row carries only its own host's subset. */
+export type HookCommentFamily = GithubCommentFamily | GitlabCommentFamily
 export type HookReviewPolicy = 'off' | 'comment' | 'request_changes' | 'full'
 // R2a intentionally exposes informational Checks only. `status` is R3.
 export type HookReportingMode = 'off' | 'check'
@@ -3792,17 +3838,17 @@ export type HookGateMode = 'informational'
 export interface HookDto {
   id: string
   agentId: string | null // null ⇒ orphaned by agent delete (inert)
-  kind: 'webhook' | 'github'
+  kind: HookKind
   name: string
   sessionMode: 'perDelivery' | 'perThread' | 'shared'
   enabled: boolean
   url: string | null
   hmacConfigured: boolean
-  // ── github kind ── repo + subscription (empty/null on webhook kind)
-  repoId?: string | null
-  repoFullName: string | null // canonical owner/repo as GitHub cases it
-  events: string[] // 'issues:*' / 'issue_comment:created' / …
-  commentFamilies: GithubCommentFamily[] // thread kinds whose replies may fire this hook
+  // ── code-host kinds ── repo/project + subscription (empty/null on webhook kind)
+  repoId?: string | null // GitHub numeric repo id, or the GitLab numeric project id
+  repoFullName: string | null // owner/repo as GitHub cases it, or the GitLab project path
+  events: string[] // 'issues:*' / 'issue_comment:created' / 'merge_request:*' / …
+  commentFamilies: HookCommentFamily[] // thread kinds whose replies may fire this hook
   labelFilter: string[]
   mentionOnly: boolean // P3: authored event text must @-mention the agent or App
   configRevision: string // BigInt JSON/wire form; CP-owned, monotonic
@@ -3857,6 +3903,19 @@ export interface CreateGithubHookInput {
   gateMode?: HookGateMode
 }
 
+// gitlab kind: the project must already be a managed binding in the org — the CP
+// validates the numeric id against its own row and derives the path from it.
+export interface CreateGitlabHookInput {
+  agentId: string
+  name: string
+  enabled?: boolean
+  projectId: string // numeric GitLab project id
+  events: string[] // 'issues:*' / 'merge_request:*' / 'push:*' — at least one
+  commentFamilies?: GitlabCommentFamily[]
+  labelFilter?: string[]
+  mentionOnly?: boolean
+}
+
 // A hook is subordinate to its agent (like an Integration), so there is no
 // org-wide hook list — you fetch ONE agent's hooks, gated server-side by that
 // agent's visibility (404 for an agent you can't see).
@@ -3885,6 +3944,19 @@ export async function createGithubHook(input: CreateGithubHookInput): Promise<Cr
 // The body re-sends the full github block — PUT is whole-definition.
 export async function updateGithubHook(id: string, input: CreateGithubHookInput): Promise<HookDto> {
   return apiPut<HookDto>(`${orgBase()}/hooks/${encodeURIComponent(id)}`, { kind: 'github', ...input })
+}
+
+// GitLab subscription — no URL, no secret: the managed project webhook signs its
+// own deliveries. Events ride through the relay, one session per issue/MR thread.
+export async function createGitlabHook(input: CreateGitlabHookInput): Promise<CreatedHookDto> {
+  const hook = await apiPost<CreatedHookDto>(`${orgBase()}/hooks`, { kind: 'gitlab', ...input })
+  track('hook_created', { org_id: apiOrgId, agent_id: hook.agentId, hook_kind: hook.kind, hook_id: hook.id })
+  return hook
+}
+
+// Update a gitlab hook's subscription. Whole-definition PUT, like the github one.
+export async function updateGitlabHook(id: string, input: CreateGitlabHookInput): Promise<HookDto> {
+  return apiPut<HookDto>(`${orgBase()}/hooks/${encodeURIComponent(id)}`, { kind: 'gitlab', ...input })
 }
 
 export async function deleteHook(id: string): Promise<void> {

@@ -1199,9 +1199,12 @@ export interface SessionQuery {
 }
 
 export interface SessionFilterQuery extends SessionQuery {
-  integration?: Platform | 'github'
+  integration?: Platform | 'github' | 'gitlab'
   triggeredBy?: string
+  /** Code-host hook ids, per host: each one is promoted out of the generic hook
+   *  bucket into its own integration, and `integration: 'hook'` excludes them all. */
   githubHookIds?: HookId[]
+  gitlabHookIds?: HookId[]
   hookTriggerIds?: HookId[]
   /** Agents whose sessions count as conversation MEMBERS, when the caller may see
    *  more than the filter returns. Absent ⇒ `agentIds`, i.e. membership and row

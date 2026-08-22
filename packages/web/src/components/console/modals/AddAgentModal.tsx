@@ -43,13 +43,15 @@ import {
   fetchGithubInstallUrl,
   fetchGithubRepoRoster,
   fetchGithubRepoAccess,
+  fetchGitlabProjects,
   invalidateGithubRepoRosterCache,
   type AgentWorkspaceDto,
   type GithubInstallationDto,
   type GithubRepoAccess,
-  type GithubRepoDto
+  type GithubRepoDto,
+  type GitlabProjectBindingDto
 } from '@/lib/api'
-import { GithubMark } from '@/components/marks'
+import { GithubMark, LoadingState } from '@/components/marks'
 import { AgentIconPicker } from '@/components/console/AgentIconPicker'
 import { DaemonSelect, type DaemonSelectOption } from '@/components/console/DaemonSelect'
 import { RuntimeSelect } from '@/components/console/RuntimeSelect'
@@ -83,14 +85,19 @@ import {
   GithubPrivateReposNotice,
   GithubRepositoryField,
   GithubRepositoryOption,
+  GitlabNoProjectsNotice,
+  GitlabProjectField,
+  GitlabProjectOption,
   RepositoryAccessField,
   WorktreeField,
   WorkingSubdirectoryField,
   WorkspaceBranchField,
-  WorkspaceModeField
+  WorkspaceModeField,
+  type WorkspaceMode
 } from '@/components/console/WorkspaceFormFields'
+import { gitlabProjectSelectable, matchGitlabProjects } from '@/lib/gitlab-projects'
 
-type WsMode = 'scratch' | 'github'
+type WsMode = WorkspaceMode
 type RepoCheckState = 'idle' | 'checking' | 'missing' | 'found'
 
 // The dialog is a single scrolling form with a section rail beside it: every
@@ -265,6 +272,15 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
   const [ghPublicExactRepo, setGhPublicExactRepo] = useState<GithubRepoDto | null>(null)
   const [ghExactRepoState, setGhExactRepoState] = useState<RepoCheckState>('idle')
   const [ghManualPublicRepo, setGhManualPublicRepo] = useState<GithubRepoDto | null>(null)
+  // GitLab path: the organization's added projects, picked by their numeric id.
+  // Null while the list is still loading; the picker never adds a project itself.
+  const [glProjects, setGlProjects] = useState<GitlabProjectBindingDto[] | null>(null)
+  const [glProjectsError, setGlProjectsError] = useState<string | null>(null)
+  const [glProject, setGlProject] = useState('')
+  const [glOpen, setGlOpen] = useState(false)
+  const [glQ, setGlQ] = useState('')
+  const [glAccessOpen, setGlAccessOpen] = useState(false)
+  const [glPush, setGlPush] = useState(true)
   const [sharing, setSharing] = useState<SharingValue>({ visibility: 'org', sharedWith: [] })
   // The org default seeds both directions; this form can still override either one.
   const [callPolicy, setCallPolicy] = useState<AgentCallPolicy>(defaultAgentVisibility)
@@ -482,6 +498,25 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
   }, [])
 
   const usingPicker = wsMode === 'github' && ghEnabled === true && ghInstalls.length > 0
+
+  // Only the GitLab pane asks for projects, so a deployment without the flag
+  // never issues the request — the mode tile it would come from is not offered.
+  useEffect(() => {
+    if (wsMode !== 'gitlab' || glProjects !== null) return
+    let alive = true
+    setGlProjectsError(null)
+    fetchGitlabProjects().then(
+      (bindings) => alive && setGlProjects(bindings),
+      (e) => alive && setGlProjectsError(e instanceof Error ? e.message : String(e))
+    )
+    return () => {
+      alive = false
+    }
+  }, [glProjects, wsMode])
+
+  const glSelectable = (glProjects ?? []).filter((project) => gitlabProjectSelectable(project.state))
+  const glNoProjects = wsMode === 'gitlab' && glProjects !== null && glSelectable.length === 0
+  const glPicked = (glProjects ?? []).find((project) => project.projectId === glProject)
 
   // Installations loaded or refreshed → merge repository pages as they arrive.
   // GitHub has no server-side search here, so the dropdown filters locally.
@@ -794,6 +829,10 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
       setErr('Pick a GitHub repository, or switch to “From scratch”.')
       return
     }
+    if (wsMode === 'gitlab' && !glProject) {
+      setErr('Pick a GitLab project, or switch to “From scratch”.')
+      return
+    }
     if (memoryProvider === 'external' && !externalMemory.connectionId) {
       setErr('Select an external-memory connection, or choose another memory backend.')
       return
@@ -805,7 +844,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
     const envRecord = envRecordFromRows(envRows)
     const secretsRecord = secretsRecordFromRows(secretRows)
     let normalizedAgentDir: string | undefined
-    if (wsMode === 'github') {
+    if (wsMode !== 'scratch') {
       try {
         normalizedAgentDir = normalizeAgentDir(agentDir)
       } catch (e) {
@@ -816,33 +855,42 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
     setBusy(true)
     setErr(null)
     const workspace: AgentWorkspaceDto =
-      wsMode === 'github'
-        ? usingPicker
-          ? picked
-            ? {
-                mode: 'github',
-                worktree,
-                gitRepo: picked.fullName, // owner/repo — the CP normalizes to the full address
-                ...(branch.trim() ? { gitBranch: branch.trim() } : {}),
-                ...(normalizedAgentDir ? { agentDir: normalizedAgentDir } : {}),
-                installationId: picked.installationId,
-                gitAccess: ghPush ? ('write' as const) : ('read' as const)
-              }
+      wsMode === 'gitlab'
+        ? {
+            mode: 'gitlab',
+            worktree,
+            projectId: glProject,
+            ...(branch.trim() ? { gitBranch: branch.trim() } : {}),
+            ...(normalizedAgentDir ? { agentDir: normalizedAgentDir } : {}),
+            gitAccess: glPush ? ('write' as const) : ('read' as const)
+          }
+        : wsMode === 'github'
+          ? usingPicker
+            ? picked
+              ? {
+                  mode: 'github',
+                  worktree,
+                  gitRepo: picked.fullName, // owner/repo — the CP normalizes to the full address
+                  ...(branch.trim() ? { gitBranch: branch.trim() } : {}),
+                  ...(normalizedAgentDir ? { agentDir: normalizedAgentDir } : {}),
+                  installationId: picked.installationId,
+                  gitAccess: ghPush ? ('write' as const) : ('read' as const)
+                }
+              : {
+                  mode: 'github',
+                  worktree,
+                  gitRepo: publicRepo ?? ghRepo.trim(),
+                  ...(branch.trim() ? { gitBranch: branch.trim() } : {}),
+                  ...(normalizedAgentDir ? { agentDir: normalizedAgentDir } : {})
+                }
             : {
                 mode: 'github',
                 worktree,
-                gitRepo: publicRepo ?? ghRepo.trim(),
+                gitRepo: repo.trim(),
                 ...(branch.trim() ? { gitBranch: branch.trim() } : {}),
                 ...(normalizedAgentDir ? { agentDir: normalizedAgentDir } : {})
               }
-          : {
-              mode: 'github',
-              worktree,
-              gitRepo: repo.trim(),
-              ...(branch.trim() ? { gitBranch: branch.trim() } : {}),
-              ...(normalizedAgentDir ? { agentDir: normalizedAgentDir } : {})
-            }
-        : { mode: 'scratch' }
+          : { mode: 'scratch' }
     try {
       await createAgent({
         name: slug,
@@ -921,9 +969,11 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
   const manageGithubAccess = installGithubApp
 
   const modeHint =
-    wsMode === 'github'
-      ? 'The repo is cloned onto the machine; the agent runs from the directory you pick.'
-      : 'We create a fresh working directory on the daemon — nothing is cloned.'
+    wsMode === 'gitlab'
+      ? 'The project is cloned onto the machine; the agent runs from the directory you pick.'
+      : wsMode === 'github'
+        ? 'The repo is cloned onto the machine; the agent runs from the directory you pick.'
+        : 'We create a fresh working directory on the daemon — nothing is cloned.'
 
   // What still blocks Create, per section — an amber dot on the rail item plus,
   // in the footer, the first one you have to go fix. These mirror `submit`'s
@@ -945,6 +995,8 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
   else if (usingPicker && ghDenied) blockers.workspace = 'no access to this repository'
   else if (usingPicker && !picked && !publicRepo) blockers.workspace = 'pick a repository'
   else if (wsMode === 'github' && !usingPicker && !repo.trim()) blockers.workspace = 'add a repository'
+  else if (wsMode === 'gitlab' && glNoProjects) blockers.workspace = 'no GitLab projects added'
+  else if (wsMode === 'gitlab' && !glProject) blockers.workspace = 'pick a project'
   if (envSecretError) blockers.secrets = envSecretError
   if (memoryProvider === 'external' && !externalMemory.connectionId) blockers.memory = 'select a connection'
   const firstBlocker = SECTIONS.find((s) => blockers[s.id])
@@ -1419,6 +1471,89 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
                   </div>
                 </>
               )}
+
+              {wsMode === 'gitlab' &&
+                (glProjectsError ? (
+                  <div className="font-sans text-[12px] font-normal leading-[1.5] text-(--status-error) desktop:col-span-2">
+                    Couldn&rsquo;t load your GitLab projects — {glProjectsError}
+                  </div>
+                ) : glProjects === null ? (
+                  <div className="desktop:col-span-2">
+                    <LoadingState size={20} padding={16} />
+                  </div>
+                ) : glNoProjects ? (
+                  <GitlabNoProjectsNotice integrationsHref={orgPath('/integrations')} />
+                ) : (
+                  <div className="grid grid-cols-1 gap-[14px] desktop:col-span-2 desktop:grid-cols-2 desktop:gap-x-7">
+                    <GitlabProjectField
+                      value={glPicked?.projectPath ?? ''}
+                      icon="book-marked"
+                      loading={false}
+                      open={glOpen}
+                      query={glQ}
+                      onToggle={() => {
+                        setGlQ('')
+                        setGlAccessOpen(false)
+                        setGlOpen((value) => !value)
+                      }}
+                      onClose={() => setGlOpen(false)}
+                      onQueryChange={setGlQ}
+                    >
+                      {matchGitlabProjects(glProjects, glQ).map((project) => (
+                        <GitlabProjectOption
+                          key={project.id}
+                          project={project}
+                          selected={glProject === project.projectId}
+                          onSelect={() => {
+                            setGlProject(project.projectId)
+                            setGlOpen(false)
+                            setBranch(project.defaultBranch ?? '')
+                            setErr(null)
+                          }}
+                        />
+                      ))}
+                      {matchGitlabProjects(glProjects, glQ).length === 0 && (
+                        <div className="fnohit">No projects match &ldquo;{glQ}&rdquo;</div>
+                      )}
+                    </GitlabProjectField>
+
+                    <RepositoryAccessField
+                      repositorySelected={!!glProject}
+                      label="Project access"
+                      unselectedLabel="Select project first"
+                      writeDescription="Push, open merge requests & run pipelines"
+                      value={glPush ? 'write' : 'read'}
+                      open={glAccessOpen}
+                      onToggle={() => {
+                        setGlOpen(false)
+                        setGlAccessOpen((value) => !value)
+                      }}
+                      onClose={() => setGlAccessOpen(false)}
+                      onChange={(value) => {
+                        setGlPush(value === 'write')
+                        setGlAccessOpen(false)
+                      }}
+                    />
+
+                    <div className="grid grid-cols-1 gap-[14px] desktop:col-span-2 desktop:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_96px] desktop:gap-x-[14px]">
+                      <WorkspaceBranchField
+                        repositorySelected={!!glProject}
+                        unselectedLabel="Pick project first"
+                        defaultBranchLabel="GitLab default branch"
+                        value={branch}
+                        branches={null}
+                        open={false}
+                        query=""
+                        onToggle={() => undefined}
+                        onClose={() => undefined}
+                        onQueryChange={() => undefined}
+                        onChange={setBranch}
+                      />
+                      <WorkingSubdirectoryField value={agentDir} onChange={setAgentDir} />
+                      <WorktreeField checked={worktree} onChange={setWorktree} />
+                    </div>
+                  </div>
+                ))}
             </div>
             <div className="mt-2 flex items-center gap-[6px] font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
               <Icon name="corner-down-right" size={13} />

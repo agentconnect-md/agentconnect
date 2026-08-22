@@ -25,6 +25,7 @@ import {
   MOCK_MODE,
   MOCK_PREFIX,
   permissionModeLabel,
+  isGitWorkspace,
   pgPrompts,
   POOL_PLACEMENT,
   platName,
@@ -2609,7 +2610,8 @@ export default function SessionDetailView() {
   const attachmentsEnabled = !isContinuable
   const pgQueue = getPgQueue(session.id)
   const hasSessionWorktree =
-    focusedAgent?.workspace.mode === 'github' &&
+    !!focusedAgent &&
+    isGitWorkspace(focusedAgent.workspace) &&
     (focusedSessionDetail?.workspaceIsolation ?? focusedSession?.workspaceIsolation) === 'session' &&
     !(focusedSessionDetail?.contentPurgedAt ?? focusedSession?.contentPurgedAt)
   const workspaceHref =
@@ -2618,7 +2620,7 @@ export default function SessionDetailView() {
           hasSessionWorktree && headerFocusSessionId ? `&worktree=${encodeURIComponent(headerFocusSessionId)}` : ''
         }`
       : null
-  const workspaceIcon = focusedAgent?.workspace.mode === 'github' ? 'git-branch' : 'folder'
+  const workspaceIcon = focusedAgent && isGitWorkspace(focusedAgent.workspace) ? 'git-branch' : 'folder'
   const focusedAgentLabel = focusedAgent ? agentLabel(focusedAgent) : (headerFocusOption?.label ?? 'agent')
   const workspaceTitle = hasSessionWorktree
     ? `Open ${focusedAgentLabel}’s session worktree`
@@ -2729,9 +2731,13 @@ export default function SessionDetailView() {
   const pgWorktree =
     worktreeSelections[session.id] ??
     getPgWorktree(session.id) ??
-    (owner?.workspace?.mode === 'github' && owner.workspace.worktree === true)
+    (!!owner?.workspace && isGitWorkspace(owner.workspace) && owner.workspace.worktree === true)
   const canChooseWorktree =
-    isPg && !multiLive && owner?.workspace?.mode === 'github' && !session.steps.some((step) => step.kind === 'msg')
+    isPg &&
+    !multiLive &&
+    !!owner?.workspace &&
+    isGitWorkspace(owner.workspace) &&
+    !session.steps.some((step) => step.kind === 'msg')
   const addAgentOptions = isPg
     ? agents
         .filter((a) => !liveRoster.some((p) => p.agentId === a.id))

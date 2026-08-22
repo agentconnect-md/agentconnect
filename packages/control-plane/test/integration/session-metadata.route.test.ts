@@ -489,6 +489,97 @@ describe('event/session sync → SessionMeta → GET /sessions/:id', () => {
     )
   })
 
+  it('gives gitlab hook sessions their own integration facet and filter', async () => {
+    // GitLab rows carry platform 'hook' like every other hook session, so without the
+    // per-host promotion they were counted as generic webhooks — and the webhook filter
+    // returned them, mixing two unrelated sources under one entry.
+    await seedDaemon(prisma, DAEMON)
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    const webhookId = randomUUID()
+    await prisma.hookDef.create({
+      data: {
+        id: webhookId,
+        orgId: DEFAULT_ORG_ID,
+        agentId: AGENT,
+        kind: 'webhook',
+        name: 'acme/build',
+        sessionMode: 'perDelivery',
+        urlToken: `whk_${randomUUID().replace(/-/g, '')}`,
+        targetPlatform: 'slack'
+      }
+    })
+    const gitlabId = randomUUID()
+    await prisma.hookDef.create({
+      data: {
+        id: gitlabId,
+        orgId: DEFAULT_ORG_ID,
+        agentId: AGENT,
+        kind: 'gitlab',
+        name: 'acme/platform',
+        sessionMode: 'perThread',
+        repoId: 4210n,
+        repoFullName: 'acme/platform',
+        events: ['merge_request:*'],
+        targetPlatform: 'slack'
+      }
+    })
+    running = buildHttpApp(prisma)
+
+    await reportSession({
+      sessionId: 'acp-webhook-gl',
+      agentId: AGENT,
+      phase: 'start',
+      platform: 'hook',
+      channel: webhookId,
+      thread: 'delivery-1',
+      title: 'Reply with a one-line hello',
+      triggeredBy: `hook:${webhookId}`,
+      ts: '2026-08-22T00:00:00.000Z'
+    })
+    await reportSession({
+      sessionId: 'acp-gitlab-1',
+      agentId: AGENT,
+      phase: 'start',
+      platform: 'hook',
+      channel: gitlabId,
+      title: 'Answer the merge request',
+      triggeredBy: `hook:${gitlabId}`,
+      channelName: 'acme/platform',
+      triggeredByName: 'acme/platform',
+      ts: '2026-08-22T00:00:00.000Z'
+    })
+
+    const facets = await running.app.inject({ method: 'GET', url: `${ORG}/sessions/facets` })
+    expect(facets.statusCode).toBe(200)
+    const facetBody = facets.json() as {
+      integrations: string[]
+      triggers: Array<{ value: string; integration: string; hookKind: string | null }>
+    }
+    expect([...facetBody.integrations].sort()).toEqual(['gitlab', 'hook'])
+    expect(facetBody.triggers).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ value: `hook:${gitlabId}`, integration: 'gitlab', hookKind: 'gitlab' }),
+        expect.objectContaining({ value: `hook:${webhookId}`, integration: 'hook', hookKind: 'webhook' })
+      ])
+    )
+
+    const gitlabOnly = await running.app.inject({
+      method: 'GET',
+      url: `${ORG}/sessions?view=flat&integration=gitlab`
+    })
+    expect(gitlabOnly.statusCode).toBe(200)
+    expect((gitlabOnly.json() as { sessions: Array<{ sessionId: string }> }).sessions.map((s) => s.sessionId)).toEqual([
+      'acp-gitlab-1'
+    ])
+    expect((gitlabOnly.json() as { total: number }).total).toBe(1)
+
+    const genericOnly = await running.app.inject({ method: 'GET', url: `${ORG}/sessions?view=flat&integration=hook` })
+    expect(genericOnly.statusCode).toBe(200)
+    expect((genericOnly.json() as { sessions: Array<{ sessionId: string }> }).sessions.map((s) => s.sessionId)).toEqual(
+      ['acp-webhook-gl']
+    )
+  })
+
   it('serves the multi-agent webchat roster on the detail route; single-agent stays null', async () => {
     // An adopted/refreshed webchat session has no relay socket to deliver the
     // verified roster — the composer/header read it from this DTO field instead.

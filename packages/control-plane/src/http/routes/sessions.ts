@@ -60,7 +60,9 @@ const SessionFilterQueryDto = z.object({
   // parser hands repeated keys over as an array.
   agentId: z.union([z.string(), z.array(z.string()).min(1)]).optional(),
   platform: z.enum(['slack', 'telegram', 'webchat', 'discord', 'feishu', 'hook', 'dream']).optional(),
-  integration: z.enum(['slack', 'telegram', 'webchat', 'discord', 'feishu', 'hook', 'github', 'dream']).optional(),
+  integration: z
+    .enum(['slack', 'telegram', 'webchat', 'discord', 'feishu', 'hook', 'github', 'gitlab', 'dream'])
+    .optional(),
   channel: z.string().optional(),
   triggeredBy: z.string().optional(),
   githubRepoId: z
@@ -103,25 +105,31 @@ function requestedAgentIds(query: z.infer<typeof SessionFilterQueryDto>): string
 const HOOK_TRIGGER_PREFIX = 'hook:'
 const HookIdString = z.string().uuid()
 
-async function githubHookFilters(
+/** Which code-host hook definitions this request has to resolve. A repository
+ *  filter is GitHub-only (the numeric repo id is GitHub's); otherwise each host's
+ *  ids are read when the facet projection classifies everything, when that host is
+ *  the requested integration, or when `hook` needs to exclude it. */
+async function codeHostHookFilters(
   deps: HttpDeps,
   orgId: OrgId,
   query: z.infer<typeof SessionFilterQueryDto>,
   classifyAll: boolean
-): Promise<{ githubHookIds: HookId[]; repoHookIds?: HookId[] }> {
+): Promise<{ githubHookIds: HookId[]; gitlabHookIds: HookId[]; repoHookIds?: HookId[] }> {
   if (query.githubRepoId) {
     const githubHooks = await deps.repos.hook.listForOrgKind(orgId, 'github')
     return {
       githubHookIds: githubHooks.map((hook) => hook.id),
+      gitlabHookIds: [],
       repoHookIds: githubHooks.filter((hook) => hook.repoId?.toString() === query.githubRepoId).map((hook) => hook.id)
     }
   }
-  return {
-    githubHookIds:
-      classifyAll || query.integration === 'github' || query.integration === 'hook'
-        ? await deps.repos.hook.listIdsForOrgKind(orgId, 'github')
-        : []
-  }
+  const wanted = (kind: 'github' | 'gitlab') =>
+    classifyAll || query.integration === kind || query.integration === 'hook'
+  const [githubHookIds, gitlabHookIds] = await Promise.all([
+    wanted('github') ? deps.repos.hook.listIdsForOrgKind(orgId, 'github') : Promise.resolve([]),
+    wanted('gitlab') ? deps.repos.hook.listIdsForOrgKind(orgId, 'gitlab') : Promise.resolve([])
+  ])
+  return { githubHookIds, gitlabHookIds }
 }
 
 function hookIdForSession(s: HookSessionRow): string | null {
@@ -201,9 +209,13 @@ function decodeSessionCursor(raw: string): SessionCursor | null {
   }
 }
 
+/** A hook session's integration facet. Both code hosts are promoted out of the
+ *  generic hook bucket so each gets a first-class entry the console can filter by;
+ *  the value matches the client's own `sessionPlatform` classification. */
 function sessionIntegration(s: HookSessionRow, hook: HookSessionMetadata | undefined): string {
   const platform = s.platform ?? 'slack'
-  return platform === 'hook' && hook?.kind === 'github' ? 'github' : platform
+  if (platform !== 'hook') return platform
+  return hook?.kind === 'github' || hook?.kind === 'gitlab' ? hook.kind : platform
 }
 
 function sessionDisplayMetadata(
@@ -585,7 +597,12 @@ export function sessionRoutes(deps: HttpDeps) {
         if (requested.some((id) => !new Set<string>(orgAgentIds).has(id))) {
           return { agents: [], agentNames: {}, integrations: [], channels: [], triggers: [] }
         }
-        const { githubHookIds, repoHookIds } = await githubHookFilters(deps, orgOf(req), req.query, true)
+        const { githubHookIds, gitlabHookIds, repoHookIds } = await codeHostHookFilters(
+          deps,
+          orgOf(req),
+          req.query,
+          true
+        )
         // A multi-agent request narrows to the qualifying CONVERSATIONS and then
         // reads facets off every member row the caller can see, rather than only
         // the selected agents' rows: a facet answers "what else can I narrow by",
@@ -599,6 +616,7 @@ export function sessionRoutes(deps: HttpDeps) {
           ...(req.query.channel ? { channel: req.query.channel } : {}),
           ...(req.query.triggeredBy ? { triggeredBy: req.query.triggeredBy } : {}),
           githubHookIds,
+          gitlabHookIds,
           ...(repoHookIds ? { hookTriggerIds: repoHookIds } : {})
         }
         // Each facet drops its own active filter, so its external-audience
@@ -669,9 +687,14 @@ export function sessionRoutes(deps: HttpDeps) {
           }
         }
 
-        // GitHub is a semantic subtype of hook sessions. Resolve definitions only
-        // when integration classification or a repository-wide trigger filter needs them.
-        const { githubHookIds, repoHookIds } = await githubHookFilters(deps, orgOf(req), req.query, false)
+        // Each code host is a semantic subtype of hook sessions. Resolve definitions
+        // only when integration classification or a repository-wide trigger filter needs them.
+        const { githubHookIds, gitlabHookIds, repoHookIds } = await codeHostHookFilters(
+          deps,
+          orgOf(req),
+          req.query,
+          false
+        )
         // Two or more selected agents ask for the threads they SHARE. The rows stay
         // scoped to those agents (`agentIds`), so `?agentId=a` keeps returning
         // exactly what it always did. Every branch below reads this one binding —
@@ -692,6 +715,7 @@ export function sessionRoutes(deps: HttpDeps) {
           ...(req.query.channel ? { channel: req.query.channel } : {}),
           ...(req.query.triggeredBy ? { triggeredBy: req.query.triggeredBy } : {}),
           ...(githubHookIds.length > 0 ? { githubHookIds } : {}),
+          ...(gitlabHookIds.length > 0 ? { gitlabHookIds } : {}),
           ...(repoHookIds ? { hookTriggerIds: repoHookIds } : {}),
           ...(cursor ? { cursor } : {}),
           limit: req.query.limit,

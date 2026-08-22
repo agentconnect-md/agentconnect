@@ -1,4 +1,4 @@
-import type { GithubCommentFamily } from './api'
+import type { GithubCommentFamily, HookCommentFamily } from './api'
 
 /**
  * GitHub subscription event model shared by the Add-integration form and the
@@ -94,6 +94,11 @@ export const GH_DEFAULT_TRIGGER_MODE: GhTriggerMode = 'every'
 /** The comment subscription that rides updated/mention-only modes for thread families. */
 export const THREAD_COMMENT_EVENT = 'issue_comment:created'
 
+/** Narrow a stored cross-host comment scope to the GitHub families a github hook may carry. */
+export function githubCommentFamilies(families: readonly HookCommentFamily[]): GithubCommentFamily[] {
+  return families.filter((family): family is GithubCommentFamily => family === 'issues' || family === 'pull_request')
+}
+
 /** Derive the explicit comment scope from the selected issue/PR families. */
 export function commentFamiliesForFamilies(fams: Iterable<GhFamily>): GithubCommentFamily[] {
   return [...fams].filter((fam): fam is GithubCommentFamily => fam === 'issues' || fam === 'pull_request')
@@ -126,7 +131,7 @@ export function triggerModeOf(h: { events: string[]; mentionOnly: boolean }): Gh
  *  same-cadence selection normalize them instead of returning early. */
 export function githubHookNeedsNormalization(h: {
   events: string[]
-  commentFamilies: GithubCommentFamily[]
+  commentFamilies: readonly HookCommentFamily[]
   mentionOnly: boolean
 }): boolean {
   const families = GH_FAMILIES.map((family) => family.fam).filter((family) => famCovered(h.events, family))
@@ -141,6 +146,6 @@ export function githubHookNeedsNormalization(h: {
   }
   return (
     !sameMembers(h.events, eventsForFamilies(families, mode)) ||
-    !sameMembers(h.commentFamilies, commentFamiliesForFamilies(families))
+    !sameMembers(githubCommentFamilies(h.commentFamilies), commentFamiliesForFamilies(families))
   )
 }

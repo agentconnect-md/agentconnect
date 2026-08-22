@@ -14,6 +14,11 @@ import {
 let root: Root | undefined
 let container: HTMLDivElement | undefined
 
+const setFlags = (value?: string) => {
+  ;(window as unknown as { __AC_ENV?: Record<string, string> }).__AC_ENV =
+    value === undefined ? {} : { FEATURE_FLAGS: value }
+}
+
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
 async function render(element: ReactNode) {
@@ -24,6 +29,7 @@ async function render(element: ReactNode) {
 }
 
 afterEach(async () => {
+  setFlags()
   if (root) await act(async () => root?.unmount())
   container?.remove()
   root = undefined
@@ -53,6 +59,22 @@ describe('WorkspaceFormFields', () => {
 
     await act(async () => buttons[1]?.click())
     expect(onChange).toHaveBeenCalledWith('github')
+  })
+
+  it('offers the GitLab source only where the flag is on', async () => {
+    const onChange = vi.fn()
+    setFlags('gitlab')
+    await render(<WorkspaceModeField value="scratch" onChange={onChange} />)
+
+    const buttons = Array.from(container?.querySelectorAll('button') ?? [])
+    expect(buttons.map((button) => button.textContent)).toEqual([
+      'From scratchFresh empty directory.',
+      'From GitHubClone a repo on a branch.',
+      'From GitLabClone a project on a branch.'
+    ])
+
+    await act(async () => buttons[2]?.click())
+    expect(onChange).toHaveBeenCalledWith('gitlab')
   })
 
   it('returns the shared repository access vocabulary', async () => {

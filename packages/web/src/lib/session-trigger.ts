@@ -1,6 +1,7 @@
 import { isSelfSender } from './data'
+import type { HookKind } from './api'
 
-export type SessionTriggerKind = 'agent' | 'person' | 'github' | 'webhook' | 'schedule'
+export type SessionTriggerKind = 'agent' | 'person' | 'github' | 'gitlab' | 'webhook' | 'schedule'
 
 type IdLookup = { has(id: string): boolean }
 const GITHUB_REPO_TRIGGER_PREFIX = 'github-repo:'
@@ -64,9 +65,11 @@ export function sessionTranscriptAgentIds(
   return authors
 }
 
+/** GitHub subscriptions collapse per repository — the CP indexes their numeric repo id.
+ *  Every other trigger, GitLab included, filters by its own raw `hook:<id>` value. */
 export function sessionTriggerFilterValue(trigger: {
   value: string
-  hookKind?: 'webhook' | 'github'
+  hookKind?: HookKind
   githubRepoId?: string
 }): string {
   return trigger.hookKind === 'github' && trigger.githubRepoId
@@ -81,7 +84,7 @@ export function githubRepoIdFromSessionTriggerFilter(value: string): string | un
 }
 
 export function sessionTriggerKind(
-  session: { triggeredBy?: string; hookKind?: 'webhook' | 'github' },
+  session: { triggeredBy?: string; hookKind?: HookKind },
   agentIds: IdLookup
 ): SessionTriggerKind | null {
   const trigger = session.triggeredBy

@@ -1,6 +1,11 @@
-import { GithubMark, PlatformMark } from '@/components/marks'
+import { GithubMark, GitlabMark, PlatformMark } from '@/components/marks'
+import type { HookKind } from '@/lib/api'
 
-type HookKind = 'webhook' | 'github'
+const HOOK_KIND_TITLE: Record<HookKind, string> = {
+  github: 'GitHub events',
+  gitlab: 'GitLab events',
+  webhook: 'Inbound webhook'
+}
 
 interface IntegrationMarkSource {
   id?: string
@@ -36,11 +41,15 @@ export function IntegrationMarks({
           <span
             key={kind}
             className={`imark h-[21px] w-[21px] ${visibleIntegrations.length + index === 0 ? '' : 'imark-overlap -ml-[7px]'}`}
-            title={kind === 'github' ? 'GitHub events' : 'Inbound webhook'}
+            title={HOOK_KIND_TITLE[kind]}
           >
             {kind === 'github' ? (
               <span className="flex h-[13px] w-[13px] items-center justify-center">
                 <GithubMark fillPct={90} />
+              </span>
+            ) : kind === 'gitlab' ? (
+              <span className="flex h-[13px] w-[13px] items-center justify-center">
+                <GitlabMark fillPct={90} />
               </span>
             ) : (
               // The brand-pink webhook mark, not a white glyph on an inverted plate:
