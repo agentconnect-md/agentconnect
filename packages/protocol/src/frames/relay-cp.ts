@@ -378,6 +378,9 @@ export const RcHookAssign = z
         // mention/reviewer targets.
         serviceAccountUserId: z.string().regex(/^[1-9]\d*$/),
         serviceAccountUsername: z.string().min(1),
+        // §12.1 veto set: every managed account bound to the project, including the one above.
+        // Additive optional (§17.3) — a rule without it vetoes only the account it names.
+        boundServiceAccountUserIds: z.array(z.string().regex(/^[1-9]\d*$/)).optional(),
         // whsec_ Standard Webhooks signing key for §11.2 verification.
         signingToken: z.string().min(1)
       })

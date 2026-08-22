@@ -196,6 +196,8 @@ describe('gitlab hooks — routes, compile, webhook converge (§8.3/§11.1/§11.
         expect(rule.gitlab?.projectId).toBe(PROJECT.toString())
         expect(rule.gitlab?.sessionKeyPrefix).toBe(`gitlab:${PROJECT}`)
         expect(rule.gitlab?.serviceAccountUsername).toBe(`agentconnect-p${PROJECT}`)
+        // §12.1 veto set: every account bound to the project, one per-project account today.
+        expect(rule.gitlab?.boundServiceAccountUserIds).toEqual([rule.gitlab!.serviceAccountUserId])
         expect(rule.gitlab?.signingToken).toBe(webhook.token)
         expect(rule.gitlab?.events).toEqual(['issues:*', 'merge_request:opened'])
         // The value never reaches the rule; the empty array only keeps an older relay decoding.

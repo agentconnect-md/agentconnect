@@ -162,6 +162,8 @@ export class HookService {
           agentName: agent.name,
           serviceAccountUserId: binding.serviceAccountUserId.toString(),
           serviceAccountUsername: binding.serviceAccountUsername,
+          // §12.1 veto set — per-agent accounts (§7.2) append here without another wire change.
+          boundServiceAccountUserIds: [...new Set([binding.serviceAccountUserId.toString()])],
           signingToken
         }
       }

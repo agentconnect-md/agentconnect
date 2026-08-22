@@ -29,6 +29,7 @@ const AGENT = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
 const DAEMON = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
 const PROJECT = 4455667
 const SA_USER = 9042
+const SIBLING_SA_USER = 9043
 const KEY = randomBytes(32)
 const TOKEN = `whsec_${KEY.toString('base64')}`
 
@@ -309,6 +310,37 @@ describe('gitlab ingress', () => {
     expect((h.sent[0] as RdMsgHook).event).toBe('merge_request:synchronize')
   })
 
+  it('§12.1: a SIBLING bound account is vetoed even for a same-project MR revision', async () => {
+    const vetoSet = { boundServiceAccountUserIds: [String(SA_USER), String(SIBLING_SA_USER)] }
+    h.table.upsert(rule({}, { events: ['merge_request:*'], commentFamilies: ['merge_request'], ...vetoSet }))
+    const siblingNote = notePayload({
+      user: { id: SIBLING_SA_USER, username: 'agentconnect-a2-g7' },
+      issue: undefined,
+      merge_request: { iid: 77, author_id: 7001 },
+      object_attributes: { noteable_type: 'MergeRequest' }
+    })
+    expect((await post(h, siblingNote)).statusCode).toBe(202)
+    const siblingRevision = mrPayload({
+      object_attributes: { action: 'update', oldrev: 'c'.repeat(40), author_id: SIBLING_SA_USER },
+      user: { id: SIBLING_SA_USER, username: 'agentconnect-a2-g7' }
+    })
+    expect((await post(h, siblingRevision, { 'webhook-id': 'msg_delivery_2' })).statusCode).toBe(202)
+    await flush()
+    expect(h.authzRequests).toHaveLength(0)
+    expect(h.sent).toHaveLength(0)
+
+    // The rule's OWN account keeps the internal-CI exception under the same veto set.
+    const ownRevision = mrPayload({
+      object_attributes: { action: 'update', oldrev: 'c'.repeat(40), author_id: SA_USER },
+      user: { id: SA_USER, username: `agentconnect-p${PROJECT}` }
+    })
+    expect((await post(h, ownRevision, { 'webhook-id': 'msg_delivery_3' })).statusCode).toBe(202)
+    await flush()
+    expect(h.authzRequests).toHaveLength(0)
+    expect(h.sent).toHaveLength(1)
+    expect((h.sent[0] as RdMsgHook).event).toBe('merge_request:synchronize')
+  })
+
   it('assigning the service account as reviewer is the explicit start path', async () => {
     h.table.upsert(rule({}, { events: ['merge_request:opened'] }))
     const assigned = mrPayload({
@@ -473,6 +505,24 @@ describe('gitlab ingress', () => {
     expect(gitlabRuleVerdict(rule({}, { labelFilter: undefined }), ctx)).toBe('needs-authz')
     expect(gitlabRuleVerdict(rule({}, { events: ['merge_request:*'] }), ctx)).toBe('no-match')
     expect(gitlabRuleVerdict(rule({ kind: 'github' }), ctx)).toBe('no-match')
+  })
+
+  it('§12.1: the veto set widens the author veto; a rule without one vetoes exactly its own account', () => {
+    const siblingIssue = normalizeGitlabEvent(
+      issuePayload({ user: { id: SIBLING_SA_USER, username: 'agentconnect-a2-g7' } }) as never
+    )!
+    const vetoSet = { boundServiceAccountUserIds: [String(SA_USER), String(SIBLING_SA_USER)] }
+    expect(gitlabRuleVerdict(rule({}, vetoSet), siblingIssue)).toBe('no-match')
+    // A rule the Control Plane compiled before the field vetoes only the ID it names.
+    expect(gitlabRuleVerdict(rule(), siblingIssue)).toBe('needs-authz')
+    expect(gitlabRuleVerdict(rule({}, { boundServiceAccountUserIds: [String(SA_USER)] }), siblingIssue)).toBe(
+      'needs-authz'
+    )
+    const ownIssue = normalizeGitlabEvent(
+      issuePayload({ user: { id: SA_USER, username: `agentconnect-p${PROJECT}` } }) as never
+    )!
+    expect(gitlabRuleVerdict(rule(), ownIssue)).toBe('no-match')
+    expect(gitlabRuleVerdict(rule({}, vetoSet), ownIssue)).toBe('no-match')
   })
 })
 

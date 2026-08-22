@@ -8,6 +8,8 @@ import { HookService, type HookAgentReads } from './hook.service.js'
 import type {
   AgentRecord,
   GithubInstallationRecord,
+  GitlabProjectBindingRecord,
+  GitlabWebhookSecretStore,
   HookRecord,
   HookRepo,
   HookSecretStore
@@ -69,6 +71,27 @@ function installation(id: bigint, over: Partial<GithubInstallationRecord> = {}):
   }
 }
 
+/** A ready gitlab binding — the gitlab-compile source (§11.3). */
+function binding(over: Partial<GitlabProjectBindingRecord> = {}): GitlabProjectBindingRecord {
+  return {
+    id: 'binding-1',
+    orgId: 'org',
+    projectId: 4455667n,
+    projectPath: 'example-group/example-project',
+    defaultBranch: 'main',
+    installerConnectionId: null,
+    serviceAccountUserId: 9042n,
+    serviceAccountUsername: 'agentconnect-p4455667',
+    webhookId: 12n,
+    desiredEventsHash: null,
+    credentialEpoch: 1n,
+    state: 'ready',
+    stateReason: null,
+    createdAt: new Date(),
+    ...over
+  }
+}
+
 /** A HookService with faked deps + a spy RelayControlSender capturing pushes. */
 function make(
   opts: {
@@ -78,6 +101,7 @@ function make(
     appSlug?: string
     hooks?: Partial<HookRepo>
     pause?: boolean | null
+    gitlabBinding?: Partial<GitlabProjectBindingRecord> | null
   } = {}
 ) {
   const agents: HookAgentReads = {
@@ -101,8 +125,24 @@ function make(
     hookRemove: (id: string) => removes.push(id)
   } as unknown as RelayControlSender
   const installations = opts.installations ? { listForOrg: vi.fn(async () => opts.installations!) } : undefined
+  const gitlabBindings =
+    opts.gitlabBinding === undefined
+      ? undefined
+      : { byProject: vi.fn(async () => (opts.gitlabBinding ? binding(opts.gitlabBinding) : null)) }
+  const gitlabWebhookSecrets = { get: vi.fn(async () => 'whsec_example') } as unknown as GitlabWebhookSecretStore
   return {
-    svc: new HookService(hooks, secrets, agents, relayControl, undefined, installations, opts.appSlug),
+    svc: new HookService(
+      hooks,
+      secrets,
+      agents,
+      relayControl,
+      undefined,
+      installations,
+      opts.appSlug,
+      undefined,
+      gitlabBindings,
+      gitlabWebhookSecrets
+    ),
     assigns,
     removes
   }
@@ -316,5 +356,16 @@ describe('HookService.broadcast', () => {
     await off.svc.broadcast(hook({ enabled: false }))
     expect(off.assigns).toHaveLength(0)
     expect(off.removes).toEqual([HOOK])
+  })
+})
+
+describe('HookService.compile — gitlab', () => {
+  it('projects the §12.1 veto set: every account bound to the project, the binding account today', async () => {
+    const { svc } = make({ gitlabBinding: {} })
+    const rule = await svc.compile(
+      hook({ kind: 'gitlab', sessionMode: 'perThread', urlToken: null, repoId: 4455667n, events: ['issues:*'] })
+    )
+    expect(rule?.gitlab?.serviceAccountUserId).toBe('9042')
+    expect(rule?.gitlab?.boundServiceAccountUserIds).toEqual(['9042'])
   })
 })

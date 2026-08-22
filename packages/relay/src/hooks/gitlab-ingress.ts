@@ -276,8 +276,14 @@ export function gitlabMentionCandidates(rules: RcHookAssign[], body: string | un
 
 export type GitlabRuleVerdict = 'no-match' | 'trusted' | 'needs-authz'
 
-/** The §12.1 internal lane: a same-project MR revision authored by the managed
- *  service account still enters review; everything else it authors is vetoed. */
+/** §12.1 veto set: every account bound to the project; an older rule names only one. */
+function gitlabVetoedAuthor(rule: RcHookAssign, actorId: string | undefined): boolean {
+  const gitlab = rule.gitlab
+  if (!gitlab || actorId === undefined) return false
+  return actorId === gitlab.serviceAccountUserId || (gitlab.boundServiceAccountUserIds ?? []).includes(actorId)
+}
+
+/** §12.1 internal lane: only a same-project MR revision by the account THIS rule names enters review. */
 function isInternalServiceAccountRevision(rule: RcHookAssign, ctx: GitlabMatchCtx): boolean {
   return (
     (ctx.eventAction === 'merge_request:opened' || ctx.eventAction === 'merge_request:synchronize') &&
@@ -295,12 +301,13 @@ function isInternalServiceAccountRevision(rule: RcHookAssign, ctx: GitlabMatchCt
  */
 export function gitlabRuleVerdict(rule: RcHookAssign, ctx: GitlabMatchCtx): GitlabRuleVerdict {
   if (rule.kind !== 'gitlab' || !rule.gitlab) return 'no-match'
-  // §12.1: events authored BY the managed service account never re-trigger,
-  // except its own same-project MR revisions (the internal CI lane). Notes it
-  // authors are always rejected (the note author IS the actor).
-  const actorIsServiceAccount = ctx.actorId !== undefined && ctx.actorId === rule.gitlab.serviceAccountUserId
-  if (actorIsServiceAccount && !isInternalServiceAccountRevision(rule, ctx)) return 'no-match'
-  if (ctx.family === 'note' && actorIsServiceAccount) return 'no-match'
+  // §12.1: any bound account's events never re-trigger, except this rule's own same-project MR revisions.
+  // A note a bound account authors is always rejected (the note author IS the actor).
+  const actorIsBoundAccount = gitlabVetoedAuthor(rule, ctx.actorId)
+  const internalRevision =
+    ctx.actorId === rule.gitlab.serviceAccountUserId && isInternalServiceAccountRevision(rule, ctx)
+  if (actorIsBoundAccount && !internalRevision) return 'no-match'
+  if (ctx.family === 'note' && actorIsBoundAccount) return 'no-match'
   // §12.2 explicit start path: assigning the SA as reviewer bypasses cadence,
   // label, and mention filters — but only for this rule's SA, and only after
   // the live membership gate authorizes the assigning actor.
@@ -339,7 +346,7 @@ export function gitlabRuleVerdict(rule: RcHookAssign, ctx: GitlabMatchCtx): Gitl
   // §12.2: pushes and the SA's own same-project revisions stay relay-trusted;
   // every issue/MR lifecycle event and comment resolves live membership.
   if (ctx.family === 'push') return 'trusted'
-  if (isInternalServiceAccountRevision(rule, ctx) && actorIsServiceAccount) return 'trusted'
+  if (internalRevision) return 'trusted'
   return 'needs-authz'
 }
 
