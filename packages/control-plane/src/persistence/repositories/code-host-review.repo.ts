@@ -29,8 +29,9 @@ import {
   isEncodedExternalRef,
   outcomeReconciles,
   phaseAfterIssue,
-  phaseAfterResult,
+  classifyRelease,
   phaseAfterSettle,
+  phaseOfSettledOutcome,
   returnUnusedTransition,
   settleTransition,
   startTransition,
@@ -335,10 +336,12 @@ export class PgCodeHostReviewLeaseRepo implements CodeHostReviewLeaseRepo {
           }
         })
       }
-      const phase = phaseAfterSettle(toPhase(lease.phase), toOperation(record).kind)
-      if (phase !== toPhase(lease.phase)) {
-        await tx.codeHostReviewLease.update({ where: { id: lease.id }, data: { phase } })
+      const settled = phaseAfterSettle(toPhase(lease.phase), toOperation(record).kind)
+      if (settled !== toPhase(lease.phase)) {
+        await tx.codeHostReviewLease.update({ where: { id: lease.id }, data: { phase: settled } })
       }
+      // Settling the last outstanding record is what lets an already-reported outcome release.
+      const phase = await this.releaseIfNowSafe(tx, lease.id, settled, input.now)
       const after = await tx.codeHostReviewOperation.findUniqueOrThrow({ where: { id: record.id } })
       return { outcome: 'ok', record: toOperation(after), phase }
     })
@@ -357,8 +360,10 @@ export class PgCodeHostReviewLeaseRepo implements CodeHostReviewLeaseRepo {
         })
         if (returned.count !== 1) return { failure: 'transition', reason: 'already_started' }
       }
+      // Returning the last outstanding record is the other way an already-reported outcome releases.
+      const phase = await this.releaseIfNowSafe(tx, lease.id, toPhase(lease.phase), input.now)
       const after = await tx.codeHostReviewOperation.findUniqueOrThrow({ where: { id: record.id } })
-      return { outcome: 'ok', record: toOperation(after), phase: toPhase(lease.phase) }
+      return { outcome: 'ok', record: toOperation(after), phase }
     })
   }
 
@@ -416,14 +421,9 @@ export class PgCodeHostReviewLeaseRepo implements CodeHostReviewLeaseRepo {
         create: { attemptId: input.attemptId, ...outcomeFacts, recordedAt: input.now },
         update: outcomeFacts
       })
-      const phase = phaseAfterResult(input.state)
-      await tx.codeHostReviewLease.update({
-        where: { id: lease.id },
-        data:
-          phase === 'ambiguous_locked'
-            ? { phase, lockedReason: 'ambiguous_unresolved', lockedAt: input.now }
-            : { phase, attemptId: null, ownerDaemonId: null, leaseUntil: null }
-      })
+      // Recording the outcome does NOT by itself clear ownership: the release runs the same
+      // classification an acquisition would, so an outstanding record keeps the attempt owned.
+      const phase = await this.releaseIfNowSafe(tx, lease.id, toPhase(lease.phase), input.now)
       return { outcome: existing ? 'idempotent' : 'recorded', phase }
     })
   }
@@ -436,9 +436,52 @@ export class PgCodeHostReviewLeaseRepo implements CodeHostReviewLeaseRepo {
     const client = tx ?? this.prisma
     const existing = await client.codeHostReviewAttemptOutcome.findUnique({ where: { attemptId: input.attemptId } })
     if (existing && existing.state === input.state) {
-      return { outcome: 'idempotent', phase: phaseAfterResult(input.state) }
+      return { outcome: 'idempotent', phase: phaseOfSettledOutcome(input.state) }
     }
     return { outcome: 'not_owner' }
+  }
+
+  /**
+   * Re-run the release classification for one lease under the caller's subject lock.
+   *
+   * Every path that can change the answer calls this: recording the outcome, and settling or
+   * returning a record afterwards. Until it says release, the attempt stays owned — a later
+   * request from it can still land, and the next acquisition must meet a held or locked row
+   * rather than the `settled` fast path.
+   */
+  private async releaseIfNowSafe(
+    tx: Prisma.TransactionClient,
+    leaseId: string,
+    current: CodeHostReviewLeasePhase,
+    now: Date
+  ): Promise<CodeHostReviewLeasePhase> {
+    const lease = await tx.codeHostReviewLease.findUnique({ where: { id: leaseId } })
+    if (!lease || lease.attemptId === null) return current
+    const outcome = await tx.codeHostReviewAttemptOutcome.findUnique({ where: { attemptId: lease.attemptId } })
+    // No reported outcome yet: the attempt is simply still running, and nothing here applies.
+    if (!outcome) return current
+    const decision = classifyRelease({
+      ledger: summarize(await this.ledgerRows(tx, lease.attemptId)),
+      state: outcome.state as CodeHostReviewState
+    })
+    if (decision.kind === 'retain') {
+      // Owned until publication, reviewer state, and any approval outcome are durably classified.
+      if (current === 'classifying') return current
+      await tx.codeHostReviewLease.update({ where: { id: leaseId }, data: { phase: 'classifying' } })
+      return 'classifying'
+    }
+    if (decision.kind === 'lock') {
+      await tx.codeHostReviewLease.update({
+        where: { id: leaseId },
+        data: { phase: 'ambiguous_locked', lockedReason: 'ambiguous_unresolved', lockedAt: now }
+      })
+      return 'ambiguous_locked'
+    }
+    await tx.codeHostReviewLease.update({
+      where: { id: leaseId },
+      data: { phase: 'settled', attemptId: null, ownerDaemonId: null, leaseUntil: null }
+    })
+    return 'settled'
   }
 
   private findSubject(

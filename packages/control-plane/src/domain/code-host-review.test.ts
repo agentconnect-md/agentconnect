@@ -7,8 +7,9 @@ import {
   isEncodedExternalRef,
   outcomeReconciles,
   phaseAfterIssue,
-  phaseAfterResult,
+  classifyRelease,
   phaseAfterSettle,
+  phaseOfSettledOutcome,
   returnUnusedTransition,
   settleTransition,
   startTransition,
@@ -228,12 +229,69 @@ describe('lease phase', () => {
     expect(phaseAfterSettle('classifying', 'approval')).toBe('classifying')
   })
 
-  it('releases a classified outcome and locks an unproven one', () => {
-    expect(phaseAfterResult('submitted')).toBe('settled')
-    expect(phaseAfterResult('approval_not_recorded')).toBe('settled')
-    expect(phaseAfterResult('not_submitted')).toBe('settled')
-    expect(phaseAfterResult('ambiguous_locked')).toBe('ambiguous_locked')
-    expect(phaseAfterResult('review_reconciliation_required')).toBe('ambiguous_locked')
+  it('names the phase of a lease nobody owns any more', () => {
+    expect(phaseOfSettledOutcome('submitted')).toBe('settled')
+    expect(phaseOfSettledOutcome('not_submitted')).toBe('settled')
+    expect(phaseOfSettledOutcome('ambiguous_locked')).toBe('ambiguous_locked')
+    expect(phaseOfSettledOutcome('review_reconciliation_required')).toBe('ambiguous_locked')
+  })
+})
+
+describe('release classification (§15.1: reporting an outcome is not releasing the lease)', () => {
+  it('releases a classified outcome only when the ledger has nothing outstanding', () => {
+    expect(classifyRelease({ ledger: ledger({}), state: 'submitted' })).toEqual({ kind: 'release' })
+    expect(classifyRelease({ ledger: ledger({ total: 2, unused: 2 }), state: 'not_submitted' })).toEqual({
+      kind: 'release'
+    })
+    expect(classifyRelease({ ledger: ledger({ total: 2, settled: 2 }), state: 'submitted' })).toEqual({
+      kind: 'release'
+    })
+    expect(
+      classifyRelease({ ledger: ledger({ total: 1, settled: 1, everAmbiguous: true }), state: 'submitted' })
+    ).toEqual({ kind: 'release' })
+  })
+
+  it('retains ownership while any record could still reach the provider', () => {
+    // The blocker: a late bulk_publish consumes every pending draft of the service account.
+    expect(classifyRelease({ ledger: ledger({ total: 1, requestStarted: 1 }), state: 'submitted' })).toEqual({
+      kind: 'retain',
+      reason: 'records_outstanding'
+    })
+    expect(classifyRelease({ ledger: ledger({ total: 1, issued: 1 }), state: 'submitted' })).toEqual({
+      kind: 'retain',
+      reason: 'records_outstanding'
+    })
+    expect(
+      classifyRelease({ ledger: ledger({ total: 2, settled: 1, issued: 1 }), state: 'approval_not_recorded' })
+    ).toEqual({ kind: 'retain', reason: 'records_outstanding' })
+    expect(classifyRelease({ ledger: ledger({ total: 1, ambiguous: 1 }), state: 'submitted' })).toEqual({
+      kind: 'retain',
+      reason: 'ambiguous_unresolved'
+    })
+  })
+
+  it('locks on an outcome that proves nothing, whatever the ledger says', () => {
+    for (const state of ['ambiguous_locked', 'review_reconciliation_required'] as const) {
+      expect(classifyRelease({ ledger: ledger({}), state })).toEqual({ kind: 'lock' })
+      expect(classifyRelease({ ledger: ledger({ total: 2, settled: 2 }), state })).toEqual({ kind: 'lock' })
+    }
+  })
+
+  it('answers exactly what a transfer would, so release and takeover cannot drift', () => {
+    const ledgers = [
+      ledger({}),
+      ledger({ total: 2, unused: 2 }),
+      ledger({ total: 2, settled: 2 }),
+      ledger({ total: 1, issued: 1 }),
+      ledger({ total: 1, requestStarted: 1 }),
+      ledger({ total: 1, ambiguous: 1 }),
+      ledger({ total: 3, settled: 2, unused: 1, everAmbiguous: true })
+    ]
+    for (const l of ledgers) {
+      const transfer = classifyTransfer(l, true)
+      const release = classifyRelease({ ledger: l, state: 'submitted' })
+      expect(release.kind === 'release').toBe(transfer.transfer)
+    }
   })
 })
 

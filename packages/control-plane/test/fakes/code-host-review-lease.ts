@@ -1,12 +1,13 @@
-import type { CodeHostReviewOpOutcome } from '@agentconnect.md/protocol'
+import type { CodeHostReviewLeasePhase, CodeHostReviewOpOutcome } from '@agentconnect.md/protocol'
 import {
   EMPTY_LEDGER,
   classifyAcquisition,
   isEncodedExternalRef,
   outcomeReconciles,
   phaseAfterIssue,
-  phaseAfterResult,
+  classifyRelease,
   phaseAfterSettle,
+  phaseOfSettledOutcome,
   returnUnusedTransition,
   settleTransition,
   startTransition,
@@ -210,7 +211,7 @@ export class FakeCodeHostReviewLeaseRepo implements CodeHostReviewLeaseRepo {
         record.everAmbiguous = true
       }
       lease.phase = phaseAfterSettle(lease.phase, record.kind)
-      return { outcome: 'ok', record, phase: lease.phase }
+      return { outcome: 'ok', record, phase: this.releaseIfNowSafe(lease) }
     })
   }
 
@@ -219,7 +220,7 @@ export class FakeCodeHostReviewLeaseRepo implements CodeHostReviewLeaseRepo {
       const transition = returnUnusedTransition(record)
       if (!transition.ok) return { failure: 'transition', reason: transition.reason }
       record.state = transition.next
-      return { outcome: 'ok', record, phase: lease.phase }
+      return { outcome: 'ok', record, phase: this.releaseIfNowSafe(lease) }
     })
   }
 
@@ -229,7 +230,7 @@ export class FakeCodeHostReviewLeaseRepo implements CodeHostReviewLeaseRepo {
     const existing = this.outcomes.get(input.attemptId)
     if (!lease || lease.ownerDaemonId !== input.daemonId || lease.orgId !== input.orgId) {
       if (existing && existing.state === input.state) {
-        return { outcome: 'idempotent', phase: phaseAfterResult(input.state) }
+        return { outcome: 'idempotent', phase: phaseOfSettledOutcome(input.state) }
       }
       return { outcome: 'not_owner' }
     }
@@ -238,15 +239,28 @@ export class FakeCodeHostReviewLeaseRepo implements CodeHostReviewLeaseRepo {
     }
     if (existing && existing.state !== input.state) return { outcome: 'conflict' }
     this.outcomes.set(input.attemptId, { state: input.state, externalIds: input.externalIds })
-    const phase = phaseAfterResult(input.state)
-    lease.phase = phase
-    if (phase === 'ambiguous_locked') lease.lockedReason = 'ambiguous_unresolved'
-    else {
+    // Recording the outcome never clears ownership by itself — the ledger decides.
+    return { outcome: existing ? 'idempotent' : 'recorded', phase: this.releaseIfNowSafe(lease) }
+  }
+
+  /** The same release classification the Postgres repository runs under the subject lock. */
+  private releaseIfNowSafe(lease: CodeHostReviewLeaseRecord): CodeHostReviewLeasePhase {
+    if (lease.attemptId === null) return lease.phase
+    const recorded = this.outcomes.get(lease.attemptId)
+    if (!recorded) return lease.phase
+    const decision = classifyRelease({ ledger: this.ledgerOf(lease.attemptId), state: recorded.state })
+    if (decision.kind === 'retain') {
+      lease.phase = 'classifying'
+    } else if (decision.kind === 'lock') {
+      lease.phase = 'ambiguous_locked'
+      lease.lockedReason = 'ambiguous_unresolved'
+    } else {
+      lease.phase = 'settled'
       lease.attemptId = null
       lease.ownerDaemonId = null
       lease.leaseUntil = null
     }
-    return { outcome: existing ? 'idempotent' : 'recorded', phase }
+    return lease.phase
   }
 
   private byAttemptSync(attemptId: string): CodeHostReviewLeaseRecord | null {

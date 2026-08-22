@@ -414,3 +414,122 @@ describe('attempt outcome store (§15.2)', () => {
     })
   })
 })
+
+describe('a result releases the lease only through the ledger (§15.1)', () => {
+  const permit = {
+    method: 'POST' as const,
+    target: '/projects/1/merge_requests/42/draft_notes',
+    ordinal: 0
+  }
+
+  async function withPermit(kind: 'draft_create' | 'bulk_publish' = 'bulk_publish') {
+    const s = subject()
+    const input = acquire(s)
+    const acquired = await repo().acquire(input)
+    if (acquired.outcome !== 'acquired') throw new Error('expected a lease')
+    const base = {
+      attemptId: input.attemptId,
+      orgId: DEFAULT_ORG_ID,
+      fence: acquired.lease.fence,
+      daemonId: DAEMON_A,
+      now: new Date()
+    }
+    const issued = await repo().issueOperation({ ...base, ...permit, kind })
+    if (!('outcome' in issued)) throw new Error('expected a permit')
+    return { s, base, attemptId: input.attemptId, recordId: issued.record.id }
+  }
+
+  function outcome(s: CodeHostReviewSubject, attemptId: string, over: Record<string, unknown> = {}) {
+    return {
+      attemptId,
+      orgId: DEFAULT_ORG_ID,
+      hookId: HOOK,
+      deliveryKey: 'delivery-1',
+      provider: s.provider,
+      projectExternalId: s.projectExternalId,
+      mergeRequestIid: s.mergeRequestIid,
+      daemonId: DAEMON_A,
+      event: 'COMMENT',
+      verdict: 'pass',
+      headSha: HEAD,
+      state: 'submitted' as const,
+      externalIds: [] as string[],
+      now: new Date(),
+      ...over
+    }
+  }
+
+  it('records the outcome but keeps the attempt while a started request could still land', async () => {
+    const { s, base, attemptId, recordId } = await withPermit()
+    await repo().startOperation({ ...base, recordId, startToken: randomUUID() })
+    expect(await repo().recordOutcome(outcome(s, attemptId))).toEqual({ outcome: 'recorded', phase: 'classifying' })
+
+    // The classification is durable — it is ownership that is withheld.
+    const stored = await prisma.codeHostReviewAttemptOutcome.findUniqueOrThrow({ where: { attemptId } })
+    expect(stored.state).toBe('submitted')
+    const lease = await prisma.codeHostReviewLease.findFirstOrThrow({
+      where: { projectExternalId: s.projectExternalId }
+    })
+    expect(lease.phase).toBe('classifying')
+    expect(lease.attemptId).toBe(attemptId)
+
+    // The next attempt must meet the lock, never the `settled` fast path.
+    const later = new Date('2027-09-06T00:00:00.000Z')
+    const takeover = await repo().acquire(acquire(s, { daemonId: DAEMON_B, now: later }))
+    expect(takeover.outcome).toBe('locked')
+    if (takeover.outcome === 'locked') expect(takeover.lock).toBe('records_outstanding')
+  })
+
+  it('settling that record afterwards re-runs the release and admits the next attempt', async () => {
+    const { s, base, attemptId, recordId } = await withPermit()
+    await repo().startOperation({ ...base, recordId, startToken: randomUUID() })
+    await repo().recordOutcome(outcome(s, attemptId))
+    const settled = await repo().settleOperation({
+      ...base,
+      recordId,
+      outcome: { kind: 'deterministic', status: 204 }
+    })
+    expect('outcome' in settled && settled.phase).toBe('settled')
+    const lease = await prisma.codeHostReviewLease.findFirstOrThrow({
+      where: { projectExternalId: s.projectExternalId }
+    })
+    expect(lease.attemptId).toBeNull()
+    const next = await repo().acquire(acquire(s, { daemonId: DAEMON_B }))
+    expect(next.outcome).toBe('acquired')
+    if (next.outcome === 'acquired') expect(next.lease.fence).toBe(2n)
+  })
+
+  it('an ambiguous record holds the attempt until its marker is positively identified', async () => {
+    const { s, base, attemptId, recordId } = await withPermit()
+    await repo().startOperation({ ...base, recordId, startToken: randomUUID() })
+    await repo().settleOperation({ ...base, recordId, outcome: { kind: 'ambiguous', code: 'response_ambiguous' } })
+    expect(await repo().recordOutcome(outcome(s, attemptId))).toEqual({ outcome: 'recorded', phase: 'classifying' })
+    const identified = await repo().settleOperation({
+      ...base,
+      recordId,
+      outcome: { kind: 'deterministic', status: 200, externalId: '778899' }
+    })
+    expect('outcome' in identified && identified.phase).toBe('settled')
+    const lease = await prisma.codeHostReviewLease.findFirstOrThrow({
+      where: { projectExternalId: s.projectExternalId }
+    })
+    expect(lease.attemptId).toBeNull()
+  })
+
+  it('returning the last unused permit is the other way the lease settles', async () => {
+    const { s, base, attemptId, recordId } = await withPermit('draft_create')
+    expect(await repo().recordOutcome(outcome(s, attemptId, { state: 'not_submitted' }))).toEqual({
+      outcome: 'recorded',
+      phase: 'classifying'
+    })
+    const returned = await repo().returnOperationUnused({ ...base, recordId })
+    expect('outcome' in returned && returned.phase).toBe('settled')
+  })
+
+  it('an attempt that issued no permit at all releases immediately', async () => {
+    const s = subject()
+    const input = acquire(s)
+    await repo().acquire(input)
+    expect(await repo().recordOutcome(outcome(s, input.attemptId))).toEqual({ outcome: 'recorded', phase: 'settled' })
+  })
+})

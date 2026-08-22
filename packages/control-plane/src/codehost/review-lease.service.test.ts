@@ -536,3 +536,112 @@ describe('review result recording (§15.2)', () => {
     ).rejects.toBeInstanceOf(CodeHostReviewBrokerError)
   })
 })
+
+describe('a result releases the lease only through the ledger (§15.1)', () => {
+  async function withPermit(kind: 'draft_create' | 'bulk_publish' = 'bulk_publish') {
+    const built = build()
+    const input = authorizeInput()
+    const granted = await built.service.authorize(input, DAEMON, ORG)
+    if (!granted.authorized) throw new Error('expected a lease')
+    const fence = granted.lease.fence
+    const issued = await built.service.operate(
+      {
+        op: 'issue',
+        attemptId: input.attemptId,
+        fence,
+        kind,
+        method: 'POST',
+        target: '/projects/4455667/merge_requests/42/draft_notes',
+        ordinal: 0
+      },
+      DAEMON,
+      ORG
+    )
+    return { ...built, attemptId: input.attemptId, fence, recordId: issued.recordId }
+  }
+
+  it('an outstanding started record keeps the attempt owned, and the next one meets a lock', async () => {
+    const { service, advance, attemptId, fence, recordId, leases } = await withPermit()
+    await service.operate({ op: 'start', attemptId, fence, recordId, startToken: randomUUID() }, DAEMON, ORG)
+
+    // The outcome IS recorded — the daemon's classification is not lost — but ownership stays.
+    expect(await service.recordResult(resultInput(attemptId), DAEMON, ORG)).toEqual({
+      accepted: true,
+      phase: 'classifying'
+    })
+    expect(leases.outcomes.get(attemptId)).toEqual({ state: 'submitted', externalIds: [] })
+    expect([...leases.leases.values()][0]?.attemptId).toBe(attemptId)
+
+    // A newer attempt gets contention now and a lock later — never the settled fast path.
+    const contender = authorizeInput({ deliveryKey: SECOND_DELIVERY, snapshot: SECOND_SNAPSHOT })
+    expect(await service.authorize(contender, OTHER_DAEMON, ORG)).toMatchObject({ reason: 'lease_held' })
+    advance(10 * 60 * 1000)
+    const later = authorizeInput({ deliveryKey: SECOND_DELIVERY, snapshot: SECOND_SNAPSHOT })
+    expect(await service.authorize(later, OTHER_DAEMON, ORG)).toEqual({
+      authorized: false,
+      attemptId: later.attemptId,
+      reason: 'ambiguous_locked',
+      retryable: false
+    })
+  })
+
+  it('settling that record afterwards re-runs the release and lets the next attempt in', async () => {
+    const { service, advance, attemptId, fence, recordId, leases } = await withPermit()
+    await service.operate({ op: 'start', attemptId, fence, recordId, startToken: randomUUID() }, DAEMON, ORG)
+    await service.recordResult(resultInput(attemptId), DAEMON, ORG)
+
+    const settled = await service.operate(
+      { op: 'settle', attemptId, fence, recordId, outcome: { kind: 'deterministic', status: 204 } },
+      DAEMON,
+      ORG
+    )
+    expect(settled.phase).toBe('settled')
+    expect([...leases.leases.values()][0]?.attemptId).toBeNull()
+
+    advance(1_000)
+    const next = authorizeInput({ deliveryKey: SECOND_DELIVERY, snapshot: SECOND_SNAPSHOT })
+    const taken = await service.authorize(next, OTHER_DAEMON, ORG)
+    expect(taken.authorized).toBe(true)
+    if (taken.authorized) expect(taken.lease.fence).toBe('2')
+  })
+
+  it('an ambiguous record holds the attempt until its marker is positively identified', async () => {
+    const { service, attemptId, fence, recordId } = await withPermit()
+    await service.operate({ op: 'start', attemptId, fence, recordId, startToken: randomUUID() }, DAEMON, ORG)
+    await service.operate(
+      { op: 'settle', attemptId, fence, recordId, outcome: { kind: 'ambiguous', code: 'response_ambiguous' } },
+      DAEMON,
+      ORG
+    )
+    expect(await service.recordResult(resultInput(attemptId), DAEMON, ORG)).toEqual({
+      accepted: true,
+      phase: 'classifying'
+    })
+    const identified = await service.operate(
+      { op: 'settle', attemptId, fence, recordId, outcome: { kind: 'deterministic', status: 200, externalId: '99' } },
+      DAEMON,
+      ORG
+    )
+    expect(identified.phase).toBe('settled')
+  })
+
+  it('returning the last unused permit is the other way the lease settles', async () => {
+    const { service, attemptId, fence, recordId } = await withPermit('draft_create')
+    expect(await service.recordResult(resultInput(attemptId, { state: 'not_submitted' }), DAEMON, ORG)).toEqual({
+      accepted: true,
+      phase: 'classifying'
+    })
+    const returned = await service.operate({ op: 'return-unused', attemptId, fence, recordId }, DAEMON, ORG)
+    expect(returned.phase).toBe('settled')
+  })
+
+  it('an attempt that issued no permit at all still releases immediately', async () => {
+    const built = build()
+    const input = authorizeInput()
+    expect((await built.service.authorize(input, DAEMON, ORG)).authorized).toBe(true)
+    expect(await built.service.recordResult(resultInput(input.attemptId), DAEMON, ORG)).toEqual({
+      accepted: true,
+      phase: 'settled'
+    })
+  })
+})

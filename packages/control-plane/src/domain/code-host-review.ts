@@ -124,9 +124,38 @@ export function phaseAfterSettle(
   return kind === 'bulk_publish' && current === 'publishing' ? 'classifying' : current
 }
 
-/** A result whose effect stays unknown keeps the merge request fail-closed forever. */
-export function phaseAfterResult(state: CodeHostReviewState): CodeHostReviewLeasePhase {
-  return codeHostReviewPublicEffect(state) === 'unknown' ? 'ambiguous_locked' : 'settled'
+export type CodeHostReviewRelease =
+  { kind: 'release' } | { kind: 'lock' } | { kind: 'retain'; reason: CodeHostReviewLockReason }
+
+/**
+ * May a reported terminal outcome actually clear ownership?
+ *
+ * Reporting an outcome is a claim about the effect, not about the ledger: a
+ * record still `issued`, `request_started`, or `ambiguous` may yet reach the
+ * provider, and a late `bulk_publish` consumes EVERY pending draft the service
+ * account owns — exactly the cross-attempt publication the lease exists to
+ * prevent. So release runs the SAME transfer classification an acquisition
+ * would, and a ledger that could not be transferred to a new attempt cannot be
+ * released to one either.
+ *
+ * `retain` keeps the attempt fail-closed with the outcome already recorded;
+ * settling or returning the last outstanding record re-runs this and releases.
+ * An attempt with no reported outcome is simply still running — callers do not
+ * ask this until one exists.
+ */
+export function classifyRelease(input: {
+  ledger: CodeHostReviewLedger
+  state: CodeHostReviewState
+}): CodeHostReviewRelease {
+  // §15.2: an outcome that proves nothing locks the merge request whatever the ledger says.
+  if (!outcomeReconciles(input.state)) return { kind: 'lock' }
+  const verdict = classifyTransfer(input.ledger, true)
+  return verdict.transfer ? { kind: 'release' } : { kind: 'retain', reason: verdict.lock }
+}
+
+/** The phase a lease that is no longer owned must be in — the released/locked split alone. */
+export function phaseOfSettledOutcome(state: CodeHostReviewState): CodeHostReviewLeasePhase {
+  return outcomeReconciles(state) ? 'settled' : 'ambiguous_locked'
 }
 
 export type CodeHostReviewOpRefusal = 'not_issued' | 'already_started' | 'not_started' | 'terminal' | 'outcome_conflict'
