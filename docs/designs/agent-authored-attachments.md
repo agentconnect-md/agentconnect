@@ -115,12 +115,13 @@ Three refusal classes, and only the first is port-probeable — the doc'd earlie
 
 ### 3.3 Identity, caption, and the result
 
-**The file post is _not_ identity-stamped today, on any platform** — three `uploadFile`
-implementations do not even declare the identity parameter, Telegram ignores identity by
-platform design, and Slack's share carries `username`/`icon_url` but not the
-`agentAuthorId` metadata every other agent post carries. On a shared Slack app that makes
-a shared file invisible to peer backfill and mis-attributable to whichever agent looks at
-it. Phase 1 states this degradation per platform rather than claiming otherwise; if
+**The file post is _not_ identity-stamped today, on any platform** — no `uploadFile`
+implementation declares the identity parameter, and Telegram ignores identity by platform
+design. Slack briefly passed `username`/`icon_url` to the share step: documented for that
+method, absent from the SDK's argument type, and never confirmed against live Slack before
+it was dropped along with the hand-written transport it lived in (§9.4). On a shared Slack
+app the gap makes a shared file invisible to peer backfill and mis-attributable to
+whichever agent looks at it. Phase 1 states this degradation per platform rather than claiming otherwise; if
 attribution matters on shared bots, the fix is a paired zero-content anchor post stamped
 with `agentAuthorId` — which would also supply Slack's missing message id — and it is
 deferred until shared-bot usage demands it.
@@ -298,8 +299,21 @@ shim boundary, and generalizes to none of the other three platforms.
 
 1. **Telegram:** does `sendPhoto` re-encode a ≤8 MB PNG chart badly enough to blur axis
    labels? Decides whether the `preview | file` hint is deferrable.
-2. **Slack:** wall time of an 8 MB three-step share on a typical self-hosted uplink vs the
+2. **Slack:** wall time of an 8 MB external upload on a typical self-hosted uplink vs the
    30 s queue bound — decides whether the default cap drops, the byte transfer gets its
    own lane, or `indeterminate` carries the weight.
-3. **Demand:** is there a concrete request behind "produced file → different
+3. **Slack transport (settled):** the external upload's middle step is a POST to a reserved
+   URL that is not a Slack API endpoint and has no published wire contract. Driving it by
+   hand was refused with HTTP 500 on every live attempt. Matching the SDK's multipart shape
+   — one part named `body`, an untyped `Blob` — did not lift the 500; the one divergence
+   left was that the SDK sends `Authorization: Bearer <token>` to the reserved URL, which
+   the hand-written POST asserted in a comment was unnecessary. Rather than test that guess
+   in production, `uploadFile` now calls `files.uploadV2`, which owns all three steps and
+   inherits the `WebClient` agent/proxy/timeout configuration. Two consequences: it builds
+   its completion arguments from an explicit key list, which is what removed the identity
+   decoration above; and it raises one `WebAPIHTTPError` for every non-200 across all three
+   steps, so an HTTP failure can never prove which step it came from. Only Slack answering
+   `{ok:false}` counts as proof that nothing was published — everything else is
+   `indeterminate`.
+4. **Demand:** is there a concrete request behind "produced file → different
    conversation", or only the table's symmetry? Decides whether `attachFile` leaves §7.
