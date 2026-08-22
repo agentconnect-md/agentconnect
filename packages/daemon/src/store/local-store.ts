@@ -387,15 +387,14 @@ export interface TranscriptEntry {
   orgAgentId?: string
 }
 
-/** A transcript row as read back, including its insertion-order sequence. The
- *  `toolCallId`/`body` columns carry through raw (NULL on text/reasoning rows). */
+/** A transcript row as read back (raw `SELECT *`), including its insertion-order sequence. */
 export interface TranscriptRow extends TranscriptEntry {
   seq: number
   /** Monotonic mutation watermark; changes when a stable row is updated in place. */
   revision: number
   /** Normalized epoch microseconds used by chronological Slack history pagination. */
   eventTimeUs: number
-  toolCallId?: string | null
+  tool_call_id?: string | null // the one snake_case column; readers never alias it. NULL off tool rows
   body?: string | null // JSON.stringify(ToolBody); NULL for text/reasoning rows
   attachmentsJson?: string | null // JSON.stringify(SessionImageAttachment[]); inline webchat only
 }
@@ -3445,7 +3444,7 @@ export class LocalStore {
     limit: number,
     includeTools = false,
     transportScope?: string | null
-  ): Promise<{ sender: string; text: string; kind?: string }[]> {
+  ): Promise<{ sender: string; text: string; kind?: string; input?: string }[]> {
     const transcriptChannel = transcriptChannelKey(channel, transportScope)
     const rows = (await this.db
       .prepare(
