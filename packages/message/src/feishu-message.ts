@@ -131,6 +131,11 @@ function extractText(messageType: string, content: string): string {
   return messageType === 'post' ? flattenPost(parsed) : ''
 }
 
+/** Extract the readable text carried by one Feishu message body. */
+export function extractFeishuMessageText(messageType: string, content: string, mentions?: FeishuMention[]): string {
+  return humanizeFeishuText(extractText(messageType, content), mentions)
+}
+
 export function deriveFeishuAttachments(messageType: string, content: string): FeishuAttachmentLike[] {
   try {
     const parsed = JSON.parse(content || '{}') as Record<string, unknown>
@@ -192,7 +197,7 @@ export function normalizeFeishuMessage(
     channel: message.chatId,
     thread: isDm ? message.chatId : (message.rootId ?? message.messageId),
     sender: { id: message.senderUnionId, isBot: message.senderIsBot ?? false },
-    text: humanizeFeishuText(extractText(message.messageType, message.content), message.mentions),
+    text: extractFeishuMessageText(message.messageType, message.content, message.mentions),
     mentionedBots: (message.mentions ?? [])
       .map((mention) => mention?.id?.open_id)
       .filter((id): id is string => typeof id === 'string' && id.length > 0),

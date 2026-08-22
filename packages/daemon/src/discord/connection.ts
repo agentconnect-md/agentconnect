@@ -14,7 +14,7 @@ import type { NormalizedMessage } from '../messages/normalized.js'
 import type { Logger } from '../log.js'
 import { isSendQueueTimeout, PlatformSendQueue } from '../platforms/send-queue.js'
 import type { UploadAnchor, UploadFailReason, UploadOutcome } from '../mcp/ops/context.js'
-import { normalizeDiscordMessage, type DiscordMessageLike } from './normalize.js'
+import { humanizeDiscordText, normalizeDiscordMessage, type DiscordMessageLike } from './normalize.js'
 import { DISCORD_APP_COMMANDS } from './app-commands.js'
 import {
   buildPermissionUpdateNotice,
@@ -24,7 +24,12 @@ import {
   type DiscordComponents,
   type DiscordSelectKind
 } from './render.js'
-import type { InteractionActor, PlatformConnection } from '../platforms/contract.js'
+import type {
+  InteractionActor,
+  PlatformChannelHistoryOptions,
+  PlatformChannelHistoryPage,
+  PlatformConnection
+} from '../platforms/contract.js'
 
 /**
  * §Discord edge unit. Mirrors slack/connection.ts + telegram/connection.ts but over
@@ -105,6 +110,8 @@ export interface DiscordDeps {
 const DEFAULT_MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
 /** Cap on channels enumerated per listChannels call (bounds the response). */
 const CHANNEL_CAP = 200
+const DISCORD_CHANNEL_HISTORY_DEFAULT_LIMIT = 100
+const DISCORD_CHANNEL_HISTORY_MAX_LIMIT = 100
 const PERMISSION_NOTICE_RETRY_MS = 5 * 60_000
 
 // Keep this permission set in lock-step with packages/web/src/components/console/platforms/discord/invite.ts.
@@ -153,6 +160,13 @@ function discordPermissionIssueFrom(err: unknown): DiscordPermissionIssue | null
   if (/\bmissing permissions?\b/i.test(message)) return 'missing-permissions'
   if (/\bmissing required oauth2 scope\b/i.test(message)) return 'missing-oauth-scope'
   return null
+}
+
+function discordErrorCode(err: unknown): number | undefined {
+  const e = err && typeof err === 'object' ? (err as DiscordErrorLike) : undefined
+  const candidate = e?.code ?? e?.rawError?.code ?? e?.data?.code
+  const code = typeof candidate === 'number' ? candidate : Number(candidate)
+  return Number.isSafeInteger(code) && code >= 0 ? code : undefined
 }
 
 /** The discord.js message-send payload we use (content + optional components). */
@@ -697,6 +711,64 @@ export class DiscordConnection implements PlatformConnection {
   }
 
   // ── MCP MessageGateway: read helpers backing the injected channel tools ──
+
+  /** Fetch one bounded page of channel messages using Discord's `before` cursor. */
+  async getChannelHistory(
+    channel: string,
+    options: PlatformChannelHistoryOptions = {}
+  ): Promise<PlatformChannelHistoryPage> {
+    const limit = Math.min(
+      Math.max(options.limit ?? DISCORD_CHANNEL_HISTORY_DEFAULT_LIMIT, 1),
+      DISCORD_CHANNEL_HISTORY_MAX_LIMIT
+    )
+    try {
+      const oldest = options.oldest === undefined ? undefined : Number(options.oldest)
+      const latest = options.latest === undefined ? undefined : Number(options.latest)
+      if ((oldest !== undefined && !Number.isFinite(oldest)) || (latest !== undefined && !Number.isFinite(latest))) {
+        throw new Error('invalid timestamp bound')
+      }
+
+      const ch = await this.client.channels.fetch(channel)
+      if (!ch?.isTextBased()) throw new Error('channel does not expose message history')
+      const fetched = await ch.messages.fetch({ limit, ...(options.cursor ? { before: options.cursor } : {}) })
+      const raw = [...fetched.values()].sort((a, b) => b.createdTimestamp - a.createdTimestamp)
+      const messages = raw
+        .filter(
+          (message) =>
+            (oldest === undefined || message.createdTimestamp >= oldest) &&
+            (latest === undefined || message.createdTimestamp <= latest)
+        )
+        .map((message) => {
+          const replyCount = message.thread?.messageCount
+          return {
+            sender: message.author.id,
+            ts: String(message.createdTimestamp),
+            text: humanizeDiscordText(
+              message.content,
+              Object.fromEntries(
+                [...message.mentions.users.values()].map((user) => [user.id, user.globalName ?? user.username])
+              )
+            ),
+            isBot: message.author.bot,
+            ...(message.thread ? { threadTs: message.thread.id } : {}),
+            ...(typeof replyCount === 'number' && replyCount > 0 ? { replyCount } : {})
+          }
+        })
+
+      const reachedOldest = oldest !== undefined && raw.some((message) => message.createdTimestamp <= oldest)
+      const nextCursor = raw.length === limit && !reachedOldest ? raw.at(-1)?.id : undefined
+      return {
+        messages,
+        hasMore: nextCursor !== undefined,
+        ...(nextCursor ? { nextCursor } : {})
+      }
+    } catch (err) {
+      this.rememberPermissionIssue(err, channel)
+      const code = discordErrorCode(err)
+      this.deps.log?.debug(`discord: channel history failed (ch=${channel}): ${code ?? 'unknown'}`)
+      throw new Error(code === undefined ? 'Discord channel history failed' : `Discord channel history failed: ${code}`)
+    }
+  }
 
   async getChannelInfo(channel: string): Promise<{
     id: string

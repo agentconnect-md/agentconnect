@@ -29,6 +29,7 @@ function fakeFeishuConn(appId: string, region: 'feishu' | 'lark', botOpenId: str
       createCard: async () => ({}),
       replyText: async () => ({}),
       replyCard: async () => ({}),
+      listMessages: async () => ({ items: [], hasMore: false }),
       uploadImage: async () => ({ imageKey: 'img_1' }),
       createImage: async () => ({}),
       replyImage: async () => ({}),

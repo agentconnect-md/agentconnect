@@ -32,6 +32,7 @@ function connectionFor(
       createCard,
       replyText: async () => ({}),
       replyCard,
+      listMessages: async () => ({ items: [], hasMore: false }),
       createCardEntity: async () => ({ cardId: 'card-1' }),
       createCardEntityMessage: async () => ({ messageId: 'message-1' }),
       replyCardEntityMessage: async () => ({ messageId: 'message-2' }),

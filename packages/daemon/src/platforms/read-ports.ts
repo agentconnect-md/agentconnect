@@ -112,6 +112,22 @@ const READ_PORTS = new Map<string, PlatformReadPorts>([
       label: 'Telegram',
       attachmentReadTool: TELEGRAM_ATTACHMENT_TOOL
     }
+  ],
+  [
+    'discord',
+    {
+      platform: 'discord',
+      label: 'Discord',
+      channelHistory: true
+    }
+  ],
+  [
+    'feishu',
+    {
+      platform: 'feishu',
+      label: 'Lark / Feishu',
+      channelHistory: true
+    }
   ]
 ])
 

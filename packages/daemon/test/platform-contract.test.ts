@@ -68,6 +68,9 @@ describe('Layer-1 platform contract (§7.1)', () => {
       expect(has(ctor, 'listBotChannels')).toBe(false)
       expect(has(ctor, 'getThreadReplies')).toBe(false)
     }
+    expect(has(DiscordConnection, 'getChannelHistory')).toBe(true)
+    expect(has(FeishuConnection, 'getChannelHistory')).toBe(true)
+    expect(has(TelegramConnection, 'getChannelHistory')).toBe(false)
 
     // leaveGranularity: Slack/Telegram leave a CONVERSATION, Discord leaves the
     // enclosing SPACE (a bot joins servers, not channels), Feishu leaves neither.
@@ -84,6 +87,8 @@ describe('Layer-1 platform contract (§7.1)', () => {
     // eval suite's ability to substitute for a real platform.
     expect(has(VirtualSlackConnection, 'getThreadReplies')).toBe(true)
     expect(has(VirtualSlackConnection, 'getChannelHistory')).toBe(true)
+    expect(has(VirtualDiscordConnection, 'getChannelHistory')).toBe(true)
+    expect(has(VirtualTelegramConnection, 'getChannelHistory')).toBe(false)
     expect(has(VirtualSlackConnection, 'listBotChannels')).toBe(true)
     expect(has(VirtualSlackConnection, 'openDirectMessage')).toBe(true)
     expect(has(VirtualSlackConnection, 'leaveChannel')).toBe(true)

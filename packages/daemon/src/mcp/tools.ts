@@ -351,7 +351,7 @@ function buildShareFileTool(): ToolDescriptor {
   }
 }
 
-function buildReadTools(platforms: string[]): ToolDescriptor[] {
+function buildReadTools(platforms: string[], currentPlatform?: string): ToolDescriptor[] {
   const platform = {
     type: 'string',
     enum: platforms,
@@ -365,7 +365,9 @@ function buildReadTools(platforms: string[]): ToolDescriptor[] {
     type: 'string',
     description: 'Optional. Pick a specific bot when the agent has multiple integrations on the target platform.'
   }
-  const historyPlatforms = channelHistoryPlatformsFor(platforms)
+  // History has no target selector, so only the current session platform may enable it.
+  const historyPlatform = currentPlatform ?? (platforms.length === 1 ? platforms[0] : undefined)
+  const hasChannelHistory = historyPlatform !== undefined && channelHistoryPlatformsFor([historyPlatform]).length > 0
   return [
     {
       name: 'getCurrentChannel',
@@ -384,7 +386,7 @@ function buildReadTools(platforms: string[]): ToolDescriptor[] {
         'has multiple bots on the platform (history is not attributable to one bot).',
       inputSchema: obj({ platform, integrationId })
     },
-    ...(historyPlatforms.length > 0
+    ...(hasChannelHistory
       ? [
           {
             name: 'getChannelHistory',
@@ -399,7 +401,7 @@ function buildReadTools(platforms: string[]): ToolDescriptor[] {
                 type: 'integer',
                 minimum: 1,
                 maximum: 200,
-                description: 'Number of messages to request, capped at 200 per page.'
+                description: 'Number of messages to request (max 200; the provider may return a smaller page).'
               },
               oldest: { type: 'string', description: 'Inclusive oldest message timestamp bound.' },
               latest: { type: 'string', description: 'Inclusive latest message timestamp bound.' }
@@ -889,7 +891,7 @@ export const ALL_TOOL_NAMES = [
       // are stable and belong in the permission auto-allow set.
       buildSendMessageTool([]),
       buildShareFileTool(),
-      ...buildReadTools(allChannelHistoryPlatforms()),
+      ...buildReadTools(allChannelHistoryPlatforms(), allChannelHistoryPlatforms().at(0)),
       // Every platform's credentialed attachment tool, whatever this agent has:
       // the auto-allow set is about NAMES, and a name a platform can inject must
       // be listed even for an agent that will never see it.
@@ -922,7 +924,7 @@ export const ALL_TOOL_NAMES = [
  */
 export function toolsForIntegrations(
   integrations: Integration[],
-  options: { sessionTitle?: boolean; organizationKnowledge?: boolean } = {}
+  options: { sessionTitle?: boolean; organizationKnowledge?: boolean; currentPlatform?: string } = {}
 ): ToolDescriptor[] {
   const tools: ToolDescriptor[] = []
   const seen = new Set<string>()
@@ -945,7 +947,7 @@ export function toolsForIntegrations(
   add([buildSendMessageTool(platforms)])
   // Platform read helpers only make sense once the agent has at least one integration.
   if (platforms.length > 0) {
-    add(buildReadTools(platforms))
+    add(buildReadTools(platforms, options.currentPlatform))
     // The current-conversation file share (docs/designs/agent-authored-attachments.md §3):
     // platform-gated like the read tools; sessions without a file-hosting gateway get a
     // clean refusal at call time (port probe / coordinate gates).

@@ -33,7 +33,11 @@ const telegramInt: Integration = {
 const ALL_CAPABILITIES = new Set(['recall', 'create', 'get', 'update', 'delete'] as const)
 
 const advertised: ToolDescriptor[] = [
-  ...toolsForIntegrations([slackInt, telegramInt], { sessionTitle: true, organizationKnowledge: true }),
+  ...toolsForIntegrations([slackInt, telegramInt], {
+    sessionTitle: true,
+    organizationKnowledge: true,
+    currentPlatform: 'slack'
+  }),
   ...externalMemoryTools(ALL_CAPABILITIES),
   ...RETIRED_ORCHESTRATION_TOOLS,
   ...GITHUB_REVIEW_TOOLS,
