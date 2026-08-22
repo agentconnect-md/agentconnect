@@ -24,6 +24,8 @@ import {
   type UpsertHookInput
 } from '../../persistence/ports.js'
 import { GithubApiError } from '../../github/api.js'
+import { GITLAB_ACCESS_DEVELOPER } from '../../gitlab/api.js'
+import { gitlabAccountUnavailableMessage } from '../../gitlab/account.service.js'
 import { GitCredDeniedError, type ResolvedAgentRepoAuthorization } from '../../github/service.js'
 import { AgentId, HookId, IntegrationId, OrgId } from '../../domain/ids.js'
 import { orgOf, denyViewerWrite, ctxOf } from '../rbac.js'
@@ -127,6 +129,25 @@ export function hookRoutes(deps: HttpDeps) {
     // never fails the CRUD (a relay converges via its register replay).
     const converge = (hook: HookRecord): void => {
       void deps.hooks.broadcast(hook).catch((err) => app.log.warn({ hookId: hook.id, err }, 'hook broadcast failed'))
+    }
+
+    // §7.2 identity for the hook's own agent, run to completion BEFORE the write
+    // that will act as it. Returns a refusal to send, or null when the agent has
+    // its account, membership, and credentials on the project.
+    const ensureGitlabAgentAccount = async (
+      orgId: OrgId,
+      projectId: bigint,
+      agentId: string
+    ): Promise<{ status: 409; message: string } | null> => {
+      const gitlab = deps.gitlab
+      if (!gitlab) return null
+      const ensured = await gitlab.provisioner.provisionAgentAccount(orgId, projectId, {
+        agentId,
+        // A hook consumer posts notes and may run the configured review policy.
+        accessLevel: GITLAB_ACCESS_DEVELOPER
+      })
+      if (ensured.ok) return null
+      return { status: 409, message: gitlabAccountUnavailableMessage(ensured.reason) }
     }
 
     // gitlab-kind writes also (re)converge the project (§11.1): the saga
@@ -434,6 +455,13 @@ export function hookRoutes(deps: HttpDeps) {
                     reportingMode: req.body.kind === 'gitlab' ? req.body.reportingMode : 'off'
                   })
                   if (effectError) return { ok: false as const, ...effectError }
+                  // §7.2 BEFORE the write: the compiled rule names this agent's
+                  // own account and its poster mints credentials from it, so the
+                  // account must exist by the time the rule reaches a relay. The
+                  // hook row is what would make the agent a consumer, so no
+                  // post-write convergence can get here first.
+                  const identity = await ensureGitlabAgentAccount(orgId, projectId, agent.id)
+                  if (identity) return { ok: false as const, ...identity }
                   return {
                     // gitlab is perThread by definition, like github (§12.3).
                     sessionMode: 'perThread' as const,
@@ -774,6 +802,14 @@ export function hookRoutes(deps: HttpDeps) {
               statusCode: effectError.status,
               message: effectError.message
             })
+          }
+          // §7.2: retargeting onto a project the agent does not consume yet needs
+          // its account there before the recompiled rule can name one.
+          const identity = await ensureGitlabAgentAccount(orgId, projectId, agent.id)
+          if (identity) {
+            return reply
+              .code(identity.status)
+              .send({ error: ERROR_NAMES[identity.status], statusCode: identity.status, message: identity.message })
           }
           kindFields = {
             sessionMode: 'perThread',

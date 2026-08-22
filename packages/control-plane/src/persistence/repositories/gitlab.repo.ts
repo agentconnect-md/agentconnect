@@ -42,10 +42,7 @@ import type {
 import type { SecretCipher } from '../../secrets/cipher.js'
 import { orgScope } from '../../secrets/scope.js'
 import { OrgId } from '../../domain/ids.js'
-import {
-  GITLAB_ACCESS_DEVELOPER as ACCESS_DEVELOPER,
-  GITLAB_ACCESS_REPORTER as ACCESS_REPORTER
-} from '../../gitlab/api.js'
+import { GITLAB_ACCESS_DEVELOPER as ACCESS_DEVELOPER, gitlabWorkspaceAccessLevel } from '../../gitlab/api.js'
 
 const CONNECTION_STATES: readonly GitlabConnectionState[] = ['connected', 'reauth_required', 'disconnected']
 
@@ -773,9 +770,8 @@ export class PgGitlabAgentAccountRepo implements GitlabAgentAccountRepo {
     const raise = (agentId: string, accessLevel: number): void => {
       levels.set(agentId, Math.max(levels.get(agentId) ?? 0, accessLevel))
     }
-    // The workspace gitAccess clamp derives the role: push needs Developer, a
-    // read-only workspace needs no more than Reporter (§7.2, §13.1).
-    for (const row of workspaces) raise(row.id, row.gitAccess === 'read' ? ACCESS_REPORTER : ACCESS_DEVELOPER)
+    // The workspace gitAccess clamp derives the role (§7.2, §13.1).
+    for (const row of workspaces) raise(row.id, gitlabWorkspaceAccessLevel(row.gitAccess))
     // A hook consumer posts notes and may run the configured review policy.
     for (const row of hooks) if (row.agentId) raise(row.agentId, ACCESS_DEVELOPER)
     return [...levels].map(([agentId, accessLevel]) => ({ agentId, accessLevel }))

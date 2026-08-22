@@ -21,6 +21,7 @@ import { randomBytes } from 'node:crypto'
 import type { Clock } from '../domain/clock.js'
 import type {
   CodeHostRepositoryRepo,
+  GitlabAccountConsumer,
   GitlabProjectBindingRecord,
   GitlabProjectBindingRepo,
   GitlabWebhookSecretStore
@@ -63,6 +64,13 @@ export type ProvisionOutcome =
   // A live peer owns the claim (provisioning or cleanup in progress): nothing
   // was written and no binding state was overwritten; the caller observes.
   | { state: 'busy'; reason: string }
+
+/** One agent's identity provisioned ahead of a write that will act as it. The
+ *  reason is the account's own repair category (`service_account_quota`, …). */
+export type AgentAccountOutcome = { ok: true } | { ok: false; reason: string; retryable: boolean }
+
+/** Inline in a request: retry a contended attempt on a short bound, then report. */
+const AGENT_ACCOUNT_ATTEMPTS = 5
 
 /** §9.4 takeover result; every refusal leaves the binding exactly as it was.
  *  The binding row carries the convergence outcome, so the caller re-reads it. */
@@ -156,6 +164,89 @@ export class GitlabProvisioner {
     }
     if (contended(outcome)) {
       this.deps.log?.warn({ projectId: projectId.toString() }, 'gitlab converge still contended — gave up')
+    }
+  }
+
+  /**
+   * Provision ONE agent's identity on a project ahead of the write that will act
+   * as that agent (§7.2). A workspace edit activates through the daemon, and
+   * activation mints credentials from the agent's own account: without this the
+   * activation is refused, the edit rolls back, and the post-write convergence
+   * that would have created the account never runs — the agent never became a
+   * consumer, so nothing else has a reason to create it either.
+   *
+   * Runs under the SAME binding lease as a full converge, so the two cannot
+   * interleave, and the account mutation lease plus the generation fence stay
+   * where `ensureForConsumer` puts them. Inline in a request, so a contended
+   * attempt is retried on a short bound and then reported, never outwaited for
+   * the minutes `convergeProject` can afford.
+   */
+  async provisionAgentAccount(
+    orgId: string,
+    projectId: bigint,
+    consumer: GitlabAccountConsumer
+  ): Promise<AgentAccountOutcome> {
+    let outcome = await this.agentAccountAttempt(orgId, projectId, consumer)
+    for (let attempt = 0; !outcome.ok && outcome.retryable && attempt < AGENT_ACCOUNT_ATTEMPTS; attempt++) {
+      const delayMs = Math.min(1_000, 200 * 2 ** attempt)
+      await new Promise<void>((resolve) => this.deps.clock.setTimeout(() => resolve(), delayMs))
+      outcome = await this.agentAccountAttempt(orgId, projectId, consumer)
+    }
+    return outcome
+  }
+
+  private async agentAccountAttempt(
+    orgId: string,
+    projectId: bigint,
+    consumer: GitlabAccountConsumer
+  ): Promise<AgentAccountOutcome> {
+    const binding = await this.deps.bindings.byProject(orgId, projectId)
+    if (!binding || binding.state === 'cleanup_pending') {
+      return { ok: false, reason: 'binding_unavailable', retryable: false }
+    }
+    if (!binding.installerConnectionId) return { ok: false, reason: 'no_admin_connection', retryable: false }
+    const owner = randomBytes(9).toString('base64url')
+    const nowMs = this.deps.clock.now()
+    if (
+      !(await this.deps.bindings.markProviderMutationStarted(
+        orgId,
+        binding.id,
+        binding.projectId,
+        owner,
+        new Date(nowMs + PROVISION_LEASE_MS),
+        new Date(nowMs)
+      ))
+    ) {
+      return { ok: false, reason: 'provisioning_or_cleanup_in_progress', retryable: true }
+    }
+    try {
+      const token = await this.deps.oauth.withAccessToken(orgId, binding.installerConnectionId)
+      const project = (await gitlabProject(
+        token,
+        binding.projectId,
+        this.deps.fetchImpl
+      )) as GitlabProjectWithNamespace | null
+      if (!project?.namespace) return { ok: false, reason: 'project_not_accessible', retryable: false }
+      const root = await gitlabRootNamespace(token, project.namespace, this.deps.fetchImpl)
+      // Service accounts hang off a top-level GROUP; a personal namespace has none (§5).
+      if (root.kind !== 'group') return { ok: false, reason: 'personal_namespace_unsupported', retryable: false }
+      return await this.deps.accounts.ensureForConsumer(
+        {
+          orgId,
+          bindingId: binding.id,
+          projectId: binding.projectId,
+          rootGroupId: root.id,
+          installerConnectionId: binding.installerConnectionId,
+          token
+        },
+        consumer
+      )
+    } catch (e) {
+      const reason = e instanceof GitlabApiError ? `gitlab_${e.status || 'unreachable'}` : 'admin_unavailable'
+      this.deps.log?.warn({ bindingId: binding.id, reason }, 'gitlab agent account provisioning failed')
+      return { ok: false, reason, retryable: e instanceof GitlabApiError && e.retryable }
+    } finally {
+      await this.deps.bindings.endProviderMutation(orgId, binding.id, binding.projectId, owner).catch(() => {})
     }
   }
 

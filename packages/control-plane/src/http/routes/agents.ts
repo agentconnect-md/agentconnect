@@ -34,6 +34,8 @@ import type {
   DreamFilesPage,
   DreamFileReadContent
 } from '@agentconnect.md/protocol'
+import { gitlabWorkspaceAccessLevel } from '../../gitlab/api.js'
+import { gitlabAccountUnavailableMessage } from '../../gitlab/account.service.js'
 import {
   GITLAB_COM_V1_FEATURE,
   MAX_WORKSPACE_EDIT_BYTES,
@@ -1753,6 +1755,25 @@ export function agentRoutes(deps: HttpDeps) {
           const connect = req.query.connect
             ? await provisionDaemonConnect(deps.apiKeys, deps.config, req.orgCtx!.orgId, req.principal?.userId)
             : undefined
+          // §7.2 BEFORE the spec push: the daemon prepares a gitlab workspace by
+          // minting credentials from this agent's OWN account. The row is
+          // created first on purpose — a crash here leaves an agent the next
+          // convergence adopts as a consumer, where the reverse order would
+          // leave an account no agent owns.
+          if (agent.workspace.mode === 'gitlab' && agent.workspaceRepoId !== undefined && deps.gitlab) {
+            const ensured = await deps.gitlab.provisioner.provisionAgentAccount(agent.orgId, agent.workspaceRepoId, {
+              agentId: agent.id,
+              accessLevel: gitlabWorkspaceAccessLevel(agent.workspace.gitAccess)
+            })
+            if (!ensured.ok) {
+              // Nothing was pushed yet, so the create can still be withdrawn
+              // whole rather than leaving an agent whose workspace cannot start.
+              await deps.repos.agent
+                .delete(agent.orgId, agent.id)
+                .catch((err) => app.log.warn({ err, agentId: agent.id }, 'agent rollback after gitlab account failure'))
+              return conflict(gitlabAccountUnavailableMessage(ensured.reason))
+            }
+          }
           // Issue the private definition first. Even if its probe ACK is lost,
           // the WebSocket preserves frame order and daemon admission remains
           // closed until the registry validates it.
@@ -2446,7 +2467,29 @@ export function agentRoutes(deps: HttpDeps) {
             return conflict(AGENT_WORKSPACE_INTEGRATION_CONFLICT_MESSAGE)
           }
 
-          const converted = await agentMoves.setWorkspace(existing, workspace, workspaceRepoId, req.principal?.userId)
+          // §7.2 BEFORE activation: the daemon prepares the workspace by minting
+          // credentials from this agent's OWN GitLab account, so the account,
+          // its membership, and its PATs must already exist. A post-write kick
+          // cannot serve this — activation would be refused, the edit would roll
+          // back, and the agent would never become the consumer that convergence
+          // needs a reason to provision for.
+          if (workspace.mode === 'gitlab' && workspaceRepoId !== undefined && deps.gitlab) {
+            const ensured = await deps.gitlab.provisioner.provisionAgentAccount(existing.orgId, workspaceRepoId, {
+              agentId: existing.id,
+              accessLevel: gitlabWorkspaceAccessLevel(workspace.gitAccess)
+            })
+            if (!ensured.ok) return conflict(gitlabAccountUnavailableMessage(ensured.reason))
+          }
+
+          let converted: AgentRecord
+          try {
+            converted = await agentMoves.setWorkspace(existing, workspace, workspaceRepoId, req.principal?.userId)
+          } catch (err) {
+            // The edit rolled back, so the membership just bound belongs to an
+            // agent that no longer consumes the project: converge it away.
+            if (workspace.mode === 'gitlab') convergeGitlabProjects(existing.orgId, [workspaceRepoId])
+            throw err
+          }
           // Joining, leaving, or re-clamping a gitlab project moves its §7.2
           // membership set. DESTINATION FIRST, and the order is load-bearing: an
           // account with no membership left in its root retires, so converging

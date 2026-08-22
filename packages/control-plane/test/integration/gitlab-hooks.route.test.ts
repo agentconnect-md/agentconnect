@@ -32,7 +32,7 @@ import {
 } from '../../src/persistence/index.js'
 import { makeSecretCipher } from '../../src/secrets/cipher.js'
 import { systemClock } from '../../src/domain/clock.js'
-import { HookId, OrgId } from '../../src/domain/ids.js'
+import { AgentId, HookId, OrgId } from '../../src/domain/ids.js'
 import {
   GITLAB_COM_V1_FEATURE,
   GITLAB_RERUN_V1_FEATURE,
@@ -222,6 +222,32 @@ describe('gitlab hooks — routes, compile, webhook converge (§8.3/§11.1/§11.
       { timeout: 20_000 }
     )
     expect(legacy.sent.filter((frame) => frame.type === 'rc/hook-assign')).toHaveLength(0)
+  })
+
+  it('provisions the hook agent’s account inline, before the write (§7.2)', async () => {
+    const h = await harness()
+    // The binding converged with no consumers, so it has no accounts at all.
+    expect(await h.accounts.listForBinding(h.binding.id)).toHaveLength(0)
+
+    const created = await h.a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: glBody(h.agentId) })
+    expect(created.statusCode).toBe(200)
+
+    // Asserted with NO polling: the rule this write compiles names the agent's
+    // own account, so the account has to exist by the time the write happens.
+    const account = (await h.accounts.byAgentRoot(DEFAULT_ORG_ID, h.agentId, 900n))!
+    expect(account.state).toBe('ready')
+    expect(account.username).toBe(gitlabAgentAccountUsername(h.agentId, 900n))
+    expect((await h.accounts.membershipsForBinding(h.binding.id)).map((m) => m.accountId)).toEqual([account.id])
+    expect(h.fake.members.get(Number(account.serviceAccountUserId))).toBe(30)
+  })
+
+  it('refuses the hook with the account’s own repair reason, writing no hook', async () => {
+    const h = await harness({ refuseServiceAccountQuota: true })
+    const created = await h.a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: glBody(h.agentId) })
+    expect(created.statusCode).toBe(409)
+    expect((created.json() as { message: string }).message).toContain('no service-account slots left')
+    expect(await h.hookRepo.listForAgent(AgentId(h.agentId))).toHaveLength(0)
+    expect(await h.accounts.membershipsForBinding(h.binding.id)).toHaveLength(0)
   })
 
   it('create is fenced on a managed binding; a second hook on the same project+agent is a 409', async () => {

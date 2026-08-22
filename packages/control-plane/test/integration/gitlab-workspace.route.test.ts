@@ -368,6 +368,81 @@ describe('gitlab workspaces — agent create/edit (§8.3)', () => {
     expect(row.gitAccess).toBe('read')
   })
 
+  it('provisions the agent’s account inline, before the workspace edit activates (§7.2)', async () => {
+    const h = await harness()
+    // The live-testing shape: a project picked and provisioned moments ago, so
+    // it has no consumers and therefore no accounts at all.
+    const fresh = await h.bindings.createWithClaim({
+      orgId: DEFAULT_ORG_ID,
+      projectId: SECOND_PROJECT,
+      projectPath: 'example-group/example-second',
+      installerConnectionId: h.connection.id
+    })
+    expect(await h.provisioner.provision(DEFAULT_ORG_ID, fresh.id)).toEqual({ state: 'ready' })
+    expect(await h.accounts.listForBinding(fresh.id)).toHaveLength(0)
+
+    const created = await h.a.app.inject({
+      method: 'POST',
+      url: `${ORG}/agents`,
+      payload: { name: 'gl-picker', runtime: 'claude' }
+    })
+    expect(created.statusCode).toBe(201)
+    const agentId = (created.json() as { id: string }).id
+
+    const res = await h.a.app.inject({
+      method: 'PUT',
+      url: `${ORG}/agents/${agentId}/workspace`,
+      payload: { mode: 'gitlab', projectId: SECOND_PROJECT.toString(), gitAccess: 'write' }
+    })
+    expect(res.statusCode).toBe(200)
+
+    // Asserted with NO polling on purpose: the identity has to exist by the time
+    // the response is written, because activation runs inside this request and
+    // mints its credentials from it.
+    const account = (await h.accounts.byAgentRoot(DEFAULT_ORG_ID, agentId, ROOT_GROUP))!
+    expect(account.state).toBe('ready')
+    expect((await h.accounts.membershipsForBinding(fresh.id)).map((m) => m.accountId)).toEqual([account.id])
+    expect(h.fake.members.get(Number(account.serviceAccountUserId))).toBe(30)
+    expect(await new PgGitlabProjectCredentialRepo(prisma).listForAccount(account.id)).toHaveLength(3)
+
+    // …and the grant the daemon asks for while preparing the workspace resolves.
+    const grant = await credService(h.bindings).grantForAgent(
+      gitlabAgent({ id: agentId, workspaceRepoId: SECOND_PROJECT } as Partial<AgentRecord>)
+    )
+    expect(grant.username).toBe(account.username)
+    expect(grant.access).toBe('write')
+  })
+
+  it('refuses the workspace edit with the account’s own repair reason, writing nothing', async () => {
+    const h = await harness()
+    const fresh = await h.bindings.createWithClaim({
+      orgId: DEFAULT_ORG_ID,
+      projectId: SECOND_PROJECT,
+      projectPath: 'example-group/example-second',
+      installerConnectionId: h.connection.id
+    })
+    await h.provisioner.provision(DEFAULT_ORG_ID, fresh.id)
+    const created = await h.a.app.inject({
+      method: 'POST',
+      url: `${ORG}/agents`,
+      payload: { name: 'gl-refused', runtime: 'claude' }
+    })
+    const agentId = (created.json() as { id: string }).id
+
+    // The top-level group is out of service-account slots (§7.2).
+    h.fake.opts.refuseServiceAccountQuota = true
+    const res = await h.a.app.inject({
+      method: 'PUT',
+      url: `${ORG}/agents/${agentId}/workspace`,
+      payload: { mode: 'gitlab', projectId: SECOND_PROJECT.toString() }
+    })
+    expect(res.statusCode).toBe(409)
+    expect((res.json() as { message: string }).message).toContain('no service-account slots left')
+    // The workspace was never written, so the agent is untouched.
+    expect((await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })).workspaceMode).toBe('scratch')
+    expect(await h.accounts.membershipsForBinding(fresh.id)).toHaveLength(0)
+  })
+
   it('a retarget within one top-level group keeps the agent’s account alive (§7.2)', async () => {
     const h = await harness()
     // A second managed project under the SAME root, so both share one account.

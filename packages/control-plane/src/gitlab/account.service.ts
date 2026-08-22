@@ -75,6 +75,21 @@ export class GitlabAccountLeaseLost extends Error {
   }
 }
 
+/** An account the write could not provision, said the way a console can act on
+ *  it. The reasons are this module's own repair categories (§8.2). */
+export function gitlabAccountUnavailableMessage(reason: string): string {
+  if (reason === 'service_account_quota') {
+    return 'the GitLab group has no service-account slots left — free one, then try again'
+  }
+  if (reason === 'service_account_create_forbidden') {
+    return 'the connected GitLab account must be an Owner of the top-level group to create bot accounts'
+  }
+  if (reason === 'provisioning_or_cleanup_in_progress' || reason === 'account_busy') {
+    return 'GitLab project setup is already running — try again shortly'
+  }
+  return `the agent’s GitLab bot account could not be provisioned (${reason})`
+}
+
 function expiresAtDate(nowMs: number): string {
   return new Date(nowMs + PAT_LIFETIME_DAYS * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
 }
@@ -141,13 +156,8 @@ export class GitlabAccountService {
     // who may stay bound, so a transient convergence failure never revokes one.
     const authorized = new Set(consumers.map((consumer) => consumer.agentId))
     for (const consumer of consumers) {
-      const outcome = await this.ensureAccount(input, consumer)
-      if (!outcome.ok) {
-        fail(outcome.reason, outcome.reason === 'account_busy')
-        continue
-      }
-      const bound = await this.bindMembership(input, outcome.account, consumer.accessLevel)
-      if (!bound) fail('account_membership_contended', true)
+      const outcome = await this.ensureForConsumer(input, consumer)
+      if (!outcome.ok) fail(outcome.reason, outcome.retryable)
     }
     // Authorization removed ⇒ membership removed (§7.2). The account itself
     // survives while it still serves another project in its root.
@@ -165,6 +175,37 @@ export class GitlabAccountService {
       }
     }
     return { reason, retryable }
+  }
+
+  /**
+   * ONE consuming agent's identity on one project: its account, its three PATs,
+   * and its project membership at the derived role.
+   *
+   * Public because a write that will immediately act as that agent — a gitlab
+   * workspace edit whose activation mints credentials, a hook whose rule must
+   * carry an account — has to run this to completion BEFORE it dispatches,
+   * while the row that would make the agent a consumer does not exist yet.
+   * The binding converge is the same call per consumer it already has.
+   */
+  async ensureForConsumer(
+    input: {
+      orgId: string
+      bindingId: string
+      projectId: bigint
+      rootGroupId: number
+      installerConnectionId: string
+      token: string
+    },
+    consumer: GitlabAccountConsumer
+  ): Promise<{ ok: true } | { ok: false; reason: string; retryable: boolean }> {
+    const outcome = await this.ensureAccount(input, consumer)
+    // A contended account lease resolves itself; every other refusal is the
+    // account's own recorded state and needs a repair, not another attempt.
+    if (!outcome.ok) return { ok: false, reason: outcome.reason, retryable: outcome.reason === 'account_busy' }
+    if (!(await this.bindMembership(input, outcome.account, consumer.accessLevel))) {
+      return { ok: false, reason: 'account_membership_contended', retryable: true }
+    }
+    return { ok: true }
   }
 
   /** One consumer's account: created or recovered in the root, named after the
