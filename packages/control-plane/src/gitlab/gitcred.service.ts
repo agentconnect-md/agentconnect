@@ -10,6 +10,8 @@ import type {
 
 /** Local lease ceiling — the daemon refreshes hourly even though the PAT lives ~90 days. */
 const LEASE_MAX_SEC = 3600
+/** Effect leases are action-time (§14.1): enough for one post + one auth retry. */
+const EFFECT_LEASE_MAX_SEC = 900
 /** Clock-skew shave, mirroring the GitHub grant discipline. */
 const SKEW_SEC = 60
 
@@ -29,6 +31,55 @@ export interface GitlabGitcredDeps {
  */
 export class GitlabGitcredService {
   constructor(private readonly deps: GitlabGitcredDeps) {}
+
+  /** §14.1 effect lease: the binding's effect PAT for the note poster, authorized by the enabled hook, not the workspace gitAccess. */
+  async grantForHookReply(orgId: string, projectId: bigint): Promise<GitCredGrant> {
+    const binding = await this.deps.bindings.byProject(orgId, projectId)
+    if (!binding || binding.state === 'cleanup_pending') {
+      throw new GitCredDeniedError(
+        'the project is not a managed GitLab binding in this organization',
+        'SCOPE_DENIED',
+        false
+      )
+    }
+    if (binding.state === 'runtime_degraded') {
+      throw new GitCredDeniedError('the project binding is runtime-degraded — repair it', 'LEASE_DENIED', true)
+    }
+    if (binding.serviceAccountUsername === null || binding.serviceAccountUserId === null) {
+      throw new GitCredDeniedError('the project binding has no service account yet — repair it', 'LEASE_DENIED', true)
+    }
+    const credential = await this.deps.credentials.get(binding.id, 'effect')
+    if (!credential) {
+      throw new GitCredDeniedError('the project binding has no effect credential — repair it', 'LEASE_DENIED', true)
+    }
+    const token = await this.deps.credentialSecrets.get(orgId, credential.id)
+    if (!token) {
+      throw new GitCredDeniedError('the project credential is sealed away — repair the binding', 'LEASE_DENIED', true)
+    }
+    const nowMs = this.deps.clock.now()
+    const providerRemainingSec = Math.floor((credential.providerExpiresAt.getTime() - nowMs) / 1000) - SKEW_SEC
+    const ttlSec = Math.min(EFFECT_LEASE_MAX_SEC, providerRemainingSec)
+    if (ttlSec <= 0) {
+      throw new GitCredDeniedError(
+        'the project credential has expired — rotation or repair must run',
+        'LEASE_DENIED',
+        true
+      )
+    }
+    return {
+      username: binding.serviceAccountUsername,
+      token,
+      ttlSec,
+      expiresAt: new Date(nowMs + ttlSec * 1000).toISOString(),
+      repoFullName: binding.projectPath,
+      // The wire access field describes CONTENTS capability — 'read' is the conservative label, as for the GitHub hook-reply grant.
+      access: 'read',
+      provider: 'gitlab',
+      externalRepoId: projectId.toString(),
+      credentialEpoch: binding.credentialEpoch.toString(),
+      providerExpiresAt: credential.providerExpiresAt.toISOString()
+    }
+  }
 
   async grantForAgent(
     agent: AgentRecord,

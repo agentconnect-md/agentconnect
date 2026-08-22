@@ -70,8 +70,33 @@ export const handleGitCredRequest: Handler = async (frame, conn, deps) => {
 
   try {
     if (gitlabRequest) {
-      // The binding's PAT under the workspace access clamp (§13.1). No hook
-      // purpose here — the M5 poster gets its own gated path.
+      if (purpose === 'gitlab_hook_reply') {
+        // §14.1: the daemon-owned note poster — its authority is the ENABLED gitlab hook itself, not the workspace clamp.
+        if (hookId === undefined || externalRepoId === undefined) {
+          conn.sendError(frame.id, 'SCOPE_DENIED', 'gitlab hook reply credentials require a hook and a project', false)
+          return
+        }
+        const hook = await deps.hook.get(orgId, HookId(hookId))
+        if (
+          !hook ||
+          hook.agentId !== AgentId(agentId) ||
+          hook.kind !== 'gitlab' ||
+          !hook.enabled ||
+          hook.repoId !== BigInt(externalRepoId)
+        ) {
+          conn.sendError(
+            frame.id,
+            'SCOPE_DENIED',
+            'hook is not an enabled gitlab hook of this agent on that project',
+            false
+          )
+          return
+        }
+        const grant = await deps.gitlabGitcred!.grantForHookReply(orgId, hook.repoId)
+        conn.replyTo(frame, 'gitcred/grant', grant)
+        return
+      }
+      // The binding's PAT under the workspace access clamp (§13.1).
       const grant = await deps.gitlabGitcred!.grantForAgent(
         agent,
         externalRepoId !== undefined ? BigInt(externalRepoId) : undefined,

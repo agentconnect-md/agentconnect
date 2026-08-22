@@ -252,6 +252,7 @@ import {
   WEBCHAT_MULTI_AGENT_FEATURE,
   WEBCHAT_REMOTE_MCP_FEATURE,
   WEBCHAT_SESSION_CONTINUATION_FEATURE,
+  GITLAB_COM_V1_FEATURE,
   encodeSharedSlackStatusTarget,
   HOOK_REPORT_REASON_AGENT_HANDOVER,
   HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED,
@@ -3707,7 +3708,9 @@ export class Daemon {
       // a runtime artifact, capability probe, or sandbox policy. The CP remains
       // authoritative for deciding whether a conversation belongs to the
       // built-in preset; turn-time dispatch rechecks the replicated marker.
-      ...(this.remoteWebchatGrants ? [WEBCHAT_REMOTE_MCP_FEATURE] : [])
+      ...(this.remoteWebchatGrants ? [WEBCHAT_REMOTE_MCP_FEATURE] : []),
+      // The CP withholds gitlab-workspace specs and gitlab hook assignments until this is advertised.
+      GITLAB_COM_V1_FEATURE
     ]
   }
 
@@ -6546,6 +6549,9 @@ export class Daemon {
       getSession: async (key) => await this.store.getSession(key),
       displayNames: async (ids) => await this.store.getDisplayNames(ids),
       getPostToken: (agentId, repo, hookId) => this.gitCreds.getPostToken(agentId, repo, hookId),
+      getGitlabPostToken: (agentId, projectId, hookId) => this.gitCreds.getGitlabPostToken(agentId, projectId, hookId),
+      invalidateGitlabPost: (agentId, projectId, token) =>
+        this.gitCreds.invalidateGitlabPost(agentId, projectId, token),
       invalidatePost: (agentId, repo, presentedToken) => this.gitCreds.invalidatePost(agentId, repo, presentedToken),
       paused: (agentId) => this.paused(agentId),
       draining: (agentId) => this.draining || this.drainingAgents.has(agentId),
@@ -7737,7 +7743,8 @@ export class Daemon {
       durationMs: Number.isFinite(start) ? Math.max(0, this.clock.now() - start) : 0,
       ...extra,
       ...(review ? { reviewAttemptId: review.attemptId, reviewResult: review.result } : {}),
-      ...(hook.publishedComment ? { publishedComment: hook.publishedComment } : {})
+      ...(hook.publishedComment ? { publishedComment: hook.publishedComment } : {}),
+      ...(hook.publishedOutput ? { publishedOutput: hook.publishedOutput } : {})
     }
   }
 
@@ -10367,8 +10374,11 @@ export class Daemon {
               return false
             }
           },
-          endPublish: async (publishedComment) => {
-            if (publishedComment && hookContext) hookContext.publishedComment = publishedComment
+          endPublish: async (published) => {
+            if (published && hookContext) {
+              if ('provider' in published) hookContext.publishedOutput = published
+              else hookContext.publishedComment = published
+            }
             await this.persistHookState(entry, 'settled')
           },
           warn: (message) => this.log.warn(message)

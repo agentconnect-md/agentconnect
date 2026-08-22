@@ -61,6 +61,9 @@ const keyOf = (agentId: string, plane: CachePlane, repo?: string, provider?: 'gi
  *  it gets its own keyspace). One per (agent, repo). */
 const POST_KEY = (agentId: string, repo: string): string => `post\u0000${agentId}\u0000${repo.toLowerCase()}`
 
+/** Cache key for the gitlab note poster's effect token (§14.1) — its own keyspace. */
+const GITLAB_POST_KEY = (agentId: string, projectId: string): string => `postglab\u0000${agentId}\u0000${projectId}`
+
 export class GitCredUnavailableError extends Error {
   constructor(
     message: string,
@@ -88,7 +91,7 @@ export interface GitCredentialCacheDeps {
     reason?: 'clone' | 'fetch' | 'pull' | 'push' | 'helper'
     capabilities?: GitCredCapability[]
     repoFullName?: string
-    purpose?: 'github_hook_reply'
+    purpose?: 'github_hook_reply' | 'gitlab_hook_reply'
     hookId?: string
     forceRefresh?: boolean
     provider?: 'gitlab'
@@ -188,6 +191,39 @@ export class GitCredentialCache {
     })
     if (forceRefresh) this.refreshPosts.delete(key)
     return entry
+  }
+
+  /** The GitlabPoster's note token (§14.1): the binding's effect PAT, gated CP-side by the enabled gitlab hook. */
+  async getGitlabPostToken(agentId: string, projectId: string, hookId: string): Promise<Entry> {
+    if (this.deps.providerV2Supported?.() !== true) {
+      throw new GitCredUnavailableError(
+        'the control plane is too old for gitlab credentials (gitcred-provider-v2 not advertised)',
+        false
+      )
+    }
+    const key = GITLAB_POST_KEY(agentId, projectId)
+    const forceRefresh = this.refreshPosts.has(key)
+    const entry = await this.getKeyed(key, agentId, {
+      agentId,
+      reason: 'helper',
+      provider: 'gitlab',
+      externalRepoId: projectId,
+      purpose: 'gitlab_hook_reply',
+      hookId,
+      ...(forceRefresh ? { forceRefresh: true } : {})
+    })
+    if (forceRefresh) this.refreshPosts.delete(key)
+    return entry
+  }
+
+  /** Drop the cached gitlab note token after GitLab rejects it. */
+  invalidateGitlabPost(agentId: string, projectId: string, presentedToken?: string): void {
+    const key = GITLAB_POST_KEY(agentId, projectId)
+    const entry = this.entries.get(key)
+    if (!entry) return
+    if (presentedToken !== undefined && entry.token !== presentedToken) return
+    this.entries.delete(key)
+    this.refreshPosts.add(key)
   }
 
   /** Drop the cached GithubPoster token after GitHub rejects it. Matching the

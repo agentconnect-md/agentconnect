@@ -96,8 +96,36 @@ describe('gitlab hook normalization (§12.3)', () => {
     expect(text).toContain(UNTRUSTED_CONTENT_BEGIN_GITLAB)
     expect(text).toContain(UNTRUSTED_CONTENT_END)
     expect(text.indexOf(UNTRUSTED_CONTENT_BEGIN_GITLAB)).toBeLessThan(text.indexOf('the primary is unreachable'))
-    // No posting promise before the M5 output surface exists.
-    expect(text).not.toContain('posts')
+    // §14.1: the daemon-owned reply promise rides AFTER the untrusted fence.
+    expect(text).toContain('The daemon posts it back to that GitLab thread automatically as one note')
+    expect(text).toContain('Do NOT create, update, or delete GitLab notes')
+    expect(text.indexOf(UNTRUSTED_CONTENT_END)).toBeLessThan(text.indexOf('The daemon posts it back'))
+  })
+
+  it('promises the daemon-owned note for issue and MR subjects but never for a push', () => {
+    const mr = fire({
+      sessionKey: `gitlab:${PROJECT}:merge_request:77`,
+      gitlab: {
+        projectId: PROJECT,
+        projectPath: 'example-group/example-project',
+        target: { kind: 'merge_request', iid: 77 }
+      },
+      context: { source: 'gitlab', event: 'merge_request', action: 'opened', number: 77, truncated: false }
+    })
+    expect(buildHookText(mr)).toContain('Return one self-contained final answer for example-group/example-project!77')
+    const push = fire({
+      sessionKey: `gitlab:${PROJECT}:push:refs/heads/main`,
+      gitlab: {
+        projectId: PROJECT,
+        projectPath: 'example-group/example-project',
+        target: { kind: 'push', ref: 'refs/heads/main' }
+      },
+      context: { source: 'gitlab', event: 'push', truncated: false, bodyExcerpt: 'two commits' }
+    })
+    const pushText = buildHookText(push)
+    expect(pushText).toContain('Ref: refs/heads/main')
+    expect(pushText).not.toContain('The daemon posts it back')
+    expect(pushText).not.toContain('Return one self-contained final answer')
   })
 
   it('renders MR references with ! and surfaces revision facts on the trusted header', () => {

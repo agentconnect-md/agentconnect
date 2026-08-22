@@ -2,6 +2,7 @@ import type {
   GithubHookMetadata,
   GitlabHookMetadata,
   GithubPublishedComment,
+  PublishedHookOutput,
   GithubReviewAuthorized,
   HookConfigSnapshot,
   HookReport,
@@ -58,6 +59,9 @@ export function foreignHookDispatch(report: HookReport, daemonId?: string): bool
 
 export interface GithubReplyTarget {
   hookId: string
+  /** Provider discriminator: absent ⇒ github; 'gitlab' sets `repo` = numeric project id and `number` = the subject IID (§14.1). */
+  provider?: 'gitlab'
+  subjectKind?: 'issue' | 'merge_request'
   repo: string
   number: number
   /** The review-comment delivery that triggered this turn (diagnostic identity). */
@@ -107,6 +111,8 @@ export interface HookDispatchContext {
   reviewReportResult?: HookReviewResult
   /** Exact body-free identity of the fallback comment published for this turn. */
   publishedComment?: GithubPublishedComment
+  /** Provider-neutral twin (§14.1): e.g. the GitLab note id this turn published. */
+  publishedOutput?: PublishedHookOutput
 }
 
 export type GithubThreadWorktreeCleanup = 'pull_request_merged' | 'issue_closed' | 'issue_deleted'

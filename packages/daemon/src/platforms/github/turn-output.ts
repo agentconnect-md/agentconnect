@@ -41,15 +41,16 @@
  * human, so the ordinary final must be suppressed) is decided by core from hook
  * state and passed in as one boolean — the surface never inspects hook context.
  */
-import type { GithubPublishedComment } from '@agentconnect.md/protocol'
-import type { GithubFinalPoster, GithubReplyCollector } from '../../github/poster.js'
+import type { GithubPublishedComment, PublishedHookOutput } from '@agentconnect.md/protocol'
+import type { GithubReplyCollector } from '../../github/poster.js'
 
 /** GitHub's per-turn state (§7.3). Held in the turn's final-surface slot, which
  *  core stores opaquely and never reads. */
 export interface GithubTurnState {
-  /** Publishes the one comment. Tokened per turn via the repo-targeted gitcred
-   *  mint; resolves its attribution at publish time. */
-  poster: GithubFinalPoster
+  /** Publishes the one comment — structurally the GitHub poster or its GitLab twin (§14.1), tokened and attributed at publish time. */
+  poster: {
+    publish(finalBody?: string): Promise<GithubPublishedComment | PublishedHookOutput | undefined>
+  }
   /** Accumulates ACP updates and selects the single logical final answer. */
   collector: GithubReplyCollector
   /** Set when the runtime's explicit final chunk was withheld from the core
@@ -89,7 +90,7 @@ export interface GithubTurnHost {
    *  be made durable, and the caller must NOT perform the public POST. */
   beginPublish(): boolean | Promise<boolean>
   /** Record the durable `settled` state and any exact public comment identity. */
-  endPublish(publishedComment?: GithubPublishedComment): void | Promise<void>
+  endPublish(publishedComment?: GithubPublishedComment | PublishedHookOutput): void | Promise<void>
   warn(message: string): void
 }
 

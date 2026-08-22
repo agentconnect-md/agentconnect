@@ -315,12 +315,20 @@ function buildGithubHookText(
   )
 }
 
-/** The gitlab-kind turn text: a trusted metadata header + the FENCED excerpt.
- *  No posting promise rides here yet — the daemon-owned GitLab reply surface is
- *  the M5 slice; until then the final reply stays in the session transcript. */
+/** The daemon-owned GitLab reply promise (§14.1) — issue/MR subjects only; a push has no thread to answer. */
+function gitlabReplyHint(c: HookContext, gitlab: GitlabHookMetadata): string {
+  if (gitlab.target.kind === 'push') return ''
+  return [
+    '',
+    `Return one self-contained final answer for ${gitlabSubjectRef(c, gitlab)}. The daemon posts it back to that GitLab thread automatically as one note and exclusively owns the reply. Do NOT create, update, or delete GitLab notes through \`glab\`, another CLI, a connector, or a direct API call — those paths would race or double-post. Other GitLab access is READ-only inspection.`
+  ].join('\n')
+}
+
+/** The gitlab-kind turn text: a trusted metadata header + the FENCED excerpt + the reply promise. */
 function buildGitlabHookText(c: HookContext, gitlab: GitlabHookMetadata): string {
   const event = c.action ? `${c.event}:${c.action}` : (c.event ?? 'event')
   const target = gitlab.target
+  const tail = gitlabReplyHint(c, gitlab)
   const head = [
     `GitLab ${event} — ${gitlabSubjectRef(c, gitlab)}${c.title ? ` "${c.title}"` : ''}`,
     `From: ${c.senderLogin ?? 'unknown'}${c.labels?.length ? ` · labels: ${c.labels.join(', ')}` : ''}`,
@@ -329,15 +337,17 @@ function buildGitlabHookText(c: HookContext, gitlab: GitlabHookMetadata): string
     ...(target.kind === 'push' ? [`Ref: ${target.ref}`] : []),
     ...(c.htmlUrl ? [c.htmlUrl] : [])
   ].join('\n')
-  if (!c.bodyExcerpt) return head
-  return [
-    head,
-    '',
-    UNTRUSTED_CONTENT_BEGIN_GITLAB,
-    neutralizeDelimiters(c.bodyExcerpt),
-    UNTRUSTED_CONTENT_END,
-    ...(c.truncated ? ['(body truncated — pull the full thread yourself through the authorized read path)'] : [])
-  ].join('\n')
+  if (!c.bodyExcerpt) return head + tail
+  return (
+    [
+      head,
+      '',
+      UNTRUSTED_CONTENT_BEGIN_GITLAB,
+      neutralizeDelimiters(c.bodyExcerpt),
+      UNTRUSTED_CONTENT_END,
+      ...(c.truncated ? ['(body truncated — pull the full thread yourself through the authorized read path)'] : [])
+    ].join('\n') + tail
+  )
 }
 
 /** The turn text: the caller's payload-borne message (+ leftover fields as context). */
