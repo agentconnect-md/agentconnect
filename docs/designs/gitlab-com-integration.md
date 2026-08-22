@@ -314,6 +314,10 @@ revoking the human connection does not silently transfer its authority.
 
 ### 7.2 Project Service Account Is the Runtime Identity
 
+> Revision proposed: [gitlab-per-agent-identity.md](gitlab-per-agent-identity.md)
+> moves the runtime identity to one account per agent per top-level group.
+> This section describes the shipped v1 model until that revision lands.
+
 One Project Service Account is created or reused for each active GitLab project
 binding:
 
