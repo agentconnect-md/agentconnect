@@ -59,7 +59,6 @@ import {
   type CreatedHookDto,
   type GithubInstallationDto,
   type GithubRepoDto,
-  type GitlabCommentFamily,
   type GitlabProjectBindingDto,
   type RepoAccess
 } from '@/lib/api'
@@ -76,12 +75,17 @@ import {
   type GhTriggerMode
 } from '@/lib/github-events'
 import {
-  GL_COMMENT_FAMILIES,
   GL_DEFAULT_FAMILIES,
+  GL_DEFAULT_TRIGGER_MODE,
   GL_FAMILIES,
+  GL_TRIGGER_LABEL,
+  commentFamiliesForGitlabFamilies,
   eventsForGitlabFamilies,
+  gitlabMentionUsage,
+  gitlabPushCadenceNote,
   parseLabelFilter,
-  type GlFamily
+  type GlFamily,
+  type GlTriggerMode
 } from '@/lib/gitlab-events'
 import { gitlabProjectSelectable, matchGitlabProjects } from '@/lib/gitlab-projects'
 import {
@@ -150,6 +154,21 @@ const GH_TRIGGER_TILES: { mode: GhTriggerMode; label: string; desc: string }[] =
   {
     mode: 'mention',
     label: GH_TRIGGER_LABEL.mention,
+    desc: 'Only when @-mentioned.'
+  }
+]
+
+/** The GitLab cadences — the same three choices, worded like GitHub's. */
+const GL_TRIGGER_TILES: { mode: GlTriggerMode; label: string; desc: string }[] = [
+  { mode: 'first', label: GL_TRIGGER_LABEL.first, desc: 'When opened, plus later @mentions.' },
+  {
+    mode: 'every',
+    label: GL_TRIGGER_LABEL.every,
+    desc: 'Updates, plus replies for selected issues and MRs.'
+  },
+  {
+    mode: 'mention',
+    label: GL_TRIGGER_LABEL.mention,
     desc: 'Only when @-mentioned.'
   }
 ]
@@ -350,9 +369,8 @@ export default function AddIntegrationModal({
   const [glOpen, setGlOpen] = useState(false)
   const [glQ, setGlQ] = useState('')
   const [glFams, setGlFams] = useState<Set<GlFamily>>(new Set(GL_DEFAULT_FAMILIES))
-  const [glComments, setGlComments] = useState<Set<GitlabCommentFamily>>(new Set(['issues', 'merge_request']))
+  const [glMode, setGlMode] = useState<GlTriggerMode>(GL_DEFAULT_TRIGGER_MODE)
   const [glLabels, setGlLabels] = useState('')
-  const [glMentionOnly, setGlMentionOnly] = useState(false)
 
   // Reusing a bot is an advanced path; every platform opens on the create flow
   // until the user explicitly chooses an existing identity.
@@ -752,15 +770,6 @@ export default function AddIntegrationModal({
     })
   }
 
-  const toggleGlComment = (fam: GitlabCommentFamily) => {
-    setGlComments((prev) => {
-      const next = new Set(prev)
-      if (next.has(fam)) next.delete(fam)
-      else next.add(fam)
-      return next
-    })
-  }
-
   const authorizeSelectedRepo = async () => {
     if (!ghRepoPick || ghAccessSaving) return
     if (ghSelectedIsWorkspace) {
@@ -839,10 +848,10 @@ export default function AddIntegrationModal({
         agentId: agent.id,
         name: glPicked?.projectPath ?? glProject,
         projectId: glProject,
-        events: eventsForGitlabFamilies(glFams),
-        commentFamilies: [...glComments],
+        events: eventsForGitlabFamilies(glFams, glMode),
+        commentFamilies: commentFamiliesForGitlabFamilies(glFams, glMode),
         labelFilter: parseLabelFilter(glLabels),
-        mentionOnly: glMentionOnly
+        mentionOnly: glMode === 'mention'
       })
       onClose()
     } catch (e) {
@@ -1726,31 +1735,45 @@ export default function AddIntegrationModal({
                     )
                   })}
                 </div>
-                <div className="fldlbl mb-2">Also run on comments in</div>
-                <div className="mb-4 grid grid-cols-1 gap-[9px] min-[440px]:grid-cols-2">
-                  {GL_COMMENT_FAMILIES.map((r) => {
-                    const on = glComments.has(r.fam)
+                <div className="fldlbl mb-2">Trigger when</div>
+                <div
+                  className={`grid grid-cols-1 gap-[9px] min-[440px]:grid-cols-3 ${glFams.has('push') ? 'mb-2' : 'mb-4'}`}
+                >
+                  {GL_TRIGGER_TILES.map((m) => {
+                    const on = glMode === m.mode
                     return (
-                      <label
-                        key={r.fam}
-                        className={`flex min-w-0 cursor-pointer items-center gap-2.5 rounded-[9px] border px-3 py-[10px] ${
+                      <div
+                        key={m.mode}
+                        data-gitlab-trigger={m.mode}
+                        title={m.mode === 'mention' ? gitlabMentionUsage(agent.name) : undefined}
+                        className={`flex min-w-0 cursor-pointer items-start gap-[9px] rounded-[9px] border px-3 py-[10px] ${
                           on ? 'border-(--brand) bg-(--brand-soft)' : 'border-(--border-default) bg-(--surface-card)'
                         }`}
+                        onClick={() => setGlMode(m.mode)}
                       >
-                        <input
-                          type="checkbox"
-                          className="flex-none accent-(--brand)"
-                          checked={on}
-                          aria-label={`Comments in ${r.label.toLowerCase()}`}
-                          onChange={() => toggleGlComment(r.fam)}
-                        />
-                        <span className="font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
-                          {r.label}
+                        <span
+                          className={`mt-[1px] flex h-4 w-4 flex-none items-center justify-center rounded-full border-[1.5px] bg-(--surface-card) ${
+                            on ? 'border-(--brand)' : 'border-(--border-default)'
+                          }`}
+                        >
+                          {on && <span className="h-2 w-2 rounded-full bg-(--brand)" />}
                         </span>
-                      </label>
+                        <span className="min-w-0 flex-1">
+                          <span className="block font-sans text-[12.5px] font-semibold leading-normal">{m.label}</span>
+                          <span className="mt-[2px] block font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-tertiary)">
+                            {m.desc}
+                          </span>
+                        </span>
+                      </div>
                     )
                   })}
                 </div>
+                {/* Pushes reach the cadence only through mention-only's commit-message gate. */}
+                {glFams.has('push') && (
+                  <div className="mb-4 font-sans text-[11.5px] font-normal leading-[1.45] text-(--text-tertiary)">
+                    {gitlabPushCadenceNote(agent.name)}
+                  </div>
+                )}
                 <div className="fld mb-4">
                   <span className="fldlbl">Only these labels (optional)</span>
                   <input
@@ -1764,21 +1787,6 @@ export default function AddIntegrationModal({
                     Comma separated. Empty means every issue and merge request.
                   </span>
                 </div>
-                <label className="mb-4 flex cursor-pointer items-start gap-2.5 rounded-[9px] border border-(--border-default) bg-(--surface-card) px-3 py-[10px]">
-                  <input
-                    type="checkbox"
-                    className="mt-[2px] flex-none accent-(--brand)"
-                    checked={glMentionOnly}
-                    aria-label="Mention only"
-                    onChange={(e) => setGlMentionOnly(e.target.checked)}
-                  />
-                  <span className="min-w-0 flex-1">
-                    <span className="block font-sans text-[12.5px] font-semibold leading-normal">Mention only</span>
-                    <span className="mt-[2px] block font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-tertiary)">
-                      Run only when the text mentions @{agent.name}.
-                    </span>
-                  </span>
-                </label>
               </>
             )}
           </>

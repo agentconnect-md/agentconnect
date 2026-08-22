@@ -1,10 +1,11 @@
 // @vitest-environment happy-dom
 /**
- * The GitLab trigger kind in the Add-integration wizard. Two things are worth a
- * regression test: the tile is absent — and the project list unrequested — while
- * the flag is off, and the create body carries exactly the stored vocabulary the
- * CP validates (`family:*` patterns, note families, labels, mention-only) keyed
- * by the project's numeric id rather than its renameable path.
+ * The GitLab trigger kind in the Add-integration wizard. Three things are worth
+ * a regression test: the tile is absent — and the project list unrequested —
+ * while the flag is off; each "Trigger when" choice compiles to exactly the
+ * stored vocabulary the CP validates (`family:*` patterns, note families,
+ * labels, mention-only) keyed by the project's numeric id rather than its
+ * renameable path; and pushes stay a per-push subscription across the cadence.
  */
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
@@ -57,6 +58,19 @@ const agent = {
   workspace: { mode: 'scratch' }
 } as unknown as Agent
 
+const project = {
+  id: 'binding-1',
+  projectId: '4210',
+  projectPath: 'acme/platform',
+  defaultBranch: 'main',
+  state: 'ready',
+  stateReason: null,
+  serviceAccountUsername: 'project_4210_bot',
+  webhookInstalled: true,
+  credentialEpoch: '1',
+  createdAt: '2026-08-01T00:00:00.000Z'
+}
+
 const setFlags = (value?: string) => {
   ;(window as unknown as { __AC_ENV?: Record<string, string> }).__AC_ENV =
     value === undefined ? {} : { FEATURE_FLAGS: value }
@@ -78,11 +92,18 @@ const tileNamed = (label: string) =>
   Array.from(document.querySelectorAll<HTMLDivElement>('.ptile')).find((tile) => tile.textContent === label)
 const clickText = (text: string) =>
   Array.from(document.querySelectorAll('button')).find((button) => button.textContent?.includes(text))
-const checkbox = (label: string) => document.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`)
+const family = (fam: string) => document.querySelector<HTMLDivElement>(`[data-gitlab-family="${fam}"]`)
+const trigger = (mode: string) => document.querySelector<HTMLDivElement>(`[data-gitlab-trigger="${mode}"]`)
 // React tracks the DOM value itself, so a plain assignment is invisible to onChange.
 function typeInto(input: HTMLInputElement, value: string) {
   Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value)
   input.dispatchEvent(new Event('input', { bubbles: true }))
+}
+
+async function pickProject() {
+  await act(async () => tileNamed('GitLab')?.click())
+  await act(async () => document.querySelector<HTMLDivElement>('.inp')?.click())
+  await act(async () => clickText('acme/platform')?.click())
 }
 
 afterEach(async () => {
@@ -107,34 +128,55 @@ describe('AddIntegrationModal, GitLab trigger', () => {
     expect(mocks.fetchGitlabProjects).not.toHaveBeenCalled()
   })
 
-  it('creates a gitlab hook from the chosen families, labels and mention mode', async () => {
+  it('defaults to the updated trigger, scoping replies to the selected subjects', async () => {
     setFlags('gitlab')
-    mocks.fetchGitlabProjects.mockResolvedValue([
-      {
-        id: 'binding-1',
-        projectId: '4210',
-        projectPath: 'acme/platform',
-        defaultBranch: 'main',
-        state: 'ready',
-        stateReason: null,
-        serviceAccountUsername: 'project_4210_bot',
-        webhookInstalled: true,
-        credentialEpoch: '1',
-        createdAt: '2026-08-01T00:00:00.000Z'
-      }
-    ])
+    mocks.fetchGitlabProjects.mockResolvedValue([project])
     await render()
-    await act(async () => tileNamed('GitLab')?.click())
-    await act(async () => document.querySelector<HTMLDivElement>('.inp')?.click())
-    await act(async () => clickText('acme/platform')?.click())
+    await pickProject()
 
-    // Merge requests ride the default; add issues and drop the issue note family.
-    await act(async () => document.querySelector<HTMLDivElement>('[data-gitlab-family="issues"]')?.click())
-    await act(async () => checkbox('Comments in issues')?.click())
+    // No cadence click: the form opens on "updated", merge requests only.
+    await act(async () => clickText('Connect')?.click())
+
+    expect(mocks.createGitlabHook).toHaveBeenCalledWith({
+      agentId: 'agent-a',
+      name: 'acme/platform',
+      projectId: '4210',
+      events: ['merge_request:*'],
+      commentFamilies: ['merge_request'],
+      labelFilter: [],
+      mentionOnly: false
+    })
+  })
+
+  it('compiles the created trigger to openings with no note subscription', async () => {
+    setFlags('gitlab')
+    mocks.fetchGitlabProjects.mockResolvedValue([project])
+    await render()
+    await pickProject()
+    await act(async () => family('issues')?.click())
+    await act(async () => trigger('first')?.click())
+
+    await act(async () => clickText('Connect')?.click())
+
+    expect(mocks.createGitlabHook).toHaveBeenCalledWith(
+      expect.objectContaining({
+        events: ['issues:opened', 'merge_request:opened'],
+        commentFamilies: [],
+        mentionOnly: false
+      })
+    )
+  })
+
+  it('compiles the mention-only trigger to the updated event set plus the flag', async () => {
+    setFlags('gitlab')
+    mocks.fetchGitlabProjects.mockResolvedValue([project])
+    await render()
+    await pickProject()
+    await act(async () => family('issues')?.click())
+    await act(async () => trigger('mention')?.click())
     await act(async () =>
       typeInto(document.querySelector<HTMLInputElement>('input[aria-label="Label filter"]')!, 'needs-review, agent')
     )
-    await act(async () => checkbox('Mention only')?.click())
 
     await act(async () => clickText('Connect')?.click())
 
@@ -143,10 +185,40 @@ describe('AddIntegrationModal, GitLab trigger', () => {
       name: 'acme/platform',
       projectId: '4210',
       events: ['issues:*', 'merge_request:*'],
-      commentFamilies: ['merge_request'],
+      commentFamilies: ['issues', 'merge_request'],
       labelFilter: ['needs-review', 'agent'],
       mentionOnly: true
     })
+  })
+
+  it('keeps pushes a per-push subscription across the cadence, and says so', async () => {
+    setFlags('gitlab')
+    mocks.fetchGitlabProjects.mockResolvedValue([project])
+    await render()
+    await pickProject()
+    await act(async () => family('merge_request')?.click())
+    await act(async () => family('push')?.click())
+
+    expect(document.body.textContent).toContain('created and updated behave the same')
+
+    await act(async () => trigger('first')?.click())
+    await act(async () => clickText('Connect')?.click())
+
+    expect(mocks.createGitlabHook).toHaveBeenCalledWith(
+      expect.objectContaining({ events: ['push:*'], commentFamilies: [], mentionOnly: false })
+    )
+  })
+
+  it('drops the separate comments row and mention checkbox the form used to expose', async () => {
+    setFlags('gitlab')
+    mocks.fetchGitlabProjects.mockResolvedValue([project])
+    await render()
+    await pickProject()
+
+    expect(document.body.textContent).toContain('Listen for')
+    expect(document.body.textContent).toContain('Trigger when')
+    expect(document.body.textContent).not.toContain('Also run on comments in')
+    expect(document.querySelector('input[aria-label="Mention only"]')).toBeNull()
   })
 
   it('keeps the GitLab tile enabled on a placed daemon that advertises no such adapter', async () => {
