@@ -308,3 +308,9 @@ export const CODEHOST_REVIEW_V1_FEATURE = 'codehost-review-v1'
 
 /** Daemon-owned informational status-note projection (desired/result frame pair). */
 export const CODEHOST_NOTE_PROJECTION_V1_FEATURE = 'codehost-note-projection-v1'
+
+/** CP mints the §14.2 broker effect lease — `purpose: 'gitlab_effect'` on a gitcred v2 request,
+ *  authorized by the agent's GitLab workspace binding or an enabled gitlab hook and clamped by the
+ *  grant's echoed access. A daemon must not name that purpose before seeing this: a new enum value
+ *  in a daemon→CP frame is frame-fatal to an older CP (§17.3), not a stripped field. */
+export const GITLAB_EFFECT_V1_FEATURE = 'gitlab-effect-v1'

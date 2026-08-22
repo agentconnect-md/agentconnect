@@ -44,4 +44,21 @@ describe('gitcred v2 (gitlab-com-integration.md §17.1)', () => {
     expect(GitCredGrant.safeParse({ ...v1Grant, provider: 'github', username: 'oauth2' }).success).toBe(false)
     expect(GitCredGrant.safeParse({ ...v1Grant, provider: 'github' }).success).toBe(true)
   })
+
+  it('accepts the broker effect purpose and keeps comment-level authority on gitlab grants only', () => {
+    expect(GitCredRequest.safeParse({ ...v1Request, purpose: 'gitlab_effect' }).success).toBe(true)
+    expect(GitCredRequest.safeParse({ ...v1Request, purpose: 'gitlab_broker' }).success).toBe(false)
+    const commentGrant = {
+      ...v1Grant,
+      username: 'example-bot',
+      access: 'comment' as const,
+      provider: 'gitlab',
+      externalRepoId: '4455667'
+    }
+    expect(GitCredGrant.safeParse(commentGrant).success).toBe(true)
+    expect(GitCredGrant.safeParse({ ...v1Grant, access: 'comment' }).success).toBe(false)
+    expect(GitCredGrant.safeParse({ ...commentGrant, provider: 'github', username: 'x-access-token' }).success).toBe(
+      false
+    )
+  })
 })

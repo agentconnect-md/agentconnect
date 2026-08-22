@@ -79,7 +79,8 @@ interface Entry {
   username: string
   token: string
   repoFullName: string
-  access: 'read' | 'write'
+  /** §13.1 authorization level as the CP echoed it — 'comment' rides an effect lease only. */
+  access: GitCredGrant['access']
   /** Monotonic deadline (ms on the injected monotonic clock). */
   expiresAtMono: number
 }

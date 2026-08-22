@@ -15,6 +15,7 @@ import {
   AGENT_EXISTS_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
   GITCRED_PROVIDER_V2_FEATURE,
+  GITLAB_EFFECT_V1_FEATURE,
   SESSION_LIVE_TAIL_FEATURE,
   SESSION_METADATA_ACK_FEATURE,
   SESSION_PURGE_FEATURE,
@@ -86,6 +87,8 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
       // §17.1: this CP decodes provider-qualified gitcred v2 requests. A daemon
       // may name provider 'gitlab' only after seeing this.
       GITCRED_PROVIDER_V2_FEATURE,
+      // §14.2: …and decodes purpose 'gitlab_effect', the broker's action-time effect lease.
+      GITLAB_EFFECT_V1_FEATURE,
       'agent-directory-org-scope-v1',
       SESSION_LIVE_TAIL_FEATURE,
       SESSION_METADATA_ACK_FEATURE,
