@@ -9587,6 +9587,13 @@ export class Daemon {
       ...(this.cfg.daemonId ? { daemonId: this.cfg.daemonId } : {}),
       persist: (required) => this.persistHookState(entry, undefined, required)
     })
+    // A replayed delivery may still owe the control plane frames a previous incarnation
+    // recorded; the ones needing no provider evidence are handed back before the turn runs.
+    if (gitlabReview) {
+      await this.gitlabReviews
+        .recoverTurn(gitlabReview)
+        .catch((err) => this.log.warn(`gitlab review: turn recovery deferred (${formatErr(err)})`))
+    }
     const activeGithubReplyBatch = plan.githubReplyBatchActive ? { entry, sessionId, called: false } : undefined
     if (activeGithubReplyBatch) this.activeGithubReplyBatchMeta.set(key, activeGithubReplyBatch)
     return {

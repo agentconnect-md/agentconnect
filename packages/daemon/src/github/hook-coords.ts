@@ -1,5 +1,6 @@
 import {
   codeHostReviewPublicEffect,
+  type CodeHostReviewExternalRef,
   type CodeHostReviewOpKind,
   type CodeHostReviewState,
   type HookReviewEvent,
@@ -166,19 +167,32 @@ export interface CodeReviewAttempt {
   verdict: HookReviewVerdict
   headSha: string
   state?: CodeHostReviewState
+  /** The publication lease's fence, so an owed ledger frame stays derivable after a restart. */
+  fence?: string
+  /** Published objects this attempt named; replayed verbatim with a reconstructed result. */
+  externalIds?: CodeHostReviewExternalRef[]
+  /** The classification exists but the control plane has not taken it yet (§15.1). */
+  resultOwed?: boolean
   /** Next operation-ledger ordinal per kind — monotonic, so a replay never reuses a spent coordinate. */
   ordinals?: Record<string, number>
   /** Operations whose one outbound request was permitted but not yet settled (§15.1). */
   operations?: CodeReviewOperation[]
 }
 
-/** The coordinates of ONE permitted provider request, written before it is sent. */
+/**
+ * The coordinates of ONE permitted provider request, written before it is sent.
+ *
+ * `phase` is the LOCAL view of the control plane's record: `issued` means the start
+ * transition had not been acknowledged, so a replay returns the permit unused rather
+ * than settling a record no request was ever permitted under.
+ */
 export interface CodeReviewOperation {
   recordId: string
   startToken: string
   kind: CodeHostReviewOpKind
   ordinal: number
   target: string
+  phase: 'issued' | 'started'
   /** Draft ordinal for a `draft_create`, so its marker can identify the effect on replay. */
   draftOrdinal?: number
 }

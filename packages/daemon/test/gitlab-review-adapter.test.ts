@@ -23,6 +23,7 @@ import { CodeHostReviewRouter, type SubmitCodeReviewReq } from '../src/codehost/
 import {
   codeHostReviewFallbackAllowed,
   hookOutputFallbackAllowed,
+  type CodeReviewAttempt,
   type HookDispatchContext
 } from '../src/github/hook-coords.js'
 import {
@@ -237,6 +238,8 @@ interface CpOptions {
   seedStarted?: string[]
   /** Return an error to fail that delivery; the frame is then owed and replayed. */
   operateFails?: (op: CodeHostReviewOpRequest) => Error | undefined
+  /** Return an error to refuse a `return-unused` frame. */
+  returnUnusedFails?: () => Error | undefined
   reportFails?: (result: CodeHostReviewResultReport) => Error | undefined
 }
 
@@ -280,7 +283,12 @@ function fakeCp(opts: CpOptions = {}) {
     },
     operate: async (payload): Promise<CodeHostReviewOpAccepted> => {
       ops.push(payload)
-      const failure = payload.op === 'settle' ? opts.operateFails?.(payload) : undefined
+      const failure =
+        payload.op === 'settle'
+          ? opts.operateFails?.(payload)
+          : payload.op === 'return-unused'
+            ? opts.returnUnusedFails?.()
+            : undefined
       if (failure) throw failure
       if (payload.op === 'issue') {
         const recordId = `rec-${payload.kind}-${payload.ordinal}`
@@ -299,6 +307,7 @@ function fakeCp(opts: CpOptions = {}) {
       }
       const [, kind, ordinal] = payload.recordId.split('-')
       records.set(payload.recordId, payload.op === 'start' ? 'request_started' : 'settled')
+      if (payload.op === 'return-unused') records.set(payload.recordId, 'settled')
       return {
         op: payload.op,
         recordId: payload.recordId,
@@ -1185,6 +1194,7 @@ describe('GitLab review adapter — started-operation recovery (round 3)', () =>
             kind: 'draft_create',
             ordinal: 0,
             target: `/projects/${PROJECT}/merge_requests/${IID}/draft_notes`,
+            phase: 'started',
             draftOrdinal: 0
           }
         ]
@@ -1255,7 +1265,8 @@ describe('GitLab review adapter — started-operation recovery (round 3)', () =>
             startToken: 'start-1',
             kind: 'bulk_publish',
             ordinal: 0,
-            target: `/projects/${PROJECT}/merge_requests/${IID}/draft_notes/bulk_publish`
+            target: `/projects/${PROJECT}/merge_requests/${IID}/draft_notes/bulk_publish`,
+            phase: 'started'
           }
         ]
       }
@@ -1283,7 +1294,8 @@ describe('GitLab review adapter — started-operation recovery (round 3)', () =>
             startToken: 'start-1',
             kind: 'bulk_publish',
             ordinal: 0,
-            target: `/projects/${PROJECT}/merge_requests/${IID}/draft_notes/bulk_publish`
+            target: `/projects/${PROJECT}/merge_requests/${IID}/draft_notes/bulk_publish`,
+            phase: 'started'
           }
         ]
       }
@@ -1295,6 +1307,132 @@ describe('GitLab review adapter — started-operation recovery (round 3)', () =>
     expect(published(h.calls)).toEqual([])
     expect(outcome.externalIds).toEqual([{ kind: 'note', externalId: '9007199254746777' }])
     expect(codeHostReviewFallbackAllowed(h.hook)).toBe(false)
+  })
+})
+
+describe('GitLab review adapter — the durable chain across every crash point (round 4)', () => {
+  /** A crash at a chosen point, as the durable hook row records it. */
+  function crashedAt(phase: 'issued' | 'started', overrides: Partial<CodeReviewAttempt> = {}): HookDispatchContext {
+    return hookContext({
+      codeReview: {
+        attemptId: ATTEMPT,
+        event: 'COMMENT',
+        verdict: 'neutral',
+        headSha: HEAD,
+        fence: '7',
+        ordinals: { draft_create: 1 },
+        operations: [
+          {
+            recordId: 'rec-draft_create-0',
+            startToken: 'start-0',
+            kind: 'draft_create',
+            ordinal: 0,
+            target: `/projects/${PROJECT}/merge_requests/${IID}/draft_notes`,
+            phase,
+            draftOrdinal: 0
+          }
+        ],
+        ...overrides
+      }
+    })
+  }
+
+  it('returns a permit whose start was never acknowledged instead of settling it', async () => {
+    const hook = crashedAt('issued')
+    const h = harness({ hook, seedStarted: [] })
+    const outcome = (await h.adapter.submit(KEY, request())) as GitlabReviewOutcome
+    expect(outcome.state).toBe('submitted')
+    // The unstarted permit is handed back, never settled — settling one is refused as `not_started`.
+    expect(h.ops.some((op) => op.op === 'return-unused' && op.recordId === 'rec-draft_create-0')).toBe(true)
+    expect(h.ops.some((op) => op.op === 'settle' && op.recordId === 'rec-draft_create-0')).toBe(false)
+    expect(h.hook.codeReview?.operations).toEqual([])
+    expect([...h.records.values()].filter((state) => state === 'request_started')).toEqual([])
+  })
+
+  it('falls through to marker reconciliation when the start had raced ahead of the local flip', async () => {
+    const state = gitlabState()
+    const draftId = '9007199254746333'
+    state.drafts.push({ id: draftId, note: `summary\n\n${signer.mint(ATTEMPT, 0, HEAD)}` })
+    const h = harness({
+      state,
+      hook: crashedAt('issued'),
+      // The control plane had already started it, so the return is permanently refused.
+      cp: { returnUnusedFails: () => Object.assign(new Error('already started'), { retryable: false }) }
+    })
+    const outcome = (await h.adapter.submit(KEY, request())) as GitlabReviewOutcome
+    expect(outcome.state).toBe('submitted')
+    const settle = h.ops.find((op) => op.op === 'settle' && op.recordId === 'rec-draft_create-0') as {
+      outcome: { kind: string; externalId?: string }
+    }
+    expect(settle.outcome).toEqual({ kind: 'deterministic', status: 201, externalId: draftId })
+  })
+
+  it('never clears coordinates on a refusal it could not classify', async () => {
+    const h = harness({
+      hook: crashedAt('issued'),
+      // A transport failure decides nothing, so the permit stays exactly where it was.
+      cp: { returnUnusedFails: () => Object.assign(new Error('unreachable'), { retryable: true }) }
+    })
+    await h.adapter.submit(KEY, request())
+    expect(h.hook.codeReview?.operations?.map((op) => op.recordId)).toEqual(['rec-draft_create-0'])
+  })
+
+  it('keeps a started operation’s coordinates when its settle is neither durable nor acked', async () => {
+    const store = new FakeReviewStore()
+    store.failWrites = Number.POSITIVE_INFINITY
+    const h = harness({
+      reviewStore: store,
+      cp: { operateFails: () => Object.assign(new Error('unreachable'), { retryable: true }) }
+    })
+    await h.adapter.submit(KEY, request())
+    // Nothing durable owes the settle, so the only record that could rebuild it survives.
+    expect(store.rows.size).toBe(0)
+    expect((h.hook.codeReview?.operations ?? []).length).toBeGreaterThan(0)
+    // The result frame WAS acknowledged, so its own upstream marker is released independently.
+    expect(h.hook.codeReview?.resultOwed).toBeUndefined()
+  })
+
+  it('rebuilds the owed settle and result from the upstream records after the process dies', async () => {
+    const store = new FakeReviewStore()
+    store.failWrites = Number.POSITIVE_INFINITY
+    const first = harness({
+      reviewStore: store,
+      cp: {
+        operateFails: () => Object.assign(new Error('unreachable'), { retryable: true }),
+        reportFails: () => Object.assign(new Error('unreachable'), { retryable: true })
+      }
+    })
+    await first.adapter.submit(KEY, request())
+    expect(store.rows.size).toBe(0)
+    const owedOps = (first.hook.codeReview?.operations ?? []).filter((op) => op.phase === 'issued')
+
+    // A NEW adapter over the SAME store and hook row, with a control plane that answers.
+    store.failWrites = 0
+    const replay = harness({ reviewStore: store, hook: first.hook, open: false })
+    const turn = replay.adapter.openTurn(KEY, first.hook, 'acp-session-2', {
+      daemonId: DAEMON_ID,
+      persist: async () => {}
+    })!
+    await replay.adapter.recoverTurn(turn)
+    // The result frame is rebuilt from the attempt record alone and taken by the control plane.
+    expect(replay.results.at(-1)).toMatchObject({ attemptId: ATTEMPT, state: 'submitted', provider: 'gitlab' })
+    expect(first.hook.codeReview?.resultOwed).toBeUndefined()
+    // Coordinates whose settle is still unowed are kept, not silently dropped.
+    expect((first.hook.codeReview?.operations ?? []).length).toBeGreaterThan(0)
+    expect(owedOps).toEqual([])
+    expect(store.rows.size).toBe(0)
+  })
+
+  it('hands back an unstarted permit from its coordinates alone, with no turn replay', async () => {
+    const hook = crashedAt('issued', { state: 'not_submitted', resultOwed: true })
+    const h = harness({ hook, open: false })
+    const turn = h.adapter.openTurn(KEY, hook, 'acp-session-2', { daemonId: DAEMON_ID, persist: async () => {} })!
+    await h.adapter.recoverTurn(turn)
+    expect(h.ops.some((op) => op.op === 'return-unused' && op.recordId === 'rec-draft_create-0')).toBe(true)
+    expect(hook.codeReview?.operations).toEqual([])
+    // ...and the classified-but-unreported result goes with it.
+    expect(h.results.at(-1)).toMatchObject({ attemptId: ATTEMPT, state: 'not_submitted' })
+    expect(hook.codeReview?.resultOwed).toBeUndefined()
   })
 })
 
@@ -1332,6 +1470,39 @@ describe('GitLab review adapter — owed frames are never dropped (round 3)', ()
     expect(h.results.filter((row) => row.attemptId === ATTEMPT)).toHaveLength(2)
     expect(store.rows.size).toBe(0)
     expect(h.timer.armed()).toBe(0)
+  })
+
+  it('stays armed when a sweep hits its page cap with rows still unseen', async () => {
+    const store = new FakeReviewStore()
+    // Two rows per page against a 50-page cap leaves the 101st row unseen.
+    store.pageSize = 2
+    for (let index = 0; index < 101; index += 1) {
+      await store.recordReviewIntent({
+        intentId: `capped-${index}`,
+        daemonId: DAEMON_ID,
+        attemptId: ATTEMPT,
+        kind: 'result',
+        frame: JSON.stringify({
+          hookId: HOOK_ID,
+          deliveryKey: 'delivery-1',
+          attemptId: ATTEMPT,
+          snapshot: SNAPSHOT,
+          provider: 'gitlab',
+          projectId: PROJECT,
+          mergeRequestIid: IID,
+          event: 'COMMENT',
+          verdict: 'neutral',
+          headSha: HEAD,
+          state: 'submitted'
+        }),
+        attempts: 0
+      })
+    }
+    const h = harness({ reviewStore: store, open: false })
+    await h.adapter.reconcilePending()
+    // The cap proves nothing about what is left, so the scheduler keeps the chain alive.
+    expect(store.rows.size).toBeGreaterThan(0)
+    expect(h.timer.armed()).toBe(1)
   })
 
   it('drains every page of owed frames before it goes quiet', async () => {
