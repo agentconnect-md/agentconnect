@@ -3968,6 +3968,31 @@ export async function fetchHookRuns(id: string, orgId?: string): Promise<HookRun
   return apiGet<HookRunDto[]>(`${orgBase(orgId)}/hooks/${encodeURIComponent(id)}/runs`)
 }
 
+/** One rerun subject — the two GitLab thread kinds a session can be keyed to. */
+export interface GitlabRerunSubject {
+  kind: 'merge_request' | 'issue'
+  iid: number
+}
+
+export interface HookRerunDto {
+  accepted: true
+  deliveryKey: string
+  event: string
+  /** The merge request's current head, read live by the CP; null for an issue. */
+  headSha: string | null
+}
+
+// The "Run again" action for a GitLab trigger thread (gitlab-com-integration.md
+// §16.1). The caller names only the subject: the Control Plane reads its current
+// state and head itself, so the console can never re-run a stale revision.
+export async function rerunGitlabHook(
+  hookId: string,
+  subject: GitlabRerunSubject,
+  orgId?: string
+): Promise<HookRerunDto> {
+  return apiPost<HookRerunDto>(`${orgBase(orgId)}/hooks/${encodeURIComponent(hookId)}/rerun`, { subject })
+}
+
 // Per-conversation trigger choice (`PATCH /integrations/:id/channels/:channelId`). The CP
 // persists it and pushes the integration's recomputed bind rules to the owning daemon.
 export async function updateIntegrationChannel(

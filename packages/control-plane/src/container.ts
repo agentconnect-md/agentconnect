@@ -29,6 +29,7 @@ import { GitlabProvisioner } from './gitlab/provisioner.js'
 import { GitlabGitcredService } from './gitlab/gitcred.service.js'
 import { GitlabCredentialRotator } from './gitlab/rotator.js'
 import { GitlabMembershipAuthzService } from './gitlab/membership-authz.service.js'
+import { GitlabHookRerunService } from './gitlab/hook-rerun.service.js'
 import { unionGitlabWebhookEvents } from './gitlab/webhook-events.js'
 import { resolveSlackPlatformAppConfig } from './config/slack-platform.js'
 import { resolveFeishuPlatformApps } from './config/feishu-platform.js'
@@ -958,6 +959,17 @@ export function buildContainer(
     ? {
         ...(opts.gitlabFetch ? { fetchImpl: opts.gitlabFetch } : {}),
         oauth: gitlabOauthService,
+        // The Console "Run again" action (§16.1) — fences here, dispatch on the relay.
+        hookRerun: new GitlabHookRerunService({
+          hooks: repos.hook,
+          agents: repos.agent,
+          bindings: repos.gitlabProjectBinding,
+          credentials: new PgGitlabProjectCredentialRepo(prisma),
+          credentialSecrets: new PgGitlabProjectCredentialSecretStore(prisma, secretCipher),
+          hookService,
+          relayControl,
+          ...(opts.gitlabFetch ? { fetchImpl: opts.gitlabFetch } : {})
+        }),
         provisioner: new GitlabProvisioner({
           oauth: gitlabOauthService,
           bindings: repos.gitlabProjectBinding,

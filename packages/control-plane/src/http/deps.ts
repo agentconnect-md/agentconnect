@@ -60,6 +60,7 @@ import type { GithubService } from '../github/service.js'
 import type { GitlabOauthService } from '../gitlab/oauth.service.js'
 import type { FetchLike as GitlabFetchLike } from '../gitlab/api.js'
 import type { GitlabProvisioner } from '../gitlab/provisioner.js'
+import type { GitlabHookRerunService } from '../gitlab/hook-rerun.service.js'
 import type { PullRequestViewService } from '../github/pull-request-view.service.js'
 import type { SessionPullRequestLinkService } from '../github/session-pull-request-link.service.js'
 import type { GithubUserAuthzService } from '../github/user-authz.js'
@@ -377,7 +378,13 @@ export interface HttpDeps {
   github?: GithubService
   /** GitLab.com OAuth surface (gitlab-com-integration.md §9); absent ⇒ routes 404.
    *  `fetchImpl` is the injectable gitlab.com edge the admin routes share with the service. */
-  gitlab?: { oauth: GitlabOauthService; provisioner: GitlabProvisioner; fetchImpl?: GitlabFetchLike }
+  gitlab?: {
+    oauth: GitlabOauthService
+    provisioner: GitlabProvisioner
+    /** The §16.1 Console rerun authorizer; the route 404s without the GitLab app. */
+    hookRerun: GitlabHookRerunService
+    fetchImpl?: GitlabFetchLike
+  }
   /** The PR panel's read projection; absent like {@link github} ⇒ the route 404s, hiding the tab. */
   pullRequestView?: PullRequestViewService
   /** The panel's second identity source: the PR a session's own head branch has, for the sessions no

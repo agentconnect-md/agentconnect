@@ -19,6 +19,8 @@ import {
   type HookContext,
   type RcCodeHostMembershipAuthz,
   type RcHookAssign,
+  type RcHookRerun,
+  type RcHookRerunResult,
   type RcRunReport,
   type RdMsgHook
 } from '@agentconnect.md/protocol'
@@ -686,4 +688,73 @@ export function registerGitlabIngress(app: FastifyInstance, deps: GitlabIngressD
       return reply.code(202).send({ deliveryKey })
     })
   })
+}
+
+/** The deps one Console-initiated rerun needs — the ordinary ingress subset. */
+export type GitlabRerunDeps = Pick<GitlabIngressDeps, 'table' | 'daemons' | 'report' | 'limiter' | 'clock' | 'log'>
+
+/**
+ * Re-dispatch one gitlab hook turn on the Control Plane's `rc/hook-rerun`
+ * (§16.1 "Run again"). The CP already revalidated the hook, agent, binding, and
+ * live subject; the relay re-checks the frame against its OWN compiled rule —
+ * a disable, retarget, or reconfigure since the CP read fails the rerun closed
+ * — then reuses the ordinary dispatch path, including its per-hook run budget.
+ *
+ * The return value IS the admission: only `admitted` means a turn was queued and
+ * a run report will follow. Every refusal is definitive and leaves no HookRun
+ * row, so the Control Plane is free to ask another relay.
+ */
+export function dispatchGitlabRerun(deps: GitlabRerunDeps, rerun: RcHookRerun): RcHookRerunResult {
+  const rule = deps.table.getByHookId(rerun.hookId)
+  // No rule at all reads as an unconverged table: this relay's copy is filled by
+  // the CP's register replay, and the CP only sends a rerun it just compiled.
+  if (!rule) {
+    deps.log.info(`gitlab rerun: no rule yet for ${rerun.hookId}:${rerun.deliveryKey}`)
+    return { admitted: false, code: 'replay_pending' }
+  }
+  if (
+    rule.kind !== 'gitlab' ||
+    !rule.gitlab ||
+    rule.agentId !== rerun.agentId ||
+    rule.gitlab.projectId !== rerun.gitlab.projectId ||
+    rule.configRevision !== rerun.configRevision ||
+    rule.dispatchRevision !== rerun.dispatchRevision
+  ) {
+    deps.log.info(`gitlab rerun: ignored stale ${rerun.hookId}:${rerun.deliveryKey}`)
+    return { admitted: false, code: 'rule_mismatch' }
+  }
+  if (!deps.limiter.allow(rule.hookId)) {
+    deps.log.info(`gitlab rerun: rate-limited ${rule.hookId}:${rerun.deliveryKey}`)
+    return { admitted: false, code: 'limiter_exhausted' }
+  }
+  const family = rerun.gitlab.target.kind === 'issue' ? ('issues' as const) : ('merge_request' as const)
+  const msg: RdMsgHook = {
+    source: 'hook',
+    agentId: rule.agentId,
+    sessionKey: gitlabSessionKey(rule, rerun.gitlab.target),
+    msgId: `${rule.hookId}:${rerun.deliveryKey}`,
+    hookId: rule.hookId,
+    deliveryKey: rerun.deliveryKey,
+    firedAt: new Date(deps.clock.now()).toISOString(),
+    ...hookSnapshotForDelivery(rule),
+    event: rerun.event,
+    gitlab: rerun.gitlab,
+    // Control-authored envelope: no third-party text, so nothing to fence.
+    context: {
+      source: 'gitlab',
+      event: family,
+      action: 'rerun',
+      repo: rerun.gitlab.projectPath,
+      ...(rerun.gitlab.target.kind !== 'push' ? { number: rerun.gitlab.target.iid } : {}),
+      truncated: false
+    },
+    ...(rule.target ? { target: rule.target } : {})
+  }
+  void dispatchHookFire(
+    { table: deps.table, daemons: deps.daemons, report: deps.report, clock: deps.clock, log: deps.log },
+    rule,
+    msg
+  )
+  deps.log.info(`gitlab rerun: queued ${rule.hookId}:${rerun.deliveryKey} (${rerun.event} ${msg.sessionKey})`)
+  return { admitted: true, deliveryKey: rerun.deliveryKey }
 }

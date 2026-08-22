@@ -771,6 +771,29 @@ describe('hooks REST — CRUD, ingress gating, secret echo, runs, audit', () => 
     })
   })
 
+  it('refuses a rerun on a deployment with no GitLab application, without an existence oracle', async () => {
+    const agentId = await placedAgent()
+    await seedRelay()
+    const a = app()
+    const { id } = (await a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: body(agentId) })).json() as {
+      id: string
+    }
+    const rerun = await a.app.inject({
+      method: 'POST',
+      url: `${ORG}/hooks/${id}/rerun`,
+      payload: { subject: { kind: 'merge_request', iid: 1 } }
+    })
+    expect(rerun.statusCode).toBe(409)
+    expect((rerun.json() as { code: string }).code).toBe('GITLAB_NOT_CONFIGURED')
+    // An unknown hook is still absent, not a configuration complaint.
+    const missing = await a.app.inject({
+      method: 'POST',
+      url: `${ORG}/hooks/${randomUUID()}/rerun`,
+      payload: { subject: { kind: 'merge_request', iid: 1 } }
+    })
+    expect(missing.statusCode).toBe(404)
+  })
+
   it('POST and DELETE append hook_change audit rows', async () => {
     const agentId = await placedAgent()
     await seedRelay()

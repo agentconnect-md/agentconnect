@@ -9,6 +9,8 @@ import {
   RcVerifyResult,
   RcDaemonRevoke,
   RcHookAssign,
+  RcHookRerun,
+  RcHookRerunResult,
   RcRunReport,
   RcGithubInstallation,
   RcGithubRerequest,
@@ -753,6 +755,60 @@ describe('relay↔CP wire — skeleton frame codec (shared-bot-relay.md §7.1)',
 
     const rm = decodeRelayCpFrame(envelope('rc/hook-remove', { hookId: HOOK_ID }))
     expect(rm.ok).toBe(true)
+  })
+
+  it('rc/hook-rerun carries the Console rerun fence and its live subject (§16.1)', () => {
+    const HOOK_ID = '99999999-9999-4999-8999-999999999999'
+    const base = {
+      hookId: HOOK_ID,
+      agentId: AGENT_ID,
+      deliveryKey: 'rerun_1',
+      configRevision: '3',
+      dispatchRevision: '5',
+      event: 'merge_request:rerun',
+      gitlab: {
+        projectId: '4455667',
+        projectPath: 'example-group/example-project',
+        target: { kind: 'merge_request', iid: 42, headSha: 'a'.repeat(40) }
+      }
+    }
+    const ok = decodeRelayCpFrame(envelope('rc/hook-rerun', base))
+    expect(ok.ok).toBe(true)
+    if (ok.ok && ok.frame.type === 'rc/hook-rerun') {
+      expect(ok.frame.payload.gitlab.target).toMatchObject({ kind: 'merge_request', iid: 42 })
+      expect(ok.frame.payload.deliveryKey).toBe('rerun_1')
+    }
+    expect(
+      RcHookRerun.safeParse({ ...base, gitlab: { ...base.gitlab, target: { kind: 'issue', iid: 7 } } }).success
+    ).toBe(true)
+    // The fence is REQUIRED here: unlike a rolling delivery frame, a rerun the
+    // relay cannot fence against its compiled rule must not decode at all.
+    expect(RcHookRerun.safeParse({ ...base, configRevision: undefined }).success).toBe(false)
+    expect(RcHookRerun.safeParse({ ...base, dispatchRevision: undefined }).success).toBe(false)
+    expect(RcHookRerun.safeParse({ ...base, deliveryKey: '' }).success).toBe(false)
+    expect(RcHookRerun.safeParse({ ...base, hookId: 'nope' }).success).toBe(false)
+    // A push ref has no rerun subject; the target still decodes as GitLab metadata.
+    expect(
+      RcHookRerun.safeParse({ ...base, gitlab: { ...base.gitlab, target: { kind: 'merge_request', iid: 0 } } }).success
+    ).toBe(false)
+
+    // The REP is the admission: reaching a socket is not acceptance.
+    const admitted = decodeRelayCpFrame(
+      envelope('rc/hook-rerun/ok', { admitted: true, deliveryKey: 'rerun_1' }, { corr: ok.ok ? ok.frame.id : 'x' })
+    )
+    expect(admitted.ok).toBe(true)
+    if (admitted.ok && admitted.frame.type === 'rc/hook-rerun/ok') {
+      expect(admitted.frame.payload).toEqual({ admitted: true, deliveryKey: 'rerun_1' })
+    }
+    for (const code of ['replay_pending', 'rule_mismatch', 'limiter_exhausted']) {
+      expect(RcHookRerunResult.safeParse({ admitted: false, code }).success).toBe(true)
+    }
+    // A refusal names a category, an admission names the delivery — never both,
+    // and never a code the Control Plane has no mapping for.
+    expect(RcHookRerunResult.safeParse({ admitted: false, code: 'daemon_offline' }).success).toBe(false)
+    expect(RcHookRerunResult.safeParse({ admitted: false }).success).toBe(false)
+    expect(RcHookRerunResult.safeParse({ admitted: true }).success).toBe(false)
+    expect(RcHookRerunResult.safeParse({ admitted: true, deliveryKey: '' }).success).toBe(false)
   })
 
   it('rc/run-report carries the delivery-stage verdict (accepted opens, failed records)', () => {
