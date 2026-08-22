@@ -36,6 +36,8 @@ import { OrgId } from '../../src/domain/ids.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
 const PROJECT = 4455667n
+/** A second project under the SAME top-level group — the retarget's other half. */
+const SECOND_PROJECT = 4455668n
 const ROOT_GROUP = 900n
 /** The agent whose own account (§7.2) backs every grant assertion below. */
 const AGENT = '11111111-1111-4111-8111-111111111111'
@@ -115,7 +117,7 @@ async function harness(liveness?: DaemonLiveness) {
   await seedAgent(prisma, AGENT, { name: 'workspace-agent', gitlabProjectId: PROJECT })
   expect(await provisioner.provision(DEFAULT_ORG_ID, binding.id)).toEqual({ state: 'ready' })
   const account = (await accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP))!
-  return { fake, a: running, bindings, accounts, binding, account, provisioner }
+  return { fake, a: running, bindings, accounts, binding, account, provisioner, connection }
 }
 
 function credService(bindings: PgGitlabProjectBindingRepo) {
@@ -364,6 +366,44 @@ describe('gitlab workspaces — agent create/edit (§8.3)', () => {
     expect(row.workspaceRepoId).toBe(PROJECT)
     expect(row.gitBranch).toBe('main')
     expect(row.gitAccess).toBe('read')
+  })
+
+  it('a retarget within one top-level group keeps the agent’s account alive (§7.2)', async () => {
+    const h = await harness()
+    // A second managed project under the SAME root, so both share one account.
+    const second = await h.bindings.createWithClaim({
+      orgId: DEFAULT_ORG_ID,
+      projectId: SECOND_PROJECT,
+      projectPath: 'example-group/example-second',
+      installerConnectionId: h.connection.id
+    })
+    const before = h.account
+    expect(before.serviceAccountUserId).not.toBeNull()
+
+    const moved = await h.a.app.inject({
+      method: 'PUT',
+      url: `${ORG}/agents/${AGENT}/workspace`,
+      payload: { mode: 'gitlab', projectId: SECOND_PROJECT.toString() }
+    })
+    expect(moved.statusCode).toBe(200)
+
+    // The route converges the DESTINATION first, so the account is bound there
+    // before the source unbind can find its root empty and retire it.
+    await vi.waitFor(
+      async () => {
+        expect((await h.accounts.membershipsForBinding(second.id)).map((m) => m.accountId)).toEqual([before.id])
+        expect(await h.accounts.membershipsForBinding(h.binding.id)).toHaveLength(0)
+      },
+      { timeout: 30_000 }
+    )
+    // The identity survived the move: same row, same GitLab user, same PATs.
+    const after = (await h.accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP))!
+    expect(after.id).toBe(before.id)
+    expect(after.serviceAccountUserId).toBe(before.serviceAccountUserId)
+    expect(after.generation).toBe(before.generation)
+    expect(h.fake.deletedServiceAccounts).toEqual([])
+    expect([...h.fake.tokens.values()].every((token) => !token.revoked)).toBe(true)
+    expect(await new PgGitlabProjectCredentialRepo(prisma).listForAccount(after.id)).toHaveLength(3)
   })
 })
 

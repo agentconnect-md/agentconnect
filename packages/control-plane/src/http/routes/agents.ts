@@ -1084,8 +1084,9 @@ export function agentRoutes(deps: HttpDeps) {
 
     // A gitlab workspace write changes who consumes the project, so the §7.2
     // accounts and memberships must reconverge — the same kick a gitlab hook
-    // write does. Retargeting converges BOTH projects: the agent joins one and
-    // leaves the other. Fire-and-forget, like every post-write convergence here.
+    // write does. Retargeting converges BOTH projects, IN THE ORDER GIVEN: the
+    // agent joins one and leaves the other, and joining must land first.
+    // Fire-and-forget, like every post-write convergence here.
     const convergeGitlabProjects = (orgId: OrgId, projectIds: Iterable<bigint | undefined>): void => {
       const gitlab = deps.gitlab
       if (!gitlab) return
@@ -2447,9 +2448,14 @@ export function agentRoutes(deps: HttpDeps) {
 
           const converted = await agentMoves.setWorkspace(existing, workspace, workspaceRepoId, req.principal?.userId)
           // Joining, leaving, or re-clamping a gitlab project moves its §7.2
-          // membership set; a project the agent left may now hold none at all.
+          // membership set. DESTINATION FIRST, and the order is load-bearing: an
+          // account with no membership left in its root retires, so converging
+          // the project being left first would retire the very account the
+          // destination is about to bind — deleting it at GitLab and recreating
+          // it under a new user id. Binding the destination first leaves the
+          // source unbind with a still-bound account to spare.
           if (existing.workspace.mode === 'gitlab' || converted.workspace.mode === 'gitlab') {
-            convergeGitlabProjects(converted.orgId, [existing.workspaceRepoId, converted.workspaceRepoId])
+            convergeGitlabProjects(converted.orgId, [converted.workspaceRepoId, existing.workspaceRepoId])
           }
           return toDto(
             converted,
