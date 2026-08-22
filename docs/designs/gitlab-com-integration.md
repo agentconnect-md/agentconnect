@@ -554,6 +554,11 @@ and removes the sealed token pair. Project bindings are not deleted
 implicitly. Bindings assigned to that connection become `admin_degraded` and
 can be taken over by another current Maintainer or Owner.
 
+The retained row is history, not a permanent fixture: once a disconnected
+connection administers no project binding at all, deleting it again removes
+the row, and that removal is refused while any binding is still assigned to
+it.
+
 Removing the AgentConnect user from the organization follows the same rule.
 Their OAuth authority must not survive organization membership.
 

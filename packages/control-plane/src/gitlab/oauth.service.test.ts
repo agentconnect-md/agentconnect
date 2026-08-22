@@ -96,6 +96,12 @@ class MemConnections implements GitlabConnectionRepo {
     this.secrets.rows.delete(id)
     return true
   }
+  async remove(orgId: string, id: string): Promise<boolean> {
+    const row = this.rows.get(id)
+    if (!row || row.orgId !== orgId || row.state !== 'disconnected') return false
+    this.rows.delete(id)
+    return true
+  }
   leases = new Map<string, { owner: string; until: Date }>()
   async claimRefreshLease(id: string, owner: string, until: Date, now: Date): Promise<boolean> {
     const lease = this.leases.get(id)

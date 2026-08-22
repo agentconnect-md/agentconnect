@@ -3275,6 +3275,9 @@ export interface GitlabConnectionRepo {
   /** Atomic disconnect: state flip, version bump (defeats in-flight refresh CAS),
    *  and sealed-pair deletion in one transaction. The row stays as history. */
   disconnect(orgId: string, connectionId: string): Promise<boolean>
+  /** Drop an already-released row (§9.4): state-fenced to `disconnected`, so a
+   *  reconnect that raced this call keeps its live connection. */
+  remove(orgId: string, connectionId: string): Promise<boolean>
 }
 
 /** Sealed OAuth pair reads (per-org key scope). Writes ride the connection
@@ -3327,6 +3330,9 @@ export interface GitlabProjectBindingRepo {
   get(orgId: string, bindingId: string): Promise<GitlabProjectBindingRecord | null>
   byProject(orgId: string, projectId: bigint): Promise<GitlabProjectBindingRecord | null>
   listForOrg(orgId: string): Promise<GitlabProjectBindingRecord[]>
+  /** How many bindings each connection still administers, keyed by connection id
+   *  (§7.1): a connection with any is not released and cannot be removed. */
+  countByInstaller(orgId: string): Promise<Record<string, number>>
   /** Saga/reconciler facts (service account, webhook, path refresh, lifecycle). */
   update(
     orgId: string,

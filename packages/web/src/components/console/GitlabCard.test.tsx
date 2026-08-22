@@ -50,6 +50,7 @@ const CONNECTION: GitlabConnectionDto = {
   scopes: ['api'],
   connectedBy: 'user-1',
   accessExpiresAt: null,
+  assignedProjects: 0,
   createdAt: '2026-08-01T00:00:00.000Z'
 }
 
@@ -98,6 +99,13 @@ async function settleSearch(): Promise<void> {
   })
 }
 
+/** One connection row and everything the card renders under it. */
+function connectionRow(id: string): HTMLElement {
+  const found = host.querySelector(`[data-gitlab-connection="${id}"]`)
+  if (!found) throw new Error(`no connection row: ${id}`)
+  return found as HTMLElement
+}
+
 function modal(): HTMLElement {
   const found = host.querySelector('.modal')
   if (!found) throw new Error('no confirmation modal is open')
@@ -139,6 +147,59 @@ describe('GitlabCard', () => {
     await render()
     expect(host.textContent).toContain('reconnect needed')
     expect(buttonIn(host, 'Reconnect')).toBeTruthy()
+  })
+
+  it('offers Disconnect, not Remove, while the connection is still live', async () => {
+    mocks.fetchConnections.mockResolvedValue({ enabled: true, connections: [CONNECTION] })
+    mocks.disconnect.mockResolvedValue({
+      removed: false,
+      connection: { ...CONNECTION, state: 'disconnected' as const }
+    })
+    await render()
+    const row = connectionRow('conn-1')
+    expect(buttonIn(row, 'Disconnect')).toBeTruthy()
+    expect(() => buttonIn(row, 'Remove')).toThrow()
+
+    // Disconnect is confirmed, and the row survives it — in its released state.
+    await click('Disconnect')
+    expect(mocks.disconnect).not.toHaveBeenCalled()
+    await click('Disconnect', modal())
+    expect(mocks.disconnect).toHaveBeenCalledWith('conn-1')
+    expect(host.textContent).toContain('disconnected')
+    expect(host.querySelectorAll('[data-gitlab-connection]')).toHaveLength(1)
+  })
+
+  it('finishes a released connection that administers nothing: Remove instead of Disconnect', async () => {
+    mocks.fetchConnections.mockResolvedValue({
+      enabled: true,
+      connections: [{ ...CONNECTION, state: 'disconnected' as const, assignedProjects: 0 }]
+    })
+    mocks.disconnect.mockResolvedValue({ removed: true, connection: null })
+    await render()
+    const row = connectionRow('conn-1')
+    expect(buttonIn(row, 'Reconnect')).toBeTruthy()
+    expect(() => buttonIn(row, 'Disconnect')).toThrow()
+
+    await click('Remove')
+    expect(mocks.disconnect).not.toHaveBeenCalled()
+    await click('Remove', modal())
+    expect(mocks.disconnect).toHaveBeenCalledWith('conn-1')
+    expect(host.querySelectorAll('[data-gitlab-connection]')).toHaveLength(0)
+  })
+
+  it('explains why a released connection with projects still assigned cannot go', async () => {
+    mocks.fetchConnections.mockResolvedValue({
+      enabled: true,
+      connections: [{ ...CONNECTION, state: 'disconnected' as const, assignedProjects: 2 }]
+    })
+    await render()
+    const row = connectionRow('conn-1')
+    expect(row.textContent).toContain('still administers 2 projects')
+    expect(buttonIn(row, 'Reconnect')).toBeTruthy()
+    expect(() => buttonIn(row, 'Remove')).toThrow()
+    expect(() => buttonIn(row, 'Disconnect')).toThrow()
+    // The blocking count is stated in words, never as a machine code.
+    expect(row.textContent).not.toContain('assignedProjects')
   })
 
   it('repairs and removes the project it was invoked on', async () => {

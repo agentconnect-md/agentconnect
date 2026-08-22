@@ -69,6 +69,15 @@ describe('PgGitlabConnectionRepo transitions', () => {
     expect((await repo().get(DEFAULT_ORG_ID, record.id))!.state).toBe('disconnected')
   })
 
+  it('remove is state-fenced: only an already-released row goes (§9.4)', async () => {
+    const record = await connected()
+    expect(await repo().remove(DEFAULT_ORG_ID, record.id)).toBe(false)
+    expect((await repo().get(DEFAULT_ORG_ID, record.id))!.state).toBe('connected')
+    await repo().disconnect(DEFAULT_ORG_ID, record.id)
+    expect(await repo().remove(DEFAULT_ORG_ID, record.id)).toBe(true)
+    expect(await repo().get(DEFAULT_ORG_ID, record.id)).toBeNull()
+  })
+
   it('markReauthRequired is version-fenced: a stale outcome keeps newer state', async () => {
     const record = await connected()
     expect(await repo().markReauthRequired(record.id, record.tokenVersion - 1n)).toBe(false)

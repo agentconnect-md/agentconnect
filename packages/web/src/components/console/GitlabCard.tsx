@@ -57,7 +57,8 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
   const [projects, setProjects] = useState<GitlabProjectBindingDto[]>([])
   const [busyId, setBusyId] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
-  const [disconnecting, setDisconnecting] = useState<GitlabConnectionDto | null>(null)
+  // One pending connection action: releasing a live row, or removing a released one.
+  const [pending, setPending] = useState<{ target: GitlabConnectionDto; remove: boolean } | null>(null)
   const [removing, setRemoving] = useState<GitlabProjectBindingDto | null>(null)
   const [adding, setAdding] = useState(false)
 
@@ -95,14 +96,20 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
     }
   }
 
-  const disconnect = async (target: GitlabConnectionDto) => {
+  // Disconnect releases the row and keeps it; a second delete on a released row
+  // with nothing left assigned to it removes the row for good.
+  const release = async (target: GitlabConnectionDto) => {
     if (busyId) return
     setBusyId(target.id)
     setErr(null)
     try {
-      await disconnectGitlabConnection(target.id)
-      setConnections((current) => current.filter((c) => c.id !== target.id))
-      setDisconnecting(null)
+      const outcome = await disconnectGitlabConnection(target.id)
+      setConnections((current) =>
+        outcome.removed || !outcome.connection
+          ? current.filter((c) => c.id !== target.id)
+          : current.map((c) => (c.id === target.id ? outcome.connection! : c))
+      )
+      setPending(null)
     } catch (e) {
       setErr(errorText(e))
     } finally {
@@ -199,7 +206,7 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
 
       {enabled === true &&
         connections.map((c) => (
-          <div key={c.id}>
+          <div key={c.id} data-gitlab-connection={c.id}>
             <div className="row grid-cols-1 gap-2 desktop:grid-cols-[minmax(0,1fr)_auto] desktop:gap-[11px]">
               <div className="flex min-w-0 flex-wrap items-center gap-[10px]">
                 <span className="flex h-7 w-7 flex-none items-center justify-center rounded-[7px] border border-(--border-default) bg-(--surface-card)">
@@ -224,18 +231,41 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
                       Reconnect
                     </Button>
                   )}
-                  <Button
-                    variant="ghost"
-                    size="xs"
-                    className="text-(--status-error) hover:text-(--status-error)"
-                    onClick={() => setDisconnecting(c)}
-                  >
-                    <Icon name="unplug" size={13} />
-                    Disconnect
-                  </Button>
+                  {/* A released row has nothing left to disconnect: it offers the finish instead. */}
+                  {c.state !== 'disconnected' && (
+                    <Button
+                      variant="ghost"
+                      size="xs"
+                      className="text-(--status-error) hover:text-(--status-error)"
+                      disabled={busyId === c.id}
+                      onClick={() => setPending({ target: c, remove: false })}
+                    >
+                      <Icon name="unplug" size={13} />
+                      Disconnect
+                    </Button>
+                  )}
+                  {c.state === 'disconnected' && c.assignedProjects === 0 && (
+                    <Button
+                      variant="ghost"
+                      size="xs"
+                      className="text-(--status-error) hover:text-(--status-error)"
+                      disabled={busyId === c.id}
+                      onClick={() => setPending({ target: c, remove: true })}
+                    >
+                      <Icon name="trash-2" size={13} />
+                      Remove
+                    </Button>
+                  )}
                 </span>
               )}
             </div>
+            {c.state === 'disconnected' && c.assignedProjects > 0 && (
+              <div className="border-b border-(--border-subtle) px-4 py-[9px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
+                {c.assignedProjects === 1
+                  ? 'This account still administers 1 project below. Remove that project, or reconnect the account to keep managing it, before this row can go.'
+                  : `This account still administers ${c.assignedProjects} projects below. Remove those projects, or reconnect the account to keep managing them, before this row can go.`}
+              </div>
+            )}
             {c.state === 'reauth_required' && (
               <div
                 role="status"
@@ -316,23 +346,31 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
         <div className="px-4 py-2 font-sans text-[12px] font-normal leading-normal text-(--status-error)">{err}</div>
       )}
 
-      {disconnecting && (
-        <div className="scrim" onClick={() => setDisconnecting(null)}>
+      {pending && (
+        <div className="scrim" onClick={() => setPending(null)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <ConfirmGitlab
-              title="Disconnect GitLab"
+              title={pending.remove ? 'Remove connection' : 'Disconnect GitLab'}
               body={
-                <>
-                  Disconnect <span className="mono text-(--text-primary)">{disconnecting.gitlabUsername}</span>? GitLab
-                  stops accepting this account for project setup and repairs. Projects you already added keep running
-                  until you remove them.
-                </>
+                pending.remove ? (
+                  <>
+                    Remove <span className="mono text-(--text-primary)">{pending.target.gitlabUsername}</span> from the
+                    list? It has already been disconnected and administers no projects, so this only clears the row.
+                    Connect GitLab again whenever you need it.
+                  </>
+                ) : (
+                  <>
+                    Disconnect <span className="mono text-(--text-primary)">{pending.target.gitlabUsername}</span>?
+                    GitLab stops accepting this account for project setup and repairs. Projects you already added keep
+                    running until you remove them.
+                  </>
+                )
               }
-              verb="Disconnect"
-              icon="unplug"
-              busy={busyId === disconnecting.id}
-              onClose={() => setDisconnecting(null)}
-              onConfirm={() => disconnect(disconnecting)}
+              verb={pending.remove ? 'Remove' : 'Disconnect'}
+              icon={pending.remove ? 'trash-2' : 'unplug'}
+              busy={busyId === pending.target.id}
+              onClose={() => setPending(null)}
+              onConfirm={() => release(pending.target)}
             />
           </div>
         </div>

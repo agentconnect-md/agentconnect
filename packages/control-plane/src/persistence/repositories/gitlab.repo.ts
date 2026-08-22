@@ -138,6 +138,15 @@ export class PgGitlabConnectionRepo implements GitlabConnectionRepo {
     })
   }
 
+  async remove(orgId: string, connectionId: string): Promise<boolean> {
+    // State-fenced (§9.4): only an already-released row goes, so a reconnect that
+    // landed between the read and this call keeps its live connection.
+    const res = await this.prisma.gitlabConnection.deleteMany({
+      where: { id: connectionId, orgId, state: 'disconnected' }
+    })
+    return res.count === 1
+  }
+
   async claimRefreshLease(connectionId: string, owner: string, until: Date, now: Date): Promise<boolean> {
     const res = await this.prisma.gitlabConnection.updateMany({
       where: {
@@ -352,6 +361,19 @@ export class PgGitlabProjectBindingRepo implements GitlabProjectBindingRepo {
       where: { orgId }
     })
     return rows.map(toBindingRecord)
+  }
+
+  async countByInstaller(orgId: string): Promise<Record<string, number>> {
+    const groups = await this.prisma.gitlabProjectBinding.groupBy({
+      by: ['installerConnectionId'],
+      where: { orgId, installerConnectionId: { not: null } },
+      _count: { _all: true }
+    })
+    const counts: Record<string, number> = {}
+    for (const group of groups) {
+      if (group.installerConnectionId) counts[group.installerConnectionId] = group._count._all
+    }
+    return counts
   }
 
   async update(
