@@ -226,6 +226,13 @@ export const GITLAB_ACCESS_REPORTER = 20
 export const GITLAB_ACCESS_DEVELOPER = 30
 export const GITLAB_ACCESS_MAINTAINER = 40
 
+/** The project role a workspace authorization derives (§7.2): push needs
+ *  Developer, a read-only workspace needs no more than Reporter. One definition,
+ *  because the consumer query and the write paths must not disagree. */
+export function gitlabWorkspaceAccessLevel(gitAccess: 'read' | 'write' | undefined): number {
+  return gitAccess === 'read' ? GITLAB_ACCESS_REPORTER : GITLAB_ACCESS_DEVELOPER
+}
+
 export interface GitlabEffectiveMembership {
   access_level: number
   state: string

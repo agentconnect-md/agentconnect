@@ -75,6 +75,21 @@ export class GitlabAccountLeaseLost extends Error {
   }
 }
 
+/** An account the write could not provision, said the way a console can act on
+ *  it. The reasons are this module's own repair categories (§8.2). */
+export function gitlabAccountUnavailableMessage(reason: string): string {
+  if (reason === 'service_account_quota') {
+    return 'the GitLab group has no service-account slots left — free one, then try again'
+  }
+  if (reason === 'service_account_create_forbidden') {
+    return 'the connected GitLab account must be an Owner of the top-level group to create bot accounts'
+  }
+  if (reason === 'provisioning_or_cleanup_in_progress' || reason === 'account_busy') {
+    return 'GitLab project setup is already running — try again shortly'
+  }
+  return `the agent’s GitLab bot account could not be provisioned (${reason})`
+}
+
 function expiresAtDate(nowMs: number): string {
   return new Date(nowMs + PAT_LIFETIME_DAYS * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
 }
@@ -141,13 +156,8 @@ export class GitlabAccountService {
     // who may stay bound, so a transient convergence failure never revokes one.
     const authorized = new Set(consumers.map((consumer) => consumer.agentId))
     for (const consumer of consumers) {
-      const outcome = await this.ensureAccount(input, consumer)
-      if (!outcome.ok) {
-        fail(outcome.reason, outcome.reason === 'account_busy')
-        continue
-      }
-      const bound = await this.bindMembership(input, outcome.account, consumer.accessLevel)
-      if (!bound) fail('account_membership_contended', true)
+      const outcome = await this.ensureForConsumer(input, consumer)
+      if (!outcome.ok) fail(outcome.reason, outcome.retryable)
     }
     // Authorization removed ⇒ membership removed (§7.2). The account itself
     // survives while it still serves another project in its root.
@@ -165,6 +175,37 @@ export class GitlabAccountService {
       }
     }
     return { reason, retryable }
+  }
+
+  /**
+   * ONE consuming agent's identity on one project: its account, its three PATs,
+   * and its project membership at the derived role.
+   *
+   * Public because a write that will immediately act as that agent — a gitlab
+   * workspace edit whose activation mints credentials, a hook whose rule must
+   * carry an account — has to run this to completion BEFORE it dispatches,
+   * while the row that would make the agent a consumer does not exist yet.
+   * The binding converge is the same call per consumer it already has.
+   */
+  async ensureForConsumer(
+    input: {
+      orgId: string
+      bindingId: string
+      projectId: bigint
+      rootGroupId: number
+      installerConnectionId: string
+      token: string
+    },
+    consumer: GitlabAccountConsumer
+  ): Promise<{ ok: true } | { ok: false; reason: string; retryable: boolean }> {
+    const outcome = await this.ensureAccount(input, consumer)
+    // A contended account lease resolves itself; every other refusal is the
+    // account's own recorded state and needs a repair, not another attempt.
+    if (!outcome.ok) return { ok: false, reason: outcome.reason, retryable: outcome.reason === 'account_busy' }
+    if (!(await this.bindMembership(input, outcome.account, consumer.accessLevel))) {
+      return { ok: false, reason: 'account_membership_contended', retryable: true }
+    }
+    return { ok: true }
   }
 
   /** One consumer's account: created or recovered in the root, named after the
@@ -317,6 +358,82 @@ export class GitlabAccountService {
     }
     await this.deps.accounts.detachMembership(account.id, bindingId)
     return this.retireIfEmpty(orgId, account.id, token)
+  }
+
+  /**
+   * Undo a speculative bind whose write never landed. `ensureForConsumer` runs
+   * BEFORE the row that makes the agent a consumer exists, so a failure after it
+   * can leave an account — and possibly a membership — that no convergence would
+   * ever visit: the unbind pass discovers stale members through the binding's
+   * membership rows, and an account with none is invisible to it. Left alone it
+   * would sit in the root consuming one of its 100 service-account slots for a
+   * hook or workspace that does not exist.
+   *
+   * An account still bound to another project keeps its membership and its PATs
+   * (§19.4) — only the binding this write was for is undone.
+   */
+  async rollbackSpeculativeBind(
+    input: { orgId: string; bindingId: string; projectId: bigint; rootGroupId: bigint; token: string },
+    agentId: string
+  ): Promise<void> {
+    const account = await this.deps.accounts.byAgentRoot(input.orgId, agentId, input.rootGroupId)
+    if (!account) return
+    // Another authorization may already earn this membership — a workspace on
+    // the project, or an enabled hook that is not the one being rolled back.
+    // The consumer set is the same authority the unbind pass uses, so asking it
+    // keeps this from revoking access the write never granted. It does not
+    // justify the ROLE the write installed, though: a read-only workspace earns
+    // Reporter, so a failed hook that raised the account to Developer must give
+    // that back rather than leave write access behind indefinitely.
+    const consumers = await this.deps.accounts.consumers(input.orgId, input.projectId)
+    const surviving = consumers.find((consumer) => consumer.agentId === agentId)
+    if (surviving) {
+      try {
+        if (account.serviceAccountUserId !== null) {
+          await gitlabEnsureMember(
+            input.token,
+            input.projectId,
+            account.serviceAccountUserId,
+            surviving.accessLevel,
+            this.deps.fetchImpl
+          )
+        }
+        await this.deps.accounts.attachMembership({
+          accountId: account.id,
+          generation: account.generation,
+          bindingId: input.bindingId,
+          accessLevel: surviving.accessLevel
+        })
+      } catch (e) {
+        this.deps.log?.warn(
+          { accountId: account.id, status: e instanceof GitlabApiError ? e.status : undefined },
+          'gitlab speculative role rollback failed'
+        )
+      }
+      return
+    }
+    try {
+      const bound = await this.deps.accounts.membershipsForBinding(input.bindingId)
+      if (bound.some((membership) => membership.accountId === account.id)) {
+        if (account.serviceAccountUserId !== null) {
+          await gitlabRemoveMember(
+            input.token,
+            input.projectId,
+            account.serviceAccountUserId,
+            this.deps.fetchImpl
+          ).catch(swallow404)
+        }
+        await this.deps.accounts.detachMembership(account.id, input.bindingId)
+      }
+      await this.retireIfEmpty(input.orgId, account.id, input.token)
+    } catch (e) {
+      // Best effort: the account row keeps its own cleanup state, and the next
+      // convergence of any project in this root reconciles what is left.
+      this.deps.log?.warn(
+        { accountId: account.id, status: e instanceof GitlabApiError ? e.status : undefined },
+        'gitlab speculative bind rollback failed'
+      )
+    }
   }
 
   /** §19.4: an account with no membership left in its root is retired — PATs

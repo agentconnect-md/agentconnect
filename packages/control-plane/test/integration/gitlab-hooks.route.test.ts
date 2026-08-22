@@ -32,7 +32,7 @@ import {
 } from '../../src/persistence/index.js'
 import { makeSecretCipher } from '../../src/secrets/cipher.js'
 import { systemClock } from '../../src/domain/clock.js'
-import { HookId, OrgId } from '../../src/domain/ids.js'
+import { AgentId, HookId, OrgId } from '../../src/domain/ids.js'
 import {
   GITLAB_COM_V1_FEATURE,
   GITLAB_RERUN_V1_FEATURE,
@@ -222,6 +222,110 @@ describe('gitlab hooks — routes, compile, webhook converge (§8.3/§11.1/§11.
       { timeout: 20_000 }
     )
     expect(legacy.sent.filter((frame) => frame.type === 'rc/hook-assign')).toHaveLength(0)
+  })
+
+  it('provisions the hook agent’s account inline, before the write (§7.2)', async () => {
+    const h = await harness()
+    // The binding converged with no consumers, so it has no accounts at all.
+    expect(await h.accounts.listForBinding(h.binding.id)).toHaveLength(0)
+
+    const created = await h.a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: glBody(h.agentId) })
+    expect(created.statusCode).toBe(200)
+
+    // Asserted with NO polling: the rule this write compiles names the agent's
+    // own account, so the account has to exist by the time the write happens.
+    const account = (await h.accounts.byAgentRoot(DEFAULT_ORG_ID, h.agentId, 900n))!
+    expect(account.state).toBe('ready')
+    expect(account.username).toBe(gitlabAgentAccountUsername(h.agentId, 900n))
+    expect((await h.accounts.membershipsForBinding(h.binding.id)).map((m) => m.accountId)).toEqual([account.id])
+    expect(h.fake.members.get(Number(account.serviceAccountUserId))).toBe(30)
+  })
+
+  it('rolls back the account a refused hook write speculatively created', async () => {
+    // The account is created, then its PATs come back out of policy: the ensure
+    // fails with real provider state already behind it, and the hook row that
+    // would have made the agent a consumer is never written. Nothing would ever
+    // visit that account again, so the write has to undo it (§7.2).
+    const h = await harness({ patExpiryOverride: null })
+    const created = await h.a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: glBody(h.agentId) })
+    expect(created.statusCode).toBe(409)
+    expect(await h.hookRepo.listForAgent(AgentId(h.agentId))).toHaveLength(0)
+
+    // No account row, no service account left in the group, no live token.
+    expect(await h.accounts.listForAgent(DEFAULT_ORG_ID, h.agentId)).toHaveLength(0)
+    expect(h.fake.serviceAccounts).toHaveLength(0)
+    expect([...h.fake.tokens.values()].every((token) => token.revoked)).toBe(true)
+  })
+
+  it('keeps a membership another authorization still earns when a hook write is refused', async () => {
+    const h = await harness()
+    // The agent already consumes the project through its workspace, so the
+    // account and membership are not this write's to undo.
+    await prisma.agent.update({
+      where: { id: h.agentId },
+      data: {
+        workspaceMode: 'gitlab',
+        workspaceRepoId: PROJECT,
+        gitRepo: 'https://gitlab.com/example-group/example-project'
+      }
+    })
+    await h.provisioner.convergeProject(DEFAULT_ORG_ID, PROJECT)
+    const account = (await h.accounts.byAgentRoot(DEFAULT_ORG_ID, h.agentId, 900n))!
+
+    // Force a re-mint that the provider then answers out of policy, so the
+    // hook's own ensure fails with the account already in place.
+    await prisma.gitlabProjectCredential.updateMany({
+      where: { accountId: account.id },
+      data: { providerExpiresAt: new Date(Date.now() - 1_000) }
+    })
+    h.fake.opts.patExpiryOverride = null
+    const created = await h.a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: glBody(h.agentId) })
+    expect(created.statusCode).toBe(409)
+    // The workspace's own authorization survives the refused hook write.
+    expect(await h.accounts.get(account.id)).not.toBeNull()
+    expect((await h.accounts.membershipsForBinding(h.binding.id)).map((m) => m.accountId)).toEqual([account.id])
+    expect(h.fake.deletedServiceAccounts).toEqual([])
+  })
+
+  it('a hook that will not be enabled needs no account, even out of quota', async () => {
+    const h = await harness({ refuseServiceAccountQuota: true })
+    // A disabled hook can never fire, so provisioning an identity for it would
+    // churn an account the next convergence retires — and would make disabling
+    // impossible while the group is out of slots.
+    const created = await h.a.app.inject({
+      method: 'POST',
+      url: `${ORG}/hooks`,
+      payload: glBody(h.agentId, { enabled: false })
+    })
+    expect(created.statusCode).toBe(200)
+    expect(await h.accounts.listForAgent(DEFAULT_ORG_ID, h.agentId)).toHaveLength(0)
+    expect(h.fake.serviceAccounts).toHaveLength(0)
+
+    // Disabling an enabled hook is likewise not blocked by the outage.
+    h.fake.opts.refuseServiceAccountQuota = false
+    const enabled = await h.a.app.inject({
+      method: 'POST',
+      url: `${ORG}/hooks`,
+      payload: glBody(h.secondAgentId)
+    })
+    expect(enabled.statusCode).toBe(200)
+    h.fake.opts.refuseServiceAccountQuota = true
+    const disabled = await h.a.app.inject({
+      method: 'PUT',
+      url: `${ORG}/hooks/${(enabled.json() as { id: string }).id}`,
+      payload: { ...glBody(h.secondAgentId), enabled: false }
+    })
+    expect(disabled.statusCode).toBe(200)
+    expect((disabled.json() as { enabled: boolean }).enabled).toBe(false)
+  })
+
+  it('refuses the hook with the account’s own repair reason, writing no hook', async () => {
+    const h = await harness({ refuseServiceAccountQuota: true })
+    const created = await h.a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: glBody(h.agentId) })
+    expect(created.statusCode).toBe(409)
+    expect((created.json() as { message: string }).message).toContain('no service-account slots left')
+    expect(await h.hookRepo.listForAgent(AgentId(h.agentId))).toHaveLength(0)
+    expect(await h.accounts.membershipsForBinding(h.binding.id)).toHaveLength(0)
   })
 
   it('create is fenced on a managed binding; a second hook on the same project+agent is a 409', async () => {

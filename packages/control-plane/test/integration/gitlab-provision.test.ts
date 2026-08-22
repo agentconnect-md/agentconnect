@@ -298,6 +298,32 @@ describe('GitlabProvisioner (§10.2) — per-agent identity', () => {
     ).toBe(true)
   })
 
+  it('a failed write gives back the role it raised, keeping what survives it', async () => {
+    // A read-only workspace earns Reporter. An enabled hook would earn
+    // Developer, so its pre-write provisioning raises the membership — and if
+    // that write then fails, the raise must not outlive it.
+    const h = await harness({}, null, [{ id: AGENT, name: 'reader', gitAccess: 'read' }])
+    await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
+    const account = (await h.accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP))!
+    expect(h.fake.members.get(Number(account.serviceAccountUserId))).toBe(20)
+
+    await expect(
+      h.provisioner.provisionAgentAccount(DEFAULT_ORG_ID, PROJECT, { agentId: AGENT, accessLevel: 30 }, async () => {
+        throw new Error('the hook write failed')
+      })
+    ).rejects.toThrow('the hook write failed')
+
+    // The workspace's own authorization survives, at its own role — not the
+    // hook's — and the account is untouched.
+    expect(h.fake.members.get(Number(account.serviceAccountUserId))).toBe(20)
+    expect((await h.accounts.membershipsForBinding(h.binding.id))[0]).toMatchObject({
+      accountId: account.id,
+      accessLevel: 20
+    })
+    expect(await h.accounts.get(account.id)).not.toBeNull()
+    expect(h.fake.deletedServiceAccounts).toEqual([])
+  })
+
   it('a transient convergence failure never revokes an existing membership', async () => {
     const h = await harness({}, null, [
       { id: AGENT, name: 'reviewer' },

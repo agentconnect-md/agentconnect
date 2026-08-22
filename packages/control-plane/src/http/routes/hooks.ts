@@ -24,6 +24,8 @@ import {
   type UpsertHookInput
 } from '../../persistence/ports.js'
 import { GithubApiError } from '../../github/api.js'
+import { GITLAB_ACCESS_DEVELOPER } from '../../gitlab/api.js'
+import { gitlabAccountUnavailableMessage } from '../../gitlab/account.service.js'
 import { GitCredDeniedError, type ResolvedAgentRepoAuthorization } from '../../github/service.js'
 import { AgentId, HookId, IntegrationId, OrgId } from '../../domain/ids.js'
 import { orgOf, denyViewerWrite, ctxOf } from '../rbac.js'
@@ -127,6 +129,33 @@ export function hookRoutes(deps: HttpDeps) {
     // never fails the CRUD (a relay converges via its register replay).
     const converge = (hook: HookRecord): void => {
       void deps.hooks.broadcast(hook).catch((err) => app.log.warn({ hookId: hook.id, err }, 'hook broadcast failed'))
+    }
+
+    // §7.2 identity bracket for a gitlab hook write: the hook agent's own account
+    // is provisioned FIRST — the compiled rule names it and its poster mints
+    // credentials from it — and the write commits while the binding lease is
+    // still held, so convergence never sees the membership without the hook row
+    // that authorizes it. A hook that will not be enabled needs no identity: it
+    // can never fire, and provisioning one would churn an account the next
+    // convergence retires, and would block disabling during an account outage.
+    const withGitlabHookIdentity = async <T>(
+      orgId: OrgId,
+      projectId: bigint,
+      agentId: string,
+      enabled: boolean,
+      commit: () => Promise<T>
+    ): Promise<{ ok: true; result: T } | { ok: false; status: 409; message: string }> => {
+      const gitlab = deps.gitlab
+      if (!gitlab || !enabled) return { ok: true, result: await commit() }
+      const done = await gitlab.provisioner.provisionAgentAccount(
+        orgId,
+        projectId,
+        // A hook consumer posts notes and may run the configured review policy.
+        { agentId, accessLevel: GITLAB_ACCESS_DEVELOPER },
+        commit
+      )
+      if (!done.ok) return { ok: false, status: 409, message: gitlabAccountUnavailableMessage(done.reason) }
+      return { ok: true, result: done.result }
     }
 
     // gitlab-kind writes also (re)converge the project (§11.1): the saga
@@ -482,42 +511,53 @@ export function hookRoutes(deps: HttpDeps) {
           return reply.code(status).send({ error: ERROR_NAMES[status], statusCode: status, message })
         }
         const { hmacSecret, ...upsertFields } = kindFields
-        const hook = await persistHook({
-          hookId,
-          orgId,
-          agentId: agent.id,
-          kind: req.body.kind,
-          name: req.body.name,
-          enabled: req.body.enabled,
-          ...upsertFields,
-          ...(req.body.kind === 'github'
-            ? {
-                events: req.body.events,
-                commentFamilies: req.body.commentFamilies,
-                labelFilter: req.body.labelFilter,
-                mentionOnly: req.body.mentionOnly,
-                reviewPolicy: req.body.reviewPolicy,
-                reportingMode: req.body.reportingMode,
-                gateMode: req.body.gateMode
-              }
-            : {}),
-          ...(req.body.kind === 'gitlab'
-            ? {
-                events: req.body.events,
-                commentFamilies: req.body.commentFamilies,
-                mentionOnly: req.body.mentionOnly,
-                reviewPolicy: req.body.reviewPolicy,
-                reportingMode: req.body.reportingMode
-                // No gateMode: GitLab has no required-gate surface, so the row stays informational.
-              }
-            : {}),
-          targetPlatform: target.targetPlatform,
-          ...(req.body.targetChannel ? { targetChannel: req.body.targetChannel } : {}),
-          ...(target.targetIntegrationId ? { targetIntegrationId: target.targetIntegrationId } : {}),
-          ...(req.principal
-            ? { createdByUserId: req.principal.userId, lastModifiedByUserId: req.principal.userId }
-            : {})
-        })
+        const writeHook = (): Promise<HookRecord | AgentWorkspaceIntegrationConflict> =>
+          persistHook({
+            hookId,
+            orgId,
+            agentId: agent.id,
+            kind: req.body.kind,
+            name: req.body.name,
+            enabled: req.body.enabled,
+            ...upsertFields,
+            ...(req.body.kind === 'github'
+              ? {
+                  events: req.body.events,
+                  commentFamilies: req.body.commentFamilies,
+                  labelFilter: req.body.labelFilter,
+                  mentionOnly: req.body.mentionOnly,
+                  reviewPolicy: req.body.reviewPolicy,
+                  reportingMode: req.body.reportingMode,
+                  gateMode: req.body.gateMode
+                }
+              : {}),
+            ...(req.body.kind === 'gitlab'
+              ? {
+                  events: req.body.events,
+                  commentFamilies: req.body.commentFamilies,
+                  mentionOnly: req.body.mentionOnly,
+                  reviewPolicy: req.body.reviewPolicy,
+                  reportingMode: req.body.reportingMode
+                  // No gateMode: GitLab has no required-gate surface, so the row stays informational.
+                }
+              : {}),
+            targetPlatform: target.targetPlatform,
+            ...(req.body.targetChannel ? { targetChannel: req.body.targetChannel } : {}),
+            ...(target.targetIntegrationId ? { targetIntegrationId: target.targetIntegrationId } : {}),
+            ...(req.principal
+              ? { createdByUserId: req.principal.userId, lastModifiedByUserId: req.principal.userId }
+              : {})
+          })
+        const written =
+          req.body.kind === 'gitlab'
+            ? await withGitlabHookIdentity(orgId, BigInt(req.body.projectId), agent.id, req.body.enabled, writeHook)
+            : { ok: true as const, result: await writeHook() }
+        if (!written.ok) {
+          return reply
+            .code(written.status)
+            .send({ error: ERROR_NAMES[written.status], statusCode: written.status, message: written.message })
+        }
+        const hook = written.result
         if (hook instanceof AgentWorkspaceIntegrationConflict) {
           return reply.code(409).send({ error: ERROR_NAMES[409], statusCode: 409, message: hook.message })
         }
@@ -790,20 +830,32 @@ export function hookRoutes(deps: HttpDeps) {
         // PgHookRepo owns the hook-level lifecycle transaction: binding/mode/
         // enablement changes tombstone the old projection epoch before this
         // definition advances to its new epoch.
-        const hook = await persistHook({
-          hookId: existing.id,
-          expectedAgentId: existing.agentId!,
-          orgId,
-          agentId: agent.id,
-          kind: existing.kind,
-          name: req.body.name,
-          enabled: req.body.enabled ?? existing.enabled,
-          ...kindFields,
-          targetPlatform: target.targetPlatform,
-          ...(req.body.targetChannel ? { targetChannel: req.body.targetChannel } : {}),
-          ...(target.targetIntegrationId ? { targetIntegrationId: target.targetIntegrationId } : {}),
-          ...(req.principal ? { lastModifiedByUserId: req.principal.userId } : {})
-        })
+        const nowEnabled = req.body.enabled ?? existing.enabled
+        const writeHook = (): Promise<HookRecord | AgentWorkspaceIntegrationConflict> =>
+          persistHook({
+            hookId: existing.id,
+            expectedAgentId: existing.agentId!,
+            orgId,
+            agentId: agent.id,
+            kind: existing.kind,
+            name: req.body.name,
+            enabled: nowEnabled,
+            ...kindFields,
+            targetPlatform: target.targetPlatform,
+            ...(req.body.targetChannel ? { targetChannel: req.body.targetChannel } : {}),
+            ...(target.targetIntegrationId ? { targetIntegrationId: target.targetIntegrationId } : {}),
+            ...(req.principal ? { lastModifiedByUserId: req.principal.userId } : {})
+          })
+        const written =
+          req.body.kind === 'gitlab'
+            ? await withGitlabHookIdentity(orgId, BigInt(req.body.projectId), agent.id, nowEnabled, writeHook)
+            : { ok: true as const, result: await writeHook() }
+        if (!written.ok) {
+          return reply
+            .code(written.status)
+            .send({ error: ERROR_NAMES[written.status], statusCode: written.status, message: written.message })
+        }
+        const hook = written.result
         if (hook instanceof AgentWorkspaceIntegrationConflict) {
           return reply.code(409).send({ error: ERROR_NAMES[409], statusCode: 409, message: hook.message })
         }
