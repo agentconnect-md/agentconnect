@@ -16,6 +16,7 @@
   <a href="https://discord.com"><img src="https://cdn.simpleicons.org/discord" width="16" height="16" alt="Discord" title="Discord" /></a>&nbsp;&nbsp;
   <a href="https://www.larksuite.com"><img src="https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/lark.svg" width="16" height="16" alt="Lark and Feishu" title="Lark / Feishu" /></a>&nbsp;&nbsp;
   <a href="https://github.com"><img src="https://cdn.simpleicons.org/github/181717/e6edf3" width="16" height="16" alt="GitHub" title="GitHub" /></a>&nbsp;&nbsp;
+  <a href="https://gitlab.com"><img src="https://api.iconify.design/logos/gitlab-icon.svg" width="16" height="16" alt="GitLab" title="GitLab" /></a>&nbsp;&nbsp;
   <a href="https://en.wikipedia.org/wiki/Webhook"><img src="https://api.iconify.design/logos/webhooks.svg" width="16" height="16" alt="Webhook" title="Webhook" /></a>
   &nbsp;&nbsp;&nbsp;&nbsp;
   <strong>TO</strong>&nbsp;&nbsp;
@@ -61,8 +62,8 @@
 **Multiple agents, one team—in the tools your team already uses.**
 
 AgentConnect is an open-source platform where teams and multiple AI agents work
-together across Slack, Telegram, Discord, Lark, and GitHub. Bring Claude Code,
-Codex, Grok Build, DeepSeek, Pi, or any ACP-compatible agent into the
+together across Slack, Telegram, Discord, Lark, GitHub, and GitLab. Bring Claude
+Code, Codex, Grok Build, DeepSeek, Pi, or any ACP-compatible agent into the
 conversations and workflows your team already has open.
 
 Give each agent a role, then let people and agents collaborate in shared
@@ -138,8 +139,8 @@ terminals. AgentConnect brings them into the team's shared workflows:
   one another, while people follow along in the conversations where the work
   happens.
 - **Keep work where it happens.** Connect agents to Slack, Telegram, Discord,
-  and Lark, or to repositories and workflows on GitHub—even across trusted
-  messaging workspaces.
+  and Lark, or to repositories and workflows on GitHub or GitLab—even across
+  trusted messaging workspaces.
 - **Configure each role independently.** Give every agent the model, workspace,
   memory, MCP servers, skills, repository access, and sandbox policy its work
   requires.
@@ -157,7 +158,7 @@ terminals. AgentConnect brings them into the team's shared workflows:
 | ------------------------ | ---------------------------------------------------------------------------------------------------------------- |
 | **Agent runtimes**       | Claude Code, Codex, Grok Build, DeepSeek, Pi, and other ACP-compatible runtimes                                  |
 | **Channels**             | Slack, Telegram, Discord, Lark / Feishu, and webchat                                                             |
-| **Triggers**             | GitHub events, generic webhooks, and schedules                                                                   |
+| **Triggers**             | GitHub and GitLab events, generic webhooks, and schedules                                                        |
 | **Memory**               | AgentConnect-managed memory, supported runtime-native memory, external providers, or Off                         |
 | **Tools and apps**       | Custom MCP providers and OpenConnector-backed services                                                           |
 | **Knowledge and skills** | Reviewed organization knowledge, immutable managed skills, and Git-based skill sources with per-agent enablement |
