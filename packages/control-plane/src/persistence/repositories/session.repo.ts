@@ -221,29 +221,38 @@ function hookTriggerSql(hookIds: string[], a: Prisma.Sql = S): Prisma.Sql {
   `
 }
 
-function githubHookSql(githubHookIds: string[], a: Prisma.Sql = S): Prisma.Sql {
-  return Prisma.sql`${a}."platform" = 'hook' AND ${hookTriggerSql(githubHookIds, a)}`
+/** One code host's hook sessions — the same predicate for either host, told apart
+ *  only by which hook ids it is given. */
+function codeHostHookSql(hookIds: string[], a: Prisma.Sql = S): Prisma.Sql {
+  return Prisma.sql`${a}."platform" = 'hook' AND ${hookTriggerSql(hookIds, a)}`
 }
 
-function genericHookSql(githubHookIds: string[], a: Prisma.Sql = S): Prisma.Sql {
-  if (githubHookIds.length === 0) return Prisma.sql`${a}."platform" = 'hook'`
-  const triggers = githubHookIds.map((id) => `${HOOK_TRIGGER_PREFIX}${id}`)
+/** Hook sessions that belong to NO code host — every promoted id is excluded here,
+ *  or a GitLab session would be counted twice: once as gitlab, once as a webhook. */
+function genericHookSql(codeHostHookIds: string[], a: Prisma.Sql = S): Prisma.Sql {
+  if (codeHostHookIds.length === 0) return Prisma.sql`${a}."platform" = 'hook'`
+  const triggers = codeHostHookIds.map((id) => `${HOOK_TRIGGER_PREFIX}${id}`)
   return Prisma.sql`
     ${a}."platform" = 'hook'
     AND (${a}."triggeredBy" IS NULL OR ${a}."triggeredBy" NOT IN (${Prisma.join(triggers)}))
     AND (
       (${a}."triggeredBy" LIKE ${`${HOOK_TRIGGER_PREFIX}%`} AND ${a}."triggeredBy" <> ${HOOK_TRIGGER_PREFIX})
       OR ${a}."channel" IS NULL
-      OR ${a}."channel" NOT IN (${Prisma.join(githubHookIds)})
+      OR ${a}."channel" NOT IN (${Prisma.join(codeHostHookIds)})
     )
   `
 }
 
+/** Every promoted code-host hook id, in one list, for the generic-hook exclusion. */
+function codeHostHookIds(q: Pick<SessionFilterQuery, 'githubHookIds' | 'gitlabHookIds'>): string[] {
+  return [...(q.githubHookIds ?? []), ...(q.gitlabHookIds ?? [])]
+}
+
 function integrationSql(q: SessionFilterQuery, a: Prisma.Sql = S): Prisma.Sql | null {
   if (!q.integration) return null
-  const githubHookIds = q.githubHookIds ?? []
-  if (q.integration === 'github') return githubHookSql(githubHookIds, a)
-  if (q.integration === 'hook') return genericHookSql(githubHookIds, a)
+  if (q.integration === 'github') return codeHostHookSql(q.githubHookIds ?? [], a)
+  if (q.integration === 'gitlab') return codeHostHookSql(q.gitlabHookIds ?? [], a)
+  if (q.integration === 'hook') return genericHookSql(codeHostHookIds(q), a)
   return platformSql(q.integration, a)
 }
 
@@ -306,11 +315,15 @@ function pageWhereSql(
   return Prisma.sql`WHERE ${Prisma.join(filters, ' AND ')}`
 }
 
-function integrationFacetSql(githubHookIds: string[]): Prisma.Sql {
-  if (githubHookIds.length === 0) return Prisma.sql`COALESCE(s."platform", 'slack')`
+function integrationFacetSql(githubHookIds: string[], gitlabHookIds: string[]): Prisma.Sql {
+  if (githubHookIds.length === 0 && gitlabHookIds.length === 0) return Prisma.sql`COALESCE(s."platform", 'slack')`
+  const arms = [
+    ...(githubHookIds.length > 0 ? [Prisma.sql`WHEN ${codeHostHookSql(githubHookIds)} THEN 'github'`] : []),
+    ...(gitlabHookIds.length > 0 ? [Prisma.sql`WHEN ${codeHostHookSql(gitlabHookIds)} THEN 'gitlab'`] : [])
+  ]
   return Prisma.sql`
     CASE
-      WHEN ${githubHookSql(githubHookIds)} THEN 'github'
+      ${Prisma.join(arms, ' ')}
       WHEN s."platform" IS NULL THEN 'slack'
       ELSE s."platform"
     END
@@ -1178,7 +1191,7 @@ export class PgSessionRepo implements SessionRepo {
     delete triggerQuery.triggeredBy
     delete triggerQuery.hookTriggerIds
 
-    const integrationFacet = integrationFacetSql(q.githubHookIds ?? [])
+    const integrationFacet = integrationFacetSql(q.githubHookIds ?? [], q.gitlabHookIds ?? [])
     const [agents, integrations, channels, triggers] = await Promise.all([
       this.db.$queryRaw<SessionAgentFacetDbRow[]>(Prisma.sql`
         SELECT DISTINCT s."agentId"

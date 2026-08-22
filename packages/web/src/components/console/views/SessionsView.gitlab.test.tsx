@@ -16,7 +16,12 @@ import type { Session } from '@/lib/data'
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
-const mocks = vi.hoisted(() => ({ replace: vi.fn(), sessions: [] as unknown[], triggers: [] as unknown[] }))
+const mocks = vi.hoisted(() => ({
+  replace: vi.fn(),
+  sessions: [] as unknown[],
+  triggers: [] as unknown[],
+  integrations: ['hook'] as string[]
+}))
 
 vi.mock('next/link', () => ({
   default: ({ children, className }: { children: React.ReactNode; className?: string }) => (
@@ -59,7 +64,7 @@ vi.mock('@/lib/use-session-facets', () => ({
     data: {
       agentIds: [],
       agentNames: {},
-      integrations: ['hook'],
+      integrations: mocks.integrations,
       channels: [],
       triggers: mocks.triggers
     }
@@ -108,14 +113,14 @@ async function render() {
   })
 }
 
-/** Open the trigger dropdown — the filter row's selects share one class, so find it by its search box. */
-async function openTriggerMenu() {
+/** Open one filter dropdown — the row's selects share a class, so find it by its search box. */
+async function openFilterMenu(noun: string) {
   for (const button of Array.from(document.querySelectorAll<HTMLButtonElement>('.selbtn'))) {
     await act(async () => button.click())
-    if (document.querySelector('input[aria-label="Filter triggers"]')) return
+    if (document.querySelector(`input[aria-label="Filter ${noun}"]`)) return
     await act(async () => button.click())
   }
-  throw new Error('trigger filter never opened')
+  throw new Error(`${noun} filter never opened`)
 }
 
 afterEach(async () => {
@@ -125,6 +130,7 @@ afterEach(async () => {
   host = undefined
   mocks.sessions = []
   mocks.triggers = []
+  mocks.integrations = ['hook']
   mocks.replace.mockClear()
 })
 
@@ -139,13 +145,32 @@ describe('SessionsView, GitLab triggers', () => {
     expect(document.body.textContent).toContain('acme/platform')
   })
 
+  it('offers GitLab as its own integration, separate from generic webhooks', async () => {
+    // The server-side facet is a first-class `gitlab` entry now; before that these
+    // sessions were counted under `hook` and read as "Webhook" in this menu.
+    mocks.sessions = [gitlabSession]
+    mocks.integrations = ['gitlab', 'hook']
+    await render()
+    await openFilterMenu('integrations')
+
+    const options = Array.from(document.querySelectorAll<HTMLButtonElement>('.fmenu button'))
+    const gitlab = options.find((option) => option.textContent?.includes('GitLab'))
+    expect(gitlab).toBeDefined()
+    // Negative control: the entry must be its own, not folded into the webhook one.
+    expect(options.filter((option) => option.textContent?.trim() === 'Webhook')).toHaveLength(1)
+    expect(gitlab!.querySelector('[data-platform-mark="gitlab"]')).not.toBeNull()
+
+    await act(async () => gitlab!.click())
+    expect(mocks.replace).toHaveBeenCalledWith('/acme/sessions?integration=gitlab')
+  })
+
   it('offers a GitLab trigger group and filters to the chosen subscription', async () => {
     mocks.sessions = [gitlabSession]
     mocks.triggers = [
       { value: 'hook:gl-1', integration: 'hook', name: 'acme/platform', hookKind: 'gitlab', githubRepoId: null }
     ]
     await render()
-    await openTriggerMenu()
+    await openFilterMenu('triggers')
 
     const headers = Array.from(document.querySelectorAll('.fhdr')).map((node) => node.textContent)
     expect(headers).toContain('GitLab')
