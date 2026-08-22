@@ -56,6 +56,7 @@ import { RemoteWebchatGrantManager } from './mcp/remote-webchat-grant.js'
 import type { CodeHostEffectReq, SetSessionTitleReq } from './mcp/ops.js'
 import { GitCredentialCache } from './cp/git-credential.js'
 import { GitlabBroker } from './gitlab/broker.js'
+import { CodeHostNoteProjector } from './gitlab/note-projection.js'
 import {
   CONFIG_FILE_CONVENTIONS,
   cleanupConfigFiles,
@@ -253,6 +254,7 @@ import {
   WEBCHAT_MULTI_AGENT_FEATURE,
   WEBCHAT_REMOTE_MCP_FEATURE,
   WEBCHAT_SESSION_CONTINUATION_FEATURE,
+  CODEHOST_NOTE_PROJECTION_V1_FEATURE,
   GITLAB_COM_V1_FEATURE,
   encodeSharedSlackStatusTarget,
   HOOK_REPORT_REASON_AGENT_HANDOVER,
@@ -640,6 +642,8 @@ export class Daemon {
   private gitCreds!: GitCredentialCache
   /** §14.2 structured mutation broker — allowlisted GitLab effects run under a daemon-held lease. */
   private gitlabBroker?: GitlabBroker
+  /** §16 run projection — the only writer of the service-account status note for a merge-request head. */
+  private noteProjector!: CodeHostNoteProjector
   /** Public commit attribution selected by the CP deployment's GitHub App. */
   private gitCommitIdentity?: GitCommitIdentity
   private gitCredServer?: GitCredServer
@@ -1686,6 +1690,29 @@ export class Daemon {
         return { token: entry.token, access: entry.access }
       },
       invalidateLease: (target, token) => this.gitCreds.invalidateGitlabEffect(target.agentId, target.projectId, token)
+    })
+    // §16: the same hook-authorized effect lease, on a writer the model never sees or influences.
+    this.noteProjector = new CodeHostNoteProjector({
+      daemonId: () => this.cfg.daemonId,
+      store: {
+        getNoteProjection: (key) => this.store.getNoteProjection(key),
+        beginNoteProjectionWrite: (row, now) => this.store.beginNoteProjectionWrite(row, now),
+        settleNoteProjectionWrite: (key, marker, noteId, now) =>
+          this.store.settleNoteProjectionWrite(key, marker, noteId, now),
+        listInFlightNoteProjections: () => this.store.listInFlightNoteProjections()
+      },
+      lease: async (target) => {
+        const entry = await this.gitCreds.getGitlabEffectToken(target.agentId, target.projectId, target.hookId)
+        return { token: entry.token, access: entry.access }
+      },
+      invalidateLease: (target, token) => this.gitCreds.invalidateGitlabEffect(target.agentId, target.projectId, token),
+      report: async (result, orgId) => {
+        const client = this.cpClient
+        if (!client) throw new Error('control plane is not connected')
+        await client.reportCodeHostNoteResult(result, orgId)
+      },
+      log: { warn: (m: string) => this.log.warn(m) },
+      now: () => this.clock.now()
     })
     this.gitCredServer = new GitCredServer(this.gitCreds, gitcredSocketPath(root), {
       log: {
@@ -3728,7 +3755,10 @@ export class Daemon {
       // built-in preset; turn-time dispatch rechecks the replicated marker.
       ...(this.remoteWebchatGrants ? [WEBCHAT_REMOTE_MCP_FEATURE] : []),
       // The CP withholds gitlab-workspace specs and gitlab hook assignments until this is advertised.
-      GITLAB_COM_V1_FEATURE
+      GITLAB_COM_V1_FEATURE,
+      // §16: this daemon renders and updates the run-projection note. The CP leaves the desired
+      // generation pending rather than opening a second provider egress path without this bit.
+      CODEHOST_NOTE_PROJECTION_V1_FEATURE
     ]
   }
 
@@ -14607,6 +14637,7 @@ export class Daemon {
       webchatMcpRevocations: () => this.webchatMcpRevocations,
       drainSessionPurges: () => this.drainSessionPurges(),
       effectiveAgents: () => this.effectiveAgents(),
+      noteProjector: () => this.noteProjector,
       cpAgents: () => this.cpAgents,
       cpIntegrations: () => this.cpIntegrations,
       cpCrons: () => this.cpCrons,

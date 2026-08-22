@@ -48,6 +48,7 @@ import type { SystemMetrics } from '../metrics/system-metrics.js'
 import type { ReadinessGate } from '../readiness.js'
 import type { MemoryFs } from '../memory/store.js'
 import type { DreamRunner } from '../dream/runner.js'
+import type { CodeHostNoteProjector } from '../gitlab/note-projection.js'
 
 /** The credentials, identity and logging this connection is built from, plus its single-point writes. */
 export interface CpClientConnectionHost {
@@ -107,6 +108,8 @@ export interface CpClientReadyHost {
   webchatMcpRevocations(): WebchatMcpRevocations
   drainSessionPurges(): Promise<void>
   effectiveAgents(): LoadedAgent[]
+  /** The §16 run-projection writer: the CP dispatch target and the interrupted-write reconciler. */
+  noteProjector(): CodeHostNoteProjector
 }
 
 /** Tenant lookups for agent-scoped frames, plus the duty seam the heartbeat carries. */
@@ -249,6 +252,9 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
       // Replay remote MCP revocations that could not reach the CP (revokes
       // queued while disconnected or left over from a previous process).
       void host.webchatMcpRevocations().drainWebchatMcpRevocations()
+      // ...and every §16 projection write this daemon started but never settled. Each is reconciled
+      // by the hidden marker before the merge request is touched again, never by replaying the write.
+      void host.noteProjector().reconcilePending()
       // ...and the retention-GC receipts (#485). A sweep that ran while the CP
       // was unreachable (or before it advertised the feature) left the deleted
       // sessions' metadata rows unmarked; this is the only side that still knows.
@@ -319,6 +325,8 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
     // A pure projection of the in-memory lease — no I/O, no runtime, and nothing it can do to a
     // reclaim decision, so it needs neither of the workspace coordinators.
     taskReader: { list: async (req) => host.listBackgroundTasks(req) },
+    // §16 desired projection generations, converged by the only GitLab Notes writer for this surface.
+    codeHostNoteProjection: (desired, orgId) => host.noteProjector().apply(desired, orgId),
     // The console's "start this agent's sandbox": duty claim + channel bind, no host — the same
     // condition the file reader serves on, reached without a turn. Local daemons have no plane.
     agentWake: createAgentWaker({
