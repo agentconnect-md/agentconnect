@@ -40,10 +40,10 @@ const LABELS = new Map<string, PlatformLabel>([
   ['discord', { name: 'Discord', picker: 'Discord' }],
   // One platform id, two clouds. Prose picks the international brand; the picker
   // names both so a Feishu user recognizes their own tile.
-  ['feishu', { name: 'Lark', picker: 'Lark / Feishu' }],
+  ['feishu', { name: 'Lark', picker: 'Lark/Feishu' }],
   // Nothing routes a bare 'lark' id today (the cloud rides on its own `region`
   // field), but the substring chains this replaces accepted it.
-  ['lark', { name: 'Lark', picker: 'Lark / Feishu' }]
+  ['lark', { name: 'Lark', picker: 'Lark/Feishu' }]
 ])
 
 /** This platform's labels, or undefined when no chat platform claims the id. */

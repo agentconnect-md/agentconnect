@@ -55,7 +55,7 @@ describe('platform set', () => {
   it('keeps the prose name and the picker label distinct only where they must be', () => {
     // One platform id, two clouds: prose picks the international brand, the
     // picker names both so a Feishu user recognizes their own tile.
-    expect(platformLabel('feishu')).toEqual({ name: 'Lark', picker: 'Lark / Feishu' })
+    expect(platformLabel('feishu')).toEqual({ name: 'Lark', picker: 'Lark/Feishu' })
     expect(platformLabel('lark')).toEqual(platformLabel('feishu'))
     for (const id of ['slack', 'telegram', 'discord']) {
       const label = platformLabel(id)!
