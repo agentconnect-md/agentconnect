@@ -62,7 +62,16 @@ const BINDING: GitlabProjectBindingDto = {
   state: 'ready',
   stateReason: null,
   installerConnectionId: 'conn-1',
-  accounts: [{ agentId: 'agent-1', username: 'agentconnect-a1-g900', displayName: 'reviewer', userId: '9042' }],
+  accounts: [
+    {
+      agentId: 'agent-1',
+      username: 'agentconnect-a1-g900',
+      displayName: 'reviewer',
+      userId: '9042',
+      state: 'ready',
+      stateReason: null
+    }
+  ],
   webhookInstalled: true,
   credentialEpoch: '1',
   createdAt: '2026-08-02T00:00:00.000Z'
@@ -374,12 +383,43 @@ describe('GitlabCard', () => {
     mocks.fetchProjects.mockResolvedValue([BINDING])
     await render()
 
-    const chip = host.querySelector('[data-gitlab-project] a') as HTMLAnchorElement
+    const chip = host.querySelector('[data-gitlab-account]') as HTMLAnchorElement
     expect(chip.textContent).toBe('bot @agentconnect-a1-g900')
     expect(chip.getAttribute('href')).toBe('https://gitlab.com/agentconnect-a1-g900')
     // A new tab, and never one that can reach back into the console.
     expect(chip.getAttribute('target')).toBe('_blank')
     expect(chip.getAttribute('rel')).toBe('noopener noreferrer')
+  })
+
+  it('gives a project one chip per member account, each with its own health', async () => {
+    mocks.fetchConnections.mockResolvedValue({ enabled: true, connections: [CONNECTION] })
+    mocks.fetchProjects.mockResolvedValue([
+      {
+        ...BINDING,
+        accounts: [
+          ...BINDING.accounts,
+          {
+            agentId: 'agent-2',
+            username: 'agentconnect-a2-g900',
+            displayName: 'triager',
+            userId: null,
+            state: 'admin_degraded' as const,
+            stateReason: 'service_account_quota'
+          }
+        ]
+      }
+    ])
+    await render()
+
+    const chips = [...host.querySelectorAll('[data-gitlab-account]')] as HTMLAnchorElement[]
+    expect(chips.map((c) => c.getAttribute('href'))).toEqual([
+      'https://gitlab.com/agentconnect-a1-g900',
+      'https://gitlab.com/agentconnect-a2-g900'
+    ])
+    // The binding is ready; only the refused account is marked, and its tooltip says why.
+    expect(chips[0]!.className).toContain('text-(--text-tertiary)')
+    expect(chips[1]!.className).toContain('text-(--amber-500)')
+    expect(chips[1]!.getAttribute('title')).toContain('limit of bot accounts')
   })
 
   it('says where projects come from when a connection has none', async () => {

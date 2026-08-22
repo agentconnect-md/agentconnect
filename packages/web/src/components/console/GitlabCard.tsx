@@ -11,7 +11,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { Button, Icon } from '@/components/ui'
 import { GitlabMark, LoadingState } from '@/components/marks'
 import { useOrgs } from '@/lib/org-context'
-import { GITLAB_PROJECT_STATE } from '@/lib/gitlab-projects'
+import { GITLAB_PROJECT_STATE, gitlabProfileUrl, gitlabStateReasonText } from '@/lib/gitlab-projects'
 import {
   ApiError,
   deleteGitlabProject,
@@ -25,24 +25,6 @@ import {
   type GitlabProjectBindingDto
 } from '@/lib/api'
 
-// The CP records a machine category in `stateReason`; these are the ones a user can act on, in GitLab
-// vocabulary. Every rotation_* variant collapses to one line — the tail (rotation_gitlab_<status>) is open-ended.
-const STATE_REASON: Record<string, string> = {
-  project_not_accessible: 'GitLab project is no longer accessible',
-  personal_namespace_unsupported: 'Projects in a personal namespace are not supported',
-  project_namespace_unknown: 'GitLab did not report the group this project belongs to',
-  service_account_create_forbidden: 'Not allowed to create a project bot on GitLab',
-  no_admin_connection: 'No connected GitLab account can manage this project — transfer it to your own account',
-  admin_unavailable:
-    'The GitLab account that set this project up can no longer manage it — reconnect that account, or transfer the project to your own',
-  cleanup_failed:
-    'Removal did not finish because no connected GitLab account could reach the project — reconnect it or transfer the project, then remove again',
-  claim_fence_lost: 'Setup was interrupted — run Repair again',
-  relay_url_unconfigured: 'This deployment has no public webhook address configured',
-  provisioning_in_progress: 'Setup is already running',
-  provisioning_or_cleanup_in_progress: 'Setup or removal is already running'
-}
-
 /** Machine-readable CP refusals the card says better itself (all takeover, today). */
 const REFUSAL: Record<string, string> = {
   GITLAB_NO_OWN_CONNECTION:
@@ -51,18 +33,6 @@ const REFUSAL: Record<string, string> = {
   GITLAB_NOT_MAINTAINER: 'Your GitLab account needs Maintainer or Owner access to this project to take it over.',
   GITLAB_INSTALLER_CONNECTED: 'A connected GitLab account already manages this project.',
   GITLAB_BINDING_BUSY: 'Setup or removal is already running for this project — try again shortly.'
-}
-
-/** User-facing copy for a binding's reason, or null to show nothing but the state badge — an
- *  unmapped category is an implementation identifier and never belongs on this surface. */
-function stateReasonText(reason: string | null): string | null {
-  if (!reason) return null
-  if (reason.startsWith('rotation_')) return 'The project bot credential needs repair'
-  // The gitlab_<status> family is open-ended; the actionable part is the same for all of it.
-  if (reason.startsWith('gitlab_')) {
-    return 'GitLab refused the last administration request — reconnect the account that manages this project, or transfer it to your own'
-  }
-  return STATE_REASON[reason] ?? null
 }
 
 function errorText(e: unknown): string {
@@ -347,16 +317,24 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
               <span className={`badge ${GITLAB_PROJECT_STATE[p.state].badge}`}>
                 {GITLAB_PROJECT_STATE[p.state].label}
               </span>
-              {/* Each member account is a real GitLab user: its chip opens that profile. */}
+              {/* Each member account is a real GitLab user: its chip opens that profile.
+                  An account can be broken on a project whose own binding is ready, so
+                  the chip carries its own state rather than borrowing the row's. */}
               {p.accounts.map((account) => (
                 <a
                   key={account.username}
-                  href={`https://gitlab.com/${account.username}`}
+                  href={gitlabProfileUrl(account.username)}
                   target="_blank"
                   rel="noopener noreferrer"
-                  title={account.displayName ?? account.username}
-                  className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary) hover:underline"
+                  title={gitlabStateReasonText(account.stateReason) ?? account.displayName ?? account.username}
+                  data-gitlab-account={account.username}
+                  className={`font-sans text-[12px] font-normal leading-normal hover:underline ${
+                    account.state === 'ready' ? 'text-(--text-tertiary)' : 'text-(--amber-500)'
+                  }`}
                 >
+                  {account.state !== 'ready' && (
+                    <Icon name="triangle-alert" size={12} className="mr-[3px] inline-block align-[-1px]" />
+                  )}
                   bot @{account.username}
                 </a>
               ))}
@@ -392,9 +370,9 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
                 </Button>
               )}
             </span>
-            {stateReasonText(p.stateReason) && (
+            {gitlabStateReasonText(p.stateReason) && (
               <span className="font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary) desktop:col-span-2">
-                {stateReasonText(p.stateReason)}
+                {gitlabStateReasonText(p.stateReason)}
               </span>
             )}
           </div>
