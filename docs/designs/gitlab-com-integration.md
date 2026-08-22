@@ -1,7 +1,10 @@
 # GitLab.com Integration
 
-> Status: **Implemented** — the Section 22 M0–M7 spine is merged; that
-> section records the two deliberate leftovers.
+> Status: **Implemented through M7** — the Section 22 M0–M7 spine is merged;
+> that section records the deliberate leftovers. The Section 7.2 per-agent
+> runtime identity is the accepted target, planned as M8 and **not yet
+> implemented**: the shipped runtime identity is still one
+> per-project account per binding, which M8 replaces outright.
 >
 > Platform assumptions last verified: **2026-07-28**
 >
@@ -37,8 +40,8 @@ authorization facts, secrets, and body-free run metadata.
    stable, non-human GitLab identity for that agent's comments, reviews,
    approvals, and Git operations; its display name is the agent's name, so
    each agent is its own visible GitLab actor. It does not consume a billable
-   seat. v1 shipped one shared account per project binding; Section 7.2.1
-   migrates deployments with no flag day.
+   seat. v1 shipped one shared account per project binding; M8 replaces it
+   outright.
 4. Create three service-account personal access tokens with separate purposes:
    a read token, a Git-write token, and an API-effect token. The broad `api`
    token is available only to trusted broker code and never enters the agent
@@ -319,6 +322,10 @@ revoking the human connection does not silently transfer its authority.
 
 ### 7.2 Agent Service Accounts Are the Runtime Identity
 
+> Target model, planned as M8 and not yet implemented. The shipped v1
+> identity is one per-project account shared by every agent; M8 replaces it
+> outright, with no transitional dual identity.
+
 The runtime identity is **one group service account per (organization, agent,
 top-level group)**. Each agent has its own GitLab face: the account's display
 name is the agent's name, every note, review, approval, and push the agent
@@ -368,9 +375,8 @@ binding remains the per-project resource: it owns the webhook, the signing
 key, the desired-event union, and the deployment-global claim, while identity
 lives on the per-agent account rows and a membership join (Section 8.2).
 
-GitLab.com allows 100 service accounts per top-level group, so the population
-is agents-with-projects per root plus transitional per-project accounts during
-migration. A refused creation lands the account row in a
+GitLab.com allows 100 service accounts per top-level group, so the population is
+agents-with-projects per root. A refused creation lands the account row in a
 `service_account_quota` provisioning failure the Console translates
 actionably; existing credentials are untouched.
 
@@ -383,38 +389,23 @@ deployment-global claim in Section 8.1 enforces this invariant before any
 provider mutation; an organization-scoped repository row is not itself an
 ownership claim.
 
-#### 7.2.1 Migration from the Per-Project Account
-
 v1 shipped one Project Service Account per project binding, shared by every
-agent on the project. Deployments run it today, and it keeps serving a project
-until that project has fully moved — there is no flag day.
-
-1. **Veto widening ships first** (Section 12.1): compiled rules carry the veto
-   set of every bound account before any per-agent account posts; old relays
-   are unaffected.
-2. **Account lifecycle in the Control Plane**: the Section 8.2 account and
-   membership tables, account creation on the next provisioning convergence of
-   any binding the agent consumes, membership convergence, and display-name
-   sync. Credentials begin minting from the agent account once it is `ready`,
-   decided per grant at mint time — the daemon sees only a grant whose
-   username it echoes, so credentials need no daemon change.
-3. **Author switch in the daemon**, gated by a `gitlab-agent-identity-v1`
-   feature the Control Plane advertises only when the agent account is the
-   credential source: poster, broker, review adapter, and projection write as
-   the agent account, whose identity the trusted hook metadata carries per
-   rule — the daemon never derives it.
-4. **Retirement**: when every consumer of a project mints from agent accounts,
-   the next convergence retires the per-project account through the existing
-   removal saga; a stuck retirement is repairable or transferable exactly like
-   any binding cleanup.
-
-The veto set and the account fields on trusted metadata are additive optional
-members under the Section 17.3 discipline; nothing is removed from any frame
-until retirement completes everywhere. The accepted costs: rotation,
-membership convergence, and cleanup fan out per agent; a merge request watched
-by N agents carries N status notes (Section 16); the account population
-doubles per project until its retirement; and a multi-root agent holds several
-accounts, which the Console groups by top-level group.
+agent on the project. M8 replaces it outright rather than running two identity
+models side by side: on upgrade, provisioning convergence creates each
+consuming agent's account and membership, switches each binding consumer in
+one transaction, and retires the per-project account through the existing
+removal saga. The switch is atomic because GitLab derives the author from the
+PAT — the poster, broker, projection writer, and review adapter send the
+granted token directly — so the credential principal cannot flip separately
+from the compiled rule's account identity; one transaction changes both, and
+the credential-epoch bump fences every outstanding grant for the old
+principal. An in-flight review attempt completes under the account that
+started it — the lease row and operation records name it — and the switch
+defers while that hook's publication row is non-idle. On the wire the veto set
+and the rule's account identity are additive optional members under the
+Section 17.3 discipline; a relay that predates them vetoes only the single ID
+its rule names, which the M8 merge order keeps correct by shipping the widened
+veto before any account switch.
 
 ### 7.3 Three Credential Purposes
 
@@ -518,7 +509,7 @@ numeric ID.
 | `GitlabProjectBinding`    | org, numeric project ID, current path, installer connection, webhook ID, desired event hash, credential epoch, lifecycle state                              |
 | `GitlabAgentAccount`      | org, agent, top-level group ID, numeric user ID, username, display-name fingerprint, credential epoch, lifecycle state                                      |
 | `GitlabAccountMembership` | account, binding, role, membership state                                                                                                                    |
-| `GitlabProjectCredential` | issuing account (or the transitional binding account), purpose, external token ID, scopes, provider expiry, active generation                               |
+| `GitlabProjectCredential` | issuing account, purpose, external token ID, scopes, provider expiry, active generation                                                                     |
 | `GitlabReviewPublication` | binding, MR IID, service-account user ID, active attempt, lease owner/expiry, monotonic fence, phase, head SHA, external draft/note IDs, normalized outcome |
 | `GitlabWebhookSecret`     | binding relation only in normal reads                                                                                                                       |
 | `GitlabConnectionSecret`  | connection relation only in normal reads                                                                                                                    |
@@ -687,8 +678,7 @@ The reconciler converges these steps:
 
 1. refresh `CodeHostRepository` by numeric project ID;
 2. for each agent consuming the binding, find that agent's deterministically
-   named account in the project's top-level group or create it (Section 7.2),
-   reusing a still-serving transitional per-project account where one exists;
+   named account in the project's top-level group or create it (Section 7.2);
 3. ensure each such account is a project member at the role the binding
    requires;
 4. create or recover the `read`, `git_write`, and `effect` PATs per account;
@@ -861,14 +851,17 @@ Reject an event when its author ID is any service-account user ID bound to
 the project. The compiled rule carries that veto set, so one agent's replies,
 reviews, and status updates can never trigger another agent's hook —
 accidental bot-to-bot stays off while the bot's own merge requests remain
-reviewable through one deliberate exception: a same-project merge-request
-revision authored by a bound account still enters review, matching GitHub's
-internal-CI lane where the App's own same-repository pull requests are
-reviewed. Notes authored by any bound account and system-generated notes
-carrying AgentConnect status or attempt markers are always rejected. A relay
-that predates the veto set vetoes only the single ID its rule names, which
-stays correct until the Section 7.2.1 author switch lets agents post as their
-own accounts — the widened veto therefore ships first.
+reviewable through one deliberate exception, scoped to the rule's own
+identity: a same-project merge-request revision authored by the account this
+rule itself names still enters review, matching GitHub's internal-CI lane
+where the App's own same-repository pull requests are reviewed. Every other
+member of the veto set stays vetoed even for merge-request revisions, so one
+agent's merge request never wakes a sibling agent's hook. Notes authored by
+any bound account and system-generated notes carrying AgentConnect status or
+attempt markers are always rejected. A relay that predates the veto set
+vetoes only the single ID its rule names; the M8 merge order keeps that
+correct by shipping the widened veto before agents post as their own
+accounts.
 
 ### 12.2 Collaborator and External-Merge-Request Gate
 
@@ -1637,11 +1630,13 @@ Disconnecting a project immediately:
 4. purges relay assignments and daemon caches; and
 5. begins external cleanup with a current Maintainer/Owner OAuth connection.
 
-External cleanup deletes the managed webhook, revokes the affected accounts'
-managed PATs, removes their project memberships, and retires accounts left
-with no bound project in their top-level group, after an explicit warning that
-GitLab retains their prior contributions under GitLab's account-deletion
-rules. Deleting an agent retires all of that agent's accounts through the same
+External cleanup deletes the managed webhook and removes the affected
+accounts' project memberships. PATs are per account, not per membership, so a
+single project's disconnect leaves them valid while the account still serves
+another bound project in its top-level group. Only an account left with no
+bound project is retired — its managed PATs revoked and the account deleted,
+after an explicit warning that GitLab retains its prior contributions under
+GitLab's account-deletion rules. Deleting an agent retires all of that agent's accounts through the same
 verified-external-cleanup discipline; lost administration authority degrades
 the account rows to `cleanup_pending` with the same reconnect-or-transfer
 exits.
@@ -1737,8 +1732,8 @@ external credentials by deleting only local metadata.
 > `running` edge waits on its GitLab arm
 > (`packages/control-plane/src/codehost/note-projection.service.ts`); that arm
 > is being finished as follow-up work. The session merge-request dock panel
-> stays out of scope per Section 18.1. The per-agent identity migration
-> (Section 7.2.1) is the planned M8 below and is not yet implemented.
+> stays out of scope per Section 18.1. The Section 7.2 per-agent identity is
+> the planned M8 below and is not yet implemented.
 
 Milestones are merge order, not calendar. Each milestone is several small,
 independently mergeable PRs; GitHub behavior stays green at every merge; each
@@ -1847,13 +1842,14 @@ M7 → M8.
   tests. Ships before anything below posts as an agent account.
 - Control Plane: `GitlabAgentAccount` and `GitlabAccountMembership`
   persistence, account and membership convergence, display-name sync, quota
-  refusal, per-grant credential-source selection, and agent-page account
-  health.
-- Daemon: the `gitlab-agent-identity-v1` gate; poster, broker, review adapter,
-  and projection author as the agent account; two agents reviewing one merge
-  request assert independent leases with no cross-contention.
-- Retirement and Console polish: per-project account retirement in
-  convergence, the Integrations member list, migration telemetry, and docs.
+  refusal, and agent-page account health.
+- Control Plane switch: the Section 7.2 one-transaction replacement —
+  credential principal and rule identity flip together, old grants fenced,
+  the per-project account retired through the removal saga; two agents
+  reviewing one merge request assert independent leases with no
+  cross-contention.
+- Console polish: the Integrations member list, the agent-page identity chip,
+  and docs.
 
 Two disciplines hold throughout. No big-bang refactor PR exists anywhere in
 this plan — every extraction ships inside the milestone that needs it.
@@ -1950,10 +1946,11 @@ projects and covers:
     notes carrying the re-request call to action; and
 16. MR-merged and issue-closed maintenance deliveries cleaning up per-thread
     session worktrees without opening a model turn; and
-17. the Section 7.2.1 migration on a deployment that started with per-project
-    accounts: per-grant credential-source flip, the `gitlab-agent-identity-v1`
-    author switch, two agents answering one issue and reviewing one merge
-    request as distinct authors, and per-project account retirement.
+17. the M8 replacement on a deployment that started with per-project
+    accounts: credentials and rule identity flipping together with old grants
+    fenced, a switch deferred by a non-idle publication row, two agents
+    answering one issue and reviewing one merge request as distinct authors,
+    and per-project account retirement.
 
 Validation must also scan source, generated examples, fixtures, logs, and PR
 prose for real deployment addresses, account identifiers, OAuth application
