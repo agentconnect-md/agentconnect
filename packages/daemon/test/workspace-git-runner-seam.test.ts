@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { WorkspaceManager, type WorkspaceGitRunnerResolver } from '../src/workspace/workspace-manager.js'
@@ -40,7 +40,8 @@ function git(cwd: string, args: string[]): string {
 
 /** A real agent whose workspace is a real repository with a real session worktree. */
 function agentWithWorktree(sessionKey: string): { agent: Agent; worktree: string } {
-  const home = mkdtempSync(join(tmpdir(), 'ac-seam-'))
+  // CANONICAL: removal re-derives cwd from the realpath'd root, so a symlinked tmpdir (macOS) renames the argv.
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ac-seam-')))
   roots.push(home)
   const path = join(home, 'checkout')
   mkdirSync(path, { recursive: true })
