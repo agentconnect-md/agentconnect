@@ -191,6 +191,13 @@ describe('GitlabCard', () => {
       },
       {
         ...BINDING,
+        id: 'bind-fence',
+        projectPath: 'example-group/interrupted',
+        state: 'admin_degraded' as const,
+        stateReason: 'claim_fence_lost'
+      },
+      {
+        ...BINDING,
         id: 'bind-unknown',
         projectPath: 'example-group/mystery',
         state: 'runtime_degraded' as const,
@@ -200,6 +207,9 @@ describe('GitlabCard', () => {
     await render()
     expect(host.textContent).toContain('GitLab project is no longer accessible')
     expect(host.textContent).toContain('The project bot credential needs repair')
+    // The lease fence also trips on same-org cleanup or a competing repair, so the copy stays neutral.
+    expect(host.textContent).toContain('Setup was interrupted')
+    expect(host.textContent).not.toContain('Another organization')
     // An unmapped category leaves the state badge alone and says nothing else.
     expect(host.textContent).not.toContain('some_future_category')
     expect(host.textContent).not.toContain('rotation_gitlab_503')

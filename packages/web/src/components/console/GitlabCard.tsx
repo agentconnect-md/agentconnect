@@ -40,7 +40,7 @@ const STATE_REASON: Record<string, string> = {
   project_namespace_unknown: 'GitLab did not report the group this project belongs to',
   service_account_create_forbidden: 'Not allowed to create a project bot on GitLab',
   no_admin_connection: 'No connected GitLab account can manage this project',
-  claim_fence_lost: 'Another organization now manages this project',
+  claim_fence_lost: 'Setup was interrupted — run Repair again',
   relay_url_unconfigured: 'This deployment has no public webhook address configured',
   provisioning_in_progress: 'Setup is already running',
   provisioning_or_cleanup_in_progress: 'Setup or removal is already running'
