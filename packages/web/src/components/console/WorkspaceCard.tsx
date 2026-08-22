@@ -33,7 +33,6 @@ import { useOrgs } from '@/lib/org-context'
 import { useProfile } from '@/lib/profile'
 import { consoleKeys } from '@/lib/swr-keys'
 import { useConsoleData } from '@/lib/data-context'
-import { featureFlagEnabled } from '@/lib/feature-flags'
 import EditWorkspaceModal from '@/components/console/modals/EditWorkspaceModal'
 import { REPOSITORY_ACCESS_BADGE, type WorkspaceMode } from '@/components/console/WorkspaceFormFields'
 
@@ -107,7 +106,6 @@ export function WorkspaceCard({
     router.replace(`${pathname}${sp.size ? `?${sp}` : ''}`, { scroll: false })
   }, [searchParams, agent.canEdit, pathname, router])
 
-  const gitlabOffered = featureFlagEnabled('gitlab')
   const isGithub = ws.mode === 'github'
   const isGitlab = ws.mode === 'gitlab'
   const isGit = ws.mode !== 'scratch'
@@ -162,16 +160,14 @@ export function WorkspaceCard({
             <Icon name="git-branch" size={12} />
             GitHub repo
           </button>
-          {gitlabOffered && (
-            <button
-              className={segClass('gitlab')}
-              onClick={() => pickMode('gitlab')}
-              title={isGitlab ? 'The workspace is a GitLab clone' : 'Convert this workspace to a GitLab project'}
-            >
-              <Icon name="git-branch" size={12} />
-              GitLab project
-            </button>
-          )}
+          <button
+            className={segClass('gitlab')}
+            onClick={() => pickMode('gitlab')}
+            title={isGitlab ? 'The workspace is a GitLab clone' : 'Convert this workspace to a GitLab project'}
+          >
+            <Icon name="git-branch" size={12} />
+            GitLab project
+          </button>
           <button
             className={segClass('scratch')}
             onClick={() => pickMode('scratch')}

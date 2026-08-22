@@ -3,7 +3,6 @@
 
 import { larkFeishuBrand, type LarkFeishuTarget } from '@/components/LarkFeishuSwitcher'
 import type { BotDto } from '@/lib/api'
-import { featureFlagEnabled } from '@/lib/feature-flags'
 import { platformLabel } from '@/lib/platform-labels'
 import { platformRegistry } from './registry'
 
@@ -57,8 +56,8 @@ export function platformTiles(ids: readonly string[]): PlatformTile[] {
 export const BOT_PLATFORMS: readonly PlatformTile[] = platformTiles(platformRegistry.ids())
 
 /** Every picker choice: the chat platforms plus the core trigger kinds. None of
- *  the triggers is gated by daemon adapters — all live on the relay pool. The
- *  GitLab tile is additionally gated on its feature flag at the call site. */
+ *  the triggers is gated by daemon adapters — all live on the relay pool, and a
+ *  code host the deployment has not configured says so in its own pane. */
 export const PLATFORMS: readonly PlatformTile[] = [
   ...BOT_PLATFORMS,
   { key: 'webhook', label: 'Webhook' },
@@ -72,13 +71,6 @@ export const PLATFORMS: readonly PlatformTile[] = [
  *  capabilities gate them; every picker must treat them as always available. */
 export function isCoreTriggerKind(key: string): boolean {
   return !BOT_PLATFORMS.some((tile) => tile.key === key) && PLATFORMS.some((tile) => tile.key === key)
-}
-
-/** The picker choices this deployment actually offers — {@link PLATFORMS} minus
- *  the tiles a feature flag holds back. Every picker reads this, so a flagged
- *  trigger kind can never appear on one surface and not the other. */
-export function offeredPlatforms(): readonly PlatformTile[] {
-  return PLATFORMS.filter((tile) => tile.key !== 'gitlab' || featureFlagEnabled('gitlab'))
 }
 
 /**

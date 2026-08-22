@@ -496,8 +496,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
 
   const usingPicker = wsMode === 'github' && ghEnabled === true && ghInstalls.length > 0
 
-  // Only the GitLab pane asks for projects, so a deployment without the flag
-  // never issues the request — the mode tile it would come from is not offered.
+  // Only the GitLab pane asks for projects; every other source issues no request.
   const gl = useGitlabProjects(wsMode === 'gitlab', glQ)
   const glNoProjects = wsMode === 'gitlab' && gl.empty
   const glPicked = gl.choices.find((choice) => choice.projectId === glProject)
@@ -1476,7 +1475,11 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
                     <LoadingState size={20} padding={16} />
                   </div>
                 ) : glNoProjects ? (
-                  <GitlabNoProjectsNotice integrationsHref={orgPath('/integrations')} connected={gl.connected} />
+                  <GitlabNoProjectsNotice
+                    integrationsHref={orgPath('/integrations')}
+                    connected={gl.connected}
+                    enabled={gl.enabled}
+                  />
                 ) : (
                   <div className="grid grid-cols-1 gap-[14px] desktop:col-span-2 desktop:grid-cols-2 desktop:gap-x-7">
                     <GitlabProjectField

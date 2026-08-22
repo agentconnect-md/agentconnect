@@ -10,7 +10,7 @@
 import { StrictMode, act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { GitlabConnectionDto, GitlabProjectBindingDto } from '@/lib/api'
+import { ApiError, type GitlabConnectionDto, type GitlabProjectBindingDto } from '@/lib/api'
 
 ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -64,6 +64,12 @@ function Probe({ active }: { active: boolean }) {
   return <span>{gl.loading ? 'loading' : gl.choices.map((choice) => choice.projectPath).join(',')}</span>
 }
 
+/** Renders the availability answer the panes branch on. */
+function AvailabilityProbe() {
+  const gl = useGitlabProjects(true, '')
+  return <span>{`${gl.enabled}|${gl.empty}|${gl.error ?? 'none'}`}</span>
+}
+
 let host: HTMLDivElement
 let root: Root
 
@@ -100,6 +106,25 @@ describe('useGitlabProjects lifecycle', () => {
     )
 
     expect(host.textContent).toBe('example-group/example-project')
+  })
+
+  it('reads a deployment with no GitLab application as absence, not a load failure', async () => {
+    // The whole surface 404s there; the panes must say so rather than render an error.
+    mocks.fetchProjects.mockRejectedValue(new ApiError('GET /gitlab/projects → 404', 404))
+    mocks.fetchConnections.mockResolvedValue({ enabled: false, connections: [] })
+
+    await mount(<AvailabilityProbe />)
+
+    expect(host.textContent).toBe('false|true|none')
+  })
+
+  it('still reports a real read failure', async () => {
+    mocks.fetchProjects.mockRejectedValue(new ApiError('GET /gitlab/projects → 503', 503))
+    mocks.fetchConnections.mockResolvedValue({ enabled: true, connections: [CONNECTION] })
+
+    await mount(<AvailabilityProbe />)
+
+    expect(host.textContent).toBe('true|true|GET /gitlab/projects → 503')
   })
 
   it('a visit that leaves mid-load and returns loads on the second visit', async () => {

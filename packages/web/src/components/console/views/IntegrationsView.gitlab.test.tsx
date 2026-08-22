@@ -1,10 +1,9 @@
 // @vitest-environment happy-dom
 /**
- * GitLab is a standing switch, not an experiment: a deployment with no GitLab
- * application must not merely hide the card, it must never mount it — mounting
- * runs the connection probe, and a console that probes a route this deployment
- * does not serve is asking a question it has no business asking. The gate is
- * therefore on the element, not inside the card, and this is its regression test.
+ * The GitLab card sits under Code hosts beside the GitHub one, on every
+ * deployment: availability is the card's own answer, read from the authenticated
+ * API (gitlab-com-integration.md §18.3), not a console-side gate that would
+ * decide before asking. This pins the mount.
  */
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
@@ -41,11 +40,6 @@ vi.mock('@/lib/api', async (importOriginal) => ({
 
 const IntegrationsView = (await import('./IntegrationsView')).default
 
-const setFlags = (value?: string) => {
-  ;(window as unknown as { __AC_ENV?: Record<string, string> }).__AC_ENV =
-    value === undefined ? {} : { FEATURE_FLAGS: value }
-}
-
 async function render(): Promise<string> {
   const host = document.createElement('div')
   document.body.appendChild(host)
@@ -60,17 +54,11 @@ async function render(): Promise<string> {
 }
 
 afterEach(() => {
-  setFlags()
   mocks.gitlabCard.mockClear()
 })
 
-describe('IntegrationsView, GitLab flag', () => {
-  it('mounts the GitLab card only where the flag is on', async () => {
-    setFlags()
-    expect(await render()).not.toContain('data-gitlab-card')
-    expect(mocks.gitlabCard).not.toHaveBeenCalled()
-
-    setFlags('gitlab')
+describe('IntegrationsView, GitLab card', () => {
+  it('mounts the GitLab card on every deployment, GitHub App or not', async () => {
     expect(await render()).toContain('data-gitlab-card')
     expect(mocks.gitlabCard).toHaveBeenCalled()
   })

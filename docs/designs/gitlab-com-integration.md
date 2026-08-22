@@ -1597,6 +1597,11 @@ Residual risks are explicit:
 7. Enable project creation generally; keep Ultimate-specific and self-managed
    options absent.
 
+Step 7 is done: the console flag that held the surface back during the pilot is
+removed, so every GitLab view is gated on deployment availability alone — a
+control plane with no GitLab application shows the same absence a deployment
+without a GitHub App does (Section 18.3).
+
 Contract extraction rides these phases rather than preceding them: each
 code-host contract member (Section 6.5) is extracted from the working GitHub
 implementation in the same change that adds its GitLab implementer, so there

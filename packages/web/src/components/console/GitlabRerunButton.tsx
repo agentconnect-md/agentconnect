@@ -8,8 +8,7 @@
  * It names only the thread's subject: the Control Plane reads the merge
  * request's current head itself, so the console can never re-run a stale
  * revision. Absent — never disabled — for anything that is not a GitLab hook
- * session on a merge-request or issue thread, and behind the `gitlab` flag with
- * the rest of the GitLab console surface.
+ * session on a merge-request or issue thread.
  *
  * State is SUBJECT-SCOPED. The session detail view stays mounted across
  * `/sessions/a` → `/sessions/b`, so busy/started/error belong to the subject
@@ -19,7 +18,6 @@
 import { useState } from 'react'
 import { Icon } from '@/components/ui'
 import { ApiError, rerunGitlabHook } from '@/lib/api'
-import { featureFlagEnabled } from '@/lib/feature-flags'
 import { parseGitlabHookThread } from '@/lib/gitlab-events'
 import type { HookKind } from '@/lib/api'
 
@@ -83,7 +81,7 @@ export function GitlabRerunButton({
   const [state, setState] = useState<RerunState>({ key: '', ...PRISTINE })
   const subject = parseGitlabHookThread(thread)
   const subjectKey = `${hookId ?? ''}:${thread ?? ''}`
-  if (!featureFlagEnabled('gitlab') || hookKind !== 'gitlab' || !hookId || !subject) return null
+  if (hookKind !== 'gitlab' || !hookId || !subject) return null
 
   // State belongs to the subject it was produced for; every other subject is pristine.
   const view = state.key === subjectKey ? state : PRISTINE

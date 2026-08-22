@@ -31,11 +31,6 @@ vi.mock('@/lib/api', async (importOriginal) => ({
 
 const { GitlabRerunButton } = await import('./GitlabRerunButton')
 
-const setFlags = (value?: string) => {
-  ;(window as unknown as { __AC_ENV?: Record<string, string> }).__AC_ENV =
-    value === undefined ? {} : { FEATURE_FLAGS: value }
-}
-
 let root: Root | undefined
 let host: HTMLDivElement | undefined
 
@@ -84,7 +79,6 @@ const startedText = () => document.querySelector('[data-gitlab-rerun-started]')?
 
 afterEach(async () => {
   await unmount()
-  setFlags(undefined)
   mocks.rerunGitlabHook.mockClear()
   mocks.rerunGitlabHook.mockResolvedValue({
     accepted: true,
@@ -97,19 +91,12 @@ afterEach(async () => {
 describe('GitlabRerunButton', () => {
   const gitlabSession = { hookKind: 'gitlab', hookId: 'hook-1', thread: 'gitlab:4455667:merge_request:42' }
 
-  it('renders for a GitLab merge-request hook session under the flag', async () => {
-    setFlags('gitlab')
+  it('renders for a GitLab merge-request hook session', async () => {
     await render(gitlabSession)
     expect(button()?.textContent).toContain('Run again')
   })
 
-  it('is absent without the flag, off a GitLab hook, and on a push or webchat thread', async () => {
-    setFlags(undefined)
-    await render(gitlabSession)
-    expect(button()).toBeNull()
-    await unmount()
-
-    setFlags('gitlab')
+  it('is absent off a GitLab hook, and on a push or webchat thread', async () => {
     for (const props of [
       { ...gitlabSession, hookKind: 'github' },
       { ...gitlabSession, hookKind: null },
@@ -126,7 +113,6 @@ describe('GitlabRerunButton', () => {
   })
 
   it('sends the thread SUBJECT — never a revision the console guessed', async () => {
-    setFlags('gitlab')
     await render({ ...gitlabSession, thread: 'gitlab:4455667:issue:7' })
     await act(async () => {
       button()?.click()
@@ -137,7 +123,6 @@ describe('GitlabRerunButton', () => {
   })
 
   it('translates a refusal code instead of showing the wire category', async () => {
-    setFlags('gitlab')
     mocks.rerunGitlabHook.mockRejectedValueOnce(
       new ApiError('this merge request is merged', 409, 'SUBJECT_CLOSED') as never
     )
@@ -158,7 +143,6 @@ describe('GitlabRerunButton', () => {
   })
 
   it('tells the three relay refusals apart, including the spent per-hook budget', async () => {
-    setFlags('gitlab')
     await render(gitlabSession)
     for (const [relayCode, copy] of [
       ['replay_pending', 'This trigger is still loading — try again shortly'],
@@ -185,7 +169,6 @@ describe('GitlabRerunButton', () => {
   })
 
   it('renders pristine for the next session and drops the previous one’s late reply', async () => {
-    setFlags('gitlab')
     type Reply = Awaited<ReturnType<typeof mocks.rerunGitlabHook>>
     let settleA: ((value: Reply) => void) | undefined
     mocks.rerunGitlabHook.mockImplementationOnce(() => new Promise<Reply>((resolve) => (settleA = resolve)))
@@ -212,7 +195,6 @@ describe('GitlabRerunButton', () => {
   })
 
   it('keeps an error on its own subject when the reader switches away', async () => {
-    setFlags('gitlab')
     mocks.rerunGitlabHook.mockRejectedValueOnce(new ApiError('gone', 409, 'SUBJECT_NOT_FOUND') as never)
     await render(gitlabSession)
     await act(async () => {

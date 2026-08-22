@@ -1,12 +1,13 @@
 // @vitest-environment happy-dom
 /**
  * The GitLab trigger kind in the Add-integration wizard. Three things are worth
- * a regression test: the tile is absent — and the project list unrequested —
- * while the flag is off; each "Trigger when" choice compiles to exactly the
- * stored vocabulary the CP validates (`family:*` patterns, note families,
- * mention-only) keyed by the project's numeric id rather than its renameable
- * path; and the form offers exactly the two subjects GitHub does, so no
- * reachable selection compiles a push event.
+ * a regression test: a deployment with no GitLab application still offers the
+ * tile and states the absence in the pane rather than failing a load; each
+ * "Trigger when" choice compiles to exactly the stored vocabulary the CP
+ * validates (`family:*` patterns, note families, mention-only) keyed by the
+ * project's numeric id rather than its renameable path; and the form offers
+ * exactly the two subjects GitHub does, so no reachable selection compiles a
+ * push event.
  *
  * The picker also offers projects the organization has not added yet, because
  * this wizard is now where a project joins the organization.
@@ -14,6 +15,7 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { ApiError } from '@/lib/api'
 import type { Agent } from '@/lib/data'
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
@@ -93,11 +95,6 @@ const connection = {
   createdAt: '2026-08-01T00:00:00.000Z'
 }
 
-const setFlags = (value?: string) => {
-  ;(window as unknown as { __AC_ENV?: Record<string, string> }).__AC_ENV =
-    value === undefined ? {} : { FEATURE_FLAGS: value }
-}
-
 let root: Root | undefined
 let host: HTMLDivElement | undefined
 
@@ -137,7 +134,6 @@ async function settleSearch() {
 }
 
 afterEach(async () => {
-  setFlags()
   if (root) await act(async () => root?.unmount())
   host?.remove()
   root = undefined
@@ -151,19 +147,26 @@ afterEach(async () => {
 })
 
 describe('AddIntegrationModal, GitLab trigger', () => {
-  it('offers no GitLab tile and asks for no projects while the flag is off', async () => {
-    setFlags()
-    mocks.fetchGitlabProjects.mockResolvedValue([])
+  it('offers the GitLab tile beside GitHub and states the absence on an unconfigured deployment', async () => {
+    // Availability is the API's answer, not the picker's: the tile is always
+    // offered and the pane it opens says why there is nothing to pick.
+    mocks.fetchGitlabProjects.mockRejectedValue(new ApiError('GET /gitlab/projects → 404', 404))
+    mocks.fetchGitlabConnections.mockResolvedValue({ enabled: false, connections: [] })
     await render()
 
     expect(tileNamed('GitHub')).toBeDefined()
-    expect(tileNamed('GitLab')).toBeUndefined()
+    expect(tileNamed('GitLab')).toBeDefined()
+    // Nothing is asked before the pane is opened.
     expect(mocks.fetchGitlabProjects).not.toHaveBeenCalled()
-    expect(mocks.fetchGitlabConnections).not.toHaveBeenCalled()
+
+    await act(async () => tileNamed('GitLab')?.click())
+    expect(document.body.textContent).toContain(
+      'GitLab is not enabled on this deployment — no GitLab application is configured.'
+    )
+    expect(document.body.textContent).not.toContain('Couldn’t load your GitLab projects')
   })
 
   it('defaults to the updated trigger, scoping replies to the selected subjects', async () => {
-    setFlags('gitlab')
     mocks.fetchGitlabProjects.mockResolvedValue([project])
     await render()
     await pickProject()
@@ -182,7 +185,6 @@ describe('AddIntegrationModal, GitLab trigger', () => {
   })
 
   it('compiles the created trigger to openings with no note subscription', async () => {
-    setFlags('gitlab')
     mocks.fetchGitlabProjects.mockResolvedValue([project])
     await render()
     await pickProject()
@@ -201,7 +203,6 @@ describe('AddIntegrationModal, GitLab trigger', () => {
   })
 
   it('compiles the mention-only trigger to the updated event set plus the flag', async () => {
-    setFlags('gitlab')
     mocks.fetchGitlabProjects.mockResolvedValue([project])
     await render()
     await pickProject()
@@ -221,7 +222,6 @@ describe('AddIntegrationModal, GitLab trigger', () => {
   })
 
   it('offers exactly the two subjects GitHub offers, and never emits a push event', async () => {
-    setFlags('gitlab')
     mocks.fetchGitlabProjects.mockResolvedValue([project])
     await render()
     await pickProject()
@@ -242,7 +242,6 @@ describe('AddIntegrationModal, GitLab trigger', () => {
   })
 
   it('drops the separate comments row and mention checkbox the form used to expose', async () => {
-    setFlags('gitlab')
     mocks.fetchGitlabProjects.mockResolvedValue([project])
     await render()
     await pickProject()
@@ -257,7 +256,6 @@ describe('AddIntegrationModal, GitLab trigger', () => {
     // GitLab is a relay-backed trigger kind, not a chat platform: the owning daemon's
     // adapter list has no say over it. Naming only webhook and github in that set left
     // this tile — and the agent page's empty-state twin — disabled for a placed agent.
-    setFlags('gitlab')
     mocks.daemons = [{ daemonId: 'daemon-1', caps: { platforms: ['slack'] } }]
     mocks.fetchGitlabProjects.mockResolvedValue([])
     await render()
@@ -269,7 +267,6 @@ describe('AddIntegrationModal, GitLab trigger', () => {
   })
 
   it('points at the connection surface when no GitLab account is connected', async () => {
-    setFlags('gitlab')
     mocks.fetchGitlabProjects.mockResolvedValue([])
     mocks.fetchGitlabConnections.mockResolvedValue({ enabled: true, connections: [] })
     await render()
@@ -282,7 +279,6 @@ describe('AddIntegrationModal, GitLab trigger', () => {
   })
 
   it('sets up a project the organization has not added, then picks it', async () => {
-    setFlags('gitlab')
     mocks.fetchGitlabProjects.mockResolvedValue([])
     mocks.searchGitlabProjects.mockResolvedValue({
       projects: [{ projectId: '4210', path: 'acme/platform', defaultBranch: 'main', lastActivityAt: null }],

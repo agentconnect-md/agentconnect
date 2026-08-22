@@ -68,7 +68,7 @@ import LarkFeishuSwitcher from '@/components/LarkFeishuSwitcher'
 import { AgentMark, GithubMark, GitlabMark, LoadingState, PlatformMark } from '@/components/marks'
 import { buildAgentReachabilityGraph } from '@/lib/agent-reachability'
 import type { Platform } from '@/components/console/modals/AddIntegrationModal'
-import { INTEGRATION_BLURB, isCoreTriggerKind, offeredPlatforms } from '@/components/console/platforms/host-projections'
+import { INTEGRATION_BLURB, PLATFORMS, isCoreTriggerKind } from '@/components/console/platforms/host-projections'
 import {
   GL_TRIGGER_MODES,
   GL_TRIGGER_PILL,
@@ -1764,7 +1764,7 @@ export default function AgentDetailView() {
                 {/* Identical grid to the Add-integration modal's platform picker —
                     same list, order, tile size and disabled treatment. */}
                 <div className="mt-4 grid grid-cols-2 gap-[10px] desktop:flex desktop:flex-wrap desktop:justify-center">
-                  {offeredPlatforms().map((p) => {
+                  {PLATFORMS.map((p) => {
                     const available = integrationPlatformAvailable(p.key)
                     return (
                       <div

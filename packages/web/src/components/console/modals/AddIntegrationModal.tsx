@@ -38,7 +38,7 @@ import {
   type IdentityChromeView
 } from '@/components/console/platforms/publish'
 import { platformRegistry, platformSupportsSharing } from '@/components/console/platforms/registry'
-import { BOT_PLATFORMS, isCoreTriggerKind, offeredPlatforms } from '@/components/console/platforms/host-projections'
+import { BOT_PLATFORMS, PLATFORMS, isCoreTriggerKind } from '@/components/console/platforms/host-projections'
 import { agentLabel, MOCK_MODE, type Agent } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { useOrgs } from '@/lib/org-context'
@@ -421,7 +421,7 @@ export default function AddIntegrationModal({
     isCoreTriggerKind(candidate) || supportedBotPlatforms.some((supported) => supported.key === candidate)
   const selectedBotPlatformSupported = isPlatformAvailable(platform)
 
-  const platformTiles = offeredPlatforms()
+  const platformTiles = PLATFORMS
 
   // The active platform module — undefined for the core trigger sections.
   const activeModule = platformRegistry.get(platform)
@@ -1646,7 +1646,11 @@ export default function AddIntegrationModal({
               <LoadingState size={20} padding={16} />
             ) : gl.empty ? (
               <div className="mb-4">
-                <GitlabNoProjectsNotice integrationsHref={orgPath('/integrations')} connected={gl.connected} />
+                <GitlabNoProjectsNotice
+                  integrationsHref={orgPath('/integrations')}
+                  connected={gl.connected}
+                  enabled={gl.enabled}
+                />
               </div>
             ) : (
               <>
