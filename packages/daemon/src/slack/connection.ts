@@ -1415,8 +1415,13 @@ export class SlackConnection implements PlatformConnection {
     uploadUrl: string,
     file: { bytes: Buffer; name: string }
   ): Promise<{ ok: true } | { ok: false; reason: UploadFailReason; detail?: string }> {
+    // FIELD NAME `body`, NOT `file`: this shape is not ours to choose — it is what Slack's
+    // own SDK sends (`postFileUploadsToExternalURL` posts `{ body: data }`, which its
+    // form serializer turns into one multipart part named `body`). A part named anything
+    // else is answered with HTTP 500 by the reserved upload URL, which is what a live
+    // Slack→Slack forward hit.
     const form = new FormData()
-    form.append('file', new Blob([new Uint8Array(file.bytes)]), file.name)
+    form.append('body', new Blob([new Uint8Array(file.bytes)]), file.name)
     // This runs inside the serial send queue, so it carries the same bound the WebClient
     // does: a stuck upload must not wedge every other message on this connection.
     const dispatcher = proxyDispatcher()
