@@ -11,7 +11,6 @@ import { Button, Icon } from '@/components/ui'
 import { agentLabel, isPoolPlacementKind, type Agent } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { useOrgs } from '@/lib/org-context'
-import { featureFlagEnabled } from '@/lib/feature-flags'
 import { matchGitlabProjects, type GitlabProjectChoice } from '@/lib/gitlab-projects'
 import { useGitlabProjects } from '@/lib/use-gitlab-projects'
 import {
@@ -94,7 +93,6 @@ export default function EditWorkspaceModal({
       ? gitlabWorkspace.gitAccess !== 'read'
       : null
   const currentAgentDir = agentDirInputValue(gitWorkspace?.agentDir)
-  const gitlabOffered = featureFlagEnabled('gitlab')
   const [mode, setMode] = useState<WorkspaceMode>(initialMode ?? agent.workspace.mode)
   const [gh, setGh] = useState<{ enabled: boolean; installations: GithubInstallationDto[] } | null>(null)
   const [ghSyncing, setGhSyncing] = useState(false)
@@ -191,7 +189,7 @@ export default function EditWorkspaceModal({
 
   // The projects this organization added, plus the ones the connected account can
   // still add — picking one of those sets it up here (§18.1).
-  const gl = useGitlabProjects(repositoryEditor === null && gitlabOffered && mode === 'gitlab', glQ)
+  const gl = useGitlabProjects(repositoryEditor === null && mode === 'gitlab', glQ)
 
   const openGhInstall = async () => {
     const url = await fetchGithubInstallUrl().catch(() => null)
@@ -499,7 +497,11 @@ export default function EditWorkspaceModal({
                   <LoadingState size={20} padding={16} />
                 </div>
               ) : noProjects ? (
-                <GitlabNoProjectsNotice integrationsHref={orgPath('/integrations')} connected={gl.connected} />
+                <GitlabNoProjectsNotice
+                  integrationsHref={orgPath('/integrations')}
+                  connected={gl.connected}
+                  enabled={gl.enabled}
+                />
               ) : (
                 <>
                   <GitlabProjectField

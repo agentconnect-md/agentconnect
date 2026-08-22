@@ -14,6 +14,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  ApiError,
   createGitlabProject,
   fetchGitlabConnections,
   fetchGitlabProjects,
@@ -29,7 +30,15 @@ function errorText(e: unknown): string {
   return e instanceof Error ? e.message : String(e)
 }
 
+// A deployment with no GitLab application serves none of these routes: 404 is absence, not failure.
+function absentAsEmpty(e: unknown): GitlabProjectBindingDto[] {
+  if (e instanceof ApiError && e.status === 404) return []
+  throw e
+}
+
 export interface GitlabProjectPicker {
+  /** This deployment has a GitLab application configured at all. */
+  enabled: boolean
   /** Added projects merged with what the live connection could still add. */
   choices: GitlabProjectChoice[]
   /** True until the added projects and the connections have both answered. */
@@ -49,10 +58,10 @@ export interface GitlabProjectPicker {
   provision: (projectId: string) => Promise<GitlabProjectBindingDto | null>
 }
 
-/** `active` keeps a pane that is not showing from issuing any request at all —
- *  a deployment without a GitLab application does not serve these routes. */
+/** `active` keeps a pane that is not showing from issuing any request at all. */
 export function useGitlabProjects(active: boolean, query: string): GitlabProjectPicker {
   const [bindings, setBindings] = useState<GitlabProjectBindingDto[] | null>(null)
+  const [enabled, setEnabled] = useState(true)
   const [connectionId, setConnectionId] = useState<string | null>(null)
   const [candidates, setCandidates] = useState<GitlabProjectDto[]>([])
   const [error, setError] = useState<string | null>(null)
@@ -68,9 +77,10 @@ export function useGitlabProjects(active: boolean, query: string): GitlabProject
     if (!active) return
     let alive = true
     setError(null)
-    Promise.all([fetchGitlabProjects(), fetchGitlabConnections()]).then(
-      ([bound, { connections }]) => {
+    Promise.all([fetchGitlabProjects().catch(absentAsEmpty), fetchGitlabConnections()]).then(
+      ([bound, { enabled: configured, connections }]) => {
         if (!alive) return
+        setEnabled(configured)
         setBindings(bound)
         // Only a connection GitLab still accepts can add a project (§10.1).
         setConnectionId(connections.find((c) => c.state === 'connected')?.id ?? null)
@@ -137,6 +147,7 @@ export function useGitlabProjects(active: boolean, query: string): GitlabProject
 
   const loading = active && bindings === null
   return {
+    enabled,
     choices,
     loading,
     empty: !loading && !everOffered && choices.length === 0,

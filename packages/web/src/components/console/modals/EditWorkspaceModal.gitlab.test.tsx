@@ -1,15 +1,16 @@
 // @vitest-environment happy-dom
 /**
- * The GitLab workspace choice is a standing switch: with the flag off the mode
- * tile must not exist AND the project list must never be requested, because a
- * deployment without a GitLab application does not serve that route. With it on,
- * the picker offers the organization's added projects — every state except the
- * transient ones — alongside the ones the connected account can still set up,
- * and the save sends the numeric project id, never the path.
+ * The GitLab workspace choice is offered on every deployment; a control plane
+ * with no GitLab application 404s the routes behind it, which the pane states as
+ * an absence instead of a failed load. Where it is configured, the picker offers
+ * the organization's added projects — every state except the transient ones —
+ * alongside the ones the connected account can still set up, and the save sends
+ * the numeric project id, never the path.
  */
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { ApiError } from '@/lib/api'
 import type { Agent } from '@/lib/data'
 
 const mocks = vi.hoisted(() => ({
@@ -57,11 +58,6 @@ const agent = {
   workspace: { mode: 'scratch' }
 } as unknown as Agent
 
-const setFlags = (value?: string) => {
-  ;(window as unknown as { __AC_ENV?: Record<string, string> }).__AC_ENV =
-    value === undefined ? {} : { FEATURE_FLAGS: value }
-}
-
 let root: Root | undefined
 let host: HTMLDivElement | undefined
 
@@ -80,7 +76,6 @@ const buttonsNamed = (text: string) =>
   Array.from(document.querySelectorAll('button')).filter((button) => button.textContent?.includes(text))
 
 afterEach(async () => {
-  setFlags()
   if (root) await act(async () => root?.unmount())
   host?.remove()
   root = undefined
@@ -118,18 +113,22 @@ async function settleSearch() {
 }
 
 describe('EditWorkspaceModal, GitLab workspace', () => {
-  it('offers no GitLab source and asks for no projects while the flag is off', async () => {
-    setFlags()
-    mocks.fetchGitlabProjects.mockResolvedValue([binding({ projectId: '1' })])
+  it('offers the GitLab source and states the absence on an unconfigured deployment', async () => {
+    mocks.fetchGitlabProjects.mockRejectedValue(new ApiError('GET /gitlab/projects → 404', 404))
+    mocks.fetchGitlabConnections.mockResolvedValue({ enabled: false, connections: [] })
     await render()
 
-    expect(document.body.textContent).not.toContain('From GitLab')
+    expect(document.body.textContent).toContain('From GitLab')
+    // Nothing is asked until the source is picked.
     expect(mocks.fetchGitlabProjects).not.toHaveBeenCalled()
-    expect(mocks.fetchGitlabConnections).not.toHaveBeenCalled()
+
+    await act(async () => buttonsNamed('From GitLab')[0]?.click())
+    expect(document.body.textContent).toContain('GitLab is not enabled on this deployment')
+    expect(document.body.textContent).not.toContain('Couldn’t load your GitLab projects')
+    expect(mocks.searchGitlabProjects).not.toHaveBeenCalled()
   })
 
   it('lists the added projects and disables the ones still setting up', async () => {
-    setFlags('gitlab')
     mocks.fetchGitlabProjects.mockResolvedValue([
       binding({ projectId: '1', projectPath: 'acme/platform', state: 'ready' }),
       binding({ projectId: '2', projectPath: 'acme/runtime', state: 'runtime_degraded' }),
@@ -152,7 +151,6 @@ describe('EditWorkspaceModal, GitLab workspace', () => {
   })
 
   it('saves the picked project by its numeric id', async () => {
-    setFlags('gitlab')
     mocks.fetchGitlabProjects.mockResolvedValue([binding({ projectId: '4210', projectPath: 'acme/platform' })])
     connected()
     await render()
@@ -174,7 +172,6 @@ describe('EditWorkspaceModal, GitLab workspace', () => {
   })
 
   it('points at the connection surface when no GitLab account is connected', async () => {
-    setFlags('gitlab')
     mocks.fetchGitlabProjects.mockResolvedValue([])
     mocks.fetchGitlabConnections.mockResolvedValue({ enabled: true, connections: [] })
     await render()
@@ -186,7 +183,6 @@ describe('EditWorkspaceModal, GitLab workspace', () => {
   })
 
   it('sets up a project the organization has not added, then saves it', async () => {
-    setFlags('gitlab')
     mocks.fetchGitlabProjects.mockResolvedValue([])
     connected([{ projectId: '4210', path: 'acme/platform', defaultBranch: 'main', lastActivityAt: null }])
     let settle: (value: unknown) => void = () => undefined

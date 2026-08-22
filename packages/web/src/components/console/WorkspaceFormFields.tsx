@@ -3,7 +3,6 @@ import { createPortal } from 'react-dom'
 import type { KeyboardEvent, ReactNode } from 'react'
 import { GithubMark, GitlabMark } from '@/components/marks'
 import { Button, Icon, Toggle } from '@/components/ui'
-import { featureFlagEnabled } from '@/lib/feature-flags'
 import { GITLAB_PROJECT_STATE, gitlabChoiceSelectable, type GitlabProjectChoice } from '@/lib/gitlab-projects'
 import type { RepoAccess } from '@/lib/api'
 
@@ -33,7 +32,6 @@ export function WorkspaceModeField({
   label?: string
 }) {
   const fieldClassName = className ? `fld ${className}` : 'fld'
-  const gitlab = featureFlagEnabled('gitlab')
   const radio = (selected: boolean) => (
     <span
       className={
@@ -54,11 +52,7 @@ export function WorkspaceModeField({
   return (
     <div className={fieldClassName}>
       <span className="fldlbl">{label}</span>
-      <div
-        className={
-          gitlab ? 'grid grid-cols-1 gap-[10px] desktop:grid-cols-3' : 'grid grid-cols-1 gap-[10px] desktop:grid-cols-2'
-        }
-      >
+      <div className="grid grid-cols-1 gap-[10px] desktop:grid-cols-3">
         <button
           type="button"
           className={value === 'scratch' ? 'ptile on items-start text-left' : 'ptile items-start text-left'}
@@ -89,22 +83,20 @@ export function WorkspaceModeField({
           </span>
           {radio(value === 'github')}
         </button>
-        {gitlab && (
-          <button
-            type="button"
-            className={value === 'gitlab' ? 'ptile on items-start text-left' : 'ptile items-start text-left'}
-            onClick={() => onChange('gitlab')}
-          >
-            {tileIcon(<GitlabMark />)}
-            <span className="min-w-0 flex-1">
-              <span className="block font-sans text-[13px] font-semibold leading-normal">From GitLab</span>
-              <span className="mt-[2px] block truncate font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-tertiary)">
-                Clone a project on a branch.
-              </span>
+        <button
+          type="button"
+          className={value === 'gitlab' ? 'ptile on items-start text-left' : 'ptile items-start text-left'}
+          onClick={() => onChange('gitlab')}
+        >
+          {tileIcon(<GitlabMark />)}
+          <span className="min-w-0 flex-1">
+            <span className="block font-sans text-[13px] font-semibold leading-normal">From GitLab</span>
+            <span className="mt-[2px] block truncate font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-tertiary)">
+              Clone a project on a branch.
             </span>
-            {radio(value === 'gitlab')}
-          </button>
-        )}
+          </span>
+          {radio(value === 'gitlab')}
+        </button>
       </div>
     </div>
   )
@@ -415,21 +407,26 @@ export function GitlabProjectOption({
   )
 }
 
-/** Nothing to pick: either no GitLab account is connected, or the connected one
- *  administers nothing this organization may set up. */
+/** Nothing to pick: this deployment configures no GitLab application, no GitLab
+ *  account is connected, or the connected one administers nothing this
+ *  organization may set up. */
 export function GitlabNoProjectsNotice({
   integrationsHref,
-  connected
+  connected,
+  enabled = true
 }: {
   integrationsHref: string
   connected: boolean
+  enabled?: boolean
 }) {
   return (
     <div className="flex items-start gap-2 rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) px-3 py-[11px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary) desktop:col-span-2">
       <span className="mt-[1px] flex h-[14px] w-[14px] flex-none items-center justify-center">
         <GitlabMark fillPct={100} />
       </span>
-      {connected ? (
+      {!enabled ? (
+        <span>GitLab is not enabled on this deployment — the control plane has no GitLab application configured.</span>
+      ) : connected ? (
         <span>
           The connected GitLab account has no project to offer. You need Maintainer or Owner access to a project before
           it can be set up here.

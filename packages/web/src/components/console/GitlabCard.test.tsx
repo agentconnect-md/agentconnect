@@ -113,6 +113,17 @@ beforeEach(() => {
 })
 
 describe('GitlabCard', () => {
+  it('states the absence, and asks for no projects, on a deployment with no GitLab application', async () => {
+    // The card mounts everywhere and learns availability from the API (§18.3):
+    // an unconfigured control plane 404s the whole surface, which is an absence
+    // to state — never a load error, and never a second request.
+    mocks.fetchConnections.mockResolvedValue({ enabled: false, connections: [] })
+    await render()
+    expect(host.textContent).toContain('Not enabled on this deployment')
+    expect(mocks.fetchProjects).not.toHaveBeenCalled()
+    expect([...host.querySelectorAll('button')]).toHaveLength(0)
+  })
+
   it('offers a single connect entry point when nothing is connected', async () => {
     mocks.fetchConnections.mockResolvedValue({ enabled: true, connections: [] })
     await render()
