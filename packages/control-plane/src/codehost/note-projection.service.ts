@@ -211,9 +211,10 @@ export class CodeHostNoteProjectionService {
     if (!subject) return
     const snapshot = completeSnapshot(edge.snapshot)
     // A partially rolled-out dispatch tuple cannot authorize an effect, so it cannot open a
-    // projection either — absence fails closed rather than being filled with a revision. The
-    // Checks-axis members are carried as fence, not evaluated: a gitlab rule forces them off.
+    // projection either — absence fails closed rather than being filled with a revision.
     if (!snapshot) return
+    // The §16 note IS the run report, so reporting `off` opens nothing — judged from the ACCEPTED snapshot.
+    if (snapshot.reportingMode === 'off') return
     const agent = await this.deps.agents.getUnscoped(AgentId(edge.agentId))
     if (!agent || agent.orgId !== edge.orgId) return
     const binding = await this.deps.bindings.byProject(edge.orgId, subject.projectId)

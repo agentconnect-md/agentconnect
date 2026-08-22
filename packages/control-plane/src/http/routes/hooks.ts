@@ -266,13 +266,15 @@ export function hookRoutes(deps: HttpDeps) {
       return (await explicitlyGranted()) ? { ok: true } : denied
     }
 
-    type GithubEffectConfig = {
+    // The two effect axes both code hosts carry; github adds its own gate axis on top.
+    type CodeHostEffectConfig = {
       reviewPolicy: HookRecord['reviewPolicy']
       reportingMode: HookRecord['reportingMode']
-      gateMode: HookRecord['gateMode']
     }
 
-    type GithubEffectDenial = { status: 409 | 429 | 502; message: string }
+    type GithubEffectConfig = CodeHostEffectConfig & { gateMode: HookRecord['gateMode'] }
+
+    type CodeHostEffectDenial = { status: 409 | 429 | 502; message: string }
 
     /** R1/R2a action-time rules are also enforced at configuration time so the
      * editor cannot save a mode that is guaranteed to fail. Runtime still
@@ -282,8 +284,8 @@ export function hookRoutes(deps: HttpDeps) {
       repoId: bigint,
       repoFullName: string,
       cfg: GithubEffectConfig
-    ): Promise<GithubEffectDenial | null> => {
-      const misconfigured = (message: string): GithubEffectDenial => ({ status: 409, message })
+    ): Promise<CodeHostEffectDenial | null> => {
+      const misconfigured = (message: string): CodeHostEffectDenial => ({ status: 409, message })
       if (cfg.gateMode === 'required') return misconfigured('required review gates are not available until R2b')
       if (cfg.reportingMode === 'status') return misconfigured('commit status reporting is not available until R3')
       if (cfg.reviewPolicy === 'off' && cfg.reportingMode === 'off') return null
@@ -322,6 +324,27 @@ export function hookRoutes(deps: HttpDeps) {
         const pullRequests = resolved.installation.permissions?.pull_requests
         if (pullRequests !== 'read' && pullRequests !== 'write') {
           return misconfigured('this GitHub App installation has not accepted the Pull requests read permission')
+        }
+      }
+      return null
+    }
+
+    // The GitLab counterpart. No repository-access clamp: the writer for BOTH effects is the
+    // project's service account under its provisioned role, not the agent's git grant, so the
+    // only configuration-time fact to check is that the binding actually has that writer.
+    const validateGitlabEffects = (
+      binding: { serviceAccountUserId: bigint | null; projectPath: string },
+      cfg: CodeHostEffectConfig
+    ): CodeHostEffectDenial | null => {
+      // §16.2: GitLab commit statuses are external CI jobs, deliberately not this transport.
+      if (cfg.reportingMode === 'status') {
+        return { status: 409, message: 'commit status reporting is not available for GitLab projects' }
+      }
+      if (cfg.reviewPolicy === 'off' && cfg.reportingMode === 'off') return null
+      if (binding.serviceAccountUserId === null) {
+        return {
+          status: 409,
+          message: `${binding.projectPath} has no project bot yet — reviews and run reporting need one`
         }
       }
       return null
@@ -415,6 +438,11 @@ export function hookRoutes(deps: HttpDeps) {
                       message: `this agent already watches ${binding.projectPath}`
                     }
                   }
+                  const effectError = validateGitlabEffects(binding, {
+                    reviewPolicy: req.body.kind === 'gitlab' ? req.body.reviewPolicy : 'off',
+                    reportingMode: req.body.kind === 'gitlab' ? req.body.reportingMode : 'off'
+                  })
+                  if (effectError) return { ok: false as const, ...effectError }
                   return {
                     // gitlab is perThread by definition, like github (§12.3).
                     sessionMode: 'perThread' as const,
@@ -486,8 +514,10 @@ export function hookRoutes(deps: HttpDeps) {
             ? {
                 events: req.body.events,
                 commentFamilies: req.body.commentFamilies,
-                mentionOnly: req.body.mentionOnly
-                // Review/reporting stay at their off defaults until the M6 slice.
+                mentionOnly: req.body.mentionOnly,
+                reviewPolicy: req.body.reviewPolicy,
+                reportingMode: req.body.reportingMode
+                // No gateMode: GitLab has no required-gate surface, so the row stays informational.
               }
             : {}),
           targetPlatform: target.targetPlatform,
@@ -742,13 +772,26 @@ export function hookRoutes(deps: HttpDeps) {
               message: `this agent already watches ${binding.projectPath}`
             })
           }
+          const effectConfig = {
+            reviewPolicy: req.body.reviewPolicy ?? existing.reviewPolicy,
+            reportingMode: req.body.reportingMode ?? existing.reportingMode
+          }
+          const effectError = validateGitlabEffects(binding, effectConfig)
+          if (effectError) {
+            return reply.code(effectError.status).send({
+              error: ERROR_NAMES[effectError.status],
+              statusCode: effectError.status,
+              message: effectError.message
+            })
+          }
           kindFields = {
             sessionMode: 'perThread',
             repoId: projectId,
             repoFullName: binding.projectPath,
             events: req.body.events,
             commentFamilies: req.body.commentFamilies ?? existing.commentFamilies,
-            mentionOnly: req.body.mentionOnly ?? existing.mentionOnly
+            mentionOnly: req.body.mentionOnly ?? existing.mentionOnly,
+            ...effectConfig
           }
         } else {
           kindFields = { sessionMode: req.body.sessionMode }

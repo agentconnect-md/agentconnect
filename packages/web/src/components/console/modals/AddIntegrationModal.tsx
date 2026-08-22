@@ -14,6 +14,7 @@ import LarkFeishuSwitcher, { type LarkFeishuTarget } from '@/components/LarkFeis
 import { AgentIconView, GithubMark, LoadingState, PlatformMark } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 import { GithubReviewSettings } from '@/components/console/GithubReviewSettings'
+import { GitlabReviewSettings } from '@/components/console/GitlabReviewSettings'
 import {
   GithubPrivateReposNotice,
   GitlabNoProjectsNotice,
@@ -366,6 +367,8 @@ export default function AddIntegrationModal({
   const gl = useGitlabProjects(platform === 'gitlab', glQ)
   const [glFams, setGlFams] = useState<Set<GlFamily>>(new Set(GL_DEFAULT_FAMILIES))
   const [glMode, setGlMode] = useState<GlTriggerMode>(GL_DEFAULT_TRIGGER_MODE)
+  const [glReviewPolicy, setGlReviewPolicy] = useState<HookReviewPolicy>('full')
+  const [glReportingMode, setGlReportingMode] = useState<HookReportingMode>('check')
 
   // Reusing a bot is an advanced path; every platform opens on the create flow
   // until the user explicitly chooses an existing identity.
@@ -838,7 +841,9 @@ export default function AddIntegrationModal({
         projectId: glProject,
         events: eventsForGitlabFamilies(glFams, glMode),
         commentFamilies: commentFamiliesForGitlabFamilies(glFams, glMode),
-        mentionOnly: glMode === 'mention'
+        mentionOnly: glMode === 'mention',
+        reviewPolicy: glReviewPolicy,
+        reportingMode: glReportingMode
       })
       onClose()
     } catch (e) {
@@ -1753,6 +1758,20 @@ export default function AddIntegrationModal({
                       </div>
                     )
                   })}
+                </div>
+                <div className="mb-4">
+                  <GitlabReviewSettings
+                    value={{ reviewPolicy: glReviewPolicy, reportingMode: glReportingMode }}
+                    onReviewPolicyChange={(policy) => {
+                      setGlReviewPolicy(policy)
+                      setErr(null)
+                    }}
+                    onReportingModeChange={(mode) => {
+                      setGlReportingMode(mode)
+                      setErr(null)
+                    }}
+                    projectBotReady={!glPicked?.binding || !!glPicked.binding.serviceAccountUsername}
+                  />
                 </div>
               </>
             )}

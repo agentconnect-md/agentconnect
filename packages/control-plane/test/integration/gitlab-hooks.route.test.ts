@@ -125,7 +125,10 @@ async function harness(options: FakeGitlabOptions = {}) {
   await seedDaemon(prisma, daemonId)
   const agentId = randomUUID()
   await seedAgent(prisma, agentId, { daemonId })
-  return { fake, a: running, hookRepo, bindings, provisioner, binding, agentId }
+  // A second agent, so a test needing two hooks on one project clears the per-agent fence.
+  const secondAgentId = randomUUID()
+  await seedAgent(prisma, secondAgentId, { daemonId })
+  return { fake, a: running, hookRepo, bindings, provisioner, binding, agentId, secondAgentId }
 }
 
 /** A stand-in relay socket. `answer` decides how it replies to a correlated
@@ -238,6 +241,83 @@ describe('gitlab hooks — routes, compile, webhook converge (§8.3/§11.1/§11.
         expect(h.fake.webhooks.size).toBe(0)
         // The binding record trails the provider delete inside the same kick.
         expect((await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))?.webhookId).toBeNull()
+      },
+      { timeout: 20_000 }
+    )
+  })
+
+  it('round-trips the review and reporting axes, defaulting both off', async () => {
+    const h = await harness()
+    // Default: a body that names neither axis stores the off pair, exactly like github's.
+    const plain = await h.a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: glBody(h.agentId) })
+    expect(plain.statusCode).toBe(200)
+    const plainRow = (await h.hookRepo.get(OrgId(DEFAULT_ORG_ID), HookId((plain.json() as { id: string }).id)))!
+    expect(plainRow.reviewPolicy).toBe('off')
+    expect(plainRow.reportingMode).toBe('off')
+    expect(plainRow.gateMode).toBe('informational')
+    expect((plain.json() as { reviewPolicy: string }).reviewPolicy).toBe('off')
+
+    // A second agent so the one-hook-per-(agent, project) fence does not fire.
+    const second = await h.a.app.inject({
+      method: 'POST',
+      url: `${ORG}/hooks`,
+      payload: glBody(h.secondAgentId, { reviewPolicy: 'full', reportingMode: 'check' })
+    })
+    expect(second.statusCode).toBe(200)
+    const hookId = (second.json() as { id: string }).id
+    const row = (await h.hookRepo.get(OrgId(DEFAULT_ORG_ID), HookId(hookId)))!
+    expect(row.reviewPolicy).toBe('full')
+    expect(row.reportingMode).toBe('check')
+    expect(second.json()).toMatchObject({ reviewPolicy: 'full', reportingMode: 'check' })
+
+    // PUT moves one axis and preserves the other; omitting both keeps the stored pair.
+    const lowered = await h.a.app.inject({
+      method: 'PUT',
+      url: `${ORG}/hooks/${hookId}`,
+      payload: glBody(h.secondAgentId, { reviewPolicy: 'comment', reportingMode: 'check' })
+    })
+    expect(lowered.statusCode).toBe(200)
+    expect((await h.hookRepo.get(OrgId(DEFAULT_ORG_ID), HookId(hookId)))!.reviewPolicy).toBe('comment')
+
+    const echoed = await h.a.app.inject({
+      method: 'PUT',
+      url: `${ORG}/hooks/${hookId}`,
+      payload: glBody(h.secondAgentId)
+    })
+    expect(echoed.statusCode).toBe(200)
+    const preserved = (await h.hookRepo.get(OrgId(DEFAULT_ORG_ID), HookId(hookId)))!
+    expect(preserved.reviewPolicy).toBe('comment')
+    expect(preserved.reportingMode).toBe('check')
+  })
+
+  it('refuses commit status reporting, which GitLab does not serve (§16.2)', async () => {
+    const h = await harness()
+    const res = await h.a.app.inject({
+      method: 'POST',
+      url: `${ORG}/hooks`,
+      payload: glBody(h.agentId, { reportingMode: 'status' })
+    })
+    expect(res.statusCode).toBe(409)
+    expect((res.json() as { message: string }).message).toContain('commit status')
+  })
+
+  it('carries the effect axes into the compiled rule fence', async () => {
+    const h = await harness()
+    const glab = channel([GITLAB_COM_V1_FEATURE])
+    h.a.relayReg.add(glab.ch)
+    const res = await h.a.app.inject({
+      method: 'POST',
+      url: `${ORG}/hooks`,
+      payload: glBody(h.agentId, { reviewPolicy: 'request_changes', reportingMode: 'check' })
+    })
+    expect(res.statusCode).toBe(200)
+    await vi.waitFor(
+      () => {
+        const assigns = glab.sent.filter((frame) => frame.type === 'rc/hook-assign')
+        expect(assigns.length).toBeGreaterThan(0)
+        const rule = assigns.at(-1)!.payload as RcHookAssign
+        expect(rule.reviewPolicy).toBe('request_changes')
+        expect(rule.reportingMode).toBe('check')
       },
       { timeout: 20_000 }
     )

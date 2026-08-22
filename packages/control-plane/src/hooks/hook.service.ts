@@ -92,8 +92,10 @@ export class HookService {
             configRevision: hook.configRevision.toString(),
             dispatchRevision: hook.dispatchRevision.toString(),
             dispatchDaemonId: agentDaemonId,
-            reviewPolicy: hook.kind === 'github' ? hook.reviewPolicy : ('off' as const),
-            reportingMode: hook.kind === 'github' ? hook.reportingMode : ('off' as const),
+            // Both code hosts carry their own effect axes; a generic webhook has none.
+            reviewPolicy: hook.kind === 'webhook' ? ('off' as const) : hook.reviewPolicy,
+            reportingMode: hook.kind === 'webhook' ? ('off' as const) : hook.reportingMode,
+            // Only github has a gate axis; GitLab has no required-gate surface and webhooks none at all.
             gateMode: hook.kind === 'github' ? hook.gateMode : ('informational' as const)
           }
         : ({ reviewPolicy: 'off', reportingMode: 'off', gateMode: 'informational' } as const)

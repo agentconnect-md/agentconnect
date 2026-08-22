@@ -2422,8 +2422,10 @@ export const CreateGitlabHookBody = HookBodyBase.extend({
   events: z.array(z.string().regex(GitlabHookEventPattern)).min(1).max(20),
   // Note events for the selected subject families (§12); empty = no comments.
   commentFamilies: z.array(GitlabCommentFamily).max(2).default([]),
-  mentionOnly: z.boolean().default(false)
-  // No review/reporting knobs yet: the M6 review slice adds them; rows default off.
+  mentionOnly: z.boolean().default(false),
+  // The two effect axes github carries; `check` is the §16 run note. No gateMode — GitLab has no required gate.
+  reviewPolicy: HookReviewPolicyEnum.default('off'),
+  reportingMode: HookReportingModeEnum.default('off')
 })
 
 export const CreateHookBody = z.discriminatedUnion('kind', [
@@ -2445,7 +2447,10 @@ export const UpdateHookBody = z.union([
   CreateGitlabHookBody.extend({
     enabled: z.boolean().optional(),
     commentFamilies: z.array(GitlabCommentFamily).max(2).optional(),
-    mentionOnly: z.boolean().optional()
+    mentionOnly: z.boolean().optional(),
+    // Optional on whole-definition PUT so a client predating these axes preserves the stored policy.
+    reviewPolicy: HookReviewPolicyEnum.optional(),
+    reportingMode: HookReportingModeEnum.optional()
   }),
   // mentionOnly OPTIONAL on update (unlike create's default-false): a pre-P3
   // client echoing a hook back must not silently downgrade mention mode — the

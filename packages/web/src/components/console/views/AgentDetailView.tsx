@@ -63,6 +63,7 @@ import { FileBrowserShell } from '@/components/console/FileBrowser'
 import { MemoryPanel } from '@/components/console/MemoryPanel'
 import { LocalSkillsList } from '@/components/console/LocalSkillsList'
 import { GithubReviewSettings } from '@/components/console/GithubReviewSettings'
+import { GitlabReviewSettings } from '@/components/console/GitlabReviewSettings'
 import { VisibilityValue } from '@/components/console/VisibilityField'
 import LarkFeishuSwitcher from '@/components/LarkFeishuSwitcher'
 import { AgentMark, GithubMark, GitlabMark, LoadingState, PlatformMark } from '@/components/marks'
@@ -75,6 +76,7 @@ import {
   commentFamiliesForGitlabFamilies,
   eventsForGitlabFamilies,
   gitlabCadencePick,
+  gitlabCommentFamilies,
   gitlabFamCovered,
   gitlabFamilyToggle,
   gitlabHookNeedsNormalization,
@@ -138,8 +140,9 @@ function FeishuRegionBadge({ integration }: { integration: Pick<IntegrationRow, 
   )
 }
 
-interface GithubReviewSettingsDraft {
+interface CodeHostReviewSettingsDraft {
   hookId: string
+  kind: 'github' | 'gitlab'
   reviewPolicy: HookReviewPolicy
   reportingMode: HookReportingMode
 }
@@ -292,11 +295,12 @@ export default function AgentDetailView() {
     return owners.length === 1 ? owners[0]! : 'GitHub'
   }, [githubHooks])
 
-  const [reviewSettingsDraft, setReviewSettingsDraft] = useState<GithubReviewSettingsDraft | null>(null)
+  const [reviewSettingsDraft, setReviewSettingsDraft] = useState<CodeHostReviewSettingsDraft | null>(null)
   const [reviewSettingsSaving, setReviewSettingsSaving] = useState(false)
   const [reviewSettingsError, setReviewSettingsError] = useState<string | null>(null)
+  const isGitlabReviewDraft = reviewSettingsDraft?.kind === 'gitlab'
   const reviewSettingsHook = reviewSettingsDraft
-    ? githubHooks.find((hook) => hook.id === reviewSettingsDraft.hookId)
+    ? (isGitlabReviewDraft ? gitlabHooks : githubHooks).find((hook) => hook.id === reviewSettingsDraft.hookId)
     : undefined
   const reviewSettingsRepoAccess = effectiveRepoAccess({
     repoId: reviewSettingsHook?.repoId,
@@ -306,19 +310,23 @@ export default function AgentDetailView() {
   })
   const reviewSettingsInstallation = installationForRepo(reviewSettingsHook?.repoFullName, githubInstallations)
   const reviewSettingsNeededAccess = reviewSettingsDraft ? requiredRepoAccess(reviewSettingsDraft) : 'none'
+  // Only the github surface has a config-time blocker; GitLab's writer is the
+  // project bot, which carries no per-agent access tier to satisfy first.
   const reviewSettingsBlocked =
-    !repoAccessSatisfies(reviewSettingsRepoAccess, reviewSettingsNeededAccess) ||
-    (reviewSettingsDraft?.reviewPolicy !== undefined &&
-      reviewSettingsDraft.reviewPolicy !== 'off' &&
-      !hasPullRequestsWritePermission(reviewSettingsInstallation)) ||
-    (reviewSettingsDraft?.reportingMode === 'check' &&
-      (!hasChecksWritePermission(reviewSettingsInstallation) ||
-        !hasPullRequestsReadPermission(reviewSettingsInstallation)))
+    !isGitlabReviewDraft &&
+    (!repoAccessSatisfies(reviewSettingsRepoAccess, reviewSettingsNeededAccess) ||
+      (reviewSettingsDraft?.reviewPolicy !== undefined &&
+        reviewSettingsDraft.reviewPolicy !== 'off' &&
+        !hasPullRequestsWritePermission(reviewSettingsInstallation)) ||
+      (reviewSettingsDraft?.reportingMode === 'check' &&
+        (!hasChecksWritePermission(reviewSettingsInstallation) ||
+          !hasPullRequestsReadPermission(reviewSettingsInstallation))))
 
   const openReviewSettings = (hook: HookDto) => {
     setReviewSettingsError(null)
     setReviewSettingsDraft({
       hookId: hook.id,
+      kind: hook.kind === 'gitlab' ? 'gitlab' : 'github',
       reviewPolicy: hook.reviewPolicy,
       reportingMode: hook.reportingMode
     })
@@ -331,32 +339,46 @@ export default function AgentDetailView() {
   }
 
   const saveReviewSettings = async () => {
-    if (
-      reviewSettingsSaving ||
-      reviewSettingsBlocked ||
-      !reviewSettingsDraft ||
-      !reviewSettingsHook?.agentId ||
-      !reviewSettingsHook.repoFullName
-    ) {
+    if (reviewSettingsSaving || reviewSettingsBlocked || !reviewSettingsDraft || !reviewSettingsHook?.agentId) {
       return
     }
+    const agentId = reviewSettingsHook.agentId
+    const hook = reviewSettingsHook
+    const { reviewPolicy, reportingMode } = reviewSettingsDraft
+    const common = { agentId, name: hook.name, enabled: hook.enabled, events: hook.events }
+    // Each host's PUT re-sends its own whole block; only the two effect axes move.
+    const save =
+      hook.kind === 'gitlab'
+        ? hook.repoId
+          ? () =>
+              updateGitlabHook(hook.id, {
+                ...common,
+                projectId: hook.repoId!,
+                commentFamilies: gitlabCommentFamilies(hook.commentFamilies),
+                mentionOnly: hook.mentionOnly,
+                reviewPolicy,
+                reportingMode
+              })
+          : null
+        : hook.repoFullName
+          ? () =>
+              updateGithubHook(hook.id, {
+                ...common,
+                repoFullName: hook.repoFullName!,
+                commentFamilies: githubCommentFamilies(hook.commentFamilies),
+                labelFilter: hook.labelFilter,
+                mentionOnly: hook.mentionOnly,
+                reviewPolicy,
+                reportingMode,
+                gateMode: 'informational'
+              })
+          : null
+    if (!save) return
     setReviewSettingsSaving(true)
     setReviewSettingsError(null)
     try {
-      const updated = await updateGithubHook(reviewSettingsHook.id, {
-        agentId: reviewSettingsHook.agentId,
-        name: reviewSettingsHook.name,
-        enabled: reviewSettingsHook.enabled,
-        repoFullName: reviewSettingsHook.repoFullName,
-        events: reviewSettingsHook.events,
-        commentFamilies: githubCommentFamilies(reviewSettingsHook.commentFamilies),
-        labelFilter: reviewSettingsHook.labelFilter,
-        mentionOnly: reviewSettingsHook.mentionOnly,
-        reviewPolicy: reviewSettingsDraft.reviewPolicy,
-        reportingMode: reviewSettingsDraft.reportingMode,
-        gateMode: 'informational'
-      })
-      void mutateHooks((rows) => rows?.map((row) => (row.id === reviewSettingsHook.id ? updated : row)), {
+      const updated = await save()
+      void mutateHooks((rows) => rows?.map((row) => (row.id === hook.id ? updated : row)), {
         revalidate: false
       })
       setReviewSettingsDraft(null)
@@ -408,7 +430,9 @@ export default function AgentDetailView() {
         projectId: h.repoId,
         events: eventsForGitlabFamilies(families, mode),
         commentFamilies: commentFamiliesForGitlabFamilies(families, mode),
-        mentionOnly: mode === 'mention'
+        mentionOnly: mode === 'mention',
+        reviewPolicy: h.reviewPolicy,
+        reportingMode: h.reportingMode
       })
       void mutateHooks((rows) => rows?.map((r) => (r.id === h.id ? updated : r)), { revalidate: false })
     } catch {
@@ -1399,10 +1423,20 @@ export default function AgentDetailView() {
                             .join(' · ') || 'no events'}
                           {` · ${GL_TRIGGER_PILL[gitlabTriggerModeOf(h)]}`}
                         </span>
+                        {(h.reviewPolicy !== 'off' || h.reportingMode === 'check') && (
+                          <span className="truncate font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+                            {reviewPolicyLabel(h.reviewPolicy)} review
+                            {h.reportingMode === 'check' ? ' · run note' : ''}
+                          </span>
+                        )}
                       </span>
-                      <span className="inline-flex flex-none items-center gap-[5px] rounded-full bg-(--surface-active) px-[10px] py-[3px] font-sans text-[12px] font-semibold leading-normal text-(--text-tertiary)">
-                        GitLab
-                      </span>
+                      <button
+                        className="iconbtn flex-none"
+                        title="MR review and run note settings"
+                        onClick={() => openReviewSettings(h)}
+                      >
+                        <Icon name="settings-2" size={15} />
+                      </button>
                     </div>
                   ))}
                 </div>
@@ -1703,6 +1737,13 @@ export default function AgentDetailView() {
                               <span className="inline-flex flex-none gap-[2px]">
                                 <button
                                   className="iconbtn h-[26px] w-[26px] flex-none"
+                                  title="MR review and run note settings"
+                                  onClick={() => openReviewSettings(h)}
+                                >
+                                  <Icon name="settings-2" size={13} />
+                                </button>
+                                <button
+                                  className="iconbtn h-[26px] w-[26px] flex-none"
                                   title="Recent deliveries"
                                   onClick={() => setHookRunsFor(hookRunsFor === h.id ? null : h.id)}
                                 >
@@ -1994,22 +2035,22 @@ export default function AgentDetailView() {
           <div
             role="dialog"
             aria-modal="true"
-            aria-labelledby="github-review-settings-title"
+            aria-labelledby="code-host-review-settings-title"
             onClick={(event) => event.stopPropagation()}
             className="flex max-h-[88vh] w-full flex-col rounded-t-xl bg-(--surface-card) shadow-[0_-8px_32px_rgba(0,0,0,.18)] desktop:max-w-[620px] desktop:rounded-xl desktop:shadow-(--shadow-xl)"
           >
             <div className="flex items-center gap-3 border-b border-(--border-subtle) px-4 py-[13px] desktop:px-5">
               <span className="flex h-8 w-8 flex-none items-center justify-center rounded-md bg-(--surface-inverse)">
                 <span className="flex h-[17px] w-[17px] items-center justify-center">
-                  <GithubMark color="#fff" />
+                  {isGitlabReviewDraft ? <GitlabMark fillPct={100} /> : <GithubMark color="#fff" />}
                 </span>
               </span>
               <div className="min-w-0 flex-1">
                 <div
-                  id="github-review-settings-title"
+                  id="code-host-review-settings-title"
                   className="font-sans text-[14px] font-semibold leading-normal text-(--text-primary)"
                 >
-                  PR review &amp; Checks
+                  {isGitlabReviewDraft ? 'MR review & run note' : 'PR review & Checks'}
                 </div>
                 <div className="mono mt-[2px] truncate text-[11.5px] text-(--text-tertiary)">
                   {reviewSettingsHook.repoFullName ?? reviewSettingsHook.name}
@@ -2020,20 +2061,35 @@ export default function AgentDetailView() {
               </button>
             </div>
             <div className="overflow-y-auto px-4 py-4 desktop:px-5">
-              <GithubReviewSettings
-                value={reviewSettingsDraft}
-                onReviewPolicyChange={(reviewPolicy) => {
-                  setReviewSettingsError(null)
-                  setReviewSettingsDraft((draft) => (draft ? { ...draft, reviewPolicy } : draft))
-                }}
-                onReportingModeChange={(reportingMode) => {
-                  setReviewSettingsError(null)
-                  setReviewSettingsDraft((draft) => (draft ? { ...draft, reportingMode } : draft))
-                }}
-                repoAccess={reviewSettingsRepoAccess}
-                installation={reviewSettingsInstallation}
-                defaultExpanded
-              />
+              {isGitlabReviewDraft ? (
+                <GitlabReviewSettings
+                  value={reviewSettingsDraft}
+                  onReviewPolicyChange={(reviewPolicy) => {
+                    setReviewSettingsError(null)
+                    setReviewSettingsDraft((draft) => (draft ? { ...draft, reviewPolicy } : draft))
+                  }}
+                  onReportingModeChange={(reportingMode) => {
+                    setReviewSettingsError(null)
+                    setReviewSettingsDraft((draft) => (draft ? { ...draft, reportingMode } : draft))
+                  }}
+                  defaultExpanded
+                />
+              ) : (
+                <GithubReviewSettings
+                  value={reviewSettingsDraft}
+                  onReviewPolicyChange={(reviewPolicy) => {
+                    setReviewSettingsError(null)
+                    setReviewSettingsDraft((draft) => (draft ? { ...draft, reviewPolicy } : draft))
+                  }}
+                  onReportingModeChange={(reportingMode) => {
+                    setReviewSettingsError(null)
+                    setReviewSettingsDraft((draft) => (draft ? { ...draft, reportingMode } : draft))
+                  }}
+                  repoAccess={reviewSettingsRepoAccess}
+                  installation={reviewSettingsInstallation}
+                  defaultExpanded
+                />
+              )}
               {reviewSettingsError && (
                 <div className="mt-3 flex items-start gap-2 rounded-md border border-(--status-error) bg-(--status-error-soft) px-3 py-[10px] font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">
                   <Icon name="triangle-alert" size={14} className="mt-[2px] flex-none" />

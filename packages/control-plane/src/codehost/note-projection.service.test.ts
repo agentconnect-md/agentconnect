@@ -32,14 +32,14 @@ const orgId = OrgId('org_1')
 const OTHER_HOOK = '00000000-0000-4000-8000-00000000000f'
 const HEAD = 'a'.repeat(40)
 
-// The tuple a gitlab rule actually compiles to today (hook.service.ts): the Checks-axis knobs are
-// forced off and the note projection is its own transport.
+// The tuple a gitlab hook that opted into run reporting compiles to. `reportingMode` is the
+// axis that owns this surface — the §16 note IS the run report — so the fixture must carry it.
 const snapshot = {
   configRevision: '3',
   dispatchRevision: '5',
   dispatchDaemonId: daemonId,
   reviewPolicy: 'off' as const,
-  reportingMode: 'off' as const,
+  reportingMode: 'check' as const,
   gateMode: 'informational' as const
 }
 
@@ -97,7 +97,7 @@ function projection(overrides: Partial<CodeHostRunProjectionRecord> = {}): CodeH
     dispatchRevision: 5n,
     dispatchDaemonId: daemonId,
     reviewPolicySnapshot: 'off',
-    reportingModeSnapshot: 'off',
+    reportingModeSnapshot: 'check',
     gateModeSnapshot: 'informational',
     leaseOwner: null,
     leaseUntil: null,
@@ -295,6 +295,30 @@ describe('CodeHostNoteProjectionService', () => {
     expect(projections.upsert).not.toHaveBeenCalled()
     await service.afterDeliveryFailed(edge({ reason: 'review_request_required' }))
     expect(projections.upsert.mock.calls[0]![0].desiredState).toBe('skipped')
+  })
+
+  it('opens no projection at all while the hook reports nothing', async () => {
+    // `reportingMode` gates this surface exactly as it gates a GitHub Check: the note IS the
+    // run report, so `off` means no generation, no ledger row, and no daemon frame.
+    const { service, projections, sent } = harness()
+    const silent = { ...snapshot, reportingMode: 'off' as const }
+    await service.afterAccepted(edge({ snapshot: silent }))
+    await service.afterStart(edge({ snapshot: silent }))
+    await service.afterReport(edge({ snapshot: silent, state: 'completed' }))
+    await service.afterDeliveryFailed(edge({ snapshot: silent, reason: 'review_request_required' }))
+    expect(projections.upsert).not.toHaveBeenCalled()
+    expect(projections.supersede).not.toHaveBeenCalled()
+    expect(sent).toEqual([])
+  })
+
+  it('still settles a terminal edge whose accepted snapshot reports, so the gate strands nothing', async () => {
+    // The gate reads the edge's ACCEPTED tuple, never the live hook, so an open generation keeps
+    // converging to its terminal state even while the hook is being edited underneath it.
+    const { service, projections } = harness()
+    await service.afterAccepted(edge())
+    expect(projections.upsert).toHaveBeenCalledTimes(1)
+    await service.afterReport(edge({ state: 'completed' }))
+    expect(projections.upsert).toHaveBeenCalledTimes(2)
   })
 
   it('settles a written result on the reporting daemon and persists the note id', async () => {
