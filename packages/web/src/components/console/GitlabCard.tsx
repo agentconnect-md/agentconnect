@@ -32,6 +32,28 @@ const PROJECT_STATE: Record<GitlabProjectBindingState, { label: string; badge: s
   cleanup_pending: { label: 'removal incomplete', badge: 'bg-(--status-error-soft) text-(--status-error)' }
 }
 
+// The CP records a machine category in `stateReason`; these are the ones a user can act on, in GitLab
+// vocabulary. Every rotation_* variant collapses to one line — the tail (rotation_gitlab_<status>) is open-ended.
+const STATE_REASON: Record<string, string> = {
+  project_not_accessible: 'GitLab project is no longer accessible',
+  personal_namespace_unsupported: 'Projects in a personal namespace are not supported',
+  project_namespace_unknown: 'GitLab did not report the group this project belongs to',
+  service_account_create_forbidden: 'Not allowed to create a project bot on GitLab',
+  no_admin_connection: 'No connected GitLab account can manage this project',
+  claim_fence_lost: 'Another organization now manages this project',
+  relay_url_unconfigured: 'This deployment has no public webhook address configured',
+  provisioning_in_progress: 'Setup is already running',
+  provisioning_or_cleanup_in_progress: 'Setup or removal is already running'
+}
+
+/** User-facing copy for a binding's reason, or null to show nothing but the state badge — an
+ *  unmapped category is an implementation identifier and never belongs on this surface. */
+function stateReasonText(reason: string | null): string | null {
+  if (!reason) return null
+  if (reason.startsWith('rotation_')) return 'The project bot credential needs repair'
+  return STATE_REASON[reason] ?? null
+}
+
 function errorText(e: unknown): string {
   return e instanceof Error ? e.message : String(e)
 }
@@ -67,9 +89,9 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
     }
   }, [activeOrg])
 
-  // The picker installs through the connection that can still talk to GitLab; a stale one mints nothing.
-  const connection = connections[0] ?? null
-  const live = connection?.state === 'connected' ? connection : null
+  // Every row is listed, but the picker installs through one that can still talk to GitLab: disconnected
+  // and reauth-required rows are retained, so the oldest connection is often not a usable one.
+  const live = connections.find((c) => c.state === 'connected') ?? null
 
   // The authorization URL carries a one-shot state — mint a fresh one per click.
   const connect = async () => {
@@ -157,7 +179,7 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
                 Add project
               </Button>
             )}
-            {!connection && (
+            {connections.length === 0 && (
               <Button onClick={connect}>
                 <Icon name="external-link" size={13} />
                 Connect GitLab
@@ -174,7 +196,7 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
         </div>
       )}
 
-      {enabled === true && !connection && (
+      {enabled === true && connections.length === 0 && (
         <div className="px-4 py-7 text-center">
           <div className="font-sans text-[13px] font-semibold leading-normal">Not connected</div>
           <div className="mt-1 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
@@ -289,9 +311,9 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
                 </Button>
               )}
             </span>
-            {p.stateReason && (
+            {stateReasonText(p.stateReason) && (
               <span className="font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary) desktop:col-span-2">
-                {p.stateReason}
+                {stateReasonText(p.stateReason)}
               </span>
             )}
           </div>

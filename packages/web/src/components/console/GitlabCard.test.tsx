@@ -159,6 +159,54 @@ describe('GitlabCard', () => {
     expect(host.querySelectorAll('[data-gitlab-project]')).toHaveLength(0)
   })
 
+  it('picks the connected account for the picker, not the oldest row', async () => {
+    // The repository orders by createdAt ASC and retains stale rows, so the first is often unusable.
+    mocks.fetchConnections.mockResolvedValue({
+      enabled: true,
+      connections: [
+        { ...CONNECTION, id: 'conn-old', gitlabUsername: 'former-admin', state: 'disconnected' as const },
+        { ...CONNECTION, id: 'conn-new', gitlabUsername: 'current-admin' }
+      ]
+    })
+    await render()
+    // Both rows still render; only the usable one drives the picker.
+    expect(host.textContent).toContain('former-admin')
+    expect(host.textContent).toContain('current-admin')
+
+    await click('Add project')
+    await settleSearch()
+    expect(mocks.searchProjects).toHaveBeenCalledWith('conn-new', {})
+  })
+
+  it('translates known binding reasons and hides unmapped machine categories', async () => {
+    mocks.fetchConnections.mockResolvedValue({ enabled: true, connections: [CONNECTION] })
+    mocks.fetchProjects.mockResolvedValue([
+      { ...BINDING, id: 'bind-known', state: 'admin_degraded' as const, stateReason: 'project_not_accessible' },
+      {
+        ...BINDING,
+        id: 'bind-rotation',
+        projectPath: 'example-group/rotating',
+        state: 'admin_degraded' as const,
+        stateReason: 'rotation_gitlab_503'
+      },
+      {
+        ...BINDING,
+        id: 'bind-unknown',
+        projectPath: 'example-group/mystery',
+        state: 'runtime_degraded' as const,
+        stateReason: 'some_future_category'
+      }
+    ])
+    await render()
+    expect(host.textContent).toContain('GitLab project is no longer accessible')
+    expect(host.textContent).toContain('The project bot credential needs repair')
+    // An unmapped category leaves the state badge alone and says nothing else.
+    expect(host.textContent).not.toContain('some_future_category')
+    expect(host.textContent).not.toContain('rotation_gitlab_503')
+    expect(host.textContent).not.toContain('project_not_accessible')
+    expect(host.textContent).toContain('bot access degraded')
+  })
+
   it('binds a searched project through the connection that found it', async () => {
     mocks.fetchConnections.mockResolvedValue({ enabled: true, connections: [CONNECTION] })
     mocks.searchProjects.mockResolvedValue({
