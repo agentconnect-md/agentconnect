@@ -12,10 +12,13 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Daemon } from '../src/daemon.js'
 import {
+  CODEHOST_NOTE_PROJECTION_V1_FEATURE,
+  CODEHOST_REVIEW_V1_FEATURE,
   HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED,
   HOOK_REPORT_REASON_PROVIDER_QUOTA_EXHAUSTED,
   type EventSession,
   type HookReport,
+  type HookStart,
   type RdMsgHook
 } from '@agentconnect.md/protocol'
 import {
@@ -26,6 +29,7 @@ import {
   UNTRUSTED_CONTENT_END
 } from '../src/messages/hook-message.js'
 import { GithubReplyCollector } from '../src/github/poster.js'
+import { NO_ACTIVE_REVIEW_TURN } from '../src/codehost/review-adapter.js'
 import { transcriptCoords } from '../src/session/session-manager.js'
 import { DatabaseSync } from 'node:sqlite'
 import { sessionKey } from '../src/store/local-store.js'
@@ -152,6 +156,24 @@ const gitlabFire = (): RdMsgHook =>
     }
   })
 
+/** The same delivery with a complete accepted dispatch tuple and an authoritative head (§17.2). */
+const gitlabReviewFire = (dispatchDaemonId: string): RdMsgHook => {
+  const base = gitlabFire()
+  return {
+    ...base,
+    configRevision: '1',
+    dispatchRevision: '1',
+    dispatchDaemonId,
+    reviewPolicy: 'full',
+    reportingMode: 'off',
+    gateMode: 'informational',
+    gitlab: {
+      ...base.gitlab!,
+      target: { kind: 'merge_request', iid: 42, headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40) }
+    }
+  }
+}
+
 describe('Daemon rd/msg hook fires', () => {
   it('uses the display agent, runtime, and session model in GitHub attribution', async () => {
     const { factory, host } = streamingHost()
@@ -257,6 +279,143 @@ describe('Daemon rd/msg hook fires', () => {
     })
     await daemon.stop()
   }, 15_000)
+
+  // §17.2: the gitlab arm of `hook/start` records the head this turn runs on, but only against a CP
+  // that advertises it — an older one cannot route a provider member and the frame would be fatal.
+  it.each([
+    { name: 'advertises the run-projection feature', features: [CODEHOST_NOTE_PROJECTION_V1_FEATURE], calls: 1 },
+    { name: 'advertises no code-host features', features: [] as string[], calls: 0 }
+  ])(
+    'sends the gitlab hook/start barrier only when the control plane $name',
+    async ({ features, calls }) => {
+      const { factory } = streamingHost()
+      const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold(), hostFactory: factory })
+      await daemon.start()
+      const startHook = vi.fn(async (_payload: HookStart, _orgId?: string) => ({ accepted: true }))
+      const cp = {
+        ...fakeCpClient(),
+        startHook,
+        supportsServerFeature: (feature: string) => features.includes(feature)
+      }
+      ;(daemon as never as { cpClient: unknown }).cpClient = cp
+      ;(daemon as any).githubReviews.makeGithubReply = vi.fn(() => ({
+        poster: { publish: vi.fn(async () => ({ provider: 'gitlab', kind: 'note', externalId: '9001' })) },
+        collector: new GithubReplyCollector()
+      }))
+      const dispatchDaemonId = (daemon as any).cfg.daemonId as string
+
+      await (daemon as any).handleRelayMsg(gitlabReviewFire(dispatchDaemonId), () => {})
+
+      await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1), WAIT)
+      expect(startHook).toHaveBeenCalledTimes(calls)
+      if (calls === 1) {
+        const payload = startHook.mock.calls[0]![0]
+        expect(payload).toMatchObject({
+          hookId: HOOK_ID,
+          deliveryKey: 'd-1',
+          event: 'merge_request:opened',
+          dispatchDaemonId,
+          reviewPolicy: 'full',
+          gitlab: { projectId: GITLAB_PROJECT, target: { iid: 42, headSha: 'a'.repeat(40) } }
+        })
+        // The one-of is exclusive on the wire: a gitlab start never carries github metadata.
+        expect(payload.github).toBeUndefined()
+        expect(payload.sessionId).toBeTruthy()
+      }
+      await daemon.stop()
+    },
+    15_000
+  )
+
+  // Round 2: an advertised barrier that is refused must not fall through to the pre-barrier legacy
+  // branch — the ordinary turn continues, but no formal-review surface exists to reach a lease.
+  it.each([
+    {
+      name: 'refuses an advertised barrier',
+      features: [CODEHOST_NOTE_PROJECTION_V1_FEATURE, CODEHOST_REVIEW_V1_FEATURE],
+      barrierFails: true,
+      startCalls: 3,
+      installed: 0
+    },
+    {
+      name: 'does not advertise the barrier at all',
+      features: [CODEHOST_REVIEW_V1_FEATURE],
+      barrierFails: true,
+      startCalls: 0,
+      installed: 1
+    },
+    {
+      name: 'accepts the barrier',
+      features: [CODEHOST_NOTE_PROJECTION_V1_FEATURE, CODEHOST_REVIEW_V1_FEATURE],
+      barrierFails: false,
+      startCalls: 1,
+      installed: 1
+    }
+  ])(
+    'installs the formal-review turn only when the control plane $name',
+    async ({ features, barrierFails, startCalls, installed }) => {
+      let observed = -1
+      let submitError: Error | undefined
+      const { factory, host } = streamingHost()
+      const stream = host.prompt.getMockImplementation()!
+      host.prompt.mockImplementation(async (sid: string) => {
+        observed = (daemon as any).gitlabReviews.turns.size
+        // With no turn installed, nothing owns the session key and the router refuses the tool
+        // before any control-plane or provider call — the agent keeps its ordinary reply.
+        if (observed === 0) {
+          await (daemon as any).codeReviews
+            .submit({
+              agentId: AGENT_ID,
+              platform: 'hook',
+              channel: HOOK_ID,
+              thread: `gitlab:${GITLAB_PROJECT}:merge_request:42`,
+              transportScope: `gitlab:${GITLAB_PROJECT}`,
+              event: 'COMMENT',
+              verdict: 'neutral',
+              body: 'This must not reach a publication lease.'
+            })
+            .catch((err: Error) => {
+              submitError = err
+            })
+        }
+        return stream(sid)
+      })
+      const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold(), hostFactory: factory })
+      await daemon.start()
+      const authorizeCodeHostReview = vi.fn(async () => {
+        throw new Error('must not authorize')
+      })
+      const cp = {
+        ...fakeCpClient(),
+        startHook: vi.fn(async () => {
+          if (barrierFails) throw new Error('start barrier refused')
+          return { accepted: true }
+        }),
+        authorizeCodeHostReview,
+        supportsServerFeature: (feature: string) => features.includes(feature)
+      }
+      ;(daemon as never as { cpClient: unknown }).cpClient = cp
+      ;(daemon as any).githubReviews.makeGithubReply = vi.fn(() => ({
+        poster: { publish: vi.fn(async () => ({ provider: 'gitlab', kind: 'note', externalId: '9001' })) },
+        collector: new GithubReplyCollector()
+      }))
+      const dispatchDaemonId = (daemon as any).cfg.daemonId as string
+
+      await (daemon as any).handleRelayMsg(gitlabReviewFire(dispatchDaemonId), () => {})
+
+      // The ordinary turn always runs to completion; only the review surface is withheld.
+      await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1), WAIT)
+      expect(cp.hookReports[0]).toMatchObject({ status: 'success' })
+      expect(cp.startHook).toHaveBeenCalledTimes(startCalls)
+      expect(observed).toBe(installed)
+      if (installed === 0) {
+        expect(submitError?.message).toBe(NO_ACTIVE_REVIEW_TURN)
+        expect(authorizeCodeHostReview).not.toHaveBeenCalled()
+      }
+      await daemon.stop()
+    },
+    15_000
+  )
 
   // gitlab-com-integration.md 14.1/19.3: a note the poster could not publish must fail the run.
   it.each([

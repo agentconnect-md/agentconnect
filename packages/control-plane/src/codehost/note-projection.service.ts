@@ -151,7 +151,10 @@ export class CodeHostNoteProjectionService {
     await this.converge(edge)
   }
 
-  // The `running` edge waits on the GitLab arm of the `hook/start` barrier, which is GitHub-only today.
+  /** The provider-neutral `hook/start` barrier crossed: the accepted turn is entering the prompt. */
+  async afterStart(edge: NoteProjectionEdge): Promise<void> {
+    await this.converge({ ...edge, state: 'running' })
+  }
 
   /**
    * The daemon settled one desired generation: persist the observed note and drain any parked intent.
@@ -248,6 +251,7 @@ export class CodeHostNoteProjectionService {
       ...(reason ? { reason } : {}),
       ...(edge.sessionId ? { sessionId: edge.sessionId } : {}),
       ...(edge.state === 'queued' ? { queuedAt: edge.at } : {}),
+      ...(edge.state === 'running' ? { startedAt: edge.at } : {}),
       ...(terminal ? { completedAt: edge.at } : {}),
       nextAttemptAt: edge.at
     })

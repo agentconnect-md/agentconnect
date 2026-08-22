@@ -27,7 +27,8 @@ import {
   type ErrorCode,
   type HookConfigSnapshot,
   type HookReviewEvent,
-  type HookReviewVerdict
+  type HookReviewVerdict,
+  type HookStart
 } from '@agentconnect.md/protocol'
 import type { Clock } from '../domain/clock.js'
 import { encodeExternalRef } from '../domain/code-host-review.js'
@@ -86,7 +87,7 @@ export type CodeHostReviewPublisherResolver = (
 
 export interface CodeHostReviewBrokerDeps {
   leases: CodeHostReviewLeaseRepo
-  hook: Pick<HookRepo, 'getUnscoped' | 'getRun'>
+  hook: Pick<HookRepo, 'getUnscoped' | 'getRun' | 'recordStart'>
   agent: Pick<AgentRepo, 'getUnscoped'>
   publisher: CodeHostReviewPublisherResolver
   clock: Pick<Clock, 'now'>
@@ -137,6 +138,56 @@ export class CodeHostReviewBrokerService {
   }
 
   /**
+   * Persist the provider-neutral start barrier before an accepted GitLab hook turn is prompted
+   * (§17.2). It attaches the started head and turn time to the accepted run, which is what gives
+   * every later review authorization a head to fence against and the §16 ledger its `running` edge.
+   *
+   * The GitHub review broker is deliberately not involved: its fence is repository/pull-shaped and
+   * its claimed-offline recovery belongs to GitHub webhook redelivery, which GitLab has no claim on.
+   */
+  async start(input: HookStart, reportingDaemonId: DaemonId, reportingOrgId: string): Promise<void> {
+    const gitlab = input.gitlab
+    if (!gitlab) denied('this start barrier carries provider-neutral metadata only')
+    const hookId = HookId(input.hookId)
+    const run = await this.deps.hook.getRun(hookId, input.deliveryKey)
+    if (
+      !run ||
+      run.status !== 'running' ||
+      run.agentId === null ||
+      run.agentId !== AgentId(input.agentId) ||
+      !snapshotMatches(run, input, reportingDaemonId)
+    ) {
+      denied('start dispatch fence does not match the accepted hook run')
+    }
+    if (run.orgId !== reportingOrgId) denied('organization does not match the accepted hook run')
+    const projectId = BigInt(gitlab.projectId)
+    const hook = await this.deps.hook.getUnscoped(hookId)
+    const agent = await this.deps.agent.getUnscoped(run.agentId)
+    if (!this.hookAuthorizes(hook, run, 'gitlab', projectId)) denied('hook is disabled or its project changed')
+    if (!agent || agent.status !== 'active' || !(await this.serves(agent, reportingDaemonId))) {
+      denied('agent is no longer active on the accepted dispatch daemon')
+    }
+    // Only a merge request has a revision; an issue or push subject records the turn time alone.
+    const head = gitlab.target.kind === 'merge_request' ? gitlab.target : undefined
+    const accepted = await this.deps.hook.recordStart(hookId, reportingDaemonId, {
+      deliveryKey: input.deliveryKey,
+      agentId: AgentId(input.agentId),
+      ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+      configRevision: BigInt(input.configRevision),
+      dispatchRevision: BigInt(input.dispatchRevision),
+      dispatchDaemonId: DaemonId(input.dispatchDaemonId),
+      reviewPolicySnapshot: input.reviewPolicy,
+      reportingModeSnapshot: input.reportingMode,
+      gateModeSnapshot: input.gateMode,
+      // CP time is not part of the daemon request; a retry reuses the persisted barrier.
+      startedAt: run.turnStartedAt ?? new Date(this.deps.clock.now()),
+      ...(head?.headSha ? { headSha: head.headSha } : {}),
+      ...(head?.baseSha ? { baseSha: head.baseSha } : {})
+    })
+    if (!accepted) denied('hook start reservation was rejected', 'CONFLICT')
+  }
+
+  /**
    * Authorize one attempt and acquire its publication lease.
    *
    * Authority is the accepted hook delivery plus the LIVE hook, agent, placement,
@@ -181,9 +232,9 @@ export class CodeHostReviewBrokerService {
     if (input.requestedEvent === 'REQUEST_CHANGES' && input.serviceAccountIsReviewer !== true) {
       return refuse(input.attemptId, 'reviewer_assignment_required', false)
     }
-    // The accepted run carries a head only once a provider-neutral start barrier
-    // has filled it; where it does, a changed head is refused before any effect.
-    if (run.headSha !== null && run.headSha !== input.headSha) {
+    // A run the start barrier crossed always carries the head it was started on, so this binds for
+    // every fresh attempt. A row started before that barrier existed carries none and stays graceful.
+    if (run.headSha !== null ? run.headSha !== input.headSha : run.turnStartedAt !== null) {
       return refuse(input.attemptId, 'head_changed', false)
     }
 

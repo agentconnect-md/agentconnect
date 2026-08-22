@@ -312,7 +312,9 @@ export const GITCRED_PROVIDER_V2_FEATURE = 'gitcred-provider-v2'
  *  review authorization/result frames). */
 export const CODEHOST_REVIEW_V1_FEATURE = 'codehost-review-v1'
 
-/** Daemon-owned informational status-note projection (desired/result frame pair). */
+/** Informational status-note projection, each side attesting to its own half: the daemon renders
+ *  and updates the note (desired/result frame pair), the CP drives the ledger end to end including
+ *  the gitlab arm of `hook/start` that records the started head and opens `running`. */
 export const CODEHOST_NOTE_PROJECTION_V1_FEATURE = 'codehost-note-projection-v1'
 
 /** CP mints the §14.2 broker effect lease — `purpose: 'gitlab_effect'` on a gitcred v2 request,

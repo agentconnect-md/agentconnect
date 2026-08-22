@@ -765,11 +765,11 @@ export class CpClient {
     }
   }
 
-  /** Durable start barrier for an accepted GitHub hook turn. Formal review is
-   * not exposed until this correlated request succeeds. */
-  async startHook(payload: HookStart): Promise<HookStartOk> {
+  /** Durable start barrier for an accepted hook turn. Formal review is not exposed until this
+   * correlated request succeeds. The gitlab arm of the one-of is organization-scoped (§17.2). */
+  async startHook(payload: HookStart, orgId?: string): Promise<HookStartOk> {
     this.requireReady('hook/start')
-    const rep = await this.request('hook/start', payload)
+    const rep = await this.request('hook/start', payload, orgId)
     if (rep.type !== 'hook/start/ok') {
       throw new WireError('INTERNAL', `expected hook/start/ok, got ${rep.type}`, false)
     }

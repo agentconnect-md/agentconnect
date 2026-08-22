@@ -290,6 +290,29 @@ describe('code-host M0 shapes (gitlab-com-integration.md §17.2)', () => {
     expect(HookStart.safeParse({ ...base, github, gitlab }).success).toBe(false)
   })
 
+  it('round-trips a gitlab hook/start and its correlated barrier reply', () => {
+    const start = buildEnvelope('hook/start', {
+      hookId: HOOK_ID,
+      agentId: AGENT_ID,
+      deliveryKey: 'delivery-1',
+      sessionId: 'acp-gitlab-1',
+      event: 'merge_request:update',
+      gitlab,
+      ...snapshot
+    })
+    const decoded = decodeEnvelope(JSON.stringify(start))
+    expect(decoded.ok).toBe(true)
+    if (!decoded.ok || !isFrame('hook/start')(decoded.frame)) throw new Error('expected hook/start')
+    // The trusted subject discriminator survives the wire: the head the CP fences reviews on.
+    expect(decoded.frame.payload.github).toBeUndefined()
+    expect(decoded.frame.payload.gitlab?.projectId).toBe(gitlab.projectId)
+    const target = decoded.frame.payload.gitlab?.target
+    expect(target?.kind === 'merge_request' ? target.headSha : undefined).toBe('a'.repeat(40))
+    expect(
+      decodeEnvelope(JSON.stringify(buildEnvelope('hook/start/ok', { accepted: true }, { corr: start.id }))).ok
+    ).toBe(true)
+  })
+
   it('accepts gitlab metadata and a provider-neutral published output on hook/report', () => {
     const base = { hookId: HOOK_ID, agentId: AGENT_ID, deliveryKey: 'delivery-1', status: 'success' as const }
     const note = { provider: 'gitlab', kind: 'note', externalId: '123456' }

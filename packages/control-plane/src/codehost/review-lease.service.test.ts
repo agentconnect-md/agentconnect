@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { randomUUID } from 'node:crypto'
-import type { CodeHostReviewAuthorize, CodeHostReviewResultReport } from '@agentconnect.md/protocol'
+import type { CodeHostReviewAuthorize, CodeHostReviewResultReport, HookStart } from '@agentconnect.md/protocol'
 import { AgentId, DaemonId, HookId, OrgId } from '../domain/ids.js'
-import type { AgentRecord, HookRecord, HookRunRecord } from '../persistence/ports.js'
+import type { AgentRecord, HookRecord, HookRunRecord, HookStartInput } from '../persistence/ports.js'
 import { FakeCodeHostReviewLeaseRepo } from '../../test/fakes/code-host-review-lease.js'
 import {
   CodeHostReviewBrokerError,
@@ -128,13 +128,18 @@ const SECOND_SNAPSHOT = { ...snapshot, dispatchDaemonId: OTHER_DAEMON }
 
 function build(overrides: Partial<CodeHostReviewBrokerDeps> = {}) {
   const leases = new FakeCodeHostReviewLeaseRepo()
+  const starts: HookStartInput[] = []
   let nowMs = 1_000_000
   const deps: CodeHostReviewBrokerDeps = {
     leases,
     hook: {
       getRun: async (_hookId, deliveryKey) =>
         deliveryKey === SECOND_DELIVERY ? run({ deliveryKey: SECOND_DELIVERY, dispatchDaemonId: OTHER_DAEMON }) : run(),
-      getUnscoped: async () => hook()
+      getUnscoped: async () => hook(),
+      recordStart: async (_hookId, _daemonId, input) => {
+        starts.push(input)
+        return true
+      }
     } as CodeHostReviewBrokerDeps['hook'],
     agent: { getUnscoped: async () => agent } as CodeHostReviewBrokerDeps['agent'],
     // A pool member serves agents its row does not name, so placement equality is not the fence.
@@ -148,6 +153,7 @@ function build(overrides: Partial<CodeHostReviewBrokerDeps> = {}) {
   }
   return {
     leases,
+    starts,
     service: new CodeHostReviewBrokerService(deps),
     advance: (ms: number) => {
       nowMs += ms
@@ -187,6 +193,104 @@ function resultInput(attemptId: string, overrides: Partial<CodeHostReviewResultR
     ...overrides
   }
 }
+
+function startInput(overrides: Partial<HookStart> = {}): HookStart {
+  return {
+    hookId: HOOK,
+    agentId: AGENT,
+    deliveryKey: 'delivery-1',
+    sessionId: 'acp-gitlab-1',
+    event: 'merge_request:update',
+    gitlab: {
+      projectId: PROJECT.toString(),
+      projectPath: 'example-group/example-project',
+      target: { kind: 'merge_request', iid: IID, headSha: HEAD, baseSha: 'b'.repeat(40) }
+    },
+    ...snapshot,
+    ...overrides
+  }
+}
+
+describe('provider-neutral hook start (gitlab-com-integration.md §17.2)', () => {
+  it('records the started head and turn time on the accepted run', async () => {
+    const { service, starts } = build()
+    await service.start(startInput(), DAEMON, ORG)
+    expect(starts).toEqual([
+      expect.objectContaining({
+        deliveryKey: 'delivery-1',
+        agentId: AGENT,
+        sessionId: 'acp-gitlab-1',
+        configRevision: 7n,
+        dispatchRevision: 9n,
+        dispatchDaemonId: DAEMON,
+        headSha: HEAD,
+        baseSha: 'b'.repeat(40),
+        startedAt: new Date(1_000_000)
+      })
+    ])
+  })
+
+  it('reuses the persisted barrier time so a retry stays idempotent', async () => {
+    const persisted = new Date(500)
+    const seen: HookStartInput[] = []
+    const { service } = build({
+      hook: {
+        getRun: async () => run({ turnStartedAt: persisted, headSha: HEAD }),
+        getUnscoped: async () => hook(),
+        recordStart: async (_hookId, _daemonId, input) => {
+          seen.push(input)
+          return true
+        }
+      } as CodeHostReviewBrokerDeps['hook']
+    })
+    await service.start(startInput(), DAEMON, ORG)
+    // CP time is not part of the request, so a retry re-asserts the barrier already on the row.
+    expect(seen[0]?.startedAt).toEqual(persisted)
+  })
+
+  it('records only the turn for a subject that has no revision', async () => {
+    const { service, starts } = build()
+    await service.start(
+      startInput({
+        gitlab: {
+          projectId: PROJECT.toString(),
+          projectPath: 'example-group/example-project',
+          target: { kind: 'push', ref: 'refs/heads/main' }
+        }
+      }),
+      DAEMON,
+      ORG
+    )
+    expect(starts[0]?.headSha).toBeUndefined()
+    expect(starts[0]?.startedAt).toEqual(new Date(1_000_000))
+  })
+
+  it('refuses a start with no provider-neutral metadata', async () => {
+    const { service, starts } = build()
+    await expect(service.start(startInput({ gitlab: undefined }), DAEMON, ORG)).rejects.toBeInstanceOf(
+      CodeHostReviewBrokerError
+    )
+    expect(starts).toEqual([])
+  })
+
+  it('refuses a start whose dispatch fence does not match the accepted run', async () => {
+    const { service, starts } = build()
+    await expect(service.start(startInput(), OTHER_DAEMON, ORG)).rejects.toBeInstanceOf(CodeHostReviewBrokerError)
+    await expect(service.start(startInput(), DAEMON, OrgId('org-2'))).rejects.toBeInstanceOf(CodeHostReviewBrokerError)
+    expect(starts).toEqual([])
+  })
+
+  it('refuses a start whose hook was disabled or retargeted', async () => {
+    const { service } = build({
+      hook: {
+        getRun: async () => run(),
+        getUnscoped: async () => hook({ enabled: false }),
+        recordStart: async () => true
+      } as CodeHostReviewBrokerDeps['hook']
+    })
+    await expect(service.start(startInput(), DAEMON, ORG)).rejects.toBeInstanceOf(CodeHostReviewBrokerError)
+  })
+})
 
 describe('code-host review authorization (gitlab-com-integration.md §15)', () => {
   it('grants the publication lease with a fence and the shared publisher identity', async () => {
@@ -301,11 +405,47 @@ describe('code-host review authorization (gitlab-com-integration.md §15)', () =
     })
   })
 
+  it('fences the head of every run the start barrier crossed', async () => {
+    const { service } = build({
+      hook: {
+        getRun: async () => run({ turnStartedAt: new Date(1_000), headSha: HEAD }),
+        getUnscoped: async () => hook(),
+        recordStart: async () => true
+      } as CodeHostReviewBrokerDeps['hook']
+    })
+    expect(await service.authorize(authorizeInput(), DAEMON, ORG)).toMatchObject({ authorized: true })
+    const moved = authorizeInput({ headSha: 'c'.repeat(40) })
+    expect(await service.authorize(moved, DAEMON, ORG)).toEqual({
+      authorized: false,
+      attemptId: moved.attemptId,
+      reason: 'head_changed',
+      retryable: false
+    })
+  })
+
+  it('refuses a started run whose barrier recorded no head at all', async () => {
+    const { service } = build({
+      hook: {
+        getRun: async () => run({ turnStartedAt: new Date(1_000) }),
+        getUnscoped: async () => hook(),
+        recordStart: async () => true
+      } as CodeHostReviewBrokerDeps['hook']
+    })
+    const input = authorizeInput()
+    expect(await service.authorize(input, DAEMON, ORG)).toMatchObject({ reason: 'head_changed', retryable: false })
+  })
+
+  it('stays graceful for a run started before the provider-neutral barrier existed', async () => {
+    const { service } = build()
+    expect(await service.authorize(authorizeInput(), DAEMON, ORG)).toMatchObject({ authorized: true })
+  })
+
   it('refuses an event the live review policy does not allow', async () => {
     const { service } = build({
       hook: {
         getRun: async () => run(),
-        getUnscoped: async () => hook({ reviewPolicy: 'comment' })
+        getUnscoped: async () => hook({ reviewPolicy: 'comment' }),
+        recordStart: async () => true
       } as CodeHostReviewBrokerDeps['hook']
     })
     const input = authorizeInput({ requestedEvent: 'APPROVE', requestedVerdict: 'pass' })
