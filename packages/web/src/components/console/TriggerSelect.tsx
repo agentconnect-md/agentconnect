@@ -88,9 +88,12 @@ export function TriggerSelect<T extends string>({
                 aria-checked={o.value === value}
                 title={o.hint}
                 className="fopt"
+                // Every pick reaches the host, the displayed one included: a code-host row whose stored
+                // rule the menu cannot express normalizes by re-picking what it already shows. True
+                // no-ops are suppressed by the hosts, which know which of their picks are no-ops.
                 onClick={() => {
                   close(true)
-                  if (o.value !== value) onChange(o.value)
+                  onChange(o.value)
                 }}
               >
                 <span className="min-w-0 flex-1 truncate">{o.label}</span>
