@@ -21,7 +21,7 @@ const mk = (id: string, appToken: string, botToken: string): Agent =>
     output: { mode: 'medium' },
     permissions: { policy: 'ask', autoApprove: [] },
     crons: []
-  }) as Agent
+  }) as unknown as Agent
 
 describe('consolidate', () => {
   it('opens one connection per unique appToken and groups integrations', () => {

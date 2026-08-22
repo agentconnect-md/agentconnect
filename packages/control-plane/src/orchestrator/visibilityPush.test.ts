@@ -11,6 +11,7 @@ import { SessionVisibilityPushService, visibilityStateOf } from './visibilityPus
 const SUBTREE_OVERFLOW = 501
 import { NoConnection } from './outbound.js'
 import type { SessionMetaRecord } from '../persistence/ports.js'
+import { SessionId } from '../domain/ids.js'
 
 const DAEMON = 'd0d0d0d0-dddd-4ddd-8ddd-dddddddddddd'
 const AGENT = 'a0a0a0a0-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
@@ -61,6 +62,8 @@ function agentRepo(daemonId: string | null | undefined = DAEMON) {
   } as never
 }
 
+type PrivateRow = { orgId: string; sessionId: string; visibility: 'private'; visibilityRev: number }
+
 function deps(
   over: {
     connReg?: never
@@ -89,8 +92,12 @@ function deps(
   const privatePages = [...(over.privatePages ?? [[]])]
   const visibilitySnapshotForAgents = vi.fn(async () => pages.shift() ?? [])
   const countUnackedVisibilityForAgents = vi.fn(async () => unacked.shift() ?? 0)
-  const privateVisibilityPage = vi.fn(async () => privatePages.shift() ?? [])
-  const sessionVisibilitySnapshot = vi.fn(async () => ({ ok: true }))
+  const privateVisibilityPage = vi.fn<
+    (agentIds: string[], limit: number, includeExternal: boolean, afterId?: string) => Promise<PrivateRow[]>
+  >(async () => privatePages.shift() ?? [])
+  const sessionVisibilitySnapshot = vi.fn<
+    (daemonId: string, orgId: string, entries: Array<Omit<PrivateRow, 'orgId'>>) => Promise<{ ok: boolean }>
+  >(async () => ({ ok: true }))
   return {
     recordVisibilityAck,
     sessionVisibility,
@@ -186,7 +193,7 @@ describe('notifySessions', () => {
       }
     )
     const { push, recordVisibilityAck } = deps({ sessionVisibility })
-    await push.notifySessions([session({ id: 'acp-bad' }), session({ id: 'acp-good' })])
+    await push.notifySessions([session({ id: SessionId('acp-bad') }), session({ id: SessionId('acp-good') })])
     expect(recordVisibilityAck).toHaveBeenCalledWith('acp-good', 2)
   })
 })
@@ -512,8 +519,8 @@ describe('visibilityStateOf — subtree scope', () => {
 
   it('covers descendants, so an acked root with a behind child is still pending', async () => {
     const { push, repos } = subtreeDeps([
-      session({ id: 'root', visibilityRev: 1, visibilityAckedRev: 1 }),
-      session({ id: 'child', visibilityRev: 1, visibilityAckedRev: -1 })
+      session({ id: SessionId('root'), visibilityRev: 1, visibilityAckedRev: 1 }),
+      session({ id: SessionId('child'), visibilityRev: 1, visibilityAckedRev: -1 })
     ])
     expect(await visibilityStateOf(push, repos as never, ['root' as never])).toBe('pending')
   })
@@ -523,14 +530,14 @@ describe('visibilityStateOf — subtree scope', () => {
     // could not see the whole subtree, and claiming a verified cutover from a
     // partial read would be a false promise.
     const rows = Array.from({ length: SUBTREE_OVERFLOW }, (_, i) =>
-      session({ id: `s-${i}`, visibilityRev: 1, visibilityAckedRev: 1 })
+      session({ id: SessionId(`s-${i}`), visibilityRev: 1, visibilityAckedRev: 1 })
     )
     const { push, repos } = subtreeDeps(rows)
     expect(await visibilityStateOf(push, repos as never, ['root' as never])).toBe('pending')
   })
 
   it('reports applied for a fully acked subtree within the cap', async () => {
-    const { push, repos } = subtreeDeps([session({ id: 'root', visibilityRev: 1, visibilityAckedRev: 1 })])
+    const { push, repos } = subtreeDeps([session({ id: SessionId('root'), visibilityRev: 1, visibilityAckedRev: 1 })])
     expect(await visibilityStateOf(push, repos as never, ['root' as never])).toBe('applied')
   })
 })
@@ -595,8 +602,8 @@ describe('isApplied — the §4.3 cutover state', () => {
 
   it('is pending if ANY affected session of a cascade is still unacked', async () => {
     const { push } = deps()
-    const acked = session({ id: 'acp-1', visibilityRev: 1, visibilityAckedRev: 1 })
-    const unacked = session({ id: 'acp-2', visibilityRev: 1, visibilityAckedRev: 0 })
+    const acked = session({ id: SessionId('acp-1'), visibilityRev: 1, visibilityAckedRev: 1 })
+    const unacked = session({ id: SessionId('acp-2'), visibilityRev: 1, visibilityAckedRev: 0 })
     expect(await push.isApplied([acked, unacked])).toBe(false)
   })
 })

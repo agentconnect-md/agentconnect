@@ -36,9 +36,8 @@ function daemonRepo(): DaemonRepo {
   } as unknown as DaemonRepo
 }
 
-function placement(orgId: OrgId, daemonId: string, suffix: string): ChannelPlacementRecord {
+function placement(daemonId: string, suffix: string): ChannelPlacementRecord {
   return {
-    orgId,
     platform: 'slack',
     channelId: `C-${suffix}`,
     agentId: AgentId(
@@ -50,6 +49,8 @@ function placement(orgId: OrgId, daemonId: string, suffix: string): ChannelPlace
     ),
     callPolicy: 'all',
     allowedCallerAgentIds: [],
+    outboundPolicy: 'all',
+    allowedTargetAgentIds: [],
     name: `agent-${suffix}`
   }
 }
@@ -62,12 +63,14 @@ function agentRepo(byOrg: Record<string, OrgAgentRecord[]> = {}): AgentRepo {
 
 function orgAgent(orgId: string, daemonId: string, suffix: string): OrgAgentRecord {
   return {
-    agentId: placement(OrgId(orgId), daemonId, suffix).agentId,
+    agentId: placement(daemonId, suffix).agentId,
     name: `agent-${suffix}`,
     displayName: null,
     description: null,
     status: 'active',
+    placementKind: 'daemon',
     daemonId,
+    setId: null,
     callPolicy: 'all',
     allowedCallerAgentIds: [],
     outboundPolicy: 'all',
@@ -82,8 +85,7 @@ describe('CollabRoutesService placement broadcast', () => {
     const service = new CollabRoutesService(
       daemonRepo(),
       {
-        channelPlacements: async (orgId: string) =>
-          orgId === ORG_A ? [placement(ORG_A, D_A, '1')] : [placement(ORG_B, D_B, '2')]
+        channelPlacements: async (orgId: string) => (orgId === ORG_A ? [placement(D_A, '1')] : [placement(D_B, '2')])
       } as unknown as IntegrationRepo,
       agentRepo({ [ORG_A]: [orgAgent(ORG_A, D_A, '3')], [ORG_B]: [orgAgent(ORG_B, D_B, '4')] }),
       { collabRoutes: (snapshot: RcCollabRoutes) => void (relay = snapshot) } as unknown as RelayControlSender,

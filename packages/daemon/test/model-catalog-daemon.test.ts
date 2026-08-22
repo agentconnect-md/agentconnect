@@ -31,7 +31,10 @@ function root(): string {
 function catalogOf(runtimes: Record<string, RuntimeDef>): ResolvedRuntimeCatalog {
   return {
     entries: Object.fromEntries(
-      Object.entries(runtimes).map(([id, rt]) => [id, { runtime: rt, source: 'user' as const, name: id, version: '' }])
+      Object.entries(runtimes).map(([id, rt]) => [
+        id,
+        { runtime: rt, source: 'user' as const, name: id, version: '', skillsAgentId: null }
+      ])
     ),
     runtimes
   }

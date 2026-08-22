@@ -140,7 +140,7 @@ describe('the daemon records only its own host’s advertisement', () => {
   it('ignores a session the agent’s host does not own, and takes one it does', async () => {
     const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
     const host = daemon as unknown as {
-      hosts: Map<string, { hasSession(id: string): boolean }>
+      hosts: Map<string, { hasSession(id: string): boolean; isLoadingSession(id: string): boolean }>
       onAcpUpdate(agentId: string, sessionId: string, update: unknown): Promise<void>
       runtimeCommands: RuntimeCommandsCache
     }

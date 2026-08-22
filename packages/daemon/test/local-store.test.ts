@@ -430,9 +430,9 @@ describe('LocalStore', () => {
       text: 'second'
     })
     await s.appendTranscript({ channel: 'C1', thread: '100.1', ts: '100.4', sender: 'U1', kind: 'text', text: 'third' })
-    const gap = await s.transcriptSince('C1', '100.1', '100.2')
+    const gap = await s.transcriptSince('C1', '100.1', '100.2', 'bot-a')
     expect(gap.map((e) => e.text)).toEqual(['second', 'third'])
-    const all = await s.transcriptSince('C1', '100.1', null)
+    const all = await s.transcriptSince('C1', '100.1', null, 'bot-a')
     expect(all).toHaveLength(3)
     await s.close()
   })
@@ -445,7 +445,7 @@ describe('LocalStore', () => {
     await s.appendTranscript({ channel: 'C1', thread: 'T', ts: '4', sender: 'bot', kind: 'text', text: 'answer' })
 
     // §8.5 replay: conversational text only
-    expect((await s.transcriptSince('C1', 'T', null)).map((e) => e.text)).toEqual(['ask', 'answer'])
+    expect((await s.transcriptSince('C1', 'T', null, 'bot-a')).map((e) => e.text)).toEqual(['ask', 'answer'])
     // Web UI: every kind, insertion order
     expect((await s.threadTranscript('C1', 'T')).map((r) => [r.kind, r.text])).toEqual([
       ['text', 'ask'],
@@ -1325,7 +1325,7 @@ describe('LocalStore session retention GC (#485)', () => {
     expect(await s.listPermissionRequests('bot-a')).toEqual([])
     expect((await s.listPermissionRequests('bot-b')).map((r) => r.id)).toEqual(['p2'])
     // The gate row is gone: an unknown session falls back to excluded-by-default.
-    expect((await s.transcriptSince('C1', 'gone', null)).map((r) => r.text)).toEqual(['hello'])
+    expect((await s.transcriptSince('C1', 'gone', null, 'bot-a')).map((r) => r.text)).toEqual(['hello'])
     // Idempotent: a second delete (or an unknown key) reports false, not an error.
     expect(await s.deleteSession('gone')).toBe(false)
     await s.close()
@@ -1727,7 +1727,7 @@ describe('LocalStore webchat MCP grant ledger', () => {
     // deduped row (and bump its revision); derived recomputes never flap it.
     const s = await store()
     await s.appendTranscript({ channel: 'C1', thread: 'T', ts: '4821', sender: 'U1', kind: 'text', text: 'hi' })
-    const before = (await s.transcriptSince('C1', 'T', null))[0] as { eventTimeUs?: number }
+    const before = (await s.transcriptSince('C1', 'T', null, 'bot-a'))[0] as { eventTimeUs?: number }
     expect(before.eventTimeUs).toBe(4_821_000_000)
     await s.appendTranscript({
       channel: 'C1',
@@ -1738,7 +1738,7 @@ describe('LocalStore webchat MCP grant ledger', () => {
       text: 'hi',
       eventTimeUs: 1_754_123_458_000_000
     })
-    const after = (await s.transcriptSince('C1', 'T', null))[0] as { eventTimeUs?: number }
+    const after = (await s.transcriptSince('C1', 'T', null, 'bot-a'))[0] as { eventTimeUs?: number }
     expect(after.eventTimeUs).toBe(1_754_123_458_000_000)
   })
 
@@ -1758,7 +1758,7 @@ describe('LocalStore webchat MCP grant ledger', () => {
       text,
       attachments: [{ name: 'shot.png', mimeType: 'image/png', data: 'aW1n' }]
     })
-    const row = (await s.transcriptSince('C1', 'T', null))[0] as { attachmentsJson?: string | null }
+    const row = (await s.transcriptSince('C1', 'T', null, 'bot-a'))[0] as { attachmentsJson?: string | null }
     expect(JSON.parse(row.attachmentsJson ?? 'null')).toEqual([
       { name: 'shot.png', mimeType: 'image/png', data: 'aW1n' }
     ])

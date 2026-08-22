@@ -93,7 +93,7 @@ describe('published probe payload', () => {
     }
     const parsed = parseK8sProbePayload(JSON.stringify(payload))
     expect(parsed?.table.runtimes[0]?.command).toBe('claude-agent-acp')
-    expect(parsed?.results[0]?.configOptions).toEqual(payload.results[0].configOptions)
+    expect(parsed?.results[0]?.configOptions).toEqual(payload.results[0]!.configOptions)
   })
 
   it('refuses a payload it cannot read, so the member probes rather than advertises a guess', () => {

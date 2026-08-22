@@ -92,7 +92,10 @@ class FakeStore implements DreamStorePort {
   async supersededDreams(): Promise<DreamInfo[]> {
     return [...this.dreams.values()].filter((d) => d.status === 'superseded')
   }
-  async dreamSessionSources(): Promise<{ sessionId: string; channel: string; thread: string; updatedAt: number }[]> {
+  async dreamSessionSources(
+    _agentId: string,
+    _limit: number
+  ): Promise<{ sessionId: string; channel: string; thread: string; updatedAt: number }[]> {
     const now = Date.now()
     return this.sources.map((s) => ({ ...s, updatedAt: s.updatedAt ?? now }))
   }
@@ -1249,7 +1252,7 @@ describe('DreamRunner crash recovery', () => {
       dreamingPolicyFor: () => undefined,
       operationPolicy: 'test-only',
       store,
-      extract: async () => '',
+      extract: async () => ({ output: '' }),
       log: silent
     }).initialize()
     expect(store.dreams.get('drm-stale')).toMatchObject({
@@ -1279,7 +1282,7 @@ describe('DreamRunner crash recovery', () => {
       dreamingPolicyFor: () => undefined,
       operationPolicy: 'test-only',
       store,
-      extract: async () => '',
+      extract: async () => ({ output: '' }),
       onEvent: (event) => {
         if (event.type === 'memory.dream.failed') failures.push(event.dream.dreamId)
       },
@@ -1549,7 +1552,7 @@ describe('DreamRunner store persistence', () => {
       runtime: 'codex',
       model: 'gpt-5.6',
       stopReason: 'end_turn',
-      snapshotWrites: { total: 7, nonDistill: 3 },
+      snapshotWrites: { generation: 'gen-1', total: 7, nonDistill: 3 },
       usage: {
         inputBytes: 2048,
         outputBytes: 512,
@@ -1571,8 +1574,16 @@ describe('DreamRunner store persistence', () => {
 
     // …and survives the status updates the pipeline makes on the way to adoption.
     await store.updateDream({ ...dream, status: 'completed', endedAt: '2026-07-24T00:05:00.000Z' })
-    expect((await store.getDream('a1', 'drm-store-1'))?.snapshotWrites).toEqual({ total: 7, nonDistill: 3 })
-    expect((await store.listDreams('a1', 10))[0]?.snapshotWrites).toEqual({ total: 7, nonDistill: 3 })
+    expect((await store.getDream('a1', 'drm-store-1'))?.snapshotWrites).toEqual({
+      generation: 'gen-1',
+      total: 7,
+      nonDistill: 3
+    })
+    expect((await store.listDreams('a1', 10))[0]?.snapshotWrites).toEqual({
+      generation: 'gen-1',
+      total: 7,
+      nonDistill: 3
+    })
     await store.close()
   })
 
@@ -2185,6 +2196,9 @@ describe('DreamRunner skill mining — review findings', () => {
   })
 })
 
+// `dreamTranscriptText` returns a bounded `input` on tool rows; its declared row type omits it.
+type ToolRow = { sender: string; text: string; kind?: string; input?: string }
+
 describe('dreamTranscriptText tool rows (real LocalStore)', () => {
   const CH = 'C1'
   const TH = 'T1'
@@ -2228,7 +2242,7 @@ describe('dreamTranscriptText tool rows (real LocalStore)', () => {
 
   it('never returns a peer-private tool row via the shared delivery table', async () => {
     const store = await storeWithPeerToolRow()
-    const rows = await store.dreamTranscriptText(CH, TH, 'me', 100, true)
+    const rows = (await store.dreamTranscriptText(CH, TH, 'me', 100, true)) as ToolRow[]
     const text = rows.map((r) => `${r.text} ${r.input ?? ''}`).join('\n')
     expect(text).not.toContain('peer-secret-command')
     expect(text).not.toContain('hunter2')
@@ -2240,7 +2254,9 @@ describe('dreamTranscriptText tool rows (real LocalStore)', () => {
 
   it('carries a bounded rawInput so a generic title still identifies the command', async () => {
     const store = await storeWithPeerToolRow()
-    const mine = (await store.dreamTranscriptText(CH, TH, 'me', 100, true)).find((r) => r.kind === 'tool')
+    const mine = ((await store.dreamTranscriptText(CH, TH, 'me', 100, true)) as ToolRow[]).find(
+      (r) => r.kind === 'tool'
+    )
     expect(mine?.text).toBe('Bash') // the title alone says nothing
     expect(mine?.input).toBe('npm run deploy --prod')
     // rawOutput is the bulk/secret-bearing half and never leaves the store.

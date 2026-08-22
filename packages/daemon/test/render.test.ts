@@ -311,7 +311,7 @@ describe('OutputConverger', () => {
     hi.onUpdate({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'first ' } } as any)
     hi.onUpdate({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'second' } } as any)
     const [reasoning] = hi.flushBuffered()
-    expect(reasoning.kind).toBe('reasoning')
+    expect(reasoning!.kind).toBe('reasoning')
     expect((reasoning as { text: string }).text).toContain('first second')
   })
 
@@ -483,9 +483,9 @@ describe('OutputConverger', () => {
     c.onUpdate({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'done.' } } as any)
     const actions = c.onFinal()
     expect(actions.some((a) => a.kind === 'set-status' && a.text === '')).toBe(true)
-    expect(actions.map((a) => a.text).join('\n')).toContain('done.')
+    expect(actions.map((a) => (a as { text?: string }).text).join('\n')).toContain('done.')
     // The old "done — details" link footer was removed.
-    expect(actions.map((a) => a.text).join('\n')).not.toContain('https://app/session/123')
+    expect(actions.map((a) => (a as { text?: string }).text).join('\n')).not.toContain('https://app/session/123')
   })
 
   it('medium mode onFinal omits the footer entirely when no link is configured', () => {
@@ -496,7 +496,7 @@ describe('OutputConverger', () => {
       { kind: 'post', text: 'done.' },
       { kind: 'set-status', text: '' }
     ])
-    expect(actions.some((a) => a.text.includes('details'))).toBe(false)
+    expect(actions.some((a) => (a as { text: string }).text.includes('details'))).toBe(false)
   })
 
   it('onFinal appends bot, runtime, model, and session links in a compact context footer', () => {
@@ -506,7 +506,9 @@ describe('OutputConverger', () => {
       const actions = c.onFinal(attribution())
       const last = actions.at(-1)!
       expect(last.kind).toBe('attribution')
-      expect(last.text).toBe('sent by Deploy Bot (Claude Code · claude-sonnet-4-5) · open in session')
+      expect((last as { text: string }).text).toBe(
+        'sent by Deploy Bot (Claude Code · claude-sonnet-4-5) · open in session'
+      )
       expect((last as any).blocks).toEqual([
         {
           type: 'context',

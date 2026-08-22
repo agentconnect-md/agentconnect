@@ -109,7 +109,7 @@ function installation(): GithubInstallationRecord {
     permissions: { checks: 'write', pull_requests: 'read' },
     suspendedAt: null,
     revokedAt: null
-  } as GithubInstallationRecord
+  } as unknown as GithubInstallationRecord
 }
 
 function mintChecksForAgent() {
@@ -581,6 +581,7 @@ describe('GithubRunReporter', () => {
         | 'advancePendingReviewProjection'
         | 'retryProjectionWrite'
         | 'blockProjection'
+        | 'settleReviewProjection'
         | 'getReviewProjection'
         | 'refreshReviewProjectionTarget'
         | 'synchronizeReviewSubjects'
@@ -814,7 +815,7 @@ describe('GithubRunReporter', () => {
       observedState: 'queued',
       checkRunId: '90071992547409931'
     })
-    const fetchImpl = vi.fn(async () =>
+    const fetchImpl = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>(async () =>
       Response.json({
         id: p.checkRunId,
         external_id: p.externalId,
@@ -869,7 +870,9 @@ describe('GithubRunReporter', () => {
       [{ pullNumber: 9, headSha: p.headSha, baseSha: 'b'.repeat(40) }],
       null
     )
-    expect(fetchImpl.mock.invocationCallOrder[0]).toBeLessThan(hooks.beginProjectionWrite.mock.invocationCallOrder[0]!)
+    expect(fetchImpl.mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(hooks.beginProjectionWrite).mock.invocationCallOrder[0]!
+    )
     const [url, init] = fetchImpl.mock.calls[1]!
     expect(url.endsWith(`/check-runs/${p.checkRunId}`)).toBe(true)
     expect(init?.method).toBe('PATCH')
@@ -1518,7 +1521,7 @@ describe('GithubRunReporter', () => {
       writePhase: 'create',
       writeStartedAt: new Date(NOW - 1_000)
     })
-    const fetchImpl = vi.fn(
+    const fetchImpl = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>(
       async () =>
         new Response(
           `{"total_count":1,"check_runs":[{"id":12345678901234567,"external_id":"${p.externalId}","status":"queued","conclusion":null,"output":{"summary":"Phase: queued\\n<!-- agentconnect-write:${marker} -->"}}]}`,
@@ -1598,7 +1601,7 @@ describe('GithubRunReporter', () => {
       writePhase: 'update',
       writeStartedAt: new Date(NOW - 1_000)
     })
-    const fetchImpl = vi.fn(async () =>
+    const fetchImpl = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>(async () =>
       Response.json({
         id: p.checkRunId,
         external_id: p.externalId,

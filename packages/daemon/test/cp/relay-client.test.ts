@@ -7,12 +7,12 @@ import {
   RD_GITHUB_THREAD_WORKTREE_CLEANUP_V2,
   RELAY_DAEMON_SUBPROTOCOL,
   type RelayDaemonFrame,
-  type RdMsgWebchat,
+  type RdMsg,
   type RdChatEvent,
   type RdAck
 } from '@agentconnect.md/protocol'
 import { FakeClock, type Transport } from '@agentconnect.md/connection'
-import { RelayClient } from '../../src/cp/relay-client.js'
+import { RelayClient, type RelayClientDeps } from '../../src/cp/relay-client.js'
 import type { Logger } from '../../src/log.js'
 
 const RELAY_ID = '11111111-1111-4111-8111-111111111111'
@@ -62,7 +62,7 @@ function make(
     daemonId?: () => string | undefined
     apiKey?: () => string
     clusterIdentityToken?: () => string | undefined
-    onRelayMsg?: (msg: RdMsgWebchat, chat: (event: RdChatEvent) => void) => RdAck
+    onRelayMsg?: (msg: RdMsg, chat: (event: RdChatEvent) => void) => RdAck
   } = {}
 ) {
   const clock = new FakeClock()
@@ -80,8 +80,8 @@ function make(
     connect,
     log: silentLog,
     jitter: () => 0,
-    onRelayMsg: over.onRelayMsg ?? ((msg: RdMsgWebchat) => ({ msgId: msg.msgId, accepted: true }))
-  })
+    onRelayMsg: over.onRelayMsg ?? ((msg: RdMsg) => ({ msgId: msg.msgId, accepted: true }))
+  } as unknown as RelayClientDeps)
   return { client, clock, transports, connect }
 }
 
@@ -132,7 +132,7 @@ describe('RelayClient (daemon → one relay)', () => {
     })
     const t = await toReady(client, transports)
     expect(t.lastReq('rd/hello')!.payload).toMatchObject({ serviceAccountToken: 'projected-1' })
-    expect(t.lastReq('rd/hello')!.payload.apiKey).toBeUndefined()
+    expect((t.lastReq('rd/hello')!.payload as { apiKey?: string }).apiKey).toBeUndefined()
     // Re-read per connect for the same reason as the CP socket: the kubelet rotates it.
     current = 'projected-2'
     await toReady(client, transports)
@@ -197,7 +197,7 @@ describe('RelayClient (daemon → one relay)', () => {
     const AGENT = '11111111-1111-4111-8111-111111111111'
     const TURN = '22222222-2222-4222-8222-222222222222'
     // A daemon that streams one output chunk then a done for each inbound turn.
-    const stream = (msg: RdMsgWebchat, chat: (e: RdChatEvent) => void): RdAck => {
+    const stream = (msg: RdMsg, chat: (e: RdChatEvent) => void): RdAck => {
       chat({ kind: 'output', output: { conversationId: CHAT, turnId: TURN, index: 0, status: { model: 'm' } } })
       chat({ kind: 'done', done: { conversationId: CHAT, turnId: TURN } })
       return { msgId: msg.msgId, accepted: true, turnId: TURN }

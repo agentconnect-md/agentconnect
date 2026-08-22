@@ -62,7 +62,7 @@ describe('WebchatTokenService', () => {
     const token = await svc.mint(CLAIMS)
     const [h, p, s] = token.split('.')
     // Flip a byte in the payload segment — signature no longer matches.
-    const tampered = `${h}.${p.slice(0, -1)}${p.at(-1) === 'A' ? 'B' : 'A'}.${s}`
+    const tampered = `${h}.${p!.slice(0, -1)}${p!.at(-1) === 'A' ? 'B' : 'A'}.${s}`
     expect(await svc.verify(tampered)).toBeNull()
   })
 

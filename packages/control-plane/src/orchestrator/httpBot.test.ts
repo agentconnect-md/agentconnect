@@ -2,7 +2,6 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import { HttpBotOrchestrator } from './httpBot.js'
 import { AgentDelivery } from './agentDelivery.js'
 import type { PlacementResolver } from './placementResolver.js'
-import { systemClock } from '../domain/clock.js'
 import { RelayRegistry, type RelayChannel } from '../ws/relay-registry.js'
 import type { RcBotAssign, RelayCpFrameType } from '@agentconnect.md/protocol'
 import { AgentId, BotId, DaemonId, IntegrationId, OrgId } from '../domain/ids.js'
@@ -48,6 +47,10 @@ const BOB = AgentId('44444444-4444-4444-8444-444444444442')
 const INT_A = IntegrationId('66666666-6666-4666-8666-666666666661')
 const INT_B = IntegrationId('66666666-6666-4666-8666-666666666662')
 
+// The named demux twins left the wire (#556); these reads assert they stay gone.
+const legacyTwins = (assign: RcBotAssign): { apiAppId?: string; teamId?: string; botUserId?: string } =>
+  assign as unknown as { apiAppId?: string; teamId?: string; botUserId?: string }
+
 // ── a recording relay channel + a control-sender spy ──────────────────────────
 class FakeChannel implements RelayChannel {
   sends: { type: RelayCpFrameType; payload: unknown }[] = []
@@ -81,7 +84,7 @@ function bot(over: Partial<BotRecord> = {}): BotRecord {
     inUseByAgentId: null,
     createdAt: new Date(0),
     ...over
-  }
+  } as BotRecord
 }
 
 function integration(id: IntegrationId, agentId: AgentId): IntegrationRecord {
@@ -112,7 +115,7 @@ function channel(over: Partial<IntegrationChannelRecord>): IntegrationChannelRec
     trigger: 'mention',
     agentId: null,
     ...over
-  }
+  } as IntegrationChannelRecord
 }
 
 describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
@@ -123,11 +126,7 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
   let channels: IntegrationChannelRecord[]
   let upserts: {
     daemonId: string
-    spec: {
-      platform: string
-      slack?: { mode?: string; appId?: string }
-      feishu?: { mode?: string; appId?: string; appSecret?: string; botOpenId?: string; region?: string }
-    }
+    spec: { platform: string; core?: { mode?: string }; config?: unknown }
   }[]
   let secretMaterial: BotSecretMaterial
   // Drives the SessionRepo.findThreadOwner fallback in lookupThread (null = no daemon session).
@@ -139,7 +138,7 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
   // Agents reported with no daemonId — not placed, so they compile no routes.
   let unplacedAgents: Set<string>
   // Drives ThreadAffinityStore.get (null = affinity miss → SessionMeta fallback).
-  let threadBinding: { agentId: AgentId; daemonId: string } | null
+  let threadBinding: { agentId: AgentId; daemonId: DaemonId } | null
   let threadParticipants: Awaited<ReturnType<ThreadAffinityStore['participantsForBot']>>
   // revokeBot recordings: the Bot revocation stamp + integration/remove pushes.
   let botRevokedAt: Date | null
@@ -185,10 +184,7 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
     }
     const threads: ThreadAffinityStore = {
       upsert: async () => {},
-      get: async () =>
-        threadBinding
-          ? ({ sessionKey: '', ...threadBinding } as Awaited<ReturnType<ThreadAffinityStore['get']>>)
-          : null,
+      get: async () => threadBinding,
       listForBot: async () => [],
       upsertParticipant: async (_botId, sessionKey, agentId, daemonId) => {
         const current = threadParticipants.find((p) => p.sessionKey === sessionKey && p.agentId === agentId)
@@ -327,7 +323,7 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       platforms,
       // No duty ledger wired ⇒ the delivery set is the placement alone, which is
       // exactly what every expectation in this file was written against.
-      new AgentDelivery({ control: control as never, specs: undefined as never, clock: systemClock }),
+      new AgentDelivery({ control: control as never, specs: undefined as never }),
       ...(placement ? [placement] : [])
     )
   }
@@ -570,9 +566,9 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
     expect(assign.originKind).toBe('chat')
     // §6.7 dual-shape: the opaque ingress bag mirrors the named demux fields.
     expect(assign.ingress).toEqual({
-      ...(assign.apiAppId ? { apiAppId: assign.apiAppId } : {}),
-      ...(assign.teamId ? { teamId: assign.teamId } : {}),
-      ...(assign.botUserId ? { botUserId: assign.botUserId } : {})
+      ...(legacyTwins(assign).apiAppId ? { apiAppId: legacyTwins(assign).apiAppId } : {}),
+      ...(legacyTwins(assign).teamId ? { teamId: legacyTwins(assign).teamId } : {}),
+      ...(legacyTwins(assign).botUserId ? { botUserId: legacyTwins(assign).botUserId } : {})
     })
 
     // members: one entry per daemon, agents grouped.
@@ -663,7 +659,7 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       defaultDaemonId: D1,
       agents: [{ agentId: ALICE, daemonId: D1, integrationId: INT_A }]
     })
-    expect(assign.apiAppId).toBeUndefined()
+    expect(legacyTwins(assign).apiAppId).toBeUndefined()
     expect('botToken' in assign.secrets).toBe(false)
     expect(upserts).toEqual([
       {
@@ -939,7 +935,7 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
 
     it('lookupThread refuses a binding to a gated agent whose conversation is off', async () => {
       gatedAgents = new Set([ALICE])
-      threadBinding = { agentId: ALICE, daemonId: D1 }
+      threadBinding = { agentId: ALICE, daemonId: DaemonId(D1) }
       channels = [] // no enabled row for ALICE in C1 ⇒ off
       const res = await makeOrch().lookupThread({ botId: BOT, sessionKey: 'C1/123.456' })
       expect(res.target).toBeNull()
@@ -947,7 +943,7 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
 
     it('lookupThread honours a binding to a gated agent whose conversation is enabled', async () => {
       gatedAgents = new Set([ALICE])
-      threadBinding = { agentId: ALICE, daemonId: D1 }
+      threadBinding = { agentId: ALICE, daemonId: DaemonId(D1) }
       channels = [channel({ integrationId: INT_A, channelId: 'C1', agentId: ALICE, trigger: 'mention' })]
       const res = await makeOrch().lookupThread({ botId: BOT, sessionKey: 'C1/123.456' })
       expect(res.target).toEqual({ agentId: ALICE, daemonId: D1 })
@@ -1184,9 +1180,9 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
 
     const assign = ch.sends.find((send) => send.type === 'rc/bot-assign')?.payload as RcBotAssign
     expect(assign.ingress).toEqual({ apiAppId: 'APLATFORM', teamId: 'T1WORKSPACE', botUserId: 'U0BOT' })
-    expect(assign.apiAppId).toBeUndefined()
-    expect(assign.teamId).toBeUndefined()
-    expect(assign.botUserId).toBeUndefined()
+    expect(legacyTwins(assign).apiAppId).toBeUndefined()
+    expect(legacyTwins(assign).teamId).toBeUndefined()
+    expect(legacyTwins(assign).botUserId).toBeUndefined()
   })
 
   it('revokeBot marks the bot + installs revoked, unassigns, and pulls the daemon specs', async () => {

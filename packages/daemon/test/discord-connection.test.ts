@@ -28,7 +28,7 @@ describe('DiscordConnection gateway options', () => {
       sendTyping: vi.fn(async () => {}),
       messages: { fetch: vi.fn(async () => ({ edit })) }
     }
-    const fetch = vi.fn(async () => channel)
+    const fetch = vi.fn<(id: string) => Promise<typeof channel>>(async () => channel)
     ;(connection as unknown as { client: unknown }).client = { channels: { fetch } }
 
     await connection.postMessage('PARENT', 'reply', 'THREAD')

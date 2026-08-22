@@ -10,6 +10,7 @@ import { writeMemoryFile, MEMORY_INDEX, MAX_INDEX_INJECT_BYTES } from '../src/me
 import { LocalMemoryFs } from '../src/memory/fs.js'
 import type { Agent } from '../src/agents/agent-schema.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
+import type { McpServer } from '@agentclientprotocol/sdk'
 
 const local = (dir: string) => new LocalMemoryFs(dir)
 
@@ -35,7 +36,7 @@ const agent: Agent & { dir: string; env: Record<string, string> } = {
   output: { mode: 'medium' },
   permissions: { policy: 'ask', autoApprove: [] },
   crons: []
-} as Agent & { dir: string; env: Record<string, string> }
+} as unknown as Agent & { dir: string; env: Record<string, string> }
 
 const fakeHost = () => ({ newSession: vi.fn(async () => 'acp-1') }) as any
 
@@ -145,7 +146,7 @@ describe('SessionManager', () => {
         pullOnNewSession: false,
         skills: []
       }
-    } as Agent & { dir: string; env: Record<string, string> }
+    } as unknown as Agent & { dir: string; env: Record<string, string> }
     const host = fakeHost()
     const prepareWorkspace = vi.fn(async () => realpathSync(cwd))
     const sm = new SessionManager({
@@ -391,7 +392,7 @@ describe('SessionManager', () => {
       {
         id: `memory-${req.turnId}`,
         text: 'deploy in sea',
-        scope: { kind: 'agent', key: 'ac:agent:bot-a' },
+        scope: { kind: 'agent' as const, key: 'ac:agent:bot-a' },
         provenance: { pluginId: 'ai.example.memory' }
       }
     ])
@@ -547,7 +548,7 @@ describe('SessionManager', () => {
 
   it('starts a fresh ACP session when the memory provider changes', async () => {
     const store = await newStore()
-    let currentAgent = { ...agent, memory: { provider: 'managed' as const } }
+    let currentAgent: typeof agent = { ...agent, memory: { provider: 'managed' } }
     const host = {
       newSession: vi.fn().mockResolvedValueOnce('acp-managed').mockResolvedValueOnce('acp-none'),
       hasSession: vi.fn(() => true)
@@ -555,7 +556,7 @@ describe('SessionManager', () => {
     const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => currentAgent, memory })
 
     await sm.handle('bot-a', msg({ ts: '100.1', text: 'first' }))
-    currentAgent = { ...agent, memory: { provider: 'none' as const } }
+    currentAgent = { ...agent, memory: { provider: 'none' } }
     const next = await sm.handle('bot-a', msg({ ts: '100.2', text: 'second' }))
 
     expect(next.sessionId).toBe('acp-none')
@@ -1253,13 +1254,13 @@ describe('SessionManager', () => {
     const sm1 = new SessionManager({ store, hostFor: async () => host1, agentById: () => agent, memory })
     await sm1.handle('bot-a', msg({ ts: '100.1', text: 'first turn' }))
 
-    const ordinary = { type: 'stdio', name: 'ordinary', command: 'ordinary-mcp', args: [], env: [] } as const
-    const admin = {
+    const ordinary: McpServer = { name: 'ordinary', command: 'ordinary-mcp', args: [], env: [] }
+    const admin: McpServer = {
       type: 'http',
       name: 'agentconnect-admin',
       url: 'https://cp.example/api/v1/mcp',
       headers: [{ name: 'Authorization', value: 'Bearer test-token' }]
-    } as const
+    }
     const host2 = {
       newSession: vi.fn(async () => 'acp-2'),
       hasSession: () => false,
@@ -1312,13 +1313,13 @@ describe('SessionManager', () => {
     const sm1 = new SessionManager({ store, hostFor: async () => host1, agentById: () => agent, memory })
     await sm1.handle('bot-a', msg({ ts: '100.1', text: 'first turn' }))
 
-    const ordinary = { type: 'stdio', name: 'ordinary', command: 'ordinary-mcp', args: [], env: [] } as const
-    const admin = {
+    const ordinary: McpServer = { name: 'ordinary', command: 'ordinary-mcp', args: [], env: [] }
+    const admin: McpServer = {
       type: 'http',
       name: 'agentconnect-admin',
       url: 'https://cp.example/api/v1/mcp',
       headers: [{ name: 'Authorization', value: 'Bearer test-token' }]
-    } as const
+    }
     const host2 = {
       newSession: vi.fn(async () => 'acp-2'),
       hasSession: () => false,
@@ -1684,7 +1685,7 @@ describe('SessionManager', () => {
     expect(res.skipped).not.toBe(true)
 
     // One deduped hand-off row (the post), not two.
-    const rows = (await (await store).transcriptSince('C1', '200.1', null)).filter((r) => r.kind === 'text')
+    const rows = (await (await store).transcriptSince('C1', '200.1', null, 'bot-b')).filter((r) => r.kind === 'text')
     expect(rows).toHaveLength(1)
     expect(rows[0]).toMatchObject({ ts: '200.5' })
 
@@ -1814,9 +1815,13 @@ describe('SessionManager', () => {
 
     // The own message stays a SINGLE transcript row (the snapshot skipped it), while the
     // missed human message is still backfilled.
-    const own = (await (await store).transcriptSince('C1', '100.1', null)).filter((r) => r.text === 'here is my answer')
+    const own = (await (await store).transcriptSince('C1', '100.1', null, 'bot-a')).filter(
+      (r) => r.text === 'here is my answer'
+    )
     expect(own).toHaveLength(1)
-    const human = (await (await store).transcriptSince('C1', '100.1', null)).filter((r) => r.text === 'human follow-up')
+    const human = (await (await store).transcriptSince('C1', '100.1', null, 'bot-a')).filter(
+      (r) => r.text === 'human follow-up'
+    )
     expect(human).toHaveLength(1)
     await (await store).close()
   })

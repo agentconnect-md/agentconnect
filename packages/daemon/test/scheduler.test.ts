@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { buildSyntheticMessage, missedOccurrence, scheduleFingerprint, Scheduler } from '../src/scheduler/scheduler.js'
+import type { ScheduleDefinition } from '../src/scheduler/scheduler.js'
 import type { CronDef } from '../src/agents/agent-schema.js'
 
 const cron = (id: string, over: Partial<CronDef> = {}): CronDef => ({
@@ -7,6 +8,7 @@ const cron = (id: string, over: Partial<CronDef> = {}): CronDef => ({
   schedule: '0 9 * * *',
   target: { platform: 'slack', channel: 'C1' },
   trigger: 'post health report',
+  enabled: true,
   ...over
 })
 
@@ -113,7 +115,7 @@ describe('Scheduler (per-agent converge — §5.2 crons change → upsert/remove
 describe('missedOccurrence (handover catch-up)', () => {
   const DAILY = { schedule: '0 3 * * *', timezone: 'Etc/UTC', enabled: true }
   const at = (iso: string) => new Date(iso).getTime()
-  const ranAt = (iso: string, definition = DAILY) => ({
+  const ranAt = (iso: string, definition: ScheduleDefinition = DAILY) => ({
     lastRunAt: at(iso),
     definition: scheduleFingerprint(definition)
   })

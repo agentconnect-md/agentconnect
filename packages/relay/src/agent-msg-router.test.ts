@@ -140,10 +140,10 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
     expect(ack.delivered).toBe(true)
     expect(forwards).toHaveLength(1)
     // The relay minted a TRUSTED claim + incremented the hop.
-    expect(forwards[0].trustedFromAgentId).toBe(A)
-    expect(forwards[0].orgId).toBe(ORG)
-    expect(forwards[0].hopCount).toBe(1)
-    expect(forwards[0].integrationId).toBe(INT)
+    expect(forwards[0]!.trustedFromAgentId).toBe(A)
+    expect(forwards[0]!.orgId).toBe(ORG)
+    expect(forwards[0]!.hopCount).toBe(1)
+    expect(forwards[0]!.integrationId).toBe(INT)
   })
 
   it('forwards a session reply to a capable daemon', async () => {
@@ -160,7 +160,7 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
 
     const ack = await route(D1, baseMsg({ deliveryKind: 'session-reply' }))
     expect(ack.delivered).toBe(true)
-    expect(forwards[0].deliveryKind).toBe('session-reply')
+    expect(forwards[0]!.deliveryKind).toBe('session-reply')
   })
 
   it('REFUSES a session reply to a daemon that does not understand the kind', async () => {
@@ -196,7 +196,7 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
 
     expect((await route(D1, baseMsg())).delivered).toBe(true)
     expect(forwards).toHaveLength(1)
-    expect(forwards[0].deliveryKind).toBeUndefined()
+    expect(forwards[0]!.deliveryKind).toBeUndefined()
   })
 
   it('forwards the visible-post transcriptTs opaquely (toAgent+channel wake dedup)', async () => {
@@ -212,7 +212,7 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
     const ack = await route(D1, baseMsg({ transcriptTs: '1784297789.871789' }))
     expect(ack.delivered).toBe(true)
     // The post ts rides through so the target can dedup the wake against the visible post.
-    expect(forwards[0].transcriptTs).toBe('1784297789.871789')
+    expect(forwards[0]!.transcriptTs).toBe('1784297789.871789')
   })
 
   it('forwards needsReply opaquely (it is the caller’s instruction about its own lineage)', async () => {
@@ -229,8 +229,8 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
     expect(ack.delivered).toBe(true)
     // The router copies field-by-field, so a new optional field is silently dropped unless it is
     // explicitly forwarded — assert it survives the hop.
-    expect(forwards[0].needsReply).toBe(true)
-    expect(forwards[0].originSessionId).toBe('acp-parent-1')
+    expect(forwards[0]!.needsReply).toBe(true)
+    expect(forwards[0]!.originSessionId).toBe('acp-parent-1')
   })
 
   it('forwards the caller daemon’s external source binding opaquely', async () => {
@@ -252,7 +252,7 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
     const ack = await route(D1, baseMsg({ externalOrigin }))
 
     expect(ack.delivered).toBe(true)
-    expect(forwards[0].externalOrigin).toEqual(externalOrigin)
+    expect(forwards[0]!.externalOrigin).toEqual(externalOrigin)
   })
 
   it('leaves needsReply absent for an ordinary wake', async () => {
@@ -266,7 +266,7 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
     })
 
     await route(D1, baseMsg())
-    expect(forwards[0].needsReply).toBeUndefined()
+    expect(forwards[0]!.needsReply).toBeUndefined()
   })
 
   it('forged claimedFromAgentId (not owned by the sending daemon) → rejected, not delivered', async () => {
@@ -346,8 +346,8 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
     const ack = await route(D1, baseMsg({ coords: { platform: 'slack', channel: 'C_EXECS' } }))
     expect(ack.delivered).toBe(true)
     expect(forwards).toHaveLength(1)
-    expect(forwards[0].integrationId).toBe(INT2)
-    expect(forwards[0].coords).toEqual({ platform: 'slack', channel: 'C_EXECS' })
+    expect(forwards[0]!.integrationId).toBe(INT2)
+    expect(forwards[0]!.coords).toEqual({ platform: 'slack', channel: 'C_EXECS' })
   })
 
   it('coords integrity: switching the coordinate PLATFORM does not dodge the gate', async () => {
@@ -458,10 +458,10 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
     expect(webchat.delivered).toBe(true)
     // The relay forwards `coords` VERBATIM — the target daemon is the side that replaces a
     // channel-free coordinate when it mints the session key, so the two cannot disagree.
-    expect(forwards[0].coords).toEqual({ platform: 'webchat', channel: 'wc-1' })
+    expect(forwards[0]!.coords).toEqual({ platform: 'webchat', channel: 'wc-1' })
     // No channel row for the coordinate ⇒ the reply integration falls back to the target's
     // directory entry, which here has none.
-    expect(forwards[0].integrationId).toBeUndefined()
+    expect(forwards[0]!.integrationId).toBeUndefined()
 
     // Post-fleet-gate (S1b): a `dream`/`hook` session's cross-daemon wake carries its RAW
     // platform — same channel-free admission as webchat, forwarded verbatim. (The daemon
@@ -610,7 +610,7 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
 
     const dm = await route(D1, baseMsg({ coords: { platform: 'slack', channel: 'D01ALICE', thread: '900.1' } }))
     expect(dm.delivered).toBe(true)
-    expect(forwards[0].coords).toEqual({ platform: 'slack', channel: 'D01ALICE', thread: '900.1' })
+    expect(forwards[0]!.coords).toEqual({ platform: 'slack', channel: 'D01ALICE', thread: '900.1' })
 
     const groupDm = await route(
       D1,
@@ -638,8 +638,8 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
 
   it('target callPolicy=selected, caller not allowed → NAK not_allowed at the relay', async () => {
     const s = snap()
-    s.agents[1].callPolicy = 'selected'
-    s.agents[1].allowedCallerAgentIds = [] // A not allowed
+    s.agents[1]!.callPolicy = 'selected'
+    s.agents[1]!.allowedCallerAgentIds = [] // A not allowed
     const router = new CollaborationRouter()
     router.replace(s)
     const forwards: RdAgentMsgFwd[] = []
@@ -675,7 +675,7 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
   it('target absent from the org directory → NAK not_found', async () => {
     const s = snap()
     s.agents = s.agents.filter((a) => a.agentId !== B) // drop B from the directory
-    s.channels[0].agents = s.channels[0].agents.filter((a) => a.agentId !== B)
+    s.channels[0]!.agents = s.channels[0]!.agents.filter((a) => a.agentId !== B)
     const router = new CollaborationRouter()
     router.replace(s)
     const route = createAgentMsgRouter({
@@ -695,7 +695,7 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
   it('PENDING target (directory entry with no daemon) → NAK not_ready, uncached; the retransmit forwards once the member is named', async () => {
     const pending = snap()
     pending.agents = pending.agents.map((a) => (a.agentId === B ? orgAgent({ agentId: B }) : a))
-    pending.channels[0].agents = pending.channels[0].agents.filter((a) => a.agentId !== B)
+    pending.channels[0]!.agents = pending.channels[0]!.agents.filter((a) => a.agentId !== B)
     const router = new CollaborationRouter()
     router.replace(pending)
     const forwards: RdAgentMsgFwd[] = []
@@ -795,7 +795,7 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
     // B in ORG2 and leave the identical channel id in place: it must still not resolve,
     // and the reason must be indistinguishable from "no such agent" (no cross-org probing).
     const s = snap()
-    s.agents[1].orgId = ORG2
+    s.agents[1]!.orgId = ORG2
     const router = new CollaborationRouter()
     router.replace(s)
     const route = createAgentMsgRouter({
@@ -829,12 +829,12 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
 
     const ack = await route(D1, baseMsg({ coords: { platform: 'webchat', channel: 'wc-1' } }))
     expect(ack.delivered).toBe(true)
-    expect(forwards[0].trustedFromAgentId).toBe(A)
-    expect(forwards[0].orgId).toBe(ORG)
+    expect(forwards[0]!.trustedFromAgentId).toBe(A)
+    expect(forwards[0]!.orgId).toBe(ORG)
     // No channel placement ⇒ no reply integration, and coords ride through as the delivery
     // coordinate regardless.
-    expect(forwards[0].integrationId).toBeUndefined()
-    expect(forwards[0].coords).toEqual({ platform: 'webchat', channel: 'wc-1' })
+    expect(forwards[0]!.integrationId).toBeUndefined()
+    expect(forwards[0]!.coords).toEqual({ platform: 'webchat', channel: 'wc-1' })
   })
 
   it('forged caller is still rejected with no channel in play (placement belongs to another daemon)', async () => {
@@ -893,8 +893,8 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
     })
     const ack = await route(D1, baseMsg())
     expect(ack.delivered).toBe(true)
-    expect(forwards[0].orgId).toBe(ORG)
-    expect(forwards[0].integrationId).toBe(INT)
+    expect(forwards[0]!.orgId).toBe(ORG)
+    expect(forwards[0]!.integrationId).toBe(INT)
   })
 
   it('per-hop dedup: same deliveryId twice → single forward', async () => {
@@ -924,7 +924,7 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
     // A2 needs a C1 placement too: both calls below assert coords slack:C1, and the
     // coordinate-integrity gate requires a caller asserting a KNOWN channel to actually
     // be in it (see the F1 regression test above).
-    s.channels[0].agents.push(placement({ agentId: A2, daemonId: D2 }))
+    s.channels[0]!.agents.push(placement({ agentId: A2, daemonId: D2 }))
     // Target A is on D1 so the D2-originated call forwards to D1's connection.
     const router = new CollaborationRouter()
     router.replace(s)
@@ -1001,7 +1001,7 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
     })
     const ack = await route(D1, baseMsg())
     expect(ack.delivered).toBe(true)
-    expect(forwards[0].integrationId).toBe('00000000-0000-0000-0000-0000000000f2')
+    expect(forwards[0]!.integrationId).toBe('00000000-0000-0000-0000-0000000000f2')
   })
 
   it('hop cap: a next delivery at the cap → NAK hop_limit', async () => {

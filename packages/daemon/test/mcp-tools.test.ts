@@ -12,14 +12,14 @@ import type { Integration } from '../src/agents/agent-schema.js'
 const slackInt: Integration = {
   id: 'int-1',
   platform: 'slack',
-  core: { bindRules: [] },
+  core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false },
   config: { botToken: 'xoxb', appToken: 'xapp' }
 }
 
 const telegramInt: Integration = {
   id: 'int-2',
   platform: 'telegram',
-  core: { bindRules: [] },
+  core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false },
   config: { botToken: '123456:ABC' }
 }
 
@@ -28,7 +28,7 @@ const telegramInt: Integration = {
 const discordInt: Integration = {
   id: 'int-3',
   platform: 'discord',
-  core: { bindRules: [], mutedChannels: [], gated: false },
+  core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false },
   config: { botToken: 'dc' }
 }
 
@@ -50,7 +50,7 @@ describe('toolsForIntegrations', () => {
     oneOf?: ObjectSchema[]
   }
   const sendSchema = (ints: Integration[]) => sendTool(ints)!.inputSchema as unknown as ObjectSchema
-  const sendTargetBranch = (ints: Integration[], targetField: 'toAgent' | 'toUser' | 'sessionId') =>
+  const sendTargetBranch = (ints: Integration[], targetField: 'toAgent' | 'toUser' | 'channel' | 'sessionId') =>
     sendSchema(ints).oneOf!.find((branch) => branch.required?.includes(targetField))!
   // The unified sendMessage tool's platform enum belongs only to the toUser-mode branch.
   const sendPlatformEnum = (ints: Integration[]) => {
@@ -93,7 +93,7 @@ describe('toolsForIntegrations', () => {
   it('narrows the read tools’ platform enum to the agent’s platforms and routes cross-platform', () => {
     const readTool = (ints: Integration[], name: string) => toolsForIntegrations(ints).find((t) => t.name === name)!
     const enumOf = (t: { inputSchema: Record<string, unknown> }) =>
-      (t.inputSchema.properties as Record<string, { enum: string[] }>).platform.enum
+      (t.inputSchema.properties as Record<string, { enum: string[] }>).platform!.enum
     // A bridged agent's read tools can target either platform.
     expect(enumOf(readTool([slackInt, telegramInt], 'listChannels'))).toEqual(['slack', 'telegram'])
     expect(enumOf(readTool([slackInt, telegramInt], 'getUserProfile'))).toEqual(['slack', 'telegram'])

@@ -143,6 +143,10 @@ pnpm --filter @agentconnect.md/control-plane dev # tsx watch src/index.ts
 pnpm --filter @agentconnect.md/web dev           # next dev
 ```
 
+`typecheck` covers tests, not just `src`: each package's `tsconfig.typecheck.json`
+includes `src` + `test` and resolves workspace siblings from source (no build needed),
+so a test calling a stale signature fails at the gate instead of mid-run.
+
 ### Control-plane tests (two Vitest projects)
 
 ```bash

@@ -19,7 +19,7 @@ describe('SystemMetrics', () => {
       { cpu: 0.5, mem: 0.6 }
     ]
     let i = 0
-    const sample = vi.fn(async () => samples[Math.min(i++, samples.length - 1)])
+    const sample = vi.fn(async () => samples[Math.min(i++, samples.length - 1)]!)
     const m = new SystemMetrics({ clock, intervalMs: 1000, sample })
 
     m.start()

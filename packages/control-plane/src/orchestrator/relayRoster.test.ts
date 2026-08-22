@@ -12,6 +12,7 @@ function row(over: Partial<RelayRecord> = {}): RelayRecord {
     id: 'relay-1',
     name: 'pod-0',
     daemonUrl: 'wss://relay-0.example.test',
+    features: [],
     lastSeenAt: new Date(NOW),
     createdAt: new Date(NOW),
     ...over

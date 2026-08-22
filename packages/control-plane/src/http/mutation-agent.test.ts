@@ -8,6 +8,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { refreshMutationAgent } from './mutation-agent.js'
 import type { AgentRecord } from '../persistence/ports.js'
+import { DaemonId } from '../domain/ids.js'
 
 const AT = new Date('2026-08-16T00:00:00.000Z')
 
@@ -42,7 +43,7 @@ describe('refreshMutationAgent', () => {
   })
 
   it('refuses a machine placement that moved to another daemon', async () => {
-    const moved = agent({ daemonId: 'd2d2d2d2-dddd-4ddd-8ddd-dddddddddddd' })
+    const moved = agent({ daemonId: DaemonId('d2d2d2d2-dddd-4ddd-8ddd-dddddddddddd') })
     expect(await refreshMutationAgent(repo(moved), agent())).toBeNull()
   })
 

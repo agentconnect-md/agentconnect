@@ -43,7 +43,7 @@ describe('CpIntegrationRegistry (memory-only)', () => {
 
   it('rejects an unusable envelope without retaining secret material', () => {
     const { reg, warn } = makeReg()
-    const core = { mode: 'direct', bindRules: [], mutedChannels: [], gated: false } as const
+    const core: IntegrationSpec['core'] = { mode: 'direct', bindRules: [], mutedChannels: [], gated: false }
     // No config at all.
     reg.upsert({ integrationId: 'bad', agentId: A1, platform: 'slack', core } as IntegrationSpec)
     // A payload the module schema refuses.

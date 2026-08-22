@@ -22,6 +22,7 @@ function row(): GithubInstallationRecord {
     accountType: 'Organization',
     repositorySelection: 'selected',
     suspendedAt: null,
+    permissions: {},
     revokedAt: null,
     createdAt: new Date(0)
   }
@@ -34,6 +35,7 @@ function facts(over: Partial<GithubInstallationFacts> = {}): GithubInstallationF
     accountType: 'Organization',
     repositorySelection: 'all',
     suspendedAt: null,
+    permissions: {},
     ...over
   }
 }

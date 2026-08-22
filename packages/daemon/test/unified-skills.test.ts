@@ -343,7 +343,7 @@ describe.skipIf(!hasBwrap)('unified isolated skill installation', () => {
         id: 'a1',
         runtime: 'claude',
         skills: [
-          { name: 'legacy', source: 'https://gitlab.com/acme/legacy' },
+          { name: 'legacy', source: 'https://gitlab.com/acme/legacy', skills: [] },
           { name: 'unbound-old-cp', source: 'acme/unbound', skills: ['unbound'] },
           { name: 'valid', source: 'acme/valid', githubRepoId: '42', skills: ['valid'] }
         ]

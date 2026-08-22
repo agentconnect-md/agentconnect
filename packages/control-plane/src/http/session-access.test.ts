@@ -1,6 +1,7 @@
 import type { FastifyRequest } from 'fastify'
 import { describe, expect, it, vi } from 'vitest'
 import { FakeClock } from '../../test/fakes/fake-clock.js'
+import { OrgId } from '../domain/ids.js'
 import { canViewSession } from '../authorization/policy.js'
 import type { ExternalScopeRecord, SessionFilterQuery } from '../persistence/ports.js'
 import type { HttpDeps } from './deps.js'
@@ -9,7 +10,7 @@ import { makeSessionAccessResolver } from './session-access.js'
 
 const scope: ExternalScopeRecord = {
   id: '11111111-1111-4111-8111-111111111111',
-  orgId: 'org-1',
+  orgId: OrgId('org-1'),
   provider: 'feishu',
   realmKey: 'lark:cli_custom_bot',
   resourceKind: 'conversation',
@@ -110,7 +111,7 @@ describe('makeSessionAccessResolver', () => {
         {
           provider: 'feishu',
           available: true,
-          addViewerIdentities: async ({ identitySet }) => {
+          addViewerIdentities: async ({ identitySet }: { identitySet: Set<string> }) => {
             identitySet.add('feishu:lark:cli_custom_bot:on_member')
           },
           resolve
@@ -121,7 +122,6 @@ describe('makeSessionAccessResolver', () => {
     const access = await makeSessionAccessResolver(deps).forSessions(request(), [
       {
         visibility: 'external',
-        ownerIdentity: null,
         externalProvider: 'feishu',
         externalScopeId: scope.id
       }

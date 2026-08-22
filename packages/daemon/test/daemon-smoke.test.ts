@@ -337,7 +337,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     const fakeHost = {
       __started: true,
       start: vi.fn(async () => {}),
-      newSession: vi.fn(async () => 'acp-mem-1'),
+      newSession: vi.fn<(cwd: string, mcpServers: unknown[]) => Promise<string>>(async () => 'acp-mem-1'),
       prompt: vi.fn(async () => 'end_turn'),
       cancel: vi.fn(),
       stop: vi.fn()
@@ -368,7 +368,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     const fakeHost = {
       __started: true,
       start: vi.fn(async () => {}),
-      newSession: vi.fn(async () => 'acp-none-1'),
+      newSession: vi.fn<(cwd: string, mcpServers: unknown[]) => Promise<string>>(async () => 'acp-none-1'),
       prompt: vi.fn(async () => 'end_turn'),
       cancel: vi.fn(),
       stop: vi.fn()

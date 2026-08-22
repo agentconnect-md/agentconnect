@@ -208,7 +208,7 @@ describe('resolveAgentIntegration', () => {
         {
           id: 'int1',
           platform: 'slack',
-          core: { bindRules: [] },
+          core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false },
           config: { botToken: 'x', botUserId: 'STATIC' } as any
         }
       ]
@@ -237,10 +237,15 @@ describe('resolveAgentIntegration', () => {
         {
           id: 'slack1',
           platform: 'slack',
-          core: { bindRules: [] },
+          core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false },
           config: { botToken: 'x', botUserId: 'BSLACK' } as any
         },
-        { id: 'tg1', platform: 'telegram', core: { bindRules: [] }, config: { botToken: 'x', botUserId: 'BTG' } as any }
+        {
+          id: 'tg1',
+          platform: 'telegram',
+          core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false },
+          config: { botToken: 'x', botUserId: 'BTG' } as any
+        }
       ]
     })
     expect(resolveAgentIntegration(a, {}, 'telegram')).toMatchObject({ integrationId: 'tg1', platform: 'telegram' })

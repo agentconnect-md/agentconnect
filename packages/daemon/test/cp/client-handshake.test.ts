@@ -1,11 +1,15 @@
 import { describe, it, expect, vi } from 'vitest'
 import { buildEnvelope } from '@agentconnect.md/protocol'
 import { CpClient, type CpClientDeps } from '../../src/cp/client.js'
+import type { ConfigApply } from '../../src/cp/config-apply.js'
 import { FakeTransport } from './fake-transport.js'
 import { FakeClock } from './fake-clock.js'
 
 const DAEMON_ID = '22222222-2222-4222-8222-222222222222'
 const silent = { trace() {}, debug() {}, info() {}, warn() {}, error() {} }
+
+/** The client only ever calls the handful of members each case supplies. */
+const partialApply = (apply: Partial<ConfigApply>): ConfigApply => apply as ConfigApply
 
 function makeDeps(transport: FakeTransport, over: Partial<CpClientDeps> = {}): CpClientDeps {
   const snap = {
@@ -29,13 +33,13 @@ function makeDeps(transport: FakeTransport, over: Partial<CpClientDeps> = {}): C
     localState: () => ({ assignments: [], crons: [], leases: [], agents: [], integrations: [], stagedAgents: [] }),
     loadSnapshot: () => ({ cpu: 0, mem: 0, agents: 0 }),
     activeSessions: () => 0,
-    configApply: snap,
+    configApply: partialApply(snap),
     clock: new FakeClock(),
     connect: async () => transport,
     log: silent,
     jitter: () => 0,
     ...over
-  }
+  } as CpClientDeps
 }
 
 /** Resolve queued microtasks so the client's async connect chain advances. */
@@ -47,14 +51,16 @@ describe('CpClient handshake', () => {
     const applied: any[] = []
     const client = new CpClient(
       makeDeps(t, {
-        configApply: {
+        configApply: partialApply({
           applyConfigPush() {},
-          applyReconcileSnapshot: (s) => applied.push(s),
+          applyReconcileSnapshot(s) {
+            applied.push(s)
+          },
           upsertCron() {},
           removeCron() {},
           applyRouteAssign() {},
           applyRouteUpdate() {}
-        }
+        })
       })
     )
     client.start()
@@ -122,14 +128,16 @@ describe('CpClient handshake', () => {
     const applied: any[] = []
     const client = new CpClient(
       makeDeps(t, {
-        configApply: {
+        configApply: partialApply({
           applyConfigPush() {},
-          applyReconcileSnapshot: (s) => applied.push(s),
+          applyReconcileSnapshot(s) {
+            applied.push(s)
+          },
           upsertCron() {},
           removeCron() {},
           applyRouteAssign() {},
           applyRouteUpdate() {}
-        }
+        })
       })
     )
     client.start()
@@ -194,7 +202,7 @@ describe('CpClient handshake', () => {
     let ready = false
     const client = new CpClient(
       makeDeps(t, {
-        configApply: {
+        configApply: partialApply({
           applyConfigPush() {},
           async applyReconcileSnapshot() {
             markSnapshotEntered()
@@ -204,7 +212,7 @@ describe('CpClient handshake', () => {
           removeCron() {},
           applyRouteAssign() {},
           applyRouteUpdate() {}
-        },
+        }),
         onReady: () => {
           ready = true
         }
@@ -282,7 +290,7 @@ describe('CpClient handshake', () => {
     const events: string[] = []
     const client = new CpClient(
       makeDeps(t, {
-        configApply: {
+        configApply: partialApply({
           applyConfigPush() {},
           async applyReconcileSnapshot() {
             events.push('snapshot:start')
@@ -301,8 +309,10 @@ describe('CpClient handshake', () => {
           removeCron() {},
           applyRouteAssign() {},
           applyRouteUpdate() {}
-        },
-        onReady: () => events.push('ready')
+        }),
+        onReady: () => {
+          events.push('ready')
+        }
       })
     )
     client.start()
@@ -325,7 +335,7 @@ describe('CpClient handshake', () => {
     const prematureRemove = buildEnvelope(
       'agent/remove',
       { agentId: prematureAgentId },
-      { epoch: 7, agentId: prematureAgentId }
+      { ext: { epoch: 7, agentId: prematureAgentId } }
     )
     t.pushInbound(JSON.stringify(prematureRemove))
     expect(events).toEqual([])
@@ -350,13 +360,17 @@ describe('CpClient handshake', () => {
       )
     )
     const queuedControls = [
-      buildEnvelope('agent/remove', { agentId: removedAgentIds[0] }, { epoch: 7, agentId: removedAgentIds[0] }),
+      buildEnvelope(
+        'agent/remove',
+        { agentId: removedAgentIds[0] },
+        { ext: { epoch: 7, agentId: removedAgentIds[0] } }
+      ),
       buildEnvelope(
         'agent/upsert',
         { agentId: removedAgentIds[0], spec: { name: 'restored-after-remove' } },
-        { epoch: 7, agentId: removedAgentIds[0] }
+        { ext: { epoch: 7, agentId: removedAgentIds[0] } }
       ),
-      buildEnvelope('agent/remove', { agentId: removedAgentIds[1] }, { epoch: 7, agentId: removedAgentIds[1] })
+      buildEnvelope('agent/remove', { agentId: removedAgentIds[1] }, { ext: { epoch: 7, agentId: removedAgentIds[1] } })
     ]
     for (const control of queuedControls) t.pushInbound(JSON.stringify(control))
     await entered

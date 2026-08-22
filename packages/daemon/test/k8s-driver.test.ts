@@ -9,7 +9,7 @@ import { LocalStore } from '../src/store/local-store.js'
 import { fakeGenerations } from './fake-generations.js'
 import { GuardedResumeRejectedError, OperatingModeRejectedError } from '../src/k8s/sandbox-api.js'
 import { K8sApiError } from '@agentconnect.md/k8s-client'
-import type { Sandbox, SandboxClaim } from '../src/k8s/sandbox-api.js'
+import type { Sandbox, SandboxClaim, SandboxWarmPool } from '../src/k8s/sandbox-api.js'
 import type { SpawnRecord } from '../src/shim/binding.js'
 import type { ShimConnection } from '../src/shim/connection.js'
 
@@ -64,7 +64,9 @@ function fakeApi(options: { ready?: boolean; mode?: 'Running' | 'Suspended'; tem
       state.claims.delete(name)
     }),
     getSandbox: vi.fn(async () => state.sandbox),
-    getWarmPool: vi.fn(async () => ({ spec: { sandboxTemplateRef: { name: 'runtime-template' } } })),
+    getWarmPool: vi.fn(async (): Promise<SandboxWarmPool> => ({
+      spec: { sandboxTemplateRef: { name: 'runtime-template' } }
+    })),
     getSandboxTemplate: vi.fn(async () => ({
       spec: {
         podTemplate: { spec: { containers: [{ name: 'runtime', image: state.templateImage }] } }
@@ -161,7 +163,7 @@ describe('cluster spawn driver', () => {
     await instance.ensureSandbox('agent-a')
     expect(state.created).toHaveLength(1)
     const claim = state.created[0]!
-    expect(claim.metadata.name).toBe('agent-agent-a')
+    expect(claim.metadata!.name).toBe('agent-agent-a')
     expect(claim.spec?.warmPoolRef?.name).toBe('ac-runtime-standard-pool')
     expect(claim.spec?.additionalPodMetadata?.labels?.[AC_LABEL_AGENT]).toBe('agent-a')
     expect(claim.spec?.additionalPodMetadata?.labels?.[AC_LABEL_ORG]).toBe('org-1')
@@ -209,11 +211,11 @@ describe('cluster spawn driver', () => {
   it('names the ADOPTED warm-pool pod, not the Sandbox, when one was adopted', async () => {
     // An adopted pod's pool-generated name is the identity TokenReview must return.
     const { api } = fakeApi()
-    api.getSandbox = async () => ({
+    api.getSandbox = vi.fn(async (): Promise<Sandbox> => ({
       metadata: { name: 'sb-1', uid: 'sandbox-uid-1', annotations: { 'agents.x-k8s.io/pod-name': 'pool-xyz-7' } },
       spec: { operatingMode: 'Running' },
       status: { conditions: [{ type: 'Ready', status: 'True' }], podIPs: ['10.0.0.9'] }
-    })
+    }))
     const { instance, records } = driver(api)
     await instance.launch(launchRequest)
     expect(records.at(-1)?.podName).toBe('pool-xyz-7')
@@ -369,15 +371,15 @@ describe('cluster spawn driver', () => {
   })
 
   it.each([
-    ['missing pool template reference', () => ({ spec: {} }), /has no sandboxTemplateRef\.name/],
+    ['missing pool template reference', async () => ({ spec: {} }), /has no sandboxTemplateRef\.name/],
     [
       'empty pool template reference',
-      () => ({ spec: { sandboxTemplateRef: { name: ' ' } } }),
+      async () => ({ spec: { sandboxTemplateRef: { name: ' ' } } }),
       /has no sandboxTemplateRef\.name/
     ],
     [
       'non-canonical pool template reference',
-      () => ({ spec: { sandboxTemplateRef: { name: ' runtime-template ' } } }),
+      async () => ({ spec: { sandboxTemplateRef: { name: ' runtime-template ' } } }),
       /has invalid sandboxTemplateRef\.name/
     ]
   ])('blocks resume for %s', async (_label, pool, expected) => {

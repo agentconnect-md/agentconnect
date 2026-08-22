@@ -1,11 +1,17 @@
 import { describe, expect, it, vi } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { FakeClock } from '@agentconnect.md/connection'
-import { K8sDriver, type ClusterDriverDeps } from '../src/k8s/driver.js'
+import { K8sDriver, type K8sDriverDeps } from '../src/k8s/driver.js'
 import { LaunchTimer, type ClusterMetrics, type LaunchPath, type LaunchStage } from '../src/metrics/cluster-metrics.js'
 import { K8sApiError } from '@agentconnect.md/k8s-client'
 import { GuardedResumeRejectedError, type Sandbox, type SandboxClaim } from '../src/k8s/sandbox-api.js'
 import { fakeGenerations } from './fake-generations.js'
+
+type AwaitChannel = (
+  agentId: string,
+  generation: number,
+  timeoutMs: number
+) => ReturnType<K8sDriverDeps['connectChannel']>
 
 // The acceptance criterion for D9 is a dashboard that settles "resume p95 ≤ 15s, cold start
 // p95 ≤ 60s" without log archaeology. That is only true if the cold/resume tag is right and the
@@ -148,7 +154,7 @@ function driverFor(
   api: ReturnType<typeof fakeApi>,
   open: 'ok' | 'error' | 'timeout' = 'ok',
   clock: FakeClock = new FakeClock(),
-  awaitChannel?: ClusterDriverDeps['awaitChannel']
+  awaitChannel?: AwaitChannel
 ) {
   return new K8sDriver({
     api: api.api as never,
@@ -326,7 +332,7 @@ describe('cluster launch metrics', () => {
     // deadline we passed, which is the fact this driver owns.
     const channelStuck = recorder()
     const clock = new FakeClock()
-    const late: ClusterDriverDeps['awaitChannel'] = async (_agentId, _generation, timeoutMs) => {
+    const late: AwaitChannel = async (_agentId, _generation, timeoutMs) => {
       clock.advance(timeoutMs)
       throw new Error('no channel bound in time')
     }
@@ -341,7 +347,7 @@ describe('cluster launch metrics', () => {
   it('still calls a channel failure BEFORE the deadline an error', async () => {
     // Otherwise every channel problem would read as a missed latency target.
     const early = recorder()
-    const failing: ClusterDriverDeps['awaitChannel'] = async () => {
+    const failing: AwaitChannel = async () => {
       throw new Error('shim registry refused the bind')
     }
     await expect(

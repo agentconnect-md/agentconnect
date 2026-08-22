@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   FeishuConnection,
   type ConsolidatedFeishuGroup,
+  type FeishuApi,
   type FeishuCardActionResponse,
   type FeishuClientHandle,
   type FeishuRawCardActionEvent
@@ -28,11 +29,11 @@ const cardTarget = {
 } as const
 
 function connection() {
-  const createCardEntity = vi.fn(async () => ({ cardId: 'card-1' }))
+  const createCardEntity = vi.fn<FeishuApi['createCardEntity']>(async () => ({ cardId: 'card-1' }))
   const replyCardEntityMessage = vi.fn(async (): Promise<{ messageId?: string }> => ({ messageId: 'message-1' }))
   const updateCardEntityElement = vi.fn(async () => {})
   const setCardEntityStreaming = vi.fn(async () => {})
-  const updateCardEntity = vi.fn(async () => {})
+  const updateCardEntity = vi.fn<FeishuApi['updateCardEntity']>(async () => {})
   const deleteMessage = vi.fn(async () => {})
   const onStatusAction = vi.fn()
   let cardActionHandler: ((event: FeishuRawCardActionEvent) => FeishuCardActionResponse | undefined) | undefined
@@ -68,6 +69,7 @@ function connection() {
   const group: ConsolidatedFeishuGroup = {
     appId: 'cli_streamingtest',
     appSecret: 'secret',
+    mode: 'direct',
     region: 'lark',
     integrations: []
   }

@@ -57,7 +57,7 @@ async function readyClient(
     applyDaemonRestart: vi.fn(() => ({ accepted: true })),
     applyDaemonUpgrade: vi.fn(() => ({ accepted: true }))
   }
-  const deps: CpClientDeps = {
+  const deps = {
     url: 'wss://cp/daemon/ws',
     token: 't',
     daemonId: DAEMON_ID,
@@ -87,7 +87,7 @@ async function readyClient(
     log: silent,
     jitter: () => 0,
     ...over
-  }
+  } as CpClientDeps
   const client = new CpClient(deps)
   client.start()
   await tick()

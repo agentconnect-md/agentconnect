@@ -26,7 +26,7 @@
     "test": "pnpm -r test",
     "test:unit": "pnpm -r test:unit && node --test scripts/*.test.mjs",
     "typecheck": "pnpm -r typecheck",
-    "typecheck:ci": "pnpm --filter @agentconnect.md/control-plane --filter @agentconnect.md/daemon --filter @agentconnect.md/setup --config.enable-pre-post-scripts=false -r typecheck"
+    "typecheck:ci": "pnpm --filter '!@agentconnect.md/web' --config.enable-pre-post-scripts=false -r typecheck"
   },
   "devDependencies": {
     "@semantic-release/exec": "^7.1.0",

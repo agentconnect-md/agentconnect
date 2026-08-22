@@ -103,6 +103,7 @@ function elicitation(toolCallId: string, overrides: Record<string, unknown> = {}
 }
 
 function installPending(daemon: Daemon): {
+  plan: { platform: string; approvalSurfaceSuppressed: boolean }
   builtinSystemToolCallIds: Set<string>
   hiddenSessionTitleToolCallIds: Set<string>
 } {
@@ -137,7 +138,7 @@ function installPending(daemon: Daemon): {
 describe('an approval publishes its resolver before the durable write', () => {
   it('a cancellation during createPermissionRequest leaves no orphaned wait or pending row', async () => {
     const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
-    const pending = installPending(daemon) as Record<string, unknown>
+    const pending = installPending(daemon)
     pending.plan.approvalSurfaceSuppressed = true
 
     // Hold the durable write open so the cancellation sweep lands inside it — the window the
@@ -210,7 +211,7 @@ describe('built-in MCP approvals use one policy on both ACP paths', () => {
 
   it('queues non-system requests for an Agent editor even when `none` hides the chat surface', async () => {
     const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
-    const pending = installPending(daemon) as Record<string, unknown>
+    const pending = installPending(daemon)
     pending.plan.approvalSurfaceSuppressed = true
 
     const permissionResult = (daemon as any).permissions.onAcpPermission(
@@ -273,7 +274,7 @@ describe('built-in MCP approvals use one policy on both ACP paths', () => {
   it('routes non-Slack and webchat requests to Agent editors instead of auto-allowing them', async () => {
     for (const platform of ['telegram', 'discord', 'feishu', 'webchat']) {
       const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
-      const pending = installPending(daemon) as Record<string, unknown>
+      const pending = installPending(daemon)
       pending.plan.platform = platform
       pending.plan.approvalSurfaceSuppressed = false
 

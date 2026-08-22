@@ -45,7 +45,7 @@ describe('normalizeDiscordMessage', () => {
     expect(m.thread).toBeUndefined()
     // §6.5 emission flip: the generic coordinate only — discordTopLevel retired.
     expect(m.promoteToThread).toBe(true)
-    expect(m.discordTopLevel).toBeUndefined()
+    expect((m as Record<string, unknown>).discordTopLevel).toBeUndefined()
     expect(m.attachments).toBeUndefined()
   })
 

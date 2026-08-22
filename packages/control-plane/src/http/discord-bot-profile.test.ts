@@ -1,5 +1,6 @@
 import sharp from 'sharp'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { AgentId } from '../domain/ids.js'
 import type { IconStore } from '../icons/icon-store.js'
 import { createDiscordBotProfileSyncer } from './discord-bot-profile.js'
 import { PLATFORM_APP_DESCRIPTION } from './platform-app-description.js'
@@ -26,7 +27,7 @@ describe('createDiscordBotProfileSyncer', () => {
     const sync = createDiscordBotProfileSyncer()
 
     await sync('discord-secret', {
-      id: '00000000-0000-4000-8000-000000000001',
+      id: AgentId('00000000-0000-4000-8000-000000000001'),
       icon: { kind: 'glyph', glyph: 'agentconnect', color: '#1a212b' },
       runtime: 'claude'
     })
@@ -67,7 +68,7 @@ describe('createDiscordBotProfileSyncer', () => {
     const sync = createDiscordBotProfileSyncer(store)
 
     await sync('discord-secret', {
-      id: '00000000-0000-4000-8000-000000000002',
+      id: AgentId('00000000-0000-4000-8000-000000000002'),
       icon: { kind: 'image' },
       runtime: 'codex'
     })

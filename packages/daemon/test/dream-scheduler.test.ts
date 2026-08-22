@@ -12,7 +12,12 @@ const EVERY_SECOND = '* * * * * *'
 function make(): { fired: string[]; warned: string[]; scheduler: DreamScheduler } {
   const fired: string[] = []
   const warned: string[] = []
-  const scheduler = new DreamScheduler({ onFire: (id) => fired.push(id), warn: (m) => warned.push(m) })
+  const scheduler = new DreamScheduler({
+    onFire: async (id) => {
+      fired.push(id)
+    },
+    warn: (m) => warned.push(m)
+  })
   return { fired, warned, scheduler }
 }
 

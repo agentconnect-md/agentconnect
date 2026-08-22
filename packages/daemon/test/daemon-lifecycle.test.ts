@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { MAX_TASK_LIST_TASKS } from '@agentconnect.md/protocol'
+import { MAX_TASK_LIST_TASKS, type SessionPurged } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
 import { TaskViolationError } from '../src/cp/task-reader.js'
 import { configFilesDir } from '../src/shim/config-file-env.js'
@@ -88,7 +88,7 @@ function multiBlockingHost() {
       await blocked
       return { stopReason: 'end_turn' }
     }),
-    cancel: vi.fn(async () => {}),
+    cancel: vi.fn(async (_sessionId: string) => {}),
     stop: vi.fn(async () => {})
   }
   return { host, release: () => release() }
@@ -273,7 +273,11 @@ describe('Daemon session lifecycle (#118)', () => {
     failing.start.mockRejectedValue(
       new Error('Codex process has exited with code 1:\nError: Missing optional dependency @openai/codex-linux-x64')
     )
-    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: vi.fn(() => failing) })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root,
+      hostFactory: vi.fn(() => failing as any)
+    })
     await daemon.start()
     ;(daemon as any).hostRuntimeHome.set('bot-a', join(root, 'agents', 'bot-a', 'home'))
     const repair = vi.spyOn(daemon as any, 'repairAgentRuntimeInstall').mockResolvedValue('failed')
@@ -288,7 +292,11 @@ describe('Daemon session lifecycle (#118)', () => {
 
   it('declines a repair it cannot own: no matching tree, or a cluster-launched runtime', async () => {
     const root = scaffold()
-    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: vi.fn(quietHost) })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root,
+      hostFactory: vi.fn(() => quietHost() as any)
+    })
     await daemon.start()
     const home = join(root, 'agents', 'bot-a', 'home')
 
@@ -2220,7 +2228,7 @@ describe('Daemon session retention GC (#485)', () => {
       clock
     })
     await daemon.start()
-    const emitSessionPurged = vi.fn(async () => 'acknowledged' as const)
+    const emitSessionPurged = vi.fn(async (_purged: SessionPurged) => 'acknowledged' as const)
     ;(daemon as any).cpClient = { emitSessionPurged, state: 'READY', stop: vi.fn(async () => {}) }
 
     await seedSession(daemon, 'expired-a', 'closed', 0)
@@ -2251,7 +2259,7 @@ describe('Daemon session retention GC (#485)', () => {
       clock
     })
     await daemon.start()
-    const emitSessionPurged = vi.fn(async () => 'acknowledged' as const)
+    const emitSessionPurged = vi.fn(async (_purged: SessionPurged) => 'acknowledged' as const)
     ;(daemon as any).cpClient = { emitSessionPurged, state: 'READY', stop: vi.fn(async () => {}) }
     const store = (daemon as any).store
 

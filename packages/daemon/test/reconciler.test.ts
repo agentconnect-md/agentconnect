@@ -16,7 +16,7 @@ const a = (id: string): Agent =>
     output: { mode: 'medium' },
     permissions: { policy: 'ask', autoApprove: [] },
     crons: []
-  }) as Agent
+  }) as unknown as Agent
 
 const slackInt = (id: string) => ({
   id,
@@ -47,7 +47,7 @@ describe('diffAgents', () => {
     const { toChange } = diffAgents([after], actual(a('x')))
     expect(toChange).toHaveLength(1)
     expect(toChange[0]).toMatchObject({ hostRespawn: true, workspace: false, integrations: false })
-    expect(toChange[0].agent.id).toBe('x')
+    expect(toChange[0]!.agent.id).toBe('x')
   })
 
   it('classifies enabling or disabling the OS sandbox as a host-spawn change', () => {
@@ -68,7 +68,7 @@ describe('diffAgents', () => {
 
   it('classifies runtime session preferences and child inputs as host-spawn changes', () => {
     const cases: Array<Partial<Agent>> = [
-      { runtimeOverrides: { model: 'opus', env: [] } },
+      { runtimeOverrides: { model: 'opus', env: [], secrets: [] } },
       { description: 'be terse' },
       { reasoningEffort: 'high' },
       { executionMode: 'yolo' },
@@ -77,7 +77,7 @@ describe('diffAgents', () => {
       { fastMode: true },
       { permissionMode: 'agent-full-access' },
       { approvalsReviewer: 'auto_review' },
-      { runtimeOverrides: { model: undefined as any, env: [{ name: 'FOO', value: 'bar' }] } },
+      { runtimeOverrides: { model: undefined as any, env: [{ name: 'FOO', value: 'bar' }], secrets: [] } },
       // Secrets are baked into the child env (and materialized as config files)
       // at spawn — a value rotation must evict the host or the child keeps the
       // stale value until the idle reap.
@@ -115,7 +115,7 @@ describe('diffAgents', () => {
     const after = {
       ...a('x'),
       workspace: { mode: 'git-repo', path: '/tmp', gitRepo: 'r', gitBranch: 'main', pullOnNewSession: true, skills: [] }
-    } as Agent
+    } as unknown as Agent
     const { toChange } = diffAgents([after], actual(a('x')))
     expect(toChange[0]).toMatchObject({
       hostRespawn: false,
@@ -166,7 +166,7 @@ describe('diffAgents', () => {
         pullOnNewSession: true,
         skills: []
       }
-    } as Agent
+    } as unknown as Agent
     const after = {
       ...before,
       workspace: { ...before.workspace, gitRepo: 'https://github.com/acme/new-name' }
@@ -234,18 +234,18 @@ describe('diffAgents', () => {
   })
 
   it('classifies an integrations edit as an integration change (only)', () => {
-    const after = { ...a('x'), integrations: [slackInt('int-1')] } as Agent
+    const after = { ...a('x'), integrations: [slackInt('int-1')] } as unknown as Agent
     const { toChange } = diffAgents([after], actual(a('x')))
     expect(toChange[0]).toMatchObject({ hostRespawn: false, workspace: false, integrations: true })
   })
 
   it('treats a replica ownership marker as soft-only so rolling upgrades do not flap sockets', () => {
-    const before = { ...a('x'), integrations: [slackInt('int-1')] } as Agent
+    const before = { ...a('x'), integrations: [slackInt('int-1')] } as unknown as Agent
     const after = {
       ...before,
       origin: 'cp',
       integrations: [{ ...slackInt('int-1'), origin: 'cp' as const }]
-    } as Agent
+    } as unknown as Agent
     const { toChange } = diffAgents([after], actual(before))
     expect(toChange).toHaveLength(1)
     expect(toChange[0]).toMatchObject({ hostRespawn: false, workspace: false, integrations: false })
@@ -279,7 +279,7 @@ describe('diffAgents', () => {
       ...a('x'),
       runtime: 'codex',
       integrations: [slackInt('int-1')]
-    } as Agent
+    } as unknown as Agent
     const { toChange } = diffAgents([after], actual(a('x')))
     expect(toChange[0]).toMatchObject({ hostRespawn: true, workspace: false, integrations: true })
   })

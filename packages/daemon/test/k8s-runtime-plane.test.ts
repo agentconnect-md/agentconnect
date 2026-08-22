@@ -67,7 +67,7 @@ function fakeApi(options: { podName?: string; adopt?: boolean } = {}) {
         if (!claim) throw new K8sApiError(404, 'NotFound', 'no claim')
         return claim
       },
-      deleteClaim: async () => undefined,
+      deleteClaim: async (_name: string): Promise<void> => {},
       listClaims: async () => [],
       getSandbox: async () => sandbox,
       setOperatingMode: async () => sandbox,

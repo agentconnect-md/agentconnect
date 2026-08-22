@@ -62,7 +62,7 @@ describe('applyModelCredential', () => {
   })
 
   it('writes Codex base URL through CODEX_CONFIG while preserving existing fields', () => {
-    const env = { CODEX_CONFIG: JSON.stringify({ features: { apps: false } }) }
+    const env: Record<string, string> = { CODEX_CONFIG: JSON.stringify({ features: { apps: false } }) }
     applyModelCredential({ provider: 'openai', runtime: 'codex' }, env, {
       key: 'issued',
       baseUrl: 'https://gateway.example/openai/v1'
@@ -70,7 +70,7 @@ describe('applyModelCredential', () => {
     expect(env.OPENAI_API_KEY).toBe('issued')
     // An endpoint-carrying credential authenticates as a GATEWAY: process-ephemeral, so no
     // persisted account can override this launch's grant and concurrent hosts share nothing.
-    expect(JSON.parse(env.DEFAULT_AUTH_REQUEST)).toEqual({
+    expect(JSON.parse(env.DEFAULT_AUTH_REQUEST!)).toEqual({
       methodId: 'gateway',
       _meta: {
         gateway: {
@@ -81,7 +81,7 @@ describe('applyModelCredential', () => {
       }
     })
     expect(env.OPENAI_BASE_URL).toBe('https://gateway.example/openai/v1')
-    expect(JSON.parse(env.CODEX_CONFIG)).toEqual({
+    expect(JSON.parse(env.CODEX_CONFIG!)).toEqual({
       features: { apps: false },
       model_provider: 'openai',
       openai_base_url: 'https://gateway.example/openai/v1'
@@ -89,7 +89,7 @@ describe('applyModelCredential', () => {
   })
 
   it('overlays only the selected OpenCode provider and references the token environment', () => {
-    const env = {
+    const env: Record<string, string> = {
       OPENCODE_CONFIG_CONTENT: JSON.stringify({ provider: { deepseek: { options: { timeout: 30_000 } } } })
     }
     applyModelCredential({ provider: 'openai', runtime: 'opencode', opencodeProvider: 'deepseek' }, env, {
@@ -97,7 +97,7 @@ describe('applyModelCredential', () => {
       baseUrl: 'https://gateway.example/openai/v1'
     })
     expect(env.MODEL_TOKEN).toBe('issued')
-    expect(JSON.parse(env.OPENCODE_CONFIG_CONTENT)).toEqual({
+    expect(JSON.parse(env.OPENCODE_CONFIG_CONTENT!)).toEqual({
       provider: {
         deepseek: {
           options: {
@@ -111,13 +111,13 @@ describe('applyModelCredential', () => {
   })
 
   it('supports a static URL without replacing the runtime key', () => {
-    const env = { OPENAI_API_KEY: 'runtime-key' }
+    const env: Record<string, string> = { OPENAI_API_KEY: 'runtime-key' }
     applyStaticModelConfig({ provider: 'openai', runtime: 'codex' }, env, {
       key: '',
       baseUrl: 'https://gateway.example/openai/v1'
     })
     expect(env.OPENAI_API_KEY).toBe('runtime-key')
-    expect(JSON.parse(env.CODEX_CONFIG)).toMatchObject({
+    expect(JSON.parse(env.CODEX_CONFIG!)).toMatchObject({
       model_provider: 'openai',
       openai_base_url: 'https://gateway.example/openai/v1'
     })
@@ -219,7 +219,7 @@ describe('applyCodexSessionFloor', () => {
     const env: Record<string, string> = {}
     applyModelCredential(codex, env, { key: 'k', baseUrl: 'https://gw.example/v1' })
     applyCodexSessionFloor(codex, env, floor)
-    expect(JSON.parse(env.CODEX_CONFIG)).toEqual({
+    expect(JSON.parse(env.CODEX_CONFIG!)).toEqual({
       model_provider: 'openai',
       openai_base_url: 'https://gw.example/v1',
       features: { multi_agent: false },
@@ -230,13 +230,13 @@ describe('applyCodexSessionFloor', () => {
   it('keeps daemon-sent leaves authoritative, merging shared tables one level deep', () => {
     const env: Record<string, string> = { CODEX_CONFIG: JSON.stringify({ model: 'o3-mini', features: { web: true } }) }
     applyCodexSessionFloor(codex, env, floor)
-    expect(JSON.parse(env.CODEX_CONFIG)).toEqual({ model: 'o3-mini', features: { multi_agent: false, web: true } })
+    expect(JSON.parse(env.CODEX_CONFIG!)).toEqual({ model: 'o3-mini', features: { multi_agent: false, web: true } })
   })
 
   it('applies with no daemon-sent config at all — the stale-sandbox case the daemon channel exists for', () => {
     const env: Record<string, string> = {}
     applyCodexSessionFloor(codex, env, floor)
-    expect(JSON.parse(env.CODEX_CONFIG)).toEqual({ features: { multi_agent: false }, model: 'gpt-5.5' })
+    expect(JSON.parse(env.CODEX_CONFIG!)).toEqual({ features: { multi_agent: false }, model: 'gpt-5.5' })
   })
 
   it('touches no runtime but codex', () => {

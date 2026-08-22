@@ -115,7 +115,7 @@ const admit = (d: Daemon, entries: DutyGrantEntry[]) =>
 /** Put a live Slack socket in the pool under this agent's own credentials, as a successful
  *  `reconcileSlackConnections` would — what consolidation must stop asking for once it is dropped. */
 function liveSlackSocket(d: Daemon, agentId: string) {
-  const integrationId = INTEGRATION[agentId]
+  const integrationId = INTEGRATION[agentId]!
   const conn = {
     botToken: `xoxb-${NAMES[agentId]}`,
     appToken: `xapp-${NAMES[agentId]}`,
@@ -183,7 +183,7 @@ describe('a refused replacement still applies its removals', () => {
 
     expect((daemon as any).cpAgents.has(AGENT_A)).toBe(true)
     expect((daemon as any).agentRemovalPending(AGENT_A)).toBe(false)
-    expect(existsSync(join(root, 'agents', NAMES[AGENT_A]))).toBe(true)
+    expect(existsSync(join(root, 'agents', NAMES[AGENT_A]!))).toBe(true)
     expect(await store.listSessions(AGENT_A)).toHaveLength(1)
     await daemon.stop()
   })

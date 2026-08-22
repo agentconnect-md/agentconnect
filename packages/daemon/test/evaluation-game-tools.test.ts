@@ -98,7 +98,7 @@ function environment(world: SilentWorld, tools: EvaluationToolDefinition[]): Dae
         connection: new VirtualSlackConnection(INTEGRATION_B, { workspaceId: 'TTOOLS' }, world, { botUserId: 'UTOOLB' })
       }
     ],
-    collaborationRoutes: { generation: 1, channels: [], agents: [] },
+    collaborationRoutes: { generation: 1, channels: [], agents: [], platformKinds: [] },
     listAgents: async (request) => ({ platform: request.platform, agents: [] }),
     tools
   }

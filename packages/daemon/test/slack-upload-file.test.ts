@@ -2,7 +2,13 @@ import { describe, it, expect, vi } from 'vitest'
 
 // The byte POST of Slack's external upload goes to a reserved URL that is NOT a Slack API
 // endpoint, so it leaves through undici directly rather than through the Web API client.
-const undici = vi.hoisted(() => ({ fetch: vi.fn(async () => ({ ok: true, status: 200 })) }))
+type FakeFetchResponse = { ok: boolean; status: number; body?: { cancel: () => Promise<void> } }
+const undici = vi.hoisted(() => ({
+  fetch: vi.fn<(url: string, init?: Record<string, unknown>) => Promise<FakeFetchResponse>>(async () => ({
+    ok: true,
+    status: 200
+  }))
+}))
 vi.mock('undici', async (importOriginal) => ({
   ...(await importOriginal<typeof import('undici')>()),
   fetch: undici.fetch

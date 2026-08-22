@@ -70,7 +70,10 @@ describe('reviewRootFor', () => {
   })
 
   it('never reads an anonymous non-GitHub workspace as the hook repository', () => {
-    const agent = agentFixture({ gitRepo: 'https://git.example.test/acme/primary-service.git', gitCredential: 'none' })
+    const agent = agentFixture({
+      gitRepo: 'https://git.example.test/acme/primary-service.git',
+      gitCredential: undefined
+    })
 
     expect(orchestrator.reviewRootFor(agent, hook('acme/primary-service'))).toBeUndefined()
   })

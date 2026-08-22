@@ -163,7 +163,7 @@ describe('Daemon evaluation surface', () => {
       modelOptions: vi.fn(() => ({ current: 'test-model', models: ['test-model'] })),
       permissionModeOptions: vi.fn(() => ({ modes: ['read-only'] })),
       setSessionPermissionMode: vi.fn(async () => true),
-      prompt: vi.fn(async (sessionId: string) => {
+      prompt: vi.fn(async (sessionId: string, _blocks: { text?: string }[]) => {
         onUpdate(sessionId, {
           sessionUpdate: 'agent_thought_chunk',
           content: { type: 'text', text: 'PRIVATE MEMORY REASONING' }
@@ -217,7 +217,7 @@ describe('Daemon evaluation surface', () => {
     }
 
     const started = await (daemon as any).dreamRunner().start(AGENT_ID, { trigger: 'manual' })
-    let dream
+    let dream: Record<string, unknown> | undefined
     await vi.waitFor(async () => {
       dream = await (daemon as any).store.getDream(AGENT_ID, started.dreamId)
       expect(dream?.status).toBe('adopted')
@@ -339,7 +339,7 @@ describe('Daemon evaluation surface', () => {
     await daemon.start()
 
     const started = await (daemon as any).dreamRunner().start(AGENT_ID, { trigger: 'manual' })
-    let dream
+    let dream: Record<string, unknown> | undefined
     await vi.waitFor(async () => {
       dream = await (daemon as any).store.getDream(AGENT_ID, started.dreamId)
       expect(dream?.status).toBe('adopted')
@@ -614,7 +614,7 @@ describe('managed memory auto-distillation runtime support (#653)', () => {
       permissionModeOptions: vi.fn(() => ({ modes: opts.modes ?? ['read-only'] })),
       setSessionPermissionMode: vi.fn(async () => true),
       discardSession: vi.fn((id: string) => void discarded.add(id)),
-      prompt: vi.fn(async (sessionId: string) => {
+      prompt: vi.fn(async (sessionId: string, _blocks: { text?: string }[]) => {
         if (opts.promptFails) throw new Error('runtime exploded')
         onUpdate(sessionId, {
           sessionUpdate: 'agent_message_chunk',
@@ -645,7 +645,7 @@ describe('managed memory auto-distillation runtime support (#653)', () => {
     // created WITH an MCP server rather than the old tool-less shape.
     expect(host.newSession).toHaveBeenCalledWith(expect.any(String), expect.arrayContaining([expect.anything()]))
     // …the policy is prepended inline to the prompt instead, still leading the turn.
-    const text = host.prompt.mock.calls[0][1][0].text as string
+    const text = host.prompt.mock.calls[0]![1][0]!.text as string
     expect(text.startsWith(MEMORY_DISTILLATION_SYSTEM_PROMPT)).toBe(true)
     expect(text).toContain('DISTILL THIS')
     await daemon.stop()
@@ -662,7 +662,7 @@ describe('managed memory auto-distillation runtime support (#653)', () => {
       MEMORY_DISTILLATION_SYSTEM_PROMPT
     )
     // Trusted: the prompt carries only the turn data, not the inline policy.
-    expect(host.prompt.mock.calls[0][1][0].text).toBe('DISTILL THIS')
+    expect(host.prompt.mock.calls[0]![1][0]!.text).toBe('DISTILL THIS')
     await daemon.stop()
   }, 15_000)
 
