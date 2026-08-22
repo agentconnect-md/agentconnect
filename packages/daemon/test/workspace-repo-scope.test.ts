@@ -345,11 +345,52 @@ describe('the console git scope keys on the MANAGED credential, not the github-a
   })
 
   it('authorizes a gitlab SUBGROUP primary at its configured URL, which github canonicalization throws on', async () => {
-    // Three path segments: `normalizeGithubRepoUrl` demands exactly owner/repo and throws here, which
-    // used to refuse every console pull and push on a managed GitLab primary as an unsafe remote.
-    const origin = 'https://gitlab.com/example-group/sub/example-project'
-    const row = managed('bot-gitlab-push', checkoutOn('bot-gitlab-push', origin), origin, 'gitlab')
+    // Three path segments: `normalizeGithubRepoUrl` demands owner/repo and throws, which used to refuse every console push.
+    const configured = 'https://gitlab.com/example-group/sub/example-project'
+    // The checkout carries what the daemon clones through — the canonical `.git` remote.
+    const row = managed('bot-gitlab-push', checkoutOn('bot-gitlab-push', `${configured}.git`), configured, 'gitlab')
     expect(await seamOn(row).push({ agentId: row.id })).toMatchObject({ isRepo: true, ok: true, ahead: 0 })
+  })
+
+  it('dials a managed gitlab primary through the canonical `.git` remote, github byte-identically', () => {
+    // gitlab.com 301s the suffix-less ref probe and daemon Git refuses to follow one — the first real managed clone died on it.
+    const at = (id: string) => join(base, 'agents', id, 'workspace')
+    const bare = managed('bot-gl-bare', at('bot-gl-bare'), 'https://gitlab.com/example-group/example-project', 'gitlab')
+    expect(workspaces.gitRepoOf(bare)).toBe('https://gitlab.com/example-group/example-project.git')
+    expect(workspaces.primaryRoot(bare).cloneUrl).toBe('https://gitlab.com/example-group/example-project.git')
+
+    const subgroup = managed('bot-gl-sub', at('bot-gl-sub'), 'https://gitlab.com/example-group/sub/proj', 'gitlab')
+    expect(workspaces.primaryRoot(subgroup).cloneUrl).toBe('https://gitlab.com/example-group/sub/proj.git')
+
+    const suffixed = managed('bot-gl-suffixed', at('bot-gl-suffixed'), 'https://gitlab.com/g/p.git', 'gitlab')
+    expect(workspaces.primaryRoot(suffixed).cloneUrl).toBe('https://gitlab.com/g/p.git')
+
+    const github = managed('bot-gh-clone', at('bot-gh-clone'), 'https://github.com/acme/infra', 'github-app')
+    expect(workspaces.primaryRoot(github).cloneUrl).toBe('https://github.com/acme/infra')
+  })
+
+  it('converges a checkout left on the suffix-less origin, so the agent never sees a second form', async () => {
+    // The origin the AGENT's git reads must be the one the daemon dials; convergence at reconcile and prepare is that seam.
+    const configured = 'https://gitlab.com/example-group/example-project'
+    const dir = checkoutOn('bot-gl-converge', configured)
+    const row = managed('bot-gl-converge', dir, configured, 'gitlab')
+    await workspaces.convergeOriginInPlaceFor(row.id, workspaces.primaryRoot(row), dir)
+    const origin = execFileSync('git', ['-C', dir, 'remote', 'get-url', 'origin'], { env, encoding: 'utf8' }).trim()
+    expect(origin).toBe(`${configured}.git`)
+  })
+
+  it('keeps the materialization key suffix-insensitive, so canonicalizing does not re-clone a checkout', () => {
+    // The key decides whether a checkout still matches the config, so gaining `.git` must not empty a materialized volume.
+    const at = (id: string) => join(base, 'agents', id, 'workspace')
+    const bare = managed('bot-gl-key', at('bot-gl-key'), 'https://gitlab.com/example-group/example-project', 'gitlab')
+    const suffixed = managed(
+      'bot-gl-key2',
+      at('bot-gl-key'),
+      'https://gitlab.com/example-group/example-project.git',
+      'gitlab'
+    )
+    expect(workspaces.materializationKey(bare)).toBe(workspaces.materializationKey(suffixed))
+    expect(workspaces.materializationKey(bare)).toContain('https://gitlab.com/example-group/example-project"')
   })
 
   it('still collapses a github-app primary onto its canonical owner/repo origin', async () => {

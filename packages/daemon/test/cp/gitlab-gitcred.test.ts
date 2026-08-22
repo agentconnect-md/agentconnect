@@ -120,6 +120,22 @@ describe('helper path parsing (§13.2)', () => {
     expect(projectFromPath('just-a-name')).toBeUndefined()
     expect(repoFromPath('owner/repo.git/info/lfs')).toBe('owner/repo')
   })
+
+  it('resolves the same project from the canonical `.git` remote git now dials (useHttpPath)', async () => {
+    const { canonicalWorkspaceGitUrl } = await import('../../src/workspace/git-injection.js')
+    // useHttpPath=true sends the remote's own path, so the helper routes on the canonical form: suffix and depth survive.
+    for (const configured of [
+      'https://gitlab.com/example-group/example-project',
+      'https://gitlab.com/example-group/example-project.git'
+    ]) {
+      const path = new URL(canonicalWorkspaceGitUrl(configured)).pathname
+      expect(path).toBe('/example-group/example-project.git')
+      expect(projectFromPath(path)).toBe('example-group/example-project')
+    }
+    const subgroup = new URL(canonicalWorkspaceGitUrl('https://gitlab.com/example-group/sub/deeper/proj')).pathname
+    expect(projectFromPath(subgroup)).toBe('example-group/sub/deeper/proj')
+    expect(projectFromPath(`${subgroup}/info/lfs`)).toBe('example-group/sub/deeper/proj')
+  })
 })
 
 describe('managed origin convergence trust (round 2)', () => {

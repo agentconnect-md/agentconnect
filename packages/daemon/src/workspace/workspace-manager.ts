@@ -26,6 +26,7 @@ import { installSkills, type LocalSkillSource } from '../skills/install-skills.j
 import { acceptedDreamSkillSources } from '../skills/dream-skills.js'
 import {
   assertSafeWorkspaceGitConfig,
+  canonicalWorkspaceGitUrl,
   cloneGitEnv,
   gitFor,
   preWarmGitCred,
@@ -286,7 +287,9 @@ export class WorkspaceManager {
       throw new Error(`workspace clone: agent "${agent.id}" has git-repo mode but no gitRepo configured`)
     }
     return authorizeWorkspaceGitUrl(
-      this.usesGithubApp(agent) ? normalizeGithubRepoUrl(agent.workspace.gitRepo) : agent.workspace.gitRepo
+      canonicalWorkspaceGitUrl(
+        this.usesGithubApp(agent) ? normalizeGithubRepoUrl(agent.workspace.gitRepo) : agent.workspace.gitRepo
+      )
     )
   }
 
@@ -848,12 +851,11 @@ export class WorkspaceManager {
   materializationKey(agent: Agent): string {
     if (agent.workspace.mode === 'from-scratch') return JSON.stringify({ mode: 'scratch' })
     const repo = this.gitRepoOf(agent)
+    // Both hosts treat `.git` as the same repository, so neither canonicalization may replace a checkout over an access-only edit.
+    const suffixInsensitive = this.usesGithubApp(agent) || managedCredentialHostOf(repo) === 'gitlab.com'
     return JSON.stringify({
       mode: 'github',
-      // GitHub treats the conventional `.git` suffix as the same repository.
-      // Ignoring it here prevents a harmless CP canonicalization from replacing
-      // an existing checkout during an access/agentDir-only edit.
-      repo: (this.usesGithubApp(agent) ? repo.replace(/\.git$/i, '') : repo).toLowerCase(),
+      repo: (suffixInsensitive ? repo.replace(/\.git$/i, '') : repo).toLowerCase(),
       branch: agent.workspace.gitBranch
     })
   }

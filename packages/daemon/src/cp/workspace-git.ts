@@ -57,6 +57,7 @@ import {
 } from '@agentconnect.md/protocol'
 import {
   assertSafeWorkspaceGitConfig,
+  canonicalWorkspaceGitUrl,
   gitCommitIdentityEnv,
   managedCredentialHostOf,
   pullWorkspaceRef,
@@ -293,7 +294,9 @@ export function createWorkspaceGit(
       // Canonicalization follows the PROVIDER HOST, never the managed flag: a github grant is tied
       // to exactly owner/repo, while a gitlab project keeps its full subgroup namespace.
       const github = target.githubApp && managedCredentialHostOf(target.repo) !== 'gitlab.com'
-      expectedOrigin = authorizeWorkspaceGitUrl(github ? normalizeGithubRepoUrl(target.repo) : target.repo)
+      expectedOrigin = authorizeWorkspaceGitUrl(
+        canonicalWorkspaceGitUrl(github ? normalizeGithubRepoUrl(target.repo) : target.repo)
+      )
     } catch {
       return undefined
     }
