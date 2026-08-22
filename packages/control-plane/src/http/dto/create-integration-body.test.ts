@@ -167,6 +167,9 @@ describe('the composition IS the platform-set authority', () => {
         }
       },
       validateConfig: async () => ({ ok: true, identity: {} }),
+      buildNewBotInstall: ({ credentials }) => ({
+        secrets: { botToken: credentials.accessToken, appToken: null, signingSecret: null }
+      }),
       secretShape: { slots: { botToken: 'Mastodon access token' }, httpAssignRequires: [] },
       projectIntegrationConfig: async () => ({})
     }

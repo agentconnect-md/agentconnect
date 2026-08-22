@@ -53,7 +53,7 @@ function ghHook(over: Partial<HookRecord> = {}): HookRecord {
     lastModifiedBy: null,
     configRevision: 0n,
     ...over
-  }
+  } as HookRecord
 }
 
 /** A delivery 10 min old — inside the window, past the grace. */

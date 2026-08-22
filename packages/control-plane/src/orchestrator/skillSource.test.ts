@@ -34,7 +34,7 @@ function repoWith(rows: SkillSourceRecord[]): SkillSourceRepo {
     getByName: async (_org, name) => byName.get(name) ?? null,
     setSharing: async () => rows[0]!,
     update: async () => rows[0]!,
-    delete: async () => undefined
+    delete: async () => 'deleted' as const
   }
 }
 

@@ -12,6 +12,7 @@ import {
 
 const provider = {
   id: 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d',
+  orgId: '11111111-1111-4111-8111-111111111111',
   name: 'linear',
   url: 'https://mcp.linear.app/sse'
 }

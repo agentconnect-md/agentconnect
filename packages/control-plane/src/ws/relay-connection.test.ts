@@ -90,7 +90,8 @@ function build(
   over: {
     upsertByName?: RelayRepo['upsertByName']
     touchLastSeen?: RelayRepo['touchLastSeen']
-    auth?: Pick<RelayAuthService, 'authenticate' | 'verifyDaemonKey' | 'heartbeatSec'>
+    auth?: Pick<RelayAuthService, 'authenticate' | 'verifyDaemonKey' | 'heartbeatSec'> &
+      Partial<Pick<RelayAuthService, 'verifyDaemonToken'>>
     verifyWebchatToken?: (token: string) => Promise<RcVerifyResult>
     authorizeGithubComment?: (req: RcGithubCommentAuthz) => Promise<boolean>
     authorizeGithubRerequest?: (req: RcGithubRerequest) => Promise<RcGithubRerequestResult>
@@ -109,6 +110,7 @@ function build(
     id: RELAY_ID,
     name,
     daemonUrl,
+    features: [],
     lastSeenAt: new Date(NOW),
     createdAt: new Date(NOW)
   }))
@@ -119,7 +121,7 @@ function build(
   const onRegistered = vi.fn()
   const onRunReport = vi.fn(async () => {})
   const onBotChannels = vi.fn(async () => {})
-  const onBotRevoked = vi.fn(async () => {})
+  const onBotRevoked = vi.fn(async () => ({ applied: true }))
   const onThreadAssign = over.onThreadAssign ?? vi.fn(async () => {})
   const onThreadParticipant = over.onThreadParticipant ?? vi.fn(async () => {})
   const relayReg = new RelayRegistry()
@@ -138,6 +140,8 @@ function build(
     onRunReport,
     onSetChannelAgent: vi.fn(async () => {}),
     onBotChannels,
+    onBotConversation: vi.fn(async () => {}),
+    onNoticePosted: vi.fn(async () => {}),
     onBotRevoked,
     onThreadAssign,
     onThreadParticipant,
@@ -146,7 +150,8 @@ function build(
     relayReg,
     verifyWebchatToken,
     authorizeGithubComment,
-    authorizeGithubRerequest
+    authorizeGithubRerequest,
+    authorizeCodeHostMembership: vi.fn(async () => false)
   })
   conn.start()
   return {
@@ -215,6 +220,7 @@ function buildWebchatVerifier(
   const getAgent = vi.fn(async (id: string) => {
     if (over.agentById && id in over.agentById) return over.agentById[id] ?? null
     return {
+      id,
       orgId: 'org-1',
       placementKind: 'daemon' as const,
       setId: null,
@@ -467,6 +473,7 @@ describe('RelayConnection FSM', () => {
       id: RELAY_ID,
       name: 'pod-0',
       daemonUrl: 'wss://pod-0.example.test',
+      features: [],
       lastSeenAt: new Date(NOW),
       createdAt: new Date(NOW)
     })
@@ -491,6 +498,7 @@ describe('RelayConnection FSM', () => {
         id: RELAY_ID,
         name,
         daemonUrl,
+        features: [],
         lastSeenAt: new Date(NOW),
         createdAt: new Date(NOW)
       })),
@@ -506,6 +514,9 @@ describe('RelayConnection FSM', () => {
       onRunReport: vi.fn(async () => {}),
       onSetChannelAgent: vi.fn(async () => {}),
       onBotChannels: vi.fn(async () => {}),
+      onBotConversation: vi.fn(async () => {}),
+      onNoticePosted: vi.fn(async () => {}),
+      onBotRevoked: vi.fn(async () => ({ applied: true })),
       onThreadAssign: vi.fn(async () => {}),
       onThreadParticipant: vi.fn(async () => {}),
       threadLookup: vi.fn(async (m) => ({ ...m, target: null, participants: [] })),
@@ -513,7 +524,8 @@ describe('RelayConnection FSM', () => {
       relayReg,
       verifyWebchatToken,
       authorizeGithubComment: vi.fn(async () => false),
-      authorizeGithubRerequest: vi.fn(async () => ({ allowed: false }))
+      authorizeGithubRerequest: vi.fn(async () => ({ allowed: false as const })),
+      authorizeCodeHostMembership: vi.fn(async () => false)
     })
     conn.start()
     await toReady(transport)
@@ -800,7 +812,13 @@ describe('webchat verification multi-agent roster (webchat-multi-agents.md §6.2
     const h = buildWebchatVerifier({
       participants: ROSTER,
       agentById: {
-        [MEMBER_AGENT_ID]: { orgId: 'org-1', placementKind: 'daemon', setId: null, daemonId: MEMBER_DAEMON_ID }
+        [MEMBER_AGENT_ID]: {
+          id: MEMBER_AGENT_ID,
+          orgId: 'org-1',
+          placementKind: 'daemon',
+          setId: null,
+          daemonId: MEMBER_DAEMON_ID
+        }
       },
       daemonById: { [MEMBER_DAEMON_ID]: { state: 'READY' } }
     })
@@ -823,7 +841,13 @@ describe('webchat verification multi-agent roster (webchat-multi-agents.md §6.2
     const h = buildWebchatVerifier({
       participants: ROSTER,
       agentById: {
-        [MEMBER_AGENT_ID]: { orgId: 'org-1', placementKind: 'daemon', setId: null, daemonId: MEMBER_DAEMON_ID }
+        [MEMBER_AGENT_ID]: {
+          id: MEMBER_AGENT_ID,
+          orgId: 'org-1',
+          placementKind: 'daemon',
+          setId: null,
+          daemonId: MEMBER_DAEMON_ID
+        }
       },
       daemonById: { [MEMBER_DAEMON_ID]: { state: 'DEGRADED' } }
     })
@@ -841,7 +865,13 @@ describe('webchat verification multi-agent roster (webchat-multi-agents.md §6.2
     const h = buildWebchatVerifier({
       participants: ROSTER,
       agentById: {
-        [MEMBER_AGENT_ID]: { orgId: 'org-OTHER', placementKind: 'daemon', setId: null, daemonId: MEMBER_DAEMON_ID }
+        [MEMBER_AGENT_ID]: {
+          id: MEMBER_AGENT_ID,
+          orgId: 'org-OTHER',
+          placementKind: 'daemon',
+          setId: null,
+          daemonId: MEMBER_DAEMON_ID
+        }
       },
       daemonById: { [MEMBER_DAEMON_ID]: { state: 'READY' } }
     })
@@ -990,7 +1020,15 @@ describe('webchat verification — session-targeted continuation (webchat-cross-
     const SUCCESSOR = '22222222-2222-4222-8222-222222222222'
     const pooled = (session: Parameters<typeof targetSession>[0], members: string[]) =>
       targeted(session, {
-        agentById: { [WEBCHAT_AGENT_ID]: { orgId: 'org-1', placementKind: 'set', setId: POOL_SET, daemonId: null } },
+        agentById: {
+          [WEBCHAT_AGENT_ID]: {
+            id: WEBCHAT_AGENT_ID,
+            orgId: 'org-1',
+            placementKind: 'set',
+            setId: POOL_SET,
+            daemonId: null
+          }
+        },
         placement: new PlacementResolver({ clock: systemClock, liveMembers: async () => [SUCCESSOR] }),
         sharedStoreMembersBySet: { [POOL_SET]: members },
         daemonById: { [SUCCESSOR]: { state: 'READY', features: CONTINUATION_FEATURES } }
