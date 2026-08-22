@@ -269,6 +269,7 @@ import {
   K8S_SUPERVISOR,
   AGENT_CONFIG_REVISION_FEATURE,
   DAEMON_BOOTSTRAP_UPGRADE_FEATURE,
+  GITCRED_GITHUB_V2_FEATURE,
   GITLAB_EFFECT_V1_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
   ORGANIZATION_SUGGESTION_REVIEW_FEATURE,
@@ -1691,6 +1692,7 @@ export class Daemon {
       log: { warn: (m: string) => this.log.warn(m) },
       actionsSupported: () => this.cpClient?.supportsServerFeature?.('gitcred-actions-v1') ?? false,
       providerV2Supported: () => this.cpClient?.supportsServerFeature?.('gitcred-provider-v2') ?? false,
+      githubV2Supported: () => this.cpClient?.supportsServerFeature?.(GITCRED_GITHUB_V2_FEATURE) ?? false,
       gitlabEffectSupported: () => this.cpClient?.supportsServerFeature?.(GITLAB_EFFECT_V1_FEATURE) ?? false
     })
     // §14.2: the broker holds the effect lease; the agent environment never sees the token.

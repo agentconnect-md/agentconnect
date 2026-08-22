@@ -54,7 +54,8 @@ describe('handleGitCredRequest — repoFullName passthrough (issue #457)', () =>
       PLACED_AGENT,
       [`daemon:${DAEMON_ID}`, `org:org-a`],
       ['contents'],
-      'acme/tools'
+      'acme/tools',
+      undefined
     )
     expect(conn.replyTo).toHaveBeenCalledWith(frame, 'gitcred/grant', {
       username: 'x-access-token',
@@ -68,7 +69,7 @@ describe('handleGitCredRequest — repoFullName passthrough (issue #457)', () =>
 
     // An absent repoFullName stays absent — the pre-multi-repo workspace ask.
     await handleGitCredRequest(gitcredFrame(), conn, deps)
-    expect(mintForAgent).toHaveBeenLastCalledWith(PLACED_AGENT, expect.anything(), undefined, undefined)
+    expect(mintForAgent).toHaveBeenLastCalledWith(PLACED_AGENT, expect.anything(), undefined, undefined, undefined)
   })
 
   it('uses the enabled-hook mint for a GithubPoster reply instead of the workspace gitAccess path', async () => {
@@ -482,5 +483,183 @@ describe('handleGitCredRequest — repoFullName passthrough (issue #457)', () =>
       false
     )
     expect(conn.replyTo).not.toHaveBeenCalled()
+  })
+})
+
+/**
+ * §17.3 — an explicitly github-qualified request takes exactly the arms the absent-provider form
+ * takes, and adds the echo a daemon verifies. The absent form is the long-lived acceptance path
+ * for user-installed daemons, so every case below carries its unqualified twin as the control.
+ */
+describe('handleGitCredRequest — explicit provider=github (§17.3)', () => {
+  const BUCKETS = [`daemon:${DAEMON_ID}`, `org:org-a`]
+
+  function githubDeps(overrides: Record<string, unknown> = {}) {
+    const mintForAgent = vi.fn(async () => ({
+      token: 'ghs_secret',
+      ttlSec: 3540,
+      expiresAt: '2026-07-11T01:00:00.000Z',
+      repoFullName: 'acme/infra',
+      access: 'write' as const,
+      repoId: 501n
+    }))
+    const deps = {
+      agent: { get: async () => PLACED_AGENT },
+      github: { mintForAgent },
+      ...overrides
+    } as unknown as DaemonWsDeps
+    return { deps, mintForAgent }
+  }
+
+  it('resolves a workspace request identically to its absent-provider twin, adding only the echo', async () => {
+    const { deps, mintForAgent } = githubDeps()
+
+    const v1 = fakeConn()
+    await handleGitCredRequest(gitcredFrame(), v1, deps)
+    const qualified = fakeConn()
+    await handleGitCredRequest(gitcredFrame({ provider: 'github' }), qualified, deps)
+
+    // Same resolution: identical mint arguments on both calls.
+    expect(mintForAgent).toHaveBeenNthCalledWith(1, PLACED_AGENT, BUCKETS, undefined, undefined, undefined)
+    expect(mintForAgent).toHaveBeenNthCalledWith(2, PLACED_AGENT, BUCKETS, undefined, undefined, undefined)
+
+    const v1Grant = v1.replyTo.mock.calls[0]?.[2] as Record<string, unknown>
+    const qualifiedGrant = qualified.replyTo.mock.calls[0]?.[2] as Record<string, unknown>
+    // Negative control: the old-daemon answer carries no v2 field at all.
+    expect(v1Grant).toEqual({
+      username: 'x-access-token',
+      token: 'ghs_secret',
+      ttlSec: 3540,
+      expiresAt: '2026-07-11T01:00:00.000Z',
+      repoFullName: 'acme/infra',
+      access: 'write'
+    })
+    expect(qualifiedGrant).toEqual({ ...v1Grant, provider: 'github', externalRepoId: '501' })
+    expect(qualified.sendError).not.toHaveBeenCalled()
+  })
+
+  it('routes a repo-targeted CLI-plane request to the same mint and forwards the access floor', async () => {
+    const { deps, mintForAgent } = githubDeps()
+    const conn = fakeConn()
+    const frame = gitcredFrame({
+      provider: 'github',
+      capabilities: ['contents', 'issues', 'pull_requests'],
+      repoFullName: 'acme/tools',
+      requestedAccess: 'read'
+    })
+
+    await handleGitCredRequest(frame, conn, deps)
+
+    expect(mintForAgent).toHaveBeenCalledWith(
+      PLACED_AGENT,
+      BUCKETS,
+      ['contents', 'issues', 'pull_requests'],
+      'acme/tools',
+      'read'
+    )
+    expect(conn.replyTo).toHaveBeenCalledWith(
+      frame,
+      'gitcred/grant',
+      expect.objectContaining({ provider: 'github', externalRepoId: '501' })
+    )
+  })
+
+  it('routes a github_hook_reply identically to its unqualified twin and echoes the hook repository', async () => {
+    const mintForHookReply = vi.fn(async () => ({
+      token: 'ghs_comment',
+      ttlSec: 3540,
+      expiresAt: '2026-07-11T01:00:00.000Z',
+      repoFullName: 'acme/infra',
+      access: 'read' as const,
+      repoId: 501n
+    }))
+    const { deps } = githubDeps({
+      hook: { get: async () => ({ agentId: AGENT_ID, kind: 'github', enabled: true, repoId: 501n }) },
+      github: { mintForAgent: vi.fn(), mintForHookReply }
+    })
+    const payload = {
+      purpose: 'github_hook_reply',
+      hookId: HOOK_ID,
+      capabilities: ['issues', 'pull_requests'],
+      repoFullName: 'acme/infra'
+    }
+
+    const v1 = fakeConn()
+    await handleGitCredRequest(gitcredFrame(payload), v1, deps)
+    const qualified = fakeConn()
+    await handleGitCredRequest(gitcredFrame({ ...payload, provider: 'github', externalRepoId: '501' }), qualified, deps)
+
+    expect(mintForHookReply).toHaveBeenNthCalledWith(1, PLACED_AGENT, 'acme/infra', 501n, BUCKETS, false)
+    expect(mintForHookReply).toHaveBeenNthCalledWith(2, PLACED_AGENT, 'acme/infra', 501n, BUCKETS, false)
+    const v1Grant = v1.replyTo.mock.calls[0]?.[2] as Record<string, unknown>
+    const qualifiedGrant = qualified.replyTo.mock.calls[0]?.[2] as Record<string, unknown>
+    expect(v1Grant.provider).toBeUndefined()
+    expect(qualifiedGrant).toEqual({ ...v1Grant, provider: 'github', externalRepoId: '501' })
+  })
+
+  it('refuses a numeric identity the request named but the resolution disagrees with', async () => {
+    const { deps, mintForAgent } = githubDeps()
+    const conn = fakeConn()
+    const frame = gitcredFrame({ provider: 'github', repoFullName: 'acme/infra', externalRepoId: '999' })
+
+    await handleGitCredRequest(frame, conn, deps)
+
+    expect(mintForAgent).toHaveBeenCalledOnce()
+    // Minted, then discarded — the wrong repository's token never reaches the wire.
+    expect(conn.replyTo).not.toHaveBeenCalled()
+    expect(conn.sendError).toHaveBeenCalledWith(
+      frame.id,
+      'SCOPE_DENIED',
+      'github repository 999 is not the repository this request resolves to',
+      false
+    )
+  })
+
+  it('refuses a hook reply naming another repository before it mints anything', async () => {
+    const mintForHookReply = vi.fn()
+    const { deps } = githubDeps({
+      hook: { get: async () => ({ agentId: AGENT_ID, kind: 'github', enabled: true, repoId: 501n }) },
+      github: { mintForHookReply }
+    })
+    const conn = fakeConn()
+    const frame = gitcredFrame({
+      provider: 'github',
+      purpose: 'github_hook_reply',
+      hookId: HOOK_ID,
+      capabilities: ['issues', 'pull_requests'],
+      repoFullName: 'acme/infra',
+      externalRepoId: '999'
+    })
+
+    await handleGitCredRequest(frame, conn, deps)
+
+    expect(mintForHookReply).not.toHaveBeenCalled()
+    expect(conn.sendError).toHaveBeenCalledWith(
+      frame.id,
+      'SCOPE_DENIED',
+      'the named repository is not the one this hook watches',
+      false
+    )
+  })
+
+  it('omits the externalRepoId echo when the resolution had no numeric id (legacy workspace)', async () => {
+    const { deps } = githubDeps({
+      github: {
+        mintForAgent: vi.fn(async () => ({
+          token: 'ghs_secret',
+          ttlSec: 3540,
+          expiresAt: '2026-07-11T01:00:00.000Z',
+          repoFullName: 'acme/infra',
+          access: 'write' as const
+        }))
+      }
+    })
+    const conn = fakeConn()
+
+    await handleGitCredRequest(gitcredFrame({ provider: 'github' }), conn, deps)
+
+    const grant = conn.replyTo.mock.calls[0]?.[2] as Record<string, unknown>
+    expect(grant.provider).toBe('github')
+    expect('externalRepoId' in grant).toBe(false)
   })
 })

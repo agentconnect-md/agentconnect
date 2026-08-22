@@ -45,6 +45,8 @@ export interface MintedGitCred {
   expiresAt: string
   repoFullName: string
   access: GitAccess
+  /** Numeric repository id the token was scoped to, when the resolution had one — the v2 grant echo. */
+  repoId?: bigint
 }
 
 /** Serve cached only while more than this remains (nests over the daemon's 10min). */
@@ -177,7 +179,7 @@ export class InstallationTokenService {
     const key = `${installationId}:${scope}:${caps.map((c) => `${c}=${effectiveLevels[c]}`).join('+')}`
     const cached = forceRefresh ? undefined : this.cache.get(key)
     if (cached && cached.expiresAtMs - this.clock.now() > FRESH_MIN_MS) {
-      return this.toGrant(cached, repoFullName, access)
+      return this.toGrant(cached, repoFullName, access, repoId)
     }
     let pending = forceRefresh ? undefined : this.inflight.get(key)
     if (!pending) {
@@ -208,7 +210,7 @@ export class InstallationTokenService {
     }
     const entry = await pending
     if (this.epoch(installationId) !== serveEpoch) throw new InstallationTokenInvalidatedError()
-    return this.toGrant(entry, repoFullName, access)
+    return this.toGrant(entry, repoFullName, access, repoId)
   }
 
   /**
@@ -288,13 +290,14 @@ export class InstallationTokenService {
     }
   }
 
-  private toGrant(entry: CacheEntry, repoFullName: string, access: GitAccess): MintedGitCred {
+  private toGrant(entry: CacheEntry, repoFullName: string, access: GitAccess, repoId?: bigint): MintedGitCred {
     return {
       token: entry.token,
       ttlSec: Math.max(0, Math.floor((entry.expiresAtMs - this.clock.now()) / 1000)),
       expiresAt: entry.expiresAtIso,
       repoFullName,
-      access
+      access,
+      ...(repoId !== undefined ? { repoId } : {})
     }
   }
 }
