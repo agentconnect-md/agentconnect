@@ -830,7 +830,7 @@ describe('feature negotiation (§17.3)', () => {
       hostFactory: () => ({ start: vi.fn(async () => {}), stop: vi.fn(async () => {}) }) as never
     })
     await daemon.start()
-    const features = (daemon as never as Record<string, () => string[]>).registrationFeatures()
+    const features = (daemon as never as { registrationFeatures: () => string[] }).registrationFeatures()
     await daemon.stop().catch(() => undefined)
     rmSync(daemonRoot, { recursive: true, force: true })
 

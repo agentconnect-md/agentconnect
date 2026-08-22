@@ -206,7 +206,9 @@ describe('the coalescing buffer is invisible to a reader', () => {
   it('raises one mutation notice per flush, carrying the revision the flushed row landed on', async () => {
     const { store } = await seeded()
     const seen: { revision: number; agentIds: string[] }[] = []
-    store.setTranscriptMutationListener((mutation) => seen.push(mutation))
+    store.setTranscriptMutationListener((mutation) => {
+      seen.push(mutation)
+    })
     for (let chunk = 1; chunk <= 5; chunk++) {
       await store.updateToolCall(CHANNEL, THREAD, AGENT, 'tc-1', { title: 'Bash', body: body(chunk) })
     }

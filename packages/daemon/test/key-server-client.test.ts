@@ -64,7 +64,7 @@ describe('KeyServerClient', () => {
         new Response(JSON.stringify({ keyId: 'key-1', key: 'secret', expiresInSeconds: 7_200 }), { status: 200 })
       )
     const client = new KeyServerClient('https://keys.example', { fetch })
-    await expect(client.issue(request)).rejects.toMatchObject<KeyServerError>({ code: 'unavailable' })
+    await expect(client.issue(request)).rejects.toMatchObject({ code: 'unavailable' } satisfies Partial<KeyServerError>)
   })
 
   it('surfaces machine-readable denials and revokes by issuance id', async () => {
@@ -77,11 +77,11 @@ describe('KeyServerClient', () => {
       )
       .mockResolvedValueOnce(new Response('{}', { status: 200 }))
     const client = new KeyServerClient('https://keys.example', { fetch })
-    await expect(client.issue(request)).rejects.toMatchObject<KeyServerError>({
+    await expect(client.issue(request)).rejects.toMatchObject({
       code: 'quota_denied',
       message: 'budget exhausted',
       status: 403
-    })
+    } satisfies Partial<KeyServerError>)
     await expect(client.revoke('key-1')).resolves.toBeUndefined()
     expect(fetch.mock.calls[1]?.[1]?.body).toBe(JSON.stringify({ keyId: 'key-1' }))
   })
@@ -98,7 +98,9 @@ describe('KeyServerClient', () => {
   it('classifies an unreadable token file as key-server authentication failure', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>()
     const client = new KeyServerClient('https://keys.example', { tokenPath: '/definitely/missing/token', fetch })
-    await expect(client.issue(request)).rejects.toMatchObject<KeyServerError>({ code: 'unauthorized' })
+    await expect(client.issue(request)).rejects.toMatchObject({
+      code: 'unauthorized'
+    } satisfies Partial<KeyServerError>)
     expect(fetch).not.toHaveBeenCalled()
   })
 })

@@ -307,7 +307,7 @@ describe('createWorkspaceGit.log against a real repo', () => {
         workspaces,
         async () => root,
         () => undefined,
-        () => target
+        async () => target
       )
 
     it('lists only what the checked-out branch adds over the configured base, and names it', async () => {

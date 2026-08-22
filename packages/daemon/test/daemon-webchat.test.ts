@@ -68,7 +68,7 @@ function streamingHost(
   let onUpdate!: (sid: string, u: unknown) => void
   const host = {
     start: vi.fn(async () => {}),
-    newSession: vi.fn(async () => {
+    newSession: vi.fn(async (_cwd: string, _mcpServers: unknown[], _effortOverride?: string) => {
       for (const update of initialUpdates) onUpdate('acp-wc-1', update)
       return 'acp-wc-1'
     }),
@@ -78,7 +78,7 @@ function streamingHost(
     setSessionEffort: vi.fn(async () => true),
     setSessionPermissionMode: vi.fn(async () => true),
     setSessionFastMode: vi.fn(async () => true),
-    prompt: vi.fn(async (sid: string) => {
+    prompt: vi.fn(async (sid: string, _blocks: unknown[]) => {
       for (const u of updates) onUpdate(sid, u)
       return { stopReason, ...(usage ? { usage } : {}) }
     }),
@@ -108,7 +108,7 @@ function fakeCpClient() {
     outputs,
     dones,
     usageReports,
-    emitUsageReport: vi.fn((report: unknown) => usageReports.push(report)),
+    emitUsageReport: vi.fn<(report: unknown) => void>((report: unknown) => usageReports.push(report)),
     emitSessionActivity: vi.fn(),
     // An ordinary org-scoped daemon: it owns its agents outright and is not duty-governed.
     organizationScope: () => 'connection' as const,
@@ -669,7 +669,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     let discardCalls = 0
     const host = {
       start: vi.fn(async () => {}),
-      newSession: vi.fn(async () => {
+      newSession: vi.fn(async (_cwd: string, _mcpServers: unknown[], _effortOverride?: string) => {
         newSessionCalls += 1
         if (newSessionCalls === 1) {
           await firstSessionGate

@@ -314,7 +314,7 @@ async function runRuntime(target: RuntimeTarget): Promise<RuntimeResult> {
       ? { status: 'ok', detail: `real model recalled session-start index via ${usesMeta ? '_meta' : 'inline block'}` }
       : { status: 'fail', detail: `real model reply did not contain ${memoryToken}` }
     result.features['usage-fold'] = lifecycle.usage
-      ? { status: 'ok', detail: `${lifecycle.usage.used}/${lifecycle.usage.size} tokens` }
+      ? { status: 'ok', detail: `${lifecycle.usage.totalTokens} tokens` }
       : { status: 'degrade', detail: 'runtime returned no ACP usage object' }
 
     if (result.models.length >= 2) {

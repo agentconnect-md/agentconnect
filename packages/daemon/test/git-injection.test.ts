@@ -352,7 +352,8 @@ describe('gitEnvBase', () => {
         clone: async () => undefined,
         pull: async () => ({ files: [], insertions: 0, deletions: 0 }),
         status: async () => ({ current: null, tracking: null, ahead: 0, behind: 0, files: [], clean: true }),
-        log: async () => []
+        log: async () => [],
+        readBounded: async () => ({ out: Buffer.alloc(0), overflow: false })
       }
       await expect(assertSafeWorkspaceGitConfig(hostile)).rejects.toThrow(/executable setting/)
 
@@ -528,7 +529,8 @@ describe('gitEnvBase', () => {
       run(['-C', seed, 'push', 'origin', 'main'])
 
       const git = gitFor(workspace).env(env)
-      await pullWorkspaceRef(git, 'origin', 'main')
+      const runner = new LocalGitRunner(git, workspace, (overrides) => gitFor(workspace).env(overrides), env)
+      await pullWorkspaceRef(runner, 'origin', 'main')
 
       const [head, tracking, status] = await Promise.all([
         git.raw(['rev-parse', 'HEAD']),

@@ -13,7 +13,8 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { AgentSpec, CronUpsert } from '@agentconnect.md/protocol'
+import type { z } from 'zod'
+import { AgentSpec as AgentSpecSchema, type AgentSpec, type CronUpsert } from '@agentconnect.md/protocol'
 import {
   agentRemovalTombstones,
   archiveAgent,
@@ -46,12 +47,14 @@ function readJson(file: string): Record<string, unknown> {
   return JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>
 }
 
-const baseSpec = (over: Partial<AgentSpec> = {}): AgentSpec => ({
-  name: 'bot-a',
-  runtime: 'claude',
-  env: {},
-  ...over
-})
+// The wire (pre-parse) shape: a CP spec leaves defaulted fields absent, and so do these fixtures.
+const baseSpec = (over: Partial<z.input<typeof AgentSpecSchema>> = {}): AgentSpec =>
+  ({
+    name: 'bot-a',
+    runtime: 'claude',
+    env: {},
+    ...over
+  }) as AgentSpec
 
 describe('durable agent removal tombstones', () => {
   it('hashes arbitrary CP ids instead of using them as filesystem paths', () => {

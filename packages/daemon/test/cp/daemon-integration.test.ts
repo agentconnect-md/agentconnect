@@ -87,7 +87,7 @@ describe('Daemon ↔ CP integration', () => {
     await layer.hydrate()
     // The local agent with id == CP agentId and a Slack integration makes the rule servable.
     const resolveCpAgent = (agentId: string) =>
-      agentId === 'agentA' ? { integrationId: 'int1', botUserId: 'B1' } : null
+      agentId === 'agentA' ? { integrationId: 'int1', botUserId: 'B1', platform: 'slack' } : null
     const merged = layer
       .effectiveRules()
       .map((r) => resolveCpRule(r, resolveCpAgent))

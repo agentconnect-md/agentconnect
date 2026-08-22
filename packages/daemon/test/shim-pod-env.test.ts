@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { AcpRunner, ghWrapperPath } from '../src/shim/acp-runner.js'
+import { AcpRunner, ghWrapperPath, type ResolveCommand } from '../src/shim/acp-runner.js'
 import { SANDBOX_GH_WRAPPER_DIR } from '../src/shim/sandbox-paths.js'
 
 // The sandbox spawns with what the daemon sent PLUS the pod's own filesystem basics. The daemon
@@ -7,19 +7,23 @@ import { SANDBOX_GH_WRAPPER_DIR } from '../src/shim/sandbox-paths.js'
 // HOME, and codex then failed with "failed to initialize sqlite state runtime under
 // /var/lib/agentconnect/.codex" — a path that exists only on the daemon.
 
+/** The runner's own open path, which is private: these tests drive it directly rather than over a channel. */
+const openOf = (runner: AcpRunner): ((payload: unknown) => Promise<void>) =>
+  (runner as unknown as { open(payload: unknown): Promise<void> }).open.bind(runner)
+
 describe('sandbox spawn environment', () => {
   it('takes HOME from the POD when the daemon does not name one', async () => {
     const seen: Array<Record<string, string>> = []
     const runner = new AcpRunner({
       emit: () => {},
       podEnv: { HOME: '/agent', PATH: '/usr/local/bin:/usr/bin', TMPDIR: '/tmp', SANDBOX_SECRET: 'must-not-leak' },
-      resolveCommand: (command, env) => {
+      resolveCommand: ((command, env) => {
         seen.push({ ...env })
         return command
-      },
+      }) satisfies ResolveCommand,
       log: { info: () => {}, warn: () => {} }
     } as never)
-    await runner.open({ op: 'open', command: 'true', args: [], env: { AC_AGENT_ID: 'a' } } as never).catch(() => {})
+    await openOf(runner)({ op: 'open', command: 'true', args: [], env: { AC_AGENT_ID: 'a' } }).catch(() => {})
     const env = seen.at(-1) ?? {}
     expect(env.HOME).toBe('/agent')
     expect(env.PATH).toBe('/usr/local/bin:/usr/bin')
@@ -34,15 +38,13 @@ describe('sandbox spawn environment', () => {
     const runner = new AcpRunner({
       emit: () => {},
       podEnv: { HOME: '/agent', PATH: '/usr/bin' },
-      resolveCommand: (command, env) => {
+      resolveCommand: ((command, env) => {
         seen.push({ ...env })
         return command
-      },
+      }) satisfies ResolveCommand,
       log: { info: () => {}, warn: () => {} }
     } as never)
-    await runner
-      .open({ op: 'open', command: 'true', args: [], env: { HOME: '/agent/private' } } as never)
-      .catch(() => {})
+    await openOf(runner)({ op: 'open', command: 'true', args: [], env: { HOME: '/agent/private' } }).catch(() => {})
     expect(seen.at(-1)?.HOME).toBe('/agent/private')
     await runner.close(1_000).catch(() => {})
   })

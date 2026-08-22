@@ -8,6 +8,7 @@ import { Daemon } from '../src/daemon.js'
 import { transcriptChannelKey, type TranscriptEntry } from '../src/store/local-store.js'
 import { stableTurnId } from '../src/messages/normalized.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
+import type { SlackPostOptions } from '../src/slack/connection.js'
 
 // vi.waitFor defaults to a 1000ms budget — too tight on a loaded CI runner, where a
 // cold session boot (workspace + host + session/new) can stall well past a second.
@@ -95,13 +96,31 @@ function makeRoutable(daemon: Daemon) {
     workspaceId: vi.fn(() => 'T1'),
     setStatus: vi.fn(async () => {}),
     // Hand back a distinct ts per post so transcript rows don't collide on PK.
-    postMessage: vi.fn(async () => `reply-${++n}`),
-    postBlocks: vi.fn(async () => 'status-bar'),
-    updateBlocks: vi.fn(async () => {})
+    postMessage: vi.fn<PostMessageFake>(async () => `reply-${++n}`),
+    postBlocks: vi.fn<PostBlocksFake>(async () => 'status-bar'),
+    updateBlocks: vi.fn<UpdateBlocksFake>(async () => {})
   }
   ;(daemon as any).connByIntegration.set('int-a', conn)
   return conn
 }
+
+type PostMessageFake = (channel: string, text: string, threadTs?: string, options?: SlackPostOptions) => Promise<string>
+type PostBlocksFake = (
+  channel: string,
+  blocks: unknown[],
+  text: string,
+  threadTs?: string,
+  options?: SlackPostOptions
+) => Promise<string>
+type UpdateBlocksFake = (
+  channel: string,
+  ts: string,
+  blocks: unknown[],
+  text?: string,
+  chrome?: boolean,
+  agentAuthorId?: string,
+  chromeOwnerAgentId?: string
+) => Promise<void>
 
 const dm = (ts: string, text: string) => ({
   msgId: `slack:C1:${ts}`,
