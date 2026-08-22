@@ -1816,6 +1816,9 @@ export const GitlabProjectBindingDto = z.object({
   defaultBranch: z.string().nullable(),
   state: z.enum(['provisioning', 'ready', 'admin_degraded', 'runtime_degraded', 'cleanup_pending']),
   stateReason: z.string().nullable(),
+  /** The OAuth connection administering this project (§7.1); null once it was
+   *  removed. Its state decides whether repair, removal, or takeover can run. */
+  installerConnectionId: z.string().nullable(),
   serviceAccountUsername: z.string().nullable(),
   webhookInstalled: z.boolean(),
   credentialEpoch: z.string(),

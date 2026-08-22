@@ -5282,6 +5282,10 @@ export interface GitlabProjectBindingDto {
   defaultBranch: string | null
   state: GitlabProjectBindingState
   stateReason: string | null
+  /** The connection administering this project; null once it was removed. A
+   *  project whose administering connection is not connected can neither be
+   *  repaired nor removed — it is reconnected or transferred first. */
+  installerConnectionId: string | null
   serviceAccountUsername: string | null
   webhookInstalled: boolean
   credentialEpoch: string
@@ -5355,6 +5359,14 @@ export function createGitlabProject(input: {
 /** Re-run provisioning: identity, service account, credentials, and webhook. */
 export function repairGitlabProject(id: string): Promise<GitlabProjectBindingDto> {
   return apiPost<GitlabProjectBindingDto>(`${orgBase()}/gitlab/projects/${encodeURIComponent(id)}/repair`, {})
+}
+
+/** Take over a project whose administering account can no longer act: the CP
+ *  re-verifies the caller's own Maintainer-or-Owner access live, through the
+ *  caller's own connection, and re-runs provisioning under it. Refusals carry a
+ *  `GITLAB_*` code on the ApiError. */
+export function transferGitlabProject(id: string): Promise<GitlabProjectBindingDto> {
+  return apiPost<GitlabProjectBindingDto>(`${orgBase()}/gitlab/projects/${encodeURIComponent(id)}/transfer`, {})
 }
 
 export function deleteGitlabProject(id: string): Promise<GitlabProjectRemovalDto> {

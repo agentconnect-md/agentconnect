@@ -10,13 +10,14 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { GitlabConnectionDto, GitlabProjectBindingDto } from '@/lib/api'
+import { ApiError, type GitlabConnectionDto, type GitlabProjectBindingDto } from '@/lib/api'
 
 const mocks = vi.hoisted(() => ({
   fetchConnections: vi.fn(),
   fetchProjects: vi.fn(),
   repairProject: vi.fn(),
   deleteProject: vi.fn(),
+  transferProject: vi.fn(),
   disconnect: vi.fn(),
   startOauth: vi.fn()
 }))
@@ -33,6 +34,7 @@ vi.mock('@/lib/api', async (importOriginal) => ({
   fetchGitlabProjects: mocks.fetchProjects,
   repairGitlabProject: mocks.repairProject,
   deleteGitlabProject: mocks.deleteProject,
+  transferGitlabProject: mocks.transferProject,
   disconnectGitlabConnection: mocks.disconnect,
   startGitlabOauth: mocks.startOauth
 }))
@@ -58,6 +60,7 @@ const BINDING: GitlabProjectBindingDto = {
   defaultBranch: 'main',
   state: 'ready',
   stateReason: null,
+  installerConnectionId: 'conn-1',
   serviceAccountUsername: 'project_4711_bot',
   webhookInstalled: true,
   credentialEpoch: '1',
@@ -191,30 +194,80 @@ describe('GitlabCard', () => {
     expect(row.textContent).not.toContain('assignedProjects')
   })
 
-  it('completes the guided removal: the blocked line clears when the last project goes', async () => {
-    const blocked = { ...CONNECTION, state: 'disconnected' as const, assignedProjects: 1 }
-    mocks.fetchConnections.mockResolvedValueOnce({ enabled: true, connections: [blocked] })
-    // The removal frees the connection, and the card reads the new count back.
-    mocks.fetchConnections.mockResolvedValue({
-      enabled: true,
-      connections: [{ ...blocked, assignedProjects: 0 }]
-    })
+  it('breaks the removal deadlock: transfer first, then the blocked line clears', async () => {
+    // The account that set the project up is gone, so removing the project would
+    // need an administering account it no longer has: takeover is the way out.
+    const stale = { ...CONNECTION, state: 'disconnected' as const, assignedProjects: 1 }
+    const mine = { ...CONNECTION, id: 'conn-2', gitlabUsername: 'current-admin', assignedProjects: 0 }
+    mocks.fetchConnections.mockResolvedValueOnce({ enabled: true, connections: [stale, mine] })
     mocks.fetchProjects.mockResolvedValue([BINDING])
-    mocks.deleteProject.mockResolvedValue({ removed: true })
     await render()
 
     expect(connectionRow('conn-1').textContent).toContain('still administers 1 project')
+    expect(connectionRow('conn-1').textContent).toContain('Transfer that project')
     expect(() => buttonIn(connectionRow('conn-1'), 'Remove')).toThrow()
 
-    // Remove the one project that blocks it — the project row's button, then the modal's.
+    // Remove is explained, not attempted: the saga would fail halfway at GitLab.
+    await click('Remove', host.querySelector('[data-gitlab-project]')!)
+    expect(modal().textContent).toContain('no longer connected')
+    expect(() => buttonIn(modal(), 'Remove')).toThrow()
+    expect(mocks.deleteProject).not.toHaveBeenCalled()
+    await click('Close', modal())
+
+    // Take it over, and the counts both sides show move with it.
+    mocks.transferProject.mockResolvedValue({ ...BINDING, installerConnectionId: 'conn-2' })
+    mocks.fetchConnections.mockResolvedValue({
+      enabled: true,
+      connections: [
+        { ...stale, assignedProjects: 0 },
+        { ...mine, assignedProjects: 1 }
+      ]
+    })
+    await click('Transfer', host.querySelector('[data-gitlab-project]')!)
+    expect(mocks.transferProject).not.toHaveBeenCalled()
+    await click('Transfer', modal())
+    expect(mocks.transferProject).toHaveBeenCalledWith('bind-1')
+    expect(connectionRow('conn-1').textContent).not.toContain('still administers')
+    expect(buttonIn(connectionRow('conn-1'), 'Remove')).toBeTruthy()
+
+    // And removal now runs for real, under the account that took it over.
+    mocks.deleteProject.mockResolvedValue({ removed: true })
     await click('Remove', host.querySelector('[data-gitlab-project]')!)
     await click('Remove', modal())
     expect(mocks.deleteProject).toHaveBeenCalledWith('bind-1')
-
-    // No reload: the connection now offers its own removal.
     expect(host.querySelectorAll('[data-gitlab-project]')).toHaveLength(0)
-    expect(connectionRow('conn-1').textContent).not.toContain('still administers')
-    expect(buttonIn(connectionRow('conn-1'), 'Remove')).toBeTruthy()
+  })
+
+  it('offers Transfer only where administration is stuck', async () => {
+    mocks.fetchConnections.mockResolvedValue({ enabled: true, connections: [CONNECTION] })
+    mocks.fetchProjects.mockResolvedValue([
+      BINDING,
+      { ...BINDING, id: 'bind-degraded', projectPath: 'example-group/degraded', state: 'admin_degraded' as const }
+    ])
+    await render()
+
+    const healthy = host.querySelector('[data-gitlab-project="bind-1"]')!
+    const degraded = host.querySelector('[data-gitlab-project="bind-degraded"]')!
+    // A ready project its own connected account manages has nothing to take over.
+    expect(() => buttonIn(healthy, 'Transfer')).toThrow()
+    expect(buttonIn(degraded, 'Transfer')).toBeTruthy()
+  })
+
+  it('says why a takeover was refused, in GitLab terms', async () => {
+    mocks.fetchConnections.mockResolvedValue({
+      enabled: true,
+      connections: [{ ...CONNECTION, state: 'disconnected' as const, assignedProjects: 1 }]
+    })
+    mocks.fetchProjects.mockResolvedValue([BINDING])
+    mocks.transferProject.mockRejectedValue(new ApiError('gitlab: nope', 403, 'GITLAB_NOT_MAINTAINER'))
+    await render()
+
+    await click('Transfer', host.querySelector('[data-gitlab-project]')!)
+    await click('Transfer', modal())
+    expect(host.textContent).toContain('Maintainer or Owner access')
+    // The refusal is readable: the dialog is gone and no machine code is shown.
+    expect(host.querySelector('.modal')).toBeNull()
+    expect(host.textContent).not.toContain('GITLAB_NOT_MAINTAINER')
   })
 
   it('repairs and removes the project it was invoked on', async () => {

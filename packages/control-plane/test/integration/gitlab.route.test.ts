@@ -5,7 +5,7 @@
  */
 import { describe, expect, it, afterEach } from 'vitest'
 import { prisma } from '../setup.db.js'
-import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
+import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { GitlabOauthService } from '../../src/gitlab/oauth.service.js'
 import {
@@ -34,7 +34,7 @@ afterEach(async () => {
   running = undefined
 })
 
-function gitlabApp(options: FakeGitlabOptions = {}): HttpApp {
+function gitlabApp(options: FakeGitlabOptions = {}): HttpApp & { fake: FakeGitlab } {
   const fake = new FakeGitlab(options)
   const oauth = new GitlabOauthService({
     cfg: { clientId: 'client-1', clientSecret: 'secret-1' },
@@ -63,7 +63,7 @@ function gitlabApp(options: FakeGitlabOptions = {}): HttpApp {
   running = buildHttpApp(prisma, { PUBLIC_CP_URL: PUBLIC_CP }, undefined, undefined, {
     gitlab: { oauth, provisioner, fetchImpl: fake.fetch() }
   })
-  return running
+  return { ...running, fake }
 }
 
 async function connect(a: HttpApp): Promise<{ connectionId: string }> {
@@ -103,6 +103,197 @@ async function connect(a: HttpApp): Promise<{ connectionId: string }> {
   const row = await prisma.gitlabConnection.findFirstOrThrow({ where: { orgId: DEFAULT_ORG_ID } })
   return { connectionId: row.id }
 }
+
+/** The §9.4 starting point: the installing user left, so the binding degrades. */
+async function degradedBinding(a: HttpApp & { fake: FakeGitlab }): Promise<{ bindingId: string; installer: string }> {
+  const { connectionId } = await connect(a)
+  const bound = await a.app.inject({
+    method: 'POST',
+    url: `${ORG}/gitlab/projects`,
+    payload: { connectionId, projectId: '4455667' }
+  })
+  expect(bound.statusCode).toBe(200)
+  const bindingId = (bound.json() as { id: string }).id
+  await a.app.inject({ method: 'DELETE', url: `${ORG}/gitlab/connections/${connectionId}` })
+  // The installing user is no longer an organization member: their OAuth authority does not survive it.
+  await prisma.gitlabConnection.update({ where: { id: connectionId }, data: { userId: null } })
+  const repaired = await a.app.inject({ method: 'POST', url: `${ORG}/gitlab/projects/${bindingId}/repair` })
+  expect((repaired.json() as { state: string }).state).toBe('admin_degraded')
+  return { bindingId, installer: connectionId }
+}
+
+/** A second GitLab identity connected by the CALLER, at the given project access level. */
+async function ownConnection(fake: FakeGitlab, accessLevel: number): Promise<{ id: string }> {
+  fake.members.set(7007, accessLevel)
+  return new PgGitlabConnectionRepo(prisma).upsertOnCallback({
+    orgId: DEFAULT_ORG_ID,
+    userId: DEFAULT_OWNER_ID,
+    gitlabUserId: 7007n,
+    gitlabUsername: 'example-successor',
+    scopes: ['api'],
+    accessExpiresAt: new Date(Date.now() + 3_600_000),
+    sealedPair: { accessToken: 'at-taker', refreshToken: 'rt-taker' }
+  })
+}
+
+const membershipRead = (userId: number, token: string) => ({
+  method: 'GET',
+  url: `https://gitlab.com/api/v4/projects/4455667/members/all/${userId}`,
+  token
+})
+
+describe('gitlab project takeover (§9.4)', () => {
+  it('moves administration to the caller, verified through the caller’s own token', async () => {
+    const a = gitlabApp()
+    const { bindingId } = await degradedBinding(a)
+    const taker = await ownConnection(a.fake, 50)
+    a.fake.requests.length = 0
+
+    const res = await a.app.inject({ method: 'POST', url: `${ORG}/gitlab/projects/${bindingId}/transfer` })
+    expect(res.statusCode).toBe(200)
+    // Provider truth was re-verified under the new administering account.
+    expect(res.json()).toMatchObject({
+      id: bindingId,
+      state: 'ready',
+      stateReason: null,
+      installerConnectionId: taker.id
+    })
+    const row = await prisma.gitlabProjectBinding.findUniqueOrThrow({ where: { id: bindingId } })
+    expect(row.installerConnectionId).toBe(taker.id)
+
+    // The Maintainer proof is the CALLER's identity read with the CALLER's token…
+    expect(a.fake.requests).toContainEqual(membershipRead(7007, 'at-taker'))
+    // …and the released installer's own token is never spent on this route.
+    expect(a.fake.requests.every((request) => request.token === 'at-taker')).toBe(true)
+    // The claim is left free for the next run: the takeover held it, it did not keep it.
+    const claim = await prisma.codeHostRepositoryClaim.findUniqueOrThrow({
+      where: { provider_externalId: { provider: 'gitlab', externalId: 4455667n } }
+    })
+    expect(claim.opOwner).toBeNull()
+  })
+
+  it('404s a binding of another organization', async () => {
+    const a = gitlabApp()
+    await connect(a)
+    await ownConnection(a.fake, 50)
+    const foreignOrg = await prisma.org.create({ data: { name: 'Foreign', slug: 'foreign-gitlab' } })
+    const foreign = await prisma.gitlabProjectBinding.create({
+      data: {
+        orgId: foreignOrg.id,
+        projectId: 991122n,
+        projectPath: 'example-group/foreign-project',
+        state: 'admin_degraded'
+      }
+    })
+    const res = await a.app.inject({ method: 'POST', url: `${ORG}/gitlab/projects/${foreign.id}/transfer` })
+    expect(res.statusCode).toBe(404)
+    // A cross-organization takeover never even reaches gitlab.com.
+    expect(a.fake.requests.some((request) => request.url.includes('991122'))).toBe(false)
+    const untouched = await prisma.gitlabProjectBinding.findUniqueOrThrow({ where: { id: foreign.id } })
+    expect(untouched.installerConnectionId).toBeNull()
+  })
+
+  it('refuses a caller with no GitLab connection of their own', async () => {
+    const a = gitlabApp()
+    const { bindingId, installer } = await degradedBinding(a)
+    const res = await a.app.inject({ method: 'POST', url: `${ORG}/gitlab/projects/${bindingId}/transfer` })
+    expect(res.statusCode).toBe(409)
+    expect(res.json()).toMatchObject({ code: 'GITLAB_NO_OWN_CONNECTION' })
+    const row = await prisma.gitlabProjectBinding.findUniqueOrThrow({ where: { id: bindingId } })
+    expect(row.installerConnectionId).toBe(installer)
+  })
+
+  it('refuses a caller whose own connection needs reconnecting', async () => {
+    const a = gitlabApp()
+    const { bindingId } = await degradedBinding(a)
+    const taker = await ownConnection(a.fake, 50)
+    await prisma.gitlabConnection.update({ where: { id: taker.id }, data: { state: 'reauth_required' } })
+    const res = await a.app.inject({ method: 'POST', url: `${ORG}/gitlab/projects/${bindingId}/transfer` })
+    expect(res.statusCode).toBe(409)
+    expect(res.json()).toMatchObject({ code: 'GITLAB_CONNECTION_NOT_CONNECTED' })
+  })
+
+  it('refuses a caller who is only a Developer on the project (§10.1)', async () => {
+    const a = gitlabApp()
+    const { bindingId, installer } = await degradedBinding(a)
+    await ownConnection(a.fake, 30)
+    a.fake.requests.length = 0
+
+    const res = await a.app.inject({ method: 'POST', url: `${ORG}/gitlab/projects/${bindingId}/transfer` })
+    expect(res.statusCode).toBe(403)
+    expect(res.json()).toMatchObject({ code: 'GITLAB_NOT_MAINTAINER' })
+    // The live read happened; the write did not.
+    expect(a.fake.requests).toContainEqual(membershipRead(7007, 'at-taker'))
+    const row = await prisma.gitlabProjectBinding.findUniqueOrThrow({ where: { id: bindingId } })
+    expect(row.installerConnectionId).toBe(installer)
+    expect(row.state).toBe('admin_degraded')
+  })
+
+  it('refuses while a peer holds the provisioning lease, spending no gitlab call', async () => {
+    const a = gitlabApp()
+    const { bindingId, installer } = await degradedBinding(a)
+    await ownConnection(a.fake, 50)
+    await prisma.codeHostRepositoryClaim.updateMany({
+      where: { provider: 'gitlab', externalId: 4455667n },
+      data: { opOwner: 'peer-run', opLeaseUntil: new Date(Date.now() + 60_000) }
+    })
+    a.fake.requests.length = 0
+
+    const res = await a.app.inject({ method: 'POST', url: `${ORG}/gitlab/projects/${bindingId}/transfer` })
+    expect(res.statusCode).toBe(409)
+    expect(res.json()).toMatchObject({ code: 'GITLAB_BINDING_BUSY' })
+    expect(a.fake.requests).toEqual([])
+    const row = await prisma.gitlabProjectBinding.findUniqueOrThrow({ where: { id: bindingId } })
+    expect(row.installerConnectionId).toBe(installer)
+    // The peer's lease is intact: a refused takeover never releases someone else's fence.
+    const claim = await prisma.codeHostRepositoryClaim.findUniqueOrThrow({
+      where: { provider_externalId: { provider: 'gitlab', externalId: 4455667n } }
+    })
+    expect(claim.opOwner).toBe('peer-run')
+  })
+
+  it('breaks the removal deadlock: cleanup_pending transfers, then removal completes', async () => {
+    const a = gitlabApp()
+    const { bindingId } = await degradedBinding(a)
+    // Removal with a released installer cannot reach GitLab: the binding half-leaves.
+    const stuck = await a.app.inject({ method: 'DELETE', url: `${ORG}/gitlab/projects/${bindingId}` })
+    expect(stuck.json()).toMatchObject({ removed: false, state: 'cleanup_pending', stateReason: 'cleanup_failed' })
+    expect(a.fake.serviceAccounts).toHaveLength(1)
+
+    const taker = await ownConnection(a.fake, 50)
+    const moved = await a.app.inject({ method: 'POST', url: `${ORG}/gitlab/projects/${bindingId}/transfer` })
+    expect(moved.statusCode).toBe(200)
+    // A binding on its way out is reassigned, never re-provisioned back to ready.
+    expect(moved.json()).toMatchObject({ state: 'cleanup_pending', installerConnectionId: taker.id })
+
+    const removed = await a.app.inject({ method: 'DELETE', url: `${ORG}/gitlab/projects/${bindingId}` })
+    expect(removed.json()).toEqual({ removed: true })
+    expect(a.fake.serviceAccounts).toHaveLength(0)
+    expect(await prisma.gitlabProjectBinding.count({ where: { id: bindingId } })).toBe(0)
+    // Verified-complete cleanup frees the project for another organization.
+    expect(await prisma.codeHostRepositoryClaim.count({ where: { externalId: 4455667n } })).toBe(0)
+  })
+
+  it('refuses a project a connected account still administers', async () => {
+    const a = gitlabApp()
+    const { connectionId } = await connect(a)
+    const bound = await a.app.inject({
+      method: 'POST',
+      url: `${ORG}/gitlab/projects`,
+      payload: { connectionId, projectId: '4455667' }
+    })
+    const bindingId = (bound.json() as { id: string }).id
+    await ownConnection(a.fake, 50)
+    a.fake.requests.length = 0
+
+    const res = await a.app.inject({ method: 'POST', url: `${ORG}/gitlab/projects/${bindingId}/transfer` })
+    expect(res.statusCode).toBe(409)
+    expect(res.json()).toMatchObject({ code: 'GITLAB_INSTALLER_CONNECTED' })
+    expect(a.fake.requests).toEqual([])
+    const row = await prisma.gitlabProjectBinding.findUniqueOrThrow({ where: { id: bindingId } })
+    expect(row.installerConnectionId).toBe(connectionId)
+  })
+})
 
 describe('gitlab oauth routes', () => {
   it('runs start → begin → callback and lists metadata-only connections', async () => {

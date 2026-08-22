@@ -35,6 +35,9 @@ export class FakeGitlab {
   mergeRequests = new Map<number, { state: string; headSha: string; baseSha?: string; draft?: boolean }>()
   issues = new Map<number, { state: string }>()
   deletedServiceAccounts: number[] = []
+  /** Every call the CP made, with the bearer it presented — WHICH token a check
+   *  used is part of the contract (§9.4 takeover proves the caller's own access). */
+  requests: { method: string; url: string; token: string | null }[] = []
   private nextId = 5000
 
   constructor(options: FakeGitlabOptions = {}) {
@@ -51,6 +54,8 @@ export class FakeGitlab {
     return async (url, init) => {
       const method = init?.method ?? 'GET'
       const body = typeof init?.body === 'string' ? init.body : ''
+      const authorization = (init?.headers as Record<string, string> | undefined)?.authorization
+      this.requests.push({ method, url, token: authorization?.replace(/^Bearer /, '') ?? null })
       const json = (): Record<string, unknown> => {
         try {
           return JSON.parse(body) as Record<string, unknown>

@@ -50,6 +50,7 @@ const BINDING: GitlabProjectBindingDto = {
   defaultBranch: 'main',
   state: 'ready',
   stateReason: null,
+  installerConnectionId: 'conn-1',
   serviceAccountUsername: 'project_4711_bot',
   webhookInstalled: true,
   credentialEpoch: '1',
