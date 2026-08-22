@@ -83,20 +83,7 @@ describe('SlackConnection.uploadFile', () => {
     })
   })
 
-  it('treats the SDK’s own byte-POST rejection as proof that nothing was published', async () => {
-    // That step runs before the share, so its failure is one of the few non-API errors that
-    // definitely left the conversation untouched — the agent may say so and move on.
-    const conn = connWith(async () => {
-      throw new Error('Failed to upload file (id:F1, filename: a.png)')
-    })
-    await expect(conn.uploadFile('C1', { bytes: Buffer.from('x'), name: 'a.png' })).resolves.toEqual({
-      ok: false,
-      reason: 'platform_error',
-      detail: 'Failed to upload file (id:F1, filename: a.png)'
-    })
-  })
-
-  it('calls any other failure indeterminate, because the share step is one-shot', async () => {
+  it('calls every non-API failure indeterminate, because the share step is one-shot', async () => {
     // `uploadV2` hides WHICH step threw, and a lost response from the completion step may
     // have been accepted. "Nothing was sent" would then be a lie about a file the channel
     // already shows, and would invite the retry that double-posts it.
@@ -107,6 +94,23 @@ describe('SlackConnection.uploadFile', () => {
       ok: false,
       reason: 'indeterminate',
       detail: 'socket hang up'
+    })
+  })
+
+  it('will not call an HTTP failure definite, however early in the upload it happened', async () => {
+    // Tempting, since a rejected byte POST runs BEFORE the share and so proves nothing was
+    // published — but the SDK raises one `WebAPIHTTPError` for every non-200 across all three
+    // steps, so that case is indistinguishable from a lost response to an accepted share.
+    const httpError = Object.assign(new Error('An HTTP protocol error occurred: statusCode = 500'), {
+      code: 'slack_webapi_http_error',
+      statusCode: 500
+    })
+    const conn = connWith(async () => {
+      throw httpError
+    })
+    await expect(conn.uploadFile('C1', { bytes: Buffer.from('x'), name: 'a.png' })).resolves.toMatchObject({
+      ok: false,
+      reason: 'indeterminate'
     })
   })
 })

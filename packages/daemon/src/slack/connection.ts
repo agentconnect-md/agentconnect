@@ -526,19 +526,6 @@ const SLACK_API_TIMEOUT_MS = 30_000
 
 /** Map a Slack API error to the port's typed failure vocabulary — every arm already had the
  *  raw material (`missing_scope` payloads, stable error codes); this only names them. */
-/**
- * `uploadV2` runs all three steps, so a failure's MEANING depends on which one raised it.
- * Slack answering `{ok:false}` (either the reservation or the share) and the SDK's own
- * byte-POST rejection both prove nothing was published; any other throw may have happened
- * after the share was already accepted, and the caller must not be told to retry it.
- * Matching the SDK's rejection text is deliberately the only brittle part — if that string
- * ever changes, this degrades to "may have landed", which is the safe direction.
- */
-function isDefiniteUploadRefusal(err: unknown): boolean {
-  if (slackApiErrorCode(err) !== undefined) return true
-  return /^Failed to upload file\b/.test((err as Error | undefined)?.message ?? '')
-}
-
 /** The provider's own words, for the arm that has no category: without this a refusal
  *  reports only `platform error`, which no operator can act on. */
 function slackErrorDetail(err: unknown): { detail?: string } {
@@ -1406,7 +1393,11 @@ export class SlackConnection implements PlatformConnection {
         this.deps.log?.debug(`slack: uploadFile ${file.name} → ch=${channel} failed: ${(err as Error).message}`)
         // A share whose outcome Slack never confirmed must say "may have landed", never
         // "nothing was sent" — the same rule the send queue's abandonment already follows.
-        return isDefiniteUploadRefusal(err)
+        // Only Slack answering `{ok:false}` proves nothing was published. An HTTP failure
+        // cannot: the SDK raises the same `WebAPIHTTPError` for every non-200 in all three
+        // steps, so a rejected byte POST and a lost response from the already-accepted share
+        // are indistinguishable here, and the ambiguous reading is the safe one.
+        return slackApiErrorCode(err) !== undefined
           ? { ok: false, reason: classifySlackUploadError(err), ...slackErrorDetail(err) }
           : { ok: false, reason: 'indeterminate', ...slackErrorDetail(err) }
       }

@@ -303,14 +303,17 @@ shim boundary, and generalizes to none of the other three platforms.
    30 s queue bound — decides whether the default cap drops, the byte transfer gets its
    own lane, or `indeterminate` carries the weight.
 3. **Slack transport (settled):** the external upload's middle step is a POST to a reserved
-   URL that is not a Slack API endpoint and has no published wire contract. Driving the
-   three steps by hand cost two live failures — a multipart part the URL answers with HTTP
-   500 unless it is named `body`, and at least one more the same code never got past — so
-   `uploadFile` now calls `files.uploadV2`, which owns all three steps and inherits the
-   `WebClient` agent/proxy/timeout configuration. `uploadV2` builds its completion
-   arguments from an explicit key list, which is what removed the identity decoration
-   above. It also hides _which_ step threw, so only a Slack `{ok:false}` and the SDK's own
-   byte-POST rejection count as proof that nothing was published; every other failure is
+   URL that is not a Slack API endpoint and has no published wire contract. Driving it by
+   hand was refused with HTTP 500 on every live attempt. Matching the SDK's multipart shape
+   — one part named `body`, an untyped `Blob` — did not lift the 500; the one divergence
+   left was that the SDK sends `Authorization: Bearer <token>` to the reserved URL, which
+   the hand-written POST asserted in a comment was unnecessary. Rather than test that guess
+   in production, `uploadFile` now calls `files.uploadV2`, which owns all three steps and
+   inherits the `WebClient` agent/proxy/timeout configuration. Two consequences: it builds
+   its completion arguments from an explicit key list, which is what removed the identity
+   decoration above; and it raises one `WebAPIHTTPError` for every non-200 across all three
+   steps, so an HTTP failure can never prove which step it came from. Only Slack answering
+   `{ok:false}` counts as proof that nothing was published — everything else is
    `indeterminate`.
 4. **Demand:** is there a concrete request behind "produced file → different
    conversation", or only the table's symmetry? Decides whether `attachFile` leaves §7.
