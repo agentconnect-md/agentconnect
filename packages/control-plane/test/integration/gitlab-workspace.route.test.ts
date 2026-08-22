@@ -4,7 +4,7 @@
  * authority), and the gitcred v2 GitLab grants served from the binding's
  * purpose-separated PATs under the workspace access clamp (§13.1/§17.1).
  */
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import { prisma } from '../setup.db.js'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
@@ -244,6 +244,50 @@ describe('gitlab workspaces — agent create/edit (§8.3)', () => {
     expect((res.json() as { message: string }).message).toContain('does not support GitLab workspaces')
   })
 
+  it('a workspace write converges the new agent’s own account, and leaving retires it (§7.2)', async () => {
+    const h = await harness()
+    const created = await h.a.app.inject({
+      method: 'POST',
+      url: `${ORG}/agents`,
+      payload: { name: 'gl-joiner', runtime: 'claude', workspace: { mode: 'gitlab', projectId: PROJECT.toString() } }
+    })
+    expect(created.statusCode).toBe(201)
+    const agentId = (created.json() as { id: string }).id
+
+    // Creating the workspace made this agent a consumer, so the kick gives it
+    // its own account, project membership, and PATs — no repair needed.
+    await vi.waitFor(
+      async () => {
+        const account = await h.accounts.byAgentRoot(DEFAULT_ORG_ID, agentId, ROOT_GROUP)
+        expect(account?.state).toBe('ready')
+        expect(h.fake.members.get(Number(account!.serviceAccountUserId))).toBe(30)
+        expect(await new PgGitlabProjectCredentialRepo(prisma).listForAccount(account!.id)).toHaveLength(3)
+      },
+      { timeout: 20_000 }
+    )
+    const joined = (await h.accounts.byAgentRoot(DEFAULT_ORG_ID, agentId, ROOT_GROUP))!
+
+    // Moving the workspace off the project takes the authorization with it.
+    const moved = await h.a.app.inject({
+      method: 'PUT',
+      url: `${ORG}/agents/${agentId}/workspace`,
+      payload: { mode: 'scratch' }
+    })
+    expect(moved.statusCode).toBe(200)
+    await vi.waitFor(
+      async () => {
+        expect(await h.accounts.byAgentRoot(DEFAULT_ORG_ID, agentId, ROOT_GROUP)).toBeNull()
+        expect(h.fake.removedMembers).toContain(Number(joined.serviceAccountUserId))
+      },
+      { timeout: 20_000 }
+    )
+    // Drain the fire-and-forget kicks so no background run still holds the lease.
+    await vi.waitFor(
+      async () => expect((await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).state).not.toBe('busy'),
+      { timeout: 20_000 }
+    )
+  })
+
   it('a binding path refresh converges affected agent clone URLs with a revision bump', async () => {
     const h = await harness()
     const created = await h.a.app.inject({
@@ -291,7 +335,10 @@ describe('gitlab workspaces — agent create/edit (§8.3)', () => {
     // Provider-side rename: the next provisioning run re-reads the path by
     // numeric id and must land the agent update before the run completes.
     h.fake.opts.path = 'example-group/project-renamed'
-    expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toEqual({ state: 'ready' })
+    // The create kicked its own §7.2 convergence; converge the way production
+    // does, which outwaits that peer's lease instead of racing it.
+    await h.provisioner.convergeProject(DEFAULT_ORG_ID, PROJECT)
+    expect((await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))!.state).toBe('ready')
     const row = await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })
     expect(row.gitRepo).toBe('https://gitlab.com/example-group/project-renamed')
     expect((await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))!.projectPath).toBe('example-group/project-renamed')

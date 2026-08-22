@@ -272,6 +272,48 @@ describe('GitlabProvisioner (§10.2) — per-agent identity', () => {
     ).toBe(true)
   })
 
+  it('a transient convergence failure never revokes an existing membership', async () => {
+    const h = await harness({}, null, [
+      { id: AGENT, name: 'reviewer' },
+      { id: SIBLING, name: 'builder' }
+    ])
+    await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
+    const sibling = (await h.accounts.byAgentRoot(DEFAULT_ORG_ID, SIBLING, ROOT_GROUP))!
+    // A live peer holds the sibling's account lease, so its converge cannot run.
+    expect(await h.accounts.claimLease(sibling.id, 'peer', new Date(Date.now() + 300_000), new Date())).toBe(true)
+
+    const outcome = await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
+    expect(outcome).toEqual({ state: 'admin_degraded', reason: 'account_busy' })
+    // Authorization did not change, so the membership, the account, and its PATs stay.
+    expect((await h.accounts.membershipsForBinding(h.binding.id)).map((m) => m.accountId).sort()).toEqual(
+      [sibling.id, (await h.accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP))!.id].sort()
+    )
+    expect(await h.accounts.get(sibling.id)).not.toBeNull()
+    expect(h.fake.removedMembers).toEqual([])
+    expect(h.fake.deletedServiceAccounts).toEqual([])
+    expect([...h.fake.tokens.values()].every((token) => !token.revoked)).toBe(true)
+  })
+
+  it('reactivating a generation drops the credentials the interrupted retirement left', async () => {
+    const h = await harness()
+    await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
+    const account = (await h.accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP))!
+    const before = (await h.credentials.get(account.id, 'read'))!
+    await h.accounts.detachMembership(account.id, h.binding.id)
+    expect(await h.accounts.beginRetirement(account.id)).toBe(true)
+
+    // Those PATs belong to the identity the retirement was tearing down: keeping
+    // them would let the fresh generation read `ready` holding dead tokens.
+    expect(await h.accounts.reactivate(account.id)).not.toBeNull()
+    expect(await h.credentials.listForAccount(account.id)).toHaveLength(0)
+    expect(await prisma.gitlabProjectCredentialSecret.count({ where: { credentialId: before.id } })).toBe(0)
+
+    // The next converge re-provisions the identity from scratch.
+    expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toEqual({ state: 'ready' })
+    const fresh = (await h.credentials.get(account.id, 'read'))!
+    expect(fresh.externalTokenId).not.toBe(before.externalTokenId)
+  })
+
   it('the lifecycle-generation fence decides a bind racing a retirement (§7.2)', async () => {
     const h = await harness()
     await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)

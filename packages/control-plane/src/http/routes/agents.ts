@@ -1082,6 +1082,20 @@ export function agentRoutes(deps: HttpDeps) {
         app.log.debug({ agentId: agent.id, daemonId: target }, 'agent/remove skipped: daemon offline')
       })
 
+    // A gitlab workspace write changes who consumes the project, so the §7.2
+    // accounts and memberships must reconverge — the same kick a gitlab hook
+    // write does. Retargeting converges BOTH projects: the agent joins one and
+    // leaves the other. Fire-and-forget, like every post-write convergence here.
+    const convergeGitlabProjects = (orgId: OrgId, projectIds: Iterable<bigint | undefined>): void => {
+      const gitlab = deps.gitlab
+      if (!gitlab) return
+      for (const projectId of new Set([...projectIds].filter((id): id is bigint => id !== undefined))) {
+        void gitlab.provisioner
+          .convergeProject(orgId, projectId)
+          .catch((err) => app.log.warn({ err, projectId: projectId.toString() }, 'gitlab workspace converge failed'))
+      }
+    }
+
     // The alive relay's HTTP origin for MCP proxy defs (ws→http/wss→https), or null
     // when no relay is live. Mirrors the mcp-providers route's relayBaseUrl.
     const relayProxyBase = async (): Promise<string | null> => {
@@ -1765,6 +1779,8 @@ export function agentRoutes(deps: HttpDeps) {
             }
           }
           await syncMcpDefsForAgent(agent, [], agent.mcpServers)
+          // A gitlab workspace makes this agent a consumer of its project (§7.2).
+          if (agent.workspace.mode === 'gitlab') convergeGitlabProjects(agent.orgId, [agent.workspaceRepoId])
           return reply.code(201).send({
             ...toDto(
               agent,
@@ -2424,6 +2440,11 @@ export function agentRoutes(deps: HttpDeps) {
           }
 
           const converted = await agentMoves.setWorkspace(existing, workspace, workspaceRepoId, req.principal?.userId)
+          // Joining, leaving, or re-clamping a gitlab project moves its §7.2
+          // membership set; a project the agent left may now hold none at all.
+          if (existing.workspace.mode === 'gitlab' || converted.workspace.mode === 'gitlab') {
+            convergeGitlabProjects(converted.orgId, [existing.workspaceRepoId, converted.workspaceRepoId])
+          }
           return toDto(
             converted,
             ctxOf(req),

@@ -736,19 +736,26 @@ export class PgGitlabAgentAccountRepo implements GitlabAgentAccountRepo {
 
   async reactivate(accountId: string): Promise<GitlabAgentAccountRecord | null> {
     // A fresh generation: whatever the abandoned retirement did externally, the
-    // next converge re-creates and re-binds from scratch.
-    const res = await this.prisma.gitlabAgentAccount.updateMany({
-      where: { id: accountId, lifecycle: 'retiring' },
-      data: {
-        lifecycle: 'active',
-        generation: { increment: 1n },
-        serviceAccountUserId: null,
-        state: 'provisioning',
-        stateReason: null
-      }
+    // next converge re-creates and re-binds from scratch. The credential rows go
+    // with the identity they were issued to — an interrupted retirement may have
+    // revoked them, or deleted the very user they name, so keeping them would
+    // let the account read `ready` holding tokens that authenticate nothing.
+    return this.prisma.$transaction(async (tx) => {
+      const res = await tx.gitlabAgentAccount.updateMany({
+        where: { id: accountId, lifecycle: 'retiring' },
+        data: {
+          lifecycle: 'active',
+          generation: { increment: 1n },
+          serviceAccountUserId: null,
+          state: 'provisioning',
+          stateReason: null
+        }
+      })
+      if (res.count !== 1) return null
+      await tx.gitlabProjectCredential.deleteMany({ where: { accountId } })
+      const row = await tx.gitlabAgentAccount.findUnique({ where: { id: accountId } })
+      return row ? toAccountRecord(row) : null
     })
-    if (res.count !== 1) return null
-    return this.get(accountId)
   }
 
   async consumers(orgId: string, projectId: bigint): Promise<GitlabAccountConsumer[]> {

@@ -129,31 +129,15 @@ export function hookRoutes(deps: HttpDeps) {
       void deps.hooks.broadcast(hook).catch((err) => app.log.warn({ hookId: hook.id, err }, 'hook broadcast failed'))
     }
 
-    // gitlab-kind writes also (re)converge the managed project webhook (§11.1):
-    // the saga recomputes the desired event union and updates/installs/removes
-    // it, then its onConverged rebroadcasts the project's compiled rules.
-    // `busy` means a peer run holds the §10.2 lease — that run re-checks the
-    // union at ITS end, but only for writes that landed before its final read,
-    // so this writer must outwait the lease rather than drop the change.
+    // gitlab-kind writes also (re)converge the project (§11.1): the saga
+    // recomputes the desired event union, gives the hook's agent its own §7.2
+    // account and membership, and its onConverged rebroadcasts the compiled
+    // rules. Fire-and-forget; the saga itself outwaits a peer's lease.
     const convergeGitlabWebhook = (orgId: OrgId, projectId: bigint | null): void => {
       const gitlab = deps.gitlab
       if (!gitlab || projectId === null) return
-      void deps.repos.gitlabProjectBinding
-        .byProject(orgId, projectId)
-        .then(async (binding) => {
-          if (!binding) return
-          let outcome = await gitlab.provisioner.provision(orgId, binding.id)
-          // Exponential backoff capped at 8s; ~92 attempts outlast a full
-          // 10-minute peer lease plus slack, while back-to-back writes (the
-          // common case: the peer run finishes in seconds) converge fast.
-          for (let attempt = 0; outcome.state === 'busy' && attempt < 92; attempt++) {
-            await new Promise((resolve) => setTimeout(resolve, Math.min(8_000, 1_000 * 2 ** attempt)))
-            outcome = await gitlab.provisioner.provision(orgId, binding.id)
-          }
-          if (outcome.state === 'busy') {
-            app.log.warn({ projectId: projectId.toString() }, 'gitlab webhook converge still busy — gave up')
-          }
-        })
+      void gitlab.provisioner
+        .convergeProject(orgId, projectId)
         .catch((err) => app.log.warn({ projectId: projectId.toString(), err }, 'gitlab webhook converge failed'))
     }
 

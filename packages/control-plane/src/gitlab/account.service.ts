@@ -129,23 +129,23 @@ export class GitlabAccountService {
   }): Promise<{ reason: string | null }> {
     const consumers = await this.deps.accounts.consumers(input.orgId, input.projectId)
     let reason: string | null = null
-    const wanted = new Set<string>()
+    // Keyed by AGENT, not by converged account: only the authorization set says
+    // who may stay bound, so a transient convergence failure never revokes one.
+    const authorized = new Set(consumers.map((consumer) => consumer.agentId))
     for (const consumer of consumers) {
       const outcome = await this.ensureAccount(input, consumer)
       if (!outcome.ok) {
         reason ??= outcome.reason
         continue
       }
-      wanted.add(outcome.account.id)
       const bound = await this.bindMembership(input, outcome.account, consumer.accessLevel)
       if (!bound) reason ??= 'account_membership_contended'
     }
     // Authorization removed ⇒ membership removed (§7.2). The account itself
     // survives while it still serves another project in its root.
     for (const membership of await this.deps.accounts.membershipsForBinding(input.bindingId)) {
-      if (wanted.has(membership.accountId)) continue
       const account = await this.deps.accounts.get(membership.accountId)
-      if (!account) continue
+      if (!account || authorized.has(account.agentId)) continue
       try {
         await this.unbindOne(input.orgId, account, input.bindingId, input.projectId, input.token)
       } catch (e) {

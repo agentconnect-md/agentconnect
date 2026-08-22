@@ -133,6 +133,31 @@ export class GitlabProvisioner {
   }
 
   /**
+   * Converge a project after a write that changed who consumes it — a gitlab
+   * hook or a gitlab workspace. Both move the §7.2 account and membership set,
+   * and a hook write may also move the webhook event union.
+   *
+   * `busy` means a peer run holds the §10.2 lease. That run re-checks its own
+   * inputs only up to its final pass, so a writer that landed after it must
+   * outwait the lease rather than drop the change: exponential backoff capped at
+   * 8s, ~92 attempts, which outlasts a full 10-minute lease plus slack while
+   * back-to-back writes converge in seconds.
+   */
+  async convergeProject(orgId: string, projectId: bigint): Promise<void> {
+    const binding = await this.deps.bindings.byProject(orgId, projectId)
+    if (!binding) return
+    let outcome = await this.provision(orgId, binding.id)
+    for (let attempt = 0; outcome.state === 'busy' && attempt < 92; attempt++) {
+      const delayMs = Math.min(8_000, 1_000 * 2 ** attempt)
+      await new Promise<void>((resolve) => this.deps.clock.setTimeout(() => resolve(), delayMs))
+      outcome = await this.provision(orgId, binding.id)
+    }
+    if (outcome.state === 'busy') {
+      this.deps.log?.warn({ projectId: projectId.toString() }, 'gitlab converge still busy — gave up')
+    }
+  }
+
+  /**
    * §9.4 takeover: another current Maintainer or Owner becomes the administering
    * account of a binding whose own administration is stuck. It proves the
    * caller's CURRENT membership with the CALLER's own token before any write.
