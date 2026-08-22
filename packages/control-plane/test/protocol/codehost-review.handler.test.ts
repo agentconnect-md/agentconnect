@@ -14,8 +14,11 @@ import { seedAgent, seedDaemon } from '../fixtures/seed.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 import { CodeHostReviewBrokerService } from '../../src/codehost/review-lease.service.js'
 import { PgCodeHostReviewLeaseRepo } from '../../src/persistence/repositories/code-host-review.repo.js'
+import { AgentId, DaemonId, HookId } from '../../src/domain/ids.js'
 
 const DAEMON = 'd1111111-1111-4111-8111-111111111111'
+// A second agent's daemon, used only to take the freed subject through the repository.
+const SECOND_DAEMON = 'd2222222-2222-4222-8222-222222222222'
 const AGENT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1'
 const HOOK = '11111111-1111-4111-8111-111111111111'
 const PROJECT = 4_455_667n
@@ -409,5 +412,119 @@ describe('a retransmitted terminal operation over the WS edge', () => {
       outcome: { kind: 'deterministic', status: 204 }
     })
     expect(await errorFor(stub, conflictId)).toMatchObject({ code: 'CONFLICT', retryable: false })
+  })
+})
+
+describe('a replayed terminal operation over the WS edge reports its own fence phase', () => {
+  it('never echoes a successor attempt lifecycle to the old daemon', async () => {
+    const h = buildWsHarness(prisma)
+    const stub = await ready(h)
+    await seedAcceptedDelivery()
+    attachBroker(h)
+
+    const attemptId = randomUUID()
+    const authzId = stub.inject('codehost/review-authz', {
+      hookId: HOOK,
+      deliveryKey: DELIVERY,
+      attemptId,
+      provider: 'gitlab',
+      projectId: PROJECT.toString(),
+      mergeRequestIid: IID,
+      requestedEvent: 'COMMENT',
+      requestedVerdict: 'pass',
+      snapshot,
+      headSha: HEAD
+    })
+    const authorized = await replyTo(stub, authzId)
+    if (!authorized || !isFrame('codehost/review-authz/result')(authorized) || !authorized.payload.authorized) {
+      throw new Error('expected a publication lease')
+    }
+    const fence = authorized.payload.lease.fence
+
+    const issueId = stub.inject('codehost/review-op', {
+      op: 'issue',
+      attemptId,
+      fence,
+      kind: 'bulk_publish',
+      method: 'POST',
+      target: '/projects/4455667/merge_requests/42/draft_notes/bulk_publish',
+      ordinal: 0
+    })
+    const issued = await replyTo(stub, issueId)
+    if (!issued || !isFrame('codehost/review-op/ok')(issued)) throw new Error('expected a permit')
+    const recordId = issued.payload.recordId
+    stub.inject('codehost/review-op', { op: 'start', attemptId, fence, recordId, startToken: randomUUID() })
+    await stub.settled()
+    stub.inject('codehost/review-result', {
+      hookId: HOOK,
+      deliveryKey: DELIVERY,
+      attemptId,
+      snapshot,
+      provider: 'gitlab',
+      projectId: PROJECT.toString(),
+      mergeRequestIid: IID,
+      event: 'COMMENT',
+      verdict: 'pass',
+      headSha: HEAD,
+      state: 'submitted'
+    })
+    await stub.settled()
+
+    const settle = {
+      op: 'settle' as const,
+      attemptId,
+      fence,
+      recordId,
+      outcome: { kind: 'deterministic' as const, status: 204 }
+    }
+    const firstId = stub.inject('codehost/review-op', settle)
+    const first = await replyTo(stub, firstId)
+    if (!first || !isFrame('codehost/review-op/ok')(first)) throw new Error('expected the settle to commit')
+    expect(first.payload.phase).toBe('settled')
+
+    // A second agent's attempt takes the freed subject and starts publishing at the next fence.
+    const leases = new PgCodeHostReviewLeaseRepo(prisma)
+    const successorAttempt = randomUUID()
+    const taken = await leases.acquire({
+      subject: {
+        provider: 'gitlab',
+        projectExternalId: PROJECT,
+        mergeRequestIid: IID,
+        serviceAccountExternalId: 99_001n
+      },
+      orgId: DEFAULT_ORG_ID,
+      attemptId: successorAttempt,
+      daemonId: DaemonId(SECOND_DAEMON),
+      agentId: AgentId(AGENT),
+      hookId: HookId(HOOK),
+      deliveryKey: 'delivery-2',
+      event: 'COMMENT',
+      verdict: 'pass',
+      headSha: HEAD,
+      leaseUntil: new Date(Date.now() + 300_000),
+      now: new Date()
+    })
+    if (taken.outcome !== 'acquired') throw new Error('expected the successor to acquire')
+    await leases.issueOperation({
+      attemptId: successorAttempt,
+      orgId: DEFAULT_ORG_ID,
+      fence: taken.lease.fence,
+      daemonId: DaemonId(SECOND_DAEMON),
+      kind: 'bulk_publish',
+      method: 'POST',
+      target: '/projects/4455667/merge_requests/42/draft_notes/bulk_publish',
+      ordinal: 0,
+      now: new Date()
+    })
+    const live = await prisma.codeHostReviewLease.findFirstOrThrow({ where: { projectExternalId: PROJECT } })
+    expect(live.phase).toBe('publishing')
+
+    // The old daemon's lost acknowledgement replays fence-coherently, not as `publishing`.
+    const replayId = stub.inject('codehost/review-op', settle)
+    const replay = await replyTo(stub, replayId)
+    expect(await errorFor(stub, replayId)).toBeUndefined()
+    expect(replay && isFrame('codehost/review-op/ok')(replay) && replay.payload).toEqual(first.payload)
+    const after = await prisma.codeHostReviewLease.findFirstOrThrow({ where: { projectExternalId: PROJECT } })
+    expect(after).toMatchObject({ attemptId: successorAttempt, fence: taken.lease.fence, phase: 'publishing' })
   })
 })

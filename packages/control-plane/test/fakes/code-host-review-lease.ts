@@ -301,7 +301,15 @@ export class FakeCodeHostReviewLeaseRepo implements CodeHostReviewLeaseRepo {
     if (!transition.ok) return { failure: 'transition', reason: transition.reason }
     const lease = [...this.leases.values()].find((l) => l.id === record.leaseId)
     if (!lease) return null
-    return { outcome: 'ok', record, phase: lease.phase }
+    // The subject row is reusable, so its live phase may already belong to a newer fence.
+    if (lease.fence === record.fence) return { outcome: 'ok', record, phase: lease.phase }
+    const recorded = this.outcomes.get(record.attemptId)
+    // Past that fence the record's attempt is over, so its own terminal outcome is the phase.
+    return {
+      outcome: 'ok',
+      record,
+      phase: recorded ? phaseOfSettledOutcome(recorded.state) : 'settled'
+    }
   }
 
   private advance(

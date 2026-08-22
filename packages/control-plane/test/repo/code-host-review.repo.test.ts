@@ -630,3 +630,122 @@ describe('a terminal operation stays idempotent after the lease is released (§1
     expect('outcome' in identified && identified.phase).toBe('settled')
   })
 })
+
+describe('a replayed terminal operation reports its own fence phase (§15.1)', () => {
+  const permit = { method: 'POST' as const, target: '/projects/1/merge_requests/42/draft_notes', ordinal: 0 }
+
+  it('does not dress a completed release in a successor attempt lifecycle', async () => {
+    const s = subject()
+    const first = acquire(s)
+    const acquired = await repo().acquire(first)
+    if (acquired.outcome !== 'acquired') throw new Error('expected a lease')
+    const base = {
+      attemptId: first.attemptId,
+      orgId: DEFAULT_ORG_ID,
+      fence: acquired.lease.fence,
+      daemonId: DAEMON_A,
+      now: new Date()
+    }
+    const issued = await repo().issueOperation({ ...base, ...permit, kind: 'bulk_publish' })
+    if (!('outcome' in issued)) throw new Error('expected a permit')
+    await repo().startOperation({ ...base, recordId: issued.record.id, startToken: randomUUID() })
+    await repo().recordOutcome({
+      attemptId: first.attemptId,
+      orgId: DEFAULT_ORG_ID,
+      hookId: HOOK,
+      deliveryKey: first.deliveryKey,
+      provider: s.provider,
+      projectExternalId: s.projectExternalId,
+      mergeRequestIid: s.mergeRequestIid,
+      daemonId: DAEMON_A,
+      event: 'COMMENT',
+      verdict: 'pass',
+      headSha: HEAD,
+      state: 'submitted',
+      externalIds: [],
+      now: new Date()
+    })
+    const settle = { ...base, recordId: issued.record.id, outcome: { kind: 'deterministic' as const, status: 204 } }
+    const committed = await repo().settleOperation(settle)
+    expect('outcome' in committed && committed.phase).toBe('settled')
+
+    // A waiting attempt takes the freed subject and starts publishing at the next fence.
+    const successor = acquire(s, { daemonId: DAEMON_B })
+    const taken = await repo().acquire(successor)
+    if (taken.outcome !== 'acquired') throw new Error('expected the successor to acquire')
+    expect(taken.lease.fence).toBe(base.fence + 1n)
+    await repo().issueOperation({
+      attemptId: successor.attemptId,
+      orgId: DEFAULT_ORG_ID,
+      fence: taken.lease.fence,
+      daemonId: DAEMON_B,
+      kind: 'bulk_publish',
+      method: 'POST',
+      target: '/projects/1/merge_requests/42/draft_notes/bulk_publish',
+      ordinal: 0,
+      now: new Date()
+    })
+    const live = await prisma.codeHostReviewLease.findFirstOrThrow({
+      where: { projectExternalId: s.projectExternalId }
+    })
+    expect(live.phase).toBe('publishing')
+
+    // The lost acknowledgement replays with the OLD record's fence-coherent phase.
+    const replay = await repo().settleOperation(settle)
+    expect(replay).toEqual(committed)
+    expect('outcome' in replay && replay.phase).toBe('settled')
+    // …and the successor's live state is untouched by that read.
+    const after = await prisma.codeHostReviewLease.findFirstOrThrow({
+      where: { projectExternalId: s.projectExternalId }
+    })
+    expect(after).toMatchObject({
+      attemptId: successor.attemptId,
+      fence: taken.lease.fence,
+      phase: 'publishing'
+    })
+  })
+
+  it('reports settled for a record whose attempt was transferred away unreported', async () => {
+    const s = subject()
+    const first = acquire(s)
+    const acquired = await repo().acquire(first)
+    if (acquired.outcome !== 'acquired') throw new Error('expected a lease')
+    const base = {
+      attemptId: first.attemptId,
+      orgId: DEFAULT_ORG_ID,
+      fence: acquired.lease.fence,
+      daemonId: DAEMON_A,
+      now: new Date()
+    }
+    const issued = await repo().issueOperation({ ...base, ...permit, kind: 'draft_create' })
+    if (!('outcome' in issued)) throw new Error('expected a permit')
+    const returned = await repo().returnOperationUnused({ ...base, recordId: issued.record.id })
+    expect('outcome' in returned && returned.record.state).toBe('unused')
+
+    // All permits unused, so an expired lease transfers with no outcome ever recorded.
+    const later = new Date('2026-09-06T01:00:00.000Z')
+    const successor = acquire(s, { daemonId: DAEMON_B, now: later })
+    const taken = await repo().acquire(successor)
+    if (taken.outcome !== 'acquired') throw new Error('expected the successor to acquire')
+    await repo().issueOperation({
+      attemptId: successor.attemptId,
+      orgId: DEFAULT_ORG_ID,
+      fence: taken.lease.fence,
+      daemonId: DAEMON_B,
+      kind: 'bulk_publish',
+      method: 'POST',
+      target: '/projects/1/merge_requests/42/draft_notes/bulk_publish',
+      ordinal: 0,
+      now: later
+    })
+
+    const replay = await repo().returnOperationUnused({ ...base, recordId: issued.record.id })
+    // Same record, and a phase that belongs to the old fence rather than the successor's.
+    expect('outcome' in replay && replay.record).toEqual('outcome' in returned ? returned.record : undefined)
+    expect('outcome' in replay && replay.phase).toBe('settled')
+    const after = await prisma.codeHostReviewLease.findFirstOrThrow({
+      where: { projectExternalId: s.projectExternalId }
+    })
+    expect(after).toMatchObject({ attemptId: successor.attemptId, phase: 'publishing' })
+  })
+})

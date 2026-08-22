@@ -551,7 +551,20 @@ export class PgCodeHostReviewLeaseRepo implements CodeHostReviewLeaseRepo {
     if (!transition.ok) return { failure: 'transition', reason: transition.reason }
     const lease = await this.prisma.codeHostReviewLease.findUnique({ where: { id: record.leaseId } })
     if (!lease) return null
-    return { outcome: 'ok', record: toOperation(record), phase: toPhase(lease.phase) }
+    // The subject row is reusable, so its live phase may already belong to a newer fence.
+    if (lease.fence === record.fence) {
+      return { outcome: 'ok', record: toOperation(record), phase: toPhase(lease.phase) }
+    }
+    // Past that fence the record's attempt is over, so its own terminal outcome is the phase.
+    const outcome = await this.prisma.codeHostReviewAttemptOutcome.findUnique({
+      where: { attemptId: record.attemptId }
+    })
+    return {
+      outcome: 'ok',
+      record: toOperation(record),
+      // No outcome row means the attempt was transferred away under a §15.1 condition, not locked.
+      phase: outcome ? phaseOfSettledOutcome(outcome.state as CodeHostReviewState) : 'settled'
+    }
   }
 
   /** Every ledger op runs under the subject lock with the owner and fence re-checked. */

@@ -752,3 +752,71 @@ describe('a terminal operation stays idempotent after the lease is released (§1
     expect(identified.state).toBe('settled')
   })
 })
+
+describe('a replayed terminal operation reports its own fence phase (§15.1)', () => {
+  it('does not dress a completed release in a successor attempt lifecycle', async () => {
+    const built = build()
+    const input = authorizeInput()
+    const granted = await built.service.authorize(input, DAEMON, ORG)
+    if (!granted.authorized) throw new Error('expected a lease')
+    const fence = granted.lease.fence
+    const issued = await built.service.operate(
+      {
+        op: 'issue',
+        attemptId: input.attemptId,
+        fence,
+        kind: 'bulk_publish',
+        method: 'POST',
+        target: '/projects/4455667/merge_requests/42/draft_notes/bulk_publish',
+        ordinal: 0
+      },
+      DAEMON,
+      ORG
+    )
+    await built.service.operate(
+      { op: 'start', attemptId: input.attemptId, fence, recordId: issued.recordId, startToken: randomUUID() },
+      DAEMON,
+      ORG
+    )
+    await built.service.recordResult(resultInput(input.attemptId), DAEMON, ORG)
+    const settle = {
+      op: 'settle' as const,
+      attemptId: input.attemptId,
+      fence,
+      recordId: issued.recordId,
+      outcome: { kind: 'deterministic' as const, status: 204 }
+    }
+    const first = await built.service.operate(settle, DAEMON, ORG)
+    expect(first.phase).toBe('settled')
+
+    // A waiting attempt takes the freed subject and starts publishing at the next fence.
+    built.advance(1_000)
+    const successor = authorizeInput({ deliveryKey: SECOND_DELIVERY, snapshot: SECOND_SNAPSHOT })
+    const taken = await built.service.authorize(successor, OTHER_DAEMON, ORG)
+    if (!taken.authorized) throw new Error('expected the successor to acquire')
+    expect(taken.lease.fence).toBe('2')
+    await built.service.operate(
+      {
+        op: 'issue',
+        attemptId: successor.attemptId,
+        fence: taken.lease.fence,
+        kind: 'bulk_publish',
+        method: 'POST',
+        target: '/projects/4455667/merge_requests/42/draft_notes/bulk_publish',
+        ordinal: 0
+      },
+      OTHER_DAEMON,
+      ORG
+    )
+    expect([...built.leases.leases.values()][0]?.phase).toBe('publishing')
+
+    // The lost acknowledgement replays with the OLD record's fence-coherent phase.
+    expect(await built.service.operate(settle, DAEMON, ORG)).toEqual(first)
+    // …and the successor's live state is untouched by that read.
+    expect([...built.leases.leases.values()][0]).toMatchObject({
+      attemptId: successor.attemptId,
+      fence: 2n,
+      phase: 'publishing'
+    })
+  })
+})
