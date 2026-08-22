@@ -166,6 +166,9 @@ export class SessionManager {
   constructor(
     private deps: {
       store: LocalStore
+      /** Bind a runtime session id to its slot's outward id (§1.1) the moment `newSession()` returns,
+       *  before the row exists — see the opener's `bindOutwardSessionId`. */
+      bindOutwardSessionId?: (agentId: string, key: string, acpSessionId: string) => Promise<void>
       hostFor: (agentId: string) => Promise<AcpHost>
       /** Whether the runtime initialize handshake completed. A cold hostFor may
        * own preparation itself when resolvePreparedWorkspace is also supplied. */
@@ -591,6 +594,7 @@ export class SessionManager {
           : {})
       },
       store: this.deps.store,
+      bindOutwardSessionId: (acpSessionId) => this.deps.bindOutwardSessionId?.(agentId, key, acpSessionId),
       ...(options.preparedWorkspaceCwd !== undefined ? { preparedWorkspaceCwd: options.preparedWorkspaceCwd } : {}),
       ...(preparedCwd !== undefined ? { preparedCwd } : {}),
       ...(expectedWarmHost !== undefined ? { expectedWarmHost } : {}),

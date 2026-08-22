@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { Daemon } from '../src/daemon.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
+import { scaffold } from './webchat-continuation-fixture.js'
+import type { LocalStore } from '../src/store/local-store.js'
 import { createRuntimeCommandsReader } from '../src/cp/runtime-commands-reader.js'
 import { pendingTurnKey } from '../src/daemon/turn-types.js'
 import {
@@ -158,6 +160,38 @@ describe('the daemon records only its own host’s advertisement', () => {
     expect(reported.sessionId).toBe('own-session')
     expect(reported.commands.map((c) => c.name)).toEqual(['code-review', 'superpowers:brainstorming', 'model'])
   })
+
+  // `newSession()` returns a session that can already stream updates, and the row that maps it to
+  // its slot is written only after that returns. An advertisement in THAT window is still recorded
+  // durably, so it must not fall back to the hop's id — nothing would repair it later.
+  it('names an advertisement that arrives before the session row exists', async () => {
+    const root = scaffold(['agent-1'])
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, sandboxMechanism: null })
+    await daemon.start()
+    const host = daemon as unknown as {
+      hosts: Map<string, { hasSession(id: string): boolean; isLoadingSession(id: string): boolean }>
+      onAcpUpdate(agentId: string, sessionId: string, update: unknown): Promise<void>
+      runtimeCommands: RuntimeCommandsCache
+      store: LocalStore
+      bindOutwardSessionId(agentId: string, key: string, acpSessionId: string): Promise<void>
+    }
+    host.hosts.set('agent-1', {
+      hasSession: (id) => id === 'fresh-acp',
+      isLoadingSession: () => false,
+      stop: async () => {}
+    } as never)
+    const key = ['slack', 'C1', '100.1', 'agent-1'].join('\u001f')
+
+    // What the opener does the instant the runtime hands back its id — before any upsert.
+    await host.bindOutwardSessionId('agent-1', key, 'fresh-acp')
+    expect(await host.store.getSessionByAcpId('fresh-acp')).toBeUndefined()
+
+    await host.onAcpUpdate('agent-1', 'fresh-acp', advertisement)
+    const outward = await host.store.ensureOutwardSessionId(key, 'agent-1')
+    expect(host.runtimeCommands.get('agent-1').sessionId).toBe(outward)
+    expect(outward).not.toBe('fresh-acp')
+    await daemon.stop()
+  }, 15_000)
 
   // claude-agent-acp advertises AFTER the session/load response, so `live` already holds the session
   // by then — but that is one adapter's ordering, and the guard must not depend on it. A session the

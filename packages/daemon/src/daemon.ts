@@ -2463,6 +2463,7 @@ export class Daemon {
     )
 
     this.sessions = new SessionManager({
+      bindOutwardSessionId: (agentId, key, acpSessionId) => this.bindOutwardSessionId(agentId, key, acpSessionId),
       // THIS daemon's plane. Omitting it hands the manager a local-mode one, and
       // `additionalWorkspaceDirectories` would then `realpathSync` a `--k8s` workspace's pod-side
       // cwd against this filesystem — failing session create/load before the runtime call.
@@ -10997,12 +10998,37 @@ export class Daemon {
   }
 
   /** The OUTWARD id of the session an ACP id names (session-concept.md §1.1) — for the reporting
-   *  boundaries that hold only the runtime's. Undefined when this daemon has no such session. */
+   *  boundaries that hold only the runtime's. Undefined when this daemon has no such session.
+   *
+   *  The in-flight bindings answer first, and they are why an early report cannot fall back to the
+   *  hop's id: `newSession()` returns a live session that can stream updates before the row
+   *  carrying the mapping is written, and one of those updates (an `available_commands_update`)
+   *  is persisted durably. */
   private async outwardSessionIdForAcp(agentId: string, acpSessionId: string): Promise<string | undefined> {
     // `store` is absent only in bare test harnesses constructed without start() — the same guard
     // the advertisement's own persist makes one line later.
     const slot = await this.store?.getSessionByAcpIdForAgent(agentId, acpSessionId)
-    return slot ? await this.store.ensureOutwardSessionId(slot.key, agentId, this.clock.now()) : undefined
+    const turnKey = pendingTurnKey(agentId, acpSessionId)
+    // Once the row can answer, it is the authority and the binding has done its job.
+    if (slot) {
+      this.openingOutwardSessionIds.delete(turnKey)
+      return await this.store.ensureOutwardSessionId(slot.key, agentId, this.clock.now())
+    }
+    return this.openingOutwardSessionIds.get(turnKey)
+  }
+
+  /** Slots whose runtime session exists but whose row does not yet, by {@link pendingTurnKey}.
+   *  Dropped once the row can answer for itself; bounded so an aborted open cannot accumulate. */
+  private readonly openingOutwardSessionIds = new Map<string, string>()
+
+  /** Called by the opener the instant `newSession()` returns — the outward id is already minted
+   *  (the credential that started this runtime carries it), so this only records the pairing. */
+  private async bindOutwardSessionId(agentId: string, key: string, acpSessionId: string): Promise<void> {
+    if (this.openingOutwardSessionIds.size >= 2000) this.openingOutwardSessionIds.clear()
+    this.openingOutwardSessionIds.set(
+      pendingTurnKey(agentId, acpSessionId),
+      await this.store.ensureOutwardSessionId(key, agentId, this.clock.now())
+    )
   }
 
   /** The console deep link to an agent: `<base>/<orgSlug>/agents/<agentId>`. Same

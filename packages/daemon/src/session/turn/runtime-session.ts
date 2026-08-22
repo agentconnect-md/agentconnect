@@ -56,6 +56,12 @@ export interface OpenRuntimeSessionInput {
   metaContext?: () => Promise<string | undefined>
   resumeSystemContext?: () => Promise<string | undefined>
   usesMeta: boolean
+  /** Bind the runtime's brand-new session id to this slot's OUTWARD one (session-concept.md §1.1)
+   *  the instant it exists. `newSession()` makes the ACP session live — and able to stream updates
+   *  — before the row that would carry the mapping is written, so anything reported in that window
+   *  could otherwise only name the hop. Called for a created session; a resumed one already has
+   *  its row. */
+  bindOutwardSessionId?: (acpSessionId: string) => Promise<void> | void
   signal?: AbortSignal
   abortable: <T>(start: () => PromiseLike<T> | T, signal?: AbortSignal) => Promise<T>
   interrupted: (signal: AbortSignal) => Error
@@ -164,6 +170,7 @@ export async function openRuntimeSession(input: OpenRuntimeSessionInput): Promis
       input.additionalMcpServers?.length ? ordinaryMcpServers : undefined
     )
     created = true
+    await input.bindOutwardSessionId?.(acpSessionId)
     rec = {
       key: identity.key,
       agentId: identity.agentId,
