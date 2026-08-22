@@ -757,9 +757,9 @@ export class GitlabReviewAdapter implements CodeHostReviewAdapter {
     }
     const draftId = op.target.split('/').at(-1) ?? ''
     const present = [...marked.values()].includes(draftId)
-    return present
-      ? { kind: 'deterministic', status: 422, code: 'draft_present' }
-      : { kind: 'deterministic', status: 204 }
+    if (present) return { kind: 'deterministic', status: 422, code: 'draft_present' }
+    // Naming the target is what upgrades a record this delete may have left ambiguous.
+    return { kind: 'deterministic', status: 204, ...(idOf(draftId) ? { externalId: draftId } : {}) }
   }
 
   /** RECORD-FIRST: the coordinates of the one permitted request, before it is permitted. */
@@ -821,7 +821,10 @@ export class GitlabReviewAdapter implements CodeHostReviewAdapter {
     // A 404 is the same proven absence the delete was asking for.
     if (outcome.kind === 'rejected') return outcome.status === 404
     const remaining = await this.listDraftIds(attempt).catch(() => undefined)
-    return remaining !== undefined && !remaining.has(draftId)
+    if (remaining === undefined || remaining.has(draftId)) return false
+    // Read-after-ambiguous-delete proved the absence, so the record is upgraded, not left ambiguous.
+    await this.upgradeAmbiguous(cp, attempt, outcome.recordId, draftId, 204)
+    return true
   }
 
   private async deleteAttemptDrafts(cp: GitlabReviewControlPlane, attempt: Attempt): Promise<void> {
@@ -873,6 +876,7 @@ export class GitlabReviewAdapter implements CodeHostReviewAdapter {
         // A draft is not a public effect: re-read by marker instead of retrying the POST.
         const recovered = await this.findDraftByOrdinal(attempt, draft.ordinal)
         if (!recovered) return this.settle(cp, attempt, 'review_reconciliation_required')
+        await this.upgradeAmbiguous(cp, attempt, outcome.recordId, recovered, 201)
         attempt.drafts.set(draft.ordinal, recovered)
         continue
       }
@@ -943,11 +947,7 @@ export class GitlabReviewAdapter implements CodeHostReviewAdapter {
       const note = await this.findSummaryNote(attempt).catch(() => undefined)
       if (note) {
         attempt.externalIds.push({ kind: 'note', externalId: note })
-        await this.settleAndClear(cp, attempt, outcome.recordId, {
-          kind: 'deterministic',
-          status: 201,
-          externalId: note
-        })
+        await this.upgradeAmbiguous(cp, attempt, outcome.recordId, note, 201)
         return 'published'
       }
       if (this.now() >= deadline) break
@@ -1028,22 +1028,21 @@ export class GitlabReviewAdapter implements CodeHostReviewAdapter {
       sha: attempt.turn.expectedHeadSha
     })
     if (outcome.kind === 'rejected') return 'approval_not_recorded'
-    const approvalId = facts.numericId
     if (outcome.kind === 'sent' && this.approvalReadback(outcome.parsed, attempt)) {
+      const approvalId = facts.numericId ?? idOf(record(outcome.parsed).id)
       if (approvalId) attempt.externalIds.push({ kind: 'approval', externalId: approvalId })
       return 'submitted'
     }
     // Ambiguous or unconvincing: one read-only readback decides, and nothing retries.
     const readback = await this.get(attempt, this.mrPath(attempt.turn, '/approvals')).catch(() => undefined)
     if (!this.approvalReadback(readback, attempt)) return 'approval_not_recorded'
+    // An upgrade must name an object, so the readback's own id backs up the merge request's.
+    const approvalId = facts.numericId ?? idOf(record(readback).id)
     if (approvalId) attempt.externalIds.push({ kind: 'approval', externalId: approvalId })
     if (outcome.kind === 'ambiguous') {
+      if (!approvalId) return 'approval_not_recorded'
       // Positive identification of an ambiguous request, per §15.1's fourth condition.
-      await this.settleAndClear(cp, attempt, outcome.recordId, {
-        kind: 'deterministic',
-        status: 201,
-        ...(approvalId ? { externalId: approvalId } : {})
-      })
+      await this.upgradeAmbiguous(cp, attempt, outcome.recordId, approvalId, 201)
     }
     return 'submitted'
   }
@@ -1112,7 +1111,7 @@ export class GitlabReviewAdapter implements CodeHostReviewAdapter {
         result = await this.send(method, target, undefined, body, attempt.token)
       } catch (err) {
         if (err instanceof AmbiguousSend) {
-          await this.settleAndClear(cp, attempt, issued.recordId, { kind: 'ambiguous', code: err.code })
+          await this.settleAndClear(cp, attempt, issued.recordId, { kind: 'ambiguous', code: err.code }, true)
           return { kind: 'ambiguous', recordId: issued.recordId }
         }
         throw err
@@ -1214,11 +1213,29 @@ export class GitlabReviewAdapter implements CodeHostReviewAdapter {
     cp: GitlabReviewControlPlane,
     attempt: Attempt,
     recordId: string,
-    outcome: CodeHostReviewOpOutcome
+    outcome: CodeHostReviewOpOutcome,
+    // An `ambiguous` record stays non-terminal until an upgrade names its object, so its
+    // coordinates are kept as the replay source for exactly that upgrade (§15.1).
+    retain = false
   ): Promise<void> {
     const disposition = await this.settleOperation(cp, attempt, recordId, outcome)
-    if (disposition === 'safe') await this.clearOperation(attempt, recordId)
+    if (disposition === 'safe' && !retain) await this.clearOperation(attempt, recordId)
     if (disposition === 'blocked') attempt.settleBlocked = true
+  }
+
+  /**
+   * Upgrade a positively identified ambiguous record to `settled` by naming the provider
+   * object. The control plane keeps an ambiguous record non-terminal until exactly this
+   * frame arrives, and retains the publication lease while one remains.
+   */
+  private async upgradeAmbiguous(
+    cp: GitlabReviewControlPlane,
+    attempt: Attempt,
+    recordId: string,
+    externalId: string,
+    status: number
+  ): Promise<void> {
+    await this.settleAndClear(cp, attempt, recordId, { kind: 'deterministic', status, externalId })
   }
 
   /** Record the terminal classification, releasing (or locking) the publication lease. */

@@ -244,7 +244,7 @@ interface CpOptions {
 }
 
 function fakeCp(opts: CpOptions = {}) {
-  const records = new Map<string, 'issued' | 'request_started' | 'settled'>(
+  const records = new Map<string, 'issued' | 'request_started' | 'settled' | 'ambiguous'>(
     (opts.seedStarted ?? []).map((id) => [id, 'request_started' as const])
   )
   const authorizations: CodeHostReviewAuthorize[] = []
@@ -306,8 +306,16 @@ function fakeCp(opts: CpOptions = {}) {
         }
       }
       const [, kind, ordinal] = payload.recordId.split('-')
-      records.set(payload.recordId, payload.op === 'start' ? 'request_started' : 'settled')
-      if (payload.op === 'return-unused') records.set(payload.recordId, 'settled')
+      if (payload.op === 'start') records.set(payload.recordId, 'request_started')
+      else if (payload.op === 'return-unused') records.set(payload.recordId, 'settled')
+      else if (payload.op === 'settle') {
+        // The control-plane contract: an ambiguous record stays non-terminal until a
+        // deterministic settle NAMES the provider object it left behind.
+        if (payload.outcome.kind === 'ambiguous') records.set(payload.recordId, 'ambiguous')
+        else if (records.get(payload.recordId) !== 'ambiguous' || payload.outcome.externalId) {
+          records.set(payload.recordId, 'settled')
+        }
+      }
       return {
         op: payload.op,
         recordId: payload.recordId,
@@ -404,7 +412,7 @@ interface Harness {
   authorizations: CodeHostReviewAuthorize[]
   reviewStore: FakeReviewStore
   timer: ReturnType<typeof fakeScheduler>
-  records: Map<string, 'issued' | 'request_started' | 'settled'>
+  records: Map<string, 'issued' | 'request_started' | 'settled' | 'ambiguous'>
   persisted: () => number
   tokens: () => string[]
   invalidated: () => string[]
@@ -1069,7 +1077,14 @@ describe('GitLab review adapter — durable ownership and ack replay (round 2)',
 
   it('replays the SAME attempt after a crash and recovers its marked drafts', async () => {
     const state = gitlabState()
-    const first = harness({ state, script: [{ method: 'POST', path: /bulk_publish$/, reply: 'network' }] })
+    const first = harness({
+      state,
+      // The pass dies at the exact-set check: the draft exists, publication was never permitted.
+      script: [
+        { method: 'GET', path: /draft_notes$/, reply: { status: 200, body: [] } },
+        { method: 'GET', path: /draft_notes$/, reply: { status: 200, body: [] } }
+      ]
+    })
     // Crash after the draft was created and before publication settled: the durable row keeps
     // the attempt, unclassified, and the marked draft is still pending on the merge request.
     await first.adapter.submit(KEY, request()).catch(() => undefined)
@@ -1577,6 +1592,131 @@ describe('GitLab review adapter — a terminal result waits for a replayable set
       outcome: { externalId?: string }
     }
     expect(settle.outcome.externalId).toBe(draftId)
+  })
+})
+
+describe('GitLab review adapter — an identified ambiguous mutation upgrades its record (round 6)', () => {
+  /** §15.1: the lease may only be released once no record is still ambiguous. */
+  const releasable = (records: Harness['records']) => ![...records.values()].includes('ambiguous')
+
+  it('upgrades an ambiguous draft create once its signed marker identifies the draft', async () => {
+    const state = gitlabState()
+    let created: string | undefined
+    const h = harness({
+      state,
+      script: [
+        {
+          method: 'POST',
+          path: /draft_notes$/,
+          reply: 'network',
+          // The request DID land; only its response was lost.
+          then: () => {
+            created = String(state.nextId++)
+            state.drafts.push({ id: created, note: `summary\n\n${signer.mint(ATTEMPT, 0, HEAD)}` })
+          }
+        }
+      ]
+    })
+    const outcome = (await h.adapter.submit(KEY, request())) as GitlabReviewOutcome
+    expect(outcome.state).toBe('submitted')
+    // The ambiguous settle is followed by the deterministic upgrade that names the draft.
+    const settles = h.ops.filter((op) => op.op === 'settle' && op.recordId === 'rec-draft_create-0') as Array<{
+      outcome: { kind: string; externalId?: string }
+    }>
+    expect(settles.map((op) => op.outcome.kind)).toEqual(['ambiguous', 'deterministic'])
+    expect(settles.at(-1)!.outcome.externalId).toBe(created)
+    // ...so nothing is left ambiguous and the publication lease can be released.
+    expect(h.records.get('rec-draft_create-0')).toBe('settled')
+    expect(releasable(h.records)).toBe(true)
+  })
+
+  it('upgrades an ambiguous draft delete once the read-after proves the absence', async () => {
+    const state = gitlabState()
+    const stale = seedDraft(state, OLD_ATTEMPT, 0, HEAD, '9007199254746901')
+    const h = harness({
+      state,
+      script: [
+        {
+          method: 'DELETE',
+          path: /draft_notes\//,
+          reply: 'network',
+          // The delete landed; the response did not.
+          then: () => void (state.drafts = state.drafts.filter((draft) => draft.id !== stale))
+        }
+      ]
+    })
+    const outcome = (await h.adapter.submit(KEY, request())) as GitlabReviewOutcome
+    expect(outcome.state).toBe('submitted')
+    const settles = h.ops.filter((op) => op.op === 'settle' && op.recordId === 'rec-draft_delete-0') as Array<{
+      outcome: { kind: string; externalId?: string; status?: number }
+    }>
+    expect(settles.map((op) => op.outcome.kind)).toEqual(['ambiguous', 'deterministic'])
+    expect(settles.at(-1)!.outcome).toMatchObject({ status: 204, externalId: stale })
+    expect(h.records.get('rec-draft_delete-0')).toBe('settled')
+    expect(releasable(h.records)).toBe(true)
+  })
+
+  it('keeps the record ambiguous — and the lease unreleasable — when nothing identifies it', async () => {
+    // The control: an ambiguous create whose marker never appears is exactly the state the
+    // upgrade exists to leave behind, and the lease is retained until it is resolved.
+    const h = harness({ script: [{ method: 'POST', path: /draft_notes$/, reply: 'network' }] })
+    const outcome = (await h.adapter.submit(KEY, request())) as GitlabReviewOutcome
+    expect(outcome.state).toBe('review_reconciliation_required')
+    expect(h.records.get('rec-draft_create-0')).toBe('ambiguous')
+    expect(releasable(h.records)).toBe(false)
+  })
+
+  it('routes the upgrade through the durable chain, so an unsafe one is parked and replayed', async () => {
+    const state = gitlabState()
+    const store = new FakeReviewStore()
+    let created: string | undefined
+    let refuseUpgrade = true
+    const h = harness({
+      state,
+      reviewStore: store,
+      script: [
+        {
+          method: 'POST',
+          path: /draft_notes$/,
+          reply: 'network',
+          then: () => {
+            created = String(state.nextId++)
+            state.drafts.push({ id: created, note: `summary\n\n${signer.mint(ATTEMPT, 0, HEAD)}` })
+          }
+        }
+      ],
+      cp: {
+        // Local writes stop the moment the ambiguous settle lands, so the upgrade that follows
+        // is neither durable nor acknowledged and must fall back to its parked coordinates.
+        operateFails: (op) => {
+          if (!('outcome' in op)) return undefined
+          if (op.outcome.kind === 'ambiguous') {
+            store.failWrites = Number.POSITIVE_INFINITY
+            return undefined
+          }
+          return refuseUpgrade ? Object.assign(new Error('unreachable'), { retryable: true }) : undefined
+        }
+      }
+    })
+    await h.adapter.submit(KEY, request())
+    // The upgrade is parked on the coordinates the ambiguous settle deliberately retained.
+    const parked = (h.hook.codeReview?.operations ?? []).find((op) => op.recordId === 'rec-draft_create-0')
+    expect(parked?.outcome).toMatchObject({ kind: 'deterministic', externalId: created })
+
+    // A restart replays it from there, and the record finally leaves `ambiguous`.
+    refuseUpgrade = false
+    store.failWrites = 0
+    const replay = harness({ reviewStore: store, hook: h.hook, open: false })
+    const turn = replay.adapter.openTurn(KEY, h.hook, 'acp-session-2', {
+      daemonId: DAEMON_ID,
+      persist: async () => {}
+    })!
+    await replay.adapter.recoverTurn(turn)
+    const upgraded = replay.ops.find((op) => op.op === 'settle' && op.recordId === 'rec-draft_create-0') as {
+      outcome: { externalId?: string }
+    }
+    expect(upgraded.outcome.externalId).toBe(created)
+    expect(h.hook.codeReview?.operations).toEqual([])
   })
 })
 
