@@ -9582,7 +9582,9 @@ export class Daemon {
       return undefined
     })
     if (activeGithub) this.activeGithubTurnMeta.set(key, activeGithub)
-    // §15: no hook/start barrier — the accepted delivery report already carries the fence review authz checks.
+    // §17.2: the provider-neutral start barrier attaches the head this turn runs on to the accepted
+    // run before the prompt, which is what a review authorization fences and §16 opens `running` on.
+    await this.startGitlabHookTurn(hookContext, sessionId)
     const gitlabReview = this.gitlabReviews.openTurn(key, hookContext, sessionId, {
       ...(this.cfg.daemonId ? { daemonId: this.cfg.daemonId } : {}),
       persist: (required) => this.persistHookState(entry, undefined, required)
@@ -9600,6 +9602,42 @@ export class Daemon {
       ...(activeGithub ? { github: activeGithub } : {}),
       ...(gitlabReview ? { gitlabReview } : {}),
       ...(activeGithubReplyBatch ? { githubReplyBatch: activeGithubReplyBatch } : {})
+    }
+  }
+
+  /** Cross the gitlab `hook/start` barrier (§17.2). A refusal costs only the head fence and the
+   *  §16 `running` edge — the turn continues, exactly as the GitHub barrier does. */
+  private async startGitlabHookTurn(hook: HookDispatchContext | undefined, sessionId: string): Promise<void> {
+    const gitlab = hook?.gitlab
+    const snapshot = hook?.snapshot
+    if (!hook || !gitlab || !snapshot) return
+    const client = this.cpClient
+    // An older CP cannot route the gitlab member of the one-of, so the send waits on its bit.
+    if (!client || client.supportsServerFeature?.(CODEHOST_NOTE_PROJECTION_V1_FEATURE) !== true) return
+    if (this.cfg.daemonId && snapshot.dispatchDaemonId !== this.cfg.daemonId) return
+    const payload = {
+      hookId: hook.hookId,
+      agentId: hook.agentId,
+      deliveryKey: hook.deliveryKey,
+      sessionId,
+      ...(hook.event ? { event: hook.event } : {}),
+      gitlab,
+      ...snapshot
+    }
+    const orgId = this.cpAgents?.orgForAgent(hook.agentId) ?? this.cpCollab.orgForAgent(hook.agentId)
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        await client.startHook(payload, orgId)
+        return
+      } catch (err) {
+        if (attempt === 2) {
+          this.log.warn(`gitlab hook: hook/start rejected (${formatErr(err)})`)
+          return
+        }
+        // The daemon ACK and the relay's accepted report travel on different sockets;
+        // let the accepted row land before repeating this idempotent barrier.
+        await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)))
+      }
     }
   }
 

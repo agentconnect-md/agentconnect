@@ -12,10 +12,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Daemon } from '../src/daemon.js'
 import {
+  CODEHOST_NOTE_PROJECTION_V1_FEATURE,
   HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED,
   HOOK_REPORT_REASON_PROVIDER_QUOTA_EXHAUSTED,
   type EventSession,
   type HookReport,
+  type HookStart,
   type RdMsgHook
 } from '@agentconnect.md/protocol'
 import {
@@ -152,6 +154,24 @@ const gitlabFire = (): RdMsgHook =>
     }
   })
 
+/** The same delivery with a complete accepted dispatch tuple and an authoritative head (§17.2). */
+const gitlabReviewFire = (dispatchDaemonId: string): RdMsgHook => {
+  const base = gitlabFire()
+  return {
+    ...base,
+    configRevision: '1',
+    dispatchRevision: '1',
+    dispatchDaemonId,
+    reviewPolicy: 'full',
+    reportingMode: 'off',
+    gateMode: 'informational',
+    gitlab: {
+      ...base.gitlab!,
+      target: { kind: 'merge_request', iid: 42, headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40) }
+    }
+  }
+}
+
 describe('Daemon rd/msg hook fires', () => {
   it('uses the display agent, runtime, and session model in GitHub attribution', async () => {
     const { factory, host } = streamingHost()
@@ -257,6 +277,53 @@ describe('Daemon rd/msg hook fires', () => {
     })
     await daemon.stop()
   }, 15_000)
+
+  // §17.2: the gitlab arm of `hook/start` records the head this turn runs on, but only against a CP
+  // that advertises it — an older one cannot route a provider member and the frame would be fatal.
+  it.each([
+    { name: 'advertises the run-projection feature', features: [CODEHOST_NOTE_PROJECTION_V1_FEATURE], calls: 1 },
+    { name: 'advertises no code-host features', features: [] as string[], calls: 0 }
+  ])(
+    'sends the gitlab hook/start barrier only when the control plane $name',
+    async ({ features, calls }) => {
+      const { factory } = streamingHost()
+      const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold(), hostFactory: factory })
+      await daemon.start()
+      const startHook = vi.fn(async (_payload: HookStart, _orgId?: string) => ({ accepted: true }))
+      const cp = {
+        ...fakeCpClient(),
+        startHook,
+        supportsServerFeature: (feature: string) => features.includes(feature)
+      }
+      ;(daemon as never as { cpClient: unknown }).cpClient = cp
+      ;(daemon as any).githubReviews.makeGithubReply = vi.fn(() => ({
+        poster: { publish: vi.fn(async () => ({ provider: 'gitlab', kind: 'note', externalId: '9001' })) },
+        collector: new GithubReplyCollector()
+      }))
+      const dispatchDaemonId = (daemon as any).cfg.daemonId as string
+
+      await (daemon as any).handleRelayMsg(gitlabReviewFire(dispatchDaemonId), () => {})
+
+      await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1), WAIT)
+      expect(startHook).toHaveBeenCalledTimes(calls)
+      if (calls === 1) {
+        const payload = startHook.mock.calls[0]![0]
+        expect(payload).toMatchObject({
+          hookId: HOOK_ID,
+          deliveryKey: 'd-1',
+          event: 'merge_request:opened',
+          dispatchDaemonId,
+          reviewPolicy: 'full',
+          gitlab: { projectId: GITLAB_PROJECT, target: { iid: 42, headSha: 'a'.repeat(40) } }
+        })
+        // The one-of is exclusive on the wire: a gitlab start never carries github metadata.
+        expect(payload.github).toBeUndefined()
+        expect(payload.sessionId).toBeTruthy()
+      }
+      await daemon.stop()
+    },
+    15_000
+  )
 
   // gitlab-com-integration.md 14.1/19.3: a note the poster could not publish must fail the run.
   it.each([

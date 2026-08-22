@@ -209,6 +209,28 @@ describe('CodeHostNoteProjectionService', () => {
     expect(desired.writeMarker).not.toBe(desired.projectionKey)
   })
 
+  it('advances the generation to running when the start barrier is crossed', async () => {
+    const { service, projections, sent } = harness({ row: projection({ desiredState: 'running' }) })
+    await service.afterStart(edge({ state: 'running', sessionId: 'sess-1' }))
+    expect(projections.upsert.mock.calls[0]![0]).toMatchObject({
+      desiredState: 'running',
+      startedAt: new Date(NOW),
+      sessionId: 'sess-1'
+    })
+    // A running edge is a lifecycle hint, not terminal authority, so it seals nothing.
+    expect(projections.upsert.mock.calls[0]![0]).not.toHaveProperty('completedAt')
+    expect(projections.setDesired).toHaveBeenCalledWith(expect.any(String), 1n, 'running', new Date(NOW), undefined)
+    expect(sent).toHaveLength(1)
+    expect(sent[0]!.desired.state).toBe('running')
+  })
+
+  it('leaves a running edge pending when the daemon does not advertise the feature', async () => {
+    const { service, projections, sent } = harness({ features: [], row: projection({ desiredState: 'running' }) })
+    await service.afterStart(edge({ state: 'running' }))
+    expect(projections.upsert).toHaveBeenCalledOnce()
+    expect(sent).toHaveLength(0)
+  })
+
   it('supersedes older heads on the same merge request before opening the new generation', async () => {
     const { service, projections } = harness()
     await service.afterAccepted(edge({ gitlab: gitlab({ headSha: 'b'.repeat(40) }) }))
