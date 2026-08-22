@@ -10387,8 +10387,10 @@ export class Daemon {
               else hookContext.publishedComment = published
             }
             // Stamped BEFORE the settled write so one durable record carries both — a crash
-            // between them cannot replay into a successful report with no note.
-            this.markNotePublishFailure(entry, p.github?.poster.failure)
+            // between them cannot replay into a successful report with no note. A barrier refusal
+            // leaves the row retryable, so a note that DID land must erase that marker here.
+            if (published) this.clearNotePublishFailure(entry)
+            else this.markNotePublishFailure(entry, p.github?.poster.failure)
             await this.persistHookState(entry, 'settled')
           },
           warn: (message) => this.log.warn(message)
@@ -10444,15 +10446,22 @@ export class Daemon {
     return true
   }
 
+  /** Erase a marker a retryable earlier attempt left behind — the note this turn published exists. */
+  private clearNotePublishFailure(entry: QueueEntry): void {
+    if (entry.hookContext) delete entry.hookContext.notePublishFailure
+  }
+
   /** Report the terminal hook outcome of a cleanly finished turn, failing it when a sealed
    *  GitHub review batch did not publish every reply, or when the promised note never landed. */
   private async completeHookOutcome(entry: QueueEntry, sessionId: string, p: Pending): Promise<void> {
     const hookContext = entry.hookContext
     if (!hookContext) return
-    // The PERSISTED outcome is authoritative — it is the only one a replayed row still has.
-    const notePublishFailure =
-      hookContext.notePublishFailure ??
-      (entry.githubReply?.provider === 'gitlab' ? p.github?.poster.failure : undefined)
+    // The PERSISTED outcome is authoritative — it is the only one a replayed row still has. A proven
+    // note identity outranks any marker: the publication happened, whatever an earlier attempt recorded.
+    const notePublishFailure = hookContext.publishedOutput
+      ? undefined
+      : (hookContext.notePublishFailure ??
+        (entry.githubReply?.provider === 'gitlab' ? p.github?.poster.failure : undefined))
     const failure = hookOutcomeFailure(hookContext.githubReviewBatch, notePublishFailure)
     await this.emitHookCompletion(
       hookContext,

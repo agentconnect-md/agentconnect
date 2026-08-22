@@ -325,6 +325,69 @@ describe('Daemon rd/msg hook fires', () => {
     15_000
   )
 
+  it('clears a stale barrier marker when the retry publishes: no row carries both a note and a failure', async () => {
+    const root = scaffold()
+    const seed = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: streamingHost().factory })
+    await seed.start()
+    const replayFire = gitlabFire()
+    const replayMessage = buildHookMessage(replayFire, 'trace-gitlab-barrier-retry')
+    // The barrier refused BEFORE any POST, so the row stays retryable — with a marker already on it.
+    const replayHook = {
+      hookId: HOOK_ID,
+      agentId: AGENT_ID,
+      deliveryKey: 'd-1',
+      firedAt: replayFire.firedAt,
+      event: replayFire.event,
+      gitlab: replayFire.gitlab,
+      githubReply: {
+        hookId: HOOK_ID,
+        provider: 'gitlab',
+        subjectKind: 'merge_request',
+        repo: GITLAB_PROJECT,
+        number: 42
+      },
+      notePublishFailure: 'publish_barrier_failed'
+    }
+    expect(
+      await (seed as any).store.appendInbox({
+        id: replayMessage.msgId,
+        sessionKey: `hook:gitlab:${GITLAB_PROJECT}:42:${AGENT_ID}`,
+        agentId: AGENT_ID,
+        msg: JSON.stringify(replayMessage),
+        hookContext: JSON.stringify(replayHook),
+        posterPublishState: 'not_started',
+        loopGuardCounted: 1,
+        enqueuedAt: '1'
+      })
+    ).toBe(true)
+    await seed.stop()
+
+    const restarted = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: streamingHost().factory })
+    const cp = fakeCpClient()
+    ;(restarted as never as { cpClient: unknown }).cpClient = cp
+    const poster = { publish: vi.fn(async () => ({ provider: 'gitlab', kind: 'note', externalId: '9001' })) }
+    ;(restarted as any).githubReviews.makeGithubReply = vi.fn(() => ({ poster, collector: new GithubReplyCollector() }))
+    const settled: Array<string | undefined> = []
+    const realPersist = (restarted as any).persistHookState.bind(restarted)
+    ;(restarted as any).persistHookState = async (entry: any, state: any, required: any) => {
+      if (state === 'settled') settled.push(entry.hookContext?.notePublishFailure)
+      return realPersist(entry, state, required)
+    }
+
+    await restarted.start()
+
+    await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1), WAIT)
+    expect(poster.publish).toHaveBeenCalledWith('done!')
+    expect(cp.hookReports[0]).toMatchObject({
+      status: 'success',
+      publishedOutput: { provider: 'gitlab', kind: 'note', externalId: '9001' }
+    })
+    expect(cp.hookReports[0]!.reason).toBeUndefined()
+    // The settled write dropped the marker, so a later replay cannot resurrect it either.
+    expect(settled).toEqual([undefined])
+    await restarted.stop()
+  }, 20_000)
+
   it('re-derives the failed completion from the persisted outcome after a restart', async () => {
     const root = scaffold()
     const seed = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: streamingHost().factory })
