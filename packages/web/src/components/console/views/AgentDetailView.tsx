@@ -36,7 +36,6 @@ import {
   updateGitlabHook,
   uploadAgentIcon,
   type GithubInstallationDto,
-  type GitlabCommentFamily,
   type HookDto,
   type HookRunDto
 } from '@/lib/api'
@@ -69,7 +68,21 @@ import { AgentMark, GithubMark, GitlabMark, LoadingState, PlatformMark } from '@
 import { buildAgentReachabilityGraph } from '@/lib/agent-reachability'
 import type { Platform } from '@/components/console/modals/AddIntegrationModal'
 import { INTEGRATION_BLURB, isCoreTriggerKind, offeredPlatforms } from '@/components/console/platforms/host-projections'
-import { GL_FAMILIES, eventsForGitlabFamilies, gitlabFamCovered, type GlFamily } from '@/lib/gitlab-events'
+import {
+  GL_FAMILIES,
+  GL_TRIGGER_MODES,
+  GL_TRIGGER_PILL,
+  commentFamiliesForGitlabFamilies,
+  eventsForGitlabFamilies,
+  gitlabCadencePick,
+  gitlabFamCovered,
+  gitlabFamilyToggle,
+  gitlabHookNeedsNormalization,
+  gitlabTriggerModeOf,
+  gitlabTriggerTooltip,
+  type GlFamily,
+  type GlTriggerMode
+} from '@/lib/gitlab-events'
 import { AgentIconPicker } from '@/components/console/AgentIconPicker'
 import { BuiltinBadge } from '@/components/console/BuiltinBadge'
 import { NotFound } from '@/components/console/NotFound'
@@ -381,14 +394,10 @@ export default function AgentDetailView() {
       setHookBusy(null)
     }
   }
-  // The GitLab counterpart: subject families only, no cadence axis and no review
-  // knobs — the M6 review slice adds those, and the row must not imply them yet.
-  const toggleGitlabHookFam = async (h: HookDto, fam: GlFamily) => {
+  // The GitLab counterpart of saveHookEvents — same two axes, no review knobs
+  // yet (the M6 slice adds those, and the row must not imply them).
+  const saveGitlabHookEvents = async (h: HookDto, families: GlFamily[], mode: GlTriggerMode) => {
     if (hookBusy || !h.agentId || !h.repoId) return
-    const families = GL_FAMILIES.map((f) => f.fam).filter((f) =>
-      f === fam ? !gitlabFamCovered(h.events, f) : gitlabFamCovered(h.events, f)
-    )
-    if (families.length === 0) return // at least one family must stay subscribed
     setHookBusy(h.id)
     try {
       const updated = await updateGitlabHook(h.id, {
@@ -396,12 +405,10 @@ export default function AgentDetailView() {
         name: h.name,
         enabled: h.enabled,
         projectId: h.repoId,
-        events: eventsForGitlabFamilies(families),
-        commentFamilies: h.commentFamilies.filter(
-          (family): family is GitlabCommentFamily => family === 'issues' || family === 'merge_request'
-        ),
+        events: eventsForGitlabFamilies(families, mode),
+        commentFamilies: commentFamiliesForGitlabFamilies(families, mode),
         labelFilter: h.labelFilter,
-        mentionOnly: h.mentionOnly
+        mentionOnly: mode === 'mention'
       })
       void mutateHooks((rows) => rows?.map((r) => (r.id === h.id ? updated : r)), { revalidate: false })
     } catch {
@@ -409,6 +416,15 @@ export default function AgentDetailView() {
     } finally {
       setHookBusy(null)
     }
+  }
+  // Pure helpers decide both edits: the toggle refuses to drop the last family, and the cadence pick refuses a no-op write, which is what leaves an inexpressible stored rule untouched.
+  const toggleGitlabHookFam = async (h: HookDto, fam: GlFamily) => {
+    const edit = gitlabFamilyToggle(h, fam)
+    if (edit) await saveGitlabHookEvents(h, edit.families, edit.mode)
+  }
+  const setGitlabHookCadence = async (h: HookDto, mode: GlTriggerMode) => {
+    const edit = gitlabCadencePick(h, mode)
+    if (edit) await saveGitlabHookEvents(h, edit.families, edit.mode)
   }
   const toggleHookFam = async (h: HookDto, fam: GhFamily) => {
     const fams = GH_FAMILIES.map((f) => f.fam).filter((f) =>
@@ -1380,7 +1396,7 @@ export default function AgentDetailView() {
                           {GL_FAMILIES.filter((f) => gitlabFamCovered(h.events, f.fam))
                             .map((f) => f.pill)
                             .join(' · ') || 'no events'}
-                          {h.mentionOnly ? ' · @-mention only' : ''}
+                          {` · ${GL_TRIGGER_PILL[gitlabTriggerModeOf(h)]}`}
                         </span>
                       </span>
                       <span className="inline-flex flex-none items-center gap-[5px] rounded-full bg-(--surface-active) px-[10px] py-[3px] font-sans text-[12px] font-semibold leading-normal text-(--text-tertiary)">
@@ -1653,9 +1669,12 @@ export default function AgentDetailView() {
                               <span className="mono min-w-[90px] flex-1 truncate text-[12px] text-(--text-primary)">
                                 {h.repoFullName ?? h.name}
                               </span>
-                              {h.mentionOnly && (
-                                <span className="badge flex-none bg-(--surface-active) text-(--text-tertiary)">
-                                  @-mention only
+                              {gitlabHookNeedsNormalization(h) && (
+                                <span
+                                  className="badge flex-none bg-(--surface-active) text-(--text-tertiary)"
+                                  title="The stored subscription matches no trigger exactly — the nearest one is shown. Picking a trigger replaces it."
+                                >
+                                  custom rule
                                 </span>
                               )}
                               <div className="ml-auto inline-flex flex-none gap-[2px] rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) p-[2px]">
@@ -1678,6 +1697,32 @@ export default function AgentDetailView() {
                                   )
                                 })}
                               </div>
+                              {/* Trigger bar — the same segmented control the GitHub rows carry. */}
+                              <span className="inline-flex flex-none items-center gap-[7px]">
+                                <span title="Trigger — when this agent runs" className="flex-none leading-none">
+                                  <Icon name="zap" size={14} color="var(--text-tertiary)" />
+                                </span>
+                                <div className="inline-flex gap-[2px] rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[2px]">
+                                  {GL_TRIGGER_MODES.map((mode) => {
+                                    const active = gitlabTriggerModeOf(h) === mode
+                                    return (
+                                      <button
+                                        key={mode}
+                                        onClick={() => void setGitlabHookCadence(h, mode)}
+                                        disabled={hookBusy === h.id}
+                                        title={gitlabTriggerTooltip(mode, da.name)}
+                                        className={`cursor-pointer rounded-[7px] border-0 px-3 py-[5px] font-sans text-[12.5px] leading-normal ${
+                                          active
+                                            ? 'bg-(--surface-card) font-semibold text-(--text-primary) shadow-[0_1px_2px_rgba(0,0,0,0.08)]'
+                                            : 'bg-transparent font-normal text-(--text-tertiary)'
+                                        } ${hookBusy === h.id ? 'opacity-60' : ''}`}
+                                      >
+                                        {GL_TRIGGER_PILL[mode]}
+                                      </button>
+                                    )
+                                  })}
+                                </div>
+                              </span>
                               <span className="inline-flex flex-none gap-[2px]">
                                 <button
                                   className="iconbtn h-[26px] w-[26px] flex-none"
