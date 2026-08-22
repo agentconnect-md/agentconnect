@@ -6,11 +6,13 @@
 // rejects edits that conflict with enabled GitHub review or Check actions.
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { GithubMark } from '@/components/marks'
+import { GithubMark, LoadingState } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 import { agentLabel, isPoolPlacementKind, type Agent } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { useOrgs } from '@/lib/org-context'
+import { featureFlagEnabled } from '@/lib/feature-flags'
+import { gitlabProjectSelectable, matchGitlabProjects } from '@/lib/gitlab-projects'
 import {
   ApiError,
   deleteAgentRepo,
@@ -20,12 +22,14 @@ import {
   fetchGithubInstallUrl,
   fetchGithubRepoRoster,
   fetchGithubRepoAccess,
+  fetchGitlabProjects,
   invalidateGithubRepoRosterCache,
   syncGithubInstallations,
   type AgentRepoAuthDto,
   type GithubInstallationDto,
   type GithubRepoAccess,
   type GithubRepoDto,
+  type GitlabProjectBindingDto,
   type RepoAccess
 } from '@/lib/api'
 import { agentDirInputValue, normalizeAgentDir } from '@/lib/repo-subdir'
@@ -35,12 +39,16 @@ import {
   GithubPrivateReposNotice,
   GithubRepositoryField,
   GithubRepositoryOption,
+  GitlabNoProjectsNotice,
+  GitlabProjectField,
+  GitlabProjectOption,
   RepositoryAccessField,
   REPOSITORY_ACCESS_BADGE,
   WorktreeField,
   WorkingSubdirectoryField,
   WorkspaceBranchField,
-  WorkspaceModeField
+  WorkspaceModeField,
+  type WorkspaceMode
 } from '@/components/console/WorkspaceFormFields'
 import AddAgentRepoModal from '@/components/console/modals/AddAgentRepoModal'
 
@@ -64,7 +72,7 @@ export default function EditWorkspaceModal({
   authorized: AgentRepoAuthDto[]
   /** Preselected mode — the workspace card's Source segment opens the editor
    *  already switched to the mode the user picked. Defaults to the current one. */
-  initialMode?: 'scratch' | 'github'
+  initialMode?: WorkspaceMode
   /** Open directly at the additional-repository step for contextual shortcuts. */
   initialRepositoryAuthorization?: InitialRepositoryAuthorization
   /** Keep the caller's shared repository cache synchronized after add/revoke. */
@@ -79,9 +87,16 @@ export default function EditWorkspaceModal({
   // Pool placements do not materialize secondary roots yet, so they keep the authorization-only wording.
   const poolPlaced = isPoolPlacementKind(agent.placementKind, agent.setId, orgSetIds)
   const githubWorkspace = agent.workspace.mode === 'github' ? agent.workspace : null
-  const currentWrite = githubWorkspace ? !!githubWorkspace.installationId && githubWorkspace.gitAccess !== 'read' : null
-  const currentAgentDir = agentDirInputValue(githubWorkspace?.agentDir)
-  const [mode, setMode] = useState<'scratch' | 'github'>(initialMode ?? agent.workspace.mode)
+  const gitlabWorkspace = agent.workspace.mode === 'gitlab' ? agent.workspace : null
+  const gitWorkspace = githubWorkspace ?? gitlabWorkspace
+  const currentWrite = githubWorkspace
+    ? !!githubWorkspace.installationId && githubWorkspace.gitAccess !== 'read'
+    : gitlabWorkspace
+      ? gitlabWorkspace.gitAccess !== 'read'
+      : null
+  const currentAgentDir = agentDirInputValue(gitWorkspace?.agentDir)
+  const gitlabOffered = featureFlagEnabled('gitlab')
+  const [mode, setMode] = useState<WorkspaceMode>(initialMode ?? agent.workspace.mode)
   const [gh, setGh] = useState<{ enabled: boolean; installations: GithubInstallationDto[] } | null>(null)
   const [ghSyncing, setGhSyncing] = useState(false)
   const [repos, setRepos] = useState<Array<GithubRepoDto & { installationId: string }> | null>(null)
@@ -92,12 +107,18 @@ export default function EditWorkspaceModal({
   const [pickOpen, setPickOpen] = useState(false)
   const [accessOpen, setAccessOpen] = useState(false)
   const [q, setQ] = useState('')
-  const [branch, setBranch] = useState(githubWorkspace?.branch ?? '')
+  const [branch, setBranch] = useState(gitWorkspace?.branch ?? '')
   const [branches, setBranches] = useState<string[] | null>(null)
   const [branchOpen, setBranchOpen] = useState(false)
   const [branchQ, setBranchQ] = useState('')
   const [agentDir, setAgentDir] = useState(currentAgentDir)
-  const [worktree, setWorktree] = useState(githubWorkspace ? githubWorkspace.worktree === true : true)
+  const [worktree, setWorktree] = useState(gitWorkspace ? gitWorkspace.worktree === true : true)
+  // The organization's added GitLab projects; null while the list is still loading.
+  const [glProjects, setGlProjects] = useState<GitlabProjectBindingDto[] | null>(null)
+  const [glProjectsError, setGlProjectsError] = useState<string | null>(null)
+  const [glPick, setGlPick] = useState(gitlabWorkspace?.projectId ?? '')
+  const [glPickOpen, setGlPickOpen] = useState(false)
+  const [glQ, setGlQ] = useState('')
   const [write, setWrite] = useState(currentWrite ?? (authorized[0] ? authorized[0].access === 'write' : true))
   const [authorizations, setAuthorizations] = useState(authorized)
   const [repositoryEditor, setRepositoryEditor] = useState<{
@@ -171,6 +192,21 @@ export default function EditWorkspaceModal({
       ctrl.abort()
     }
   }, [gh, repositoryEditor, reposNonce])
+
+  // Added projects only — the picker never installs one, so the connection card
+  // stays the single place a project joins the organization.
+  useEffect(() => {
+    if (repositoryEditor !== null || !gitlabOffered || mode !== 'gitlab' || glProjects !== null) return
+    let alive = true
+    setGlProjectsError(null)
+    fetchGitlabProjects().then(
+      (bindings) => alive && setGlProjects(bindings),
+      (e) => alive && setGlProjectsError(e instanceof Error ? e.message : String(e))
+    )
+    return () => {
+      alive = false
+    }
+  }, [gitlabOffered, glProjects, mode, repositoryEditor])
 
   const openGhInstall = async () => {
     const url = await fetchGithubInstallUrl().catch(() => null)
@@ -268,16 +304,23 @@ export default function EditWorkspaceModal({
   }
 
   const noInstall = mode === 'github' && gh !== null && (!gh.enabled || gh.installations.length === 0)
-  const accessChanged = githubWorkspace !== null && write !== currentWrite
+  const glSelectable = (glProjects ?? []).filter((project) => gitlabProjectSelectable(project.state))
+  const noProjects = mode === 'gitlab' && glProjects !== null && glSelectable.length === 0
+  const glPicked = (glProjects ?? []).find((project) => project.projectId === glPick)
+  // Falls back to the stored path so the current project reads correctly before the list lands.
+  const glPickLabel =
+    glPicked?.projectPath ?? (glPick && glPick === gitlabWorkspace?.projectId ? gitlabWorkspace.repo : '')
+  const accessChanged = gitWorkspace !== null && write !== currentWrite
   const installationChanged =
     githubWorkspace !== null && pickInstallationId !== null && githubWorkspace.installationId !== pickInstallationId
   const repoChanged =
-    mode === 'github' && (githubWorkspace === null || pick.toLowerCase() !== githubWorkspace.repo.toLowerCase())
-  const branchChanged =
-    mode === 'github' && githubWorkspace !== null && branch.trim() !== (githubWorkspace.branch ?? '')
+    mode === 'github'
+      ? githubWorkspace === null || pick.toLowerCase() !== githubWorkspace.repo.toLowerCase()
+      : mode === 'gitlab' && (gitlabWorkspace === null || glPick !== gitlabWorkspace.projectId)
+  const branchChanged = mode === agent.workspace.mode && gitWorkspace !== null && branch.trim() !== gitWorkspace.branch
   const agentDirChanged =
-    mode === 'github' && githubWorkspace !== null && (normalizedAgentDir ?? '') !== currentAgentDir
-  const worktreeChanged = mode === 'github' && githubWorkspace !== null && worktree !== !!githubWorkspace.worktree
+    mode === agent.workspace.mode && gitWorkspace !== null && (normalizedAgentDir ?? '') !== currentAgentDir
+  const worktreeChanged = mode === agent.workspace.mode && gitWorkspace !== null && worktree !== !!gitWorkspace.worktree
   const destructiveChange = mode !== agent.workspace.mode || repoChanged || branchChanged
   const changed =
     mode !== agent.workspace.mode ||
@@ -288,10 +331,15 @@ export default function EditWorkspaceModal({
         agentDirChanged ||
         worktreeChanged ||
         accessChanged ||
-        installationChanged))
+        installationChanged)) ||
+    (mode === 'gitlab' &&
+      (gitlabWorkspace === null || repoChanged || branchChanged || agentDirChanged || worktreeChanged || accessChanged))
   const canSubmit =
     changed &&
-    (mode === 'scratch' || (!!pick && !uncovered && !probeDenies && agentDirError === null && !!pickInstallationId))
+    (mode === 'scratch' ||
+      (mode === 'gitlab'
+        ? !!glPick && agentDirError === null
+        : !!pick && !uncovered && !probeDenies && agentDirError === null && !!pickInstallationId))
 
   const selectRepo = (fullName: string) => {
     const selected = repos?.find((repo) => repo.fullName.toLowerCase() === fullName.toLowerCase())
@@ -306,6 +354,15 @@ export default function EditWorkspaceModal({
     setErr(null)
   }
 
+  const selectProject = (project: GitlabProjectBindingDto) => {
+    setGlPick(project.projectId)
+    setGlPickOpen(false)
+    setAccessOpen(false)
+    setBranch(project.defaultBranch ?? '')
+    setAgentDir('')
+    setErr(null)
+  }
+
   const submit = async () => {
     if (busyRef.current || !canSubmit) return
     busyRef.current = true
@@ -317,14 +374,23 @@ export default function EditWorkspaceModal({
         agent.id,
         mode === 'scratch'
           ? { mode: 'scratch' }
-          : {
-              mode: 'github',
-              worktree,
-              repoFullName: pick,
-              ...(branch.trim() ? { gitBranch: branch.trim() } : {}),
-              ...(normalizedAgentDir ? { agentDir: normalizedAgentDir } : {}),
-              gitAccess: write ? 'write' : 'read'
-            }
+          : mode === 'gitlab'
+            ? {
+                mode: 'gitlab',
+                worktree,
+                projectId: glPick,
+                ...(branch.trim() ? { gitBranch: branch.trim() } : {}),
+                ...(normalizedAgentDir ? { agentDir: normalizedAgentDir } : {}),
+                gitAccess: write ? 'write' : 'read'
+              }
+            : {
+                mode: 'github',
+                worktree,
+                repoFullName: pick,
+                ...(branch.trim() ? { gitBranch: branch.trim() } : {}),
+                ...(normalizedAgentDir ? { agentDir: normalizedAgentDir } : {}),
+                gitAccess: write ? 'write' : 'read'
+              }
       )
       onChanged()
     } catch (error) {
@@ -415,6 +481,7 @@ export default function EditWorkspaceModal({
               setPickOpen(false)
               setAccessOpen(false)
               setBranchOpen(false)
+              setGlPickOpen(false)
               setErr(null)
             }}
           />
@@ -434,6 +501,98 @@ export default function EditWorkspaceModal({
             </span>
           </div>
 
+          {mode === 'gitlab' && (
+            <div className="mb-4 grid grid-cols-1 gap-[14px] desktop:grid-cols-2 desktop:gap-x-7">
+              {glProjectsError ? (
+                <div className="font-sans text-[12px] font-normal leading-[1.5] text-(--status-error) desktop:col-span-2">
+                  Couldn&rsquo;t load your GitLab projects — {glProjectsError}
+                </div>
+              ) : glProjects === null ? (
+                <div className="desktop:col-span-2">
+                  <LoadingState size={20} padding={16} />
+                </div>
+              ) : noProjects ? (
+                <GitlabNoProjectsNotice integrationsHref={orgPath('/integrations')} />
+              ) : (
+                <>
+                  <GitlabProjectField
+                    value={glPickLabel}
+                    icon="book-marked"
+                    loading={false}
+                    open={glPickOpen}
+                    query={glQ}
+                    onToggle={() => {
+                      setGlQ('')
+                      setAccessOpen(false)
+                      setGlPickOpen((value) => !value)
+                    }}
+                    onClose={() => setGlPickOpen(false)}
+                    onQueryChange={setGlQ}
+                  >
+                    {matchGitlabProjects(glProjects, glQ).map((project) => (
+                      <GitlabProjectOption
+                        key={project.id}
+                        project={project}
+                        selected={glPick === project.projectId}
+                        onSelect={() => selectProject(project)}
+                      />
+                    ))}
+                    {matchGitlabProjects(glProjects, glQ).length === 0 && (
+                      <div className="fnohit">No projects match &ldquo;{glQ}&rdquo;</div>
+                    )}
+                  </GitlabProjectField>
+
+                  <RepositoryAccessField
+                    repositorySelected={!!glPick}
+                    label="Project access"
+                    unselectedLabel="Select project first"
+                    writeDescription="Push, open merge requests & run pipelines"
+                    value={write ? 'write' : 'read'}
+                    open={accessOpen}
+                    onToggle={() => {
+                      setGlPickOpen(false)
+                      setAccessOpen((value) => !value)
+                    }}
+                    onClose={() => setAccessOpen(false)}
+                    onChange={(value) => {
+                      setWrite(value === 'write')
+                      setAccessOpen(false)
+                      setErr(null)
+                    }}
+                  />
+
+                  <div className="grid grid-cols-1 gap-[14px] desktop:col-span-2 desktop:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_96px] desktop:gap-x-[14px]">
+                    <WorkspaceBranchField
+                      repositorySelected={!!glPick}
+                      unselectedLabel="Pick project first"
+                      defaultBranchLabel="GitLab default branch"
+                      value={branch}
+                      branches={null}
+                      open={false}
+                      query=""
+                      onToggle={() => {}}
+                      onClose={() => {}}
+                      onQueryChange={() => {}}
+                      onChange={(value) => {
+                        setBranch(value)
+                        setErr(null)
+                      }}
+                    />
+
+                    <WorkingSubdirectoryField
+                      value={agentDir}
+                      error={agentDirError}
+                      onChange={(value) => {
+                        setAgentDir(value)
+                        setErr(null)
+                      }}
+                    />
+                    <WorktreeField checked={worktree} onChange={setWorktree} />
+                  </div>
+                </>
+              )}
+            </div>
+          )}
           {mode === 'github' &&
             (gh === null ? (
               <div className="mb-4 flex items-center gap-[10px] rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px] font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
@@ -689,8 +848,8 @@ export default function EditWorkspaceModal({
           </Button>
           <Button
             onClick={() => void submit()}
-            disabled={!canSubmit || saving || noInstall}
-            className={!canSubmit || saving || noInstall ? 'pointer-events-none opacity-50' : undefined}
+            disabled={!canSubmit || saving || noInstall || noProjects}
+            className={!canSubmit || saving || noInstall || noProjects ? 'pointer-events-none opacity-50' : undefined}
           >
             {saving ? 'Saving…' : destructiveChange ? 'Replace workspace' : 'Save'}
           </Button>

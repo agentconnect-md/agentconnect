@@ -16,7 +16,7 @@ import { amountToNumber } from '@/lib/amount'
 import { useConsoleData } from '@/lib/data-context'
 import { IntegrationMarks } from '@/components/console/IntegrationMarks'
 import { useModal } from '@/components/console/ModalProvider'
-import { AgentIconView, GithubMark, LoadingState, PlatformMark } from '@/components/marks'
+import { AgentIconView, GithubMark, GitlabMark, LoadingState, PlatformMark } from '@/components/marks'
 import { BuiltinBadge } from '@/components/console/BuiltinBadge'
 import { RestrictedLock } from '@/components/console/VisibilityField'
 import { Avatar, Button, Icon } from '@/components/ui'
@@ -436,6 +436,8 @@ export default function AgentsView() {
                     <span className="flex h-4 w-4 flex-none items-center justify-center">
                       {(a.hookKinds ?? []).includes('github') ? (
                         <GithubMark />
+                      ) : (a.hookKinds ?? []).includes('gitlab') ? (
+                        <GitlabMark />
                       ) : (
                         <Icon name="webhook" size={14} color="var(--text-secondary)" />
                       )}

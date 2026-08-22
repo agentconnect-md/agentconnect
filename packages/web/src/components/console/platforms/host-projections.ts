@@ -3,6 +3,7 @@
 
 import { larkFeishuBrand, type LarkFeishuTarget } from '@/components/LarkFeishuSwitcher'
 import type { BotDto } from '@/lib/api'
+import { featureFlagEnabled } from '@/lib/feature-flags'
 import { platformLabel } from '@/lib/platform-labels'
 import { platformRegistry } from './registry'
 
@@ -21,8 +22,8 @@ import { platformRegistry } from './registry'
  *    (`lib/platform-labels.ts`), never re-spelled here. §5's `displayName` is
  *    manifest data shared with the daemon/relay/CP and deliberately NOT a
  *    web-module member (contract D2);
- *  - the two **core trigger kinds** (`webhook`, `github`) are not platform
- *    modules at all — picking either mints an inbound hook rather than a bot
+ *  - the **core trigger kinds** (`webhook`, `github`, `gitlab`) are not platform
+ *    modules at all — picking one mints an inbound hook rather than a bot
  *    identity — so the chassis lists them itself;
  *  - the **region axis** ({@link BOT_PLATFORM_TABS}), for the same D2 reason.
  *
@@ -55,13 +56,22 @@ export function platformTiles(ids: readonly string[]): PlatformTile[] {
  */
 export const BOT_PLATFORMS: readonly PlatformTile[] = platformTiles(platformRegistry.ids())
 
-/** Every picker choice: the chat platforms plus the two core trigger kinds.
- *  Neither trigger is gated by daemon adapters — both live on the relay pool. */
+/** Every picker choice: the chat platforms plus the core trigger kinds. None of
+ *  the triggers is gated by daemon adapters — all live on the relay pool. The
+ *  GitLab tile is additionally gated on its feature flag at the call site. */
 export const PLATFORMS: readonly PlatformTile[] = [
   ...BOT_PLATFORMS,
   { key: 'webhook', label: 'Webhook' },
-  { key: 'github', label: 'GitHub' }
+  { key: 'github', label: 'GitHub' },
+  { key: 'gitlab', label: 'GitLab' }
 ]
+
+/** The picker choices this deployment actually offers — {@link PLATFORMS} minus
+ *  the tiles a feature flag holds back. Every picker reads this, so a flagged
+ *  trigger kind can never appear on one surface and not the other. */
+export function offeredPlatforms(): readonly PlatformTile[] {
+  return PLATFORMS.filter((tile) => tile.key !== 'gitlab' || featureFlagEnabled('gitlab'))
+}
 
 /**
  * One-liners for the agent page's empty-integrations tiles, keyed by picker
@@ -75,6 +85,7 @@ export const INTEGRATION_BLURB: Record<string, string> = {
   discord: 'Reply in servers',
   feishu: 'Reply in groups & chats',
   github: 'React to issues & PRs',
+  gitlab: 'React to issues & MRs',
   webhook: 'Trigger by posting a URL'
 }
 

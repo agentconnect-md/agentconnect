@@ -1,11 +1,13 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { KeyboardEvent, ReactNode } from 'react'
-import { GithubMark } from '@/components/marks'
+import { GithubMark, GitlabMark } from '@/components/marks'
 import { Button, Icon, Toggle } from '@/components/ui'
-import type { RepoAccess } from '@/lib/api'
+import { featureFlagEnabled } from '@/lib/feature-flags'
+import { GITLAB_PROJECT_STATE, gitlabProjectSelectable } from '@/lib/gitlab-projects'
+import type { GitlabProjectBindingDto, RepoAccess } from '@/lib/api'
 
-export type WorkspaceMode = 'scratch' | 'github'
+export type WorkspaceMode = 'scratch' | 'github' | 'gitlab'
 export type WorkspaceRepoAccess = 'read' | 'write'
 type RepositoryMenuStyle = { left: number; top: number; width: number; maxHeight: number }
 
@@ -31,6 +33,7 @@ export function WorkspaceModeField({
   label?: string
 }) {
   const fieldClassName = className ? `fld ${className}` : 'fld'
+  const gitlab = featureFlagEnabled('gitlab')
   const radio = (selected: boolean) => (
     <span
       className={
@@ -51,7 +54,11 @@ export function WorkspaceModeField({
   return (
     <div className={fieldClassName}>
       <span className="fldlbl">{label}</span>
-      <div className="grid grid-cols-1 gap-[10px] desktop:grid-cols-2">
+      <div
+        className={
+          gitlab ? 'grid grid-cols-1 gap-[10px] desktop:grid-cols-3' : 'grid grid-cols-1 gap-[10px] desktop:grid-cols-2'
+        }
+      >
         <button
           type="button"
           className={value === 'scratch' ? 'ptile on items-start text-left' : 'ptile items-start text-left'}
@@ -82,6 +89,22 @@ export function WorkspaceModeField({
           </span>
           {radio(value === 'github')}
         </button>
+        {gitlab && (
+          <button
+            type="button"
+            className={value === 'gitlab' ? 'ptile on items-start text-left' : 'ptile items-start text-left'}
+            onClick={() => onChange('gitlab')}
+          >
+            {tileIcon(<GitlabMark color="var(--text-primary)" />)}
+            <span className="min-w-0 flex-1">
+              <span className="block font-sans text-[13px] font-semibold leading-normal">From GitLab</span>
+              <span className="mt-[2px] block truncate font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-tertiary)">
+                Clone a project on a branch.
+              </span>
+            </span>
+            {radio(value === 'gitlab')}
+          </button>
+        )}
       </div>
     </div>
   )
@@ -175,22 +198,10 @@ export function GithubPrivateReposNotice({ profileHref }: { profileHref: string 
   )
 }
 
-export function GithubRepositoryField({
-  value,
-  icon = 'lock',
-  badge,
-  loading,
-  open,
-  query,
-  onToggle,
-  onClose,
-  onQueryChange,
-  onSearchKeyDown,
-  error,
-  onRetry,
-  children,
-  note
-}: {
+/** What a caller supplies to either code-host picker; the words come from the wrapper. */
+export interface RepositoryPickerProps {
+  /** Overrides the wrapper's field label where a surface needs another noun. */
+  label?: string
   value: string
   icon?: 'lock' | 'book-marked'
   badge?: string
@@ -205,7 +216,39 @@ export function GithubRepositoryField({
   onRetry?: () => void
   children: ReactNode
   note?: ReactNode
-}) {
+}
+
+interface RepositoryPickerWords {
+  label: string
+  mark: ReactNode
+  emptyLabel: string
+  loadingLabel: string
+  searchPlaceholder: string
+}
+
+/** The provider-neutral picker chrome — trigger, portalled menu, search box and
+ *  error row. Each code host supplies its own words and mark through a wrapper. */
+function RepositoryPickerField({
+  label,
+  mark,
+  emptyLabel,
+  loadingLabel,
+  searchPlaceholder,
+  value,
+  icon = 'lock',
+  badge,
+  loading,
+  open,
+  query,
+  onToggle,
+  onClose,
+  onQueryChange,
+  onSearchKeyDown,
+  error,
+  onRetry,
+  children,
+  note
+}: Omit<RepositoryPickerProps, 'label'> & RepositoryPickerWords) {
   const triggerRef = useRef<HTMLDivElement>(null)
   const [menuStyle, setMenuStyle] = useState<RepositoryMenuStyle | null>(null)
 
@@ -234,7 +277,7 @@ export function GithubRepositoryField({
 
   return (
     <div className="fld relative min-w-0">
-      <span className="fldlbl">GitHub repository</span>
+      <span className="fldlbl">{label}</span>
       <div ref={triggerRef} className="inp min-w-0 cursor-pointer gap-2" title={value || undefined} onClick={onToggle}>
         <span className="inline-flex min-w-0 flex-1 items-center gap-[7px]">
           {value ? (
@@ -254,12 +297,8 @@ export function GithubRepositoryField({
             </>
           ) : (
             <>
-              <span className="imark h-4 w-4 flex-none border-0 bg-transparent">
-                <GithubMark color="var(--text-secondary)" />
-              </span>
-              <span className="truncate text-(--text-tertiary)">
-                {loading ? 'Loading repositories…' : 'Pick a repository'}
-              </span>
+              <span className="imark h-4 w-4 flex-none border-0 bg-transparent">{mark}</span>
+              <span className="truncate text-(--text-tertiary)">{loading ? loadingLabel : emptyLabel}</span>
             </>
           )}
         </span>
@@ -276,7 +315,7 @@ export function GithubRepositoryField({
                 value={query}
                 onChange={(event) => onQueryChange(event.target.value)}
                 onKeyDown={onSearchKeyDown}
-                placeholder="Search or type owner/repo…"
+                placeholder={searchPlaceholder}
                 autoFocus
               />
               {error && (
@@ -295,6 +334,96 @@ export function GithubRepositoryField({
           document.body
         )}
       {note}
+    </div>
+  )
+}
+
+export function GithubRepositoryField(props: RepositoryPickerProps) {
+  return (
+    <RepositoryPickerField
+      {...props}
+      label={props.label ?? 'GitHub repository'}
+      mark={<GithubMark color="var(--text-secondary)" />}
+      emptyLabel="Pick a repository"
+      loadingLabel="Loading repositories…"
+      searchPlaceholder="Search or type owner/repo…"
+    />
+  )
+}
+
+export function GitlabProjectField(props: RepositoryPickerProps) {
+  return (
+    <RepositoryPickerField
+      {...props}
+      label={props.label ?? 'GitLab project'}
+      mark={<GitlabMark color="var(--text-secondary)" />}
+      emptyLabel="Pick a project"
+      loadingLabel="Loading projects…"
+      searchPlaceholder="Search your added projects…"
+    />
+  )
+}
+
+/** One added project. Transient states are listed and disabled, not hidden — a project
+ *  the user just added reads as on its way rather than mysteriously absent. */
+export function GitlabProjectOption({
+  project,
+  selected = false,
+  onSelect
+}: {
+  project: GitlabProjectBindingDto
+  selected?: boolean
+  onSelect: () => void
+}) {
+  const selectable = gitlabProjectSelectable(project.state)
+  const state = GITLAB_PROJECT_STATE[project.state]
+  return (
+    <button
+      type="button"
+      className={
+        selectable
+          ? 'fopt min-h-[46px] items-center gap-3 px-2 py-2'
+          : 'fopt min-h-[46px] cursor-not-allowed items-center gap-3 px-2 py-2 opacity-60'
+      }
+      title={project.projectPath}
+      aria-disabled={!selectable}
+      disabled={!selectable}
+      onClick={() => selectable && onSelect()}
+    >
+      <span className="flex h-4 w-4 flex-none items-center justify-center">
+        <GitlabMark color="var(--text-tertiary)" />
+      </span>
+      <span className="flex min-w-0 flex-1 flex-col items-start gap-[2px] overflow-hidden">
+        <span
+          className="block w-full min-w-0 truncate font-mono text-[12.5px] font-semibold leading-normal text-(--text-primary)"
+          title={project.projectPath}
+        >
+          {project.projectPath}
+        </span>
+        <span className="block w-full min-w-0 truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+          {project.defaultBranch ? `default branch ${project.defaultBranch}` : 'no default branch reported'}
+        </span>
+      </span>
+      {project.state !== 'ready' && <span className={`badge flex-none ${state.badge}`}>{state.label}</span>}
+      {selected && <Icon name="check" size={17} color="var(--brand)" />}
+    </button>
+  )
+}
+
+/** Nothing to pick yet: projects come from the organization's GitLab connection. */
+export function GitlabNoProjectsNotice({ integrationsHref }: { integrationsHref: string }) {
+  return (
+    <div className="flex items-start gap-2 rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) px-3 py-[11px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary) desktop:col-span-2">
+      <span className="mt-[1px] flex h-[14px] w-[14px] flex-none items-center justify-center">
+        <GitlabMark color="var(--text-tertiary)" fillPct={100} />
+      </span>
+      <span>
+        No GitLab projects have been added yet. Connect GitLab and add a project under{' '}
+        <a className="lnk font-medium" href={integrationsHref}>
+          Integrations
+        </a>
+        , then pick it here.
+      </span>
     </div>
   )
 }
@@ -342,20 +471,17 @@ export function GithubRepositoryOption({
   )
 }
 
-const ACCESS_OPTIONS: Array<{
+function accessOptions(writeDescription: string): Array<{
   value: WorkspaceRepoAccess
   icon: 'eye' | 'git-branch'
   label: string
   description: string
-}> = [
-  { value: 'read', icon: 'eye', label: 'Read only', description: 'Clone & read files only' },
-  {
-    value: 'write',
-    icon: 'git-branch',
-    label: 'Read & write',
-    description: 'Push, open PRs & run GitHub Actions'
-  }
-]
+}> {
+  return [
+    { value: 'read', icon: 'eye', label: 'Read only', description: 'Clone & read files only' },
+    { value: 'write', icon: 'git-branch', label: 'Read & write', description: writeDescription }
+  ]
+}
 
 export function RepositoryAccessField({
   repositorySelected,
@@ -363,6 +489,9 @@ export function RepositoryAccessField({
   open,
   readOnly = false,
   readOnlyNote,
+  label = 'Repository access',
+  unselectedLabel = 'Select repository first',
+  writeDescription = 'Push, open PRs & run GitHub Actions',
   onToggle,
   onClose,
   onChange
@@ -372,20 +501,25 @@ export function RepositoryAccessField({
   open: boolean
   readOnly?: boolean
   readOnlyNote?: ReactNode
+  label?: string
+  unselectedLabel?: string
+  /** What read & write buys on this code host — the only provider-specific word here. */
+  writeDescription?: string
   onToggle: () => void
   onClose: () => void
   onChange: (value: WorkspaceRepoAccess) => void
 }) {
-  const selected = ACCESS_OPTIONS.find((option) => option.value === value)!
+  const options = accessOptions(writeDescription)
+  const selected = options.find((option) => option.value === value)!
   return (
     <div className="fld relative min-w-0">
-      <span className="fldlbl">Repository access</span>
+      <span className="fldlbl">{label}</span>
       {!repositorySelected ? (
         <div className="inp min-w-0 cursor-not-allowed pl-[10px] opacity-70" aria-disabled="true">
           <span className="inline-flex min-w-0 flex-1 items-center gap-[7px]">
             <Icon name="book-marked" size={16} color="var(--text-tertiary)" className="flex-none" />
             <span className="truncate font-sans text-[13px] font-medium leading-normal text-(--text-tertiary)">
-              Select repository first
+              {unselectedLabel}
             </span>
           </span>
         </div>
@@ -409,7 +543,7 @@ export function RepositoryAccessField({
             <>
               <div className="fscrim" onClick={onClose} />
               <div className="fmenu left-0 right-0 z-40 min-w-0 rounded-lg p-2 shadow-(--shadow-xl)">
-                {ACCESS_OPTIONS.map((option) => (
+                {options.map((option) => (
                   <button
                     key={option.value}
                     type="button"
@@ -445,6 +579,8 @@ export function WorkspaceBranchField({
   defaultBranch,
   open,
   query,
+  unselectedLabel = 'Pick repository first',
+  defaultBranchLabel = 'GitHub default branch',
   onToggle,
   onClose,
   onQueryChange,
@@ -456,6 +592,8 @@ export function WorkspaceBranchField({
   defaultBranch?: string
   open: boolean
   query: string
+  unselectedLabel?: string
+  defaultBranchLabel?: string
   onToggle: () => void
   onClose: () => void
   onQueryChange: (value: string) => void
@@ -472,7 +610,7 @@ export function WorkspaceBranchField({
           <span className="inline-flex min-w-0 flex-1 items-center gap-[7px]">
             <Icon name="git-branch" size={16} color="var(--text-tertiary)" className="flex-none" />
             <span className="truncate font-sans text-[13px] font-medium leading-normal text-(--text-tertiary)">
-              Pick repository first
+              {unselectedLabel}
             </span>
           </span>
         </div>
@@ -488,7 +626,7 @@ export function WorkspaceBranchField({
                     : 'truncate font-sans text-[13px] font-medium leading-normal text-(--text-tertiary)'
                 }
               >
-                {value || 'GitHub default branch'}
+                {value || defaultBranchLabel}
               </span>
             </span>
             <Icon name="chevron-down" size={15} color="var(--text-tertiary)" />

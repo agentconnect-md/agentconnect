@@ -129,7 +129,7 @@ interface WorkspaceRepoMatchInput {
   repoId?: string | null
   repoFullName: string | null | undefined
   workspace: {
-    mode: 'github' | 'scratch'
+    mode: 'github' | 'gitlab' | 'scratch'
     repoId?: string
     repo?: string
     installationId?: string
@@ -158,7 +158,7 @@ export function effectiveRepoAccess(input: {
   repoId?: string | null
   repoFullName: string | null | undefined
   workspace: {
-    mode: 'github' | 'scratch'
+    mode: 'github' | 'gitlab' | 'scratch'
     repoId?: string
     repo?: string
     installationId?: string

@@ -230,8 +230,8 @@ export function GitlabMark({ color = 'currentColor', fillPct = 60 }: { color?: s
 }
 
 /**
- * A mark for one integration surface. The CORE kinds (github / webhook / schedule
- * / memory dream / playground+webchat) are the host's own; the four chat platforms
+ * A mark for one integration surface. The CORE kinds (github / gitlab / webhook /
+ * schedule / memory dream / playground+webchat) are the host's own; the chat platforms
  * come from their modules (§10 {@link WebPlatformModule.Mark}) through the light
  * `platforms/marks` lookup — see the note there on why this is not a read through
  * `platformRegistry`.
@@ -255,6 +255,10 @@ export function PlatformMark({ platform, fillPct = 60 }: { platform: string; fil
   const sq = squareMarkBox(fillPct)
   if (x.includes('github')) {
     return <SiGithub style={sq} color="currentColor" aria-hidden />
+  }
+  // The other code host, capped the same way: the tanuki is a full-bleed glyph too.
+  if (x.includes('gitlab')) {
+    return <SiGitlab style={sq} color="currentColor" aria-hidden />
   }
   if (x.includes('hook')) {
     return <IconifyIcon icon={webhooksLogoFillIcon} style={s} color="var(--brand)" aria-hidden />

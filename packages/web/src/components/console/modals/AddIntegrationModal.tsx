@@ -11,10 +11,16 @@ import {
 } from 'react'
 import useSWR from 'swr'
 import LarkFeishuSwitcher, { type LarkFeishuTarget } from '@/components/LarkFeishuSwitcher'
-import { AgentIconView, GithubMark, PlatformMark } from '@/components/marks'
+import { AgentIconView, GithubMark, LoadingState, PlatformMark } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 import { GithubReviewSettings } from '@/components/console/GithubReviewSettings'
-import { GithubPrivateReposNotice, REPOSITORY_ACCESS_BADGE } from '@/components/console/WorkspaceFormFields'
+import {
+  GithubPrivateReposNotice,
+  GitlabNoProjectsNotice,
+  GitlabProjectField,
+  GitlabProjectOption,
+  REPOSITORY_ACCESS_BADGE
+} from '@/components/console/WorkspaceFormFields'
 import type {
   WebWizardTransport,
   WizardFooterState,
@@ -32,7 +38,7 @@ import {
   type IdentityChromeView
 } from '@/components/console/platforms/publish'
 import { platformRegistry, platformSupportsSharing } from '@/components/console/platforms/registry'
-import { BOT_PLATFORMS, PLATFORMS } from '@/components/console/platforms/host-projections'
+import { BOT_PLATFORMS, offeredPlatforms } from '@/components/console/platforms/host-projections'
 import { agentLabel, MOCK_MODE, type Agent } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { useOrgs } from '@/lib/org-context'
@@ -46,12 +52,15 @@ import {
   fetchGithubInstallations,
   fetchGithubInstallUrl,
   fetchGithubRepoRoster,
+  fetchGitlabProjects,
   invalidateGithubRepoRosterCache,
   syncGithubInstallations,
   updateAgentRepo,
   type CreatedHookDto,
   type GithubInstallationDto,
   type GithubRepoDto,
+  type GitlabCommentFamily,
+  type GitlabProjectBindingDto,
   type RepoAccess
 } from '@/lib/api'
 import EditWorkspaceModal from './EditWorkspaceModal'
@@ -66,6 +75,15 @@ import {
   type GhFamily,
   type GhTriggerMode
 } from '@/lib/github-events'
+import {
+  GL_COMMENT_FAMILIES,
+  GL_DEFAULT_FAMILIES,
+  GL_FAMILIES,
+  eventsForGitlabFamilies,
+  parseLabelFilter,
+  type GlFamily
+} from '@/lib/gitlab-events'
+import { gitlabProjectSelectable, matchGitlabProjects } from '@/lib/gitlab-projects'
 import {
   effectiveRepoAccess,
   hasChecksWritePermission,
@@ -203,8 +221,17 @@ export default function AddIntegrationModal({
   initialFeishuRegion?: FeishuRegion
   onClose: () => void
 }) {
-  const { createIntegration, bots, createHook, createGithubHook, daemons, daemonsLoading, refresh, updateAgent } =
-    useConsoleData()
+  const {
+    createIntegration,
+    bots,
+    createHook,
+    createGithubHook,
+    createGitlabHook,
+    daemons,
+    daemonsLoading,
+    refresh,
+    updateAgent
+  } = useConsoleData()
   const { me } = useProfile()
   const [platform, setPlatform] = useState<Platform>(initialPlatform ?? 'slack')
   // Lark/Feishu gateway: new installs default to international Lark. Host state
@@ -315,6 +342,18 @@ export default function AddIntegrationModal({
       (ghReportingMode === 'check' &&
         (!hasChecksWritePermission(ghSelectedInstallation) || !hasPullRequestsReadPermission(ghSelectedInstallation))))
 
+  // GitLab path: the organization's added projects, one hook per project. The
+  // wizard never adds a project — that stays on the connection card.
+  const [glProjects, setGlProjects] = useState<GitlabProjectBindingDto[] | null>(null)
+  const [glProjectsError, setGlProjectsError] = useState<string | null>(null)
+  const [glProject, setGlProject] = useState<string | null>(null)
+  const [glOpen, setGlOpen] = useState(false)
+  const [glQ, setGlQ] = useState('')
+  const [glFams, setGlFams] = useState<Set<GlFamily>>(new Set(GL_DEFAULT_FAMILIES))
+  const [glComments, setGlComments] = useState<Set<GitlabCommentFamily>>(new Set(['issues', 'merge_request']))
+  const [glLabels, setGlLabels] = useState('')
+  const [glMentionOnly, setGlMentionOnly] = useState(false)
+
   // Reusing a bot is an advanced path; every platform opens on the create flow
   // until the user explicitly chooses an existing identity.
   const [modePick, setModePick] = useState<'existing' | 'create' | null>(null)
@@ -368,10 +407,13 @@ export default function AddIntegrationModal({
   const isPlatformAvailable = (candidate: Platform) =>
     candidate === 'webhook' ||
     candidate === 'github' ||
+    candidate === 'gitlab' ||
     supportedBotPlatforms.some((supported) => supported.key === candidate)
   const selectedBotPlatformSupported = isPlatformAvailable(platform)
 
-  // The active platform module — undefined for the two core trigger sections.
+  const platformTiles = offeredPlatforms()
+
+  // The active platform module — undefined for the core trigger sections.
   const activeModule = platformRegistry.get(platform)
   const wizard = activeModule?.wizard
   // §5 `regions` is manifest data the web module deliberately does not carry
@@ -704,6 +746,24 @@ export default function AddIntegrationModal({
     })
   }
 
+  const toggleGlFam = (fam: GlFamily) => {
+    setGlFams((prev) => {
+      const next = new Set(prev)
+      if (next.has(fam)) next.delete(fam)
+      else next.add(fam)
+      return next
+    })
+  }
+
+  const toggleGlComment = (fam: GitlabCommentFamily) => {
+    setGlComments((prev) => {
+      const next = new Set(prev)
+      if (next.has(fam)) next.delete(fam)
+      else next.add(fam)
+      return next
+    })
+  }
+
   const authorizeSelectedRepo = async () => {
     if (!ghRepoPick || ghAccessSaving) return
     if (ghSelectedIsWorkspace) {
@@ -736,6 +796,62 @@ export default function AddIntegrationModal({
       setErr(e instanceof Error ? e.message : String(e))
     } finally {
       setGhAccessSaving(false)
+    }
+  }
+
+  // Only the GitLab pane asks for projects; the flag already decides whether the
+  // tile that reaches this pane exists at all.
+  useEffect(() => {
+    if (platform !== 'gitlab' || glProjects !== null) return
+    let alive = true
+    setGlProjectsError(null)
+    fetchGitlabProjects().then(
+      (bindings) => alive && setGlProjects(bindings),
+      (e) => alive && setGlProjectsError(e instanceof Error ? e.message : String(e))
+    )
+    return () => {
+      alive = false
+    }
+  }, [glProjects, platform])
+
+  const glSelectable = (glProjects ?? []).filter((project) => gitlabProjectSelectable(project.state))
+  const glNoProjects = glProjects !== null && glSelectable.length === 0
+  const glPicked = (glProjects ?? []).find((project) => project.projectId === glProject)
+  // One hook per (agent, project) — the CP 409s a second one, so the picker says so first.
+  const glWatchedProjects = useMemo(
+    () =>
+      new Set((agentHooksData ?? []).filter((h) => h.kind === 'gitlab' && h.repoId).map((h) => h.repoId!.toString())),
+    [agentHooksData]
+  )
+  const glAlreadyWatched = !!glProject && glWatchedProjects.has(glProject)
+
+  // One subscription = one hook row on this agent, named after the project.
+  const submitGitlab = async () => {
+    if (busyRef.current || !glProject || glFams.size === 0) return
+    if (glAlreadyWatched) {
+      setErr(
+        `This agent already watches ${glPicked?.projectPath ?? 'this project'} — edit its events on the agent page instead.`
+      )
+      return
+    }
+    busyRef.current = true
+    setSaving(true)
+    setErr(null)
+    try {
+      await createGitlabHook({
+        agentId: agent.id,
+        name: glPicked?.projectPath ?? glProject,
+        projectId: glProject,
+        events: eventsForGitlabFamilies(glFams),
+        commentFamilies: [...glComments],
+        labelFilter: parseLabelFilter(glLabels),
+        mentionOnly: glMentionOnly
+      })
+      onClose()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+      setSaving(false)
+      busyRef.current = false
     }
   }
 
@@ -837,19 +953,26 @@ export default function AddIntegrationModal({
             enabled: !!ghRepoPick && !ghRepoAlreadyWatched && ghFams.size > 0 && !ghReviewSettingsBlocked,
             hidden: false
           }
-        : mode === 'existing'
+        : platform === 'gitlab'
           ? {
-              label: 'Connect & authorize',
-              act: () => void submitReuse(),
-              enabled: selectedBotId !== null,
+              label: 'Connect',
+              act: () => void submitGitlab(),
+              enabled: !!glProject && !glAlreadyWatched && glFams.size > 0,
               hidden: false
             }
-          : {
-              label: footerView?.label ?? 'Connect & authorize',
-              act: () => footerRef.current?.onSubmit(),
-              enabled: footerView?.enabled === true,
-              hidden: footerView?.hidden === true
-            }
+          : mode === 'existing'
+            ? {
+                label: 'Connect & authorize',
+                act: () => void submitReuse(),
+                enabled: selectedBotId !== null,
+                hidden: false
+              }
+            : {
+                label: footerView?.label ?? 'Connect & authorize',
+                act: () => footerRef.current?.onSubmit(),
+                enabled: footerView?.enabled === true,
+                hidden: footerView?.hidden === true
+              }
 
   return (
     <>
@@ -886,8 +1009,16 @@ export default function AddIntegrationModal({
           </div>
         )}
         <div className="fldlbl mb-2">Platform</div>
-        <div className="mb-[18px] grid grid-cols-2 gap-[10px] desktop:grid-cols-6">
-          {PLATFORMS.map((candidate) => {
+        {/* One column per offered tile — complete literal strings, so the flagged
+            GitLab tile widens the row instead of wrapping a lone tile below it. */}
+        <div
+          className={
+            platformTiles.length > 6
+              ? 'mb-[18px] grid grid-cols-2 gap-[10px] desktop:grid-cols-7'
+              : 'mb-[18px] grid grid-cols-2 gap-[10px] desktop:grid-cols-6'
+          }
+        >
+          {platformTiles.map((candidate) => {
             const available = isPlatformAvailable(candidate.key)
             const on = available && platform === candidate.key
             return (
@@ -1512,6 +1643,149 @@ export default function AddIntegrationModal({
             )}
           </>
         )}
+        {platform === 'gitlab' && (
+          <>
+            {glProjectsError ? (
+              <div className="mb-4 font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">
+                Couldn&rsquo;t load your GitLab projects — {glProjectsError}
+              </div>
+            ) : glProjects === null ? (
+              <LoadingState size={20} padding={16} />
+            ) : glNoProjects ? (
+              <div className="mb-4">
+                <GitlabNoProjectsNotice integrationsHref={orgPath('/integrations')} />
+              </div>
+            ) : (
+              <>
+                <div className="mb-4">
+                  <GitlabProjectField
+                    value={glPicked?.projectPath ?? ''}
+                    icon="book-marked"
+                    loading={false}
+                    open={glOpen}
+                    query={glQ}
+                    onToggle={() => {
+                      setGlQ('')
+                      setGlOpen((value) => !value)
+                    }}
+                    onClose={() => setGlOpen(false)}
+                    onQueryChange={setGlQ}
+                    error={
+                      glAlreadyWatched
+                        ? `This agent already watches ${glPicked?.projectPath ?? 'this project'}.`
+                        : undefined
+                    }
+                  >
+                    {matchGitlabProjects(glProjects, glQ).map((project) => (
+                      <GitlabProjectOption
+                        key={project.id}
+                        project={project}
+                        selected={glProject === project.projectId}
+                        onSelect={() => {
+                          setGlProject(project.projectId)
+                          setGlOpen(false)
+                          setErr(null)
+                        }}
+                      />
+                    ))}
+                    {matchGitlabProjects(glProjects, glQ).length === 0 && (
+                      <div className="fnohit">No projects match &ldquo;{glQ}&rdquo;</div>
+                    )}
+                  </GitlabProjectField>
+                </div>
+                <div className="fldlbl mb-2">Listen for</div>
+                <div className="mb-4 grid grid-cols-1 gap-[9px] min-[440px]:grid-cols-3">
+                  {GL_FAMILIES.map((r) => {
+                    const on = glFams.has(r.fam)
+                    return (
+                      <div
+                        key={r.fam}
+                        data-gitlab-family={r.fam}
+                        className={`flex min-w-0 cursor-pointer items-start gap-[9px] rounded-[9px] border px-3 py-[10px] ${
+                          on ? 'border-(--brand) bg-(--brand-soft)' : 'border-(--border-default) bg-(--surface-card)'
+                        }`}
+                        onClick={() => toggleGlFam(r.fam)}
+                      >
+                        <Icon
+                          name={r.icon}
+                          size={16}
+                          color={on ? 'var(--brand)' : 'var(--text-tertiary)'}
+                          className="mt-[1px] flex-none"
+                        />
+                        <span className="min-w-0 flex-1">
+                          <span className="block font-sans text-[12.5px] font-semibold leading-normal">{r.label}</span>
+                          <span className="mt-[2px] block font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-tertiary)">
+                            {r.desc}
+                          </span>
+                        </span>
+                        <span
+                          className={`mt-[1px] flex h-[18px] w-[18px] flex-none items-center justify-center rounded-[5px] border-[1.5px] ${
+                            on ? 'border-(--brand) bg-(--brand)' : 'border-(--border-default) bg-(--surface-card)'
+                          }`}
+                        >
+                          {on && <Icon name="check" size={12} color="#fff" />}
+                        </span>
+                      </div>
+                    )
+                  })}
+                </div>
+                <div className="fldlbl mb-2">Also run on comments in</div>
+                <div className="mb-4 grid grid-cols-1 gap-[9px] min-[440px]:grid-cols-2">
+                  {GL_COMMENT_FAMILIES.map((r) => {
+                    const on = glComments.has(r.fam)
+                    return (
+                      <label
+                        key={r.fam}
+                        className={`flex min-w-0 cursor-pointer items-center gap-2.5 rounded-[9px] border px-3 py-[10px] ${
+                          on ? 'border-(--brand) bg-(--brand-soft)' : 'border-(--border-default) bg-(--surface-card)'
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          className="flex-none accent-(--brand)"
+                          checked={on}
+                          aria-label={`Comments in ${r.label.toLowerCase()}`}
+                          onChange={() => toggleGlComment(r.fam)}
+                        />
+                        <span className="font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
+                          {r.label}
+                        </span>
+                      </label>
+                    )
+                  })}
+                </div>
+                <div className="fld mb-4">
+                  <span className="fldlbl">Only these labels (optional)</span>
+                  <input
+                    className="inp mn"
+                    placeholder="needs-review, agent"
+                    value={glLabels}
+                    onChange={(e) => setGlLabels(e.target.value)}
+                    aria-label="Label filter"
+                  />
+                  <span className="mt-[6px] block font-sans text-[11.5px] font-normal leading-[1.45] text-(--text-tertiary)">
+                    Comma separated. Empty means every issue and merge request.
+                  </span>
+                </div>
+                <label className="mb-4 flex cursor-pointer items-start gap-2.5 rounded-[9px] border border-(--border-default) bg-(--surface-card) px-3 py-[10px]">
+                  <input
+                    type="checkbox"
+                    className="mt-[2px] flex-none accent-(--brand)"
+                    checked={glMentionOnly}
+                    aria-label="Mention only"
+                    onChange={(e) => setGlMentionOnly(e.target.checked)}
+                  />
+                  <span className="min-w-0 flex-1">
+                    <span className="block font-sans text-[12.5px] font-semibold leading-normal">Mention only</span>
+                    <span className="mt-[2px] block font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-tertiary)">
+                      Run only when the text mentions @{agent.name}.
+                    </span>
+                  </span>
+                </label>
+              </>
+            )}
+          </>
+        )}
         {wizard && !identityHidden && (
           <div className="mb-2 flex items-center justify-between gap-3">
             <div className="fldlbl">Bot identity</div>
@@ -1644,7 +1918,9 @@ export default function AddIntegrationModal({
               ? 'Each POST becomes a session, routed to this agent by the endpoint path. Retries are de-duplicated by the X-AC-Delivery-Key header (auto-assigned when absent).'
               : platform === 'github'
                 ? 'Matching events run the agent in a session and reply on the same PR, issue or commit thread.'
-                : wizard?.inviteHint(region)}
+                : platform === 'gitlab'
+                  ? 'Matching events run the agent in a session and reply on the same issue, merge request or push thread.'
+                  : wizard?.inviteHint(region)}
           </span>
         </div>
         {shareToggleAvailable && !identityHidden && (

@@ -32,9 +32,9 @@ import { botCardCopy, platformRegistry } from './registry'
  */
 const ALIASES = ['lark']
 
-/** Not a module and never will be: picking either mints an inbound trigger, not
- *  a bot identity (contract, registry doc). The picker still offers them. */
-const CORE_TRIGGER_KINDS = ['webhook', 'github']
+/** Not modules and never will be: picking one mints an inbound trigger, not a
+ *  bot identity (contract, registry doc). The picker still offers them. */
+const CORE_TRIGGER_KINDS = ['webhook', 'github', 'gitlab']
 
 describe('platform set', () => {
   it('gives every registered module a mark and a label', () => {
@@ -61,9 +61,9 @@ describe('platform set', () => {
     }
   })
 
-  it('offers exactly the registered platforms as picker tiles, plus the two core triggers', () => {
-    // The tile SET is the registry's, in registry order; the two trigger kinds
-    // are appended by the chassis because they are not modules.
+  it('offers exactly the registered platforms as picker tiles, plus the core triggers', () => {
+    // The tile SET is the registry's, in registry order; the trigger kinds are
+    // appended by the chassis because they are not modules.
     expect(BOT_PLATFORMS.map((tile) => tile.key)).toEqual([...platformRegistry.ids()])
     expect(PLATFORMS.map((tile) => tile.key)).toEqual([...platformRegistry.ids(), ...CORE_TRIGGER_KINDS])
   })

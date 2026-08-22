@@ -2,7 +2,7 @@
 // Ported from the AgentConnect design (static demo content for the console UI).
 
 import type { AgentIcon } from '@/lib/agent-icon'
-import type { DaemonSessionRetention, ManagedMemoryScope, MemoryDreamingConfig } from '@/lib/api'
+import type { DaemonSessionRetention, HookKind, ManagedMemoryScope, MemoryDreamingConfig } from '@/lib/api'
 import { featureFlagEnabled } from '@/lib/feature-flags'
 import { platformLabel } from '@/lib/platform-labels'
 import { randomUuid } from '@/lib/random-uuid'
@@ -334,6 +334,13 @@ export interface GithubWorkspace {
   files: WorkspaceFile[]
 }
 
+/** A managed GitLab project checkout — the same git shape, keyed by project id. */
+export interface GitlabWorkspace extends Omit<GithubWorkspace, 'mode' | 'repoId' | 'installationId'> {
+  mode: 'gitlab'
+  /** Numeric GitLab project id — rename-stable, unlike the namespaced path. */
+  projectId?: string
+}
+
 export interface ScratchWorkspace {
   mode: 'scratch'
   created: string
@@ -341,7 +348,7 @@ export interface ScratchWorkspace {
   files: WorkspaceFile[]
 }
 
-export type Workspace = GithubWorkspace | ScratchWorkspace
+export type Workspace = GithubWorkspace | GitlabWorkspace | ScratchWorkspace
 
 export interface WorkspaceStatusInfo {
   dot: string
@@ -479,7 +486,7 @@ export interface Agent {
   sandboxRequired: boolean
   integrations: Integration[]
   /** Distinct kinds of enabled inbound triggers (hooks) — list-view marks. */
-  hookKinds?: ('webhook' | 'github')[]
+  hookKinds?: HookKind[]
   workspace: Workspace
 }
 
