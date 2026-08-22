@@ -47,10 +47,6 @@ const BOB = AgentId('44444444-4444-4444-8444-444444444442')
 const INT_A = IntegrationId('66666666-6666-4666-8666-666666666661')
 const INT_B = IntegrationId('66666666-6666-4666-8666-666666666662')
 
-// The named demux twins left the wire (#556); these reads assert they stay gone.
-const legacyTwins = (assign: RcBotAssign): { apiAppId?: string; teamId?: string; botUserId?: string } =>
-  assign as unknown as { apiAppId?: string; teamId?: string; botUserId?: string }
-
 // ── a recording relay channel + a control-sender spy ──────────────────────────
 class FakeChannel implements RelayChannel {
   sends: { type: RelayCpFrameType; payload: unknown }[] = []
@@ -564,12 +560,9 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
     // §6.1: a bot assignment is always a chat platform; the kind teaches an older relay
     // to classify an id a newer CP introduces.
     expect(assign.originKind).toBe('chat')
-    // §6.7 dual-shape: the opaque ingress bag mirrors the named demux fields.
-    expect(assign.ingress).toEqual({
-      ...(legacyTwins(assign).apiAppId ? { apiAppId: legacyTwins(assign).apiAppId } : {}),
-      ...(legacyTwins(assign).teamId ? { teamId: legacyTwins(assign).teamId } : {}),
-      ...(legacyTwins(assign).botUserId ? { botUserId: legacyTwins(assign).botUserId } : {})
-    })
+    // §6.7: a manual-paste bot has no demux identity, so the opaque ingress bag ships empty
+    // (keys omitted, never null) and the relay verify-scans instead.
+    expect(assign.ingress).toEqual({})
 
     // members: one entry per daemon, agents grouped.
     const members = Object.fromEntries(assign.members.map((m) => [m.daemonId, m.agentIds.sort()]))
@@ -659,7 +652,6 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       defaultDaemonId: D1,
       agents: [{ agentId: ALICE, daemonId: D1, integrationId: INT_A }]
     })
-    expect(legacyTwins(assign).apiAppId).toBeUndefined()
     expect('botToken' in assign.secrets).toBe(false)
     expect(upserts).toEqual([
       {
@@ -1171,18 +1163,13 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
   it('stamps teamId + botUserId into the rc/bot-assign ingress bag for a platform-app install', async () => {
     // A distributed app's install: every workspace shares the app id + signing
     // secret, so the relay may only demux this bot on (api_app_id, team_id).
-    // §6.7 emission flip: the opaque ingress bag is the ONE carrier — the named
-    // top-level fields are no longer emitted (the relay's bag reader shipped
-    // first in #545).
+    // §6.7: the opaque ingress bag is the ONE carrier of that demux identity.
     botRow = bot({ slackAppId: 'APLATFORM', teamId: 'T1WORKSPACE', botUserId: 'U0BOT' })
 
     await makeOrch().syncBot(BOT)
 
     const assign = ch.sends.find((send) => send.type === 'rc/bot-assign')?.payload as RcBotAssign
     expect(assign.ingress).toEqual({ apiAppId: 'APLATFORM', teamId: 'T1WORKSPACE', botUserId: 'U0BOT' })
-    expect(legacyTwins(assign).apiAppId).toBeUndefined()
-    expect(legacyTwins(assign).teamId).toBeUndefined()
-    expect(legacyTwins(assign).botUserId).toBeUndefined()
   })
 
   it('revokeBot marks the bot + installs revoked, unassigns, and pulls the daemon specs', async () => {
