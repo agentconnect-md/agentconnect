@@ -188,7 +188,7 @@ export function WorkspaceCard({
 
         {isGit ? (
           <span className="flex h-5 w-5 flex-none items-center justify-center">
-            {isGitlab ? <GitlabMark color="var(--text-secondary)" /> : <GithubMark color="var(--text-secondary)" />}
+            {isGitlab ? <GitlabMark /> : <GithubMark color="var(--text-secondary)" />}
           </span>
         ) : (
           <Icon name="folder" size={16} color="var(--text-tertiary)" />

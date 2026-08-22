@@ -441,7 +441,7 @@ export default function SessionsView() {
       kind: 'gitlab' as const,
       face: (
         <span className="flex h-[15px] w-[15px] items-center justify-center">
-          <GitlabMark color="var(--text-tertiary)" />
+          <GitlabMark />
         </span>
       )
     }))

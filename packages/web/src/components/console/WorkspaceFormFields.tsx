@@ -95,7 +95,7 @@ export function WorkspaceModeField({
             className={value === 'gitlab' ? 'ptile on items-start text-left' : 'ptile items-start text-left'}
             onClick={() => onChange('gitlab')}
           >
-            {tileIcon(<GitlabMark color="var(--text-primary)" />)}
+            {tileIcon(<GitlabMark />)}
             <span className="min-w-0 flex-1">
               <span className="block font-sans text-[13px] font-semibold leading-normal">From GitLab</span>
               <span className="mt-[2px] block truncate font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-tertiary)">
@@ -356,7 +356,7 @@ export function GitlabProjectField(props: RepositoryPickerProps) {
     <RepositoryPickerField
       {...props}
       label={props.label ?? 'GitLab project'}
-      mark={<GitlabMark color="var(--text-secondary)" />}
+      mark={<GitlabMark />}
       emptyLabel="Pick a project"
       loadingLabel="Loading projects…"
       searchPlaceholder="Search your added projects…"
@@ -391,7 +391,7 @@ export function GitlabProjectOption({
       onClick={() => selectable && onSelect()}
     >
       <span className="flex h-4 w-4 flex-none items-center justify-center">
-        <GitlabMark color="var(--text-tertiary)" />
+        <GitlabMark />
       </span>
       <span className="flex min-w-0 flex-1 flex-col items-start gap-[2px] overflow-hidden">
         <span
@@ -415,7 +415,7 @@ export function GitlabNoProjectsNotice({ integrationsHref }: { integrationsHref:
   return (
     <div className="flex items-start gap-2 rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) px-3 py-[11px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary) desktop:col-span-2">
       <span className="mt-[1px] flex h-[14px] w-[14px] flex-none items-center justify-center">
-        <GitlabMark color="var(--text-tertiary)" fillPct={100} />
+        <GitlabMark fillPct={100} />
       </span>
       <span>
         No GitLab projects have been added yet. Connect GitLab and add a project under{' '}

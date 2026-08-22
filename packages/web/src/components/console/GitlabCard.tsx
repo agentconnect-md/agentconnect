@@ -158,7 +158,7 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
       <div className="cardhead justify-between">
         <span className="cardtitle flex items-center gap-2">
           <span className="flex h-[15px] w-[15px] items-center justify-center">
-            <GitlabMark color="var(--text-primary)" />
+            <GitlabMark />
           </span>
           GitLab
         </span>
@@ -204,7 +204,7 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
               <div className="flex min-w-0 flex-wrap items-center gap-[10px]">
                 <span className="flex h-7 w-7 flex-none items-center justify-center rounded-[7px] border border-(--border-default) bg-(--surface-card)">
                   <span className="flex h-[14px] w-[14px] items-center justify-center">
-                    <GitlabMark color="var(--text-primary)" />
+                    <GitlabMark />
                   </span>
                 </span>
                 <span className="mono min-w-0 truncate text-[12.5px]">{c.gitlabUsername}</span>
@@ -386,7 +386,7 @@ function ConfirmGitlab({
       <div className="modalhead">
         <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] bg-(--status-error-soft)">
           <span className="flex h-4 w-4 items-center justify-center">
-            <GitlabMark color="var(--status-error)" />
+            <GitlabMark />
           </span>
         </span>
         <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">{title}</span>
