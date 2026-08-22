@@ -225,6 +225,9 @@ export class GitlabProvisioner {
     ) {
       return { ok: false, reason: 'provisioning_or_cleanup_in_progress', retryable: true }
     }
+    // Set once the run knows where it is working, so a failure can undo exactly
+    // what it speculatively created.
+    let scope: { orgId: string; bindingId: string; projectId: bigint; rootGroupId: bigint; token: string } | undefined
     try {
       let ensured: { ok: true } | { ok: false; reason: string; retryable: boolean }
       try {
@@ -238,27 +241,39 @@ export class GitlabProvisioner {
         const root = await gitlabRootNamespace(token, project.namespace, this.deps.fetchImpl)
         // Service accounts hang off a top-level GROUP; a personal namespace has none (§5).
         if (root.kind !== 'group') return { ok: false, reason: 'personal_namespace_unsupported', retryable: false }
+        scope = {
+          orgId,
+          bindingId: binding.id,
+          projectId: binding.projectId,
+          rootGroupId: BigInt(root.id),
+          token
+        }
         ensured = await this.deps.accounts.ensureForConsumer(
-          {
-            orgId,
-            bindingId: binding.id,
-            projectId: binding.projectId,
-            rootGroupId: root.id,
-            installerConnectionId: binding.installerConnectionId,
-            token
-          },
+          { ...scope, rootGroupId: root.id, installerConnectionId: binding.installerConnectionId },
           consumer
         )
       } catch (e) {
         // Only the provisioning half maps its failures; `commit` owns its own.
         const reason = e instanceof GitlabApiError ? `gitlab_${e.status || 'unreachable'}` : 'admin_unavailable'
         this.deps.log?.warn({ bindingId: binding.id, reason }, 'gitlab agent account provisioning failed')
+        if (scope) await this.deps.accounts.rollbackSpeculativeBind(scope, consumer.agentId)
         return { ok: false, reason, retryable: e instanceof GitlabApiError && e.retryable }
       }
-      if (!ensured.ok) return ensured
+      if (!ensured.ok) {
+        // A retryable loser did not create anything of its own — the account it
+        // lost to belongs to a live peer, so only a final failure rolls back.
+        if (!ensured.retryable && scope) await this.deps.accounts.rollbackSpeculativeBind(scope, consumer.agentId)
+        return ensured
+      }
       // STILL under the binding lease: the authorization row and the membership
       // become visible to convergence together, never one without the other.
-      return { ok: true, result: await commit() }
+      try {
+        return { ok: true, result: await commit() }
+      } catch (e) {
+        // The write never landed, so the bind it was for must not outlive it.
+        if (scope) await this.deps.accounts.rollbackSpeculativeBind(scope, consumer.agentId)
+        throw e
+      }
     } finally {
       await this.deps.bindings.endProviderMutation(orgId, binding.id, binding.projectId, owner).catch(() => {})
     }

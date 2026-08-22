@@ -360,6 +360,54 @@ export class GitlabAccountService {
     return this.retireIfEmpty(orgId, account.id, token)
   }
 
+  /**
+   * Undo a speculative bind whose write never landed. `ensureForConsumer` runs
+   * BEFORE the row that makes the agent a consumer exists, so a failure after it
+   * can leave an account — and possibly a membership — that no convergence would
+   * ever visit: the unbind pass discovers stale members through the binding's
+   * membership rows, and an account with none is invisible to it. Left alone it
+   * would sit in the root consuming one of its 100 service-account slots for a
+   * hook or workspace that does not exist.
+   *
+   * An account still bound to another project keeps its membership and its PATs
+   * (§19.4) — only the binding this write was for is undone.
+   */
+  async rollbackSpeculativeBind(
+    input: { orgId: string; bindingId: string; projectId: bigint; rootGroupId: bigint; token: string },
+    agentId: string
+  ): Promise<void> {
+    const account = await this.deps.accounts.byAgentRoot(input.orgId, agentId, input.rootGroupId)
+    if (!account) return
+    // Another authorization may already earn this membership — a workspace on
+    // the project, or an enabled hook that is not the one being rolled back.
+    // The consumer set is the same authority the unbind pass uses, so asking it
+    // keeps this from revoking access the write never granted.
+    const consumers = await this.deps.accounts.consumers(input.orgId, input.projectId)
+    if (consumers.some((consumer) => consumer.agentId === agentId)) return
+    try {
+      const bound = await this.deps.accounts.membershipsForBinding(input.bindingId)
+      if (bound.some((membership) => membership.accountId === account.id)) {
+        if (account.serviceAccountUserId !== null) {
+          await gitlabRemoveMember(
+            input.token,
+            input.projectId,
+            account.serviceAccountUserId,
+            this.deps.fetchImpl
+          ).catch(swallow404)
+        }
+        await this.deps.accounts.detachMembership(account.id, input.bindingId)
+      }
+      await this.retireIfEmpty(input.orgId, account.id, input.token)
+    } catch (e) {
+      // Best effort: the account row keeps its own cleanup state, and the next
+      // convergence of any project in this root reconciles what is left.
+      this.deps.log?.warn(
+        { accountId: account.id, status: e instanceof GitlabApiError ? e.status : undefined },
+        'gitlab speculative bind rollback failed'
+      )
+    }
+  }
+
   /** §19.4: an account with no membership left in its root is retired — PATs
    *  revoked, account deleted — never kept warm. */
   async retireIfEmpty(orgId: string, accountId: string, token: string): Promise<boolean> {
