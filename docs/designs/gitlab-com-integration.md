@@ -343,13 +343,26 @@ account in each; in the common case this is exactly one account per agent.
 
 The account:
 
-- has the username `agentconnect-a<agentIdHex>-g<rootGroupId>` — deterministic
-  from its key, globally unique across deployments, and rename-stable: agent
-  renames never touch it;
+- has the username `<agentSlug>-<agentId8>-<root36>`: the agent's name
+  slugged to lower-case `[a-z0-9-]` and capped at 20 characters, the first
+  eight hex characters of the agent id, and the top-level group id in base
+  36 — for example `gitlab-pilot-5b350c0a-2bmzez`. GitLab.com usernames are
+  one global namespace, so the suffixes carry the uniqueness: eight hex
+  characters are ample against the at-most-100 accounts a root can hold, and
+  the root component is what lets one agent own an account in each root it
+  spans. The slug is readable in `@`-completion and is taken at creation; it
+  is not re-derived on rename, because the row's numeric user id is the
+  durable key and the derivation is needed only to recover an account the
+  database does not know yet;
 - carries the agent's display name, sanitized as the earlier `<project>-bot`
   derivation sanitized and without any suffix; on agent rename the next
   provisioning convergence updates it, and a refused rename is cosmetic and
   never degrades credentials;
+- wears the agent's icon as its avatar: the same rendered PNG the chat
+  platforms receive, uploaded through the account's own `api` token with
+  GitLab's current-user avatar endpoint, converged on provisioning and on
+  icon change under the account lease. Like the display name it is cosmetic:
+  a refused or unsupported upload never degrades credentials;
 - cannot sign in through the GitLab UI and does not consume a licensed seat;
   and
 - is assigned the Developer role by default. GitLab branch rules, approval
@@ -1504,12 +1517,16 @@ administers — the shape the GitHub card already has. It shows:
 
 - connected GitLab username and GitLab.com host;
 - OAuth state: connected, reconnect required, or disconnected;
-- project binding state and the agent accounts that are members, each
-  linking to its GitLab profile;
-- webhook state: not needed, installed, repairing, or failed;
+- the organization's bots, one row per agent account — avatar, display
+  name, `@username` linking to its GitLab profile, top-level group, and
+  account health — mirroring the chat-platform cards, where the bot is the
+  row;
+- under each bot, the projects it is a member of: path, role, binding state,
+  and webhook state (not needed, installed, repairing, or failed), with the
+  project-level actions — repair, remove, transfer administration — on that
+  project line;
 - credential expiry and rotation warning without token values; and
-- actions to reconnect, repair, remove a project, transfer administration,
-  disconnect, or remove a released connection.
+- actions to reconnect, disconnect, or remove a released connection.
 
 The agent detail page owns the agent's own GitLab identity: a bot chip with
 the account username, display name, profile link, and account health, grouped
