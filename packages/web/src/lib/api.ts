@@ -5139,6 +5139,121 @@ export async function fetchGithubRepoAccess(
   }
 }
 
+// ── gitlab.com connections and project bindings ──────────────────────────────
+// The org's GitLab.com OAuth connections and the projects they manage
+// (gitlab-com-integration.md §18.2). Deployment-config opt-in like the GitHub
+// App: without a GitLab OAuth application the CP registers none of these routes
+// and every call 404s — mapped to `enabled: false` so callers get a tri-state
+// instead of throws. No token material crosses this surface, ever.
+
+/** One organization GitLab.com connection — the administration identity only. */
+export interface GitlabConnectionDto {
+  id: string
+  gitlabUserId: string // numeric GitLab.com user id, losslessly as a string
+  gitlabUsername: string
+  state: 'connected' | 'reauth_required' | 'disconnected'
+  scopes: string[]
+  connectedBy: string | null // AgentConnect user id; null after user deletion
+  accessExpiresAt: string | null
+  createdAt: string
+}
+
+/** One accessible project in the picker — metadata only, never installability. */
+export interface GitlabProjectDto {
+  projectId: string // numeric id, losslessly as a string
+  path: string // current namespaced path — display only, renames are expected
+  defaultBranch: string | null
+  lastActivityAt: string | null
+}
+
+export type GitlabProjectBindingState =
+  'provisioning' | 'ready' | 'admin_degraded' | 'runtime_degraded' | 'cleanup_pending'
+
+/** One managed project — its lifecycle state and non-secret external identity. */
+export interface GitlabProjectBindingDto {
+  id: string
+  projectId: string
+  projectPath: string
+  defaultBranch: string | null
+  state: GitlabProjectBindingState
+  stateReason: string | null
+  serviceAccountUsername: string | null
+  webhookInstalled: boolean
+  credentialEpoch: string
+  createdAt: string
+}
+
+/** Removing a project can leave external cleanup unfinished; the binding then
+ *  stays listed as `cleanup_pending` instead of disappearing (§19.4). */
+export interface GitlabProjectRemovalDto {
+  removed: boolean
+  state?: GitlabProjectBindingState
+  stateReason?: string | null
+}
+
+/** The connection list doubles as the enabled-probe: it is viewer-readable (the
+ *  OAuth start route is not — minting a state is a write), and 404 ⇒ the feature
+ *  is off on this deployment. */
+export async function fetchGitlabConnections(): Promise<{ enabled: boolean; connections: GitlabConnectionDto[] }> {
+  try {
+    const body = await apiGet<{ connections: GitlabConnectionDto[] }>(`${orgBase()}/gitlab/connections`)
+    return { enabled: true, connections: body.connections }
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 404) return { enabled: false, connections: [] }
+    throw e
+  }
+}
+
+/** One-shot org-bound authorization URL. Mints a state the begin hop consumes,
+ *  so fetch it fresh per click; `returnPath` is where the callback lands back. */
+export function startGitlabOauth(returnPath?: string): Promise<string> {
+  return apiPost<{ url: string }>(`${orgBase()}/gitlab/oauth/start`, returnPath ? { returnPath } : {}).then(
+    (r) => r.url
+  )
+}
+
+/** Revoke the OAuth grant and drop the stored tokens. Bound projects survive —
+ *  removing them is a separate, explicitly destructive action. */
+export function disconnectGitlabConnection(id: string): Promise<GitlabConnectionDto> {
+  return apiDelete<GitlabConnectionDto>(`${orgBase()}/gitlab/connections/${encodeURIComponent(id)}`)
+}
+
+/** Server-side paginated project search. `nextPage` is null on the last page. */
+export function searchGitlabProjects(
+  connectionId: string,
+  input: { search?: string; page?: number } = {}
+): Promise<{ projects: GitlabProjectDto[]; nextPage: number | null }> {
+  const params = new URLSearchParams()
+  if (input.search?.trim()) params.set('search', input.search.trim())
+  if (input.page) params.set('page', String(input.page))
+  const query = params.toString()
+  return apiGet<{ projects: GitlabProjectDto[]; nextPage: number | null }>(
+    `${orgBase()}/gitlab/connections/${encodeURIComponent(connectionId)}/projects${query ? `?${query}` : ''}`
+  )
+}
+
+export function fetchGitlabProjects(): Promise<GitlabProjectBindingDto[]> {
+  return apiGet<{ bindings: GitlabProjectBindingDto[] }>(`${orgBase()}/gitlab/projects`).then((r) => r.bindings)
+}
+
+/** Bind a project. The server re-fetches it and requires current Maintainer or
+ *  Owner access, so the returned binding — not the picked row — is the truth. */
+export function createGitlabProject(input: {
+  connectionId: string
+  projectId: string
+}): Promise<GitlabProjectBindingDto> {
+  return apiPost<GitlabProjectBindingDto>(`${orgBase()}/gitlab/projects`, input)
+}
+
+/** Re-run provisioning: identity, service account, credentials, and webhook. */
+export function repairGitlabProject(id: string): Promise<GitlabProjectBindingDto> {
+  return apiPost<GitlabProjectBindingDto>(`${orgBase()}/gitlab/projects/${encodeURIComponent(id)}/repair`, {})
+}
+
+export function deleteGitlabProject(id: string): Promise<GitlabProjectRemovalDto> {
+  return apiDelete<GitlabProjectRemovalDto>(`${orgBase()}/gitlab/projects/${encodeURIComponent(id)}`)
+}
+
 // ── agent repository authorizations (agent-multi-repo-authorization.md) ──────
 // Explicit non-workspace repo grants on an agent — the detail page's
 // Repositories card. The workspace repo is implicit and never listed here; the
