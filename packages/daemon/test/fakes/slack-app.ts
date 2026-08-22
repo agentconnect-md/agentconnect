@@ -44,6 +44,11 @@ export function fakeSlackAppFactory(identity: FakeSlackIdentity = {}): SlackAppF
           delete: ok
         },
         files: {
+          getUploadURLExternal: async () => ({
+            upload_url: 'https://files.slack.com/upload/v1/fake',
+            file_id: 'F_FAKE'
+          }),
+          completeUploadExternal: async () => ({ files: [{ id: 'F_FAKE' }] }),
           uploadV2: async () => ({ ok: true, files: [{ ok: true, files: [{ id: 'F_FAKE' }] }] }),
           info: async () => ({ file: { shares: { public: { C1: [{ ts: '1700000000.000100' }] } } } })
         },
