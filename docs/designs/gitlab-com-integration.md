@@ -1,6 +1,7 @@
 # GitLab.com Integration
 
-> Status: **Proposed**
+> Status: **Implemented** — the Section 22 M0–M7 spine is merged; that
+> section records the two deliberate leftovers.
 >
 > Platform assumptions last verified: **2026-07-28**
 >
@@ -1590,6 +1591,21 @@ bindings remain visible for repair or disconnect; rollback must not orphan
 external credentials by deleting only local metadata.
 
 ## 22. Implementation Plan
+
+> **Implementation status.** The M0–M7 spine below is implemented. Its
+> rolling-compatibility seams are gated by six feature strings, all declared in
+> `packages/protocol/src/consts.ts`: `gitcred-provider-v2` (provider-qualified
+> Git credentials), `gitlab-com-v1` (the complete daemon and relay GitLab
+> slice), `gitlab-effect-v1` (the Section 14.2 broker effect lease),
+> `gitlab-rerun-v1` (the relay's `rc/hook-rerun` admission),
+> `codehost-note-projection-v1` (the daemon-owned status-note projection), and
+> `codehost-review-v1` (the provider-routed formal-review surface). Two gaps
+> are deliberate. The `hook/start` barrier is a provider one-of on the wire but
+> is still served GitHub-only in the Control Plane, so the note projection's
+> `running` edge waits on its GitLab arm
+> (`packages/control-plane/src/codehost/note-projection.service.ts`); that arm
+> is being finished as follow-up work. The session merge-request dock panel
+> stays out of scope per Section 18.1.
 
 Milestones are merge order, not calendar. Each milestone is several small,
 independently mergeable PRs; GitHub behavior stays green at every merge; each
