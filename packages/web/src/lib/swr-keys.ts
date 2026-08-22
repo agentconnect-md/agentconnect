@@ -88,8 +88,11 @@ export const consoleKeys = {
     agentId ? consoleKey(orgId, 'agent-hooks', agentId) : null,
   agentRepos: (orgId: string | null | undefined, agentId: string | null | undefined) =>
     agentId ? consoleKey(orgId, 'agent-repos', agentId) : null,
-  agentGitlabAccounts: (orgId: string | null | undefined, agentId: string | null | undefined) =>
-    agentId ? consoleKey(orgId, 'agent-gitlab-accounts', agentId) : null,
+  /** `consumers` is not a request parameter but a freshness discriminator: the CP creates and
+   *  retires these accounts behind hook CRUD, so binding or unbinding a project must not read a
+   *  cache entry recorded under the old consumer set. */
+  agentGitlabAccounts: (orgId: string | null | undefined, agentId: string | null | undefined, consumers: number) =>
+    agentId ? consoleKey(orgId, 'agent-gitlab-accounts', agentId, String(consumers)) : null,
   agentPermissionRequests: (orgId: string | null | undefined, agentId: string | null | undefined) =>
     agentId ? consoleKey(orgId, 'agent-permission-requests', agentId) : null,
   hookRuns: (orgId: string | null | undefined, hookId: string) => consoleKey(orgId, 'hook-runs', hookId)

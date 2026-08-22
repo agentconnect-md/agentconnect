@@ -14,6 +14,11 @@ import { consoleKeys } from '@/lib/swr-keys'
 import { GITLAB_PROJECT_STATE, gitlabProfileUrl, gitlabStateReasonText } from '@/lib/gitlab-projects'
 import { fetchGitlabAgentAccounts, type GitlabAgentAccountDto } from '@/lib/api'
 
+type AccountsRead = Awaited<ReturnType<typeof fetchGitlabAgentAccounts>>
+
+/** Account convergence runs behind hook CRUD; this is how often we ask whether it landed. */
+const CONVERGENCE_POLL_MS = 5_000
+
 /** Accounts in row order, one bucket per group — the readable path labels it whenever we have one. */
 function groupByRoot(accounts: readonly GitlabAgentAccountDto[]): Array<{
   rootGroupId: string
@@ -76,10 +81,32 @@ function AccountChip({ account }: { account: GitlabAgentAccountDto }) {
   )
 }
 
-export function AgentGitlabIdentity({ agentId, className = '' }: { agentId: string; className?: string }) {
+/** Whether what we fetched already agrees with what the agent's consumers imply.
+ *  Convergence is transient; a refused account is a resting state we stop polling. */
+function settled(data: AccountsRead | undefined, hasConsumer: boolean): boolean {
+  if (!data) return false
+  if (data.accounts.length > 0 !== hasConsumer) return false
+  return data.accounts.every((a) => a.lifecycle === 'active' && a.state !== 'provisioning')
+}
+
+export function AgentGitlabIdentity({
+  agentId,
+  consumerCount,
+  className = ''
+}: {
+  agentId: string
+  /** Enabled GitLab hooks plus a GitLab workspace — what the CP counts as consumers. */
+  consumerCount: number
+  className?: string
+}) {
   const { activeOrg } = useOrgs()
-  const accountsKey = MOCK_MODE ? null : consoleKeys.agentGitlabAccounts(activeOrg?.id, agentId)
+  // The consumer count is part of the key: binding or unbinding a project makes the
+  // stale entry unreachable, so no mutation site has to remember to invalidate it.
+  const accountsKey = MOCK_MODE ? null : consoleKeys.agentGitlabAccounts(activeOrg?.id, agentId, consumerCount)
   const { data } = useSWR(accountsKey, ([, , , id]) => fetchGitlabAgentAccounts(id as string), {
+    // The CP returns from hook CRUD BEFORE the saga creates or retires the account,
+    // so one immediate read would race it. Poll until the two agree, then rest.
+    refreshInterval: (latest) => (settled(latest, consumerCount > 0) ? 0 : CONVERGENCE_POLL_MS),
     shouldRetryOnError: false
   })
 

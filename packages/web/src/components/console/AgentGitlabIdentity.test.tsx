@@ -22,13 +22,18 @@ vi.mock('@/lib/api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/api')>()),
   fetchGitlabAgentAccounts: mocks.fetchAccounts
 }))
-// SWR resolves through the mocked fetcher directly — the card has no revalidation behaviour to test.
+// The mock records the key and options so the freshness contract is assertable.
 vi.mock('swr', () => ({
-  default: (key: unknown, fetcher: ((k: unknown) => Promise<unknown>) | null) => {
+  default: (key: unknown, fetcher: ((k: unknown) => Promise<unknown>) | null, options: SwrOptions) => {
+    lastCall = { key, options }
     if (!key || !fetcher) return { data: undefined }
     return { data: swrData }
   }
 }))
+
+interface SwrOptions {
+  refreshInterval?: (latest: unknown) => number
+}
 
 const AgentGitlabIdentity = (await import('./AgentGitlabIdentity')).AgentGitlabIdentity
 
@@ -44,19 +49,27 @@ const ACCOUNT: GitlabAgentAccountDto = {
   lifecycle: 'active'
 }
 
-let swrData: { enabled: boolean; accounts: GitlabAgentAccountDto[] } | undefined
+type Read = { enabled: boolean; accounts: GitlabAgentAccountDto[] } | undefined
+
+let swrData: Read
+let lastCall: { key: unknown; options: SwrOptions } | undefined
 let host: HTMLDivElement
 let root: Root
 
 // No default argument: "SWR has no data yet" IS one of the cases, and a default would swallow it.
-async function render(data: { enabled: boolean; accounts: GitlabAgentAccountDto[] } | undefined): Promise<void> {
+async function render(data: Read, consumerCount = 1): Promise<void> {
   swrData = data
   host = document.createElement('div')
   document.body.appendChild(host)
   root = createRoot(host)
   await act(async () => {
-    root.render(<AgentGitlabIdentity agentId="agent-1" />)
+    root.render(<AgentGitlabIdentity agentId="agent-1" consumerCount={consumerCount} />)
   })
+}
+
+/** What SWR would wait before asking again — 0 means the card has stopped polling. */
+function pollInterval(): number {
+  return lastCall!.options.refreshInterval!(swrData)
 }
 
 function chips(): HTMLElement[] {
@@ -65,6 +78,7 @@ function chips(): HTMLElement[] {
 
 beforeEach(() => {
   mocks.fetchAccounts.mockReset()
+  lastCall = undefined
   document.body.innerHTML = ''
 })
 
@@ -157,5 +171,46 @@ describe('AgentGitlabIdentity', () => {
 
     expect(host.textContent).toContain('bot access degraded')
     expect(host.textContent).not.toContain('some_internal_category')
+  })
+  it('keys the read by the consumer set, so binding a project cannot read the pre-bind entry', async () => {
+    await render({ enabled: true, accounts: [] }, 0)
+    const beforeBind = JSON.stringify(lastCall!.key)
+
+    await render({ enabled: true, accounts: [] }, 1)
+    const afterBind = JSON.stringify(lastCall!.key)
+
+    // The CP creates the account behind hook CRUD, so the old entry must be unreachable.
+    expect(afterBind).not.toBe(beforeBind)
+    expect(afterBind).toContain('agent-1')
+  })
+
+  it('polls while convergence is still in flight and rests once it has landed', async () => {
+    // A consumer exists but its account does not yet — the saga runs after hook CRUD returned.
+    await render({ enabled: true, accounts: [] }, 1)
+    expect(pollInterval()).toBeGreaterThan(0)
+
+    // Still provisioning is equally in flight.
+    await render({ enabled: true, accounts: [{ ...ACCOUNT, state: 'provisioning' }] }, 1)
+    expect(pollInterval()).toBeGreaterThan(0)
+
+    // The last consumer went away but the identity is still listed: retirement in flight.
+    await render({ enabled: true, accounts: [ACCOUNT] }, 0)
+    expect(pollInterval()).toBeGreaterThan(0)
+
+    // Agreed: an account for the consumer that has one, and nothing transient left.
+    await render({ enabled: true, accounts: [ACCOUNT] }, 1)
+    expect(pollInterval()).toBe(0)
+
+    // No consumer and no account is equally settled — the common agent must not poll at all.
+    await render({ enabled: true, accounts: [] }, 0)
+    expect(pollInterval()).toBe(0)
+  })
+
+  it('stops polling on a refused account: a quota refusal rests until someone repairs it', async () => {
+    await render(
+      { enabled: true, accounts: [{ ...ACCOUNT, state: 'admin_degraded', stateReason: 'service_account_quota' }] },
+      1
+    )
+    expect(pollInterval()).toBe(0)
   })
 })

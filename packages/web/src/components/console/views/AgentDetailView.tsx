@@ -237,6 +237,9 @@ export default function AgentDetailView() {
   const webhookHooks = agentHooks.filter((h) => h.kind === 'webhook')
   const githubHooks = agentHooks.filter((h) => h.kind === 'github')
   const gitlabHooks = agentHooks.filter((h) => h.kind === 'gitlab')
+  // What earns this agent a GitLab bot account (§7.2): its enabled GitLab hooks plus a GitLab workspace.
+  const gitlabConsumerCount =
+    gitlabHooks.filter((h) => h.enabled).length + (getAgent(id)?.workspace?.mode === 'gitlab' ? 1 : 0)
   const githubInstallationsKey =
     activeOrg && githubHooks.length > 0 ? (['github-review-installations', activeOrg.id] as const) : null
   const { data: githubInstallationsData } = useSWR<GithubInstallationDto[]>(githubInstallationsKey, () =>
@@ -1848,7 +1851,11 @@ export default function AgentDetailView() {
 
           <div className="flex min-w-0 flex-col gap-4 desktop:gap-[18px]">
             {/* Absent unless this agent has a GitLab project bound — it renders its own nothing. */}
-            <AgentGitlabIdentity agentId={da.id} className="max-desktop:rounded-lg" />
+            <AgentGitlabIdentity
+              agentId={da.id}
+              consumerCount={gitlabConsumerCount}
+              className="max-desktop:rounded-lg"
+            />
             {da.canEdit && !da.name.startsWith(MOCK_PREFIX) && (
               <ApprovalRequestsCard agentId={da.id} className="max-desktop:rounded-lg" />
             )}
