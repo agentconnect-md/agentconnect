@@ -112,8 +112,8 @@ const SESSION_ACCESS_COPY: Record<
     degraded: 'Repository scopes stopped resolving — new sessions are being hidden.'
   },
   feishu: {
-    name: 'Feishu / Lark',
-    label: 'Follow Feishu / Lark access',
+    name: 'Feishu/Lark',
+    label: 'Follow Feishu/Lark access',
     details: [
       'Group sessions created through the matching AgentConnect app follow current chat membership.',
       'DMs stay private, and agent memory learned earlier is not erased.',
@@ -121,9 +121,9 @@ const SESSION_ACCESS_COPY: Record<
       'Turning this off hides the sessions synced while it was on — they are not deleted, and turning it back on restores them.'
     ].join('\n'),
     unavailable:
-      'Unavailable until console sign-in is configured for this deployment — without it a viewer has no linked Feishu / Lark profile to check.',
+      'Unavailable until console sign-in is configured for this deployment — without it a viewer has no linked Feishu/Lark profile to check.',
     unresolved: (count) => `${count} session${count === 1 ? '' : 's'} hidden — no trusted chat scope.`,
-    degraded: 'Feishu / Lark scopes stopped resolving — new sessions are being hidden.'
+    degraded: 'Feishu/Lark scopes stopped resolving — new sessions are being hidden.'
   }
 }
 
