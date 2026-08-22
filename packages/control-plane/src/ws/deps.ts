@@ -34,6 +34,7 @@ import type { GithubService } from '../github/service.js'
 import type { GitlabGitcredService } from '../gitlab/gitcred.service.js'
 import type { GithubReviewBrokerService } from '../github/review-broker.service.js'
 import type { GithubRunCoordinator } from '../github/run-reporter.js'
+import type { CodeHostNoteProjectionService } from '../codehost/note-projection.service.js'
 import type { ReconcileService } from '../orchestrator/placement.js'
 import type { ConnectionRegistry } from './registry.js'
 import type { Clock } from '../domain/clock.js'
@@ -136,6 +137,8 @@ export interface DaemonWsDeps {
   githubReviewBroker?: GithubReviewBrokerService
   /** R2a metadata-only lifecycle → informational Check projection. */
   githubRunCoordinator?: GithubRunCoordinator
+  /** §16 desired-generation ledger for the daemon-written run projection; absent ⇒ no GitLab bindings. */
+  codeHostNoteProjection?: CodeHostNoteProjectionService
   /** The current relay roster, injected into `register/ok.relays` so a (re)connecting
    *  daemon converges to the relays it should dial (shared-bot-relay.md §5). */
   relayRoster: () => Promise<RelayRosterEntry[]>

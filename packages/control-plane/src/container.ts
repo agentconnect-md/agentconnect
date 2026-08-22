@@ -43,6 +43,7 @@ import { GithubReviewBrokerService } from './github/review-broker.service.js'
 import { PullRequestViewService } from './github/pull-request-view.service.js'
 import { SessionPullRequestLinkService } from './github/session-pull-request-link.service.js'
 import { GithubRunCoordinator, GithubRunReporter } from './github/run-reporter.js'
+import { CodeHostNoteProjectionService } from './codehost/note-projection.service.js'
 import { githubProjectionIntent } from './github/projection-intent.js'
 import { HookRedeliveryReconciler } from './orchestrator/hookRedeliveryReconciler.js'
 import { LogtoIdentityService, resolveLogtoMgmtConfig } from './github/logto-identity.js'
@@ -98,6 +99,7 @@ import {
   PgGithubInstallStateStore,
   PgAgentRepoAuthorizationRepo,
   PgCodeHostRepositoryRepo,
+  PgCodeHostRunProjectionRepo,
   PgGitlabConnectionRepo,
   PgGitlabProjectBindingRepo,
   PgGitlabConnectionSecretStore,
@@ -1044,6 +1046,32 @@ export function buildContainer(
       })
     : undefined
 
+  // §16 informational run projection: the CP records the desired generation, the OWNING DAEMON
+  // writes the note. Assembled with the GitLab administration surface, since the ledger's
+  // credential fence comes from a project binding.
+  const codeHostNoteProjection = gitlab
+    ? new CodeHostNoteProjectionService({
+        projections: new PgCodeHostRunProjectionRepo(prisma),
+        agents: repos.agent,
+        bindings: repos.gitlabProjectBinding,
+        orgs: repos.org,
+        clock,
+        ...(gitlabWebAppUrl ? { webAppUrl: gitlabWebAppUrl } : {}),
+        sender: {
+          daemonFeatures: (daemonId) => connReg.get(daemonId)?.capabilities?.features,
+          send: (daemonId, desired, orgId) => {
+            try {
+              sender.codeHostNoteDesired(daemonId, desired, orgId)
+            } catch (err) {
+              // An offline daemon leaves the desired generation pending — never an error path.
+              http.log.debug({ err, daemonId }, 'note projection: desired frame not sent — daemon offline')
+            }
+          }
+        },
+        log: { warn: (obj, msg) => http.log.warn(obj, msg) }
+      })
+    : undefined
+
   // The console PR panel's read projection — long-lived so its short TTL cache actually absorbs mounts.
   const pullRequestView = github ? new PullRequestViewService(github.tokens, clock, opts.githubFetch) : undefined
   // §12.6's second identity source for that panel: the PR a session's own head branch has, for the
@@ -1662,6 +1690,7 @@ export function buildContainer(
       : {}),
     ...(githubReviewBroker ? { githubReviewBroker } : {}),
     ...(githubRunCoordinator ? { githubRunCoordinator } : {}),
+    ...(codeHostNoteProjection ? { codeHostNoteProjection } : {}),
     relayRoster: () => relayRoster.entries(),
     clock,
     config: {
@@ -1867,6 +1896,31 @@ export function buildContainer(
           .catch((err) =>
             http.log.warn({ err, hookId: report.hookId }, 'github check: manual-request convergence failed')
           )
+      }
+      // §16 delivery-stage edge: an accepted gitlab MR fire opens `queued`, a delivery failure
+      // reads `skipped`. Fire-and-forget like the Check convergence above — the desired generation
+      // is durable, so a lost projection edge is repaired by the next one.
+      if (delivery.accepted && codeHostNoteProjection && report.gitlab) {
+        void (async () => {
+          const hook = await repos.hook.getUnscoped(HookId(report.hookId))
+          if (hook?.kind !== 'gitlab') return
+          const edge = {
+            hookId: report.hookId,
+            agentId: report.agentId,
+            deliveryKey: report.deliveryKey,
+            orgId: hook.orgId,
+            state: 'queued' as const,
+            reason: report.reason ?? null,
+            gitlab: report.gitlab,
+            snapshot: report,
+            projectionEpoch: hook.projectionEpoch,
+            at: firedAt
+          }
+          if (report.status === 'accepted') await codeHostNoteProjection.afterAccepted(edge)
+          else await codeHostNoteProjection.afterDeliveryFailed(edge)
+        })().catch((err) =>
+          http.log.warn({ err, hookId: report.hookId }, 'note projection: delivery convergence failed')
+        )
       }
     },
     // The in-Slack config modal picked a channel's default agent — persist + recompile
