@@ -2,6 +2,7 @@
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "customConditions": ["development"],
+    "declaration": false,
     "noEmit": true,
     "rootDir": "../.."
   },
