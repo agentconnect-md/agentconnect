@@ -292,15 +292,20 @@ describe('executeTool: sendMessage (channel post)', () => {
       expect(recorded).toEqual([])
     })
 
-    it('refuses an unforwardable name without blaming the spelling, posting nothing', async () => {
+    it('refuses an unforwardable name without blaming the spelling or inviting a re-send', async () => {
       const gw = anchorless()
       const { deps: d } = deps(gw)
       Object.assign(d, resolves())
       await expect(
         executeTool(ctx, 'sendMessage', { channel: 'C_OTHER', attachment: 'nope.png', message: 'hi' }, d)
-      ).rejects.toThrow(/"nope.png" is not forwardable/)
+      ).rejects.toThrow(/"nope.png" cannot be forwarded/)
       expect(gw.uploadFile).not.toHaveBeenCalled()
       expect(gw.postMessage).not.toHaveBeenCalled()
+      // An agent read an earlier phrasing backwards and asked the user to re-send the picture
+      // AS a document — the one move that cannot help. The refusal now forecloses it.
+      await expect(
+        executeTool(ctx, 'sendMessage', { channel: 'C_OTHER', attachment: 'nope.png', message: 'hi' }, d)
+      ).rejects.toThrow(/Do NOT ask anyone to re-send it/)
     })
 
     it('refuses a target platform with no upload port rather than sending the caption alone', async () => {

@@ -13,7 +13,7 @@ import type { Agent } from '../agents/agent-schema.js'
 import type { LoadedAgent } from '../agents/load-agents.js'
 import { stableTurnId, type Attachment, type NormalizedMessage } from '../messages/normalized.js'
 import { messageOrderingFor } from '../platforms/message-ordering.js'
-import { buildAttachmentBlocks } from './attachment-block.js'
+import { attachmentMention, buildAttachmentBlocks } from './attachment-block.js'
 import { DIRECT_AGENT_CALL_REMINDER, EXPLICIT_MENTION_REMINDER, NO_RESPONSE_REMINDER } from './no-response.js'
 import { planReplay, renderReplayContext } from './turn/replay-plan.js'
 import { AGENT_META_OPENING, buildStandingContext, type StandingContext } from './turn/standing-context.js'
@@ -755,7 +755,18 @@ export class SessionManager {
             ? matchSkillInvocation(msg.text, this.deps.advertisedCommandsFor(agentId))
             : null
         const triggerText = invocation ? renderSkillInvocation(invocation) : msg.text
-        blocks.push({ type: 'text', text: msg.source === 'user' ? `[${msg.sender.id}] ${triggerText}` : msg.text })
+        // The trigger's OWN attachments are named here, not only on its transcript row. A
+        // shared image reaches the model as pixels (an `image` block below), which is enough
+        // to look at and not enough to ACT on: `sendMessage`'s `attachment` takes the name
+        // from this marker, so without it an agent asked to forward the picture it can
+        // plainly see has no string to forward it by. Replayed context already carries the
+        // marker (it renders transcript rows), which is why only this arm was missing it.
+        const triggerMarker = attachmentMention(ingested.attachments)
+        const withMarker = (text: string): string => (triggerMarker ? `${text}\n${triggerMarker}` : text)
+        blocks.push({
+          type: 'text',
+          text: withMarker(msg.source === 'user' ? `[${msg.sender.id}] ${triggerText}` : msg.text)
+        })
         contextEvents = [...context.map((entry) => ({ ts: entry.ts, text: entry.text })), { ts, text: msg.text }]
       }
       rec.lastDeliveredTs = plan.deliveredThrough ?? ts

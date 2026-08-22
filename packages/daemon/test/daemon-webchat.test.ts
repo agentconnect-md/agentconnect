@@ -1674,9 +1674,11 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     expect(ack).toMatchObject({ accepted: true })
     await vi.waitFor(() => expect(events.some((event) => event.kind === 'done')).toBe(true), WAIT)
 
+    // The trigger names its own attachment beside the pixels: the image block is what the
+    // model looks at, the marker is what `sendMessage`'s `attachment` forwards it BY.
     expect(host.prompt.mock.calls[0]?.[1]).toEqual(
       expect.arrayContaining([
-        { type: 'text', text: '[ada] What is shown?' },
+        { type: 'text', text: '[ada] What is shown?\n[attached: screen.webp (image/webp)]' },
         { type: 'image', data: bytes.toString('base64'), mimeType: 'image/webp' }
       ])
     )

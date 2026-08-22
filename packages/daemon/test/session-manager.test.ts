@@ -1438,6 +1438,41 @@ describe('SessionManager', () => {
     const img = blocks.find((b: any) => b.type === 'image') as any
     expect(img).toMatchObject({ type: 'image', mimeType: 'image/png', data: png.toString('base64') })
     expect(img).not.toHaveProperty('uri')
+    // The pixels are not enough: `sendMessage`'s `attachment` takes the NAME from this marker,
+    // so an agent asked to forward the picture it can see needs the marker on the trigger too.
+    const prompt = blocks
+      .filter((b: any) => b.type === 'text')
+      .map((b: any) => b.text)
+      .join('\n')
+    expect(prompt).toContain('see this')
+    expect(prompt).toContain('[attached: a.png (image/png)]')
+    await (await store).close()
+  })
+
+  it('names the trigger’s attachment even when the agent cannot take images at all', async () => {
+    // The resource_link arm carries a uri, but the forward path is keyed on the marker name —
+    // it must not depend on the runtime's image capability.
+    const store = await newStore()
+    const sm = new SessionManager({
+      store,
+      hostFor: async () => fakeHost(),
+      agentById: () => agent,
+      memory,
+      downloadAttachment: async () => null
+    })
+    const { blocks } = await sm.handle(
+      'bot-a',
+      msg({
+        ts: '100.1',
+        text: 'forward this',
+        attachments: [{ id: 'F1', name: 'shot.jpg', mimeType: 'image/jpeg', sourceUrl: 'tg-file-id' }]
+      })
+    )
+    const prompt = blocks
+      .filter((b: any) => b.type === 'text')
+      .map((b: any) => b.text)
+      .join('\n')
+    expect(prompt).toContain('[attached: shot.jpg (image/jpeg)]')
     await (await store).close()
   })
 
