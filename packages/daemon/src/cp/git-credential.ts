@@ -64,6 +64,9 @@ const POST_KEY = (agentId: string, repo: string): string => `post\u0000${agentId
 /** Cache key for the gitlab note poster's effect token (§14.1) — its own keyspace. */
 const GITLAB_POST_KEY = (agentId: string, projectId: string): string => `postglab\u0000${agentId}\u0000${projectId}`
 
+/** Cache key for the structured broker's effect lease (§14.2) — a third keyspace, per (agent, project). */
+const GITLAB_EFFECT_KEY = (agentId: string, projectId: string): string => `fxglab\u0000${agentId}\u0000${projectId}`
+
 export class GitCredUnavailableError extends Error {
   constructor(
     message: string,
@@ -92,7 +95,7 @@ export interface GitCredentialCacheDeps {
     reason?: 'clone' | 'fetch' | 'pull' | 'push' | 'helper'
     capabilities?: GitCredCapability[]
     repoFullName?: string
-    purpose?: 'github_hook_reply' | 'gitlab_hook_reply'
+    purpose?: 'github_hook_reply' | 'gitlab_hook_reply' | 'gitlab_effect'
     hookId?: string
     forceRefresh?: boolean
     provider?: 'gitlab'
@@ -108,6 +111,9 @@ export interface GitCredentialCacheDeps {
    *  gitcred-provider-v2 — an older CP would strip the field and answer a
    *  GitHub workspace grant for the wrong provider. */
   providerV2Supported?: () => boolean
+  /** §17.3 negotiation: `purpose: 'gitlab_effect'` is a NEW ENUM VALUE, so naming it to an
+   *  older CP is frame-fatal rather than silently stripped — ask only after gitlab-effect-v1. */
+  gitlabEffectSupported?: () => boolean
   /** Monotonic ms; injectable for tests. */
   monoNow?: () => number
 }
@@ -217,9 +223,45 @@ export class GitCredentialCache {
     return entry
   }
 
+  /** The structured broker's effect lease (§14.2): the never-agent-visible effect PAT, authorized by the
+   *  agent's GitLab workspace binding or the NAMED enabled hook, carrying the §13.1 clamp it enforces. */
+  async getGitlabEffectToken(agentId: string, projectId: string, hookId?: string): Promise<Entry> {
+    if (this.deps.providerV2Supported?.() !== true) {
+      throw new GitCredUnavailableError(
+        'the control plane is too old for gitlab credentials (gitcred-provider-v2 not advertised)',
+        false
+      )
+    }
+    if (this.deps.gitlabEffectSupported?.() !== true) {
+      throw new GitCredUnavailableError('the control plane does not support GitLab effect leases yet', false)
+    }
+    const key = GITLAB_EFFECT_KEY(agentId, projectId)
+    const forceRefresh = this.refreshPosts.has(key)
+    const entry = await this.getKeyed(key, agentId, {
+      agentId,
+      reason: 'helper',
+      provider: 'gitlab',
+      externalRepoId: projectId,
+      purpose: 'gitlab_effect',
+      ...(hookId !== undefined ? { hookId } : {}),
+      ...(forceRefresh ? { forceRefresh: true } : {})
+    })
+    if (forceRefresh) this.refreshPosts.delete(key)
+    return entry
+  }
+
   /** Drop the cached gitlab note token after GitLab rejects it. */
   invalidateGitlabPost(agentId: string, projectId: string, presentedToken?: string): void {
-    const key = GITLAB_POST_KEY(agentId, projectId)
+    this.dropCached(GITLAB_POST_KEY(agentId, projectId), presentedToken)
+  }
+
+  /** Drop the cached broker effect lease after GitLab rejects it, so the single retry re-mints. */
+  invalidateGitlabEffect(agentId: string, projectId: string, presentedToken?: string): void {
+    this.dropCached(GITLAB_EFFECT_KEY(agentId, projectId), presentedToken)
+  }
+
+  /** Evict one daemon-owned writer's cached token and force its next mint past the CP cache. */
+  private dropCached(key: string, presentedToken?: string): void {
     const entry = this.entries.get(key)
     if (!entry) return
     if (presentedToken !== undefined && entry.token !== presentedToken) return
@@ -230,12 +272,7 @@ export class GitCredentialCache {
   /** Drop the cached GithubPoster token after GitHub rejects it. Matching the
    *  presented token avoids deleting a newer grant that won a concurrent race. */
   invalidatePost(agentId: string, repo: string, presentedToken?: string): void {
-    const key = POST_KEY(agentId, repo)
-    const entry = this.entries.get(key)
-    if (!entry) return
-    if (presentedToken !== undefined && entry.token !== presentedToken) return
-    this.entries.delete(key)
-    this.refreshPosts.add(key)
+    this.dropCached(POST_KEY(agentId, repo), presentedToken)
   }
 
   private async getKeyed(
@@ -317,6 +354,12 @@ export class GitCredentialCache {
     } catch (e) {
       const code = (e as { code?: string }).code
       if (code === 'SCOPE_DENIED') {
+        // §14.2: an effect lease is re-resolved live on every call and hook/binding lifecycle changes
+        // never replicate an agent spec, so its refusal is never durable — the next call asks again.
+        if (payload.purpose === 'gitlab_effect') {
+          this.entries.delete(key)
+          throw new GitCredUnavailableError((e as Error).message, false)
+        }
         if (payload.repoFullName !== undefined) {
           // Repo-keyed: negative-cache and retry in a minute — the operator may
           // be authorizing the repo in the console right now.

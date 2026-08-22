@@ -59,6 +59,14 @@ export function optionalBoundedInt(key: string, min: number, max: number) {
     .transform((value) => value ?? undefined)
 }
 
+/** An optional boolean; `null` reads as absent, like every other optional here. */
+export function optionalBoolean(key: string) {
+  return z
+    .boolean(`argument ${key} must be a boolean`)
+    .nullish()
+    .transform((value) => value ?? undefined)
+}
+
 /** An optional plain JSON object (never an array). */
 export function optionalObject(key: string) {
   const message = `argument ${key} must be an object`

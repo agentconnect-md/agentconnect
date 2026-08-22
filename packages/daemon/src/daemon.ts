@@ -53,8 +53,9 @@ import { TranscriptRecorder, type TranscriptEvent } from './session/transcript-r
 import { attachmentMention, sniffImageMimeType } from './session/attachment-block.js'
 import { McpControlServer } from './mcp/control-server.js'
 import { RemoteWebchatGrantManager } from './mcp/remote-webchat-grant.js'
-import type { SetSessionTitleReq } from './mcp/ops.js'
+import type { CodeHostEffectReq, SetSessionTitleReq } from './mcp/ops.js'
 import { GitCredentialCache } from './cp/git-credential.js'
+import { GitlabBroker } from './gitlab/broker.js'
 import {
   CONFIG_FILE_CONVENTIONS,
   cleanupConfigFiles,
@@ -76,7 +77,7 @@ import {
 import { configureWorkspaceGitOrigins } from './workspace/git-origin-policy.js'
 import { buildMcpServers, buildSandboxMcpServers, type McpStdioServer } from './mcp/inject.js'
 import { resolveAgentMcpServers, RESERVED_MCP_SERVER_NAME } from './mcp/resolve-servers.js'
-import { toolsForIntegrations, GITHUB_REVIEW_TOOLS, KNOWLEDGE_TOOLS } from './mcp/tools.js'
+import { toolsForIntegrations, CODE_HOST_EFFECT_TOOLS, GITHUB_REVIEW_TOOLS, KNOWLEDGE_TOOLS } from './mcp/tools.js'
 import { MEMORY_TOOL_NAMES, MEMORY_TOOLS } from './memory/tools.js'
 import { DREAM_TOPIC_RE, MAX_DREAM_FILES } from './dream/dreamer.js'
 import { isSessionTitleToolCall } from './mcp/session-title-tool.js'
@@ -263,6 +264,7 @@ import {
   K8S_SUPERVISOR,
   AGENT_CONFIG_REVISION_FEATURE,
   DAEMON_BOOTSTRAP_UPGRADE_FEATURE,
+  GITLAB_EFFECT_V1_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
   ORGANIZATION_SUGGESTION_REVIEW_FEATURE,
   SESSION_VISIBILITY_FEATURE,
@@ -636,6 +638,8 @@ export class Daemon {
   /** Lazily-built dream-job engine (docs/designs/memory-dreaming.md §4). */
   private dreamRunnerInstance?: DreamRunner
   private gitCreds!: GitCredentialCache
+  /** §14.2 structured mutation broker — allowlisted GitLab effects run under a daemon-held lease. */
+  private gitlabBroker?: GitlabBroker
   /** Public commit attribution selected by the CP deployment's GitHub App. */
   private gitCommitIdentity?: GitCommitIdentity
   private gitCredServer?: GitCredServer
@@ -1672,7 +1676,16 @@ export class Daemon {
       },
       log: { warn: (m: string) => this.log.warn(m) },
       actionsSupported: () => this.cpClient?.supportsServerFeature?.('gitcred-actions-v1') ?? false,
-      providerV2Supported: () => this.cpClient?.supportsServerFeature?.('gitcred-provider-v2') ?? false
+      providerV2Supported: () => this.cpClient?.supportsServerFeature?.('gitcred-provider-v2') ?? false,
+      gitlabEffectSupported: () => this.cpClient?.supportsServerFeature?.(GITLAB_EFFECT_V1_FEATURE) ?? false
+    })
+    // §14.2: the broker holds the effect lease; the agent environment never sees the token.
+    this.gitlabBroker = new GitlabBroker({
+      lease: async (target) => {
+        const entry = await this.gitCreds.getGitlabEffectToken(target.agentId, target.projectId, target.hookId)
+        return { token: entry.token, access: entry.access }
+      },
+      invalidateLease: (target, token) => this.gitCreds.invalidateGitlabEffect(target.agentId, target.projectId, token)
     })
     this.gitCredServer = new GitCredServer(this.gitCreds, gitcredSocketPath(root), {
       log: {
@@ -2266,6 +2279,7 @@ export class Daemon {
       cancelOrchestration: (req) => Promise.resolve(this.collab.cancelOrchestrationForOwner(req)),
       submitGithubReview: (req) => this.githubReviews.submitGithubReview(req),
       replyGithubReviewThreads: (req) => this.githubReviews.replyGithubReviewThreads(req),
+      codeHostEffect: (req) => this.runCodeHostEffect(req),
       memory: this.memory,
       // Every session may READ shared agent memory; only a non-isolated session
       // may WRITE it, so a private DM/A2A turn can use existing memory but cannot
@@ -2521,6 +2535,8 @@ export class Daemon {
         // outlive many hook deliveries. The call resolves the CURRENT daemon-
         // private turn and fails closed everywhere else.
         tools = [...tools, ...GITHUB_REVIEW_TOOLS]
+        // §14.2 broker: only a session with a GitLab target carries it, and the clamped lease still authorizes.
+        if (this.gitlabWorkspaceProject(agent.id) !== undefined) tools = [...tools, ...CODE_HOST_EFFECT_TOOLS]
         // Replace the legacy managed descriptors with this provider's stable core
         // tools. An external plugin's raw MCP tools never enter the ACP session.
         tools = tools.filter((t) => !MEMORY_TOOL_NAMES.has(t.name))
@@ -6538,6 +6554,31 @@ export class Daemon {
     return !this.dutyCoordinator.dutyEnforced() || this.duties.holdsAgent(agentId)
   }
 
+  /** §14.2: resolve this turn's trusted GitLab target, then run exactly one allowlisted operation. */
+  private async runCodeHostEffect(req: CodeHostEffectReq): Promise<unknown> {
+    const broker = this.gitlabBroker
+    if (!broker) throw new Error('code-host effects are unavailable on this daemon')
+    const key = sessionKey(req.platform, req.channel, req.thread, req.agentId, req.transportScope)
+    const target = this.codeHostEffectTarget(req.agentId, key)
+    if (!target) throw new Error('this session has no GitLab project to act on')
+    return await broker.execute({ ...target, agentId: req.agentId, sessionKey: key }, req.operation)
+  }
+
+  /** The hook-dispatched turn's trusted project first (§13.1), else the agent's GitLab workspace project. */
+  private codeHostEffectTarget(agentId: string, key: string): { projectId: string; hookId?: string } | undefined {
+    const hook = this.activeTurnCodeHost.get(key)
+    if (hook && hook.agentId === agentId) return { projectId: hook.projectId, hookId: hook.hookId }
+    const projectId = this.gitlabWorkspaceProject(agentId)
+    return projectId === undefined ? undefined : { projectId }
+  }
+
+  /** The agent's managed GitLab workspace project from the REPLICATED SPEC — never a tool argument. */
+  private gitlabWorkspaceProject(agentId: string): string | undefined {
+    const agent = this.agents.get(agentId)
+    if (!agent || this.workspaces.managedCredentialProvider(agent) !== 'gitlab') return undefined
+    return agent.workspace.mode === 'git-repo' ? agent.workspace.gitlabProjectId : undefined
+  }
+
   /** Everything the GitHub hook-dispatch and formal-review seam reaches back for. */
   private githubReviewHost(): GithubReviewHost {
     return {
@@ -9436,6 +9477,12 @@ export class Daemon {
       headless: entry.msg.headless === true,
       synthetic: isSyntheticA2aChannel(plan.channel)
     })
+    // §14.2: a hook-dispatched turn pins the broker to the delivery's own signature-verified project.
+    const hookContext = entry.hookContext
+    if (hookContext?.gitlab) {
+      const target = { agentId, projectId: hookContext.gitlab.projectId, hookId: hookContext.hookId }
+      this.activeTurnCodeHost.set(key, target)
+    }
     const activeGithub = await this.githubReviews.prepareGithubTurn(entry, sessionId).catch((err) => {
       this.log.warn(`github review: turn setup failed (${formatErr(err)})`)
       return undefined
@@ -10338,6 +10385,7 @@ export class Daemon {
     if (callMeta) this.activeTurnCallMeta.delete(key)
     this.activeTurnShare.delete(key)
     this.shareBudgetByTurn.delete(key)
+    this.activeTurnCodeHost.delete(key)
     const activeGithub = activeTurn.github
     const activeGithubReplyBatch = activeTurn.githubReplyBatch
     if (activeGithub && this.activeGithubTurnMeta.get(key) === activeGithub) this.activeGithubTurnMeta.delete(key)
@@ -11277,6 +11325,9 @@ export class Daemon {
   /** Bytes `shareFile` has uploaded this turn, by the same key — the synchronous per-turn
    *  reservation of agent-authored-attachments.md §5. */
   private shareBudgetByTurn = new Map<string, number>()
+
+  /** The hook-dispatched turn's trusted GitLab project by sessionKey — the §14.2 broker target, never model input. */
+  private activeTurnCodeHost = new Map<string, { agentId: string; projectId: string; hookId: string }>()
 
   /**
    * Post a chronological boundary message SERIALIZED on the turn's apply chain, returning
