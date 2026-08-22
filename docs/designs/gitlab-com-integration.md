@@ -409,24 +409,16 @@ provider mutation; an organization-scoped repository row is not itself an
 ownership claim.
 
 v1 shipped one Project Service Account per project binding, shared by every
-agent on the project. M8 replaces it outright rather than running two identity
-models side by side, and the switch fails closed because a bearer already
-issued to a running process outlives any database write: a credential-epoch
-bump purges caches and stops new grants, but it cannot recall an effect or Git
-lease a writer already holds. Per binding, the switch waits until every
-review-publication row for the binding is idle, stops issuing old-principal
-grants, positively revokes the per-project account's PATs at GitLab by token
-ID — an ambiguous revocation blocks the switch and leaves the binding
-degraded rather than half-switched — and only then, in one transaction,
-points the compiled rules and the active credentials at the agent accounts,
-because GitLab derives the author from the PAT and rule identity must never
-disagree with the acting principal. An in-flight Git or effect operation
-holding a revoked bearer fails and retries under the new identity. The
-emptied per-project account then retires through the existing removal saga.
-On the wire the veto set and the rule's account identity are additive
-optional members under the Section 17.3 discipline; a relay that predates
-them vetoes only the single ID its rule names, which the M8 merge order keeps
-correct by shipping the widened veto before any account switch.
+agent on the project. M8 replaces it outright and carries nothing forward:
+the binding's account columns are dropped, and an existing binding simply
+converges like any binding whose account is missing — its hooks and
+credential grants stay disabled until it is `ready` again, exactly as during
+first provisioning. The per-project accounts left behind on GitLab are
+orphans an operator removes, not managed state, and no code path ever runs
+both identity models. On the wire the veto set and the rule's account
+identity are additive optional members under the Section 17.3 discipline; a
+relay that predates them vetoes only the single ID its rule names, so the
+relay change rolls out before the Control Plane names agent accounts.
 
 ### 7.3 Three Credential Purposes
 
@@ -883,9 +875,8 @@ member of the veto set stays vetoed even for merge-request revisions, so one
 agent's merge request never wakes a sibling agent's hook. Notes authored by
 any bound account and system-generated notes carrying AgentConnect status or
 attempt markers are always rejected. A relay that predates the veto set
-vetoes only the single ID its rule names; the M8 merge order keeps that
-correct by shipping the widened veto before agents post as their own
-accounts.
+vetoes only the single ID its rule names, so the relay change rolls out
+before the Control Plane names agent accounts.
 
 ### 12.2 Collaborator and External-Merge-Request Gate
 
@@ -1867,18 +1858,18 @@ M7 → M8.
 
 - Protocol, relay, and Control Plane rule projection: the additive veto-set
   field on the compiled rule, the widened relay veto, and old-rule tolerance
-  tests. Ships before anything below posts as an agent account.
-- Control Plane: `GitlabAgentAccount` and `GitlabAccountMembership`
-  persistence, the account mutation lease, lifecycle-generation fence, and
+  tests. Deploys before the Control Plane names agent accounts.
+- Control Plane, one change: `GitlabAgentAccount` and
+  `GitlabAccountMembership` persistence replacing the binding's account
+  columns, the account mutation lease, lifecycle-generation fence, and
   administering connection, account and membership convergence, display-name
-  sync, quota refusal, and agent-page account health.
-- Control Plane switch: the Section 7.2 fail-closed replacement — grants
-  frozen, the per-project PATs positively revoked with an ambiguous
-  revocation blocking, rules and credentials flipped in one transaction, the
-  emptied account retired through the removal saga; two agents reviewing one
-  merge request assert independent leases with no cross-contention.
-- Console polish: the Integrations member list, the agent-page identity chip,
-  and docs.
+  sync, quota refusal, per-account credentials, rules naming the hook agent's
+  account, and lifecycle — unbind removes membership, an empty account
+  retires, agent deletion retires every account. Nothing carries forward;
+  existing bindings reconverge. Two agents reviewing one merge request assert
+  independent leases with no cross-contention.
+- Console: the agent-page identity chip, the Integrations member list, and
+  docs.
 
 Two disciplines hold throughout. No big-bang refactor PR exists anywhere in
 this plan — every extraction ships inside the milestone that needs it.
@@ -1975,15 +1966,12 @@ projects and covers:
     notes carrying the re-request call to action; and
 16. MR-merged and issue-closed maintenance deliveries cleaning up per-thread
     session worktrees without opening a model turn; and
-17. the M8 replacement on a deployment that started with per-project
-    accounts: the fail-closed switch — grants frozen, old PATs positively
-    revoked with an ambiguous revocation blocking, rules and credentials
-    flipped together — deferred by a non-idle publication row, concurrent
-    binding reconcilers serialized by the account mutation lease, a bind
-    racing retirement losing to the generation fence and re-provisioning a
-    fresh generation, two agents
-    answering one issue and reviewing one merge request as distinct authors,
-    and per-project account retirement.
+17. per-agent accounts: an existing binding reconverging onto agent accounts
+    with its grants disabled until `ready`, concurrent binding reconcilers
+    serialized by the account mutation lease, a bind racing retirement losing
+    to the generation fence and re-provisioning a fresh generation, and two
+    agents answering one issue and reviewing one merge request as distinct
+    authors.
 
 Validation must also scan source, generated examples, fixtures, logs, and PR
 prose for real deployment addresses, account identifiers, OAuth application
