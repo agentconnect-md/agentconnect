@@ -57,7 +57,10 @@ export const GitCredRequest = z.object({
   // explicitly lets the CP apply the hook authorization instead of incorrectly
   // clamping the comment token to the workspace contents gitAccess.
   // gitlab_hook_reply is the §14.1 twin: the note poster's effect lease, gated by an enabled gitlab hook.
-  purpose: z.enum(['github_hook_reply', 'gitlab_hook_reply']).optional(),
+  // gitlab_effect is the §14.2 broker lease: the same never-agent-visible effect PAT, authorized by the
+  // agent's GitLab workspace binding OR an enabled gitlab hook, and clamped by the grant's echoed access.
+  // A new value here is frame-fatal to an older CP (§17.3): name it only after GITLAB_EFFECT_V1_FEATURE.
+  purpose: z.enum(['github_hook_reply', 'gitlab_hook_reply', 'gitlab_effect']).optional(),
   // Trusted hook identity copied from the relay-delivered rd/msg. Required by
   // the CP for purpose=github_hook_reply so authorization stays rename-safe on
   // HookDef.repoId instead of comparing mutable owner/repo display names.
@@ -105,7 +108,9 @@ export const GitCredGrant = z
     // clock must never resurrect a dead token); `expiresAt` is observability only.
     expiresAt: z.string().datetime(),
     repoFullName: z.string(), // owner/repo (github) or namespaced project path (gitlab) — helper path-match + diagnostics
-    access: z.enum(['read', 'write']),
+    // §13.1 authorization level. 'comment' is the effect-lease clamp a daemon broker enforces per
+    // operation and rides only a gitlab grant (fenced below), so the GitHub v1 wire stays read|write.
+    access: z.enum(['read', 'comment', 'write']),
     // ── gitcred v2 echo (gitlab-com-integration.md §17.1) — negotiated fields ──
     // Absent ⇒ GitHub v1 grant. A v2 consumer MUST verify provider and
     // externalRepoId against its request before returning the password: an older
@@ -125,6 +130,13 @@ export const GitCredGrant = z
         code: 'custom',
         path: ['username'],
         message: 'a GitHub grant carries the fixed installation-token username'
+      })
+    }
+    if (isGithub && grant.access === 'comment') {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['access'],
+        message: 'comment-level authority rides a provider-qualified gitlab grant only'
       })
     }
   })

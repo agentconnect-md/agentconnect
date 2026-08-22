@@ -310,6 +310,136 @@ describe('handleGitCredRequest — repoFullName passthrough (issue #457)', () =>
     expect(grantForHookReply).not.toHaveBeenCalled()
   })
 
+  it('routes a gitlab_effect request to the broker grant, authorized by the workspace alone (§14.2)', async () => {
+    const grantForBrokerEffect = vi.fn(async () => ({
+      username: 'agentconnect-p4455667',
+      token: 'glpat-effect',
+      ttlSec: 900,
+      expiresAt: '2026-07-11T00:15:00.000Z',
+      repoFullName: 'example-group/example-project',
+      access: 'write' as const,
+      provider: 'gitlab',
+      externalRepoId: '4455667',
+      credentialEpoch: '3',
+      providerExpiresAt: '2026-10-01T00:00:00.000Z'
+    }))
+    const hookGet = vi.fn()
+    const deps = {
+      agent: { get: async () => PLACED_AGENT },
+      hook: { get: hookGet },
+      github: {},
+      gitlabGitcred: { grantForBrokerEffect }
+    } as unknown as DaemonWsDeps
+    const conn = fakeConn()
+    const frame = gitcredFrame({ provider: 'gitlab', purpose: 'gitlab_effect', externalRepoId: '4455667' })
+
+    await handleGitCredRequest(frame, conn, deps)
+
+    // No hook named ⇒ no hook read at all; the workspace binding is the only authorization asked for.
+    expect(hookGet).not.toHaveBeenCalled()
+    expect(grantForBrokerEffect).toHaveBeenCalledWith(PLACED_AGENT, 4455667n, false)
+    expect(conn.replyTo).toHaveBeenCalledWith(
+      frame,
+      'gitcred/grant',
+      expect.objectContaining({ provider: 'gitlab', access: 'write', ttlSec: 900 })
+    )
+    expect(conn.sendError).not.toHaveBeenCalled()
+  })
+
+  it('passes hook authorization to the broker grant when the request names an enabled gitlab hook', async () => {
+    const grantForBrokerEffect = vi.fn(async () => ({
+      username: 'agentconnect-p4455667',
+      token: 'glpat-effect',
+      ttlSec: 900,
+      expiresAt: '2026-07-11T00:15:00.000Z',
+      repoFullName: 'example-group/example-project',
+      access: 'comment' as const,
+      provider: 'gitlab',
+      externalRepoId: '4455667'
+    }))
+    const deps = {
+      agent: { get: async () => PLACED_AGENT },
+      hook: { get: async () => ({ agentId: AGENT_ID, kind: 'gitlab', enabled: true, repoId: 4455667n }) },
+      github: {},
+      gitlabGitcred: { grantForBrokerEffect }
+    } as unknown as DaemonWsDeps
+    const conn = fakeConn()
+    const frame = gitcredFrame({
+      provider: 'gitlab',
+      purpose: 'gitlab_effect',
+      hookId: HOOK_ID,
+      externalRepoId: '4455667'
+    })
+
+    await handleGitCredRequest(frame, conn, deps)
+
+    expect(grantForBrokerEffect).toHaveBeenCalledWith(PLACED_AGENT, 4455667n, true)
+    expect(conn.replyTo).toHaveBeenCalledWith(frame, 'gitcred/grant', expect.objectContaining({ access: 'comment' }))
+  })
+
+  it('refuses a gitlab_effect request naming a stale hook instead of falling back to the workspace', async () => {
+    const grantForBrokerEffect = vi.fn()
+    const deps = {
+      agent: { get: async () => PLACED_AGENT },
+      hook: { get: async () => ({ agentId: AGENT_ID, kind: 'gitlab', enabled: false, repoId: 4455667n }) },
+      github: {},
+      gitlabGitcred: { grantForBrokerEffect }
+    } as unknown as DaemonWsDeps
+    const conn = fakeConn()
+    const frame = gitcredFrame({
+      provider: 'gitlab',
+      purpose: 'gitlab_effect',
+      hookId: HOOK_ID,
+      externalRepoId: '4455667'
+    })
+
+    await handleGitCredRequest(frame, conn, deps)
+
+    expect(conn.sendError).toHaveBeenCalledWith(
+      frame.id,
+      'SCOPE_DENIED',
+      'hook is not an enabled gitlab hook of this agent on that project',
+      false
+    )
+    expect(grantForBrokerEffect).not.toHaveBeenCalled()
+  })
+
+  it('refuses a gitlab_effect request that names no project, and relays the service denial otherwise', async () => {
+    const grantForBrokerEffect = vi.fn(async () => {
+      throw new GitCredDeniedError('the agent is not authorized for that gitlab project', 'SCOPE_DENIED', false)
+    })
+    const deps = {
+      agent: { get: async () => PLACED_AGENT },
+      hook: { get: vi.fn() },
+      github: {},
+      gitlabGitcred: { grantForBrokerEffect }
+    } as unknown as DaemonWsDeps
+
+    const noProject = fakeConn()
+    const noProjectFrame = gitcredFrame({ provider: 'gitlab', purpose: 'gitlab_effect' })
+    await handleGitCredRequest(noProjectFrame, noProject, deps)
+    expect(noProject.sendError).toHaveBeenCalledWith(
+      noProjectFrame.id,
+      'SCOPE_DENIED',
+      'gitlab effect credentials require a project',
+      false
+    )
+    expect(grantForBrokerEffect).not.toHaveBeenCalled()
+
+    // Neither the workspace binding nor a hook authorizes the project: the service refuses and the
+    // handler relays it as a correlated error REP, never a grant.
+    const unauthorized = fakeConn()
+    const frame = gitcredFrame({ provider: 'gitlab', purpose: 'gitlab_effect', externalRepoId: '999' })
+    await handleGitCredRequest(frame, unauthorized, deps)
+    expect(unauthorized.sendError).toHaveBeenCalledWith(
+      frame.id,
+      'SCOPE_DENIED',
+      'the agent is not authorized for that gitlab project',
+      false
+    )
+    expect(unauthorized.replyTo).not.toHaveBeenCalled()
+  })
+
   it('fails a gitlab request closed when the seam is absent, and refuses unknown providers per-value', async () => {
     const deps = { agent: { get: async () => PLACED_AGENT }, github: {} } as unknown as DaemonWsDeps
     const conn = fakeConn()

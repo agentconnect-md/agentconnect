@@ -22,6 +22,18 @@ import { AgentId, HookId } from '../../domain/ids.js'
 import { GitCredDeniedError } from '../../github/service.js'
 import { frameOrgId } from './frame-org.js'
 import type { Handler } from './index.js'
+import type { HookRecord } from '../../persistence/ports.js'
+
+/** §13.1 hook authorization: the named hook must be an ENABLED gitlab hook of this agent on that very project. */
+function gitlabHookAuthorizes(
+  hook: HookRecord | null,
+  agentId: AgentId,
+  projectId: bigint
+): hook is HookRecord & { repoId: bigint } {
+  return (
+    hook !== null && hook.agentId === agentId && hook.kind === 'gitlab' && hook.enabled && hook.repoId === projectId
+  )
+}
 
 export const handleGitCredRequest: Handler = async (frame, conn, deps) => {
   if (!isFrame('gitcred/request')(frame)) return
@@ -77,13 +89,7 @@ export const handleGitCredRequest: Handler = async (frame, conn, deps) => {
           return
         }
         const hook = await deps.hook.get(orgId, HookId(hookId))
-        if (
-          !hook ||
-          hook.agentId !== AgentId(agentId) ||
-          hook.kind !== 'gitlab' ||
-          !hook.enabled ||
-          hook.repoId !== BigInt(externalRepoId)
-        ) {
+        if (!gitlabHookAuthorizes(hook, AgentId(agentId), BigInt(externalRepoId))) {
           conn.sendError(
             frame.id,
             'SCOPE_DENIED',
@@ -93,6 +99,34 @@ export const handleGitCredRequest: Handler = async (frame, conn, deps) => {
           return
         }
         const grant = await deps.gitlabGitcred!.grantForHookReply(orgId, hook.repoId)
+        conn.replyTo(frame, 'gitcred/grant', grant)
+        return
+      }
+      if (purpose === 'gitlab_effect') {
+        // §14.2: the structured broker's action-time lease. Either the agent's own GitLab workspace
+        // binding or an enabled gitlab hook on the project authorizes it (§13.1); the service echoes
+        // the clamp the broker then enforces per operation.
+        if (externalRepoId === undefined) {
+          conn.sendError(frame.id, 'SCOPE_DENIED', 'gitlab effect credentials require a project', false)
+          return
+        }
+        const projectId = BigInt(externalRepoId)
+        // A NAMED hook is a fence, not a hint: a stale or foreign one is refused rather than ignored.
+        let hookAuthorized = false
+        if (hookId !== undefined) {
+          const hook = await deps.hook.get(orgId, HookId(hookId))
+          if (!gitlabHookAuthorizes(hook, AgentId(agentId), projectId)) {
+            conn.sendError(
+              frame.id,
+              'SCOPE_DENIED',
+              'hook is not an enabled gitlab hook of this agent on that project',
+              false
+            )
+            return
+          }
+          hookAuthorized = true
+        }
+        const grant = await deps.gitlabGitcred!.grantForBrokerEffect(agent, projectId, hookAuthorized)
         conn.replyTo(frame, 'gitcred/grant', grant)
         return
       }

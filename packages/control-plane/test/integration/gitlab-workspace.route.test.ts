@@ -395,4 +395,48 @@ describe('gitcred v2 GitLab grants (§13.1/§17.1)', () => {
     await prisma.gitlabProjectBinding.update({ where: { id: h.binding.id }, data: { state: 'runtime_degraded' } })
     await expect(service.grantForHookReply(DEFAULT_ORG_ID, PROJECT)).rejects.toThrowError(GitCredDeniedError)
   })
+
+  it('grantForBrokerEffect clamps the same effect PAT by the workspace authorization (§14.2)', async () => {
+    const h = await harness()
+    const service = credService(h.bindings)
+    const creds = new PgGitlabProjectCredentialRepo(prisma)
+    const store = new PgGitlabProjectCredentialSecretStore(prisma, cipher)
+    const effectToken = await store.get(DEFAULT_ORG_ID, (await creds.get(h.binding.id, 'effect'))!.id)
+
+    // A write workspace earns full effect authority on the same action-time lease as the poster.
+    const write = await service.grantForBrokerEffect(gitlabAgent(), PROJECT, false)
+    expect(write.access).toBe('write')
+    expect(write.token).toBe(effectToken)
+    expect(write.provider).toBe('gitlab')
+    expect(write.externalRepoId).toBe(PROJECT.toString())
+    expect(write.ttlSec).toBeGreaterThan(0)
+    expect(write.ttlSec).toBeLessThanOrEqual(900)
+
+    // A read workspace gets the SAME PAT under a comment-level clamp the broker enforces per operation.
+    const readAgent = gitlabAgent({
+      workspace: { mode: 'gitlab', gitRepo: 'https://gitlab.com/example-group/example-project', gitAccess: 'read' }
+    } as Partial<AgentRecord>)
+    const read = await service.grantForBrokerEffect(readAgent, PROJECT, false)
+    expect(read.access).toBe('comment')
+    expect(read.token).toBe(effectToken)
+
+    // An agent whose workspace is not this project is admitted only by an enabled hook, at comment level.
+    const unbound = gitlabAgent({ workspace: { mode: 'scratch' } } as Partial<AgentRecord>)
+    expect((await service.grantForBrokerEffect(unbound, PROJECT, true)).access).toBe('comment')
+
+    // Neither authorization ⇒ terminal refusal, and a write workspace on ANOTHER project is not one.
+    const denial = await service.grantForBrokerEffect(unbound, PROJECT, false).catch((e: GitCredDeniedError) => e)
+    expect(denial).toBeInstanceOf(GitCredDeniedError)
+    expect((denial as GitCredDeniedError).code).toBe('SCOPE_DENIED')
+    expect((denial as GitCredDeniedError).retryable).toBe(false)
+    await expect(service.grantForBrokerEffect(gitlabAgent(), 999n, false)).rejects.toThrowError(GitCredDeniedError)
+
+    // §19.3: runtime drift refuses a NEW effect lease exactly as it refuses a workspace one.
+    await prisma.gitlabProjectBinding.update({ where: { id: h.binding.id }, data: { state: 'runtime_degraded' } })
+    const degraded = await service
+      .grantForBrokerEffect(gitlabAgent(), PROJECT, false)
+      .catch((e: GitCredDeniedError) => e)
+    expect((degraded as GitCredDeniedError).code).toBe('LEASE_DENIED')
+    expect((degraded as GitCredDeniedError).retryable).toBe(true)
+  })
 })

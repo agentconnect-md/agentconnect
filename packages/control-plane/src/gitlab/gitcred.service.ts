@@ -34,6 +34,29 @@ export class GitlabGitcredService {
 
   /** §14.1 effect lease: the binding's effect PAT for the note poster, authorized by the enabled hook, not the workspace gitAccess. */
   async grantForHookReply(orgId: string, projectId: bigint): Promise<GitCredGrant> {
+    // The wire access field describes CONTENTS capability here — 'read' is the conservative label, as for the GitHub hook-reply grant.
+    return this.effectGrant(orgId, projectId, 'read')
+  }
+
+  /** §14.2 broker effect lease: the same never-agent-visible effect PAT, authorized by the agent's GitLab workspace binding or an enabled gitlab hook (§13.1). */
+  async grantForBrokerEffect(agent: AgentRecord, projectId: bigint, hookAuthorized: boolean): Promise<GitCredGrant> {
+    const workspace =
+      agent.workspace.mode === 'gitlab' && agent.workspaceRepoId === projectId ? agent.workspace : undefined
+    if (workspace === undefined && !hookAuthorized) {
+      throw new GitCredDeniedError('the agent is not authorized for that gitlab project', 'SCOPE_DENIED', false)
+    }
+    // The clamp the daemon broker enforces per operation (§13.1): only a write workspace earns full
+    // effect authority; a read workspace or hook-only authorization stays comment-level.
+    const access = workspace !== undefined && workspace.gitAccess !== 'read' ? 'write' : 'comment'
+    return this.effectGrant(agent.orgId, projectId, access)
+  }
+
+  /** The purpose=effect PAT on an action-time lease; every request re-resolves the binding, membership, and epoch. */
+  private async effectGrant(
+    orgId: string,
+    projectId: bigint,
+    access: 'read' | 'comment' | 'write'
+  ): Promise<GitCredGrant> {
     const binding = await this.deps.bindings.byProject(orgId, projectId)
     if (!binding || binding.state === 'cleanup_pending') {
       throw new GitCredDeniedError(
@@ -72,8 +95,7 @@ export class GitlabGitcredService {
       ttlSec,
       expiresAt: new Date(nowMs + ttlSec * 1000).toISOString(),
       repoFullName: binding.projectPath,
-      // The wire access field describes CONTENTS capability — 'read' is the conservative label, as for the GitHub hook-reply grant.
-      access: 'read',
+      access,
       provider: 'gitlab',
       externalRepoId: projectId.toString(),
       credentialEpoch: binding.credentialEpoch.toString(),
