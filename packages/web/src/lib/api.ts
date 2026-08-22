@@ -5252,7 +5252,15 @@ export interface GitlabConnectionDto {
   scopes: string[]
   connectedBy: string | null // AgentConnect user id; null after user deletion
   accessExpiresAt: string | null
+  assignedProjects: number // managed projects this connection still administers
   createdAt: string
+}
+
+/** Deleting a connection twice means two things: the first call releases it and
+ *  returns the retained row, the second removes the row entirely. */
+export interface GitlabConnectionDeleteDto {
+  removed: boolean
+  connection: GitlabConnectionDto | null
 }
 
 /** One accessible project in the picker — metadata only, never installability. */
@@ -5309,10 +5317,12 @@ export function startGitlabOauth(returnPath?: string): Promise<string> {
   )
 }
 
-/** Revoke the OAuth grant and drop the stored tokens. Bound projects survive —
- *  removing them is a separate, explicitly destructive action. */
-export function disconnectGitlabConnection(id: string): Promise<GitlabConnectionDto> {
-  return apiDelete<GitlabConnectionDto>(`${orgBase()}/gitlab/connections/${encodeURIComponent(id)}`)
+/** Two-step release. On a live connection this revokes the OAuth grant, drops the
+ *  stored tokens, and keeps the row so its projects can still be listed; on an
+ *  already-disconnected one that administers nothing it removes the row. Removal
+ *  is refused (409) while any project is still assigned to the connection. */
+export function disconnectGitlabConnection(id: string): Promise<GitlabConnectionDeleteDto> {
+  return apiDelete<GitlabConnectionDeleteDto>(`${orgBase()}/gitlab/connections/${encodeURIComponent(id)}`)
 }
 
 /** Server-side paginated project search. `nextPage` is null on the last page. */

@@ -1776,11 +1776,21 @@ export const GitlabConnectionDto = z.object({
   scopes: z.array(z.string()),
   connectedBy: z.string().nullable(), // AgentConnect user id; null after user deletion
   accessExpiresAt: z.string().nullable(),
+  /** Managed projects this connection still administers (§7.1). A released
+   *  connection with none can be removed; with any, removal is refused. */
+  assignedProjects: z.number().int(),
   createdAt: z.string()
 })
 export type GitlabConnectionDtoT = z.infer<typeof GitlabConnectionDto>
 
 export const GitlabConnectionListDto = z.object({ connections: z.array(GitlabConnectionDto) })
+
+/** Deleting a connection twice means two things (§9.4): the first call releases
+ *  it and returns the retained row, the second removes the row entirely. */
+export const GitlabConnectionDeleteDto = z.object({
+  removed: z.boolean(),
+  connection: GitlabConnectionDto.nullable()
+})
 
 /** The begin URL the browser must visit to continue the OAuth flow on GitLab.com. */
 export const GitlabOauthStartDto = z.object({ url: z.string() })

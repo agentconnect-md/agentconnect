@@ -3275,7 +3275,19 @@ export interface GitlabConnectionRepo {
   /** Atomic disconnect: state flip, version bump (defeats in-flight refresh CAS),
    *  and sealed-pair deletion in one transaction. The row stays as history. */
   disconnect(orgId: string, connectionId: string): Promise<boolean>
+  /** Drop an already-released row (§9.4). Locks the row, re-checks the state and
+   *  the assigned-binding count, and deletes — all in one transaction, because
+   *  `installerConnectionId` is ON DELETE SET NULL: an unfenced delete would
+   *  silently DETACH a binding a racing create had just attached. */
+  remove(orgId: string, connectionId: string): Promise<GitlabConnectionRemoval>
 }
+
+/** Why a connection removal did or did not happen — the route maps it to a status. */
+export type GitlabConnectionRemoval =
+  | { outcome: 'removed' }
+  | { outcome: 'blocked'; assignedProjects: number }
+  | { outcome: 'not_disconnected' }
+  | { outcome: 'missing' }
 
 /** Sealed OAuth pair reads (per-org key scope). Writes ride the connection
  *  repo's atomic transitions; never joined by DTO queries. */
@@ -3327,6 +3339,9 @@ export interface GitlabProjectBindingRepo {
   get(orgId: string, bindingId: string): Promise<GitlabProjectBindingRecord | null>
   byProject(orgId: string, projectId: bigint): Promise<GitlabProjectBindingRecord | null>
   listForOrg(orgId: string): Promise<GitlabProjectBindingRecord[]>
+  /** How many bindings each connection still administers, keyed by connection id
+   *  (§7.1): a connection with any is not released and cannot be removed. */
+  countByInstaller(orgId: string): Promise<Record<string, number>>
   /** Saga/reconciler facts (service account, webhook, path refresh, lifecycle). */
   update(
     orgId: string,

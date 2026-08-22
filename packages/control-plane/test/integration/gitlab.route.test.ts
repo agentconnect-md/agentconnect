@@ -154,8 +154,44 @@ describe('gitlab oauth routes', () => {
     const { connectionId } = await connect(a)
     const res = await a.app.inject({ method: 'DELETE', url: `${ORG}/gitlab/connections/${connectionId}` })
     expect(res.statusCode).toBe(200)
-    expect((res.json() as { state: string }).state).toBe('disconnected')
+    // A live connection is released, never removed: the row survives for takeover.
+    expect(res.json()).toMatchObject({ removed: false, connection: { state: 'disconnected' } })
     expect(await prisma.gitlabConnectionSecret.findUnique({ where: { connectionId } })).toBeNull()
+    expect(await prisma.gitlabConnection.count({ where: { id: connectionId } })).toBe(1)
+  })
+
+  it('removes a released connection that administers no project (§9.4)', async () => {
+    const a = gitlabApp()
+    const { connectionId } = await connect(a)
+    await a.app.inject({ method: 'DELETE', url: `${ORG}/gitlab/connections/${connectionId}` })
+    const res = await a.app.inject({ method: 'DELETE', url: `${ORG}/gitlab/connections/${connectionId}` })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual({ removed: true, connection: null })
+    expect(await prisma.gitlabConnection.count({ where: { id: connectionId } })).toBe(0)
+    const list = await a.app.inject({ method: 'GET', url: `${ORG}/gitlab/connections` })
+    expect((list.json() as { connections: unknown[] }).connections).toHaveLength(0)
+  })
+
+  it('refuses to remove a released connection while it still administers projects', async () => {
+    const a = gitlabApp()
+    const { connectionId } = await connect(a)
+    const bound = await a.app.inject({
+      method: 'POST',
+      url: `${ORG}/gitlab/projects`,
+      payload: { connectionId, projectId: '4455667' }
+    })
+    expect(bound.statusCode).toBe(200)
+    // The list states the blocking count before the user reaches for removal.
+    const listed = await a.app.inject({ method: 'GET', url: `${ORG}/gitlab/connections` })
+    expect((listed.json() as { connections: { assignedProjects: number }[] }).connections[0]).toMatchObject({
+      assignedProjects: 1
+    })
+
+    await a.app.inject({ method: 'DELETE', url: `${ORG}/gitlab/connections/${connectionId}` })
+    const res = await a.app.inject({ method: 'DELETE', url: `${ORG}/gitlab/connections/${connectionId}` })
+    expect(res.statusCode).toBe(409)
+    expect((res.json() as { message: string }).message).toContain('1 managed project')
+    expect(await prisma.gitlabConnection.count({ where: { id: connectionId } })).toBe(1)
   })
 
   it('searches accessible projects through the connection', async () => {
