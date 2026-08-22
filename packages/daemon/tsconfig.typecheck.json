@@ -4,5 +4,6 @@
     "customConditions": ["development"],
     "noEmit": true,
     "rootDir": "../.."
-  }
+  },
+  "include": ["src", "test", "vitest.config.ts"]
 }
