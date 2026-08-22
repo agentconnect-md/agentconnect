@@ -659,7 +659,19 @@ export class PermissionCoordinator {
     // merely because the user agent normally runs in an auto-approval mode.
     if (this.host.memoryExtractionInFlight(pendingTurnKey(agentId, sessionId))) {
       this.permissionEvaluationDetails.set(evaluationParams, { reason: 'memory_extraction' })
-      return { outcome: { outcome: 'cancelled' } }
+      // Answer with a REJECTION when the runtime offers one. A cancel arrives as an
+      // aborted tool call — Claude reports "Tool use aborted" and abandons the run
+      // mid-plan — while a rejection is an ordinary answer it works past. An
+      // extraction that tries to leave its read-only mode must lose that request,
+      // not the whole dream.
+      const reject =
+        params.options.find((o) => o.kind === 'reject_once') ?? params.options.find((o) => o.kind === 'reject_always')
+      this.host
+        .log()
+        .debug(`permission refused for background extraction on agent "${agentId}" (${params.toolCall?.title ?? '?'})`)
+      return reject
+        ? { outcome: { outcome: 'selected', optionId: reject.optionId } }
+        : { outcome: { outcome: 'cancelled' } }
     }
     // Platform system tools (this daemon's OWN MCP tools — sendMessage, listAgents,
     // orchestration, memory, …) are always granted: a human should never

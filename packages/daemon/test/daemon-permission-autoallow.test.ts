@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import type { CreateElicitationRequest, RequestPermissionRequest } from '@agentclientprotocol/sdk'
 import { Daemon, noneSuppressedApprovalSurface, isBuiltinSystemTool, isBuiltinSystemToolCall } from '../src/daemon.js'
 import { ALL_TOOL_NAMES } from '../src/mcp/tools.js'
+import { pendingTurnKey } from '../src/daemon/turn-types.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 
 /**
@@ -206,6 +207,36 @@ describe('built-in MCP approvals use one policy on both ACP paths', () => {
     expect((daemon as any).permissions.pendingEditorPermissions.size).toBe(0)
     expect((daemon as any).permissions.pendingChatPermissions.size).toBe(0)
     expect((daemon as any).permissions.pendingElicits.size).toBe(0)
+  })
+
+  it('refuses a background extraction as a rejection, so the run continues without the tool', async () => {
+    // A dream/distill session runs under a read-only permission mode and may never gain
+    // side effects — but answering `cancelled` reaches Claude as an aborted tool call and
+    // it abandons the run (an ExitPlanMode this way lost a whole dream). Reject instead.
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    installPending(daemon)
+    ;(daemon as any).memoryExtractionCollectors.set(pendingTurnKey('agent-1', 's1'), { chunks: [] })
+
+    await expect(
+      (daemon as any).permissions.onAcpPermission('agent-1', 's1', req({ title: 'ExitPlanMode' }))
+    ).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'deny' } })
+    // Nothing was queued for a human: there is no one to ask on a background run.
+    expect((daemon as any).permissions.pendingEditorPermissions.size).toBe(0)
+    expect((daemon as any).permissions.pendingChatPermissions.size).toBe(0)
+  })
+
+  it('still cancels an extraction request when the runtime offers no reject option', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    installPending(daemon)
+    ;(daemon as any).memoryExtractionCollectors.set(pendingTurnKey('agent-1', 's1'), { chunks: [] })
+    const allowOnly = {
+      ...req({ title: 'ExitPlanMode' }),
+      options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }]
+    }
+
+    await expect((daemon as any).permissions.onAcpPermission('agent-1', 's1', allowOnly)).resolves.toEqual({
+      outcome: { outcome: 'cancelled' }
+    })
   })
 
   it('queues non-system requests for an Agent editor even when `none` hides the chat surface', async () => {
