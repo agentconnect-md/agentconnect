@@ -381,9 +381,37 @@ export class GitlabAccountService {
     // Another authorization may already earn this membership — a workspace on
     // the project, or an enabled hook that is not the one being rolled back.
     // The consumer set is the same authority the unbind pass uses, so asking it
-    // keeps this from revoking access the write never granted.
+    // keeps this from revoking access the write never granted. It does not
+    // justify the ROLE the write installed, though: a read-only workspace earns
+    // Reporter, so a failed hook that raised the account to Developer must give
+    // that back rather than leave write access behind indefinitely.
     const consumers = await this.deps.accounts.consumers(input.orgId, input.projectId)
-    if (consumers.some((consumer) => consumer.agentId === agentId)) return
+    const surviving = consumers.find((consumer) => consumer.agentId === agentId)
+    if (surviving) {
+      try {
+        if (account.serviceAccountUserId !== null) {
+          await gitlabEnsureMember(
+            input.token,
+            input.projectId,
+            account.serviceAccountUserId,
+            surviving.accessLevel,
+            this.deps.fetchImpl
+          )
+        }
+        await this.deps.accounts.attachMembership({
+          accountId: account.id,
+          generation: account.generation,
+          bindingId: input.bindingId,
+          accessLevel: surviving.accessLevel
+        })
+      } catch (e) {
+        this.deps.log?.warn(
+          { accountId: account.id, status: e instanceof GitlabApiError ? e.status : undefined },
+          'gitlab speculative role rollback failed'
+        )
+      }
+      return
+    }
     try {
       const bound = await this.deps.accounts.membershipsForBinding(input.bindingId)
       if (bound.some((membership) => membership.accountId === account.id)) {
