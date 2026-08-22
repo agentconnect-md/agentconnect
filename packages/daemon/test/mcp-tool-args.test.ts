@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
 import { SEND_MESSAGE_BRANCHES, TOOL_ARG_SCHEMAS } from '../src/mcp/ops.js'
-import { GITHUB_REVIEW_TOOLS, RETIRED_ORCHESTRATION_TOOLS, toolsForIntegrations } from '../src/mcp/tools.js'
+import {
+  CODE_HOST_EFFECT_TOOLS,
+  GITHUB_REVIEW_TOOLS,
+  RETIRED_ORCHESTRATION_TOOLS,
+  toolsForIntegrations
+} from '../src/mcp/tools.js'
 import { externalMemoryTools } from '../src/memory/tools.js'
 import type { ToolDescriptor } from '../src/tool-schema/descriptor.js'
 import type { Integration } from '../src/agents/agent-schema.js'
@@ -31,7 +36,8 @@ const advertised: ToolDescriptor[] = [
   ...toolsForIntegrations([slackInt, telegramInt], { sessionTitle: true, organizationKnowledge: true }),
   ...externalMemoryTools(ALL_CAPABILITIES),
   ...RETIRED_ORCHESTRATION_TOOLS,
-  ...GITHUB_REVIEW_TOOLS
+  ...GITHUB_REVIEW_TOOLS,
+  ...CODE_HOST_EFFECT_TOOLS
 ]
 
 interface ObjectSchemaView {

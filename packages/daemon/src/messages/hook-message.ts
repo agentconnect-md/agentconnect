@@ -320,7 +320,7 @@ function gitlabReplyHint(c: HookContext, gitlab: GitlabHookMetadata): string {
   if (gitlab.target.kind === 'push') return ''
   return [
     '',
-    `Return one self-contained final answer for ${gitlabSubjectRef(c, gitlab)}. The daemon posts it back to that GitLab thread automatically as one note and exclusively owns the reply. Do NOT create, update, or delete GitLab notes through \`glab\`, another CLI, a connector, or a direct API call — those paths would race or double-post. Other GitLab access is READ-only inspection.`
+    `Return one self-contained final answer for ${gitlabSubjectRef(c, gitlab)}. The daemon posts it back to that GitLab thread automatically as one note and exclusively owns the reply. Do NOT create, update, or delete GitLab notes through \`glab\`, another CLI, a connector, or a direct API call — those paths would race or double-post. Any other effect — a separate comment, a discussion reply, a merge request, a pipeline action — goes through the structured code-host tools when you have them; every other GitLab access is READ-only inspection.`
   ].join('\n')
 }
 
