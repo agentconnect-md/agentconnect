@@ -45,13 +45,77 @@ export function isTerminalNoteState(state: string): boolean {
   return !NON_TERMINAL_STATES.has(state as CodeHostNoteState)
 }
 
-interface PendingNoteIntent {
+/** The complete accepted fence a parked edge carries, so draining applies ITS authority, never the
+ *  authority of the run whose write was in flight. Bigints ride as decimal strings, dates as ISO. */
+interface PendingNoteFence {
+  agentName?: string
+  projectPath?: string
+  sessionId?: string | null
+  queuedAt?: string | null
+  startedAt?: string | null
+  completedAt?: string | null
+  credentialEpoch?: string
+  configRevision?: string
+  dispatchRevision?: string
+  dispatchDaemonId?: string
+  reviewPolicySnapshot?: string
+  reportingModeSnapshot?: string
+  gateModeSnapshot?: string
+}
+
+interface PendingNoteIntent extends PendingNoteFence {
   desiredState: CodeHostNoteState
   reason?: string | null
   currentDeliveryKey?: string | null
   currentRunAt?: string
   nextAttemptAt?: string
   tombstoned?: boolean
+}
+
+/** Timestamps and session are per-RUN: a parked edge from a new delivery carries only its own, while
+ *  one from the delivery already on the row merges the row's, so draining can set all of them. */
+function encodePendingFence(
+  input: UpsertCodeHostRunProjectionInput,
+  current: CodeHostRunProjection,
+  sameRun: boolean
+): PendingNoteFence {
+  const iso = (value: Date | null | undefined, carried: Date | null) =>
+    (value ?? (sameRun ? carried : null))?.toISOString() ?? null
+  return {
+    agentName: input.agentName,
+    projectPath: input.projectPath,
+    sessionId: input.sessionId ?? (sameRun ? current.sessionId : null),
+    queuedAt: iso(input.queuedAt, current.queuedAt),
+    startedAt: iso(input.startedAt, current.startedAt),
+    completedAt: iso(input.completedAt, current.completedAt),
+    ...(input.credentialEpoch !== undefined ? { credentialEpoch: input.credentialEpoch.toString() } : {}),
+    ...(input.configRevision !== undefined ? { configRevision: input.configRevision.toString() } : {}),
+    ...(input.dispatchRevision !== undefined ? { dispatchRevision: input.dispatchRevision.toString() } : {}),
+    ...(input.dispatchDaemonId ? { dispatchDaemonId: input.dispatchDaemonId } : {}),
+    ...(input.reviewPolicySnapshot ? { reviewPolicySnapshot: input.reviewPolicySnapshot } : {}),
+    ...(input.reportingModeSnapshot ? { reportingModeSnapshot: input.reportingModeSnapshot } : {}),
+    ...(input.gateModeSnapshot ? { gateModeSnapshot: input.gateModeSnapshot } : {})
+  }
+}
+
+/** Apply a parked edge's fence to the generation it drains into; a member it never carried is left. */
+function pendingFenceUpdate(pending: PendingNoteIntent) {
+  const at = (value?: string | null) => (value ? new Date(value) : null)
+  return {
+    ...(pending.agentName !== undefined ? { agentName: pending.agentName } : {}),
+    ...(pending.projectPath !== undefined ? { projectPath: pending.projectPath } : {}),
+    ...(pending.sessionId !== undefined ? { sessionId: pending.sessionId } : {}),
+    ...(pending.queuedAt !== undefined ? { queuedAt: at(pending.queuedAt) } : {}),
+    ...(pending.startedAt !== undefined ? { startedAt: at(pending.startedAt) } : {}),
+    ...(pending.completedAt !== undefined ? { completedAt: at(pending.completedAt) } : {}),
+    ...(pending.credentialEpoch !== undefined ? { credentialEpoch: BigInt(pending.credentialEpoch) } : {}),
+    ...(pending.configRevision !== undefined ? { configRevision: BigInt(pending.configRevision) } : {}),
+    ...(pending.dispatchRevision !== undefined ? { dispatchRevision: BigInt(pending.dispatchRevision) } : {}),
+    ...(pending.dispatchDaemonId !== undefined ? { dispatchDaemonId: pending.dispatchDaemonId } : {}),
+    ...(pending.reviewPolicySnapshot !== undefined ? { reviewPolicySnapshot: pending.reviewPolicySnapshot } : {}),
+    ...(pending.reportingModeSnapshot !== undefined ? { reportingModeSnapshot: pending.reportingModeSnapshot } : {}),
+    ...(pending.gateModeSnapshot !== undefined ? { gateModeSnapshot: pending.gateModeSnapshot } : {})
+  }
 }
 
 function parsePendingIntent(value: unknown): PendingNoteIntent | null {
@@ -225,7 +289,8 @@ export class PgCodeHostRunProjectionRepo implements CodeHostRunProjectionRepo {
           reason: input.reason ?? null,
           currentDeliveryKey: input.currentDeliveryKey,
           currentRunAt: input.currentRunAt.toISOString(),
-          nextAttemptAt: input.nextAttemptAt.toISOString()
+          nextAttemptAt: input.nextAttemptAt.toISOString(),
+          ...encodePendingFence(input, current, sameRun)
         }
         return toRecord(
           await tx.codeHostRunProjection.update({ where: { id: current.id }, data: { pendingIntent: pending } })
@@ -261,7 +326,13 @@ export class PgCodeHostRunProjectionRepo implements CodeHostRunProjectionRepo {
             pendingIntent: Prisma.DbNull,
             leaseOwner: null,
             leaseUntil: null,
-            ...lifecycle
+            ...lifecycle,
+            // A new delivery owns a fresh lifecycle: keeping the previous run's timestamps or session
+            // would render another run's facts under this generation.
+            queuedAt: input.queuedAt ?? null,
+            startedAt: input.startedAt ?? null,
+            completedAt: input.completedAt ?? null,
+            sessionId: input.sessionId ?? null
           }
         })
       )
@@ -423,24 +494,33 @@ export class PgCodeHostRunProjectionRepo implements CodeHostRunProjectionRepo {
     projectionId: string,
     generation: bigint,
     leaseOwner: string,
+    writeMarker: string,
     errorCode: string,
     nextAttemptAt: Date,
     keepWriteMutex = false
   ): Promise<boolean> {
     return this.transaction(async (tx) => {
       const current = await this.lockById(tx, projectionId)
-      if (!current || current.generation !== generation || current.leaseOwner !== leaseOwner) return false
+      // Same out-of-order fence as completeWrite: a late duplicate of an EARLIER attempt's result
+      // names that attempt's marker and must not touch the attempt now in flight.
+      if (
+        !current ||
+        current.generation !== generation ||
+        current.leaseOwner !== leaseOwner ||
+        current.writeMarker !== writeMarker
+      )
+        return false
       const changed = await tx.codeHostRunProjection.updateMany({
-        where: { id: projectionId, generation, leaseOwner },
+        where: { id: projectionId, generation, leaseOwner, writeMarker },
         data: {
           attempts: { increment: 1 },
           lastErrorCode: errorCode,
           nextAttemptAt,
-          leaseOwner: null,
-          leaseUntil: null,
-          // Only a PROVED non-effect releases the mutex; an ambiguous mutation keeps it so a later
-          // pass reconciles the marker instead of writing a second note.
-          ...(keepWriteMutex ? {} : { writeMarker: null, writePhase: null, writeStartedAt: null })
+          // Only a PROVED non-effect releases the mutex AND the lease. An ambiguous mutation keeps
+          // both, so the same daemon stays the one writer that may reconcile the marker (§16).
+          ...(keepWriteMutex
+            ? {}
+            : { leaseOwner: null, leaseUntil: null, writeMarker: null, writePhase: null, writeStartedAt: null })
         }
       })
       return changed.count === 1
@@ -482,7 +562,10 @@ export class PgCodeHostRunProjectionRepo implements CodeHostRunProjectionRepo {
           lastErrorCode: null,
           pendingIntent: Prisma.DbNull,
           ...(pending.currentDeliveryKey !== undefined ? { currentDeliveryKey: pending.currentDeliveryKey } : {}),
-          ...(pending.currentRunAt ? { currentRunAt: new Date(pending.currentRunAt) } : {})
+          ...(pending.currentRunAt ? { currentRunAt: new Date(pending.currentRunAt) } : {}),
+          // The parked edge's OWN placement and credential fence: draining must never dispatch the
+          // new generation to the daemon or credential epoch the in-flight write belonged to.
+          ...pendingFenceUpdate(pending)
         }
       })
       if (changed.count !== 1) return null
@@ -495,52 +578,67 @@ export class PgCodeHostRunProjectionRepo implements CodeHostRunProjectionRepo {
     const row = await this.db.codeHostRunProjection.findUnique({ where: { id: projectionId } })
     return row ? toRecord(row) : null
   }
+}
 
-  async tombstone(hookIds: HookId[], at: Date): Promise<number> {
-    const ids = [...new Set(hookIds)]
-    if (ids.length === 0) return 0
-    return this.transaction(async (tx) => {
-      const rows = await tx.codeHostRunProjection.findMany({
-        where: { hookId: { in: ids } },
-        select: { id: true }
-      })
-      let changed = 0
-      for (const { id } of [...rows].sort((a, b) => a.id.localeCompare(b.id))) {
-        const row = await this.lockById(tx, id)
-        if (!row || row.tombstonedAt !== null) continue
-        if (row.writePhase !== null) {
-          // A cleanup tombstone must not stomp a mutex someone is mid-writing; it rides as pending.
-          await tx.codeHostRunProjection.update({
-            where: { id: row.id },
-            data: {
-              tombstonedAt: at,
-              pendingIntent: { desiredState: 'skipped', tombstoned: true, nextAttemptAt: at.toISOString() },
-              nextAttemptAt: at
-            }
-          })
-          changed += 1
-          continue
+/** Row lock shared with every projection mutation, so cleanup serializes against an in-flight write. */
+async function lockProjectionById(tx: Prisma.TransactionClient, id: string): Promise<CodeHostRunProjection | null> {
+  const rows = await tx.$queryRaw<CodeHostRunProjection[]>(Prisma.sql`
+    SELECT * FROM "code_host_run_projection" WHERE "id" = ${id}::uuid FOR UPDATE
+  `)
+  return rows[0] ?? null
+}
+
+/**
+ * One-way cleanup intent, callable INSIDE the transaction that retires the owner rows.
+ *
+ * The ledger has no foreign keys — cleanup must outlive hook, agent, and organization rows — so the
+ * intent has to be committed by the same transaction that removes ownership, never by a best-effort
+ * call afterwards. Hook deletion, the agent cascade, and the organization sweep all land here.
+ */
+export async function tombstoneCodeHostRunProjections(
+  tx: Prisma.TransactionClient,
+  scope: { hookIds: readonly string[] } | { orgId: string },
+  at: Date
+): Promise<number> {
+  const where = 'orgId' in scope ? { orgId: scope.orgId } : { hookId: { in: [...new Set(scope.hookIds)] } }
+  if ('hookIds' in scope && scope.hookIds.length === 0) return 0
+  const rows = await tx.codeHostRunProjection.findMany({ where, select: { id: true } })
+  let changed = 0
+  // Deterministic id order: hook deletion, the agent cascade, and organization deletion overlap.
+  for (const { id } of [...rows].sort((a, b) => a.id.localeCompare(b.id))) {
+    const row = await lockProjectionById(tx, id)
+    if (!row || row.tombstonedAt !== null) continue
+    if (row.writePhase !== null) {
+      // A cleanup tombstone must not stomp a mutex someone is mid-writing; it rides as pending.
+      await tx.codeHostRunProjection.update({
+        where: { id: row.id },
+        data: {
+          tombstonedAt: at,
+          pendingIntent: { desiredState: 'skipped', tombstoned: true, nextAttemptAt: at.toISOString() },
+          nextAttemptAt: at
         }
-        const nextGeneration = row.generation + 1n
-        await tx.codeHostRunProjection.update({
-          where: { id: row.id },
-          data: {
-            tombstonedAt: at,
-            generation: nextGeneration,
-            desiredState: 'skipped',
-            sealedThrough: nextGeneration,
-            observedState: null,
-            nextAttemptAt: at,
-            attempts: 0,
-            lastErrorCode: null,
-            pendingIntent: Prisma.DbNull,
-            leaseOwner: null,
-            leaseUntil: null
-          }
-        })
-        changed += 1
+      })
+      changed += 1
+      continue
+    }
+    const nextGeneration = row.generation + 1n
+    await tx.codeHostRunProjection.update({
+      where: { id: row.id },
+      data: {
+        tombstonedAt: at,
+        generation: nextGeneration,
+        desiredState: 'skipped',
+        sealedThrough: nextGeneration,
+        observedState: null,
+        nextAttemptAt: at,
+        attempts: 0,
+        lastErrorCode: null,
+        pendingIntent: Prisma.DbNull,
+        leaseOwner: null,
+        leaseUntil: null
       }
-      return changed
     })
+    changed += 1
   }
+  return changed
 }

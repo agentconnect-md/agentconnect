@@ -27,6 +27,7 @@ import type {
 } from '../../generated/prisma/client.js'
 import { Prisma } from '../../generated/prisma/client.js'
 import type { PrismaLike } from '../prisma.js'
+import { tombstoneCodeHostRunProjections } from './code-host-projection.repo.js'
 import type {
   HookRepo,
   HookRecord,
@@ -661,7 +662,10 @@ export class PgHookRepo implements HookRepo {
           return { kind: 'retry', owner: AgentId(hook.agentId) } as const
         }
         const projections = await tx.hookReviewProjection.findMany({ where: { hookId } })
-        await this.tombstoneProjectionRows(tx, projections, new Date(), 'failure')
+        const deletedAt = new Date()
+        await this.tombstoneProjectionRows(tx, projections, deletedAt, 'failure')
+        // The §16 ledger has no FK to this row, so its cleanup intent must commit with the delete.
+        await tombstoneCodeHostRunProjections(tx, { hookIds: [hookId] }, deletedAt)
         await tx.hookDef.delete({
           where: { id: hookId, orgId, ...(expectedOwnerForMutation ? { agentId: expectedOwnerForMutation } : {}) }
         })
@@ -2982,6 +2986,8 @@ export class PgHookRepo implements HookRepo {
         }
       })
       const rows = await tx.hookReviewProjection.findMany({ where: { hookId: { in: ids } } })
+      // The Agent-delete cascade reaches the §16 ledger only here — it has no FK to ride.
+      await tombstoneCodeHostRunProjections(tx, { hookIds: ids }, at)
       return this.tombstoneProjectionRows(tx, rows, at, desiredState)
     })
   }
@@ -3085,6 +3091,8 @@ export class PgHookRepo implements HookRepo {
 
         const projections = await tx.hookReviewProjection.findMany({ where: { orgId } })
         await this.tombstoneProjectionRows(tx, projections, at, 'failure')
+        // Same sweep for the §16 ledger: its rows survive the organization's cascade by design.
+        await tombstoneCodeHostRunProjections(tx, { orgId }, at)
 
         // A marker is durable before every external mutation. With no check id,
         // marker/phase, observed state, or write-start timestamp, there is proof

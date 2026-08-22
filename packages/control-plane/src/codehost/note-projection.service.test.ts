@@ -29,6 +29,7 @@ const hookId = HookId('00000000-0000-4000-8000-000000000001')
 const agentId = AgentId('00000000-0000-4000-8000-000000000002')
 const daemonId = DaemonId('00000000-0000-4000-8000-000000000003')
 const orgId = OrgId('org_1')
+const OTHER_HOOK = '00000000-0000-4000-8000-00000000000f'
 const HEAD = 'a'.repeat(40)
 
 // The tuple a gitlab rule actually compiles to today (hook.service.ts): the Checks-axis knobs are
@@ -133,8 +134,7 @@ function harness(
     completeWrite: vi.fn(async () => true),
     failWrite: vi.fn(async () => true),
     advancePending: vi.fn(async () => null),
-    get: vi.fn(async () => row),
-    tombstone: vi.fn(async () => 1)
+    get: vi.fn(async () => row)
   } satisfies Record<keyof CodeHostRunProjectionRepo, unknown> as unknown as CodeHostRunProjectionRepo & {
     upsert: ReturnType<typeof vi.fn>
     setDesired: ReturnType<typeof vi.fn>
@@ -143,7 +143,6 @@ function harness(
     completeWrite: ReturnType<typeof vi.fn>
     failWrite: ReturnType<typeof vi.fn>
     get: ReturnType<typeof vi.fn>
-    tombstone: ReturnType<typeof vi.fn>
   }
   const service = new CodeHostNoteProjectionService({
     projections,
@@ -288,9 +287,10 @@ describe('CodeHostNoteProjectionService', () => {
         observedState: 'queued',
         observedAt: new Date(NOW).toISOString()
       },
-      daemonId
+      daemonId,
+      orgId
     )
-    expect(settled).toBe(true)
+    expect(settled).toBe('settled')
     expect(projections.completeWrite).toHaveBeenCalledWith(
       expect.objectContaining({ leaseOwner: daemonId, generation: 1n, noteId: '987654321' })
     )
@@ -305,29 +305,78 @@ describe('CodeHostNoteProjectionService', () => {
       writeMarker: '20000000-0000-4000-8000-000000000001',
       observedAt: new Date(NOW).toISOString()
     }
-    await service.recordResult({ ...base, outcome: 'ambiguous', code: 'ambiguous_write' }, daemonId)
+    await service.recordResult({ ...base, outcome: 'ambiguous', code: 'ambiguous_write' }, daemonId, orgId)
     expect(projections.failWrite).toHaveBeenLastCalledWith(
       base.projectionId,
       1n,
       daemonId,
+      base.writeMarker,
       'ambiguous_write',
       expect.any(Date),
       true
     )
-    await service.recordResult({ ...base, outcome: 'failed', code: 'forbidden' }, daemonId)
+    await service.recordResult({ ...base, outcome: 'failed', code: 'forbidden' }, daemonId, orgId)
     expect(projections.failWrite).toHaveBeenLastCalledWith(
       base.projectionId,
       1n,
       daemonId,
+      base.writeMarker,
       'forbidden',
       expect.any(Date),
       false
     )
   })
 
-  it('tombstones a retired hook through the ledger', async () => {
+  it('refuses a result claiming a projection in another organization', async () => {
     const { service, projections } = harness()
-    await service.tombstone([hookId])
-    expect(projections.tombstone).toHaveBeenCalledWith([hookId], new Date(NOW))
+    const result = {
+      projectionId: projection().id,
+      hookId,
+      generation: '1',
+      writeMarker: '20000000-0000-4000-8000-000000000001',
+      outcome: 'written' as const,
+      noteId: '987654321',
+      observedState: 'queued' as const,
+      observedAt: new Date(NOW).toISOString()
+    }
+    expect(await service.recordResult(result, daemonId, OrgId('org_2'))).toBe('denied')
+    expect(await service.recordResult({ ...result, hookId: OTHER_HOOK }, daemonId, orgId)).toBe('denied')
+    expect(projections.completeWrite).not.toHaveBeenCalled()
+  })
+
+  it('settles a result whose hook is already gone, so a tombstone can still drain', async () => {
+    // The row deliberately outlives its HookDef; authorization reads the row, not a live hook.
+    const { service, projections } = harness({ row: projection({ tombstonedAt: new Date(NOW) }) })
+    const settled = await service.recordResult(
+      {
+        projectionId: projection().id,
+        hookId,
+        generation: '1',
+        writeMarker: '20000000-0000-4000-8000-000000000001',
+        outcome: 'written',
+        noteId: '987654321',
+        observedState: 'skipped',
+        observedAt: new Date(NOW).toISOString()
+      },
+      daemonId,
+      orgId
+    )
+    expect(settled).toBe('settled')
+    expect(projections.completeWrite).toHaveBeenCalledOnce()
+  })
+
+  it('never starts a second attempt while an unsettled marker is held', async () => {
+    for (const owner of [daemonId, 'another-daemon']) {
+      const { service, projections, sent } = harness({
+        row: projection({
+          writeMarker: '20000000-0000-4000-8000-0000000000bb',
+          writePhase: 'create',
+          leaseOwner: owner
+        })
+      })
+      await service.afterAccepted(edge())
+      expect(projections.beginWrite).not.toHaveBeenCalled()
+      expect(sent).toHaveLength(0)
+    }
   })
 })

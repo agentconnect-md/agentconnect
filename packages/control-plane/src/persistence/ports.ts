@@ -2807,12 +2807,14 @@ export interface CodeHostRunProjectionRepo {
   /** Settle the daemon's reported outcome. Fenced on generation ∧ lease owner ∧ marker, so an
    *  older generation's result can never regress a newer desired state. */
   completeWrite(input: CodeHostProjectionWriteResultInput): Promise<boolean>
-  /** A deterministic no-effect failure releases the mutex; an ambiguous one keeps it
-   *  (`keepWriteMutex`) so only reconciliation, never a replay, may follow. */
+  /** A deterministic no-effect failure releases the mutex AND the lease; an ambiguous one keeps both
+   *  (`keepWriteMutex`) so only that daemon's reconciliation, never a replay, may follow. Fenced on
+   *  the echoed marker so a late duplicate of an older attempt settles nothing. */
   failWrite(
     projectionId: string,
     generation: bigint,
     leaseOwner: string,
+    writeMarker: string,
     errorCode: string,
     nextAttemptAt: Date,
     keepWriteMutex?: boolean
@@ -2824,8 +2826,6 @@ export interface CodeHostRunProjectionRepo {
     fallbackNextAttemptAt: Date
   ): Promise<CodeHostRunProjectionRecord | null>
   get(projectionId: string): Promise<CodeHostRunProjectionRecord | null>
-  /** One-way cleanup intent: the row may never regain run authority afterwards. */
-  tombstone(hookIds: HookId[], at: Date): Promise<number>
 }
 
 /** Per-hook HMAC signing key — read ONLY here, NEVER joined into a DTO

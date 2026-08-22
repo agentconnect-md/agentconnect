@@ -8,8 +8,14 @@ import { randomUUID } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import { prisma } from '../setup.db.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
-import { AgentId, HookId, OrgId } from '../../src/domain/ids.js'
-import { PgCodeHostRunProjectionRepo } from '../../src/persistence/repositories/code-host-projection.repo.js'
+import { seedAgent, seedDaemon } from '../fixtures/seed.js'
+import { AgentId, DaemonId, HookId, OrgId } from '../../src/domain/ids.js'
+import { PgAgentRepo } from '../../src/persistence/repositories/agent.repo.js'
+import {
+  PgCodeHostRunProjectionRepo,
+  tombstoneCodeHostRunProjections
+} from '../../src/persistence/repositories/code-host-projection.repo.js'
+import { PgHookRepo } from '../../src/persistence/repositories/hook.repo.js'
 import type { UpsertCodeHostRunProjectionInput } from '../../src/persistence/ports.js'
 
 const NOW = new Date('2026-07-07T00:00:00.000Z')
@@ -18,8 +24,11 @@ const HEAD = 'a'.repeat(40)
 const NEXT_HEAD = 'b'.repeat(40)
 const PROJECT = 4455667n
 const DAEMON = '00000000-0000-4000-8000-0000000000d1'
+const NEXT_DAEMON = '00000000-0000-4000-8000-0000000000d2'
 
 const repo = () => new PgCodeHostRunProjectionRepo(prisma)
+const tombstone = (hookIds: string[]) =>
+  prisma.$transaction((tx) => tombstoneCodeHostRunProjections(tx, { hookIds }, LATER))
 
 function input(overrides: Partial<UpsertCodeHostRunProjectionInput> = {}): UpsertCodeHostRunProjectionInput {
   return {
@@ -166,27 +175,144 @@ describe('code-host run projection ledger (gitlab-com-integration.md §16)', () 
     expect(advanced!.pendingIntent).toBeNull()
   })
 
-  it('keeps an ambiguous mutation fail-closed on its writer and releases a proved non-effect', async () => {
+  it('keeps an ambiguous mutation on its writer and lets that writer reconcile it', async () => {
     const ledger = repo()
     const opened = await ledger.upsert(input())
     const marker = randomUUID()
     await ledger.beginWrite(opened.id, 1n, DAEMON, marker, 'create', NOW, LATER)
-    expect(await ledger.failWrite(opened.id, 1n, DAEMON, 'ambiguous_write', LATER, true)).toBe(true)
+    expect(await ledger.failWrite(opened.id, 1n, DAEMON, marker, 'ambiguous_write', LATER, true)).toBe(true)
     const held = (await ledger.get(opened.id))!
     expect(held.writeMarker).toBe(marker)
     expect(held.attempts).toBe(1)
+    // The owner is PRESERVED, otherwise no reconciliation could ever settle this attempt.
+    expect(held.leaseOwner).toBe(DAEMON)
     // Nobody may start a second mutation while the ambiguous one is unreconciled.
     expect(await ledger.beginWrite(opened.id, 1n, DAEMON, randomUUID(), 'update', NOW, LATER)).toBe(false)
+    // Another daemon may not settle it either.
+    expect(
+      await ledger.completeWrite({
+        projectionId: opened.id,
+        generation: 1n,
+        leaseOwner: 'other-daemon',
+        writeMarker: marker,
+        observedState: 'queued',
+        noteId: '111'
+      })
+    ).toBe(false)
 
-    await ledger.beginWrite(opened.id, 1n, DAEMON, marker, 'create', NOW, LATER)
-    expect(await ledger.failWrite(opened.id, 1n, DAEMON, 'forbidden', LATER, false)).toBe(false)
+    // The original writer reconciles by the hidden marker and settles the attempt.
+    expect(
+      await ledger.completeWrite({
+        projectionId: opened.id,
+        generation: 1n,
+        leaseOwner: DAEMON,
+        writeMarker: marker,
+        observedState: 'queued',
+        noteId: '987654321'
+      })
+    ).toBe(true)
+    const settled = (await ledger.get(opened.id))!
+    expect(settled.noteId).toBe('987654321')
+    expect(settled.writeMarker).toBeNull()
+    expect(settled.leaseOwner).toBeNull()
+  })
+
+  it('ignores a late duplicate of an earlier attempt on every settlement path', async () => {
+    const ledger = repo()
+    const opened = await ledger.upsert(input())
+    const first = randomUUID()
+    await ledger.beginWrite(opened.id, 1n, DAEMON, first, 'create', NOW, LATER)
+    // Attempt 1 proved a non-effect and released the mutex; attempt 2 then took it.
+    expect(await ledger.failWrite(opened.id, 1n, DAEMON, first, 'forbidden', LATER, false)).toBe(true)
+    const second = randomUUID()
+    expect(await ledger.beginWrite(opened.id, 1n, DAEMON, second, 'create', NOW, LATER)).toBe(true)
+
+    // A duplicate of attempt 1's result must not clear attempt 2's mutex.
+    expect(await ledger.failWrite(opened.id, 1n, DAEMON, first, 'forbidden', LATER, false)).toBe(false)
+    expect(
+      await ledger.completeWrite({
+        projectionId: opened.id,
+        generation: 1n,
+        leaseOwner: DAEMON,
+        writeMarker: first,
+        observedState: 'queued',
+        noteId: '111'
+      })
+    ).toBe(false)
+    const stillHeld = (await ledger.get(opened.id))!
+    expect(stillHeld.writeMarker).toBe(second)
+    expect(stillHeld.noteId).toBeNull()
+  })
+
+  it("drains a parked edge with its OWN placement and credential fence, not the in-flight run's", async () => {
+    const ledger = repo()
+    const base = input()
+    const opened = await ledger.upsert(base)
+    await ledger.beginWrite(opened.id, 1n, DAEMON, randomUUID(), 'create', NOW, LATER)
+
+    // Run B arrives mid-write after the agent moved and credentials rotated.
+    const parked = await ledger.upsert({
+      ...base,
+      desiredState: 'queued',
+      currentDeliveryKey: 'delivery-2',
+      currentRunAt: LATER,
+      queuedAt: LATER,
+      sessionId: 'sess-b',
+      dispatchDaemonId: NEXT_DAEMON,
+      configRevision: 9n,
+      dispatchRevision: 11n,
+      credentialEpoch: 4n
+    })
+    expect(parked.generation).toBe(1n)
+    expect(parked.dispatchDaemonId).toBe(DAEMON)
+
+    await ledger.completeWrite({
+      projectionId: opened.id,
+      generation: 1n,
+      leaseOwner: DAEMON,
+      writeMarker: (await ledger.get(opened.id))!.writeMarker!,
+      observedState: 'queued',
+      noteId: '987654321'
+    })
+    const drained = (await ledger.advancePending(opened.id, 1n, LATER))!
+    expect(drained.generation).toBe(2n)
+    // B's authority, end to end — dispatching this to DAEMON would target the previous placement.
+    expect(drained.dispatchDaemonId).toBe(NEXT_DAEMON)
+    expect(drained.configRevision).toBe(9n)
+    expect(drained.dispatchRevision).toBe(11n)
+    expect(drained.credentialEpoch).toBe(4n)
+    expect(drained.sessionId).toBe('sess-b')
+    expect(drained.queuedAt).toEqual(LATER)
+    expect(drained.currentDeliveryKey).toBe('delivery-2')
+  })
+
+  it("keeps the running delivery's own timestamps when its later edge parks", async () => {
+    const ledger = repo()
+    const base = input({ queuedAt: NOW })
+    const opened = await ledger.upsert(base)
+    await ledger.beginWrite(opened.id, 1n, DAEMON, randomUUID(), 'create', NOW, LATER)
+    // Same delivery, terminal edge: it carries completedAt but not queuedAt.
+    await ledger.upsert({ ...base, desiredState: 'completed', completedAt: LATER, sessionId: 'sess-a' })
+    await ledger.completeWrite({
+      projectionId: opened.id,
+      generation: 1n,
+      leaseOwner: DAEMON,
+      writeMarker: (await ledger.get(opened.id))!.writeMarker!,
+      observedState: 'queued'
+    })
+    const drained = (await ledger.advancePending(opened.id, 1n, LATER))!
+    expect(drained.desiredState).toBe('completed')
+    expect(drained.queuedAt).toEqual(NOW)
+    expect(drained.completedAt).toEqual(LATER)
+    expect(drained.sessionId).toBe('sess-a')
   })
 
   it('makes a tombstone one-way: no revival, no desired-state change, no generation advance', async () => {
     const ledger = repo()
     const base = input()
     const opened = await ledger.upsert(base)
-    expect(await ledger.tombstone([base.hookId], LATER)).toBe(1)
+    // The production entry point is the transaction-scoped helper the owner lifecycles call.
+    expect(await tombstone([base.hookId])).toBe(1)
     const dead = (await ledger.get(opened.id))!
     expect(dead.tombstonedAt).toEqual(LATER)
     expect(dead.desiredState).toBe('skipped')
@@ -203,6 +329,90 @@ describe('code-host run projection ledger (gitlab-com-integration.md §16)', () 
     expect(delayed.desiredState).toBe('skipped')
     expect(await ledger.setDesired(opened.id, 2n, 'completed', LATER)).toBe(false)
     // Tombstoning again is idempotent rather than a second cleanup generation.
-    expect(await ledger.tombstone([base.hookId], LATER)).toBe(0)
+    expect(await tombstone([base.hookId])).toBe(0)
+  })
+})
+
+describe('projection cleanup rides the owner lifecycle, not a route', () => {
+  const hooks = () => new PgHookRepo(prisma)
+
+  async function gitlabHook(agentId: AgentId) {
+    return hooks().upsert({
+      hookId: HookId(randomUUID()),
+      orgId: OrgId(DEFAULT_ORG_ID),
+      agentId,
+      kind: 'gitlab',
+      name: 'gitlab review',
+      sessionMode: 'perThread',
+      repoId: PROJECT,
+      events: ['merge_request:*']
+    })
+  }
+
+  async function seedProjectionFor(hookId: HookId, agentId: AgentId) {
+    return repo().upsert(input({ hookId, agentId }))
+  }
+
+  it('commits the cleanup intent in the same transaction that deletes the hook', async () => {
+    const daemonId = DaemonId(randomUUID())
+    await seedDaemon(prisma, daemonId)
+    const agentId = AgentId(randomUUID())
+    await seedAgent(prisma, agentId, { daemonId, name: `agent-${randomUUID().slice(0, 8)}` })
+    const hook = await gitlabHook(agentId)
+    const projection = await seedProjectionFor(hook.id, agentId)
+
+    await hooks().remove(OrgId(DEFAULT_ORG_ID), hook.id, agentId)
+    // The HookDef is gone AND the FK-free ledger row carries cleanup intent — one transaction.
+    expect(await prisma.hookDef.findUnique({ where: { id: hook.id } })).toBeNull()
+    const dead = (await repo().get(projection.id))!
+    expect(dead.tombstonedAt).not.toBeNull()
+    expect(dead.desiredState).toBe('skipped')
+  })
+
+  it('tombstones through the agent-delete cascade, which never enters an HTTP route', async () => {
+    const daemonId = DaemonId(randomUUID())
+    await seedDaemon(prisma, daemonId)
+    const agentId = AgentId(randomUUID())
+    await seedAgent(prisma, agentId, { daemonId, name: `agent-${randomUUID().slice(0, 8)}` })
+    const hook = await gitlabHook(agentId)
+    const projection = await seedProjectionFor(hook.id, agentId)
+
+    await new PgAgentRepo(prisma).delete(OrgId(DEFAULT_ORG_ID), agentId)
+    expect(await prisma.hookDef.findUnique({ where: { id: hook.id } })).toBeNull()
+    const dead = (await repo().get(projection.id))!
+    expect(dead.tombstonedAt).not.toBeNull()
+    expect(dead.desiredState).toBe('skipped')
+  })
+
+  it('parks cleanup behind an in-flight write instead of stomping its mutex', async () => {
+    const daemonId = DaemonId(randomUUID())
+    await seedDaemon(prisma, daemonId)
+    const agentId = AgentId(randomUUID())
+    await seedAgent(prisma, agentId, { daemonId, name: `agent-${randomUUID().slice(0, 8)}` })
+    const hook = await gitlabHook(agentId)
+    const projection = await seedProjectionFor(hook.id, agentId)
+    const marker = randomUUID()
+    await repo().beginWrite(projection.id, 1n, DAEMON, marker, 'create', NOW, LATER)
+
+    await hooks().remove(OrgId(DEFAULT_ORG_ID), hook.id, agentId)
+    const parked = (await repo().get(projection.id))!
+    expect(parked.tombstonedAt).not.toBeNull()
+    expect(parked.writeMarker).toBe(marker)
+    expect(parked.pendingIntent).toMatchObject({ desiredState: 'skipped', tombstoned: true })
+
+    // The daemon's result still settles after the hook is gone, and the tombstone then drains.
+    expect(
+      await repo().completeWrite({
+        projectionId: projection.id,
+        generation: 1n,
+        leaseOwner: DAEMON,
+        writeMarker: marker,
+        observedState: 'queued',
+        noteId: '987654321'
+      })
+    ).toBe(true)
+    const drained = (await repo().advancePending(projection.id, 1n, LATER))!
+    expect(drained.desiredState).toBe('skipped')
+    expect(drained.tombstonedAt).not.toBeNull()
   })
 })

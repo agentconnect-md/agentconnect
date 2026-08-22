@@ -1350,7 +1350,6 @@ export function buildContainer(
     agentMutations,
     sessionOwners: connReg,
     hooks: hookService,
-    ...(codeHostNoteProjection ? { codeHostNoteProjection } : {}),
     ...(githubRunReporter ? { kickGithubRunReporter: () => githubRunReporter.kick() } : {}),
     recomputeDuties: (orgId: string) => dutyRecompute.kick(orgId),
     auth,

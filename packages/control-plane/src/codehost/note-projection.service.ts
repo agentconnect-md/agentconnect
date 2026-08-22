@@ -99,6 +99,10 @@ export interface NoteProjectionEdge {
   at: Date
 }
 
+/** How a reported result settled. `denied` is a cross-org or cross-hook claim; `conflict` is a
+ *  fence miss (stale generation, lost lease, or an older attempt's marker) the daemon may drop. */
+export type NoteResultOutcome = 'settled' | 'conflict' | 'denied' | 'not_found'
+
 /** Sends one desired generation to a daemon that has advertised the feature. */
 export interface NoteProjectionSender {
   /** The daemon's advertised features, or undefined when it is offline. */
@@ -149,8 +153,16 @@ export class CodeHostNoteProjectionService {
 
   // The `running` edge waits on the GitLab arm of the `hook/start` barrier, which is GitHub-only today.
 
-  /** The daemon settled one desired generation: persist the observed note and drain any parked intent. */
-  async recordResult(result: CodeHostNoteResult, reportingDaemonId: string): Promise<boolean> {
+  /**
+   * The daemon settled one desired generation: persist the observed note and drain any parked intent.
+   *
+   * Authorized against the PERSISTED row, never a live HookDef — a projection deliberately outlives
+   * its hook so cleanup can settle, and a result arriving after deletion must still be acknowledged.
+   */
+  async recordResult(result: CodeHostNoteResult, reportingDaemonId: string, orgId: OrgId): Promise<NoteResultOutcome> {
+    const row = await this.deps.projections.get(result.projectionId)
+    if (!row) return 'not_found'
+    if (row.orgId !== orgId || row.hookId !== result.hookId) return 'denied'
     const generation = BigInt(result.generation)
     const now = new Date(this.deps.clock.now())
     if (result.outcome === 'written' && result.observedState) {
@@ -163,27 +175,25 @@ export class CodeHostNoteProjectionService {
         ...(result.noteId ? { noteId: result.noteId } : {}),
         recheckAt: now
       })
-      if (settled) await this.drain(result.projectionId, now)
-      return settled
+      if (!settled) return 'conflict'
+      await this.drain(result.projectionId, now)
+      return 'settled'
     }
-    // A deterministic no-effect outcome releases the mutex; an ambiguous one keeps it so only
-    // reconciliation, never a replay, may follow (§16).
+    // A deterministic no-effect outcome releases the mutex and the lease; an ambiguous one keeps
+    // both, so only this daemon's reconciliation — never a replay — may follow (§16).
     const keepWriteMutex = result.outcome === 'ambiguous'
     const released = await this.deps.projections.failWrite(
       result.projectionId,
       generation,
       reportingDaemonId,
+      result.writeMarker,
       result.code ?? result.outcome,
       now,
       keepWriteMutex
     )
-    if (released && !keepWriteMutex) await this.drain(result.projectionId, now)
-    return released
-  }
-
-  /** Cleanup intent for retired hooks; the rows may never regain run authority. */
-  async tombstone(hookIds: HookId[]): Promise<number> {
-    return this.deps.projections.tombstone(hookIds, new Date(this.deps.clock.now()))
+    if (!released) return 'conflict'
+    if (!keepWriteMutex) await this.drain(result.projectionId, now)
+    return 'settled'
   }
 
   private async drain(projectionId: string, now: Date): Promise<void> {
@@ -276,7 +286,13 @@ export class CodeHostNoteProjectionService {
     const features = this.deps.sender.daemonFeatures(daemonId)
     if (!features?.includes(CODEHOST_NOTE_PROJECTION_V1_FEATURE)) return
 
+    // A held marker is an unsettled mutation: it stays fail-closed on the writer that owns it until
+    // that writer reconciles it, and daemon loss or lease expiry alone never authorizes another
+    // attempt (§16). Duplicated with the repository's own fence so an alternate port cannot skip it.
+    if (projection.writeMarker !== null) return
+
     const now = new Date(this.deps.clock.now())
+    const leaseUntil = new Date(now.getTime() + this.writeLeaseMs)
     const writeMarker = randomUUID()
     const taken = await this.deps.projections.beginWrite(
       projection.id,
@@ -285,10 +301,8 @@ export class CodeHostNoteProjectionService {
       writeMarker,
       projection.noteId ? 'update' : 'create',
       now,
-      new Date(now.getTime() + this.writeLeaseMs)
+      leaseUntil
     )
-    // Refused ⇒ another mutation is still in flight for this generation. An ambiguous one stays
-    // fail-closed on its writer; daemon loss or lease expiry alone cannot authorize another.
     if (!taken) return
 
     const consoleUrl = await this.consoleUrl(projection)
@@ -326,7 +340,7 @@ export class CodeHostNoteProjectionService {
           gateMode: projection.gateModeSnapshot
         },
         credentialEpoch: projection.credentialEpoch.toString(),
-        leaseUntil: new Date(now.getTime() + this.writeLeaseMs).toISOString()
+        leaseUntil: leaseUntil.toISOString()
       },
       projection.orgId
     )

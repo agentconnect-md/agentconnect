@@ -1,6 +1,5 @@
 /** `codehost/note-result`: the owning daemon settled one desired projection generation (§16). */
 import { isFrame } from '@agentconnect.md/protocol'
-import { HookId } from '../../domain/ids.js'
 import { frameOrgId } from './frame-org.js'
 import type { Handler } from './index.js'
 
@@ -10,17 +9,24 @@ export const handleCodeHostNoteResult: Handler = async (frame, conn, deps) => {
     conn.sendError(frame.id, 'SCOPE_DENIED', 'note projection is not enabled', false)
     return
   }
-  // The hook must live in the org the frame acts in: a cross-org id reads as absent here.
   const orgId = frameOrgId(frame, conn)
-  if (!orgId || !(await deps.hook.get(orgId, HookId(frame.payload.hookId)))) {
-    conn.sendError(frame.id, 'SCOPE_DENIED', 'hook is not in the organization this frame acts in', false)
+  if (!orgId) {
+    conn.sendError(frame.id, 'SCOPE_DENIED', 'organization is required', false)
     return
   }
   try {
-    // The reporting daemon is the lease owner the result is fenced on, so a daemon that no longer
-    // holds the write settles nothing and is told so rather than silently accepted.
-    const settled = await deps.codeHostNoteProjection.recordResult(frame.payload, conn.daemonId)
-    if (!settled) {
+    // Authorized on the PERSISTED projection, not a live HookDef: a row outlives its hook so an
+    // in-flight write can still settle and its tombstone drain after the hook is deleted.
+    const outcome = await deps.codeHostNoteProjection.recordResult(frame.payload, conn.daemonId, orgId)
+    if (outcome === 'denied') {
+      conn.sendError(frame.id, 'SCOPE_DENIED', 'projection is not in the organization this frame acts in', false)
+      return
+    }
+    if (outcome === 'not_found') {
+      conn.sendError(frame.id, 'CONFLICT', 'no such projection', false)
+      return
+    }
+    if (outcome === 'conflict') {
       conn.sendError(frame.id, 'CONFLICT', 'note result does not match the current projection write', false)
       return
     }
