@@ -32,6 +32,10 @@ export type FeatureFlagId =
    *  nothing to point it at. `BILLING_URL` then says WHERE that service is; this says WHETHER to
    *  offer the page, so a missing endpoint is a misconfiguration rather than a silent opt-out. */
   | 'billing'
+  /** GitLab.com integration surfaces: the Connections card, its project bindings, and the gitlab
+   *  workspace and hook options as they land. A standing switch — the connection needs a GitLab
+   *  OAuth application only some deployments register (gitlab-com-integration.md §18.1, §18.3). */
+  | 'gitlab'
 
 function enabledIds(): ReadonlySet<string> {
   // The server must read the SAME value `PublicEnvScript` injects, in the same precedence, or a

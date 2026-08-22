@@ -10,7 +10,7 @@ import slackIcon from '@iconify-icons/logos/slack-icon'
 import webhooksLogoFillIcon from '@iconify-icons/ph/webhooks-logo-fill'
 import { Icon as IconifyIcon } from '@iconify/react'
 import { FcGoogle } from 'react-icons/fc'
-import { SiGithub } from 'react-icons/si'
+import { SiGithub, SiGitlab } from 'react-icons/si'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
 import { LARK_MARK_SRC } from './console/platforms/feishu/mark'
 import { platformMark } from './console/platforms/marks'
@@ -219,6 +219,13 @@ export function OrgIconView({
 export function GithubMark({ color = 'currentColor', fillPct = 60 }: { color?: string; fillPct?: number }) {
   return (
     <SiGithub style={{ width: `${fillPct}%`, height: `${fillPct}%`, display: 'block' }} color={color} aria-hidden />
+  )
+}
+
+// GitLab tanuki mark — the code-host counterpart of {@link GithubMark}.
+export function GitlabMark({ color = 'currentColor', fillPct = 60 }: { color?: string; fillPct?: number }) {
+  return (
+    <SiGitlab style={{ width: `${fillPct}%`, height: `${fillPct}%`, display: 'block' }} color={color} aria-hidden />
   )
 }
 
