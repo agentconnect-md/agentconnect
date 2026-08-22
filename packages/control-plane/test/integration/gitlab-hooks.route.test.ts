@@ -167,7 +167,12 @@ describe('gitlab hooks — routes, compile, webhook converge (§8.3/§11.1/§11.
     h.a.relayReg.add(glab.ch)
     h.a.relayReg.add(legacy.ch)
 
-    const res = await h.a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: glBody(h.agentId) })
+    // The removed label filter is read tolerantly: an old client may still send it.
+    const res = await h.a.app.inject({
+      method: 'POST',
+      url: `${ORG}/hooks`,
+      payload: glBody(h.agentId, { labelFilter: ['bug'] })
+    })
     expect(res.statusCode).toBe(200)
     const dto = res.json() as { id: string; kind: string; url: string | null }
     expect(dto.kind).toBe('gitlab')
@@ -193,6 +198,8 @@ describe('gitlab hooks — routes, compile, webhook converge (§8.3/§11.1/§11.
         expect(rule.gitlab?.serviceAccountUsername).toBe(`agentconnect-p${PROJECT}`)
         expect(rule.gitlab?.signingToken).toBe(webhook.token)
         expect(rule.gitlab?.events).toEqual(['issues:*', 'merge_request:opened'])
+        // The value never reaches the rule; the empty array only keeps an older relay decoding.
+        expect(rule.gitlab?.labelFilter).toEqual([])
       },
       { timeout: 20_000 }
     )

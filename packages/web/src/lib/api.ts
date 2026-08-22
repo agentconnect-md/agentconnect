@@ -3912,7 +3912,6 @@ export interface CreateGitlabHookInput {
   projectId: string // numeric GitLab project id
   events: string[] // 'issues:*' / 'merge_request:*' / 'push:*' — at least one
   commentFamilies?: GitlabCommentFamily[]
-  labelFilter?: string[]
   mentionOnly?: boolean
 }
 

@@ -291,7 +291,7 @@ function isInternalServiceAccountRevision(rule: RcHookAssign, ctx: GitlabMatchCt
 /**
  * One rule's verdict for one verified delivery (pure; exported for unit tests).
  * Order: loop-prevention veto → reviewer-request path → cadence/additive summon
- * match → comment scope → mention-only gate → labels → live-authz classification.
+ * match → comment scope → mention-only gate → live-authz classification.
  */
 export function gitlabRuleVerdict(rule: RcHookAssign, ctx: GitlabMatchCtx): GitlabRuleVerdict {
   if (rule.kind !== 'gitlab' || !rule.gitlab) return 'no-match'
@@ -336,8 +336,6 @@ export function gitlabRuleVerdict(rule: RcHookAssign, ctx: GitlabMatchCtx): Gitl
   }
   if (!eventMatched) return 'no-match'
   if (rule.gitlab.mentionOnly && !summoned) return 'no-match'
-  if (rule.gitlab.labelFilter.length > 0 && !ctx.labels.some((label) => rule.gitlab!.labelFilter.includes(label)))
-    return 'no-match'
   // §12.2: pushes and the SA's own same-project revisions stay relay-trusted;
   // every issue/MR lifecycle event and comment resolves live membership.
   if (ctx.family === 'push') return 'trusted'

@@ -757,6 +757,35 @@ describe('relay↔CP wire — skeleton frame codec (shared-bot-relay.md §7.1)',
     expect(rm.ok).toBe(true)
   })
 
+  it('a gitlab rule decodes with or without the removed label filter (§17.3)', () => {
+    const gitlab = {
+      hookId: '88888888-8888-4888-8888-888888888888',
+      agentId: AGENT_ID,
+      daemonId: DAEMON_ID,
+      kind: 'gitlab' as const,
+      sessionMode: 'perThread' as const,
+      gitlab: {
+        projectId: '4210',
+        projectPath: 'example-group/example-project',
+        sessionKeyPrefix: 'gitlab:4210',
+        events: ['merge_request:*'],
+        commentFamilies: ['merge_request' as const],
+        mentionOnly: false,
+        serviceAccountUserId: '99',
+        serviceAccountUsername: 'agentconnect-p4210',
+        signingToken: 'whsec_example'
+      }
+    }
+    // Absence is the shape a later release sends once no older relay is deployed.
+    expect(RcHookAssign.safeParse(gitlab).success).toBe(true)
+    // Presence is what a Control Plane predating the removal still sends; it decodes
+    // and the relay's matcher ignores the value.
+    const withFilter = { ...gitlab, gitlab: { ...gitlab.gitlab, labelFilter: ['bug'] } }
+    const decoded = RcHookAssign.safeParse(withFilter)
+    expect(decoded.success).toBe(true)
+    if (decoded.success) expect(decoded.data.gitlab?.labelFilter).toEqual(['bug'])
+  })
+
   it('rc/hook-rerun carries the Console rerun fence and its live subject (§16.1)', () => {
     const HOOK_ID = '99999999-9999-4999-8999-999999999999'
     const base = {

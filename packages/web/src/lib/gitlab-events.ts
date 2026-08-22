@@ -213,18 +213,6 @@ export function gitlabCadencePick(
   return { families: gitlabFamiliesOf(hook.events), mode }
 }
 
-/** Split a comma or whitespace separated label filter into the stored array. */
-export function parseLabelFilter(input: string): string[] {
-  return [
-    ...new Set(
-      input
-        .split(',')
-        .map((label) => label.trim())
-        .filter(Boolean)
-    )
-  ]
-}
-
 /**
  * The rename-stable thread key a GitLab hook session carries
  * (gitlab-com-integration.md §12.3): `gitlab:<project-id>:<kind>:<iid>`. A push

@@ -486,7 +486,6 @@ export function hookRoutes(deps: HttpDeps) {
             ? {
                 events: req.body.events,
                 commentFamilies: req.body.commentFamilies,
-                labelFilter: req.body.labelFilter,
                 mentionOnly: req.body.mentionOnly
                 // Review/reporting stay at their off defaults until the M6 slice.
               }
@@ -749,7 +748,6 @@ export function hookRoutes(deps: HttpDeps) {
             repoFullName: binding.projectPath,
             events: req.body.events,
             commentFamilies: req.body.commentFamilies ?? existing.commentFamilies,
-            labelFilter: req.body.labelFilter,
             mentionOnly: req.body.mentionOnly ?? existing.mentionOnly
           }
         } else {

@@ -123,7 +123,6 @@ GitHub modes.
 | Controlled comments and mutations      | Daemon-owned effect broker                                                     | Equivalent                                                      |
 | Managed event ingress                  | Automatically reconciled project webhook                                       | Equivalent                                                      |
 | Created, updated, mention-only cadence | GitLab issue, merge-request, note, and push event mapping                      | Equivalent                                                      |
-| Label filter                           | Current issue or merge-request labels from the verified event/API              | Equivalent                                                      |
 | Collaborator gate                      | Live target-project membership check; Developer or higher                      | Stricter than GitHub, whose gate now accepts the triage role    |
 | External merge-request gate            | Target-project membership or explicit Developer-or-higher request              | Stricter than GitHub; no workflow-approval start path           |
 | Bot-authored merge requests            | Same-project service-account MR revisions enter review                         | Equivalent to GitHub's internal-CI lane                         |
@@ -210,7 +209,7 @@ The relay owns public webhook ingress. It:
 - verifies the signing-token HMAC and timestamp before full decoding;
 - maps `webhook-id` to the stable downstream delivery identity without owning
   authoritative deduplication;
-- applies provider-specific event, bot, mention, label, and collaborator gates;
+- applies provider-specific event, bot, mention, and collaborator gates;
 - routes the bounded, explicitly untrusted context directly to the owning
   daemon; and
 - reports only delivery metadata to the Control Plane.
@@ -720,7 +719,7 @@ The Control Plane sends each relay the compiled rule, extending the existing
 - provider `gitlab` with the numeric project ID as the match key;
 - current project path for display only;
 - service-account numeric user ID and username;
-- event patterns, label filter, comment families, and mention mode; and
+- event patterns, comment families, and mention mode; and
 - the project signing token inline in the rule, exactly as the generic
   webhook's HMAC secret rides today, fetched from the hook secret store at
   compile time.
@@ -1409,7 +1408,7 @@ hook wizard and the agent workspace and additional-repository pickers list the
 connection's Maintainer-or-Owner projects merged with the ones already added,
 and picking one that is not added yet runs the Section 10.2 provisioning saga
 inline before the selection lands. Hook configuration retains the existing
-family, cadence, label, review, reporting, and output controls. Premium-only
+family, cadence, review, reporting, and output controls. Premium-only
 effective behavior is described where relevant; the UI does not imply that
 Free request changes block merges.
 
@@ -1727,9 +1726,9 @@ Use focused unit tests for pure boundaries only:
 
 - OAuth state/PKCE binding and refresh single-writer transitions;
 - Standard Webhooks signature, timestamp, and multi-signature verification;
-- event normalization, mention targeting, bot veto, labels, and membership
-  gates, including effective direct, inherited, invited-group, expired, and
-  awaiting membership;
+- event normalization, mention targeting, bot veto, and membership gates,
+  including effective direct, inherited, invited-group, expired, and awaiting
+  membership;
 - disjoint issue, merge-request, and push session-key derivation with missing
   target/ref rejection, plus daemon normalization that keeps one MR/ref on one
   channel/thread pair across different delivery IDs;

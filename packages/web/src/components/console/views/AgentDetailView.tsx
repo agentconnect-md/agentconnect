@@ -407,7 +407,6 @@ export default function AgentDetailView() {
         projectId: h.repoId,
         events: eventsForGitlabFamilies(families, mode),
         commentFamilies: commentFamiliesForGitlabFamilies(families, mode),
-        labelFilter: h.labelFilter,
         mentionOnly: mode === 'mention'
       })
       void mutateHooks((rows) => rows?.map((r) => (r.id === h.id ? updated : r)), { revalidate: false })

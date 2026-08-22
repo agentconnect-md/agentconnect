@@ -2416,7 +2416,6 @@ export const CreateGitlabHookBody = HookBodyBase.extend({
   events: z.array(z.string().regex(GitlabHookEventPattern)).min(1).max(20),
   // Note events for the selected subject families (§12); empty = no comments.
   commentFamilies: z.array(GitlabCommentFamily).max(2).default([]),
-  labelFilter: z.array(z.string().trim().min(1).max(100)).max(20).default([]),
   mentionOnly: z.boolean().default(false)
   // No review/reporting knobs yet: the M6 review slice adds them; rows default off.
 })

@@ -368,7 +368,9 @@ export const RcHookAssign = z
         projectPath: z.string().min(1), // display/logs only; never matched on
         sessionKeyPrefix: z.string().min(1), // rename-stable per-thread namespace: gitlab:<projectId>
         events: z.array(z.string()), // 'issues:*' / 'merge_request:*' / 'push:*' …
-        labelFilter: z.array(z.string()),
+        // Removed feature, accepted and ignored for one release: a relay predating
+        // this one still REQUIRES the member, so the CP keeps sending an empty array.
+        labelFilter: z.array(z.string()).optional(),
         commentFamilies: z.array(z.enum(['issues', 'merge_request'])).optional(),
         mentionOnly: z.boolean(),
         agentName: z.string().optional(),
