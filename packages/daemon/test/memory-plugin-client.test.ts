@@ -124,6 +124,7 @@ interface FakeOptions {
   wrongInputTypeFor?: { tool: string; field: string }
   textOnlyFor?: string
   delayFor?: { tool: string; ms: number }
+  holdFor?: { tool: string; arrived: () => void; released: Promise<void> }
   hugeFor?: { tool: string; bytes: number }
   resultFor?: Partial<Record<string, ToolResult>>
 }
@@ -286,6 +287,10 @@ async function startFake(options: FakeOptions = {}): Promise<{
       const name = String(params.name)
       calls.push({ name, args: params.arguments })
       if (options.delayFor?.tool === name) await new Promise((resolve) => setTimeout(resolve, options.delayFor!.ms))
+      if (options.holdFor?.tool === name) {
+        options.holdFor.arrived()
+        await options.holdFor.released
+      }
       let result: ToolResult
       if (options.resultFor?.[name]) result = options.resultFor[name]!
       else if (name === MEMORY_PLUGIN_TOOL.manifest) {
@@ -677,14 +682,37 @@ describe('MemoryPluginClient conformance over remote Streamable HTTP', () => {
   })
 
   it('gives capture its own budget so a write slower than the generic call timeout still completes', async () => {
-    // Mirrors a healthy Mem0 `infer: true` capture that runs past the generic
-    // per-call budget: capture must not be bound by the recall/generic timeout.
-    const slow = await startFake({ delayFor: { tool: MEMORY_PLUGIN_TOOL.capture, ms: 120 } })
-    const client = await MemoryPluginClient.connect({ url: slow.url, callTimeoutMs: 40, captureTimeoutMs: 400 })
-    await expect(
-      client.capture({ context, operationId: 'op-slow', turn: { turnId: 'turn-slow', input: 'in', output: 'out' } })
-    ).resolves.toEqual({ state: 'completed' })
-    await client.close()
+    // Capture must not be bound by the recall/generic timeout (a healthy Mem0 `infer: true` outruns it).
+    let captureArrived!: () => void
+    let releaseCapture!: () => void
+    const arrived = new Promise<void>((resolve) => (captureArrived = resolve))
+    const released = new Promise<void>((resolve) => (releaseCapture = resolve))
+    const slow = await startFake({ holdFor: { tool: MEMORY_PLUGIN_TOOL.capture, arrived: captureArrived, released } })
+    // The reply is held while the FAKE clock runs the generic budget out — no real sleep to race CI load.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    try {
+      // Generous real-clock budgets: the connect-time conformance probe also runs under callTimeoutMs.
+      const client = await MemoryPluginClient.connect({
+        url: slow.url,
+        callTimeoutMs: 30_000,
+        captureTimeoutMs: 60_000
+      })
+      const pending = client.capture({
+        context,
+        operationId: 'op-slow',
+        turn: { turnId: 'turn-slow', input: 'in', output: 'out' }
+      })
+      pending.catch(() => undefined) // a regression rejects mid-advance; keep that handled for the assert below
+      await arrived
+      await vi.advanceTimersByTimeAsync(45_000) // past callTimeoutMs, within captureTimeoutMs
+      releaseCapture()
+      await expect(pending).resolves.toEqual({ state: 'completed' })
+      vi.useRealTimers()
+      await client.close()
+    } finally {
+      releaseCapture() // on any earlier failure, unblock the fake so afterEach can close it
+      vi.useRealTimers()
+    }
   })
 
   it('still surfaces a capture that exceeds its own budget so the outbox can mark delivery unknown', async () => {
