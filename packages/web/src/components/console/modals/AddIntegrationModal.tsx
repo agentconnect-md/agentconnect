@@ -80,8 +80,6 @@ import {
   commentFamiliesForGitlabFamilies,
   eventsForGitlabFamilies,
   gitlabMentionUsage,
-  gitlabPushCadenceNote,
-  parseLabelFilter,
   type GlFamily,
   type GlTriggerMode
 } from '@/lib/gitlab-events'
@@ -368,7 +366,6 @@ export default function AddIntegrationModal({
   const gl = useGitlabProjects(platform === 'gitlab', glQ)
   const [glFams, setGlFams] = useState<Set<GlFamily>>(new Set(GL_DEFAULT_FAMILIES))
   const [glMode, setGlMode] = useState<GlTriggerMode>(GL_DEFAULT_TRIGGER_MODE)
-  const [glLabels, setGlLabels] = useState('')
 
   // Reusing a bot is an advanced path; every platform opens on the create flow
   // until the user explicitly chooses an existing identity.
@@ -841,7 +838,6 @@ export default function AddIntegrationModal({
         projectId: glProject,
         events: eventsForGitlabFamilies(glFams, glMode),
         commentFamilies: commentFamiliesForGitlabFamilies(glFams, glMode),
-        labelFilter: parseLabelFilter(glLabels),
         mentionOnly: glMode === 'mention'
       })
       onClose()
@@ -1688,7 +1684,7 @@ export default function AddIntegrationModal({
                   </GitlabProjectField>
                 </div>
                 <div className="fldlbl mb-2">Listen for</div>
-                <div className="mb-4 grid grid-cols-1 gap-[9px] min-[440px]:grid-cols-3">
+                <div className="mb-4 grid grid-cols-1 gap-[9px] min-[440px]:grid-cols-2">
                   {GL_FAMILIES.map((r) => {
                     const on = glFams.has(r.fam)
                     return (
@@ -1724,9 +1720,7 @@ export default function AddIntegrationModal({
                   })}
                 </div>
                 <div className="fldlbl mb-2">Trigger when</div>
-                <div
-                  className={`grid grid-cols-1 gap-[9px] min-[440px]:grid-cols-3 ${glFams.has('push') ? 'mb-2' : 'mb-4'}`}
-                >
+                <div className="mb-4 grid grid-cols-1 gap-[9px] min-[440px]:grid-cols-3">
                   {GL_TRIGGER_TILES.map((m) => {
                     const on = glMode === m.mode
                     return (
@@ -1755,25 +1749,6 @@ export default function AddIntegrationModal({
                       </div>
                     )
                   })}
-                </div>
-                {/* Pushes reach the cadence only through mention-only's commit-message gate. */}
-                {glFams.has('push') && (
-                  <div className="mb-4 font-sans text-[11.5px] font-normal leading-[1.45] text-(--text-tertiary)">
-                    {gitlabPushCadenceNote(agent.name)}
-                  </div>
-                )}
-                <div className="fld mb-4">
-                  <span className="fldlbl">Only these labels (optional)</span>
-                  <input
-                    className="inp mn"
-                    placeholder="needs-review, agent"
-                    value={glLabels}
-                    onChange={(e) => setGlLabels(e.target.value)}
-                    aria-label="Label filter"
-                  />
-                  <span className="mt-[6px] block font-sans text-[11.5px] font-normal leading-[1.45] text-(--text-tertiary)">
-                    Comma separated. Empty means every issue and merge request.
-                  </span>
                 </div>
               </>
             )}

@@ -155,7 +155,9 @@ export class HookService {
                 )
               }
             : {}),
-          labelFilter: hook.labelFilter,
+          // Removed feature: a stored value is read tolerantly and ignored. The empty
+          // array still rides the wire because a relay predating this release requires it.
+          labelFilter: [],
           mentionOnly: hook.mentionOnly,
           agentName: agent.name,
           serviceAccountUserId: binding.serviceAccountUserId.toString(),

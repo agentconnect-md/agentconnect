@@ -2,8 +2,9 @@
  * GitLab subscription vocabulary, the counterpart of `github-events.ts`.
  *
  * The console presents the same two axes GitHub does: SUBJECT families (issues
- * / merge requests / pushes) plus one TRIGGER MODE. The stored `events`
- * patterns, `commentFamilies` and the `mentionOnly` flag encode both:
+ * and merge requests — pushes are wire-supported but held back from the console,
+ * see `GL_FAMILIES`) plus one TRIGGER MODE. The stored `events` patterns,
+ * `commentFamilies` and the `mentionOnly` flag encode both:
  *
  *   created  → `family:opened` for the thread families and NO note family; the
  *              relay additionally accepts a later explicit @mention in an
@@ -32,9 +33,20 @@ import type { GitlabCommentFamily, HookCommentFamily } from './api'
 export type GlFamily = 'issues' | 'merge_request' | 'push'
 export type GlTriggerMode = 'first' | 'every' | 'mention'
 
+export interface GlFamilyTile {
+  fam: GlFamily
+  pill: string
+  icon: string
+  label: string
+  desc: string
+}
+
 // `desc` is the Add-integration tile subtitle — keep it to a short fragment
 // naming signals the relay really forwards, on one or two 11.5px lines.
-export const GL_FAMILIES: { fam: GlFamily; pill: string; icon: string; label: string; desc: string }[] = [
+// Every subject the wire knows, in display order. The event helpers read THIS
+// list, so an already-stored push subscription round-trips instead of being
+// silently dropped by an edit that never mentioned pushes.
+const GL_ALL_FAMILIES: GlFamilyTile[] = [
   { fam: 'issues', pill: 'Issues', icon: 'circle-dot', label: 'Issues', desc: 'opened, labels, replies' },
   {
     fam: 'merge_request',
@@ -45,6 +57,17 @@ export const GL_FAMILIES: { fam: GlFamily; pill: string; icon: string; label: st
   },
   { fam: 'push', pill: 'Pushes', icon: 'git-commit-horizontal', label: 'Pushes', desc: 'commits pushed to a branch' }
 ]
+
+// The subjects the console OFFERS — the two GitHub offers too. The push tile is
+// intentionally held back for now, exactly as `GH_FAMILIES` holds back commits;
+// re-add it here (and restore the 3-up grid) to bring the feature back.
+export const GL_FAMILIES: GlFamilyTile[] = GL_ALL_FAMILIES.filter((entry) => entry.fam !== 'push')
+
+/** The subject toggles ONE stored hook shows: the offered ones, plus pushes when
+ *  it already listens to them so the stored rule stays legible and removable. */
+export function gitlabRowFamilies(events: readonly string[]): GlFamilyTile[] {
+  return GL_ALL_FAMILIES.filter((entry) => entry.fam !== 'push' || gitlabFamCovered(events, 'push'))
+}
 
 /** The trigger modes in display order — mention deliberately last. */
 export const GL_TRIGGER_MODES: readonly GlTriggerMode[] = ['first', 'every', 'mention']
@@ -80,11 +103,6 @@ export function gitlabMentionUsage(agentName: string): string {
   return `Use @${agentName} to trigger only this agent.`
 }
 
-/** Pushes carry no conversation and no "first" — the cadence never narrows them. */
-export function gitlabPushCadenceNote(agentName: string): string {
-  return `Pushes run once per push, so created and updated behave the same for them; mention only still needs the commit message to @-mention ${agentName}.`
-}
-
 /** The default create-form selection: merge requests only. */
 export const GL_DEFAULT_FAMILIES: readonly GlFamily[] = ['merge_request']
 
@@ -104,7 +122,7 @@ export function commentFamiliesForGitlabFamilies(
 ): GitlabCommentFamily[] {
   if (mode === 'first') return []
   const picked = new Set(families)
-  return GL_FAMILIES.map((entry) => entry.fam).filter(
+  return GL_ALL_FAMILIES.map((entry) => entry.fam).filter(
     (family): family is GitlabCommentFamily => family !== 'push' && picked.has(family)
   )
 }
@@ -114,7 +132,7 @@ export function commentFamiliesForGitlabFamilies(
  *  were ticked. */
 export function eventsForGitlabFamilies(families: Iterable<GlFamily>, mode: GlTriggerMode): string[] {
   const picked = new Set(families)
-  return GL_FAMILIES.filter((entry) => picked.has(entry.fam)).map((entry) =>
+  return GL_ALL_FAMILIES.filter((entry) => picked.has(entry.fam)).map((entry) =>
     mode === 'first' && entry.fam !== 'push' ? `${entry.fam}:opened` : `${entry.fam}:*`
   )
 }
@@ -166,7 +184,7 @@ export interface GitlabSubscriptionEdit {
 
 /** The stored subject families, in display order. */
 function gitlabFamiliesOf(events: readonly string[]): GlFamily[] {
-  return GL_FAMILIES.map((entry) => entry.fam).filter((family) => gitlabFamCovered(events, family))
+  return GL_ALL_FAMILIES.map((entry) => entry.fam).filter((family) => gitlabFamCovered(events, family))
 }
 
 /** A subject toggle on an existing hook — null when it would leave the hook
@@ -176,7 +194,7 @@ export function gitlabFamilyToggle(
   hook: { events: readonly string[]; mentionOnly: boolean },
   fam: GlFamily
 ): GitlabSubscriptionEdit | null {
-  const families = GL_FAMILIES.map((entry) => entry.fam).filter((family) =>
+  const families = GL_ALL_FAMILIES.map((entry) => entry.fam).filter((family) =>
     family === fam ? !gitlabFamCovered(hook.events, family) : gitlabFamCovered(hook.events, family)
   )
   if (families.length === 0) return null
@@ -193,18 +211,6 @@ export function gitlabCadencePick(
 ): GitlabSubscriptionEdit | null {
   if (mode === gitlabTriggerModeOf(hook) && !gitlabHookNeedsNormalization(hook)) return null
   return { families: gitlabFamiliesOf(hook.events), mode }
-}
-
-/** Split a comma or whitespace separated label filter into the stored array. */
-export function parseLabelFilter(input: string): string[] {
-  return [
-    ...new Set(
-      input
-        .split(',')
-        .map((label) => label.trim())
-        .filter(Boolean)
-    )
-  ]
 }
 
 /**

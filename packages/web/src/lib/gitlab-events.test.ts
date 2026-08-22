@@ -10,11 +10,10 @@ import {
   gitlabCadencePick,
   gitlabFamilyToggle,
   gitlabHookNeedsNormalization,
-  gitlabPushCadenceNote,
+  gitlabRowFamilies,
   gitlabTriggerModeOf,
   gitlabTriggerTooltip,
-  parseGitlabHookThread,
-  parseLabelFilter
+  parseGitlabHookThread
 } from './gitlab-events'
 
 describe('GL_TRIGGER_LABEL', () => {
@@ -51,11 +50,22 @@ describe('GL_TRIGGER_PILL', () => {
 })
 
 describe('GL_FAMILIES', () => {
-  it('keeps the third GitLab subject and describes each like the GitHub tiles', () => {
-    expect(GL_FAMILIES.map(({ fam }) => fam)).toEqual(['issues', 'merge_request', 'push'])
+  it('offers the same two subjects GitHub does — pushes stay held back', () => {
+    expect(GL_FAMILIES.map(({ fam }) => fam)).toEqual(['issues', 'merge_request'])
     expect(GL_FAMILIES.find(({ fam }) => fam === 'issues')?.desc).toBe('opened, labels, replies')
     expect(GL_FAMILIES.find(({ fam }) => fam === 'merge_request')?.desc).toBe('opened, new commits, replies')
-    expect(GL_FAMILIES.find(({ fam }) => fam === 'push')?.desc).toBe('commits pushed to a branch')
+  })
+})
+
+describe('gitlabRowFamilies', () => {
+  it('shows only the offered subjects for a hook that never listened to pushes', () => {
+    expect(gitlabRowFamilies(['merge_request:*']).map(({ fam }) => fam)).toEqual(['issues', 'merge_request'])
+  })
+
+  it('keeps the pushes toggle on a hook that already stores push events', () => {
+    const rows = gitlabRowFamilies(['merge_request:*', 'push:*'])
+    expect(rows.map(({ fam }) => fam)).toEqual(['issues', 'merge_request', 'push'])
+    expect(rows.find(({ fam }) => fam === 'push')?.desc).toBe('commits pushed to a branch')
   })
 })
 
@@ -175,21 +185,6 @@ describe('gitlabHookNeedsNormalization', () => {
   })
 })
 
-describe('gitlabPushCadenceNote', () => {
-  it('says the cadence reaches pushes only through the mention gate', () => {
-    const note = gitlabPushCadenceNote('reviewer')
-    expect(note).toContain('created and updated behave the same')
-    expect(note).toContain('commit message')
-    expect(note).toContain('reviewer')
-  })
-})
-
-describe('parseLabelFilter', () => {
-  it('trims, drops blanks and de-duplicates', () => {
-    expect(parseLabelFilter(' needs-review , agent, ,needs-review ')).toEqual(['needs-review', 'agent'])
-  })
-})
-
 describe('parseGitlabHookThread', () => {
   it('names a rerunnable subject but never a branch', () => {
     expect(parseGitlabHookThread('gitlab:4210:merge_request:17')).toEqual({ kind: 'merge_request', iid: 17 })
@@ -205,6 +200,13 @@ describe('gitlabFamilyToggle', () => {
     expect(gitlabFamilyToggle({ events: ['issues:opened', 'push:*'], mentionOnly: false }, 'push')).toEqual({
       families: ['issues'],
       mode: 'first'
+    })
+  })
+
+  it('carries a stored push subscription through an edit that never mentioned it', () => {
+    expect(gitlabFamilyToggle({ events: ['merge_request:*', 'push:*'], mentionOnly: false }, 'issues')).toEqual({
+      families: ['issues', 'merge_request', 'push'],
+      mode: 'every'
     })
   })
 
