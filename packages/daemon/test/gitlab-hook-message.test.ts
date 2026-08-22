@@ -155,6 +155,46 @@ describe('gitlab hook normalization (§12.3)', () => {
     expect(hookAnchorText(msg)).toContain('merge_request:synchronize — example-group/example-project!77')
   })
 
+  it('opens the formal-review prompt only for an MR revision that carries a head and a policy', () => {
+    const mr = (overrides: Partial<RdMsgHook> = {}) =>
+      fire({
+        sessionKey: `gitlab:${PROJECT}:merge_request:77`,
+        event: 'merge_request:opened',
+        reviewPolicy: 'full',
+        gitlab: {
+          projectId: PROJECT,
+          projectPath: 'example-group/example-project',
+          target: { kind: 'merge_request', iid: 77, headSha: 'a'.repeat(40) }
+        },
+        context: { source: 'gitlab', event: 'merge_request', action: 'opened', number: 77, truncated: false },
+        ...overrides
+      })
+    const review = buildHookText(mr())
+    expect(review).toContain('structured `submitCodeReview` tool')
+    expect(review).toContain('opens a review generation for the current merge-request revision')
+    expect(review).toContain('APPROVE + pass')
+    expect(review).toContain('REQUEST_CHANGES works only while a user has requested the project service account')
+    expect(review).toContain('Do NOT create, update, or delete GitLab notes, drafts, or approvals')
+    // A comment-only policy promises only what it can deliver.
+    expect(buildHookText(mr({ reviewPolicy: 'comment' }))).toContain('COMMENT + fail')
+    // Off, an ordinary conversation event, and a headless MR keep the plain reply promise.
+    for (const plain of [
+      mr({ reviewPolicy: 'off' }),
+      mr({ context: { source: 'gitlab', event: 'merge_request', action: 'labeled', number: 77, truncated: false } }),
+      mr({
+        gitlab: {
+          projectId: PROJECT,
+          projectPath: 'example-group/example-project',
+          target: { kind: 'merge_request', iid: 77 }
+        }
+      })
+    ]) {
+      const text = buildHookText(plain)
+      expect(text).not.toContain('submitCodeReview')
+      expect(text).toContain('Return one self-contained final answer')
+    }
+  })
+
   it('maps merged MRs and closed issues to the shared worktree-cleanup family, fenced on metadata', () => {
     const gitlab = { projectId: PROJECT, projectPath: 'p', target: { kind: 'merge_request' as const, iid: 77 } }
     expect(githubThreadWorktreeCleanup({ event: 'merge_request:merged', gitlab })).toBe('pull_request_merged')

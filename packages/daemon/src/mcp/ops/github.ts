@@ -9,7 +9,7 @@ import {
   requiredString,
   requiredStringAllowEmpty
 } from './args.js'
-import type { GithubReviewEffect, SubmitGithubReviewInput } from '../../github/review.js'
+import type { SubmitCodeReviewReq } from '../../codehost/review-adapter.js'
 
 const REVIEW_SIDES = ['LEFT', 'RIGHT'] as const
 
@@ -29,8 +29,8 @@ const REVIEW_COMMENT = z.object(
   }
 )
 
-/** `submitGithubReview` arguments. `body` may be empty; the review target is never model input. */
-export const SUBMIT_GITHUB_REVIEW_ARGS = z.object({
+/** `submitCodeReview` arguments. `body` may be empty; the review target is never model input. */
+export const SUBMIT_CODE_REVIEW_ARGS = z.object({
   event: requiredEnum('event', ['COMMENT', 'REQUEST_CHANGES', 'APPROVE']),
   verdict: requiredEnum('verdict', ['pass', 'fail', 'neutral']),
   body: requiredStringAllowEmpty('body'),
@@ -75,15 +75,8 @@ export const REPLY_GITHUB_REVIEW_THREADS_ARGS = z.object({
     })
 })
 
-/** A formal PR review request with its caller identity/session coordinates
- * filled from the trusted MCP SessionContext. No GitHub target is model input. */
-export interface SubmitGithubReviewReq extends SubmitGithubReviewInput {
-  agentId: string
-  platform: string
-  channel: string
-  thread: string
-  transportScope?: string
-}
+/** The pre-promotion name of {@link SubmitCodeReviewReq}; the shape is unchanged. */
+export type SubmitGithubReviewReq = SubmitCodeReviewReq
 
 export interface ReplyGithubReviewThreadsReq {
   agentId: string
@@ -102,28 +95,28 @@ export interface ReplyGithubReviewThreadsResult {
   }>
 }
 
-/** The GitHub-review deps. Both are optional: an ordinary daemon carries the tool
+/** The formal-review deps. Both are optional: an ordinary daemon carries the tool
  *  descriptors but fails closed when the review seam is not wired. */
 export interface GithubReviewDeps {
-  /** Execute the R1 formal-review effect against the daemon-private active PR
-   * turn. The implementation owns action-time CP authorization and head/base
-   * fencing; ordinary sessions fail closed. */
-  submitGithubReview?: (req: SubmitGithubReviewReq) => Promise<GithubReviewEffect>
+  /** Execute the formal-review effect against the daemon-private active hook turn.
+   * The implementation routes by the turn's code host and owns action-time CP
+   * authorization and revision fencing; ordinary sessions fail closed. */
+  submitCodeReview?: (req: SubmitCodeReviewReq) => Promise<unknown>
   /** Publish the independently authored replies for one trusted inline-review batch. */
   replyGithubReviewThreads?: (req: ReplyGithubReviewThreadsReq) => Promise<ReplyGithubReviewThreadsResult>
 }
 
-// Structured formal PR review. Target identity is intentionally absent from
+// Structured formal code review. Target identity is intentionally absent from
 // args; the daemon recomputes the logical session key from these trusted
 // SessionContext fields and resolves the CURRENT active hook turn.
-export function submitGithubReview(
+export function submitCodeReview(
   ctx: SessionContext,
   args: Record<string, unknown>,
   deps: GithubReviewDeps
 ): Promise<unknown> {
-  if (!deps.submitGithubReview) throw new Error('formal GitHub reviews are unavailable on this daemon')
-  const { event, verdict, body, comments } = parseArgs(SUBMIT_GITHUB_REVIEW_ARGS, args)
-  return deps.submitGithubReview({
+  if (!deps.submitCodeReview) throw new Error('formal code reviews are unavailable on this daemon')
+  const { event, verdict, body, comments } = parseArgs(SUBMIT_CODE_REVIEW_ARGS, args)
+  return deps.submitCodeReview({
     agentId: ctx.agentId,
     platform: ctx.platform,
     channel: ctx.channel,

@@ -60,13 +60,13 @@ describe('advertised tool schemas agree with their zod validators', () => {
 
   it('advertises every dispatchable tool that takes arguments', () => {
     const missing = [...TOOL_ARG_SCHEMAS.keys()].filter(
-      // `listChannelAgents` is a dispatch-only alias, and the orchestration triple is retired.
-      (name) => !byName.has(name) && name !== 'listChannelAgents'
+      // `listChannelAgents` and `submitGithubReview` are dispatch-only aliases, and the orchestration triple is retired.
+      (name) => !byName.has(name) && name !== 'listChannelAgents' && name !== 'submitGithubReview'
     )
     expect(missing).toEqual([])
   })
 
-  it.each([...TOOL_ARG_SCHEMAS.keys()].filter((name) => name !== 'listChannelAgents'))(
+  it.each([...TOOL_ARG_SCHEMAS.keys()].filter((name) => name !== 'listChannelAgents' && name !== 'submitGithubReview'))(
     '%s takes exactly the advertised arguments',
     (name) => {
       const descriptor = byName.get(name)!

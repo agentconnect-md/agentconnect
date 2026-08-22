@@ -22,7 +22,7 @@ export function requiredString(key: string): z.ZodString {
   return z.string(message).min(1, message)
 }
 
-/** Like {@link requiredString} but accepts `''` — for `updateMemory`/`submitGithubReview`, where
+/** Like {@link requiredString} but accepts `''` — for `updateMemory`/`submitCodeReview`, where
  *  an empty string is a valid value. */
 export function requiredStringAllowEmpty(key: string): z.ZodString {
   return z.string(`missing required string argument: ${key}`)

@@ -1,13 +1,20 @@
-import type {
-  GithubHookMetadata,
-  GitlabHookMetadata,
-  GithubPublishedComment,
-  PublishedHookOutput,
-  GithubReviewAuthorized,
-  HookConfigSnapshot,
-  HookReport,
-  HookReviewResult,
-  RdMsgHook
+import {
+  codeHostReviewPublicEffect,
+  type CodeHostReviewExternalRef,
+  type CodeHostReviewOpKind,
+  type CodeHostReviewOpOutcome,
+  type CodeHostReviewState,
+  type HookReviewEvent,
+  type HookReviewVerdict,
+  type GithubHookMetadata,
+  type GitlabHookMetadata,
+  type GithubPublishedComment,
+  type PublishedHookOutput,
+  type GithubReviewAuthorized,
+  type HookConfigSnapshot,
+  type HookReport,
+  type HookReviewResult,
+  type RdMsgHook
 } from '@agentconnect.md/protocol'
 import type { GithubReviewEffect, GithubReviewEvent, GithubReviewTarget, GithubReviewVerdict } from './review.js'
 import type { SessionWorktreeRemoval } from '../workspace/workspace-manager.js'
@@ -143,8 +150,68 @@ export interface HookDispatchContext {
   publishedComment?: GithubPublishedComment
   /** Provider-neutral twin (§14.1): e.g. the GitLab note id this turn published. */
   publishedOutput?: PublishedHookOutput
+  /** The provider-neutral formal-review attempt (§15) — durable, so a replay cannot resurrect the fallback. */
+  codeReview?: CodeReviewAttempt
   /** Its twin for an absent note — persisted WITH settlement so a replay cannot report success (§14.1). */
   notePublishFailure?: NotePublishFailure
+}
+
+/**
+ * One reserved formal-review attempt, written to the durable hook row BEFORE the
+ * first provider operation (§15). `state` appears only once the attempt is durably
+ * classified; its absence means the effect is unknown and the ordinary reply is
+ * blocked, exactly as an uncorrelated GitHub attempt is.
+ */
+export interface CodeReviewAttempt {
+  attemptId: string
+  event: HookReviewEvent
+  verdict: HookReviewVerdict
+  headSha: string
+  state?: CodeHostReviewState
+  /** The publication lease's fence, so an owed ledger frame stays derivable after a restart. */
+  fence?: string
+  /** Published objects this attempt named; replayed verbatim with a reconstructed result. */
+  externalIds?: CodeHostReviewExternalRef[]
+  /** The classification exists but the control plane has not taken it yet (§15.1). */
+  resultOwed?: boolean
+  /** Next operation-ledger ordinal per kind — monotonic, so a replay never reuses a spent coordinate. */
+  ordinals?: Record<string, number>
+  /** Operations whose one outbound request was permitted but not yet settled (§15.1). */
+  operations?: CodeReviewOperation[]
+}
+
+/**
+ * The coordinates of ONE permitted provider request, written before it is sent.
+ *
+ * `phase` is the LOCAL view of the control plane's record: `issued` means the start
+ * transition had not been acknowledged, so a replay returns the permit unused rather
+ * than settling a record no request was ever permitted under.
+ */
+export interface CodeReviewOperation {
+  recordId: string
+  startToken: string
+  kind: CodeHostReviewOpKind
+  ordinal: number
+  target: string
+  phase: 'issued' | 'started'
+  /** The settle this operation owes, kept here when its frame could not be made durable —
+   *  a restart replays it from these coordinates alone, with no provider evidence. */
+  outcome?: CodeHostReviewOpOutcome
+  /** Draft ordinal for a `draft_create`, so its marker can identify the effect on replay. */
+  draftOrdinal?: number
+}
+
+/** §15.2 single-writer gate: only a PROVEN no-effect attempt leaves the ordinary reply available. */
+export function codeHostReviewFallbackAllowed(hook: HookDispatchContext | undefined): boolean {
+  const attempt = hook?.codeReview
+  if (!attempt) return true
+  return attempt.state !== undefined && codeHostReviewPublicEffect(attempt.state) === 'absent'
+}
+
+/** THE gate the turn-final surface asks: may the daemon still publish its ordinary reply?
+ *  Either provider's unresolved formal attempt is enough to answer no. */
+export function hookOutputFallbackAllowed(hook: HookDispatchContext | undefined): boolean {
+  return githubFallbackAllowed(hook) && codeHostReviewFallbackAllowed(hook)
 }
 
 export type GithubThreadWorktreeCleanup = 'pull_request_merged' | 'issue_closed' | 'issue_deleted'

@@ -25,6 +25,7 @@ import type { Logger } from '../log.js'
 import { buildHookMessage, githubOpensReviewGeneration, hookAnchorText } from '../messages/hook-message.js'
 import type { NormalizedMessage } from '../messages/normalized.js'
 import type { ReplyGithubReviewThreadsReq, ReplyGithubReviewThreadsResult, SubmitGithubReviewReq } from '../mcp/ops.js'
+import type { CodeHostReviewAdapter } from '../codehost/review-adapter.js'
 import { sessionKey, type SessionRecord } from '../store/local-store.js'
 import { formatErr, formatErrWithCauses } from '../daemon/text.js'
 import {
@@ -142,6 +143,14 @@ export interface GithubReviewHost {
 
 export class GithubReviewOrchestrator {
   readonly githubReviewClient = new GithubReviewClient()
+
+  /** The §6.5 code-host review adapter, GitHub side — extracted so GitLab can implement
+   *  the same member instead of core branching on a provider name. */
+  readonly reviewAdapter: CodeHostReviewAdapter = {
+    provider: 'github',
+    owns: (key, agentId) => this.host.activeGithubTurn(key)?.hook.agentId === agentId,
+    submit: (_key, req) => this.submitGithubReview(req)
+  }
 
   constructor(private readonly host: GithubReviewHost) {}
 

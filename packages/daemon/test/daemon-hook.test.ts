@@ -3361,7 +3361,7 @@ describe('buildHookMessage', () => {
       expect(draftText).toContain('Draft: true')
       expect(draftText).toContain('opens a review generation for the current PR revision')
       expect(draftText).toContain('use APPROVE + pass when it passes')
-      expect(draftText).toContain('submitGithubReview')
+      expect(draftText).toContain('submitCodeReview')
       expect(draftText).not.toContain('cannot accept a formal review')
 
       const convertedText = buildHookText(
@@ -3426,7 +3426,7 @@ describe('buildHookMessage', () => {
       expect(withThread).toContain('posts that final back to acme/infra#42 automatically')
       expect(withThread).toContain('exclusively owns the reply')
       expect(withThread).toContain('Formal GitHub review submission is unavailable')
-      expect(withThread).not.toContain('submitGithubReview')
+      expect(withThread).not.toContain('submitCodeReview')
       expect(withThread).toContain('Do NOT create, update, or delete GitHub comments or formal reviews')
       expect(withThread).toContain('`gh`, another CLI, a connector, or a direct API call')
       expect(withThread).toContain('Other GitHub tools are for READ-only inspection')
@@ -3434,7 +3434,7 @@ describe('buildHookMessage', () => {
       // formal verdict. A mention identified by the relay opens a review below.
       const issueComment = buildHookText(ghFire({ event: 'issue_comment', action: 'created' }))
       expect(issueComment).toContain('Formal GitHub review submission is unavailable')
-      expect(issueComment).not.toContain('submitGithubReview')
+      expect(issueComment).not.toContain('submitCodeReview')
       const prConversation = buildHookText(
         ghFire(
           { event: 'issue_comment', action: 'created' },
@@ -3452,7 +3452,7 @@ describe('buildHookMessage', () => {
       )
       expect(prConversation).toContain('does not prove its files match the PR revision')
       expect(prConversation).toContain('revision-addressed Git object reads')
-      expect(prConversation).not.toContain('submitGithubReview')
+      expect(prConversation).not.toContain('submitCodeReview')
       const revisionReview = buildHookText(
         ghFire(
           { event: 'pull_request', action: 'synchronize' },
@@ -3472,7 +3472,7 @@ describe('buildHookMessage', () => {
         )
       )
       expect(revisionReview).toContain('opens a review generation for the current PR revision')
-      expect(revisionReview).toContain('structured `submitGithubReview` tool')
+      expect(revisionReview).toContain('structured `submitCodeReview` tool')
       expect(revisionReview).toContain(`Base SHA: ${'b'.repeat(40)}`)
       expect(revisionReview).toContain(`Head SHA: ${'a'.repeat(40)}`)
       expect(revisionReview).toContain('Before trusting local files or repository traces')
@@ -3518,7 +3518,7 @@ describe('buildHookMessage', () => {
       )
       expect(inlineReply).toContain('daemon posts it back to the existing review thread automatically')
       expect(inlineReply).toContain('exclusively owns every inline reply')
-      expect(inlineReply).not.toContain('submitGithubReview')
+      expect(inlineReply).not.toContain('submitCodeReview')
       expect(inlineReply).not.toContain('ordinary GitHub comment')
       const batchableInline = buildHookText(
         ghFire(
@@ -3562,7 +3562,7 @@ describe('buildHookMessage', () => {
       expect(missingRoot).toContain('automatically as one ordinary GitHub comment')
       expect(missingRoot).toContain('Formal GitHub reviews are unavailable')
       expect(missingRoot).not.toContain('existing review thread')
-      expect(missingRoot).not.toContain('submitGithubReview')
+      expect(missingRoot).not.toContain('submitCodeReview')
       // push events have no issue/PR number → no poster runs → no hint.
       const push = buildHookText(
         ghFire({ event: 'push', action: undefined, number: undefined, bodyExcerpt: undefined })
@@ -3637,7 +3637,7 @@ describe('buildHookMessage', () => {
       expect(text).not.toContain('opens a review generation for the current PR revision')
       expect(text).not.toContain('use APPROVE + pass when it passes')
       expect(text).toContain('Formal GitHub review submission is unavailable')
-      expect(text).not.toContain('submitGithubReview')
+      expect(text).not.toContain('submitCodeReview')
     })
 
     it('a body quoting the delimiters cannot close the fence (delimiter lines are defanged)', async () => {

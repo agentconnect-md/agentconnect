@@ -1709,9 +1709,9 @@ describe('executeTool: viewSessionStatus', () => {
   })
 })
 
-describe('executeTool: submitGithubReview', () => {
+describe('executeTool: submitCodeReview', () => {
   it('takes agent/session identity from trusted context and passes only semantic review input', async () => {
-    const submitGithubReview = vi.fn(async () => ({
+    const submitCodeReview = vi.fn(async () => ({
       state: 'submitted' as const,
       reviewId: '99',
       event: 'REQUEST_CHANGES' as const,
@@ -1719,11 +1719,11 @@ describe('executeTool: submitGithubReview', () => {
       commitId: 'a'.repeat(40)
     }))
     const { deps: d } = deps(fakeGateway())
-    d.submitGithubReview = submitGithubReview
+    d.submitCodeReview = submitCodeReview
 
     const result = await executeTool(
       ctx,
-      'submitGithubReview',
+      'submitCodeReview',
       {
         // These attacker-supplied target fields are ignored.
         repoFullName: 'evil/repo',
@@ -1738,7 +1738,7 @@ describe('executeTool: submitGithubReview', () => {
     )
 
     expect(result).toMatchObject({ state: 'submitted', reviewId: '99' })
-    expect(submitGithubReview).toHaveBeenCalledWith({
+    expect(submitCodeReview).toHaveBeenCalledWith({
       agentId: 'bot-a',
       platform: 'slack',
       channel: 'C_CURRENT',
@@ -1753,18 +1753,28 @@ describe('executeTool: submitGithubReview', () => {
   it('fails closed when no review effect boundary is wired', async () => {
     const { deps: d } = deps(fakeGateway())
     await expect(
-      executeTool(ctx, 'submitGithubReview', { event: 'COMMENT', verdict: 'neutral', body: 'note' }, d)
+      executeTool(ctx, 'submitCodeReview', { event: 'COMMENT', verdict: 'neutral', body: 'note' }, d)
     ).rejects.toThrow(/unavailable/)
   })
 
-  it('validates inline coordinates before calling the effect boundary', async () => {
-    const submitGithubReview = vi.fn()
+  it('still dispatches the pre-promotion `submitGithubReview` name to the same entry', async () => {
+    const submitCodeReview = vi.fn(async () => ({ provider: 'gitlab', state: 'submitted' }))
     const { deps: d } = deps(fakeGateway())
-    d.submitGithubReview = submitGithubReview
+    d.submitCodeReview = submitCodeReview
+    await executeTool(ctx, 'submitGithubReview', { event: 'COMMENT', verdict: 'neutral', body: 'note' }, d)
+    expect(submitCodeReview).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: 'bot-a', event: 'COMMENT', verdict: 'neutral', body: 'note' })
+    )
+  })
+
+  it('validates inline coordinates before calling the effect boundary', async () => {
+    const submitCodeReview = vi.fn()
+    const { deps: d } = deps(fakeGateway())
+    d.submitCodeReview = submitCodeReview
     await expect(
       executeTool(
         ctx,
-        'submitGithubReview',
+        'submitCodeReview',
         {
           event: 'COMMENT',
           verdict: 'neutral',
@@ -1774,14 +1784,14 @@ describe('executeTool: submitGithubReview', () => {
         d
       )
     ).rejects.toThrow(/positive integer/)
-    expect(submitGithubReview).not.toHaveBeenCalled()
+    expect(submitCodeReview).not.toHaveBeenCalled()
   })
 
   // A malformed entry must name its own INDEX — that is the whole repair instruction for a
   // model holding a long batch, so the number has to survive the argument-schema plumbing.
   it.each([
     {
-      tool: 'submitGithubReview',
+      tool: 'submitCodeReview',
       args: {
         event: 'COMMENT',
         verdict: 'neutral',
@@ -1798,7 +1808,7 @@ describe('executeTool: submitGithubReview', () => {
     { tool: 'startOrchestration', args: { subtasks: ['nope'] }, expected: 'subtasks[0] must be an object' }
   ])('$tool names the offending entry by index', async ({ tool, args, expected }) => {
     const { deps: d } = deps(fakeGateway())
-    d.submitGithubReview = vi.fn()
+    d.submitCodeReview = vi.fn()
     d.replyGithubReviewThreads = vi.fn()
     await expect(executeTool(ctx, tool, args, d)).rejects.toThrow(expected)
   })

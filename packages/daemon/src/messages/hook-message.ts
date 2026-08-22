@@ -186,7 +186,7 @@ function githubReviewDecisionHint(
   const failingEvent = reviewPolicy === 'comment' ? 'COMMENT' : 'REQUEST_CHANGES'
   return (
     ' This delivery opens a review generation for the current PR revision. If you finish reviewing this revision, ' +
-    `record the actual verdict through \`submitGithubReview\`: use ${passingEvent} + pass when it passes, or ` +
+    `record the actual verdict through \`submitCodeReview\`: use ${passingEvent} + pass when it passes, or ` +
     `${failingEvent} + fail when it has blocking findings. An approval or rejection from an earlier revision does ` +
     'not complete this revision; do not merely describe the verdict in your final reply.'
   )
@@ -271,7 +271,7 @@ function githubReplyHint(
   }
   return [
     '',
-    `Your final reply is kept in the session transcript and is posted back to ${where} automatically as an ordinary GitHub comment only when no formal review was attempted or the current attempt definitively returns \`not_submitted\`. Keep it self-contained; the daemon exclusively owns that fallback reply comment. Use only the structured \`submitGithubReview\` tool for COMMENT / REQUEST_CHANGES / APPROVE and inline review comments. Its \`body\` must be a complete, self-contained, non-empty public review summary (including for APPROVE), because a submitted, ambiguous, or otherwise unresolved formal attempt suppresses the ordinary comment.${githubReviewDecisionHint(c, github, reviewPolicy)} Do NOT create, update, or delete GitHub comments or formal reviews through \`gh\`, another CLI, a connector, or a direct API call — those paths would race or double-post. Other GitHub tools are for READ-only inspection (thread, diff, files), then return a self-contained final reply for the transcript and fallback path.${githubWorkspaceCheckHint(github, true)}`
+    `Your final reply is kept in the session transcript and is posted back to ${where} automatically as an ordinary GitHub comment only when no formal review was attempted or the current attempt definitively returns \`not_submitted\`. Keep it self-contained; the daemon exclusively owns that fallback reply comment. Use only the structured \`submitCodeReview\` tool for COMMENT / REQUEST_CHANGES / APPROVE and inline review comments. Its \`body\` must be a complete, self-contained, non-empty public review summary (including for APPROVE), because a submitted, ambiguous, or otherwise unresolved formal attempt suppresses the ordinary comment.${githubReviewDecisionHint(c, github, reviewPolicy)} Do NOT create, update, or delete GitHub comments or formal reviews through \`gh\`, another CLI, a connector, or a direct API call — those paths would race or double-post. Other GitHub tools are for READ-only inspection (thread, diff, files), then return a self-contained final reply for the transcript and fallback path.${githubWorkspaceCheckHint(github, true)}`
   ].join('\n')
 }
 
@@ -315,20 +315,75 @@ function buildGithubHookText(
   )
 }
 
+/** GitLab deliveries that open a review generation for the current merge-request head. */
+const GITLAB_REVISION_REVIEW_EVENTS = new Set([
+  'merge_request:opened',
+  'merge_request:synchronize',
+  'merge_request:review_requested',
+  'merge_request:rerun'
+])
+
+/** True only when this delivery opens a formal review generation for the current MR head (§15). */
+export function gitlabOpensReviewGeneration(
+  event: string | undefined,
+  gitlab: GitlabHookMetadata | undefined,
+  reviewPolicy: RdMsgHook['reviewPolicy']
+): boolean {
+  const target = gitlab?.target
+  return Boolean(
+    target?.kind === 'merge_request' &&
+    target.headSha &&
+    reviewPolicy !== undefined &&
+    reviewPolicy !== 'off' &&
+    (target.explicitReviewRequest || GITLAB_REVISION_REVIEW_EVENTS.has(event ?? ''))
+  )
+}
+
+/** The §15 verdict instruction. REQUEST_CHANGES availability is stated rather than
+ *  omitted: no relay-delivered metadata carries the service account's reviewer record,
+ *  so the adapter is the first place that fact exists and it refuses before any draft. */
+function gitlabReviewDecisionHint(reviewPolicy: RdMsgHook['reviewPolicy']): string {
+  const passingEvent = reviewPolicy === 'full' ? 'APPROVE' : 'COMMENT'
+  const failingEvent = reviewPolicy === 'comment' ? 'COMMENT' : 'REQUEST_CHANGES'
+  return (
+    ' This delivery opens a review generation for the current merge-request revision. If you finish reviewing this ' +
+    `revision, record the actual verdict through \`submitCodeReview\`: use ${passingEvent} + pass when it passes, or ` +
+    `${failingEvent} + fail when it has blocking findings.${
+      failingEvent === 'REQUEST_CHANGES'
+        ? ' REQUEST_CHANGES works only while a user has requested the project service account as a reviewer in ' +
+          'GitLab; if it is refused for that reason, record the same finding with COMMENT + fail.'
+        : ''
+    } An approval or rejection from an earlier revision does not complete this revision; do not merely describe the ` +
+    'verdict in your final reply.'
+  )
+}
+
 /** The daemon-owned GitLab reply promise (§14.1) — issue/MR subjects only; a push has no thread to answer. */
-function gitlabReplyHint(c: HookContext, gitlab: GitlabHookMetadata): string {
+function gitlabReplyHint(c: HookContext, gitlab: GitlabHookMetadata, reviewPolicy: RdMsgHook['reviewPolicy']): string {
   if (gitlab.target.kind === 'push') return ''
+  const where = gitlabSubjectRef(c, gitlab)
+  const event = c.action ? `${c.event}:${c.action}` : (c.event ?? '')
+  if (gitlabOpensReviewGeneration(event, gitlab, reviewPolicy)) {
+    return [
+      '',
+      `Your final reply is kept in the session transcript and is posted back to ${where} automatically as one ordinary GitLab note only when no formal review was attempted or the current attempt definitively returns \`not_submitted\`. Keep it self-contained; the daemon exclusively owns that fallback note. Use only the structured \`submitCodeReview\` tool for COMMENT / REQUEST_CHANGES / APPROVE and inline diff comments. Its \`body\` must be a complete, self-contained, non-empty public review summary (including for APPROVE), because a submitted, ambiguous, or otherwise unresolved formal attempt suppresses the ordinary note.${gitlabReviewDecisionHint(reviewPolicy)} Do NOT create, update, or delete GitLab notes, drafts, or approvals through \`glab\`, another CLI, a connector, or a direct API call — those paths would race or double-post. Every other GitLab access is READ-only inspection.`
+    ].join('\n')
+  }
   return [
     '',
-    `Return one self-contained final answer for ${gitlabSubjectRef(c, gitlab)}. The daemon posts it back to that GitLab thread automatically as one note and exclusively owns the reply. Do NOT create, update, or delete GitLab notes through \`glab\`, another CLI, a connector, or a direct API call — those paths would race or double-post. Any other effect — a separate comment, a discussion reply, a merge request, a pipeline action — goes through the structured code-host tools when you have them; every other GitLab access is READ-only inspection.`
+    `Return one self-contained final answer for ${where}. The daemon posts it back to that GitLab thread automatically as one note and exclusively owns the reply. Do NOT create, update, or delete GitLab notes through \`glab\`, another CLI, a connector, or a direct API call — those paths would race or double-post. Any other effect — a separate comment, a discussion reply, a merge request, a pipeline action — goes through the structured code-host tools when you have them; every other GitLab access is READ-only inspection.`
   ].join('\n')
 }
 
 /** The gitlab-kind turn text: a trusted metadata header + the FENCED excerpt + the reply promise. */
-function buildGitlabHookText(c: HookContext, gitlab: GitlabHookMetadata): string {
+function buildGitlabHookText(
+  c: HookContext,
+  gitlab: GitlabHookMetadata,
+  reviewPolicy: RdMsgHook['reviewPolicy']
+): string {
   const event = c.action ? `${c.event}:${c.action}` : (c.event ?? 'event')
   const target = gitlab.target
-  const tail = gitlabReplyHint(c, gitlab)
+  const tail = gitlabReplyHint(c, gitlab, reviewPolicy)
   const head = [
     `GitLab ${event} — ${gitlabSubjectRef(c, gitlab)}${c.title ? ` "${c.title}"` : ''}`,
     `From: ${c.senderLogin ?? 'unknown'}${c.labels?.length ? ` · labels: ${c.labels.join(', ')}` : ''}`,
@@ -352,7 +407,9 @@ function buildGitlabHookText(c: HookContext, gitlab: GitlabHookMetadata): string
 
 /** The turn text: the caller's payload-borne message (+ leftover fields as context). */
 export function buildHookText(msg: RdMsgHook): string {
-  if (msg.context?.source === 'gitlab' && msg.gitlab) return buildGitlabHookText(msg.context, msg.gitlab)
+  if (msg.context?.source === 'gitlab' && msg.gitlab) {
+    return buildGitlabHookText(msg.context, msg.gitlab, msg.reviewPolicy)
+  }
   if (msg.context?.source === 'github') return buildGithubHookText(msg.context, msg.github, msg.reviewPolicy)
   const parts: string[] = []
   const body = msg.context?.body

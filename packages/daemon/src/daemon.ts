@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto'
+import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { basename, dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { mkdtemp, readFile, stat } from 'node:fs/promises'
@@ -184,6 +184,8 @@ import {
 import { DreamScheduler } from './scheduler/dream-scheduler.js'
 import { finalizeGithubTurn, isGithubFinalChunk, onGithubUpdate } from './platforms/github/turn-output.js'
 import { GithubReviewOrchestrator, type GithubReviewHost } from './github/review-orchestrator.js'
+import { CodeHostReviewRouter } from './codehost/review-adapter.js'
+import { GitlabReviewAdapter, type GitlabReviewAdapterDeps, type GitlabReviewTurn } from './gitlab/review-adapter.js'
 import {
   collectGithubQueueCandidates,
   combineCoordinationWaits,
@@ -255,6 +257,7 @@ import {
   WEBCHAT_REMOTE_MCP_FEATURE,
   WEBCHAT_SESSION_CONTINUATION_FEATURE,
   CODEHOST_NOTE_PROJECTION_V1_FEATURE,
+  CODEHOST_REVIEW_V1_FEATURE,
   GITLAB_COM_V1_FEATURE,
   encodeSharedSlackStatusTarget,
   HOOK_REPORT_REASON_AGENT_HANDOVER,
@@ -412,7 +415,7 @@ import {
 import {
   foreignHookDispatch,
   githubDeletedHookEvent,
-  githubFallbackAllowed,
+  hookOutputFallbackAllowed,
   githubHookCoordinates,
   githubPullRequestLane,
   githubReviewResultForCompletion,
@@ -962,6 +965,9 @@ export class Daemon {
   private readonly activeGithubTurnMeta = new Map<string, ActiveGithubTurnMeta>()
   private readonly activeGithubReplyBatchMeta = new Map<string, ActiveGithubReplyBatchMeta>()
   private readonly githubReviews: GithubReviewOrchestrator
+  /** §15 GitLab formal-review adapter and the provider-routing seam both live behind this. */
+  private readonly gitlabReviews: GitlabReviewAdapter
+  private readonly codeReviews = new CodeHostReviewRouter()
   // ── lifecycle (§2.5/§5.3/§7.2/§7.3) ──
   private clock: Clock
   private requestExit: (code: number) => void
@@ -1184,6 +1190,9 @@ export class Daemon {
     this.webchatMcpRevocations = new WebchatMcpRevocations(this.webchatMcpRevocationHost())
     this.commands = new CommandHandlers(this.commandHost())
     this.githubReviews = new GithubReviewOrchestrator(this.githubReviewHost())
+    this.gitlabReviews = new GitlabReviewAdapter(this.gitlabReviewDeps())
+    this.codeReviews.register(this.githubReviews.reviewAdapter)
+    this.codeReviews.register(this.gitlabReviews)
     this.curatedRuntimeAdmission = new CuratedRuntimeAdmission({
       now: () => this.clock.now(),
       ttlMs: PROBE_TTL_MS
@@ -2311,7 +2320,7 @@ export class Daemon {
       startOrchestration: (req) => this.collab.startOrchestration(req),
       getOrchestration: (req) => Promise.resolve(this.collab.getOrchestrationForOwner(req)),
       cancelOrchestration: (req) => Promise.resolve(this.collab.cancelOrchestrationForOwner(req)),
-      submitGithubReview: (req) => this.githubReviews.submitGithubReview(req),
+      submitCodeReview: (req) => this.codeReviews.submit(req),
       replyGithubReviewThreads: (req) => this.githubReviews.replyGithubReviewThreads(req),
       codeHostEffect: (req) => this.runCodeHostEffect(req),
       memory: this.memory,
@@ -3765,7 +3774,9 @@ export class Daemon {
       GITLAB_COM_V1_FEATURE,
       // §16: this daemon renders and updates the run-projection note. The CP leaves the desired
       // generation pending rather than opening a second provider egress path without this bit.
-      CODEHOST_NOTE_PROJECTION_V1_FEATURE
+      CODEHOST_NOTE_PROJECTION_V1_FEATURE,
+      // The provider-routed formal-review surface: `submitCodeReview` plus the §15 GitLab adapter.
+      CODEHOST_REVIEW_V1_FEATURE
     ]
   }
 
@@ -6617,6 +6628,48 @@ export class Daemon {
   }
 
   /** Everything the GitHub hook-dispatch and formal-review seam reaches back for. */
+  /** §15 GitLab review adapter deps: the CP lease surface plus the never-agent-visible effect PAT. */
+  private gitlabReviewDeps(): GitlabReviewAdapterDeps {
+    return {
+      cp: () => {
+        const client = this.cpClient
+        if (!client) return undefined
+        return {
+          supportsReview: () => client.supportsServerFeature?.(CODEHOST_REVIEW_V1_FEATURE) === true,
+          authorize: (payload, orgId) => client.authorizeCodeHostReview(payload, orgId),
+          operate: (payload, orgId) => client.operateCodeHostReview(payload, orgId),
+          renew: (payload, orgId) => client.renewCodeHostReviewLease(payload, orgId),
+          report: (payload, orgId) => client.reportCodeHostReviewResult(payload, orgId)
+        }
+      },
+      orgForAgent: (agentId) => this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId),
+      daemonId: () => this.cfg.daemonId,
+      store: {
+        recordReviewIntent: (row, now) => this.store.recordReviewIntent(row, now),
+        clearReviewIntent: (intentId) => this.store.clearReviewIntent(intentId),
+        listReviewIntents: (daemonId) => this.store.listReviewIntents(daemonId)
+      },
+      // Restart-stable, so a same-attempt recovery can still verify the drafts it authored.
+      markerKey: async () =>
+        Buffer.from(
+          await this.store.getOrCreateDaemonSecret(
+            'gitlab-review-marker-key',
+            () => randomBytes(32).toString('base64'),
+            this.clock.now()
+          ),
+          'base64'
+        ),
+      token: async (turn) =>
+        (await this.gitCreds.getGitlabEffectToken(turn.agentId, turn.projectId, turn.hookId)).token,
+      invalidateToken: (turn, token) => this.gitCreds.invalidateGitlabEffect(turn.agentId, turn.projectId, token),
+      attribution: async (turn) =>
+        this.agents.get(turn.agentId)?.output.showFooter
+          ? await this.githubReviews.githubCommentAttribution(turn.agentId, turn.sessionId)
+          : undefined,
+      log: { warn: (message: string) => this.log.warn(message) }
+    }
+  }
+
   private githubReviewHost(): GithubReviewHost {
     return {
       log: () => this.log,
@@ -9491,7 +9544,11 @@ export class Daemon {
   private async installActiveTurnContext(
     run: TurnRun,
     sessionId: string
-  ): Promise<{ github?: ActiveGithubTurnMeta; githubReplyBatch?: ActiveGithubReplyBatchMeta }> {
+  ): Promise<{
+    github?: ActiveGithubTurnMeta
+    githubReplyBatch?: ActiveGithubReplyBatchMeta
+    gitlabReview?: GitlabReviewTurn
+  }> {
     const { entry, key, plan } = run
     const { agentId, callMeta } = entry
     // session/new|load may emit title/usage metadata before the local row exists.
@@ -9525,10 +9582,23 @@ export class Daemon {
       return undefined
     })
     if (activeGithub) this.activeGithubTurnMeta.set(key, activeGithub)
+    // §15: no hook/start barrier — the accepted delivery report already carries the fence review authz checks.
+    const gitlabReview = this.gitlabReviews.openTurn(key, hookContext, sessionId, {
+      ...(this.cfg.daemonId ? { daemonId: this.cfg.daemonId } : {}),
+      persist: (required) => this.persistHookState(entry, undefined, required)
+    })
+    // A replayed delivery may still owe the control plane frames a previous incarnation
+    // recorded; the ones needing no provider evidence are handed back before the turn runs.
+    if (gitlabReview) {
+      await this.gitlabReviews
+        .recoverTurn(gitlabReview)
+        .catch((err) => this.log.warn(`gitlab review: turn recovery deferred (${formatErr(err)})`))
+    }
     const activeGithubReplyBatch = plan.githubReplyBatchActive ? { entry, sessionId, called: false } : undefined
     if (activeGithubReplyBatch) this.activeGithubReplyBatchMeta.set(key, activeGithubReplyBatch)
     return {
       ...(activeGithub ? { github: activeGithub } : {}),
+      ...(gitlabReview ? { gitlabReview } : {}),
       ...(activeGithubReplyBatch ? { githubReplyBatch: activeGithubReplyBatch } : {})
     }
   }
@@ -10389,7 +10459,11 @@ export class Daemon {
     sessionId: string,
     settlement: TurnSettlement,
     releaseReplyConn: () => void,
-    activeTurn: { github?: ActiveGithubTurnMeta; githubReplyBatch?: ActiveGithubReplyBatchMeta }
+    activeTurn: {
+      github?: ActiveGithubTurnMeta
+      githubReplyBatch?: ActiveGithubReplyBatchMeta
+      gitlabReview?: GitlabReviewTurn
+    }
   ): Promise<void> {
     const { entry, key, plan } = run
     const { agentId, msg, callMeta, githubReply, hookContext } = entry
@@ -10426,12 +10500,14 @@ export class Daemon {
     const activeGithub = activeTurn.github
     const activeGithubReplyBatch = activeTurn.githubReplyBatch
     if (activeGithub && this.activeGithubTurnMeta.get(key) === activeGithub) this.activeGithubTurnMeta.delete(key)
+    if (activeTurn.gitlabReview) this.gitlabReviews.closeTurn(key, activeTurn.gitlabReview)
     if (activeGithubReplyBatch && this.activeGithubReplyBatchMeta.get(key) === activeGithubReplyBatch) {
       this.activeGithubReplyBatchMeta.delete(key)
     }
-    // Anything other than no attempt or a correlated definite no-effect
-    // result is fail-closed: GitHub may already own the public response.
-    const formalReviewOwnsResponse = githubReply !== undefined && !githubFallbackAllowed(hookContext)
+    // Anything other than no attempt or a correlated definite no-effect result is
+    // fail-closed: the code host may already own the public response. Both providers'
+    // durable attempt records are consulted, so a GitLab review blocks the note too.
+    const formalReviewOwnsResponse = githubReply !== undefined && !hookOutputFallbackAllowed(hookContext)
     if (formalReviewOwnsResponse) {
       try {
         await this.persistHookState(entry, 'settled', true)
@@ -14645,6 +14721,7 @@ export class Daemon {
       drainSessionPurges: () => this.drainSessionPurges(),
       effectiveAgents: () => this.effectiveAgents(),
       noteProjector: () => this.noteProjector,
+      gitlabReviews: () => this.gitlabReviews,
       cpAgents: () => this.cpAgents,
       cpIntegrations: () => this.cpIntegrations,
       cpCrons: () => this.cpCrons,
@@ -15653,6 +15730,7 @@ export class Daemon {
     this.gitCredServer?.stop()
     // The projection resweep runs on its own clock, so it must be disarmed before the store closes.
     this.noteProjector?.stop()
+    this.gitlabReviews?.stop()
     if (this.dataPlane) await this.dataPlane.close().catch((e) => errors.push(e))
     else await this.store?.close()
     if (errors.length) throw new AggregateError(errors, 'stop: partial failure')
