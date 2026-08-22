@@ -69,7 +69,6 @@ import { buildAgentReachabilityGraph } from '@/lib/agent-reachability'
 import type { Platform } from '@/components/console/modals/AddIntegrationModal'
 import { INTEGRATION_BLURB, isCoreTriggerKind, offeredPlatforms } from '@/components/console/platforms/host-projections'
 import {
-  GL_FAMILIES,
   GL_TRIGGER_MODES,
   GL_TRIGGER_PILL,
   commentFamiliesForGitlabFamilies,
@@ -78,6 +77,7 @@ import {
   gitlabFamCovered,
   gitlabFamilyToggle,
   gitlabHookNeedsNormalization,
+  gitlabRowFamilies,
   gitlabTriggerModeOf,
   gitlabTriggerTooltip,
   type GlFamily,
@@ -1393,7 +1393,8 @@ export default function AgentDetailView() {
                           {h.repoFullName ?? h.name}
                         </span>
                         <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                          {GL_FAMILIES.filter((f) => gitlabFamCovered(h.events, f.fam))
+                          {gitlabRowFamilies(h.events)
+                            .filter((f) => gitlabFamCovered(h.events, f.fam))
                             .map((f) => f.pill)
                             .join(' · ') || 'no events'}
                           {` · ${GL_TRIGGER_PILL[gitlabTriggerModeOf(h)]}`}
@@ -1678,7 +1679,8 @@ export default function AgentDetailView() {
                                 </span>
                               )}
                               <div className="ml-auto inline-flex flex-none gap-[2px] rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) p-[2px]">
-                                {GL_FAMILIES.map((f) => {
+                                {/* Pushes appear only on a hook that already listens to them — visible and removable, never addable. */}
+                                {gitlabRowFamilies(h.events).map((f) => {
                                   const on = gitlabFamCovered(h.events, f.fam)
                                   return (
                                     <button
@@ -1758,7 +1760,7 @@ export default function AgentDetailView() {
                         <div className="flex items-center gap-[7px] px-[14px] pt-0 pb-2 font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
                           <Icon name="info" size={12} className="flex-none" />
                           Pick which projects to watch and which events run the agent — it replies on the same issue,
-                          merge request or push thread.
+                          merge request thread.
                         </div>
                       </div>
                     </div>

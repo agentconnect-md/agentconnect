@@ -80,7 +80,6 @@ import {
   commentFamiliesForGitlabFamilies,
   eventsForGitlabFamilies,
   gitlabMentionUsage,
-  gitlabPushCadenceNote,
   parseLabelFilter,
   type GlFamily,
   type GlTriggerMode
@@ -1688,7 +1687,7 @@ export default function AddIntegrationModal({
                   </GitlabProjectField>
                 </div>
                 <div className="fldlbl mb-2">Listen for</div>
-                <div className="mb-4 grid grid-cols-1 gap-[9px] min-[440px]:grid-cols-3">
+                <div className="mb-4 grid grid-cols-1 gap-[9px] min-[440px]:grid-cols-2">
                   {GL_FAMILIES.map((r) => {
                     const on = glFams.has(r.fam)
                     return (
@@ -1724,9 +1723,7 @@ export default function AddIntegrationModal({
                   })}
                 </div>
                 <div className="fldlbl mb-2">Trigger when</div>
-                <div
-                  className={`grid grid-cols-1 gap-[9px] min-[440px]:grid-cols-3 ${glFams.has('push') ? 'mb-2' : 'mb-4'}`}
-                >
+                <div className="mb-4 grid grid-cols-1 gap-[9px] min-[440px]:grid-cols-3">
                   {GL_TRIGGER_TILES.map((m) => {
                     const on = glMode === m.mode
                     return (
@@ -1756,12 +1753,6 @@ export default function AddIntegrationModal({
                     )
                   })}
                 </div>
-                {/* Pushes reach the cadence only through mention-only's commit-message gate. */}
-                {glFams.has('push') && (
-                  <div className="mb-4 font-sans text-[11.5px] font-normal leading-[1.45] text-(--text-tertiary)">
-                    {gitlabPushCadenceNote(agent.name)}
-                  </div>
-                )}
                 <div className="fld mb-4">
                   <span className="fldlbl">Only these labels (optional)</span>
                   <input
