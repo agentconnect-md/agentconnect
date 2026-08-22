@@ -39,6 +39,9 @@ const HANDOUT_MIN_MS = 10 * 60 * 1000
 /** Repo-level denials are retried after this — the console-authorization lag. */
 const REPO_DENIAL_TTL_MS = 60 * 1000
 
+/** Daemon-owned GitLab writers: project-keyed, re-resolved live per call, so a refusal is never durable. */
+const GITLAB_EFFECT_PURPOSES = new Set(['gitlab_hook_reply', 'gitlab_effect'])
+
 /** The baseline scope set behind `GH_TOKEN` (P2.5 write-back): git contents plus the
  *  issue/PR scopes `gh issue comment` / `gh pr comment` need. The CP clamps
  *  every capability — the workspace repo to the agent's gitAccess, an
@@ -354,9 +357,9 @@ export class GitCredentialCache {
     } catch (e) {
       const code = (e as { code?: string }).code
       if (code === 'SCOPE_DENIED') {
-        // §14.2: an effect lease is re-resolved live on every call and hook/binding lifecycle changes
-        // never replicate an agent spec, so its refusal is never durable — the next call asks again.
-        if (payload.purpose === 'gitlab_effect') {
+        // §14.1/§14.2: these leases are re-resolved live and hook/binding lifecycle changes never
+        // replicate an agent spec, so a refusal is never durable — the next turn asks the CP again.
+        if (payload.purpose !== undefined && GITLAB_EFFECT_PURPOSES.has(payload.purpose)) {
           this.entries.delete(key)
           throw new GitCredUnavailableError((e as Error).message, false)
         }

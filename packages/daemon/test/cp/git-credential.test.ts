@@ -343,7 +343,7 @@ describe('GitCredentialCache', () => {
     })
   })
 
-  describe('gitlab effect lease (gitlab-com-integration.md 14.2)', () => {
+  describe('daemon-owned gitlab leases (gitlab-com-integration.md 14.1/14.2)', () => {
     const PROJECT = '4455667'
 
     function buildEffect(responder: (n: number, payload: { purpose?: string }) => GitCredGrant) {
@@ -402,6 +402,33 @@ describe('GitCredentialCache', () => {
       expect((await h.cache.get(AGENT, 'clone', { provider: 'gitlab', externalRepoId: PROJECT })).token).toBe('glpat_4')
     })
 
+    it('keeps a SCOPE_DENIED hook-reply lease retryable instead of durably denying the key', async () => {
+      const h = buildEffect((n) => {
+        if (n === 1) throw Object.assign(new Error('hook is not enabled'), { code: 'SCOPE_DENIED' })
+        return effectGrant(`glpat_${n}`)
+      })
+      // The note poster carries only the numeric project, so this refusal used to read as agent-level.
+      await expect(h.cache.getGitlabPostToken(AGENT, PROJECT, HOOK)).rejects.toMatchObject({ terminal: false })
+      // A re-enabled hook takes effect on the next turn, with no agent upsert in between.
+      expect((await h.cache.getGitlabPostToken(AGENT, PROJECT, HOOK)).token).toBe('glpat_2')
+      expect(h.calls()).toBe(2)
+    })
+
+    it('recovers the note poster without clearDenied, and leaves the sibling keyspaces alone', async () => {
+      const h = buildEffect((n) => {
+        if (n <= 2) throw Object.assign(new Error('hook is not enabled'), { code: 'SCOPE_DENIED' })
+        return effectGrant(`glpat_${n}`)
+      })
+      await expect(h.cache.getGitlabPostToken(AGENT, PROJECT, HOOK)).rejects.toBeInstanceOf(GitCredUnavailableError)
+      await expect(h.cache.getGitlabPostToken(AGENT, PROJECT, HOOK)).rejects.toBeInstanceOf(GitCredUnavailableError)
+      // Two refusals, two CP asks — nothing absorbed the second one locally.
+      expect(h.calls()).toBe(2)
+      expect((await h.cache.getGitlabPostToken(AGENT, PROJECT, HOOK)).token).toBe('glpat_3')
+      // The broker lease and the agent's own workspace grant were never dragged into the denial.
+      expect((await h.cache.getGitlabEffectToken(AGENT, PROJECT)).token).toBe('glpat_4')
+      expect((await h.cache.get(AGENT, 'clone', { provider: 'gitlab', externalRepoId: PROJECT })).token).toBe('glpat_5')
+    })
+
     it('leaves a workspace-keyed git SCOPE_DENIED terminal, exactly as before', async () => {
       const h = buildEffect((n, p) => {
         if (p.purpose === undefined) throw Object.assign(new Error('not placed here'), { code: 'SCOPE_DENIED' })
@@ -410,8 +437,9 @@ describe('GitCredentialCache', () => {
       await expect(h.cache.get(AGENT, 'push')).rejects.toMatchObject({ terminal: true })
       await expect(h.cache.get(AGENT, 'push')).rejects.toMatchObject({ terminal: true })
       expect(h.calls()).toBe(1) // still silenced locally — the git-purpose behavior is unchanged
-      // …and that terminal git denial does not reach the effect keyspace.
+      // …and that terminal git denial reaches neither daemon-owned writer's keyspace.
       expect((await h.cache.getGitlabEffectToken(AGENT, PROJECT)).token).toBe('glpat_2')
+      expect((await h.cache.getGitlabPostToken(AGENT, PROJECT, HOOK)).token).toBe('glpat_3')
     })
   })
 })
