@@ -5,7 +5,7 @@
  * purpose-separated PATs with policy validation, the managed webhook, the
  * lifecycle-generation fence, retirement, and claim-preserving disconnect.
  */
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { prisma } from '../setup.db.js'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 import { seedAgent } from '../fixtures/seed.js'
@@ -31,6 +31,8 @@ import { systemClock } from '../../src/domain/clock.js'
 
 const cipher = makeSecretCipher({ SECRET_CIPHER: 'none' } as never)
 const PROJECT = 4455667n
+/** A second project under the SAME top-level group — the retarget's other half. */
+const SECOND_PROJECT = 4455668n
 const ROOT_GROUP = 900n
 const AGENT = '11111111-1111-4111-8111-111111111111'
 const SIBLING = '22222222-2222-4222-8222-222222222222'
@@ -110,7 +112,18 @@ async function harness(
       ...(agent.gitAccess ? { gitAccess: agent.gitAccess } : {})
     })
   }
-  return { fake, bindings, accounts, credentials, credentialSecrets, oauth, accountService, provisioner, binding }
+  return {
+    fake,
+    bindings,
+    accounts,
+    credentials,
+    credentialSecrets,
+    oauth,
+    accountService,
+    provisioner,
+    binding,
+    connection
+  }
 }
 
 describe('GitlabProvisioner (§10.2) — per-agent identity', () => {
@@ -306,6 +319,38 @@ describe('GitlabProvisioner (§10.2) — per-agent identity', () => {
     expect(h.fake.removedMembers).toEqual([])
     expect(h.fake.deletedServiceAccounts).toEqual([])
     expect([...h.fake.tokens.values()].every((token) => !token.revoked)).toBe(true)
+  })
+
+  it('a retarget under one root converges the loser once the peer releases the account fence', async () => {
+    const h = await harness()
+    await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
+    const account = (await h.accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP))!
+
+    // The agent's workspace moves to a second project in the SAME top-level
+    // group, so both projects converge against its one account (§7.2).
+    const second = await h.bindings.createWithClaim({
+      orgId: DEFAULT_ORG_ID,
+      projectId: SECOND_PROJECT,
+      projectPath: 'example-group/example-second',
+      installerConnectionId: h.connection.id
+    })
+    await prisma.agent.update({ where: { id: AGENT }, data: { workspaceRepoId: SECOND_PROJECT } })
+
+    // The project being left owns the account fence first: the new project's
+    // run must lose, wait, and come back rather than leave the agent unbound.
+    expect(await h.accounts.claimLease(account.id, 'old-project-run', new Date(Date.now() + 300_000), new Date())).toBe(
+      true
+    )
+    const converging = h.provisioner.convergeProject(DEFAULT_ORG_ID, SECOND_PROJECT)
+    await vi.waitFor(
+      async () => expect((await h.bindings.get(DEFAULT_ORG_ID, second.id))!.stateReason).toBe('account_busy'),
+      { timeout: 20_000 }
+    )
+    await h.accounts.releaseLease(account.id, 'old-project-run')
+
+    await converging
+    expect((await h.bindings.get(DEFAULT_ORG_ID, second.id))!.state).toBe('ready')
+    expect((await h.accounts.membershipsForBinding(second.id)).map((m) => m.accountId)).toEqual([account.id])
   })
 
   it('reactivating a generation drops the credentials the interrupted retirement left', async () => {
