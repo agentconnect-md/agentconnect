@@ -1156,9 +1156,8 @@ describe('gitlab hook/start records the started head', () => {
     const started = (await repo().getRun(HookId(hookId), 'gl-1'))!
     expect(started).toMatchObject({ headSha: HEAD, baseSha: 'b'.repeat(40), sessionId: 'ses_gitlab' })
     expect(started.turnStartedAt).not.toBeNull()
-    expect(first.afterStart).toHaveBeenCalledWith(
-      expect.objectContaining({ state: 'running', projectionEpoch: hook.projectionEpoch })
-    )
+    // The edge names the delivery, not an epoch — the projection resolves that from the accepted run.
+    expect(first.afterStart).toHaveBeenCalledWith(expect.objectContaining({ state: 'running', deliveryKey: 'gl-1' }))
 
     // A retried barrier re-asserts the same row rather than moving the recorded head.
     const retry = await start(hookId, agentId, 'gl-1')

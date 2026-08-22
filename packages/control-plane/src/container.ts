@@ -1054,6 +1054,7 @@ export function buildContainer(
   const codeHostNoteProjection = gitlab
     ? new CodeHostNoteProjectionService({
         projections: new PgCodeHostRunProjectionRepo(prisma),
+        runs: repos.hook,
         agents: repos.agent,
         bindings: repos.gitlabProjectBinding,
         orgs: repos.org,
@@ -1936,7 +1937,6 @@ export function buildContainer(
             reason: report.reason ?? null,
             gitlab: report.gitlab,
             snapshot: report,
-            projectionEpoch: hook.projectionEpoch,
             at: firedAt
           }
           if (report.status === 'accepted') await codeHostNoteProjection.afterAccepted(edge)

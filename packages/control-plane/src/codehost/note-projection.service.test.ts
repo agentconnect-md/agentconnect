@@ -32,14 +32,14 @@ const orgId = OrgId('org_1')
 const OTHER_HOOK = '00000000-0000-4000-8000-00000000000f'
 const HEAD = 'a'.repeat(40)
 
-// The tuple a gitlab rule actually compiles to today (hook.service.ts): the Checks-axis knobs are
-// forced off and the note projection is its own transport.
+// The tuple a gitlab hook that opted into run reporting compiles to. `reportingMode` is the
+// axis that owns this surface — the §16 note IS the run report — so the fixture must carry it.
 const snapshot = {
   configRevision: '3',
   dispatchRevision: '5',
   dispatchDaemonId: daemonId,
   reviewPolicy: 'off' as const,
-  reportingMode: 'off' as const,
+  reportingMode: 'check' as const,
   gateMode: 'informational' as const
 }
 
@@ -60,7 +60,6 @@ function edge(overrides: Partial<NoteProjectionEdge> = {}): NoteProjectionEdge {
     state: 'queued',
     gitlab: gitlab(),
     snapshot,
-    projectionEpoch: 1n,
     at: new Date(NOW),
     ...overrides
   }
@@ -97,7 +96,7 @@ function projection(overrides: Partial<CodeHostRunProjectionRecord> = {}): CodeH
     dispatchRevision: 5n,
     dispatchDaemonId: daemonId,
     reviewPolicySnapshot: 'off',
-    reportingModeSnapshot: 'off',
+    reportingModeSnapshot: 'check',
     gateModeSnapshot: 'informational',
     leaseOwner: null,
     leaseUntil: null,
@@ -123,6 +122,7 @@ function harness(
     beginWrite?: boolean
     setDesired?: boolean
     retiredOwner?: boolean
+    runEpoch?: bigint | null
   } = {}
 ) {
   const row = options.row ?? projection()
@@ -145,8 +145,13 @@ function harness(
     failWrite: ReturnType<typeof vi.fn>
     get: ReturnType<typeof vi.fn>
   }
+  // The accepted run, whose epoch the projection must spend even after the live hook moves on.
+  const runs = {
+    getRun: vi.fn(async () => ({ projectionEpoch: options.runEpoch === undefined ? 1n : options.runEpoch }))
+  }
   const service = new CodeHostNoteProjectionService({
     projections,
+    runs: runs as never,
     agents: { getUnscoped: vi.fn(async () => agent) },
     bindings: { byProject: vi.fn(async () => ({ credentialEpoch: 2n })) } as never,
     orgs: { slugById: vi.fn(async () => 'acme') },
@@ -157,7 +162,7 @@ function harness(
       send: (id, desired, org) => sent.push({ daemonId: id, desired, orgId: org })
     }
   })
-  return { service, projections, sent, row }
+  return { service, projections, sent, row, runs }
 }
 
 describe('reportedNoteState (gitlab-com-integration.md §16)', () => {
@@ -249,9 +254,10 @@ describe('CodeHostNoteProjectionService', () => {
   })
 
   it('leaves the row pending when the owning daemon is offline', async () => {
-    const { service, projections, sent } = harness({ features: undefined })
+    const { projections, sent, runs } = harness({ features: undefined })
     const offline = new CodeHostNoteProjectionService({
       projections,
+      runs: runs as never,
       agents: { getUnscoped: vi.fn(async () => agent) },
       bindings: { byProject: vi.fn(async () => ({ credentialEpoch: 2n })) } as never,
       clock: new FakeClock(NOW),
@@ -295,6 +301,45 @@ describe('CodeHostNoteProjectionService', () => {
     expect(projections.upsert).not.toHaveBeenCalled()
     await service.afterDeliveryFailed(edge({ reason: 'review_request_required' }))
     expect(projections.upsert.mock.calls[0]![0].desiredState).toBe('skipped')
+  })
+
+  it('opens no projection at all while the hook reports nothing', async () => {
+    // `reportingMode` gates this surface exactly as it gates a GitHub Check: the note IS the
+    // run report, so `off` means no generation, no ledger row, and no daemon frame.
+    const { service, projections, sent } = harness()
+    const silent = { ...snapshot, reportingMode: 'off' as const }
+    await service.afterAccepted(edge({ snapshot: silent }))
+    await service.afterStart(edge({ snapshot: silent }))
+    await service.afterReport(edge({ snapshot: silent, state: 'completed' }))
+    await service.afterDeliveryFailed(edge({ snapshot: silent, reason: 'review_request_required' }))
+    expect(projections.upsert).not.toHaveBeenCalled()
+    expect(projections.supersede).not.toHaveBeenCalled()
+    expect(sent).toEqual([])
+  })
+
+  it('settles the row acceptance opened when the hook is edited mid-run, instead of forking a new one', async () => {
+    // A check → off PUT mid-run advances the LIVE hook's epoch while the accepted run keeps its own.
+    // Spending the live one would strand the queued note and post a second terminal one.
+    const ACCEPTED_EPOCH = 1n
+    const EDITED_HOOK_EPOCH = 2n
+    const { service, projections, runs } = harness({ runEpoch: ACCEPTED_EPOCH })
+    await service.afterAccepted(edge())
+    // The edit lands here: it moves the hook definition, never the accepted run.
+    await service.afterReport(edge({ state: 'completed' }))
+
+    const epochs = projections.upsert.mock.calls.map(([input]) => input.projectionEpoch)
+    expect(epochs).toEqual([ACCEPTED_EPOCH, ACCEPTED_EPOCH])
+    expect(epochs).not.toContain(EDITED_HOOK_EPOCH)
+    // Both edges resolved that epoch from the accepted run, keyed by the delivery they belong to.
+    expect(runs.getRun).toHaveBeenCalledTimes(2)
+    expect(runs.getRun).toHaveBeenLastCalledWith(hookId, 'delivery-1')
+  })
+
+  it('opens nothing when the accepted run carries no epoch, so a retired key is never revived', async () => {
+    const { service, projections } = harness({ runEpoch: null })
+    await service.afterAccepted(edge())
+    expect(projections.upsert).not.toHaveBeenCalled()
+    expect(projections.supersede).not.toHaveBeenCalled()
   })
 
   it('settles a written result on the reporting daemon and persists the note id', async () => {

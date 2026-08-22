@@ -180,7 +180,10 @@ describe('AddIntegrationModal, GitLab trigger', () => {
       projectId: '4210',
       events: ['merge_request:*'],
       commentFamilies: ['merge_request'],
-      mentionOnly: false
+      mentionOnly: false,
+      // The review disclosure opens on the full preset, exactly like the github pane.
+      reviewPolicy: 'full',
+      reportingMode: 'check'
     })
   })
 
@@ -217,8 +220,44 @@ describe('AddIntegrationModal, GitLab trigger', () => {
       projectId: '4210',
       events: ['issues:*', 'merge_request:*'],
       commentFamilies: ['issues', 'merge_request'],
-      mentionOnly: true
+      mentionOnly: true,
+      reviewPolicy: 'full',
+      reportingMode: 'check'
     })
+  })
+
+  it('offers the review disclosure and sends whichever preset is chosen', async () => {
+    mocks.fetchGitlabProjects.mockResolvedValue([project])
+    await render()
+    await pickProject()
+
+    // The section exists on the GitLab pane, worded for merge requests.
+    const disclosure = clickText('MR review')
+    expect(disclosure).toBeDefined()
+    await act(async () => disclosure?.click())
+    expect(document.body.textContent).toContain('Run note')
+
+    // "None" turns both axes off in one click.
+    await act(async () => clickText('None')?.click())
+    await act(async () => clickText('Connect')?.click())
+
+    expect(mocks.createGitlabHook).toHaveBeenCalledWith(
+      expect.objectContaining({ reviewPolicy: 'off', reportingMode: 'off' })
+    )
+  })
+
+  it('names GitLab tier semantics in the review copy, not GitHub ones', async () => {
+    mocks.fetchGitlabProjects.mockResolvedValue([project])
+    await render()
+    await pickProject()
+    await act(async () => clickText('MR review')?.click())
+
+    const help = Array.from(document.querySelectorAll('label[title]')).map((row) => row.getAttribute('title') ?? '')
+    // §15.3: request-changes needs the bot to be a current reviewer; approval is its own act.
+    expect(help.some((text) => text.includes('current reviewer'))).toBe(true)
+    expect(help.some((text) => text.includes('separate act from a review'))).toBe(true)
+    expect(help.join(' ')).not.toContain('Check Run')
+    expect(help.join(' ')).not.toContain('CODEOWNERS')
   })
 
   it('offers exactly the two subjects GitHub offers, and never emits a push event', async () => {

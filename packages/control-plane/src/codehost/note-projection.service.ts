@@ -33,6 +33,7 @@ import type {
   CodeHostRunProjectionRecord,
   CodeHostRunProjectionRepo,
   GitlabProjectBindingRepo,
+  HookRepo,
   OrgRepo
 } from '../persistence/ports.js'
 
@@ -94,8 +95,6 @@ export interface NoteProjectionEdge {
   sessionId?: string
   gitlab: GitlabHookMetadata | undefined
   snapshot: OptionalHookConfigSnapshot
-  /** Hook-definition epoch: retarget / disable / re-enable retires the old projection key. */
-  projectionEpoch: bigint
   at: Date
 }
 
@@ -116,6 +115,8 @@ export interface CodeHostNoteProjectionLog {
 
 export interface CodeHostNoteProjectionDeps {
   projections: CodeHostRunProjectionRepo
+  /** The ACCEPTED run behind an edge — the only authority for its projection epoch. */
+  runs: Pick<HookRepo, 'getRun'>
   agents: Pick<AgentRepo, 'getUnscoped'>
   bindings: Pick<GitlabProjectBindingRepo, 'byProject'>
   orgs?: Pick<OrgRepo, 'slugById'>
@@ -211,9 +212,14 @@ export class CodeHostNoteProjectionService {
     if (!subject) return
     const snapshot = completeSnapshot(edge.snapshot)
     // A partially rolled-out dispatch tuple cannot authorize an effect, so it cannot open a
-    // projection either — absence fails closed rather than being filled with a revision. The
-    // Checks-axis members are carried as fence, not evaluated: a gitlab rule forces them off.
+    // projection either — absence fails closed rather than being filled with a revision.
     if (!snapshot) return
+    // The §16 note IS the run report, so reporting `off` opens nothing — judged from the ACCEPTED snapshot.
+    if (snapshot.reportingMode === 'off') return
+    // The ACCEPTED run's epoch, never the live hook's: an edit mid-run would otherwise fork a new row.
+    const run = await this.deps.runs.getRun(HookId(edge.hookId), edge.deliveryKey)
+    // No epoch means the run's fence missed at delivery and its key is retired — fail closed.
+    if (!run || run.projectionEpoch === null) return
     const agent = await this.deps.agents.getUnscoped(AgentId(edge.agentId))
     if (!agent || agent.orgId !== edge.orgId) return
     const binding = await this.deps.bindings.byProject(edge.orgId, subject.projectId)
@@ -236,7 +242,7 @@ export class CodeHostNoteProjectionService {
       orgId: edge.orgId,
       agentId: AgentId(edge.agentId),
       agentName: agent.name,
-      projectionEpoch: edge.projectionEpoch,
+      projectionEpoch: run.projectionEpoch,
       desiredState: edge.state,
       currentDeliveryKey: edge.deliveryKey,
       currentRunAt: edge.at,

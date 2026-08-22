@@ -3913,6 +3913,9 @@ export interface CreateGitlabHookInput {
   events: string[] // 'issues:*' / 'merge_request:*' / 'push:*' — at least one
   commentFamilies?: GitlabCommentFamily[]
   mentionOnly?: boolean
+  reviewPolicy?: HookReviewPolicy
+  // 'check' publishes the merge-request run note; no gateMode — GitLab has no required gate.
+  reportingMode?: HookReportingMode
 }
 
 // A hook is subordinate to its agent (like an Integration), so there is no
