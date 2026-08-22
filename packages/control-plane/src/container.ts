@@ -30,6 +30,7 @@ import { GitlabGitcredService } from './gitlab/gitcred.service.js'
 import { GitlabCredentialRotator } from './gitlab/rotator.js'
 import { GitlabMembershipAuthzService } from './gitlab/membership-authz.service.js'
 import { GitlabHookRerunService } from './gitlab/hook-rerun.service.js'
+import { CodeHostReviewBrokerService } from './codehost/review-lease.service.js'
 import { unionGitlabWebhookEvents } from './gitlab/webhook-events.js'
 import { resolveSlackPlatformAppConfig } from './config/slack-platform.js'
 import { resolveFeishuPlatformApps } from './config/feishu-platform.js'
@@ -107,6 +108,7 @@ import {
   PgGitlabProjectCredentialSecretStore,
   PgGitlabWebhookSecretStore,
   PgGitlabOauthStateStore,
+  PgCodeHostReviewLeaseRepo,
   PgSocialIdentityMutationGate,
   PgCronRepo,
   PgDutyGroupRepo,
@@ -1123,6 +1125,26 @@ export function buildContainer(
         placement: placementResolver
       })
     : undefined
+  // Provider-neutral formal reviews (§15.1/§15.2). The publishing identity is the
+  // project binding's service account, so today the broker exists only where GitLab
+  // administration is configured; the frames themselves name no provider.
+  const codeHostReviewBroker = gitlabAppCfg
+    ? new CodeHostReviewBrokerService({
+        leases: new PgCodeHostReviewLeaseRepo(prisma),
+        hook: repos.hook,
+        agent: repos.agent,
+        clock,
+        placement: placementResolver,
+        publisher: async (orgId, provider, projectExternalId) => {
+          if (provider !== 'gitlab') return null
+          const binding = await repos.gitlabProjectBinding.byProject(orgId, projectExternalId)
+          if (!binding || binding.serviceAccountUserId === null) return null
+          // A binding being repaired or torn down publishes nothing.
+          if (binding.state !== 'ready' && binding.state !== 'admin_degraded') return null
+          return { serviceAccountExternalId: binding.serviceAccountUserId, projectPath: binding.projectPath }
+        }
+      })
+    : undefined
   const githubCommentAuthz = github
     ? new GithubCommentAuthzService({
         hooks: repos.hook,
@@ -1689,6 +1711,7 @@ export function buildContainer(
         }
       : {}),
     ...(githubReviewBroker ? { githubReviewBroker } : {}),
+    ...(codeHostReviewBroker ? { codeHostReviewBroker } : {}),
     ...(githubRunCoordinator ? { githubRunCoordinator } : {}),
     ...(codeHostNoteProjection ? { codeHostNoteProjection } : {}),
     relayRoster: () => relayRoster.entries(),

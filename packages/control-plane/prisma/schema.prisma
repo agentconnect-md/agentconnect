@@ -112,6 +112,8 @@ model Org {
   sessionExternalAccess     SessionExternalAccessPolicy[]
   environmentEntries        OrganizationEnvironmentEntry[]
   dutyGroups                DutyGroup[]
+  codeHostReviewLeases      CodeHostReviewLease[]
+  codeHostReviewOutcomes    CodeHostReviewAttemptOutcome[]
 
   @@index([createdByUserId])
   @@map("org")
@@ -1889,6 +1891,123 @@ model HookReviewProjection {
   @@index([agentId, repoId])
   @@index([lastResolvedInstallationId])
   @@map("hook_review_projection")
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Provider-neutral formal reviews (gitlab-com-integration.md §15.1, §15.2).
+//   Every agent on a project publishes through ONE service account, and the
+//   provider's bulk-publish endpoint carries no attempt identifier — so the
+//   publication lease below is a correctness boundary, not an optimization.
+//   Review bodies and inline comments never reach these tables.
+// ───────────────────────────────────────────────────────────────────────────
+
+/// The durable publication lease for one `(provider, project, merge-request IID,
+/// service-account user)` subject. Acquisition is compare-and-swap, increments
+/// `fence`, and admits exactly one owner across agents and daemons. The subject
+/// key deliberately omits `orgId`: the boundary is the provider-side merge
+/// request, and the global project claim already gives it one owning org.
+model CodeHostReviewLease {
+  id                       String    @id @default(uuid()) @db.Uuid
+  orgId                    String
+  provider                 String    // 'gitlab' today — app-layer closed set (protocol code-host.ts)
+  projectExternalId        BigInt
+  mergeRequestIid          Int
+  serviceAccountExternalId BigInt
+  // Monotonic and never reused; bumped on every acquisition so a stale broker
+  // cannot obtain another operation record. Never a provider-side fence (§15.1).
+  fence                    BigInt    @default(0)
+  // The current owner; null only while the lease is settled.
+  attemptId                String?   @unique @db.Uuid
+  ownerDaemonId            String?   @db.Uuid
+  agentId                  String?   @db.Uuid
+  hookId                   String?   @db.Uuid
+  deliveryKey              String?
+  event                    String?
+  verdict                  String?
+  headSha                  String?
+  // open / publishing / classifying / settled / ambiguous_locked — app-layer closed set.
+  // `ambiguous_locked` retains its attempt indefinitely: no timeout, no force unlock.
+  phase                    String    @default("settled")
+  // Advisory only. An expired lease permits a TRANSFER decision, never a takeover:
+  // once a record was issued, transfer needs one of the four §15.1 conditions.
+  leaseUntil               DateTime? @db.Timestamptz(6)
+  // Short normalized lock category for operator diagnosis. Never provider text.
+  lockedReason             String?
+  lockedAt                 DateTime? @db.Timestamptz(6)
+  createdAt                DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt                DateTime  @updatedAt @db.Timestamptz(6)
+
+  org        Org                       @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  operations CodeHostReviewOperation[]
+
+  @@unique([provider, projectExternalId, mergeRequestIid, serviceAccountExternalId], map: "code_host_review_lease_subject_key")
+  @@index([orgId])
+  @@index([phase, leaseUntil])
+  @@map("code_host_review_lease")
+}
+
+/// One single-use provider-mutation permit. Bound to attempt, fence, kind,
+/// method, target, and ordinal; `issued` -> `request_started` (atomically, before
+/// the outbound request) -> `settled` or `ambiguous`, or `unused` when the same
+/// live broker durably returns it before any request starts. `startToken` is the
+/// broker's id for the ONE intended request, so a lost reply is retransmittable
+/// while a second, different start is refused.
+model CodeHostReviewOperation {
+  id                 String    @id @default(uuid()) @db.Uuid
+  leaseId            String    @db.Uuid
+  orgId              String
+  attemptId          String    @db.Uuid
+  fence              BigInt
+  ordinal            Int
+  kind               String    // draft_create / draft_delete / bulk_publish / approval
+  method             String    // POST / PUT / PATCH / DELETE
+  target             String    // bounded request path — body-free by construction
+  state              String    @default("issued") // issued / request_started / settled / ambiguous / unused
+  startToken         String?   @db.Uuid
+  responseStatus     Int?
+  responseExternalId String?
+  resultCode         String?   // short normalized code; provider error text never lands here
+  issuedAt           DateTime  @default(now()) @db.Timestamptz(6)
+  startedAt          DateTime? @db.Timestamptz(6)
+  // Set the first time this record was classified ambiguous and retained after a
+  // later positive identification — that history is §15.1's fourth transfer condition.
+  ambiguousAt        DateTime? @db.Timestamptz(6)
+  settledAt          DateTime? @db.Timestamptz(6)
+
+  lease CodeHostReviewLease @relation(fields: [leaseId], references: [id], onDelete: Cascade)
+
+  @@unique([attemptId, fence, kind, ordinal], map: "code_host_review_operation_permit_key")
+  @@index([leaseId, state])
+  @@index([orgId])
+  @@map("code_host_review_operation")
+}
+
+/// The body-free outcome of one formal review attempt (§15.2). The control plane
+/// stores the attempt id, external ids, event, verdict, head SHA, and normalized
+/// state — never a review body, an inline comment, or provider prose.
+/// `externalIds` entries are `"<kind>:<numeric id>"`, validated on write, so the
+/// column cannot hold text.
+model CodeHostReviewAttemptOutcome {
+  attemptId         String   @id @db.Uuid
+  orgId             String
+  hookId            String   @db.Uuid
+  deliveryKey       String
+  provider          String
+  projectExternalId BigInt
+  mergeRequestIid   Int
+  event             String
+  verdict           String
+  headSha           String
+  state             String
+  externalIds       String[] @default([])
+  recordedAt        DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime @updatedAt @db.Timestamptz(6)
+
+  org Org @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId])
+  @@index([hookId, deliveryKey])
+  @@map("code_host_review_attempt_outcome")
 }
 
 model HookReviewSubject {

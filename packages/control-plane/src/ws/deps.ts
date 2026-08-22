@@ -32,6 +32,7 @@ import type { SessionVisibilityPushService } from '../orchestrator/visibilityPus
 import type { DutyAgentBundle, RelayRosterEntry } from '@agentconnect.md/protocol'
 import type { GithubService } from '../github/service.js'
 import type { GitlabGitcredService } from '../gitlab/gitcred.service.js'
+import type { CodeHostReviewBrokerService } from '../codehost/review-lease.service.js'
 import type { GithubReviewBrokerService } from '../github/review-broker.service.js'
 import type { GithubRunCoordinator } from '../github/run-reporter.js'
 import type { CodeHostNoteProjectionService } from '../codehost/note-projection.service.js'
@@ -135,6 +136,9 @@ export interface DaemonWsDeps {
   gitlabGitcred?: GitlabGitcredService
   /** R1 action-time formal-review broker; absent ⇒ review/start REQs fail closed. */
   githubReviewBroker?: GithubReviewBrokerService
+  /** Provider-neutral formal reviews: publication lease, operation ledger, outcome
+   *  store (§15.1/§15.2). Absent ⇒ every `codehost/*` REQ fails closed. */
+  codeHostReviewBroker?: CodeHostReviewBrokerService
   /** R2a metadata-only lifecycle → informational Check projection. */
   githubRunCoordinator?: GithubRunCoordinator
   /** §16 desired-generation ledger for the daemon-written run projection; absent ⇒ no GitLab bindings. */
