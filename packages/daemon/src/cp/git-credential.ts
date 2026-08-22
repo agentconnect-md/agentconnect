@@ -48,13 +48,13 @@ const GH_TOKEN_CAPABILITIES: readonly GitCredCapability[] = ['contents', 'issues
 
 /** The credential plane: 'git' = contents-only (the credential helper), 'gh' =
  *  the widened GH_TOKEN set. Distinct capability sets are distinct tokens. */
-export type CredPlane = 'git' | 'gh'
+export type CredPlane = 'git' | 'gh' | 'glab'
 type CachePlane = CredPlane | 'gh-actions'
 
 /** Cache key — NUL-joined so no owner/repo string can collide across fields
  *  (the GH_KEY precedent). */
-const keyOf = (agentId: string, plane: CachePlane, repo?: string): string =>
-  `${plane}\u0000${agentId}\u0000${repo?.toLowerCase() ?? ''}`
+const keyOf = (agentId: string, plane: CachePlane, repo?: string, provider?: 'gitlab'): string =>
+  `${plane}\u0000${agentId}\u0000${repo?.toLowerCase() ?? ''}\u0000${provider ?? ''}`
 
 /** Cache key for a repo-targeted COMMENT token (the GithubPoster's — issues/PR
  *  only, no contents requested; its capability set differs from both planes so
@@ -91,12 +91,19 @@ export interface GitCredentialCacheDeps {
     purpose?: 'github_hook_reply'
     hookId?: string
     forceRefresh?: boolean
+    provider?: 'gitlab'
+    externalRepoId?: string
+    requestedAccess?: 'read' | 'write'
   }) => Promise<GitCredGrant>
   log: { warn: (msg: string) => void }
   /** Rolling-upgrade gate: old CPs reject the new enum value, so request Actions
    *  only after register/ok advertises support. The cache key changes with this
    *  value so reconnecting to an upgraded CP mints a fresh widened grant. */
   actionsSupported?: () => boolean
+  /** §17.1 negotiation: a provider may be named only after register/ok carries
+   *  gitcred-provider-v2 — an older CP would strip the field and answer a
+   *  GitHub workspace grant for the wrong provider. */
+  providerV2Supported?: () => boolean
   /** Monotonic ms; injectable for tests. */
   monoNow?: () => number
 }
@@ -129,18 +136,33 @@ export class GitCredentialCache {
   async get(
     agentId: string,
     reason: 'clone' | 'fetch' | 'pull' | 'push' | 'helper',
-    opts: { plane?: CredPlane; repo?: string } = {}
+    opts: {
+      plane?: CredPlane
+      repo?: string
+      provider?: 'gitlab'
+      externalRepoId?: string
+      requestedAccess?: 'read' | 'write'
+    } = {}
   ): Promise<Entry> {
     const plane = opts.plane ?? 'git'
+    if (opts.provider === 'gitlab' && this.deps.providerV2Supported?.() !== true) {
+      throw new GitCredUnavailableError(
+        'the control plane is too old for gitlab credentials (gitcred-provider-v2 not advertised)',
+        false
+      )
+    }
     const withActions = plane === 'gh' && this.deps.actionsSupported?.() === true
     const cachePlane = withActions ? 'gh-actions' : plane
-    return this.getKeyed(keyOf(agentId, cachePlane, opts.repo), agentId, {
+    return this.getKeyed(keyOf(agentId, cachePlane, opts.repo, opts.provider), agentId, {
       agentId,
       reason,
-      ...(plane === 'gh'
+      ...(plane === 'gh' && opts.provider === undefined
         ? { capabilities: [...GH_TOKEN_CAPABILITIES, ...(withActions ? (['actions'] as const) : [])] }
         : {}),
-      ...(opts.repo !== undefined ? { repoFullName: opts.repo } : {})
+      ...(opts.repo !== undefined ? { repoFullName: opts.repo } : {}),
+      ...(opts.provider !== undefined ? { provider: opts.provider } : {}),
+      ...(opts.externalRepoId !== undefined ? { externalRepoId: opts.externalRepoId } : {}),
+      ...(opts.requestedAccess !== undefined ? { requestedAccess: opts.requestedAccess } : {})
     })
   }
 
@@ -228,10 +250,14 @@ export class GitCredentialCache {
    * fresh grant from being wiped by a stale erase. `repo` routes the erase to
    * the same key the `get` used; absent ⇒ the workspace git-plane entry.
    */
-  invalidate(agentId: string, presentedPassword?: string, opts: { plane?: CredPlane; repo?: string } = {}): void {
+  invalidate(
+    agentId: string,
+    presentedPassword?: string,
+    opts: { plane?: CredPlane; repo?: string; provider?: 'gitlab' } = {}
+  ): void {
     const plane = opts.plane ?? 'git'
     const cachePlane = plane === 'gh' && this.deps.actionsSupported?.() === true ? 'gh-actions' : plane
-    const key = keyOf(agentId, cachePlane, opts.repo)
+    const key = keyOf(agentId, cachePlane, opts.repo, opts.provider)
     const entry = this.entries.get(key)
     if (!entry) return
     if (presentedPassword !== undefined && entry.token !== presentedPassword) return
@@ -279,6 +305,22 @@ export class GitCredentialCache {
     if (payload.repoFullName !== undefined && grant.repoFullName.toLowerCase() !== payload.repoFullName.toLowerCase()) {
       throw new GitCredUnavailableError(
         `control plane is too old for per-repo credentials (asked ${payload.repoFullName}, got ${grant.repoFullName})`,
+        false
+      )
+    }
+    // v2 echo verification (§17.1): a stripped provider means an older CP
+    // answered a GitHub workspace grant — never serve it for another provider.
+    if (payload.provider !== undefined && grant.provider !== payload.provider) {
+      throw new GitCredUnavailableError(
+        `control plane answered provider ${grant.provider ?? 'github'} for a ${payload.provider} request`,
+        false
+      )
+    }
+    // …and a mismatched numeric identity is a wrong-project credential: local
+    // replica and CP record disagree — fail, never serve.
+    if (payload.externalRepoId !== undefined && grant.externalRepoId !== payload.externalRepoId) {
+      throw new GitCredUnavailableError(
+        `control plane answered project ${grant.externalRepoId ?? 'unknown'} for project ${payload.externalRepoId}`,
         false
       )
     }

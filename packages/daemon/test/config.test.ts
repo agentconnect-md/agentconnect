@@ -24,7 +24,11 @@ describe('loadConfig', () => {
     expect(cfg.version).toBe(1)
     expect(cfg.runtimes.claude.command).toBe('npx')
     expect(cfg.security.isolateAccountApps).toBe(true)
-    expect(cfg.security.workspaceGitAllowedOrigins).toEqual(['https://github.com', 'ssh://github.com'])
+    expect(cfg.security.workspaceGitAllowedOrigins).toEqual([
+      'https://github.com',
+      'ssh://github.com',
+      'https://gitlab.com'
+    ])
     expect(cfg.features.turnFinalContextRefresh).toBe(true)
     expect(cfg.limits.maxAgents).toBe(32)
     expect(cfg.agentsDir).toContain('agents')

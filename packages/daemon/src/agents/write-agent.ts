@@ -840,10 +840,10 @@ export function applySpecFields(
     // clears a previously replicated cwd rather than preserving a stale local value.
     delete existing.agentDir
     if (ws.mode === 'gitlab') {
-      // §17.3: the CP never sends this arm unless the daemon advertised
-      // gitlab-com-v1 (the M5 slice). Decoding it stays total so a compile-time
-      // union widening cannot strand register; managed credentials arrive with
-      // the credential slice, so until then the URL is treated like any remote.
+      // The managed-GitLab workspace (gitlab-com-integration.md §13): the local
+      // credential marker routes clone/pull/session git through the daemon
+      // helper with provider 'gitlab'. The CP only sends this arm to a daemon
+      // that advertised gitlab-com-v1 (§17.3).
       existing.gitRepo = normalizeGitCloneUrl(redactGitUrlSecrets(ws.gitRepo))
       existing.gitBranch = ws.branch
       if (ws.agentDir !== undefined) existing.agentDir = ws.agentDir
@@ -872,8 +872,16 @@ export function applySpecFields(
     }
     // Credential mode is CP-derived config and also applies to scratch
     // workspaces with explicit repo grants. Mirror it exactly, including clear.
-    if (ws.mode !== 'gitlab' && ws.gitCredential !== undefined) existing.gitCredential = ws.gitCredential
-    else delete existing.gitCredential
+    if (ws.mode === 'gitlab') {
+      existing.gitCredential = 'gitlab'
+      // The rename-stable identity rides the spec (§17.1); the grant consumer
+      // verifies every echo against it.
+      existing.gitlabProjectId = ws.projectId
+    } else {
+      if (ws.gitCredential !== undefined) existing.gitCredential = ws.gitCredential
+      else delete existing.gitCredential
+      delete existing.gitlabProjectId
+    }
     // The CP is the authority on the additional-repository allowlist and always ships
     // the full set, so mirror it exactly — [] must replicate as a cleared list.
     existing.additionalRepos = ws.additionalRepos
