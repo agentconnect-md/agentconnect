@@ -48,7 +48,12 @@ export interface UploadAnchor {
 export type UploadFailReason =
   'missing_scope' | 'too_large' | 'not_found' | 'forbidden' | 'indeterminate' | 'platform_error'
 
-export type UploadOutcome = { ok: true; messageId?: string; warning?: string } | { ok: false; reason: UploadFailReason }
+export type UploadOutcome =
+  | { ok: true; messageId?: string; warning?: string }
+  /** `detail` is the PROVIDER's own error code, carried because a category alone is not
+   *  diagnosable: `platform_error` is the catch-all every unclassified refusal lands in, and
+   *  a report that omits what the platform actually said cannot be acted on. */
+  | { ok: false; reason: UploadFailReason; detail?: string }
 
 export interface MessageGateway {
   /** Layer-1 `openDirectMessage`: resolve one platform user to the app's real
