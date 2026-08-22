@@ -1,20 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-
-// The byte POST of Slack's external upload goes to a reserved URL that is NOT a Slack API
-// endpoint, so it leaves through undici directly rather than through the Web API client.
-type FakeFetchResponse = { ok: boolean; status: number; body?: { cancel: () => Promise<void> } }
-const undici = vi.hoisted(() => ({
-  fetch: vi.fn<(url: string, init?: Record<string, unknown>) => Promise<FakeFetchResponse>>(async () => ({
-    ok: true,
-    status: 200
-  }))
-}))
-vi.mock('undici', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('undici')>()),
-  fetch: undici.fetch
-}))
-
-const { SlackConnection } = await import('../src/slack/connection.js')
+import { SlackConnection } from '../src/slack/connection.js'
 
 const deps = () => ({
   group: { appToken: 'xapp-1', botToken: 'xoxb-a', integrations: [] },
@@ -22,8 +7,8 @@ const deps = () => ({
   newTraceId: () => 't'
 })
 
-function fakeApp(files: Record<string, unknown>) {
-  return {
+function connWith(uploadV2: unknown) {
+  const app = {
     message() {},
     event() {},
     action() {},
@@ -31,110 +16,53 @@ function fakeApp(files: Record<string, unknown>) {
     client: {
       auth: { test: async () => ({ user_id: 'U1', team_id: 'T123' }) },
       chat: { postMessage: async () => ({}), getPermalink: async () => ({ permalink: 'https://x/y' }) },
-      files,
+      files: { uploadV2 },
       assistant: { threads: { setStatus: async () => undefined, setTitle: async () => undefined } }
     },
     start: async () => {},
     stop: async () => {}
   }
+  return new SlackConnection(deps() as never, (() => app) as never)
 }
 
-function connWith(files: Record<string, unknown>) {
-  return new SlackConnection(deps() as never, (() => fakeApp(files)) as never)
-}
+const slackError = (code: string, extra: Record<string, unknown> = {}) =>
+  Object.assign(new Error(code), { data: { error: code, ...extra } })
 
 describe('SlackConnection.uploadFile', () => {
   // Slack is the outlier: its share answers with the FILE, so success carries no messageId and
   // a forward there anchors nothing — see platform-upload-file.test.ts for the other three.
-  it('reserves a URL, POSTs the bytes, and shares the file as the message', async () => {
-    const getUploadURLExternal = vi.fn(async () => ({
-      upload_url: 'https://files.slack.com/upload/v1/x',
-      file_id: 'F1'
-    }))
-    const completeUploadExternal = vi.fn(async () => ({ files: [{ id: 'F1' }] }))
-    const conn = connWith({ getUploadURLExternal, completeUploadExternal })
+  it('hands the whole external upload to the SDK, with the coordinates that make it a message', async () => {
+    // The byte POST is not a Slack API request and its wire shape is undocumented; two live
+    // failures came out of reimplementing it, so the transport belongs to `uploadV2` now.
+    const uploadV2 = vi.fn(async () => ({ ok: true, files: [{ id: 'F1' }] }))
+    const conn = connWith(uploadV2)
 
     const bytes = Buffer.from('PNGBYTES')
     await expect(
-      conn.uploadFile(
-        'C1',
-        { bytes, name: 'shot.png' },
-        'from telegram',
-        { thread: '111.1' },
-        {
-          username: 'Scout',
-          icon_url: 'https://example.test/a.png'
-        }
-      )
+      conn.uploadFile('C1', { bytes, name: 'shot.png' }, 'from telegram', { thread: '111.1' })
     ).resolves.toEqual({ ok: true })
 
-    expect(getUploadURLExternal).toHaveBeenCalledWith({ filename: 'shot.png', length: bytes.byteLength })
-    expect(undici.fetch).toHaveBeenCalledWith(
-      'https://files.slack.com/upload/v1/x',
-      expect.objectContaining({ method: 'POST' })
-    )
-    // The multipart part must be named `body`, the name Slack's own SDK sends. Anything
-    // else — `file`, say — is answered with HTTP 500 by the reserved upload URL.
-    const posted = undici.fetch.mock.calls[0]![1] as { body: FormData }
-    expect(posted.body.has('body')).toBe(true)
-    expect(posted.body.has('file')).toBe(false)
     // channel_id is what turns a hosted file into a message; without it the upload stays
-    // private. The caption rides as initial_comment, and the agent keeps its own identity.
-    expect(completeUploadExternal).toHaveBeenCalledWith({
-      files: [{ id: 'F1', title: 'shot.png' }],
+    // private. No `blocks`: the completion step ignores them whenever `initial_comment` is
+    // set, so sending both would only look like the caption renders as CommonMark.
+    expect(uploadV2).toHaveBeenCalledWith({
+      file: bytes,
+      filename: 'shot.png',
       channel_id: 'C1',
       thread_ts: '111.1',
-      // No `blocks`: this method ignores them whenever `initial_comment` is set, so sending
-      // both would only look like the caption renders as CommonMark. It does not — see the
-      // note on the trade in `uploadFile`.
-      initial_comment: 'from telegram',
-      username: 'Scout',
-      icon_url: 'https://example.test/a.png'
+      initial_comment: 'from telegram'
     })
   })
 
-  it('shares under the app identity when ANY decorated attempt is refused, not only a missing scope', async () => {
-    // username/icon_url are documented for this method but absent from the SDK's argument
-    // type, so a rejection is not necessarily the scope — it can be the arguments. The file
-    // must land either way; the agent's name on it is the part we are willing to lose.
-    const completeUploadExternal = vi.fn(async (a: Record<string, unknown>) => {
-      if (a.username) throw Object.assign(new Error('invalid_arguments'), { data: { error: 'invalid_arguments' } })
-      return { files: [{ id: 'F1' }] }
-    })
-    const conn = connWith({
-      getUploadURLExternal: async () => ({ upload_url: 'https://files.slack.com/upload/v1/x', file_id: 'F1' }),
-      completeUploadExternal
-    })
-    await expect(
-      conn.uploadFile('C1', { bytes: Buffer.from('x'), name: 'a.png' }, 'hi', undefined, { username: 'Scout' })
-    ).resolves.toEqual({ ok: true })
-    expect(completeUploadExternal).toHaveBeenCalledTimes(2)
-    expect(completeUploadExternal.mock.calls[1]![0]).not.toHaveProperty('username')
-  })
-
-  it('does NOT retry a completion whose outcome Slack never confirmed, and calls it indeterminate', async () => {
-    // completeUploadExternal is one-shot: a transport failure may have been ACCEPTED with its
-    // response lost, so a second call could double-post and "nothing was sent" could be a lie
-    // about a file the channel already shows.
-    const completeUploadExternal = vi.fn(async () => {
-      throw new Error('socket hang up')
-    })
-    const conn = connWith({
-      getUploadURLExternal: async () => ({ upload_url: 'https://files.slack.com/upload/v1/x', file_id: 'F1' }),
-      completeUploadExternal
-    })
-    await expect(
-      conn.uploadFile('C1', { bytes: Buffer.from('x'), name: 'a.png' }, 'hi', undefined, { username: 'Scout' })
-    ).resolves.toEqual({ ok: false, reason: 'indeterminate', detail: 'socket hang up' })
-    expect(completeUploadExternal).toHaveBeenCalledOnce()
+  it('omits the anchor and the caption rather than sending them empty', async () => {
+    const uploadV2 = vi.fn(async () => ({ ok: true }))
+    await connWith(uploadV2).uploadFile('C1', { bytes: Buffer.from('x'), name: 'a.png' })
+    expect(uploadV2).toHaveBeenCalledWith({ file: expect.any(Buffer), filename: 'a.png', channel_id: 'C1' })
   })
 
   it('reports the provider’s own error code, since `platform error` alone is not actionable', async () => {
-    const conn = connWith({
-      getUploadURLExternal: async () => {
-        throw Object.assign(new Error('nope'), { data: { error: 'method_not_supported_for_channel_type' } })
-      },
-      completeUploadExternal: async () => ({ files: [] })
+    const conn = connWith(async () => {
+      throw slackError('method_not_supported_for_channel_type')
     })
     await expect(conn.uploadFile('C1', { bytes: Buffer.from('x'), name: 'a.png' })).resolves.toEqual({
       ok: false,
@@ -143,77 +71,42 @@ describe('SlackConnection.uploadFile', () => {
     })
   })
 
-  it('shares under the app identity when chat:write.customize is missing', async () => {
-    const completeUploadExternal = vi.fn(async (a: Record<string, unknown>) => {
-      if (a.username)
-        throw Object.assign(new Error('missing_scope'), {
-          data: { error: 'missing_scope', needed: 'chat:write.customize' }
-        })
-      return { files: [{ id: 'F1' }] }
-    })
-    const conn = connWith({
-      getUploadURLExternal: async () => ({ upload_url: 'https://files.slack.com/upload/v1/x', file_id: 'F1' }),
-      completeUploadExternal
-    })
-
-    await expect(
-      conn.uploadFile('C1', { bytes: Buffer.from('x'), name: 'a.png' }, 'hi', undefined, { username: 'Scout' })
-    ).resolves.toEqual({ ok: true })
-    expect(completeUploadExternal).toHaveBeenCalledTimes(2)
-    expect(completeUploadExternal.mock.calls[1]![0]).not.toHaveProperty('username')
-  })
-
-  it('bounds the byte POST and drains its body, so neither can wedge the send queue', async () => {
-    // The body matters as much as the signal: an unread one keeps the request in flight, and
-    // the graceful agent close waits for exactly that — outside the signal's reach.
-    const cancel = vi.fn(async () => {})
-    undici.fetch.mockResolvedValueOnce({ ok: true, status: 200, body: { cancel } })
-    const conn = connWith({
-      getUploadURLExternal: async () => ({ upload_url: 'https://files.slack.com/upload/v1/x', file_id: 'F1' }),
-      completeUploadExternal: async () => ({ files: [{ id: 'F1' }] })
-    })
-    await conn.uploadFile('C1', { bytes: Buffer.from('x'), name: 'a.png' })
-    expect(undici.fetch.mock.calls[0]![1]).toMatchObject({ signal: expect.any(AbortSignal) })
-    expect(cancel).toHaveBeenCalledOnce()
-  })
-
-  it('gives up without sharing when the reservation returns no upload url', async () => {
-    const completeUploadExternal = vi.fn(async () => ({ files: [] }))
-    const conn = connWith({ getUploadURLExternal: async () => ({}), completeUploadExternal })
-
-    await expect(conn.uploadFile('C1', { bytes: Buffer.from('x'), name: 'a.png' })).resolves.toEqual({
-      ok: false,
-      reason: 'platform_error'
-    })
-    expect(completeUploadExternal).not.toHaveBeenCalled()
-  })
-
-  it('classifies failures instead of throwing into the send path', async () => {
-    const conn = connWith({
-      getUploadURLExternal: async () => {
-        throw new Error('slack down')
-      },
-      completeUploadExternal: async () => ({ files: [] })
-    })
-    await expect(conn.uploadFile('C1', { bytes: Buffer.from('x'), name: 'a.png' })).resolves.toEqual({
-      ok: false,
-      reason: 'platform_error',
-      detail: 'slack down'
-    })
-  })
-
   it('classifies a missing files:write scope, the likeliest first-run failure', async () => {
     // Operator-fixable, so the reason must be distinguishable from a deleted thread root.
-    const conn = connWith({
-      getUploadURLExternal: async () => {
-        throw Object.assign(new Error('missing_scope'), { data: { error: 'missing_scope', needed: 'files:write' } })
-      },
-      completeUploadExternal: async () => ({ files: [] })
+    const conn = connWith(async () => {
+      throw slackError('missing_scope', { needed: 'files:write' })
     })
     await expect(conn.uploadFile('C1', { bytes: Buffer.from('x'), name: 'a.png' })).resolves.toEqual({
       ok: false,
       reason: 'missing_scope',
       detail: 'missing_scope'
+    })
+  })
+
+  it('treats the SDK’s own byte-POST rejection as proof that nothing was published', async () => {
+    // That step runs before the share, so its failure is one of the few non-API errors that
+    // definitely left the conversation untouched — the agent may say so and move on.
+    const conn = connWith(async () => {
+      throw new Error('Failed to upload file (id:F1, filename: a.png)')
+    })
+    await expect(conn.uploadFile('C1', { bytes: Buffer.from('x'), name: 'a.png' })).resolves.toEqual({
+      ok: false,
+      reason: 'platform_error',
+      detail: 'Failed to upload file (id:F1, filename: a.png)'
+    })
+  })
+
+  it('calls any other failure indeterminate, because the share step is one-shot', async () => {
+    // `uploadV2` hides WHICH step threw, and a lost response from the completion step may
+    // have been accepted. "Nothing was sent" would then be a lie about a file the channel
+    // already shows, and would invite the retry that double-posts it.
+    const conn = connWith(async () => {
+      throw new Error('socket hang up')
+    })
+    await expect(conn.uploadFile('C1', { bytes: Buffer.from('x'), name: 'a.png' })).resolves.toEqual({
+      ok: false,
+      reason: 'indeterminate',
+      detail: 'socket hang up'
     })
   })
 })
