@@ -90,7 +90,15 @@ export function renderProjectionNote(desired: CodeHostNoteDesired): string {
   return lines.join('\n')
 }
 
-export type NoteProjectionPhase = 'in_flight' | 'settled'
+/**
+ * `in_flight` — a mutation was started and its outcome is not yet definite.
+ * `settled_unreported` — the outcome is definite but the control plane has not acknowledged it.
+ * `settled` — the control plane holds the result; nothing is owed.
+ */
+export type NoteProjectionPhase = 'in_flight' | 'settled_unreported' | 'settled'
+
+/** The definite outcomes a stored row can replay; `ambiguous` is never definite, so never stored. */
+export type NoteProjectionOutcome = 'written' | 'skipped' | 'failed'
 
 /** The durable local write ledger row: written BEFORE any mutation, settled after a definite one. */
 export interface NoteProjectionRow {
@@ -111,23 +119,29 @@ export interface NoteProjectionRow {
   noteId?: string
   credentialEpoch: string
   phase: NoteProjectionPhase
+  /** Set with `settled_unreported`: the outcome and code the replay re-sends verbatim. */
+  outcome?: NoteProjectionOutcome
+  code?: string
 }
 
 export interface NoteProjectionStore {
   getNoteProjection(projectionKey: string): Promise<NoteProjectionRow | undefined>
   beginNoteProjectionWrite(row: NoteProjectionRow, now: number): Promise<void>
-  settleNoteProjectionWrite(
-    projectionKey: string,
-    writeMarker: string,
-    noteId: string | undefined,
+  recordNoteProjectionOutcome(
+    row: NoteProjectionRow,
+    outcome: NoteProjectionOutcome,
+    code: string | undefined,
     now: number
   ): Promise<void>
-  listInFlightNoteProjections(): Promise<NoteProjectionRow[]>
+  markNoteProjectionReported(projectionKey: string, writeMarker: string, now: number): Promise<void>
+  listUnsettledNoteProjections(): Promise<NoteProjectionRow[]>
 }
 
 export interface NoteProjectionLease {
   token: string
   access: BrokerCapability
+  /** The purge fence the grant was minted under; a mismatch against the desired fence never writes. */
+  credentialEpoch?: string
 }
 
 export interface CodeHostNoteProjectorDeps {
@@ -138,7 +152,8 @@ export interface CodeHostNoteProjectorDeps {
   lease: (input: { agentId: string; projectId: string; hookId: string }) => Promise<NoteProjectionLease>
   /** Drop a lease GitLab just rejected (401/403) so the single retry re-mints. */
   invalidateLease?: (input: { agentId: string; projectId: string }, token: string) => void
-  /** Deliver `codehost/note-result` to the Control Plane; may reject when the CP is unreachable. */
+  /** Deliver `codehost/note-result` to the Control Plane; may reject when the CP is unreachable. A
+   *  rejection carrying `retryable: false` is a permanent answer and stops the replay. */
   report: (result: CodeHostNoteResult, orgId?: string) => Promise<void>
   log: { warn: (message: string) => void }
   now?: () => number
@@ -147,9 +162,12 @@ export interface CodeHostNoteProjectorDeps {
   requestTimeoutMs?: number
 }
 
-/** A definite provider answer, an ambiguous one, or a deterministic no-effect refusal. */
+/** A definite provider answer, an ambiguous one, or a no-effect refusal this writer owns. */
 type WriteOutcome =
-  { kind: 'written'; noteId: string } | { kind: 'failed'; code: string } | { kind: 'ambiguous'; code: string }
+  | { kind: 'written'; noteId: string }
+  | { kind: 'failed'; code: string }
+  | { kind: 'skipped'; code: string }
+  | { kind: 'ambiguous'; code: string }
 
 /** One bounded provider call's answer; a timeout or transport error is unavailable, not a status. */
 type ProviderAnswer = { kind: 'answered'; status: number; body: string } | { kind: 'unavailable'; code: string }
@@ -166,14 +184,16 @@ export class CodeHostNoteProjector {
   }
 
   /**
-   * Startup / reconnect sweep over writes this daemon started but never settled (§16): every one is
+   * Startup / reconnect sweep over everything this daemon still owes (§16). An `in_flight` row is
    * reconciled by LISTING the merge request's notes and matching the hidden marker before the note
-   * is touched again, so an interrupted create can never become a second note for the same head.
+   * is touched again, so an interrupted create can never become a second note for the same head. A
+   * `settled_unreported` row already has its definite outcome and only replays the result, so a
+   * dropped `codehost/note-result` cannot leave the control plane's write mutex held forever.
    */
   async reconcilePending(): Promise<void> {
     let rows: NoteProjectionRow[]
     try {
-      rows = await this.deps.store.listInFlightNoteProjections()
+      rows = await this.deps.store.listUnsettledNoteProjections()
     } catch (err) {
       this.warn(`note projection: pending write scan failed (${String(err)})`)
       return
@@ -196,16 +216,24 @@ export class CodeHostNoteProjector {
 
   private async converge(desired: CodeHostNoteDesired, orgId?: string): Promise<void> {
     const fence = this.fenceFailure(desired)
-    if (fence) return await this.send(refusal(desired, fence.outcome, fence.code, this.now()), orgId)
+    // A refusal this daemon does not own leaves no local row: there is nothing here to replay.
+    if (fence) {
+      await this.send(refusal(desired, fence.outcome, fence.code, this.now()), orgId)
+      return
+    }
     let stored: NoteProjectionRow | undefined
     try {
       stored = await this.deps.store.getNoteProjection(desired.projectionKey)
     } catch (err) {
       this.warn(`note projection: ledger read failed for ${desired.projectionKey} (${String(err)})`)
-      return await this.send(refusal(desired, 'failed', 'ledger_unavailable', this.now()), orgId)
+      await this.send(refusal(desired, 'failed', 'ledger_unavailable', this.now()), orgId)
+      return
     }
     const ledger = this.ledgerFailure(desired, stored)
-    if (ledger) return await this.send(refusal(desired, 'skipped', ledger, this.now()), orgId)
+    if (ledger) {
+      await this.send(refusal(desired, 'skipped', ledger, this.now()), orgId)
+      return
+    }
 
     // The recorded note wins over the frame's hint only when the frame carries none; both are the
     // same observed identity, and an unreadable one is treated as unknown so the marker decides.
@@ -231,15 +259,35 @@ export class CodeHostNoteProjector {
     // An earlier write of this projection never reached a definite outcome, so the note's identity
     // is recovered from the provider before this generation may touch the merge request at all.
     const outcome = await this.write(row, stored?.phase === 'in_flight', true)
-    await this.send(settled(row, outcome, this.now()), orgId)
+    await this.deliver(row, outcome, orgId)
   }
 
-  /** Finish an interrupted write from the ledger row alone: reconcile by marker, then converge. */
+  /** Finish what the ledger row still owes: reconcile an interrupted write, or replay its result. */
   private async settlePending(row: NoteProjectionRow): Promise<void> {
+    if (row.phase === 'settled_unreported') return await this.deliver(row, storedOutcome(row), row.orgId)
     const outcome = await this.write(row, true, false)
     // Still fail-closed on this writer: the row stays in flight and the next sweep reconciles again.
-    if (outcome.kind === 'ambiguous') return
-    await this.send(settled(row, outcome, this.now()), row.orgId)
+    if (outcome.kind === 'ambiguous') {
+      await this.send(settled(row, outcome, this.now()), row.orgId)
+      return
+    }
+    await this.deliver(row, outcome, row.orgId)
+  }
+
+  /** Send one definite result and stop replaying it only once the control plane has taken it. */
+  private async deliver(row: NoteProjectionRow, outcome: WriteOutcome, orgId?: string): Promise<void> {
+    // An ambiguous outcome keeps its in-flight row, which the sweep reconciles; nothing to retire.
+    if (outcome.kind === 'ambiguous') {
+      await this.send(settled(row, outcome, this.now()), orgId)
+      return
+    }
+    if (!(await this.send(settled(row, outcome, this.now()), orgId))) return
+    try {
+      await this.deps.store.markNoteProjectionReported(row.projectionKey, row.writeMarker, this.now())
+    } catch (err) {
+      // Harmless: the row simply replays an identical result, which the control plane answers once.
+      this.warn(`note projection: ledger ack failed for ${row.projectionKey} (${String(err)})`)
+    }
   }
 
   /** Placement, credential and renderability fences — all of them refuse BEFORE any provider call. */
@@ -267,7 +315,9 @@ export class CodeHostNoteProjector {
     )
       return 'projection_key_conflict'
     if (BigInt(stored.credentialEpoch) > BigInt(desired.credentialEpoch)) return 'stale_credential_epoch'
-    if (stored.phase === 'settled' && BigInt(stored.generation) > BigInt(desired.generation)) return 'stale_generation'
+    // Any phase but in-flight means the stored generation reached a definite outcome and outranks an older one.
+    if (stored.phase !== 'in_flight' && BigInt(stored.generation) > BigInt(desired.generation))
+      return 'stale_generation'
     return undefined
   }
 
@@ -276,15 +326,9 @@ export class CodeHostNoteProjector {
    * write marker, then create once or update the SAME note in place.
    */
   private async write(row: NoteProjectionRow, reconcile: boolean, persist: boolean): Promise<WriteOutcome> {
-    let lease: NoteProjectionLease
-    try {
-      lease = await this.deps.lease({ agentId: row.agentId, projectId: row.projectId, hookId: row.hookId })
-    } catch {
-      // A refused effect lease is its own outcome: nothing was ever sent to GitLab.
-      return { kind: 'failed', code: 'token_unavailable' }
-    }
-    if (CAPABILITY_RANK[lease.access] < CAPABILITY_RANK[REQUIRED_CAPABILITY])
-      return { kind: 'failed', code: 'insufficient_authority' }
+    const minted = await this.mint(row)
+    if (minted.kind !== 'lease') return await this.persistOutcome(row, minted, row.noteId)
+    const lease = minted.lease
 
     let noteId = row.noteId
     if (reconcile) {
@@ -305,17 +349,49 @@ export class CodeHostNoteProjector {
     const outcome = await this.mutate(row, noteId, lease)
     // An ambiguous mutation keeps its in-flight row: only reconciliation, never a replay, may follow.
     if (outcome.kind === 'ambiguous') return outcome
+    return await this.persistOutcome(row, outcome, noteId)
+  }
+
+  /** A definite outcome becomes durable BEFORE it is reported, so a dropped report is replayable. */
+  private async persistOutcome(
+    row: NoteProjectionRow,
+    outcome: WriteOutcome,
+    noteId: string | undefined
+  ): Promise<WriteOutcome> {
+    if (outcome.kind === 'ambiguous') return outcome
+    const settledNoteId = outcome.kind === 'written' ? outcome.noteId : noteId
     try {
-      await this.deps.store.settleNoteProjectionWrite(
-        row.projectionKey,
-        row.writeMarker,
-        outcome.kind === 'written' ? outcome.noteId : noteId,
+      await this.deps.store.recordNoteProjectionOutcome(
+        { ...row, ...(settledNoteId ? { noteId: settledNoteId } : {}) },
+        outcome.kind,
+        outcome.kind === 'written' ? undefined : outcome.code,
         this.now()
       )
     } catch (err) {
-      this.warn(`note projection: ledger settle failed for ${row.projectionKey} (${String(err)})`)
+      this.warn(`note projection: outcome persist failed for ${row.projectionKey} (${String(err)})`)
     }
     return outcome
+  }
+
+  /**
+   * Mint the hook-authorized effect lease and check every authority fence it must satisfy: the §13.1
+   * clamp, and the credential epoch the desired generation was fenced on. A grant minted under an
+   * older or newer purge epoch is stale authority and may not write.
+   */
+  private async mint(
+    row: NoteProjectionRow
+  ): Promise<{ kind: 'lease'; lease: NoteProjectionLease } | { kind: 'failed' | 'skipped'; code: string }> {
+    let lease: NoteProjectionLease
+    try {
+      lease = await this.deps.lease({ agentId: row.agentId, projectId: row.projectId, hookId: row.hookId })
+    } catch {
+      // A refused effect lease is its own outcome: nothing was ever sent to GitLab.
+      return { kind: 'failed', code: 'token_unavailable' }
+    }
+    if (CAPABILITY_RANK[lease.access] < CAPABILITY_RANK[REQUIRED_CAPABILITY])
+      return { kind: 'failed', code: 'insufficient_authority' }
+    if (lease.credentialEpoch !== row.credentialEpoch) return { kind: 'skipped', code: 'stale_credential_epoch' }
+    return { kind: 'lease', lease }
   }
 
   /** One retry only, and only after a definite auth rejection or a 404 proving the note is gone. */
@@ -333,20 +409,23 @@ export class CodeHostNoteProjector {
       if (res.kind === 'unavailable') return { kind: 'ambiguous', code: res.code }
       if (res.status >= 200 && res.status < 300) {
         const id = noteIdOf(idFromBody(res.body))
-        // The note exists; a missing id only loses the deep link and must never re-run the write.
-        return id ? { kind: 'written', noteId: id } : { kind: 'failed', code: 'note_id_unreadable' }
+        if (id) return { kind: 'written', noteId: id }
+        // An update already knows the note it edited, so an unreadable body loses nothing. A create
+        // does not: GitLab accepted it, so the note exists at an id only the marker can recover.
+        return target === undefined
+          ? { kind: 'ambiguous', code: 'create_id_unreadable' }
+          : { kind: 'written', noteId: target }
       }
+      // A 5xx never proves the mutation had no effect — on either attempt, so this precedes the guard.
+      if (res.status >= 500) return { kind: 'ambiguous', code: `http_${res.status}` }
       if (attempt === 1) return { kind: 'failed', code: `http_${res.status}` }
       if (res.status === 401 || res.status === 403) {
         if (!this.deps.invalidateLease) return { kind: 'failed', code: `http_${res.status}` }
         this.deps.invalidateLease({ agentId: row.agentId, projectId: row.projectId }, current.token)
-        try {
-          current = await this.deps.lease({ agentId: row.agentId, projectId: row.projectId, hookId: row.hookId })
-        } catch {
-          return { kind: 'failed', code: 'token_unavailable' }
-        }
-        if (CAPABILITY_RANK[current.access] < CAPABILITY_RANK[REQUIRED_CAPABILITY])
-          return { kind: 'failed', code: 'insufficient_authority' }
+        // The re-minted grant re-runs every authority fence: a refresh may cross a credential purge.
+        const minted = await this.mint(row)
+        if (minted.kind !== 'lease') return minted
+        current = minted.lease
         continue
       }
       // The recorded note is gone: reconcile by marker once more rather than assume a fresh create.
@@ -357,8 +436,6 @@ export class CodeHostNoteProjector {
         target = found.noteId
         continue
       }
-      // A 5xx answer does not prove the mutation had no effect, so it stays fail-closed here.
-      if (res.status >= 500) return { kind: 'ambiguous', code: `http_${res.status}` }
       return { kind: 'failed', code: `http_${res.status}` }
     }
     return { kind: 'failed', code: 'write_failed' }
@@ -423,12 +500,16 @@ export class CodeHostNoteProjector {
     }
   }
 
-  private async send(result: CodeHostNoteResult, orgId?: string): Promise<void> {
+  /** True once the control plane has definitively taken the result — acked, or permanently refused. */
+  private async send(result: CodeHostNoteResult, orgId?: string): Promise<boolean> {
     try {
       await this.deps.report(result, orgId)
+      return true
     } catch (err) {
-      // The ledger row already records the truth; a lost result is re-derivable, never a second write.
       this.warn(`note projection: result report failed for ${result.projectionId} (${String(err)})`)
+      // A non-retryable refusal means the control plane already moved past this generation: replaying
+      // it forever would only leak a row. Anything else is a delivery failure the sweep retries.
+      return (err as { retryable?: unknown })?.retryable === false
     }
   }
 
@@ -470,6 +551,13 @@ function settled(row: NoteProjectionRow, outcome: WriteOutcome, now: number): Co
     ...(outcome.kind === 'written' ? { noteId: outcome.noteId, observedState: row.state } : { code: outcome.code }),
     observedAt: new Date(now).toISOString()
   }
+}
+
+/** Rebuild an unreported outcome from its row. A `written` row without an id cannot claim one. */
+function storedOutcome(row: NoteProjectionRow): WriteOutcome {
+  if (row.outcome === 'written' && row.noteId) return { kind: 'written', noteId: row.noteId }
+  if (row.outcome === 'skipped') return { kind: 'skipped', code: row.code ?? 'skipped' }
+  return { kind: 'failed', code: row.code ?? 'note_id_unreadable' }
 }
 
 function noteIdOf(value: string | undefined): string | undefined {

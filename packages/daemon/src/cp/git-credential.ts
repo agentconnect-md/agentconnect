@@ -87,6 +87,8 @@ interface Entry {
   repoFullName: string
   /** §13.1 authorization level as the CP echoed it — 'comment' rides an effect lease only. */
   access: GitCredGrant['access']
+  /** The purge fence the CP minted this grant under; absent when the CP echoed none. */
+  credentialEpoch?: string
   /** Monotonic deadline (ms on the injected monotonic clock). */
   expiresAtMono: number
 }
@@ -414,6 +416,7 @@ export class GitCredentialCache {
       token: grant.token,
       repoFullName: grant.repoFullName,
       access: grant.access,
+      ...(grant.credentialEpoch !== undefined ? { credentialEpoch: grant.credentialEpoch } : {}),
       expiresAtMono: this.monoNow() + grant.ttlSec * 1000
     }
     this.entries.set(key, entry)

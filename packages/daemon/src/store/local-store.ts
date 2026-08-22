@@ -9,7 +9,7 @@ import {
   type QuotedMessage,
   type SessionImageAttachment
 } from '@agentconnect.md/protocol'
-import type { NoteProjectionRow } from '../gitlab/note-projection.js'
+import type { NoteProjectionOutcome, NoteProjectionPhase, NoteProjectionRow } from '../gitlab/note-projection.js'
 import { SESSION_TITLE_TOOL_TITLES } from '../mcp/session-title-tool.js'
 import type { ScheduleRun } from '../scheduler/scheduler.js'
 import { AsyncMutex } from './async-mutex.js'
@@ -660,11 +660,17 @@ interface CodeHostNoteProjectionRow {
   noteId: string | null
   credentialEpoch: string
   phase: string
+  outcome: string | null
+  code: string | null
   updatedAt: number
   ownerId: string | null
 }
 
+const NOTE_PROJECTION_PHASES: readonly NoteProjectionPhase[] = ['in_flight', 'settled_unreported', 'settled']
+const NOTE_PROJECTION_OUTCOMES: readonly NoteProjectionOutcome[] = ['written', 'skipped', 'failed']
+
 function toNoteProjectionRow(row: CodeHostNoteProjectionRow): NoteProjectionRow {
+  const outcome = NOTE_PROJECTION_OUTCOMES.find((o) => o === row.outcome)
   return {
     projectionKey: row.projectionKey,
     projectionId: row.projectionId,
@@ -681,7 +687,48 @@ function toNoteProjectionRow(row: CodeHostNoteProjectionRow): NoteProjectionRow 
     body: row.body,
     ...(row.noteId ? { noteId: row.noteId } : {}),
     credentialEpoch: row.credentialEpoch,
-    phase: row.phase === 'in_flight' ? 'in_flight' : 'settled'
+    // An unknown phase reads as fully settled: it can neither be rewritten nor replayed.
+    phase: NOTE_PROJECTION_PHASES.find((p) => p === row.phase) ?? 'settled',
+    ...(outcome ? { outcome } : {}),
+    ...(row.code ? { code: row.code } : {})
+  }
+}
+
+/** One upsert for both projection phases: the row is identical, only the phase and outcome differ. */
+const NOTE_PROJECTION_UPSERT = `INSERT INTO code_host_note_projection
+   (projectionKey, projectionId, hookId, agentId, orgId, provider, projectId, mergeRequestIid, headSha,
+    generation, writeMarker, state, body, noteId, credentialEpoch, phase, outcome, code, updatedAt, ownerId)
+ VALUES (@projectionKey, @projectionId, @hookId, @agentId, @orgId, @provider, @projectId, @mergeRequestIid,
+    @headSha, @generation, @writeMarker, @state, @body, @noteId, @credentialEpoch, @phase, @outcome, @code,
+    @now, @ownerId)
+ ON CONFLICT (projectionKey) DO UPDATE SET
+   projectionId = excluded.projectionId, hookId = excluded.hookId, agentId = excluded.agentId,
+   orgId = excluded.orgId, provider = excluded.provider, projectId = excluded.projectId,
+   mergeRequestIid = excluded.mergeRequestIid, headSha = excluded.headSha,
+   generation = excluded.generation, writeMarker = excluded.writeMarker, state = excluded.state,
+   body = excluded.body, noteId = excluded.noteId, credentialEpoch = excluded.credentialEpoch,
+   phase = excluded.phase, outcome = excluded.outcome, code = excluded.code,
+   updatedAt = excluded.updatedAt, ownerId = excluded.ownerId`
+
+function noteProjectionParams(row: NoteProjectionRow, now: number, ownerId: string | null): SqlParams {
+  return {
+    projectionKey: row.projectionKey,
+    projectionId: row.projectionId,
+    hookId: row.hookId,
+    agentId: row.agentId,
+    orgId: row.orgId ?? null,
+    provider: row.provider,
+    projectId: row.projectId,
+    mergeRequestIid: row.mergeRequestIid,
+    headSha: row.headSha,
+    generation: row.generation,
+    writeMarker: row.writeMarker,
+    state: row.state,
+    body: row.body,
+    noteId: row.noteId ?? null,
+    credentialEpoch: row.credentialEpoch,
+    now,
+    ownerId
   }
 }
 
@@ -1421,7 +1468,9 @@ export class LocalStore {
       );
       -- gitlab-com-integration.md §16 run projection: the write marker this daemon persists BEFORE
       -- every provider mutation. An 'in_flight' row surviving a restart is reconciled by listing the
-      -- merge request's notes and matching the hidden marker, never by replaying the write.
+      -- merge request's notes and matching the hidden marker, never by replaying the write. A
+      -- 'settled_unreported' row holds a definite outcome the control plane has not acknowledged yet:
+      -- it is replayed until acked, so a dropped result cannot wedge the control plane's write mutex.
       CREATE TABLE IF NOT EXISTS code_host_note_projection (
         projectionKey TEXT PRIMARY KEY,
         projectionId TEXT NOT NULL,
@@ -1438,7 +1487,9 @@ export class LocalStore {
         body TEXT NOT NULL,
         noteId TEXT,
         credentialEpoch TEXT NOT NULL,
-        phase TEXT NOT NULL CHECK (phase IN ('in_flight', 'settled')),
+        phase TEXT NOT NULL CHECK (phase IN ('in_flight', 'settled_unreported', 'settled')),
+        outcome TEXT,                     -- the definite outcome awaiting acknowledgement
+        code TEXT,                        -- its normalized reason code
         updatedAt INTEGER NOT NULL,
         ownerId TEXT                      -- daemon incarnation that started the write; NULL on an exclusively owned store
       );
@@ -5172,64 +5223,43 @@ export class LocalStore {
   /** Record the write marker BEFORE the provider mutation, so an interrupted write is reconcilable. */
   async beginNoteProjectionWrite(row: NoteProjectionRow, now: number): Promise<void> {
     await this.db
-      .prepare(
-        `INSERT INTO code_host_note_projection
-           (projectionKey, projectionId, hookId, agentId, orgId, provider, projectId, mergeRequestIid, headSha,
-            generation, writeMarker, state, body, noteId, credentialEpoch, phase, updatedAt, ownerId)
-         VALUES (@projectionKey, @projectionId, @hookId, @agentId, @orgId, @provider, @projectId, @mergeRequestIid,
-            @headSha, @generation, @writeMarker, @state, @body, @noteId, @credentialEpoch, 'in_flight', @now, @ownerId)
-         ON CONFLICT (projectionKey) DO UPDATE SET
-           projectionId = excluded.projectionId, hookId = excluded.hookId, agentId = excluded.agentId,
-           orgId = excluded.orgId, provider = excluded.provider, projectId = excluded.projectId,
-           mergeRequestIid = excluded.mergeRequestIid, headSha = excluded.headSha,
-           generation = excluded.generation, writeMarker = excluded.writeMarker, state = excluded.state,
-           body = excluded.body, noteId = excluded.noteId, credentialEpoch = excluded.credentialEpoch,
-           phase = 'in_flight', updatedAt = excluded.updatedAt, ownerId = excluded.ownerId`
-      )
-      .run({
-        projectionKey: row.projectionKey,
-        projectionId: row.projectionId,
-        hookId: row.hookId,
-        agentId: row.agentId,
-        orgId: row.orgId ?? null,
-        provider: row.provider,
-        projectId: row.projectId,
-        mergeRequestIid: row.mergeRequestIid,
-        headSha: row.headSha,
-        generation: row.generation,
-        writeMarker: row.writeMarker,
-        state: row.state,
-        body: row.body,
-        noteId: row.noteId ?? null,
-        credentialEpoch: row.credentialEpoch,
-        now,
-        ownerId: this.ownerId ?? null
-      })
+      .prepare(NOTE_PROJECTION_UPSERT)
+      .run({ ...noteProjectionParams(row, now, this.ownerId ?? null), phase: 'in_flight', outcome: null, code: null })
   }
 
-  /** Settle the write that marker opened, recording the observed note identity. Exact-marker fenced. */
-  async settleNoteProjectionWrite(
-    projectionKey: string,
-    writeMarker: string,
-    noteId: string | undefined,
+  /** Persist a definite outcome as UNREPORTED: it is replayed until the control plane acknowledges it. */
+  async recordNoteProjectionOutcome(
+    row: NoteProjectionRow,
+    outcome: NoteProjectionOutcome,
+    code: string | undefined,
     now: number
   ): Promise<void> {
+    await this.db.prepare(NOTE_PROJECTION_UPSERT).run({
+      ...noteProjectionParams(row, now, this.ownerId ?? null),
+      phase: 'settled_unreported',
+      outcome,
+      code: code ?? null
+    })
+  }
+
+  /** The control plane acknowledged the result: only then does the row stop being replayed. */
+  async markNoteProjectionReported(projectionKey: string, writeMarker: string, now: number): Promise<void> {
     await this.db
       .prepare(
         `UPDATE code_host_note_projection
-         SET phase = 'settled', noteId = COALESCE(@noteId, noteId), updatedAt = @now
-         WHERE projectionKey = @projectionKey AND writeMarker = @writeMarker`
+         SET phase = 'settled', updatedAt = @now
+         WHERE projectionKey = @projectionKey AND writeMarker = @writeMarker AND phase = 'settled_unreported'`
       )
-      .run({ projectionKey, writeMarker, noteId: noteId ?? null, now })
+      .run({ projectionKey, writeMarker, now })
   }
 
-  /** Writes THIS incarnation started and never settled — the only rows a reconciliation may touch. */
-  async listInFlightNoteProjections(limit = 100): Promise<NoteProjectionRow[]> {
+  /** Writes THIS incarnation started and has not carried to a reported outcome: reconcile or replay. */
+  async listUnsettledNoteProjections(limit = 100): Promise<NoteProjectionRow[]> {
     const owned = this.shared ? ' AND ownerId = @ownerId' : ''
     const rows = (await this.db
       .prepare(
         `SELECT * FROM code_host_note_projection
-         WHERE phase = 'in_flight'${owned}
+         WHERE phase IN ('in_flight', 'settled_unreported')${owned}
          ORDER BY updatedAt ASC LIMIT @limit`
       )
       .all({ limit, ...(this.shared ? { ownerId: this.ownerId! } : {}) })) as unknown as CodeHostNoteProjectionRow[]

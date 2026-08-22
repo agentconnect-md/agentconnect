@@ -26,6 +26,8 @@ const PROJECT = '4455667'
 const IID = 77
 const HEAD = 'abc123def4567890abc123def4567890abc123de'
 const NOW = Date.parse('2026-08-22T10:00:00.000Z')
+/** The credential purge fence the desired frame and the effect grant must agree on. */
+const EPOCH = '3'
 
 function desiredFrame(over: Partial<CodeHostNoteDesired> = {}): CodeHostNoteDesired {
   return {
@@ -97,6 +99,16 @@ afterEach(async () => {
   rmSync(root, { recursive: true, force: true })
 })
 
+/** A control-plane answer to `codehost/note-result`, as the correlator surfaces it. */
+class FakeWireError extends Error {
+  constructor(
+    message: string,
+    readonly retryable: boolean
+  ) {
+    super(message)
+  }
+}
+
 function projector(
   fetchImpl: typeof fetch,
   over: {
@@ -104,29 +116,42 @@ function projector(
     leaseTokens?: string[]
     leaseThrows?: boolean
     daemonId?: string
+    /** Per-mint credential epoch; the default matches the desired frame's fence. */
+    leaseEpochs?: (string | undefined)[]
+    /** Reject this many reports before the fake control plane starts accepting them. */
+    reportRejections?: number
+    reportRetryable?: boolean
   } = {}
 ) {
   const results: Array<{ result: CodeHostNoteResult; orgId?: string }> = []
   const invalidated: string[] = []
   const tokens = over.leaseTokens ?? ['glpat-1', 'glpat-2']
   let mint = 0
+  let rejections = over.reportRejections ?? 0
   const projector = new CodeHostNoteProjector({
     daemonId: () => over.daemonId ?? DAEMON,
     store: {
       getNoteProjection: (key) => store.getNoteProjection(key),
       beginNoteProjectionWrite: (row, now) => store.beginNoteProjectionWrite(row, now),
-      settleNoteProjectionWrite: (key, marker, noteId, now) =>
-        store.settleNoteProjectionWrite(key, marker, noteId, now),
-      listInFlightNoteProjections: () => store.listInFlightNoteProjections()
+      recordNoteProjectionOutcome: (row, outcome, code, now) =>
+        store.recordNoteProjectionOutcome(row, outcome, code, now),
+      markNoteProjectionReported: (key, marker, now) => store.markNoteProjectionReported(key, marker, now),
+      listUnsettledNoteProjections: () => store.listUnsettledNoteProjections()
     },
     lease: async () => {
       if (over.leaseThrows) throw new Error('effect lease refused')
       const token = tokens[Math.min(mint, tokens.length - 1)]!
+      const epochs = over.leaseEpochs ?? [EPOCH]
+      const credentialEpoch = epochs[Math.min(mint, epochs.length - 1)]
       mint += 1
-      return { token, access: over.access ?? 'comment' }
+      return { token, access: over.access ?? 'comment', ...(credentialEpoch ? { credentialEpoch } : {}) }
     },
     invalidateLease: (_target, token) => invalidated.push(token),
     report: async (result, orgId) => {
+      if (rejections > 0) {
+        rejections -= 1
+        throw new FakeWireError('control plane unreachable', over.reportRetryable ?? true)
+      }
       results.push({ result, ...(orgId ? { orgId } : {}) })
     },
     log: { warn: () => undefined },
@@ -315,6 +340,139 @@ describe('the run-projection note (gitlab-com-integration.md §16)', () => {
 
     expect(second.calls).toHaveLength(0)
     expect(b.results[0]!.result).toMatchObject({ outcome: 'skipped', code: 'projection_key_conflict' })
+  })
+})
+
+describe('authority and outcome fences (round-2 review)', () => {
+  it('never mutates when the effect grant was minted under a different credential epoch', async () => {
+    const { fetchImpl, calls } = fakeFetch([])
+    const { projector: p, results } = projector(fetchImpl, { leaseEpochs: ['2'] })
+    await p.apply(desiredFrame())
+
+    expect(calls).toHaveLength(0)
+    expect(results[0]!.result).toMatchObject({ outcome: 'skipped', code: 'stale_credential_epoch' })
+    // Stale authority must not leave a claim on the note either.
+    expect((await store.getNoteProjection(PROJECTION))?.noteId).toBeUndefined()
+  })
+
+  it('re-checks the epoch after the auth refresh, so a purge mid-write stops the retry', async () => {
+    const { fetchImpl, calls } = fakeFetch([{ status: 401 }, { status: 201, body: '{"id":12345}' }])
+    const { projector: p, results, invalidated } = projector(fetchImpl, { leaseEpochs: [EPOCH, '4'] })
+    await p.apply(desiredFrame())
+
+    expect(invalidated).toEqual(['glpat-1'])
+    // The refreshed grant crossed a purge, so the second write never leaves the daemon.
+    expect(calls).toHaveLength(1)
+    expect(results[0]!.result).toMatchObject({ outcome: 'skipped', code: 'stale_credential_epoch' })
+  })
+
+  it('still writes when the refreshed grant carries the same epoch — the negative control', async () => {
+    const { fetchImpl, calls } = fakeFetch([{ status: 401 }, { status: 201, body: '{"id":12345}' }])
+    const { projector: p, results } = projector(fetchImpl, { leaseEpochs: [EPOCH, EPOCH] })
+    await p.apply(desiredFrame())
+
+    expect(calls).toHaveLength(2)
+    expect(results[0]!.result).toMatchObject({ outcome: 'written', noteId: '12345' })
+  })
+
+  it('treats an accepted create whose id is unreadable as ambiguous, then recovers it by marker', async () => {
+    const created = fakeFetch([{ status: 201, body: 'not json at all' }])
+    const a = projector(created.fetchImpl)
+    await a.projector.apply(desiredFrame())
+
+    expect(a.results[0]!.result).toMatchObject({ outcome: 'ambiguous', code: 'create_id_unreadable' })
+    expect((await store.getNoteProjection(PROJECTION))?.phase).toBe('in_flight')
+
+    const listed = JSON.stringify([{ id: 777, body: `${projectionMarker(PROJECTION)}\n**AgentConnect run**` }])
+    const recovered = fakeFetch([
+      { status: 200, body: listed },
+      { status: 200, body: '{"id":777}' }
+    ])
+    const b = projector(recovered.fetchImpl)
+    await b.projector.reconcilePending()
+
+    // Reconciliation adopts the note GitLab really created; a redispatch would have posted a second one.
+    expect(recovered.calls.map((c) => c.method)).toEqual(['GET', 'PUT'])
+    expect(b.results[0]!.result).toMatchObject({ outcome: 'written', noteId: '777' })
+  })
+
+  it('keeps an update deterministic when its response is unreadable — the target id is already known', async () => {
+    const first = fakeFetch([{ status: 201, body: '{"id":12345}' }])
+    await projector(first.fetchImpl).projector.apply(desiredFrame())
+
+    const second = fakeFetch([{ status: 200, body: 'not json at all' }])
+    const b = projector(second.fetchImpl)
+    await b.projector.apply(desiredFrame({ generation: '2', writeMarker: MARKER_B, state: 'completed' }))
+
+    expect(second.calls.map((c) => c.method)).toEqual(['PUT'])
+    expect(b.results[0]!.result).toMatchObject({ outcome: 'written', noteId: '12345', observedState: 'completed' })
+  })
+
+  it('reports ambiguous for a 5xx on the retried attempt, not a deterministic failure', async () => {
+    const { fetchImpl, calls } = fakeFetch([{ status: 401 }, { status: 500 }])
+    const { projector: p, results } = projector(fetchImpl)
+    await p.apply(desiredFrame())
+
+    expect(calls).toHaveLength(2)
+    // The refreshed POST may well have created the note, so only reconciliation may decide.
+    expect(results[0]!.result).toMatchObject({ outcome: 'ambiguous', code: 'http_500' })
+    expect((await store.getNoteProjection(PROJECTION))?.phase).toBe('in_flight')
+  })
+
+  it('keeps an answered 4xx on the retried attempt deterministic — the negative control', async () => {
+    const { fetchImpl } = fakeFetch([{ status: 401 }, { status: 422 }])
+    const { projector: p, results } = projector(fetchImpl)
+    await p.apply(desiredFrame())
+
+    expect(results[0]!.result).toMatchObject({ outcome: 'failed', code: 'http_422' })
+    // Definite: the outcome was persisted, reported, and acknowledged in one pass.
+    expect(await store.getNoteProjection(PROJECTION)).toMatchObject({ phase: 'settled', outcome: 'failed' })
+  })
+
+  it('replays a dropped result until the control plane takes it, exactly once in effect', async () => {
+    const wrote = fakeFetch([{ status: 201, body: '{"id":12345}' }])
+    const a = projector(wrote.fetchImpl, { reportRejections: 1 })
+    await a.projector.apply(desiredFrame())
+
+    // The note exists and the outcome is durable, but the control plane never heard it.
+    expect(a.results).toHaveLength(0)
+    const pending = await store.getNoteProjection(PROJECTION)
+    expect(pending).toMatchObject({ phase: 'settled_unreported', outcome: 'written', noteId: '12345' })
+
+    const replay = fakeFetch([])
+    const b = projector(replay.fetchImpl)
+    await b.projector.reconcilePending()
+
+    // A replay touches no provider — the outcome is already definite.
+    expect(replay.calls).toHaveLength(0)
+    expect(b.results).toHaveLength(1)
+    expect(b.results[0]!.result).toMatchObject({
+      generation: '1',
+      writeMarker: MARKER_A,
+      outcome: 'written',
+      noteId: '12345',
+      observedState: 'queued'
+    })
+    expect((await store.getNoteProjection(PROJECTION))?.phase).toBe('settled')
+
+    // Acknowledged means retired: a later sweep re-sends nothing.
+    const after = projector(fakeFetch([]).fetchImpl)
+    await after.projector.reconcilePending()
+    expect(after.results).toHaveLength(0)
+  })
+
+  it('retires an unreported row the control plane permanently refuses instead of replaying forever', async () => {
+    const wrote = fakeFetch([{ status: 201, body: '{"id":12345}' }])
+    const a = projector(wrote.fetchImpl, { reportRejections: 1 })
+    await a.projector.apply(desiredFrame())
+    expect((await store.getNoteProjection(PROJECTION))?.phase).toBe('settled_unreported')
+
+    const refused = projector(fakeFetch([]).fetchImpl, { reportRejections: 1, reportRetryable: false })
+    await refused.projector.reconcilePending()
+
+    // The control plane already moved past this generation; the row must not keep asking.
+    expect(refused.results).toHaveLength(0)
+    expect((await store.getNoteProjection(PROJECTION))?.phase).toBe('settled')
   })
 })
 

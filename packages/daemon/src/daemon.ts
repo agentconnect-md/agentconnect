@@ -1697,13 +1697,19 @@ export class Daemon {
       store: {
         getNoteProjection: (key) => this.store.getNoteProjection(key),
         beginNoteProjectionWrite: (row, now) => this.store.beginNoteProjectionWrite(row, now),
-        settleNoteProjectionWrite: (key, marker, noteId, now) =>
-          this.store.settleNoteProjectionWrite(key, marker, noteId, now),
-        listInFlightNoteProjections: () => this.store.listInFlightNoteProjections()
+        recordNoteProjectionOutcome: (row, outcome, code, now) =>
+          this.store.recordNoteProjectionOutcome(row, outcome, code, now),
+        markNoteProjectionReported: (key, marker, now) => this.store.markNoteProjectionReported(key, marker, now),
+        listUnsettledNoteProjections: () => this.store.listUnsettledNoteProjections()
       },
       lease: async (target) => {
         const entry = await this.gitCreds.getGitlabEffectToken(target.agentId, target.projectId, target.hookId)
-        return { token: entry.token, access: entry.access }
+        // The grant's purge epoch travels with it: the writer refuses a fence the grant does not match.
+        return {
+          token: entry.token,
+          access: entry.access,
+          ...(entry.credentialEpoch !== undefined ? { credentialEpoch: entry.credentialEpoch } : {})
+        }
       },
       invalidateLease: (target, token) => this.gitCreds.invalidateGitlabEffect(target.agentId, target.projectId, token),
       report: async (result, orgId) => {
