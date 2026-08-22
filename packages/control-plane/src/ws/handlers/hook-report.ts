@@ -118,7 +118,6 @@ export const handleHookReport: Handler = async (frame, conn, deps) => {
         ...(p.sessionId ? { sessionId: p.sessionId } : {}),
         gitlab: p.gitlab,
         snapshot: p,
-        projectionEpoch: hook.projectionEpoch,
         at: completedAt
       })
     }

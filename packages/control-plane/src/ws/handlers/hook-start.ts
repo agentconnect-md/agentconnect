@@ -38,7 +38,6 @@ export const handleHookStart: Handler = async (frame, conn, deps) => {
         ...(frame.payload.sessionId ? { sessionId: frame.payload.sessionId } : {}),
         gitlab: frame.payload.gitlab,
         snapshot: frame.payload,
-        projectionEpoch: hook.projectionEpoch,
         at: new Date(deps.clock.now())
       })
       conn.replyTo(frame, 'hook/start/ok', { accepted: true })

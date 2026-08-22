@@ -60,7 +60,6 @@ function edge(overrides: Partial<NoteProjectionEdge> = {}): NoteProjectionEdge {
     state: 'queued',
     gitlab: gitlab(),
     snapshot,
-    projectionEpoch: 1n,
     at: new Date(NOW),
     ...overrides
   }
@@ -123,6 +122,7 @@ function harness(
     beginWrite?: boolean
     setDesired?: boolean
     retiredOwner?: boolean
+    runEpoch?: bigint | null
   } = {}
 ) {
   const row = options.row ?? projection()
@@ -145,8 +145,13 @@ function harness(
     failWrite: ReturnType<typeof vi.fn>
     get: ReturnType<typeof vi.fn>
   }
+  // The accepted run, whose epoch the projection must spend even after the live hook moves on.
+  const runs = {
+    getRun: vi.fn(async () => ({ projectionEpoch: options.runEpoch === undefined ? 1n : options.runEpoch }))
+  }
   const service = new CodeHostNoteProjectionService({
     projections,
+    runs: runs as never,
     agents: { getUnscoped: vi.fn(async () => agent) },
     bindings: { byProject: vi.fn(async () => ({ credentialEpoch: 2n })) } as never,
     orgs: { slugById: vi.fn(async () => 'acme') },
@@ -157,7 +162,7 @@ function harness(
       send: (id, desired, org) => sent.push({ daemonId: id, desired, orgId: org })
     }
   })
-  return { service, projections, sent, row }
+  return { service, projections, sent, row, runs }
 }
 
 describe('reportedNoteState (gitlab-com-integration.md §16)', () => {
@@ -249,9 +254,10 @@ describe('CodeHostNoteProjectionService', () => {
   })
 
   it('leaves the row pending when the owning daemon is offline', async () => {
-    const { service, projections, sent } = harness({ features: undefined })
+    const { projections, sent, runs } = harness({ features: undefined })
     const offline = new CodeHostNoteProjectionService({
       projections,
+      runs: runs as never,
       agents: { getUnscoped: vi.fn(async () => agent) },
       bindings: { byProject: vi.fn(async () => ({ credentialEpoch: 2n })) } as never,
       clock: new FakeClock(NOW),
@@ -311,14 +317,29 @@ describe('CodeHostNoteProjectionService', () => {
     expect(sent).toEqual([])
   })
 
-  it('still settles a terminal edge whose accepted snapshot reports, so the gate strands nothing', async () => {
-    // The gate reads the edge's ACCEPTED tuple, never the live hook, so an open generation keeps
-    // converging to its terminal state even while the hook is being edited underneath it.
-    const { service, projections } = harness()
+  it('settles the row acceptance opened when the hook is edited mid-run, instead of forking a new one', async () => {
+    // A check → off PUT mid-run advances the LIVE hook's epoch while the accepted run keeps its own.
+    // Spending the live one would strand the queued note and post a second terminal one.
+    const ACCEPTED_EPOCH = 1n
+    const EDITED_HOOK_EPOCH = 2n
+    const { service, projections, runs } = harness({ runEpoch: ACCEPTED_EPOCH })
     await service.afterAccepted(edge())
-    expect(projections.upsert).toHaveBeenCalledTimes(1)
+    // The edit lands here: it moves the hook definition, never the accepted run.
     await service.afterReport(edge({ state: 'completed' }))
-    expect(projections.upsert).toHaveBeenCalledTimes(2)
+
+    const epochs = projections.upsert.mock.calls.map(([input]) => input.projectionEpoch)
+    expect(epochs).toEqual([ACCEPTED_EPOCH, ACCEPTED_EPOCH])
+    expect(epochs).not.toContain(EDITED_HOOK_EPOCH)
+    // Both edges resolved that epoch from the accepted run, keyed by the delivery they belong to.
+    expect(runs.getRun).toHaveBeenCalledTimes(2)
+    expect(runs.getRun).toHaveBeenLastCalledWith(hookId, 'delivery-1')
+  })
+
+  it('opens nothing when the accepted run carries no epoch, so a retired key is never revived', async () => {
+    const { service, projections } = harness({ runEpoch: null })
+    await service.afterAccepted(edge())
+    expect(projections.upsert).not.toHaveBeenCalled()
+    expect(projections.supersede).not.toHaveBeenCalled()
   })
 
   it('settles a written result on the reporting daemon and persists the note id', async () => {

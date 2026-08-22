@@ -90,7 +90,6 @@ describe('hook/start provider one-of (gitlab-com-integration.md §17.2)', () => 
       sessionId: 'acp-gitlab-1',
       gitlab,
       snapshot: frame.payload,
-      projectionEpoch: 3n,
       at: new Date(NOW)
     })
     expect(conn.replyTo).toHaveBeenCalledWith(frame, 'hook/start/ok', { accepted: true })
