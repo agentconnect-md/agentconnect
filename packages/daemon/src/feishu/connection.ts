@@ -171,9 +171,10 @@ export interface FeishuApi {
   replyCardEntityMessage(messageId: string, cardId: string): Promise<{ messageId?: string }>
   /** cardkit.cardElement.content (native typewriter update). */
   updateCardEntityElement(cardId: string, elementId: string, text: string, sequence: number): Promise<void>
-  /** cardkit.card.settings + card.update terminal lifecycle. */
+  /** cardkit.card.settings closes the native stream before the final message patch. */
   setCardEntityStreaming(cardId: string, streaming: boolean, sequence: number): Promise<void>
-  updateCardEntity(cardId: string, card: Record<string, unknown>, sequence: number): Promise<void>
+  /** im.message.patch materializes the final card JSON so message history can read it. */
+  patchCardMessage(messageId: string, card: Record<string, unknown>): Promise<void>
   /** im.message.delete (retract an unfinished/no-response card). */
   deleteMessage(messageId: string): Promise<void>
   /** im.message.update (in-place text edit). */
@@ -297,6 +298,7 @@ function defaultFactory(appId: string, appSecret: string, region: FeishuRegion):
             container_id: chatId,
             sort_type: 'ByCreateTimeDesc',
             page_size: request.limit,
+            card_msg_content_type: 'user_card_content',
             only_thread_root_messages: true,
             ...(request.cursor ? { page_token: request.cursor } : {}),
             ...(request.startTime ? { start_time: request.startTime } : {}),
@@ -360,17 +362,13 @@ function defaultFactory(appId: string, appSecret: string, region: FeishuRegion):
         'cardkit.card.settings'
       )
     },
-    async updateCardEntity(cardId, card, sequence) {
+    async patchCardMessage(messageId, card) {
       assertApiSuccess(
-        await client.cardkit.v1.card.update({
-          path: { card_id: cardId },
-          data: {
-            card: { type: 'card_json', data: JSON.stringify(card) },
-            sequence,
-            uuid: `u_${cardId}_${sequence}`
-          }
+        await client.im.message.patch({
+          path: { message_id: messageId },
+          data: { content: JSON.stringify(card) }
         }),
-        'cardkit.card.update'
+        'im.message.patch'
       )
     },
     async deleteMessage(messageId) {
@@ -649,8 +647,7 @@ export class FeishuConnection implements PlatformConnection {
   // All outbound writes funnel through one queue so streamed edits are FIFO-ordered
   // per connection (keeps a post-then-edit pair from racing on the same progress msg).
   private queue: PlatformSendQueue
-  /** CardKit sequence numbers are scoped to a card entity and must increase across
-   * element, settings, and full-card updates. */
+  /** CardKit sequence numbers are scoped to a card entity and increase across element and settings updates. */
   private streamingCards = new Map<
     string,
     { sequence: number; lastText: string; messageId: string; sessionUrl?: string }
@@ -983,13 +980,11 @@ export class FeishuConnection implements PlatformConnection {
         this.deps.log?.debug(`feishu: streaming card close failed (${card.cardId}): ${(err as Error).message}`)
       }
 
-      state.sequence += 1
       let updated = false
       try {
-        await this.handle.api.updateCardEntity(
-          card.cardId,
-          buildCompletedReplyCard(text, attribution, state.sessionUrl),
-          state.sequence
+        await this.handle.api.patchCardMessage(
+          state.messageId,
+          buildCompletedReplyCard(text, attribution, state.sessionUrl)
         )
         updated = true
       } catch (err) {

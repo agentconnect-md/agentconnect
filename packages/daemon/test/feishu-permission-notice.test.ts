@@ -38,7 +38,7 @@ function connectionFor(
       replyCardEntityMessage: async () => ({ messageId: 'message-2' }),
       updateCardEntityElement: async () => {},
       setCardEntityStreaming: async () => {},
-      updateCardEntity: async () => {},
+      patchCardMessage: async () => {},
       deleteMessage: async () => {},
       uploadImage: async () => ({}),
       createImage: async () => ({}),

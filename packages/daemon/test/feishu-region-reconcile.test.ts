@@ -38,7 +38,7 @@ function fakeFeishuConn(appId: string, region: 'feishu' | 'lark', botOpenId: str
       replyCardEntityMessage: async () => ({ messageId: 'message-2' }),
       updateCardEntityElement: async () => {},
       setCardEntityStreaming: async () => {},
-      updateCardEntity: async () => {},
+      patchCardMessage: async () => {},
       deleteMessage: async () => {},
       updateText: async () => {},
       downloadResource: async () => {},

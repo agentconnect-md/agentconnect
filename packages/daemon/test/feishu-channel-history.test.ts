@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { FeishuConnection, type FeishuClientHandle } from '../src/feishu/connection.js'
+import { buildCompletedReplyCard } from '../src/feishu/render.js'
 
 describe('FeishuConnection.getChannelHistory', () => {
   it('converts bounds, maps messages, and preserves the provider cursor', async () => {
@@ -13,6 +14,13 @@ describe('FeishuConnection.getChannelHistory', () => {
           sender: { id: 'ou_user', sender_type: 'user' },
           body: { content: '{"text":"hello @_user_1"}' },
           mentions: [{ key: '@_user_1', id: 'ou_alice', name: 'Alice' }]
+        },
+        {
+          message_id: 'om_card',
+          msg_type: 'interactive',
+          create_time: '2500',
+          sender: { id: 'cli_bot', sender_type: 'app' },
+          body: { content: JSON.stringify(buildCompletedReplyCard('CardKit answer')) }
         },
         {
           message_id: 'om_2',
@@ -68,6 +76,7 @@ describe('FeishuConnection.getChannelHistory', () => {
           isBot: false,
           threadTs: 'omt_3'
         },
+        { sender: 'cli_bot', ts: '2500', text: 'CardKit answer', isBot: true },
         { sender: 'cli_bot', ts: '2000', text: 'bot reply', isBot: true }
       ],
       hasMore: true,

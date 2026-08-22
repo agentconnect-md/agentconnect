@@ -33,7 +33,7 @@ function connection() {
   const replyCardEntityMessage = vi.fn(async (): Promise<{ messageId?: string }> => ({ messageId: 'message-1' }))
   const updateCardEntityElement = vi.fn(async () => {})
   const setCardEntityStreaming = vi.fn(async () => {})
-  const updateCardEntity = vi.fn<FeishuApi['updateCardEntity']>(async () => {})
+  const patchCardMessage = vi.fn<FeishuApi['patchCardMessage']>(async () => {})
   const deleteMessage = vi.fn(async () => {})
   const onStatusAction = vi.fn()
   let cardActionHandler: ((event: FeishuRawCardActionEvent) => FeishuCardActionResponse | undefined) | undefined
@@ -52,7 +52,7 @@ function connection() {
       replyCardEntityMessage,
       updateCardEntityElement,
       setCardEntityStreaming,
-      updateCardEntity,
+      patchCardMessage,
       deleteMessage,
       updateText: async () => {},
       downloadResource: async () => {},
@@ -83,7 +83,7 @@ function connection() {
     replyCardEntityMessage,
     updateCardEntityElement,
     setCardEntityStreaming,
-    updateCardEntity,
+    patchCardMessage,
     deleteMessage,
     onStatusAction,
     triggerCardAction: (event: FeishuRawCardActionEvent) => cardActionHandler?.(event)
@@ -98,7 +98,7 @@ describe('Lark CardKit transport', () => {
       replyCardEntityMessage,
       updateCardEntityElement,
       setCardEntityStreaming,
-      updateCardEntity
+      patchCardMessage
     } = connection()
 
     const card = await conn.startStreamingCard('oc_chat', 'om_root', {
@@ -142,9 +142,8 @@ describe('Lark CardKit transport', () => {
 
     expect(updateCardEntityElement).toHaveBeenCalledWith('card-1', FEISHU_STREAMING_ELEMENT_ID, 'Hello', 1)
     expect(setCardEntityStreaming).toHaveBeenCalledWith('card-1', false, 2)
-    expect(updateCardEntity.mock.calls[0]![0]).toBe('card-1')
-    expect(updateCardEntity.mock.calls[0]![2]).toBe(3)
-    expect(updateCardEntity.mock.calls[0]![1]).toMatchObject({
+    expect(patchCardMessage.mock.calls[0]![0]).toBe('message-1')
+    expect(patchCardMessage.mock.calls[0]![1]).toMatchObject({
       body: {
         elements: [
           { tag: 'markdown', content: 'Hello world' },
@@ -214,12 +213,12 @@ describe('Lark CardKit transport', () => {
   })
 
   it('falls back when the IM send response has no message id', async () => {
-    const { conn, replyCardEntityMessage, updateCardEntity } = connection()
+    const { conn, replyCardEntityMessage, patchCardMessage } = connection()
     replyCardEntityMessage.mockResolvedValueOnce({})
 
     const card = await conn.startStreamingCard('oc_chat', 'om_root')
 
     expect(card).toBeUndefined()
-    expect(updateCardEntity).not.toHaveBeenCalled()
+    expect(patchCardMessage).not.toHaveBeenCalled()
   })
 })
