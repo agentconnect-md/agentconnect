@@ -2,6 +2,7 @@ import {
   codeHostReviewPublicEffect,
   type CodeHostReviewExternalRef,
   type CodeHostReviewOpKind,
+  type CodeHostReviewOpOutcome,
   type CodeHostReviewState,
   type HookReviewEvent,
   type HookReviewVerdict,
@@ -193,6 +194,9 @@ export interface CodeReviewOperation {
   ordinal: number
   target: string
   phase: 'issued' | 'started'
+  /** The settle this operation owes, kept here when its frame could not be made durable —
+   *  a restart replays it from these coordinates alone, with no provider evidence. */
+  outcome?: CodeHostReviewOpOutcome
   /** Draft ordinal for a `draft_create`, so its marker can identify the effect on replay. */
   draftOrdinal?: number
 }

@@ -174,6 +174,17 @@ const OUTCOME_SENTENCE: Record<CodeHostReviewState, string> = {
     'Pending review drafts on this merge request could not be reconciled, so no review was published and this merge request stays fail-closed.'
 }
 
+/** What a settle left behind: nothing, replayable coordinates, or no replay source at all. */
+type SettleDisposition = 'safe' | 'replayable' | 'blocked'
+
+/** The terminal result is withheld until every unsafe settle has a durable replay source. */
+class ResultWithheld extends Error {
+  constructor() {
+    super('the formal review outcome could not be made durable yet; the daemon will retry before reporting it')
+    this.name = 'ResultWithheld'
+  }
+}
+
 class AmbiguousSend extends Error {
   constructor(readonly code: string) {
     super(`GitLab review request outcome is unknown (${code})`)
@@ -211,6 +222,14 @@ interface Session {
   token: string
 }
 
+/** What a ledger frame needs to name itself — an in-flight attempt or a recovered record. */
+interface LeaseRef {
+  turn: GitlabReviewTurn
+  attemptId: string
+  fence: string
+  orgId?: string
+}
+
 /** Everything one attempt carries between steps. */
 interface Attempt extends Session {
   req: SubmitCodeReviewReq
@@ -225,6 +244,8 @@ interface Attempt extends Session {
   drafts: Map<number, string>
   externalIds: CodeHostReviewExternalRef[]
   reviewerBefore?: ReviewerRecord
+  /** A settle this attempt owes has no durable replay source yet, so no result may be reported. */
+  settleBlocked?: boolean
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -394,7 +415,8 @@ export class GitlabReviewAdapter implements CodeHostReviewAdapter {
       turn.state = codeHostReviewPublicEffect(outcome.state) === 'absent' ? 'idle' : 'done'
       return outcome
     } catch (err) {
-      turn.state = 'done'
+      // A withheld result leaves the turn open and the attempt pre-terminal, by design.
+      turn.state = err instanceof ResultWithheld ? 'idle' : 'done'
       throw err
     }
   }
@@ -595,13 +617,7 @@ export class GitlabReviewAdapter implements CodeHostReviewAdapter {
         outstanding.push(op)
         continue
       }
-      const owed = await this.settleOperation(
-        cp,
-        attempt,
-        op.recordId,
-        this.classifyDraftOperation(op, marked, attempt)
-      )
-      if (owed) await this.clearOperation(attempt, op.recordId)
+      await this.settleAndClear(cp, attempt, op.recordId, this.classifyDraftOperation(op, marked, attempt))
     }
     const publish = outstanding.find((op) => op.kind === 'bulk_publish')
     const approval = outstanding.find((op) => op.kind === 'approval')
@@ -611,31 +627,25 @@ export class GitlabReviewAdapter implements CodeHostReviewAdapter {
     const note = await this.findSummaryNote(attempt).catch(() => undefined)
     if (publish) {
       if (!note) {
-        const owed = await this.settleOperation(cp, attempt, publish.recordId, {
-          kind: 'ambiguous',
-          code: 'publish_unreconciled'
-        })
-        if (owed) await this.clearOperation(attempt, publish.recordId)
+        await this.settleAndClear(cp, attempt, publish.recordId, { kind: 'ambiguous', code: 'publish_unreconciled' })
         return await this.settle(cp, attempt, 'ambiguous_locked')
       }
-      const owed = await this.settleOperation(cp, attempt, publish.recordId, {
+      await this.settleAndClear(cp, attempt, publish.recordId, {
         kind: 'deterministic',
         status: 201,
         externalId: note
       })
-      if (owed) await this.clearOperation(attempt, publish.recordId)
     }
     if (note) attempt.externalIds.push({ kind: 'note', externalId: note })
     if (approval) {
       const readback = await this.get(attempt, this.mrPath(attempt.turn, '/approvals')).catch(() => undefined)
       const approved = this.approvalReadback(readback, attempt)
       const approvalId = idOf(record(readback).id)
-      const owed = await this.settleOperation(cp, attempt, approval.recordId, {
+      await this.settleAndClear(cp, attempt, approval.recordId, {
         kind: 'deterministic',
         status: approved ? 201 : 422,
         ...(approved && approvalId ? { externalId: approvalId } : {})
       })
-      if (owed) await this.clearOperation(attempt, approval.recordId)
       if (approved && approvalId) attempt.externalIds.push({ kind: 'approval', externalId: approvalId })
       return await this.settle(cp, attempt, approved ? 'submitted' : 'approval_not_recorded')
     }
@@ -662,15 +672,15 @@ export class GitlabReviewAdapter implements CodeHostReviewAdapter {
    */
   private async returnUnused(
     cp: GitlabReviewControlPlane,
-    attempt: Attempt,
+    ref: LeaseRef,
     op: CodeReviewOperation
   ): Promise<'returned' | 'started' | 'deferred'> {
     try {
       await cp.operate(
-        { op: 'return-unused', attemptId: attempt.attemptId, fence: attempt.fence, recordId: op.recordId },
-        attempt.orgId
+        { op: 'return-unused', attemptId: ref.attemptId, fence: ref.fence, recordId: op.recordId },
+        ref.orgId
       )
-      await this.clearOperation(attempt, op.recordId)
+      await this.clearOperation(ref, op.recordId)
       return 'returned'
     } catch (err) {
       // A permanent refusal means the record moved on without this daemon; evidence decides.
@@ -692,13 +702,17 @@ export class GitlabReviewAdapter implements CodeHostReviewAdapter {
     const fence = attemptRecord.fence
     const orgId = this.deps.orgForAgent(turn.agentId)
     if (fence) {
+      const ref: LeaseRef = { turn, attemptId: attemptRecord.attemptId, fence, ...(orgId ? { orgId } : {}) }
       for (const op of [...(attemptRecord.operations ?? [])]) {
-        if (op.phase !== 'issued') continue
-        await this.returnUnused(
-          cp,
-          { turn, attemptId: attemptRecord.attemptId, fence, ...(orgId ? { orgId } : {}) } as Attempt,
-          op
-        )
+        // An unstarted permit is handed back; a started one replays the outcome parked on it.
+        if (op.phase === 'issued') {
+          await this.returnUnused(cp, ref, op)
+          continue
+        }
+        if (!op.outcome) continue
+        if (await this.owe(cp, this.settleIntent(ref, op.recordId, op.outcome))) {
+          await this.clearOperation(ref, op.recordId)
+        }
       }
     }
     if (!attemptRecord.resultOwed || !attemptRecord.state) return
@@ -766,11 +780,11 @@ export class GitlabReviewAdapter implements CodeHostReviewAdapter {
   }
 
   /** Settled, so the coordinates are no longer owed. A lost removal costs one idempotent re-settle. */
-  private async clearOperation(attempt: Attempt, recordId: string): Promise<void> {
-    const attemptRecord = attempt.turn.hook.codeReview
+  private async clearOperation(ref: LeaseRef, recordId: string): Promise<void> {
+    const attemptRecord = ref.turn.hook.codeReview
     if (!attemptRecord?.operations) return
     attemptRecord.operations = attemptRecord.operations.filter((op) => op.recordId !== recordId)
-    await attempt.turn.persist().catch(() => undefined)
+    await ref.turn.persist().catch(() => undefined)
   }
 
   /** §15.1 orphan recovery, run while holding the lease and before any create. */
@@ -929,7 +943,7 @@ export class GitlabReviewAdapter implements CodeHostReviewAdapter {
       const note = await this.findSummaryNote(attempt).catch(() => undefined)
       if (note) {
         attempt.externalIds.push({ kind: 'note', externalId: note })
-        await this.settleOperation(cp, attempt, outcome.recordId, {
+        await this.settleAndClear(cp, attempt, outcome.recordId, {
           kind: 'deterministic',
           status: 201,
           externalId: note
@@ -1025,7 +1039,7 @@ export class GitlabReviewAdapter implements CodeHostReviewAdapter {
     if (approvalId) attempt.externalIds.push({ kind: 'approval', externalId: approvalId })
     if (outcome.kind === 'ambiguous') {
       // Positive identification of an ambiguous request, per §15.1's fourth condition.
-      await this.settleOperation(cp, attempt, outcome.recordId, {
+      await this.settleAndClear(cp, attempt, outcome.recordId, {
         kind: 'deterministic',
         status: 201,
         ...(approvalId ? { externalId: approvalId } : {})
@@ -1098,23 +1112,18 @@ export class GitlabReviewAdapter implements CodeHostReviewAdapter {
         result = await this.send(method, target, undefined, body, attempt.token)
       } catch (err) {
         if (err instanceof AmbiguousSend) {
-          const owed = await this.settleOperation(cp, attempt, issued.recordId, {
-            kind: 'ambiguous',
-            code: err.code
-          })
-          if (owed) await this.clearOperation(attempt, issued.recordId)
+          await this.settleAndClear(cp, attempt, issued.recordId, { kind: 'ambiguous', code: err.code })
           return { kind: 'ambiguous', recordId: issued.recordId }
         }
         throw err
       }
       const authRejected = result.status === 401 || result.status === 403
       const externalId = idOf(record(result.parsed).id)
-      const owed = await this.settleOperation(cp, attempt, issued.recordId, {
+      await this.settleAndClear(cp, attempt, issued.recordId, {
         kind: 'deterministic',
         status: result.status,
         ...(externalId ? { externalId } : {})
       })
-      if (owed) await this.clearOperation(attempt, issued.recordId)
       if (result.status < 300) {
         return { kind: 'sent', status: result.status, parsed: result.parsed, recordId: issued.recordId }
       }
@@ -1153,25 +1162,63 @@ export class GitlabReviewAdapter implements CodeHostReviewAdapter {
    *  Returns whether the operation's own coordinates may now be forgotten. */
   private async settleOperation(
     cp: GitlabReviewControlPlane,
-    attempt: Attempt,
+    ref: LeaseRef,
     recordId: string,
     outcome: CodeHostReviewOpOutcome
-  ): Promise<boolean> {
-    return await this.owe(cp, {
-      intentId: `${attempt.attemptId}:op:${recordId}`,
+  ): Promise<SettleDisposition> {
+    const safe = await this.owe(cp, this.settleIntent(ref, recordId, outcome))
+    if (safe) return 'safe'
+    // Neither written nor acknowledged: the coordinates become the replay source instead.
+    return (await this.persistSettleOutcome(ref, recordId, outcome)) ? 'replayable' : 'blocked'
+  }
+
+  /** The one settle frame, built the same way whether it is owed now or replayed later. */
+  private settleIntent(ref: LeaseRef, recordId: string, outcome: CodeHostReviewOpOutcome): ReviewIntentRow {
+    return {
+      intentId: `${ref.attemptId}:op:${recordId}`,
       daemonId: this.deps.daemonId() ?? '',
-      attemptId: attempt.attemptId,
-      ...(attempt.orgId ? { orgId: attempt.orgId } : {}),
+      attemptId: ref.attemptId,
+      ...(ref.orgId ? { orgId: ref.orgId } : {}),
       kind: 'operation',
       frame: JSON.stringify({
         op: 'settle',
-        attemptId: attempt.attemptId,
-        fence: attempt.fence,
+        attemptId: ref.attemptId,
+        fence: ref.fence,
         recordId,
         outcome
       } satisfies CodeHostReviewOpRequest),
       attempts: 0
-    })
+    }
+  }
+
+  /** Park the exact outcome on the surviving coordinates so a restart can replay it blind. */
+  private async persistSettleOutcome(
+    ref: LeaseRef,
+    recordId: string,
+    outcome: CodeHostReviewOpOutcome
+  ): Promise<boolean> {
+    const op = ref.turn.hook.codeReview?.operations?.find((entry) => entry.recordId === recordId)
+    if (!op) return false
+    op.outcome = outcome
+    try {
+      await ref.turn.persist(true)
+      return true
+    } catch (err) {
+      this.warn(`gitlab review: settle outcome could not be parked (${err instanceof Error ? err.message : err})`)
+      return false
+    }
+  }
+
+  /** Owe the settle, then forget the coordinates only once something can replay it. */
+  private async settleAndClear(
+    cp: GitlabReviewControlPlane,
+    attempt: Attempt,
+    recordId: string,
+    outcome: CodeHostReviewOpOutcome
+  ): Promise<void> {
+    const disposition = await this.settleOperation(cp, attempt, recordId, outcome)
+    if (disposition === 'safe') await this.clearOperation(attempt, recordId)
+    if (disposition === 'blocked') attempt.settleBlocked = true
   }
 
   /** Record the terminal classification, releasing (or locking) the publication lease. */
@@ -1181,6 +1228,12 @@ export class GitlabReviewAdapter implements CodeHostReviewAdapter {
     state: CodeHostReviewState
   ): Promise<GitlabReviewOutcome> {
     const externalIds = codeHostReviewPublicEffect(state) === 'absent' ? [] : attempt.externalIds
+    // No terminal result while a started operation has no durable replay source: the control
+    // plane would record the outcome and keep the lease on a record nothing can settle (§15.1).
+    if (attempt.settleBlocked) {
+      this.arm()
+      throw new ResultWithheld()
+    }
     // The durable single-writer gate first: only a PROVEN no-effect attempt may be followed
     // by the ordinary note, and a replay must read the same verdict this turn reached (§15.2).
     // The same record is the result frame's upstream entry, so it also marks it owed.

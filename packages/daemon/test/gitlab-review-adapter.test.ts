@@ -422,6 +422,8 @@ function harness(
     attemptIds?: string[]
     open?: boolean
     failPersist?: boolean
+    /** Fail only the hook-row writes this predicate selects. */
+    persistFails?: () => boolean
   } = {}
 ): Harness {
   const state = opts.state ?? gitlabState()
@@ -467,7 +469,7 @@ function harness(
       daemonId: DAEMON_ID,
       persist: async () => {
         persisted += 1
-        if (opts.failPersist) throw new Error('inbox row is missing')
+        if (opts.failPersist || opts.persistFails?.()) throw new Error('inbox row is missing')
       }
     })
   }
@@ -1417,8 +1419,9 @@ describe('GitLab review adapter — the durable chain across every crash point (
     // The result frame is rebuilt from the attempt record alone and taken by the control plane.
     expect(replay.results.at(-1)).toMatchObject({ attemptId: ATTEMPT, state: 'submitted', provider: 'gitlab' })
     expect(first.hook.codeReview?.resultOwed).toBeUndefined()
-    // Coordinates whose settle is still unowed are kept, not silently dropped.
-    expect((first.hook.codeReview?.operations ?? []).length).toBeGreaterThan(0)
+    // The settle is replayed from the outcome parked on its coordinates, which then release.
+    expect(replay.ops.some((frame) => frame.op === 'settle')).toBe(true)
+    expect(first.hook.codeReview?.operations).toEqual([])
     expect(owedOps).toEqual([])
     expect(store.rows.size).toBe(0)
   })
@@ -1433,6 +1436,147 @@ describe('GitLab review adapter — the durable chain across every crash point (
     // ...and the classified-but-unreported result goes with it.
     expect(h.results.at(-1)).toMatchObject({ attemptId: ATTEMPT, state: 'not_submitted' })
     expect(hook.codeReview?.resultOwed).toBeUndefined()
+  })
+})
+
+describe('GitLab review adapter — a terminal result waits for a replayable settle (round 5)', () => {
+  /** A control plane that refuses settles but takes everything else. */
+  const settlesRefused = { operateFails: () => Object.assign(new Error('unreachable'), { retryable: true }) }
+
+  it('parks the exact settle outcome on the coordinates when its frame cannot be made durable', async () => {
+    const store = new FakeReviewStore()
+    store.failWrites = Number.POSITIVE_INFINITY
+    const h = harness({ reviewStore: store, cp: settlesRefused })
+    const outcome = (await h.adapter.submit(KEY, request())) as GitlabReviewOutcome
+    // The result still lands, because the settle now HAS a durable replay source.
+    expect(outcome.state).toBe('submitted')
+    const parked = h.hook.codeReview?.operations ?? []
+    expect(parked.length).toBeGreaterThan(0)
+    expect(parked.every((op) => op.phase === 'started' && op.outcome !== undefined)).toBe(true)
+    expect(parked.find((op) => op.kind === 'draft_create')?.outcome).toMatchObject({
+      kind: 'deterministic',
+      status: 201
+    })
+  })
+
+  it('replays the parked settle after the process dies, and the lease releases', async () => {
+    const store = new FakeReviewStore()
+    store.failWrites = Number.POSITIVE_INFINITY
+    const first = harness({ reviewStore: store, cp: settlesRefused })
+    await first.adapter.submit(KEY, request())
+    expect(store.rows.size).toBe(0)
+
+    // A NEW adapter over the SAME store and hook row, with a control plane that answers.
+    store.failWrites = 0
+    const replay = harness({ reviewStore: store, hook: first.hook, open: false })
+    const turn = replay.adapter.openTurn(KEY, first.hook, 'acp-session-2', {
+      daemonId: DAEMON_ID,
+      persist: async () => {}
+    })!
+    await replay.adapter.recoverTurn(turn)
+    // Every started record reaches `settled`, so nothing keeps the publication lease.
+    expect(replay.ops.filter((op) => op.op === 'settle').length).toBeGreaterThan(0)
+    expect([...replay.records.values()].filter((state) => state === 'request_started')).toEqual([])
+    expect(first.hook.codeReview?.operations).toEqual([])
+    expect(store.rows.size).toBe(0)
+  })
+
+  it('withholds the terminal result when even the parked outcome cannot be written', async () => {
+    const store = new FakeReviewStore()
+    store.failWrites = Number.POSITIVE_INFINITY
+    let allowPersist = true
+    const h = harness({
+      reviewStore: store,
+      // The hook row stops accepting writes exactly when the first settle is refused, so
+      // the parking write fails too and the settle has NO replay source at all.
+      cp: {
+        operateFails: (op) => {
+          if (!('recordId' in op) || !op.recordId.includes('bulk_publish')) return undefined
+          allowPersist = false
+          return Object.assign(new Error('unreachable'), { retryable: true })
+        }
+      },
+      persistFails: () => !allowPersist
+    })
+    await expect(h.adapter.submit(KEY, request())).rejects.toThrow(/could not be made durable/)
+    // No result reached the control plane, and the attempt stays pre-terminal.
+    expect(h.results).toEqual([])
+    expect(h.hook.codeReview?.state).toBeUndefined()
+    expect(codeHostReviewFallbackAllowed(h.hook)).toBe(false)
+    // The turn stays open and the retry is armed.
+    expect(h.timer.armed()).toBe(1)
+    expect(h.adapter.owns(KEY, AGENT_ID)).toBe(true)
+  })
+
+  it('completes both halves on a later pass once the store recovers', async () => {
+    const store = new FakeReviewStore()
+    store.failWrites = Number.POSITIVE_INFINITY
+    let allowPersist = true
+    let refuseSettles = true
+    const h = harness({
+      reviewStore: store,
+      cp: {
+        operateFails: (op) => {
+          if (!refuseSettles || !('recordId' in op) || !op.recordId.includes('bulk_publish')) return undefined
+          allowPersist = false
+          return Object.assign(new Error('unreachable'), { retryable: true })
+        }
+      },
+      persistFails: () => !allowPersist
+    })
+    await expect(h.adapter.submit(KEY, request())).rejects.toThrow(/could not be made durable/)
+    expect(h.results).toEqual([])
+
+    // The turn stayed open, so the SAME attempt runs again once the store and control plane recover.
+    allowPersist = true
+    refuseSettles = false
+    store.failWrites = 0
+    const outcome = (await h.adapter.submit(KEY, request())) as GitlabReviewOutcome
+    // The publication already landed, so the replay classifies it rather than repeating it.
+    expect(outcome.state).toBe('review_state_not_recorded')
+    expect(h.results.at(-1)).toMatchObject({ attemptId: ATTEMPT, state: 'review_state_not_recorded' })
+    expect(published(h.calls)).toHaveLength(1)
+    expect([...h.records.values()].filter((state) => state === 'request_started')).toEqual([])
+  })
+
+  it('leaves a started operation without a parked outcome on the marker-reconciliation path', async () => {
+    const state = gitlabState()
+    const draftId = '9007199254746555'
+    state.drafts.push({ id: draftId, note: `summary\n\n${signer.mint(ATTEMPT, 0, HEAD)}` })
+    const hook = hookContext({
+      codeReview: {
+        attemptId: ATTEMPT,
+        event: 'COMMENT',
+        verdict: 'neutral',
+        headSha: HEAD,
+        fence: '7',
+        ordinals: { draft_create: 1 },
+        operations: [
+          {
+            recordId: 'rec-draft_create-0',
+            startToken: 'start-0',
+            kind: 'draft_create',
+            ordinal: 0,
+            target: `/projects/${PROJECT}/merge_requests/${IID}/draft_notes`,
+            phase: 'started',
+            draftOrdinal: 0
+          }
+        ]
+      }
+    })
+    const h = harness({ state, hook, open: false })
+    const turn = h.adapter.openTurn(KEY, hook, 'acp-session-2', { daemonId: DAEMON_ID, persist: async () => {} })!
+    // Recovery without evidence cannot classify it, so it is left for the turn's own replay.
+    await h.adapter.recoverTurn(turn)
+    expect(h.ops).toEqual([])
+    expect(hook.codeReview?.operations).toHaveLength(1)
+    // The turn replay then settles it from the marker, as before.
+    const outcome = (await h.adapter.submit(KEY, request())) as GitlabReviewOutcome
+    expect(outcome.state).toBe('submitted')
+    const settle = h.ops.find((op) => op.op === 'settle' && op.recordId === 'rec-draft_create-0') as {
+      outcome: { externalId?: string }
+    }
+    expect(settle.outcome.externalId).toBe(draftId)
   })
 })
 
