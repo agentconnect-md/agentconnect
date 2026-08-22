@@ -32,9 +32,9 @@ contracts**, so that:
    implement a published interface instead of duck-typing internals of an
    18k-line class.
 
-Two upcoming designs pay the current scatter cost imminently —
-[linear-integration.md](linear-integration.md) and
-[gitlab-com-integration.md](gitlab-com-integration.md) are both Proposed —
+Two designs pay the current scatter cost —
+[linear-integration.md](linear-integration.md) is still Proposed and
+[gitlab-com-integration.md](gitlab-com-integration.md) is now Implemented —
 so the refactor amortizes immediately.
 
 **Scope decision (honest goal):** this design delivers **first-party
