@@ -323,3 +323,91 @@ describe('codehost review frames on the daemon WS edge', () => {
     expect(await errorFor(stub, secondStart)).toMatchObject({ code: 'CONFLICT', retryable: false })
   })
 })
+
+describe('a retransmitted terminal operation over the WS edge', () => {
+  async function leased(stub: InMemoryDaemonStub) {
+    const attemptId = randomUUID()
+    const authzId = stub.inject('codehost/review-authz', {
+      hookId: HOOK,
+      deliveryKey: DELIVERY,
+      attemptId,
+      provider: 'gitlab',
+      projectId: PROJECT.toString(),
+      mergeRequestIid: IID,
+      requestedEvent: 'COMMENT',
+      requestedVerdict: 'pass',
+      snapshot,
+      headSha: HEAD
+    })
+    const authorized = await replyTo(stub, authzId)
+    if (!authorized || !isFrame('codehost/review-authz/result')(authorized) || !authorized.payload.authorized) {
+      throw new Error('expected a publication lease')
+    }
+    return { attemptId, fence: authorized.payload.lease.fence }
+  }
+
+  it('answers the identical REQ again after the settle released the lease', async () => {
+    const h = buildWsHarness(prisma)
+    const stub = await ready(h)
+    await seedAcceptedDelivery()
+    attachBroker(h)
+    const { attemptId, fence } = await leased(stub)
+
+    const issueId = stub.inject('codehost/review-op', {
+      op: 'issue',
+      attemptId,
+      fence,
+      kind: 'bulk_publish',
+      method: 'POST',
+      target: '/projects/4455667/merge_requests/42/draft_notes/bulk_publish',
+      ordinal: 0
+    })
+    const issued = await replyTo(stub, issueId)
+    if (!issued || !isFrame('codehost/review-op/ok')(issued)) throw new Error('expected a permit')
+    const recordId = issued.payload.recordId
+    stub.inject('codehost/review-op', { op: 'start', attemptId, fence, recordId, startToken: randomUUID() })
+    await stub.settled()
+
+    // The terminal classification lands first, so settling the record releases the lease.
+    stub.inject('codehost/review-result', {
+      hookId: HOOK,
+      deliveryKey: DELIVERY,
+      attemptId,
+      snapshot,
+      provider: 'gitlab',
+      projectId: PROJECT.toString(),
+      mergeRequestIid: IID,
+      event: 'COMMENT',
+      verdict: 'pass',
+      headSha: HEAD,
+      state: 'not_submitted'
+    })
+    await stub.settled()
+
+    const settle = {
+      op: 'settle' as const,
+      attemptId,
+      fence,
+      recordId,
+      outcome: { kind: 'deterministic' as const, status: 400, code: 'draft_rejected' }
+    }
+    const firstId = stub.inject('codehost/review-op', settle)
+    const first = await replyTo(stub, firstId)
+    expect(first?.type).toBe('codehost/review-op/ok')
+    if (!first || !isFrame('codehost/review-op/ok')(first)) return
+    expect(first.payload).toMatchObject({ state: 'settled', phase: 'settled' })
+
+    // A retransmit of the very same REQ must return the committed proof, not `no_lease`.
+    const replayId = stub.inject('codehost/review-op', settle)
+    const replay = await replyTo(stub, replayId)
+    expect(await errorFor(stub, replayId)).toBeUndefined()
+    expect(replay && isFrame('codehost/review-op/ok')(replay) && replay.payload).toEqual(first.payload)
+
+    // A different terminal request on that record is still a refusal.
+    const conflictId = stub.inject('codehost/review-op', {
+      ...settle,
+      outcome: { kind: 'deterministic', status: 204 }
+    })
+    expect(await errorFor(stub, conflictId)).toMatchObject({ code: 'CONFLICT', retryable: false })
+  })
+})

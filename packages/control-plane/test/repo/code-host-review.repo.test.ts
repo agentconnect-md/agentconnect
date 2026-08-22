@@ -533,3 +533,100 @@ describe('a result releases the lease only through the ledger (§15.1)', () => {
     expect(await repo().recordOutcome(outcome(s, input.attemptId))).toEqual({ outcome: 'recorded', phase: 'settled' })
   })
 })
+
+describe('a terminal operation stays idempotent after the lease is released (§15.1)', () => {
+  const permit = { method: 'POST' as const, target: '/projects/1/merge_requests/42/draft_notes', ordinal: 0 }
+
+  async function reported(kind: 'draft_create' | 'bulk_publish', state: 'submitted' | 'not_submitted') {
+    const s = subject()
+    const input = acquire(s)
+    const acquired = await repo().acquire(input)
+    if (acquired.outcome !== 'acquired') throw new Error('expected a lease')
+    const base = {
+      attemptId: input.attemptId,
+      orgId: DEFAULT_ORG_ID,
+      fence: acquired.lease.fence,
+      daemonId: DAEMON_A,
+      now: new Date()
+    }
+    const issued = await repo().issueOperation({ ...base, ...permit, kind })
+    if (!('outcome' in issued)) throw new Error('expected a permit')
+    if (kind === 'bulk_publish') {
+      await repo().startOperation({ ...base, recordId: issued.record.id, startToken: randomUUID() })
+    }
+    await repo().recordOutcome({
+      attemptId: input.attemptId,
+      orgId: DEFAULT_ORG_ID,
+      hookId: HOOK,
+      deliveryKey: input.deliveryKey,
+      provider: s.provider,
+      projectExternalId: s.projectExternalId,
+      mergeRequestIid: s.mergeRequestIid,
+      daemonId: DAEMON_A,
+      event: 'COMMENT',
+      verdict: 'pass',
+      headSha: HEAD,
+      state,
+      externalIds: [],
+      now: new Date()
+    })
+    return { s, base, recordId: issued.record.id }
+  }
+
+  it('replays an identical settle after the release committed in the same transaction', async () => {
+    const { s, base, recordId } = await reported('bulk_publish', 'submitted')
+    const settle = { ...base, recordId, outcome: { kind: 'deterministic' as const, status: 204 } }
+    const first = await repo().settleOperation(settle)
+    expect('outcome' in first && first.phase).toBe('settled')
+    // The release nulled `attemptId`, so only the record can answer the retransmit.
+    const lease = await prisma.codeHostReviewLease.findFirstOrThrow({
+      where: { projectExternalId: s.projectExternalId }
+    })
+    expect(lease.attemptId).toBeNull()
+    const replay = await repo().settleOperation(settle)
+    expect(replay).toEqual(first)
+  })
+
+  it('replays an identical return-unused after release', async () => {
+    const { base, recordId } = await reported('draft_create', 'not_submitted')
+    const ret = { ...base, recordId }
+    const first = await repo().returnOperationUnused(ret)
+    expect('outcome' in first && first.record.state).toBe('unused')
+    expect('outcome' in first && first.phase).toBe('settled')
+    expect(await repo().returnOperationUnused(ret)).toEqual(first)
+  })
+
+  it('refuses a different terminal request on the already-terminal record', async () => {
+    const { base, recordId } = await reported('bulk_publish', 'submitted')
+    await repo().settleOperation({ ...base, recordId, outcome: { kind: 'deterministic', status: 204 } })
+    expect(
+      await repo().settleOperation({ ...base, recordId, outcome: { kind: 'deterministic', status: 201 } })
+    ).toEqual({ failure: 'transition', reason: 'outcome_conflict' })
+    expect(await repo().returnOperationUnused({ ...base, recordId })).toEqual({
+      failure: 'transition',
+      reason: 'terminal'
+    })
+  })
+
+  it('refuses a replay naming a foreign attempt, fence, or organization', async () => {
+    const { base, recordId } = await reported('bulk_publish', 'submitted')
+    const settle = { ...base, recordId, outcome: { kind: 'deterministic' as const, status: 204 } }
+    await repo().settleOperation(settle)
+    expect(await repo().settleOperation({ ...settle, attemptId: randomUUID() })).toEqual({ failure: 'no_lease' })
+    expect(await repo().settleOperation({ ...settle, fence: settle.fence + 1n })).toEqual({ failure: 'no_lease' })
+    expect(await repo().settleOperation({ ...settle, orgId: 'not-the-org' })).toEqual({ failure: 'no_lease' })
+  })
+
+  it('leaves a still-advanceable ambiguous record on the owned-lease path', async () => {
+    const { base, recordId } = await reported('bulk_publish', 'submitted')
+    await repo().settleOperation({ ...base, recordId, outcome: { kind: 'ambiguous', code: 'response_ambiguous' } })
+    // Still owned: the outcome could not release while the record was ambiguous.
+    const identified = await repo().settleOperation({
+      ...base,
+      recordId,
+      outcome: { kind: 'deterministic', status: 200, externalId: '778899' }
+    })
+    expect('outcome' in identified && identified.record.state).toBe('settled')
+    expect('outcome' in identified && identified.phase).toBe('settled')
+  })
+})

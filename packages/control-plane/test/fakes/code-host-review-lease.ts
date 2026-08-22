@@ -11,7 +11,8 @@ import {
   returnUnusedTransition,
   settleTransition,
   startTransition,
-  type CodeHostReviewLedger
+  type CodeHostReviewLedger,
+  type CodeHostReviewOpTransition
 } from '../../src/domain/code-host-review.js'
 import type {
   CodeHostReviewAcquireInput,
@@ -200,6 +201,8 @@ export class FakeCodeHostReviewLeaseRepo implements CodeHostReviewLeaseRepo {
   async settleOperation(
     input: CodeHostReviewAdvanceInput & { outcome: CodeHostReviewOpOutcome }
   ): Promise<CodeHostReviewOpResult> {
+    const replay = this.replayTerminalRecord(input, (record) => settleTransition(record, input.outcome))
+    if (replay) return replay
     return this.advance(input, (record, lease) => {
       const transition = settleTransition(record, input.outcome)
       if (!transition.ok) return { failure: 'transition', reason: transition.reason }
@@ -216,6 +219,8 @@ export class FakeCodeHostReviewLeaseRepo implements CodeHostReviewLeaseRepo {
   }
 
   async returnOperationUnused(input: CodeHostReviewAdvanceInput): Promise<CodeHostReviewOpResult> {
+    const replay = this.replayTerminalRecord(input, (record) => returnUnusedTransition(record))
+    if (replay) return replay
     return this.advance(input, (record, lease) => {
       const transition = returnUnusedTransition(record)
       if (!transition.ok) return { failure: 'transition', reason: transition.reason }
@@ -280,6 +285,23 @@ export class FakeCodeHostReviewLeaseRepo implements CodeHostReviewLeaseRepo {
     if (lease.fence !== input.fence) return { failure: 'stale_fence' }
     if (lease.phase === 'settled' || lease.phase === 'ambiguous_locked') return { failure: 'lease_closed' }
     return lease
+  }
+
+  /** The same record-first replay the Postgres repository does, so a released lease still answers. */
+  private replayTerminalRecord(
+    input: CodeHostReviewAdvanceInput,
+    decide: (record: StoredOperation) => CodeHostReviewOpTransition
+  ): CodeHostReviewOpResult | null {
+    const record = this.operations.get(input.recordId)
+    if (!record || record.attemptId !== input.attemptId || record.fence !== input.fence) return null
+    if (record.orgId !== input.orgId) return null
+    if (record.state === 'issued' || record.state === 'request_started') return null
+    const transition = decide(record)
+    if (transition.ok && !transition.idempotent) return null
+    if (!transition.ok) return { failure: 'transition', reason: transition.reason }
+    const lease = [...this.leases.values()].find((l) => l.id === record.leaseId)
+    if (!lease) return null
+    return { outcome: 'ok', record, phase: lease.phase }
   }
 
   private advance(

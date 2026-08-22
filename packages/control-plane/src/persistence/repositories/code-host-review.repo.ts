@@ -37,7 +37,8 @@ import {
   startTransition,
   type CodeHostReviewLedger,
   type CodeHostReviewLockReason,
-  type CodeHostReviewOpFacts
+  type CodeHostReviewOpFacts,
+  type CodeHostReviewOpTransition
 } from '../../domain/code-host-review.js'
 import { lockCodeHostReviewSubject } from '../code-host-review-lock.js'
 import type {
@@ -314,6 +315,8 @@ export class PgCodeHostReviewLeaseRepo implements CodeHostReviewLeaseRepo {
   async settleOperation(
     input: CodeHostReviewAdvanceInput & { outcome: CodeHostReviewOpOutcome }
   ): Promise<CodeHostReviewOpResult> {
+    const replay = await this.replayTerminalRecord(input, (record) => settleTransition(record, input.outcome))
+    if (replay) return replay
     return this.withOwnedLease(input, async (tx, lease) => {
       const record = await this.ownedRecord(tx, input)
       if (!record) return { failure: 'no_record' }
@@ -348,6 +351,8 @@ export class PgCodeHostReviewLeaseRepo implements CodeHostReviewLeaseRepo {
   }
 
   async returnOperationUnused(input: CodeHostReviewAdvanceInput): Promise<CodeHostReviewOpResult> {
+    const replay = await this.replayTerminalRecord(input, (record) => returnUnusedTransition(record))
+    if (replay) return replay
     return this.withOwnedLease(input, async (tx, lease) => {
       const record = await this.ownedRecord(tx, input)
       if (!record) return { failure: 'no_record' }
@@ -516,6 +521,37 @@ export class PgCodeHostReviewLeaseRepo implements CodeHostReviewLeaseRepo {
     return tx.codeHostReviewOperation.findFirst({
       where: { id: input.recordId, attemptId: input.attemptId, fence: input.fence }
     })
+  }
+
+  /**
+   * Answer a retransmitted TERMINAL operation from the durable record itself.
+   *
+   * Settling or returning the last outstanding record can release the lease in the same
+   * transaction, so the retransmit of that very request would find no lease by `attemptId`
+   * and answer `no_lease` — losing the daemon the committed proof it asked for, and REQ
+   * retransmission is a premise of this protocol, not an edge case. Records outlive release,
+   * so resolve the record first: once it is terminal and the request would not change it, its
+   * committed state plus the lease's current phase IS the answer. Anything that still mutates
+   * — an ambiguous record positively identified, or a record not yet terminal — returns null
+   * and takes the owned-lease path unchanged.
+   */
+  private async replayTerminalRecord(
+    input: CodeHostReviewAdvanceInput,
+    decide: (record: CodeHostReviewOpFacts) => CodeHostReviewOpTransition
+  ): Promise<CodeHostReviewOpResult | null> {
+    const record = await this.prisma.codeHostReviewOperation.findFirst({
+      where: { id: input.recordId, attemptId: input.attemptId, fence: input.fence, orgId: input.orgId }
+    })
+    if (!record) return null
+    const state = toOpState(record.state)
+    if (state === 'issued' || state === 'request_started') return null
+    const transition = decide(facts(record))
+    if (transition.ok && !transition.idempotent) return null
+    // A differing terminal request on an already-terminal record stays a refusal.
+    if (!transition.ok) return { failure: 'transition', reason: transition.reason }
+    const lease = await this.prisma.codeHostReviewLease.findUnique({ where: { id: record.leaseId } })
+    if (!lease) return null
+    return { outcome: 'ok', record: toOperation(record), phase: toPhase(lease.phase) }
   }
 
   /** Every ledger op runs under the subject lock with the owner and fence re-checked. */

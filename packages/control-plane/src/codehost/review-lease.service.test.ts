@@ -645,3 +645,110 @@ describe('a result releases the lease only through the ledger (§15.1)', () => {
     })
   })
 })
+
+describe('a terminal operation stays idempotent after the lease is released (§15.1)', () => {
+  async function withStartedPermit(kind: 'draft_create' | 'bulk_publish' = 'bulk_publish') {
+    const built = build()
+    const input = authorizeInput()
+    const granted = await built.service.authorize(input, DAEMON, ORG)
+    if (!granted.authorized) throw new Error('expected a lease')
+    const fence = granted.lease.fence
+    const issued = await built.service.operate(
+      {
+        op: 'issue',
+        attemptId: input.attemptId,
+        fence,
+        kind,
+        method: 'POST',
+        target: '/projects/4455667/merge_requests/42/draft_notes',
+        ordinal: 0
+      },
+      DAEMON,
+      ORG
+    )
+    return { ...built, attemptId: input.attemptId, fence, recordId: issued.recordId }
+  }
+
+  it('answers a retransmitted settle from the durable record after release', async () => {
+    const { service, attemptId, fence, recordId, leases } = await withStartedPermit()
+    await service.operate({ op: 'start', attemptId, fence, recordId, startToken: randomUUID() }, DAEMON, ORG)
+    await service.recordResult(resultInput(attemptId), DAEMON, ORG)
+    const settle = {
+      op: 'settle' as const,
+      attemptId,
+      fence,
+      recordId,
+      outcome: { kind: 'deterministic' as const, status: 204 }
+    }
+    const first = await service.operate(settle, DAEMON, ORG)
+    expect(first).toMatchObject({ state: 'settled', phase: 'settled' })
+    // The lease is gone, so a lost reply must still be answerable from the record alone.
+    expect([...leases.leases.values()][0]?.attemptId).toBeNull()
+    expect(await service.operate(settle, DAEMON, ORG)).toEqual(first)
+  })
+
+  it('answers a retransmitted return-unused from the durable record after release', async () => {
+    const { service, attemptId, fence, recordId } = await withStartedPermit('draft_create')
+    await service.recordResult(resultInput(attemptId, { state: 'not_submitted' }), DAEMON, ORG)
+    const ret = { op: 'return-unused' as const, attemptId, fence, recordId }
+    const first = await service.operate(ret, DAEMON, ORG)
+    expect(first).toMatchObject({ state: 'unused', phase: 'settled' })
+    expect(await service.operate(ret, DAEMON, ORG)).toEqual(first)
+  })
+
+  it('refuses a DIFFERENT outcome on the now-terminal record instead of replaying it', async () => {
+    const { service, attemptId, fence, recordId } = await withStartedPermit()
+    await service.operate({ op: 'start', attemptId, fence, recordId, startToken: randomUUID() }, DAEMON, ORG)
+    await service.recordResult(resultInput(attemptId), DAEMON, ORG)
+    await service.operate(
+      { op: 'settle', attemptId, fence, recordId, outcome: { kind: 'deterministic', status: 204 } },
+      DAEMON,
+      ORG
+    )
+    await expect(
+      service.operate(
+        { op: 'settle', attemptId, fence, recordId, outcome: { kind: 'deterministic', status: 201 } },
+        DAEMON,
+        ORG
+      )
+    ).rejects.toMatchObject({ code: 'CONFLICT' })
+    await expect(
+      service.operate({ op: 'return-unused', attemptId, fence, recordId }, DAEMON, ORG)
+    ).rejects.toMatchObject({ code: 'CONFLICT' })
+  })
+
+  it('refuses a replay from a foreign attempt or a foreign organization', async () => {
+    const { service, attemptId, fence, recordId } = await withStartedPermit()
+    await service.operate({ op: 'start', attemptId, fence, recordId, startToken: randomUUID() }, DAEMON, ORG)
+    await service.recordResult(resultInput(attemptId), DAEMON, ORG)
+    const settle = {
+      op: 'settle' as const,
+      attemptId,
+      fence,
+      recordId,
+      outcome: { kind: 'deterministic' as const, status: 204 }
+    }
+    await service.operate(settle, DAEMON, ORG)
+    await expect(service.operate({ ...settle, attemptId: randomUUID() }, DAEMON, ORG)).rejects.toBeInstanceOf(
+      CodeHostReviewBrokerError
+    )
+    await expect(service.operate(settle, DAEMON, 'org-2')).rejects.toBeInstanceOf(CodeHostReviewBrokerError)
+  })
+
+  it('still routes a positive identification of an ambiguous record through the lease', async () => {
+    const { service, attemptId, fence, recordId } = await withStartedPermit()
+    await service.operate({ op: 'start', attemptId, fence, recordId, startToken: randomUUID() }, DAEMON, ORG)
+    await service.operate(
+      { op: 'settle', attemptId, fence, recordId, outcome: { kind: 'ambiguous', code: 'response_ambiguous' } },
+      DAEMON,
+      ORG
+    )
+    // An ambiguous record is terminal-looking but still advanceable, so this must MUTATE.
+    const identified = await service.operate(
+      { op: 'settle', attemptId, fence, recordId, outcome: { kind: 'deterministic', status: 200, externalId: '99' } },
+      DAEMON,
+      ORG
+    )
+    expect(identified.state).toBe('settled')
+  })
+})
