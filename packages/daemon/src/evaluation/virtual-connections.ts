@@ -176,6 +176,37 @@ function identityOf(options?: VirtualPostOptions): SendIdentity | undefined {
   return Object.keys(identity).length > 0 ? identity : undefined
 }
 
+function virtualChannelHistory(
+  world: VirtualConnectionWorldPort,
+  channel: string,
+  options: PlatformChannelHistoryOptions,
+  maxLimit: number
+): PlatformChannelHistoryPage {
+  const limit = Math.min(Math.max(options.limit ?? 100, 1), maxLimit)
+  const offset = Math.max(Number.parseInt(options.cursor ?? '0', 10) || 0, 0)
+  const oldest = options.oldest || undefined
+  const latest = options.latest || undefined
+  const messages = [...(world.channelHistory?.(channel) ?? [])]
+    .filter(
+      (message) => (oldest === undefined || message.ts >= oldest) && (latest === undefined || message.ts <= latest)
+    )
+    .sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0))
+  const page = messages.slice(offset, offset + limit)
+  const nextOffset = offset + page.length
+  const nextCursor = nextOffset < messages.length ? String(nextOffset) : undefined
+  const result: PlatformChannelHistoryMessage[] = page.map((message) => ({
+    sender: message.sender,
+    ts: message.ts,
+    text: message.text,
+    isBot: message.isBot
+  }))
+  return {
+    messages: result,
+    hasMore: nextCursor !== undefined,
+    ...(nextCursor !== undefined ? { nextCursor } : {})
+  }
+}
+
 /**
  * Implements the `SlackConnection` surface the daemon uses: the ordinary reply
  * path, Slack tenant identity for session/audience classification, delivery
@@ -370,29 +401,7 @@ export class VirtualSlackConnection implements PlatformConnection {
     channel: string,
     options: PlatformChannelHistoryOptions = {}
   ): Promise<PlatformChannelHistoryPage> {
-    const limit = Math.min(Math.max(options.limit ?? 100, 1), 200)
-    const offset = Math.max(Number.parseInt(options.cursor ?? '0', 10) || 0, 0)
-    const oldest = options.oldest || undefined
-    const latest = options.latest || undefined
-    const messages = [...(this.world.channelHistory?.(channel) ?? [])]
-      .filter(
-        (message) => (oldest === undefined || message.ts >= oldest) && (latest === undefined || message.ts <= latest)
-      )
-      .sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0))
-    const page = messages.slice(offset, offset + limit)
-    const nextOffset = offset + page.length
-    const nextCursor = nextOffset < messages.length ? String(nextOffset) : undefined
-    const result: PlatformChannelHistoryMessage[] = page.map((message) => ({
-      sender: message.sender,
-      ts: message.ts,
-      text: message.text,
-      isBot: message.isBot
-    }))
-    return {
-      messages: result,
-      hasMore: nextCursor !== undefined,
-      ...(nextCursor !== undefined ? { nextCursor } : {})
-    }
+    return virtualChannelHistory(this.world, channel, options, 200)
   }
 
   /** Ephemeral presence (assistant status) — not a message; not recorded. */
@@ -510,6 +519,13 @@ export class VirtualDiscordConnection implements PlatformConnection {
 
   async listChannels(): Promise<{ id: string; name?: string; isPrivate?: boolean }[]> {
     return [...this.world.channels(this.integrationId)]
+  }
+
+  async getChannelHistory(
+    channel: string,
+    options: PlatformChannelHistoryOptions = {}
+  ): Promise<PlatformChannelHistoryPage> {
+    return virtualChannelHistory(this.world, channel, options, 100)
   }
 
   async getUserProfile(user: string): Promise<{ id: string; name?: string; realName?: string; isBot?: boolean }> {

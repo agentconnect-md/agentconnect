@@ -2576,7 +2576,8 @@ export class Daemon {
       mcpServersFor: ({ agent, platform, channel, thread, integrationId, transportScope, isDm }) => {
         const servers: McpServer[] = []
         let tools = toolsForIntegrations(agent.integrations, {
-          organizationKnowledge: this.cpClient?.supportsServerFeature?.(ORGANIZATION_KNOWLEDGE_FEATURE) === true
+          organizationKnowledge: this.cpClient?.supportsServerFeature?.(ORGANIZATION_KNOWLEDGE_FEATURE) === true,
+          currentPlatform: platform
         })
         // Static descriptor, dynamic authority: a per-thread ACP session can
         // outlive many hook deliveries. The call resolves the CURRENT daemon-

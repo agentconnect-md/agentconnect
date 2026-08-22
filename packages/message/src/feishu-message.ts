@@ -117,6 +117,45 @@ function flattenPost(parsed: unknown): string {
   return [title, body].filter(Boolean).join('\n')
 }
 
+function flattenCard(parsed: unknown): string {
+  const parts: string[] = []
+  const add = (value: unknown, prefix = '') => {
+    if (typeof value !== 'string') return
+    const text = value.trim()
+    if (text) parts.push(prefix + text)
+  }
+  const visit = (value: unknown): void => {
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item)
+      return
+    }
+    if (!value || typeof value !== 'object') return
+    const node = value as Record<string, unknown>
+    const tag = typeof node.tag === 'string' ? node.tag : undefined
+    if (tag === 'button' || tag === 'overflow') return
+    if (tag === 'at') {
+      const user = node.user_name || node.user_id
+      add(user, typeof user === 'string' && user.startsWith('@') ? '' : '@')
+      return
+    }
+    if (tag === 'markdown' || tag === 'lark_md' || tag === 'plain_text' || tag === 'md') {
+      add(node.content ?? node.text)
+      return
+    }
+    if (tag === 'text' || tag === 'a') {
+      add(node.text ?? node.content)
+      return
+    }
+    for (const key of ['title', 'header', 'body', 'elements', 'columns', 'fields', 'text', 'content']) {
+      const child = node[key]
+      if (typeof child === 'string') add(child)
+      else visit(child)
+    }
+  }
+  visit(parsed)
+  return parts.join('\n')
+}
+
 function extractText(messageType: string, content: string): string {
   let parsed: unknown
   try {
@@ -128,7 +167,13 @@ function extractText(messageType: string, content: string): string {
     const text = (parsed as Record<string, unknown>)?.text
     return typeof text === 'string' ? text : ''
   }
-  return messageType === 'post' ? flattenPost(parsed) : ''
+  if (messageType === 'post') return flattenPost(parsed)
+  return messageType === 'interactive' ? flattenCard(parsed) : ''
+}
+
+/** Extract the readable text carried by one Feishu message body. */
+export function extractFeishuMessageText(messageType: string, content: string, mentions?: FeishuMention[]): string {
+  return humanizeFeishuText(extractText(messageType, content), mentions)
 }
 
 export function deriveFeishuAttachments(messageType: string, content: string): FeishuAttachmentLike[] {
@@ -192,7 +237,7 @@ export function normalizeFeishuMessage(
     channel: message.chatId,
     thread: isDm ? message.chatId : (message.rootId ?? message.messageId),
     sender: { id: message.senderUnionId, isBot: message.senderIsBot ?? false },
-    text: humanizeFeishuText(extractText(message.messageType, message.content), message.mentions),
+    text: extractFeishuMessageText(message.messageType, message.content, message.mentions),
     mentionedBots: (message.mentions ?? [])
       .map((mention) => mention?.id?.open_id)
       .filter((id): id is string => typeof id === 'string' && id.length > 0),

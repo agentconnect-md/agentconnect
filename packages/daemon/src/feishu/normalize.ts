@@ -1,5 +1,6 @@
 export {
   deriveFeishuAttachments,
+  extractFeishuMessageText,
   feishuEventToMessageLike,
   humanizeFeishuText,
   normalizeFeishuMessage,

@@ -88,7 +88,19 @@ describe('toolsForIntegrations', () => {
       ])
     )
     expect(names).not.toContain('readSlackFile') // the Slack file tool is still platform-gated
+    expect(names).not.toContain('getChannelHistory')
     expect(sendPlatformEnum([telegramInt])).toEqual(['telegram'])
+  })
+
+  it('injects channel history only for the current session platform when its adapter is registered', () => {
+    const integrations = [slackInt, telegramInt, discordInt, feishuInt]
+    const namesFor = (currentPlatform: string) =>
+      toolsForIntegrations(integrations, { currentPlatform }).map((tool) => tool.name)
+
+    for (const platform of ['slack', 'discord', 'feishu']) {
+      expect(namesFor(platform)).toContain('getChannelHistory')
+    }
+    expect(namesFor('telegram')).not.toContain('getChannelHistory')
   })
 
   it('narrows the read tools’ platform enum to the agent’s platforms and routes cross-platform', () => {
@@ -107,7 +119,10 @@ describe('toolsForIntegrations', () => {
     for (const n of ['listChannels', 'listChannelMembers', 'getUserProfile']) {
       expect(props(readTool([slackInt, telegramInt], n))).toHaveProperty('integrationId')
     }
-    const historyProps = props(readTool([slackInt, telegramInt], 'getChannelHistory'))
+    const historyTool = toolsForIntegrations([slackInt, telegramInt], { currentPlatform: 'slack' }).find(
+      (tool) => tool.name === 'getChannelHistory'
+    )!
+    const historyProps = props(historyTool)
     expect(Object.keys(historyProps).sort()).toEqual(['cursor', 'latest', 'limit', 'oldest'])
     expect(props(readTool([slackInt, telegramInt], 'listKnownUsers'))).not.toHaveProperty('integrationId')
   })
