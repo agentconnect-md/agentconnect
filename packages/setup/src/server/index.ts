@@ -32,6 +32,7 @@ import { loadDeploymentEnvironment } from '../deployment-environment.js'
 import { LOGTO_GITHUB_CONNECTOR_ID, LOGTO_GOOGLE_CONNECTOR_ID, LOGTO_SLACK_CONNECTOR_ID } from '../logto-connectors.js'
 import {
   githubDeploymentPut,
+  gitlabDeploymentPut,
   localAuthLogtoPut,
   logtoGoogleConnectorPut,
   logtoGithubConnectorPut,
@@ -44,6 +45,7 @@ import {
   githubConfiguredUrls,
   githubManifestRegistrationUrl
 } from '../github-app.js'
+import { gitlabConfiguredUrls } from '../gitlab-app.js'
 import {
   auditSlackManifest,
   buildSlackDeploymentManifest,
@@ -110,6 +112,15 @@ const CreateSlackBody = z.strictObject({
   name: z.string().trim().min(1).max(80),
   configToken: z.string().trim().min(1).max(10_000),
   connectLogto: z.boolean().optional().default(false)
+})
+
+const ConfigureGitlabBody = z.strictObject({
+  application: z
+    .strictObject({
+      clientId: z.string().trim().min(1).max(500),
+      clientSecret: z.string().min(1).max(10_000).optional()
+    })
+    .nullable()
 })
 
 const ConfigureGoogleBody = z.strictObject({
@@ -504,8 +515,15 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
     } catch {
       // Slack requires HTTPS startup URLs; the UI keeps creation/check disabled.
     }
+    let gitlab: ReturnType<typeof gitlabConfiguredUrls> | null = null
+    try {
+      gitlab = gitlabConfiguredUrls(providerAppConfig(localAuthBootstrap.services))
+    } catch {
+      // GitLab needs an HTTPS Control Plane URL before its redirect URI is publishable.
+    }
     return {
       github,
+      gitlab,
       slack,
       google: values.logto?.browser
         ? {
@@ -839,6 +857,23 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
       return { revision: saved.revision, restartRequired: true as const }
     })
   )
+
+  app.post('/api/v1/configure/gitlab', { preHandler: requireConfigurationAccess }, async (request, reply) => {
+    const parsed = ConfigureGitlabBody.safeParse(request.body)
+    if (!parsed.success) return problem(reply, 400, 'a valid GitLab OAuth application id is required')
+    return serializeMutation(async () => {
+      const current = await deps.store.getAdmin()
+      if (!current) return problem(reply, 409, 'save deployment settings before configuring GitLab')
+      let put: ReturnType<typeof gitlabDeploymentPut>
+      try {
+        put = gitlabDeploymentPut(current, parsed.data.application)
+      } catch (error) {
+        return problem(reply, 400, error instanceof Error ? error.message : 'invalid GitLab OAuth application')
+      }
+      const saved = await deps.store.replace({ expectedRevision: current.revision, ...put })
+      return { revision: saved.revision, restartRequired: true as const }
+    })
+  })
 
   app.post('/api/v1/configure/google', { preHandler: requireConfigurationAccess }, async (request, reply) => {
     const parsed = ConfigureGoogleBody.safeParse(request.body)

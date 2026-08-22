@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { loadDeploymentEnvironment } from '../src/deployment-environment.js'
 import { buildGithubAppManifest, githubConfiguredUrls } from '../src/github-app.js'
+import { gitlabConfiguredUrls } from '../src/gitlab-app.js'
 import { buildSlackDeploymentManifest, slackConfiguredUrls } from '../src/slack-app.js'
 
 const PREFIXED_ENVIRONMENT = {
@@ -75,5 +76,15 @@ describe('provider service base paths', () => {
       webhookUrl: 'https://gateway.example.test/relay/webhooks/github',
       webhookActive: true
     })
+  })
+
+  it('publishes the GitLab redirect URI beneath the Control Plane prefix with the requested scopes', () => {
+    const config = { services: loadDeploymentEnvironment(PREFIXED_ENVIRONMENT).services }
+
+    expect(gitlabConfiguredUrls(config)).toEqual({
+      callbackUrl: 'https://gateway.example.test/cp/v1/gitlab/oauth/callback',
+      scopes: ['api']
+    })
+    expect(() => gitlabConfiguredUrls({ services: { controlPlane: 'http://localhost:8080' } })).toThrow(/HTTPS/)
   })
 })
