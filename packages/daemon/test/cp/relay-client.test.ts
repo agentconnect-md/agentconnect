@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import {
   buildRelayDaemonFrame,
+  GITLAB_COM_V1_FEATURE,
   RD_HEADLESS_AGENT_DELIVERY_V1,
   RD_AGENT_IMPLICIT_ROUTING_V1,
   RD_GITHUB_THREAD_WORKTREE_CLEANUP_V2,
@@ -108,7 +109,12 @@ describe('RelayClient (daemon → one relay)', () => {
     expect(t.lastReq('rd/hello')!.payload).toEqual({
       apiKey: 'daemon-key',
       daemonId: DAEMON_ID,
-      capabilities: [RD_HEADLESS_AGENT_DELIVERY_V1, RD_AGENT_IMPLICIT_ROUTING_V1, RD_GITHUB_THREAD_WORKTREE_CLEANUP_V2]
+      capabilities: [
+        RD_HEADLESS_AGENT_DELIVERY_V1,
+        RD_AGENT_IMPLICIT_ROUTING_V1,
+        RD_GITHUB_THREAD_WORKTREE_CLEANUP_V2,
+        GITLAB_COM_V1_FEATURE
+      ]
     })
     expect(client.state).toBe('READY')
     expect(client.isReady()).toBe(true)
