@@ -9,7 +9,8 @@
 >
 > Scope: **GitLab.com Free and Premium**. GitLab Self-Managed, GitLab
 > Dedicated, and Ultimate-only capabilities are outside the v1 support
-> contract.
+> contract. Self-managed instances are extended by
+> [gitlab-self-managed.md](gitlab-self-managed.md).
 
 This design adds GitLab.com as a first-class code-host provider with semantic
 parity to AgentConnect's current GitHub integration. The user experience is a
