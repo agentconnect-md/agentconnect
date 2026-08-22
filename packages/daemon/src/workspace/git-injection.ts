@@ -346,6 +346,14 @@ export function managedCredentialHostOf(repository: string | undefined): Managed
   }
 }
 
+// The address daemon Git may dial: gitlab.com 301s the suffix-less HTTPS probe and we refuse redirects, so its remote carries `.git`.
+export function canonicalWorkspaceGitUrl(repository: string): string {
+  const normalized = normalizeGitCloneUrl(repository)
+  if (managedCredentialHostOf(normalized) !== 'gitlab.com') return normalized
+  if (!/^https:/i.test(normalized) || /\.git$/i.test(normalized)) return normalized
+  return `${normalized}.git`
+}
+
 /**
  * Where the git that will READ these pointers runs.
  *
