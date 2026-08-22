@@ -88,6 +88,13 @@ export class FakeGitlab {
         if (level === null) return Response.json({ message: 'Not Found' }, { status: 404 })
         return Response.json({ access_level: level, state: 'active', expires_at: null })
       }
+      if (/\/api\/v4\/projects\/\d+\/members\/\d+$/.test(url) && method === 'GET') {
+        // The DIRECT membership read: this fake tracks only direct rows.
+        const userId = Number(/members\/(\d+)$/.exec(url)![1])
+        const level = this.members.get(userId)
+        if (level === undefined) return Response.json({ message: 'Not Found' }, { status: 404 })
+        return Response.json({ id: userId, access_level: level, state: 'active' })
+      }
       if (/\/api\/v4\/projects\/\d+\/members$/.test(url) && method === 'POST') {
         const payload = json()
         this.members.set(Number(payload.user_id), Number(payload.access_level))

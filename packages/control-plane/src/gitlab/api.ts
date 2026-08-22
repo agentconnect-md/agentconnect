@@ -386,8 +386,30 @@ export interface GitlabMember {
   state: string
 }
 
-/** Ensure the service account is a project member at exactly `accessLevel`
- *  (§7.2): add, or raise a lower direct membership. Never raises beyond it. */
+/** One DIRECT project membership (`/members/:user_id`, not `/members/all/`);
+ *  null when the account holds only an inherited grant, or none at all. */
+export async function gitlabProjectMember(
+  accessToken: string,
+  projectId: bigint,
+  userId: bigint,
+  fetchImpl?: FetchLike
+): Promise<GitlabMember | null> {
+  try {
+    return await gitlabRequest<GitlabMember>(`/projects/${projectId}/members/${userId}`, {
+      auth: accessToken,
+      fetchImpl
+    })
+  } catch (e) {
+    if (e instanceof GitlabApiError && e.code === 'NOT_FOUND') return null
+    throw e
+  }
+}
+
+/** Converge the service account's DIRECT project membership to exactly
+ *  `accessLevel` (§7.2), in either direction: a narrowed workspace clamp must
+ *  lower the provider role, not only a widened one raise it. An account whose
+ *  grant is inherited from an ancestor group has no direct row to converge, and
+ *  a lower direct one could not reduce that grant, so it is left alone. */
 export async function gitlabEnsureMember(
   accessToken: string,
   projectId: bigint,
@@ -404,11 +426,15 @@ export async function gitlabEnsureMember(
     })
     return
   } catch (e) {
-    // 409: already a member — verify the effective level below.
+    // 409: already a member — converge the existing level below.
     if (!(e instanceof GitlabApiError) || (e.status !== 409 && e.status !== 400)) throw e
   }
-  const membership = await gitlabEffectiveMembership(accessToken, projectId, userId, fetchImpl)
-  if (membershipSatisfies(membership, accessLevel, Date.now())) return
+  const direct = await gitlabProjectMember(accessToken, projectId, userId, fetchImpl)
+  if (direct?.access_level === accessLevel) return
+  if (direct === null) {
+    const inherited = await gitlabEffectiveMembership(accessToken, projectId, userId, fetchImpl)
+    if (membershipSatisfies(inherited, accessLevel, Date.now())) return
+  }
   await gitlabRequest<GitlabMember>(`/projects/${projectId}/members/${userId}`, {
     method: 'PUT',
     auth: accessToken,

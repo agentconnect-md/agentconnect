@@ -1089,11 +1089,17 @@ export function agentRoutes(deps: HttpDeps) {
     const convergeGitlabProjects = (orgId: OrgId, projectIds: Iterable<bigint | undefined>): void => {
       const gitlab = deps.gitlab
       if (!gitlab) return
-      for (const projectId of new Set([...projectIds].filter((id): id is bigint => id !== undefined))) {
-        void gitlab.provisioner
-          .convergeProject(orgId, projectId)
-          .catch((err) => app.log.warn({ err, projectId: projectId.toString() }, 'gitlab workspace converge failed'))
-      }
+      const projects = [...new Set([...projectIds].filter((id): id is bigint => id !== undefined))]
+      // SEQUENTIAL: two projects under one top-level group share the agent's
+      // single account, so converging them in parallel would have them contend
+      // for its mutation lease and back off against each other.
+      void (async () => {
+        for (const projectId of projects) {
+          await gitlab.provisioner
+            .convergeProject(orgId, projectId)
+            .catch((err) => app.log.warn({ err, projectId: projectId.toString() }, 'gitlab workspace converge failed'))
+        }
+      })()
     }
 
     // The alive relay's HTTP origin for MCP proxy defs (ws→http/wss→https), or null

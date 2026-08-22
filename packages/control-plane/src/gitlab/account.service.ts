@@ -126,20 +126,28 @@ export class GitlabAccountService {
     rootGroupId: number
     installerConnectionId: string
     token: string
-  }): Promise<{ reason: string | null }> {
+  }): Promise<{ reason: string | null; retryable: boolean }> {
     const consumers = await this.deps.accounts.consumers(input.orgId, input.projectId)
     let reason: string | null = null
+    // A contended account lease or a lost generation fence resolves on its own:
+    // the caller must come back rather than leave the agent unbound (§7.2).
+    let retryable = false
+    const fail = (why: string, again: boolean): void => {
+      if (reason !== null) return
+      reason = why
+      retryable = again
+    }
     // Keyed by AGENT, not by converged account: only the authorization set says
     // who may stay bound, so a transient convergence failure never revokes one.
     const authorized = new Set(consumers.map((consumer) => consumer.agentId))
     for (const consumer of consumers) {
       const outcome = await this.ensureAccount(input, consumer)
       if (!outcome.ok) {
-        reason ??= outcome.reason
+        fail(outcome.reason, outcome.reason === 'account_busy')
         continue
       }
       const bound = await this.bindMembership(input, outcome.account, consumer.accessLevel)
-      if (!bound) reason ??= 'account_membership_contended'
+      if (!bound) fail('account_membership_contended', true)
     }
     // Authorization removed ⇒ membership removed (§7.2). The account itself
     // survives while it still serves another project in its root.
@@ -153,10 +161,10 @@ export class GitlabAccountService {
           { accountId: account.id, status: e instanceof GitlabApiError ? e.status : undefined },
           'gitlab account membership removal failed'
         )
-        reason ??= 'account_unbind_failed'
+        fail('account_unbind_failed', false)
       }
     }
-    return { reason }
+    return { reason, retryable }
   }
 
   /** One consumer's account: created or recovered in the root, named after the

@@ -57,7 +57,9 @@ export class GitlabClaimFenceLost extends Error {
 
 export type ProvisionOutcome =
   | { state: 'ready' }
-  | { state: 'admin_degraded' | 'runtime_degraded'; reason: string }
+  // `retryable` marks a loser that resolves on its own — a contended account
+  // lease or a lost generation fence (§7.2) — so a writer comes back for it.
+  | { state: 'admin_degraded' | 'runtime_degraded'; reason: string; retryable?: boolean }
   // A live peer owns the claim (provisioning or cleanup in progress): nothing
   // was written and no binding state was overwritten; the caller observes.
   | { state: 'busy'; reason: string }
@@ -137,23 +139,23 @@ export class GitlabProvisioner {
    * hook or a gitlab workspace. Both move the §7.2 account and membership set,
    * and a hook write may also move the webhook event union.
    *
-   * `busy` means a peer run holds the §10.2 lease. That run re-checks its own
-   * inputs only up to its final pass, so a writer that landed after it must
-   * outwait the lease rather than drop the change: exponential backoff capped at
-   * 8s, ~92 attempts, which outlasts a full 10-minute lease plus slack while
+   * A contended outcome — a peer holding the §10.2 binding lease, or, inside the
+   * run, an account lease or generation fence a §7.2 loser must come back for —
+   * is outwaited rather than dropped: exponential backoff capped at 8s, ~92
+   * attempts, which outlasts a full 10-minute lease plus slack while
    * back-to-back writes converge in seconds.
    */
   async convergeProject(orgId: string, projectId: bigint): Promise<void> {
     const binding = await this.deps.bindings.byProject(orgId, projectId)
     if (!binding) return
     let outcome = await this.provision(orgId, binding.id)
-    for (let attempt = 0; outcome.state === 'busy' && attempt < 92; attempt++) {
+    for (let attempt = 0; contended(outcome) && attempt < 92; attempt++) {
       const delayMs = Math.min(8_000, 1_000 * 2 ** attempt)
       await new Promise<void>((resolve) => this.deps.clock.setTimeout(() => resolve(), delayMs))
       outcome = await this.provision(orgId, binding.id)
     }
-    if (outcome.state === 'busy') {
-      this.deps.log?.warn({ projectId: projectId.toString() }, 'gitlab converge still busy — gave up')
+    if (contended(outcome)) {
+      this.deps.log?.warn({ projectId: projectId.toString() }, 'gitlab converge still contended — gave up')
     }
   }
 
@@ -367,7 +369,9 @@ export class GitlabProvisioner {
     // An account the run could not converge is an ADMIN repair: the accounts
     // that did converge keep serving, and the failing agent simply has no
     // usable identity until the reason named here is fixed (§7.2).
-    if (accounts.reason) return { state: 'admin_degraded', reason: accounts.reason }
+    if (accounts.reason) {
+      return { state: 'admin_degraded', reason: accounts.reason, ...(accounts.retryable ? { retryable: true } : {}) }
+    }
     return { state: 'ready' }
   }
 
@@ -504,6 +508,13 @@ export class GitlabProvisioner {
     await this.deps.bindings.removeWithClaim(orgId, bindingId, binding.projectId)
     return { removed: true }
   }
+}
+
+/** Someone else holds a fence this run needs: the binding lease, or — inside the
+ *  run — an account lease or generation the §7.2 loser must come back for. */
+function contended(outcome: ProvisionOutcome): boolean {
+  if (outcome.state === 'busy') return true
+  return outcome.state !== 'ready' && outcome.retryable === true
 }
 
 /** A definitively absent external resource IS cleaned up; anything else rethrows. */

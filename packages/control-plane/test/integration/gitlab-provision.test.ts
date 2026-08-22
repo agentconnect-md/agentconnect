@@ -173,6 +173,19 @@ describe('GitlabProvisioner (§10.2) — per-agent identity', () => {
     ])
   })
 
+  it('narrows the provider role when the workspace clamp narrows', async () => {
+    const h = await harness()
+    await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
+    const account = (await h.accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP))!
+    expect(h.fake.members.get(Number(account.serviceAccountUserId))).toBe(30)
+
+    // write → read: the clamp is the role, so the membership must come DOWN.
+    await prisma.agent.update({ where: { id: AGENT }, data: { gitAccess: 'read' } })
+    expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toEqual({ state: 'ready' })
+    expect(h.fake.members.get(Number(account.serviceAccountUserId))).toBe(20)
+    expect((await h.accounts.membershipsForBinding(h.binding.id))[0]!.accessLevel).toBe(20)
+  })
+
   it('translates the root group’s account quota refusal (§7.2)', async () => {
     const h = await harness({ refuseServiceAccountQuota: true })
     expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toEqual({
@@ -283,7 +296,8 @@ describe('GitlabProvisioner (§10.2) — per-agent identity', () => {
     expect(await h.accounts.claimLease(sibling.id, 'peer', new Date(Date.now() + 300_000), new Date())).toBe(true)
 
     const outcome = await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
-    expect(outcome).toEqual({ state: 'admin_degraded', reason: 'account_busy' })
+    // Retryable: a contended account lease resolves itself, so a writer comes back.
+    expect(outcome).toEqual({ state: 'admin_degraded', reason: 'account_busy', retryable: true })
     // Authorization did not change, so the membership, the account, and its PATs stay.
     expect((await h.accounts.membershipsForBinding(h.binding.id)).map((m) => m.accountId).sort()).toEqual(
       [sibling.id, (await h.accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP))!.id].sort()
