@@ -607,9 +607,10 @@ export async function sendMessage(
               'MAY still have been delivered — do NOT retry; say the send may have gone through instead.'
           )
         }
+        const detail = shared && !shared.ok && shared.detail ? `: ${shared.detail}` : ''
         throw new Error(
           `sendMessage: ${platformLabel(wantPlatform)} rejected the file "${attachment.name}" ` +
-            `(${reason.replace('_', ' ')}) — nothing was sent.`
+            `(${reason.replace('_', ' ')}${detail}) — nothing was sent.`
         )
       }
       providerPostId = shared.messageId

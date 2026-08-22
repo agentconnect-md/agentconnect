@@ -88,6 +88,39 @@ describe('SlackConnection.uploadFile', () => {
     })
   })
 
+  it('shares under the app identity when ANY decorated attempt is refused, not only a missing scope', async () => {
+    // username/icon_url are documented for this method but absent from the SDK's argument
+    // type, so a rejection is not necessarily the scope — it can be the arguments. The file
+    // must land either way; the agent's name on it is the part we are willing to lose.
+    const completeUploadExternal = vi.fn(async (a: Record<string, unknown>) => {
+      if (a.username) throw Object.assign(new Error('invalid_arguments'), { data: { error: 'invalid_arguments' } })
+      return { files: [{ id: 'F1' }] }
+    })
+    const conn = connWith({
+      getUploadURLExternal: async () => ({ upload_url: 'https://files.slack.com/upload/v1/x', file_id: 'F1' }),
+      completeUploadExternal
+    })
+    await expect(
+      conn.uploadFile('C1', { bytes: Buffer.from('x'), name: 'a.png' }, 'hi', undefined, { username: 'Scout' })
+    ).resolves.toEqual({ ok: true })
+    expect(completeUploadExternal).toHaveBeenCalledTimes(2)
+    expect(completeUploadExternal.mock.calls[1]![0]).not.toHaveProperty('username')
+  })
+
+  it('reports the provider’s own error code, since `platform error` alone is not actionable', async () => {
+    const conn = connWith({
+      getUploadURLExternal: async () => {
+        throw Object.assign(new Error('nope'), { data: { error: 'method_not_supported_for_channel_type' } })
+      },
+      completeUploadExternal: async () => ({ files: [] })
+    })
+    await expect(conn.uploadFile('C1', { bytes: Buffer.from('x'), name: 'a.png' })).resolves.toEqual({
+      ok: false,
+      reason: 'platform_error',
+      detail: 'method_not_supported_for_channel_type'
+    })
+  })
+
   it('shares under the app identity when chat:write.customize is missing', async () => {
     const completeUploadExternal = vi.fn(async (a: Record<string, unknown>) => {
       if (a.username)
@@ -142,7 +175,8 @@ describe('SlackConnection.uploadFile', () => {
     })
     await expect(conn.uploadFile('C1', { bytes: Buffer.from('x'), name: 'a.png' })).resolves.toEqual({
       ok: false,
-      reason: 'platform_error'
+      reason: 'platform_error',
+      detail: 'slack down'
     })
   })
 
@@ -156,7 +190,8 @@ describe('SlackConnection.uploadFile', () => {
     })
     await expect(conn.uploadFile('C1', { bytes: Buffer.from('x'), name: 'a.png' })).resolves.toEqual({
       ok: false,
-      reason: 'missing_scope'
+      reason: 'missing_scope',
+      detail: 'missing_scope'
     })
   })
 })
