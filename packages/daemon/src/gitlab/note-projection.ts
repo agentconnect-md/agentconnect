@@ -190,6 +190,8 @@ export class CodeHostNoteProjector {
   private resweepHandle?: unknown
   /** Consecutive sweeps that still left work behind; resets to zero the moment nothing is owed. */
   private resweepAttempt = 0
+  /** Monotonic count of arm REQUESTS, so a zero-work disarm can tell whether it raced new work. */
+  private armGeneration = 0
   private sweeping = false
   private stopped = false
 
@@ -204,7 +206,7 @@ export class CodeHostNoteProjector {
   /** Drop the pending resweep so a shutting-down daemon leaves no timer behind. */
   stop(): void {
     this.stopped = true
-    this.disarm()
+    this.clearTimer()
   }
 
   /** Converge one desired generation and report exactly one result. Never rejects. */
@@ -222,13 +224,15 @@ export class CodeHostNoteProjector {
   async reconcilePending(): Promise<void> {
     if (this.sweeping) return
     this.sweeping = true
+    // Read BEFORE the scan: work that arms after this point owns the timer, not this sweep.
+    const armedThrough = this.armGeneration
     try {
       const remaining = await this.sweepOnce()
       // Keep the projector's own clock running while anything is owed, and go quiet the moment
       // nothing is: an unreachable provider must not depend on a control-plane reconnect to retry.
-      if (remaining === undefined) return
-      if (remaining > 0) this.arm()
-      else this.disarm()
+      // A scan that did not answer proves nothing, so it continues the chain rather than ending it.
+      if (remaining === undefined || remaining > 0) this.arm()
+      else this.disarm(armedThrough)
     } finally {
       this.sweeping = false
     }
@@ -258,7 +262,11 @@ export class CodeHostNoteProjector {
 
   /** Arm the next resweep on exponential backoff, capped. An armed timer is never restarted early. */
   private arm(): void {
-    if (this.stopped || this.resweepHandle !== undefined) return
+    if (this.stopped) return
+    // EVERY arm request advances the generation, including one an armed timer already covers: a
+    // concurrent zero-work sweep decides by this counter whether the timer is still its to clear.
+    this.armGeneration += 1
+    if (this.resweepHandle !== undefined) return
     const base = this.deps.resweepBaseMs ?? DEFAULT_RESWEEP_BASE_MS
     const cap = this.deps.resweepCapMs ?? DEFAULT_RESWEEP_CAP_MS
     const delay = Math.min(base * 2 ** Math.min(this.resweepAttempt, 16), cap)
@@ -273,8 +281,14 @@ export class CodeHostNoteProjector {
     }
   }
 
-  private disarm(): void {
+  /** Go quiet — but only if nothing armed after the sweep that decided there was no work left. */
+  private disarm(armedThrough: number): void {
+    if (this.armGeneration !== armedThrough) return
     this.resweepAttempt = 0
+    this.clearTimer()
+  }
+
+  private clearTimer(): void {
     if (this.resweepHandle === undefined) return
     try {
       this.sched.clearTimeout(this.resweepHandle)

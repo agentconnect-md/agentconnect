@@ -161,6 +161,10 @@ function projector(
     /** A store other than the per-test one — the shared-store restart cases open their own. */
     store?: LocalStore
     scheduler?: ReturnType<typeof fakeScheduler>
+    /** Make the unsettled-row scan throw this many times before it starts answering. */
+    scanFailures?: number
+    /** Runs inside the FIRST scan, after it read the rows — the interleave the arm fence guards. */
+    onFirstScan?: () => Promise<void>
   } = {}
 ) {
   const results: Array<{ result: CodeHostNoteResult; orgId?: string }> = []
@@ -170,6 +174,8 @@ function projector(
   const clock = over.scheduler ?? fakeScheduler()
   let mint = 0
   let rejections = over.reportRejections ?? 0
+  let scanFailures = over.scanFailures ?? 0
+  let firstScan = over.onFirstScan
   const projector = new CodeHostNoteProjector({
     daemonId: () => over.daemonId ?? DAEMON,
     store: {
@@ -178,7 +184,17 @@ function projector(
       recordNoteProjectionOutcome: (row, outcome, code, now) => db.recordNoteProjectionOutcome(row, outcome, code, now),
       markNoteProjectionReported: (daemonId, key, marker, now) =>
         db.markNoteProjectionReported(daemonId, key, marker, now),
-      listUnsettledNoteProjections: (daemonId) => db.listUnsettledNoteProjections(daemonId)
+      listUnsettledNoteProjections: async (daemonId) => {
+        if (scanFailures > 0) {
+          scanFailures -= 1
+          throw new Error('ledger scan unavailable')
+        }
+        const rows = await db.listUnsettledNoteProjections(daemonId)
+        const hook = firstScan
+        firstScan = undefined
+        await hook?.()
+        return rows
+      }
     },
     lease: async () => {
       if (over.leaseThrows) throw new Error('effect lease refused')
@@ -639,6 +655,106 @@ describe('recovery scheduling and ownership (round-3 review)', () => {
     await second.close()
     await first.close()
     rmSync(poolRoot, { recursive: true, force: true })
+  })
+})
+
+describe('resweep scheduling edges (round-4 review)', () => {
+  it('continues the backoff when a fired sweep cannot read the ledger at all', async () => {
+    const listed = JSON.stringify([{ id: 12345, body: projectionMarker(PROJECTION) }])
+    const { fetchImpl, calls } = fakeFetch([
+      { throws: true },
+      { status: 200, body: listed },
+      { status: 200, body: '{"id":12345}' }
+    ])
+    // The scan fails once, on the sweep the first armed timer fires.
+    const { projector: p, results, clock } = projector(fetchImpl, { scanFailures: 1 })
+    await p.apply(desiredFrame())
+    expect(clock.delays()).toEqual([RESWEEP_BASE_MS])
+
+    clock.fire()
+    // An unreadable ledger proves nothing about the durable work, so the chain must not end here.
+    await vi.waitFor(() => expect(clock.delays()).toEqual([RESWEEP_BASE_MS, 60_000]))
+    expect(clock.armed()).toBe(1)
+    expect(calls).toHaveLength(1)
+
+    clock.fire()
+    await vi.waitFor(() => expect(results).toHaveLength(2))
+    expect(calls.map((c) => c.method)).toEqual(['POST', 'GET', 'PUT'])
+    expect(results[1]!.result).toMatchObject({ outcome: 'written', noteId: '12345' })
+    expect(await store.getNoteProjection(DAEMON, PROJECTION)).toMatchObject({ phase: 'settled' })
+    expect(clock.armed()).toBe(0)
+  })
+
+  it('never lets a zero-work disarm clear a timer that concurrent new work just armed', async () => {
+    const listed = JSON.stringify([{ id: 12345, body: projectionMarker(PROJECTION) }])
+    const { fetchImpl, calls } = fakeFetch([
+      { throws: true },
+      { status: 200, body: listed },
+      { status: 200, body: '{"id":12345}' }
+    ])
+    // A box, because the hook must reach the projector the same call is still constructing.
+    const box: { projector?: CodeHostNoteProjector } = {}
+    const started = projector(fetchImpl, {
+      // The interleave: the sweep has already read an EMPTY ledger when new work arms the timer.
+      onFirstScan: async () => {
+        await box.projector!.apply(desiredFrame())
+      }
+    })
+    box.projector = started.projector
+
+    await started.projector.reconcilePending()
+
+    // The sweep decided there was nothing to do, but that decision predates the row now on disk.
+    expect(started.results[0]!.result).toMatchObject({ outcome: 'ambiguous' })
+    expect(started.clock.armed()).toBe(1)
+    expect(await store.getNoteProjection(DAEMON, PROJECTION)).toMatchObject({ phase: 'in_flight' })
+
+    started.clock.fire()
+    await vi.waitFor(() => expect(started.results).toHaveLength(2))
+    expect(calls.map((c) => c.method)).toEqual(['POST', 'GET', 'PUT'])
+    expect(started.results[1]!.result).toMatchObject({ outcome: 'written', noteId: '12345' })
+    expect(started.clock.armed()).toBe(0)
+  })
+
+  it('fences the disarm even when the racing work reused an ALREADY armed timer', async () => {
+    const listed = JSON.stringify([{ id: 700, body: projectionMarker(PROJECTION_B) }])
+    const { fetchImpl, calls } = fakeFetch([
+      { throws: true },
+      { throws: true },
+      { status: 200, body: listed },
+      { status: 200, body: '{"id":700}' }
+    ])
+    const box: { projector?: CodeHostNoteProjector } = {}
+    const started = projector(fetchImpl, {
+      onFirstScan: async () => {
+        // Arms while a timer is already pending, so arm() takes its early-return path.
+        await box.projector!.apply(
+          desiredFrame({ projectionId: PROJECTION_B, projectionKey: PROJECTION_B, writeMarker: MARKER_B })
+        )
+      }
+    })
+    box.projector = started.projector
+
+    await started.projector.apply(desiredFrame())
+    expect(started.clock.delays()).toEqual([RESWEEP_BASE_MS])
+
+    // Retire the first row out of band: the next scan reads an empty ledger with the timer still up.
+    const first = (await store.getNoteProjection(DAEMON, PROJECTION))!
+    await store.recordNoteProjectionOutcome(first, 'written', undefined, NOW)
+    await store.markNoteProjectionReported(DAEMON, PROJECTION, MARKER_A, NOW)
+
+    await started.projector.reconcilePending()
+
+    // No second timer was scheduled — this is the reused-timer path — and it survived the disarm.
+    expect(started.clock.delays()).toEqual([RESWEEP_BASE_MS])
+    expect(started.clock.armed()).toBe(1)
+    expect(await store.getNoteProjection(DAEMON, PROJECTION_B)).toMatchObject({ phase: 'in_flight' })
+
+    started.clock.fire()
+    await vi.waitFor(() => expect(started.results).toHaveLength(3))
+    expect(calls.map((c) => c.method)).toEqual(['POST', 'POST', 'GET', 'PUT'])
+    expect(started.results[2]!.result).toMatchObject({ outcome: 'written', noteId: '700' })
+    expect(started.clock.armed()).toBe(0)
   })
 })
 
