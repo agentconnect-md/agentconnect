@@ -951,11 +951,7 @@ describe('CpClient dispatch', () => {
       Date.parse('2026-06-26T00:00:00.000Z')
     )
     const { t } = await readyClient({
-      runtimeCommandsReader: createRuntimeCommandsReader(
-        commands,
-        (id) => id === 'a1',
-        async (_a, acp) => acp
-      )
+      runtimeCommandsReader: createRuntimeCommandsReader(commands, (id) => id === 'a1')
     })
     const f = JSON.parse(frame('runtime/commands', { agentId: 'a1' }, { epoch: 5 }))
     t.pushInbound(JSON.stringify(f))
@@ -973,11 +969,7 @@ describe('CpClient dispatch', () => {
 
   it('replies runtime/commands/list with reported:false before any advertisement', async () => {
     const { t } = await readyClient({
-      runtimeCommandsReader: createRuntimeCommandsReader(
-        new RuntimeCommandsCache(),
-        () => true,
-        async (_a, acp) => acp
-      )
+      runtimeCommandsReader: createRuntimeCommandsReader(new RuntimeCommandsCache(), () => true)
     })
     t.pushInbound(frame('runtime/commands', { agentId: 'a1' }, { epoch: 5 }))
     await tick()
