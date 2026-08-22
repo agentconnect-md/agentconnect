@@ -8,7 +8,7 @@
  * covers the other half of that shift: a shutdown now has to await what it used to preempt.
  */
 import { describe, expect, it } from 'vitest'
-import { sessionKey, type LocalStore, type TranscriptRow } from '../src/store/local-store.js'
+import { sessionKey, type LocalStore } from '../src/store/local-store.js'
 import { openTestStore, tempStorePath } from './store-support.js'
 
 const seedSession = async (s: LocalStore, key: string, agentId: string, acpSessionId: string | null) =>
@@ -82,9 +82,7 @@ describe('LocalStore under interleaved turns', () => {
     expect(Math.max(...revisions)).toBe(await s.threadTranscriptRevision(channel, thread))
     // Every tool row carries its own turn's final body: no flush wrote another turn's overlay.
     for (const row of rows.filter((entry) => entry.kind === 'tool')) {
-      // `threadTranscript` is a raw `SELECT *`, so the id arrives under its snake_case column.
-      const toolCallId = (row as TranscriptRow & { tool_call_id?: string }).tool_call_id
-      expect(row.body).toBe(`{"status":"completed","turn":${toolCallId?.slice('tc-'.length)}}`)
+      expect(row.body).toBe(`{"status":"completed","turn":${row.tool_call_id?.slice('tc-'.length)}}`)
     }
     await s.close()
   })

@@ -373,7 +373,7 @@ export function createSessionReader(
           return base // unparseable body → fall back to the title-only row
         }
         const bytes = Buffer.byteLength(r.body)
-        base.toolCallId = full.toolCallId ?? r.toolCallId ?? undefined
+        base.toolCallId = full.toolCallId ?? r.tool_call_id ?? undefined
         if (full.status !== undefined) base.toolStatus = full.status
         if (full.kind !== undefined) base.toolKind = full.kind
         if (bytes <= PREVIEW_CAP) {

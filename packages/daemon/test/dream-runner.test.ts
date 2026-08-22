@@ -2196,9 +2196,6 @@ describe('DreamRunner skill mining — review findings', () => {
   })
 })
 
-// `dreamTranscriptText` returns a bounded `input` on tool rows; its declared row type omits it.
-type ToolRow = { sender: string; text: string; kind?: string; input?: string }
-
 describe('dreamTranscriptText tool rows (real LocalStore)', () => {
   const CH = 'C1'
   const TH = 'T1'
@@ -2242,7 +2239,7 @@ describe('dreamTranscriptText tool rows (real LocalStore)', () => {
 
   it('never returns a peer-private tool row via the shared delivery table', async () => {
     const store = await storeWithPeerToolRow()
-    const rows = (await store.dreamTranscriptText(CH, TH, 'me', 100, true)) as ToolRow[]
+    const rows = await store.dreamTranscriptText(CH, TH, 'me', 100, true)
     const text = rows.map((r) => `${r.text} ${r.input ?? ''}`).join('\n')
     expect(text).not.toContain('peer-secret-command')
     expect(text).not.toContain('hunter2')
@@ -2254,9 +2251,7 @@ describe('dreamTranscriptText tool rows (real LocalStore)', () => {
 
   it('carries a bounded rawInput so a generic title still identifies the command', async () => {
     const store = await storeWithPeerToolRow()
-    const mine = ((await store.dreamTranscriptText(CH, TH, 'me', 100, true)) as ToolRow[]).find(
-      (r) => r.kind === 'tool'
-    )
+    const mine = (await store.dreamTranscriptText(CH, TH, 'me', 100, true)).find((r) => r.kind === 'tool')
     expect(mine?.text).toBe('Bash') // the title alone says nothing
     expect(mine?.input).toBe('npm run deploy --prod')
     // rawOutput is the bulk/secret-bearing half and never leaves the store.
