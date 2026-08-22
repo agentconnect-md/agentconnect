@@ -203,6 +203,113 @@ describe('handleGitCredRequest — repoFullName passthrough (issue #457)', () =>
     )
   })
 
+  it('routes a gitlab_hook_reply to the effect grant, gated by the enabled gitlab hook (§14.1)', async () => {
+    const grantForHookReply = vi.fn(async () => ({
+      username: 'agentconnect-p4455667',
+      token: 'glpat-effect',
+      ttlSec: 900,
+      expiresAt: '2026-07-11T00:15:00.000Z',
+      repoFullName: 'example-group/example-project',
+      access: 'read' as const,
+      provider: 'gitlab',
+      externalRepoId: '4455667',
+      credentialEpoch: '3',
+      providerExpiresAt: '2026-10-01T00:00:00.000Z'
+    }))
+    const grantForAgent = vi.fn()
+    const deps = {
+      agent: { get: async () => PLACED_AGENT },
+      hook: { get: async () => ({ agentId: AGENT_ID, kind: 'gitlab', enabled: true, repoId: 4455667n }) },
+      github: {},
+      gitlabGitcred: { grantForAgent, grantForHookReply }
+    } as unknown as DaemonWsDeps
+    const conn = fakeConn()
+    const frame = gitcredFrame({
+      provider: 'gitlab',
+      purpose: 'gitlab_hook_reply',
+      hookId: HOOK_ID,
+      externalRepoId: '4455667'
+    })
+
+    await handleGitCredRequest(frame, conn, deps)
+
+    // The workspace clamp is bypassed: the hook, not gitAccess, is the authority.
+    expect(grantForHookReply).toHaveBeenCalledWith(ORG_ID, 4455667n)
+    expect(grantForAgent).not.toHaveBeenCalled()
+    expect(conn.replyTo).toHaveBeenCalledWith(
+      frame,
+      'gitcred/grant',
+      expect.objectContaining({ provider: 'gitlab', access: 'read', ttlSec: 900 })
+    )
+    expect(conn.sendError).not.toHaveBeenCalled()
+  })
+
+  it('denies a gitlab_hook_reply whose hook is disabled, foreign, wrong-kind, or on another project', async () => {
+    const grantForHookReply = vi.fn()
+    const frame = gitcredFrame({
+      provider: 'gitlab',
+      purpose: 'gitlab_hook_reply',
+      hookId: HOOK_ID,
+      externalRepoId: '4455667'
+    })
+    const enabledGitlab = { agentId: AGENT_ID, kind: 'gitlab', enabled: true, repoId: 4455667n }
+    const cases = [
+      { ...enabledGitlab, enabled: false },
+      { ...enabledGitlab, kind: 'github' },
+      { ...enabledGitlab, repoId: 999n },
+      { ...enabledGitlab, agentId: 'e0e0e0e0-eeee-4eee-8eee-eeeeeeeeeeee' },
+      null
+    ]
+
+    for (const hook of cases) {
+      const conn = fakeConn()
+      const deps = {
+        agent: { get: async () => PLACED_AGENT },
+        hook: { get: async () => hook },
+        github: {},
+        gitlabGitcred: { grantForHookReply }
+      } as unknown as DaemonWsDeps
+
+      await handleGitCredRequest(frame, conn, deps)
+
+      expect(conn.sendError).toHaveBeenCalledWith(
+        frame.id,
+        'SCOPE_DENIED',
+        'hook is not an enabled gitlab hook of this agent on that project',
+        false
+      )
+      expect(conn.replyTo).not.toHaveBeenCalled()
+    }
+    expect(grantForHookReply).not.toHaveBeenCalled()
+  })
+
+  it('denies a gitlab_hook_reply that names no hook or no project before reaching the store', async () => {
+    const grantForHookReply = vi.fn()
+    const get = vi.fn()
+    const deps = {
+      agent: { get: async () => PLACED_AGENT },
+      hook: { get },
+      github: {},
+      gitlabGitcred: { grantForHookReply }
+    } as unknown as DaemonWsDeps
+
+    for (const payload of [{ hookId: HOOK_ID }, { externalRepoId: '4455667' }, {}]) {
+      const conn = fakeConn()
+      const frame = gitcredFrame({ provider: 'gitlab', purpose: 'gitlab_hook_reply', ...payload })
+
+      await handleGitCredRequest(frame, conn, deps)
+
+      expect(conn.sendError).toHaveBeenCalledWith(
+        frame.id,
+        'SCOPE_DENIED',
+        'gitlab hook reply credentials require a hook and a project',
+        false
+      )
+    }
+    expect(get).not.toHaveBeenCalled()
+    expect(grantForHookReply).not.toHaveBeenCalled()
+  })
+
   it('fails a gitlab request closed when the seam is absent, and refuses unknown providers per-value', async () => {
     const deps = { agent: { get: async () => PLACED_AGENT }, github: {} } as unknown as DaemonWsDeps
     const conn = fakeConn()

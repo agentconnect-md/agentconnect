@@ -128,6 +128,30 @@ const fire = (over: Partial<RdMsgHook> = {}): RdMsgHook => ({
   ...over
 })
 
+const GITLAB_PROJECT = '4455667'
+
+/** A gitlab MR delivery — `githubReply` rides the same pipe with repo = project id, number = IID (14.1). */
+const gitlabFire = (): RdMsgHook =>
+  fire({
+    sessionKey: `gitlab:${GITLAB_PROJECT}:merge_request:42`,
+    event: 'merge_request:opened',
+    gitlab: {
+      projectId: GITLAB_PROJECT,
+      projectPath: 'example-group/example-project',
+      target: { kind: 'merge_request', iid: 42 }
+    },
+    context: {
+      source: 'gitlab',
+      event: 'merge_request',
+      action: 'opened',
+      repo: 'example-group/example-project',
+      number: 42,
+      title: 'fix the primary',
+      htmlUrl: 'https://gitlab.com/example-group/example-project/-/merge_requests/42',
+      truncated: false
+    }
+  })
+
 describe('Daemon rd/msg hook fires', () => {
   it('uses the display agent, runtime, and session model in GitHub attribution', async () => {
     const { factory, host } = streamingHost()
@@ -231,6 +255,233 @@ describe('Daemon rd/msg hook fires', () => {
       sourceInstallationId: '456',
       repoFullName: 'agentconnect-md/agentconnect'
     })
+    await daemon.stop()
+  }, 15_000)
+
+  // gitlab-com-integration.md 14.1/19.3: a note the poster could not publish must fail the run.
+  it.each([
+    { name: 'a refused effect lease', failure: 'token_unavailable' },
+    { name: 'an exhausted auth retry', failure: 'auth_rejected' },
+    { name: 'an abandoned publish', failure: 'publish_timeout' }
+  ])(
+    'fails the hook run when the gitlab note publish reports $name',
+    async ({ failure }) => {
+      const { factory } = streamingHost()
+      const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold(), hostFactory: factory })
+      await daemon.start()
+      const cp = fakeCpClient()
+      ;(daemon as never as { cpClient: unknown }).cpClient = cp
+      ;(daemon as any).githubReviews.makeGithubReply = vi.fn(() => ({
+        poster: { publish: vi.fn(async () => undefined), failure },
+        collector: new GithubReplyCollector()
+      }))
+
+      const ack = await (daemon as any).handleRelayMsg(gitlabFire(), () => {})
+
+      expect(ack).toEqual({ msgId: `${HOOK_ID}:d-1`, accepted: true })
+      await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1), WAIT)
+      expect(cp.hookReports[0]).toMatchObject({ status: 'failed', reason: `note_publish_failed:${failure}` })
+      await daemon.stop()
+    },
+    15_000
+  )
+
+  it.each([
+    {
+      name: 'a failed publish carries its code into the settled write',
+      failure: 'post_failed',
+      expected: 'post_failed'
+    },
+    { name: 'a published note leaves the durable record clean', failure: undefined, expected: undefined }
+  ])(
+    'persists the note outcome with settlement: $name',
+    async ({ failure, expected }) => {
+      const { factory } = streamingHost()
+      const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold(), hostFactory: factory })
+      await daemon.start()
+      const cp = fakeCpClient()
+      ;(daemon as never as { cpClient: unknown }).cpClient = cp
+      ;(daemon as any).githubReviews.makeGithubReply = vi.fn(() => ({
+        poster: {
+          publish: vi.fn(async () => (failure ? undefined : { provider: 'gitlab', kind: 'note', externalId: '9001' })),
+          ...(failure ? { failure } : {})
+        },
+        collector: new GithubReplyCollector()
+      }))
+      // Capture what the 'settled' write actually serializes — the reason must ride that same record.
+      const settled: Array<string | undefined> = []
+      const realPersist = (daemon as any).persistHookState.bind(daemon)
+      ;(daemon as any).persistHookState = async (entry: any, state: any, required: any) => {
+        if (state === 'settled') settled.push(entry.hookContext?.notePublishFailure)
+        return realPersist(entry, state, required)
+      }
+
+      await (daemon as any).handleRelayMsg(gitlabFire(), () => {})
+
+      await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1), WAIT)
+      expect(settled).toEqual([expected])
+      await daemon.stop()
+    },
+    15_000
+  )
+
+  it('clears a stale barrier marker when the retry publishes: no row carries both a note and a failure', async () => {
+    const root = scaffold()
+    const seed = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: streamingHost().factory })
+    await seed.start()
+    const replayFire = gitlabFire()
+    const replayMessage = buildHookMessage(replayFire, 'trace-gitlab-barrier-retry')
+    // The barrier refused BEFORE any POST, so the row stays retryable — with a marker already on it.
+    const replayHook = {
+      hookId: HOOK_ID,
+      agentId: AGENT_ID,
+      deliveryKey: 'd-1',
+      firedAt: replayFire.firedAt,
+      event: replayFire.event,
+      gitlab: replayFire.gitlab,
+      githubReply: {
+        hookId: HOOK_ID,
+        provider: 'gitlab',
+        subjectKind: 'merge_request',
+        repo: GITLAB_PROJECT,
+        number: 42
+      },
+      notePublishFailure: 'publish_barrier_failed'
+    }
+    expect(
+      await (seed as any).store.appendInbox({
+        id: replayMessage.msgId,
+        sessionKey: `hook:gitlab:${GITLAB_PROJECT}:42:${AGENT_ID}`,
+        agentId: AGENT_ID,
+        msg: JSON.stringify(replayMessage),
+        hookContext: JSON.stringify(replayHook),
+        posterPublishState: 'not_started',
+        loopGuardCounted: 1,
+        enqueuedAt: '1'
+      })
+    ).toBe(true)
+    await seed.stop()
+
+    const restarted = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: streamingHost().factory })
+    const cp = fakeCpClient()
+    ;(restarted as never as { cpClient: unknown }).cpClient = cp
+    const poster = { publish: vi.fn(async () => ({ provider: 'gitlab', kind: 'note', externalId: '9001' })) }
+    ;(restarted as any).githubReviews.makeGithubReply = vi.fn(() => ({ poster, collector: new GithubReplyCollector() }))
+    const settled: Array<string | undefined> = []
+    const realPersist = (restarted as any).persistHookState.bind(restarted)
+    ;(restarted as any).persistHookState = async (entry: any, state: any, required: any) => {
+      if (state === 'settled') settled.push(entry.hookContext?.notePublishFailure)
+      return realPersist(entry, state, required)
+    }
+
+    await restarted.start()
+
+    await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1), WAIT)
+    expect(poster.publish).toHaveBeenCalledWith('done!')
+    expect(cp.hookReports[0]).toMatchObject({
+      status: 'success',
+      publishedOutput: { provider: 'gitlab', kind: 'note', externalId: '9001' }
+    })
+    expect(cp.hookReports[0]!.reason).toBeUndefined()
+    // The settled write dropped the marker, so a later replay cannot resurrect it either.
+    expect(settled).toEqual([undefined])
+    await restarted.stop()
+  }, 20_000)
+
+  it('re-derives the failed completion from the persisted outcome after a restart', async () => {
+    const root = scaffold()
+    const seed = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: streamingHost().factory })
+    await seed.start()
+    const replayFire = gitlabFire()
+    const replayMessage = buildHookMessage(replayFire, 'trace-gitlab-replay')
+    // The crash window: `settled` and the reason were made durable, the completion was not sent.
+    const replayHook = {
+      hookId: HOOK_ID,
+      agentId: AGENT_ID,
+      deliveryKey: 'd-1',
+      firedAt: replayFire.firedAt,
+      event: replayFire.event,
+      gitlab: replayFire.gitlab,
+      githubReply: {
+        hookId: HOOK_ID,
+        provider: 'gitlab',
+        subjectKind: 'merge_request',
+        repo: GITLAB_PROJECT,
+        number: 42
+      },
+      notePublishFailure: 'post_failed'
+    }
+    expect(
+      await (seed as any).store.appendInbox({
+        id: replayMessage.msgId,
+        sessionKey: `hook:gitlab:${GITLAB_PROJECT}:42:${AGENT_ID}`,
+        agentId: AGENT_ID,
+        msg: JSON.stringify(replayMessage),
+        hookContext: JSON.stringify(replayHook),
+        posterPublishState: 'settled',
+        loopGuardCounted: 1,
+        enqueuedAt: '1'
+      })
+    ).toBe(true)
+    await seed.stop()
+
+    const restarted = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: streamingHost().factory })
+    const cp = fakeCpClient()
+    ;(restarted as never as { cpClient: unknown }).cpClient = cp
+    const makeGithubReply = vi.fn(() => ({ poster: { publish: vi.fn() }, collector: new GithubReplyCollector() }))
+    ;(restarted as any).githubReviews.makeGithubReply = makeGithubReply
+
+    await restarted.start()
+
+    await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1), WAIT)
+    expect(cp.hookReports[0]).toMatchObject({ status: 'failed', reason: 'note_publish_failed:post_failed' })
+    // A settled row builds no poster at all, so the reason can only have come from the durable record.
+    expect(makeGithubReply).not.toHaveBeenCalled()
+    await restarted.stop()
+  }, 20_000)
+
+  it('records publish_barrier_failed and never reaches the poster when the durable barrier write fails', async () => {
+    const { factory } = streamingHost()
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold(), hostFactory: factory })
+    await daemon.start()
+    const cp = fakeCpClient()
+    ;(daemon as never as { cpClient: unknown }).cpClient = cp
+    const poster = { publish: vi.fn(async () => undefined) }
+    ;(daemon as any).githubReviews.makeGithubReply = vi.fn(() => ({ poster, collector: new GithubReplyCollector() }))
+    const realPersist = (daemon as any).persistHookState.bind(daemon)
+    ;(daemon as any).persistHookState = async (entry: any, state: any, required: any) => {
+      if (state === 'in_flight') throw new Error('durable inbox row is missing')
+      return realPersist(entry, state, required)
+    }
+
+    await (daemon as any).handleRelayMsg(gitlabFire(), () => {})
+
+    await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1), WAIT)
+    expect(cp.hookReports[0]).toMatchObject({
+      status: 'failed',
+      reason: 'note_publish_failed:publish_barrier_failed'
+    })
+    // Fail-closed is preserved: the barrier never opened, so no public write was attempted.
+    expect(poster.publish).not.toHaveBeenCalled()
+    await daemon.stop()
+  }, 15_000)
+
+  it('still reports success when the gitlab note published — the poster reports no failure', async () => {
+    const { factory } = streamingHost()
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold(), hostFactory: factory })
+    await daemon.start()
+    const cp = fakeCpClient()
+    ;(daemon as never as { cpClient: unknown }).cpClient = cp
+    ;(daemon as any).githubReviews.makeGithubReply = vi.fn(() => ({
+      poster: { publish: vi.fn(async () => ({ provider: 'gitlab', kind: 'note', externalId: '9001' })) },
+      collector: new GithubReplyCollector()
+    }))
+
+    await (daemon as any).handleRelayMsg(gitlabFire(), () => {})
+
+    await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1), WAIT)
+    expect(cp.hookReports[0]).toMatchObject({ status: 'success' })
+    expect(cp.hookReports[0]!.reason).toBeUndefined()
     await daemon.stop()
   }, 15_000)
 

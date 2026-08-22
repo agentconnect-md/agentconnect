@@ -14,6 +14,7 @@ import { GitlabProvisioner } from '../../src/gitlab/provisioner.js'
 import { GitlabGitcredService } from '../../src/gitlab/gitcred.service.js'
 import { GitCredDeniedError } from '../../src/github/service.js'
 import {
+  PgAgentRepo,
   PgCodeHostRepositoryRepo,
   PgGitlabConnectionRepo,
   PgGitlabConnectionSecretStore,
@@ -28,7 +29,6 @@ import { makeSecretCipher } from '../../src/secrets/cipher.js'
 import { systemClock } from '../../src/domain/clock.js'
 import { seedDaemon } from '../fixtures/seed.js'
 import type { DaemonLiveness } from '../../src/ports.js'
-import { PgAgentRepo } from '../../src/persistence/index.js'
 import { OrgId } from '../../src/domain/ids.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
@@ -368,5 +368,31 @@ describe('gitcred v2 GitLab grants (§13.1/§17.1)', () => {
       data: { providerExpiresAt: new Date(Date.now() - 1000) }
     })
     await expect(service.grantForAgent(gitlabAgent())).rejects.toThrowError(GitCredDeniedError)
+  })
+
+  it('grantForHookReply serves the effect PAT on a short action-time lease (§14.1)', async () => {
+    const h = await harness()
+    const service = credService(h.bindings)
+    const creds = new PgGitlabProjectCredentialRepo(prisma)
+    const store = new PgGitlabProjectCredentialSecretStore(prisma, cipher)
+
+    const grant = await service.grantForHookReply(DEFAULT_ORG_ID, PROJECT)
+
+    const effect = (await creds.get(h.binding.id, 'effect'))!
+    expect(grant.token).toBe(await store.get(DEFAULT_ORG_ID, effect.id))
+    // Never a workspace PAT: the reply carries api effect scope, not contents.
+    expect(grant.token).not.toBe(await store.get(DEFAULT_ORG_ID, (await creds.get(h.binding.id, 'read'))!.id))
+    expect(grant.token).not.toBe(await store.get(DEFAULT_ORG_ID, (await creds.get(h.binding.id, 'git_write'))!.id))
+    expect(grant.access).toBe('read')
+    expect(grant.provider).toBe('gitlab')
+    expect(grant.username).toBe(`agentconnect-p${PROJECT}`)
+    expect(grant.externalRepoId).toBe(PROJECT.toString())
+    expect(grant.repoFullName).toBe('example-group/example-project')
+    // Action-time, not the hourly workspace lease.
+    expect(grant.ttlSec).toBeGreaterThan(0)
+    expect(grant.ttlSec).toBeLessThanOrEqual(900)
+
+    await prisma.gitlabProjectBinding.update({ where: { id: h.binding.id }, data: { state: 'runtime_degraded' } })
+    await expect(service.grantForHookReply(DEFAULT_ORG_ID, PROJECT)).rejects.toThrowError(GitCredDeniedError)
   })
 })

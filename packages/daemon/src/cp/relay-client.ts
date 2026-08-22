@@ -25,7 +25,8 @@ import {
   type RdAgentMsgFwd,
   type RdAgentMsgAck,
   type RdChatEvent,
-  type RdWebchatPost
+  type RdWebchatPost,
+  GITLAB_COM_V1_FEATURE
 } from '@agentconnect.md/protocol'
 import { Backoff, ReqRep, WireError, type Clock, type TimerHandle, type Transport } from '@agentconnect.md/connection'
 import type { Logger } from '../log.js'
@@ -43,7 +44,9 @@ const CLOSE_AUTH_FAILED = 4401
 const DAEMON_RD_CAPABILITIES: readonly string[] = [
   RD_HEADLESS_AGENT_DELIVERY_V1,
   RD_AGENT_IMPLICIT_ROUTING_V1,
-  RD_GITHUB_THREAD_WORKTREE_CLEANUP_V2
+  RD_GITHUB_THREAD_WORKTREE_CLEANUP_V2,
+  // The relay gates gitlab rd/msg dispatch on this capability.
+  GITLAB_COM_V1_FEATURE
 ]
 
 export type RelayClientState = 'CONNECTING' | 'HELLO' | 'READY' | 'CLOSED' | 'DEGRADED'

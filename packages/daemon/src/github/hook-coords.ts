@@ -2,6 +2,7 @@ import type {
   GithubHookMetadata,
   GitlabHookMetadata,
   GithubPublishedComment,
+  PublishedHookOutput,
   GithubReviewAuthorized,
   HookConfigSnapshot,
   HookReport,
@@ -12,6 +13,7 @@ import type { GithubReviewEffect, GithubReviewEvent, GithubReviewTarget, GithubR
 import type { SessionWorktreeRemoval } from '../workspace/workspace-manager.js'
 import type { NormalizedMessage } from '../messages/normalized.js'
 import type { QueueEntry } from '../daemon/turn-types.js'
+import type { GitlabPublishFailure } from '../gitlab/poster.js'
 
 export function hookSnapshot(msg: RdMsgHook): HookConfigSnapshot | undefined {
   if (
@@ -58,6 +60,9 @@ export function foreignHookDispatch(report: HookReport, daemonId?: string): bool
 
 export interface GithubReplyTarget {
   hookId: string
+  /** Provider discriminator: absent ⇒ github; 'gitlab' sets `repo` = numeric project id and `number` = the subject IID (§14.1). */
+  provider?: 'gitlab'
+  subjectKind?: 'issue' | 'merge_request'
   repo: string
   number: number
   /** The review-comment delivery that triggered this turn (diagnostic identity). */
@@ -81,6 +86,35 @@ export interface GithubReviewBatch {
   updatedAt: number
   sealed?: boolean
   items: GithubReviewBatchItem[]
+}
+
+/** Bounded normalized note outcomes on the durable hook context (14.1); `publish_barrier_failed` is core's own — the poster was never reached. */
+export type NotePublishFailure = GitlabPublishFailure | 'publish_barrier_failed'
+
+const NOTE_PUBLISH_FAILURES = new Set<string>([
+  'publish_timeout',
+  'auth_rejected',
+  'token_unavailable',
+  'post_failed',
+  'publish_barrier_failed'
+] satisfies NotePublishFailure[])
+
+/** Clamp a note outcome that round-tripped through the durable row's JSON back onto the bounded set. */
+function notePublishFailureOf(value: unknown): NotePublishFailure | undefined {
+  return typeof value === 'string' && NOTE_PUBLISH_FAILURES.has(value) ? (value as NotePublishFailure) : undefined
+}
+
+/** Terminal hook reason for a cleanly finished turn, undefined ⇒ success: an unfinished multi-reply review batch, else a final that never became a note (14.1 — a silently absent note must never read as a successful run). */
+export function hookOutcomeFailure(
+  batch: GithubReviewBatch | undefined,
+  notePublishFailure: unknown
+): string | undefined {
+  if (batch && batch.items.length > 1) {
+    if (batch.items.some((item) => item.publishState === 'in_flight')) return 'review_batch_publish_ambiguous'
+    if (batch.items.some((item) => item.publishState !== 'settled')) return 'review_batch_replies_missing'
+  }
+  const code = notePublishFailureOf(notePublishFailure)
+  return code ? `note_publish_failed:${code}` : undefined
 }
 
 /** Durable daemon-private hook identity; coalesced prompt excerpts stay local and HookReport omits them. */
@@ -107,6 +141,10 @@ export interface HookDispatchContext {
   reviewReportResult?: HookReviewResult
   /** Exact body-free identity of the fallback comment published for this turn. */
   publishedComment?: GithubPublishedComment
+  /** Provider-neutral twin (§14.1): e.g. the GitLab note id this turn published. */
+  publishedOutput?: PublishedHookOutput
+  /** Its twin for an absent note — persisted WITH settlement so a replay cannot report success (§14.1). */
+  notePublishFailure?: NotePublishFailure
 }
 
 export type GithubThreadWorktreeCleanup = 'pull_request_merged' | 'issue_closed' | 'issue_deleted'

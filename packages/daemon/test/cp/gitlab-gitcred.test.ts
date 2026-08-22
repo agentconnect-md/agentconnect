@@ -12,11 +12,13 @@ import { projectFromPath, repoFromPath } from '../../src/gitcred/helper.js'
 import { initGitInjection, managedCredentialHostOf, sessionGitConfig } from '../../src/workspace/git-injection.js'
 
 const AGENT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+const HOOK = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
 
 type Payload = { provider?: string; requestedAccess?: string }
 
 function build(opts: { v2?: boolean; respond: (payload: Payload, n: number) => GitCredGrant }) {
   let calls = 0
+  let mono = 0
   const seen: Payload[] = []
   const cache = new GitCredentialCache({
     request: async (payload) => {
@@ -25,10 +27,10 @@ function build(opts: { v2?: boolean; respond: (payload: Payload, n: number) => G
       return opts.respond(payload, calls)
     },
     log: { warn: () => {} },
-    monoNow: () => 0,
+    monoNow: () => mono,
     providerV2Supported: () => opts.v2 === true
   })
-  return { cache, seen, calls: () => calls }
+  return { cache, seen, calls: () => calls, advance: (ms: number) => (mono += ms) }
 }
 
 const gitlabGrant: GitCredGrant = {
@@ -88,6 +90,25 @@ describe('GitCredentialCache — gitlab provider (§17.1)', () => {
     h.cache.invalidate(AGENT, 'glpat-1', { provider: 'gitlab' })
     await h.cache.get(AGENT, 'clone', { provider: 'gitlab', externalRepoId: '4455667' })
     expect(h.calls()).toBe(3) // eviction forced a fresh CP ask
+  })
+})
+
+describe('gitlab note token under an authoritative denial (19.3)', () => {
+  it('a LEASE_DENIED refresh evicts the minted PAT: the poster fails now and re-asks next turn', async () => {
+    const h = build({
+      v2: true,
+      respond: (_payload, n) => {
+        if (n === 2) throw Object.assign(new Error('runtime_degraded'), { code: 'LEASE_DENIED' })
+        return { ...gitlabGrant, token: `glpat-${n}` }
+      }
+    })
+    expect((await h.cache.getGitlabPostToken(AGENT, '4455667', HOOK)).token).toBe('glpat-1')
+    h.advance(50 * 60 * 1000) // below the handout threshold → refresh, and the binding refuses
+
+    await expect(h.cache.getGitlabPostToken(AGENT, '4455667', HOOK)).rejects.toThrow(GitCredUnavailableError)
+    // The revoked grant is gone rather than served for the rest of its lease.
+    expect((await h.cache.getGitlabPostToken(AGENT, '4455667', HOOK)).token).toBe('glpat-3')
+    expect(h.calls()).toBe(3)
   })
 })
 

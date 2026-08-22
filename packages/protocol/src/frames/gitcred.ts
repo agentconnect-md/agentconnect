@@ -56,7 +56,8 @@ export const GitCredRequest = z.object({
   // the one final comment for an enabled GitHub hook turn. Marking that purpose
   // explicitly lets the CP apply the hook authorization instead of incorrectly
   // clamping the comment token to the workspace contents gitAccess.
-  purpose: z.literal('github_hook_reply').optional(),
+  // gitlab_hook_reply is the §14.1 twin: the note poster's effect lease, gated by an enabled gitlab hook.
+  purpose: z.enum(['github_hook_reply', 'gitlab_hook_reply']).optional(),
   // Trusted hook identity copied from the relay-delivered rd/msg. Required by
   // the CP for purpose=github_hook_reply so authorization stays rename-safe on
   // HookDef.repoId instead of comparing mutable owner/repo display names.

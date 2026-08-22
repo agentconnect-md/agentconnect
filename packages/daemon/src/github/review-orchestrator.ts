@@ -53,6 +53,7 @@ import type { WebchatTurnContext } from '../webchat/types.js'
 import { initiatorLabel } from '../workspace/session-branch.js'
 import type { PrepareSessionWorkspaceRequest } from '../workspace/workspace-manager.js'
 import { GithubFinalPoster, GithubReplyCollector, type GithubCommentAttribution } from './poster.js'
+import { GitlabFinalPoster } from '../gitlab/poster.js'
 import { GithubReviewClient, type GithubReviewEffect } from './review.js'
 
 /** Dispatch options this seam needs; a subset of the daemon's own. */
@@ -75,6 +76,9 @@ export interface GithubReviewHost {
   getSession(key: string): Promise<SessionRecord | undefined>
   displayNames(ids: string[]): Promise<Map<string, string>>
   getPostToken(agentId: string, repo: string, hookId: string): Promise<{ token: string }>
+  /** §14.1 effect lease: the binding's effect PAT gated by the enabled gitlab hook. */
+  getGitlabPostToken(agentId: string, projectId: string, hookId: string): Promise<{ token: string }>
+  invalidateGitlabPost(agentId: string, projectId: string, presentedToken?: string): void
   invalidatePost(agentId: string, repo: string, presentedToken?: string): void
   paused(agentId: string): boolean
   draining(agentId: string): boolean
@@ -272,8 +276,20 @@ export class GithubReviewOrchestrator {
     // Inline coordinates and their PR target are one body-free trusted unit.
     // A mixed-version frame without that unit keeps the rolling-compatible
     // ordinary issue/PR comment path derived from HookContext.
+    // GitLab (§14.1) rides the same pipe: repo = numeric project id, number = IID; pushes have no thread and stay silent.
+    const gitlabReply =
+      c?.source === 'gitlab' && msg.gitlab && msg.gitlab.target.kind !== 'push'
+        ? {
+            hookId: msg.hookId,
+            provider: 'gitlab' as const,
+            subjectKind: msg.gitlab.target.kind,
+            repo: msg.gitlab.projectId,
+            number: msg.gitlab.target.iid
+          }
+        : undefined
     const githubReply =
       trustedInlineTarget ??
+      gitlabReply ??
       (c?.source === 'github' && c.repo && c.number !== undefined
         ? { hookId: msg.hookId, repo: c.repo, number: c.number }
         : undefined)
@@ -902,13 +918,15 @@ export class GithubReviewOrchestrator {
       const published = await this.makeGithubReply(req.agentId, item.reply, active.sessionId).poster.publish(
         supplied.get(root)!
       )
-      if (published) item.publishedComment = published
+      // Batch replies are a GitHub-only surface (inline review threads) — narrow away the gitlab arm of the shared poster union.
+      const comment = published && !('provider' in published) ? published : undefined
+      if (comment) item.publishedComment = comment
       item.publishState = 'settled'
       await this.host.persistHookState(active.entry, undefined, true)
       results.push({
         threadRootCommentId: root,
-        state: published ? 'published' : 'settled',
-        ...(published ? { commentId: published.commentId } : {})
+        state: comment ? 'published' : 'settled',
+        ...(comment ? { commentId: comment.commentId } : {})
       })
     }
     return { replies: results }
@@ -921,7 +939,24 @@ export class GithubReviewOrchestrator {
     agentId: string,
     ref: GithubReplyTarget,
     sessionId: string
-  ): { poster: GithubFinalPoster; collector: GithubReplyCollector } {
+  ): { poster: GithubFinalPoster | GitlabFinalPoster; collector: GithubReplyCollector } {
+    if (ref.provider === 'gitlab') {
+      return {
+        collector: new GithubReplyCollector(),
+        poster: new GitlabFinalPoster(
+          {
+            token: async () => (await this.host.getGitlabPostToken(agentId, ref.repo, ref.hookId)).token,
+            invalidateToken: (token) => this.host.invalidateGitlabPost(agentId, ref.repo, token),
+            log: { warn: (m: string) => this.log.warn(m) }
+          },
+          ref.repo,
+          ref.subjectKind ?? 'issue',
+          ref.number,
+          () =>
+            this.agents.get(agentId)?.output.showFooter ? this.githubCommentAttribution(agentId, sessionId) : undefined
+        )
+      }
+    }
     return {
       collector: new GithubReplyCollector(),
       poster: new GithubFinalPoster(

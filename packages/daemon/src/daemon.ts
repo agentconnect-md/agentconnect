@@ -252,6 +252,7 @@ import {
   WEBCHAT_MULTI_AGENT_FEATURE,
   WEBCHAT_REMOTE_MCP_FEATURE,
   WEBCHAT_SESSION_CONTINUATION_FEATURE,
+  GITLAB_COM_V1_FEATURE,
   encodeSharedSlackStatusTarget,
   HOOK_REPORT_REASON_AGENT_HANDOVER,
   HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED,
@@ -412,6 +413,7 @@ import {
   githubPullRequestLane,
   githubReviewResultForCompletion,
   githubThreadWorktreeCleanup,
+  hookOutcomeFailure,
   MAX_HOOK_REPORT_INFLIGHT,
   type ActiveGithubReplyBatchMeta,
   type ActiveGithubTurnMeta,
@@ -420,6 +422,7 @@ import {
   type GithubRevisionAdmissionPlan,
   type HookCompletionOwner,
   type HookDispatchContext,
+  type NotePublishFailure,
   type SessionWorktreeCleanupResult
 } from './github/hook-coords.js'
 import {
@@ -3707,7 +3710,9 @@ export class Daemon {
       // a runtime artifact, capability probe, or sandbox policy. The CP remains
       // authoritative for deciding whether a conversation belongs to the
       // built-in preset; turn-time dispatch rechecks the replicated marker.
-      ...(this.remoteWebchatGrants ? [WEBCHAT_REMOTE_MCP_FEATURE] : [])
+      ...(this.remoteWebchatGrants ? [WEBCHAT_REMOTE_MCP_FEATURE] : []),
+      // The CP withholds gitlab-workspace specs and gitlab hook assignments until this is advertised.
+      GITLAB_COM_V1_FEATURE
     ]
   }
 
@@ -6546,6 +6551,9 @@ export class Daemon {
       getSession: async (key) => await this.store.getSession(key),
       displayNames: async (ids) => await this.store.getDisplayNames(ids),
       getPostToken: (agentId, repo, hookId) => this.gitCreds.getPostToken(agentId, repo, hookId),
+      getGitlabPostToken: (agentId, projectId, hookId) => this.gitCreds.getGitlabPostToken(agentId, projectId, hookId),
+      invalidateGitlabPost: (agentId, projectId, token) =>
+        this.gitCreds.invalidateGitlabPost(agentId, projectId, token),
       invalidatePost: (agentId, repo, presentedToken) => this.gitCreds.invalidatePost(agentId, repo, presentedToken),
       paused: (agentId) => this.paused(agentId),
       draining: (agentId) => this.draining || this.drainingAgents.has(agentId),
@@ -7737,7 +7745,8 @@ export class Daemon {
       durationMs: Number.isFinite(start) ? Math.max(0, this.clock.now() - start) : 0,
       ...extra,
       ...(review ? { reviewAttemptId: review.attemptId, reviewResult: review.result } : {}),
-      ...(hook.publishedComment ? { publishedComment: hook.publishedComment } : {})
+      ...(hook.publishedComment ? { publishedComment: hook.publishedComment } : {}),
+      ...(hook.publishedOutput ? { publishedOutput: hook.publishedOutput } : {})
     }
   }
 
@@ -9059,7 +9068,7 @@ export class Daemon {
     // Turn finished cleanly. Draining the next queued message for this sessionKey is
     // runLoop's job (it holds ownership across turns) — NOT here. On a throw, the catch
     // above rethrows and runLoop applies fail-stop (§6.9 #378).
-    await this.completeHookOutcome(entry, sessionId)
+    await this.completeHookOutcome(entry, sessionId, p)
     return sessionId
   }
 
@@ -10356,7 +10365,7 @@ export class Daemon {
         {
           appendTranscript: async (row) => await this.store.appendTranscript(row),
           monotonicTs: () => monotonicTs(),
-          beginPublish: async () => {
+          beginPublish: async (hasFinal) => {
             try {
               // A replay of `in_flight` suppresses another comment. If this write
               // cannot be made durable, fail closed and do not perform the POST.
@@ -10364,11 +10373,24 @@ export class Daemon {
               return true
             } catch (err) {
               this.log.warn(`github poster: durability barrier failed; final publish skipped (${formatErr(err)})`)
+              // A body was owed and the poster is never reached — a lost publication, not a silent skip.
+              if (hasFinal && this.markNotePublishFailure(entry, 'publish_barrier_failed')) {
+                // The barrier write just failed, so this one may too; the live completion still reads memory.
+                await this.persistHookState(entry)
+              }
               return false
             }
           },
-          endPublish: async (publishedComment) => {
-            if (publishedComment && hookContext) hookContext.publishedComment = publishedComment
+          endPublish: async (published) => {
+            if (published && hookContext) {
+              if ('provider' in published) hookContext.publishedOutput = published
+              else hookContext.publishedComment = published
+            }
+            // Stamped BEFORE the settled write so one durable record carries both — a crash
+            // between them cannot replay into a successful report with no note. A barrier refusal
+            // leaves the row retryable, so a note that DID land must erase that marker here.
+            if (published) this.clearNotePublishFailure(entry)
+            else this.markNotePublishFailure(entry, p.github?.poster.failure)
             await this.persistHookState(entry, 'settled')
           },
           warn: (message) => this.log.warn(message)
@@ -10416,24 +10438,35 @@ export class Daemon {
     }
   }
 
+  /** Stamp this turn's normalized note outcome on the durable hook context (14.1) so settlement
+   *  carries it; gitlab reply targets only. Returns whether anything was recorded. */
+  private markNotePublishFailure(entry: QueueEntry, code: NotePublishFailure | undefined): boolean {
+    if (!code || !entry.hookContext || entry.githubReply?.provider !== 'gitlab') return false
+    entry.hookContext.notePublishFailure = code
+    return true
+  }
+
+  /** Erase a marker a retryable earlier attempt left behind — the note this turn published exists. */
+  private clearNotePublishFailure(entry: QueueEntry): void {
+    if (entry.hookContext) delete entry.hookContext.notePublishFailure
+  }
+
   /** Report the terminal hook outcome of a cleanly finished turn, failing it when a sealed
-   *  GitHub review batch did not publish every reply. */
-  private async completeHookOutcome(entry: QueueEntry, sessionId: string): Promise<void> {
+   *  GitHub review batch did not publish every reply, or when the promised note never landed. */
+  private async completeHookOutcome(entry: QueueEntry, sessionId: string, p: Pending): Promise<void> {
     const hookContext = entry.hookContext
     if (!hookContext) return
-    const batch = hookContext.githubReviewBatch
-    const batchFailure =
-      batch && batch.items.length > 1
-        ? batch.items.some((item) => item.publishState === 'in_flight')
-          ? 'review_batch_publish_ambiguous'
-          : batch.items.some((item) => item.publishState !== 'settled')
-            ? 'review_batch_replies_missing'
-            : undefined
-        : undefined
+    // The PERSISTED outcome is authoritative — it is the only one a replayed row still has. A proven
+    // note identity outranks any marker: the publication happened, whatever an earlier attempt recorded.
+    const notePublishFailure = hookContext.publishedOutput
+      ? undefined
+      : (hookContext.notePublishFailure ??
+        (entry.githubReply?.provider === 'gitlab' ? p.github?.poster.failure : undefined))
+    const failure = hookOutcomeFailure(hookContext.githubReviewBatch, notePublishFailure)
     await this.emitHookCompletion(
       hookContext,
-      batchFailure ? 'failed' : 'success',
-      { sessionId, ...(batchFailure ? { reason: batchFailure } : {}) },
+      failure ? 'failed' : 'success',
+      { sessionId, ...(failure ? { reason: failure } : {}) },
       entry
     )
   }
