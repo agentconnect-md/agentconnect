@@ -1616,13 +1616,13 @@ export class Daemon {
           // the daemon's own filesystem, so without a tunnel they exist nowhere the pod can reach.
           // `mcp` is served for every pod agent because any session may carry tools and the
           // listener belongs to the pod's lifetime, while the spec that dials it is decided per
-          // session; a GitHub-App workspace adds the credential helper its git asks for.
+          // session; a managed-credential workspace — github-app or gitlab — adds the helper socket.
           // An id this daemon holds no agent for gets neither: the member's own runtime probe is
           // the case, and its channel is granted `probe` alone, so asking would only be refused.
           tunnelsFor: (agentId) => {
             const agent = this.agents.get(agentId)
             if (!agent) return []
-            return agent.workspace.gitCredential === 'github-app' ? ['mcp', 'gitcred'] : ['mcp']
+            return this.workspaces.usesManagedCredential(agent) ? ['mcp', 'gitcred'] : ['mcp']
           },
           tunnelSocketPath: (tunnel) => (tunnel === 'gitcred' ? gitcredSocketPath(root) : mcpSocketPath(root)),
           // A bound sandbox is a reachable memory tree: drain any managed capture that waited for it.

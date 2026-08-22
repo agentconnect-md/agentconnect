@@ -253,6 +253,61 @@ describe('a secondary root is App-covered whatever the primary workspace is', ()
   })
 })
 
+describe('the console git scope keys on the MANAGED credential, not the github-app value', () => {
+  it('rides the helper for a gitlab primary, whose target host the remote builder derives from the URL', async () => {
+    const gitlab = AgentSchema.parse({
+      id: 'bot-gitlab',
+      name: 'bot-gitlab',
+      status: 'active',
+      runtime: 'claude',
+      workspace: {
+        mode: 'git-repo',
+        path: join(base, 'agents', 'bot-gitlab', 'workspace'),
+        gitRepo: 'https://gitlab.com/example-group/example-project',
+        gitCredential: 'gitlab',
+        gitlabProjectId: '4455667'
+      },
+      integrations: [],
+      output: { mode: 'low' }
+    })
+    const gitlabScope = createWorkspaceScope({
+      workspaces,
+      agentOf: (id) => (id === 'bot-gitlab' ? gitlab : undefined),
+      sessionOf: async () => undefined,
+      runtimeRootOf: () => undefined
+    })
+    await expect(gitlabScope.target('bot-gitlab')).resolves.toMatchObject({
+      repo: 'https://gitlab.com/example-group/example-project',
+      githubApp: true
+    })
+    expect(gitlabScope.usesGithubApp('bot-gitlab')).toBe(true)
+  })
+
+  it('leaves an anonymous git-repo primary off the helper, so the flag still means something', async () => {
+    const anon = AgentSchema.parse({
+      id: 'bot-anon',
+      name: 'bot-anon',
+      status: 'active',
+      runtime: 'claude',
+      workspace: {
+        mode: 'git-repo',
+        path: join(base, 'agents', 'bot-anon', 'workspace'),
+        gitRepo: 'https://gitlab.com/example-group/public-project'
+      },
+      integrations: [],
+      output: { mode: 'low' }
+    })
+    const anonScope = createWorkspaceScope({
+      workspaces,
+      agentOf: (id) => (id === 'bot-anon' ? anon : undefined),
+      sessionOf: async () => undefined,
+      runtimeRootOf: () => undefined
+    })
+    await expect(anonScope.target('bot-anon')).resolves.toMatchObject({ githubApp: false })
+    expect(anonScope.usesGithubApp('bot-anon')).toBe(false)
+  })
+})
+
 describe('a cluster daemon addresses a secondary root on the pod volume', () => {
   const POD_ROOT = '/agent'
   const POD_SECONDARY = `${POD_ROOT}/repos/${AUTHORIZED}`
