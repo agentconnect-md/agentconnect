@@ -37,7 +37,7 @@ authorization facts, secrets, and body-free run metadata.
    stable, non-human GitLab identity for that agent's comments, reviews,
    approvals, and Git operations; its display name is the agent's name, so
    each agent is its own visible GitLab actor. It does not consume a billable
-   seat. v1 shipped one shared account per project binding; M8 replaces it
+   seat. v1 shipped one shared account per project binding; M8 replaced it
    outright.
 4. Create three service-account personal access tokens with separate purposes:
    a read token, a Git-write token, and an API-effect token. The broad `api`
@@ -319,9 +319,6 @@ revoking the human connection does not silently transfer its authority.
 
 ### 7.2 Agent Service Accounts Are the Runtime Identity
 
-> Implemented as M8. The v1 per-project account shared by every agent was
-> replaced outright, with no transitional dual identity.
-
 The runtime identity is **one group service account per (organization, agent,
 top-level group)**. Each agent has its own GitLab face: the account's display
 name is the agent's name, every note, review, approval, and push the agent
@@ -405,16 +402,17 @@ provider mutation; an organization-scoped repository row is not itself an
 ownership claim.
 
 v1 shipped one Project Service Account per project binding, shared by every
-agent on the project. M8 replaces it outright and carries nothing forward:
-the binding's account columns are dropped, and an existing binding simply
-converges like any binding whose account is missing — its hooks and
+agent on the project. M8 replaced it outright and carried nothing forward:
+the binding's account columns are gone, and a binding that predates the
+change converges like any binding whose account is missing — its hooks and
 credential grants stay disabled until it is `ready` again, exactly as during
 first provisioning. The per-project accounts left behind on GitLab are
 orphans an operator removes, not managed state, and no code path ever runs
 both identity models. On the wire the veto set and the rule's account
 identity are additive optional members under the Section 17.3 discipline; a
-relay that predates them vetoes only the single ID its rule names, so the
-relay change rolls out before the Control Plane names agent accounts.
+relay that predates them vetoes only the single ID its rule names, which is
+why the relay change shipped before the Control Plane began naming agent
+accounts.
 
 ### 7.3 Three Credential Purposes
 
@@ -871,8 +869,8 @@ member of the veto set stays vetoed even for merge-request revisions, so one
 agent's merge request never wakes a sibling agent's hook. Notes authored by
 any bound account and system-generated notes carrying AgentConnect status or
 attempt markers are always rejected. A relay that predates the veto set
-vetoes only the single ID its rule names, so the relay change rolls out
-before the Control Plane names agent accounts.
+vetoes only the single ID its rule names, which is why the relay change
+shipped before the Control Plane began naming agent accounts.
 
 ### 12.2 Collaborator and External-Merge-Request Gate
 
@@ -1734,22 +1732,22 @@ external credentials by deleting only local metadata.
 
 ## 22. Implementation Plan
 
-> **Implementation status.** The M0–M7 spine below is implemented. Its
+> **Implementation status.** The M0–M8 spine below is implemented. Its
 > rolling-compatibility seams are gated by six feature strings, all declared in
 > `packages/protocol/src/consts.ts`: `gitcred-provider-v2` (provider-qualified
 > Git credentials), `gitlab-com-v1` (the complete daemon and relay GitLab
 > slice), `gitlab-effect-v1` (the Section 14.2 broker effect lease),
 > `gitlab-rerun-v1` (the relay's `rc/hook-rerun` admission),
 > `codehost-note-projection-v1` (the daemon-owned status-note projection), and
-> `codehost-review-v1` (the provider-routed formal-review surface). Two gaps
+> `codehost-review-v1` (the provider-routed formal-review surface). M8 needed
+> no seventh string — the Section 7.2 per-agent identity reached the wire as
+> additive optional members under the Section 17.3 discipline. Two gaps
 > are deliberate. The `hook/start` barrier is a provider one-of on the wire but
 > is still served GitHub-only in the Control Plane, so the note projection's
 > `running` edge waits on its GitLab arm
 > (`packages/control-plane/src/codehost/note-projection.service.ts`); that arm
 > is being finished as follow-up work. The session merge-request dock panel
-> stays out of scope per Section 18.1. The Section 7.2 per-agent identity
-> shipped as M8: the relay veto set, the control-plane account model with the
-> inline pre-activation ensure, and the console identity surfaces.
+> stays out of scope per Section 18.1.
 
 Milestones are merge order, not calendar. Each milestone is several small,
 independently mergeable PRs; GitHub behavior stays green at every merge; each
