@@ -12,7 +12,8 @@ import { agentLabel, isPoolPlacementKind, type Agent } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { useOrgs } from '@/lib/org-context'
 import { featureFlagEnabled } from '@/lib/feature-flags'
-import { gitlabProjectSelectable, matchGitlabProjects } from '@/lib/gitlab-projects'
+import { matchGitlabProjects, type GitlabProjectChoice } from '@/lib/gitlab-projects'
+import { useGitlabProjects } from '@/lib/use-gitlab-projects'
 import {
   ApiError,
   deleteAgentRepo,
@@ -22,14 +23,12 @@ import {
   fetchGithubInstallUrl,
   fetchGithubRepoRoster,
   fetchGithubRepoAccess,
-  fetchGitlabProjects,
   invalidateGithubRepoRosterCache,
   syncGithubInstallations,
   type AgentRepoAuthDto,
   type GithubInstallationDto,
   type GithubRepoAccess,
   type GithubRepoDto,
-  type GitlabProjectBindingDto,
   type RepoAccess
 } from '@/lib/api'
 import { agentDirInputValue, normalizeAgentDir } from '@/lib/repo-subdir'
@@ -113,9 +112,6 @@ export default function EditWorkspaceModal({
   const [branchQ, setBranchQ] = useState('')
   const [agentDir, setAgentDir] = useState(currentAgentDir)
   const [worktree, setWorktree] = useState(gitWorkspace ? gitWorkspace.worktree === true : true)
-  // The organization's added GitLab projects; null while the list is still loading.
-  const [glProjects, setGlProjects] = useState<GitlabProjectBindingDto[] | null>(null)
-  const [glProjectsError, setGlProjectsError] = useState<string | null>(null)
   const [glPick, setGlPick] = useState(gitlabWorkspace?.projectId ?? '')
   const [glPickOpen, setGlPickOpen] = useState(false)
   const [glQ, setGlQ] = useState('')
@@ -193,20 +189,9 @@ export default function EditWorkspaceModal({
     }
   }, [gh, repositoryEditor, reposNonce])
 
-  // Added projects only — the picker never installs one, so the connection card
-  // stays the single place a project joins the organization.
-  useEffect(() => {
-    if (repositoryEditor !== null || !gitlabOffered || mode !== 'gitlab' || glProjects !== null) return
-    let alive = true
-    setGlProjectsError(null)
-    fetchGitlabProjects().then(
-      (bindings) => alive && setGlProjects(bindings),
-      (e) => alive && setGlProjectsError(e instanceof Error ? e.message : String(e))
-    )
-    return () => {
-      alive = false
-    }
-  }, [gitlabOffered, glProjects, mode, repositoryEditor])
+  // The projects this organization added, plus the ones the connected account can
+  // still add — picking one of those sets it up here (§18.1).
+  const gl = useGitlabProjects(repositoryEditor === null && gitlabOffered && mode === 'gitlab', glQ)
 
   const openGhInstall = async () => {
     const url = await fetchGithubInstallUrl().catch(() => null)
@@ -304,9 +289,9 @@ export default function EditWorkspaceModal({
   }
 
   const noInstall = mode === 'github' && gh !== null && (!gh.enabled || gh.installations.length === 0)
-  const glSelectable = (glProjects ?? []).filter((project) => gitlabProjectSelectable(project.state))
-  const noProjects = mode === 'gitlab' && glProjects !== null && glSelectable.length === 0
-  const glPicked = (glProjects ?? []).find((project) => project.projectId === glPick)
+  const noProjects = mode === 'gitlab' && gl.empty
+  const glPicked = gl.choices.find((choice) => choice.projectId === glPick)
+  const glMatches = matchGitlabProjects(gl.choices, glQ)
   // Falls back to the stored path so the current project reads correctly before the list lands.
   const glPickLabel =
     glPicked?.projectPath ?? (glPick && glPick === gitlabWorkspace?.projectId ? gitlabWorkspace.repo : '')
@@ -354,11 +339,13 @@ export default function EditWorkspaceModal({
     setErr(null)
   }
 
-  const selectProject = (project: GitlabProjectBindingDto) => {
-    setGlPick(project.projectId)
+  // Picking an unadded project provisions it first; a failed setup picks nothing.
+  const selectProject = async (choice: GitlabProjectChoice) => {
+    if (!choice.binding && !(await gl.provision(choice.projectId))) return
+    setGlPick(choice.projectId)
     setGlPickOpen(false)
     setAccessOpen(false)
-    setBranch(project.defaultBranch ?? '')
+    setBranch(choice.defaultBranch ?? '')
     setAgentDir('')
     setErr(null)
   }
@@ -503,16 +490,16 @@ export default function EditWorkspaceModal({
 
           {mode === 'gitlab' && (
             <div className="mb-4 grid grid-cols-1 gap-[14px] desktop:grid-cols-2 desktop:gap-x-7">
-              {glProjectsError ? (
+              {gl.error ? (
                 <div className="font-sans text-[12px] font-normal leading-[1.5] text-(--status-error) desktop:col-span-2">
-                  Couldn&rsquo;t load your GitLab projects — {glProjectsError}
+                  Couldn&rsquo;t load your GitLab projects — {gl.error}
                 </div>
-              ) : glProjects === null ? (
+              ) : gl.loading ? (
                 <div className="desktop:col-span-2">
                   <LoadingState size={20} padding={16} />
                 </div>
               ) : noProjects ? (
-                <GitlabNoProjectsNotice integrationsHref={orgPath('/integrations')} />
+                <GitlabNoProjectsNotice integrationsHref={orgPath('/integrations')} connected={gl.connected} />
               ) : (
                 <>
                   <GitlabProjectField
@@ -528,18 +515,18 @@ export default function EditWorkspaceModal({
                     }}
                     onClose={() => setGlPickOpen(false)}
                     onQueryChange={setGlQ}
+                    error={gl.provisionError ? `Couldn’t set up that project — ${gl.provisionError}` : undefined}
                   >
-                    {matchGitlabProjects(glProjects, glQ).map((project) => (
+                    {glMatches.map((choice) => (
                       <GitlabProjectOption
-                        key={project.id}
-                        project={project}
-                        selected={glPick === project.projectId}
-                        onSelect={() => selectProject(project)}
+                        key={choice.projectId}
+                        choice={choice}
+                        selected={glPick === choice.projectId}
+                        busy={gl.provisioning === choice.projectId}
+                        onSelect={() => void selectProject(choice)}
                       />
                     ))}
-                    {matchGitlabProjects(glProjects, glQ).length === 0 && (
-                      <div className="fnohit">No projects match &ldquo;{glQ}&rdquo;</div>
-                    )}
+                    {glMatches.length === 0 && <div className="fnohit">No projects match &ldquo;{glQ}&rdquo;</div>}
                   </GitlabProjectField>
 
                   <RepositoryAccessField

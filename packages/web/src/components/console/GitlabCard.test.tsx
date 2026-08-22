@@ -1,10 +1,11 @@
 // @vitest-environment happy-dom
 /**
- * The GitLab card is the console's whole GitLab surface, so what it renders IS
- * the connection state: an unconnected organization gets one entry point, a
- * connected one gets its projects and their lifecycle. The write actions are
- * asserted against the endpoint they call — a repair that silently posted to
- * the wrong binding would still look right on screen.
+ * The GitLab card is the console's GitLab MANAGEMENT surface: an unconnected
+ * organization gets one entry point, a connected one gets its connection
+ * lifecycle and the health of the projects already set up. Picking a project is
+ * deliberately not here — that happens where the project is used. The write
+ * actions are asserted against the endpoint they call: a repair that silently
+ * posted to the wrong binding would still look right on screen.
  */
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
@@ -14,8 +15,6 @@ import type { GitlabConnectionDto, GitlabProjectBindingDto } from '@/lib/api'
 const mocks = vi.hoisted(() => ({
   fetchConnections: vi.fn(),
   fetchProjects: vi.fn(),
-  searchProjects: vi.fn(),
-  createProject: vi.fn(),
   repairProject: vi.fn(),
   deleteProject: vi.fn(),
   disconnect: vi.fn(),
@@ -32,8 +31,6 @@ vi.mock('@/lib/api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/api')>()),
   fetchGitlabConnections: mocks.fetchConnections,
   fetchGitlabProjects: mocks.fetchProjects,
-  searchGitlabProjects: mocks.searchProjects,
-  createGitlabProject: mocks.createProject,
   repairGitlabProject: mocks.repairProject,
   deleteGitlabProject: mocks.deleteProject,
   disconnectGitlabConnection: mocks.disconnect,
@@ -92,13 +89,6 @@ async function click(label: string, scope: ParentNode = host): Promise<void> {
   })
 }
 
-/** The picker searches server-side behind a debounce; let it elapse for real. */
-async function settleSearch(): Promise<void> {
-  await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 400))
-  })
-}
-
 /** One connection row and everything the card renders under it. */
 function connectionRow(id: string): HTMLElement {
   const found = host.querySelector(`[data-gitlab-connection="${id}"]`)
@@ -116,7 +106,6 @@ beforeEach(() => {
   vi.clearAllMocks()
   document.body.innerHTML = ''
   mocks.fetchProjects.mockResolvedValue([])
-  mocks.searchProjects.mockResolvedValue({ projects: [], nextPage: null })
 })
 
 describe('GitlabCard', () => {
@@ -246,7 +235,7 @@ describe('GitlabCard', () => {
     expect(host.querySelectorAll('[data-gitlab-project]')).toHaveLength(0)
   })
 
-  it('picks the connected account for the picker, not the oldest row', async () => {
+  it('lists every retained connection, stale ones included', async () => {
     // The repository orders by createdAt ASC and retains stale rows, so the first is often unusable.
     mocks.fetchConnections.mockResolvedValue({
       enabled: true,
@@ -256,13 +245,29 @@ describe('GitlabCard', () => {
       ]
     })
     await render()
-    // Both rows still render; only the usable one drives the picker.
     expect(host.textContent).toContain('former-admin')
     expect(host.textContent).toContain('current-admin')
+    expect(host.querySelectorAll('[data-gitlab-connection]')).toHaveLength(2)
+  })
 
-    await click('Add project')
-    await settleSearch()
-    expect(mocks.searchProjects).toHaveBeenCalledWith('conn-new', {})
+  it('manages bindings but never picks a project: no add-project surface', async () => {
+    // Authorization lives at the point of use; the card is the health list, like GitHub's.
+    mocks.fetchConnections.mockResolvedValue({ enabled: true, connections: [CONNECTION] })
+    mocks.fetchProjects.mockResolvedValue([BINDING])
+    await render()
+
+    expect(() => buttonIn(host, 'Add project')).toThrow()
+    expect(host.querySelector('input[aria-label="Search GitLab projects"]')).toBeNull()
+    // The health list itself is untouched: the project, its state, and its repairs.
+    expect(host.querySelectorAll('[data-gitlab-project]')).toHaveLength(1)
+    expect(buttonIn(host, 'Repair')).toBeTruthy()
+  })
+
+  it('says where projects come from when a connection has none', async () => {
+    mocks.fetchConnections.mockResolvedValue({ enabled: true, connections: [CONNECTION] })
+    await render()
+    expect(host.textContent).toContain('No projects are set up yet')
+    expect(host.textContent).toContain('agent workspace')
   })
 
   it('translates known binding reasons and hides unmapped machine categories', async () => {
@@ -302,29 +307,5 @@ describe('GitlabCard', () => {
     expect(host.textContent).not.toContain('rotation_gitlab_503')
     expect(host.textContent).not.toContain('project_not_accessible')
     expect(host.textContent).toContain('bot access degraded')
-  })
-
-  it('binds a searched project through the connection that found it', async () => {
-    mocks.fetchConnections.mockResolvedValue({ enabled: true, connections: [CONNECTION] })
-    mocks.searchProjects.mockResolvedValue({
-      projects: [
-        { projectId: '90210', path: 'example-group/example-project', defaultBranch: 'main', lastActivityAt: null }
-      ],
-      nextPage: null
-    })
-    mocks.createProject.mockResolvedValue(BINDING)
-    await render()
-
-    await click('Add project')
-    await settleSearch()
-    expect(mocks.searchProjects).toHaveBeenCalledWith('conn-1', {})
-
-    const row = [...host.querySelectorAll('button')].find(
-      (candidate) => candidate.getAttribute('aria-label') === 'Add example-group/example-project'
-    )
-    await act(async () => {
-      row!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
-    expect(mocks.createProject).toHaveBeenCalledWith({ connectionId: 'conn-1', projectId: '90210' })
   })
 })

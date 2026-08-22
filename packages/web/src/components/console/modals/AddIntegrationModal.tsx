@@ -52,14 +52,12 @@ import {
   fetchGithubInstallations,
   fetchGithubInstallUrl,
   fetchGithubRepoRoster,
-  fetchGitlabProjects,
   invalidateGithubRepoRosterCache,
   syncGithubInstallations,
   updateAgentRepo,
   type CreatedHookDto,
   type GithubInstallationDto,
   type GithubRepoDto,
-  type GitlabProjectBindingDto,
   type RepoAccess
 } from '@/lib/api'
 import EditWorkspaceModal from './EditWorkspaceModal'
@@ -87,7 +85,8 @@ import {
   type GlFamily,
   type GlTriggerMode
 } from '@/lib/gitlab-events'
-import { gitlabProjectSelectable, matchGitlabProjects } from '@/lib/gitlab-projects'
+import { matchGitlabProjects, type GitlabProjectChoice } from '@/lib/gitlab-projects'
+import { useGitlabProjects } from '@/lib/use-gitlab-projects'
 import {
   effectiveRepoAccess,
   hasChecksWritePermission,
@@ -361,13 +360,12 @@ export default function AddIntegrationModal({
       (ghReportingMode === 'check' &&
         (!hasChecksWritePermission(ghSelectedInstallation) || !hasPullRequestsReadPermission(ghSelectedInstallation))))
 
-  // GitLab path: the organization's added projects, one hook per project. The
-  // wizard never adds a project — that stays on the connection card.
-  const [glProjects, setGlProjects] = useState<GitlabProjectBindingDto[] | null>(null)
-  const [glProjectsError, setGlProjectsError] = useState<string | null>(null)
+  // GitLab path: one hook per project, picked here. A project the organization
+  // has not added yet is set up as part of picking it (§18.1).
   const [glProject, setGlProject] = useState<string | null>(null)
   const [glOpen, setGlOpen] = useState(false)
   const [glQ, setGlQ] = useState('')
+  const gl = useGitlabProjects(platform === 'gitlab', glQ)
   const [glFams, setGlFams] = useState<Set<GlFamily>>(new Set(GL_DEFAULT_FAMILIES))
   const [glMode, setGlMode] = useState<GlTriggerMode>(GL_DEFAULT_TRIGGER_MODE)
   const [glLabels, setGlLabels] = useState('')
@@ -805,24 +803,17 @@ export default function AddIntegrationModal({
     }
   }
 
-  // Only the GitLab pane asks for projects; the flag already decides whether the
-  // tile that reaches this pane exists at all.
-  useEffect(() => {
-    if (platform !== 'gitlab' || glProjects !== null) return
-    let alive = true
-    setGlProjectsError(null)
-    fetchGitlabProjects().then(
-      (bindings) => alive && setGlProjects(bindings),
-      (e) => alive && setGlProjectsError(e instanceof Error ? e.message : String(e))
-    )
-    return () => {
-      alive = false
-    }
-  }, [glProjects, platform])
+  const glPicked = gl.choices.find((choice) => choice.projectId === glProject)
+  const glMatches = matchGitlabProjects(gl.choices, glQ)
 
-  const glSelectable = (glProjects ?? []).filter((project) => gitlabProjectSelectable(project.state))
-  const glNoProjects = glProjects !== null && glSelectable.length === 0
-  const glPicked = (glProjects ?? []).find((project) => project.projectId === glProject)
+  // Picking an unadded project provisions it first; the pick lands on the
+  // binding the saga produced, so a failed setup selects nothing.
+  const pickGlProject = async (choice: GitlabProjectChoice) => {
+    if (!choice.binding && !(await gl.provision(choice.projectId))) return
+    setGlProject(choice.projectId)
+    setGlOpen(false)
+    setErr(null)
+  }
   // One hook per (agent, project) — the CP 409s a second one, so the picker says so first.
   const glWatchedProjects = useMemo(
     () =>
@@ -1651,15 +1642,15 @@ export default function AddIntegrationModal({
         )}
         {platform === 'gitlab' && (
           <>
-            {glProjectsError ? (
+            {gl.error ? (
               <div className="mb-4 font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">
-                Couldn&rsquo;t load your GitLab projects — {glProjectsError}
+                Couldn&rsquo;t load your GitLab projects — {gl.error}
               </div>
-            ) : glProjects === null ? (
+            ) : gl.loading ? (
               <LoadingState size={20} padding={16} />
-            ) : glNoProjects ? (
+            ) : gl.empty ? (
               <div className="mb-4">
-                <GitlabNoProjectsNotice integrationsHref={orgPath('/integrations')} />
+                <GitlabNoProjectsNotice integrationsHref={orgPath('/integrations')} connected={gl.connected} />
               </div>
             ) : (
               <>
@@ -1677,26 +1668,23 @@ export default function AddIntegrationModal({
                     onClose={() => setGlOpen(false)}
                     onQueryChange={setGlQ}
                     error={
-                      glAlreadyWatched
-                        ? `This agent already watches ${glPicked?.projectPath ?? 'this project'}.`
-                        : undefined
+                      gl.provisionError
+                        ? `Couldn’t set up that project — ${gl.provisionError}`
+                        : glAlreadyWatched
+                          ? `This agent already watches ${glPicked?.projectPath ?? 'this project'}.`
+                          : undefined
                     }
                   >
-                    {matchGitlabProjects(glProjects, glQ).map((project) => (
+                    {glMatches.map((choice) => (
                       <GitlabProjectOption
-                        key={project.id}
-                        project={project}
-                        selected={glProject === project.projectId}
-                        onSelect={() => {
-                          setGlProject(project.projectId)
-                          setGlOpen(false)
-                          setErr(null)
-                        }}
+                        key={choice.projectId}
+                        choice={choice}
+                        selected={glProject === choice.projectId}
+                        busy={gl.provisioning === choice.projectId}
+                        onSelect={() => void pickGlProject(choice)}
                       />
                     ))}
-                    {matchGitlabProjects(glProjects, glQ).length === 0 && (
-                      <div className="fnohit">No projects match &ldquo;{glQ}&rdquo;</div>
-                    )}
+                    {glMatches.length === 0 && <div className="fnohit">No projects match &ldquo;{glQ}&rdquo;</div>}
                   </GitlabProjectField>
                 </div>
                 <div className="fldlbl mb-2">Listen for</div>

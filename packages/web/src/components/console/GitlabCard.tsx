@@ -1,26 +1,26 @@
 // No 'use client' here: rendered only inside a client boundary (IntegrationsView).
 
-// The org's GitLab.com connection and the projects it manages (gitlab-com-integration.md §18.1).
+// The org's GitLab.com connection and the health of the projects it manages
+// (gitlab-com-integration.md §18.1). Like the GitHub card this is the management
+// surface only: a project joins the organization where it is used — the hook and
+// workspace flows — not from a picker here.
 // Deployment-config opt-in: with no GitLab application configured these routes 404 and the card says so.
 // Connections and projects are org-level infrastructure — visible to all, writable by non-viewers.
 
-import { useCallback, useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { Button, Icon } from '@/components/ui'
 import { GitlabMark, LoadingState } from '@/components/marks'
 import { useOrgs } from '@/lib/org-context'
 import { GITLAB_PROJECT_STATE } from '@/lib/gitlab-projects'
 import {
-  createGitlabProject,
   deleteGitlabProject,
   disconnectGitlabConnection,
   fetchGitlabConnections,
   fetchGitlabProjects,
   repairGitlabProject,
-  searchGitlabProjects,
   startGitlabOauth,
   type GitlabConnectionDto,
-  type GitlabProjectBindingDto,
-  type GitlabProjectDto
+  type GitlabProjectBindingDto
 } from '@/lib/api'
 
 // The CP records a machine category in `stateReason`; these are the ones a user can act on, in GitLab
@@ -60,7 +60,6 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
   // One pending connection action: releasing a live row, or removing a released one.
   const [pending, setPending] = useState<{ target: GitlabConnectionDto; remove: boolean } | null>(null)
   const [removing, setRemoving] = useState<GitlabProjectBindingDto | null>(null)
-  const [adding, setAdding] = useState(false)
 
   useEffect(() => {
     if (!activeOrg) return
@@ -80,10 +79,6 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
       alive = false
     }
   }, [activeOrg])
-
-  // Every row is listed, but the picker installs through one that can still talk to GitLab: disconnected
-  // and reauth-required rows are retained, so the oldest connection is often not a usable one.
-  const live = connections.find((c) => c.state === 'connected') ?? null
 
   // The authorization URL carries a one-shot state — mint a fresh one per click.
   const connect = async () => {
@@ -160,11 +155,6 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
     }
   }
 
-  const onBound = useCallback((binding: GitlabProjectBindingDto) => {
-    setProjects((current) => [...current.filter((p) => p.id !== binding.id), binding])
-    setAdding(false)
-  }, [])
-
   return (
     <div className="card">
       <div className="cardhead justify-between">
@@ -174,21 +164,11 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
           </span>
           GitLab
         </span>
-        {enabled === true && canWrite && (
-          <span className="flex items-center gap-2">
-            {live && (
-              <Button variant="ghost" onClick={() => setAdding((open) => !open)}>
-                <Icon name="plus" size={13} />
-                Add project
-              </Button>
-            )}
-            {connections.length === 0 && (
-              <Button onClick={connect}>
-                <Icon name="external-link" size={13} />
-                Connect GitLab
-              </Button>
-            )}
-          </span>
+        {enabled === true && canWrite && connections.length === 0 && (
+          <Button onClick={connect}>
+            <Icon name="external-link" size={13} />
+            Connect GitLab
+          </Button>
         )}
       </div>
 
@@ -203,8 +183,8 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
         <div className="px-4 py-7 text-center">
           <div className="font-sans text-[13px] font-semibold leading-normal">Not connected</div>
           <div className="mt-1 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-            Connect a GitLab account with Maintainer or Owner access to your projects. AgentConnect then sets up a
-            project bot and a webhook per project you add, and agents answer merge requests and issues there.
+            Connect a GitLab account with Maintainer or Owner access to your projects. You then pick a project when you
+            add a trigger or an agent workspace, and AgentConnect sets up its project bot and webhook there.
           </div>
         </div>
       )}
@@ -287,8 +267,11 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
           </div>
         ))}
 
-      {enabled === true && live && adding && canWrite && (
-        <AddGitlabProject connectionId={live.id} bound={projects} onBound={onBound} onError={setErr} />
+      {enabled === true && connections.length > 0 && projects.length === 0 && (
+        <div className="px-4 py-5 text-center font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
+          No projects are set up yet. Pick one when you add a GitLab trigger or an agent workspace — it is set up there,
+          and shows up here for repairs.
+        </div>
       )}
 
       {/* Desktop only: below the breakpoint the row stacks, where a two-track header would label nothing. */}
@@ -451,101 +434,5 @@ function ConfirmGitlab({
         </Button>
       </div>
     </>
-  )
-}
-
-// The picker: GitLab searches server-side, so keystrokes settle through a debounce, not a local roster.
-const SEARCH_DEBOUNCE_MS = 300
-
-function AddGitlabProject({
-  connectionId,
-  bound,
-  onBound,
-  onError
-}: {
-  connectionId: string
-  bound: GitlabProjectBindingDto[]
-  onBound: (binding: GitlabProjectBindingDto) => void
-  onError: (message: string | null) => void
-}) {
-  const [query, setQuery] = useState('')
-  const [results, setResults] = useState<GitlabProjectDto[]>([])
-  const [loading, setLoading] = useState(false)
-  const [bindingId, setBindingId] = useState<string | null>(null)
-
-  useEffect(() => {
-    let alive = true
-    setLoading(true)
-    const timer = setTimeout(() => {
-      searchGitlabProjects(connectionId, query.trim() ? { search: query.trim() } : {})
-        .then((page) => alive && setResults(page.projects))
-        .catch((e) => alive && onError(errorText(e)))
-        .finally(() => alive && setLoading(false))
-    }, SEARCH_DEBOUNCE_MS)
-    return () => {
-      alive = false
-      clearTimeout(timer)
-    }
-  }, [connectionId, query, onError])
-
-  const bind = async (project: GitlabProjectDto) => {
-    if (bindingId) return
-    setBindingId(project.projectId)
-    onError(null)
-    try {
-      onBound(await createGitlabProject({ connectionId, projectId: project.projectId }))
-    } catch (e) {
-      onError(errorText(e))
-    } finally {
-      setBindingId(null)
-    }
-  }
-
-  const boundIds = new Set(bound.map((b) => b.projectId))
-
-  return (
-    <div className="border-b border-(--border-subtle) bg-(--surface-sunken) px-4 py-3">
-      <label className="relative flex items-center">
-        <Icon
-          name="search"
-          size={15}
-          color="var(--text-tertiary)"
-          className="pointer-events-none absolute left-[11px]"
-        />
-        <input
-          className="inp mn pl-[34px]"
-          placeholder="Search your GitLab projects…"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          aria-label="Search GitLab projects"
-        />
-      </label>
-      {loading && <LoadingState size={18} padding={12} />}
-      {!loading && results.length === 0 && (
-        <div className="py-3 text-center font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-          No projects matched.
-        </div>
-      )}
-      {!loading &&
-        results.map((p) => (
-          <div key={p.projectId} className="flex items-center gap-3 py-[7px]">
-            <span className="mono min-w-0 flex-1 truncate text-[12.5px]">{p.path}</span>
-            {boundIds.has(p.projectId) ? (
-              <span className="badge bg-(--surface-active) text-(--text-tertiary)">added</span>
-            ) : (
-              <Button
-                variant="ghost"
-                size="xs"
-                disabled={bindingId !== null}
-                onClick={() => bind(p)}
-                ariaLabel={`Add ${p.path}`}
-              >
-                <Icon name="plus" size={13} />
-                {bindingId === p.projectId ? 'Adding…' : 'Add'}
-              </Button>
-            )}
-          </div>
-        ))}
-    </div>
   )
 }

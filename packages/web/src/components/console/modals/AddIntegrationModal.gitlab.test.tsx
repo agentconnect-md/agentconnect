@@ -6,10 +6,13 @@
  * stored vocabulary the CP validates (`family:*` patterns, note families,
  * labels, mention-only) keyed by the project's numeric id rather than its
  * renameable path; and pushes stay a per-push subscription across the cadence.
+ *
+ * The picker also offers projects the organization has not added yet, because
+ * this wizard is now where a project joins the organization.
  */
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Agent } from '@/lib/data'
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
@@ -17,6 +20,9 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 const mocks = vi.hoisted(() => ({
   createGitlabHook: vi.fn(async () => ({ id: 'hook-1', agentId: 'agent-a', kind: 'gitlab' })),
   fetchGitlabProjects: vi.fn(),
+  fetchGitlabConnections: vi.fn(),
+  searchGitlabProjects: vi.fn(),
+  createGitlabProject: vi.fn(),
   daemons: [] as unknown[]
 }))
 
@@ -45,7 +51,10 @@ vi.mock('@/lib/api', async (importOriginal) => ({
   fetchGithubInstallUrl: vi.fn(async () => null),
   fetchGithubRepoRoster: vi.fn(async () => ({ repos: [], privateReposHidden: false, failed: false })),
   syncGithubInstallations: vi.fn(async () => []),
-  fetchGitlabProjects: mocks.fetchGitlabProjects
+  fetchGitlabProjects: mocks.fetchGitlabProjects,
+  fetchGitlabConnections: mocks.fetchGitlabConnections,
+  searchGitlabProjects: mocks.searchGitlabProjects,
+  createGitlabProject: mocks.createGitlabProject
 }))
 
 const AddIntegrationModal = (await import('./AddIntegrationModal')).default
@@ -68,6 +77,18 @@ const project = {
   serviceAccountUsername: 'project_4210_bot',
   webhookInstalled: true,
   credentialEpoch: '1',
+  createdAt: '2026-08-01T00:00:00.000Z'
+}
+
+const connection = {
+  id: 'conn-1',
+  gitlabUserId: '4711',
+  gitlabUsername: 'octo-maintainer',
+  state: 'connected',
+  scopes: ['api'],
+  connectedBy: 'user-1',
+  accessExpiresAt: null,
+  assignedProjects: 0,
   createdAt: '2026-08-01T00:00:00.000Z'
 }
 
@@ -106,6 +127,19 @@ async function pickProject() {
   await act(async () => clickText('acme/platform')?.click())
 }
 
+/** One usable connection with nothing else on offer; a test that needs another shape overrides it. */
+beforeEach(() => {
+  mocks.fetchGitlabConnections.mockResolvedValue({ enabled: true, connections: [connection] })
+  mocks.searchGitlabProjects.mockResolvedValue({ projects: [], nextPage: null })
+})
+
+/** Candidates are searched on GitLab behind a debounce; let it elapse for real. */
+async function settleSearch() {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 400))
+  })
+}
+
 afterEach(async () => {
   setFlags()
   if (root) await act(async () => root?.unmount())
@@ -114,6 +148,9 @@ afterEach(async () => {
   host = undefined
   mocks.createGitlabHook.mockClear()
   mocks.fetchGitlabProjects.mockReset()
+  mocks.fetchGitlabConnections.mockReset()
+  mocks.searchGitlabProjects.mockReset()
+  mocks.createGitlabProject.mockReset()
   mocks.daemons = []
 })
 
@@ -126,6 +163,7 @@ describe('AddIntegrationModal, GitLab trigger', () => {
     expect(tileNamed('GitHub')).toBeDefined()
     expect(tileNamed('GitLab')).toBeUndefined()
     expect(mocks.fetchGitlabProjects).not.toHaveBeenCalled()
+    expect(mocks.fetchGitlabConnections).not.toHaveBeenCalled()
   })
 
   it('defaults to the updated trigger, scoping replies to the selected subjects', async () => {
@@ -236,13 +274,52 @@ describe('AddIntegrationModal, GitLab trigger', () => {
     expect(tileNamed('Discord')?.getAttribute('aria-disabled')).toBe('true')
   })
 
-  it('points at the connection surface when no project has been added', async () => {
+  it('points at the connection surface when no GitLab account is connected', async () => {
     setFlags('gitlab')
     mocks.fetchGitlabProjects.mockResolvedValue([])
+    mocks.fetchGitlabConnections.mockResolvedValue({ enabled: true, connections: [] })
     await render()
     await act(async () => tileNamed('GitLab')?.click())
 
-    expect(document.body.textContent).toContain('No GitLab projects have been added yet')
+    expect(document.body.textContent).toContain('No GitLab account is connected yet')
     expect(document.querySelector('a[href="/acme/integrations"]')).not.toBeNull()
+    // Nothing to search through: an unusable connection never reaches the picker.
+    expect(mocks.searchGitlabProjects).not.toHaveBeenCalled()
+  })
+
+  it('sets up a project the organization has not added, then picks it', async () => {
+    setFlags('gitlab')
+    mocks.fetchGitlabProjects.mockResolvedValue([])
+    mocks.searchGitlabProjects.mockResolvedValue({
+      projects: [{ projectId: '4210', path: 'acme/platform', defaultBranch: 'main', lastActivityAt: null }],
+      nextPage: null
+    })
+    let settle: (binding: typeof project) => void = () => undefined
+    mocks.createGitlabProject.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          settle = resolve
+        })
+    )
+    await render()
+    await act(async () => tileNamed('GitLab')?.click())
+    await settleSearch()
+    expect(mocks.searchGitlabProjects).toHaveBeenCalledWith('conn-1', {})
+
+    await act(async () => document.querySelector<HTMLDivElement>('.inp')?.click())
+    // The candidate says what picking it will do before the click.
+    expect(document.body.textContent).toContain('sets up on pick')
+    await act(async () => clickText('acme/platform')?.click())
+    expect(mocks.createGitlabProject).toHaveBeenCalledWith({ connectionId: 'conn-1', projectId: '4210' })
+    // The saga takes seconds; the option says so while it runs.
+    expect(document.body.textContent).toContain('Setting up the project bot and webhook')
+
+    await act(async () => {
+      settle(project)
+    })
+    await act(async () => clickText('Connect')?.click())
+    expect(mocks.createGitlabHook).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: 'agent-a', name: 'acme/platform', projectId: '4210' })
+    )
   })
 })
