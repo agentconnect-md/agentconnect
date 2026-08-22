@@ -317,7 +317,7 @@ describe('rowLabel', () => {
 })
 
 describe('IntegrationChannelList direct rows', () => {
-  it('renders an Everyone DM with its Off/On control', () => {
+  it('renders an Everyone DM with its on/off trigger dropdown', () => {
     const html = renderToStaticMarkup(
       createElement(IntegrationChannelList, {
         platform: 'discord',
@@ -326,8 +326,9 @@ describe('IntegrationChannelList direct rows', () => {
       })
     )
     expect(html).toContain('Direct messages')
-    expect(html).toContain('>off</button>')
-    expect(html).toContain('>on</button>')
+    // The closed control READS the current choice; "off" is one menu item away.
+    expect(html).toContain('aria-label="Trigger for Alice"')
+    expect(html).toContain('>on</span>')
   })
 
   it('renders shared-bot default dispatch for a DM', () => {
@@ -342,5 +343,32 @@ describe('IntegrationChannelList direct rows', () => {
       })
     )
     expect(html).toContain('Default dispatch — Bob')
+  })
+})
+
+// A row offers exactly one way out, so it spends it directly — the same × the repository
+// rows carry — rather than hiding a single item behind an overflow menu.
+describe('IntegrationChannelList row action', () => {
+  const render = (platform: string) =>
+    renderToStaticMarkup(
+      createElement(IntegrationChannelList, {
+        integrationId: 'int_alice',
+        platform,
+        channels: [{ channelId: 'C1', name: 'deploys', kind: 'channel', trigger: 'mention' }]
+      })
+    )
+
+  it('delists with an × where the bot cannot leave', () => {
+    const html = render('slack')
+    expect(html).toContain('aria-label="Remove from this list: deploys"')
+    expect(html).toContain('lucide-x')
+    expect(html).not.toContain('lucide-ellipsis')
+  })
+
+  it('leaves, and says so, where the platform can leave one conversation', () => {
+    const html = render('telegram')
+    expect(html).toContain('aria-label="Leave group: deploys"')
+    expect(html).toContain('lucide-log-out')
+    expect(html).not.toContain('lucide-ellipsis')
   })
 })
