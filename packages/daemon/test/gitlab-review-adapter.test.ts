@@ -233,12 +233,17 @@ interface CpOptions {
   supports?: boolean
   renewPhase?: CodeHostReviewLeasePhase
   serviceAccountUserId?: string
+  /** Operation records a previous incarnation left permitted but unsettled. */
+  seedStarted?: string[]
   /** Return an error to fail that delivery; the frame is then owed and replayed. */
   operateFails?: (op: CodeHostReviewOpRequest) => Error | undefined
   reportFails?: (result: CodeHostReviewResultReport) => Error | undefined
 }
 
 function fakeCp(opts: CpOptions = {}) {
+  const records = new Map<string, 'issued' | 'request_started' | 'settled'>(
+    (opts.seedStarted ?? []).map((id) => [id, 'request_started' as const])
+  )
   const authorizations: CodeHostReviewAuthorize[] = []
   const ops: CodeHostReviewOpRequest[] = []
   const results: CodeHostReviewResultReport[] = []
@@ -278,9 +283,12 @@ function fakeCp(opts: CpOptions = {}) {
       const failure = payload.op === 'settle' ? opts.operateFails?.(payload) : undefined
       if (failure) throw failure
       if (payload.op === 'issue') {
+        const recordId = `rec-${payload.kind}-${payload.ordinal}`
+        if (records.get(recordId) === 'settled') throw new Error('permit conflict')
+        records.set(recordId, 'issued')
         return {
           op: 'issue',
-          recordId: `rec-${payload.kind}-${payload.ordinal}`,
+          recordId,
           attemptId: payload.attemptId,
           fence: payload.fence,
           kind: payload.kind,
@@ -290,6 +298,7 @@ function fakeCp(opts: CpOptions = {}) {
         }
       }
       const [, kind, ordinal] = payload.recordId.split('-')
+      records.set(payload.recordId, payload.op === 'start' ? 'request_started' : 'settled')
       return {
         op: payload.op,
         recordId: payload.recordId,
@@ -314,17 +323,23 @@ function fakeCp(opts: CpOptions = {}) {
       return { accepted: true, phase: 'settled' }
     }
   }
-  return { cp, authorizations, ops, results }
+  return { cp, authorizations, ops, results, records }
 }
 
 /** The daemon-local durability the adapter depends on, in memory. */
 class FakeReviewStore {
   readonly rows = new Map<string, ReviewIntentRow>()
   private secret?: string
-  failRecord = false
+  /** Writes still to be refused; Infinity models a store that never comes back. */
+  failWrites = 0
+  /** The real store answers one bounded page at a time. */
+  pageSize = 100
 
   async recordReviewIntent(row: ReviewIntentRow): Promise<void> {
-    if (this.failRecord) throw new Error('store unavailable')
+    if (this.failWrites > 0) {
+      this.failWrites -= 1
+      throw new Error('store unavailable')
+    }
     this.rows.set(row.intentId, { ...row })
   }
 
@@ -333,7 +348,7 @@ class FakeReviewStore {
   }
 
   async listReviewIntents(daemonId: string): Promise<ReviewIntentRow[]> {
-    return [...this.rows.values()].filter((row) => row.daemonId === daemonId)
+    return [...this.rows.values()].filter((row) => row.daemonId === daemonId).slice(0, this.pageSize)
   }
 
   /** One value for the process's lifetime, exactly like the store row it stands in for. */
@@ -380,6 +395,7 @@ interface Harness {
   authorizations: CodeHostReviewAuthorize[]
   reviewStore: FakeReviewStore
   timer: ReturnType<typeof fakeScheduler>
+  records: Map<string, 'issued' | 'request_started' | 'settled'>
   persisted: () => number
   tokens: () => string[]
   invalidated: () => string[]
@@ -393,6 +409,7 @@ function harness(
     tokens?: string[]
     hook?: HookDispatchContext
     reviewStore?: FakeReviewStore
+    seedStarted?: string[]
     attemptIds?: string[]
     open?: boolean
     failPersist?: boolean
@@ -400,7 +417,7 @@ function harness(
 ): Harness {
   const state = opts.state ?? gitlabState()
   const gitlab = fakeGitlab(state, opts.script ?? [])
-  const control = fakeCp(opts.cp ?? {})
+  const control = fakeCp({ ...(opts.cp ?? {}), ...(opts.seedStarted ? { seedStarted: opts.seedStarted } : {}) })
   const supply = opts.tokens ?? ['glpat-effect-1']
   const minted: string[] = []
   const invalidated: string[] = []
@@ -455,6 +472,7 @@ function harness(
     authorizations: control.authorizations,
     reviewStore,
     timer,
+    records: control.records,
     persisted: () => persisted,
     tokens: () => minted,
     invalidated: () => invalidated
@@ -1150,6 +1168,206 @@ describe('GitLab review adapter — durable ownership and ack replay (round 2)',
   })
 })
 
+describe('GitLab review adapter — started-operation recovery (round 3)', () => {
+  /** The durable record a crash between the permitted request and its settlement leaves behind. */
+  function crashedAttempt(): HookDispatchContext {
+    return hookContext({
+      codeReview: {
+        attemptId: ATTEMPT,
+        event: 'COMMENT',
+        verdict: 'neutral',
+        headSha: HEAD,
+        ordinals: { draft_create: 1 },
+        operations: [
+          {
+            recordId: 'rec-draft_create-0',
+            startToken: 'start-0',
+            kind: 'draft_create',
+            ordinal: 0,
+            target: `/projects/${PROJECT}/merge_requests/${IID}/draft_notes`,
+            draftOrdinal: 0
+          }
+        ]
+      }
+    })
+  }
+
+  it('settles the exact started record from provider evidence before creating anything new', async () => {
+    const state = gitlabState()
+    const draftId = '9007199254746001'
+    state.drafts.push({ id: draftId, note: `summary\n\n${signer.mint(ATTEMPT, 0, HEAD)}` })
+    const h = harness({ state, hook: crashedAttempt(), seedStarted: ['rec-draft_create-0'] })
+
+    const outcome = (await h.adapter.submit(KEY, request())) as GitlabReviewOutcome
+    expect(outcome.state).toBe('submitted')
+    // The recovered record is settled deterministically, naming the draft that proves the effect.
+    const settle = h.ops.find((op) => op.op === 'settle' && op.recordId === 'rec-draft_create-0') as {
+      outcome: { kind: string; externalId?: string }
+    }
+    expect(settle.outcome).toEqual({ kind: 'deterministic', status: 201, externalId: draftId })
+    // ...and it is settled BEFORE the attempt issues another operation.
+    const settledAt = h.ops.findIndex((op) => op.op === 'settle' && op.recordId === 'rec-draft_create-0')
+    const nextIssue = h.ops.findIndex((op) => op.op === 'issue' && op.kind === 'draft_create')
+    expect(settledAt).toBeGreaterThanOrEqual(0)
+    expect(nextIssue === -1 || settledAt < nextIssue).toBe(true)
+    // Nothing is left permitted-but-unsettled on the control plane.
+    expect([...h.records.values()].filter((phase) => phase === 'request_started')).toEqual([])
+    // The recovered draft is reused rather than created again, and the coordinate is not reused.
+    expect(drafted(h.calls)).toEqual([])
+    expect(h.hook.codeReview?.operations).toEqual([])
+  })
+
+  it('never reuses a spent operation coordinate after a recovery', async () => {
+    const state = gitlabState()
+    const h = harness({ state, hook: crashedAttempt(), seedStarted: ['rec-draft_create-0'] })
+    await h.adapter.submit(KEY, request())
+    // Ordinal 0 belongs to the crashed request; the replacement draft takes the next one.
+    const issued = h.ops.filter((op) => op.op === 'issue' && op.kind === 'draft_create') as Array<{ ordinal: number }>
+    expect(issued.map((op) => op.ordinal)).toEqual([1])
+    expect(h.hook.codeReview?.ordinals).toMatchObject({ draft_create: 2 })
+  })
+
+  it('proves a started draft create had no effect when no marker exists', async () => {
+    const h = harness({ hook: crashedAttempt(), seedStarted: ['rec-draft_create-0'] })
+    await h.adapter.submit(KEY, request())
+    const settle = h.ops.find((op) => op.op === 'settle' && op.recordId === 'rec-draft_create-0') as {
+      outcome: { kind: string; code?: string }
+    }
+    expect(settle.outcome).toMatchObject({ kind: 'deterministic', code: 'draft_absent' })
+    // The replacement draft is issued only AFTER the crashed record is accounted for.
+    const settledAt = h.ops.findIndex((op) => op.op === 'settle' && op.recordId === 'rec-draft_create-0')
+    const nextIssue = h.ops.findIndex((op) => op.op === 'issue' && op.kind === 'draft_create')
+    expect(nextIssue).toBeGreaterThan(settledAt)
+    expect([...h.records.values()].filter((phase) => phase === 'request_started')).toEqual([])
+  })
+
+  it('locks instead of republishing when a started bulk publish left no marker', async () => {
+    const hook = hookContext({
+      codeReview: {
+        attemptId: ATTEMPT,
+        event: 'COMMENT',
+        verdict: 'neutral',
+        headSha: HEAD,
+        ordinals: { bulk_publish: 1 },
+        operations: [
+          {
+            recordId: 'rec-bulk_publish-0',
+            startToken: 'start-1',
+            kind: 'bulk_publish',
+            ordinal: 0,
+            target: `/projects/${PROJECT}/merge_requests/${IID}/draft_notes/bulk_publish`
+          }
+        ]
+      }
+    })
+    const h = harness({ hook, seedStarted: ['rec-bulk_publish-0'] })
+    const outcome = (await h.adapter.submit(KEY, request())) as GitlabReviewOutcome
+    expect(outcome.state).toBe('ambiguous_locked')
+    expect(published(h.calls)).toEqual([])
+    expect([...h.records.values()].filter((phase) => phase === 'request_started')).toEqual([])
+  })
+
+  it('adopts a started bulk publish that DID land, and never publishes a second time', async () => {
+    const state = gitlabState()
+    state.notes.push({ id: '9007199254746777', body: `summary\n\n${signer.mint(ATTEMPT, 0, HEAD)}` })
+    const hook = hookContext({
+      codeReview: {
+        attemptId: ATTEMPT,
+        event: 'COMMENT',
+        verdict: 'neutral',
+        headSha: HEAD,
+        ordinals: { bulk_publish: 1 },
+        operations: [
+          {
+            recordId: 'rec-bulk_publish-0',
+            startToken: 'start-1',
+            kind: 'bulk_publish',
+            ordinal: 0,
+            target: `/projects/${PROJECT}/merge_requests/${IID}/draft_notes/bulk_publish`
+          }
+        ]
+      }
+    })
+    const h = harness({ state, hook, seedStarted: ['rec-bulk_publish-0'] })
+    const outcome = (await h.adapter.submit(KEY, request())) as GitlabReviewOutcome
+    // A recovered publication cannot prove the unchanged-state postcondition.
+    expect(outcome.state).toBe('review_state_not_recorded')
+    expect(published(h.calls)).toEqual([])
+    expect(outcome.externalIds).toEqual([{ kind: 'note', externalId: '9007199254746777' }])
+    expect(codeHostReviewFallbackAllowed(h.hook)).toBe(false)
+  })
+})
+
+describe('GitLab review adapter — owed frames are never dropped (round 3)', () => {
+  it('absorbs a transient local write failure and still delivers the frame', async () => {
+    const store = new FakeReviewStore()
+    store.failWrites = 1
+    const h = harness({ reviewStore: store })
+    const outcome = (await h.adapter.submit(KEY, request())) as GitlabReviewOutcome
+    expect(outcome.state).toBe('submitted')
+    expect(store.rows.size).toBe(0)
+    expect(h.results.at(-1)).toMatchObject({ state: 'submitted' })
+  })
+
+  it('replays a frame whose durable write never landed, from memory, on the resweep', async () => {
+    const store = new FakeReviewStore()
+    store.failWrites = Number.POSITIVE_INFINITY
+    let refuse = true
+    const h = harness({
+      reviewStore: store,
+      cp: {
+        reportFails: () => {
+          const err = refuse ? Object.assign(new Error('control plane unreachable'), { retryable: true }) : undefined
+          refuse = false
+          return err
+        }
+      }
+    })
+    await h.adapter.submit(KEY, request())
+    // Nothing reached the store, so only the in-memory copy can save the frame.
+    expect(store.rows.size).toBe(0)
+    expect(h.timer.armed()).toBe(1)
+    store.failWrites = 0
+    await h.timer.fire()
+    expect(h.results.filter((row) => row.attemptId === ATTEMPT)).toHaveLength(2)
+    expect(store.rows.size).toBe(0)
+    expect(h.timer.armed()).toBe(0)
+  })
+
+  it('drains every page of owed frames before it goes quiet', async () => {
+    const store = new FakeReviewStore()
+    for (let index = 0; index < 101; index += 1) {
+      await store.recordReviewIntent({
+        intentId: `owed-${index}`,
+        daemonId: DAEMON_ID,
+        attemptId: ATTEMPT,
+        orgId: 'org-1',
+        kind: 'result',
+        frame: JSON.stringify({
+          hookId: HOOK_ID,
+          deliveryKey: 'delivery-1',
+          attemptId: ATTEMPT,
+          snapshot: SNAPSHOT,
+          provider: 'gitlab',
+          projectId: PROJECT,
+          mergeRequestIid: IID,
+          event: 'COMMENT',
+          verdict: 'neutral',
+          headSha: HEAD,
+          state: 'submitted'
+        }),
+        attempts: 0
+      })
+    }
+    const h = harness({ reviewStore: store, open: false })
+    await h.adapter.reconcilePending()
+    // The store answers 100 at a time; a page of acked rows is not an empty store.
+    expect(store.rows.size).toBe(0)
+    expect(h.results).toHaveLength(101)
+    expect(h.timer.armed()).toBe(0)
+  })
+})
+
 describe('GitLab review durability in the real daemon store', () => {
   let root: string
   let store: LocalStore
@@ -1243,9 +1461,8 @@ describe('GitLab review adapter — credentials and features', () => {
     })
     await daemon.start()
     try {
-      expect((daemon as never as Record<string, () => string[]>).registrationFeatures()).toContain(
-        CODEHOST_REVIEW_V1_FEATURE
-      )
+      const features = (daemon as unknown as { registrationFeatures(): string[] }).registrationFeatures()
+      expect(features).toContain(CODEHOST_REVIEW_V1_FEATURE)
     } finally {
       await daemon.stop().catch(() => {})
     }

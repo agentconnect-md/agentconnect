@@ -1,5 +1,6 @@
 import {
   codeHostReviewPublicEffect,
+  type CodeHostReviewOpKind,
   type CodeHostReviewState,
   type HookReviewEvent,
   type HookReviewVerdict,
@@ -165,6 +166,21 @@ export interface CodeReviewAttempt {
   verdict: HookReviewVerdict
   headSha: string
   state?: CodeHostReviewState
+  /** Next operation-ledger ordinal per kind — monotonic, so a replay never reuses a spent coordinate. */
+  ordinals?: Record<string, number>
+  /** Operations whose one outbound request was permitted but not yet settled (§15.1). */
+  operations?: CodeReviewOperation[]
+}
+
+/** The coordinates of ONE permitted provider request, written before it is sent. */
+export interface CodeReviewOperation {
+  recordId: string
+  startToken: string
+  kind: CodeHostReviewOpKind
+  ordinal: number
+  target: string
+  /** Draft ordinal for a `draft_create`, so its marker can identify the effect on replay. */
+  draftOrdinal?: number
 }
 
 /** §15.2 single-writer gate: only a PROVEN no-effect attempt leaves the ordinary reply available. */
