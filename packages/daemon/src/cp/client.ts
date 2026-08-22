@@ -26,6 +26,8 @@ import type {
   GithubReviewAuthorized,
   GithubReviewResultReport,
   GithubReviewResultOk,
+  CodeHostNoteResult,
+  CodeHostNoteResultOk,
   GitCredRequest,
   GitCredGrant,
   ChannelAgentsReq,
@@ -70,6 +72,7 @@ import {
 import { ReqRep, WireError, type Clock, type TimerHandle, type Transport } from '@agentconnect.md/connection'
 import type { AgentControlDeps } from './control/agent.js'
 import type { ControlWire } from './control/context.js'
+import type { CodeHostControlDeps } from './control/codehost.js'
 import type { DreamControlDeps } from './control/dream.js'
 import type { MemoryControlDeps } from './control/memory.js'
 import { CONTROL_HANDLERS, type ControlDeps } from './control/registry.js'
@@ -122,6 +125,7 @@ export interface CpClientDeps
     SessionControlDeps,
     SkillsControlDeps,
     TaskControlDeps,
+    CodeHostControlDeps,
     WorkspaceReadDeps {
   url: string
   /** The CP API key. Absent on an in-cluster daemon, which presents
@@ -277,6 +281,7 @@ export class CpClient {
       localSkillsReader: deps.localSkillsReader,
       runtimeCommandsReader: deps.runtimeCommandsReader,
       gitMessagePasses: new GitMessagePasses(),
+      codeHostNoteProjection: deps.codeHostNoteProjection,
       noteLeasesGranted: (groupIds) => this.noteLeasesGranted(groupIds),
       forgetLeaseDeadlines: (groupIds) => this.forgetLeaseDeadlines(groupIds),
       onDutyRenewed: (leaseMs) => this.onDutyRenewed(leaseMs),
@@ -781,6 +786,16 @@ export class CpClient {
       throw new WireError('INTERNAL', `expected github/review-result/ok, got ${rep.type}`, false)
     }
     return rep.payload as GithubReviewResultOk
+  }
+
+  /** The observed outcome of ONE desired run projection generation (gitlab-com-integration.md §16). */
+  async reportCodeHostNoteResult(payload: CodeHostNoteResult, orgId?: string): Promise<CodeHostNoteResultOk> {
+    this.requireReady('codehost/note-result')
+    const rep = await this.request('codehost/note-result', payload, orgId)
+    if (rep.type !== 'codehost/note-result/ok') {
+      throw new WireError('INTERNAL', `expected codehost/note-result/ok, got ${rep.type}`, false)
+    }
+    return rep.payload as CodeHostNoteResultOk
   }
 
   async issueWebchatMcpGrant(payload: WebchatMcpGrantIssue, orgId?: string): Promise<WebchatMcpGrantIssued> {
