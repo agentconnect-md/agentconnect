@@ -73,6 +73,11 @@ describe('SlackConnection.uploadFile', () => {
       'https://files.slack.com/upload/v1/x',
       expect.objectContaining({ method: 'POST' })
     )
+    // The multipart part must be named `body`, the name Slack's own SDK sends. Anything
+    // else — `file`, say — is answered with HTTP 500 by the reserved upload URL.
+    const posted = undici.fetch.mock.calls[0]![1] as { body: FormData }
+    expect(posted.body.has('body')).toBe(true)
+    expect(posted.body.has('file')).toBe(false)
     // channel_id is what turns a hosted file into a message; without it the upload stays
     // private. The caption rides as initial_comment, and the agent keeps its own identity.
     expect(completeUploadExternal).toHaveBeenCalledWith({
