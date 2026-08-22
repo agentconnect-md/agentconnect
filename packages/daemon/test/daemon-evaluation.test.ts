@@ -7,6 +7,12 @@ import { Daemon } from '../src/daemon.js'
 import { MEMORY_DISTILLATION_SYSTEM_PROMPT } from '../src/memory/distill.js'
 import { EvaluationEventCollector } from '../src/evaluation/index.js'
 
+// The outward `sessionId` a frame carries for the slot behind an ACP hop id (session-concept.md §1.1).
+const outwardId = async (daemon: any, acpSessionId: string): Promise<string> => {
+  const slot = await daemon.store.getSessionByAcpId(acpSessionId)
+  return slot!.sessionId ?? (await daemon.store.ensureOutwardSessionId(slot!.key, slot!.agentId ?? undefined))
+}
+
 // vi.waitFor defaults to a 1000ms budget — too tight on a loaded CI runner, where a
 // cold session boot (workspace + host + session/new) can stall well past a second.
 // Give every poll in this file the same generous budget instead.
@@ -223,8 +229,12 @@ describe('Daemon evaluation surface', () => {
       expect(dream?.status).toBe('adopted')
     }, WAIT)
 
+    // The dream row names its execution session outwardly (§1.1), stored at write time so the
+    // record keeps one identity after the session itself is purged.
+    const outwardExecution = (await (daemon as any).store.getSessionByAcpId('dream-session-1'))!.sessionId
+    expect(outwardExecution).not.toBe('dream-session-1')
     expect(dream).toMatchObject({
-      executionSessionId: 'dream-session-1',
+      executionSessionId: outwardExecution,
       runtime: 'test',
       model: 'test-model',
       stopReason: 'end_turn',
@@ -279,7 +289,7 @@ describe('Daemon evaluation surface', () => {
     // the teardown window is covered by the ignore-cancel test below.
     expect((daemon as any).memoryExtractionQuarantines.size).toBe(0)
     expect(usageReports.at(-1)).toMatchObject({
-      sessionId: 'dream-session-1',
+      sessionId: await outwardId(daemon, 'dream-session-1'),
       agentId: AGENT_ID,
       platform: 'dream',
       channel: 'memory'
@@ -292,7 +302,8 @@ describe('Daemon evaluation surface', () => {
     })
     expect(collector.events().at(-1)).toMatchObject({
       type: 'memory.dream.skill_accepted',
-      sessionId: 'dream-session-1',
+      // The evaluation event carries the dream's own record, which names its session outwardly.
+      sessionId: outwardExecution,
       data: { dreamId: started.dreamId, skillName: 'deploy-staging' }
     })
     const reviewedHistory = (await (daemon as any).store.threadTranscript('memory', started.dreamId))

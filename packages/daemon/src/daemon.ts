@@ -1287,7 +1287,8 @@ export class Daemon {
         await this.dispatch(agentId, msg, integrationId, undefined, undefined, { isQueueCmd: true })
       },
       replyConnFor: (agentId, integrationId) => this.replyConnFor(agentId, integrationId),
-      sessionLink: (acpSessionId, source) => this.sessionLink(acpSessionId, source),
+      sessionLink: (sessionId, source) => this.sessionLink(sessionId, source),
+      outwardSessionId: (agentId, acpSessionId) => this.outwardSessionIdForAcp(agentId, acpSessionId),
       sessionLinkSource: (platform, integrationId) => this.sessionLinkSource(platform, integrationId),
       threadOwner: async (channel, thread, transportScope) =>
         await this.sessions.threadOwner(channel, thread, transportScope),
@@ -2369,7 +2370,7 @@ export class Daemon {
         const scope = createWorkspaceScope({
           workspaces: this.workspaces,
           agentOf: (id) => this.agents.get(id),
-          sessionOf: (id, acpSessionId) => this.store.getSessionByAcpIdForAgent(id, acpSessionId),
+          sessionOf: (id, sessionId) => this.store.getSessionByOutwardId(sessionId, id),
           runtimeRootOf: (id) => this.k8sPlane?.workspaceRootFor(id)
         })
         const acpSessionId = await this.acpSessionIdForToolCall(ctx).catch(() => undefined)
@@ -2505,6 +2506,7 @@ export class Daemon {
     )
 
     this.sessions = new SessionManager({
+      prepareOutwardBinding: (agentId, key) => this.prepareOutwardBinding(agentId, key),
       // THIS daemon's plane. Omitting it hands the manager a local-mode one, and
       // `additionalWorkspaceDirectories` would then `realpathSync` a `--k8s` workspace's pod-side
       // cwd against this filesystem — failing session create/load before the runtime call.
@@ -3809,6 +3811,8 @@ export class Daemon {
       orgForAgent: (agentId) => this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId),
       modelOverride: async (sessionKey) => await this.store.getModelOverride(sessionKey),
       acpSessionId: async (sessionKey) => (await this.store.getSession(sessionKey))?.acpSessionId,
+      outwardSessionId: async (sessionKey, agentId) =>
+        await this.store.ensureOutwardSessionId(sessionKey, agentId, this.clock.now()),
       sessionKeyForAcpId: async (agentId, acpSessionId) =>
         (await this.store.getSessionByAcpIdForAgent(agentId, acpSessionId))?.key,
       sessionSdkQuiescent: (agentId, acpSessionId) => this.sessionSdkQuiescent(agentId, acpSessionId),
@@ -4580,7 +4584,9 @@ export class Daemon {
     if (dream) {
       await this.store.updateDream({
         ...dream,
-        executionSessionId: sessionId,
+        // Stored outwardly (§1.1), not resolved at read time: the dream outlives its session, and
+        // a record whose identity changes when the session is purged is worse than no link.
+        executionSessionId: await this.store.ensureOutwardSessionId(executionKey, agentId, this.clock.now()),
         runtime: agent.runtime,
         ...(model ? { model } : {})
       })
@@ -4799,7 +4805,7 @@ export class Daemon {
     })
 
     if (!dream.executionSessionId || event.type === 'memory.dream.started') return
-    const rec = await this.store.getSessionByAcpIdForAgent(dream.agentId, dream.executionSessionId)
+    const rec = await this.store.getSessionByOutwardId(dream.executionSessionId, dream.agentId)
     if (!rec) return
     const message: Partial<Record<DreamLifecycleEvent['type'], string>> = {
       'memory.dream.completed': 'Dream completed. The staged memory is ready for review.',
@@ -4821,7 +4827,8 @@ export class Daemon {
     }
     await this.store.setSessionState(rec.key, 'idle', this.clock.now())
     await this.sessionMetadataOutbox.emitSessionMetadataSnapshot({
-      sessionId: dream.executionSessionId,
+      // The outbox takes the ACP hop's id and translates; the dream row holds the outward one.
+      sessionId: rec.acpSessionId ?? dream.executionSessionId,
       agentId: dream.agentId,
       phase: event.type === 'memory.dream.failed' ? 'problem' : 'end',
       platform: 'dream',
@@ -6419,7 +6426,7 @@ export class Daemon {
     // policy above still apply. A missing session NAKs `not_found`, mirroring the
     // local replyToSession contract — SessionTarget never creates a session.
     if (msg.lineageReplyTo !== undefined) {
-      const origin = await this.store.getSessionByAcpIdForAgent(msg.toAgentId, msg.lineageReplyTo)
+      const origin = await this.store.getSessionByOutwardId(msg.lineageReplyTo, msg.toAgentId)
       if (!origin) return record(nak('not_found'))
       // Reply transport from the SESSION's own scope (mirrors replyToSession's local branch).
       const replyIntegrationId = this.integrationIdForSessionTransport(
@@ -6708,7 +6715,8 @@ export class Daemon {
       activeGithubTurn: (key) => this.activeGithubTurnMeta.get(key),
       activeGithubReplyBatch: (key) => this.activeGithubReplyBatchMeta.get(key),
       agentLink: (agentId) => this.agentLink(agentId),
-      sessionLink: (acpSessionId, source) => this.sessionLink(acpSessionId, source),
+      sessionLink: (sessionId, source) => this.sessionLink(sessionId, source),
+      outwardSessionId: (agentId, acpSessionId) => this.outwardSessionIdForAcp(agentId, acpSessionId),
       runtimeNames: () => this.runtimeFacts.runtimeNames(),
       hostForStoredSession: async (agentId, acpSessionId) =>
         await this.modelSessions.hostForStoredSession(agentId, acpSessionId)
@@ -7901,12 +7909,19 @@ export class Daemon {
     owner?: HookCompletionOwner
   ): Promise<void> {
     if (owner?.hookTerminalReceipt) return
+    // Every caller here holds the runtime's session id; the CP files the run against
+    // `session_meta.id` and deep-links the console from it, which is the outward one (§1.1).
+    // Translating at this one boundary is what keeps a later caller from getting it wrong.
+    const attributed =
+      extra.sessionId === undefined
+        ? extra
+        : { ...extra, sessionId: (await this.outwardSessionIdForAcp(hook.agentId, extra.sessionId)) ?? extra.sessionId }
     // Interrupt reasons are local vocabulary, but the CP turns THIS one into maintainer-facing
     // Check text, so it crosses as the shared normalized code rather than the internal word.
     const report = this.buildHookReport(
       hook,
       status,
-      extra.reason === 'handover' ? { ...extra, reason: HOOK_REPORT_REASON_AGENT_HANDOVER } : extra
+      attributed.reason === 'handover' ? { ...attributed, reason: HOOK_REPORT_REASON_AGENT_HANDOVER } : attributed
     )
     let reportInboxId: string | undefined
     if (owner?.inboxId) {
@@ -8266,7 +8281,8 @@ export class Daemon {
       admissionWait?: Promise<boolean>
       /** Delay observed-inbound persistence until admissionWait succeeds. */
       deferObservedInbound?: boolean
-      /** Best-effort notification once the ACP session exists, before prompt. */
+      /** Best-effort notification once the session exists, before prompt. Carries its OUTWARD
+       *  id (session-concept.md §1.1) — every consumer of this reports it onward. */
       onSessionReady?: (sessionId: string) => void
     },
     githubReply?: GithubReplyTarget,
@@ -9159,7 +9175,14 @@ export class Daemon {
     const pendingWebchat = webchat
       ? Object.assign(webchat, { index: 0, replyText: '', heldText: '', messageEmitted: false })
       : undefined
-    const p = this.buildPending(run, { conv, rec, sessionId, webchat: pendingWebchat })
+    // Resolved once for the turn: the console addresses this session by its outward id (§1.1),
+    // and most of the turn's link/status producers are synchronous.
+    const outwardSessionId = await this.store.ensureOutwardSessionId(
+      run.plan.sessionKey,
+      run.entry.agentId,
+      this.clock.now()
+    )
+    const p = this.buildPending(run, { conv, rec, sessionId, outwardSessionId, webchat: pendingWebchat })
     const activeTurn = await this.installActiveTurnContext(run, sessionId)
     const settlement: TurnSettlement = { finalPhase: 'end', propagatingTurnError: false }
     let turnModel: string | undefined
@@ -9476,7 +9499,9 @@ export class Daemon {
       await this.observedChannelsSync.refreshObservedChannels()
     }
     try {
-      onSessionReady?.(sessionId)
+      // The one consumer is the CP's cron report, a console deep link — so the callback is
+      // handed the session's outward id (§1.1), not the runtime's.
+      onSessionReady?.((await this.outwardSessionIdForAcp(agentId, sessionId)) ?? sessionId)
     } catch (err) {
       this.log.warn(`dispatch: session-ready notification failed (${formatErr(err)})`)
     }
@@ -9485,11 +9510,17 @@ export class Daemon {
   /** Build this turn's live record from its plan and register it as the session's Pending turn. */
   private buildPending(
     run: TurnRun,
-    turn: { conv: DaemonConverger; rec: TranscriptRecorder; sessionId: string; webchat: Pending['webchat'] }
+    turn: {
+      conv: DaemonConverger
+      rec: TranscriptRecorder
+      sessionId: string
+      outwardSessionId: string
+      webchat: Pending['webchat']
+    }
   ): Pending {
     const { entry, plan } = run
     const { agentId, callMeta, githubReply } = entry
-    const { conv, rec, sessionId } = turn
+    const { conv, rec, sessionId, outwardSessionId } = turn
     let resolveDone!: () => void
     const done = new Promise<void>((r) => (resolveDone = r))
     if (!entry.selectedHost) {
@@ -9521,6 +9552,7 @@ export class Daemon {
       builtinSystemToolCallIds: new Set(),
       hiddenSessionTitleToolCallIds: new Set(),
       acpSessionId: sessionId,
+      outwardSessionId,
       ...(entry.selectedHost ? { selectedHost: entry.selectedHost } : {}),
       turnState: plan.turnSurface.initialTurnState(plan.turnCtx),
       conn: run.replyConn,
@@ -10242,7 +10274,7 @@ export class Daemon {
   ): Promise<void> {
     if (p.webchat && !p.webchat.continuation) return
     const { plan } = run
-    const link = plan.showFooter ? this.sessionLink(sessionId) : undefined
+    const link = plan.showFooter ? this.sessionLink(p.outwardSessionId) : undefined
     const finalAttributionInfo = plan.showFooter ? await currentAttributionInfo() : undefined
     // A runtime may only publish its final session-scoped model during prompt.
     // Refresh before enqueueing the final body so any not-yet-sent section is born
@@ -10694,7 +10726,7 @@ export class Daemon {
       botUrl: this.agentLink(entry.agentId),
       runtime: this.runtimeFacts.runtimeNames()[agent.runtime] ?? agent.runtime,
       model: (await this.buildStatusInfo(p)).model ?? turnModel ?? 'default',
-      sessionUrl: this.sessionLink(sessionId, this.sessionLinkSource(plan.platform, plan.integrationId)),
+      sessionUrl: this.sessionLink(p.outwardSessionId, this.sessionLinkSource(plan.platform, plan.integrationId)),
       ...(plan.hopLimitNotice ? { notice: plan.hopLimitNotice } : {})
     }
   }
@@ -11090,7 +11122,7 @@ export class Daemon {
         recordReplySegment: (turn, text) => this.recordReplySegment(turn as Pending, text),
         appendTranscript: async (row) => await this.store.appendTranscript(row),
         sessionUrl: (turn) =>
-          this.sessionLink(turn.acpSessionId, this.sessionLinkSource(turn.plan.platform, turn.plan.integrationId))
+          this.sessionLink(turn.outwardSessionId, this.sessionLinkSource(turn.plan.platform, turn.plan.integrationId))
       },
       p,
       turnState<FeishuTurnState>(p),
@@ -11118,10 +11150,48 @@ export class Daemon {
    *  (`DEFAULT_WEB_APP_URL`). The console is org-scoped, so the org slug is inserted when
    *  known; without it the link falls back to `<base>/sessions/<id>`. Provider-rendered
    *  links carry a presentation-only source hint for the generic 404 profile-linking action. */
-  private sessionLink(acpSessionId: string, source?: string): string {
+  /** The console deep link to a session. Takes its OUTWARD id (session-concept.md §1.1) — the
+   *  console resolves what the CP stored, and the CP stores this one. */
+  private sessionLink(sessionId: string, source?: string): string {
     const orgSeg = this.cpOrgSlug ? `/${encodeURIComponent(this.cpOrgSlug)}` : ''
-    const link = `${this.webAppBase()}${orgSeg}/sessions/${encodeURIComponent(acpSessionId)}`
+    const link = `${this.webAppBase()}${orgSeg}/sessions/${encodeURIComponent(sessionId)}`
     return source ? `${link}?source=${source}` : link
+  }
+
+  /** The OUTWARD id of the session an ACP id names (session-concept.md §1.1) — for the reporting
+   *  boundaries that hold only the runtime's. Undefined when this daemon has no such session.
+   *
+   *  The in-flight bindings answer first, and they are why an early report cannot fall back to the
+   *  hop's id: `newSession()` returns a live session that can stream updates before the row
+   *  carrying the mapping is written, and one of those updates (an `available_commands_update`)
+   *  is persisted durably. */
+  private async outwardSessionIdForAcp(agentId: string, acpSessionId: string): Promise<string | undefined> {
+    // `store` is absent only in bare test harnesses constructed without start() — the same guard
+    // the advertisement's own persist makes one line later.
+    const slot = await this.store?.getSessionByAcpIdForAgent(agentId, acpSessionId)
+    const turnKey = pendingTurnKey(agentId, acpSessionId)
+    // Once the row can answer, it is the authority and the binding has done its job.
+    if (slot) {
+      this.openingOutwardSessionIds.delete(turnKey)
+      return await this.store.ensureOutwardSessionId(slot.key, agentId, this.clock.now())
+    }
+    return this.openingOutwardSessionIds.get(turnKey)
+  }
+
+  /** Slots whose runtime session exists but whose row does not yet, by {@link pendingTurnKey}.
+   *  Dropped once the row can answer for itself; bounded so an aborted open cannot accumulate. */
+  private readonly openingOutwardSessionIds = new Map<string, string>()
+
+  /** Mint the slot's outward id BEFORE the runtime is asked for a session, and hand back the
+   *  binder its raw response calls. The binder is synchronous by contract: it runs in the instant
+   *  between the runtime answering and its session becoming reachable, and an update that lands
+   *  while it awaited anything would be dropped for want of an owner. */
+  private async prepareOutwardBinding(agentId: string, key: string): Promise<(acpSessionId: string) => void> {
+    const outward = await this.store.ensureOutwardSessionId(key, agentId, this.clock.now())
+    return (acpSessionId) => {
+      if (this.openingOutwardSessionIds.size >= 2000) this.openingOutwardSessionIds.clear()
+      this.openingOutwardSessionIds.set(pendingTurnKey(agentId, acpSessionId), outward)
+    }
   }
 
   /** The console deep link to an agent: `<base>/<orgSlug>/agents/<agentId>`. Same
@@ -11180,6 +11250,9 @@ export class Daemon {
   ): Promise<StatusBarInfo> {
     const agent = this.agents.get(agentId)
     const usage = await this.store.getUsage(sessionKey)
+    const outwardSessionId = acpSessionId
+      ? await this.store.ensureOutwardSessionId(sessionKey, agentId, this.clock.now())
+      : undefined
     // `?.()` guards a host stub without the method (test fakes); real AcpHosts always have it.
     const host = acpSessionId
       ? await this.modelSessions.hostForStoredSession(agentId, acpSessionId)
@@ -11259,7 +11332,8 @@ export class Daemon {
           }
         : {}),
       ...(allowRuntimeChangesInChat && fast ? { fastModeAvailable: true } : {}),
-      ...(acpSessionId ? { sessionId: acpSessionId } : {})
+      // The console deep-links from this, so it is the session's outward id (§1.1), not the hop's.
+      ...(outwardSessionId ? { sessionId: outwardSessionId } : {})
     }
   }
 
@@ -11287,7 +11361,8 @@ export class Daemon {
       ...(iconUrl ? { iconUrl } : {}),
       ...(sessionTitle ? { sessionTitle } : {})
     }
-    const link = rec.acpSessionId ? this.sessionLink(rec.acpSessionId, 'slack') : undefined
+    const outward = rec.sessionId ?? rec.acpSessionId
+    const link = outward ? this.sessionLink(outward, 'slack') : undefined
     const pending = [...this.pending.values()].find((turn) => turn.plan.sessionKey === sessionKey)
     const cancellable = pending?.chrome.statusCancellable ?? this.inflight.has(sessionKey)
     return { info, identity, ...(link ? { link } : {}), cancellable }
@@ -11351,7 +11426,7 @@ export class Daemon {
       // runtimes only advertise the model after the first prompt). It fills in via edits
       // as usage_update / turn-end land.
       p.chrome.lastStatusBar = key
-      const link = this.sessionLink(p.acpSessionId, 'slack')
+      const link = this.sessionLink(p.outwardSessionId, 'slack')
       const sessionTarget = this.httpSlackSessionTarget(p)
       const shared =
         sessionTarget && p.plan.integrationId
@@ -11575,9 +11650,12 @@ export class Daemon {
     const usage = await this.store.getUsage(key)
     if (Object.keys(usage).length === 0) return
     const observedModel = await this.store.getObservedModel(key)
+    // The wire carries the outward id (§1.1) — the same one the gateway's metered rows carry, so
+    // both sources of a session's spend land on one row instead of two.
+    const outwardSessionId = await this.store.ensureOutwardSessionId(key, agentId, this.clock.now())
     try {
       this.cpClient?.emitUsageReport({
-        sessionId,
+        sessionId: outwardSessionId,
         agentId,
         platform,
         channel,
@@ -11783,7 +11861,14 @@ export class Daemon {
       const host = this.hosts.get(agentId)
       const owned = host?.hasSession(sessionId) || host?.isLoadingSession(sessionId)
       if (owned && !this.internalPassSessions.has(extractionKey)) {
-        const entry = this.runtimeCommands.record(agentId, sessionId, update, this.clock.now())
+        // Recorded under the session's OUTWARD id (§1.1): the row survives the session, so a name
+        // resolved later would change once retention drops the mapping.
+        const entry = this.runtimeCommands.record(
+          agentId,
+          (await this.outwardSessionIdForAcp(agentId, sessionId)) ?? sessionId,
+          update,
+          this.clock.now()
+        )
         // Persisted so a restart/upgrade serves the last-known list instead of "nothing yet".
         // `store` is absent only in bare test harnesses constructed without start().
         if (entry && this.store) {
@@ -13063,9 +13148,13 @@ export class Daemon {
    *  ones fencing the host; then the retained settled ones (newest end first). Only an unknown
    *  agent is an error — no lease answers `tracked:false`, which is a different statement from
    *  "no background tasks" and the console says so. */
-  private listBackgroundTasks(req: TaskListReq): TaskList {
+  private async listBackgroundTasks(req: TaskListReq): Promise<TaskList> {
     if (!this.agents.has(req.agentId)) throw new TaskViolationError(`unknown agent "${req.agentId}"`, 'unknown-agent')
-    const lease = this.sdkLease.get(sdkLeaseKey(req.agentId, req.sessionId))
+    // The console names the session outwardly (§1.1); the lease it wants is keyed by the runtime's
+    // id, so this read is where the two meet. An unresolvable id is passed through, which is what
+    // a pre-v12 session was reported under.
+    const slot = await this.store.getSessionByOutwardId(req.sessionId, req.agentId)
+    const lease = this.sdkLease.get(sdkLeaseKey(req.agentId, slot?.acpSessionId ?? req.sessionId))
     const iso = (ms: number) => new Date(ms).toISOString()
     // Model-authored, so bounded here rather than trusted; the row survives, the tail does not.
     const described = (description: string | undefined) =>
@@ -15028,6 +15117,8 @@ export class Daemon {
     report()
     let readySessionId: string | undefined
     try {
+      // A cron run is a console deep link on the CP side, so every id it reports is the outward
+      // one (§1.1). The ready callback already delivers that; `fireTrigger`'s return is the ACP id.
       const sessionId = await this.fireTrigger(
         agentId,
         msg,
@@ -15045,7 +15136,7 @@ export class Daemon {
         report({
           status: 'success',
           durationMs: Math.max(0, this.clock.now() - firedAt),
-          sessionId
+          sessionId: (await this.outwardSessionIdForAcp(agentId, sessionId)) ?? sessionId
         })
     } catch (err) {
       report({

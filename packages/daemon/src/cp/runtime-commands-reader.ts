@@ -15,7 +15,8 @@ export function createRuntimeCommandsReader(
 ): RuntimeCommandsReader {
   return {
     // An agent this daemon does not run reads as "nothing advertised yet" rather than as another
-    // agent's cache entry surviving a move.
+    // agent's cache entry surviving a move. The advertising session is already named outwardly —
+    // recorded that way (session-concept.md §1.1), because the row outlives the session.
     async list(req) {
       return knowsAgent(req.agentId) ? commands.get(req.agentId) : { reported: false, commands: [] }
     }

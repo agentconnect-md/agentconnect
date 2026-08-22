@@ -128,6 +128,10 @@ export interface DreamStorePort {
   supersededDreams(): Promise<DreamInfo[]>
   /** Dreams still carrying a proposed organization suggestion, newest first. */
   organizationSuggestionDreams(limit: number): Promise<DreamInfo[]>
+  /** The two reads that name a session OUTWARDLY (session-concept.md §1.1), for the durable
+   *  records a dream leaves behind — they outlive the session they point at. */
+  getSessionByAcpIdForAgent(agentId: string, acpSessionId: string): Promise<{ key: string } | undefined>
+  ensureOutwardSessionId(key: string, agentId?: string): Promise<string>
   /** Newest-first addressable sessions for the agent (transcript sources). */
   dreamSessionSources(
     agentId: string,
@@ -720,8 +724,16 @@ export class DreamRunner {
         return
       }
       const output = extracted.output
+      // Named outwardly here too (§1.1) — the extraction hands back the runtime's id, and this row
+      // outlives the session it points at.
+      const executionSlot = extracted.sessionId
+        ? await this.deps.store.getSessionByAcpIdForAgent(agentId, extracted.sessionId)
+        : undefined
+      const executionSessionId = executionSlot
+        ? await this.deps.store.ensureOutwardSessionId(executionSlot.key, agentId)
+        : extracted.sessionId
       const execution = {
-        ...(extracted.sessionId ? { executionSessionId: extracted.sessionId } : {}),
+        ...(executionSessionId ? { executionSessionId } : {}),
         ...(extracted.runtime ? { runtime: extracted.runtime } : {}),
         ...(extracted.model ? { model: extracted.model } : {}),
         ...(extracted.stopReason ? { stopReason: extracted.stopReason } : {})

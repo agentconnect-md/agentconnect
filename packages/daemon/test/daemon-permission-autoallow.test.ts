@@ -3,6 +3,11 @@ import type { CreateElicitationRequest, RequestPermissionRequest } from '@agentc
 import { Daemon, noneSuppressedApprovalSurface, isBuiltinSystemTool, isBuiltinSystemToolCall } from '../src/daemon.js'
 import { ALL_TOOL_NAMES } from '../src/mcp/tools.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { LocalStore } from '../src/store/local-store.js'
+import { listAgentPermissionRequests } from '../src/cp/config-apply-handlers.js'
 
 /**
  * Auto-approve policy for the daemon's OWN built-in MCP tools (UX fix): a human should
@@ -352,5 +357,43 @@ describe('built-in MCP approvals use one policy on both ACP paths', () => {
     await expect(
       (daemon as any).permissions.onAcpElicit('agent-1', 's1', elicitation('uncorrelated', { mode: 'url' }))
     ).resolves.toBeUndefined()
+  })
+})
+
+describe('the approval list names its session the way the console asked for it', () => {
+  it('reports the outward id, so the console can scope approvals to the session it is showing', async () => {
+    const store = await LocalStore.open(join(mkdtempSync(join(tmpdir(), 'ac-approvals-')), 'local.sqlite'))
+    const key = ['slack', 'C1', '100.1', 'bot-a'].join('\u001f')
+    await store.upsertSession({
+      key,
+      agentId: 'bot-a',
+      platform: 'slack',
+      channel: 'C1',
+      thread: '100.1',
+      acpSessionId: 'acp-1',
+      state: 'prompting',
+      lastDeliveredTs: null,
+      updatedAt: 1
+    })
+    const outward = (await store.getSession(key))!.sessionId!
+    expect(outward).not.toBe('acp-1')
+    // The row itself is keyed by the runtime's id — the permission arrives over ACP.
+    await store.createPermissionRequest({
+      id: 'p1',
+      agentId: 'bot-a',
+      sessionId: 'acp-1',
+      createdAt: 100,
+      requesterId: null,
+      requesterName: null,
+      command: 'rm -rf /tmp/x',
+      status: 'pending',
+      resolvedAt: null
+    })
+
+    const host = { store: () => store, clock: () => ({ now: () => 1_000 }) } as never
+    const page = await listAgentPermissionRequests(host, { agentId: 'bot-a', limit: 10 })
+    // The console routes on the outward id, so filtering by it must find this request.
+    expect(page.requests.map((r) => r.sessionId)).toEqual([outward])
+    await store.close()
   })
 })

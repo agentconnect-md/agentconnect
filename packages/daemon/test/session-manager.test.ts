@@ -159,7 +159,16 @@ describe('SessionManager', () => {
 
     await sm.handle('bot-a', msg({ ts: '100.3', thread: '100.3', text: 'update production' }))
 
-    expect(host.newSession).toHaveBeenCalledWith(realpathSync(cwd), [], undefined, undefined, [realpathSync(repoRoot)])
+    // The trailing argument is the outward-id binder (session-concept.md §1.1); this harness
+    // wires no `prepareOutwardBinding`, so the opener has none to pass on.
+    expect(host.newSession).toHaveBeenCalledWith(
+      realpathSync(cwd),
+      [],
+      undefined,
+      undefined,
+      [realpathSync(repoRoot)],
+      undefined
+    )
     await (await store).close()
   })
 
@@ -773,9 +782,11 @@ describe('SessionManager', () => {
     expect(appendArg).toContain('- Source: telegram')
     expect(appendArg).toContain('# Choosing whether to respond')
     expect(appendArg).toContain('AC_NO_RESPONSE')
-    // On a resume the session record already carries its acpSessionId (minted on the
-    // first turn), so the `- Session` locator line is present now.
-    expect(appendArg).toContain('- Session: acp-1')
+    // The locator line names the session OUTWARDLY (session-concept.md §1.1), never the runtime's
+    // id — and that one exists from the slot's first resolution, so it is there on every turn.
+    const outward = (await store.getSession(sessionKey('telegram', 'C1', '100.1', 'bot-a')))!.sessionId
+    expect(outward).not.toBe('acp-1')
+    expect(appendArg).toContain(`- Session: ${outward}`)
     await (await store).close()
   })
 
@@ -1401,7 +1412,7 @@ describe('SessionManager', () => {
     expect(host2.loadSession).toHaveBeenCalledTimes(1)
     expect(host2.loadSession.mock.calls[0]?.[3]).toBe('ultracode')
     expect(host2.discardSession).toHaveBeenCalledWith('acp-1')
-    expect(host2.newSession).toHaveBeenCalledWith(expect.any(String), [], undefined, undefined, [])
+    expect(host2.newSession).toHaveBeenCalledWith(expect.any(String), [], undefined, undefined, [], undefined)
     await (await store).close()
   })
 

@@ -166,6 +166,9 @@ export class SessionManager {
   constructor(
     private deps: {
       store: LocalStore
+      /** Mint a slot's outward id (§1.1) and hand back the synchronous binder the runtime's raw
+       *  `session/new` response calls — see the opener's `prepareOutwardBinding`. */
+      prepareOutwardBinding?: (agentId: string, key: string) => Promise<(acpSessionId: string) => void>
       hostFor: (agentId: string) => Promise<AcpHost>
       /** Whether the runtime initialize handshake completed. A cold hostFor may
        * own preparation itself when resolvePreparedWorkspace is also supplied. */
@@ -553,7 +556,7 @@ export class SessionManager {
           slackSelfId:
             msg.platform === 'slack' && integrationId ? this.deps.slackBotUserIdFor?.(integrationId) : undefined,
           thread,
-          acpSessionId: rec?.acpSessionId,
+          sessionId: rec?.sessionId,
           parentSessionId: effectiveOriginSessionId,
           envSecretNames: secretNames.filter((n) => !fileSecretNames.has(n)),
           fileSecrets: fileSecrets.map((m) => ({ sourceVar: m.sourceVar, pointerVar: m.convention.pointerVar })),
@@ -591,6 +594,9 @@ export class SessionManager {
           : {})
       },
       store: this.deps.store,
+      ...(this.deps.prepareOutwardBinding
+        ? { prepareOutwardBinding: () => this.deps.prepareOutwardBinding!(agentId, key) }
+        : {}),
       ...(options.preparedWorkspaceCwd !== undefined ? { preparedWorkspaceCwd: options.preparedWorkspaceCwd } : {}),
       ...(preparedCwd !== undefined ? { preparedCwd } : {}),
       ...(expectedWarmHost !== undefined ? { expectedWarmHost } : {}),

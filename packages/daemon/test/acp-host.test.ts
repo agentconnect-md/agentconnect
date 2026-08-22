@@ -35,6 +35,24 @@ describe('AcpHost (against a fake ACP agent)', () => {
     await host.stop()
   }, 15_000)
 
+  // A runtime can advertise from inside `newSession()`: the host makes the session ownable and
+  // then awaits its configuration round trips. Whatever the daemon needs in order to name that
+  // session must therefore be handed over at the RAW response, before it is reachable.
+  it('announces a new session id before the session becomes reachable', async () => {
+    const host = new AcpHost({ command: process.execPath, args: [fakeAgent], env: [] }, { onUpdate: () => {} })
+    await host.start()
+    let reachableWhenAnnounced: boolean | undefined
+    let announced: string | undefined
+    const sessionId = await host.newSession('/tmp', [], undefined, undefined, [], (id) => {
+      announced = id
+      reachableWhenAnnounced = host.hasSession(id)
+    })
+    expect(announced).toBe(sessionId)
+    expect(reachableWhenAnnounced).toBe(false)
+    expect(host.hasSession(sessionId)).toBe(true)
+    await host.stop()
+  }, 15_000)
+
   it('applies and switches the composite Auto permission preset through independent selectors', async () => {
     const host = new AcpHost(
       { command: process.execPath, args: [fakeAgent], env: [] },

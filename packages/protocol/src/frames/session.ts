@@ -38,7 +38,7 @@ export type SessionUsage = z.infer<typeof SessionUsage>
 
 /** One row in the session list (metadata + console metrics; NOT the transcript). */
 export const SessionListItem = z.object({
-  sessionId: z.string(), // opaque ACP session id (agent-assigned; NOT a wire UUID)
+  sessionId: z.string(), // the session's opaque outward identity (session-concept.md §1.1) — never the ACP hop's id
   // The stable ACP session id that spawned this session through sendMessage.
   // Absent for root sessions. This is lineage metadata only, never a body.
   parentSessionId: z.string().optional(),
@@ -131,7 +131,7 @@ export const SessionHistoryReq = z
     // Optional only for rolling compatibility with an older CP. A current CP always
     // sends the authorized owner and the daemon re-checks the session binding.
     agentId: z.string().uuid().optional(),
-    sessionId: z.string(), // opaque ACP session id (agent-assigned; NOT a wire UUID)
+    sessionId: z.string(), // the session's opaque outward identity (session-concept.md §1.1) — never the ACP hop's id
     cursor: z.string().optional(), // opaque; omit ⇒ newest page
     // Monotonic daemon-local transcript revision. Mutually exclusive with the
     // backward-pagination cursor; used by an open console view to pull inserts
@@ -150,7 +150,7 @@ export type SessionHistoryReq = z.infer<typeof SessionHistoryReq>
 
 /** D→C REP (corr = the req id): a page of messages + the cursor for the next page. */
 export const SessionHistoryPage = z.object({
-  sessionId: z.string(), // opaque ACP session id (agent-assigned; NOT a wire UUID)
+  sessionId: z.string(), // the session's opaque outward identity (session-concept.md §1.1) — never the ACP hop's id
   messages: z.array(SessionMessage), // chronological oldest→newest within the page (seq breaks equal-time ties)
   nextCursor: z.string().optional(), // absent ⇒ no older messages
   // Optional for rolling compatibility. `liveCursor` is the next `after`
@@ -264,7 +264,7 @@ export type ChildSessionStatusProbe = z.infer<typeof ChildSessionStatusProbe>
  * and out-of-order application safe on the daemon.
  */
 export const SessionVisibilityPush = z.object({
-  sessionId: z.string().min(1), // opaque ACP session id (agent-assigned; NOT a wire UUID)
+  sessionId: z.string().min(1), // the session's opaque outward identity (session-concept.md §1.1) — never the ACP hop's id
   // The session's owning agent. ACP session ids are runtime-local, so on a pool's
   // shared store the id alone names a gate every org could claim. Optional for
   // rolling upgrades: an older CP omits it and the daemon attributes the push to

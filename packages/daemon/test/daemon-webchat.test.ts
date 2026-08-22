@@ -392,11 +392,15 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     // Turn start: model + sessionId (no usage folded yet). Runtime controls are hidden while
     // chat-side changes are disabled. Then usage_update adds context+cost. Turn end: token
     // totals fold in. Deduped ⇒ exactly these three snapshots.
+    // The console deep-links from this, so it is the session's OUTWARD id (§1.1) — minted by the
+    // daemon, never the runtime's `acp-wc-1`.
+    const outward = (await (daemon as any).store.getSessionByAcpId('acp-wc-1'))!.sessionId
+    expect(outward).not.toBe('acp-wc-1')
     const base = {
       model: 'opus-4.8',
       permissionMode: 'default',
       permissionModes: [],
-      sessionId: 'acp-wc-1'
+      sessionId: outward
     }
     const ctx = { contextUsed: 120_000, contextSize: 200_000, costAmount: 0.18, costCurrency: 'USD' }
     expect(statuses).toEqual([base, { ...base, ...ctx }, { ...base, ...ctx, totalTokens: 45_200 }])

@@ -249,7 +249,7 @@ export const HookReport = z
     gitlab: GitlabHookMetadata.optional(),
     status: z.enum(['success', 'failed']),
     durationMs: z.number().int().nonnegative().optional(), // dispatch → turn end
-    sessionId: z.string().optional(), // ACP session the run prompted (console deep-link)
+    sessionId: z.string().optional(), // the session the run prompted, by its outward id (§1.1)
     reason: z.string().optional(), // short failure text (status "failed")
     // A submitted result is repeated here as recovery if the immediate
     // github/review-result request was lost. No review/comment body crosses CP.
@@ -303,7 +303,7 @@ export const HookStart = z
     hookId: z.string().uuid(),
     agentId: z.string().uuid(),
     deliveryKey: z.string().min(1),
-    sessionId: z.string().min(1).optional(), // ACP session already created for this turn (rolling-compatible)
+    sessionId: z.string().min(1).optional(), // the turn's session by its outward id (§1.1); rolling-compatible
     event: z.string().min(1).optional(),
     // Provider one-of: exactly one member carries the trusted subject metadata.
     // `github` was required pre-GitLab, so every existing sender stays valid.

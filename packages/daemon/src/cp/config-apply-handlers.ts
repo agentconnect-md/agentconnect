@@ -693,17 +693,21 @@ export async function listAgentPermissionRequests(
 ): Promise<AgentPermissionRequestPage> {
   return {
     agentId,
-    requests: (await host.store().listPermissionRequests(agentId, limit)).map((request) => ({
-      id: request.id,
-      agentId: request.agentId,
-      sessionId: request.sessionId,
-      createdAt: new Date(request.createdAt).toISOString(),
-      requesterId: request.requesterId,
-      requesterName: request.requesterName,
-      command: request.command,
-      status: request.status,
-      resolvedAt: request.resolvedAt === null ? null : new Date(request.resolvedAt).toISOString()
-    }))
+    requests: await Promise.all(
+      (await host.store().listPermissionRequests(agentId, limit)).map(async (request) => ({
+        id: request.id,
+        agentId: request.agentId,
+        // The console scopes approvals to the session it is showing, by the id it routed on —
+        // the outward one (§1.1). The row is keyed by the runtime's, so it translates here.
+        sessionId: await outwardSessionId(host, request.agentId, request.sessionId),
+        createdAt: new Date(request.createdAt).toISOString(),
+        requesterId: request.requesterId,
+        requesterName: request.requesterName,
+        command: request.command,
+        status: request.status,
+        resolvedAt: request.resolvedAt === null ? null : new Date(request.resolvedAt).toISOString()
+      }))
+    )
   }
 }
 
@@ -837,17 +841,27 @@ export function applyAgentStop(host: ConfigApplyGateHost & ConfigApplyRuntimeHos
 // settlements and cascades); the daemon only enforces the resulting
 // capture gate. Ordering is by the CP's durable revision, so retransmits
 // and out-of-order delivery are safe.
+/** How the CONSOLE names the session an ACP id belongs to (session-concept.md §1.1). Falls back
+ *  to the id it was given, which is what a pre-v12 session was reported under. */
+async function outwardSessionId(host: ConfigApplyCoreHost, agentId: string, acpSessionId: string): Promise<string> {
+  const slot = await host.store().getSessionByAcpIdForAgent(agentId, acpSessionId)
+  return slot ? await host.store().ensureOutwardSessionId(slot.key, agentId, host.clock().now()) : acpSessionId
+}
+
 export async function applySessionVisibility(
   host: ConfigApplyCoreHost,
   p: SessionVisibilityPush
 ): Promise<'applied' | 'superseded'> {
-  // A CP too old to name the agent leaves only the runtime-local ACP id: use the
-  // sole local holder, and where there is none leave the gate closed (still ACKed).
+  // A CP too old to name the agent leaves only the id: use the sole local holder, and where
+  // there is none leave the gate closed (still ACKed).
   const agentId = p.agentId ?? (await host.store().soleAgentForAcpSession(p.sessionId))
   if (!agentId) return 'superseded'
+  // The push names the session outwardly; the gate is keyed by the runtime's id.
+  const slot = await host.store().getSessionByOutwardId(p.sessionId, agentId)
+  const acpSessionId = slot?.acpSessionId ?? p.sessionId
   return host
     .store()
-    .applyCpCaptureGate(agentId, p.sessionId, p.sharedMemoryExcluded ?? p.visibility === 'private', p.visibilityRev)
+    .applyCpCaptureGate(agentId, acpSessionId, p.sharedMemoryExcluded ?? p.visibility === 'private', p.visibilityRev)
 }
 
 /** Wire the handlers into the seam — member order mirrors the `ConfigApply` contract. */

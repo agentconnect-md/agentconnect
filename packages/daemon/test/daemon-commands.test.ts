@@ -1489,7 +1489,10 @@ describe('Slack interactive status bar', () => {
     const section = blocks.find((b) => b.type === 'section')!
     expect(blocks).toHaveLength(1)
     expect(section.text!.text).toContain('opus-4.8')
-    expect(section.text!.text).toContain('<http://localhost:3000/sessions/acp-1?source=slack|View Session>')
+    // The deep link names the session outwardly (session-concept.md §1.1), not the runtime's id.
+    const outward = (await (daemon as any).store.getSessionByAcpId('acp-1'))!.sessionId
+    expect(outward).not.toBe('acp-1')
+    expect(section.text!.text).toContain(`<http://localhost:3000/sessions/${outward}?source=slack|View Session>`)
     expect(section.accessory.action_id).toBe('ac_more')
     await daemon.stop()
   }, 15_000)
@@ -2213,7 +2216,8 @@ describe('Slack interactive status bar', () => {
     await vi.waitFor(() => expect(hasPending(daemon, 'acp-1')).toBe(true), WAIT)
     // The connection queries statusInfoForKey to build the modal; it resolves the deep link.
     const data = await (daemon as any).statusInfoForKey(SESSION_KEY)
-    expect(data.link).toBe('https://console.example.com/sessions/acp-1?source=slack')
+    const outward = (await (daemon as any).store.getSessionByAcpId('acp-1'))!.sessionId
+    expect(data.link).toBe(`https://console.example.com/sessions/${outward}?source=slack`)
     expect(data.info.models).toEqual(['opus-4.8', 'sonnet-5'])
     expect(data.identity).toMatchObject({
       name: AGENT_IDENTITY.displayName,

@@ -136,7 +136,9 @@ export interface GithubReviewHost {
   activeGithubTurn(key: string): ActiveGithubTurnMeta | undefined
   activeGithubReplyBatch(key: string): ActiveGithubReplyBatchMeta | undefined
   agentLink(agentId: string): string
-  sessionLink(acpSessionId: string, source?: string): string
+  /** Takes the session's OUTWARD id (session-concept.md §1.1), which {@link outwardSessionId} resolves. */
+  sessionLink(sessionId: string, source?: string): string
+  outwardSessionId(agentId: string, acpSessionId: string): Promise<string | undefined>
   runtimeNames(): Record<string, string>
   hostForStoredSession(agentId: string, acpSessionId: string): Promise<AcpHost | undefined>
 }
@@ -628,7 +630,9 @@ export class GithubReviewOrchestrator {
       hookId: hook.hookId,
       agentId: hook.agentId,
       deliveryKey: hook.deliveryKey,
-      sessionId,
+      // The CP files the run against `session_meta.id` and deep-links the console from it, so
+      // this is the session's outward id (§1.1) — the caller holds the ACP hop's.
+      sessionId: (await this.host.outwardSessionId(hook.agentId, sessionId)) ?? sessionId,
       ...(hook.event ? { event: hook.event } : {}),
       github: { ...trusted, reportSha: trusted.reportSha ?? trusted.headSha },
       ...snapshot
@@ -986,6 +990,8 @@ export class GithubReviewOrchestrator {
   async githubCommentAttribution(agentId: string, sessionId: string): Promise<GithubCommentAttribution> {
     const agent = this.agents.get(agentId)
     const runtime = agent?.runtime
+    // The footer links the console, which knows this session by its outward id (§1.1).
+    const outward = await this.host.outwardSessionId(agentId, sessionId)
     return {
       agentName: agent?.displayName?.trim() || agent?.name || agentId,
       agentUrl: this.host.agentLink(agentId),
@@ -994,7 +1000,7 @@ export class GithubReviewOrchestrator {
         (await this.host.hostForStoredSession(agentId, sessionId))?.modelOptions?.(sessionId)?.current ??
         agent?.runtimeOverrides?.model ??
         'default',
-      sessionUrl: this.host.sessionLink(sessionId, 'github'),
+      sessionUrl: this.host.sessionLink(outward ?? sessionId, 'github'),
       // Same CP-resolved public avatar Slack uses for icon_url; GitHub renders it
       // inline ahead of the footer sentence.
       ...(agent?.iconUrl ? { iconUrl: agent.iconUrl } : {})

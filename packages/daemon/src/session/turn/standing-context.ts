@@ -57,7 +57,7 @@ export type StandingContextInput = {
   slackSelfId?: string
   thread: string
   /** This session's own ACP id, once minted (absent on the turn that mints it). */
-  acpSessionId?: string | null
+  sessionId?: string | null
   /** The parent session to reply into, when this session was woken by another. */
   parentSessionId?: string | null
   /** Key NAMES (never values) of the agent's write-only env secrets. */
@@ -140,13 +140,12 @@ function buildAgentMeta(input: StandingContextInput): string {
     // Best-effort and async, so it can be absent for a brand-new channel until resolution
     // catches up — then the id line alone stands.
     ...(input.channelName ? [`- Channel name: ${input.channelName}`] : []),
-    // session-concept §2.3: standing locator lines. `Thread` is this session's thread
-    // segment; `Session` is its own stable id (only once minted — a brand-new session
-    // mints its acpSessionId AFTER this block is composed, so it appears from the next
-    // turn / on resume); `Parent session` appears ONLY when this session has a parent
-    // (woken by another session's `sendMessage`) and is the SessionTarget to reply into.
+    // session-concept §2.3: standing locator lines. `Thread` is this session's thread segment;
+    // `Session` is its own OUTWARD id (§1.1), minted when the slot resolves, so it is there from
+    // the first turn; `Parent session` appears ONLY when this session has a parent (woken by
+    // another session's `sendMessage`) and is the SessionTarget to reply into.
     `- Thread: ${input.thread}`,
-    ...(input.acpSessionId ? [`- Session: ${input.acpSessionId}`] : []),
+    ...(input.sessionId ? [`- Session: ${input.sessionId}`] : []),
     ...(input.parentSessionId ? [`- Parent session: ${input.parentSessionId}`] : []),
     ...(input.agentDescription ? ['', input.agentDescription] : []),
     // Key NAMES (never values) of the agent's write-only secrets. The values are merged into

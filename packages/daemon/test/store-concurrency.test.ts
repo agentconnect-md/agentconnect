@@ -92,6 +92,8 @@ describe('LocalStore under interleaved turns', () => {
     const keys = [1, 2, 3, 4, 5, 6].map((n) => sessionKey('slack', 'C1', `T-tx-${n}`, 'bot-a'))
     for (const [index, key] of keys.entries()) await seedSession(s, key, 'bot-a', `acp-tx-${index}`)
 
+    const deletedOutwardIds = await Promise.all(keys.slice(3).map(async (key) => (await s.getSession(key))!.sessionId!))
+
     // Mutes and deletes, each a BEGIN…COMMIT block, all in flight against one store.
     await Promise.all([
       ...keys.slice(0, 3).map((key) => s.setSessionMuted(key, true)),
@@ -109,7 +111,9 @@ describe('LocalStore under interleaved turns', () => {
       expect(await s.isSessionMuted(key)).toBe(false)
     }
     const purged = await s.listSessionPurges(10, 1_500, 'daemon-a', ['bot-a'])
-    expect(purged.map((row) => row.sessionId).sort()).toEqual(['acp-tx-3', 'acp-tx-4', 'acp-tx-5'])
+    // Receipts name their sessions the outward way (session-concept.md §1.1), so compare against
+    // the ids the store minted for the three deleted slots.
+    expect(purged.map((row) => row.sessionId).sort()).toEqual(deletedOutwardIds.sort())
     await s.close()
   })
 

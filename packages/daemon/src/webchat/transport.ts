@@ -345,10 +345,10 @@ export class WebchatTransport {
       if (startFailure) return { accepted: false, turnId, reason: 'start_failed', detail: startFailure }
       return { accepted: false, turnId, reason: 'no_agent' }
     }
-    // ACP ids are runtime-owned: resolve agent-scoped, and use ONLY the local
-    // row's coordinates. A miss means the CP verdict is stale (retention GC /
-    // metadata replacement) — fail closed.
-    const local = await this.host.store().getSessionByAcpIdForAgent(agentId, targetSessionId)
+    // The console names the target session outwardly (session-concept.md §1.1). Resolve
+    // agent-scoped, and use ONLY the local row's coordinates. A miss means the CP verdict is
+    // stale (retention GC / metadata replacement) — fail closed.
+    const local = await this.host.store().getSessionByOutwardId(targetSessionId, agentId)
     if (!local || originKindOf(local.platform) !== 'chat') return { accepted: false, turnId, reason: 'not_found' }
     if (this.host.paused(agentId)) return { accepted: false, turnId, reason: 'paused' }
     if (this.host.safetyDraining(agentId)) return { accepted: false, turnId, reason: 'busy' }

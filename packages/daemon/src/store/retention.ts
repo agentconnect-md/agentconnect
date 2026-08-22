@@ -88,6 +88,18 @@ export const STORE_RETENTION_RULES: readonly StoreRetentionRule[] = [
     horizonMs: DEFAULT_STORE_HORIZON_MS
   },
   {
+    // An outward id minted before its session row exists (§1.1). The turn's insert adopts it and
+    // `deleteSession` drops it, so what ages out here is a slot whose turn never dispatched, or an
+    // `internal:*` key — dream / memory / commit work that never becomes a session at all. Aging
+    // one out is safe: the session, if it exists, answers with its own column first.
+    id: 'outward-id',
+    table: 'session_outward_ids',
+    key: ['key'],
+    clock: 'mintedAt',
+    agentColumn: 'agentId',
+    horizonMs: DEFAULT_STORE_HORIZON_MS
+  },
+  {
     id: 'session-metadata',
     table: 'session_metadata_outbox',
     key: ['agentId', 'sessionId'],

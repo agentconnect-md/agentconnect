@@ -208,12 +208,16 @@ describe('Daemon rd/msg hook fires', () => {
     expect(ack).toEqual({ msgId: `${HOOK_ID}:d-1`, accepted: true })
 
     await vi.waitFor(() => expect(cp.hookReports.length).toBe(1), WAIT)
+    // The CP files this run against `session_meta.id` and deep-links the console from it, so the
+    // report names the session outwardly (session-concept.md §1.1), never the runtime's id.
+    const outward = (await (daemon as any).store.getSessionByAcpId('acp-hook-1'))!.sessionId
+    expect(outward).not.toBe('acp-hook-1')
     expect(cp.hookReports[0]).toMatchObject({
       hookId: HOOK_ID,
       agentId: AGENT_ID,
       deliveryKey: 'd-1',
       status: 'success',
-      sessionId: 'acp-hook-1'
+      sessionId: outward
     })
     expect(cp.hookReports[0]!.durationMs).toBeGreaterThanOrEqual(0)
     // Exactly one turn ran through the shared engine.
@@ -691,7 +695,7 @@ describe('Daemon rd/msg hook fires', () => {
         hookId: HOOK_ID,
         deliveryKey: 'd-1',
         status: 'failed',
-        sessionId: 'acp-hook-1',
+        sessionId: (await (daemon as any).store.getSessionByAcpId('acp-hook-1'))!.sessionId,
         reason
       })
       await daemon.stop()
@@ -1586,7 +1590,7 @@ describe('Daemon rd/msg hook fires', () => {
         hookId: HOOK_ID,
         deliveryKey: 'd-1',
         status: 'success',
-        sessionId: `acp-${event}`
+        sessionId: (await (daemon as any).store.getSessionByAcpId(`acp-${event}`))!.sessionId
       })
 
       await daemon.stop()

@@ -32,7 +32,7 @@ export const RuntimeCommandsList = z
     reported: z.boolean(),
     /** When that advertisement arrived; the list survives the host stopping, so it can be stale. */
     updatedAt: z.string().optional(),
-    /** The ACP session it came from — a worktree-isolated session can advertise its own set. */
+    /** The session it came from, by its outward id (§1.1) — a worktree-isolated session can advertise its own set. */
     sessionId: z.string().optional(),
     commands: z.array(RuntimeCommand)
   })

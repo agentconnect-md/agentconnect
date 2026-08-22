@@ -27,6 +27,7 @@ async function seedHistorySession(
     channel,
     thread,
     acpSessionId: 'acp-1',
+    sessionId: 'sid-1',
     state: 'idle',
     lastDeliveredTs: null,
     updatedAt: 1
@@ -50,6 +51,27 @@ describe('SessionReader', () => {
     await s.close()
   })
 
+  it('reads a session under the OUTWARD id the control plane knows it by', async () => {
+    const s = await store()
+    await seedHistorySession(s)
+    const key = sessionKey('slack', 'C1', 'T1', AGENT)
+    const outward = (await s.getSession(key))!.sessionId!
+    // The id the console holds came from this daemon's own metadata frame, and it is not the
+    // runtime's (session-concept.md §1.1) — a read that only knew ACP ids would answer empty.
+    expect(outward).not.toBe('acp-1')
+    const reader = await createSessionReader(s, undefined, {
+      transcriptPageForAgentByEventTime: async () => ({ rows: [], hasMore: false, cursor: 5 }),
+      transcriptPageForAgent: async () => ({ rows: [], hasMore: false, cursor: 5 }),
+      transcriptTailForAgent: async () => ({ rows: [], hasMore: false, cursor: 5 }),
+      currentTranscriptRevision: async () => 5,
+      getToolBodyForAgent: async () => undefined
+    } as never)
+    expect((await reader.history({ agentId: AGENT, sessionId: outward, limit: 20 })).liveCursor).toBe('5')
+    // A pre-v12 session was reported under its ACP id, so that still resolves.
+    expect((await reader.history({ agentId: AGENT, sessionId: 'acp-1', limit: 20 })).liveCursor).toBe('5')
+    await s.close()
+  })
+
   it('reads only the transcript namespace persisted on the session', async () => {
     const s = await store()
     await s.upsertSession({
@@ -60,6 +82,7 @@ describe('SessionReader', () => {
       thread: 'dm',
       transportScope: 'telegram:bot-b',
       acpSessionId: 'acp-scoped',
+      sessionId: 'sid-scoped',
       state: 'idle',
       lastDeliveredTs: null,
       updatedAt: 1
@@ -101,11 +124,12 @@ describe('SessionReader', () => {
       channel: 'C1',
       thread: 'T1',
       acpSessionId: 'acp-1',
+      sessionId: 'sid-1',
       state: 'idle',
       lastDeliveredTs: null,
       updatedAt: 1,
       triggeredBy: 'U1',
-      originSessionId: 'acp-parent'
+      originSessionId: 'sid-parent'
     })
     await s.upsertSession({
       key: sessionKey('slack', 'C2', 'T2', AGENT),
@@ -114,6 +138,7 @@ describe('SessionReader', () => {
       channel: 'C2',
       thread: 'T2',
       acpSessionId: 'acp-2',
+      sessionId: 'sid-2',
       state: 'idle',
       lastDeliveredTs: null,
       updatedAt: 2
@@ -125,15 +150,15 @@ describe('SessionReader', () => {
     const reader = createSessionReader(s)
     const { sessions } = await reader.list({})
     const byId = new Map(sessions.map((x) => [x.sessionId, x]))
-    expect(byId.get('acp-1')).toMatchObject({
-      parentSessionId: 'acp-parent',
+    expect(byId.get('sid-1')).toMatchObject({
+      parentSessionId: 'sid-parent',
       title: 'Roll back the deploy',
       channelName: 'deploys',
       triggeredBy: 'U1',
       triggeredByName: 'Dana Reyes'
     })
     // No cached names / no triggeredBy / no title → optional fields simply absent, ids intact.
-    const bare = byId.get('acp-2')!
+    const bare = byId.get('sid-2')!
     expect(bare.sessionKey.channel).toBe('C2')
     expect(bare.title).toBeUndefined()
     expect(bare.channelName).toBeUndefined()
@@ -152,6 +177,7 @@ describe('SessionReader', () => {
       channel: 'conv-1',
       thread: 'webchat:conv-1',
       acpSessionId: 'acp-wc',
+      sessionId: 'sid-wc',
       state: 'idle',
       lastDeliveredTs: null,
       updatedAt: 3,
@@ -183,6 +209,7 @@ describe('SessionReader', () => {
       channel: 'C9',
       thread: 'T9',
       acpSessionId: 'acp-titled',
+      sessionId: 'sid-titled',
       state: 'idle',
       lastDeliveredTs: null,
       updatedAt: 4
@@ -199,9 +226,9 @@ describe('SessionReader', () => {
 
     const byId = new Map((await createSessionReader(s).list({})).sessions.map((x) => [x.sessionId, x]))
     // Untitled webchat session ⇒ named from its first user message (never the agent reply).
-    expect(byId.get('acp-wc')!.title).toBe("what's your model?")
+    expect(byId.get('sid-wc')!.title).toBe("what's your model?")
     // Runtime title wins over the first-message fallback.
-    expect(byId.get('acp-titled')!.title).toBe('Runtime summary')
+    expect(byId.get('sid-titled')!.title).toBe('Runtime summary')
     await s.close()
   })
 
@@ -214,6 +241,7 @@ describe('SessionReader', () => {
       channel: 'C1',
       thread: 'T1',
       acpSessionId: 'acp-1',
+      sessionId: 'sid-1',
       state: 'idle',
       lastDeliveredTs: null,
       updatedAt: 1
@@ -229,7 +257,7 @@ describe('SessionReader', () => {
     })
     await s.setDisplayName('U1', 'Dana Reyes', 1)
 
-    const title = (await createSessionReader(s).list({})).sessions.find((x) => x.sessionId === 'acp-1')!.title!
+    const title = (await createSessionReader(s).list({})).sessions.find((x) => x.sessionId === 'sid-1')!.title!
     expect(title.startsWith('@Dana Reyes ')).toBe(true) // leading mention rewritten to @name
     expect(title.endsWith('…')).toBe(true) // long body truncated with an ellipsis
     expect(title).not.toContain('second line') // only the first line is used
@@ -246,6 +274,7 @@ describe('SessionReader', () => {
       channel: 'C1',
       thread: '1710799200.123456',
       acpSessionId: 'acp-slack',
+      sessionId: 'sid-slack',
       state: 'idle',
       lastDeliveredTs: null,
       updatedAt: 2
@@ -258,6 +287,7 @@ describe('SessionReader', () => {
       channel: 'chat1',
       thread: 'T1',
       acpSessionId: 'acp-tg',
+      sessionId: 'sid-tg',
       state: 'idle',
       lastDeliveredTs: null,
       updatedAt: 1
@@ -270,6 +300,7 @@ describe('SessionReader', () => {
       thread: '42',
       threadUrl: 'https://github.com/acme/infra/issues/42',
       acpSessionId: 'acp-github',
+      sessionId: 'sid-github',
       state: 'idle',
       lastDeliveredTs: null,
       updatedAt: 3
@@ -280,19 +311,19 @@ describe('SessionReader', () => {
       sessionThreadUrlFor(session, { workspaceUrl: 'https://acme.slack.com/' })
     )
     const byId = new Map((await withUrl.list({})).sessions.map((x) => [x.sessionId, x]))
-    expect(byId.get('acp-slack')!.threadUrl).toBe('https://acme.slack.com/archives/C1/p1710799200123456')
-    expect(byId.get('acp-tg')!.threadUrl).toBeUndefined()
-    expect(byId.get('acp-github')!.threadUrl).toBe('https://github.com/acme/infra/issues/42')
+    expect(byId.get('sid-slack')!.threadUrl).toBe('https://acme.slack.com/archives/C1/p1710799200123456')
+    expect(byId.get('sid-tg')!.threadUrl).toBeUndefined()
+    expect(byId.get('sid-github')!.threadUrl).toBe('https://github.com/acme/infra/issues/42')
 
     // No resolver leaves only the persisted links available.
     expect(
-      (await createSessionReader(s).list({})).sessions.find((x) => x.sessionId === 'acp-slack')!.threadUrl
+      (await createSessionReader(s).list({})).sessions.find((x) => x.sessionId === 'sid-slack')!.threadUrl
     ).toBeUndefined()
-    expect((await createSessionReader(s).list({})).sessions.find((x) => x.sessionId === 'acp-github')!.threadUrl).toBe(
+    expect((await createSessionReader(s).list({})).sessions.find((x) => x.sessionId === 'sid-github')!.threadUrl).toBe(
       'https://github.com/acme/infra/issues/42'
     )
     expect(
-      (await createSessionReader(s, () => undefined).list({})).sessions.find((x) => x.sessionId === 'acp-slack')!
+      (await createSessionReader(s, () => undefined).list({})).sessions.find((x) => x.sessionId === 'sid-slack')!
         .threadUrl
     ).toBeUndefined()
     await s.close()
@@ -310,6 +341,7 @@ describe('SessionReader', () => {
       thread: 'T1',
       transportScope,
       acpSessionId: 'acp-1',
+      sessionId: 'sid-1',
       state: 'idle',
       lastDeliveredTs: null,
       updatedAt: 1
@@ -468,6 +500,7 @@ describe('SessionReader', () => {
       channel: 'C1',
       thread: 'T1',
       acpSessionId: 'acp-peer',
+      sessionId: 'sid-peer',
       state: 'idle',
       lastDeliveredTs: null,
       updatedAt: 1
@@ -530,6 +563,7 @@ describe('SessionReader', () => {
       channel: 'C1',
       thread: 'T1',
       acpSessionId: 'acp-1',
+      sessionId: 'sid-1',
       state: 'idle',
       lastDeliveredTs: null,
       updatedAt: 1

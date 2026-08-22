@@ -7,7 +7,7 @@ import { z } from 'zod'
  * in the owning daemon's in-memory background-task lease, pulled live and proxied, never
  * persisted (body-locality — webchat-side-panels.md §2).
  *
- * Scoped per (agent, ACP session) because the lease already is: ACP session ids are
+ * Scoped per (agent, session) because the lease already is: ACP session ids are
  * runtime-local, so two agents can each expose an `acp-1`
  * (background-task-aware-reclaim.md §3).
  *
@@ -56,10 +56,11 @@ export const MAX_TASK_DETAIL = 200
 export const TaskState = z.enum(['running', 'done', 'failed'])
 export type TaskState = z.infer<typeof TaskState>
 
-/** C→D REQ: the background tasks of ONE ACP session of one agent. */
+/** C→D REQ: the background tasks of ONE session of one agent. */
 export const TaskListReq = z.object({
   agentId: z.string().min(1), // local agent id (NOT a wire UUID)
-  /** ACP session id — the lease's own scope, so this is required rather than optional. */
+  /** The session's outward id (§1.1) — the console asks by what it routed on, and the daemon
+   *  resolves the runtime-scoped lease behind it. Required: a lease has no meaning without one. */
   sessionId: z.string().min(1)
 })
 export type TaskListReq = z.infer<typeof TaskListReq>
