@@ -14,6 +14,7 @@ import {
   effortField,
   enrichSessionWithAgent,
   flattenFiles,
+  isGitWorkspace,
   isPoolPlacementKind,
   MOCK_MODE,
   MOCK_PREFIX,
@@ -67,7 +68,7 @@ import LarkFeishuSwitcher from '@/components/LarkFeishuSwitcher'
 import { AgentMark, GithubMark, GitlabMark, LoadingState, PlatformMark } from '@/components/marks'
 import { buildAgentReachabilityGraph } from '@/lib/agent-reachability'
 import type { Platform } from '@/components/console/modals/AddIntegrationModal'
-import { INTEGRATION_BLURB, offeredPlatforms } from '@/components/console/platforms/host-projections'
+import { INTEGRATION_BLURB, isCoreTriggerKind, offeredPlatforms } from '@/components/console/platforms/host-projections'
 import { GL_FAMILIES, eventsForGitlabFamilies, gitlabFamCovered, type GlFamily } from '@/lib/gitlab-events'
 import { AgentIconPicker } from '@/components/console/AgentIconPicker'
 import { BuiltinBadge } from '@/components/console/BuiltinBadge'
@@ -480,14 +481,14 @@ export default function AgentDetailView() {
   const ws = da.workspace
   // Demo agents have no daemon to read git state from, so the workspace card's
   // live half comes straight from their static mock workspace instead.
-  const mockWorkspaceHeader: WorkspaceHeaderInfo =
-    ws.mode === 'github'
-      ? {
-          status: workspaceStatus(ws),
-          ...(ws.commitMsg ? { commit: { sha: ws.commit, time: ws.commitTime, title: ws.commitMsg } } : {}),
-          repoUrl: ws.repoUrl ?? `https://github.com/${ws.repo}`
-        }
-      : { status: workspaceStatus(ws) }
+  const mockWorkspaceHeader: WorkspaceHeaderInfo = isGitWorkspace(ws)
+    ? {
+        status: workspaceStatus(ws),
+        ...(ws.commitMsg ? { commit: { sha: ws.commit, time: ws.commitTime, title: ws.commitMsg } } : {}),
+        repoUrl: ws.repoUrl ?? `https://${ws.mode === 'gitlab' ? 'gitlab.com' : 'github.com'}/${ws.repo}`,
+        remoteLabel: ws.mode === 'gitlab' ? 'GitLab' : 'GitHub'
+      }
+    : { status: workspaceStatus(ws) }
   // Counts walk the whole mock tree (files are nested under folder children).
   const allFiles = flattenFiles(ws.files)
   const changedFiles = allFiles.filter((f) => f.tag).length
@@ -509,11 +510,7 @@ export default function AgentDetailView() {
   // Slack" card / the funnel mint CP-side rows whose delivery converges at
   // placement; the modal + server gate what genuinely needs a daemon.
   const integrationPlatformAvailable = (key: Platform) =>
-    key === 'webhook' ||
-    key === 'github' ||
-    daemonsLoading ||
-    !owningDaemon ||
-    owningDaemon.caps.platforms.includes(key)
+    isCoreTriggerKind(key) || daemonsLoading || !owningDaemon || owningDaemon.caps.platforms.includes(key)
   // Effective (intersection) peer sets for the read-only Access summary.
   const inboundEffectiveIds = agentReach.incomingByAgentId.get(da.id) ?? []
   const outboundEffectiveIds = agentReach.outgoingByAgentId.get(da.id) ?? []
@@ -1822,13 +1819,13 @@ export default function AgentDetailView() {
               {...(selectedWorktreeSessionId ? { sessionId: selectedWorktreeSessionId } : {})}
               {...(selectedRepo ? { repo: selectedRepo } : {})}
               repoOptions={workspaceRepoOptions}
-              {...(da.workspace.mode === 'github' ? { primaryRepoLabel: da.workspace.repo } : {})}
+              {...(isGitWorkspace(da.workspace) ? { primaryRepoLabel: da.workspace.repo } : {})}
               onRepoChange={selectRepoScope}
               workdir={da.workdir}
               canEdit={selectedWorktreeSessionId === null && da.workspace.mode === 'scratch' && da.canEdit}
               sandboxed={isPoolPlacementKind(da.placementKind)}
               renderWorkspacePicker={(primaryBranch) =>
-                da.workspace.mode === 'github' ? (
+                isGitWorkspace(da.workspace) ? (
                   <WorkspaceScopePicker
                     primaryBranch={primaryBranch ?? da.workspace.branch}
                     sessions={workspaceSessions}
@@ -1858,7 +1855,7 @@ export default function AgentDetailView() {
             <FileBrowserShell
               title="Files"
               headerEnd={
-                ws.mode === 'github' ? (
+                isGitWorkspace(ws) ? (
                   <div className="flex w-1/4 min-w-0 flex-none items-center gap-2 max-desktop:w-[min(210px,56vw)]">
                     <WorkspaceScopePicker
                       primaryBranch={ws.branch}

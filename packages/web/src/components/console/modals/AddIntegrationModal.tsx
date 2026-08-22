@@ -38,7 +38,7 @@ import {
   type IdentityChromeView
 } from '@/components/console/platforms/publish'
 import { platformRegistry, platformSupportsSharing } from '@/components/console/platforms/registry'
-import { BOT_PLATFORMS, offeredPlatforms } from '@/components/console/platforms/host-projections'
+import { BOT_PLATFORMS, isCoreTriggerKind, offeredPlatforms } from '@/components/console/platforms/host-projections'
 import { agentLabel, MOCK_MODE, type Agent } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { useOrgs } from '@/lib/org-context'
@@ -405,10 +405,7 @@ export default function AddIntegrationModal({
   // webhook + github are relay/CP-backed triggers — always available, never
   // gated by the daemon's adapter capabilities.
   const isPlatformAvailable = (candidate: Platform) =>
-    candidate === 'webhook' ||
-    candidate === 'github' ||
-    candidate === 'gitlab' ||
-    supportedBotPlatforms.some((supported) => supported.key === candidate)
+    isCoreTriggerKind(candidate) || supportedBotPlatforms.some((supported) => supported.key === candidate)
   const selectedBotPlatformSupported = isPlatformAvailable(platform)
 
   const platformTiles = offeredPlatforms()

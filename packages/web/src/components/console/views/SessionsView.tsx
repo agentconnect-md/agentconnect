@@ -25,7 +25,8 @@ import {
   githubRepoIdFromSessionTriggerFilter,
   sessionSenderLabel,
   sessionTriggerFilterValue,
-  sessionTriggerKind
+  sessionTriggerKind,
+  type SessionTriggerKind
 } from '@/lib/session-trigger'
 import { useConsoleData } from '@/lib/data-context'
 import { useSessionFacets } from '@/lib/use-session-facets'
@@ -34,7 +35,7 @@ import { isFlatSessionView, sessionListSearchParams } from '@/lib/session-list-v
 import { useProfile } from '@/lib/profile'
 import { usePlayground } from '@/components/console/PlaygroundProvider'
 import { useMobileFilterSlot } from '@/components/console/Shell'
-import { AgentIconView, GithubMark, LoadingState, PlatformMark } from '@/components/marks'
+import { AgentIconView, GithubMark, GitlabMark, LoadingState, PlatformMark } from '@/components/marks'
 import { RestrictedLock } from '@/components/console/VisibilityField'
 import { Avatar, Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
@@ -280,10 +281,11 @@ export default function SessionsView() {
   }
   // Triggerers are keyed by raw triggeredBy id so same-named entries stay distinct.
   // Agent ids resolve only through the caller-visible agent roster; hook sessions use
-  // their CP-enriched source kind to keep GitHub distinct from generic webhooks.
+  // their CP-enriched source kind to keep each code host distinct from generic webhooks.
   const triggerAgentSet = new Map<string, Agent>()
   const peopleSet = new Map<string, { label: string; platform: string; member?: MemberDto }>()
   const githubSet = new Map<string, string>()
+  const gitlabSet = new Map<string, string>()
   const webhookSet = new Map<string, string>()
   const cronSet = new Map<string, string>()
   for (const [triggeredBy, source] of triggerSources) {
@@ -296,6 +298,11 @@ export default function SessionsView() {
       }
       case 'github':
         if (!githubSet.has(source.filterValue)) githubSet.set(source.filterValue, label)
+        break
+      // No per-project collapse: the CP indexes a numeric repo id for GitHub only,
+      // so a GitLab subscription filters by its own trigger value like a webhook.
+      case 'gitlab':
+        gitlabSet.set(triggeredBy, label)
         break
       case 'webhook':
         webhookSet.set(triggeredBy, label)
@@ -427,6 +434,18 @@ export default function SessionsView() {
       )
     }))
     .sort(byLabel)
+  const triggerGitlab: FilterOption[] = [...gitlabSet]
+    .map(([v, label]) => ({
+      v,
+      label,
+      kind: 'gitlab' as const,
+      face: (
+        <span className="flex h-[15px] w-[15px] items-center justify-center">
+          <GitlabMark color="var(--text-tertiary)" />
+        </span>
+      )
+    }))
+    .sort(byLabel)
   const triggerWebhooks: FilterOption[] = [...webhookSet]
     .map(([v, label]) => ({ v, label, kind: 'webhook' as const, face: catFace('webhook') }))
     .sort(byLabel)
@@ -437,6 +456,7 @@ export default function SessionsView() {
     { label: 'Agents', options: triggerAgents },
     { label: 'People', options: triggerPeople },
     { label: 'GitHub', options: triggerGithub },
+    { label: 'GitLab', options: triggerGitlab },
     { label: 'Webhooks', options: triggerWebhooks },
     { label: 'Schedules', options: triggerScheds }
   ]
@@ -445,6 +465,7 @@ export default function SessionsView() {
     ...triggerAgents,
     ...triggerPeople,
     ...triggerGithub,
+    ...triggerGitlab,
     ...triggerWebhooks,
     ...triggerScheds
   ]
@@ -813,7 +834,8 @@ type FilterOption = {
   // left/right). Defaults to `face`; channels override it to the platform mark
   // (their desktop `face` is the `#` glyph, but the pill wants the platform).
   pillFace?: ReactNode
-  kind?: 'agent' | 'person' | 'github' | 'webhook' | 'schedule'
+  /** The trigger category this option came from — one vocabulary with `sessionTriggerKind`. */
+  kind?: SessionTriggerKind
 }
 type FilterGroup = { label: string; options: FilterOption[] }
 

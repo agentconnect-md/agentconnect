@@ -414,7 +414,7 @@ export interface SessionDto {
   externalProvider?: string | null
   externalResolution?: 'pending' | 'settled' | 'invalid' | null
   triggeredBy: string | null
-  hookKind?: 'webhook' | 'github' | null
+  hookKind?: HookKind | null
   // Daemon-resolved display names; null until the daemon has resolved them.
   channelName: string | null
   triggeredByName: string | null
@@ -457,7 +457,7 @@ export interface SessionFacetsDto {
     value: string
     integration: string
     name: string | null
-    hookKind: 'webhook' | 'github' | null
+    hookKind: HookKind | null
     githubRepoId: string | null
   }>
 }
@@ -524,7 +524,7 @@ export interface SessionFacets {
     value: string
     name?: string
     platform: string
-    hookKind?: 'webhook' | 'github'
+    hookKind?: HookKind
     githubRepoId?: string
   }>
 }
@@ -565,7 +565,7 @@ export interface SessionDetailDto {
   usage: SessionUsageDto | null
   triggeredBy: string | null
   /** Stable source kind for hook-backed sessions. Absent on older Control Planes. */
-  hookKind?: 'webhook' | 'github' | null
+  hookKind?: HookKind | null
   channelName: string | null
   triggeredByName: string | null
   threadUrl: string | null
@@ -1869,8 +1869,8 @@ export function agentFromDto(d: AgentDto): Agent {
     daemon: placementValueOf(d) ?? PLACEHOLDER,
     ...(d.daemonName ? { daemonName: d.daemonName } : {}),
     region: PLACEHOLDER,
-    repo: ws.mode === 'github' ? ws.repo : PLACEHOLDER,
-    workdir: ws.mode === 'github' ? ws.agentDir : PLACEHOLDER,
+    repo: ws.mode !== 'scratch' ? ws.repo : PLACEHOLDER,
+    workdir: ws.mode !== 'scratch' ? ws.agentDir : PLACEHOLDER,
     // A paused agent reads as "paused" regardless of placement — pause is a deliberate
     // operator state, orthogonal to online/offline. Gives the "Paused" filter tab meaning.
     status: d.pause ? 'paused' : toStatusKey(d.status),

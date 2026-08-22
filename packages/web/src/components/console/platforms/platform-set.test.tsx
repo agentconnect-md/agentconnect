@@ -9,6 +9,8 @@ import {
   INTEGRATION_BLURB,
   PLATFORMS,
   botMatchesPlatformTab,
+  isCoreTriggerKind,
+  offeredPlatforms,
   platformTiles
 } from './host-projections'
 import { PLATFORM_MARK_IDS, platformMark } from './marks'
@@ -78,6 +80,33 @@ describe('platform set', () => {
       expect(INTEGRATION_BLURB[tile.key], tile.key).toBeTruthy()
     }
     expect(Object.keys(INTEGRATION_BLURB).sort()).toEqual([...platformRegistry.ids(), ...CORE_TRIGGER_KINDS].sort())
+  })
+
+  it('treats exactly the non-module choices as relay-backed trigger kinds', () => {
+    // Both pickers gate a chat platform on the owning daemon's advertised adapters
+    // and must NEVER gate a trigger kind that way — GitLab's empty-state tile
+    // rendered disabled for a normally placed agent while this set named only two.
+    expect(PLATFORMS.map((tile) => tile.key).filter(isCoreTriggerKind)).toEqual(CORE_TRIGGER_KINDS)
+    for (const id of platformRegistry.ids()) expect(isCoreTriggerKind(id), id).toBe(false)
+    expect(isCoreTriggerKind('zulip')).toBe(false)
+  })
+
+  it('offers the flagged GitLab tile only where its flag is on', () => {
+    const flags = (value?: string) => {
+      ;(globalThis as { window?: { __AC_ENV?: Record<string, string> } }).window = {
+        __AC_ENV: value === undefined ? {} : { FEATURE_FLAGS: value }
+      }
+    }
+    try {
+      flags()
+      expect(offeredPlatforms().map((tile) => tile.key)).not.toContain('gitlab')
+      flags('gitlab')
+      expect(offeredPlatforms().map((tile) => tile.key)).toContain('gitlab')
+      // Still a trigger kind, so nothing about the daemon can disable its tile.
+      expect(isCoreTriggerKind('gitlab')).toBe(true)
+    } finally {
+      delete (globalThis as { window?: unknown }).window
+    }
   })
 
   it('passes an id no module claims straight through the tile projection', () => {

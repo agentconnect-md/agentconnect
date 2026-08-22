@@ -66,6 +66,14 @@ export const PLATFORMS: readonly PlatformTile[] = [
   { key: 'gitlab', label: 'GitLab' }
 ]
 
+/** The core trigger kinds — every picker choice that is NOT a registry platform.
+ *  Derived from the two lists rather than restated, so adding a trigger kind above
+ *  is still one edit. These ride the relay pool, so no daemon's chat-adapter
+ *  capabilities gate them; every picker must treat them as always available. */
+export function isCoreTriggerKind(key: string): boolean {
+  return !BOT_PLATFORMS.some((tile) => tile.key === key) && PLATFORMS.some((tile) => tile.key === key)
+}
+
 /** The picker choices this deployment actually offers — {@link PLATFORMS} minus
  *  the tiles a feature flag holds back. Every picker reads this, so a flagged
  *  trigger kind can never appear on one surface and not the other. */

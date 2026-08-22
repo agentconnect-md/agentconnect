@@ -15,7 +15,8 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
 const mocks = vi.hoisted(() => ({
   createGitlabHook: vi.fn(async () => ({ id: 'hook-1', agentId: 'agent-a', kind: 'gitlab' })),
-  fetchGitlabProjects: vi.fn()
+  fetchGitlabProjects: vi.fn(),
+  daemons: [] as unknown[]
 }))
 
 vi.mock('@/lib/profile', () => ({ useProfile: () => ({ me: null }) }))
@@ -25,7 +26,7 @@ vi.mock('@/lib/org-context', () => ({
 vi.mock('@/lib/data-context', () => ({
   useConsoleData: () => ({
     bots: [],
-    daemons: [],
+    daemons: mocks.daemons,
     daemonsLoading: false,
     createIntegration: vi.fn(),
     createHook: vi.fn(),
@@ -92,6 +93,7 @@ afterEach(async () => {
   host = undefined
   mocks.createGitlabHook.mockClear()
   mocks.fetchGitlabProjects.mockReset()
+  mocks.daemons = []
 })
 
 describe('AddIntegrationModal, GitLab trigger', () => {
@@ -145,6 +147,21 @@ describe('AddIntegrationModal, GitLab trigger', () => {
       labelFilter: ['needs-review', 'agent'],
       mentionOnly: true
     })
+  })
+
+  it('keeps the GitLab tile enabled on a placed daemon that advertises no such adapter', async () => {
+    // GitLab is a relay-backed trigger kind, not a chat platform: the owning daemon's
+    // adapter list has no say over it. Naming only webhook and github in that set left
+    // this tile — and the agent page's empty-state twin — disabled for a placed agent.
+    setFlags('gitlab')
+    mocks.daemons = [{ daemonId: 'daemon-1', caps: { platforms: ['slack'] } }]
+    mocks.fetchGitlabProjects.mockResolvedValue([])
+    await render()
+
+    expect(tileNamed('GitLab')?.getAttribute('aria-disabled')).toBe('false')
+    expect(tileNamed('GitHub')?.getAttribute('aria-disabled')).toBe('false')
+    // Control: a chat platform the daemon does not advertise stays disabled.
+    expect(tileNamed('Discord')?.getAttribute('aria-disabled')).toBe('true')
   })
 
   it('points at the connection surface when no project has been added', async () => {
