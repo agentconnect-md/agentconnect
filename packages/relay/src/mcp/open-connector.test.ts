@@ -14,7 +14,7 @@ const HEADERS = (over: Record<string, string> = {}) =>
 
 function stubFetch(
   routes: Record<string, unknown>,
-  capture?: { calls: Array<{ url: string; body: unknown; redirect?: RequestRedirect }> }
+  capture?: { calls: Array<{ url: string; body: unknown; redirect?: RequestInit['redirect'] }> }
 ) {
   return vi.fn(async (url: string, init?: RequestInit) => {
     capture?.calls.push({ url, body: init?.body ? JSON.parse(String(init.body)) : undefined, redirect: init?.redirect })
@@ -67,7 +67,7 @@ describe('handleOpenConnectorMessage', () => {
   })
 
   it('tools/list maps actions for the bound service to MCP tools', async () => {
-    const capture = { calls: [] as Array<{ url: string; body: unknown; redirect?: RequestRedirect }> }
+    const capture = { calls: [] as Array<{ url: string; body: unknown; redirect?: RequestInit['redirect'] }> }
     const fetchImpl = stubFetch(
       {
         '/v1/actions': {
@@ -88,7 +88,7 @@ describe('handleOpenConnectorMessage', () => {
   })
 
   it('tools/call posts to /v1/actions/<id> with the profile and returns the output', async () => {
-    const capture = { calls: [] as Array<{ url: string; body: unknown; redirect?: RequestRedirect }> }
+    const capture = { calls: [] as Array<{ url: string; body: unknown; redirect?: RequestInit['redirect'] }> }
     const fetchImpl = stubFetch({ '/v1/actions/gmail.send': { success: true, data: { id: 'msg_1' } } }, capture)
     const res = await handleOpenConnectorMessage(ctx(fetchImpl), {
       jsonrpc: '2.0',

@@ -165,8 +165,8 @@ function makeHarness(): Harness {
         } as never
       }
     }),
-    report: (r) => h.reports.push(r),
-    authorizeMembership: async (request) => {
+    report: (r: RcRunReport) => h.reports.push(r),
+    authorizeMembership: async (request: RcCodeHostMembershipAuthz) => {
       h.authzRequests.push(request)
       return typeof h.authzResult === 'function' ? h.authzResult(request) : h.authzResult!
     },

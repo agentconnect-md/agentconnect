@@ -50,7 +50,7 @@ const deps = (over: Partial<RelayIngressManagerDeps> = {}): RelayIngressManagerD
   reportBotChannels: vi.fn(() => true),
   reportBotConversation: vi.fn(() => true),
   reportNoticePosted: vi.fn(() => true),
-  reportBotRevoked: vi.fn(() => true),
+  reportBotRevoked: vi.fn(async () => true),
   selfRelayId: () => SELF_RELAY,
   reportThreadAssign: vi.fn(() => true),
   reportThreadParticipant: vi.fn(() => true),
@@ -404,11 +404,10 @@ describe('RelayIngressManager HTTP Lark / Feishu card actions', () => {
     // began filling `response` (#521). An ack carrying only the stale key (which
     // the schema now strips) yields no callback body rather than resurrecting it.
     const response = { toast: { type: 'info' as const, content: 'Cancellation requested.' } }
-    const sendMsg = vi.fn(async (msg: RdMsgPlatformAction): Promise<RdAck> => ({
-      msgId: msg.msgId,
-      accepted: true,
-      feishuCardAction: response
-    }))
+    const sendMsg = vi.fn(
+      async (msg: RdMsgPlatformAction): Promise<RdAck> =>
+        ({ msgId: msg.msgId, accepted: true, feishuCardAction: response }) as RdAck
+    )
     const daemon = { sendMsg } as unknown as RelayDaemonConnection
     const manager = new RelayIngressManager(
       deps({ getDaemon: (daemonId) => (daemonId === DAEMON_ID ? daemon : undefined) })
@@ -638,7 +637,7 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
 
     const managerWith = (
       over: Partial<RelayIngressManagerDeps> = {},
-      sendMsg = vi.fn(async (m: { msgId: string }): Promise<RdAck> => ({ msgId: m.msgId, accepted: true })),
+      sendMsg = vi.fn(async (m: RdMsg): Promise<RdAck> => ({ msgId: m.msgId, accepted: true })),
       // A current-build daemon advertises every rd/* capability. `supports` is what the
       // implicit path is gated on, so a test can pass `() => false` to model an older one.
       supports: (c: string) => boolean = () => true
@@ -1382,8 +1381,8 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
 
 describe('RelayIngressManager conversation gating (resource-visibility §14.3)', () => {
   const fakeIngest = () => {
-    const lookupUserName = vi.fn(async () => '@Alice')
-    const postText = vi.fn(async () => {})
+    const lookupUserName = vi.fn(async (_userId: string) => '@Alice')
+    const postText = vi.fn(async (_channelId: string, _text: string, _threadTs?: string) => {})
     // Mirrors SlackHttpIngest: the contract egress facet delegates to the
     // platform client methods (the manager only ever sees the facet).
     return { lookupUserName, postText, egress: { notice: postText, lookupUserName } }
@@ -2224,7 +2223,7 @@ describe('RelayIngressManager — activation rendezvous', () => {
       reason: RD_ACK_NOT_HOLDER,
       holderDaemonId: HOLDER_ID
     }))
-    const holderSend = vi.fn(async () => ({ msgId: 'm-1', accepted: true, turnId: undefined }))
+    const holderSend = vi.fn(async (_m: RdMsg) => ({ msgId: 'm-1', accepted: true, turnId: undefined }))
     const holder = conn(holderSend)
     const manager = new RelayIngressManager(deps({ getDaemon: (id) => (id === HOLDER_ID ? holder : undefined) }))
 

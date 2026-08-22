@@ -11,7 +11,7 @@ import {
   type RelayDaemonFrame
 } from '@agentconnect.md/protocol'
 import { FakeClock } from '@agentconnect.md/connection'
-import { createRelayDaemonServer, type RelayDaemonServer } from './relay-daemon-server.js'
+import { createRelayDaemonServer, type RelayDaemonServer, type RelayDaemonServerDeps } from './relay-daemon-server.js'
 import type { Logger } from './log.js'
 
 const RELAY_ID = '11111111-1111-4111-8111-111111111111'
@@ -30,7 +30,7 @@ afterEach(async () => {
 })
 
 async function start(
-  verify: (k: 'daemon-key', c: string) => Promise<RcVerifyResult>,
+  verify: RelayDaemonServerDeps['verify'],
   relayId: () => string | undefined = () => RELAY_ID
 ): Promise<string> {
   http = createServer()
@@ -40,6 +40,8 @@ async function start(
     relayId,
     clock: new FakeClock(),
     onChat: () => {},
+    onWebchatPost: () => {},
+    onAgentMsg: async () => ({ deliveryId: 'unused', delivered: false }),
     log: silentLog
   })
   const port = (http.address() as AddressInfo).port
