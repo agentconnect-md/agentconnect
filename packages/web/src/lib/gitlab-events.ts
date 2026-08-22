@@ -58,3 +58,23 @@ export function parseLabelFilter(input: string): string[] {
     )
   ]
 }
+
+/**
+ * The rename-stable thread key a GitLab hook session carries
+ * (gitlab-com-integration.md §12.3): `gitlab:<project-id>:<kind>:<iid>`. A push
+ * session's `…:push:<ref>` deliberately does not parse — a branch is not a
+ * subject the "Run again" action can re-run.
+ */
+const GITLAB_HOOK_THREAD = /^gitlab:[1-9]\d*:(merge_request|issue):([1-9]\d*)$/
+
+export interface GitlabHookThread {
+  kind: 'merge_request' | 'issue'
+  iid: number
+}
+
+/** The thread's rerun subject, or null when it names none. */
+export function parseGitlabHookThread(thread: string | null | undefined): GitlabHookThread | null {
+  const match = thread ? GITLAB_HOOK_THREAD.exec(thread) : null
+  if (!match) return null
+  return { kind: match[1] as GitlabHookThread['kind'], iid: Number(match[2]) }
+}

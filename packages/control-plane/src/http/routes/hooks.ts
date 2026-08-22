@@ -32,6 +32,8 @@ import {
   HookListDto,
   CreatedHookDto,
   HookRunListDto,
+  HookRerunBody,
+  HookRerunDto,
   ErrorDto,
   IdParam,
   type HookDtoT
@@ -859,6 +861,59 @@ export function hookRoutes(deps: HttpDeps) {
           redeliveryAttempts: run.redeliveryAttempts,
           redeliveryLastRequestedAt: run.redeliveryLastRequestedAt?.toISOString() ?? null
         }))
+      }
+    )
+
+    // The Console "Run again" action (gitlab-com-integration.md §16.1, §18.2).
+    // GitLab has no native Check button, so this is the replacement start path:
+    // the service revalidates every fence live and reads the subject's CURRENT
+    // head from GitLab, then the relay re-dispatches through the ordinary hook
+    // turn path. Registered unconditionally so the published spec describes it;
+    // a deployment without the GitLab app refuses every call.
+    r.post(
+      '/hooks/:id/rerun',
+      {
+        schema: {
+          tags: [Tag.Hooks],
+          summary: 'Run a GitLab trigger again',
+          description:
+            'Re-dispatches one GitLab trigger turn for a merge request or issue thread. GitLab offers no native re-run control, so this is the console entry point. The enabled trigger, its agent, the managed project binding, and the subject are all revalidated live, and a merge-request rerun targets the head SHA GitLab reports right now — never a stored one. Refusals carry a machine-readable `code`.',
+          operationId: 'rerunHook',
+          params: IdParam,
+          body: HookRerunBody,
+          response: { 200: HookRerunDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 502: ErrorDto, 503: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        if (denyViewerWrite(req, reply)) return
+        // Cross-org and invisible-agent ids read as absent, like every other hook route.
+        const hook = await getOrgHook(req, req.params.id)
+        if (!hook) {
+          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'hook not found' })
+        }
+        if (!deps.gitlab) {
+          return reply.code(409).send({
+            error: 'Conflict',
+            statusCode: 409,
+            message: 'this deployment has no GitLab application configured',
+            code: 'GITLAB_NOT_CONFIGURED'
+          })
+        }
+        const outcome = await deps.gitlab.hookRerun.rerun(hook, req.body.subject)
+        if (!outcome.ok) {
+          return reply.code(outcome.status).send({
+            error: outcome.status === 502 ? 'Bad Gateway' : outcome.status === 503 ? 'Service Unavailable' : 'Conflict',
+            statusCode: outcome.status,
+            message: outcome.message,
+            code: outcome.code
+          })
+        }
+        return {
+          accepted: true as const,
+          deliveryKey: outcome.deliveryKey,
+          event: outcome.event,
+          headSha: outcome.headSha
+        }
       }
     )
 

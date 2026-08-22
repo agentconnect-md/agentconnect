@@ -10,7 +10,12 @@
  * target daemon's rd/* socket (`rd/msg` in, `rd/chat` out) — content never touches the CP.
  */
 import { randomUUID } from 'node:crypto'
-import { RELAY_CP_SUBPROTOCOL } from '@agentconnect.md/protocol'
+import {
+  RELAY_CP_SUBPROTOCOL,
+  type RcCodeHostMembershipAuthz,
+  type RcHookRerun,
+  type RcRunReport
+} from '@agentconnect.md/protocol'
 import { ClientTransport, systemClock } from '@agentconnect.md/connection'
 import { loadConfig, resolveAuth, toWsOrigin } from './config.js'
 import { RelayCpClient } from './relay-cp-client.js'
@@ -27,7 +32,7 @@ import { HookTable } from './hooks/hook-table.js'
 import { HookRateLimiter } from './hooks/rate-limit.js'
 import { registerHookIngress } from './hooks/ingress.js'
 import { registerGithubIngress } from './hooks/github-ingress.js'
-import { registerGitlabIngress } from './hooks/gitlab-ingress.js'
+import { dispatchGitlabRerun, registerGitlabIngress } from './hooks/gitlab-ingress.js'
 import { McpBindingTable } from './mcp/binding-table.js'
 import { registerMcpProxy, registerMemoryPluginProxy } from './mcp/proxy.js'
 import { MemoryConnectionBindingTable } from './memory/binding-table.js'
@@ -52,7 +57,12 @@ async function main(): Promise<void> {
   // Build the server first so the CP client can log through its pino instance. The
   // health probes and the CP-revoke callback read the client / rd server through a
   // holder (both are constructed below, once the logger exists).
-  const held: { client?: RelayCpClient; rdServer?: RelayDaemonServer; relayIngress?: RelayIngressManager } = {}
+  const held: {
+    client?: RelayCpClient
+    rdServer?: RelayDaemonServer
+    relayIngress?: RelayIngressManager
+    gitlabRerun?: (rerun: RcHookRerun) => void
+  } = {}
 
   // The bot-agnostic collaboration routing snapshot (agent-collaboration §2.3/§6.2).
   // The CP ships it over `rc/collab-routes`; the cross-daemon `rd/agentmsg` router
@@ -173,6 +183,8 @@ async function main(): Promise<void> {
       }),
     onHookAssign: (rule) => hookTable.upsert(rule),
     onHookRemove: (hookId) => hookTable.remove(hookId),
+    // Late-bound: the gitlab ingress deps this reuses are built after listen.
+    onHookRerun: (rerun) => held.gitlabRerun?.(rerun),
     // Bot-agnostic collaboration routing snapshot (agent-collaboration §2.3/§6.2) —
     // FULL-REPLACE the relay's cross-daemon agent-call routing/policy table.
     onCollabRoutes: (snap) => collab.replace(snap),
@@ -252,16 +264,19 @@ async function main(): Promise<void> {
   // GitLab project webhooks (gitlab-com-integration.md §11.2): rule-carried
   // signing tokens, live membership through the CP, same shared run limiter.
   const gitlabAuthzLimiter = new HookRateLimiter(systemClock, { capacity: 10, refillPerSec: 0.25 })
-  registerGitlabIngress(server, {
+  const gitlabIngressDeps = {
     table: hookTable,
     daemons: () => held.rdServer,
-    report: (r) => client.emitRunReport(r),
-    authorizeMembership: (request) => client.authorizeCodeHostMembership(request),
+    report: (r: RcRunReport) => client.emitRunReport(r),
+    authorizeMembership: (request: RcCodeHostMembershipAuthz) => client.authorizeCodeHostMembership(request),
     authzLimiter: gitlabAuthzLimiter,
     limiter,
     clock: systemClock,
     log
-  })
+  }
+  registerGitlabIngress(server, gitlabIngressDeps)
+  // The Console "Run again" action (§16.1) re-enters the same dispatch path.
+  held.gitlabRerun = (rerun) => dispatchGitlabRerun(gitlabIngressDeps, rerun)
 
   // MCP reverse proxy (ALL /mcp/:providerId) — resolves a grant to its upstream, SSRF-guards
   // + IP-pins the operator-supplied upstream, swaps the bearer for the real headers, streams

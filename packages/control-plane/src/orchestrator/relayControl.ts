@@ -13,6 +13,7 @@
  */
 import type {
   RcHookAssign,
+  RcHookRerun,
   RcCollabRoutes,
   RcMcpAssign,
   RcMcpUnassign,
@@ -49,6 +50,22 @@ export class RelayControlSender {
   /** Drop one hook rule pool-wide (hook disabled / deleted / agent unplaced). */
   hookRemove(hookId: string): void {
     this.broadcast((ch) => ch.send('rc/hook-remove', { hookId }))
+  }
+
+  /** Hand ONE gitlab rerun to ONE relay advertising the feature (§16.1): every
+   *  relay holds the rule, so a broadcast would buy one turn per relay for one
+   *  click. False ⇒ no relay could carry it and nothing was sent. */
+  hookRerun(rerun: RcHookRerun): boolean {
+    for (const ch of this.relays.all()) {
+      if (!ch.features?.includes(GITLAB_COM_V1_FEATURE)) continue
+      try {
+        ch.send('rc/hook-rerun', rerun)
+        return true
+      } catch {
+        // dead socket — its onClose removes it from the registry; try the next
+      }
+    }
+    return false
   }
 
   /** Load an MCP provider's proxy binding onto every relay (whole-pool BROADCAST —

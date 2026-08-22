@@ -523,3 +523,58 @@ export async function gitlabTestWebhook(
     fetchImpl
   })
 }
+
+// ── subject reads for the Console rerun (§16.1) ──
+
+export interface GitlabMergeRequest {
+  iid: number
+  state: string
+  title?: string
+  web_url?: string
+  draft?: boolean
+  work_in_progress?: boolean
+  sha?: string | null
+  source_project_id?: number
+  target_project_id?: number
+  diff_refs?: { base_sha?: string | null; head_sha?: string | null; start_sha?: string | null } | null
+}
+
+/** One merge request by IID; null on a definitive 404 (deleted or out of grant). */
+export async function gitlabMergeRequest(
+  accessToken: string,
+  projectId: bigint,
+  iid: number,
+  fetchImpl?: FetchLike
+): Promise<GitlabMergeRequest | null> {
+  try {
+    return await gitlabRequest<GitlabMergeRequest>(`/projects/${projectId}/merge_requests/${iid}`, {
+      auth: accessToken,
+      fetchImpl
+    })
+  } catch (e) {
+    if (e instanceof GitlabApiError && e.code === 'NOT_FOUND') return null
+    throw e
+  }
+}
+
+export interface GitlabIssue {
+  iid: number
+  state: string
+  title?: string
+  web_url?: string
+}
+
+/** One issue by IID; null on a definitive 404. */
+export async function gitlabIssue(
+  accessToken: string,
+  projectId: bigint,
+  iid: number,
+  fetchImpl?: FetchLike
+): Promise<GitlabIssue | null> {
+  try {
+    return await gitlabRequest<GitlabIssue>(`/projects/${projectId}/issues/${iid}`, { auth: accessToken, fetchImpl })
+  } catch (e) {
+    if (e instanceof GitlabApiError && e.code === 'NOT_FOUND') return null
+    throw e
+  }
+}

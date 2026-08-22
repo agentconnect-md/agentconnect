@@ -19,6 +19,7 @@ import {
   type HookContext,
   type RcCodeHostMembershipAuthz,
   type RcHookAssign,
+  type RcHookRerun,
   type RcRunReport,
   type RdMsgHook
 } from '@agentconnect.md/protocol'
@@ -686,4 +687,63 @@ export function registerGitlabIngress(app: FastifyInstance, deps: GitlabIngressD
       return reply.code(202).send({ deliveryKey })
     })
   })
+}
+
+/** The deps one Console-initiated rerun needs — the ordinary ingress subset. */
+export type GitlabRerunDeps = Pick<GitlabIngressDeps, 'table' | 'daemons' | 'report' | 'limiter' | 'clock' | 'log'>
+
+/**
+ * Re-dispatch one gitlab hook turn on the Control Plane's `rc/hook-rerun`
+ * (§16.1 "Run again"). The CP already revalidated the hook, agent, binding, and
+ * live subject; the relay re-checks the frame against its OWN compiled rule —
+ * a disable, retarget, or reconfigure since the CP read fails the rerun closed
+ * — then reuses the ordinary dispatch path, including its per-hook run budget.
+ */
+export function dispatchGitlabRerun(deps: GitlabRerunDeps, rerun: RcHookRerun): void {
+  const rule = deps.table.getByHookId(rerun.hookId)
+  if (
+    !rule ||
+    rule.kind !== 'gitlab' ||
+    !rule.gitlab ||
+    rule.agentId !== rerun.agentId ||
+    rule.gitlab.projectId !== rerun.gitlab.projectId ||
+    rule.configRevision !== rerun.configRevision ||
+    rule.dispatchRevision !== rerun.dispatchRevision
+  ) {
+    deps.log.info(`gitlab rerun: ignored stale ${rerun.hookId}:${rerun.deliveryKey}`)
+    return
+  }
+  if (!deps.limiter.allow(rule.hookId)) {
+    deps.log.info(`gitlab rerun: rate-limited ${rule.hookId}:${rerun.deliveryKey}`)
+    return
+  }
+  const family = rerun.gitlab.target.kind === 'issue' ? ('issues' as const) : ('merge_request' as const)
+  const msg: RdMsgHook = {
+    source: 'hook',
+    agentId: rule.agentId,
+    sessionKey: gitlabSessionKey(rule, rerun.gitlab.target),
+    msgId: `${rule.hookId}:${rerun.deliveryKey}`,
+    hookId: rule.hookId,
+    deliveryKey: rerun.deliveryKey,
+    firedAt: new Date(deps.clock.now()).toISOString(),
+    ...hookSnapshotForDelivery(rule),
+    event: rerun.event,
+    gitlab: rerun.gitlab,
+    // Control-authored envelope: no third-party text, so nothing to fence.
+    context: {
+      source: 'gitlab',
+      event: family,
+      action: 'rerun',
+      repo: rerun.gitlab.projectPath,
+      ...(rerun.gitlab.target.kind !== 'push' ? { number: rerun.gitlab.target.iid } : {}),
+      truncated: false
+    },
+    ...(rule.target ? { target: rule.target } : {})
+  }
+  void dispatchHookFire(
+    { table: deps.table, daemons: deps.daemons, report: deps.report, clock: deps.clock, log: deps.log },
+    rule,
+    msg
+  )
+  deps.log.info(`gitlab rerun: queued ${rule.hookId}:${rerun.deliveryKey} (${rerun.event} ${msg.sessionKey})`)
 }

@@ -29,7 +29,7 @@ import {
 import { makeSecretCipher } from '../../src/secrets/cipher.js'
 import { systemClock } from '../../src/domain/clock.js'
 import { HookId, OrgId } from '../../src/domain/ids.js'
-import { GITLAB_COM_V1_FEATURE, type RcHookAssign } from '@agentconnect.md/protocol'
+import { GITLAB_COM_V1_FEATURE, type RcHookAssign, type RcHookRerun } from '@agentconnect.md/protocol'
 import type { RelayChannel } from '../../src/ws/relay-registry.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
@@ -389,5 +389,174 @@ describe('rc/codehost-membership-authz (§12.2)', () => {
     expect(await service.allowed({ ...base, provider: 'github' })).toBe(false)
     await prisma.hookDef.update({ where: { id: hookRow.id }, data: { enabled: false } })
     expect(await service.allowed(base)).toBe(false)
+  })
+})
+
+describe('gitlab hook rerun — the Console "Run again" route (§16.1/§18.2)', () => {
+  const MR_IID = 42
+  const CURRENT_HEAD = 'cafebabe0000000000000000000000000000cafe'
+
+  async function rerunHarness() {
+    const h = await harness()
+    const glab = channel([GITLAB_COM_V1_FEATURE])
+    h.a.relayReg.add(glab.ch)
+    const created = await h.a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: glBody(h.agentId) })
+    expect(created.statusCode).toBe(200)
+    const hookId = (created.json() as { id: string }).id
+    // The create kick installs the managed webhook; until it lands the hook has
+    // no compilable rule and every rerun is correctly refused.
+    await vi.waitFor(
+      () => {
+        expect(h.fake.webhooks.size).toBe(1)
+        expect(glab.sent.some((frame) => frame.type === 'rc/hook-assign')).toBe(true)
+      },
+      { timeout: 20_000 }
+    )
+    // The subject as GitLab reports it NOW — a stale stored head must never win.
+    h.fake.mergeRequests.set(MR_IID, {
+      state: 'opened',
+      headSha: CURRENT_HEAD,
+      baseSha: 'ba5e0000000000000000000000000000000ba5e0'
+    })
+    glab.sent.length = 0
+    return { h, glab, hookId }
+  }
+
+  const rerun = (a: HttpApp, hookId: string, subject: Record<string, unknown>) =>
+    a.app.inject({ method: 'POST', url: `${ORG}/hooks/${hookId}/rerun`, payload: { subject } })
+
+  const reruns = (sent: Array<{ type: string; payload: unknown }>) =>
+    sent.filter((frame) => frame.type === 'rc/hook-rerun').map((frame) => frame.payload as RcHookRerun)
+
+  it('re-dispatches the current head to ONE feature-advertising relay', async () => {
+    const { h, glab, hookId } = await rerunHarness()
+    const legacy = channel()
+    h.a.relayReg.add(legacy.ch)
+    // A stale head in the request body is impossible by construction: the caller
+    // names only the subject, and the CP reads the revision itself.
+    const res = await rerun(h.a, hookId, { kind: 'merge_request', iid: MR_IID })
+    expect(res.statusCode).toBe(200)
+    const body = res.json() as { accepted: boolean; deliveryKey: string; event: string; headSha: string }
+    expect(body.accepted).toBe(true)
+    expect(body.event).toBe('merge_request:rerun')
+    expect(body.headSha).toBe(CURRENT_HEAD)
+
+    const frames = reruns(glab.sent)
+    expect(frames).toHaveLength(1)
+    const frame = frames[0]!
+    expect(frame.hookId).toBe(hookId)
+    expect(frame.agentId).toBe(h.agentId)
+    expect(frame.deliveryKey).toBe(body.deliveryKey)
+    expect(frame.gitlab.projectId).toBe(PROJECT.toString())
+    expect(frame.gitlab.target).toMatchObject({ kind: 'merge_request', iid: MR_IID, headSha: CURRENT_HEAD })
+    // The fence the relay re-checks against its own compiled rule.
+    const row = (await h.hookRepo.get(OrgId(DEFAULT_ORG_ID), HookId(hookId)))!
+    expect(frame.configRevision).toBe(row.configRevision.toString())
+    expect(frame.dispatchRevision).toBe(row.dispatchRevision.toString())
+    // One click is one turn: a relay that cannot decode the frame gets nothing,
+    // and the frame is handed to exactly one relay, never fanned out.
+    expect(reruns(legacy.sent)).toHaveLength(0)
+  })
+
+  it('follows the head between reruns instead of pinning the first one', async () => {
+    const { h, glab, hookId } = await rerunHarness()
+    expect((await rerun(h.a, hookId, { kind: 'merge_request', iid: MR_IID })).statusCode).toBe(200)
+    h.fake.mergeRequests.set(MR_IID, { state: 'opened', headSha: 'f00d'.repeat(10) })
+    const second = await rerun(h.a, hookId, { kind: 'merge_request', iid: MR_IID })
+    expect(second.statusCode).toBe(200)
+    expect((second.json() as { headSha: string }).headSha).toBe('f00d'.repeat(10))
+    const frames = reruns(glab.sent)
+    expect(frames).toHaveLength(2)
+    expect(frames.map((frame) => (frame.gitlab.target as { headSha?: string }).headSha)).toEqual([
+      CURRENT_HEAD,
+      'f00d'.repeat(10)
+    ])
+    // Each rerun opens its own run row.
+    expect(new Set(frames.map((frame) => frame.deliveryKey)).size).toBe(2)
+  })
+
+  it('runs an issue subject with no head, and refuses a closed or deleted one', async () => {
+    const { h, glab, hookId } = await rerunHarness()
+    h.fake.issues.set(7, { state: 'opened' })
+    h.fake.issues.set(8, { state: 'closed' })
+
+    const open = await rerun(h.a, hookId, { kind: 'issue', iid: 7 })
+    expect(open.statusCode).toBe(200)
+    expect((open.json() as { headSha: string | null; event: string }).headSha).toBeNull()
+    expect((open.json() as { event: string }).event).toBe('issues:rerun')
+    expect(reruns(glab.sent)[0]!.gitlab.target).toEqual({ kind: 'issue', iid: 7 })
+
+    const closed = await rerun(h.a, hookId, { kind: 'issue', iid: 8 })
+    expect(closed.statusCode).toBe(409)
+    expect((closed.json() as { code: string }).code).toBe('SUBJECT_CLOSED')
+
+    const gone = await rerun(h.a, hookId, { kind: 'issue', iid: 9 })
+    expect(gone.statusCode).toBe(409)
+    expect((gone.json() as { code: string }).code).toBe('SUBJECT_NOT_FOUND')
+
+    // A merged merge request is equally not a new generation.
+    h.fake.mergeRequests.set(MR_IID, { state: 'merged', headSha: CURRENT_HEAD })
+    const merged = await rerun(h.a, hookId, { kind: 'merge_request', iid: MR_IID })
+    expect(merged.statusCode).toBe(409)
+    expect((merged.json() as { code: string }).code).toBe('SUBJECT_CLOSED')
+    expect(reruns(glab.sent)).toHaveLength(1)
+  })
+
+  it('reads an unknown and a cross-organization hook as absent', async () => {
+    const { h, glab, hookId } = await rerunHarness()
+    expect((await rerun(h.a, randomUUID(), { kind: 'merge_request', iid: MR_IID })).statusCode).toBe(404)
+
+    const foreignOrg = `foreign-${randomUUID().slice(0, 8)}`
+    await prisma.org.create({ data: { id: foreignOrg, slug: foreignOrg } })
+    await prisma.hookDef.update({ where: { id: hookId }, data: { orgId: foreignOrg } })
+    const cross = await rerun(h.a, hookId, { kind: 'merge_request', iid: MR_IID })
+    expect(cross.statusCode).toBe(404)
+    // No existence oracle: the same shape as a hook that never existed.
+    expect((cross.json() as { code?: string }).code).toBeUndefined()
+    expect(reruns(glab.sent)).toHaveLength(0)
+  })
+
+  it('refuses a disabled trigger and a non-gitlab kind', async () => {
+    const { h, glab, hookId } = await rerunHarness()
+    await prisma.hookDef.update({ where: { id: hookId }, data: { enabled: false } })
+    const disabled = await rerun(h.a, hookId, { kind: 'merge_request', iid: MR_IID })
+    expect(disabled.statusCode).toBe(409)
+    expect((disabled.json() as { code: string }).code).toBe('HOOK_DISABLED')
+
+    const webhook = await h.a.app.inject({
+      method: 'POST',
+      url: `${ORG}/hooks`,
+      payload: { agentId: h.agentId, kind: 'webhook', name: 'plain-hook' }
+    })
+    expect(webhook.statusCode).toBe(200)
+    const wrongKind = await rerun(h.a, (webhook.json() as { id: string }).id, { kind: 'merge_request', iid: MR_IID })
+    expect(wrongKind.statusCode).toBe(409)
+    expect((wrongKind.json() as { code: string }).code).toBe('HOOK_NOT_GITLAB')
+    expect(reruns(glab.sent)).toHaveLength(0)
+  })
+
+  it('refuses a paused agent, a torn-down binding, and a pool with no relay to carry it', async () => {
+    const { h, glab, hookId } = await rerunHarness()
+    const pause = async (value: boolean) =>
+      h.a.app.inject({ method: 'PATCH', url: `${ORG}/agents/${h.agentId}`, payload: { pause: value } })
+    expect((await pause(true)).statusCode).toBe(200)
+    const paused = await rerun(h.a, hookId, { kind: 'merge_request', iid: MR_IID })
+    expect(paused.statusCode).toBe(409)
+    expect((paused.json() as { code: string }).code).toBe('AGENT_UNAVAILABLE')
+    expect((await pause(false)).statusCode).toBe(200)
+
+    await h.bindings.update(DEFAULT_ORG_ID, h.binding.id, { state: 'cleanup_pending' })
+    const unbound = await rerun(h.a, hookId, { kind: 'merge_request', iid: MR_IID })
+    expect(unbound.statusCode).toBe(409)
+    expect((unbound.json() as { code: string }).code).toBe('BINDING_INACTIVE')
+    await h.bindings.update(DEFAULT_ORG_ID, h.binding.id, { state: 'ready' })
+
+    // Nothing reached the pool through any refusal above.
+    expect(reruns(glab.sent)).toHaveLength(0)
+    // …and with no feature-advertising relay connected there is nowhere to dispatch.
+    h.a.relayReg.remove(glab.ch.relayId, glab.ch)
+    const nowhere = await rerun(h.a, hookId, { kind: 'merge_request', iid: MR_IID })
+    expect(nowhere.statusCode).toBe(503)
+    expect((nowhere.json() as { code: string }).code).toBe('RELAY_UNAVAILABLE')
   })
 })

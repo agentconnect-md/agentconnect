@@ -35,6 +35,8 @@ import {
   PgCodeHostRepositoryRepo,
   PgGitlabConnectionRepo,
   PgGitlabProjectBindingRepo,
+  PgGitlabProjectCredentialRepo,
+  PgGitlabProjectCredentialSecretStore,
   PgGitlabWebhookSecretStore,
   PgOrgRepo,
   PgOrgInviteLinkRepo,
@@ -95,6 +97,7 @@ import { RelayRegistry } from '../../src/ws/relay-registry.js'
 import { InMemorySessionEventSink } from '../../src/events/sink.js'
 import { SessionUsageWriter } from '../../src/usage/writer.js'
 import { HookService } from '../../src/hooks/hook.service.js'
+import { GitlabHookRerunService } from '../../src/gitlab/hook-rerun.service.js'
 import { buildHttpServer } from '../../src/http/server.js'
 import type { HttpDeps } from '../../src/http/deps.js'
 import { buildCpPlatformRegistry } from '../../src/platforms/registry.js'
@@ -217,7 +220,12 @@ export function buildHttpApp(
   // the platform keys are peeled into `platformStubs` and the rest merged last, so
   // a test can register funnel routes that gate on these at plugin-registration
   // time. Nested config goes through `configOverrides`, not here.
-  depsOverrides?: Partial<HttpDeps> & Partial<PlatformStubs>
+  // The gitlab seam's rerun authorizer is filled in below from the same repos,
+  // so a suite wires only `{ oauth, provisioner, fetchImpl }`.
+  depsOverrides?: Partial<Omit<HttpDeps, 'gitlab'>> &
+    Partial<PlatformStubs> & {
+      gitlab?: Omit<NonNullable<HttpDeps['gitlab']>, 'hookRerun'> & { hookRerun?: GitlabHookRerunService }
+    }
 ): HttpApp {
   const clock = systemClock
   // Mirror the prod graph: WAITLIST_MODE gates JIT personal-org creation and drives
@@ -364,7 +372,7 @@ export function buildHttpApp(
   // Peel the platform seams out of the overrides bag: they are no longer core
   // deps (§9 DI collapse), but suites still hand them in at build time so the
   // funnel plugins that gate on them register.
-  const coreOverrides: Partial<HttpDeps> = { ...depsOverrides }
+  const coreOverrides: Partial<HttpDeps> = { ...depsOverrides } as Partial<HttpDeps>
   for (const key of PLATFORM_STUB_KEYS) delete (coreOverrides as Record<string, unknown>)[key]
   const platformStubs: PlatformStubs = {
     verifyTelegramBot: async () => ({ status: 'ok', name: null, privacyModeDisabled: true }),
@@ -381,6 +389,35 @@ export function buildHttpApp(
         (depsOverrides as Record<string, unknown>)[key]
       ])
     )
+  }
+
+  const hookService = new HookService(
+    hookRepo,
+    hookSecretStore,
+    agentRepo,
+    relayControl,
+    placementResolver,
+    githubInstallationRepo,
+    'agentconnect-test',
+    undefined,
+    depsOverrides?.gitlab ? new PgGitlabProjectBindingRepo(prisma) : undefined,
+    depsOverrides?.gitlab ? new PgGitlabWebhookSecretStore(prisma, cipher) : undefined
+  )
+  // The §16.1 rerun authorizer rides the gitlab seam; a suite may still override it.
+  if (coreOverrides.gitlab && !coreOverrides.gitlab.hookRerun) {
+    coreOverrides.gitlab = {
+      ...coreOverrides.gitlab,
+      hookRerun: new GitlabHookRerunService({
+        hooks: hookRepo,
+        agents: agentRepo,
+        bindings: new PgGitlabProjectBindingRepo(prisma),
+        credentials: new PgGitlabProjectCredentialRepo(prisma),
+        credentialSecrets: new PgGitlabProjectCredentialSecretStore(prisma, cipher),
+        hookService,
+        relayControl,
+        ...(coreOverrides.gitlab.fetchImpl ? { fetchImpl: coreOverrides.gitlab.fetchImpl } : {})
+      })
+    }
   }
 
   const deps: HttpDeps = {
@@ -477,18 +514,7 @@ export function buildHttpApp(
     sessionOwners: connReg,
     // The installations repo feeds the github-kind compile — same graph as prod.
     // gitlab-kind compile sources appear exactly when the test wires a gitlab seam.
-    hooks: new HookService(
-      hookRepo,
-      hookSecretStore,
-      agentRepo,
-      relayControl,
-      placementResolver,
-      githubInstallationRepo,
-      'agentconnect-test',
-      undefined,
-      depsOverrides?.gitlab ? new PgGitlabProjectBindingRepo(prisma) : undefined,
-      depsOverrides?.gitlab ? new PgGitlabWebhookSecretStore(prisma, cipher) : undefined
-    ),
+    hooks: hookService,
     auth: new DaemonAuthService(
       codec,
       apiKeyRepo,

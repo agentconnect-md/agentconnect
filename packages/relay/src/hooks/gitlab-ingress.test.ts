@@ -7,6 +7,7 @@ import {
   HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED,
   type RcCodeHostMembershipAuthz,
   type RcHookAssign,
+  type RcHookRerun,
   type RcRunReport,
   type RdAck,
   type RdMsg,
@@ -14,7 +15,13 @@ import {
 } from '@agentconnect.md/protocol'
 import { HookTable } from './hook-table.js'
 import { HookRateLimiter } from './rate-limit.js'
-import { registerGitlabIngress, gitlabRuleVerdict, normalizeGitlabEvent } from './gitlab-ingress.js'
+import {
+  dispatchGitlabRerun,
+  registerGitlabIngress,
+  gitlabRuleVerdict,
+  normalizeGitlabEvent,
+  type GitlabRerunDeps
+} from './gitlab-ingress.js'
 
 const HOOK = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const HOOK_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
@@ -127,6 +134,8 @@ interface Harness {
   ack: RdAck
   offline: boolean
   gitlabSupported: boolean
+  /** The same deps the ingress runs on — the rerun path reuses them verbatim. */
+  deps: GitlabRerunDeps
 }
 
 function makeHarness(): Harness {
@@ -142,7 +151,7 @@ function makeHarness(): Harness {
   }
   const app = Fastify()
   const table = new HookTable()
-  registerGitlabIngress(app, {
+  const deps = {
     table,
     daemons: () => ({
       get: () => {
@@ -165,10 +174,12 @@ function makeHarness(): Harness {
     limiter: new HookRateLimiter(clock, { capacity: 5, refillPerSec: 0 }),
     clock,
     log
-  })
+  }
+  registerGitlabIngress(app, deps)
   h.app = app
   h.table = table
   h.clock = clock
+  h.deps = deps
   return h as Harness
 }
 
@@ -458,5 +469,93 @@ describe('gitlab ingress', () => {
     expect(gitlabRuleVerdict(rule({}, { labelFilter: ['ops'] }), ctx)).toBe('no-match')
     expect(gitlabRuleVerdict(rule({}, { events: ['merge_request:*'] }), ctx)).toBe('no-match')
     expect(gitlabRuleVerdict(rule({ kind: 'github' }), ctx)).toBe('no-match')
+  })
+})
+
+describe('gitlab rerun dispatch (§16.1 "Run again")', () => {
+  let h: Harness
+  beforeEach(() => {
+    h = makeHarness()
+  })
+  afterEach(async () => {
+    await h.app.close()
+  })
+
+  const frame = (over: Partial<RcHookRerun> = {}): RcHookRerun => ({
+    hookId: HOOK,
+    agentId: AGENT,
+    deliveryKey: 'rerun_1',
+    configRevision: '3',
+    dispatchRevision: '5',
+    event: 'merge_request:rerun',
+    gitlab: {
+      projectId: String(PROJECT),
+      projectPath: 'example-group/example-project',
+      target: { kind: 'merge_request', iid: 77, headSha: 'b'.repeat(40), explicitReviewRequest: true }
+    },
+    ...over
+  })
+
+  it('re-enters the ordinary dispatch path with the §12.3 key and the frame head', async () => {
+    h.table.upsert(rule())
+    dispatchGitlabRerun(h.deps, frame())
+    await flush()
+    const msg = h.sent[0] as RdMsgHook
+    expect(msg.source).toBe('hook')
+    expect(msg.hookId).toBe(HOOK)
+    expect(msg.agentId).toBe(AGENT)
+    expect(msg.sessionKey).toBe(`gitlab:${PROJECT}:merge_request:77`)
+    expect(msg.msgId).toBe(`${HOOK}:rerun_1`)
+    expect(msg.event).toBe('merge_request:rerun')
+    expect(msg.gitlab?.target).toMatchObject({ kind: 'merge_request', iid: 77, headSha: 'b'.repeat(40) })
+    // A control-authored envelope: no third-party excerpt rides it.
+    expect(msg.context).toMatchObject({ source: 'gitlab', event: 'merge_request', action: 'rerun', number: 77 })
+    expect(msg.context?.bodyExcerpt).toBeUndefined()
+    // The dispatch reports through the same run-report leg an ingress fire does.
+    expect(h.reports.map((report) => report.status)).toEqual(['accepted'])
+    expect(h.reports[0]?.deliveryKey).toBe('rerun_1')
+  })
+
+  it('lands an issue rerun on the same thread key as the issue events', async () => {
+    h.table.upsert(rule())
+    dispatchGitlabRerun(
+      h.deps,
+      frame({ event: 'issues:rerun', gitlab: { ...frame().gitlab, target: { kind: 'issue', iid: 42 } } })
+    )
+    await flush()
+    expect((h.sent[0] as RdMsgHook).sessionKey).toBe(`gitlab:${PROJECT}:issue:42`)
+  })
+
+  it('refuses a frame whose fence no longer matches the compiled rule', async () => {
+    h.table.upsert(rule())
+    dispatchGitlabRerun(h.deps, frame({ configRevision: '4' }))
+    dispatchGitlabRerun(h.deps, frame({ dispatchRevision: '6' }))
+    dispatchGitlabRerun(h.deps, frame({ agentId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee' }))
+    dispatchGitlabRerun(h.deps, frame({ gitlab: { ...frame().gitlab, projectId: '999' } }))
+    dispatchGitlabRerun(h.deps, frame({ hookId: HOOK_B }))
+    await flush()
+    expect(h.sent).toHaveLength(0)
+    expect(h.reports).toHaveLength(0)
+  })
+
+  it('refuses once the rule left the pool, and reports a daemon that cannot take it', async () => {
+    dispatchGitlabRerun(h.deps, frame())
+    await flush()
+    expect(h.sent).toHaveLength(0)
+
+    h.table.upsert(rule())
+    h.gitlabSupported = false
+    dispatchGitlabRerun(h.deps, frame({ deliveryKey: 'rerun_2' }))
+    await flush()
+    expect(h.sent).toHaveLength(0)
+    expect(h.reports).toEqual([expect.objectContaining({ status: 'failed', reason: 'rejected:unsupported' })])
+  })
+
+  it('spends the same per-hook run budget an ingress fire does', async () => {
+    h.table.upsert(rule())
+    for (let i = 0; i < 7; i += 1) dispatchGitlabRerun(h.deps, frame({ deliveryKey: `rerun_${i}` }))
+    await flush()
+    // The harness limiter holds five tokens and does not refill.
+    expect(h.sent).toHaveLength(5)
   })
 })

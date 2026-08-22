@@ -35,6 +35,7 @@ import {
   type RcParticipantAssign,
   type RcHookAssign,
   type RcHookRemove,
+  type RcHookRerun,
   type RcRunReport,
   type RcGithubInstallation,
   type RcSetChannelAgent,
@@ -118,6 +119,9 @@ export interface RelayCpClientDeps {
   onHookAssign?: (rule: RcHookAssign) => void
   /** Called on a CP `rc/hook-remove` EVT — drop one hook rule. */
   onHookRemove?: (hookId: string) => void
+  /** Called on a CP `rc/hook-rerun` EVT — re-dispatch one gitlab hook turn the
+   *  Console asked for (gitlab-com-integration.md §16.1). */
+  onHookRerun?: (rerun: RcHookRerun) => void
   /** Called on a CP `rc/collab-routes` EVT — FULL-REPLACE the bot-agnostic
    *  collaboration routing snapshot (agent-collaboration §2.3/§6.2). */
   onCollabRoutes?: (snap: RcCollabRoutes) => void
@@ -597,6 +601,10 @@ export class RelayCpClient {
       }
       case 'rc/hook-remove': {
         this.deps.onHookRemove?.((frame.payload as RcHookRemove).hookId)
+        return
+      }
+      case 'rc/hook-rerun': {
+        this.deps.onHookRerun?.(frame.payload as RcHookRerun)
         return
       }
       case 'rc/collab-routes': {

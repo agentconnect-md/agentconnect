@@ -398,6 +398,28 @@ export const RcHookRemove = z.object({
 })
 export type RcHookRemove = z.infer<typeof RcHookRemove>
 
+/**
+ * C→R EVT — re-dispatch ONE gitlab hook turn the Console asked for
+ * (gitlab-com-integration.md §16.1 "Run again", §18.2). GitLab has no native
+ * Check button, so the Control Plane is the entry point instead of a signed
+ * provider callback; the frame carries only the fences and the freshly read
+ * subject metadata, and the relay re-checks its own compiled rule before
+ * reusing the ordinary hook dispatch path.
+ *
+ * Sent to ONE relay (never broadcast): every connected relay dispatching the
+ * same rerun would buy duplicate turns for one click.
+ */
+export const RcHookRerun = z.object({
+  hookId: z.string().uuid(),
+  agentId: z.string().uuid(),
+  deliveryKey: z.string().min(1), // Control-Plane-minted; the HookRun/dedup identity
+  configRevision: HookBigIntString,
+  dispatchRevision: HookBigIntString,
+  event: z.string().min(1), // normalized 'family:action', e.g. 'merge_request:rerun'
+  gitlab: GitlabHookMetadata
+})
+export type RcHookRerun = z.infer<typeof RcHookRerun>
+
 /** Definite pre-dispatch unavailability: the relay found no live connection for
  * the assigned daemon, so no agent turn or external review effect could start. */
 export const HOOK_DELIVERY_REASON_DAEMON_OFFLINE = 'daemon_offline' as const
@@ -1006,6 +1028,7 @@ export const RELAY_CP_SCHEMAS = {
   'rc/github-rerequest/ok': RcGithubRerequestResult,
   'rc/hook-assign': RcHookAssign,
   'rc/hook-remove': RcHookRemove,
+  'rc/hook-rerun': RcHookRerun,
   'rc/run-report': RcRunReport,
   'rc/github-installation': RcGithubInstallation,
   'rc/daemon-revoke': RcDaemonRevoke,
@@ -1055,6 +1078,7 @@ export const RelayCpFrame = z.discriminatedUnion('type', [
   frameSchema('rc/github-rerequest/ok', RELAY_CP_SCHEMAS['rc/github-rerequest/ok']),
   frameSchema('rc/hook-assign', RELAY_CP_SCHEMAS['rc/hook-assign']),
   frameSchema('rc/hook-remove', RELAY_CP_SCHEMAS['rc/hook-remove']),
+  frameSchema('rc/hook-rerun', RELAY_CP_SCHEMAS['rc/hook-rerun']),
   frameSchema('rc/run-report', RELAY_CP_SCHEMAS['rc/run-report']),
   frameSchema('rc/github-installation', RELAY_CP_SCHEMAS['rc/github-installation']),
   frameSchema('rc/daemon-revoke', RELAY_CP_SCHEMAS['rc/daemon-revoke']),
