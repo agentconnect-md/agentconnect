@@ -11,7 +11,6 @@ import { daemonWsUrl, daemonStartCommand, daemonPkgSpec } from './onboarding.js'
 import type { HttpServerConfig } from './deps.js'
 
 const cfg = (over: Partial<HttpServerConfig>): HttpServerConfig => ({
-  DEFAULT_ORG_ID: 'org',
   DEFAULT_OWNER_ID: 'owner',
   ...over
 })

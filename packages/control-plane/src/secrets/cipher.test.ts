@@ -4,13 +4,13 @@
  * reading back unchanged, so wiring it in is a pure no-op deploy.
  */
 import { describe, it, expect } from 'vitest'
-import { PlaintextSecretCipher } from './cipher.js'
+import { PlaintextSecretCipher, type SecretCipher } from './cipher.js'
 import { DEPLOYMENT_SCOPE, effectiveOrgKeyPrefix, orgKeyPrefixConflict, orgScope } from './scope.js'
 import { OrgId } from '../domain/ids.js'
 
 describe('PlaintextSecretCipher', () => {
   it('seal and open are both identity, whatever the scope (plaintext at rest)', async () => {
-    const cipher = new PlaintextSecretCipher()
+    const cipher: SecretCipher = new PlaintextSecretCipher()
     for (const scope of [DEPLOYMENT_SCOPE, orgScope(OrgId('org-1'))]) {
       for (const value of ['xoxb-token', '', 'vault:v1:already-looks-sealed', 'acv1:looks-enveloped', 'multibyte ✓']) {
         expect(await cipher.seal(value, scope)).toBe(value)

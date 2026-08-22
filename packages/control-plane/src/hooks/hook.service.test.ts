@@ -21,6 +21,7 @@ const HOOK = HookId('11111111-1111-4111-8111-111111111111')
 const AGENT = AgentId('22222222-2222-4222-8222-222222222222')
 const DAEMON = 'd1d1d1d1-dddd-4ddd-8ddd-dddddddddddd'
 
+// A legacy row: `compile` branches explicitly on the revision columns being absent.
 function hook(over: Partial<HookRecord> = {}): HookRecord {
   return {
     id: HOOK,
@@ -48,7 +49,7 @@ function hook(over: Partial<HookRecord> = {}): HookRecord {
     lastModifiedAt: new Date(),
     lastModifiedBy: null,
     ...over
-  }
+  } as HookRecord
 }
 
 /** Minimal installation rows for the github-compile fakes. */
@@ -60,6 +61,7 @@ function installation(id: bigint, over: Partial<GithubInstallationRecord> = {}):
     accountLogin: 'acme',
     accountType: 'Organization',
     repositorySelection: 'all',
+    permissions: {},
     suspendedAt: null,
     revokedAt: null,
     createdAt: new Date(),

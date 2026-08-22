@@ -18,6 +18,7 @@ function relayRecord(over: Partial<ApiKeyRecord> = {}): ApiKeyRecord {
     orgId: null,
     daemonId: null,
     userId: null,
+    oauthGrantId: null,
     displayTail: '…abcd',
     name: 'pod-0',
     scopes: [],

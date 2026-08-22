@@ -138,8 +138,8 @@ describe('planDutyReconcile', () => {
       [held('g2', 'm2', agent('a2'), bot('b2')), held('g1', 'm1', agent('a1'), bot('b1'))],
       [comp(agent('a1'), agent('a2'), bot('b1'), bot('b2'))]
     )
-    expect(plan.writes[0].groupId).toBe('g1')
-    expect(plan.writes[0].regrantTo).toBe('m1')
+    expect(plan.writes[0]!.groupId).toBe('g1')
+    expect(plan.writes[0]!.regrantTo).toBe('m1')
     expect(plan.superseded).toEqual([{ groupId: 'g2', holder: 'm2' }])
   })
 

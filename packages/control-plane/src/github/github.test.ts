@@ -9,6 +9,7 @@ import { jwtVerify } from 'jose'
 import type { GitCredCapability } from '@agentconnect.md/protocol'
 import { FakeClock } from '../../test/fakes/fake-clock.js'
 import type { AgentRepoAuthorizationRecord, GithubInstallationRecord } from '../persistence/ports.js'
+import { OrgId } from '../domain/ids.js'
 import { githubAppBotIdentity, resolveGithubAppConfig, type GithubAppConfig } from './config.js'
 import { GithubApiError, githubRequest, mintAppJwt, type FetchLike } from './api.js'
 import { InstallationTokenInvalidatedError, InstallationTokenService } from './installation-token.service.js'
@@ -987,6 +988,7 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
       accountLogin: 'acme',
       accountType: 'Organization',
       repositorySelection: 'all',
+      permissions: {},
       suspendedAt: null,
       revokedAt: null,
       createdAt: new Date(0),
@@ -1374,7 +1376,7 @@ describe('GithubService.refreshInstallationFacts', () => {
     const clock = new FakeClock(1_700_000_000_000)
     const claimed = {
       id: 'row-1',
-      orgId: 'org-a',
+      orgId: OrgId('org-a'),
       installationId: 42n,
       accountLogin: 'acme',
       accountType: 'Organization',
@@ -1439,7 +1441,7 @@ describe('GithubService.refreshInstallationFacts', () => {
     const clock = new FakeClock(1_700_000_000_000)
     const claimed = {
       id: 'row-1',
-      orgId: 'org-a',
+      orgId: OrgId('org-a'),
       installationId: 42n,
       accountLogin: 'acme',
       accountType: 'Organization',

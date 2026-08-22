@@ -11,6 +11,7 @@
 import Fastify, { type FastifyInstance } from 'fastify'
 import { describe, expect, it, vi } from 'vitest'
 import type { HttpDeps } from '../deps.js'
+import type { SessionPageQuery, SessionPageRecord } from '../../persistence/ports.js'
 import { installZod } from '../plugins/zod.js'
 import { sessionRoutes } from './sessions.js'
 
@@ -60,7 +61,11 @@ const hookRows = [
 
 function fakeDeps() {
   const listFacets = vi.fn(async () => facetIndex)
-  const listPage = vi.fn(async () => ({ sessions: [], total: 0, hasMore: false }))
+  const listPage = vi.fn<(q: SessionPageQuery) => Promise<SessionPageRecord>>(async () => ({
+    sessions: [],
+    total: 0,
+    hasMore: false
+  }))
   const listIdsForOrgKind = vi.fn(async (_orgId: string, kind: string) =>
     hookRows.filter((hook) => hook.kind === kind).map((hook) => hook.id)
   )
