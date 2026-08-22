@@ -48,6 +48,7 @@ const CONNECTION: GitlabConnectionDto = {
   state: 'connected',
   scopes: ['api'],
   connectedBy: 'user-1',
+  mine: true,
   accessExpiresAt: null,
   assignedProjects: 0,
   createdAt: '2026-08-01T00:00:00.000Z'
@@ -251,6 +252,47 @@ describe('GitlabCard', () => {
     // A ready project its own connected account manages has nothing to take over.
     expect(() => buttonIn(healthy, 'Transfer')).toThrow()
     expect(buttonIn(degraded, 'Transfer')).toBeTruthy()
+  })
+
+  it('offers Transfer on a project awaiting cleanup, connected installer and all', async () => {
+    // A removal that failed halfway leaves cleanup_pending under a connected account:
+    // the takeover is what lets someone else finish it.
+    mocks.fetchConnections.mockResolvedValue({ enabled: true, connections: [CONNECTION] })
+    mocks.fetchProjects.mockResolvedValue([{ ...BINDING, state: 'cleanup_pending' as const }])
+    await render()
+    expect(buttonIn(host.querySelector('[data-gitlab-project]')!, 'Transfer')).toBeTruthy()
+  })
+
+  it('keeps a connect action reachable for a caller who owns none of the connections', async () => {
+    const theirs = { ...CONNECTION, id: 'conn-theirs', gitlabUsername: 'someone-else', mine: false }
+    mocks.fetchConnections.mockResolvedValue({ enabled: true, connections: [theirs] })
+    await render()
+    // Every listed account belongs to someone else, so the caller can still start their own.
+    expect(buttonIn(host, 'Connect my account')).toBeTruthy()
+  })
+
+  it('drops that action once the caller has an own connected account', async () => {
+    const theirs = { ...CONNECTION, id: 'conn-theirs', gitlabUsername: 'someone-else', mine: false }
+    mocks.fetchConnections.mockResolvedValue({ enabled: true, connections: [theirs, CONNECTION] })
+    await render()
+    expect(() => buttonIn(host, 'Connect my account')).toThrow()
+    expect(() => buttonIn(host, 'Connect GitLab')).toThrow()
+  })
+
+  it('points a takeover refused for want of an own account at that action', async () => {
+    mocks.fetchConnections.mockResolvedValue({
+      enabled: true,
+      connections: [{ ...CONNECTION, mine: false, state: 'disconnected' as const, assignedProjects: 1 }]
+    })
+    mocks.fetchProjects.mockResolvedValue([BINDING])
+    mocks.transferProject.mockRejectedValue(new ApiError('no own connection', 409, 'GITLAB_NO_OWN_CONNECTION'))
+    await render()
+
+    await click('Transfer', host.querySelector('[data-gitlab-project]')!)
+    await click('Transfer', modal())
+    // The refusal names the affordance, and that affordance is on screen.
+    expect(host.textContent).toContain('Connect my account')
+    expect(buttonIn(host, 'Connect my account')).toBeTruthy()
   })
 
   it('says why a takeover was refused, in GitLab terms', async () => {

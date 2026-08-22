@@ -1775,6 +1775,9 @@ export const GitlabConnectionDto = z.object({
   state: z.enum(['connected', 'reauth_required', 'disconnected']),
   scopes: z.array(z.string()),
   connectedBy: z.string().nullable(), // AgentConnect user id; null after user deletion
+  /** Whether the CALLER owns this connection: takeover and reconnect are their
+   *  own account's actions, so the console needs the answer without comparing ids. */
+  mine: z.boolean(),
   accessExpiresAt: z.string().nullable(),
   /** Managed projects this connection still administers (§7.1). A released
    *  connection with none can be removed; with any, removal is refused. */

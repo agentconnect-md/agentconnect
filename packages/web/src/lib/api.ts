@@ -5251,6 +5251,9 @@ export interface GitlabConnectionDto {
   state: 'connected' | 'reauth_required' | 'disconnected'
   scopes: string[]
   connectedBy: string | null // AgentConnect user id; null after user deletion
+  /** Whether this connection is the CALLER's own: takeover and reconnect act on
+   *  their own GitLab account, and the CP answers so the console compares no ids. */
+  mine: boolean
   accessExpiresAt: string | null
   assignedProjects: number // managed projects this connection still administers
   createdAt: string

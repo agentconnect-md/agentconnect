@@ -45,7 +45,8 @@ const STATE_REASON: Record<string, string> = {
 
 /** Machine-readable CP refusals the card says better itself (all takeover, today). */
 const REFUSAL: Record<string, string> = {
-  GITLAB_NO_OWN_CONNECTION: 'Connect your own GitLab account first — a project is taken over with your own access.',
+  GITLAB_NO_OWN_CONNECTION:
+    'Connect your own GitLab account first, with Connect my account above — a project is taken over with your own access.',
   GITLAB_CONNECTION_NOT_CONNECTED: 'Reconnect your own GitLab account first, then take the project over.',
   GITLAB_NOT_MAINTAINER: 'Your GitLab account needs Maintainer or Owner access to this project to take it over.',
   GITLAB_INSTALLER_CONNECTED: 'A connected GitLab account already manages this project.',
@@ -135,6 +136,9 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
     }
   }
 
+  // The caller's own connected account — the only one a takeover can run on (§7.1).
+  const ownConnection = connections.some((c) => c.mine && c.state === 'connected')
+
   // One connection administers a project; a released or removed one can neither
   // repair nor remove it, and §9.4 lets another Maintainer take it over instead.
   const stuck = (binding: GitlabProjectBindingDto): boolean =>
@@ -211,10 +215,12 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
           </span>
           GitLab
         </span>
-        {enabled === true && canWrite && connections.length === 0 && (
+        {/* A takeover runs on the caller's OWN account, so connecting one stays reachable
+            even when the organization already lists other people's connections. */}
+        {enabled === true && canWrite && !ownConnection && (
           <Button onClick={connect}>
             <Icon name="external-link" size={13} />
-            Connect GitLab
+            {connections.length === 0 ? 'Connect GitLab' : 'Connect my account'}
           </Button>
         )}
       </div>
@@ -351,8 +357,9 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
               )}
             </div>
             <span className="flex items-center justify-end gap-3">
-              {/* Only a project whose administration is stuck can be taken over (§9.4). */}
-              {canWrite && (stuck(p) || p.state === 'admin_degraded') && (
+              {/* Only a project whose administration is stuck can be taken over — and one
+                  awaiting cleanup always can, since that is what unblocks its removal. */}
+              {canWrite && (stuck(p) || p.state === 'admin_degraded' || p.state === 'cleanup_pending') && (
                 <Button variant="ghost" size="xs" disabled={busyId === p.id} onClick={() => setTaking(p)}>
                   <Icon name="key-round" size={13} />
                   Transfer

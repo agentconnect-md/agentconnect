@@ -274,6 +274,34 @@ describe('gitlab project takeover (§9.4)', () => {
     expect(await prisma.codeHostRepositoryClaim.count({ where: { externalId: 4455667n } })).toBe(0)
   })
 
+  it('takes over a project awaiting cleanup even while its installer still reads connected', async () => {
+    // A revoke that fails leaves cleanup_pending under a perfectly connected account:
+    // gating on the installer's state alone would answer GITLAB_INSTALLER_CONNECTED here.
+    const a = gitlabApp({ failTokenRevoke: true })
+    const { connectionId } = await connect(a)
+    const bound = await a.app.inject({
+      method: 'POST',
+      url: `${ORG}/gitlab/projects`,
+      payload: { connectionId, projectId: '4455667' }
+    })
+    const bindingId = (bound.json() as { id: string }).id
+    const stuck = await a.app.inject({ method: 'DELETE', url: `${ORG}/gitlab/projects/${bindingId}` })
+    expect(stuck.json()).toMatchObject({ removed: false, state: 'cleanup_pending' })
+    const installer = await prisma.gitlabConnection.findUniqueOrThrow({ where: { id: connectionId } })
+    expect(installer.state).toBe('connected')
+
+    const taker = await ownConnection(a.fake, 50)
+    const moved = await a.app.inject({ method: 'POST', url: `${ORG}/gitlab/projects/${bindingId}/transfer` })
+    expect(moved.statusCode).toBe(200)
+    expect(moved.json()).toMatchObject({ state: 'cleanup_pending', installerConnectionId: taker.id })
+
+    // Under the account that took it over — and a provider that answers — removal finishes.
+    a.fake.opts.failTokenRevoke = false
+    const removed = await a.app.inject({ method: 'DELETE', url: `${ORG}/gitlab/projects/${bindingId}` })
+    expect(removed.json()).toEqual({ removed: true })
+    expect(await prisma.codeHostRepositoryClaim.count({ where: { externalId: 4455667n } })).toBe(0)
+  })
+
   it('refuses a project a connected account still administers', async () => {
     const a = gitlabApp()
     const { connectionId } = await connect(a)
@@ -309,7 +337,8 @@ describe('gitlab oauth routes', () => {
       gitlabUserId: '4242',
       gitlabUsername: 'example-admin',
       state: 'connected',
-      scopes: ['api']
+      scopes: ['api'],
+      mine: true
     })
     // Metadata only: no token-shaped field leaves the DTO.
     expect(JSON.stringify(body)).not.toContain('at-1')
@@ -317,6 +346,15 @@ describe('gitlab oauth routes', () => {
     // The pair itself landed sealed in the side-table.
     const secret = await prisma.gitlabConnectionSecret.findUniqueOrThrow({ where: { connectionId } })
     expect(secret.accessToken).toBeTruthy()
+  })
+
+  it('reports a connection whose user left the organization as nobody’s own', async () => {
+    const a = gitlabApp()
+    const { connectionId } = await connect(a)
+    await prisma.gitlabConnection.update({ where: { id: connectionId }, data: { userId: null } })
+    const list = await a.app.inject({ method: 'GET', url: `${ORG}/gitlab/connections` })
+    // `mine` is what the console keys its own-account connect affordance on.
+    expect((list.json() as { connections: { mine: boolean }[] }).connections[0]).toMatchObject({ mine: false })
   })
 
   it('requires the begin-hop browser cookie on the callback', async () => {

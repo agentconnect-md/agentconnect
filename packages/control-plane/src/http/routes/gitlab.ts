@@ -43,7 +43,7 @@ import {
 } from '../dto/index.js'
 import type { GitlabConnectionRecord, GitlabProjectBindingRecord } from '../../persistence/ports.js'
 
-function toDto(r: GitlabConnectionRecord, assignedProjects: number) {
+function toDto(r: GitlabConnectionRecord, assignedProjects: number, callerUserId: string) {
   return {
     id: r.id,
     gitlabUserId: r.gitlabUserId.toString(),
@@ -51,6 +51,7 @@ function toDto(r: GitlabConnectionRecord, assignedProjects: number) {
     state: r.state,
     scopes: r.scopes,
     connectedBy: r.userId,
+    mine: r.userId !== null && r.userId === callerUserId,
     accessExpiresAt: r.accessExpiresAt ? r.accessExpiresAt.toISOString() : null,
     assignedProjects,
     createdAt: r.createdAt.toISOString()
@@ -138,7 +139,7 @@ export function gitlabRoutes(deps: HttpDeps) {
         const orgId = orgOf(req)
         const rows = await deps.repos.gitlabConnection.listForOrg(orgId)
         const assigned = await deps.repos.gitlabProjectBinding.countByInstaller(orgId)
-        return { connections: rows.map((row) => toDto(row, assigned[row.id] ?? 0)) }
+        return { connections: rows.map((row) => toDto(row, assigned[row.id] ?? 0, req.principal!.userId)) }
       }
     )
 
@@ -367,8 +368,11 @@ export function gitlabRoutes(deps: HttpDeps) {
           ? await deps.repos.gitlabConnection.get(orgId, binding.installerConnectionId)
           : null
         // §9.4 offers takeover for administration that is actually stuck: a released
-        // or removed installer, or a binding degraded under the current one.
-        if (installer?.state === 'connected' && binding.state !== 'admin_degraded') {
+        // or removed installer, or a binding degraded under the current one. A binding
+        // awaiting cleanup qualifies whatever its installer row reports — the takeover
+        // only reassigns it, and that is what unblocks the interrupted removal (§19.4).
+        const stuck = installer?.state !== 'connected'
+        if (!stuck && binding.state !== 'admin_degraded' && binding.state !== 'cleanup_pending') {
           return conflict('GITLAB_INSTALLER_CONNECTED', 'a connected GitLab account already administers this project')
         }
         try {
@@ -476,7 +480,7 @@ export function gitlabRoutes(deps: HttpDeps) {
         const record = await deps.repos.gitlabConnection.get(orgId, existing.id)
         if (!record) return notFound()
         const assigned = (await deps.repos.gitlabProjectBinding.countByInstaller(orgId))[existing.id] ?? 0
-        return { removed: false, connection: toDto(record, assigned) }
+        return { removed: false, connection: toDto(record, assigned, req.principal!.userId) }
       }
     )
   }
