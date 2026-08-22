@@ -1,10 +1,7 @@
 # GitLab.com Integration
 
-> Status: **Implemented through M7** — the Section 22 M0–M7 spine is merged;
-> that section records the deliberate leftovers. The Section 7.2 per-agent
-> runtime identity is the accepted target, planned as M8 and **not yet
-> implemented**: the shipped runtime identity is still one
-> per-project account per binding, which M8 replaces outright.
+> Status: **Implemented** — the Section 22 M0–M8 spine is merged; that
+> section records the deliberate leftovers.
 >
 > Platform assumptions last verified: **2026-07-28**
 >
@@ -322,9 +319,8 @@ revoking the human connection does not silently transfer its authority.
 
 ### 7.2 Agent Service Accounts Are the Runtime Identity
 
-> Target model, planned as M8 and not yet implemented. The shipped v1
-> identity is one per-project account shared by every agent; M8 replaces it
-> outright, with no transitional dual identity.
+> Implemented as M8. The v1 per-project account shared by every agent was
+> replaced outright, with no transitional dual identity.
 
 The runtime identity is **one group service account per (organization, agent,
 top-level group)**. Each agent has its own GitLab face: the account's display
@@ -1751,8 +1747,9 @@ external credentials by deleting only local metadata.
 > `running` edge waits on its GitLab arm
 > (`packages/control-plane/src/codehost/note-projection.service.ts`); that arm
 > is being finished as follow-up work. The session merge-request dock panel
-> stays out of scope per Section 18.1. The Section 7.2 per-agent identity is
-> the planned M8 below and is not yet implemented.
+> stays out of scope per Section 18.1. The Section 7.2 per-agent identity
+> shipped as M8: the relay veto set, the control-plane account model with the
+> inline pre-activation ensure, and the console identity surfaces.
 
 Milestones are merge order, not calendar. Each milestone is several small,
 independently mergeable PRs; GitHub behavior stays green at every merge; each
