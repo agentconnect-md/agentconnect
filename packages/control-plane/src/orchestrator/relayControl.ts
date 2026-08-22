@@ -9,18 +9,31 @@
  * connection index.
  *
  * Fire-and-forget + per-socket isolated: a dead relay socket's error is swallowed
- * (its close removes it from the registry).
+ * (its close removes it from the registry). The one exception is {@link
+ * RelayControlSender.hookRerun}, which AWAITS a correlated admission — a console
+ * action must not report success for a frame that merely reached a socket.
  */
 import type {
   RcHookAssign,
   RcHookRerun,
+  RcHookRerunRefusal,
   RcCollabRoutes,
   RcMcpAssign,
   RcMcpUnassign,
   RcMemoryConnectionAssign,
   RcMemoryConnectionUnassign
 } from '@agentconnect.md/protocol'
-import { GITLAB_COM_V1_FEATURE } from '@agentconnect.md/protocol'
+import { GITLAB_COM_V1_FEATURE, GITLAB_RERUN_V1_FEATURE, RcHookRerunResult } from '@agentconnect.md/protocol'
+
+/** What one Console rerun attempt achieved across the eligible relay pool. */
+export type RelayRerunOutcome =
+  | { kind: 'admitted' }
+  /** Every eligible relay definitively declined; nothing ran anywhere. */
+  | { kind: 'refused'; code: RcHookRerunRefusal }
+  /** A relay went quiet mid-request: the turn may or may not have started. */
+  | { kind: 'ambiguous' }
+  /** No connected relay advertises the rerun feature. */
+  | { kind: 'unreachable' }
 import type { RelayChannel, RelayRegistry } from '../ws/relay-registry.js'
 
 export class RelayControlSender {
@@ -52,20 +65,35 @@ export class RelayControlSender {
     this.broadcast((ch) => ch.send('rc/hook-remove', { hookId }))
   }
 
-  /** Hand ONE gitlab rerun to ONE relay advertising the feature (§16.1): every
-   *  relay holds the rule, so a broadcast would buy one turn per relay for one
-   *  click. False ⇒ no relay could carry it and nothing was sent. */
-  hookRerun(rerun: RcHookRerun): boolean {
-    for (const ch of this.relays.all()) {
-      if (!ch.features?.includes(GITLAB_COM_V1_FEATURE)) continue
+  /**
+   * Hand ONE gitlab rerun to ONE relay at a time (§16.1) and wait for its
+   * admission. Reaching a socket proves nothing: only a relay that answers
+   * `admitted` has queued a turn and opened a run row, so the console is told
+   * "started" on that REP alone.
+   *
+   * Eligibility is `gitlab-rerun-v1` — `gitlab-com-v1` predates the frame and
+   * its holder cannot decode it (§17.3). A DEFINITIVE refusal leaves no effect
+   * behind, so the next eligible relay is asked; an ambiguous failure (closed
+   * socket, deadline, error REP) stops the walk, because a turn may have started.
+   */
+  async hookRerun(rerun: RcHookRerun): Promise<RelayRerunOutcome> {
+    const eligible = this.relays
+      .all()
+      .filter((ch) => ch.features?.includes(GITLAB_RERUN_V1_FEATURE) && typeof ch.request === 'function')
+    let lastRefusal: RcHookRerunRefusal | undefined
+    for (const ch of eligible) {
+      let result: RcHookRerunResult
       try {
-        ch.send('rc/hook-rerun', rerun)
-        return true
+        result = RcHookRerunResult.parse(await ch.request!('rc/hook-rerun', rerun))
       } catch {
-        // dead socket — its onClose removes it from the registry; try the next
+        // The relay may or may not have dispatched before it went quiet. Stop:
+        // asking a peer could double-run the same delivery key.
+        return { kind: 'ambiguous' }
       }
+      if (result.admitted) return { kind: 'admitted' }
+      lastRefusal = result.code
     }
-    return false
+    return lastRefusal ? { kind: 'refused', code: lastRefusal } : { kind: 'unreachable' }
   }
 
   /** Load an MCP provider's proxy binding onto every relay (whole-pool BROADCAST —

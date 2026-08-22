@@ -39,6 +39,14 @@ import {
   type HookDtoT
 } from '../dto/index.js'
 
+/** Reason phrases for the rerun route's refusal statuses. */
+const RERUN_STATUS_TEXT = {
+  409: 'Conflict',
+  429: 'Too Many Requests',
+  502: 'Bad Gateway',
+  503: 'Service Unavailable'
+} as const
+
 /** The full ingress URL for a hook's urlToken (pool-level origin + fixed path). */
 export function hookIngressUrl(publicRelayUrl: string, urlToken: string): string {
   const relayHttpUrl = publicRelayUrl
@@ -881,7 +889,15 @@ export function hookRoutes(deps: HttpDeps) {
           operationId: 'rerunHook',
           params: IdParam,
           body: HookRerunBody,
-          response: { 200: HookRerunDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 502: ErrorDto, 503: ErrorDto }
+          response: {
+            200: HookRerunDto,
+            403: ErrorDto,
+            404: ErrorDto,
+            409: ErrorDto,
+            429: ErrorDto,
+            502: ErrorDto,
+            503: ErrorDto
+          }
         }
       },
       async (req, reply) => {
@@ -902,7 +918,7 @@ export function hookRoutes(deps: HttpDeps) {
         const outcome = await deps.gitlab.hookRerun.rerun(hook, req.body.subject)
         if (!outcome.ok) {
           return reply.code(outcome.status).send({
-            error: outcome.status === 502 ? 'Bad Gateway' : outcome.status === 503 ? 'Service Unavailable' : 'Conflict',
+            error: RERUN_STATUS_TEXT[outcome.status],
             statusCode: outcome.status,
             message: outcome.message,
             code: outcome.code

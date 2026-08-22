@@ -10,6 +10,7 @@ import {
   RcDaemonRevoke,
   RcHookAssign,
   RcHookRerun,
+  RcHookRerunResult,
   RcRunReport,
   RcGithubInstallation,
   RcGithubRerequest,
@@ -790,6 +791,24 @@ describe('relay↔CP wire — skeleton frame codec (shared-bot-relay.md §7.1)',
     expect(
       RcHookRerun.safeParse({ ...base, gitlab: { ...base.gitlab, target: { kind: 'merge_request', iid: 0 } } }).success
     ).toBe(false)
+
+    // The REP is the admission: reaching a socket is not acceptance.
+    const admitted = decodeRelayCpFrame(
+      envelope('rc/hook-rerun/ok', { admitted: true, deliveryKey: 'rerun_1' }, { corr: ok.ok ? ok.frame.id : 'x' })
+    )
+    expect(admitted.ok).toBe(true)
+    if (admitted.ok && admitted.frame.type === 'rc/hook-rerun/ok') {
+      expect(admitted.frame.payload).toEqual({ admitted: true, deliveryKey: 'rerun_1' })
+    }
+    for (const code of ['replay_pending', 'rule_mismatch', 'limiter_exhausted']) {
+      expect(RcHookRerunResult.safeParse({ admitted: false, code }).success).toBe(true)
+    }
+    // A refusal names a category, an admission names the delivery — never both,
+    // and never a code the Control Plane has no mapping for.
+    expect(RcHookRerunResult.safeParse({ admitted: false, code: 'daemon_offline' }).success).toBe(false)
+    expect(RcHookRerunResult.safeParse({ admitted: false }).success).toBe(false)
+    expect(RcHookRerunResult.safeParse({ admitted: true }).success).toBe(false)
+    expect(RcHookRerunResult.safeParse({ admitted: true, deliveryKey: '' }).success).toBe(false)
   })
 
   it('rc/run-report carries the delivery-stage verdict (accepted opens, failed records)', () => {

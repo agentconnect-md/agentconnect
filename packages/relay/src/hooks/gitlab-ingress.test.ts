@@ -498,7 +498,7 @@ describe('gitlab rerun dispatch (§16.1 "Run again")', () => {
 
   it('re-enters the ordinary dispatch path with the §12.3 key and the frame head', async () => {
     h.table.upsert(rule())
-    dispatchGitlabRerun(h.deps, frame())
+    expect(dispatchGitlabRerun(h.deps, frame())).toEqual({ admitted: true, deliveryKey: 'rerun_1' })
     await flush()
     const msg = h.sent[0] as RdMsgHook
     expect(msg.source).toBe('hook')
@@ -526,36 +526,52 @@ describe('gitlab rerun dispatch (§16.1 "Run again")', () => {
     expect((h.sent[0] as RdMsgHook).sessionKey).toBe(`gitlab:${PROJECT}:issue:42`)
   })
 
-  it('refuses a frame whose fence no longer matches the compiled rule', async () => {
+  it('answers rule_mismatch for a frame whose fence no longer matches the compiled rule', async () => {
     h.table.upsert(rule())
-    dispatchGitlabRerun(h.deps, frame({ configRevision: '4' }))
-    dispatchGitlabRerun(h.deps, frame({ dispatchRevision: '6' }))
-    dispatchGitlabRerun(h.deps, frame({ agentId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee' }))
-    dispatchGitlabRerun(h.deps, frame({ gitlab: { ...frame().gitlab, projectId: '999' } }))
-    dispatchGitlabRerun(h.deps, frame({ hookId: HOOK_B }))
+    const mismatch = { admitted: false, code: 'rule_mismatch' }
+    expect(dispatchGitlabRerun(h.deps, frame({ configRevision: '4' }))).toEqual(mismatch)
+    expect(dispatchGitlabRerun(h.deps, frame({ dispatchRevision: '6' }))).toEqual(mismatch)
+    expect(dispatchGitlabRerun(h.deps, frame({ agentId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee' }))).toEqual(mismatch)
+    expect(dispatchGitlabRerun(h.deps, frame({ gitlab: { ...frame().gitlab, projectId: '999' } }))).toEqual(mismatch)
+    await flush()
+    expect(h.sent).toHaveLength(0)
+    // A definitive refusal leaves nothing behind for the CP to reconcile.
+    expect(h.reports).toHaveLength(0)
+  })
+
+  it('answers replay_pending while its table holds no rule for the hook', async () => {
+    expect(dispatchGitlabRerun(h.deps, frame())).toEqual({ admitted: false, code: 'replay_pending' })
+    expect(dispatchGitlabRerun(h.deps, frame({ hookId: HOOK_B }))).toEqual({
+      admitted: false,
+      code: 'replay_pending'
+    })
     await flush()
     expect(h.sent).toHaveLength(0)
     expect(h.reports).toHaveLength(0)
   })
 
-  it('refuses once the rule left the pool, and reports a daemon that cannot take it', async () => {
-    dispatchGitlabRerun(h.deps, frame())
-    await flush()
-    expect(h.sent).toHaveLength(0)
-
+  it('ADMITS a fire the daemon then refuses — the run row is the report, not the verdict', async () => {
     h.table.upsert(rule())
     h.gitlabSupported = false
-    dispatchGitlabRerun(h.deps, frame({ deliveryKey: 'rerun_2' }))
+    expect(dispatchGitlabRerun(h.deps, frame({ deliveryKey: 'rerun_2' }))).toEqual({
+      admitted: true,
+      deliveryKey: 'rerun_2'
+    })
     await flush()
     expect(h.sent).toHaveLength(0)
     expect(h.reports).toEqual([expect.objectContaining({ status: 'failed', reason: 'rejected:unsupported' })])
   })
 
-  it('spends the same per-hook run budget an ingress fire does', async () => {
+  it('answers limiter_exhausted once the shared per-hook run budget is spent', async () => {
     h.table.upsert(rule())
-    for (let i = 0; i < 7; i += 1) dispatchGitlabRerun(h.deps, frame({ deliveryKey: `rerun_${i}` }))
+    const verdicts = Array.from({ length: 7 }, (_, i) => dispatchGitlabRerun(h.deps, frame({ deliveryKey: `r_${i}` })))
     await flush()
     // The harness limiter holds five tokens and does not refill.
+    expect(verdicts.filter((v) => v.admitted)).toHaveLength(5)
+    expect(verdicts.slice(5)).toEqual([
+      { admitted: false, code: 'limiter_exhausted' },
+      { admitted: false, code: 'limiter_exhausted' }
+    ])
     expect(h.sent).toHaveLength(5)
   })
 })

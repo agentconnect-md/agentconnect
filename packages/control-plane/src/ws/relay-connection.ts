@@ -49,6 +49,9 @@ import type { RelayChannel, RelayRegistry } from './relay-registry.js'
 
 type RelayState = 'AUTHENTICATING' | 'REGISTERING' | 'READY' | 'CLOSED'
 
+/** Deadline for a correlated C→R REQ. Bounded well under a console request. */
+const RELAY_REQUEST_TIMEOUT_MS = 5_000
+
 export interface RelayConnDeps {
   auth: RelayAuthService
   relays: RelayRepo
@@ -118,6 +121,8 @@ export class RelayConnection implements RelayChannel {
   state: RelayState = 'AUTHENTICATING'
   relayId = ''
   features: readonly string[] = []
+  /** In-flight CP-issued REQs on this socket, by frame id (see {@link request}). */
+  private readonly pending = new Map<string, { resolve: (value: unknown) => void; reject: (err: unknown) => void }>()
 
   constructor(
     private readonly transport: Transport,
@@ -141,6 +146,8 @@ export class RelayConnection implements RelayChannel {
       return
     }
     const frame = decoded.frame
+    // A correlated REP/error settles a CP-issued REQ — never dispatched as inbound.
+    if (this.settle(frame)) return
     if (!this.isLegalInState(frame.type)) {
       this.sendError(frame.id, 'PROTOCOL_STATE', `${frame.type} illegal in ${this.state}`)
       return
@@ -450,6 +457,54 @@ export class RelayConnection implements RelayChannel {
     this.transport.send(JSON.stringify(buildRelayCpFrame(type, payload)))
   }
 
+  /**
+   * {@link RelayChannel} — correlated C→R REQ, resolving with the relay's REP
+   * payload. Deliberately SINGLE-SHOT: unlike the daemon correlator this never
+   * retransmits, because every frame that rides it (today `rc/hook-rerun`) is an
+   * effect a duplicate would perform twice. A silent relay therefore rejects on
+   * the deadline rather than being re-asked.
+   */
+  request<T extends RelayCpFrameType>(
+    type: T,
+    payload: z.input<(typeof RELAY_CP_SCHEMAS)[T]>,
+    timeoutMs = RELAY_REQUEST_TIMEOUT_MS
+  ): Promise<unknown> {
+    const frame = buildRelayCpFrame(type, payload)
+    return new Promise<unknown>((resolve, reject) => {
+      const timer = this.deps.clock.setTimeout(() => {
+        this.pending.delete(frame.id)
+        reject(new Error(`no relay reply for ${type} within ${timeoutMs}ms`))
+      }, timeoutMs)
+      this.pending.set(frame.id, {
+        resolve: (value) => {
+          this.deps.clock.clearTimeout(timer)
+          resolve(value)
+        },
+        reject: (err) => {
+          this.deps.clock.clearTimeout(timer)
+          reject(err)
+        }
+      })
+      try {
+        this.transport.send(JSON.stringify(frame))
+      } catch (e) {
+        this.pending.get(frame.id)?.reject(e)
+        this.pending.delete(frame.id)
+      }
+    })
+  }
+
+  /** Settle a CP-issued REQ from an inbound correlated frame; true when it matched. */
+  private settle(frame: RelayCpFrame): boolean {
+    if (!frame.corr) return false
+    const entry = this.pending.get(frame.corr)
+    if (!entry) return false
+    this.pending.delete(frame.corr)
+    if (frame.type === 'error') entry.reject(new Error(`relay refused ${frame.corr}`))
+    else entry.resolve(frame.payload)
+    return true
+  }
+
   private sendError(corr: string, code: ErrorCode, message: string, retryable = false): void {
     this.transport.send(JSON.stringify(buildRelayCpFrame('error', { code, message, retryable }, { corr })))
   }
@@ -467,6 +522,8 @@ export class RelayConnection implements RelayChannel {
 
   private onClose(): void {
     this.state = 'CLOSED'
+    for (const entry of this.pending.values()) entry.reject(new Error('relay connection closed'))
+    this.pending.clear()
     // Drop from the registry only if still ours (a late close from a superseded old
     // socket must not evict the live one). The durable `relay` row ages out of the
     // roster via the sweeper (bounded failover window, §13).

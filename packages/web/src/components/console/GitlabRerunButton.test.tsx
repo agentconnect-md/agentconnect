@@ -1,14 +1,17 @@
 // @vitest-environment happy-dom
 /**
- * The "Run again" action (gitlab-com-integration.md §16.1). Three claims worth
+ * The "Run again" action (gitlab-com-integration.md §16.1). Four claims worth
  * pinning: it is ABSENT — not disabled — for anything that is not a GitLab hook
  * session on a merge-request or issue thread, it sends the SUBJECT only (the
- * revision is the Control Plane's to read), and a refusal is shown rather than
- * swallowed.
+ * revision is the Control Plane's to read), a refusal is translated rather than
+ * swallowed or shown raw, and its state belongs to ONE subject — the session
+ * detail view stays mounted across `/sessions/a` → `/sessions/b`, so neither the
+ * pending state nor a late reply may paint the next session.
  */
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { ApiError } from '@/lib/api'
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
@@ -36,30 +39,59 @@ const setFlags = (value?: string) => {
 let root: Root | undefined
 let host: HTMLDivElement | undefined
 
-async function render(props: { hookKind?: string | null; hookId?: string | null; thread?: string | null }) {
+interface Props {
+  hookKind?: string | null
+  hookId?: string | null
+  thread?: string | null
+}
+
+function element(props: Props) {
+  return (
+    <GitlabRerunButton
+      hookKind={(props.hookKind ?? null) as never}
+      hookId={props.hookId ?? null}
+      thread={props.thread ?? null}
+    />
+  )
+}
+
+async function render(props: Props) {
   host = document.createElement('div')
   document.body.append(host)
   root = createRoot(host)
   await act(async () => {
-    root?.render(
-      <GitlabRerunButton
-        hookKind={(props.hookKind ?? null) as never}
-        hookId={props.hookId ?? null}
-        thread={props.thread ?? null}
-      />
-    )
+    root?.render(element(props))
   })
 }
 
-const button = () => document.querySelector<HTMLButtonElement>('[data-gitlab-rerun]')
+/** Re-render the SAME mounted component with another session's props. */
+async function rerenderWith(props: Props) {
+  await act(async () => {
+    root?.render(element(props))
+  })
+}
 
-afterEach(async () => {
+async function unmount() {
   await act(async () => root?.unmount())
   host?.remove()
   root = undefined
   host = undefined
+}
+
+const button = () => document.querySelector<HTMLButtonElement>('[data-gitlab-rerun]')
+const errorText = () => document.querySelector('[data-gitlab-rerun-error]')?.textContent ?? null
+const startedText = () => document.querySelector('[data-gitlab-rerun-started]')?.textContent ?? null
+
+afterEach(async () => {
+  await unmount()
   setFlags(undefined)
   mocks.rerunGitlabHook.mockClear()
+  mocks.rerunGitlabHook.mockResolvedValue({
+    accepted: true,
+    deliveryKey: 'rerun_1',
+    event: 'merge_request:rerun',
+    headSha: 'abc'
+  })
 })
 
 describe('GitlabRerunButton', () => {
@@ -75,8 +107,7 @@ describe('GitlabRerunButton', () => {
     setFlags(undefined)
     await render(gitlabSession)
     expect(button()).toBeNull()
-    await act(async () => root?.unmount())
-    host?.remove()
+    await unmount()
 
     setFlags('gitlab')
     for (const props of [
@@ -89,8 +120,7 @@ describe('GitlabRerunButton', () => {
     ]) {
       await render(props)
       expect(button()).toBeNull()
-      await act(async () => root?.unmount())
-      host?.remove()
+      await unmount()
     }
     expect(mocks.rerunGitlabHook).not.toHaveBeenCalled()
   })
@@ -102,18 +132,71 @@ describe('GitlabRerunButton', () => {
       button()?.click()
     })
     expect(mocks.rerunGitlabHook).toHaveBeenCalledWith('hook-1', { kind: 'issue', iid: 7 })
-    expect(document.querySelector('[data-gitlab-rerun-started]')?.textContent).toBe('Started')
-    expect(document.querySelector('[data-gitlab-rerun-error]')).toBeNull()
+    expect(startedText()).toBe('Started')
+    expect(errorText()).toBeNull()
   })
 
-  it('surfaces a refusal instead of failing silently', async () => {
+  it('translates a refusal code instead of showing the wire category', async () => {
     setFlags('gitlab')
-    mocks.rerunGitlabHook.mockRejectedValueOnce(new Error('this merge request is merged'))
+    mocks.rerunGitlabHook.mockRejectedValueOnce(
+      new ApiError('this merge request is merged', 409, 'SUBJECT_CLOSED') as never
+    )
     await render(gitlabSession)
     await act(async () => {
       button()?.click()
     })
-    expect(document.querySelector('[data-gitlab-rerun-error]')?.textContent).toBe('this merge request is merged')
+    expect(errorText()).toBe('That merge request or issue is closed on GitLab')
     expect(button()?.disabled).toBe(false)
+
+    // An unmapped code collapses to the generic line — an implementation
+    // identifier never reaches this surface.
+    mocks.rerunGitlabHook.mockRejectedValueOnce(new ApiError('boom', 500, 'SOME_INTERNAL_CATEGORY') as never)
+    await act(async () => {
+      button()?.click()
+    })
+    expect(errorText()).toBe('Could not run this trigger again')
+  })
+
+  it('renders pristine for the next session and drops the previous one’s late reply', async () => {
+    setFlags('gitlab')
+    type Reply = Awaited<ReturnType<typeof mocks.rerunGitlabHook>>
+    let settleA: ((value: Reply) => void) | undefined
+    mocks.rerunGitlabHook.mockImplementationOnce(() => new Promise<Reply>((resolve) => (settleA = resolve)))
+    await render(gitlabSession)
+    await act(async () => {
+      button()?.click()
+    })
+    // Subject A is in flight.
+    expect(button()?.disabled).toBe(true)
+
+    // The reader moves to another GitLab session; the view stays mounted.
+    await rerenderWith({ ...gitlabSession, thread: 'gitlab:4455667:merge_request:99' })
+    expect(button()?.disabled).toBe(false)
+    expect(startedText()).toBeNull()
+    expect(errorText()).toBeNull()
+
+    // A's reply lands after the switch — subject B must not report it.
+    await act(async () => {
+      settleA?.({ accepted: true, deliveryKey: 'rerun_1', event: 'merge_request:rerun', headSha: 'abc' })
+    })
+    expect(startedText()).toBeNull()
+    expect(errorText()).toBeNull()
+    expect(button()?.disabled).toBe(false)
+  })
+
+  it('keeps an error on its own subject when the reader switches away', async () => {
+    setFlags('gitlab')
+    mocks.rerunGitlabHook.mockRejectedValueOnce(new ApiError('gone', 409, 'SUBJECT_NOT_FOUND') as never)
+    await render(gitlabSession)
+    await act(async () => {
+      button()?.click()
+    })
+    expect(errorText()).toBe('That merge request or issue no longer exists')
+
+    await rerenderWith({ ...gitlabSession, thread: 'gitlab:4455667:issue:7' })
+    expect(errorText()).toBeNull()
+    // …and coming back shows it again: the state was scoped, not discarded.
+    await rerenderWith(gitlabSession)
+    expect(errorText()).toBe('That merge request or issue no longer exists')
   })
 })

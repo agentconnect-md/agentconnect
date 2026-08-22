@@ -14,6 +14,7 @@ import {
   RELAY_CP_SUBPROTOCOL,
   type RcCodeHostMembershipAuthz,
   type RcHookRerun,
+  type RcHookRerunResult,
   type RcRunReport
 } from '@agentconnect.md/protocol'
 import { ClientTransport, systemClock } from '@agentconnect.md/connection'
@@ -61,7 +62,7 @@ async function main(): Promise<void> {
     client?: RelayCpClient
     rdServer?: RelayDaemonServer
     relayIngress?: RelayIngressManager
-    gitlabRerun?: (rerun: RcHookRerun) => void
+    gitlabRerun?: (rerun: RcHookRerun) => RcHookRerunResult
   } = {}
 
   // The bot-agnostic collaboration routing snapshot (agent-collaboration §2.3/§6.2).
@@ -183,8 +184,9 @@ async function main(): Promise<void> {
       }),
     onHookAssign: (rule) => hookTable.upsert(rule),
     onHookRemove: (hookId) => hookTable.remove(hookId),
-    // Late-bound: the gitlab ingress deps this reuses are built after listen.
-    onHookRerun: (rerun) => held.gitlabRerun?.(rerun),
+    // Late-bound: the gitlab ingress deps this reuses are built after listen, so
+    // a frame that somehow beats them finds no rule table either.
+    onHookRerun: (rerun) => held.gitlabRerun?.(rerun) ?? { admitted: false, code: 'replay_pending' },
     // Bot-agnostic collaboration routing snapshot (agent-collaboration §2.3/§6.2) —
     // FULL-REPLACE the relay's cross-daemon agent-call routing/policy table.
     onCollabRoutes: (snap) => collab.replace(snap),

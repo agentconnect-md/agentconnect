@@ -16,7 +16,7 @@
  * path an ordinary delivery takes.
  */
 import { randomUUID } from 'node:crypto'
-import type { GitlabHookMetadata, RcHookRerun } from '@agentconnect.md/protocol'
+import type { GitlabHookMetadata, RcHookRerun, RcHookRerunRefusal } from '@agentconnect.md/protocol'
 import type { HookService } from '../hooks/hook.service.js'
 import type { RelayControlSender } from '../orchestrator/relayControl.js'
 import { AgentId, HookId } from '../domain/ids.js'
@@ -50,10 +50,21 @@ export type GitlabRerunCode =
   | 'HEAD_UNAVAILABLE'
   | 'GITLAB_UNAVAILABLE'
   | 'RELAY_UNAVAILABLE'
+  /** Every eligible relay declined; nothing ran (the relay's reason rides `relayCode`). */
+  | 'RELAY_REJECTED'
+  /** A relay went quiet mid-request — the turn may or may not have started. */
+  | 'RELAY_AMBIGUOUS'
 
 export type GitlabRerunResult =
   | { ok: true; deliveryKey: string; event: string; headSha: string | null }
-  | { ok: false; status: 409 | 502 | 503; code: GitlabRerunCode; message: string }
+  | {
+      ok: false
+      status: 409 | 429 | 502 | 503
+      code: GitlabRerunCode
+      message: string
+      /** The relay's own refusal category, when one answered. */
+      relayCode?: RcHookRerunRefusal
+    }
 
 export interface GitlabHookRerunDeps {
   hooks: Pick<HookRepo, 'getUnscoped'>
@@ -66,8 +77,16 @@ export interface GitlabHookRerunDeps {
   fetchImpl?: FetchLike
 }
 
-function refuse(status: 409 | 502 | 503, code: GitlabRerunCode, message: string): GitlabRerunResult {
+function refuse(status: 409 | 429 | 502 | 503, code: GitlabRerunCode, message: string): GitlabRerunResult {
   return { ok: false, status, code, message }
+}
+
+/** How a definitive relay refusal reads to the caller. `replay_pending` is the
+ *  only retryable one: the pool simply has not converged on the rule yet. */
+const RELAY_REFUSAL: Record<RcHookRerunRefusal, { status: 409 | 429 | 503; message: string }> = {
+  replay_pending: { status: 503, message: 'the relay pool has not loaded this trigger yet — try again shortly' },
+  rule_mismatch: { status: 409, message: 'this trigger changed while the rerun was being authorized' },
+  limiter_exhausted: { status: 429, message: 'this trigger has run too many times just now — try again shortly' }
 }
 
 export class GitlabHookRerunService {
@@ -161,8 +180,23 @@ export class GitlabHookRerunService {
       event: subject.kind === 'issue' ? 'issues:rerun' : 'merge_request:rerun',
       gitlab: { projectId: projectId.toString(), projectPath: binding.projectPath, target }
     }
-    if (!this.deps.relayControl.hookRerun(frame)) {
+    // Only a relay's own admission proves a turn was queued and a run row opened.
+    const outcome = await this.deps.relayControl.hookRerun(frame)
+    if (outcome.kind === 'unreachable') {
       return refuse(503, 'RELAY_UNAVAILABLE', 'no relay is connected to run this trigger')
+    }
+    if (outcome.kind === 'ambiguous') {
+      return refuse(503, 'RELAY_AMBIGUOUS', 'the relay stopped answering — check the runs before running again')
+    }
+    if (outcome.kind === 'refused') {
+      const mapped = RELAY_REFUSAL[outcome.code]
+      return {
+        ok: false,
+        status: mapped.status,
+        code: 'RELAY_REJECTED',
+        message: mapped.message,
+        relayCode: outcome.code
+      }
     }
     return { ok: true, deliveryKey: frame.deliveryKey, event: frame.event, headSha }
   }

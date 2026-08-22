@@ -16,8 +16,11 @@ import {
   buildRelayCpFrame,
   decodeRelayCpFrame,
   GITLAB_COM_V1_FEATURE,
+  GITLAB_RERUN_V1_FEATURE,
   WEBCHAT_SESSION_CONTINUATION_FEATURE,
+  RELAY_CP_SCHEMAS,
   type RelayCpFrame,
+  type RelayCpFrameType,
   type RcAuthOk,
   type RcDeploymentConfig,
   type RcRegistered,
@@ -36,6 +39,7 @@ import {
   type RcHookAssign,
   type RcHookRemove,
   type RcHookRerun,
+  type RcHookRerunResult,
   type RcRunReport,
   type RcGithubInstallation,
   type RcSetChannelAgent,
@@ -63,6 +67,7 @@ import {
   type TimerHandle,
   type Transport
 } from '@agentconnect.md/connection'
+import type { z } from 'zod'
 import type { Logger } from './log.js'
 import type { RelayAuthCredential } from './config.js'
 
@@ -119,9 +124,10 @@ export interface RelayCpClientDeps {
   onHookAssign?: (rule: RcHookAssign) => void
   /** Called on a CP `rc/hook-remove` EVT — drop one hook rule. */
   onHookRemove?: (hookId: string) => void
-  /** Called on a CP `rc/hook-rerun` EVT — re-dispatch one gitlab hook turn the
-   *  Console asked for (gitlab-com-integration.md §16.1). */
-  onHookRerun?: (rerun: RcHookRerun) => void
+  /** Called on a CP `rc/hook-rerun` REQ — re-dispatch one gitlab hook turn the
+   *  Console asked for (gitlab-com-integration.md §16.1). The returned verdict IS
+   *  the correlated reply: only `admitted` claims a turn was queued. */
+  onHookRerun?: (rerun: RcHookRerun) => RcHookRerunResult
   /** Called on a CP `rc/collab-routes` EVT — FULL-REPLACE the bot-agnostic
    *  collaboration routing snapshot (agent-collaboration §2.3/§6.2). */
   onCollabRoutes?: (snap: RcCollabRoutes) => void
@@ -527,7 +533,9 @@ export class RelayCpClient {
         // gates session-targeted mints on every live relay advertising it.
         // gitlab-com-v1: this relay verifies and routes GitLab project
         // webhooks, so the CP may send it gitlab-kind compiled rules (§17.3).
-        features: [WEBCHAT_SESSION_CONTINUATION_FEATURE, GITLAB_COM_V1_FEATURE]
+        // gitlab-rerun-v1: this relay decodes rc/hook-rerun and answers its
+        // admission REP — strictly newer than gitlab-com-v1 (§17.3).
+        features: [WEBCHAT_SESSION_CONTINUATION_FEATURE, GITLAB_COM_V1_FEATURE, GITLAB_RERUN_V1_FEATURE]
       })
     )
     this.relayId = (registered.payload as RcRegistered).relayId
@@ -604,7 +612,13 @@ export class RelayCpClient {
         return
       }
       case 'rc/hook-rerun': {
-        this.deps.onHookRerun?.(frame.payload as RcHookRerun)
+        // The CP awaits this REP before it tells the console anything, so an
+        // unwired relay must answer an error rather than a silent non-admission.
+        if (!this.deps.onHookRerun) {
+          this.sendError(frame.id, 'PROTOCOL_STATE', 'rc/hook-rerun is not served by this relay', false)
+          return
+        }
+        this.reply(frame.id, 'rc/hook-rerun/ok', this.deps.onHookRerun(frame.payload as RcHookRerun))
         return
       }
       case 'rc/collab-routes': {
@@ -638,6 +652,16 @@ export class RelayCpClient {
     if (msg === 'FRAME_TOO_LARGE') return 'FRAME_TOO_LARGE'
     if (msg === 'UNKNOWN_FRAME') return 'UNKNOWN_FRAME'
     return 'BAD_PAYLOAD'
+  }
+
+  /** Correlated REP to a CP-issued REQ (the mirror of the CP's own `reply`). */
+  private reply<T extends RelayCpFrameType>(
+    corr: string,
+    type: T,
+    payload: z.input<(typeof RELAY_CP_SCHEMAS)[T]>
+  ): void {
+    if (!this.transport) return
+    this.transport.send(JSON.stringify(buildRelayCpFrame(type, payload, { corr })))
   }
 
   private sendError(corr: string, code: ErrorCode, message: string, retryable: boolean): void {

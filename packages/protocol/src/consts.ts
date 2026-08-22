@@ -297,6 +297,12 @@ export const AGENT_EXISTS_FEATURE = 'agent-exists-v1'
  *  and rule broadcast — a GitLab-shaped value sent without it is frame-fatal downstream. */
 export const GITLAB_COM_V1_FEATURE = 'gitlab-com-v1'
 
+/** Relay decodes `rc/hook-rerun` and answers its correlated admission REP
+ *  (§16.1 Console "Run again"). Strictly newer than `gitlab-com-v1`: a relay
+ *  advertising only that one cannot decode the frame, so the CP must select
+ *  rerun targets on THIS bit alone. */
+export const GITLAB_RERUN_V1_FEATURE = 'gitlab-rerun-v1'
+
 /** CP serves provider-qualified gitcred v2 request/grant fields. A daemon must not name a
  *  provider before seeing this, and must reject a grant whose provider or numeric repository
  *  id differs from its request (an older CP strips new fields and answers GitHub-shaped). */

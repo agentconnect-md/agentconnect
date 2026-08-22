@@ -97,6 +97,7 @@ function build(
     deploymentConfig?: ConstructorParameters<typeof RelayConnection>[1]['deploymentConfig']
     onThreadAssign?: ConstructorParameters<typeof RelayConnection>[1]['onThreadAssign']
     onThreadParticipant?: ConstructorParameters<typeof RelayConnection>[1]['onThreadParticipant']
+    clock?: Clock
   } = {}
 ) {
   const codec = new ApiKeyCodec({ API_KEY_PEPPER: 'unit-test-pepper-0123456789abcdefghij' })
@@ -131,7 +132,7 @@ function build(
   const conn = new RelayConnection(transport, {
     auth,
     relays,
-    clock,
+    clock: over.clock ?? clock,
     ...(over.deploymentConfig ? { deploymentConfig: over.deploymentConfig } : {}),
     onRegistered,
     onRunReport,
@@ -1013,5 +1014,87 @@ describe('webchat verification — session-targeted continuation (webchat-cross-
     await expect(
       pooled({ daemonId: RECORDER, contentSetId: POOL_SET }, [RECORDER]).verifier('t')
     ).resolves.toMatchObject({ ok: false })
+  })
+})
+
+describe('correlated C→R request (rc/hook-rerun admission, §16.1)', () => {
+  const timerClock: Clock = {
+    now: () => NOW,
+    setTimeout: (fn, ms) => globalThis.setTimeout(fn, ms),
+    clearTimeout: (h) => globalThis.clearTimeout(h as ReturnType<typeof globalThis.setTimeout>)
+  }
+  const RERUN = {
+    hookId: '88888888-8888-4888-8888-888888888888',
+    agentId: WEBCHAT_AGENT_ID,
+    deliveryKey: 'rerun_1',
+    configRevision: '7',
+    dispatchRevision: '9',
+    event: 'merge_request:rerun',
+    gitlab: {
+      projectId: '4455667',
+      projectPath: 'example-group/example-project',
+      target: { kind: 'merge_request' as const, iid: 42, headSha: 'a'.repeat(40) }
+    }
+  }
+
+  it('resolves with the relay REP payload and sends the frame exactly once', async () => {
+    const { conn, transport } = build({ clock: timerClock })
+    await toReady(transport)
+    const pending = conn.request('rc/hook-rerun', RERUN)
+    const sent = transport.sent.filter((f) => f.type === 'rc/hook-rerun')
+    expect(sent).toHaveLength(1)
+    transport.feedFrame(
+      buildRelayCpFrame('rc/hook-rerun/ok', { admitted: true, deliveryKey: 'rerun_1' }, { corr: sent[0]!.id })
+    )
+    await expect(pending).resolves.toEqual({ admitted: true, deliveryKey: 'rerun_1' })
+    // Never retransmitted: a second copy of this frame would be a second turn.
+    expect(transport.sent.filter((f) => f.type === 'rc/hook-rerun')).toHaveLength(1)
+  })
+
+  it('carries a definitive refusal through as the resolved payload', async () => {
+    const { conn, transport } = build({ clock: timerClock })
+    await toReady(transport)
+    const pending = conn.request('rc/hook-rerun', RERUN)
+    const corr = transport.sent.find((f) => f.type === 'rc/hook-rerun')!.id
+    transport.feedFrame(buildRelayCpFrame('rc/hook-rerun/ok', { admitted: false, code: 'rule_mismatch' }, { corr }))
+    await expect(pending).resolves.toEqual({ admitted: false, code: 'rule_mismatch' })
+  })
+
+  it('rejects on a correlated error REP, on close, and on its own deadline', async () => {
+    const errored = build({ clock: timerClock })
+    await toReady(errored.transport)
+    const failing = errored.conn.request('rc/hook-rerun', RERUN)
+    const corr = errored.transport.sent.find((f) => f.type === 'rc/hook-rerun')!.id
+    errored.transport.feedFrame(
+      buildRelayCpFrame('error', { code: 'PROTOCOL_STATE', message: 'not served', retryable: false }, { corr })
+    )
+    await expect(failing).rejects.toThrow()
+
+    const closing = build({ clock: timerClock })
+    await toReady(closing.transport)
+    const orphaned = closing.conn.request('rc/hook-rerun', RERUN)
+    closing.transport.simulateClose(1006)
+    await expect(orphaned).rejects.toThrow(/closed/)
+
+    const silent = build({ clock: timerClock })
+    await toReady(silent.transport)
+    await expect(silent.conn.request('rc/hook-rerun', RERUN, 5)).rejects.toThrow(/no relay reply/)
+    // A lapsed deadline still leaves exactly one frame on the wire.
+    expect(silent.transport.sent.filter((f) => f.type === 'rc/hook-rerun')).toHaveLength(1)
+  })
+
+  it('never dispatches a correlated reply as a fresh inbound frame', async () => {
+    const { conn, transport } = build({ clock: timerClock })
+    await toReady(transport)
+    const pending = conn.request('rc/hook-rerun', RERUN)
+    const corr = transport.sent.find((f) => f.type === 'rc/hook-rerun')!.id
+    transport.feedFrame(buildRelayCpFrame('rc/hook-rerun/ok', { admitted: true, deliveryKey: 'rerun_1' }, { corr }))
+    await expect(pending).resolves.toMatchObject({ admitted: true })
+    // A REP the relay sends for an id nobody awaits is inert, not a state error.
+    transport.feedFrame(
+      buildRelayCpFrame('rc/hook-rerun/ok', { admitted: true, deliveryKey: 'rerun_9' }, { corr: 'unknown-id' })
+    )
+    await Promise.resolve()
+    expect(transport.closed).toBeUndefined()
   })
 })

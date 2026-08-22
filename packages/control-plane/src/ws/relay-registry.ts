@@ -18,6 +18,12 @@ export interface RelayChannel {
   readonly features?: readonly string[]
   /** Fire-and-forget C→R EVT (e.g. `rc/daemon-revoke`). */
   send<T extends RelayCpFrameType>(type: T, payload: z.input<(typeof RELAY_CP_SCHEMAS)[T]>): void
+  /** Correlated C→R REQ resolving with the relay's REP payload (e.g. `rc/hook-rerun`).
+   *  Single-shot: it rejects on close, on an `error` REP, and on its deadline —
+   *  it is never retransmitted, because its frames carry effects. Optional so a
+   *  push-only stand-in still satisfies the firewall; a channel without it is
+   *  never an RPC target. */
+  request?<T extends RelayCpFrameType>(type: T, payload: z.input<(typeof RELAY_CP_SCHEMAS)[T]>): Promise<unknown>
   close(code: number, reason: string): void
 }
 
