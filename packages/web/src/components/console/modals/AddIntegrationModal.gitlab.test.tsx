@@ -160,7 +160,9 @@ describe('AddIntegrationModal, GitLab trigger', () => {
     expect(mocks.fetchGitlabProjects).not.toHaveBeenCalled()
 
     await act(async () => tileNamed('GitLab')?.click())
-    expect(document.body.textContent).toContain('GitLab is not enabled on this deployment')
+    expect(document.body.textContent).toContain(
+      'GitLab is not enabled on this deployment — no GitLab application is configured.'
+    )
     expect(document.body.textContent).not.toContain('Couldn’t load your GitLab projects')
   })
 

@@ -425,7 +425,7 @@ export function GitlabNoProjectsNotice({
         <GitlabMark fillPct={100} />
       </span>
       {!enabled ? (
-        <span>GitLab is not enabled on this deployment — the control plane has no GitLab application configured.</span>
+        <span>GitLab is not enabled on this deployment — no GitLab application is configured.</span>
       ) : connected ? (
         <span>
           The connected GitLab account has no project to offer. You need Maintainer or Owner access to a project before
