@@ -203,6 +203,51 @@ describe('code-host run projection ledger (gitlab-com-integration.md §16)', () 
     expect(advanced!.pendingIntent).toBeNull()
   })
 
+  it('lets the terminal edge of a run win after the daemon refused its non-terminal write', async () => {
+    const ledger = repo()
+    const base = input(await owner())
+    const opened = await upsert(base)
+    // The create lands: the note exists and reads queued.
+    const created = randomUUID()
+    expect(await ledger.beginWrite(opened.id, 1n, DAEMON, created, 'create', NOW, LATER)).toBe(true)
+    expect(
+      await ledger.completeWrite({
+        projectionId: opened.id,
+        generation: 1n,
+        leaseOwner: DAEMON,
+        writeMarker: created,
+        observedState: 'queued',
+        noteId: '987654321'
+      })
+    ).toBe(true)
+
+    // The running edge of the SAME run moves the state inside this generation, and the daemon
+    // refuses that write with a ledger code — a proved non-effect, so the mutex is released.
+    expect(await ledger.setDesired(opened.id, 1n, 'running', LATER)).toBe(true)
+    const refused = randomUUID()
+    expect(await ledger.beginWrite(opened.id, 1n, DAEMON, refused, 'update', NOW, LATER)).toBe(true)
+    expect(await ledger.failWrite(opened.id, 1n, DAEMON, refused, 'projection_key_conflict', LATER, false)).toBe(true)
+    const stuck = (await ledger.get(opened.id))!
+    expect(stuck.desiredState).toBe('running')
+    expect(stuck.observedState).toBe('queued')
+    expect(stuck.attempts).toBe(1)
+    expect(stuck.lastErrorCode).toBe('projection_key_conflict')
+
+    // Nothing re-dispatches a refused generation on its own, so the terminal edge is the only
+    // thing that can move this row — a refusal must never cost the run its final state.
+    const reported = await upsert({ ...base, desiredState: 'completed', currentRunAt: LATER, completedAt: LATER })
+    expect(reported.generation).toBe(1n)
+    expect(reported.pendingIntent).toBeNull()
+    expect(await ledger.setDesired(opened.id, 1n, 'completed', LATER)).toBe(true)
+    const terminal = (await ledger.get(opened.id))!
+    expect(terminal.desiredState).toBe('completed')
+    expect(terminal.sealedThrough).toBe(1n)
+    // And it is dispatchable: the refusal left no marker or lease behind to fence the write out.
+    expect(terminal.writeMarker).toBeNull()
+    expect(terminal.writePhase).toBeNull()
+    expect(await ledger.beginWrite(opened.id, 1n, DAEMON, randomUUID(), 'update', LATER, LATER)).toBe(true)
+  })
+
   it('keeps an ambiguous mutation on its writer and lets that writer reconcile it', async () => {
     const ledger = repo()
     const opened = await upsert(await owner())
