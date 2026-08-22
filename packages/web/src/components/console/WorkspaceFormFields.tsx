@@ -4,8 +4,8 @@ import type { KeyboardEvent, ReactNode } from 'react'
 import { GithubMark, GitlabMark } from '@/components/marks'
 import { Button, Icon, Toggle } from '@/components/ui'
 import { featureFlagEnabled } from '@/lib/feature-flags'
-import { GITLAB_PROJECT_STATE, gitlabProjectSelectable } from '@/lib/gitlab-projects'
-import type { GitlabProjectBindingDto, RepoAccess } from '@/lib/api'
+import { GITLAB_PROJECT_STATE, gitlabChoiceSelectable, type GitlabProjectChoice } from '@/lib/gitlab-projects'
+import type { RepoAccess } from '@/lib/api'
 
 export type WorkspaceMode = 'scratch' | 'github' | 'gitlab'
 export type WorkspaceRepoAccess = 'read' | 'write'
@@ -359,24 +359,29 @@ export function GitlabProjectField(props: RepositoryPickerProps) {
       mark={<GitlabMark />}
       emptyLabel="Pick a project"
       loadingLabel="Loading projects…"
-      searchPlaceholder="Search your added projects…"
+      searchPlaceholder="Search your GitLab projects…"
     />
   )
 }
 
-/** One added project. Transient states are listed and disabled, not hidden — a project
- *  the user just added reads as on its way rather than mysteriously absent. */
+/** One pickable project — already added, or one this connection can add. Picking
+ *  an unadded one sets up its bot and webhook, which is why it says so before the
+ *  click. Transient states are listed and disabled, not hidden: a project that is
+ *  mid-setup reads as on its way rather than mysteriously absent. */
 export function GitlabProjectOption({
-  project,
+  choice,
   selected = false,
+  busy = false,
   onSelect
 }: {
-  project: GitlabProjectBindingDto
+  choice: GitlabProjectChoice
   selected?: boolean
+  busy?: boolean
   onSelect: () => void
 }) {
-  const selectable = gitlabProjectSelectable(project.state)
-  const state = GITLAB_PROJECT_STATE[project.state]
+  const selectable = gitlabChoiceSelectable(choice) && !busy
+  const state = choice.binding ? GITLAB_PROJECT_STATE[choice.binding.state] : null
+  const branch = choice.defaultBranch ? `default branch ${choice.defaultBranch}` : 'no default branch reported'
   return (
     <button
       type="button"
@@ -385,7 +390,7 @@ export function GitlabProjectOption({
           ? 'fopt min-h-[46px] items-center gap-3 px-2 py-2'
           : 'fopt min-h-[46px] cursor-not-allowed items-center gap-3 px-2 py-2 opacity-60'
       }
-      title={project.projectPath}
+      title={choice.projectPath}
       aria-disabled={!selectable}
       disabled={!selectable}
       onClick={() => selectable && onSelect()}
@@ -396,34 +401,48 @@ export function GitlabProjectOption({
       <span className="flex min-w-0 flex-1 flex-col items-start gap-[2px] overflow-hidden">
         <span
           className="block w-full min-w-0 truncate font-mono text-[12.5px] font-semibold leading-normal text-(--text-primary)"
-          title={project.projectPath}
+          title={choice.projectPath}
         >
-          {project.projectPath}
+          {choice.projectPath}
         </span>
         <span className="block w-full min-w-0 truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-          {project.defaultBranch ? `default branch ${project.defaultBranch}` : 'no default branch reported'}
+          {busy ? 'Setting up the project bot and webhook…' : choice.binding ? branch : `${branch} · sets up on pick`}
         </span>
       </span>
-      {project.state !== 'ready' && <span className={`badge flex-none ${state.badge}`}>{state.label}</span>}
+      {state && state.label !== 'ready' && <span className={`badge flex-none ${state.badge}`}>{state.label}</span>}
       {selected && <Icon name="check" size={17} color="var(--brand)" />}
     </button>
   )
 }
 
-/** Nothing to pick yet: projects come from the organization's GitLab connection. */
-export function GitlabNoProjectsNotice({ integrationsHref }: { integrationsHref: string }) {
+/** Nothing to pick: either no GitLab account is connected, or the connected one
+ *  administers nothing this organization may set up. */
+export function GitlabNoProjectsNotice({
+  integrationsHref,
+  connected
+}: {
+  integrationsHref: string
+  connected: boolean
+}) {
   return (
     <div className="flex items-start gap-2 rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) px-3 py-[11px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary) desktop:col-span-2">
       <span className="mt-[1px] flex h-[14px] w-[14px] flex-none items-center justify-center">
         <GitlabMark fillPct={100} />
       </span>
-      <span>
-        No GitLab projects have been added yet. Connect GitLab and add a project under{' '}
-        <a className="lnk font-medium" href={integrationsHref}>
-          Integrations
-        </a>
-        , then pick it here.
-      </span>
+      {connected ? (
+        <span>
+          The connected GitLab account has no project to offer. You need Maintainer or Owner access to a project before
+          it can be set up here.
+        </span>
+      ) : (
+        <span>
+          No GitLab account is connected yet. Connect GitLab under{' '}
+          <a className="lnk font-medium" href={integrationsHref}>
+            Integrations
+          </a>
+          , then pick a project here.
+        </span>
+      )}
     </div>
   )
 }

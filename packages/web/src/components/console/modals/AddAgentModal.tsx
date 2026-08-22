@@ -43,13 +43,11 @@ import {
   fetchGithubInstallUrl,
   fetchGithubRepoRoster,
   fetchGithubRepoAccess,
-  fetchGitlabProjects,
   invalidateGithubRepoRosterCache,
   type AgentWorkspaceDto,
   type GithubInstallationDto,
   type GithubRepoAccess,
-  type GithubRepoDto,
-  type GitlabProjectBindingDto
+  type GithubRepoDto
 } from '@/lib/api'
 import { GithubMark, LoadingState } from '@/components/marks'
 import { AgentIconPicker } from '@/components/console/AgentIconPicker'
@@ -95,7 +93,8 @@ import {
   WorkspaceModeField,
   type WorkspaceMode
 } from '@/components/console/WorkspaceFormFields'
-import { gitlabProjectSelectable, matchGitlabProjects } from '@/lib/gitlab-projects'
+import { matchGitlabProjects, type GitlabProjectChoice } from '@/lib/gitlab-projects'
+import { useGitlabProjects } from '@/lib/use-gitlab-projects'
 
 type WsMode = WorkspaceMode
 type RepoCheckState = 'idle' | 'checking' | 'missing' | 'found'
@@ -272,10 +271,8 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
   const [ghPublicExactRepo, setGhPublicExactRepo] = useState<GithubRepoDto | null>(null)
   const [ghExactRepoState, setGhExactRepoState] = useState<RepoCheckState>('idle')
   const [ghManualPublicRepo, setGhManualPublicRepo] = useState<GithubRepoDto | null>(null)
-  // GitLab path: the organization's added projects, picked by their numeric id.
-  // Null while the list is still loading; the picker never adds a project itself.
-  const [glProjects, setGlProjects] = useState<GitlabProjectBindingDto[] | null>(null)
-  const [glProjectsError, setGlProjectsError] = useState<string | null>(null)
+  // GitLab path: projects picked by their numeric id. One this organization has
+  // not added yet is set up as part of picking it (§18.1).
   const [glProject, setGlProject] = useState('')
   const [glOpen, setGlOpen] = useState(false)
   const [glQ, setGlQ] = useState('')
@@ -501,22 +498,19 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
 
   // Only the GitLab pane asks for projects, so a deployment without the flag
   // never issues the request — the mode tile it would come from is not offered.
-  useEffect(() => {
-    if (wsMode !== 'gitlab' || glProjects !== null) return
-    let alive = true
-    setGlProjectsError(null)
-    fetchGitlabProjects().then(
-      (bindings) => alive && setGlProjects(bindings),
-      (e) => alive && setGlProjectsError(e instanceof Error ? e.message : String(e))
-    )
-    return () => {
-      alive = false
-    }
-  }, [glProjects, wsMode])
+  const gl = useGitlabProjects(wsMode === 'gitlab', glQ)
+  const glNoProjects = wsMode === 'gitlab' && gl.empty
+  const glPicked = gl.choices.find((choice) => choice.projectId === glProject)
+  const glMatches = matchGitlabProjects(gl.choices, glQ)
 
-  const glSelectable = (glProjects ?? []).filter((project) => gitlabProjectSelectable(project.state))
-  const glNoProjects = wsMode === 'gitlab' && glProjects !== null && glSelectable.length === 0
-  const glPicked = (glProjects ?? []).find((project) => project.projectId === glProject)
+  // Picking an unadded project provisions it first; a failed setup picks nothing.
+  const pickGlProject = async (choice: GitlabProjectChoice) => {
+    if (!choice.binding && !(await gl.provision(choice.projectId))) return
+    setGlProject(choice.projectId)
+    setGlOpen(false)
+    setBranch(choice.defaultBranch ?? '')
+    setErr(null)
+  }
 
   // Installations loaded or refreshed → merge repository pages as they arrive.
   // GitHub has no server-side search here, so the dropdown filters locally.
@@ -1473,16 +1467,16 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
               )}
 
               {wsMode === 'gitlab' &&
-                (glProjectsError ? (
+                (gl.error ? (
                   <div className="font-sans text-[12px] font-normal leading-[1.5] text-(--status-error) desktop:col-span-2">
-                    Couldn&rsquo;t load your GitLab projects — {glProjectsError}
+                    Couldn&rsquo;t load your GitLab projects — {gl.error}
                   </div>
-                ) : glProjects === null ? (
+                ) : gl.loading ? (
                   <div className="desktop:col-span-2">
                     <LoadingState size={20} padding={16} />
                   </div>
                 ) : glNoProjects ? (
-                  <GitlabNoProjectsNotice integrationsHref={orgPath('/integrations')} />
+                  <GitlabNoProjectsNotice integrationsHref={orgPath('/integrations')} connected={gl.connected} />
                 ) : (
                   <div className="grid grid-cols-1 gap-[14px] desktop:col-span-2 desktop:grid-cols-2 desktop:gap-x-7">
                     <GitlabProjectField
@@ -1498,23 +1492,18 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
                       }}
                       onClose={() => setGlOpen(false)}
                       onQueryChange={setGlQ}
+                      error={gl.provisionError ? `Couldn’t set up that project — ${gl.provisionError}` : undefined}
                     >
-                      {matchGitlabProjects(glProjects, glQ).map((project) => (
+                      {glMatches.map((choice) => (
                         <GitlabProjectOption
-                          key={project.id}
-                          project={project}
-                          selected={glProject === project.projectId}
-                          onSelect={() => {
-                            setGlProject(project.projectId)
-                            setGlOpen(false)
-                            setBranch(project.defaultBranch ?? '')
-                            setErr(null)
-                          }}
+                          key={choice.projectId}
+                          choice={choice}
+                          selected={glProject === choice.projectId}
+                          busy={gl.provisioning === choice.projectId}
+                          onSelect={() => void pickGlProject(choice)}
                         />
                       ))}
-                      {matchGitlabProjects(glProjects, glQ).length === 0 && (
-                        <div className="fnohit">No projects match &ldquo;{glQ}&rdquo;</div>
-                      )}
+                      {glMatches.length === 0 && <div className="fnohit">No projects match &ldquo;{glQ}&rdquo;</div>}
                     </GitlabProjectField>
 
                     <RepositoryAccessField

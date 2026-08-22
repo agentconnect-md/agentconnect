@@ -1389,26 +1389,29 @@ spec in a snapshot sent to one.
 
 ### 18.1 Console
 
-The Connections page shows:
+The Connections page manages the connection and the health of what it
+administers — the shape the GitHub card already has. It shows:
 
 - connected GitLab username and GitLab.com host;
 - OAuth state: connected, reconnect required, or disconnected;
-- project search with current path and role;
 - project binding state and service-account username;
 - webhook state: not needed, installed, repairing, or failed;
 - credential expiry and rotation warning without token values; and
-- actions to refresh projects, reconnect, repair, transfer administration, or
-  disconnect.
+- actions to reconnect, repair, remove a project, transfer administration,
+  disconnect, or remove a released connection.
 
 Webhook setup is automatic. The UI may show the desired endpoint and last
 verification result for diagnosis, but v1 does not make a manually copied
 secret a second source of truth.
 
-Agent workspace and additional-repository pickers use the same provider-aware
-project list. Hook configuration retains the existing family, cadence, label,
-review, reporting, and output controls. Premium-only effective behavior is
-described where relevant; the UI does not imply that Free request changes
-block merges.
+Choosing a project happens where the project is used, not on that page: the
+hook wizard and the agent workspace and additional-repository pickers list the
+connection's Maintainer-or-Owner projects merged with the ones already added,
+and picking one that is not added yet runs the Section 10.2 provisioning saga
+inline before the selection lands. Hook configuration retains the existing
+family, cadence, label, review, reporting, and output controls. Premium-only
+effective behavior is described where relevant; the UI does not imply that
+Free request changes block merges.
 
 User-facing copy says GitLab, connection, project, webhook, and bot. It does
 not expose internal Control Plane or relay terminology.
