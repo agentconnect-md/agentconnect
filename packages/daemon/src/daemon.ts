@@ -9584,11 +9584,16 @@ export class Daemon {
     if (activeGithub) this.activeGithubTurnMeta.set(key, activeGithub)
     // §17.2: the provider-neutral start barrier attaches the head this turn runs on to the accepted
     // run before the prompt, which is what a review authorization fences and §16 opens `running` on.
-    await this.startGitlabHookTurn(hookContext, sessionId)
-    const gitlabReview = this.gitlabReviews.openTurn(key, hookContext, sessionId, {
-      ...(this.cfg.daemonId ? { daemonId: this.cfg.daemonId } : {}),
-      persist: (required) => this.persistHookState(entry, undefined, required)
-    })
+    const barrier = await this.startGitlabHookTurn(hookContext, sessionId)
+    // A refused barrier keeps the ordinary turn but withholds the formal-review surface, exactly as a
+    // failed GitHub barrier does: a run whose started head was not recorded must never reach a lease.
+    const gitlabReview =
+      barrier === 'failed'
+        ? undefined
+        : this.gitlabReviews.openTurn(key, hookContext, sessionId, {
+            ...(this.cfg.daemonId ? { daemonId: this.cfg.daemonId } : {}),
+            persist: (required) => this.persistHookState(entry, undefined, required)
+          })
     // A replayed delivery may still owe the control plane frames a previous incarnation
     // recorded; the ones needing no provider evidence are handed back before the turn runs.
     if (gitlabReview) {
@@ -9605,16 +9610,20 @@ export class Daemon {
     }
   }
 
-  /** Cross the gitlab `hook/start` barrier (§17.2). A refusal costs only the head fence and the
-   *  §16 `running` edge — the turn continues, exactly as the GitHub barrier does. */
-  private async startGitlabHookTurn(hook: HookDispatchContext | undefined, sessionId: string): Promise<void> {
+  /** Cross the gitlab `hook/start` barrier (§17.2): `started` durably recorded the head, `legacy` is a
+   *  control plane that does not serve the barrier, `failed` is an advertised barrier that refused. */
+  private async startGitlabHookTurn(
+    hook: HookDispatchContext | undefined,
+    sessionId: string
+  ): Promise<'started' | 'legacy' | 'failed'> {
     const gitlab = hook?.gitlab
     const snapshot = hook?.snapshot
-    if (!hook || !gitlab || !snapshot) return
+    if (!hook || !gitlab || !snapshot) return 'legacy'
     const client = this.cpClient
     // An older CP cannot route the gitlab member of the one-of, so the send waits on its bit.
-    if (!client || client.supportsServerFeature?.(CODEHOST_NOTE_PROJECTION_V1_FEATURE) !== true) return
-    if (this.cfg.daemonId && snapshot.dispatchDaemonId !== this.cfg.daemonId) return
+    if (!client || client.supportsServerFeature?.(CODEHOST_NOTE_PROJECTION_V1_FEATURE) !== true) return 'legacy'
+    // A stale dispatch target opens no review turn anyway; the barrier is not this daemon's to cross.
+    if (this.cfg.daemonId && snapshot.dispatchDaemonId !== this.cfg.daemonId) return 'legacy'
     const payload = {
       hookId: hook.hookId,
       agentId: hook.agentId,
@@ -9628,17 +9637,18 @@ export class Daemon {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
         await client.startHook(payload, orgId)
-        return
+        return 'started'
       } catch (err) {
         if (attempt === 2) {
-          this.log.warn(`gitlab hook: hook/start rejected (${formatErr(err)})`)
-          return
+          this.log.warn(`gitlab review: hook/start rejected (${formatErr(err)})`)
+          return 'failed'
         }
         // The daemon ACK and the relay's accepted report travel on different sockets;
         // let the accepted row land before repeating this idempotent barrier.
         await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)))
       }
     }
+    return 'failed'
   }
 
   /** Resolve the exact host this turn runs on and re-apply the session's sticky runtime controls
