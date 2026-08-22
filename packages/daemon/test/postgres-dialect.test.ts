@@ -3,7 +3,10 @@
  * exact output — every rewrite rule, both binding forms, revision-slot detection, and the
  * PRAGMA / `sqlite_master` emulation `LocalStore` depends on.
  */
+import { DatabaseSync } from 'node:sqlite'
 import { describe, expect, it } from 'vitest'
+import { LocalStore } from '../src/store/local-store.js'
+import { tempStorePath } from './store-support.js'
 import {
   bind,
   changesOf,
@@ -185,6 +188,31 @@ describe('result shaping', () => {
 
   it('maps every canonical column back from its folded spelling', () => {
     expect(columnNames['transcriptcoordinates']).toBe('transcriptCoordinates')
+  })
+})
+
+describe('canonical column coverage', () => {
+  // The list is what restores a folded name, so a camelCase column missing from it reads back as
+  // undefined on PostgreSQL only — the store's row shapes silently lose that field. Enumerate the
+  // real schema and require every one of them, instead of trusting the list to be maintained.
+  it('names every camelCase column the store schema declares', async () => {
+    const path = tempStorePath('ac-dialect-')
+    await (await LocalStore.open(path)).close()
+    const db = new DatabaseSync(path)
+    const tables = db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
+      .all() as Array<{ name: string }>
+    const unregistered: string[] = []
+    for (const { name } of tables) {
+      const columns = db.prepare(`PRAGMA table_info("${name}")`).all() as Array<{ name: string }>
+      for (const column of columns) {
+        if (!/[A-Z]/.test(column.name)) continue
+        if (columnNames[column.name.toLowerCase()] !== column.name) unregistered.push(`${name}.${column.name}`)
+      }
+    }
+    db.close()
+    expect(tables.length).toBeGreaterThan(0)
+    expect(unregistered).toEqual([])
   })
 })
 

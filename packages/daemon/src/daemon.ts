@@ -7883,6 +7883,9 @@ export class Daemon {
       ...(hook.snapshot ?? {}),
       ...(hook.event ? { event: hook.event } : {}),
       ...(hook.github ? { github: hook.github } : {}),
+      // The §16 terminal edge is keyed on this subject: without it the note never leaves its
+      // last non-terminal state, because nothing else re-dispatches the projection.
+      ...(hook.gitlab ? { gitlab: hook.gitlab } : {}),
       status,
       durationMs: Number.isFinite(start) ? Math.max(0, this.clock.now() - start) : 0,
       ...extra,

@@ -3,6 +3,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
+import type { NoteProjectionRow } from '../src/gitlab/note-projection.js'
 import { LocalStore, sessionKey, type StoreDatabase } from '../src/store/local-store.js'
 import { SqliteAsyncDatabase } from '../src/store/sqlite-async-database.js'
 import { memoryStoreDatabase, openTestStore, usingPostgresStore } from './store-support.js'
@@ -2426,6 +2427,55 @@ describe('transcript org fence on a shared store', () => {
     await a.appendTranscript({ channel: 'C1', thread: 'T9', ts: '1', sender: 'U', kind: 'text', text: 'observed' })
     expect((await a.threadTranscript('C1', 'T9', 'agent-a')).map((r) => r.text)).toEqual(['observed'])
     await a.close()
+  })
+})
+
+describe('code-host note projection ledger (gitlab-com-integration.md §16)', () => {
+  const DAEMON = 'dddddddd-dddd-4ddd-8ddd-ddddddddddd1'
+  const ledgerRow = (overrides: Partial<NoteProjectionRow> = {}): NoteProjectionRow => ({
+    projectionKey: 'cccccccc-cccc-4ccc-8ccc-ccccccccccc1',
+    projectionId: 'cccccccc-cccc-4ccc-8ccc-ccccccccccc1',
+    hookId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1',
+    agentId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1',
+    orgId: 'org-1',
+    provider: 'gitlab',
+    projectId: '4455667',
+    mergeRequestIid: 42,
+    headSha: 'a'.repeat(40),
+    generation: '1',
+    writeMarker: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee1',
+    state: 'queued',
+    body: 'AgentConnect run — Queued',
+    noteId: '9001',
+    credentialEpoch: '2',
+    daemonId: DAEMON,
+    phase: 'in_flight',
+    ...overrides
+  })
+
+  // The projector's key fence compares its stored row against the incoming desired frame with ===,
+  // so a field that does not survive the read refuses every update after the create.
+  it('reads every field back with the value and type it was written with', async () => {
+    const s = await store()
+    const row = ledgerRow()
+    await s.beginNoteProjectionWrite(row, 1000)
+    const stored = await s.getNoteProjection(DAEMON, row.projectionKey)
+    expect(stored).toEqual(row)
+    expect(typeof stored!.mergeRequestIid).toBe('number')
+    for (const field of ['hookId', 'projectId', 'mergeRequestIid', 'headSha'] as const) {
+      expect(stored![field]).toBe(row[field])
+    }
+    await s.close()
+  })
+
+  it('replays an unsettled write with the same fields the sweep compares', async () => {
+    const s = await store()
+    const row = ledgerRow()
+    await s.recordNoteProjectionOutcome(row, 'written', undefined, 1000)
+    expect(await s.listUnsettledNoteProjections(DAEMON)).toEqual([
+      { ...row, phase: 'settled_unreported', outcome: 'written' }
+    ])
+    await s.close()
   })
 })
 

@@ -326,6 +326,11 @@ describe('Daemon rd/msg hook fires', () => {
         expect(payload.github).toBeUndefined()
         expect(payload.sessionId).toBeTruthy()
       }
+      // The terminal report carries the same subject, whatever the start barrier did: the control
+      // plane projects the §16 note's terminal edge only from a report that names its merge request.
+      const report = cp.hookReports[0]!
+      expect(report.gitlab).toEqual(gitlabReviewFire(dispatchDaemonId).gitlab)
+      expect(report.github).toBeUndefined()
       await daemon.stop()
     },
     15_000
