@@ -92,6 +92,10 @@ agents, integrations, and permitted work in view.
   resolution where the conversation began.
 - **Run recurring operations.** Start work from a schedule or webhook, bring
   exceptions into a shared conversation, and keep the human decision visible.
+- **Keep private forks current.** Subscribe to upstream changes through GitHub,
+  a GitHub subscription in Slack, webhooks, or schedules. Let agents assess the
+  impact, prepare and test relevant updates, and bring them to the team for
+  review.
 
 ## Get started
 
