@@ -2,10 +2,10 @@
 // §15.2) and the §23 review matrix rows that belong to the daemon: the thirteen steps,
 // the publication lease and its single-use operation ledger, marker reconciliation, and
 // every ambiguous effect failing closed instead of publishing a fallback.
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   CODEHOST_REVIEW_V1_FEATURE,
   type CodeHostReviewAuthorize,
@@ -18,13 +18,18 @@ import {
   type HookConfigSnapshot
 } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
-import { sessionKey } from '../src/store/local-store.js'
+import { LocalStore, sessionKey } from '../src/store/local-store.js'
 import { CodeHostReviewRouter, type SubmitCodeReviewReq } from '../src/codehost/review-adapter.js'
-import type { HookDispatchContext } from '../src/github/hook-coords.js'
+import {
+  codeHostReviewFallbackAllowed,
+  hookOutputFallbackAllowed,
+  type HookDispatchContext
+} from '../src/github/hook-coords.js'
 import {
   GitlabReviewAdapter,
   type GitlabReviewControlPlane,
-  type GitlabReviewOutcome
+  type GitlabReviewOutcome,
+  type ReviewIntentRow
 } from '../src/gitlab/review-adapter.js'
 import { ReviewMarkerSigner } from '../src/gitlab/review-marker.js'
 
@@ -45,9 +50,9 @@ const DAEMON_ID = '44444444-4444-4444-8444-444444444444'
 const AGENT_ID = 'bot-a'
 const THREAD = `gitlab:${PROJECT}:merge_request:${IID}`
 const KEY = sessionKey('hook', HOOK_ID, THREAD, AGENT_ID)
-const MARKER_KEY = Buffer.from('gitlab-review-marker-test-key-01')
+const MARKER_SEED = 'gitlab-review-marker-test-key-01'
 
-const signer = new ReviewMarkerSigner(MARKER_KEY)
+const signer = new ReviewMarkerSigner(Buffer.from(MARKER_SEED, 'utf8'))
 
 const SNAPSHOT: HookConfigSnapshot = {
   configRevision: '4',
@@ -228,6 +233,9 @@ interface CpOptions {
   supports?: boolean
   renewPhase?: CodeHostReviewLeasePhase
   serviceAccountUserId?: string
+  /** Return an error to fail that delivery; the frame is then owed and replayed. */
+  operateFails?: (op: CodeHostReviewOpRequest) => Error | undefined
+  reportFails?: (result: CodeHostReviewResultReport) => Error | undefined
 }
 
 function fakeCp(opts: CpOptions = {}) {
@@ -267,6 +275,8 @@ function fakeCp(opts: CpOptions = {}) {
     },
     operate: async (payload): Promise<CodeHostReviewOpAccepted> => {
       ops.push(payload)
+      const failure = payload.op === 'settle' ? opts.operateFails?.(payload) : undefined
+      if (failure) throw failure
       if (payload.op === 'issue') {
         return {
           op: 'issue',
@@ -299,19 +309,78 @@ function fakeCp(opts: CpOptions = {}) {
     }),
     report: async (payload) => {
       results.push(payload)
+      const failure = opts.reportFails?.(payload)
+      if (failure) throw failure
       return { accepted: true, phase: 'settled' }
     }
   }
   return { cp, authorizations, ops, results }
 }
 
+/** The daemon-local durability the adapter depends on, in memory. */
+class FakeReviewStore {
+  readonly rows = new Map<string, ReviewIntentRow>()
+  private secret?: string
+  failRecord = false
+
+  async recordReviewIntent(row: ReviewIntentRow): Promise<void> {
+    if (this.failRecord) throw new Error('store unavailable')
+    this.rows.set(row.intentId, { ...row })
+  }
+
+  async clearReviewIntent(intentId: string): Promise<void> {
+    this.rows.delete(intentId)
+  }
+
+  async listReviewIntents(daemonId: string): Promise<ReviewIntentRow[]> {
+    return [...this.rows.values()].filter((row) => row.daemonId === daemonId)
+  }
+
+  /** One value for the process's lifetime, exactly like the store row it stands in for. */
+  async getOrCreateDaemonSecret(mint: () => string): Promise<string> {
+    this.secret ??= mint()
+    return this.secret
+  }
+}
+
+/** A hand-driven timer so the resweep backoff is deterministic. */
+function fakeScheduler() {
+  const pending: Array<{ fn: () => void; id: number }> = []
+  let next = 1
+  const scheduler = {
+    now: () => 0,
+    setTimeout: (fn: () => void) => {
+      const id = next++
+      pending.push({ fn, id })
+      return id
+    },
+    clearTimeout: (handle: unknown) => {
+      const index = pending.findIndex((entry) => entry.id === handle)
+      if (index >= 0) pending.splice(index, 1)
+    }
+  }
+  return {
+    scheduler,
+    armed: () => pending.length,
+    async fire(): Promise<void> {
+      const entry = pending.shift()
+      entry?.fn()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    }
+  }
+}
+
 interface Harness {
   adapter: GitlabReviewAdapter
   state: GitlabState
+  hook: HookDispatchContext
   calls: Call[]
   ops: CodeHostReviewOpRequest[]
   results: CodeHostReviewResultReport[]
   authorizations: CodeHostReviewAuthorize[]
+  reviewStore: FakeReviewStore
+  timer: ReturnType<typeof fakeScheduler>
+  persisted: () => number
   tokens: () => string[]
   invalidated: () => string[]
 }
@@ -323,6 +392,10 @@ function harness(
     cp?: CpOptions
     tokens?: string[]
     hook?: HookDispatchContext
+    reviewStore?: FakeReviewStore
+    attemptIds?: string[]
+    open?: boolean
+    failPersist?: boolean
   } = {}
 ): Harness {
   const state = opts.state ?? gitlabState()
@@ -331,10 +404,19 @@ function harness(
   const supply = opts.tokens ?? ['glpat-effect-1']
   const minted: string[] = []
   const invalidated: string[] = []
+  const reviewStore = opts.reviewStore ?? new FakeReviewStore()
+  const timer = fakeScheduler()
+  const hook = opts.hook ?? hookContext()
+  const attemptIds = opts.attemptIds ?? [ATTEMPT]
+  let mintedAttempts = 0
+  let persisted = 0
   let clock = 1_000
   const adapter = new GitlabReviewAdapter({
     cp: () => control.cp,
     orgForAgent: () => 'org-1',
+    daemonId: () => DAEMON_ID,
+    store: reviewStore,
+    markerKey: async () => Buffer.from(await reviewStore.getOrCreateDaemonSecret(() => MARKER_SEED), 'utf8'),
     token: async () => {
       const token = supply[Math.min(minted.length, supply.length - 1)]!
       minted.push(token)
@@ -344,23 +426,36 @@ function harness(
     log: { warn: () => {} },
     baseUrl: BASE,
     fetchImpl: gitlab.fetchImpl,
-    markerKey: MARKER_KEY,
-    newAttemptId: () => ATTEMPT,
+    newAttemptId: () => attemptIds[Math.min(mintedAttempts++, attemptIds.length - 1)]!,
     newStartToken: () => `start-${control.ops.filter((op) => op.op === 'issue').length}`,
     now: () => clock,
     sleep: async (ms) => void (clock += ms),
     ambiguousWindowMs: 4_000,
     mergeStatusWindowMs: 4_000,
-    pollIntervalMs: 1_000
+    pollIntervalMs: 1_000,
+    scheduler: timer.scheduler,
+    resweepBaseMs: 1_000
   })
-  adapter.openTurn(KEY, opts.hook ?? hookContext(), 'acp-session-1', DAEMON_ID)
+  if (opts.open !== false) {
+    adapter.openTurn(KEY, hook, 'acp-session-1', {
+      daemonId: DAEMON_ID,
+      persist: async () => {
+        persisted += 1
+        if (opts.failPersist) throw new Error('inbox row is missing')
+      }
+    })
+  }
   return {
     adapter,
     state,
+    hook,
     calls: gitlab.calls,
     ops: control.ops,
     results: control.results,
     authorizations: control.authorizations,
+    reviewStore,
+    timer,
+    persisted: () => persisted,
     tokens: () => minted,
     invalidated: () => invalidated
   }
@@ -419,22 +514,41 @@ describe('GitLab review adapter — pre-effect rejections (§15)', () => {
     expect(h.adapter.owns(KEY, AGENT_ID)).toBe(false)
   })
 
-  it('opens no review turn for a non-review delivery', () => {
+  it('opens no review turn for a delivery the review-generation gate does not open', () => {
     const h = harness()
+    const open = (key: string, hook: HookDispatchContext, daemonId = DAEMON_ID) =>
+      h.adapter.openTurn(key, hook, 's', { daemonId, persist: async () => {} })
+    expect(open('k2', hookContext({ snapshot: { ...SNAPSHOT, reviewPolicy: 'off' } }))).toBeUndefined()
     expect(
-      h.adapter.openTurn('k2', hookContext({ snapshot: { ...SNAPSHOT, reviewPolicy: 'off' } }), 's', DAEMON_ID)
+      open('k3', hookContext({ gitlab: { projectId: PROJECT, projectPath: 'g/p', target: { kind: 'issue', iid: 5 } } }))
     ).toBeUndefined()
+    expect(open('k4', hookContext(), 'another-daemon')).toBeUndefined()
+    // An ordinary merge-request conversation must not own the structured tool.
+    expect(open('k5', hookContext({ event: 'merge_request:labeled' }))).toBeUndefined()
+    expect(open('k6', hookContext({ event: 'note:created' }))).toBeUndefined()
+    // A head-less merge-request delivery has nothing to fence a review on.
     expect(
-      h.adapter.openTurn(
-        'k3',
+      open(
+        'k7',
         hookContext({
-          gitlab: { projectId: PROJECT, projectPath: 'g/p', target: { kind: 'issue', iid: 5 } }
-        }),
-        's',
-        DAEMON_ID
+          gitlab: { projectId: PROJECT, projectPath: 'g/p', target: { kind: 'merge_request', iid: IID } }
+        })
       )
     ).toBeUndefined()
-    expect(h.adapter.openTurn('k4', hookContext(), 's', 'another-daemon')).toBeUndefined()
+    // A relay-flagged review request opens one even on an otherwise ordinary event.
+    expect(
+      open(
+        'k8',
+        hookContext({
+          event: 'merge_request:labeled',
+          gitlab: {
+            projectId: PROJECT,
+            projectPath: 'g/p',
+            target: { kind: 'merge_request', iid: IID, headSha: HEAD, explicitReviewRequest: true }
+          }
+        })
+      )
+    ).toBeDefined()
   })
 })
 
@@ -874,6 +988,215 @@ describe('GitLab review adapter — approval (§15 step 13)', () => {
     })
     const outcome = (await h.adapter.submit(KEY, request({ event: 'APPROVE', verdict: 'pass' }))) as GitlabReviewOutcome
     expect(outcome.state).toBe('approval_not_recorded')
+  })
+})
+
+describe('GitLab review adapter — durable ownership and ack replay (round 2)', () => {
+  it('claims the reply gate durably for a submitted review, and keeps it across a restart', async () => {
+    const h = harness()
+    const outcome = (await h.adapter.submit(KEY, request())) as GitlabReviewOutcome
+    expect(outcome.state).toBe('submitted')
+    // The durable hook row — not adapter memory — is what the ordinary-note gate reads.
+    expect(h.hook.codeReview).toMatchObject({ attemptId: ATTEMPT, state: 'submitted', headSha: HEAD })
+    expect(codeHostReviewFallbackAllowed(h.hook)).toBe(false)
+    // The turn-final surface asks ONE question, and a GitLab attempt answers it too.
+    expect(hookOutputFallbackAllowed(h.hook)).toBe(false)
+    // A restart replays that row into a fresh adapter: still no ordinary note, and no second attempt.
+    const restarted = harness({ hook: h.hook, reviewStore: h.reviewStore })
+    expect(codeHostReviewFallbackAllowed(restarted.hook)).toBe(false)
+    await expect(restarted.adapter.submit(KEY, request())).rejects.toThrow(/already has a formal review attempt/)
+    expect(mutations(restarted.calls)).toEqual([])
+  })
+
+  it('claims the reply gate for an ambiguous publication too', async () => {
+    const h = harness({ script: [{ method: 'POST', path: /bulk_publish$/, reply: 'network' }] })
+    const outcome = (await h.adapter.submit(KEY, request())) as GitlabReviewOutcome
+    expect(outcome.state).toBe('ambiguous_locked')
+    expect(h.hook.codeReview?.state).toBe('ambiguous_locked')
+    expect(codeHostReviewFallbackAllowed(h.hook)).toBe(false)
+  })
+
+  it('leaves the ordinary reply available only for a proven no-effect attempt', async () => {
+    const h = harness({ state: gitlabState({ sha: OTHER_HEAD }) })
+    const outcome = (await h.adapter.submit(KEY, request())) as GitlabReviewOutcome
+    expect(outcome.state).toBe('not_submitted')
+    expect(codeHostReviewFallbackAllowed(h.hook)).toBe(true)
+    expect(hookOutputFallbackAllowed(h.hook)).toBe(true)
+    // A reserved attempt with no classification yet is unknown, so it blocks the note.
+    expect(codeHostReviewFallbackAllowed({ ...h.hook, codeReview: { ...h.hook.codeReview!, state: undefined } })).toBe(
+      false
+    )
+  })
+
+  it('records the attempt before the first provider call and refuses when that write fails', async () => {
+    const h = harness({ failPersist: true })
+    await expect(h.adapter.submit(KEY, request())).rejects.toThrow(/durability barrier failed/)
+    expect(h.calls).toEqual([])
+    expect(h.authorizations).toEqual([])
+    // The rolled-back record must not leave a phantom attempt blocking the ordinary note.
+    expect(h.hook.codeReview).toBeUndefined()
+    expect(codeHostReviewFallbackAllowed(h.hook)).toBe(true)
+  })
+
+  it('replays the SAME attempt after a crash and recovers its marked drafts', async () => {
+    const state = gitlabState()
+    const first = harness({ state, script: [{ method: 'POST', path: /bulk_publish$/, reply: 'network' }] })
+    // Crash after the draft was created and before publication settled: the durable row keeps
+    // the attempt, unclassified, and the marked draft is still pending on the merge request.
+    await first.adapter.submit(KEY, request()).catch(() => undefined)
+    delete first.hook.codeReview!.state
+    expect(state.drafts).toHaveLength(1)
+    expect(signer.read(state.drafts[0]!.note, HEAD)).toEqual({ attemptId: ATTEMPT, ordinal: 0 })
+
+    // A NEW adapter over the SAME store and hook row: same attempt id, same verifiable marker.
+    const replay = harness({ state, hook: first.hook, reviewStore: first.reviewStore, attemptIds: ['ignored-id'] })
+    const outcome = (await replay.adapter.submit(KEY, request())) as GitlabReviewOutcome
+    expect(outcome.state).toBe('submitted')
+    expect(replay.authorizations[0]!.attemptId).toBe(ATTEMPT)
+    // The recovered draft was reused, not created again.
+    expect(drafted(replay.calls)).toEqual([])
+  })
+
+  it('refuses a recovered attempt that changes its event or verdict', async () => {
+    const h = harness()
+    h.hook.codeReview = { attemptId: ATTEMPT, event: 'COMMENT', verdict: 'neutral', headSha: HEAD }
+    const replay = harness({ hook: h.hook, reviewStore: h.reviewStore })
+    await expect(replay.adapter.submit(KEY, request({ event: 'APPROVE', verdict: 'pass' }))).rejects.toThrow(
+      /must keep its original event, verdict, and head/
+    )
+    expect(replay.calls).toEqual([])
+  })
+
+  it('replays an unacknowledged settle until the control plane takes it', async () => {
+    let refusals = 2
+    const h = harness({
+      cp: {
+        operateFails: () => {
+          if (refusals <= 0) return undefined
+          refusals -= 1
+          return Object.assign(new Error('control plane unreachable'), { retryable: true })
+        }
+      }
+    })
+    const outcome = (await h.adapter.submit(KEY, request())) as GitlabReviewOutcome
+    expect(outcome.state).toBe('submitted')
+    // Both settles were refused, so both are owed durably and the resweep is armed.
+    expect([...h.reviewStore.rows.keys()].filter((id) => id.includes(':op:'))).toHaveLength(2)
+    expect(h.timer.armed()).toBe(1)
+    await h.timer.fire()
+    // The replayed frames are the identical settles, and the ledger is clear once acked.
+    const replayed = h.ops.filter((op) => op.op === 'settle')
+    expect(replayed.length).toBeGreaterThanOrEqual(4)
+    expect([...h.reviewStore.rows.keys()].filter((id) => id.includes(':op:'))).toEqual([])
+  })
+
+  it('replays an unacknowledged result report and clears it once acked', async () => {
+    let refuse = true
+    const h = harness({
+      cp: {
+        reportFails: () => {
+          const err = refuse ? Object.assign(new Error('control plane unreachable'), { retryable: true }) : undefined
+          refuse = false
+          return err
+        }
+      }
+    })
+    await h.adapter.submit(KEY, request())
+    expect([...h.reviewStore.rows.keys()]).toEqual([`${ATTEMPT}:result`])
+    expect(h.timer.armed()).toBe(1)
+    await h.timer.fire()
+    expect(h.reviewStore.rows.size).toBe(0)
+    const reports = h.results.filter((row) => row.attemptId === ATTEMPT)
+    expect(reports.at(-1)).toMatchObject({ state: 'submitted', provider: 'gitlab' })
+  })
+
+  it('drops an owed frame the control plane permanently refuses instead of replaying forever', async () => {
+    const h = harness({
+      cp: { reportFails: () => Object.assign(new Error('does not own the lease'), { retryable: false }) }
+    })
+    await h.adapter.submit(KEY, request())
+    expect(h.reviewStore.rows.size).toBe(0)
+    expect(h.timer.armed()).toBe(0)
+  })
+
+  it('recovers owed frames written by a previous process', async () => {
+    const store = new FakeReviewStore()
+    await store.recordReviewIntent({
+      intentId: `${ATTEMPT}:result`,
+      daemonId: DAEMON_ID,
+      attemptId: ATTEMPT,
+      orgId: 'org-1',
+      kind: 'result',
+      frame: JSON.stringify({
+        hookId: HOOK_ID,
+        deliveryKey: 'delivery-1',
+        attemptId: ATTEMPT,
+        snapshot: SNAPSHOT,
+        provider: 'gitlab',
+        projectId: PROJECT,
+        mergeRequestIid: IID,
+        event: 'COMMENT',
+        verdict: 'neutral',
+        headSha: HEAD,
+        state: 'submitted'
+      }),
+      attempts: 3
+    })
+    const h = harness({ reviewStore: store, open: false })
+    await h.adapter.reconcilePending()
+    expect(store.rows.size).toBe(0)
+    expect(h.results.at(-1)).toMatchObject({ attemptId: ATTEMPT, state: 'submitted' })
+    expect(h.timer.armed()).toBe(0)
+  })
+})
+
+describe('GitLab review durability in the real daemon store', () => {
+  let root: string
+  let store: LocalStore
+
+  beforeEach(async () => {
+    root = mkdtempSync(join(tmpdir(), 'gitlab-review-store-'))
+    store = await LocalStore.open(join(root, 'state.db'))
+  })
+
+  afterEach(async () => {
+    await store.close()
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  it('mints the marker key once and returns the same value to every later caller', async () => {
+    const first = await store.getOrCreateDaemonSecret('gitlab-review-marker-key', () => 'first', 1)
+    const second = await store.getOrCreateDaemonSecret('gitlab-review-marker-key', () => 'second', 2)
+    expect(second).toBe(first)
+    // A restart over the same file reads the stored key rather than minting a new one.
+    await store.close()
+    const reopened = await LocalStore.open(join(root, 'state.db'))
+    expect(await reopened.getOrCreateDaemonSecret('gitlab-review-marker-key', () => 'third', 3)).toBe(first)
+    store = reopened
+  })
+
+  it('keeps owed frames per daemon identity, upserts by intent, and clears on ack', async () => {
+    const row: ReviewIntentRow = {
+      intentId: `${ATTEMPT}:result`,
+      daemonId: DAEMON_ID,
+      attemptId: ATTEMPT,
+      orgId: 'org-1',
+      kind: 'result',
+      frame: '{"state":"submitted"}',
+      attempts: 0
+    }
+    await store.recordReviewIntent(row, 1)
+    await store.recordReviewIntent({ ...row, attempts: 4, frame: '{"state":"ambiguous_locked"}' }, 2)
+    await store.recordReviewIntent({ ...row, intentId: 'other', daemonId: 'peer-daemon' }, 3)
+
+    const mine = await store.listReviewIntents(DAEMON_ID)
+    expect(mine).toHaveLength(1)
+    expect(mine[0]).toMatchObject({ attempts: 4, frame: '{"state":"ambiguous_locked"}', orgId: 'org-1' })
+    // A peer's owed frame is never replayed by this identity.
+    expect(await store.listReviewIntents('peer-daemon')).toHaveLength(1)
+
+    await store.clearReviewIntent(row.intentId)
+    expect(await store.listReviewIntents(DAEMON_ID)).toEqual([])
   })
 })
 

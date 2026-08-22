@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto'
+import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { basename, dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { mkdtemp, readFile, stat } from 'node:fs/promises'
@@ -415,7 +415,7 @@ import {
 import {
   foreignHookDispatch,
   githubDeletedHookEvent,
-  githubFallbackAllowed,
+  hookOutputFallbackAllowed,
   githubHookCoordinates,
   githubPullRequestLane,
   githubReviewResultForCompletion,
@@ -6643,6 +6643,22 @@ export class Daemon {
         }
       },
       orgForAgent: (agentId) => this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId),
+      daemonId: () => this.cfg.daemonId,
+      store: {
+        recordReviewIntent: (row, now) => this.store.recordReviewIntent(row, now),
+        clearReviewIntent: (intentId) => this.store.clearReviewIntent(intentId),
+        listReviewIntents: (daemonId) => this.store.listReviewIntents(daemonId)
+      },
+      // Restart-stable, so a same-attempt recovery can still verify the drafts it authored.
+      markerKey: async () =>
+        Buffer.from(
+          await this.store.getOrCreateDaemonSecret(
+            'gitlab-review-marker-key',
+            () => randomBytes(32).toString('base64'),
+            this.clock.now()
+          ),
+          'base64'
+        ),
       token: async (turn) =>
         (await this.gitCreds.getGitlabEffectToken(turn.agentId, turn.projectId, turn.hookId)).token,
       invalidateToken: (turn, token) => this.gitCreds.invalidateGitlabEffect(turn.agentId, turn.projectId, token),
@@ -9567,7 +9583,10 @@ export class Daemon {
     })
     if (activeGithub) this.activeGithubTurnMeta.set(key, activeGithub)
     // §15: no hook/start barrier — the accepted delivery report already carries the fence review authz checks.
-    const gitlabReview = this.gitlabReviews.openTurn(key, hookContext, sessionId, this.cfg.daemonId)
+    const gitlabReview = this.gitlabReviews.openTurn(key, hookContext, sessionId, {
+      ...(this.cfg.daemonId ? { daemonId: this.cfg.daemonId } : {}),
+      persist: (required) => this.persistHookState(entry, undefined, required)
+    })
     const activeGithubReplyBatch = plan.githubReplyBatchActive ? { entry, sessionId, called: false } : undefined
     if (activeGithubReplyBatch) this.activeGithubReplyBatchMeta.set(key, activeGithubReplyBatch)
     return {
@@ -10478,9 +10497,10 @@ export class Daemon {
     if (activeGithubReplyBatch && this.activeGithubReplyBatchMeta.get(key) === activeGithubReplyBatch) {
       this.activeGithubReplyBatchMeta.delete(key)
     }
-    // Anything other than no attempt or a correlated definite no-effect
-    // result is fail-closed: GitHub may already own the public response.
-    const formalReviewOwnsResponse = githubReply !== undefined && !githubFallbackAllowed(hookContext)
+    // Anything other than no attempt or a correlated definite no-effect result is
+    // fail-closed: the code host may already own the public response. Both providers'
+    // durable attempt records are consulted, so a GitLab review blocks the note too.
+    const formalReviewOwnsResponse = githubReply !== undefined && !hookOutputFallbackAllowed(hookContext)
     if (formalReviewOwnsResponse) {
       try {
         await this.persistHookState(entry, 'settled', true)
@@ -14694,6 +14714,7 @@ export class Daemon {
       drainSessionPurges: () => this.drainSessionPurges(),
       effectiveAgents: () => this.effectiveAgents(),
       noteProjector: () => this.noteProjector,
+      gitlabReviews: () => this.gitlabReviews,
       cpAgents: () => this.cpAgents,
       cpIntegrations: () => this.cpIntegrations,
       cpCrons: () => this.cpCrons,
@@ -15702,6 +15723,7 @@ export class Daemon {
     this.gitCredServer?.stop()
     // The projection resweep runs on its own clock, so it must be disarmed before the store closes.
     this.noteProjector?.stop()
+    this.gitlabReviews?.stop()
     if (this.dataPlane) await this.dataPlane.close().catch((e) => errors.push(e))
     else await this.store?.close()
     if (errors.length) throw new AggregateError(errors, 'stop: partial failure')

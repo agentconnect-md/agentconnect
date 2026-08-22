@@ -110,6 +110,8 @@ export interface CpClientReadyHost {
   effectiveAgents(): LoadedAgent[]
   /** The §16 run-projection writer: the CP dispatch target and the interrupted-write reconciler. */
   noteProjector(): CodeHostNoteProjector
+  /** The §15 review adapter, for the control-plane frames a finished attempt still owes. */
+  gitlabReviews(): { reconcilePending(): Promise<void> }
 }
 
 /** Tenant lookups for agent-scoped frames, plus the duty seam the heartbeat carries. */
@@ -255,6 +257,9 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
       // ...and every §16 projection write this daemon started but never settled. Each is reconciled
       // by the hidden marker before the merge request is touched again, never by replaying the write.
       void host.noteProjector().reconcilePending()
+      // ...and every §15 settle/result frame a review attempt still owes. Both are idempotent
+      // REQs, so replaying one the CP already took is a no-op; not replaying wedges its ledger.
+      void host.gitlabReviews().reconcilePending()
       // ...and the retention-GC receipts (#485). A sweep that ran while the CP
       // was unreachable (or before it advertised the feature) left the deleted
       // sessions' metadata rows unmarked; this is the only side that still knows.

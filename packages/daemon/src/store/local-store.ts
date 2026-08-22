@@ -10,6 +10,7 @@ import {
   type SessionImageAttachment
 } from '@agentconnect.md/protocol'
 import type { NoteProjectionOutcome, NoteProjectionPhase, NoteProjectionRow } from '../gitlab/note-projection.js'
+import type { ReviewIntentRow } from '../gitlab/review-adapter.js'
 import { SESSION_TITLE_TOOL_TITLES } from '../mcp/session-title-tool.js'
 import type { ScheduleRun } from '../scheduler/scheduler.js'
 import { AsyncMutex } from './async-mutex.js'
@@ -1502,6 +1503,31 @@ export class LocalStore {
       );
       CREATE INDEX IF NOT EXISTS code_host_note_projection_pending
         ON code_host_note_projection (daemonId, phase, updatedAt);
+      -- Daemon-local secrets that must survive a restart. Nothing here authenticates to a peer:
+      -- the only entry today is the formal-review marker key, whose whole claim is "this daemon's
+      -- attempt authored this draft", so a key that changed every boot would make same-attempt
+      -- crash recovery unverifiable (gitlab-com-integration.md §15.1).
+      CREATE TABLE IF NOT EXISTS daemon_secret (
+        name TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        createdAt INTEGER NOT NULL
+      );
+      -- gitlab-com-integration.md §15.1: control-plane frames a finished review still OWES. Both
+      -- the operation settle and the terminal result are idempotent REQs, so an unacknowledged one
+      -- is replayed verbatim until the control plane takes it; a lost ack must never leave an
+      -- operation record started forever or an outcome unreconciled.
+      CREATE TABLE IF NOT EXISTS code_host_review_intent (
+        intentId TEXT PRIMARY KEY,
+        daemonId TEXT NOT NULL,
+        attemptId TEXT NOT NULL,
+        orgId TEXT,
+        kind TEXT NOT NULL CHECK (kind IN ('operation', 'result')),
+        frame TEXT NOT NULL,              -- the exact payload replayed, verbatim
+        attempts INTEGER NOT NULL DEFAULT 0,
+        updatedAt INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS code_host_review_intent_pending
+        ON code_host_review_intent (daemonId, updatedAt);
     `)
     // Stamped only once the CREATE block above has actually emitted that schema, so
     // a store that failed halfway through creation is not left claiming to be current.
@@ -5283,6 +5309,67 @@ export class LocalStore {
       )
       .all({ daemonId, limit })) as unknown as CodeHostNoteProjectionRow[]
     return rows.map(toNoteProjectionRow)
+  }
+
+  /**
+   * A restart-stable daemon-local secret, minted once on first use.
+   *
+   * The insert is `ON CONFLICT DO NOTHING` and the read follows it, so two callers racing
+   * the same name both observe the one stored value rather than each keeping its own.
+   */
+  async getOrCreateDaemonSecret(name: string, mint: () => string, now: number): Promise<string> {
+    await this.db
+      .prepare('INSERT INTO daemon_secret (name, value, createdAt) VALUES (@name, @value, @now) ON CONFLICT DO NOTHING')
+      .run({ name, value: mint(), now })
+    const row = (await this.db.prepare('SELECT value FROM daemon_secret WHERE name = @name').get({ name })) as
+      { value: string } | undefined
+    if (!row) throw new Error(`daemon secret ${name} could not be stored`)
+    return row.value
+  }
+
+  /** Remember a control-plane frame this review attempt still owes, so a lost ack is replayed. */
+  async recordReviewIntent(row: ReviewIntentRow, now: number): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT INTO code_host_review_intent (intentId, daemonId, attemptId, orgId, kind, frame, attempts, updatedAt)
+         VALUES (@intentId, @daemonId, @attemptId, @orgId, @kind, @frame, @attempts, @now)
+         ON CONFLICT (intentId) DO UPDATE SET
+           attempts = excluded.attempts, frame = excluded.frame, updatedAt = excluded.updatedAt`
+      )
+      .run({
+        intentId: row.intentId,
+        daemonId: row.daemonId,
+        attemptId: row.attemptId,
+        orgId: row.orgId ?? null,
+        kind: row.kind,
+        frame: row.frame,
+        attempts: row.attempts,
+        now
+      })
+  }
+
+  /** The control plane took it; nothing is owed for that frame any more. */
+  async clearReviewIntent(intentId: string): Promise<void> {
+    await this.db.prepare('DELETE FROM code_host_review_intent WHERE intentId = @intentId').run({ intentId })
+  }
+
+  /** Scoped to the stable daemon identity, so a restart replays its own frames and no peer's. */
+  async listReviewIntents(daemonId: string, limit = 100): Promise<ReviewIntentRow[]> {
+    const rows = (await this.db
+      .prepare(
+        `SELECT intentId, daemonId, attemptId, orgId, kind, frame, attempts FROM code_host_review_intent
+         WHERE daemonId = @daemonId ORDER BY updatedAt ASC LIMIT @limit`
+      )
+      .all({ daemonId, limit })) as unknown as Array<ReviewIntentRow & { orgId: string | null }>
+    return rows.map((row) => ({
+      intentId: row.intentId,
+      daemonId: row.daemonId,
+      attemptId: row.attemptId,
+      ...(row.orgId ? { orgId: row.orgId } : {}),
+      kind: row.kind,
+      frame: row.frame,
+      attempts: row.attempts
+    }))
   }
 
   /** Record one turn admission against a conversation-wide fixed window. A trusted

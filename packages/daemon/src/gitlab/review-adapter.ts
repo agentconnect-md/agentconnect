@@ -29,6 +29,8 @@ import {
   type CodeHostReviewState,
   type HookConfigSnapshot
 } from '@agentconnect.md/protocol'
+import { reviewPolicyAllows, type HookDispatchContext } from '../github/hook-coords.js'
+import { gitlabOpensReviewGeneration } from '../messages/hook-message.js'
 import {
   validateCodeReviewInput,
   type CodeHostReviewAdapter,
@@ -36,8 +38,12 @@ import {
   type CodeReviewVerdict,
   type SubmitCodeReviewReq
 } from '../codehost/review-adapter.js'
-import { reviewPolicyAllows, type HookDispatchContext } from '../github/hook-coords.js'
-import { appendGithubMarkdownChrome, githubAttributionFooter, type GithubCommentAttribution } from '../github/poster.js'
+import {
+  appendGithubMarkdownChrome,
+  githubAttributionFooter,
+  type GithubCommentAttribution,
+  type PosterScheduler
+} from '../github/poster.js'
 import { parseGitlabJson } from './broker.js'
 import { ReviewMarkerSigner } from './review-marker.js'
 
@@ -54,8 +60,30 @@ export interface GitlabReviewTurn {
   expectedHeadSha: string
   expectedBaseSha?: string
   sessionId: string
+  /** The durable hook row this attempt's identity and outcome live on (§15, §15.2). */
+  hook: HookDispatchContext
+  /** Persist that row; `required` makes a failed write fail the caller. */
+  persist: (required?: boolean) => Promise<void>
   /** §15 step 1: one review attempt per turn, reserved synchronously. */
   state: 'idle' | 'submitting' | 'done'
+}
+
+/** One control-plane frame a finished attempt still owes, replayed verbatim until acked (§15.1). */
+export interface ReviewIntentRow {
+  intentId: string
+  daemonId: string
+  attemptId: string
+  orgId?: string
+  kind: 'operation' | 'result'
+  /** The exact JSON payload; both frames are idempotent REQs by contract. */
+  frame: string
+  attempts: number
+}
+
+export interface ReviewIntentStore {
+  recordReviewIntent(row: ReviewIntentRow, now: number): Promise<void>
+  clearReviewIntent(intentId: string): Promise<void>
+  listReviewIntents(daemonId: string): Promise<ReviewIntentRow[]>
 }
 
 /** The narrow Control-Plane surface this adapter needs (§15.1 lease + operation ledger). */
@@ -71,6 +99,11 @@ export interface GitlabReviewControlPlane {
 export interface GitlabReviewAdapterDeps {
   cp: () => GitlabReviewControlPlane | undefined
   orgForAgent: (agentId: string) => string | undefined
+  /** The STABLE daemon identity owed frames are recovered under — never a process incarnation. */
+  daemonId: () => string | undefined
+  store: ReviewIntentStore
+  /** Restart-stable marker key; see the trust model on {@link ReviewMarkerSigner}. */
+  markerKey: () => Promise<Buffer>
   /** §14.1 effect lease: the binding's effect PAT; it never enters the agent environment. */
   token: (turn: GitlabReviewTurn) => Promise<string>
   invalidateToken: (turn: GitlabReviewTurn, token: string) => void
@@ -78,8 +111,6 @@ export interface GitlabReviewAdapterDeps {
   log: { warn: (message: string) => void }
   baseUrl?: string
   fetchImpl?: typeof fetch
-  /** Daemon-local marker key; see the trust model on {@link ReviewMarkerSigner}. */
-  markerKey?: Buffer
   newAttemptId?: () => string
   newStartToken?: () => string
   now?: () => number
@@ -89,6 +120,10 @@ export interface GitlabReviewAdapterDeps {
   /** §15.2/§15 step 13 bounded wait for `detailed_merge_status` to leave its unstable values. */
   mergeStatusWindowMs?: number
   pollIntervalMs?: number
+  /** Timer seam for the owed-frame resweep; tests drive it, production uses real timers. */
+  scheduler?: PosterScheduler
+  resweepBaseMs?: number
+  resweepCapMs?: number
 }
 
 /** The model-visible outcome: one normalized state plus a plain-English sentence. */
@@ -106,6 +141,8 @@ const DEFAULT_TIMEOUT_MS = 20_000
 const DEFAULT_AMBIGUOUS_WINDOW_MS = 30_000
 const DEFAULT_MERGE_STATUS_WINDOW_MS = 30_000
 const DEFAULT_POLL_INTERVAL_MS = 2_000
+const DEFAULT_RESWEEP_BASE_MS = 30_000
+const DEFAULT_RESWEEP_CAP_MS = 300_000
 const MAX_NOTE_PAGES = 10
 const NOTES_PER_PAGE = 100
 const MAX_DRAFTS = 100
@@ -175,6 +212,7 @@ interface Session {
 /** Everything one attempt carries between steps. */
 interface Attempt extends Session {
   req: SubmitCodeReviewReq
+  signer: ReviewMarkerSigner
   orgId?: string
   attemptId: string
   fence: string
@@ -240,31 +278,55 @@ export class GitlabReviewAdapter implements CodeHostReviewAdapter {
   readonly provider = 'gitlab' as const
 
   private readonly turns = new Map<string, GitlabReviewTurn>()
-  private readonly signer: ReviewMarkerSigner
   private readonly now: () => number
   private readonly sleep: (ms: number) => Promise<void>
+  private readonly sched: PosterScheduler
+  private signerPromise?: Promise<ReviewMarkerSigner>
+  private resweepHandle?: unknown
+  private resweepAttempt = 0
+  /** Monotonic count of arm REQUESTS, so a zero-work disarm can tell whether it raced new work. */
+  private armGeneration = 0
+  private sweeping = false
+  private stopped = false
 
   constructor(private readonly deps: GitlabReviewAdapterDeps) {
-    this.signer = new ReviewMarkerSigner(deps.markerKey)
     this.now = deps.now ?? (() => Date.now())
     this.sleep = deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)))
+    this.sched = deps.scheduler ?? {
+      now: () => Date.now(),
+      setTimeout: (fn, ms) => setTimeout(fn, ms),
+      clearTimeout: (h) => clearTimeout(h as NodeJS.Timeout)
+    }
+  }
+
+  /** Drop the pending resweep so a shutting-down daemon leaves no timer behind. */
+  stop(): void {
+    this.stopped = true
+    this.clearTimer()
   }
 
   /**
    * Install the active review turn for one logical session key. Returns undefined
-   * for every delivery that is not an authorized merge-request review generation.
+   * for every delivery that is not an authorized merge-request review generation —
+   * an ordinary merge-request conversation must not own the structured tool.
    */
   openTurn(
     key: string,
     hook: HookDispatchContext | undefined,
     sessionId: string,
-    daemonId?: string
+    options: { daemonId?: string; persist: (required?: boolean) => Promise<void> }
   ): GitlabReviewTurn | undefined {
     const gitlab = hook?.gitlab
     const snapshot = hook?.snapshot
-    if (!hook || !gitlab || !snapshot || snapshot.reviewPolicy === 'off') return undefined
+    if (!hook || !gitlab || !snapshot) return undefined
     if (gitlab.target.kind !== 'merge_request' || !gitlab.target.headSha) return undefined
-    if (daemonId && snapshot.dispatchDaemonId !== daemonId) return undefined
+    // The same trusted predicate the prompt uses: only a delivery that OPENS a review
+    // generation for this head may publish one (§15).
+    if (!gitlabOpensReviewGeneration(hook.event, gitlab, snapshot.reviewPolicy)) return undefined
+    if (options.daemonId && snapshot.dispatchDaemonId !== options.daemonId) return undefined
+    // A durable attempt that already reached a present or unknown effect is terminal for this turn.
+    const prior = hook.codeReview
+    const terminal = prior?.state !== undefined && codeHostReviewPublicEffect(prior.state) !== 'absent'
     const turn: GitlabReviewTurn = {
       hookId: hook.hookId,
       agentId: hook.agentId,
@@ -276,10 +338,18 @@ export class GitlabReviewAdapter implements CodeHostReviewAdapter {
       expectedHeadSha: gitlab.target.headSha,
       ...(gitlab.target.baseSha ? { expectedBaseSha: gitlab.target.baseSha } : {}),
       sessionId,
-      state: 'idle'
+      hook,
+      persist: options.persist,
+      state: terminal ? 'done' : 'idle'
     }
     this.turns.set(key, turn)
     return turn
+  }
+
+  /** The restart-stable signer, minted from the daemon store on first use. */
+  private markerSigner(): Promise<ReviewMarkerSigner> {
+    this.signerPromise ??= this.deps.markerKey().then((key) => new ReviewMarkerSigner(key))
+    return this.signerPromise
   }
 
   closeTurn(key: string, turn?: GitlabReviewTurn): void {
@@ -325,13 +395,46 @@ export class GitlabReviewAdapter implements CodeHostReviewAdapter {
     }
   }
 
+  /**
+   * RECORD-FIRST (§15, §15.1): the attempt identity lands on the durable hook row
+   * before any provider or control-plane call, so a crash replays the SAME attempt —
+   * its lease is reacquired idempotently and its marked drafts are recoverable. A
+   * prior attempt that proved no effect is superseded by a fresh id.
+   */
+  private async reserveAttempt(turn: GitlabReviewTurn, req: SubmitCodeReviewReq): Promise<string> {
+    const prior = turn.hook.codeReview
+    const recovering = prior !== undefined && prior.state === undefined
+    if (recovering) {
+      if (prior.event !== req.event || prior.verdict !== req.verdict || prior.headSha !== turn.expectedHeadSha) {
+        throw new Error('a recovered formal-review attempt must keep its original event, verdict, and head')
+      }
+      return prior.attemptId
+    }
+    const attemptId = (this.deps.newAttemptId ?? randomUUID)()
+    turn.hook.codeReview = {
+      attemptId,
+      event: req.event,
+      verdict: req.verdict,
+      headSha: turn.expectedHeadSha
+    }
+    try {
+      await turn.persist(true)
+    } catch (err) {
+      if (prior) turn.hook.codeReview = prior
+      else delete turn.hook.codeReview
+      throw new Error(`formal review durability barrier failed: ${err instanceof Error ? err.message : String(err)}`)
+    }
+    return attemptId
+  }
+
   private async run(
     turn: GitlabReviewTurn,
     req: SubmitCodeReviewReq,
     cp: GitlabReviewControlPlane
   ): Promise<GitlabReviewOutcome> {
     const orgId = this.deps.orgForAgent(turn.agentId)
-    const attemptId = (this.deps.newAttemptId ?? randomUUID)()
+    const attemptId = await this.reserveAttempt(turn, req)
+    const signer = await this.markerSigner()
     const session: Session = { turn, token: await this.deps.token(turn) }
 
     // Read pre-lease so the authz can carry the §15 step 6/7 reviewer fact and prove the leased account is ours.
@@ -358,7 +461,7 @@ export class GitlabReviewAdapter implements CodeHostReviewAdapter {
       },
       orgId
     )
-    if (!authorized.authorized) return this.refused(req, authorized)
+    if (!authorized.authorized) return await this.refused(turn, req, authorized)
     if (
       authorized.projectId !== turn.projectId ||
       authorized.mergeRequestIid !== turn.mergeRequestIid ||
@@ -370,6 +473,7 @@ export class GitlabReviewAdapter implements CodeHostReviewAdapter {
     const attempt: Attempt = {
       turn,
       req,
+      signer,
       ...(orgId ? { orgId } : {}),
       attemptId,
       fence: authorized.lease.fence,
@@ -456,7 +560,7 @@ export class GitlabReviewAdapter implements CodeHostReviewAdapter {
     const pending = draftNotes(await this.get(attempt, this.mrPath(turn, '/draft_notes')))
     const stale: string[] = []
     for (const draft of pending) {
-      const marker = this.signer.read(draft.note, turn.expectedHeadSha)
+      const marker = attempt.signer.read(draft.note, turn.expectedHeadSha)
       // Unmarked, invalid, or unverifiable: nothing proves what it is, so fail closed.
       if (!marker) return this.settle(cp, attempt, 'review_reconciliation_required')
       if (marker.attemptId === attempt.attemptId.toLowerCase()) {
@@ -503,7 +607,7 @@ export class GitlabReviewAdapter implements CodeHostReviewAdapter {
     if (!attempt.drafts.has(0)) {
       bodies.push({
         ordinal: 0,
-        note: this.render(req.body, attribution, this.signer.mint(attempt.attemptId, 0, turn.expectedHeadSha))
+        note: this.render(req.body, attribution, attempt.signer.mint(attempt.attemptId, 0, turn.expectedHeadSha))
       })
     }
     ;(req.comments ?? []).forEach((comment, index) => {
@@ -511,7 +615,7 @@ export class GitlabReviewAdapter implements CodeHostReviewAdapter {
       if (attempt.drafts.has(ordinal)) return
       bodies.push({
         ordinal,
-        note: `${ReviewMarkerSigner.neutralize(comment.body)}\n\n${this.signer.mint(attempt.attemptId, ordinal, turn.expectedHeadSha)}`,
+        note: `${ReviewMarkerSigner.neutralize(comment.body)}\n\n${attempt.signer.mint(attempt.attemptId, ordinal, turn.expectedHeadSha)}`,
         position: diffPosition(comment, facts)
       })
     })
@@ -541,7 +645,7 @@ export class GitlabReviewAdapter implements CodeHostReviewAdapter {
   private async findDraftByOrdinal(attempt: Attempt, ordinal: number): Promise<string | undefined> {
     const pending = draftNotes(await this.get(attempt, this.mrPath(attempt.turn, '/draft_notes')).catch(() => []))
     for (const draft of pending) {
-      const marker = this.signer.read(draft.note, attempt.turn.expectedHeadSha)
+      const marker = attempt.signer.read(draft.note, attempt.turn.expectedHeadSha)
       if (marker?.attemptId === attempt.attemptId.toLowerCase() && marker.ordinal === ordinal) return draft.id
     }
     return undefined
@@ -560,7 +664,7 @@ export class GitlabReviewAdapter implements CodeHostReviewAdapter {
     if (pending.length !== attempt.drafts.size) return false
     const seen = new Set<number>()
     for (const draft of pending) {
-      const marker = this.signer.read(draft.note, attempt.turn.expectedHeadSha)
+      const marker = attempt.signer.read(draft.note, attempt.turn.expectedHeadSha)
       if (!marker || marker.attemptId !== attempt.attemptId.toLowerCase()) return false
       if (attempt.drafts.get(marker.ordinal) !== draft.id) return false
       seen.add(marker.ordinal)
@@ -621,7 +725,7 @@ export class GitlabReviewAdapter implements CodeHostReviewAdapter {
       if (!Array.isArray(parsed)) return undefined
       for (const row of parsed) {
         const note = record(row)
-        const marker = this.signer.read(text(note.body), attempt.turn.expectedHeadSha)
+        const marker = attempt.signer.read(text(note.body), attempt.turn.expectedHeadSha)
         if (marker?.attemptId === attempt.attemptId.toLowerCase() && marker.ordinal === 0) return idOf(note.id)
       }
       if (parsed.length < NOTES_PER_PAGE) return undefined
@@ -800,20 +904,28 @@ export class GitlabReviewAdapter implements CodeHostReviewAdapter {
     throw last instanceof Error ? last : new Error('the control plane refused to start the review operation')
   }
 
+  /** The settle is owed durably first: a lost ack must never strand a started record. */
   private async settleOperation(
     cp: GitlabReviewControlPlane,
     attempt: Attempt,
     recordId: string,
     outcome: CodeHostReviewOpOutcome
   ): Promise<void> {
-    try {
-      await cp.operate(
-        { op: 'settle', attemptId: attempt.attemptId, fence: attempt.fence, recordId, outcome },
-        attempt.orgId
-      )
-    } catch (err) {
-      this.deps.log.warn(`gitlab review: operation settle deferred (${err instanceof Error ? err.message : err})`)
-    }
+    await this.owe(cp, {
+      intentId: `${attempt.attemptId}:op:${recordId}`,
+      daemonId: this.deps.daemonId() ?? '',
+      attemptId: attempt.attemptId,
+      ...(attempt.orgId ? { orgId: attempt.orgId } : {}),
+      kind: 'operation',
+      frame: JSON.stringify({
+        op: 'settle',
+        attemptId: attempt.attemptId,
+        fence: attempt.fence,
+        recordId,
+        outcome
+      } satisfies CodeHostReviewOpRequest),
+      attempts: 0
+    })
   }
 
   /** Record the terminal classification, releasing (or locking) the publication lease. */
@@ -823,27 +935,31 @@ export class GitlabReviewAdapter implements CodeHostReviewAdapter {
     state: CodeHostReviewState
   ): Promise<GitlabReviewOutcome> {
     const externalIds = codeHostReviewPublicEffect(state) === 'absent' ? [] : attempt.externalIds
-    try {
-      await cp.report(
-        {
-          hookId: attempt.turn.hookId,
-          deliveryKey: attempt.turn.deliveryKey,
-          attemptId: attempt.attemptId,
-          snapshot: attempt.turn.snapshot,
-          provider: 'gitlab',
-          projectId: attempt.turn.projectId,
-          mergeRequestIid: attempt.turn.mergeRequestIid,
-          event: attempt.req.event,
-          verdict: attempt.req.verdict,
-          headSha: attempt.turn.expectedHeadSha,
-          state,
-          ...(externalIds.length ? { externalIds } : {})
-        },
-        attempt.orgId
-      )
-    } catch (err) {
-      this.deps.log.warn(`gitlab review: result report deferred (${err instanceof Error ? err.message : err})`)
-    }
+    // The durable single-writer gate first: only a PROVEN no-effect attempt may be followed
+    // by the ordinary note, and a replay must read the same verdict this turn reached (§15.2).
+    await this.recordOutcome(attempt.turn, state)
+    await this.owe(cp, {
+      intentId: `${attempt.attemptId}:result`,
+      daemonId: this.deps.daemonId() ?? '',
+      attemptId: attempt.attemptId,
+      ...(attempt.orgId ? { orgId: attempt.orgId } : {}),
+      kind: 'result',
+      frame: JSON.stringify({
+        hookId: attempt.turn.hookId,
+        deliveryKey: attempt.turn.deliveryKey,
+        attemptId: attempt.attemptId,
+        snapshot: attempt.turn.snapshot,
+        provider: 'gitlab',
+        projectId: attempt.turn.projectId,
+        mergeRequestIid: attempt.turn.mergeRequestIid,
+        event: attempt.req.event,
+        verdict: attempt.req.verdict,
+        headSha: attempt.turn.expectedHeadSha,
+        state,
+        ...(externalIds.length ? { externalIds } : {})
+      } satisfies CodeHostReviewResultReport),
+      attempts: 0
+    })
     return {
       provider: 'gitlab',
       state,
@@ -855,10 +971,11 @@ export class GitlabReviewAdapter implements CodeHostReviewAdapter {
   }
 
   /** A typed CP refusal is an ordinary control outcome the model must read precisely. */
-  private refused(
+  private async refused(
+    turn: GitlabReviewTurn,
     req: SubmitCodeReviewReq,
     answer: Extract<CodeHostReviewAuthorized, { authorized: false }>
-  ): GitlabReviewOutcome {
+  ): Promise<GitlabReviewOutcome> {
     const state: CodeHostReviewState =
       answer.reason === 'reviewer_assignment_required'
         ? 'reviewer_assignment_required'
@@ -875,12 +992,162 @@ export class GitlabReviewAdapter implements CodeHostReviewAdapter {
             : answer.reason === 'binding_unavailable'
               ? ' This project has no ready GitLab binding to publish as.'
               : ''
+    // No lease was granted, so nothing is owed to the control plane — but the durable
+    // gate still has to learn whether the ordinary note may follow this attempt.
+    await this.recordOutcome(turn, state)
     return {
       provider: 'gitlab',
       state,
       event: req.event,
       verdict: req.verdict,
       message: `${OUTCOME_SENTENCE[state]}${detail}`
+    }
+  }
+
+  /** Stamp the durable attempt with its classification; the in-memory copy guards this process. */
+  private async recordOutcome(turn: GitlabReviewTurn, state: CodeHostReviewState): Promise<void> {
+    if (!turn.hook.codeReview) return
+    turn.hook.codeReview.state = state
+    try {
+      await turn.persist(true)
+    } catch (err) {
+      // A stateless durable attempt reads as unknown, which blocks the fallback — the safe direction.
+      this.warn(`gitlab review: outcome persistence deferred (${err instanceof Error ? err.message : err})`)
+    }
+  }
+
+  /**
+   * Owe one control-plane frame, then try to deliver it.
+   *
+   * The row lands BEFORE the send, so a crash in between still replays it; both frames
+   * are idempotent REQs, so replaying one the control plane already took is a no-op. A
+   * permanently refused frame is dropped rather than replayed forever (§15.1).
+   */
+  private async owe(cp: GitlabReviewControlPlane, row: ReviewIntentRow): Promise<void> {
+    try {
+      await this.deps.store.recordReviewIntent(row, this.now())
+    } catch (err) {
+      this.warn(`gitlab review: owed frame could not be recorded (${err instanceof Error ? err.message : err})`)
+    }
+    const answer = await this.deliver(cp, row)
+    if (answer === 'retry') this.arm()
+    else await this.forget(row.intentId)
+  }
+
+  /** Send one owed frame verbatim. `retry` keeps it; anything else is finished with. */
+  private async deliver(cp: GitlabReviewControlPlane, row: ReviewIntentRow): Promise<'sent' | 'retry' | 'refused'> {
+    try {
+      if (row.kind === 'operation') await cp.operate(JSON.parse(row.frame) as CodeHostReviewOpRequest, row.orgId)
+      else await cp.report(JSON.parse(row.frame) as CodeHostReviewResultReport, row.orgId)
+      return 'sent'
+    } catch (err) {
+      // A control plane that answered `retryable: false` has decided; replaying cannot change it.
+      const permanent = (err as { retryable?: unknown }).retryable === false
+      this.warn(
+        `gitlab review: owed ${row.kind} frame ${permanent ? 'refused' : 'deferred'} (${err instanceof Error ? err.message : err})`
+      )
+      return permanent ? 'refused' : 'retry'
+    }
+  }
+
+  private async forget(intentId: string): Promise<void> {
+    try {
+      await this.deps.store.clearReviewIntent(intentId)
+    } catch (err) {
+      // The frame is delivered; a stale row only costs one idempotent replay later.
+      this.warn(`gitlab review: owed frame could not be cleared (${err instanceof Error ? err.message : err})`)
+    }
+  }
+
+  /**
+   * Replay everything this daemon identity still owes the control plane (§15.1). Runs at
+   * startup and on reconnect, and re-arms itself on backoff while anything remains, so a
+   * dropped ack cannot leave an operation record started or an outcome unreconciled.
+   */
+  async reconcilePending(): Promise<void> {
+    if (this.sweeping) return
+    this.sweeping = true
+    // Read BEFORE the scan: work that arms after this point owns the timer, not this sweep.
+    const armedThrough = this.armGeneration
+    try {
+      const remaining = await this.sweepOnce()
+      if (remaining === undefined || remaining > 0) this.arm()
+      else this.disarm(armedThrough)
+    } finally {
+      this.sweeping = false
+    }
+  }
+
+  /** One pass over the owed frames; the count still outstanding after it, or undefined. */
+  private async sweepOnce(): Promise<number | undefined> {
+    const daemonId = this.deps.daemonId()
+    // Before the control plane adopts an id there is no identity to recover rows under.
+    if (!daemonId) return 0
+    const cp = this.deps.cp()
+    if (!cp) return undefined
+    let rows: ReviewIntentRow[]
+    try {
+      rows = await this.deps.store.listReviewIntents(daemonId)
+    } catch (err) {
+      this.warn(`gitlab review: owed frame scan failed (${err instanceof Error ? err.message : err})`)
+      return undefined
+    }
+    let outstanding = 0
+    for (const row of rows) {
+      const answer = await this.deliver(cp, row)
+      if (answer === 'retry') {
+        outstanding += 1
+        await this.deps.store
+          .recordReviewIntent({ ...row, attempts: row.attempts + 1 }, this.now())
+          .catch(() => undefined)
+      } else {
+        await this.forget(row.intentId)
+      }
+    }
+    return outstanding
+  }
+
+  /** Arm the next resweep on exponential backoff, capped. An armed timer is never restarted early. */
+  private arm(): void {
+    if (this.stopped) return
+    this.armGeneration += 1
+    if (this.resweepHandle !== undefined) return
+    const base = this.deps.resweepBaseMs ?? DEFAULT_RESWEEP_BASE_MS
+    const cap = this.deps.resweepCapMs ?? DEFAULT_RESWEEP_CAP_MS
+    const delay = Math.min(base * 2 ** Math.min(this.resweepAttempt, 16), cap)
+    this.resweepAttempt += 1
+    try {
+      this.resweepHandle = this.sched.setTimeout(() => {
+        this.resweepHandle = undefined
+        void this.reconcilePending()
+      }, delay)
+    } catch (err) {
+      this.warn(`gitlab review: resweep scheduling failed (${err instanceof Error ? err.message : err})`)
+    }
+  }
+
+  /** Go quiet — but only if nothing armed after the sweep that decided there was no work left. */
+  private disarm(armedThrough: number): void {
+    if (this.armGeneration !== armedThrough) return
+    this.resweepAttempt = 0
+    this.clearTimer()
+  }
+
+  private clearTimer(): void {
+    if (this.resweepHandle === undefined) return
+    try {
+      this.sched.clearTimeout(this.resweepHandle)
+    } catch {
+      // A failed clear only leaves a sweep that finds nothing to do.
+    }
+    this.resweepHandle = undefined
+  }
+
+  private warn(message: string): void {
+    try {
+      this.deps.log.warn(message)
+    } catch {
+      // A broken logger must not break a settlement path.
     }
   }
 
