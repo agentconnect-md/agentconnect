@@ -422,6 +422,7 @@ import {
   type GithubRevisionAdmissionPlan,
   type HookCompletionOwner,
   type HookDispatchContext,
+  type NotePublishFailure,
   type SessionWorktreeCleanupResult
 } from './github/hook-coords.js'
 import {
@@ -10364,7 +10365,7 @@ export class Daemon {
         {
           appendTranscript: async (row) => await this.store.appendTranscript(row),
           monotonicTs: () => monotonicTs(),
-          beginPublish: async () => {
+          beginPublish: async (hasFinal) => {
             try {
               // A replay of `in_flight` suppresses another comment. If this write
               // cannot be made durable, fail closed and do not perform the POST.
@@ -10372,6 +10373,11 @@ export class Daemon {
               return true
             } catch (err) {
               this.log.warn(`github poster: durability barrier failed; final publish skipped (${formatErr(err)})`)
+              // A body was owed and the poster is never reached — a lost publication, not a silent skip.
+              if (hasFinal && this.markNotePublishFailure(entry, 'publish_barrier_failed')) {
+                // The barrier write just failed, so this one may too; the live completion still reads memory.
+                await this.persistHookState(entry)
+              }
               return false
             }
           },
@@ -10380,6 +10386,9 @@ export class Daemon {
               if ('provider' in published) hookContext.publishedOutput = published
               else hookContext.publishedComment = published
             }
+            // Stamped BEFORE the settled write so one durable record carries both — a crash
+            // between them cannot replay into a successful report with no note.
+            this.markNotePublishFailure(entry, p.github?.poster.failure)
             await this.persistHookState(entry, 'settled')
           },
           warn: (message) => this.log.warn(message)
@@ -10427,13 +10436,23 @@ export class Daemon {
     }
   }
 
+  /** Stamp this turn's normalized note outcome on the durable hook context (14.1) so settlement
+   *  carries it; gitlab reply targets only. Returns whether anything was recorded. */
+  private markNotePublishFailure(entry: QueueEntry, code: NotePublishFailure | undefined): boolean {
+    if (!code || !entry.hookContext || entry.githubReply?.provider !== 'gitlab') return false
+    entry.hookContext.notePublishFailure = code
+    return true
+  }
+
   /** Report the terminal hook outcome of a cleanly finished turn, failing it when a sealed
    *  GitHub review batch did not publish every reply, or when the promised note never landed. */
   private async completeHookOutcome(entry: QueueEntry, sessionId: string, p: Pending): Promise<void> {
     const hookContext = entry.hookContext
     if (!hookContext) return
-    // The gitlab poster only records a failure for a non-empty final it actually attempted (14.1).
-    const notePublishFailure = entry.githubReply?.provider === 'gitlab' ? p.github?.poster.failure : undefined
+    // The PERSISTED outcome is authoritative — it is the only one a replayed row still has.
+    const notePublishFailure =
+      hookContext.notePublishFailure ??
+      (entry.githubReply?.provider === 'gitlab' ? p.github?.poster.failure : undefined)
     const failure = hookOutcomeFailure(hookContext.githubReviewBatch, notePublishFailure)
     await this.emitHookCompletion(
       hookContext,

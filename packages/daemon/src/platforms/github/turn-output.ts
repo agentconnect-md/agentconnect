@@ -90,8 +90,10 @@ export interface GithubTurnHost {
   /** Monotonic transcript timestamp — core owns ordering across surfaces. */
   monotonicTs(): string
   /** Record the durable `in_flight` barrier. `false` means the write could not
-   *  be made durable, and the caller must NOT perform the public POST. */
-  beginPublish(): boolean | Promise<boolean>
+   *  be made durable, and the caller must NOT perform the public POST. `hasFinal`
+   *  says whether a body was actually owed, so core can tell a lost publication
+   *  from a barrier failure on a turn that had nothing to say. */
+  beginPublish(hasFinal: boolean): boolean | Promise<boolean>
   /** Record the durable `settled` state and any exact public comment identity. */
   endPublish(publishedComment?: GithubPublishedComment | PublishedHookOutput): void | Promise<void>
   warn(message: string): void
@@ -151,7 +153,7 @@ export async function finalizeGithubTurn<TTurn extends GithubTurn>(
   // With no formal effect (or a proved not_submitted effect), the ordinary final
   // remains the fallback. A replay of `in_flight` suppresses another comment; if
   // that write cannot be made durable, fail closed and skip the POST entirely.
-  if (!(await host.beginPublish())) return
+  if (!(await host.beginPublish(!!final?.trim()))) return
   // publish() is time-bounded and degrading — a failure here must not strand the
   // turn, so it is logged and the hook still settles.
   const publishedComment = await state.poster.publish(final).catch((err) => {
