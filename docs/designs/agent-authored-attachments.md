@@ -115,6 +115,16 @@ Three refusal classes, and only the first is port-probeable — the doc'd earlie
 
 ### 3.3 Identity, caption, and the result
 
+**The file post carries no message id of its own, and Slack needs a second read to get
+one.** `files.completeUploadExternal` answers with the FILE, not the message it became — and
+an unnamed post is not an ANCHOR: a human replying under a shared image lands in a thread
+whose root the daemon does not recognize as its own, so the reply wakes nobody, while the
+same reply under a forwarded TEXT message (a `chat.postMessage`, which returns its `ts`)
+always worked. `uploadFile` therefore reads `files.info` after the share and returns
+`shares.public|private[channel][0].ts` as the outcome's `messageId`. The read is
+best-effort by construction: the file is already in the conversation, so a failure degrades
+to an unanchored share, never to a failed one.
+
 **The file post is _not_ identity-stamped today, on any platform** — no `uploadFile`
 implementation declares the identity parameter, and Telegram ignores identity by platform
 design. Slack briefly passed `username`/`icon_url` to the share step: documented for that
@@ -315,5 +325,13 @@ shim boundary, and generalizes to none of the other three platforms.
    steps, so an HTTP failure can never prove which step it came from. Only Slack answering
    `{ok:false}` counts as proof that nothing was published — everything else is
    `indeterminate`.
-4. **Demand:** is there a concrete request behind "produced file → different
+4. **Slack file identity is an app setting, not an argument (settled).** A bot binds to ONE
+   agent, so the app's own name is already the agent's; what a file post shows for an avatar
+   is the app's ICON. No file method takes `username`/`icon_url`, and the app manifest has
+   no icon field — Slack exposes no way to set one programmatically. Text posts sidestep
+   this with `icon_url` on `chat.postMessage`; file posts cannot, so an installation whose
+   Slack app has no icon shows the placeholder on shared files and the agent's icon on its
+   replies. The fix is to upload the agent's icon once in the app's settings, not to change
+   this code.
+5. **Demand:** is there a concrete request behind "produced file → different
    conversation", or only the table's symmetry? Decides whether `attachFile` leaves §7.

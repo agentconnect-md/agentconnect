@@ -35,6 +35,7 @@ const EXEMPT: Record<string, string> = {
   postPermissionUpdateCard: 'private permission-card helper',
   postIfThreadExists: 'private Slack root-existence guard',
   postChatMessage: 'private shared post boundary behind postMessage/postBlocks',
+  shareMessageTs: 'private share-ts read behind uploadFile',
   // Interactive Slack surfaces (Block Kit actions / modals) are driven by
   // Bolt callbacks the virtual transport never receives; the daemon only
   // invokes them from those callbacks.
