@@ -37,6 +37,7 @@ import type {
   UpsertCodeHostRunProjectionInput
 } from '../ports.js'
 import type { PrismaLike } from '../prisma.js'
+import { lockHookReviewLifecycleScope, lockHookReviewOrgProducerScope } from '../review-projection-lock.js'
 
 /** queued/running are lifecycle hints; everything else is an authority a late hint cannot undo. */
 const NON_TERMINAL_STATES = new Set<CodeHostNoteState>(['queued', 'running'])
@@ -206,12 +207,19 @@ export class PgCodeHostRunProjectionRepo implements CodeHostRunProjectionRepo {
     return rows[0] ?? null
   }
 
-  async upsert(input: UpsertCodeHostRunProjectionInput): Promise<CodeHostRunProjectionRecord> {
+  async upsert(input: UpsertCodeHostRunProjectionInput): Promise<CodeHostRunProjectionRecord | null> {
     return this.transaction(async (tx) => {
+      // Join the established owner-lifecycle lock order — org producer scope, then hook — BEFORE the
+      // natural-key lock, exactly as the Checks writer does. Without it a converge that started
+      // before a deletion could insert a fresh FK-free row after that deletion's cleanup snapshot
+      // and leave it live once the HookDef was gone.
+      await lockHookReviewOrgProducerScope(tx, input.orgId)
+      await lockHookReviewLifecycleScope(tx, input.hookId)
       // The unique constraint prevents duplicate rows but does not make the read/compare/update
-      // below atomic under READ COMMITTED. Serialize the natural key first, exactly as the Checks
-      // writer does, so two CP processes cannot both advance one generation from stale state.
+      // below atomic under READ COMMITTED. Serialize the natural key next, so two CP processes
+      // cannot both advance one generation from stale state.
       const naturalKey = JSON.stringify([
+        'code-host-run-projection',
         input.hookId,
         input.projectId.toString(),
         input.mergeRequestIid,
@@ -247,6 +255,16 @@ export class PgCodeHostRunProjectionRepo implements CodeHostRunProjectionRepo {
         ...(input.gateModeSnapshot ? { gateModeSnapshot: input.gateModeSnapshot } : {})
       }
       if (!current) {
+        // Create only under a live owner. Every retire path — delete, disable, retarget, the agent
+        // cascade — runs inside this same hook lock and either bumps the projection epoch or removes
+        // the row, so a retired hook refuses a new projection instead of leaking one.
+        const hook = await tx.hookDef.findUnique({
+          where: { id: input.hookId },
+          select: { orgId: true, enabled: true, projectionEpoch: true }
+        })
+        if (!hook || hook.orgId !== input.orgId || !hook.enabled || hook.projectionEpoch !== input.projectionEpoch) {
+          return null
+        }
         const id = randomUUID()
         return toRecord(
           await tx.codeHostRunProjection.create({

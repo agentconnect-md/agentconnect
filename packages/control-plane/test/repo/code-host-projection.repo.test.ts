@@ -27,15 +27,42 @@ const DAEMON = '00000000-0000-4000-8000-0000000000d1'
 const NEXT_DAEMON = '00000000-0000-4000-8000-0000000000d2'
 
 const repo = () => new PgCodeHostRunProjectionRepo(prisma)
+const hooks = () => new PgHookRepo(prisma)
 const tombstone = (hookIds: string[]) =>
   prisma.$transaction((tx) => tombstoneCodeHostRunProjections(tx, { hookIds }, LATER))
 
-function input(overrides: Partial<UpsertCodeHostRunProjectionInput> = {}): UpsertCodeHostRunProjectionInput {
-  return {
-    provider: 'gitlab',
+/** A live owner: creation is fenced on the HookDef, so every test needs a real one. */
+async function owner(): Promise<{ hookId: HookId; agentId: AgentId }> {
+  const daemonId = DaemonId(randomUUID())
+  await seedDaemon(prisma, daemonId)
+  const agentId = AgentId(randomUUID())
+  await seedAgent(prisma, agentId, { daemonId, name: `agent-${randomUUID().slice(0, 8)}` })
+  const hook = await hooks().upsert({
     hookId: HookId(randomUUID()),
     orgId: OrgId(DEFAULT_ORG_ID),
-    agentId: AgentId(randomUUID()),
+    agentId,
+    kind: 'gitlab',
+    name: `gitlab review ${randomUUID().slice(0, 8)}`,
+    sessionMode: 'perThread',
+    repoId: PROJECT,
+    events: ['merge_request:*']
+  })
+  return { hookId: hook.id, agentId }
+}
+
+/** Upsert that must have produced a row — the null arm is the retired-owner refusal. */
+async function upsert(overrides: Partial<UpsertCodeHostRunProjectionInput> & { hookId: HookId; agentId: AgentId }) {
+  const row = await repo().upsert(input(overrides))
+  expect(row).not.toBeNull()
+  return row!
+}
+
+function input(
+  overrides: Partial<UpsertCodeHostRunProjectionInput> & { hookId: HookId; agentId: AgentId }
+): UpsertCodeHostRunProjectionInput {
+  return {
+    provider: 'gitlab',
+    orgId: OrgId(DEFAULT_ORG_ID),
     agentName: 'reviewer',
     projectId: PROJECT,
     projectPath: 'example-group/example-project',
@@ -60,20 +87,20 @@ function input(overrides: Partial<UpsertCodeHostRunProjectionInput> = {}): Upser
 describe('code-host run projection ledger (gitlab-com-integration.md §16)', () => {
   it('opens generation 1 and advances it only for a strictly newer delivery', async () => {
     const ledger = repo()
-    const base = input()
-    const opened = await ledger.upsert(base)
+    const base = input(await owner())
+    const opened = await upsert(base)
     expect(opened.generation).toBe(1n)
     expect(opened.externalId).toBe(opened.id)
     expect(opened.dispatchDaemonId).toBe(DAEMON)
     expect(opened.reportingModeSnapshot).toBe('off')
 
     // A later edge of the SAME delivery keeps the generation — the state moves inside it.
-    const same = await ledger.upsert({ ...base, desiredState: 'completed', completedAt: LATER })
+    const same = await upsert({ ...base, desiredState: 'completed', completedAt: LATER })
     expect(same.generation).toBe(1n)
     expect(await ledger.setDesired(same.id, same.generation, 'completed', LATER)).toBe(true)
 
     // A NEW delivery on the same head is a re-request: a fresh generation with a clean slate.
-    const rerun = await ledger.upsert({
+    const rerun = await upsert({
       ...base,
       desiredState: 'queued',
       currentDeliveryKey: 'delivery-2',
@@ -84,7 +111,7 @@ describe('code-host run projection ledger (gitlab-com-integration.md §16)', () 
     expect(rerun.observedState).toBeNull()
 
     // An OLDER delivery never takes the row back from the newer one.
-    const stale = await ledger.upsert({
+    const stale = await upsert({
       ...base,
       desiredState: 'failed',
       currentDeliveryKey: 'delivery-0',
@@ -96,8 +123,8 @@ describe('code-host run projection ledger (gitlab-com-integration.md §16)', () 
 
   it('seals a terminal generation against a delayed queued edge', async () => {
     const ledger = repo()
-    const base = input({ desiredState: 'completed', completedAt: NOW })
-    const opened = await ledger.upsert(base)
+    const base = input({ ...(await owner()), desiredState: 'completed', completedAt: NOW })
+    const opened = await upsert(base)
     expect(opened.sealedThrough).toBe(1n)
     // The late lifecycle hint loses; the terminal authority stands.
     expect(await ledger.setDesired(opened.id, opened.generation, 'queued', LATER)).toBe(false)
@@ -108,10 +135,11 @@ describe('code-host run projection ledger (gitlab-com-integration.md §16)', () 
 
   it('supersedes every older head on the merge request and leaves the current one alone', async () => {
     const ledger = repo()
-    const hookId = HookId(randomUUID())
-    const old = await ledger.upsert(input({ hookId, headSha: HEAD }))
-    const other = await ledger.upsert(input({ hookId, headSha: HEAD, mergeRequestIid: 7 }))
-    const current = await ledger.upsert(input({ hookId, headSha: NEXT_HEAD, currentDeliveryKey: 'delivery-2' }))
+    const subject = await owner()
+    const { hookId } = subject
+    const old = await upsert({ ...subject, headSha: HEAD })
+    const other = await upsert({ ...subject, headSha: HEAD, mergeRequestIid: 7 })
+    const current = await upsert({ ...subject, headSha: NEXT_HEAD, currentDeliveryKey: 'delivery-2' })
 
     expect(await ledger.supersede(hookId, PROJECT, 42, NEXT_HEAD, LATER)).toBe(1)
     const superseded = (await ledger.get(old.id))!
@@ -127,15 +155,15 @@ describe('code-host run projection ledger (gitlab-com-integration.md §16)', () 
 
   it('holds one write at a time and ignores an older generation settling it', async () => {
     const ledger = repo()
-    const base = input()
-    const opened = await ledger.upsert(base)
+    const base = input(await owner())
+    const opened = await upsert(base)
     const marker = randomUUID()
     expect(await ledger.beginWrite(opened.id, 1n, DAEMON, marker, 'create', NOW, LATER)).toBe(true)
     // Ownership may not move while a mutation is in flight — not to another daemon, not to a retry.
     expect(await ledger.beginWrite(opened.id, 1n, DAEMON, randomUUID(), 'update', NOW, LATER)).toBe(false)
 
     // A terminal edge lands mid-write: it parks rather than moving the generation.
-    const parked = await ledger.upsert({
+    const parked = await upsert({
       ...base,
       desiredState: 'completed',
       currentDeliveryKey: 'delivery-2',
@@ -177,7 +205,7 @@ describe('code-host run projection ledger (gitlab-com-integration.md §16)', () 
 
   it('keeps an ambiguous mutation on its writer and lets that writer reconcile it', async () => {
     const ledger = repo()
-    const opened = await ledger.upsert(input())
+    const opened = await upsert(await owner())
     const marker = randomUUID()
     await ledger.beginWrite(opened.id, 1n, DAEMON, marker, 'create', NOW, LATER)
     expect(await ledger.failWrite(opened.id, 1n, DAEMON, marker, 'ambiguous_write', LATER, true)).toBe(true)
@@ -219,7 +247,7 @@ describe('code-host run projection ledger (gitlab-com-integration.md §16)', () 
 
   it('ignores a late duplicate of an earlier attempt on every settlement path', async () => {
     const ledger = repo()
-    const opened = await ledger.upsert(input())
+    const opened = await upsert(await owner())
     const first = randomUUID()
     await ledger.beginWrite(opened.id, 1n, DAEMON, first, 'create', NOW, LATER)
     // Attempt 1 proved a non-effect and released the mutex; attempt 2 then took it.
@@ -246,12 +274,12 @@ describe('code-host run projection ledger (gitlab-com-integration.md §16)', () 
 
   it("drains a parked edge with its OWN placement and credential fence, not the in-flight run's", async () => {
     const ledger = repo()
-    const base = input()
-    const opened = await ledger.upsert(base)
+    const base = input(await owner())
+    const opened = await upsert(base)
     await ledger.beginWrite(opened.id, 1n, DAEMON, randomUUID(), 'create', NOW, LATER)
 
     // Run B arrives mid-write after the agent moved and credentials rotated.
-    const parked = await ledger.upsert({
+    const parked = await upsert({
       ...base,
       desiredState: 'queued',
       currentDeliveryKey: 'delivery-2',
@@ -288,11 +316,11 @@ describe('code-host run projection ledger (gitlab-com-integration.md §16)', () 
 
   it("keeps the running delivery's own timestamps when its later edge parks", async () => {
     const ledger = repo()
-    const base = input({ queuedAt: NOW })
-    const opened = await ledger.upsert(base)
+    const base = input({ ...(await owner()), queuedAt: NOW })
+    const opened = await upsert(base)
     await ledger.beginWrite(opened.id, 1n, DAEMON, randomUUID(), 'create', NOW, LATER)
     // Same delivery, terminal edge: it carries completedAt but not queuedAt.
-    await ledger.upsert({ ...base, desiredState: 'completed', completedAt: LATER, sessionId: 'sess-a' })
+    await upsert({ ...base, desiredState: 'completed', completedAt: LATER, sessionId: 'sess-a' })
     await ledger.completeWrite({
       projectionId: opened.id,
       generation: 1n,
@@ -309,8 +337,8 @@ describe('code-host run projection ledger (gitlab-com-integration.md §16)', () 
 
   it('makes a tombstone one-way: no revival, no desired-state change, no generation advance', async () => {
     const ledger = repo()
-    const base = input()
-    const opened = await ledger.upsert(base)
+    const base = input(await owner())
+    const opened = await upsert(base)
     // The production entry point is the transaction-scoped helper the owner lifecycles call.
     expect(await tombstone([base.hookId])).toBe(1)
     const dead = (await ledger.get(opened.id))!
@@ -319,7 +347,7 @@ describe('code-host run projection ledger (gitlab-com-integration.md §16)', () 
     expect(dead.generation).toBe(2n)
 
     // A delayed lifecycle edge observes the historical run but may never revive the row.
-    const delayed = await ledger.upsert({
+    const delayed = await upsert({
       ...base,
       desiredState: 'completed',
       currentDeliveryKey: 'delivery-2',
@@ -334,67 +362,36 @@ describe('code-host run projection ledger (gitlab-com-integration.md §16)', () 
 })
 
 describe('projection cleanup rides the owner lifecycle, not a route', () => {
-  const hooks = () => new PgHookRepo(prisma)
-
-  async function gitlabHook(agentId: AgentId) {
-    return hooks().upsert({
-      hookId: HookId(randomUUID()),
-      orgId: OrgId(DEFAULT_ORG_ID),
-      agentId,
-      kind: 'gitlab',
-      name: 'gitlab review',
-      sessionMode: 'perThread',
-      repoId: PROJECT,
-      events: ['merge_request:*']
-    })
-  }
-
-  async function seedProjectionFor(hookId: HookId, agentId: AgentId) {
-    return repo().upsert(input({ hookId, agentId }))
-  }
-
   it('commits the cleanup intent in the same transaction that deletes the hook', async () => {
-    const daemonId = DaemonId(randomUUID())
-    await seedDaemon(prisma, daemonId)
-    const agentId = AgentId(randomUUID())
-    await seedAgent(prisma, agentId, { daemonId, name: `agent-${randomUUID().slice(0, 8)}` })
-    const hook = await gitlabHook(agentId)
-    const projection = await seedProjectionFor(hook.id, agentId)
+    const subject = await owner()
+    const projection = await upsert(subject)
 
-    await hooks().remove(OrgId(DEFAULT_ORG_ID), hook.id, agentId)
+    await hooks().remove(OrgId(DEFAULT_ORG_ID), subject.hookId, subject.agentId)
     // The HookDef is gone AND the FK-free ledger row carries cleanup intent — one transaction.
-    expect(await prisma.hookDef.findUnique({ where: { id: hook.id } })).toBeNull()
+    expect(await prisma.hookDef.findUnique({ where: { id: subject.hookId } })).toBeNull()
     const dead = (await repo().get(projection.id))!
     expect(dead.tombstonedAt).not.toBeNull()
     expect(dead.desiredState).toBe('skipped')
   })
 
   it('tombstones through the agent-delete cascade, which never enters an HTTP route', async () => {
-    const daemonId = DaemonId(randomUUID())
-    await seedDaemon(prisma, daemonId)
-    const agentId = AgentId(randomUUID())
-    await seedAgent(prisma, agentId, { daemonId, name: `agent-${randomUUID().slice(0, 8)}` })
-    const hook = await gitlabHook(agentId)
-    const projection = await seedProjectionFor(hook.id, agentId)
+    const subject = await owner()
+    const projection = await upsert(subject)
 
-    await new PgAgentRepo(prisma).delete(OrgId(DEFAULT_ORG_ID), agentId)
-    expect(await prisma.hookDef.findUnique({ where: { id: hook.id } })).toBeNull()
+    await new PgAgentRepo(prisma).delete(OrgId(DEFAULT_ORG_ID), subject.agentId)
+    expect(await prisma.hookDef.findUnique({ where: { id: subject.hookId } })).toBeNull()
     const dead = (await repo().get(projection.id))!
     expect(dead.tombstonedAt).not.toBeNull()
     expect(dead.desiredState).toBe('skipped')
   })
 
   it('parks cleanup behind an in-flight write instead of stomping its mutex', async () => {
-    const daemonId = DaemonId(randomUUID())
-    await seedDaemon(prisma, daemonId)
-    const agentId = AgentId(randomUUID())
-    await seedAgent(prisma, agentId, { daemonId, name: `agent-${randomUUID().slice(0, 8)}` })
-    const hook = await gitlabHook(agentId)
-    const projection = await seedProjectionFor(hook.id, agentId)
+    const subject = await owner()
+    const projection = await upsert(subject)
     const marker = randomUUID()
     await repo().beginWrite(projection.id, 1n, DAEMON, marker, 'create', NOW, LATER)
 
-    await hooks().remove(OrgId(DEFAULT_ORG_ID), hook.id, agentId)
+    await hooks().remove(OrgId(DEFAULT_ORG_ID), subject.hookId, subject.agentId)
     const parked = (await repo().get(projection.id))!
     expect(parked.tombstonedAt).not.toBeNull()
     expect(parked.writeMarker).toBe(marker)
@@ -414,5 +411,55 @@ describe('projection cleanup rides the owner lifecycle, not a route', () => {
     const drained = (await repo().advancePending(projection.id, 1n, LATER))!
     expect(drained.desiredState).toBe('skipped')
     expect(drained.tombstonedAt).not.toBeNull()
+  })
+
+  it('refuses a create that races an owner deletion, and never leaves a live row behind', async () => {
+    const subject = await owner()
+    // T1 holds the hook lifecycle lock and deletes, exactly as the route path does.
+    const deletion = hooks().remove(OrgId(DEFAULT_ORG_ID), subject.hookId, subject.agentId)
+    // T2's converge starts after T1's cleanup snapshot; the fence makes it wait, then refuse.
+    const raced = await repo().upsert(input({ ...subject, currentDeliveryKey: 'delivery-race' }))
+    await deletion
+
+    expect(raced).toBeNull()
+    expect(await prisma.hookDef.findUnique({ where: { id: subject.hookId } })).toBeNull()
+    expect(await prisma.codeHostRunProjection.count({ where: { hookId: subject.hookId } })).toBe(0)
+  })
+
+  it('would leak a live row without the fence, and still creates normally for a live owner', async () => {
+    // Negative control: the same interleaving through an UNFENCED insert leaves a row whose
+    // HookDef is gone — the leak the create-path fence exists to prevent.
+    const leaked = await owner()
+    await hooks().remove(OrgId(DEFAULT_ORG_ID), leaked.hookId, leaked.agentId)
+    await prisma.codeHostRunProjection.create({
+      data: {
+        id: randomUUID(),
+        provider: 'gitlab',
+        hookId: leaked.hookId,
+        orgId: DEFAULT_ORG_ID,
+        agentId: leaked.agentId,
+        projectId: PROJECT,
+        projectPath: 'example-group/example-project',
+        mergeRequestIid: 42,
+        headSha: HEAD,
+        projectionEpoch: 1n,
+        externalId: randomUUID(),
+        desiredState: 'queued'
+      }
+    })
+    const orphan = await prisma.codeHostRunProjection.findFirst({ where: { hookId: leaked.hookId } })
+    expect(orphan?.tombstonedAt ?? null).toBeNull()
+
+    // And the fence is scoped: a live owner still gets its projection.
+    const live = await owner()
+    expect(await repo().upsert(input(live))).not.toBeNull()
+  })
+
+  it('refuses a create for a hook the agent cascade already retired', async () => {
+    const subject = await owner()
+    // The cascade disables the hook and bumps its projection epoch before the Agent row goes.
+    await hooks().tombstoneReviewProjections([subject.hookId], LATER, 'failure')
+    expect(await repo().upsert(input(subject))).toBeNull()
+    expect(await prisma.codeHostRunProjection.count({ where: { hookId: subject.hookId } })).toBe(0)
   })
 })

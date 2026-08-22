@@ -122,12 +122,13 @@ function harness(
     features?: readonly string[] | undefined
     beginWrite?: boolean
     setDesired?: boolean
+    retiredOwner?: boolean
   } = {}
 ) {
   const row = options.row ?? projection()
   const sent: Array<{ daemonId: string; desired: CodeHostNoteDesired; orgId: string }> = []
   const projections = {
-    upsert: vi.fn(async () => row),
+    upsert: vi.fn(async () => (options.retiredOwner ? null : row)),
     setDesired: vi.fn(async () => options.setDesired ?? true),
     supersede: vi.fn(async () => 0),
     beginWrite: vi.fn(async () => options.beginWrite ?? true),
@@ -363,6 +364,15 @@ describe('CodeHostNoteProjectionService', () => {
     )
     expect(settled).toBe('settled')
     expect(projections.completeWrite).toHaveBeenCalledOnce()
+  })
+
+  it('drops the edge when the ledger refuses creation for a retired owner', async () => {
+    const { service, projections, sent } = harness({ retiredOwner: true })
+    await service.afterAccepted(edge())
+    expect(projections.upsert).toHaveBeenCalledOnce()
+    expect(projections.setDesired).not.toHaveBeenCalled()
+    expect(projections.beginWrite).not.toHaveBeenCalled()
+    expect(sent).toHaveLength(0)
   })
 
   it('never starts a second attempt while an unsettled marker is held', async () => {

@@ -2775,8 +2775,9 @@ export interface CodeHostProjectionWriteResultInput {
 export interface CodeHostRunProjectionRepo {
   /** Record or advance the desired generation for one natural key. A tombstoned row is never
    *  revived, an older run never takes the row from a newer one, and an edge that lands while a
-   *  provider mutation is in flight is parked as `pendingIntent` instead of moving the generation. */
-  upsert(input: UpsertCodeHostRunProjectionInput): Promise<CodeHostRunProjectionRecord>
+   *  provider mutation is in flight is parked as `pendingIntent` instead of moving the generation.
+   *  Null ⇒ the owner is retired: creation is refused under the owner-lifecycle fence. */
+  upsert(input: UpsertCodeHostRunProjectionInput): Promise<CodeHostRunProjectionRecord | null>
   /** Move the desired state within one generation. A non-terminal edge loses to `sealedThrough`. */
   setDesired(
     projectionId: string,

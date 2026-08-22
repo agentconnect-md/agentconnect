@@ -251,7 +251,9 @@ export class CodeHostNoteProjectionService {
       ...(terminal ? { completedAt: edge.at } : {}),
       nextAttemptAt: edge.at
     })
-    if (projection.tombstonedAt) return
+    // Null ⇒ the hook was retired under the lifecycle fence while this edge was in flight; a retired
+    // hook needs no projection, so the edge is simply dropped.
+    if (!projection || projection.tombstonedAt) return
     // The upsert parks an edge that landed mid-write; that intent is dispatched when the in-flight
     // generation settles, not now.
     if (projection.writePhase !== null) return
