@@ -41,6 +41,7 @@ import { handleGitCredRequest } from './gitcred.js'
 import { handleHookStart } from './hook-start.js'
 import { handleGithubReviewAuthorize } from './github-review-authorize.js'
 import { handleGithubReviewResult } from './github-review-result.js'
+import { handleCodeHostNoteResult } from './codehost-note-result.js'
 import {
   handleWebchatMcpGrantAccept,
   handleWebchatMcpGrantIssue,
@@ -80,6 +81,7 @@ export class FrameRouter {
       'hook/start': handleHookStart,
       'github/review-authorize': handleGithubReviewAuthorize,
       'github/review-result': handleGithubReviewResult,
+      'codehost/note-result': handleCodeHostNoteResult,
       'channel/agents': handleChannelAgents,
       'session/child-status': handleChildSessionStatus,
       'event/session': handleEventSession,
@@ -122,6 +124,7 @@ export {
   handleHookStart,
   handleGithubReviewAuthorize,
   handleGithubReviewResult,
+  handleCodeHostNoteResult,
   handleChannelAgents,
   handleChildSessionStatus,
   handleEventSession,

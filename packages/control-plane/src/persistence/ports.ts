@@ -25,6 +25,7 @@ import type {
   AgentMemoryBinding,
   ApprovalsReviewer,
   DecimalAmount,
+  CodeHostNoteState,
   GithubPublishedComment,
   OrganizationSuggestionInfo
 } from '@agentconnect.md/protocol'
@@ -2669,6 +2670,162 @@ export interface HookRepo {
     desiredState: string
   ): Promise<number>
   tombstoneReviewProjections(hookIds: HookId[], at: Date, desiredState: string): Promise<number>
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// CodeHostRunProjectionRepo — the provider-neutral informational run projection
+// (gitlab-com-integration.md §16). One row per (hook, project, MR IID, head
+// SHA, projection epoch). It ports the GitHub Checks writer's generation,
+// lease, pending-intent, write-marker, tombstone, and out-of-order rules, but
+// inverts the writer: the OWNING DAEMON is the only provider writer, so
+// `leaseOwner` is a daemon id and an offline one leaves the row pending.
+// ───────────────────────────────────────────────────────────────────────────
+
+export interface CodeHostRunProjectionRecord {
+  id: string
+  provider: string
+  hookId: HookId
+  orgId: OrgId
+  agentId: AgentId
+  agentName: string | null
+  projectId: bigint
+  projectPath: string
+  mergeRequestIid: number
+  headSha: string
+  projectionEpoch: bigint
+  generation: bigint
+  /** (hookId, deliveryKey) is the hook-run identity, so the delivery key IS the owning run. */
+  currentDeliveryKey: string | null
+  currentRunAt: Date | null
+  /** Hidden stable marker the daemon reconciles its note by; stable across generations. */
+  externalId: string
+  noteId: string | null
+  desiredState: CodeHostNoteState
+  observedState: CodeHostNoteState | null
+  reason: string | null
+  /** Terminal-authority watermark, separate from `generation`: it orders AUTHORITY, not writes. */
+  sealedThrough: bigint
+  queuedAt: Date | null
+  startedAt: Date | null
+  completedAt: Date | null
+  sessionId: string | null
+  credentialEpoch: bigint
+  configRevision: bigint | null
+  dispatchRevision: bigint | null
+  dispatchDaemonId: string | null
+  reviewPolicySnapshot: HookReviewPolicy | null
+  reportingModeSnapshot: HookReportingMode | null
+  gateModeSnapshot: HookGateMode | null
+  /** The daemon that currently holds the write, not a Control-Plane worker. */
+  leaseOwner: string | null
+  leaseUntil: Date | null
+  nextAttemptAt: Date | null
+  attempts: number
+  lastErrorCode: string | null
+  pendingIntent: unknown | null
+  writeMarker: string | null
+  writePhase: string | null
+  writeStartedAt: Date | null
+  tombstonedAt: Date | null
+  updatedAt: Date
+}
+
+export interface UpsertCodeHostRunProjectionInput {
+  provider: string
+  hookId: HookId
+  orgId: OrgId
+  agentId: AgentId
+  agentName: string
+  projectId: bigint
+  projectPath: string
+  mergeRequestIid: number
+  headSha: string
+  projectionEpoch: bigint
+  desiredState: CodeHostNoteState
+  reason?: string
+  currentDeliveryKey: string
+  /** Relay ingest / report time of this edge — the total order an older edge loses against. */
+  currentRunAt: Date
+  sessionId?: string
+  credentialEpoch?: bigint
+  configRevision?: bigint
+  dispatchRevision?: bigint
+  dispatchDaemonId?: string
+  reviewPolicySnapshot?: HookReviewPolicy
+  reportingModeSnapshot?: HookReportingMode
+  gateModeSnapshot?: HookGateMode
+  queuedAt?: Date
+  startedAt?: Date
+  completedAt?: Date
+  nextAttemptAt: Date
+}
+
+export interface CodeHostProjectionWriteResultInput {
+  projectionId: string
+  generation: bigint
+  leaseOwner: string
+  writeMarker: string
+  observedState: CodeHostNoteState
+  noteId?: string
+  settledErrorCode?: string
+  /** Keeps a changed desired state due after the older write reconciled. */
+  recheckAt?: Date
+}
+
+export interface CodeHostRunProjectionRepo {
+  /** Record or advance the desired generation for one natural key. A tombstoned row is never
+   *  revived, an older run never takes the row from a newer one, and an edge that lands while a
+   *  provider mutation is in flight is parked as `pendingIntent` instead of moving the generation. */
+  upsert(input: UpsertCodeHostRunProjectionInput): Promise<CodeHostRunProjectionRecord>
+  /** Move the desired state within one generation. A non-terminal edge loses to `sealedThrough`. */
+  setDesired(
+    projectionId: string,
+    generation: bigint,
+    desiredState: CodeHostNoteState,
+    nextAttemptAt: Date,
+    reason?: string
+  ): Promise<boolean>
+  /** A newer head preempted every older generation on the same merge request (§16). */
+  supersede(
+    hookId: HookId,
+    projectId: bigint,
+    mergeRequestIid: number,
+    currentHeadSha: string,
+    at: Date
+  ): Promise<number>
+  /** Take the write for one generation on behalf of `leaseOwner` (a daemon id) and arm the mutex.
+   *  Refused while another mutation is in flight — ownership may not move mid-write. */
+  beginWrite(
+    projectionId: string,
+    generation: bigint,
+    leaseOwner: string,
+    writeMarker: string,
+    writePhase: string,
+    startedAt: Date,
+    leaseUntil: Date
+  ): Promise<boolean>
+  /** Settle the daemon's reported outcome. Fenced on generation ∧ lease owner ∧ marker, so an
+   *  older generation's result can never regress a newer desired state. */
+  completeWrite(input: CodeHostProjectionWriteResultInput): Promise<boolean>
+  /** A deterministic no-effect failure releases the mutex; an ambiguous one keeps it
+   *  (`keepWriteMutex`) so only reconciliation, never a replay, may follow. */
+  failWrite(
+    projectionId: string,
+    generation: bigint,
+    leaseOwner: string,
+    errorCode: string,
+    nextAttemptAt: Date,
+    keepWriteMutex?: boolean
+  ): Promise<boolean>
+  /** Drain a parked intent into a fresh generation once no mutation is in flight. */
+  advancePending(
+    projectionId: string,
+    generation: bigint,
+    fallbackNextAttemptAt: Date
+  ): Promise<CodeHostRunProjectionRecord | null>
+  get(projectionId: string): Promise<CodeHostRunProjectionRecord | null>
+  /** One-way cleanup intent: the row may never regain run authority afterwards. */
+  tombstone(hookIds: HookId[], at: Date): Promise<number>
 }
 
 /** Per-hook HMAC signing key — read ONLY here, NEVER joined into a DTO

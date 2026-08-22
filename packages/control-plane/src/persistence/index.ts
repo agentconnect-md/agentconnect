@@ -19,6 +19,7 @@ export { PgAgentRepo } from './repositories/agent.repo.js'
 export { PgGithubInstallationRepo, PgGithubInstallStateStore } from './repositories/github.repo.js'
 export { PgAgentRepoAuthorizationRepo } from './repositories/agent-repo-auth.repo.js'
 export { PgCodeHostRepositoryRepo } from './repositories/code-host-repository.repo.js'
+export { PgCodeHostRunProjectionRepo } from './repositories/code-host-projection.repo.js'
 export {
   PgGitlabConnectionRepo,
   PgGitlabConnectionSecretStore,

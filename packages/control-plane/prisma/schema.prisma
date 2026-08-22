@@ -1906,6 +1906,80 @@ model HookReviewSubject {
   @@map("hook_review_subject")
 }
 
+// Provider-neutral informational run projection (gitlab-com-integration.md §16).
+// ONE note per (hook, project, merge-request IID, head SHA, projection epoch).
+// The Control Plane records the desired generation; the OWNING DAEMON is the
+// only provider writer, so `leaseOwner` is the daemon that holds the write and
+// an offline or non-advertising daemon simply leaves the row pending. Same
+// no-FK discipline as hook_review_projection: cleanup outlives its owner rows.
+model CodeHostRunProjection {
+  id              String  @id @default(uuid()) @db.Uuid
+  provider        String
+  hookId          String  @db.Uuid
+  orgId           String
+  agentId         String  @db.Uuid
+  // Snapshotted so a projection survives Agent deletion for cleanup.
+  agentName       String?
+  projectId       BigInt
+  projectPath     String
+  mergeRequestIid Int
+  headSha         String
+  projectionEpoch BigInt
+
+  generation         BigInt  @default(1)
+  currentDeliveryKey String?
+  // Relay ingest / report time of the delivery that owns the row; an older edge never takes it back.
+  currentRunAt       DateTime? @db.Timestamptz(6)
+  // The hidden stable marker the daemon reconciles its note by; stable across generations.
+  externalId         String  @unique
+  noteId             String?
+
+  desiredState  String
+  observedState String?
+  // Bounded normalized code only — never provider or runtime exception text.
+  reason        String?
+  // Terminal-authority watermark: a late queued/running edge cannot regress a sealed generation.
+  sealedThrough BigInt  @default(0)
+
+  queuedAt    DateTime? @db.Timestamptz(6)
+  startedAt   DateTime? @db.Timestamptz(6)
+  completedAt DateTime? @db.Timestamptz(6)
+
+  // ACP session behind the ordinary authenticated Console link; never a token-bearing URL.
+  sessionId       String?
+  // Purge fence copied from the project binding: a stale effect lease loses against a newer epoch.
+  credentialEpoch BigInt  @default(1)
+  // The complete §17.2 placement fence, stored verbatim so the desired frame echoes exactly the
+  // accepted dispatch tuple. Any member missing ⇒ the row is not dispatchable (fail closed).
+  configRevision        BigInt?
+  dispatchRevision      BigInt?
+  dispatchDaemonId      String? @db.Uuid
+  reviewPolicySnapshot  String?
+  reportingModeSnapshot String?
+  gateModeSnapshot      String?
+
+  // Write ownership. `leaseOwner` is the daemon id; `writeMarker`/`writePhase` are the
+  // in-flight mutation mutex, and ownership may not move while one is set.
+  leaseOwner     String?
+  leaseUntil     DateTime? @db.Timestamptz(6)
+  nextAttemptAt  DateTime? @db.Timestamptz(6)
+  attempts       Int       @default(0)
+  lastErrorCode  String?
+  pendingIntent  Json?     @db.JsonB
+  writeMarker    String?   @unique
+  writePhase     String?
+  writeStartedAt DateTime? @db.Timestamptz(6)
+  tombstonedAt   DateTime? @db.Timestamptz(6)
+  updatedAt      DateTime  @updatedAt @db.Timestamptz(6)
+
+  @@unique([hookId, projectId, mergeRequestIid, headSha, projectionEpoch])
+  @@index([orgId])
+  @@index([nextAttemptAt, leaseUntil])
+  @@index([hookId, projectId, mergeRequestIid])
+  @@index([agentId])
+  @@map("code_host_run_projection")
+}
+
 // ───────────────────────────────────────────────────────────────────────────
 // Relay — one registered ingress-relay instance (shared-bot-relay.md §6)
 //   The relay pool is the platform's unified inbound plane: webchat now,

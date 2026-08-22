@@ -832,7 +832,14 @@ export function hookRoutes(deps: HttpDeps) {
           })
           .catch(() => {})
         deps.hooks.remove(existing.id)
-        if (existing.kind === 'gitlab') convergeGitlabWebhook(orgOf(req), existing.repoId)
+        if (existing.kind === 'gitlab') {
+          // One-way cleanup intent for the §16 run projections this hook owned; a delayed
+          // lifecycle edge can never revive them afterwards.
+          void deps.codeHostNoteProjection
+            ?.tombstone([existing.id])
+            .catch(() => req.log.warn({ hookId: existing.id }, 'note projection: tombstone on hook delete failed'))
+          convergeGitlabWebhook(orgOf(req), existing.repoId)
+        }
         return reply.code(204).send(null)
       }
     )

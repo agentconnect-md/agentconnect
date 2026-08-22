@@ -66,6 +66,7 @@ import type { SessionPullRequestLinkService } from '../github/session-pull-reque
 import type { GithubUserAuthzService } from '../github/user-authz.js'
 import type { LogtoIdentityService } from '../github/logto-identity.js'
 import type { HookService } from '../hooks/hook.service.js'
+import type { CodeHostNoteProjectionService } from '../codehost/note-projection.service.js'
 import type { DaemonRegistry, DaemonAuth, ApiKeyAdmin, DaemonLiveness, ClusterWorkloadIdentity } from '../ports.js'
 import type { CpPlatformRegistry } from '../platforms/provider.js'
 import type { DaemonReleaseResolver } from '../registry/daemonRelease.js'
@@ -324,6 +325,8 @@ export interface HttpDeps {
   /** Compiles hooks into relay rules and keeps the pool converged — hook CRUD
    *  and agent placement changes call through it (fire-and-forget). */
   hooks: HookService
+  /** §16 run-projection ledger; absent ⇒ no GitLab administration surface on this deployment. */
+  codeHostNoteProjection?: CodeHostNoteProjectionService
   /** Best-effort latency kick for durable GitHub projection cleanup. */
   kickGithubRunReporter?: () => void
   /** Recompute an org's duty groups now that their inputs changed (integrations,

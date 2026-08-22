@@ -123,7 +123,8 @@ import type {
   AgentPermissionRequestPage,
   AgentPermissionDecision,
   SessionVisibilityPush,
-  SessionVisibilityOk
+  SessionVisibilityOk,
+  CodeHostNoteDesired
 } from '@agentconnect.md/protocol'
 import {
   MAX_ORGANIZATION_SUGGESTION_BODY_BYTES,
@@ -322,6 +323,18 @@ export class ControlSender {
   async agentRemove(daemonId: string, r: AgentRemove, orgId?: string): Promise<void> {
     const c = this.must(daemonId)
     c.conn.send('agent/remove', r, { epoch: c.sessionEpoch, agentId: r.agentId }, orgId)
+  }
+
+  /**
+   * Hand one desired run-projection generation to its owning daemon (§16 EVT).
+   *
+   * Fire-and-forget by design: the daemon is the only provider writer, and its authoritative answer
+   * is the `codehost/note-result` frame, not a transport ack. The §17.3 feature gate is the caller's
+   * — an offline or non-advertising daemon must leave the row pending, never raise.
+   */
+  codeHostNoteDesired(daemonId: string, desired: CodeHostNoteDesired, orgId?: string): void {
+    const c = this.must(daemonId)
+    c.conn.send('codehost/note-desired', desired, { epoch: c.sessionEpoch, agentId: desired.agentId }, orgId)
   }
 
   /** Fence and archive an agent before a daemon move or workspace edit (REQ → ack). */
