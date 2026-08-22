@@ -65,9 +65,10 @@ export type ProvisionOutcome =
   // was written and no binding state was overwritten; the caller observes.
   | { state: 'busy'; reason: string }
 
-/** One agent's identity provisioned ahead of a write that will act as it. The
- *  reason is the account's own repair category (`service_account_quota`, …). */
-export type AgentAccountOutcome = { ok: true } | { ok: false; reason: string; retryable: boolean }
+/** One agent's identity provisioned ahead of a write that will act as it, and
+ *  that write's own result. The reason is the account's own repair category
+ *  (`service_account_quota`, …); nothing was committed when it is present. */
+export type AgentAccountOutcome<T> = { ok: true; result: T } | { ok: false; reason: string; retryable: boolean }
 
 /** Inline in a request: retry a contended attempt on a short bound, then report. */
 const AGENT_ACCOUNT_ATTEMPTS = 5
@@ -177,29 +178,34 @@ export class GitlabProvisioner {
    *
    * Runs under the SAME binding lease as a full converge, so the two cannot
    * interleave, and the account mutation lease plus the generation fence stay
-   * where `ensureForConsumer` puts them. Inline in a request, so a contended
+   * where `ensureForConsumer` puts them. `commit` — the write that makes the
+   * agent a consumer — runs while that lease is still HELD, because a membership
+   * whose authorization row is not visible yet is exactly what a concurrent
+   * convergence would unbind and retire. Inline in a request, so a contended
    * attempt is retried on a short bound and then reported, never outwaited for
-   * the minutes `convergeProject` can afford.
+   * the minutes `convergeProject` can afford. A throw from `commit` propagates.
    */
-  async provisionAgentAccount(
+  async provisionAgentAccount<T>(
     orgId: string,
     projectId: bigint,
-    consumer: GitlabAccountConsumer
-  ): Promise<AgentAccountOutcome> {
-    let outcome = await this.agentAccountAttempt(orgId, projectId, consumer)
+    consumer: GitlabAccountConsumer,
+    commit: () => Promise<T>
+  ): Promise<AgentAccountOutcome<T>> {
+    let outcome = await this.agentAccountAttempt(orgId, projectId, consumer, commit)
     for (let attempt = 0; !outcome.ok && outcome.retryable && attempt < AGENT_ACCOUNT_ATTEMPTS; attempt++) {
       const delayMs = Math.min(1_000, 200 * 2 ** attempt)
       await new Promise<void>((resolve) => this.deps.clock.setTimeout(() => resolve(), delayMs))
-      outcome = await this.agentAccountAttempt(orgId, projectId, consumer)
+      outcome = await this.agentAccountAttempt(orgId, projectId, consumer, commit)
     }
     return outcome
   }
 
-  private async agentAccountAttempt(
+  private async agentAccountAttempt<T>(
     orgId: string,
     projectId: bigint,
-    consumer: GitlabAccountConsumer
-  ): Promise<AgentAccountOutcome> {
+    consumer: GitlabAccountConsumer,
+    commit: () => Promise<T>
+  ): Promise<AgentAccountOutcome<T>> {
     const binding = await this.deps.bindings.byProject(orgId, projectId)
     if (!binding || binding.state === 'cleanup_pending') {
       return { ok: false, reason: 'binding_unavailable', retryable: false }
@@ -220,31 +226,39 @@ export class GitlabProvisioner {
       return { ok: false, reason: 'provisioning_or_cleanup_in_progress', retryable: true }
     }
     try {
-      const token = await this.deps.oauth.withAccessToken(orgId, binding.installerConnectionId)
-      const project = (await gitlabProject(
-        token,
-        binding.projectId,
-        this.deps.fetchImpl
-      )) as GitlabProjectWithNamespace | null
-      if (!project?.namespace) return { ok: false, reason: 'project_not_accessible', retryable: false }
-      const root = await gitlabRootNamespace(token, project.namespace, this.deps.fetchImpl)
-      // Service accounts hang off a top-level GROUP; a personal namespace has none (§5).
-      if (root.kind !== 'group') return { ok: false, reason: 'personal_namespace_unsupported', retryable: false }
-      return await this.deps.accounts.ensureForConsumer(
-        {
-          orgId,
-          bindingId: binding.id,
-          projectId: binding.projectId,
-          rootGroupId: root.id,
-          installerConnectionId: binding.installerConnectionId,
-          token
-        },
-        consumer
-      )
-    } catch (e) {
-      const reason = e instanceof GitlabApiError ? `gitlab_${e.status || 'unreachable'}` : 'admin_unavailable'
-      this.deps.log?.warn({ bindingId: binding.id, reason }, 'gitlab agent account provisioning failed')
-      return { ok: false, reason, retryable: e instanceof GitlabApiError && e.retryable }
+      let ensured: { ok: true } | { ok: false; reason: string; retryable: boolean }
+      try {
+        const token = await this.deps.oauth.withAccessToken(orgId, binding.installerConnectionId)
+        const project = (await gitlabProject(
+          token,
+          binding.projectId,
+          this.deps.fetchImpl
+        )) as GitlabProjectWithNamespace | null
+        if (!project?.namespace) return { ok: false, reason: 'project_not_accessible', retryable: false }
+        const root = await gitlabRootNamespace(token, project.namespace, this.deps.fetchImpl)
+        // Service accounts hang off a top-level GROUP; a personal namespace has none (§5).
+        if (root.kind !== 'group') return { ok: false, reason: 'personal_namespace_unsupported', retryable: false }
+        ensured = await this.deps.accounts.ensureForConsumer(
+          {
+            orgId,
+            bindingId: binding.id,
+            projectId: binding.projectId,
+            rootGroupId: root.id,
+            installerConnectionId: binding.installerConnectionId,
+            token
+          },
+          consumer
+        )
+      } catch (e) {
+        // Only the provisioning half maps its failures; `commit` owns its own.
+        const reason = e instanceof GitlabApiError ? `gitlab_${e.status || 'unreachable'}` : 'admin_unavailable'
+        this.deps.log?.warn({ bindingId: binding.id, reason }, 'gitlab agent account provisioning failed')
+        return { ok: false, reason, retryable: e instanceof GitlabApiError && e.retryable }
+      }
+      if (!ensured.ok) return ensured
+      // STILL under the binding lease: the authorization row and the membership
+      // become visible to convergence together, never one without the other.
+      return { ok: true, result: await commit() }
     } finally {
       await this.deps.bindings.endProviderMutation(orgId, binding.id, binding.projectId, owner).catch(() => {})
     }

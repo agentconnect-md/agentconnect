@@ -241,6 +241,38 @@ describe('gitlab hooks — routes, compile, webhook converge (§8.3/§11.1/§11.
     expect(h.fake.members.get(Number(account.serviceAccountUserId))).toBe(30)
   })
 
+  it('a hook that will not be enabled needs no account, even out of quota', async () => {
+    const h = await harness({ refuseServiceAccountQuota: true })
+    // A disabled hook can never fire, so provisioning an identity for it would
+    // churn an account the next convergence retires — and would make disabling
+    // impossible while the group is out of slots.
+    const created = await h.a.app.inject({
+      method: 'POST',
+      url: `${ORG}/hooks`,
+      payload: glBody(h.agentId, { enabled: false })
+    })
+    expect(created.statusCode).toBe(200)
+    expect(await h.accounts.listForAgent(DEFAULT_ORG_ID, h.agentId)).toHaveLength(0)
+    expect(h.fake.serviceAccounts).toHaveLength(0)
+
+    // Disabling an enabled hook is likewise not blocked by the outage.
+    h.fake.opts.refuseServiceAccountQuota = false
+    const enabled = await h.a.app.inject({
+      method: 'POST',
+      url: `${ORG}/hooks`,
+      payload: glBody(h.secondAgentId)
+    })
+    expect(enabled.statusCode).toBe(200)
+    h.fake.opts.refuseServiceAccountQuota = true
+    const disabled = await h.a.app.inject({
+      method: 'PUT',
+      url: `${ORG}/hooks/${(enabled.json() as { id: string }).id}`,
+      payload: { ...glBody(h.secondAgentId), enabled: false }
+    })
+    expect(disabled.statusCode).toBe(200)
+    expect((disabled.json() as { enabled: boolean }).enabled).toBe(false)
+  })
+
   it('refuses the hook with the account’s own repair reason, writing no hook', async () => {
     const h = await harness({ refuseServiceAccountQuota: true })
     const created = await h.a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: glBody(h.agentId) })
