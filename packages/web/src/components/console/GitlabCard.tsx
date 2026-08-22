@@ -13,12 +13,14 @@ import { GitlabMark, LoadingState } from '@/components/marks'
 import { useOrgs } from '@/lib/org-context'
 import { GITLAB_PROJECT_STATE } from '@/lib/gitlab-projects'
 import {
+  ApiError,
   deleteGitlabProject,
   disconnectGitlabConnection,
   fetchGitlabConnections,
   fetchGitlabProjects,
   repairGitlabProject,
   startGitlabOauth,
+  transferGitlabProject,
   type GitlabConnectionDto,
   type GitlabProjectBindingDto
 } from '@/lib/api'
@@ -30,11 +32,25 @@ const STATE_REASON: Record<string, string> = {
   personal_namespace_unsupported: 'Projects in a personal namespace are not supported',
   project_namespace_unknown: 'GitLab did not report the group this project belongs to',
   service_account_create_forbidden: 'Not allowed to create a project bot on GitLab',
-  no_admin_connection: 'No connected GitLab account can manage this project',
+  no_admin_connection: 'No connected GitLab account can manage this project — transfer it to your own account',
+  admin_unavailable:
+    'The GitLab account that set this project up can no longer manage it — reconnect that account, or transfer the project to your own',
+  cleanup_failed:
+    'Removal did not finish because no connected GitLab account could reach the project — reconnect it or transfer the project, then remove again',
   claim_fence_lost: 'Setup was interrupted — run Repair again',
   relay_url_unconfigured: 'This deployment has no public webhook address configured',
   provisioning_in_progress: 'Setup is already running',
   provisioning_or_cleanup_in_progress: 'Setup or removal is already running'
+}
+
+/** Machine-readable CP refusals the card says better itself (all takeover, today). */
+const REFUSAL: Record<string, string> = {
+  GITLAB_NO_OWN_CONNECTION:
+    'Connect your own GitLab account first, with Connect my account above — a project is taken over with your own access.',
+  GITLAB_CONNECTION_NOT_CONNECTED: 'Reconnect your own GitLab account first, then take the project over.',
+  GITLAB_NOT_MAINTAINER: 'Your GitLab account needs Maintainer or Owner access to this project to take it over.',
+  GITLAB_INSTALLER_CONNECTED: 'A connected GitLab account already manages this project.',
+  GITLAB_BINDING_BUSY: 'Setup or removal is already running for this project — try again shortly.'
 }
 
 /** User-facing copy for a binding's reason, or null to show nothing but the state badge — an
@@ -42,10 +58,15 @@ const STATE_REASON: Record<string, string> = {
 function stateReasonText(reason: string | null): string | null {
   if (!reason) return null
   if (reason.startsWith('rotation_')) return 'The project bot credential needs repair'
+  // The gitlab_<status> family is open-ended; the actionable part is the same for all of it.
+  if (reason.startsWith('gitlab_')) {
+    return 'GitLab refused the last administration request — reconnect the account that manages this project, or transfer it to your own'
+  }
   return STATE_REASON[reason] ?? null
 }
 
 function errorText(e: unknown): string {
+  if (e instanceof ApiError && e.code && REFUSAL[e.code]) return REFUSAL[e.code]!
   return e instanceof Error ? e.message : String(e)
 }
 
@@ -60,6 +81,9 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
   // One pending connection action: releasing a live row, or removing a released one.
   const [pending, setPending] = useState<{ target: GitlabConnectionDto; remove: boolean } | null>(null)
   const [removing, setRemoving] = useState<GitlabProjectBindingDto | null>(null)
+  const [taking, setTaking] = useState<GitlabProjectBindingDto | null>(null)
+  // Removal needs an administering account: without one the saga cannot finish, so it is explained, not run.
+  const [blocked, setBlocked] = useState<GitlabProjectBindingDto | null>(null)
 
   useEffect(() => {
     if (!activeOrg) return
@@ -108,6 +132,33 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
     } catch (e) {
       setErr(errorText(e))
     } finally {
+      setBusyId(null)
+    }
+  }
+
+  // The caller's own connected account — the only one a takeover can run on (§7.1).
+  const ownConnection = connections.some((c) => c.mine && c.state === 'connected')
+
+  // One connection administers a project; a released or removed one can neither
+  // repair nor remove it, and §9.4 lets another Maintainer take it over instead.
+  const stuck = (binding: GitlabProjectBindingDto): boolean =>
+    connections.find((c) => c.id === binding.installerConnectionId)?.state !== 'connected'
+
+  const takeOver = async (binding: GitlabProjectBindingDto) => {
+    if (busyId) return
+    setBusyId(binding.id)
+    setErr(null)
+    try {
+      const updated = await transferGitlabProject(binding.id)
+      setProjects((current) => current.map((p) => (p.id === updated.id ? updated : p)))
+      // The takeover moves a project between connections, and both counts gate their Remove.
+      const fresh = await fetchGitlabConnections().catch(() => null)
+      if (fresh) setConnections(fresh.connections)
+    } catch (e) {
+      setErr(errorText(e))
+    } finally {
+      // The refusal is a sentence under the card, so the dialog closes either way.
+      setTaking(null)
       setBusyId(null)
     }
   }
@@ -164,10 +215,12 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
           </span>
           GitLab
         </span>
-        {enabled === true && canWrite && connections.length === 0 && (
+        {/* A takeover runs on the caller's OWN account, so connecting one stays reachable
+            even when the organization already lists other people's connections. */}
+        {enabled === true && canWrite && !ownConnection && (
           <Button onClick={connect}>
             <Icon name="external-link" size={13} />
-            Connect GitLab
+            {connections.length === 0 ? 'Connect GitLab' : 'Connect my account'}
           </Button>
         )}
       </div>
@@ -246,9 +299,10 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
             </div>
             {c.state === 'disconnected' && c.assignedProjects > 0 && (
               <div className="border-b border-(--border-subtle) px-4 py-[9px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
+                {/* Removing those projects needs an administering account too, so it is not a way out from here. */}
                 {c.assignedProjects === 1
-                  ? 'This account still administers 1 project below. Remove that project, or reconnect the account to keep managing it, before this row can go.'
-                  : `This account still administers ${c.assignedProjects} projects below. Remove those projects, or reconnect the account to keep managing them, before this row can go.`}
+                  ? 'This account still administers 1 project below. Transfer that project to your own GitLab account, or reconnect this one to keep managing it, before this row can go.'
+                  : `This account still administers ${c.assignedProjects} projects below. Transfer those projects to your own GitLab account, or reconnect this one to keep managing them, before this row can go.`}
               </div>
             )}
             {c.state === 'reauth_required' && (
@@ -303,6 +357,14 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
               )}
             </div>
             <span className="flex items-center justify-end gap-3">
+              {/* Only a project whose administration is stuck can be taken over — and one
+                  awaiting cleanup always can, since that is what unblocks its removal. */}
+              {canWrite && (stuck(p) || p.state === 'admin_degraded' || p.state === 'cleanup_pending') && (
+                <Button variant="ghost" size="xs" disabled={busyId === p.id} onClick={() => setTaking(p)}>
+                  <Icon name="key-round" size={13} />
+                  Transfer
+                </Button>
+              )}
               {canWrite && (
                 <Button variant="ghost" size="xs" disabled={busyId === p.id} onClick={() => repair(p)}>
                   <Icon name="wrench" size={13} />
@@ -315,7 +377,7 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
                   size="xs"
                   className="text-(--status-error) hover:text-(--status-error)"
                   disabled={busyId === p.id}
-                  onClick={() => setRemoving(p)}
+                  onClick={() => (stuck(p) ? setBlocked(p) : setRemoving(p))}
                 >
                   <Icon name="trash-2" size={13} />
                   Remove
@@ -364,6 +426,48 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
         </div>
       )}
 
+      {taking && (
+        <div className="scrim" onClick={() => setTaking(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <ConfirmGitlab
+              title="Transfer administration"
+              body={
+                <>
+                  Take over <span className="mono text-(--text-primary)">{taking.projectPath}</span>? GitLab is asked
+                  whether your own account has Maintainer or Owner access to the project right now, and if it does, your
+                  account becomes the one AgentConnect uses to set up and repair it.
+                </>
+              }
+              verb="Transfer"
+              icon="key-round"
+              busy={busyId === taking.id}
+              danger={false}
+              onClose={() => setTaking(null)}
+              onConfirm={() => takeOver(taking)}
+            />
+          </div>
+        </div>
+      )}
+
+      {blocked && (
+        <div className="scrim" onClick={() => setBlocked(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <ConfirmGitlab
+              title="Remove project"
+              body={
+                <>
+                  <span className="mono text-(--text-primary)">{blocked.projectPath}</span> cannot be removed yet: the
+                  GitLab account that manages it is no longer connected, and removing the webhook and the project bot
+                  needs one. Reconnect that account, or transfer the project to your own, then remove it.
+                </>
+              }
+              busy={false}
+              onClose={() => setBlocked(null)}
+            />
+          </div>
+        </div>
+      )}
+
       {removing && (
         <div className="scrim" onClick={() => setRemoving(null)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
@@ -389,28 +493,33 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
   )
 }
 
-// One confirmation body for both destructive actions: bare-verb primary, noun in the title.
+// One confirmation body for every dialog here: bare-verb primary, noun in the title.
+// Without `onConfirm` it is guidance for an action that cannot run yet, and only closes.
 function ConfirmGitlab({
   title,
   body,
   verb,
   icon,
   busy,
+  danger = true,
   onClose,
   onConfirm
 }: {
   title: string
   body: ReactNode
-  verb: string
-  icon: string
+  verb?: string
+  icon?: string
   busy: boolean
+  danger?: boolean
   onClose: () => void
-  onConfirm: () => void
+  onConfirm?: () => void
 }) {
   return (
     <>
       <div className="modalhead">
-        <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] bg-(--status-error-soft)">
+        <span
+          className={`flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] ${danger ? 'bg-(--status-error-soft)' : 'bg-(--surface-active)'}`}
+        >
           <span className="flex h-4 w-4 items-center justify-center">
             <GitlabMark />
           </span>
@@ -426,12 +535,18 @@ function ConfirmGitlab({
       <div className="modalfoot">
         <div className="flex-1" />
         <Button variant="ghost" onClick={onClose}>
-          Cancel
+          {onConfirm ? 'Cancel' : 'Close'}
         </Button>
-        <Button variant="danger" onClick={onConfirm} className={busy ? 'pointer-events-none opacity-50' : undefined}>
-          <Icon name={icon} size={15} />
-          {busy ? 'Working…' : verb}
-        </Button>
+        {onConfirm && verb && (
+          <Button
+            variant={danger ? 'danger' : 'primary'}
+            onClick={onConfirm}
+            className={busy ? 'pointer-events-none opacity-50' : undefined}
+          >
+            {icon && <Icon name={icon} size={15} />}
+            {busy ? 'Working…' : verb}
+          </Button>
+        )}
       </div>
     </>
   )

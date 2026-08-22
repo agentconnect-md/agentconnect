@@ -38,6 +38,7 @@ const CONNECTION: GitlabConnectionDto = {
   state: 'connected',
   scopes: ['api'],
   connectedBy: 'user-1',
+  mine: true,
   accessExpiresAt: null,
   assignedProjects: 0,
   createdAt: '2026-08-01T00:00:00.000Z'
@@ -50,6 +51,7 @@ const BINDING: GitlabProjectBindingDto = {
   defaultBranch: 'main',
   state: 'ready',
   stateReason: null,
+  installerConnectionId: 'conn-1',
   serviceAccountUsername: 'project_4711_bot',
   webhookInstalled: true,
   credentialEpoch: '1',

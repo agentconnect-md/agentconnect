@@ -1775,6 +1775,9 @@ export const GitlabConnectionDto = z.object({
   state: z.enum(['connected', 'reauth_required', 'disconnected']),
   scopes: z.array(z.string()),
   connectedBy: z.string().nullable(), // AgentConnect user id; null after user deletion
+  /** Whether the CALLER owns this connection: takeover and reconnect are their
+   *  own account's actions, so the console needs the answer without comparing ids. */
+  mine: z.boolean(),
   accessExpiresAt: z.string().nullable(),
   /** Managed projects this connection still administers (§7.1). A released
    *  connection with none can be removed; with any, removal is refused. */
@@ -1816,6 +1819,9 @@ export const GitlabProjectBindingDto = z.object({
   defaultBranch: z.string().nullable(),
   state: z.enum(['provisioning', 'ready', 'admin_degraded', 'runtime_degraded', 'cleanup_pending']),
   stateReason: z.string().nullable(),
+  /** The OAuth connection administering this project (§7.1); null once it was
+   *  removed. Its state decides whether repair, removal, or takeover can run. */
+  installerConnectionId: z.string().nullable(),
   serviceAccountUsername: z.string().nullable(),
   webhookInstalled: z.boolean(),
   credentialEpoch: z.string(),

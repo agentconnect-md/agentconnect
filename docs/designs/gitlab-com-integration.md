@@ -554,6 +554,11 @@ and removes the sealed token pair. Project bindings are not deleted
 implicitly. Bindings assigned to that connection become `admin_degraded` and
 can be taken over by another current Maintainer or Owner.
 
+Takeover is offered wherever administration is actually stuck — a released,
+reauth-required, or removed connection, or a binding degraded under its current
+one — and a `cleanup_pending` binding is reassigned without being reprovisioned,
+so its interrupted removal can finish under the new account (Section 19.4).
+
 The retained row is history, not a permanent fixture: once a disconnected
 connection administers no project binding at all, deleting it again removes
 the row, and that removal is refused while any binding is still assigned to

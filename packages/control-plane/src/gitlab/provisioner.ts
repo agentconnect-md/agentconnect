@@ -36,12 +36,14 @@ import type {
   GitlabWebhookSecretStore
 } from '../persistence/ports.js'
 import {
+  GITLAB_ACCESS_MAINTAINER,
   GitlabApiError,
   gitlabCreateServiceAccount,
   gitlabCreateServiceAccountToken,
   gitlabCreateWebhook,
   gitlabDeleteServiceAccount,
   gitlabDeleteWebhook,
+  gitlabEffectiveMembership,
   gitlabEnsureDeveloperMember,
   gitlabFindServiceAccount,
   gitlabProject,
@@ -52,6 +54,7 @@ import {
   gitlabServiceAccountUsername,
   gitlabTestWebhook,
   gitlabUpdateWebhook,
+  membershipSatisfies,
   type FetchLike,
   type GitlabProjectWithNamespace,
   type GitlabWebhookEvents
@@ -92,6 +95,11 @@ export type ProvisionOutcome =
   // A live peer owns the claim (provisioning or cleanup in progress): nothing
   // was written and no binding state was overwritten; the caller observes.
   | { state: 'busy'; reason: string }
+
+/** §9.4 takeover result; every refusal leaves the binding exactly as it was.
+ *  The binding row carries the convergence outcome, so the caller re-reads it. */
+export type GitlabTransferOutcome =
+  { outcome: 'transferred' } | { outcome: 'binding_missing' } | { outcome: 'busy' } | { outcome: 'not_maintainer' }
 
 export interface GitlabProvisionerDeps {
   oauth: GitlabOauthService
@@ -156,30 +164,109 @@ export class GitlabProvisioner {
     }
     try {
       const token = await this.deps.oauth.withAccessToken(orgId, binding.installerConnectionId)
-      const outcome = await this.converge(orgId, binding, token, owner)
-      if (outcome.state === 'ready') {
-        await this.deps.bindings.update(orgId, bindingId, { state: 'ready', stateReason: null })
-      } else if (outcome.state !== 'busy') {
-        await this.deps.bindings.update(orgId, bindingId, { state: outcome.state, stateReason: outcome.reason })
-      }
-      this.deps.onConverged?.(orgId, binding.projectId)
-      return outcome
+      return await this.convergeAndPersist(orgId, binding, token, owner)
     } catch (e) {
-      const reason =
-        e instanceof GitlabClaimFenceLost
-          ? 'claim_fence_lost'
-          : e instanceof GitlabTokenPolicyViolation
-            ? 'out_of_policy_token'
-            : e instanceof GitlabApiError
-              ? `gitlab_${e.status || 'unreachable'}`
-              : 'admin_unavailable'
-      this.deps.log?.warn({ bindingId, reason }, 'gitlab provisioning failed')
-      return this.degrade(orgId, bindingId, 'admin_degraded', reason)
+      // Only the administration-token acquisition reaches here; convergence maps its own failures.
+      return this.failed(orgId, bindingId, e)
     } finally {
       // Release THIS run's lease whatever happened: every external resource is
       // deterministically marked, so the next run reconciles it.
       await this.deps.bindings.endProviderMutation(orgId, bindingId, binding.projectId, owner).catch(() => {})
     }
+  }
+
+  /**
+   * §9.4 takeover: another current Maintainer or Owner becomes the administering
+   * account of a binding whose own administration is stuck. It proves the
+   * caller's CURRENT membership with the CALLER's own token before any write.
+   *
+   * A binding still in provisioning/ready/degraded is then re-converged under the
+   * new authority, so the takeover is an admin mutation and runs under the SAME
+   * exclusive lease as provision. A `cleanup_pending` one is only reassigned so
+   * its interrupted removal can finish (§19.4) — it writes nothing at the
+   * provider, holds no provisioning lease, and is never re-provisioned.
+   */
+  async transfer(
+    orgId: string,
+    bindingId: string,
+    connection: { id: string; gitlabUserId: bigint }
+  ): Promise<GitlabTransferOutcome> {
+    const binding = await this.deps.bindings.get(orgId, bindingId)
+    if (!binding) return { outcome: 'binding_missing' }
+    const reprovision = binding.state !== 'cleanup_pending'
+    const owner = randomBytes(9).toString('base64url')
+    const nowMs = this.deps.clock.now()
+    if (
+      reprovision &&
+      !(await this.deps.bindings.markProviderMutationStarted(
+        orgId,
+        bindingId,
+        binding.projectId,
+        owner,
+        new Date(nowMs + PROVISION_LEASE_MS),
+        new Date(nowMs)
+      ))
+    ) {
+      return { outcome: 'busy' }
+    }
+    try {
+      // Read-only prelude through the CALLER's own connection: an auth or upstream
+      // failure here reaches the caller and degrades nothing, because nothing moved.
+      const token = await this.deps.oauth.withAccessToken(orgId, connection.id)
+      const membership = await gitlabEffectiveMembership(
+        token,
+        binding.projectId,
+        connection.gitlabUserId,
+        this.deps.fetchImpl
+      )
+      if (!membershipSatisfies(membership, GITLAB_ACCESS_MAINTAINER, this.deps.clock.now())) {
+        return { outcome: 'not_maintainer' }
+      }
+      // §10.2 per-step atomic renewal: the fence must still be ours before the first write.
+      if (reprovision && !(await this.renewLease(orgId, binding, owner))) return { outcome: 'busy' }
+      const moved = await this.deps.bindings.update(orgId, bindingId, { installerConnectionId: connection.id })
+      if (!moved) return { outcome: 'binding_missing' }
+      if (reprovision) await this.convergeAndPersist(orgId, moved, token, owner)
+      return { outcome: 'transferred' }
+    } finally {
+      if (reprovision) {
+        await this.deps.bindings.endProviderMutation(orgId, bindingId, binding.projectId, owner).catch(() => {})
+      }
+    }
+  }
+
+  /** Converge under an already-held lease and persist the outcome on the binding. */
+  private async convergeAndPersist(
+    orgId: string,
+    binding: GitlabProjectBindingRecord,
+    token: string,
+    owner: string
+  ): Promise<ProvisionOutcome> {
+    try {
+      const outcome = await this.converge(orgId, binding, token, owner)
+      if (outcome.state === 'ready') {
+        await this.deps.bindings.update(orgId, binding.id, { state: 'ready', stateReason: null })
+      } else if (outcome.state !== 'busy') {
+        await this.deps.bindings.update(orgId, binding.id, { state: outcome.state, stateReason: outcome.reason })
+      }
+      this.deps.onConverged?.(orgId, binding.projectId)
+      return outcome
+    } catch (e) {
+      return this.failed(orgId, binding.id, e)
+    }
+  }
+
+  private failed(orgId: string, bindingId: string, e: unknown): Promise<ProvisionOutcome> {
+    const reason =
+      e instanceof GitlabClaimFenceLost
+        ? 'claim_fence_lost'
+        : e instanceof GitlabTokenPolicyViolation
+          ? 'out_of_policy_token'
+          : e instanceof GitlabApiError
+            ? `gitlab_${e.status || 'unreachable'}`
+            : 'admin_unavailable'
+    this.deps.log?.warn({ bindingId, reason }, 'gitlab provisioning failed')
+    return this.degrade(orgId, bindingId, 'admin_degraded', reason)
   }
 
   private async degrade(

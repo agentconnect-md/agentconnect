@@ -43,7 +43,7 @@ import {
 } from '../dto/index.js'
 import type { GitlabConnectionRecord, GitlabProjectBindingRecord } from '../../persistence/ports.js'
 
-function toDto(r: GitlabConnectionRecord, assignedProjects: number) {
+function toDto(r: GitlabConnectionRecord, assignedProjects: number, callerUserId: string) {
   return {
     id: r.id,
     gitlabUserId: r.gitlabUserId.toString(),
@@ -51,6 +51,7 @@ function toDto(r: GitlabConnectionRecord, assignedProjects: number) {
     state: r.state,
     scopes: r.scopes,
     connectedBy: r.userId,
+    mine: r.userId !== null && r.userId === callerUserId,
     accessExpiresAt: r.accessExpiresAt ? r.accessExpiresAt.toISOString() : null,
     assignedProjects,
     createdAt: r.createdAt.toISOString()
@@ -66,6 +67,7 @@ function bindingToDto(r: GitlabProjectBindingRecord) {
     defaultBranch: r.defaultBranch,
     state: r.state,
     stateReason: r.stateReason,
+    installerConnectionId: r.installerConnectionId,
     serviceAccountUsername: r.serviceAccountUsername,
     webhookInstalled: r.webhookId !== null,
     credentialEpoch: r.credentialEpoch.toString(),
@@ -137,7 +139,7 @@ export function gitlabRoutes(deps: HttpDeps) {
         const orgId = orgOf(req)
         const rows = await deps.repos.gitlabConnection.listForOrg(orgId)
         const assigned = await deps.repos.gitlabProjectBinding.countByInstaller(orgId)
-        return { connections: rows.map((row) => toDto(row, assigned[row.id] ?? 0)) }
+        return { connections: rows.map((row) => toDto(row, assigned[row.id] ?? 0, req.principal!.userId)) }
       }
     )
 
@@ -320,6 +322,92 @@ export function gitlabRoutes(deps: HttpDeps) {
       }
     )
 
+    r.post(
+      '/gitlab/projects/:id/transfer',
+      {
+        schema: {
+          tags: [Tag.GitLab],
+          summary: 'Take over administration of a GitLab project',
+          description:
+            "Moves administration of a project whose administering account can no longer act to the caller's own connected GitLab account (§9.4). The Control Plane re-verifies the caller's CURRENT Maintainer-or-Owner membership live, through the caller's own connection, then re-runs the §10.2 convergence under the new account. Eligible in any binding state — including a `cleanup_pending` one, whose interrupted removal can then finish under the new account (§19.4); that state is only reassigned, never re-provisioned. A project whose administering account is still connected and is not degraded is refused. Every refusal carries a machine-readable `code`.",
+          operationId: 'transferGitlabProject',
+          params: IdParam,
+          response: {
+            200: GitlabProjectBindingDto,
+            400: ErrorDto,
+            403: ErrorDto,
+            404: ErrorDto,
+            409: ErrorDto,
+            429: ErrorDto,
+            502: ErrorDto
+          }
+        }
+      },
+      async (req, reply) => {
+        if (denyViewerWrite(req, reply)) return
+        const orgId = orgOf(req)
+        const notFound = () =>
+          reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'gitlab project not found' })
+        const conflict = (code: string, message: string) =>
+          reply.code(409).send({ error: 'Conflict', statusCode: 409, message, code })
+        const binding = await deps.repos.gitlabProjectBinding.get(orgId, req.params.id)
+        if (!binding) return notFound()
+        // Takeover authority is the CALLER's own connection, never the org's (§7.1).
+        const own = (await deps.repos.gitlabConnection.listForOrg(orgId)).filter(
+          (candidate) => candidate.userId === req.principal!.userId
+        )
+        if (own.length === 0) {
+          return conflict('GITLAB_NO_OWN_CONNECTION', 'connect your own GitLab account before taking over a project')
+        }
+        // Newest wins when one user connected two GitLab identities to this organization.
+        const mine = own.filter((candidate) => candidate.state === 'connected').at(-1)
+        if (!mine) {
+          return conflict('GITLAB_CONNECTION_NOT_CONNECTED', 'reconnect your own GitLab account first')
+        }
+        const installer = binding.installerConnectionId
+          ? await deps.repos.gitlabConnection.get(orgId, binding.installerConnectionId)
+          : null
+        // §9.4 offers takeover for administration that is actually stuck: a released
+        // or removed installer, or a binding degraded under the current one. A binding
+        // awaiting cleanup qualifies whatever its installer row reports — the takeover
+        // only reassigns it, and that is what unblocks the interrupted removal (§19.4).
+        const stuck = installer?.state !== 'connected'
+        if (!stuck && binding.state !== 'admin_degraded' && binding.state !== 'cleanup_pending') {
+          return conflict('GITLAB_INSTALLER_CONNECTED', 'a connected GitLab account already administers this project')
+        }
+        try {
+          const outcome = await gitlab.provisioner.transfer(orgId, binding.id, {
+            id: mine.id,
+            gitlabUserId: mine.gitlabUserId
+          })
+          if (outcome.outcome === 'binding_missing') return notFound()
+          if (outcome.outcome === 'busy') {
+            return conflict('GITLAB_BINDING_BUSY', 'project setup or removal is already running — try again shortly')
+          }
+          if (outcome.outcome === 'not_maintainer') {
+            return reply.code(403).send({
+              error: 'Forbidden',
+              statusCode: 403,
+              message: 'Maintainer or Owner access to the project is required to take it over',
+              code: 'GITLAB_NOT_MAINTAINER'
+            })
+          }
+          const converged = await deps.repos.gitlabProjectBinding.get(orgId, binding.id)
+          if (!converged) return notFound()
+          return bindingToDto(converged)
+        } catch (e) {
+          if (e instanceof GitlabOauthDenied) {
+            return reply.code(e.status).send({ error: 'Conflict', statusCode: e.status, message: e.message })
+          }
+          if (e instanceof GitlabApiError) {
+            const up = gitlabUpstream(e)
+            return reply.code(up.status).send({ error: 'Bad Gateway', statusCode: up.status, message: up.message })
+          }
+          throw e
+        }
+      }
+    )
+
     r.delete(
       '/gitlab/projects/:id',
       {
@@ -392,7 +480,7 @@ export function gitlabRoutes(deps: HttpDeps) {
         const record = await deps.repos.gitlabConnection.get(orgId, existing.id)
         if (!record) return notFound()
         const assigned = (await deps.repos.gitlabProjectBinding.countByInstaller(orgId))[existing.id] ?? 0
-        return { removed: false, connection: toDto(record, assigned) }
+        return { removed: false, connection: toDto(record, assigned, req.principal!.userId) }
       }
     )
   }
