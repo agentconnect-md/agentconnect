@@ -30,7 +30,7 @@ function deps(writeAllowed: boolean, over: Partial<OpsDeps> = {}): OpsDeps {
       read: vi.fn(async () => ({ content: 'existing' })),
       write: vi.fn(async () => ({ ok: true }))
     },
-    memoryAccessAllowed: (_ctx, mode) => mode === 'read' || writeAllowed,
+    memoryAccessAllowed: (_ctx: SessionContext, mode: 'read' | 'write') => mode === 'read' || writeAllowed,
     ...over
   } as unknown as OpsDeps
 }

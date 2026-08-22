@@ -72,7 +72,7 @@ function tarGzip(entries: TarFixtureEntry[]): Buffer {
 interface FetchCall {
   url: string
   authorization: string | null
-  redirect: RequestRedirect | undefined
+  redirect: RequestInit['redirect']
 }
 
 function offlineGitHubFetch(opts: {

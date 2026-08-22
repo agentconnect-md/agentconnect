@@ -117,29 +117,32 @@ function recording(): {
   const resolver: WorkspaceGitRunnerResolver = (agentId, cwd, abort) => {
     calls.push({ agentId, ...(cwd === undefined ? {} : { cwd }) })
     const inner: GitRunner = new LocalGitRunner(gitFor(cwd, abort), cwd, (env) => gitFor(cwd, abort).env(env))
-    const wrap = (runner: GitRunner): GitRunner => ({
-      withEnv: (env) => wrap(runner.withEnv(env)),
-      raw: async (args) => {
-        argv.push(args)
-        return runner.raw(args)
-      },
-      clone: async (repo, target, options) => {
-        argv.push(['clone', ...(options ?? []), repo, target])
-        return runner.clone(repo, target, options)
-      },
-      pull: async (remote, branch, options) => {
-        argv.push(['pull', ...(options ?? []), remote, branch])
-        return runner.pull(remote, branch, options)
-      },
-      status: async () => {
-        argv.push(['status'])
-        return runner.status()
-      },
-      log: async (options) => {
-        argv.push(['log', String(options.maxCount)])
-        return runner.log(options)
+    const wrap = (runner: GitRunner): GitRunner => {
+      const recorder: Omit<GitRunner, 'readBounded'> = {
+        withEnv: (env) => wrap(runner.withEnv(env)),
+        raw: async (args) => {
+          argv.push(args)
+          return runner.raw(args)
+        },
+        clone: async (repo, target, options) => {
+          argv.push(['clone', ...(options ?? []), repo, target])
+          return runner.clone(repo, target, options)
+        },
+        pull: async (remote, branch, options) => {
+          argv.push(['pull', ...(options ?? []), remote, branch])
+          return runner.pull(remote, branch, options)
+        },
+        status: async () => {
+          argv.push(['status'])
+          return runner.status()
+        },
+        log: async (options) => {
+          argv.push(['log', String(options.maxCount)])
+          return runner.log(options)
+        }
       }
-    })
+      return recorder as GitRunner
+    }
     return wrap(inner)
   }
   return { resolver, calls, argv }
@@ -220,7 +223,7 @@ describe('workspace-manager git runner seam', () => {
         pull: async () => ({ files: [], insertions: 0, deletions: 0 }),
         status: async () => ({ current: null, tracking: null, ahead: 0, behind: 0, files: [], clean: true }),
         log: async () => []
-      } as GitRunner
+      } as unknown as GitRunner
       return runner
     })
 

@@ -40,7 +40,7 @@ function fakeApi(over: Partial<TelegramApi> = {}): TelegramApi {
     ]),
     getFile: vi.fn(async () => ({ file_path: 'photos/x.jpg', file_size: 12 })),
     ...over
-  }
+  } as TelegramApi
 }
 
 interface BotState {

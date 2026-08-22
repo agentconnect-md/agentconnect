@@ -619,7 +619,7 @@ describe('the MCP surface validates arguments before the broker sees them', () =
   })
 
   it('ignores a project supplied as an argument', async () => {
-    const codeHostEffect = vi.fn(async () => ({}))
+    const codeHostEffect = vi.fn<NonNullable<OpsDeps['codeHostEffect']>>(async () => ({}))
     await executeTool(
       ctx,
       'createCodeHostComment',

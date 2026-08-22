@@ -3153,7 +3153,7 @@ describe('Daemon rd/msg hook fires', () => {
     const firstCp = fakeCpClient()
     ;(first as never as { cpClient: unknown }).cpClient = firstCp
     const firstAnchor = {
-      postMessage: vi.fn(async () => 'anchor-1'),
+      postMessage: vi.fn<(channel: string, text: string) => Promise<string>>(async () => 'anchor-1'),
       postBlocks: vi.fn(async () => 'reply-1'),
       postContext: vi.fn(async () => {}),
       setStatus: vi.fn(async () => {})

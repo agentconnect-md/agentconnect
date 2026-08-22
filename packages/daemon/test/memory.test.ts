@@ -819,6 +819,6 @@ describe('memory/provider (ManagedMemoryProvider)', () => {
     expect(p.runtimeEnv({ command: 'codex', args: [], env: [] } as never)).toEqual({
       CODEX_CONFIG: '{"features":{"memories":false}}'
     })
-    await expect(p.recordTurn(scope, {})).resolves.toBeUndefined()
+    await expect(p.recordTurn(scope, {} as never)).resolves.toBeUndefined()
   })
 })

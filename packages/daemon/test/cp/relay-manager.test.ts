@@ -1,7 +1,8 @@
 import { describe, it, expect, vi } from 'vitest'
 import { FakeClock, type Transport } from '@agentconnect.md/connection'
-import { buildRelayDaemonFrame, type RdMsgWebchat, type RelayDaemonFrame } from '@agentconnect.md/protocol'
+import { buildRelayDaemonFrame, type RdMsg, type RelayDaemonFrame } from '@agentconnect.md/protocol'
 import { RelayManager } from '../../src/cp/relay-manager.js'
+import type { RelayClientDeps } from '../../src/cp/relay-client.js'
 import type { Logger } from '../../src/log.js'
 
 const silentLog = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} } as unknown as Logger
@@ -40,8 +41,8 @@ function manager() {
     connect,
     log: silentLog,
     jitter: () => 0,
-    onRelayMsg: (msg: RdMsgWebchat) => ({ msgId: msg.msgId, accepted: true })
-  })
+    onRelayMsg: (msg: RdMsg) => ({ msgId: msg.msgId, accepted: true })
+  } as unknown as RelayClientDeps)
   return { mgr, connect }
 }
 
@@ -110,8 +111,8 @@ function readyManager() {
     connect,
     log: silentLog,
     jitter: () => 0,
-    onRelayMsg: (msg: RdMsgWebchat) => ({ msgId: msg.msgId, accepted: true })
-  })
+    onRelayMsg: (msg: RdMsg) => ({ msgId: msg.msgId, accepted: true })
+  } as unknown as RelayClientDeps)
   return { mgr, transports }
 }
 
