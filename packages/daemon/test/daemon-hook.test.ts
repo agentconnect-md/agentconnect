@@ -128,6 +128,30 @@ const fire = (over: Partial<RdMsgHook> = {}): RdMsgHook => ({
   ...over
 })
 
+const GITLAB_PROJECT = '4455667'
+
+/** A gitlab MR delivery — `githubReply` rides the same pipe with repo = project id, number = IID (14.1). */
+const gitlabFire = (): RdMsgHook =>
+  fire({
+    sessionKey: `gitlab:${GITLAB_PROJECT}:merge_request:42`,
+    event: 'merge_request:opened',
+    gitlab: {
+      projectId: GITLAB_PROJECT,
+      projectPath: 'example-group/example-project',
+      target: { kind: 'merge_request', iid: 42 }
+    },
+    context: {
+      source: 'gitlab',
+      event: 'merge_request',
+      action: 'opened',
+      repo: 'example-group/example-project',
+      number: 42,
+      title: 'fix the primary',
+      htmlUrl: 'https://gitlab.com/example-group/example-project/-/merge_requests/42',
+      truncated: false
+    }
+  })
+
 describe('Daemon rd/msg hook fires', () => {
   it('uses the display agent, runtime, and session model in GitHub attribution', async () => {
     const { factory, host } = streamingHost()
@@ -231,6 +255,53 @@ describe('Daemon rd/msg hook fires', () => {
       sourceInstallationId: '456',
       repoFullName: 'agentconnect-md/agentconnect'
     })
+    await daemon.stop()
+  }, 15_000)
+
+  // gitlab-com-integration.md 14.1/19.3: a note the poster could not publish must fail the run.
+  it.each([
+    { name: 'a refused effect lease', failure: 'token_unavailable' },
+    { name: 'an exhausted auth retry', failure: 'auth_rejected' },
+    { name: 'an abandoned publish', failure: 'publish_timeout' }
+  ])(
+    'fails the hook run when the gitlab note publish reports $name',
+    async ({ failure }) => {
+      const { factory } = streamingHost()
+      const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold(), hostFactory: factory })
+      await daemon.start()
+      const cp = fakeCpClient()
+      ;(daemon as never as { cpClient: unknown }).cpClient = cp
+      ;(daemon as any).githubReviews.makeGithubReply = vi.fn(() => ({
+        poster: { publish: vi.fn(async () => undefined), failure },
+        collector: new GithubReplyCollector()
+      }))
+
+      const ack = await (daemon as any).handleRelayMsg(gitlabFire(), () => {})
+
+      expect(ack).toEqual({ msgId: `${HOOK_ID}:d-1`, accepted: true })
+      await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1), WAIT)
+      expect(cp.hookReports[0]).toMatchObject({ status: 'failed', reason: `note_publish_failed:${failure}` })
+      await daemon.stop()
+    },
+    15_000
+  )
+
+  it('still reports success when the gitlab note published — the poster reports no failure', async () => {
+    const { factory } = streamingHost()
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold(), hostFactory: factory })
+    await daemon.start()
+    const cp = fakeCpClient()
+    ;(daemon as never as { cpClient: unknown }).cpClient = cp
+    ;(daemon as any).githubReviews.makeGithubReply = vi.fn(() => ({
+      poster: { publish: vi.fn(async () => ({ provider: 'gitlab', kind: 'note', externalId: '9001' })) },
+      collector: new GithubReplyCollector()
+    }))
+
+    await (daemon as any).handleRelayMsg(gitlabFire(), () => {})
+
+    await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1), WAIT)
+    expect(cp.hookReports[0]).toMatchObject({ status: 'success' })
+    expect(cp.hookReports[0]!.reason).toBeUndefined()
     await daemon.stop()
   }, 15_000)
 

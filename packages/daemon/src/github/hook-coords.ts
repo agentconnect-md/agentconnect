@@ -13,6 +13,7 @@ import type { GithubReviewEffect, GithubReviewEvent, GithubReviewTarget, GithubR
 import type { SessionWorktreeRemoval } from '../workspace/workspace-manager.js'
 import type { NormalizedMessage } from '../messages/normalized.js'
 import type { QueueEntry } from '../daemon/turn-types.js'
+import type { GitlabPublishFailure } from '../gitlab/poster.js'
 
 export function hookSnapshot(msg: RdMsgHook): HookConfigSnapshot | undefined {
   if (
@@ -85,6 +86,18 @@ export interface GithubReviewBatch {
   updatedAt: number
   sealed?: boolean
   items: GithubReviewBatchItem[]
+}
+
+/** Terminal hook reason for a cleanly finished turn, undefined ⇒ success: an unfinished multi-reply review batch, else a final the poster could not publish (14.1 — a silently absent note must never read as a successful run). */
+export function hookOutcomeFailure(
+  batch: GithubReviewBatch | undefined,
+  notePublishFailure: GitlabPublishFailure | undefined
+): string | undefined {
+  if (batch && batch.items.length > 1) {
+    if (batch.items.some((item) => item.publishState === 'in_flight')) return 'review_batch_publish_ambiguous'
+    if (batch.items.some((item) => item.publishState !== 'settled')) return 'review_batch_replies_missing'
+  }
+  return notePublishFailure ? `note_publish_failed:${notePublishFailure}` : undefined
 }
 
 /** Durable daemon-private hook identity; coalesced prompt excerpts stay local and HookReport omits them. */

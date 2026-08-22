@@ -14,6 +14,9 @@ const MAX_NOTE_CHARS = 65536
 const TRUNCATION_MARKER = '\n\n…(truncated)'
 const DEFAULT_FINALIZE_TIMEOUT_MS = 60_000
 
+/** Bounded normalized reasons the promised note is absent (14.1) — the hook completion reports exactly one. */
+export type GitlabPublishFailure = 'publish_timeout' | 'auth_rejected' | 'token_unavailable' | 'post_failed'
+
 export interface GitlabFinalPosterDeps {
   /** Action-time effect lease: the binding's effect PAT via purpose gitlab_hook_reply. */
   token: () => Promise<string>
@@ -28,6 +31,7 @@ export interface GitlabFinalPosterDeps {
 
 export class GitlabFinalPoster {
   private abandoned = false
+  private failureCode?: GitlabPublishFailure
   private publishPromise?: Promise<PublishedHookOutput | undefined>
   private readonly abort = new AbortController()
   private readonly sched: PosterScheduler
@@ -47,6 +51,11 @@ export class GitlabFinalPoster {
       clearTimeout: (h) => clearTimeout(h as NodeJS.Timeout)
     }
     this.finalizeTimeoutMs = deps.finalizeTimeoutMs ?? DEFAULT_FINALIZE_TIMEOUT_MS
+  }
+
+  /** Why this turn's note is missing; undefined when it published or the final was legitimately empty. */
+  get failure(): GitlabPublishFailure | undefined {
+    return this.failureCode
   }
 
   /** Publish the completed turn's final body exactly once; never rejects. */
@@ -78,6 +87,7 @@ export class GitlabFinalPoster {
       })
       return await Promise.race([this.post(finalBody, deadlineAt), deadline])
     } catch (err) {
+      this.fail('post_failed')
       if (!this.abandoned) this.safeWarn(`gitlab poster: create failed on ${this.target()} (${String(err)})`)
       return undefined
     } finally {
@@ -98,7 +108,14 @@ export class GitlabFinalPoster {
     const family = this.subjectKind === 'issue' ? 'issues' : 'merge_requests'
     const notePath = `/projects/${this.projectId}/${family}/${this.iid}/notes`
     for (let attempt = 0; attempt < 2; attempt += 1) {
-      const token = await this.deps.token()
+      let token: string
+      try {
+        token = await this.deps.token()
+      } catch (err) {
+        // A refused effect lease is its own outcome: nothing was ever sent to GitLab.
+        this.fail('token_unavailable')
+        throw err
+      }
       if (this.abandoned) return
       if (this.sched.now() >= deadlineAt) {
         this.abandonTimedOut()
@@ -136,11 +153,16 @@ export class GitlabFinalPoster {
       } catch {
         // Best-effort resource cleanup only.
       }
-      const refreshable = attempt === 0 && (res.status === 401 || res.status === 403) && this.deps.invalidateToken
-      if (!refreshable) throw new Error(`GitLab POST ${res.status}`)
+      const authRejected = res.status === 401 || res.status === 403
+      const refreshable = attempt === 0 && authRejected && this.deps.invalidateToken
+      if (!refreshable) {
+        this.fail(authRejected ? 'auth_rejected' : 'post_failed')
+        throw new Error(`GitLab POST ${res.status}`)
+      }
       try {
         this.deps.invalidateToken!(token)
       } catch {
+        this.fail('auth_rejected')
         throw new Error(`GitLab POST ${res.status}`)
       }
     }
@@ -164,9 +186,15 @@ export class GitlabFinalPoster {
     }
   }
 
+  /** First cause wins: a deadline that aborted an in-flight POST must not be relabelled by its abort error. */
+  private fail(code: GitlabPublishFailure): void {
+    this.failureCode ??= code
+  }
+
   private abandon(): boolean {
     if (this.abandoned) return false
     this.abandoned = true
+    this.fail('publish_timeout')
     this.abort.abort()
     return true
   }

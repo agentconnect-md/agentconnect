@@ -330,6 +330,8 @@ export class GitCredentialCache {
         this.entries.delete(key)
         throw new GitCredUnavailableError((e as Error).message, true)
       }
+      // 19.3: LEASE_DENIED is an authoritative refusal of new effects, not an outage — evict so no revoked token keeps serving.
+      if (code === 'LEASE_DENIED') this.entries.delete(key)
       throw new GitCredUnavailableError((e as Error).message, false)
     }
     // Old-CP mismatch guard (multi-repo design §Protocol Changes): a CP that predates

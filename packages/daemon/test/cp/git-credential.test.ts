@@ -93,6 +93,21 @@ describe('GitCredentialCache', () => {
     expect((await h.cache.get(AGENT, 'push')).token).toBe('ghs_2')
   })
 
+  it('evicts the cached token on an authoritative LEASE_DENIED instead of riding it (19.3)', async () => {
+    const h = build((n) => {
+      if (n === 2) throw Object.assign(new Error('binding stopped new effects'), { code: 'LEASE_DENIED' })
+      return grant(`ghs_${n}`, 3540)
+    })
+    expect((await h.cache.get(AGENT, 'clone')).token).toBe('ghs_1')
+    h.advance(50 * 60 * 1000) // below the handout threshold → refresh, and the CP refuses
+
+    // Unlike the INTERNAL outage above, the caller must fail NOW rather than keep the revoked grant.
+    await expect(h.cache.get(AGENT, 'push')).rejects.toMatchObject({ terminal: false })
+    // Neither terminal nor negative-cached: a repaired binding serves on the very next ask.
+    expect((await h.cache.get(AGENT, 'push')).token).toBe('ghs_3')
+    expect(h.calls()).toBe(3)
+  })
+
   it('invalidates only when the presented password matches (stale erase races)', async () => {
     const h = build((n) => grant(`ghs_${n}`, 3540))
     await h.cache.get(AGENT, 'clone')

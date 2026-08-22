@@ -413,6 +413,7 @@ import {
   githubPullRequestLane,
   githubReviewResultForCompletion,
   githubThreadWorktreeCleanup,
+  hookOutcomeFailure,
   MAX_HOOK_REPORT_INFLIGHT,
   type ActiveGithubReplyBatchMeta,
   type ActiveGithubTurnMeta,
@@ -9066,7 +9067,7 @@ export class Daemon {
     // Turn finished cleanly. Draining the next queued message for this sessionKey is
     // runLoop's job (it holds ownership across turns) — NOT here. On a throw, the catch
     // above rethrows and runLoop applies fail-stop (§6.9 #378).
-    await this.completeHookOutcome(entry, sessionId)
+    await this.completeHookOutcome(entry, sessionId, p)
     return sessionId
   }
 
@@ -10427,23 +10428,17 @@ export class Daemon {
   }
 
   /** Report the terminal hook outcome of a cleanly finished turn, failing it when a sealed
-   *  GitHub review batch did not publish every reply. */
-  private async completeHookOutcome(entry: QueueEntry, sessionId: string): Promise<void> {
+   *  GitHub review batch did not publish every reply, or when the promised note never landed. */
+  private async completeHookOutcome(entry: QueueEntry, sessionId: string, p: Pending): Promise<void> {
     const hookContext = entry.hookContext
     if (!hookContext) return
-    const batch = hookContext.githubReviewBatch
-    const batchFailure =
-      batch && batch.items.length > 1
-        ? batch.items.some((item) => item.publishState === 'in_flight')
-          ? 'review_batch_publish_ambiguous'
-          : batch.items.some((item) => item.publishState !== 'settled')
-            ? 'review_batch_replies_missing'
-            : undefined
-        : undefined
+    // The gitlab poster only records a failure for a non-empty final it actually attempted (14.1).
+    const notePublishFailure = entry.githubReply?.provider === 'gitlab' ? p.github?.poster.failure : undefined
+    const failure = hookOutcomeFailure(hookContext.githubReviewBatch, notePublishFailure)
     await this.emitHookCompletion(
       hookContext,
-      batchFailure ? 'failed' : 'success',
-      { sessionId, ...(batchFailure ? { reason: batchFailure } : {}) },
+      failure ? 'failed' : 'success',
+      { sessionId, ...(failure ? { reason: failure } : {}) },
       entry
     )
   }
