@@ -106,6 +106,29 @@ export interface PlatformThreadWindow {
   readState?: { truncated: boolean }
 }
 
+/** One bounded page of channel messages from a provider history read. */
+export interface PlatformChannelHistoryMessage {
+  sender: string
+  ts: string
+  text: string
+  isBot: boolean
+  threadTs?: string
+  replyCount?: number
+}
+
+export interface PlatformChannelHistoryOptions {
+  cursor?: string
+  limit?: number
+  oldest?: string
+  latest?: string
+}
+
+export interface PlatformChannelHistoryPage {
+  messages: PlatformChannelHistoryMessage[]
+  hasMore: boolean
+  nextCursor?: string
+}
+
 /**
  * The Layer-1 contract every chat-platform connection satisfies.
  *
@@ -144,6 +167,8 @@ export interface PlatformConnection {
   downloadFile(ref: string, maxBytes?: number): Promise<Buffer | null>
 
   // ── optional facets: what core PROBES for today ──
+  /** Fetch one provider-paginated page of channel messages. */
+  getChannelHistory?(channel: string, options?: PlatformChannelHistoryOptions): Promise<PlatformChannelHistoryPage>
   /** Provider thread history — backs mid-thread context recovery. Absent ⇒ the
    *  daemon degrades to observed-only transcript rows. */
   getThreadReplies?(

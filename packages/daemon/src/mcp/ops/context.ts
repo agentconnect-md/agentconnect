@@ -1,6 +1,7 @@
 import type { MemoryWriteSource } from '../../memory/store.js'
 import type { MemoryScope } from '../../memory/types.js'
 import type { ToolDescriptor } from '../../tool-schema/descriptor.js'
+import type { PlatformChannelHistoryOptions, PlatformChannelHistoryPage } from '../../platforms/contract.js'
 
 /**
  * The platform-neutral slice a session's tools need. `SlackConnection` and
@@ -67,6 +68,8 @@ export interface MessageGateway {
   listMembers(channel: string): Promise<{ id: string; name?: string; isBot?: boolean }[]>
   listChannels(): Promise<{ id: string; name?: string; isPrivate?: boolean }[]>
   getUserProfile(user: string): Promise<{ id: string; name?: string; realName?: string; isBot?: boolean }>
+  /** Read one bounded page from the conversation bound to the current session. */
+  getChannelHistory?(channel: string, options?: PlatformChannelHistoryOptions): Promise<PlatformChannelHistoryPage>
   /** Download an auth-gated file (Slack url_private / Telegram file_id) with the
    *  bot credentials; null on failure / over-cap. Backs the `read*File` tools so
    *  the agent can read attachments without ever holding the token. */

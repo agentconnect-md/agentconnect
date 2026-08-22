@@ -6,7 +6,7 @@ import {
   resolveGatewayForPlatform,
   type GatewayDeps
 } from './gateway.js'
-import { optionalString, parseArgs, requiredString } from './args.js'
+import { optionalBoundedInt, optionalString, parseArgs, requiredString } from './args.js'
 
 const DEFAULT_MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
 
@@ -31,6 +31,14 @@ export const GET_USER_PROFILE_ARGS = z.object({
   platform: optionalString('platform'),
   integrationId: optionalString('integrationId'),
   user: requiredString('user')
+})
+
+/** `getChannelHistory` arguments; the channel is always the current context channel. */
+export const GET_CHANNEL_HISTORY_ARGS = z.object({
+  cursor: optionalString('cursor'),
+  limit: optionalBoundedInt('limit', 1, 200),
+  oldest: optionalString('oldest'),
+  latest: optionalString('latest')
 })
 
 /** Every platform's credentialed attachment read (`readSlackFile`, `readTelegramFile`, …). */
@@ -147,6 +155,31 @@ export async function getUserProfile(
   const platform = parsed.platform ?? ctx.platform
   const { gw } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId)
   return { platform, ...(await gw.getUserProfile(parsed.user)) }
+}
+
+/** Read one bounded page from the current session's channel only. */
+export async function getChannelHistory(
+  ctx: SessionContext,
+  args: Record<string, unknown>,
+  deps: PlatformReadDeps
+): Promise<unknown> {
+  const parsed = parseArgs(GET_CHANNEL_HISTORY_ARGS, args)
+  const gw = ctx.integrationId ? deps.gatewayFor(ctx.integrationId) : undefined
+  if (!gw) throw new Error(`no live platform connection for integration ${ctx.integrationId ?? '(none)'}`)
+  if (!gw.getChannelHistory) throw new Error('channel history is unavailable on this connection')
+  const page = await gw.getChannelHistory(ctx.channel, {
+    ...(parsed.cursor ? { cursor: parsed.cursor } : {}),
+    ...(parsed.limit !== undefined ? { limit: parsed.limit } : {}),
+    ...(parsed.oldest ? { oldest: parsed.oldest } : {}),
+    ...(parsed.latest ? { latest: parsed.latest } : {})
+  })
+  return {
+    platform: ctx.platform,
+    channel: ctx.channel,
+    messages: page.messages,
+    hasMore: page.hasMore,
+    ...(page.nextCursor ? { nextCursor: page.nextCursor } : {})
+  }
 }
 
 // Any platform's CREDENTIALED attachment read (`readSlackFile`, `readTelegramFile`, …).

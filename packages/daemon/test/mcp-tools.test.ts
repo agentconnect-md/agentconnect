@@ -66,6 +66,7 @@ describe('toolsForIntegrations', () => {
         'listChannelMembers',
         'listChannels',
         'getUserProfile',
+        'getChannelHistory',
         'readSlackFile'
       ])
     )
@@ -106,6 +107,8 @@ describe('toolsForIntegrations', () => {
     for (const n of ['listChannels', 'listChannelMembers', 'getUserProfile']) {
       expect(props(readTool([slackInt, telegramInt], n))).toHaveProperty('integrationId')
     }
+    const historyProps = props(readTool([slackInt, telegramInt], 'getChannelHistory'))
+    expect(Object.keys(historyProps).sort()).toEqual(['cursor', 'latest', 'limit', 'oldest'])
     expect(props(readTool([slackInt, telegramInt], 'listKnownUsers'))).not.toHaveProperty('integrationId')
   })
 
@@ -382,6 +385,7 @@ describe('toolsForIntegrations', () => {
         'setSessionTitle',
         'sendMessage',
         'listChannels',
+        'getChannelHistory',
         'readTelegramFile',
         'searchMemory',
         'saveMemory',

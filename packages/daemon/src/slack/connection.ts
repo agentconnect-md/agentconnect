@@ -27,7 +27,12 @@ import {
   type StatusBarInfo,
   type StatusModalIdentity
 } from './render.js'
-import type { InteractionActor, PlatformConnection } from '../platforms/contract.js'
+import type {
+  InteractionActor,
+  PlatformChannelHistoryOptions,
+  PlatformChannelHistoryPage,
+  PlatformConnection
+} from '../platforms/contract.js'
 
 export interface ConsolidatedGroup {
   appToken: string
@@ -392,6 +397,22 @@ export type AppLike = {
         has_more?: boolean
         response_metadata?: { next_cursor?: string }
       }>
+      history: (a: unknown) => Promise<{
+        messages?: {
+          user?: string
+          bot_id?: string
+          app_id?: string
+          bot_profile?: { app_id?: string }
+          ts?: string
+          text?: string
+          blocks?: unknown
+          attachments?: unknown
+          thread_ts?: string
+          reply_count?: number
+        }[]
+        has_more?: boolean
+        response_metadata?: { next_cursor?: string }
+      }>
     }
     users: {
       info: (a: unknown) => Promise<{ user?: SlackUserResult }>
@@ -453,6 +474,8 @@ function isRoutableMessageEvent(ev: SlackMessageEvent): boolean {
 
 /** Cap on members enriched per `listChannelMembers` call (bounds users.info fan-out). */
 const MEMBER_ENRICH_CAP = 50
+const SLACK_CHANNEL_HISTORY_DEFAULT_LIMIT = 100
+const SLACK_CHANNEL_HISTORY_MAX_LIMIT = 200
 const SLACK_FILE_ORIGIN = 'https://files.slack.com'
 
 /**
@@ -1255,6 +1278,54 @@ export class SlackConnection implements PlatformConnection {
       if (window?.throwOnError) throw err
     }
     return out
+  }
+
+  /** Fetch one bounded, cursor-paginated page of Slack channel messages. */
+  async getChannelHistory(
+    channel: string,
+    options: PlatformChannelHistoryOptions = {}
+  ): Promise<PlatformChannelHistoryPage> {
+    const limit = Math.min(
+      Math.max(options.limit ?? SLACK_CHANNEL_HISTORY_DEFAULT_LIMIT, 1),
+      SLACK_CHANNEL_HISTORY_MAX_LIMIT
+    )
+    const hasTimeBounds = Boolean(options.oldest || options.latest)
+    try {
+      const res = await this.app.client.conversations.history({
+        channel,
+        limit,
+        ...(options.cursor ? { cursor: options.cursor } : {}),
+        ...(options.oldest ? { oldest: options.oldest } : {}),
+        ...(options.latest ? { latest: options.latest } : {}),
+        ...(hasTimeBounds ? { inclusive: true } : {})
+      })
+      const nextCursor = res.response_metadata?.next_cursor?.trim() || undefined
+      const messages = (res.messages ?? []).flatMap((m) => {
+        if (!m.ts) return []
+        const appId = m.app_id ?? m.bot_profile?.app_id
+        const replyCount = typeof m.reply_count === 'number' && m.reply_count > 0 ? m.reply_count : undefined
+        return [
+          {
+            sender: m.bot_id ?? m.user ?? 'unknown',
+            ts: m.ts,
+            text: extractSlackMessageText(m),
+            isBot: Boolean(m.bot_id || appId),
+            ...(m.thread_ts ? { threadTs: m.thread_ts } : {}),
+            ...(replyCount !== undefined ? { replyCount } : {})
+          }
+        ]
+      })
+      return {
+        messages,
+        hasMore: Boolean(res.has_more || nextCursor),
+        ...(nextCursor ? { nextCursor } : {})
+      }
+    } catch (err) {
+      const code = slackApiErrorCode(err)
+      const safeCode = code && /^[a-z0-9._:-]{1,64}$/i.test(code) ? code : undefined
+      this.deps.log?.debug('slack: conversations.history failed (ch=' + channel + '): ' + (safeCode ?? 'unknown'))
+      throw new Error(safeCode ? 'Slack channel history failed: ' + safeCode : 'Slack channel history failed')
+    }
   }
 
   /**

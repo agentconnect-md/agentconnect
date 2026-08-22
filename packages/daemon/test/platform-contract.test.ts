@@ -62,6 +62,7 @@ describe('Layer-1 platform contract (§7.1)', () => {
     // (`membershipEnumeration: 'authoritative'`) and provider thread history.
     expect(has(SlackConnection, 'listBotChannels')).toBe(true)
     expect(has(SlackConnection, 'getThreadReplies')).toBe(true)
+    expect(has(SlackConnection, 'getChannelHistory')).toBe(true)
     expect(has(SlackConnection, 'openDirectMessage')).toBe(true)
     for (const ctor of [TelegramConnection, DiscordConnection, FeishuConnection]) {
       expect(has(ctor, 'listBotChannels')).toBe(false)
@@ -82,6 +83,7 @@ describe('Layer-1 platform contract (§7.1)', () => {
     // The interface was lifted FROM these, so a drift on either side breaks the
     // eval suite's ability to substitute for a real platform.
     expect(has(VirtualSlackConnection, 'getThreadReplies')).toBe(true)
+    expect(has(VirtualSlackConnection, 'getChannelHistory')).toBe(true)
     expect(has(VirtualSlackConnection, 'listBotChannels')).toBe(true)
     expect(has(VirtualSlackConnection, 'openDirectMessage')).toBe(true)
     expect(has(VirtualSlackConnection, 'leaveChannel')).toBe(true)
