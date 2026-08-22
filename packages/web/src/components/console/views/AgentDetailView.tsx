@@ -52,6 +52,7 @@ import { AgentCallVisibility } from '@/components/console/AgentCallVisibility'
 import { ApprovalRequestsCard } from '@/components/console/ApprovalRequestsCard'
 import { IntegrationChannelList, roomGlyph, rowLabel } from '@/components/console/IntegrationChannelList'
 import { RecentSessionsCard } from '@/components/console/RecentSessionsCard'
+import { TriggerSelect } from '@/components/console/TriggerSelect'
 import { discordBotInviteUrl } from '@/components/console/platforms/discord/invite'
 import { WorkspaceCard, type WorkspaceHeaderInfo } from '@/components/console/WorkspaceCard'
 import { WorkspaceFiles, workspaceReadModelKey } from '@/components/console/WorkspaceFiles'
@@ -1564,33 +1565,20 @@ export default function AgentDetailView() {
                                   )
                                 })}
                               </div>
-                              {/* Trigger bar — same ⚡ + segmented control as the IM
-                                    channel rows, mention last, hover copy per segment. */}
-                              <span className="inline-flex flex-none items-center gap-[7px]">
-                                <span title="Trigger — when this agent runs" className="flex-none leading-none">
-                                  <Icon name="zap" size={14} color="var(--text-tertiary)" />
-                                </span>
-                                <div className="inline-flex gap-[2px] rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[2px]">
-                                  {GH_TRIGGER_MODES.map((mode) => {
-                                    const active = triggerModeOf(h) === mode
-                                    return (
-                                      <button
-                                        key={mode}
-                                        onClick={() => void setHookCadence(h, mode)}
-                                        disabled={hookBusy === h.id}
-                                        title={githubTriggerTooltip(mode, da.name)}
-                                        className={`cursor-pointer rounded-[7px] border-0 px-3 py-[5px] font-sans text-[12.5px] leading-normal ${
-                                          active
-                                            ? 'bg-(--surface-card) font-semibold text-(--text-primary) shadow-[0_1px_2px_rgba(0,0,0,0.08)]'
-                                            : 'bg-transparent font-normal text-(--text-tertiary)'
-                                        } ${hookBusy === h.id ? 'opacity-60' : ''}`}
-                                      >
-                                        {GH_TRIGGER_PILL[mode]}
-                                      </button>
-                                    )
-                                  })}
-                                </div>
-                              </span>
+                              {/* Trigger — the same ⚡ dropdown the IM channel rows carry, mention last. */}
+                              <TriggerSelect
+                                className="flex-none"
+                                options={GH_TRIGGER_MODES.map((mode) => ({
+                                  value: mode,
+                                  label: GH_TRIGGER_PILL[mode],
+                                  hint: githubTriggerTooltip(mode, da.name)
+                                }))}
+                                value={triggerModeOf(h)}
+                                onChange={(mode) => void setHookCadence(h, mode)}
+                                ariaLabel={`Trigger for ${h.repoFullName ?? h.name}`}
+                                hint="Trigger — when this agent runs"
+                                busy={hookBusy === h.id}
+                              />
                               <span className="inline-flex flex-none gap-[2px]">
                                 <button
                                   className="iconbtn h-[26px] w-[26px] flex-none"
@@ -1697,32 +1685,20 @@ export default function AgentDetailView() {
                                   )
                                 })}
                               </div>
-                              {/* Trigger bar — the same segmented control the GitHub rows carry. */}
-                              <span className="inline-flex flex-none items-center gap-[7px]">
-                                <span title="Trigger — when this agent runs" className="flex-none leading-none">
-                                  <Icon name="zap" size={14} color="var(--text-tertiary)" />
-                                </span>
-                                <div className="inline-flex gap-[2px] rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[2px]">
-                                  {GL_TRIGGER_MODES.map((mode) => {
-                                    const active = gitlabTriggerModeOf(h) === mode
-                                    return (
-                                      <button
-                                        key={mode}
-                                        onClick={() => void setGitlabHookCadence(h, mode)}
-                                        disabled={hookBusy === h.id}
-                                        title={gitlabTriggerTooltip(mode, da.name)}
-                                        className={`cursor-pointer rounded-[7px] border-0 px-3 py-[5px] font-sans text-[12.5px] leading-normal ${
-                                          active
-                                            ? 'bg-(--surface-card) font-semibold text-(--text-primary) shadow-[0_1px_2px_rgba(0,0,0,0.08)]'
-                                            : 'bg-transparent font-normal text-(--text-tertiary)'
-                                        } ${hookBusy === h.id ? 'opacity-60' : ''}`}
-                                      >
-                                        {GL_TRIGGER_PILL[mode]}
-                                      </button>
-                                    )
-                                  })}
-                                </div>
-                              </span>
+                              {/* Trigger — the same ⚡ dropdown the GitHub rows carry. */}
+                              <TriggerSelect
+                                className="flex-none"
+                                options={GL_TRIGGER_MODES.map((mode) => ({
+                                  value: mode,
+                                  label: GL_TRIGGER_PILL[mode],
+                                  hint: gitlabTriggerTooltip(mode, da.name)
+                                }))}
+                                value={gitlabTriggerModeOf(h)}
+                                onChange={(mode) => void setGitlabHookCadence(h, mode)}
+                                ariaLabel={`Trigger for ${h.repoFullName ?? h.name}`}
+                                hint="Trigger — when this agent runs"
+                                busy={hookBusy === h.id}
+                              />
                               <span className="inline-flex flex-none gap-[2px]">
                                 <button
                                   className="iconbtn h-[26px] w-[26px] flex-none"

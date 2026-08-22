@@ -7,13 +7,13 @@ import { useConsoleData } from '@/lib/data-context'
 import { Icon } from '@/components/ui'
 import { AgentIconView } from '@/components/marks'
 import { channelListSemantics } from '@/components/console/platforms/registry'
+import { TriggerSelect, type TriggerOption } from '@/components/console/TriggerSelect'
 import type { AgentIcon } from '@/lib/agent-icon'
 import { chatPlatformName } from '@/lib/platform-labels'
 
-/** The per-conversation trigger toggle: a ⚡ marker followed by the segmented
- *  bar. Channels: "off" / "any message" / "@-mention" (the default, so it sits
- *  last). DM rows are binary off/on; shared bots project that state across every
- *  membership row. Every segment carries hover copy. */
+/** The per-conversation trigger dropdown: channels take "off" / "any message" / "@-mention" (the
+ *  default, so it sits last), DM rows are binary off/on, and shared bots project that state across
+ *  every membership row. Every choice carries hover copy. */
 function TriggerToggle({
   channel,
   platform,
@@ -33,62 +33,38 @@ function TriggerToggle({
     setSaving(true)
     Promise.resolve(onChange(trigger)).finally(() => setSaving(false))
   }
-  const seg = (trigger: IntegrationChannelRow['trigger'], label: string, hint: string) => {
-    const active = channel.trigger === trigger
-    return (
-      <button
-        key={trigger}
-        onClick={() => pick(trigger)}
-        disabled={disabled || saving}
-        title={hint}
-        className={`rounded-[7px] border-0 px-3 py-[5px] font-sans text-[12.5px] leading-normal max-desktop:w-full ${
-          disabled ? 'cursor-default' : 'cursor-pointer'
-        } ${
-          active
-            ? 'bg-(--surface-card) font-semibold text-(--text-primary) shadow-[0_1px_2px_rgba(0,0,0,0.08)]'
-            : 'bg-transparent font-normal text-(--text-tertiary)'
-        } ${saving ? 'opacity-60' : ''}`}
-      >
-        {label}
-      </button>
-    )
-  }
   // A DM conversation activates on any message once enabled — binary off/on. A
   // channel takes the full three-way choice for EVERY agent, gated or not: an operator
   // who wants the bot silent here but still in the channel on the platform has nowhere
   // else to say so. A GROUP DM takes the channel's choice, not the DM's: several people
   // share it, so "every message" must stay opt-in.
   const here = `this ${rowNoun(channel.kind, platform)}`
-  const segs: [IntegrationChannelRow['trigger'], string, string][] =
+  const options: TriggerOption<IntegrationChannelRow['trigger']>[] =
     channel.kind === 'im'
       ? [
-          ['off', 'off', "The agent doesn't respond in this conversation."],
-          ['any', 'on', 'The agent responds to messages in this conversation.']
+          { value: 'off', label: 'off', hint: "The agent doesn't respond in this conversation." },
+          { value: 'any', label: 'on', hint: 'The agent responds to messages in this conversation.' }
         ]
       : [
-          ['off', 'off', `The agent doesn't respond in ${here}, even when @-mentioned.`],
-          ['any', 'any message', `The agent responds to every message in ${here}.`],
-          [
-            'mention',
-            '@-mention',
-            "The agent responds when @-mentioned. Follow-ups in a thread it has joined don't need another mention."
-          ]
+          { value: 'off', label: 'off', hint: `The agent doesn't respond in ${here}, even when @-mentioned.` },
+          { value: 'any', label: 'any message', hint: `The agent responds to every message in ${here}.` },
+          {
+            value: 'mention',
+            label: '@-mention',
+            hint: "The agent responds when @-mentioned. Follow-ups in a thread it has joined don't need another mention."
+          }
         ]
   return (
-    <span className="inline-flex items-center gap-[7px] max-desktop:w-full">
-      <span title="Trigger — when the agent responds here" className="flex-none leading-none">
-        <Icon name="zap" size={14} color="var(--text-tertiary)" />
-      </span>
-      <div
-        className={
-          segs.length === 3
-            ? 'inline-flex flex-1 gap-[2px] rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[2px] max-desktop:grid max-desktop:grid-cols-3'
-            : 'inline-flex flex-1 gap-[2px] rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[2px] max-desktop:grid max-desktop:grid-cols-2'
-        }
-      >
-        {segs.map(([trigger, label, hint]) => seg(trigger, label, hint))}
-      </div>
-    </span>
+    <TriggerSelect
+      options={options}
+      value={channel.trigger}
+      onChange={pick}
+      ariaLabel={`Trigger for ${rowLabel(channel)}`}
+      hint="Trigger — when the agent responds here"
+      disabled={disabled}
+      busy={saving}
+      className="max-desktop:w-full"
+    />
   )
 }
 
@@ -253,10 +229,9 @@ export const canLeaveRow = (kind: IntegrationChannelRow['kind'], platform?: stri
   canLeaveConversation(platform) && !isDirectConversation(kind)
 
 /**
- * The ONE action a row's menu offers, fully worded. Exported and pure because the rule
- * it encodes — one action, the strongest the platform allows, and the copy carries
- * whatever that leaves undone — is the whole design and belongs in a test rather than
- * only in a rendered popover.
+ * The ONE action a row offers, fully worded. Exported and pure because the rule it encodes —
+ * one action, the strongest the platform allows, and the copy carries whatever that leaves
+ * undone — is the whole design and belongs in a test rather than only in a rendered button.
  *
  * Three cases hide behind "cannot leave", and they call for different sentences:
  * a Discord bot belongs to a SERVER, so the way out is the band heading above the row,
@@ -289,7 +264,7 @@ export function rowMenuAction(
     leave: false,
     name,
     label: 'Remove from this list',
-    icon: 'trash-2',
+    icon: 'x',
     hint: `Only stops showing it here. ${rest}`,
     confirm: `Remove ${name} from this list? ${rest}`
   }
@@ -320,22 +295,22 @@ export function placePopover(
 }
 
 /**
- * The per-row overflow menu, which offers exactly ONE action — the strongest the
- * platform allows, worded by `rowMenuAction`. Where the bot can leave, leaving is the
- * only choice: it does everything the weaker one does and more, so offering both would
- * ask the operator to distinguish two outcomes that differ only in how far they reach.
- * Where it cannot, removing the row is the only choice and its copy carries the rest.
+ * The row's ONE way out, worded by `rowMenuAction` — a bare icon button, not a menu: a
+ * single-item overflow menu is two clicks and a popover to reach one control, and the repository
+ * rows next to it already spend their × directly. Where the bot can leave, leaving is the only
+ * choice: it does everything the weaker one does and more, so offering both would ask the operator
+ * to distinguish two outcomes that differ only in how far they reach. Where it cannot, removing the
+ * row is the only choice and its copy carries the rest.
  *
- * That collapse is what makes the "already gone" case load-bearing: on a leave-capable
- * platform a stale row has no second escape hatch, so Leave must also succeed when the
- * bot has already been removed there (`isAlreadyOutOfChat`, daemon side).
+ * That collapse is what makes the "already gone" case load-bearing: on a leave-capable platform a
+ * stale row has no second escape hatch, so Leave must also succeed when the bot has already been
+ * removed there (`isAlreadyOutOfChat`, daemon side).
  *
- * Each label names its OUTCOME. Neither says "forget", the earlier wording: it
- * describes our bookkeeping, not the user's outcome, and in a product that gives agents
- * a MEMORY it reads like erasing what was said. Both confirm, since neither is undoable
- * from here.
+ * The label names the OUTCOME. Neither says "forget", the earlier wording: it describes our
+ * bookkeeping, not the user's outcome, and in a product that gives agents a MEMORY it reads like
+ * erasing what was said. Both confirm, since neither is undoable from here.
  */
-function RowActions({
+function RowAction({
   channel,
   platform,
   onForget,
@@ -346,88 +321,25 @@ function RowActions({
   onForget: () => Promise<void>
   onLeave: () => Promise<void>
 }) {
-  const [box, setBox] = useState<PopoverBox | null>(null)
   const [busy, setBusy] = useState(false)
-  const btnRef = useRef<HTMLButtonElement>(null)
-  const open = box !== null
-  const close = useCallback(() => setBox(null), [])
-  // Same portal + dismissal contract as the default-dispatch popover: the host cards
-  // clip their rows, so an in-flow menu is cut off on the last one.
-  useEffect(() => {
-    if (!open) return
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && close()
-    document.addEventListener('keydown', onKey, true)
-    window.addEventListener('scroll', close, true)
-    window.addEventListener('resize', close)
-    return () => {
-      document.removeEventListener('keydown', onKey, true)
-      window.removeEventListener('scroll', close, true)
-      window.removeEventListener('resize', close)
-    }
-  }, [open, close])
-  const toggle = () => {
-    const el = btnRef.current
-    if (open || !el) return close()
-    setBox(placePopover(el.getBoundingClientRect(), window.innerWidth, window.innerHeight))
-  }
-  const run = (action: () => Promise<void>) => {
-    close()
-    if (busy) return
-    setBusy(true)
-    void action().finally(() => setBusy(false))
-  }
   const action = rowMenuAction(channel, platform)
-  const item = (label: string, icon: string, hint: string, onClick: () => void) => (
-    <button
-      onClick={onClick}
-      disabled={busy}
-      title={hint}
-      className={`flex w-full items-start gap-[9px] rounded-[6px] border-0 bg-transparent px-[9px] py-[7px] text-left hover:bg-(--surface-hover) ${
-        busy ? 'cursor-default opacity-60' : 'cursor-pointer'
-      }`}
-    >
-      <Icon name={icon} size={13} color="var(--text-tertiary)" className="mt-[2px] flex-none" />
-      <span className="min-w-0">
-        <span className="block font-sans text-[12.5px] font-semibold leading-normal text-(--text-primary)">
-          {label}
-        </span>
-        <span className="block font-sans text-[11.5px] font-normal leading-[1.45] text-(--text-tertiary)">{hint}</span>
-      </span>
-    </button>
-  )
+  const run = () => {
+    if (busy || !window.confirm(action.confirm)) return
+    setBusy(true)
+    void (action.leave ? onLeave() : onForget()).finally(() => setBusy(false))
+  }
   return (
     // The row's controls stack on mobile, where a left-aligned lone button reads as
     // stray; pinning it to the row's end keeps it looking like the row's own control.
-    <span className="flex-none max-desktop:self-end">
-      <button
-        ref={btnRef}
-        onClick={toggle}
-        title={`More actions for ${action.name}`}
-        aria-label={`More actions for ${action.name}`}
-        aria-expanded={open}
-        className={`iconbtn h-7 w-7 ${busy ? 'opacity-60' : ''}`}
-      >
-        <Icon name="ellipsis" size={15} color="var(--text-tertiary)" />
-      </button>
-      {box &&
-        createPortal(
-          <>
-            <span className="fixed inset-0 z-[1090]" onClick={close} />
-            <div
-              className="fixed z-[1100] w-[264px] rounded-[10px] border border-(--border-default) bg-(--surface-card) p-1 shadow-(--shadow-lg)"
-              style={box.style}
-            >
-              {item(action.label, action.icon, action.hint, () =>
-                run(async () => {
-                  if (!window.confirm(action.confirm)) return
-                  await (action.leave ? onLeave() : onForget())
-                })
-              )}
-            </div>
-          </>,
-          document.body
-        )}
-    </span>
+    <button
+      onClick={run}
+      disabled={busy}
+      title={`${action.label} — ${action.hint}`}
+      aria-label={`${action.label}: ${action.name}`}
+      className={`iconbtn h-7 w-7 flex-none max-desktop:self-end ${busy ? 'opacity-60' : ''}`}
+    >
+      <Icon name={action.icon} size={14} color="var(--text-tertiary)" />
+    </button>
   )
 }
 
@@ -721,11 +633,11 @@ export function IntegrationChannelList({
             disabled={!integrationId}
             onChange={(trigger) => setChannelTrigger(integrationId!, c.channelId, trigger)}
           />
-          {/* Demo rows have no integration to act on, so they carry no menu at all
-              rather than an inert one. Both callbacks below are always wired; which ONE
-              the menu offers is `rowMenuAction`'s call, so that rule lives in one place. */}
+          {/* Demo rows have no integration to act on, so they carry no button at all rather than an
+              inert one. Both callbacks are always wired; which ONE the row spends is `rowMenuAction`'s
+              call, so that rule lives in one place. */}
           {integrationId && (
-            <RowActions
+            <RowAction
               channel={c}
               platform={platform}
               onForget={() => act(() => forgetChannel(integrationId, c.channelId))}
