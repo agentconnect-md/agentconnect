@@ -6,11 +6,12 @@
 import { useState } from 'react'
 import { Icon } from './ui'
 import { withIconUrl, type AgentIcon } from '@/lib/agent-icon'
+import gitlabIcon from '@iconify-icons/logos/gitlab'
 import slackIcon from '@iconify-icons/logos/slack-icon'
 import webhooksLogoFillIcon from '@iconify-icons/ph/webhooks-logo-fill'
 import { Icon as IconifyIcon } from '@iconify/react'
 import { FcGoogle } from 'react-icons/fc'
-import { SiGithub, SiGitlab } from 'react-icons/si'
+import { SiGithub } from 'react-icons/si'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
 import { LARK_MARK_SRC } from './console/platforms/feishu/mark'
 import { platformMark } from './console/platforms/marks'
@@ -222,11 +223,9 @@ export function GithubMark({ color = 'currentColor', fillPct = 60 }: { color?: s
   )
 }
 
-// GitLab tanuki mark — the code-host counterpart of {@link GithubMark}.
-export function GitlabMark({ color = 'currentColor', fillPct = 60 }: { color?: string; fillPct?: number }) {
-  return (
-    <SiGitlab style={{ width: `${fillPct}%`, height: `${fillPct}%`, display: 'block' }} color={color} aria-hidden />
-  )
+// GitLab tanuki mark — {@link GithubMark}'s multi-color counterpart, hence no `color`; `ssr` draws it before mount.
+export function GitlabMark({ fillPct = 60 }: { fillPct?: number }) {
+  return <IconifyIcon icon={gitlabIcon} ssr style={markBox(fillPct)} aria-hidden />
 }
 
 /**
@@ -258,7 +257,7 @@ export function PlatformMark({ platform, fillPct = 60 }: { platform: string; fil
   }
   // The other code host, capped the same way: the tanuki is a full-bleed glyph too.
   if (x.includes('gitlab')) {
-    return <SiGitlab style={sq} color="currentColor" aria-hidden />
+    return <IconifyIcon icon={gitlabIcon} ssr style={sq} aria-hidden />
   }
   if (x.includes('hook')) {
     return <IconifyIcon icon={webhooksLogoFillIcon} style={s} color="var(--brand)" aria-hidden />

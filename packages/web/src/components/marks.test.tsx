@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { AgentIconView, OrgIconView, PlatformMark, modelProviderSlug } from './marks'
+import { AgentIconView, GitlabMark, OrgIconView, PlatformMark, modelProviderSlug } from './marks'
 
 describe('modelProviderSlug', () => {
   it('reads the provider prefix from provider/model ids', () => {
@@ -84,6 +84,26 @@ describe('icon views', () => {
   })
 })
 
+describe('GitlabMark', () => {
+  it('renders the official multi-color tanuki rather than a monochrome glyph', () => {
+    const markup = renderToStaticMarkup(<GitlabMark />)
+
+    expect(markup).toContain('<svg')
+    // The brand triad, straight from the official logo artwork.
+    expect(markup).toContain('#E24329')
+    expect(markup).toContain('#FC6D26')
+    expect(markup).toContain('#FCA326')
+    expect(markup).not.toContain('currentColor')
+    expect(markup).toContain('width:60%')
+  })
+
+  it('applies a caller fill verbatim so it matches the GitHub mark beside it', () => {
+    // Only PlatformMark caps a full-bleed request; both code-host marks pass it through.
+    expect(renderToStaticMarkup(<GitlabMark fillPct={100} />)).toContain('width:100%')
+    expect(renderToStaticMarkup(<GitlabMark fillPct={90} />)).toContain('width:90%')
+  })
+})
+
 describe('PlatformMark', () => {
   it('applies the requested fill once to the GitHub mark', () => {
     const inset = renderToStaticMarkup(<PlatformMark platform="github" />)
@@ -104,11 +124,9 @@ describe('PlatformMark', () => {
   })
 
   it('caps the square brand glyphs at 80% while other marks honour a full-bleed box', () => {
-    // Slack / GitHub / Discord have no padding inside their artwork, so a
-    // fillPct=100 caller (the session rail rows) would draw them larger than the
-    // marks beside them. Slack is an Iconify mark, which renders an empty <span>
-    // until it hydrates, so only the react-icons pair is assertable from SSR.
-    for (const platform of ['github', 'discord']) {
+    // No padding inside this artwork, so an uncapped fillPct=100 would outsize the marks beside it.
+    for (const platform of ['github', 'gitlab', 'discord']) {
+      // Slack belongs here too, but renders without `ssr`, so SSR gives it an empty <span>.
       const markup = renderToStaticMarkup(<PlatformMark platform={platform} fillPct={100} />)
       expect(markup, platform).toContain('width:80%')
       expect(markup, platform).not.toContain('width:100%')
