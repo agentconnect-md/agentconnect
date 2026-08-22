@@ -49,6 +49,7 @@ import { AgentSecretsCard } from '@/components/console/AgentSecretsCard'
 import { AgentToolsCard } from '@/components/console/AgentToolsCard'
 import { AgentSkillsCard } from '@/components/console/AgentSkillsCard'
 import { AgentCallVisibility } from '@/components/console/AgentCallVisibility'
+import { AgentGitlabIdentity } from '@/components/console/AgentGitlabIdentity'
 import { ApprovalRequestsCard } from '@/components/console/ApprovalRequestsCard'
 import { IntegrationChannelList, roomGlyph, rowLabel } from '@/components/console/IntegrationChannelList'
 import { RecentSessionsCard } from '@/components/console/RecentSessionsCard'
@@ -1846,6 +1847,8 @@ export default function AgentDetailView() {
           </div>
 
           <div className="flex min-w-0 flex-col gap-4 desktop:gap-[18px]">
+            {/* Absent unless this agent has a GitLab project bound — it renders its own nothing. */}
+            <AgentGitlabIdentity agentId={da.id} className="max-desktop:rounded-lg" />
             {da.canEdit && !da.name.startsWith(MOCK_PREFIX) && (
               <ApprovalRequestsCard agentId={da.id} className="max-desktop:rounded-lg" />
             )}

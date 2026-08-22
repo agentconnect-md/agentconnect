@@ -88,6 +88,8 @@ export const consoleKeys = {
     agentId ? consoleKey(orgId, 'agent-hooks', agentId) : null,
   agentRepos: (orgId: string | null | undefined, agentId: string | null | undefined) =>
     agentId ? consoleKey(orgId, 'agent-repos', agentId) : null,
+  agentGitlabAccounts: (orgId: string | null | undefined, agentId: string | null | undefined) =>
+    agentId ? consoleKey(orgId, 'agent-gitlab-accounts', agentId) : null,
   agentPermissionRequests: (orgId: string | null | undefined, agentId: string | null | undefined) =>
     agentId ? consoleKey(orgId, 'agent-permission-requests', agentId) : null,
   hookRuns: (orgId: string | null | undefined, hookId: string) => consoleKey(orgId, 'hook-runs', hookId)

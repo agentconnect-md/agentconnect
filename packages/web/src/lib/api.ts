@@ -5286,6 +5286,9 @@ export interface GitlabProjectAccountDto {
   username: string
   displayName: string | null
   userId: string | null
+  /** The account's OWN health: an agent's identity can be broken on a ready project. */
+  state: GitlabProjectBindingState
+  stateReason: string | null
 }
 
 export interface GitlabProjectBindingDto {
@@ -5386,6 +5389,37 @@ export function transferGitlabProject(id: string): Promise<GitlabProjectBindingD
 
 export function deleteGitlabProject(id: string): Promise<GitlabProjectRemovalDto> {
   return apiDelete<GitlabProjectRemovalDto>(`${orgBase()}/gitlab/projects/${encodeURIComponent(id)}`)
+}
+
+/** One agent's own GitLab identity: the group service account it acts as. An
+ *  agent holds one per top-level group it has a bound project in, so an agent
+ *  spanning two groups has two — GitLab bot accounts cannot cross that boundary. */
+export interface GitlabAgentAccountDto {
+  id: string
+  rootGroupId: string // numeric top-level group id, losslessly as a string
+  rootGroupPath: string | null // that group's current path, read off a bound project
+  username: string
+  displayName: string | null
+  userId: string | null // numeric GitLab user id; null until the account exists
+  state: GitlabProjectBindingState
+  stateReason: string | null
+  lifecycle: 'active' | 'retiring'
+}
+
+/** The agent's GitLab accounts. Like the connection list this doubles as the enabled-probe: 404 ⇒ no GitLab app. */
+export async function fetchGitlabAgentAccounts(
+  agentId: string,
+  orgId?: string
+): Promise<{ enabled: boolean; accounts: GitlabAgentAccountDto[] }> {
+  try {
+    const body = await apiGet<{ accounts: GitlabAgentAccountDto[] }>(
+      `${orgBase(orgId)}/gitlab/agents/${encodeURIComponent(agentId)}/accounts`
+    )
+    return { enabled: true, accounts: body.accounts }
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 404) return { enabled: false, accounts: [] }
+    throw e
+  }
 }
 
 // ── agent repository authorizations (agent-multi-repo-authorization.md) ──────
