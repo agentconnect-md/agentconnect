@@ -107,6 +107,23 @@ describe('SlackConnection.uploadFile', () => {
     expect(completeUploadExternal.mock.calls[1]![0]).not.toHaveProperty('username')
   })
 
+  it('does NOT retry a completion whose outcome Slack never confirmed, and calls it indeterminate', async () => {
+    // completeUploadExternal is one-shot: a transport failure may have been ACCEPTED with its
+    // response lost, so a second call could double-post and "nothing was sent" could be a lie
+    // about a file the channel already shows.
+    const completeUploadExternal = vi.fn(async () => {
+      throw new Error('socket hang up')
+    })
+    const conn = connWith({
+      getUploadURLExternal: async () => ({ upload_url: 'https://files.slack.com/upload/v1/x', file_id: 'F1' }),
+      completeUploadExternal
+    })
+    await expect(
+      conn.uploadFile('C1', { bytes: Buffer.from('x'), name: 'a.png' }, 'hi', undefined, { username: 'Scout' })
+    ).resolves.toEqual({ ok: false, reason: 'indeterminate', detail: 'socket hang up' })
+    expect(completeUploadExternal).toHaveBeenCalledOnce()
+  })
+
   it('reports the provider’s own error code, since `platform error` alone is not actionable', async () => {
     const conn = connWith({
       getUploadURLExternal: async () => {

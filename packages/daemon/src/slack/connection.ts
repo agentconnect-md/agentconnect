@@ -1390,7 +1390,14 @@ export class SlackConnection implements PlatformConnection {
       } catch (err) {
         this.rememberMissingScopes(err)
         this.deps.log?.debug(`slack: uploadFile ${file.name} → ch=${channel} failed: ${(err as Error).message}`)
-        return { ok: false, reason: classifySlackUploadError(err), ...slackErrorDetail(err) }
+        // A share whose outcome Slack never confirmed must say "may have landed", never
+        // "nothing was sent" — the same rule the send queue's abandonment already follows.
+        const ambiguous = (err as { shareMayHaveLanded?: unknown } | null)?.shareMayHaveLanded === true
+        return {
+          ok: false,
+          reason: ambiguous ? 'indeterminate' : classifySlackUploadError(err),
+          ...slackErrorDetail(err)
+        }
       }
     })
     // The queue abandons a task at 30 s but the task KEEPS RUNNING — the share may still
@@ -1453,6 +1460,21 @@ export class SlackConnection implements PlatformConnection {
    * would have done for the one cause it knew about. The file lands either way; the agent's
    * name on it is the part we are willing to lose.
    */
+  /**
+   * `files.completeUploadExternal` is ONE-SHOT: it cannot be safely repeated, because a
+   * second call after a lost response would double-post. So a failure that is not a DEFINITE
+   * platform refusal (Slack answering `{ok:false, error}`) is ambiguous — the share may
+   * already be visible — and is marked as such rather than treated as "nothing happened".
+   */
+  private async completeShare(payload: Record<string, unknown>): Promise<void> {
+    try {
+      await this.app.client.files.completeUploadExternal(payload)
+    } catch (err) {
+      if (slackApiErrorCode(err) === undefined) throw Object.assign(err as Error, { shareMayHaveLanded: true })
+      throw err
+    }
+  }
+
   private async completeUpload(share: Record<string, unknown>, options?: SlackPostOptions): Promise<void> {
     const customize: Record<string, unknown> = {}
     const username = options?.username?.trim()
@@ -1460,21 +1482,25 @@ export class SlackConnection implements PlatformConnection {
     if (username) customize.username = username
     if (iconUrl) customize.icon_url = iconUrl
     if (Object.keys(customize).length === 0 || Date.now() < this.customUsernameRetryAt) {
-      await this.app.client.files.completeUploadExternal(share)
+      await this.completeShare(share)
       return
     }
     try {
-      await this.app.client.files.completeUploadExternal({ ...share, ...customize })
+      await this.completeShare({ ...share, ...customize })
       this.customUsernameRetryAt = 0
     } catch (err) {
       this.rememberMissingScopes(err)
+      // A second completion is only safe when Slack DEFINITELY refused the first: an
+      // ambiguous transport failure may have been accepted, and retrying it would either
+      // double-post or report "nothing was sent" for a file the channel already shows.
+      if (slackApiErrorCode(err) === undefined) throw err
       // Only a genuine missing scope arms the shared backoff — anything else is this
       // method's own argument handling and says nothing about the text path.
       if (isMissingCustomizeScope(err)) this.customUsernameRetryAt = Date.now() + CUSTOM_USERNAME_REPROBE_MS
       this.deps.log?.debug(
-        `slack: decorated file share refused (${slackApiErrorCode(err) ?? (err as Error).message}) — retrying under the app identity`
+        `slack: decorated file share refused (${slackApiErrorCode(err)}) — retrying under the app identity`
       )
-      await this.app.client.files.completeUploadExternal(share)
+      await this.completeShare(share)
     }
   }
 
