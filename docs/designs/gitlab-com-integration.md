@@ -343,17 +343,23 @@ account in each; in the common case this is exactly one account per agent.
 
 The account:
 
-- has the username `<agentSlug>-<agentId8>-<root36>`: the agent's name
+- has the username `<agentSlug>-<agentId12>-<root36>`: the agent's name
   slugged to lower-case `[a-z0-9-]` and capped at 20 characters, the first
-  eight hex characters of the agent id, and the top-level group id in base
-  36 — for example `gitlab-pilot-5b350c0a-2bmzez`. GitLab.com usernames are
-  one global namespace, so the suffixes carry the uniqueness: eight hex
-  characters are ample against the at-most-100 accounts a root can hold, and
-  the root component is what lets one agent own an account in each root it
-  spans. The slug is readable in `@`-completion and is taken at creation; it
-  is not re-derived on rename, because the row's numeric user id is the
-  durable key and the derivation is needed only to recover an account the
-  database does not know yet;
+  twelve hex characters of the agent id, and the top-level group id in base
+  36 — for example `gitlab-pilot-5b350c0aeba7-2bmzez`. GitLab.com usernames
+  are one global namespace, so the suffixes carry the uniqueness: 48 bits of
+  agent identity put an accidental collision among even millions of accounts
+  below one in a billion, and the root component is what lets one agent own
+  an account in each root it spans. The slug is readable in `@`-completion
+  and is taken at creation; it is not re-derived on rename, because the
+  row's numeric user id is the durable key. The derivation is a recovery
+  marker only for an account the database does not know yet, and recovery
+  never adopts by name alone: after an ambiguous create, the account is
+  claimed only when it is listed among this top-level group's own service
+  accounts and its creation time falls inside that attempt's window; a
+  username that is already taken otherwise is a foreign account, and the
+  row fails provisioning with a translated `username_taken` reason rather
+  than adopting it;
 - carries the agent's display name, sanitized as the earlier `<project>-bot`
   derivation sanitized and without any suffix; on agent rename the next
   provisioning convergence updates it, and a refused rename is cosmetic and
@@ -1525,6 +1531,10 @@ administers — the shape the GitHub card already has. It shows:
   and webhook state (not needed, installed, repairing, or failed), with the
   project-level actions — repair, remove, transfer administration — on that
   project line;
+- a final "projects without a bot" group for every managed binding no
+  account is currently a member of — a binding outlives its last consumer
+  until it is removed, and it keeps its state and the same project-level
+  actions there;
 - credential expiry and rotation warning without token values; and
 - actions to reconnect, disconnect, or remove a released connection.
 
