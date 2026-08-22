@@ -80,7 +80,6 @@ import {
   commentFamiliesForGitlabFamilies,
   eventsForGitlabFamilies,
   gitlabMentionUsage,
-  parseLabelFilter,
   type GlFamily,
   type GlTriggerMode
 } from '@/lib/gitlab-events'
@@ -367,7 +366,6 @@ export default function AddIntegrationModal({
   const gl = useGitlabProjects(platform === 'gitlab', glQ)
   const [glFams, setGlFams] = useState<Set<GlFamily>>(new Set(GL_DEFAULT_FAMILIES))
   const [glMode, setGlMode] = useState<GlTriggerMode>(GL_DEFAULT_TRIGGER_MODE)
-  const [glLabels, setGlLabels] = useState('')
 
   // Reusing a bot is an advanced path; every platform opens on the create flow
   // until the user explicitly chooses an existing identity.
@@ -840,7 +838,6 @@ export default function AddIntegrationModal({
         projectId: glProject,
         events: eventsForGitlabFamilies(glFams, glMode),
         commentFamilies: commentFamiliesForGitlabFamilies(glFams, glMode),
-        labelFilter: parseLabelFilter(glLabels),
         mentionOnly: glMode === 'mention'
       })
       onClose()
@@ -1752,19 +1749,6 @@ export default function AddIntegrationModal({
                       </div>
                     )
                   })}
-                </div>
-                <div className="fld mb-4">
-                  <span className="fldlbl">Only these labels (optional)</span>
-                  <input
-                    className="inp mn"
-                    placeholder="needs-review, agent"
-                    value={glLabels}
-                    onChange={(e) => setGlLabels(e.target.value)}
-                    aria-label="Label filter"
-                  />
-                  <span className="mt-[6px] block font-sans text-[11.5px] font-normal leading-[1.45] text-(--text-tertiary)">
-                    Comma separated. Empty means every issue and merge request.
-                  </span>
                 </div>
               </>
             )}

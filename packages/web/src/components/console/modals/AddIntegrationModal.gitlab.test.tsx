@@ -4,9 +4,9 @@
  * a regression test: the tile is absent — and the project list unrequested —
  * while the flag is off; each "Trigger when" choice compiles to exactly the
  * stored vocabulary the CP validates (`family:*` patterns, note families,
- * labels, mention-only) keyed by the project's numeric id rather than its
- * renameable path; and the form offers exactly the two subjects GitHub does, so
- * no reachable selection compiles a push event.
+ * mention-only) keyed by the project's numeric id rather than its renameable
+ * path; and the form offers exactly the two subjects GitHub does, so no
+ * reachable selection compiles a push event.
  *
  * The picker also offers projects the organization has not added yet, because
  * this wizard is now where a project joins the organization.
@@ -116,11 +116,6 @@ const clickText = (text: string) =>
   Array.from(document.querySelectorAll('button')).find((button) => button.textContent?.includes(text))
 const family = (fam: string) => document.querySelector<HTMLDivElement>(`[data-gitlab-family="${fam}"]`)
 const trigger = (mode: string) => document.querySelector<HTMLDivElement>(`[data-gitlab-trigger="${mode}"]`)
-// React tracks the DOM value itself, so a plain assignment is invisible to onChange.
-function typeInto(input: HTMLInputElement, value: string) {
-  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value)
-  input.dispatchEvent(new Event('input', { bubbles: true }))
-}
 
 async function pickProject() {
   await act(async () => tileNamed('GitLab')?.click())
@@ -182,7 +177,6 @@ describe('AddIntegrationModal, GitLab trigger', () => {
       projectId: '4210',
       events: ['merge_request:*'],
       commentFamilies: ['merge_request'],
-      labelFilter: [],
       mentionOnly: false
     })
   })
@@ -213,9 +207,6 @@ describe('AddIntegrationModal, GitLab trigger', () => {
     await pickProject()
     await act(async () => family('issues')?.click())
     await act(async () => trigger('mention')?.click())
-    await act(async () =>
-      typeInto(document.querySelector<HTMLInputElement>('input[aria-label="Label filter"]')!, 'needs-review, agent')
-    )
 
     await act(async () => clickText('Connect')?.click())
 
@@ -225,7 +216,6 @@ describe('AddIntegrationModal, GitLab trigger', () => {
       projectId: '4210',
       events: ['issues:*', 'merge_request:*'],
       commentFamilies: ['issues', 'merge_request'],
-      labelFilter: ['needs-review', 'agent'],
       mentionOnly: true
     })
   })

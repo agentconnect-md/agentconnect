@@ -13,8 +13,7 @@ import {
   gitlabRowFamilies,
   gitlabTriggerModeOf,
   gitlabTriggerTooltip,
-  parseGitlabHookThread,
-  parseLabelFilter
+  parseGitlabHookThread
 } from './gitlab-events'
 
 describe('GL_TRIGGER_LABEL', () => {
@@ -183,12 +182,6 @@ describe('gitlabHookNeedsNormalization', () => {
 
   it('leaves a note-only rule outside the console normalization model', () => {
     expect(gitlabHookNeedsNormalization({ events: [], commentFamilies: ['issues'], mentionOnly: false })).toBe(false)
-  })
-})
-
-describe('parseLabelFilter', () => {
-  it('trims, drops blanks and de-duplicates', () => {
-    expect(parseLabelFilter(' needs-review , agent, ,needs-review ')).toEqual(['needs-review', 'agent'])
   })
 })
 
