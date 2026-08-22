@@ -161,35 +161,70 @@ describe('the daemon records only its own host’s advertisement', () => {
     expect(reported.commands.map((c) => c.name)).toEqual(['code-review', 'superpowers:brainstorming', 'model'])
   })
 
-  // `newSession()` returns a session that can already stream updates, and the row that maps it to
-  // its slot is written only after that returns. An advertisement in THAT window is still recorded
-  // durably, so it must not fall back to the hop's id — nothing would repair it later.
-  it('names an advertisement that arrives before the session row exists', async () => {
+  // Production ordering, not a hand-driven one: the fake runtime advertises from INSIDE
+  // `newSession()`, in the window where the host has the id but has not returned it — the daemon
+  // has no row and, before the binding moved to the raw response, nothing to resolve through.
+  it('names an advertisement the runtime makes from inside session creation', async () => {
     const root = scaffold(['agent-1'])
-    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, sandboxMechanism: null })
-    await daemon.start()
-    const host = daemon as unknown as {
-      hosts: Map<string, { hasSession(id: string): boolean; isLoadingSession(id: string): boolean }>
+    const advertise: { run: () => Promise<void> } = { run: async () => {} }
+    const acpSessionId = 'fresh-acp'
+    const hostFactory = (): unknown => {
+      const host = {
+        start: async () => {},
+        stop: async () => {},
+        hasSession: (id: string) => id === acpSessionId,
+        isLoadingSession: () => false,
+        newSession: async (
+          _cwd: string,
+          _servers: unknown,
+          _effort: unknown,
+          _append: unknown,
+          _dirs: unknown,
+          announce?: (id: string) => Promise<void> | void
+        ) => {
+          await announce?.(acpSessionId)
+          // Where `applySessionConfig()`'s awaited round trips would be.
+          await advertise.run()
+          return acpSessionId
+        },
+        prompt: async () => ({ stopReason: 'end_turn' })
+      }
+      return host
+    }
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root,
+      sandboxMechanism: null,
+      hostFactory: hostFactory as never
+    })
+    const inner = daemon as unknown as {
       onAcpUpdate(agentId: string, sessionId: string, update: unknown): Promise<void>
       runtimeCommands: RuntimeCommandsCache
       store: LocalStore
-      bindOutwardSessionId(agentId: string, key: string, acpSessionId: string): Promise<void>
     }
-    host.hosts.set('agent-1', {
-      hasSession: (id) => id === 'fresh-acp',
-      isLoadingSession: () => false,
-      stop: async () => {}
-    } as never)
-    const key = ['slack', 'C1', '100.1', 'agent-1'].join('\u001f')
+    advertise.run = async () => {
+      // No row yet — this is precisely the reported window.
+      expect(await inner.store.getSessionByAcpId(acpSessionId)).toBeUndefined()
+      await inner.onAcpUpdate('agent-1', acpSessionId, advertisement)
+    }
+    await daemon.start()
 
-    // What the opener does the instant the runtime hands back its id — before any upsert.
-    await host.bindOutwardSessionId('agent-1', key, 'fresh-acp')
-    expect(await host.store.getSessionByAcpId('fresh-acp')).toBeUndefined()
+    await (daemon as any).dispatch('agent-1', {
+      msgId: 'slack:C1:100.1',
+      traceId: 't1',
+      source: 'user',
+      platform: 'slack',
+      channel: 'C1',
+      thread: '100.1',
+      sender: { id: 'U1', isBot: false },
+      text: 'hi',
+      mentionedBots: [],
+      isDm: true
+    })
 
-    await host.onAcpUpdate('agent-1', 'fresh-acp', advertisement)
-    const outward = await host.store.ensureOutwardSessionId(key, 'agent-1')
-    expect(host.runtimeCommands.get('agent-1').sessionId).toBe(outward)
-    expect(outward).not.toBe('fresh-acp')
+    const recorded = inner.runtimeCommands.get('agent-1').sessionId
+    expect(recorded).not.toBe(acpSessionId)
+    expect(recorded).toBe((await inner.store.getSessionByAcpId(acpSessionId))!.sessionId)
     await daemon.stop()
   }, 15_000)
 

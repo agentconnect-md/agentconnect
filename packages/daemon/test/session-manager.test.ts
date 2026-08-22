@@ -158,7 +158,15 @@ describe('SessionManager', () => {
 
     await sm.handle('bot-a', msg({ ts: '100.3', thread: '100.3', text: 'update production' }))
 
-    expect(host.newSession).toHaveBeenCalledWith(realpathSync(cwd), [], undefined, undefined, [realpathSync(repoRoot)])
+    // The trailing argument is the outward-id announce hook (session-concept.md §1.1).
+    expect(host.newSession).toHaveBeenCalledWith(
+      realpathSync(cwd),
+      [],
+      undefined,
+      undefined,
+      [realpathSync(repoRoot)],
+      expect.any(Function)
+    )
     await (await store).close()
   })
 
@@ -1402,7 +1410,14 @@ describe('SessionManager', () => {
     expect(host2.loadSession).toHaveBeenCalledTimes(1)
     expect(host2.loadSession.mock.calls[0]?.[3]).toBe('ultracode')
     expect(host2.discardSession).toHaveBeenCalledWith('acp-1')
-    expect(host2.newSession).toHaveBeenCalledWith(expect.any(String), [], undefined, undefined, [])
+    expect(host2.newSession).toHaveBeenCalledWith(
+      expect.any(String),
+      [],
+      undefined,
+      undefined,
+      [],
+      expect.any(Function)
+    )
     await (await store).close()
   })
 

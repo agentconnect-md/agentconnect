@@ -57,10 +57,11 @@ export interface OpenRuntimeSessionInput {
   resumeSystemContext?: () => Promise<string | undefined>
   usesMeta: boolean
   /** Bind the runtime's brand-new session id to this slot's OUTWARD one (session-concept.md §1.1)
-   *  the instant it exists. `newSession()` makes the ACP session live — and able to stream updates
-   *  — before the row that would carry the mapping is written, so anything reported in that window
-   *  could otherwise only name the hop. Called for a created session; a resumed one already has
-   *  its row. */
+   *  at the raw `session/new` response, before the session is reachable. The host makes it live
+   *  and then awaits its configuration round trips, and the row lands later still, so a runtime
+   *  that advertises from inside that window would otherwise be reported under the hop's id —
+   *  durably, with nothing to repair it. Runs on every create path; a resumed session keeps the
+   *  id its row already carries. */
   bindOutwardSessionId?: (acpSessionId: string) => Promise<void> | void
   signal?: AbortSignal
   abortable: <T>(start: () => PromiseLike<T> | T, signal?: AbortSignal) => Promise<T>
@@ -118,7 +119,13 @@ export async function openRuntimeSession(input: OpenRuntimeSessionInput): Promis
     while (true) {
       const selected = await sessionStartEffort()
       const create = (servers: McpServer[]) =>
-        abortable(() => host.newSession(cwd, servers, selected.value, systemAppend, additionalDirectories), signal)
+        abortable(
+          () =>
+            host.newSession(cwd, servers, selected.value, systemAppend, additionalDirectories, (acpSessionId) =>
+              input.bindOutwardSessionId?.(acpSessionId)
+            ),
+          signal
+        )
       const sessionId = await withAdditionalMcpFallback(
         () => create(mcpServers),
         fallbackMcpServers ? () => create(fallbackMcpServers) : undefined
@@ -170,7 +177,6 @@ export async function openRuntimeSession(input: OpenRuntimeSessionInput): Promis
       input.additionalMcpServers?.length ? ordinaryMcpServers : undefined
     )
     created = true
-    await input.bindOutwardSessionId?.(acpSessionId)
     rec = {
       key: identity.key,
       agentId: identity.agentId,

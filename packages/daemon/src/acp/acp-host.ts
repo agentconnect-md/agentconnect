@@ -829,12 +829,19 @@ export class AcpHost {
    *  session) rides the Claude `_meta.systemPrompt` append — standing context, never a
    *  user turn (see #398). `additionalDirectories` expands the runtime workspace
    *  without changing the configured working-subdirectory `cwd`. */
+  /**
+   * @param announce Called with the runtime's brand-new id at the raw `session/new` response —
+   *   BEFORE the session becomes reachable. Anything the daemon must know before an update can
+   *   arrive belongs here: `live.add()` makes the session ownable, and the configuration round
+   *   trips that follow are awaited, so a runtime may advertise from inside this call.
+   */
   async newSession(
     cwd: string,
     mcpServers: McpServer[] = [],
     effortOverride?: string,
     systemAppend?: string,
-    additionalDirectories: string[] = []
+    additionalDirectories: string[] = [],
+    announce?: (sessionId: string) => Promise<void> | void
   ): Promise<string> {
     const _meta = claudeSessionMeta(
       effortOverride ?? this.opts.configPrefs?.reasoningEffort,
@@ -852,6 +859,7 @@ export class AcpHost {
       mcpServers,
       ...(_meta ? { _meta } : {})
     })
+    await announce?.(res.sessionId)
     this.live.add(res.sessionId)
     const configOptions = await this.applySessionConfig(res.sessionId, res.configOptions)
     this.refreshOptionCaches(configOptions)
