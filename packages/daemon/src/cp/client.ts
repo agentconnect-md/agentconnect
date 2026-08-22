@@ -28,6 +28,14 @@ import type {
   GithubReviewResultOk,
   CodeHostNoteResult,
   CodeHostNoteResultOk,
+  CodeHostReviewAuthorize,
+  CodeHostReviewAuthorized,
+  CodeHostReviewLeaseRenew,
+  CodeHostReviewLeaseRenewed,
+  CodeHostReviewOpAccepted,
+  CodeHostReviewOpRequest,
+  CodeHostReviewResultOk,
+  CodeHostReviewResultReport,
   GitCredRequest,
   GitCredGrant,
   ChannelAgentsReq,
@@ -796,6 +804,57 @@ export class CpClient {
       throw new WireError('INTERNAL', `expected codehost/note-result/ok, got ${rep.type}`, false)
     }
     return rep.payload as CodeHostNoteResultOk
+  }
+
+  /**
+   * The provider-neutral formal-review surface (gitlab-com-integration.md §15).
+   * `codehost/review-authz` acquires the durable publication lease and its fence;
+   * the ledger, renewal, and terminal result ride the three frames below. Review
+   * bodies never travel on any of them.
+   */
+  async authorizeCodeHostReview(payload: CodeHostReviewAuthorize, orgId?: string): Promise<CodeHostReviewAuthorized> {
+    this.requireReady('codehost/review-authz')
+    const rep = await this.request('codehost/review-authz', payload, orgId)
+    if (rep.type !== 'codehost/review-authz/result') {
+      throw new WireError('INTERNAL', `expected codehost/review-authz/result, got ${rep.type}`, false)
+    }
+    return rep.payload as CodeHostReviewAuthorized
+  }
+
+  /** One step of the §15.1 single-use operation ledger. */
+  async operateCodeHostReview(payload: CodeHostReviewOpRequest, orgId?: string): Promise<CodeHostReviewOpAccepted> {
+    this.requireReady('codehost/review-op')
+    const rep = await this.request('codehost/review-op', payload, orgId)
+    if (rep.type !== 'codehost/review-op/ok') {
+      throw new WireError('INTERNAL', `expected codehost/review-op/ok, got ${rep.type}`, false)
+    }
+    return rep.payload as CodeHostReviewOpAccepted
+  }
+
+  /** Owner-only publication-lease extension; expiry alone never transfers authority. */
+  async renewCodeHostReviewLease(
+    payload: CodeHostReviewLeaseRenew,
+    orgId?: string
+  ): Promise<CodeHostReviewLeaseRenewed> {
+    this.requireReady('codehost/review-lease-renew')
+    const rep = await this.request('codehost/review-lease-renew', payload, orgId)
+    if (rep.type !== 'codehost/review-lease-renew/ok') {
+      throw new WireError('INTERNAL', `expected codehost/review-lease-renew/ok, got ${rep.type}`, false)
+    }
+    return rep.payload as CodeHostReviewLeaseRenewed
+  }
+
+  /** The body-free terminal classification; it is also what releases or locks the lease. */
+  async reportCodeHostReviewResult(
+    payload: CodeHostReviewResultReport,
+    orgId?: string
+  ): Promise<CodeHostReviewResultOk> {
+    this.requireReady('codehost/review-result')
+    const rep = await this.request('codehost/review-result', payload, orgId)
+    if (rep.type !== 'codehost/review-result/ok') {
+      throw new WireError('INTERNAL', `expected codehost/review-result/ok, got ${rep.type}`, false)
+    }
+    return rep.payload as CodeHostReviewResultOk
   }
 
   async issueWebchatMcpGrant(payload: WebchatMcpGrantIssue, orgId?: string): Promise<WebchatMcpGrantIssued> {

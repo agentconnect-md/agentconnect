@@ -43,8 +43,8 @@ import {
 import {
   replyGithubReviewThreads,
   REPLY_GITHUB_REVIEW_THREADS_ARGS,
-  submitGithubReview,
-  SUBMIT_GITHUB_REVIEW_ARGS,
+  submitCodeReview,
+  SUBMIT_CODE_REVIEW_ARGS,
   type GithubReviewDeps
 } from './ops/github.js'
 import {
@@ -95,6 +95,7 @@ export type {
   ReplyGithubReviewThreadsResult,
   SubmitGithubReviewReq
 } from './ops/github.js'
+export type { SubmitCodeReviewReq } from '../codehost/review-adapter.js'
 export type { CodeHostEffectReq } from './ops/code-host.js'
 export { SEND_MESSAGE_BRANCHES } from './ops/messaging.js'
 export type { MessageAgentReq, MessageAgentResult, ReplyToSessionReq, ReplyToSessionResult } from './ops/messaging.js'
@@ -164,7 +165,9 @@ const HANDLERS: Map<string, ToolHandler<OpsDeps>> = new Map<string, ToolHandler<
   ['startOrchestration', startOrchestration],
   ['getOrchestration', getOrchestration],
   ['cancelOrchestration', cancelOrchestration],
-  ['submitGithubReview', submitGithubReview],
+  ['submitCodeReview', submitCodeReview],
+  // A working alias so sessions already warm with the pre-promotion tool set keep resolving.
+  ['submitGithubReview', submitCodeReview],
   ['replyGithubReviewThreads', replyGithubReviewThreads],
   ['createCodeHostComment', createCodeHostComment],
   ['updateCodeHostComment', updateCodeHostComment],
@@ -205,7 +208,8 @@ export const TOOL_ARG_SCHEMAS: Map<string, ZodType> = new Map<string, ZodType>([
   ['startOrchestration', START_ORCHESTRATION_ARGS],
   ['getOrchestration', ORCHESTRATION_OWNER_ARGS],
   ['cancelOrchestration', ORCHESTRATION_OWNER_ARGS],
-  ['submitGithubReview', SUBMIT_GITHUB_REVIEW_ARGS],
+  ['submitCodeReview', SUBMIT_CODE_REVIEW_ARGS],
+  ['submitGithubReview', SUBMIT_CODE_REVIEW_ARGS],
   ['replyGithubReviewThreads', REPLY_GITHUB_REVIEW_THREADS_ARGS],
   ['createCodeHostComment', CREATE_CODE_HOST_COMMENT_ARGS],
   ['updateCodeHostComment', UPDATE_CODE_HOST_COMMENT_ARGS],

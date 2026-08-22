@@ -388,6 +388,8 @@ describe('toolsForIntegrations', () => {
         'getMemory',
         'updateMemory',
         'deleteMemory',
+        'submitCodeReview',
+        // The pre-promotion alias stays reserved and auto-allowed for warm sessions.
         'submitGithubReview'
       ])
     )
@@ -411,16 +413,19 @@ describe('toolsForIntegrations', () => {
     }
   })
 
-  it('formal review descriptor has no model-selectable GitHub target', () => {
-    const tool = GITHUB_REVIEW_TOOLS.find((candidate) => candidate.name === 'submitGithubReview')!
-    expect(tool.name).toBe('submitGithubReview')
+  it('formal review descriptor has no model-selectable code-host target', () => {
+    const tool = GITHUB_REVIEW_TOOLS.find((candidate) => candidate.name === 'submitCodeReview')!
+    expect(tool.name).toBe('submitCodeReview')
     const properties = (tool.inputSchema.properties ?? {}) as Record<string, unknown>
     expect(Object.keys(properties)).toEqual(['event', 'verdict', 'body', 'comments'])
     expect(properties).not.toHaveProperty('repoFullName')
     expect(properties).not.toHaveProperty('pullNumber')
     expect(properties).not.toHaveProperty('commitId')
+    expect(properties).not.toHaveProperty('projectId')
+    expect(properties).not.toHaveProperty('mergeRequestIid')
     expect(properties.body).toMatchObject({ minLength: 1 })
     expect(tool.description).toContain('only a definite not_submitted result preserves')
+    expect(tool.description).toContain('REQUEST_CHANGES requires verdict fail')
   })
 
   it('batched review replies select only trusted thread roots exposed by the prompt', () => {

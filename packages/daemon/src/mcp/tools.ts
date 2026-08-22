@@ -617,20 +617,24 @@ export const RETIRED_ORCHESTRATION_TOOLS: ToolDescriptor[] = [
 ]
 
 /**
- * Formal GitHub PR review effect. The descriptor may remain attached to a
- * long-lived per-thread ACP session, but availability is not authorization:
- * execution resolves the daemon-private active hook turn and fails closed for
- * every ordinary/non-PR/policy-off turn. The target is intentionally absent.
+ * Formal code-host review effect (gitlab-com-integration.md §15). The descriptor
+ * may remain attached to a long-lived per-thread ACP session, but availability is
+ * not authorization: execution resolves the daemon-private active hook turn, routes
+ * to that turn's code host, and fails closed for every ordinary/non-review turn.
+ * The target is intentionally absent.
  */
 export const GITHUB_REVIEW_TOOLS: ToolDescriptor[] = [
   {
-    name: 'submitGithubReview',
+    name: 'submitCodeReview',
     description:
-      'Submit the formal review for the active GitHub pull-request hook turn. The repository, pull request, and ' +
-      'commit are fixed by trusted turn metadata and cannot be selected here. Use COMMENT for a formal non-blocking ' +
-      'review, REQUEST_CHANGES for a failing review, or APPROVE for a passing review. This tool is unavailable ' +
-      'outside an authorized active PR hook turn, and at most one review can be submitted per turn. The review body ' +
-      'is the complete public response: once an attempt starts, only a definite not_submitted result preserves the ordinary-comment fallback.',
+      'Submit the formal review for the active pull-request or merge-request hook turn. The repository or project, ' +
+      'the pull/merge request, and the commit are fixed by trusted turn metadata and cannot be selected here. Use ' +
+      'COMMENT for a formal non-blocking review, REQUEST_CHANGES for a failing review, or APPROVE for a passing ' +
+      'review; REQUEST_CHANGES requires verdict fail and APPROVE requires verdict pass. On GitLab, REQUEST_CHANGES ' +
+      'is available only while the project service account is already a current reviewer — otherwise record the ' +
+      'finding with COMMENT and verdict fail. This tool is unavailable outside an authorized active review hook ' +
+      'turn, and at most one review can be submitted per turn. The review body is the complete public response: ' +
+      'once an attempt starts, only a definite not_submitted result preserves the ordinary-comment fallback.',
     inputSchema: obj(
       {
         event: { type: 'string', enum: ['COMMENT', 'REQUEST_CHANGES', 'APPROVE'] },
@@ -874,6 +878,8 @@ export const ALL_TOOL_NAMES = [
       .map((t) => t.name)
       // External-memory record tools: only their names are core knowledge here, the descriptors live in memory/.
       .concat([...EXTERNAL_MEMORY_TOOL_NAMES])
+      // The pre-promotion review name: no longer injected, still dispatched for warm sessions.
+      .concat(['submitGithubReview'])
   )
 ]
 
