@@ -41,12 +41,15 @@ function catalog(): ResolvedRuntimeCatalog {
   // find nothing, so anything advertised came from the declared table.
   const absent = { command: 'ac-k8s-absent-runtime', args: [], env: [] }
   const hermes = { command: 'hermes', args: ['acp'], env: [] }
+  // A runtime whose command names a provider surface, so a probe of it composes a credential.
+  const codex = { command: 'codex-acp', args: [], env: [] }
   return {
     entries: {
       claude: { runtime: absent, source: 'registry', name: 'Claude Code', version: '1.0.0', skillsAgentId: 'claude' },
+      'codex-acp': { runtime: codex, source: 'registry', name: 'Codex', version: '1.0.0', skillsAgentId: 'codex' },
       'hermes-agent': { runtime: hermes, source: 'curated', name: 'Hermes Agent', version: '', skillsAgentId: null }
     },
-    runtimes: { claude: absent, 'hermes-agent': hermes }
+    runtimes: { claude: absent, 'codex-acp': codex, 'hermes-agent': hermes }
   }
 }
 
@@ -727,6 +730,43 @@ describe('daemon --k8s mode', () => {
       const profile = (k8sDaemon as any).runtimeFacts.profileFor('claude')
       expect(profile.models).toEqual(['sonnet'])
       expect(profile.modelsSource).toBe('cached')
+    } finally {
+      await k8sDaemon.stop()
+    }
+  })
+
+  it('keeps the declared facts when a runtime refuses a probe this deployment gave no credential', async () => {
+    // Codex and DeepSeek Harness refuse `session/new` with no credential at all, and publishing
+    // that as authRequired empties the model picker AND asks the user to log a POD in.
+    const k8sDaemon = daemon({
+      root: root({ declared: { runtimes: [{ id: 'codex-acp', models: ['gpt-5.6-sol'] }] } }),
+      k8s: true,
+      probeHostFactory: () =>
+        ({
+          start: async () => {
+            throw Object.assign(new Error('Authentication required'), { code: -32000 })
+          },
+          newSession: async () => 'unused',
+          modelOptions: () => null,
+          acpProtocolVersion: () => undefined,
+          stop: async () => {}
+        }) as never,
+      plane: {
+        probeRuntimes: async (sweep: any) => {
+          const table = {
+            runtimes: [{ id: 'codex-acp', version: '1.2.3', command: 'codex-acp', models: ['gpt-5.6-sol'] }]
+          }
+          await sweep?.(table, { agentId: 'ac-runtime-probe-abc', cwd: '/agent' })
+          return table
+        }
+      }
+    })
+    try {
+      await k8sDaemon.start()
+      await vi.waitFor(() => expect((k8sDaemon as any).k8sRuntimeProbed).toBe(true))
+      const profile = (k8sDaemon as any).runtimeFacts.profileFor('codex-acp')
+      expect(profile.models).toEqual(['gpt-5.6-sol'])
+      expect(profile.authRequired).toBeUndefined()
     } finally {
       await k8sDaemon.stop()
     }

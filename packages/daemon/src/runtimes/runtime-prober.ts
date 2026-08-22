@@ -126,6 +126,10 @@ export interface RuntimeProbeResult {
    *  launched and spoke ACP, but wants an interactive login before it will open
    *  a session. Only ever set alongside `ok: false`. */
   authRequired?: boolean
+  /** The launch carried no provider credential although this runtime takes one (the cluster
+   *  probe, on a deployment that configures neither key nor endpoint for it) — so a rejection
+   *  says what the PROBE lacked, not that the runtime is logged out. */
+  uncredentialed?: boolean
 }
 
 /** ACP reserves JSON-RPC -32000 for "authentication required" (the SDK's

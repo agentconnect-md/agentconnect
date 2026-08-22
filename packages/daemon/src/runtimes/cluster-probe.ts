@@ -59,6 +59,23 @@ export interface ClusterProbeOptions {
 }
 
 /**
+ * Stand-in key for a deployment whose model egress mints its keys per session: real launches ask
+ * the key server, and a probe — which belongs to no session — has nothing to ask for.
+ *
+ * Codex and DeepSeek Harness refuse `session/new` outright with no credential, so an endpoint-only
+ * deployment loses their whole model list to a credential the enumeration never spends: the probe
+ * reads the session's model selector and never prompts. Advertising nothing is the worse answer,
+ * because it also reads as "this runtime needs a login" in the console.
+ */
+export const PROBE_PLACEHOLDER_KEY = 'ac-runtime-probe-no-key'
+
+/** The pair a probe launches with: the deployment's own, or its endpoint plus the stand-in. */
+function probeCredential(configured: ModelCredential | undefined): ModelCredential | undefined {
+  if (!configured || configured.key) return configured
+  return configured.baseUrl ? { ...configured, key: PROBE_PLACEHOLDER_KEY } : configured
+}
+
+/**
  * The child environment one probed runtime launches with: provider configuration and the routing
  * id, and nothing else — the pod supplies HOME/PATH, and this daemon's env describes another
  * machine.
@@ -73,12 +90,14 @@ export function clusterProbeEnv(
   runtimeId: string,
   runtime: RuntimeDef,
   opts: Pick<ClusterProbeOptions, 'agentId' | 'staticCredential' | 'codexSessionFloor'>
-): { env: Record<string, string>; redactValues: string[] } {
+): { env: Record<string, string>; redactValues: string[]; uncredentialed: boolean } {
   const env: Record<string, string> = { AC_AGENT_ID: opts.agentId }
   const target = modelProviderTarget({ runtime: runtimeId }, runtime)
-  if (!target) return { env, redactValues: [] }
+  // A runtime with no provider surface carries its own auth, so nothing was withheld from it.
+  if (!target) return { env, redactValues: [], uncredentialed: false }
   const configured = opts.staticCredential?.(target.runtime)
-  if (configured) applyStaticModelConfig(target, env, configured)
+  const credential = probeCredential(configured)
+  if (credential) applyStaticModelConfig(target, env, credential)
   // Last, so every key the daemon authored above stays authoritative over the floor — the same
   // order a real launch uses.
   if (opts.codexSessionFloor) applyCodexSessionFloor(target, env, opts.codexSessionFloor)
@@ -86,7 +105,7 @@ export function clusterProbeEnv(
   // The key itself, plus every value it was folded into — matched by content rather than by
   // variable name, so a runtime that gains a new credential-bearing variable is covered already.
   const redactValues = key ? [key, ...Object.values(env).filter((value) => value !== key && value.includes(key))] : []
-  return { env, redactValues }
+  return { env, redactValues, uncredentialed: !credential?.key }
 }
 
 export async function probeClusterRuntimes(opts: ClusterProbeOptions): Promise<RuntimeProbeResult[]> {
@@ -94,8 +113,8 @@ export async function probeClusterRuntimes(opts: ClusterProbeOptions): Promise<R
   const results: RuntimeProbeResult[] = []
   for (const id of ids) {
     const runtime = opts.runtimes[id]!
-    const { env, redactValues } = clusterProbeEnv(id, runtime, opts)
-    const result = await probeRuntime(id, runtime, opts.cwd, {
+    const { env, redactValues, uncredentialed } = clusterProbeEnv(id, runtime, opts)
+    const probed = await probeRuntime(id, runtime, opts.cwd, {
       ...(opts.log ? { log: opts.log } : {}),
       hostFactory: opts.hostFactory,
       timeoutMs: opts.timeoutMs ?? CLUSTER_PROBE_TIMEOUT_MS,
@@ -103,6 +122,9 @@ export async function probeClusterRuntimes(opts: ClusterProbeOptions): Promise<R
       // compose here, and inheriting this daemon's environment would describe another machine.
       launchFor: () => ({ env, inheritProcessEnv: false, redactValues })
     })
+    // Marked on the result rather than left to the caller, because an adopting member reads the
+    // published result and has no other way to know what the prober launched with.
+    const result = uncredentialed ? { ...probed, uncredentialed: true } : probed
     results.push(result)
     try {
       await opts.onResult?.(result)
@@ -160,7 +182,8 @@ const ProbeResultSchema = z.object({
   mcpCapabilities: z.object({ http: z.boolean(), sse: z.boolean() }).optional(),
   configOptions: z.array(z.unknown()).optional(),
   error: z.string().optional(),
-  authRequired: z.boolean().optional()
+  authRequired: z.boolean().optional(),
+  uncredentialed: z.boolean().optional()
 })
 
 const K8sProbePayloadSchema = z.object({ table: K8sRuntimeTableSchema, results: z.array(ProbeResultSchema) })
