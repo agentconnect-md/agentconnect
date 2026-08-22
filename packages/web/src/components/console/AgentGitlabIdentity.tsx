@@ -87,13 +87,17 @@ function rootGroupsOf(projectPaths: readonly string[]): string[] {
   return [...new Set(projectPaths.map((path) => path.split('/')[0]).filter((seg): seg is string => !!seg))].sort()
 }
 
-/** Whether the fetched accounts already match what the consumers imply, with nothing transient left.
- *  Counting GROUPS, not consumers: two projects in one group share one account, two groups earn two. */
-function settled(data: AccountsRead | undefined, expectedGroups: number): boolean {
+/** Whether the fetched accounts already serve exactly the groups the consumers imply, with nothing
+ *  transient left. Compares WHICH groups, not how many: a retarget from one group to another keeps
+ *  the count equal, and a stale read of the old group's account would otherwise look finished. */
+function settled(data: AccountsRead | undefined, expectedGroups: readonly string[]): boolean {
   if (!data) return false
-  if (data.accounts.length !== expectedGroups) return false
-  // A refused account rests here on purpose: a group out of service accounts needs a repair, not a poll.
-  return data.accounts.every((a) => a.lifecycle === 'active' && a.state !== 'provisioning')
+  if (data.accounts.some((a) => a.lifecycle !== 'active' || a.state === 'provisioning')) return false
+  // An account with no bound project cannot name its group, so it can never be matched against an
+  // expected one — a refused account keeps us asking, and repairing its group heals the card live.
+  if (data.accounts.some((a) => a.rootGroupPath === null)) return false
+  const served = [...new Set(data.accounts.map((a) => a.rootGroupPath as string))].sort()
+  return served.length === expectedGroups.length && served.every((group, i) => group === expectedGroups[i])
 }
 
 export function AgentGitlabIdentity({
@@ -115,7 +119,7 @@ export function AgentGitlabIdentity({
   const { data } = useSWR(accountsKey, ([, , , id]) => fetchGitlabAgentAccounts(id as string), {
     // The CP returns from hook CRUD BEFORE the saga creates or retires an account, so one
     // immediate read would race it. Poll until the accounts match the groups, then rest.
-    refreshInterval: (latest) => (settled(latest, rootGroups.length) ? 0 : CONVERGENCE_POLL_MS),
+    refreshInterval: (latest) => (settled(latest, rootGroups) ? 0 : CONVERGENCE_POLL_MS),
     shouldRetryOnError: false
   })
 

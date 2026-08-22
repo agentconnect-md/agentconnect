@@ -51,6 +51,15 @@ const ACCOUNT: GitlabAgentAccountDto = {
 
 type Read = { enabled: boolean; accounts: GitlabAgentAccountDto[] } | undefined
 
+/** The same agent's account in a SECOND top-level group — accounts cannot cross that boundary. */
+const OTHER_GROUP_ACCOUNT: GitlabAgentAccountDto = {
+  ...ACCOUNT,
+  id: 'acct-2',
+  rootGroupId: '901',
+  rootGroupPath: 'other-group',
+  username: 'agentconnect-a1-g901'
+}
+
 let swrData: Read
 let lastCall: { key: unknown; options: SwrOptions } | undefined
 let host: HTMLDivElement
@@ -225,24 +234,49 @@ describe('AgentGitlabIdentity', () => {
     await render({ enabled: true, accounts: [ACCOUNT] }, consumers)
     expect(pollInterval()).toBeGreaterThan(0)
 
-    await render({ enabled: true, accounts: [ACCOUNT, { ...ACCOUNT, id: 'acct-2', rootGroupId: '901' }] }, consumers)
+    await render({ enabled: true, accounts: [ACCOUNT, OTHER_GROUP_ACCOUNT] }, consumers)
     expect(pollInterval()).toBe(0)
   })
 
   it('keeps polling while ONE of several accounts is still retiring', async () => {
     // Dropping to one group: the surviving account alone is the settled shape.
-    await render({ enabled: true, accounts: [ACCOUNT, { ...ACCOUNT, id: 'acct-2', rootGroupId: '901' }] })
+    await render({
+      enabled: true,
+      accounts: [ACCOUNT, OTHER_GROUP_ACCOUNT]
+    })
     expect(pollInterval()).toBeGreaterThan(0)
 
     await render({ enabled: true, accounts: [ACCOUNT] })
     expect(pollInterval()).toBe(0)
   })
 
-  it('stops polling on a refused account: a quota refusal rests until someone repairs it', async () => {
+  it('keeps polling a retarget to another group, which leaves the COUNT unchanged', async () => {
+    const retargeted = ['other-group/example-project']
+    // The CP commits the new consumer and returns before convergence runs, so the first read can
+    // still be the old group's account: one expected group, one account, and nothing transient.
+    await render({ enabled: true, accounts: [ACCOUNT] }, retargeted)
+    expect(pollInterval()).toBeGreaterThan(0)
+
+    await render({ enabled: true, accounts: [{ ...OTHER_GROUP_ACCOUNT, id: ACCOUNT.id }] }, retargeted)
+    expect(pollInterval()).toBe(0)
+  })
+
+  it('keeps polling a refused account, which cannot yet name the group it serves', async () => {
+    // Creation was refused, so no project is bound and the group is unknown — asking again is what
+    // heals the card once someone frees up the group's bot accounts.
     await render({
       enabled: true,
-      accounts: [{ ...ACCOUNT, state: 'admin_degraded', stateReason: 'service_account_quota' }]
+      accounts: [
+        {
+          ...ACCOUNT,
+          userId: null,
+          rootGroupPath: null,
+          state: 'admin_degraded',
+          stateReason: 'service_account_quota'
+        }
+      ]
     })
-    expect(pollInterval()).toBe(0)
+    expect(pollInterval()).toBeGreaterThan(0)
+    expect(host.textContent).toContain('limit of bot accounts')
   })
 })
