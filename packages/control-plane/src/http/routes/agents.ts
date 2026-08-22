@@ -1082,6 +1082,27 @@ export function agentRoutes(deps: HttpDeps) {
         app.log.debug({ agentId: agent.id, daemonId: target }, 'agent/remove skipped: daemon offline')
       })
 
+    // A gitlab workspace write changes who consumes the project, so the §7.2
+    // accounts and memberships must reconverge — the same kick a gitlab hook
+    // write does. Retargeting converges BOTH projects, IN THE ORDER GIVEN: the
+    // agent joins one and leaves the other, and joining must land first.
+    // Fire-and-forget, like every post-write convergence here.
+    const convergeGitlabProjects = (orgId: OrgId, projectIds: Iterable<bigint | undefined>): void => {
+      const gitlab = deps.gitlab
+      if (!gitlab) return
+      const projects = [...new Set([...projectIds].filter((id): id is bigint => id !== undefined))]
+      // SEQUENTIAL: two projects under one top-level group share the agent's
+      // single account, so converging them in parallel would have them contend
+      // for its mutation lease and back off against each other.
+      void (async () => {
+        for (const projectId of projects) {
+          await gitlab.provisioner
+            .convergeProject(orgId, projectId)
+            .catch((err) => app.log.warn({ err, projectId: projectId.toString() }, 'gitlab workspace converge failed'))
+        }
+      })()
+    }
+
     // The alive relay's HTTP origin for MCP proxy defs (ws→http/wss→https), or null
     // when no relay is live. Mirrors the mcp-providers route's relayBaseUrl.
     const relayProxyBase = async (): Promise<string | null> => {
@@ -1765,6 +1786,8 @@ export function agentRoutes(deps: HttpDeps) {
             }
           }
           await syncMcpDefsForAgent(agent, [], agent.mcpServers)
+          // A gitlab workspace makes this agent a consumer of its project (§7.2).
+          if (agent.workspace.mode === 'gitlab') convergeGitlabProjects(agent.orgId, [agent.workspaceRepoId])
           return reply.code(201).send({
             ...toDto(
               agent,
@@ -2424,6 +2447,16 @@ export function agentRoutes(deps: HttpDeps) {
           }
 
           const converted = await agentMoves.setWorkspace(existing, workspace, workspaceRepoId, req.principal?.userId)
+          // Joining, leaving, or re-clamping a gitlab project moves its §7.2
+          // membership set. DESTINATION FIRST, and the order is load-bearing: an
+          // account with no membership left in its root retires, so converging
+          // the project being left first would retire the very account the
+          // destination is about to bind — deleting it at GitLab and recreating
+          // it under a new user id. Binding the destination first leaves the
+          // source unbind with a still-bound account to spare.
+          if (existing.workspace.mode === 'gitlab' || converted.workspace.mode === 'gitlab') {
+            convergeGitlabProjects(converted.orgId, [converted.workspaceRepoId, existing.workspaceRepoId])
+          }
           return toDto(
             converted,
             ctxOf(req),
@@ -2840,6 +2873,14 @@ export function agentRoutes(deps: HttpDeps) {
             await removeExternalMemoryFromDaemonIfUnused(current.orgId, current.daemonId, current.memory.connectionId)
           }
           for (const h of removedHooks) deps.hooks.remove(h.id)
+          // §19.4: the agent's GitLab accounts retire — memberships removed,
+          // PATs revoked, accounts deleted. Best-effort here; an account whose
+          // external cleanup fails stays `cleanup_pending` for a repair.
+          if (deps.gitlab) {
+            void deps.gitlab.accounts
+              .retireAgentAccounts(current.orgId, current.id)
+              .catch((err) => app.log.warn({ err, agentId: current.id }, 'gitlab account retirement failed'))
+          }
           return reply.code(204).send(null)
         } catch (e) {
           if (e instanceof MemoryConnectionBusy) {

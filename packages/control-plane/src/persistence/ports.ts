@@ -3314,8 +3314,6 @@ export interface GitlabProjectBindingRecord {
   projectPath: string
   defaultBranch: string | null
   installerConnectionId: string | null
-  serviceAccountUserId: bigint | null
-  serviceAccountUsername: string | null
   webhookId: bigint | null
   desiredEventsHash: string | null
   credentialEpoch: bigint
@@ -3350,8 +3348,6 @@ export interface GitlabProjectBindingRepo {
       projectPath: string
       defaultBranch: string | null
       installerConnectionId: string | null
-      serviceAccountUserId: bigint | null
-      serviceAccountUsername: string | null
       webhookId: bigint | null
       desiredEventsHash: string | null
       state: GitlabBindingState
@@ -3387,11 +3383,110 @@ export interface GitlabProjectBindingRepo {
   removeWithClaim(orgId: string, bindingId: string, projectId: bigint): Promise<boolean>
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// Per-agent runtime identity (§7.2, §8.2): one group service account per
+// (organization, agent, top-level group), its project memberships, and the
+// purpose-separated PATs it issues. Account and PAT lifecycle mutations run
+// under the account's own mutation lease; membership and webhook work stays
+// under the binding's provisioning lease.
+// ───────────────────────────────────────────────────────────────────────────
+
+/** Account rows reuse the binding lifecycle vocabulary and Console translations (§8.2). */
+export type GitlabAccountState = GitlabBindingState
+
+/** The generation fence a membership insert commits against (§7.2). */
+export type GitlabAccountLifecycle = 'active' | 'retiring'
+
+export interface GitlabAgentAccountRecord {
+  id: string
+  orgId: string
+  agentId: string
+  rootGroupId: bigint
+  serviceAccountUserId: bigint | null
+  username: string
+  displayName: string | null
+  credentialEpoch: bigint
+  administeringConnectionId: string | null
+  generation: bigint
+  lifecycle: GitlabAccountLifecycle
+  state: GitlabAccountState
+  stateReason: string | null
+}
+
+export interface GitlabAccountMembershipRecord {
+  accountId: string
+  accountGeneration: bigint
+  bindingId: string
+  accessLevel: number
+}
+
+/** One agent that binds a project, with the access level its authorization derives. */
+export interface GitlabAccountConsumer {
+  agentId: string
+  accessLevel: number
+}
+
+export interface GitlabAgentAccountRepo {
+  /** Find-or-create the (org, agent, root) row; an existing row keeps its state. */
+  ensure(input: {
+    orgId: string
+    agentId: string
+    rootGroupId: bigint
+    username: string
+    administeringConnectionId: string | null
+  }): Promise<GitlabAgentAccountRecord>
+  get(accountId: string): Promise<GitlabAgentAccountRecord | null>
+  byAgentRoot(orgId: string, agentId: string, rootGroupId: bigint): Promise<GitlabAgentAccountRecord | null>
+  /** The account serving one agent on one project — the membership IS the resolution. */
+  forAgentBinding(orgId: string, agentId: string, bindingId: string): Promise<GitlabAgentAccountRecord | null>
+  /** Every account holding a membership on the binding (§12.1 veto set, DTO). */
+  listForBinding(bindingId: string): Promise<GitlabAgentAccountRecord[]>
+  listForAgent(orgId: string, agentId: string): Promise<GitlabAgentAccountRecord[]>
+  update(
+    accountId: string,
+    patch: Partial<{
+      serviceAccountUserId: bigint | null
+      displayName: string | null
+      administeringConnectionId: string | null
+      state: GitlabAccountState
+      stateReason: string | null
+    }>
+  ): Promise<GitlabAgentAccountRecord | null>
+  /** §7.2 mutation lease, CAS-acquired: free, same-owner, or expired only. */
+  claimLease(accountId: string, owner: string, until: Date, now: Date): Promise<boolean>
+  renewLease(accountId: string, owner: string, until: Date): Promise<boolean>
+  releaseLease(accountId: string, owner: string): Promise<void>
+  /** Generation-fenced membership insert: commits only while the row is `active`
+   *  at exactly `generation`. False ⇒ a retirement won; the caller re-provisions. */
+  attachMembership(input: {
+    accountId: string
+    generation: bigint
+    bindingId: string
+    accessLevel: number
+  }): Promise<boolean>
+  detachMembership(accountId: string, bindingId: string): Promise<void>
+  membershipsForBinding(bindingId: string): Promise<GitlabAccountMembershipRecord[]>
+  /** The account's own bound projects — agent deletion removes each membership
+   *  at the provider before the account may retire (§19.4). */
+  membershipsOfAccount(accountId: string): Promise<Array<{ bindingId: string; projectId: bigint }>>
+  countMemberships(accountId: string): Promise<number>
+  /** §7.2 retirement CAS: `active`→`retiring` in the SAME transaction that
+   *  verifies the membership set is empty. False ⇒ a bind landed first. */
+  beginRetirement(accountId: string): Promise<boolean>
+  /** Verified-complete retirement: the row and its cascaded credentials go. */
+  finishRetirement(accountId: string): Promise<void>
+  /** A bind that lost the race re-provisions a FRESH generation off `retiring`. */
+  reactivate(accountId: string): Promise<GitlabAgentAccountRecord | null>
+  /** The agents consuming a project: gitlab-workspace agents and enabled gitlab
+   *  hooks, each with the access level its authorization derives (§7.2). */
+  consumers(orgId: string, projectId: bigint): Promise<GitlabAccountConsumer[]>
+}
+
 export type GitlabCredentialPurpose = 'read' | 'git_write' | 'effect'
 
 export interface GitlabProjectCredentialRecord {
   id: string
-  bindingId: string
+  accountId: string
   purpose: GitlabCredentialPurpose
   externalTokenId: bigint
   scopes: string[]
@@ -3400,22 +3495,22 @@ export interface GitlabProjectCredentialRecord {
 }
 
 export interface GitlabProjectCredentialRepo {
-  /** One atomic rotation commit per (binding, purpose): credential metadata and
-   *  generation, the SEALED value, and the binding's credential-epoch purge
+  /** One atomic rotation commit per (account, purpose): credential metadata and
+   *  generation, the SEALED value, and the account's credential-epoch purge
    *  fence land in the same transaction, or not at all (§7.4). */
   commitRotation(input: {
-    bindingId: string
+    accountId: string
     purpose: GitlabCredentialPurpose
     externalTokenId: bigint
     scopes: string[]
     providerExpiresAt: Date
     sealedToken: string
   }): Promise<GitlabProjectCredentialRecord>
-  get(bindingId: string, purpose: GitlabCredentialPurpose): Promise<GitlabProjectCredentialRecord | null>
-  listForBinding(bindingId: string): Promise<GitlabProjectCredentialRecord[]>
+  get(accountId: string, purpose: GitlabCredentialPurpose): Promise<GitlabProjectCredentialRecord | null>
+  listForAccount(accountId: string): Promise<GitlabProjectCredentialRecord[]>
   /** Rotation worklist (§7.4): credentials whose provider expiry is before the horizon. */
   listExpiring(before: Date): Promise<Array<{ credential: GitlabProjectCredentialRecord; orgId: string }>>
-  remove(bindingId: string, purpose: GitlabCredentialPurpose): Promise<void>
+  remove(accountId: string, purpose: GitlabCredentialPurpose): Promise<void>
 }
 
 /** Sealed PAT value reads (per-org key scope); writes ride the rotation commit. */

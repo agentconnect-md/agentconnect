@@ -347,17 +347,19 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
               <span className={`badge ${GITLAB_PROJECT_STATE[p.state].badge}`}>
                 {GITLAB_PROJECT_STATE[p.state].label}
               </span>
-              {/* The bot is a real GitLab account: its chip opens that profile. */}
-              {p.serviceAccountUsername && (
+              {/* Each member account is a real GitLab user: its chip opens that profile. */}
+              {p.accounts.map((account) => (
                 <a
-                  href={`https://gitlab.com/${p.serviceAccountUsername}`}
+                  key={account.username}
+                  href={`https://gitlab.com/${account.username}`}
                   target="_blank"
                   rel="noopener noreferrer"
+                  title={account.displayName ?? account.username}
                   className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary) hover:underline"
                 >
-                  bot @{p.serviceAccountUsername}
+                  bot @{account.username}
                 </a>
-              )}
+              ))}
               {!p.webhookInstalled && (
                 <span className="badge bg-(--surface-active) text-(--text-tertiary)">no webhook</span>
               )}

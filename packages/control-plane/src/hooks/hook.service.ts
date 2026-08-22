@@ -21,6 +21,7 @@ import type { AgentId, OrgId } from '../domain/ids.js'
 import type {
   AgentRecord,
   GithubInstallationRepo,
+  GitlabAgentAccountRepo,
   GitlabProjectBindingRepo,
   GitlabWebhookSecretStore,
   HookRecord,
@@ -59,10 +60,11 @@ export class HookService {
     private readonly appSlug?: string,
     private readonly log?: HookServiceLog,
     /** gitlab-kind compile sources (gitlab-com-integration.md §11.3): the org's
-     *  managed bindings and the sealed signing keys. Absent ⇒ gitlab hooks never
-     *  compile (deployment without the GitLab OAuth app). */
+     *  managed bindings, the sealed signing keys, and the per-agent accounts.
+     *  Absent ⇒ gitlab hooks never compile (deployment without the OAuth app). */
     private readonly gitlabBindings?: Pick<GitlabProjectBindingRepo, 'byProject'>,
-    private readonly gitlabWebhookSecrets?: GitlabWebhookSecretStore
+    private readonly gitlabWebhookSecrets?: GitlabWebhookSecretStore,
+    private readonly gitlabAccounts?: Pick<GitlabAgentAccountRepo, 'listForBinding'>
   ) {}
 
   /**
@@ -130,16 +132,24 @@ export class HookService {
       }
     }
     if (hook.kind === 'gitlab') {
-      // gitlab (§11.3): the rule carries the binding's runtime identity and the
-      // inline signing token. A binding without a working ingress (no webhook,
-      // no signing key, no service account, or entering cleanup) must leave the
-      // pool — a rule the relay holds is always verifiable and dispatchable.
-      if (hook.repoId === null || !this.gitlabBindings || !this.gitlabWebhookSecrets) return null
-      const binding = await this.gitlabBindings.byProject(hook.orgId, hook.repoId)
-      if (!binding || binding.state === 'cleanup_pending') return null
-      if (binding.serviceAccountUserId === null || !binding.serviceAccountUsername || binding.webhookId === null) {
+      // gitlab (§11.3): the rule carries the hook agent's runtime identity and
+      // the inline signing token. A hook without a working ingress (no webhook,
+      // no signing key, no ready agent account, or entering cleanup) must leave
+      // the pool — a rule the relay holds is always verifiable and dispatchable.
+      if (hook.repoId === null || !this.gitlabBindings || !this.gitlabWebhookSecrets || !this.gitlabAccounts) {
         return null
       }
+      const binding = await this.gitlabBindings.byProject(hook.orgId, hook.repoId)
+      if (!binding || binding.state === 'cleanup_pending' || binding.webhookId === null) return null
+      // §7.2: the rule names the HOOK AGENT's own account, and vetoes every
+      // account bound to the project — one agent's replies never wake a sibling.
+      const accounts = await this.gitlabAccounts.listForBinding(binding.id)
+      const account = accounts.find((candidate) => candidate.agentId === hook.agentId)
+      if (!account || account.serviceAccountUserId === null || account.state !== 'ready') return null
+      const bound = accounts
+        .map((candidate) => candidate.serviceAccountUserId)
+        .filter((userId): userId is bigint => userId !== null)
+        .map((userId) => userId.toString())
       const signingToken = await this.gitlabWebhookSecrets.get(hook.orgId, binding.id)
       if (!signingToken) return null
       return {
@@ -162,10 +172,10 @@ export class HookService {
           labelFilter: [],
           mentionOnly: hook.mentionOnly,
           agentName: agent.name,
-          serviceAccountUserId: binding.serviceAccountUserId.toString(),
-          serviceAccountUsername: binding.serviceAccountUsername,
-          // §12.1 veto set — per-agent accounts (§7.2) append here without another wire change.
-          boundServiceAccountUserIds: [...new Set([binding.serviceAccountUserId.toString()])],
+          serviceAccountUserId: account.serviceAccountUserId.toString(),
+          serviceAccountUsername: account.username,
+          // §12.1 veto set: every managed account bound to the project.
+          boundServiceAccountUserIds: [...new Set(bound)],
           signingToken
         }
       }

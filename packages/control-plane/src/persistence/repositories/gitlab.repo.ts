@@ -7,6 +7,7 @@
  * here, policy in the service: a short lease row claim plus a tokenVersion CAS.
  */
 import type {
+  GitlabAgentAccount,
   GitlabConnection,
   GitlabProjectBinding,
   GitlabProjectCredential,
@@ -16,6 +17,11 @@ import { Prisma } from '../../generated/prisma/client.js'
 import type { PrismaLike } from '../prisma.js'
 import { GitlabMembershipGone, GitlabProjectClaimConflict } from '../errors.js'
 import type {
+  GitlabAccountConsumer,
+  GitlabAccountMembershipRecord,
+  GitlabAccountState,
+  GitlabAgentAccountRecord,
+  GitlabAgentAccountRepo,
   GitlabBindingState,
   GitlabConnectionRecord,
   GitlabConnectionRepo,
@@ -36,6 +42,10 @@ import type {
 import type { SecretCipher } from '../../secrets/cipher.js'
 import { orgScope } from '../../secrets/scope.js'
 import { OrgId } from '../../domain/ids.js'
+import {
+  GITLAB_ACCESS_DEVELOPER as ACCESS_DEVELOPER,
+  GITLAB_ACCESS_REPORTER as ACCESS_REPORTER
+} from '../../gitlab/api.js'
 
 const CONNECTION_STATES: readonly GitlabConnectionState[] = ['connected', 'reauth_required', 'disconnected']
 
@@ -286,8 +296,6 @@ function toBindingRecord(r: GitlabProjectBinding): GitlabProjectBindingRecord {
     projectPath: r.projectPath,
     defaultBranch: r.defaultBranch,
     installerConnectionId: r.installerConnectionId,
-    serviceAccountUserId: r.serviceAccountUserId,
-    serviceAccountUsername: r.serviceAccountUsername,
     webhookId: r.webhookId,
     desiredEventsHash: r.desiredEventsHash,
     credentialEpoch: r.credentialEpoch,
@@ -395,8 +403,6 @@ export class PgGitlabProjectBindingRepo implements GitlabProjectBindingRepo {
       projectPath: string
       defaultBranch: string | null
       installerConnectionId: string | null
-      serviceAccountUserId: bigint | null
-      serviceAccountUsername: string | null
       webhookId: bigint | null
       desiredEventsHash: string | null
       state: GitlabBindingState
@@ -512,13 +518,277 @@ export class PgGitlabProjectBindingRepo implements GitlabProjectBindingRepo {
   }
 }
 
+// ── §7.2/§8.2 per-agent accounts, their memberships, and their PATs ──────────
+
+const ACCOUNT_STATES: readonly GitlabAccountState[] = BINDING_STATES
+
+function toAccountRecord(r: GitlabAgentAccount): GitlabAgentAccountRecord {
+  return {
+    id: r.id,
+    orgId: r.orgId,
+    agentId: r.agentId,
+    rootGroupId: r.rootGroupId,
+    serviceAccountUserId: r.serviceAccountUserId,
+    username: r.username,
+    displayName: r.displayName,
+    credentialEpoch: r.credentialEpoch,
+    administeringConnectionId: r.administeringConnectionId,
+    generation: r.generation,
+    // Unknown persisted values fail toward "needs repair", never toward usable.
+    lifecycle: r.lifecycle === 'retiring' ? 'retiring' : 'active',
+    state: (ACCOUNT_STATES as readonly string[]).includes(r.state)
+      ? (r.state as GitlabAccountState)
+      : 'runtime_degraded',
+    stateReason: r.stateReason
+  }
+}
+
+export class PgGitlabAgentAccountRepo implements GitlabAgentAccountRepo {
+  constructor(private readonly prisma: PrismaClient) {}
+
+  async ensure(input: {
+    orgId: string
+    agentId: string
+    rootGroupId: bigint
+    username: string
+    administeringConnectionId: string | null
+  }): Promise<GitlabAgentAccountRecord> {
+    const row = await this.prisma.gitlabAgentAccount.upsert({
+      where: {
+        orgId_agentId_rootGroupId: {
+          orgId: input.orgId,
+          agentId: input.agentId,
+          rootGroupId: input.rootGroupId
+        }
+      },
+      create: {
+        orgId: input.orgId,
+        agentId: input.agentId,
+        rootGroupId: input.rootGroupId,
+        username: input.username,
+        administeringConnectionId: input.administeringConnectionId,
+        state: 'provisioning'
+      },
+      // An existing row keeps its lifecycle facts: only the administering
+      // connection follows the binding that is converging it right now.
+      update: { administeringConnectionId: input.administeringConnectionId }
+    })
+    return toAccountRecord(row)
+  }
+
+  async get(accountId: string): Promise<GitlabAgentAccountRecord | null> {
+    const row = await this.prisma.gitlabAgentAccount.findUnique({ where: { id: accountId } })
+    return row ? toAccountRecord(row) : null
+  }
+
+  async byAgentRoot(orgId: string, agentId: string, rootGroupId: bigint): Promise<GitlabAgentAccountRecord | null> {
+    const row = await this.prisma.gitlabAgentAccount.findUnique({
+      where: { orgId_agentId_rootGroupId: { orgId, agentId, rootGroupId } }
+    })
+    return row ? toAccountRecord(row) : null
+  }
+
+  async forAgentBinding(orgId: string, agentId: string, bindingId: string): Promise<GitlabAgentAccountRecord | null> {
+    // The membership IS the resolution: an account serves an agent on a project
+    // exactly while it is bound there, whatever else it holds in its root.
+    const row = await this.prisma.gitlabAgentAccount.findFirst({
+      where: { orgId, agentId, memberships: { some: { bindingId } } }
+    })
+    return row ? toAccountRecord(row) : null
+  }
+
+  async listForBinding(bindingId: string): Promise<GitlabAgentAccountRecord[]> {
+    const rows = await this.prisma.gitlabAgentAccount.findMany({
+      orderBy: { createdAt: 'asc' },
+      where: { memberships: { some: { bindingId } } }
+    })
+    return rows.map(toAccountRecord)
+  }
+
+  async listForAgent(orgId: string, agentId: string): Promise<GitlabAgentAccountRecord[]> {
+    const rows = await this.prisma.gitlabAgentAccount.findMany({
+      orderBy: { createdAt: 'asc' },
+      where: { orgId, agentId }
+    })
+    return rows.map(toAccountRecord)
+  }
+
+  async update(
+    accountId: string,
+    patch: Partial<{
+      serviceAccountUserId: bigint | null
+      displayName: string | null
+      administeringConnectionId: string | null
+      state: GitlabAccountState
+      stateReason: string | null
+    }>
+  ): Promise<GitlabAgentAccountRecord | null> {
+    const res = await this.prisma.gitlabAgentAccount.updateMany({ where: { id: accountId }, data: patch })
+    if (res.count !== 1) return null
+    return this.get(accountId)
+  }
+
+  async claimLease(accountId: string, owner: string, until: Date, now: Date): Promise<boolean> {
+    // CAS: free, same-owner, or expired — never a live foreign lease, so two
+    // runs can never both mutate one account at the provider (§7.2).
+    const res = await this.prisma.gitlabAgentAccount.updateMany({
+      where: {
+        id: accountId,
+        OR: [{ leaseOwner: null }, { leaseOwner: owner }, { leaseUntil: { lt: now } }]
+      },
+      data: { leaseOwner: owner, leaseUntil: until }
+    })
+    return res.count === 1
+  }
+
+  async renewLease(accountId: string, owner: string, until: Date): Promise<boolean> {
+    const res = await this.prisma.gitlabAgentAccount.updateMany({
+      where: { id: accountId, leaseOwner: owner },
+      data: { leaseUntil: until }
+    })
+    return res.count === 1
+  }
+
+  async releaseLease(accountId: string, owner: string): Promise<void> {
+    await this.prisma.gitlabAgentAccount.updateMany({
+      where: { id: accountId, leaseOwner: owner },
+      data: { leaseOwner: null, leaseUntil: null }
+    })
+  }
+
+  async attachMembership(input: {
+    accountId: string
+    generation: bigint
+    bindingId: string
+    accessLevel: number
+  }): Promise<boolean> {
+    // The generation fence (§7.2): the row must still be `active` at exactly the
+    // generation the caller provisioned under. The locked read serializes with
+    // the retirement CAS below, so exactly one of the two wins.
+    return this.prisma.$transaction(async (tx) => {
+      const locked = await tx.$queryRaw<{ generation: bigint; lifecycle: string }[]>`
+        SELECT "generation", "lifecycle" FROM "gitlab_agent_account"
+         WHERE "id" = ${input.accountId}::uuid FOR UPDATE`
+      const row = locked[0]
+      if (!row || row.lifecycle !== 'active' || row.generation !== input.generation) return false
+      await tx.gitlabAccountMembership.upsert({
+        where: { accountId_bindingId: { accountId: input.accountId, bindingId: input.bindingId } },
+        create: {
+          accountId: input.accountId,
+          accountGeneration: input.generation,
+          bindingId: input.bindingId,
+          accessLevel: input.accessLevel
+        },
+        update: { accountGeneration: input.generation, accessLevel: input.accessLevel }
+      })
+      return true
+    })
+  }
+
+  async detachMembership(accountId: string, bindingId: string): Promise<void> {
+    await this.prisma.gitlabAccountMembership.deleteMany({ where: { accountId, bindingId } })
+  }
+
+  async membershipsForBinding(bindingId: string): Promise<GitlabAccountMembershipRecord[]> {
+    const rows = await this.prisma.gitlabAccountMembership.findMany({ where: { bindingId } })
+    return rows.map((row) => ({
+      accountId: row.accountId,
+      accountGeneration: row.accountGeneration,
+      bindingId: row.bindingId,
+      accessLevel: row.accessLevel
+    }))
+  }
+
+  async membershipsOfAccount(accountId: string): Promise<Array<{ bindingId: string; projectId: bigint }>> {
+    const rows = await this.prisma.gitlabAccountMembership.findMany({
+      where: { accountId },
+      select: { bindingId: true, binding: { select: { projectId: true } } }
+    })
+    return rows.map((row) => ({ bindingId: row.bindingId, projectId: row.binding.projectId }))
+  }
+
+  countMemberships(accountId: string): Promise<number> {
+    return this.prisma.gitlabAccountMembership.count({ where: { accountId } })
+  }
+
+  async beginRetirement(accountId: string): Promise<boolean> {
+    // Emptiness check and the `active`→`retiring` CAS are ONE transaction under
+    // the same row lock a membership insert takes, so a bind either commits
+    // first (and this finds a membership) or waits and then loses the fence.
+    return this.prisma.$transaction(async (tx) => {
+      const locked = await tx.$queryRaw<{ lifecycle: string }[]>`
+        SELECT "lifecycle" FROM "gitlab_agent_account" WHERE "id" = ${accountId}::uuid FOR UPDATE`
+      const row = locked[0]
+      if (!row) return false
+      if (row.lifecycle === 'retiring') return true
+      if ((await tx.gitlabAccountMembership.count({ where: { accountId } })) > 0) return false
+      await tx.gitlabAgentAccount.updateMany({
+        where: { id: accountId, lifecycle: 'active' },
+        data: { lifecycle: 'retiring' }
+      })
+      return true
+    })
+  }
+
+  async finishRetirement(accountId: string): Promise<void> {
+    await this.prisma.gitlabAgentAccount.deleteMany({ where: { id: accountId, lifecycle: 'retiring' } })
+  }
+
+  async reactivate(accountId: string): Promise<GitlabAgentAccountRecord | null> {
+    // A fresh generation: whatever the abandoned retirement did externally, the
+    // next converge re-creates and re-binds from scratch. The credential rows go
+    // with the identity they were issued to — an interrupted retirement may have
+    // revoked them, or deleted the very user they name, so keeping them would
+    // let the account read `ready` holding tokens that authenticate nothing.
+    return this.prisma.$transaction(async (tx) => {
+      const res = await tx.gitlabAgentAccount.updateMany({
+        where: { id: accountId, lifecycle: 'retiring' },
+        data: {
+          lifecycle: 'active',
+          generation: { increment: 1n },
+          serviceAccountUserId: null,
+          state: 'provisioning',
+          stateReason: null
+        }
+      })
+      if (res.count !== 1) return null
+      await tx.gitlabProjectCredential.deleteMany({ where: { accountId } })
+      const row = await tx.gitlabAgentAccount.findUnique({ where: { id: accountId } })
+      return row ? toAccountRecord(row) : null
+    })
+  }
+
+  async consumers(orgId: string, projectId: bigint): Promise<GitlabAccountConsumer[]> {
+    const [workspaces, hooks] = await Promise.all([
+      this.prisma.agent.findMany({
+        where: { orgId, workspaceMode: 'gitlab', workspaceRepoId: projectId },
+        select: { id: true, gitAccess: true }
+      }),
+      this.prisma.hookDef.findMany({
+        where: { orgId, kind: 'gitlab', enabled: true, repoId: projectId, agentId: { not: null } },
+        select: { agentId: true }
+      })
+    ])
+    const levels = new Map<string, number>()
+    const raise = (agentId: string, accessLevel: number): void => {
+      levels.set(agentId, Math.max(levels.get(agentId) ?? 0, accessLevel))
+    }
+    // The workspace gitAccess clamp derives the role: push needs Developer, a
+    // read-only workspace needs no more than Reporter (§7.2, §13.1).
+    for (const row of workspaces) raise(row.id, row.gitAccess === 'read' ? ACCESS_REPORTER : ACCESS_DEVELOPER)
+    // A hook consumer posts notes and may run the configured review policy.
+    for (const row of hooks) if (row.agentId) raise(row.agentId, ACCESS_DEVELOPER)
+    return [...levels].map(([agentId, accessLevel]) => ({ agentId, accessLevel }))
+  }
+}
+
 export class PgGitlabProjectCredentialRepo implements GitlabProjectCredentialRepo {
   constructor(private readonly prisma: PrismaClient) {}
 
   private toRecord(r: GitlabProjectCredential): GitlabProjectCredentialRecord {
     return {
       id: r.id,
-      bindingId: r.bindingId,
+      accountId: r.accountId,
       // Purpose is written only from the closed union; a foreign value cannot round-trip.
       purpose: r.purpose as GitlabCredentialPurpose,
       externalTokenId: r.externalTokenId,
@@ -529,7 +799,7 @@ export class PgGitlabProjectCredentialRepo implements GitlabProjectCredentialRep
   }
 
   async commitRotation(input: {
-    bindingId: string
+    accountId: string
     purpose: GitlabCredentialPurpose
     externalTokenId: bigint
     scopes: string[]
@@ -541,13 +811,13 @@ export class PgGitlabProjectCredentialRepo implements GitlabProjectCredentialRep
       scopes: input.scopes,
       providerExpiresAt: input.providerExpiresAt
     }
-    // Metadata/generation, the sealed value, and the binding's purge fence land
+    // Metadata/generation, the sealed value, and the account's purge fence land
     // in ONE transaction: a reader can never open an old token under new
     // metadata, and a crash between them cannot lose the provider token id.
     return this.prisma.$transaction(async (tx) => {
       const row = await tx.gitlabProjectCredential.upsert({
-        where: { bindingId_purpose: { bindingId: input.bindingId, purpose: input.purpose } },
-        create: { bindingId: input.bindingId, purpose: input.purpose, ...facts },
+        where: { accountId_purpose: { accountId: input.accountId, purpose: input.purpose } },
+        create: { accountId: input.accountId, purpose: input.purpose, ...facts },
         update: { ...facts, generation: { increment: 1n } }
       })
       await tx.gitlabProjectCredentialSecret.upsert({
@@ -555,25 +825,25 @@ export class PgGitlabProjectCredentialRepo implements GitlabProjectCredentialRep
         create: { credentialId: row.id, token: input.sealedToken },
         update: { token: input.sealedToken }
       })
-      await tx.gitlabProjectBinding.updateMany({
-        where: { id: input.bindingId },
+      await tx.gitlabAgentAccount.updateMany({
+        where: { id: input.accountId },
         data: { credentialEpoch: { increment: 1n } }
       })
       return this.toRecord(row)
     })
   }
 
-  async get(bindingId: string, purpose: GitlabCredentialPurpose): Promise<GitlabProjectCredentialRecord | null> {
+  async get(accountId: string, purpose: GitlabCredentialPurpose): Promise<GitlabProjectCredentialRecord | null> {
     const row = await this.prisma.gitlabProjectCredential.findUnique({
-      where: { bindingId_purpose: { bindingId, purpose } }
+      where: { accountId_purpose: { accountId, purpose } }
     })
     return row ? this.toRecord(row) : null
   }
 
-  async listForBinding(bindingId: string): Promise<GitlabProjectCredentialRecord[]> {
+  async listForAccount(accountId: string): Promise<GitlabProjectCredentialRecord[]> {
     const rows = await this.prisma.gitlabProjectCredential.findMany({
       orderBy: { purpose: 'asc' },
-      where: { bindingId }
+      where: { accountId }
     })
     return rows.map((r) => this.toRecord(r))
   }
@@ -582,13 +852,13 @@ export class PgGitlabProjectCredentialRepo implements GitlabProjectCredentialRep
     const rows = await this.prisma.gitlabProjectCredential.findMany({
       orderBy: { providerExpiresAt: 'asc' },
       where: { providerExpiresAt: { lt: before } },
-      include: { binding: { select: { orgId: true } } }
+      include: { account: { select: { orgId: true } } }
     })
-    return rows.map((row) => ({ credential: this.toRecord(row), orgId: row.binding.orgId }))
+    return rows.map((row) => ({ credential: this.toRecord(row), orgId: row.account.orgId }))
   }
 
-  async remove(bindingId: string, purpose: GitlabCredentialPurpose): Promise<void> {
-    await this.prisma.gitlabProjectCredential.deleteMany({ where: { bindingId, purpose } })
+  async remove(accountId: string, purpose: GitlabCredentialPurpose): Promise<void> {
+    await this.prisma.gitlabProjectCredential.deleteMany({ where: { accountId, purpose } })
   }
 }
 
@@ -600,7 +870,7 @@ export class PgGitlabProjectCredentialSecretStore implements GitlabProjectCreden
 
   async get(orgId: string, credentialId: string): Promise<string | null> {
     const row = await this.db.gitlabProjectCredentialSecret.findFirst({
-      where: { credentialId, credential: { binding: { orgId } } }
+      where: { credentialId, credential: { account: { orgId } } }
     })
     return row ? this.cipher.open(row.token, orgScope(OrgId(orgId))) : null
   }

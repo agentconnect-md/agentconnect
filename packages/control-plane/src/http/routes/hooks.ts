@@ -16,7 +16,13 @@ import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { z } from 'zod'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
-import { isSyntheticEmail, type AgentRecord, type HookRecord, type UpsertHookInput } from '../../persistence/ports.js'
+import {
+  isSyntheticEmail,
+  type AgentRecord,
+  type GitlabBindingState,
+  type HookRecord,
+  type UpsertHookInput
+} from '../../persistence/ports.js'
 import { GithubApiError } from '../../github/api.js'
 import { GitCredDeniedError, type ResolvedAgentRepoAuthorization } from '../../github/service.js'
 import { AgentId, HookId, IntegrationId, OrgId } from '../../domain/ids.js'
@@ -123,31 +129,15 @@ export function hookRoutes(deps: HttpDeps) {
       void deps.hooks.broadcast(hook).catch((err) => app.log.warn({ hookId: hook.id, err }, 'hook broadcast failed'))
     }
 
-    // gitlab-kind writes also (re)converge the managed project webhook (§11.1):
-    // the saga recomputes the desired event union and updates/installs/removes
-    // it, then its onConverged rebroadcasts the project's compiled rules.
-    // `busy` means a peer run holds the §10.2 lease — that run re-checks the
-    // union at ITS end, but only for writes that landed before its final read,
-    // so this writer must outwait the lease rather than drop the change.
+    // gitlab-kind writes also (re)converge the project (§11.1): the saga
+    // recomputes the desired event union, gives the hook's agent its own §7.2
+    // account and membership, and its onConverged rebroadcasts the compiled
+    // rules. Fire-and-forget; the saga itself outwaits a peer's lease.
     const convergeGitlabWebhook = (orgId: OrgId, projectId: bigint | null): void => {
       const gitlab = deps.gitlab
       if (!gitlab || projectId === null) return
-      void deps.repos.gitlabProjectBinding
-        .byProject(orgId, projectId)
-        .then(async (binding) => {
-          if (!binding) return
-          let outcome = await gitlab.provisioner.provision(orgId, binding.id)
-          // Exponential backoff capped at 8s; ~92 attempts outlast a full
-          // 10-minute peer lease plus slack, while back-to-back writes (the
-          // common case: the peer run finishes in seconds) converge fast.
-          for (let attempt = 0; outcome.state === 'busy' && attempt < 92; attempt++) {
-            await new Promise((resolve) => setTimeout(resolve, Math.min(8_000, 1_000 * 2 ** attempt)))
-            outcome = await gitlab.provisioner.provision(orgId, binding.id)
-          }
-          if (outcome.state === 'busy') {
-            app.log.warn({ projectId: projectId.toString() }, 'gitlab webhook converge still busy — gave up')
-          }
-        })
+      void gitlab.provisioner
+        .convergeProject(orgId, projectId)
         .catch((err) => app.log.warn({ projectId: projectId.toString(), err }, 'gitlab webhook converge failed'))
     }
 
@@ -330,10 +320,11 @@ export function hookRoutes(deps: HttpDeps) {
     }
 
     // The GitLab counterpart. No repository-access clamp: the writer for BOTH effects is the
-    // project's service account under its provisioned role, not the agent's git grant, so the
-    // only configuration-time fact to check is that the binding actually has that writer.
+    // hook agent's own service account under its provisioned role (§7.2), not the agent's git
+    // grant. That account is created by the convergence this very write kicks, so the only
+    // configuration-time fact to check is that the binding itself has converged once.
     const validateGitlabEffects = (
-      binding: { serviceAccountUserId: bigint | null; projectPath: string },
+      binding: { state: GitlabBindingState; projectPath: string },
       cfg: CodeHostEffectConfig
     ): CodeHostEffectDenial | null => {
       // §16.2: GitLab commit statuses are external CI jobs, deliberately not this transport.
@@ -341,10 +332,10 @@ export function hookRoutes(deps: HttpDeps) {
         return { status: 409, message: 'commit status reporting is not available for GitLab projects' }
       }
       if (cfg.reviewPolicy === 'off' && cfg.reportingMode === 'off') return null
-      if (binding.serviceAccountUserId === null) {
+      if (binding.state === 'provisioning') {
         return {
           status: 409,
-          message: `${binding.projectPath} has no project bot yet — reviews and run reporting need one`
+          message: `${binding.projectPath} is still being set up — reviews and run reporting need its bot accounts`
         }
       }
       return null

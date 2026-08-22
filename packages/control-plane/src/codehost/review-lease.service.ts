@@ -68,21 +68,24 @@ function denied(message: string, code: BrokerCode = 'SCOPE_DENIED', retryable = 
   throw new CodeHostReviewBrokerError(code, message, retryable)
 }
 
-/** The publishing identity a provider binding contributes. No credential rides it. */
+/** The publishing identity one agent acts as. No credential rides it. */
 export interface CodeHostReviewPublisher {
   serviceAccountExternalId: bigint
   projectPath?: string
 }
 
 /**
- * Resolve the shared publishing identity for one project. One implementer today
- * (the GitLab project binding), so it stays a function on this service's deps
+ * Resolve the ACTING AGENT's publishing identity on one project. Per-agent
+ * accounts (gitlab-com-integration.md §7.2) make this the coordinator's subject
+ * key, so two agents reviewing one merge request hold independent rows. One
+ * implementer today (GitLab), so it stays a function on this service's deps
  * rather than a speculative code-host repository interface.
  */
 export type CodeHostReviewPublisherResolver = (
   orgId: string,
   provider: string,
-  projectExternalId: bigint
+  projectExternalId: bigint,
+  agentId: string
 ) => Promise<CodeHostReviewPublisher | null>
 
 export interface CodeHostReviewBrokerDeps {
@@ -238,7 +241,7 @@ export class CodeHostReviewBrokerService {
       return refuse(input.attemptId, 'head_changed', false)
     }
 
-    const publisher = await this.deps.publisher(run.orgId, input.provider, projectId)
+    const publisher = await this.deps.publisher(run.orgId, input.provider, projectId, run.agentId)
     if (!publisher) return refuse(input.attemptId, 'binding_unavailable', true)
 
     const now = new Date(this.deps.clock.now())

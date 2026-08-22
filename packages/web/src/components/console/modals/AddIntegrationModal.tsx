@@ -1770,7 +1770,7 @@ export default function AddIntegrationModal({
                       setGlReportingMode(mode)
                       setErr(null)
                     }}
-                    projectBotReady={!glPicked?.binding || !!glPicked.binding.serviceAccountUsername}
+                    projectBotReady={!glPicked?.binding || glPicked.binding.state !== 'provisioning'}
                   />
                 </div>
               </>

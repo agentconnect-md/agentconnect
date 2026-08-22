@@ -25,6 +25,7 @@ import { resolveGithubAppConfig } from './github/config.js'
 import { resolveGitlabAppConfig } from './gitlab/config.js'
 import type { FetchLike as GitlabFetchLike } from './gitlab/api.js'
 import { GitlabOauthService } from './gitlab/oauth.service.js'
+import { GitlabAccountService } from './gitlab/account.service.js'
 import { GitlabProvisioner } from './gitlab/provisioner.js'
 import { GitlabGitcredService } from './gitlab/gitcred.service.js'
 import { GitlabCredentialRotator } from './gitlab/rotator.js'
@@ -102,6 +103,7 @@ import {
   PgCodeHostRepositoryRepo,
   PgCodeHostRunProjectionRepo,
   PgGitlabConnectionRepo,
+  PgGitlabAgentAccountRepo,
   PgGitlabProjectBindingRepo,
   PgGitlabConnectionSecretStore,
   PgGitlabProjectCredentialRepo,
@@ -434,6 +436,7 @@ export function buildContainer(
     codeHostRepository: new PgCodeHostRepositoryRepo(prisma),
     gitlabConnection: new PgGitlabConnectionRepo(prisma),
     gitlabProjectBinding: new PgGitlabProjectBindingRepo(prisma),
+    gitlabAgentAccount: new PgGitlabAgentAccountRepo(prisma),
     gitlabOauthState: new PgGitlabOauthStateStore(prisma)
   }
 
@@ -689,7 +692,8 @@ export function buildContainer(
     githubAppCfg?.slug,
     undefined,
     gitlabAppCfg ? repos.gitlabProjectBinding : undefined,
-    gitlabWebhookSecretStore
+    gitlabWebhookSecretStore,
+    gitlabAppCfg ? repos.gitlabAgentAccount : undefined
   )
 
   // The single fencing site (allocates seq, stamps epoch/launchId on C→D frames).
@@ -959,6 +963,21 @@ export function buildContainer(
           log: { warn: (obj, msg) => http.log.warn(obj, msg) }
         })
       : undefined
+  // §7.2 identity: per-agent accounts, their PATs, and their memberships. Its
+  // mutation lease is the account row's, never a binding's.
+  const gitlabAccountService = gitlabOauthService
+    ? new GitlabAccountService({
+        oauth: gitlabOauthService,
+        accounts: repos.gitlabAgentAccount,
+        credentials: new PgGitlabProjectCredentialRepo(prisma),
+        credentialSecrets: new PgGitlabProjectCredentialSecretStore(prisma, secretCipher),
+        agents: repos.agent,
+        cipher: secretCipher,
+        clock,
+        ...(opts.gitlabFetch ? { fetchImpl: opts.gitlabFetch } : {}),
+        log: { warn: (obj, msg) => http.log.warn(obj, msg) }
+      })
+    : undefined
   const gitlab = gitlabOauthService
     ? {
         ...(opts.gitlabFetch ? { fetchImpl: opts.gitlabFetch } : {}),
@@ -968,20 +987,20 @@ export function buildContainer(
           hooks: repos.hook,
           agents: repos.agent,
           bindings: repos.gitlabProjectBinding,
+          accounts: repos.gitlabAgentAccount,
           credentials: new PgGitlabProjectCredentialRepo(prisma),
           credentialSecrets: new PgGitlabProjectCredentialSecretStore(prisma, secretCipher),
           hookService,
           relayControl,
           ...(opts.gitlabFetch ? { fetchImpl: opts.gitlabFetch } : {})
         }),
+        accounts: gitlabAccountService!,
         provisioner: new GitlabProvisioner({
           oauth: gitlabOauthService,
           bindings: repos.gitlabProjectBinding,
-          credentials: new PgGitlabProjectCredentialRepo(prisma),
-          credentialSecrets: new PgGitlabProjectCredentialSecretStore(prisma, secretCipher),
+          accounts: gitlabAccountService!,
           webhookSecrets: gitlabWebhookSecretStore!,
           catalog: repos.codeHostRepository,
-          cipher: secretCipher,
           clock,
           ...(config.PUBLIC_RELAY_URL ? { publicRelayUrl: config.PUBLIC_RELAY_URL } : {}),
           // §11.1: the union every enabled gitlab hook on the project wants.
@@ -1029,7 +1048,7 @@ export function buildContainer(
   // §7.4 PAT-rotation sweep; armed only by startBackground().
   const gitlabRotator = gitlab
     ? new GitlabCredentialRotator({
-        provisioner: gitlab.provisioner,
+        accounts: gitlab.accounts,
         clock,
         log: { warn: (obj, msg) => http.log.warn(obj, msg) }
       })
@@ -1041,6 +1060,7 @@ export function buildContainer(
     ? new GitlabMembershipAuthzService({
         hooks: repos.hook,
         bindings: repos.gitlabProjectBinding,
+        accounts: repos.gitlabAgentAccount,
         credentials: new PgGitlabProjectCredentialRepo(prisma),
         credentialSecrets: new PgGitlabProjectCredentialSecretStore(prisma, secretCipher),
         clock,
@@ -1136,13 +1156,16 @@ export function buildContainer(
         agent: repos.agent,
         clock,
         placement: placementResolver,
-        publisher: async (orgId, provider, projectExternalId) => {
+        publisher: async (orgId, provider, projectExternalId, agentId) => {
           if (provider !== 'gitlab') return null
           const binding = await repos.gitlabProjectBinding.byProject(orgId, projectExternalId)
-          if (!binding || binding.serviceAccountUserId === null) return null
+          if (!binding) return null
           // A binding being repaired or torn down publishes nothing.
           if (binding.state !== 'ready' && binding.state !== 'admin_degraded') return null
-          return { serviceAccountExternalId: binding.serviceAccountUserId, projectPath: binding.projectPath }
+          // §7.2: the ACTING agent's own account is the coordinator's subject key.
+          const account = await repos.gitlabAgentAccount.forAgentBinding(orgId, agentId, binding.id)
+          if (!account || account.serviceAccountUserId === null) return null
+          return { serviceAccountExternalId: account.serviceAccountUserId, projectPath: binding.projectPath }
         }
       })
     : undefined
@@ -1352,6 +1375,7 @@ export function buildContainer(
       codeHostRepository: repos.codeHostRepository,
       gitlabConnection: repos.gitlabConnection,
       gitlabProjectBinding: repos.gitlabProjectBinding,
+      gitlabAgentAccount: repos.gitlabAgentAccount,
       audit: repos.audit,
       webchatMcpOperation: repos.webchatMcpOperation,
       oauth: repos.oauth
@@ -1700,11 +1724,12 @@ export function buildContainer(
     organizationKnowledge: repos.organizationKnowledge,
     externalMemoryConnection: repos.externalMemoryConnection,
     ...(github ? { github } : {}),
-    // gitcred v2 (§13.1): the gitlab arm serves binding PATs; absent ⇒ disabled.
+    // gitcred v2 (§13.1): the gitlab arm serves the agent's own account PATs; absent ⇒ disabled.
     ...(gitlab
       ? {
           gitlabGitcred: new GitlabGitcredService({
             bindings: repos.gitlabProjectBinding,
+            accounts: repos.gitlabAgentAccount,
             credentials: new PgGitlabProjectCredentialRepo(prisma),
             credentialSecrets: new PgGitlabProjectCredentialSecretStore(prisma, secretCipher),
             clock

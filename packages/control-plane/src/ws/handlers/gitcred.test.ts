@@ -235,7 +235,8 @@ describe('handleGitCredRequest — repoFullName passthrough (issue #457)', () =>
     await handleGitCredRequest(frame, conn, deps)
 
     // The workspace clamp is bypassed: the hook, not gitAccess, is the authority.
-    expect(grantForHookReply).toHaveBeenCalledWith(ORG_ID, 4455667n)
+    // The reply is authored by the HOOK AGENT's own account (§7.2).
+    expect(grantForHookReply).toHaveBeenCalledWith(ORG_ID, AGENT_ID, 4455667n)
     expect(grantForAgent).not.toHaveBeenCalled()
     expect(conn.replyTo).toHaveBeenCalledWith(
       frame,

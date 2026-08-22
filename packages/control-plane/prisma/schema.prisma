@@ -96,6 +96,7 @@ model Org {
   githubInstallations       GithubInstallation[]
   gitlabConnections         GitlabConnection[]
   gitlabProjectBindings     GitlabProjectBinding[]
+  gitlabAgentAccounts       GitlabAgentAccount[]
   slackUserConfigs          SlackUserConfig[]
   inviteLink                OrgInviteLink?
   mcpProviders              McpProvider[]
@@ -2690,6 +2691,7 @@ model GitlabConnection {
   user   User?                   @relation("GitlabConnectionUser", fields: [userId], references: [id], onDelete: SetNull)
   secret GitlabConnectionSecret?
   installedBindings GitlabProjectBinding[] @relation("GitlabBindingInstaller")
+  administeredAccounts GitlabAgentAccount[] @relation("GitlabAccountAdministrator")
 
   @@unique([orgId, gitlabUserId])
   @@index([orgId])
@@ -2723,8 +2725,6 @@ model GitlabProjectBinding {
   // different Maintainer/Owner may explicitly take over. SetNull on removal —
   // the binding then reads admin_degraded, never silently transfers.
   installerConnectionId  String?   @db.Uuid
-  serviceAccountUserId   BigInt? // Project Service Account numeric user id (§7.2)
-  serviceAccountUsername String?
   webhookId              BigInt? // the one AgentConnect-managed project webhook (§10.3)
   desiredEventsHash      String? // hash of the enabled-hook event union the webhook was last converged to
   credentialEpoch        BigInt    @default(1) // purge fence: bumped on rotation/revocation/disconnect
@@ -2735,7 +2735,7 @@ model GitlabProjectBinding {
 
   org         Org               @relation(fields: [orgId], references: [id], onDelete: Cascade)
   installer   GitlabConnection? @relation("GitlabBindingInstaller", fields: [installerConnectionId], references: [id], onDelete: SetNull)
-  credentials GitlabProjectCredential[]
+  memberships GitlabAccountMembership[]
   webhookSecret GitlabWebhookSecret?
 
   @@unique([orgId, projectId])
@@ -2743,25 +2743,84 @@ model GitlabProjectBinding {
   @@map("gitlab_project_binding")
 }
 
+/// One group service account per (organization, agent, top-level group) — the
+/// runtime identity every note, review, and push is authored by (§7.2, §8.2).
+/// `username` is the rename-stable deterministic marker; `displayName` is the
+/// last synced label. `agentId` deliberately carries NO foreign key: an account
+/// whose external cleanup is still owed outlives the agent that earned it.
+/// `state` is TEXT with the binding's own closed set; `lifecycle` is the
+/// generation fence a membership insert commits against (§7.2).
+model GitlabAgentAccount {
+  id                        String    @id @default(uuid()) @db.Uuid
+  orgId                     String
+  agentId                   String    @db.Uuid
+  rootGroupId               BigInt // numeric TOP-LEVEL group id — accounts cannot cross it
+  serviceAccountUserId      BigInt? // numeric GitLab user id; null until created
+  username                  String // agentconnect-a<agentIdHex>-g<rootGroupId>
+  displayName               String? // fingerprint of the agent name last synced to the provider
+  credentialEpoch           BigInt    @default(1) // purge fence: bumped on every PAT rotation
+  administeringConnectionId String?   @db.Uuid // the OAuth connection currently administering it
+  leaseOwner                String? // account mutation lease (§7.2): create/rotate/rename/retire
+  leaseUntil                DateTime? @db.Timestamptz(6)
+  generation                BigInt    @default(1) // lifecycle generation a membership insert fences on
+  lifecycle                 String    @default("active") // active | retiring
+  state                     String
+  stateReason               String? // bounded repair category, e.g. service_account_quota
+  createdAt                 DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt                 DateTime  @updatedAt @db.Timestamptz(6)
+
+  org           Org                       @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  administering GitlabConnection?         @relation("GitlabAccountAdministrator", fields: [administeringConnectionId], references: [id], onDelete: SetNull)
+  memberships   GitlabAccountMembership[]
+  credentials   GitlabProjectCredential[]
+
+  @@unique([orgId, agentId, rootGroupId])
+  @@index([orgId])
+  @@index([agentId])
+  @@map("gitlab_agent_account")
+}
+
+/// One account's project membership — authorization made external (§7.2). The
+/// row is inserted against the account's CURRENT lifecycle generation, so a
+/// bind racing a retirement loses deterministically instead of resurrecting a
+/// deleted account.
+model GitlabAccountMembership {
+  id                String   @id @default(uuid()) @db.Uuid
+  accountId         String   @db.Uuid
+  accountGeneration BigInt // the account generation this membership was bound under
+  bindingId         String   @db.Uuid
+  accessLevel       Int // GitLab access level the workspace gitAccess clamp derives
+  state             String   @default("active") // active — the app-layer closed set
+  createdAt         DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime @updatedAt @db.Timestamptz(6)
+
+  account GitlabAgentAccount   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  binding GitlabProjectBinding @relation(fields: [bindingId], references: [id], onDelete: Cascade)
+
+  @@unique([accountId, bindingId])
+  @@index([bindingId])
+  @@map("gitlab_account_membership")
+}
+
 /// One purpose-separated service-account PAT (§7.3): read | git_write | effect.
 /// Metadata only — the sealed token value lives in the side-table below, read
-/// exclusively through its secret store. Every row records the provider token
-/// id and the explicit 90-day expiry the reconciler validated on create.
+/// exclusively through its secret store. Keyed by the ISSUING ACCOUNT (§8.2):
+/// PATs are per agent account, not per project.
 model GitlabProjectCredential {
   id                String    @id @default(uuid()) @db.Uuid
-  bindingId         String    @db.Uuid
+  accountId         String    @db.Uuid
   purpose           String // read | git_write | effect — app-layer closed set
   externalTokenId   BigInt // provider PAT id — the revocation/rotation handle
   scopes            String[]  @default([])
   providerExpiresAt DateTime  @db.Timestamptz(6)
-  generation        BigInt    @default(1) // rotation counter; the active row is the (binding, purpose) row
+  generation        BigInt    @default(1) // rotation counter; the active row is the (account, purpose) row
   createdAt         DateTime  @default(now()) @db.Timestamptz(6)
   updatedAt         DateTime  @updatedAt @db.Timestamptz(6)
 
-  binding GitlabProjectBinding           @relation(fields: [bindingId], references: [id], onDelete: Cascade)
+  account GitlabAgentAccount             @relation(fields: [accountId], references: [id], onDelete: Cascade)
   secret  GitlabProjectCredentialSecret?
 
-  @@unique([bindingId, purpose])
+  @@unique([accountId, purpose])
   @@map("gitlab_project_credential")
 }
 

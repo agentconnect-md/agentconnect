@@ -49,6 +49,7 @@ import type {
   AgentRepoAuthorizationRepo,
   CodeHostRepositoryRepo,
   GitlabConnectionRepo,
+  GitlabAgentAccountRepo,
   GitlabProjectBindingRepo,
   DaemonLifecycleOpRepo,
   OAuthRepo,
@@ -59,6 +60,7 @@ import type { OAuthService } from '../registry/oauthService.js'
 import type { GithubService } from '../github/service.js'
 import type { GitlabOauthService } from '../gitlab/oauth.service.js'
 import type { FetchLike as GitlabFetchLike } from '../gitlab/api.js'
+import type { GitlabAccountService } from '../gitlab/account.service.js'
 import type { GitlabProvisioner } from '../gitlab/provisioner.js'
 import type { GitlabHookRerunService } from '../gitlab/hook-rerun.service.js'
 import type { PullRequestViewService } from '../github/pull-request-view.service.js'
@@ -246,6 +248,8 @@ export interface HttpDeps {
     gitlabConnection: GitlabConnectionRepo
     /** Managed GitLab project bindings (§8.2/§10). */
     gitlabProjectBinding: GitlabProjectBindingRepo
+    /** Per-agent GitLab service accounts and their memberships (§7.2/§8.2). */
+    gitlabAgentAccount: GitlabAgentAccountRepo
     /** Append-only events feed (§3.12) — WebUI CRUD writes land here (`cron_change`, …). */
     audit: AuditRepo
     /** Durable browser-confirmed delegated MCP operation ledger. */
@@ -381,6 +385,8 @@ export interface HttpDeps {
   gitlab?: {
     oauth: GitlabOauthService
     provisioner: GitlabProvisioner
+    /** §7.2 per-agent accounts: convergence, retirement, and PAT rotation. */
+    accounts: GitlabAccountService
     /** The §16.1 Console rerun authorizer; the route 404s without the GitLab app. */
     hookRerun: GitlabHookRerunService
     fetchImpl?: GitlabFetchLike

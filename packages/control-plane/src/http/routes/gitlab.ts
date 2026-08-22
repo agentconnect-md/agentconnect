@@ -41,7 +41,11 @@ import {
   GitlabProjectPageDto,
   IdParam
 } from '../dto/index.js'
-import type { GitlabConnectionRecord, GitlabProjectBindingRecord } from '../../persistence/ports.js'
+import type {
+  GitlabAgentAccountRecord,
+  GitlabConnectionRecord,
+  GitlabProjectBindingRecord
+} from '../../persistence/ports.js'
 
 function toDto(r: GitlabConnectionRecord, assignedProjects: number, callerUserId: string) {
   return {
@@ -58,8 +62,8 @@ function toDto(r: GitlabConnectionRecord, assignedProjects: number, callerUserId
   }
 }
 
-/** The begin-hop browser cookie, parsed by hand (no cookie plugin dependency). */
-function bindingToDto(r: GitlabProjectBindingRecord) {
+/** One binding with its member accounts (§7.2) — the project's bot identities. */
+function bindingToDto(r: GitlabProjectBindingRecord, accounts: GitlabAgentAccountRecord[]) {
   return {
     id: r.id,
     projectId: r.projectId.toString(),
@@ -68,7 +72,12 @@ function bindingToDto(r: GitlabProjectBindingRecord) {
     state: r.state,
     stateReason: r.stateReason,
     installerConnectionId: r.installerConnectionId,
-    serviceAccountUsername: r.serviceAccountUsername,
+    accounts: accounts.map((account) => ({
+      agentId: account.agentId,
+      username: account.username,
+      displayName: account.displayName,
+      userId: account.serviceAccountUserId?.toString() ?? null
+    })),
     webhookInstalled: r.webhookId !== null,
     credentialEpoch: r.credentialEpoch.toString(),
     createdAt: r.createdAt.toISOString()
@@ -213,7 +222,11 @@ export function gitlabRoutes(deps: HttpDeps) {
       },
       async (req) => {
         const rows = await deps.repos.gitlabProjectBinding.listForOrg(orgOf(req))
-        return { bindings: rows.map(bindingToDto) }
+        return {
+          bindings: await Promise.all(
+            rows.map(async (row) => bindingToDto(row, await deps.repos.gitlabAgentAccount.listForBinding(row.id)))
+          )
+        }
       }
     )
 
@@ -275,7 +288,7 @@ export function gitlabRoutes(deps: HttpDeps) {
           // the outcome state either way and repair re-runs it.
           await gitlab.provisioner.provision(orgId, binding.id)
           const converged = await deps.repos.gitlabProjectBinding.get(orgId, binding.id)
-          return bindingToDto(converged ?? binding)
+          return bindingToDto(converged ?? binding, await deps.repos.gitlabAgentAccount.listForBinding(binding.id))
         } catch (e) {
           if (e instanceof GitlabProjectClaimConflict) {
             // The deployment-global claim (§7.2): one managing organization per
@@ -318,7 +331,7 @@ export function gitlabRoutes(deps: HttpDeps) {
         if (!binding) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'gitlab project not found' })
         }
-        return bindingToDto(binding)
+        return bindingToDto(binding, await deps.repos.gitlabAgentAccount.listForBinding(binding.id))
       }
     )
 
@@ -394,7 +407,7 @@ export function gitlabRoutes(deps: HttpDeps) {
           }
           const converged = await deps.repos.gitlabProjectBinding.get(orgId, binding.id)
           if (!converged) return notFound()
-          return bindingToDto(converged)
+          return bindingToDto(converged, await deps.repos.gitlabAgentAccount.listForBinding(binding.id))
         } catch (e) {
           if (e instanceof GitlabOauthDenied) {
             return reply.code(e.status).send({ error: 'Conflict', statusCode: e.status, message: e.message })

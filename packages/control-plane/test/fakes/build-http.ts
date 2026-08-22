@@ -34,6 +34,7 @@ import {
   PgAgentRepoAuthorizationRepo,
   PgCodeHostRepositoryRepo,
   PgGitlabConnectionRepo,
+  PgGitlabAgentAccountRepo,
   PgGitlabProjectBindingRepo,
   PgGitlabProjectCredentialRepo,
   PgGitlabProjectCredentialSecretStore,
@@ -401,7 +402,8 @@ export function buildHttpApp(
     'agentconnect-test',
     undefined,
     depsOverrides?.gitlab ? new PgGitlabProjectBindingRepo(prisma) : undefined,
-    depsOverrides?.gitlab ? new PgGitlabWebhookSecretStore(prisma, cipher) : undefined
+    depsOverrides?.gitlab ? new PgGitlabWebhookSecretStore(prisma, cipher) : undefined,
+    depsOverrides?.gitlab ? new PgGitlabAgentAccountRepo(prisma) : undefined
   )
   // The §16.1 rerun authorizer rides the gitlab seam; a suite may still override it.
   if (coreOverrides.gitlab && !coreOverrides.gitlab.hookRerun) {
@@ -411,6 +413,7 @@ export function buildHttpApp(
         hooks: hookRepo,
         agents: agentRepo,
         bindings: new PgGitlabProjectBindingRepo(prisma),
+        accounts: new PgGitlabAgentAccountRepo(prisma),
         credentials: new PgGitlabProjectCredentialRepo(prisma),
         credentialSecrets: new PgGitlabProjectCredentialSecretStore(prisma, cipher),
         hookService,
@@ -445,6 +448,7 @@ export function buildHttpApp(
       codeHostRepository: new PgCodeHostRepositoryRepo(prisma),
       gitlabConnection: new PgGitlabConnectionRepo(prisma),
       gitlabProjectBinding: new PgGitlabProjectBindingRepo(prisma),
+      gitlabAgentAccount: new PgGitlabAgentAccountRepo(prisma),
       integration: integrationRepo,
       bot: botRepo,
       botSecret: botSecretStore,

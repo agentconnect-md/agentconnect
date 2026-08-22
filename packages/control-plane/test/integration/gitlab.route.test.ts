@@ -4,11 +4,15 @@
  * metadata-only DTOs, single-use state, browser binding, and disconnect.
  */
 import { describe, expect, it, afterEach } from 'vitest'
+import { randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
+import { seedAgent } from '../fixtures/seed.js'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { GitlabOauthService } from '../../src/gitlab/oauth.service.js'
+import { PgAgentRepo } from '../../src/persistence/repositories/agent.repo.js'
 import {
+  PgGitlabAgentAccountRepo,
   PgGitlabConnectionRepo,
   PgGitlabConnectionSecretStore,
   PgGitlabOauthStateStore,
@@ -19,6 +23,7 @@ import {
 } from '../../src/persistence/repositories/gitlab.repo.js'
 import { PgCodeHostRepositoryRepo } from '../../src/persistence/repositories/code-host-repository.repo.js'
 import { GitlabProvisioner } from '../../src/gitlab/provisioner.js'
+import { GitlabAccountService } from '../../src/gitlab/account.service.js'
 import { FakeGitlab, type FakeGitlabOptions } from '../fakes/gitlab-api.js'
 import { makeSecretCipher } from '../../src/secrets/cipher.js'
 import { systemClock } from '../../src/domain/clock.js'
@@ -47,21 +52,29 @@ function gitlabApp(options: FakeGitlabOptions = {}): HttpApp & { fake: FakeGitla
     webAppUrl: 'https://console.example.test',
     fetchImpl: fake.fetch()
   })
+  const accountService = new GitlabAccountService({
+    oauth,
+    accounts: new PgGitlabAgentAccountRepo(prisma),
+    credentials: new PgGitlabProjectCredentialRepo(prisma),
+    credentialSecrets: new PgGitlabProjectCredentialSecretStore(prisma, cipher),
+    agents: new PgAgentRepo(prisma),
+    cipher,
+    clock: systemClock,
+    fetchImpl: fake.fetch()
+  })
   const provisioner = new GitlabProvisioner({
     oauth,
     bindings: new PgGitlabProjectBindingRepo(prisma),
-    credentials: new PgGitlabProjectCredentialRepo(prisma),
-    credentialSecrets: new PgGitlabProjectCredentialSecretStore(prisma, cipher),
+    accounts: accountService,
     webhookSecrets: new PgGitlabWebhookSecretStore(prisma, cipher),
     catalog: new PgCodeHostRepositoryRepo(prisma),
-    cipher,
     clock: systemClock,
     publicRelayUrl: 'https://relay.example.test',
     desiredWebhookEvents: async () => null,
     fetchImpl: fake.fetch()
   })
   running = buildHttpApp(prisma, { PUBLIC_CP_URL: PUBLIC_CP }, undefined, undefined, {
-    gitlab: { oauth, provisioner, fetchImpl: fake.fetch() }
+    gitlab: { oauth, provisioner, accounts: accountService, fetchImpl: fake.fetch() }
   })
   return { ...running, fake }
 }
@@ -104,9 +117,15 @@ async function connect(a: HttpApp): Promise<{ connectionId: string }> {
   return { connectionId: row.id }
 }
 
+/** One agent consuming the project, so convergence gives it a service account (§7.2). */
+async function seedConsumer(): Promise<void> {
+  await seedAgent(prisma, randomUUID(), { name: `gl-${randomUUID().slice(0, 6)}`, gitlabProjectId: 4455667n })
+}
+
 /** The §9.4 starting point: the installing user left, so the binding degrades. */
 async function degradedBinding(a: HttpApp & { fake: FakeGitlab }): Promise<{ bindingId: string; installer: string }> {
   const { connectionId } = await connect(a)
+  await seedConsumer()
   const bound = await a.app.inject({
     method: 'POST',
     url: `${ORG}/gitlab/projects`,
@@ -279,6 +298,7 @@ describe('gitlab project takeover (§9.4)', () => {
     // gating on the installer's state alone would answer GITLAB_INSTALLER_CONNECTED here.
     const a = gitlabApp({ failTokenRevoke: true })
     const { connectionId } = await connect(a)
+    await seedConsumer()
     const bound = await a.app.inject({
       method: 'POST',
       url: `${ORG}/gitlab/projects`,
@@ -457,7 +477,8 @@ describe('gitlab oauth routes', () => {
       projectId: '4455667',
       projectPath: 'example-group/example-project',
       state: 'ready',
-      serviceAccountUsername: 'agentconnect-p4455667',
+      // No agent consumes this project yet, so it has no member accounts (§7.2).
+      accounts: [],
       webhookInstalled: false
     })
     // The claim and the provider-qualified catalog row were acquired atomically.

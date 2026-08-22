@@ -77,7 +77,7 @@ const project = {
   defaultBranch: 'main',
   state: 'ready',
   stateReason: null,
-  serviceAccountUsername: 'project_4210_bot',
+  accounts: [],
   webhookInstalled: true,
   credentialEpoch: '1',
   createdAt: '2026-08-01T00:00:00.000Z'

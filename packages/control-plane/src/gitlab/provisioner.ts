@@ -1,80 +1,51 @@
 /**
  * GitLab project provisioning saga + external cleanup (gitlab-com-integration.md
- * §10.2, §7.2–§7.4, §11.1, §19.4).
+ * §10.2, §11.1, §19.4).
  *
  * Desired-state convergence, resumable at every step: refresh the project by
- * numeric id, find-or-create the deterministically marked Project Service
- * Account under the ROOT group, ensure Developer membership, create or recover
- * the three purpose-separated PATs with an explicit 90-day expiry, and — when
- * at least one enabled GitLab hook wants events — install and test the managed
- * webhook with a fresh whsec signing key.
+ * numeric id, converge every consuming agent's own service account and project
+ * membership through the account service (§7.2), and — when at least one enabled
+ * GitLab hook wants events — install and test the managed webhook with a fresh
+ * whsec signing key.
  *
  * Fail-closed rules carried from the design:
- * - a returned PAT is sealed only after its identity, scopes, active flag, and
- *   EXACT requested expiry validate; anything else is revoked by id at once and
- *   the step fails (§7.3);
- * - external names carry the stable binding marker; foreign accounts, tokens,
- *   and webhooks are never adopted by name alone — webhook ownership needs BOTH
- *   the stored id and the marker URL (§10.3);
+ * - external names carry a deterministic marker; foreign accounts, tokens, and
+ *   webhooks are never adopted by name alone — webhook ownership needs BOTH the
+ *   stored id and the marker URL (§10.3);
  * - cleanup that cannot be completed leaves `cleanup_pending` and RETAINS the
  *   deployment-global claim; elapsed time never releases it (§10.2, §19.4).
  *
  * NEVER log token material or upstream token responses.
  */
 import { randomBytes } from 'node:crypto'
-import { OrgId } from '../domain/ids.js'
-import type { SecretCipher } from '../secrets/cipher.js'
-import { orgScope } from '../secrets/scope.js'
 import type { Clock } from '../domain/clock.js'
 import type {
   CodeHostRepositoryRepo,
-  GitlabCredentialPurpose,
   GitlabProjectBindingRecord,
   GitlabProjectBindingRepo,
-  GitlabProjectCredentialRepo,
-  GitlabProjectCredentialSecretStore,
   GitlabWebhookSecretStore
 } from '../persistence/ports.js'
 import {
   GITLAB_ACCESS_MAINTAINER,
   GitlabApiError,
-  gitlabCreateServiceAccount,
-  gitlabCreateServiceAccountToken,
   gitlabCreateWebhook,
-  gitlabDeleteServiceAccount,
   gitlabDeleteWebhook,
   gitlabEffectiveMembership,
-  gitlabEnsureDeveloperMember,
-  gitlabFindServiceAccount,
   gitlabProject,
-  gitlabListServiceAccountTokens,
   gitlabListWebhooks,
-  gitlabRevokeServiceAccountToken,
   gitlabRootNamespace,
-  gitlabServiceAccountDisplayName,
-  gitlabServiceAccountNameIsDefault,
-  gitlabServiceAccountUsername,
   gitlabTestWebhook,
-  gitlabUpdateServiceAccount,
   gitlabUpdateWebhook,
   membershipSatisfies,
   type FetchLike,
   type GitlabProjectWithNamespace,
   type GitlabWebhookEvents
 } from './api.js'
+import { GitlabTokenPolicyViolation, type GitlabAccountService } from './account.service.js'
 import type { GitlabOauthService } from './oauth.service.js'
 
 /** The exclusive provisioning lease a run holds across its provider writes. */
 export const PROVISION_LEASE_MS = 10 * 60 * 1000
-
-/** §7.3 v1 policy: every PAT is created with exactly this lifetime. */
-export const PAT_LIFETIME_DAYS = 90
-
-const PURPOSE_SCOPES: Record<GitlabCredentialPurpose, string[]> = {
-  read: ['read_api', 'read_repository'],
-  git_write: ['write_repository'],
-  effect: ['api']
-}
 
 /** §10.2: the claim fence was lost mid-run (cleanup or takeover won). */
 export class GitlabClaimFenceLost extends Error {
@@ -84,17 +55,11 @@ export class GitlabClaimFenceLost extends Error {
   }
 }
 
-/** §7.3: the provider returned a token outside the requested policy. */
-export class GitlabTokenPolicyViolation extends Error {
-  constructor(readonly purpose: GitlabCredentialPurpose) {
-    super(`gitlab returned an out-of-policy ${purpose} token`)
-    this.name = 'GitlabTokenPolicyViolation'
-  }
-}
-
 export type ProvisionOutcome =
   | { state: 'ready' }
-  | { state: 'admin_degraded' | 'runtime_degraded'; reason: string }
+  // `retryable` marks a loser that resolves on its own — a contended account
+  // lease or a lost generation fence (§7.2) — so a writer comes back for it.
+  | { state: 'admin_degraded' | 'runtime_degraded'; reason: string; retryable?: boolean }
   // A live peer owns the claim (provisioning or cleanup in progress): nothing
   // was written and no binding state was overwritten; the caller observes.
   | { state: 'busy'; reason: string }
@@ -107,11 +72,10 @@ export type GitlabTransferOutcome =
 export interface GitlabProvisionerDeps {
   oauth: GitlabOauthService
   bindings: GitlabProjectBindingRepo
-  credentials: GitlabProjectCredentialRepo
-  credentialSecrets: GitlabProjectCredentialSecretStore
+  /** §7.2 identity: per-agent accounts, their PATs, and their memberships. */
+  accounts: GitlabAccountService
   webhookSecrets: GitlabWebhookSecretStore
   catalog: CodeHostRepositoryRepo
-  cipher: SecretCipher
   clock: Clock
   /** Public relay origin the managed webhook URL derives from; absent ⇒ the
    *  webhook step reports a configuration reason instead of guessing. */
@@ -127,14 +91,6 @@ export interface GitlabProvisionerDeps {
   onConverged?: (orgId: string, projectId: bigint) => void
   fetchImpl?: FetchLike
   log?: { warn(obj: object, msg: string): void }
-}
-
-function expiresAtDate(nowMs: number): string {
-  return new Date(nowMs + PAT_LIFETIME_DAYS * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
-}
-
-function patName(projectId: bigint, purpose: GitlabCredentialPurpose): string {
-  return `${gitlabServiceAccountUsername(projectId)}-${purpose.replace('_', '-')}`
 }
 
 export class GitlabProvisioner {
@@ -175,6 +131,31 @@ export class GitlabProvisioner {
       // Release THIS run's lease whatever happened: every external resource is
       // deterministically marked, so the next run reconciles it.
       await this.deps.bindings.endProviderMutation(orgId, bindingId, binding.projectId, owner).catch(() => {})
+    }
+  }
+
+  /**
+   * Converge a project after a write that changed who consumes it — a gitlab
+   * hook or a gitlab workspace. Both move the §7.2 account and membership set,
+   * and a hook write may also move the webhook event union.
+   *
+   * A contended outcome — a peer holding the §10.2 binding lease, or, inside the
+   * run, an account lease or generation fence a §7.2 loser must come back for —
+   * is outwaited rather than dropped: exponential backoff capped at 8s, ~92
+   * attempts, which outlasts a full 10-minute lease plus slack while
+   * back-to-back writes converge in seconds.
+   */
+  async convergeProject(orgId: string, projectId: bigint): Promise<void> {
+    const binding = await this.deps.bindings.byProject(orgId, projectId)
+    if (!binding) return
+    let outcome = await this.provision(orgId, binding.id)
+    for (let attempt = 0; contended(outcome) && attempt < 92; attempt++) {
+      const delayMs = Math.min(8_000, 1_000 * 2 ** attempt)
+      await new Promise<void>((resolve) => this.deps.clock.setTimeout(() => resolve(), delayMs))
+      outcome = await this.provision(orgId, binding.id)
+    }
+    if (contended(outcome)) {
+      this.deps.log?.warn({ projectId: projectId.toString() }, 'gitlab converge still contended — gave up')
     }
   }
 
@@ -327,62 +308,19 @@ export class GitlabProvisioner {
     // Service accounts hang off a top-level GROUP; a personal namespace has none (§5).
     if (root.kind !== 'group') return { state: 'admin_degraded', reason: 'personal_namespace_unsupported' }
 
-    // 2–3. Find-or-create the marked service account; ensure Developer membership.
-    const username = gitlabServiceAccountUsername(binding.projectId)
-    const displayName = gitlabServiceAccountDisplayName(project.path_with_namespace, username)
-    let account = await gitlabFindServiceAccount(token, root.id, username, fetchImpl)
-    if (!account) {
-      // §10.2 per-step atomic renewal: the run must still own the lease.
-      if (!(await this.renewLease(orgId, binding, owner))) {
-        return { state: 'admin_degraded', reason: 'claim_fence_lost' }
-      }
-      try {
-        account = await gitlabCreateServiceAccount(token, root.id, { username, name: displayName }, fetchImpl)
-      } catch (e) {
-        // Ambiguous create (§10.2): list by the deterministic marker before failing.
-        account = await gitlabFindServiceAccount(token, root.id, username, fetchImpl)
-        if (!account) {
-          if (e instanceof GitlabApiError && e.status === 403) {
-            // Owner identity verification or the Free quota — a human prerequisite (§5).
-            return { state: 'admin_degraded', reason: 'service_account_create_forbidden' }
-          }
-          throw e
-        }
-      }
+    // 2–5. Every consuming agent's own account, its PATs, and its membership at
+    // the role its authorization derives; each under the ACCOUNT's lease (§7.2).
+    if (!(await this.renewLease(orgId, binding, owner))) {
+      return { state: 'admin_degraded', reason: 'claim_fence_lost' }
     }
-    // Repair backfills the friendly name onto an account still carrying a default
-    // one; a name a person chose is left alone, and a refused rename never fails
-    // the run — the account and its credentials matter, its label does not.
-    if (account.name !== displayName && gitlabServiceAccountNameIsDefault(account.name, username)) {
-      if (!(await this.renewLease(orgId, binding, owner))) {
-        return { state: 'admin_degraded', reason: 'claim_fence_lost' }
-      }
-      try {
-        account = await gitlabUpdateServiceAccount(token, root.id, BigInt(account.id), { name: displayName }, fetchImpl)
-      } catch (e) {
-        this.deps.log?.warn(
-          { bindingId: binding.id, status: e instanceof GitlabApiError ? e.status : undefined },
-          'gitlab service account rename failed'
-        )
-      }
-    }
-    const accountUserId = BigInt(account.id)
-    await gitlabEnsureDeveloperMember(token, binding.projectId, accountUserId, fetchImpl)
-    await this.deps.bindings.update(orgId, binding.id, {
-      serviceAccountUserId: accountUserId,
-      serviceAccountUsername: account.username
+    const accounts = await this.deps.accounts.convergeForBinding({
+      orgId,
+      bindingId: binding.id,
+      projectId: binding.projectId,
+      rootGroupId: root.id,
+      installerConnectionId: binding.installerConnectionId!,
+      token
     })
-
-    // 4–5. The three purpose-separated PATs, each with the explicit finite expiry.
-    for (const purpose of ['read', 'git_write', 'effect'] as const) {
-      const existing = await this.deps.credentials.get(binding.id, purpose)
-      const stillValid =
-        existing &&
-        existing.providerExpiresAt.getTime() > this.deps.clock.now() &&
-        (await this.deps.credentialSecrets.get(orgId, existing.id)) !== null
-      if (stillValid) continue
-      await this.mintCredential(orgId, binding, token, root.id, accountUserId, purpose, owner)
-    }
 
     // 6–7. The managed webhook, converged against PROVIDER truth to the union
     // CURRENT at run end. Each pass re-lists the project's webhooks first: a
@@ -428,92 +366,13 @@ export class GitlabProvisioner {
       }
       applied = want
     }
+    // An account the run could not converge is an ADMIN repair: the accounts
+    // that did converge keep serving, and the failing agent simply has no
+    // usable identity until the reason named here is fixed (§7.2).
+    if (accounts.reason) {
+      return { state: 'admin_degraded', reason: accounts.reason, ...(accounts.retryable ? { retryable: true } : {}) }
+    }
     return { state: 'ready' }
-  }
-
-  private async mintCredential(
-    orgId: string,
-    binding: GitlabProjectBindingRecord,
-    token: string,
-    groupId: number,
-    serviceAccountUserId: bigint,
-    purpose: GitlabCredentialPurpose,
-    owner: string
-  ): Promise<void> {
-    const scopes = PURPOSE_SCOPES[purpose]
-    const expiresAt = expiresAtDate(this.deps.clock.now())
-    // §10.2 per-step atomic renewal under the lease.
-    if (!(await this.renewLease(orgId, binding, owner))) throw new GitlabClaimFenceLost()
-    // Ambiguous-create recovery (§10.2): a marked token we did not record has a
-    // lost plaintext — revoke it before minting, sparing the recorded one
-    // (rotation's create-before-revoke overlap shares the name deliberately).
-    const recorded = await this.deps.credentials.get(binding.id, purpose)
-    const name = patName(binding.projectId, purpose)
-    const strays = (
-      await gitlabListServiceAccountTokens(token, groupId, serviceAccountUserId, this.deps.fetchImpl)
-    ).filter((t) => t.name === name && t.active !== false && t.revoked !== true)
-    for (const stray of strays) {
-      if (recorded && BigInt(stray.id) === recorded.externalTokenId) continue
-      await gitlabRevokeServiceAccountToken(
-        token,
-        groupId,
-        serviceAccountUserId,
-        BigInt(stray.id),
-        this.deps.fetchImpl
-      ).catch(() =>
-        this.deps.log?.warn({ bindingId: binding.id, purpose }, 'gitlab stray token revocation is unconfirmed')
-      )
-    }
-    // Renew again right before the create: the stray sweep above may have
-    // spent a chunk of the lease on sequential provider calls.
-    if (!(await this.renewLease(orgId, binding, owner))) throw new GitlabClaimFenceLost()
-    const grant = await gitlabCreateServiceAccountToken(
-      token,
-      groupId,
-      serviceAccountUserId,
-      { name: patName(binding.projectId, purpose), scopes, expiresAt },
-      this.deps.fetchImpl
-    )
-    // §7.3 validation before sealing: identity, scopes, active, EXACT expiry.
-    const valid =
-      typeof grant.token === 'string' &&
-      grant.token.length > 0 &&
-      grant.active !== false &&
-      grant.revoked !== true &&
-      grant.expires_at === expiresAt &&
-      (grant.user_id === undefined || BigInt(grant.user_id) === serviceAccountUserId) &&
-      scopes.every((scope) => grant.scopes?.includes(scope)) &&
-      grant.scopes?.length === scopes.length
-    if (!valid) {
-      // Out-of-policy token: revoke by id immediately and fail closed. An
-      // id-less response is recorded as restricted cleanup debt.
-      if (typeof grant.id === 'number') {
-        await gitlabRevokeServiceAccountToken(
-          token,
-          groupId,
-          serviceAccountUserId,
-          BigInt(grant.id),
-          this.deps.fetchImpl
-        ).catch(() => {
-          this.deps.log?.warn(
-            { bindingId: binding.id, purpose, tokenId: grant.id },
-            'gitlab out-of-policy token revocation is unconfirmed (restricted cleanup debt)'
-          )
-        })
-      } else {
-        this.deps.log?.warn({ bindingId: binding.id, purpose }, 'gitlab returned an out-of-policy token without an id')
-      }
-      throw new GitlabTokenPolicyViolation(purpose)
-    }
-    // Seal first; metadata, sealed value, and the epoch fence commit atomically.
-    await this.deps.credentials.commitRotation({
-      bindingId: binding.id,
-      purpose,
-      externalTokenId: BigInt(grant.id),
-      scopes,
-      providerExpiresAt: new Date(`${expiresAt}T00:00:00.000Z`),
-      sealedToken: await this.deps.cipher.seal(grant.token!, orgScope(OrgId(orgId)))
-    })
   }
 
   private async convergeWebhook(
@@ -592,105 +451,6 @@ export class GitlabProvisioner {
   }
 
   /**
-   * §7.4 rotation: create the replacement BEFORE revoking the old PAT — GitLab's
-   * rotate-in-place invalidates immediately, so the overlap lives on our side.
-   * The replacement rides the same validation + atomic commit as first mint,
-   * under the same exclusive run lease as provision (§10.2) — a live peer
-   * refuses and the next sweep retries. Only after commit is the previous
-   * provider token revoked (best-effort: it carries a finite expiry anyway).
-   */
-  async rotateDueCredentials(horizonMs: number): Promise<void> {
-    const due = await this.deps.credentials.listExpiring(new Date(this.deps.clock.now() + horizonMs))
-    const failedBindings = new Set<string>()
-    for (const { credential, orgId } of due) {
-      if (failedBindings.has(credential.bindingId)) continue
-      const binding = await this.deps.bindings.get(orgId, credential.bindingId)
-      if (!binding || binding.state === 'cleanup_pending') continue
-      if (!binding.installerConnectionId) {
-        failedBindings.add(binding.id)
-        await this.degrade(orgId, binding.id, 'admin_degraded', 'rotation_admin_unavailable')
-        continue
-      }
-      const owner = randomBytes(9).toString('base64url')
-      const nowMs = this.deps.clock.now()
-      const acquired = await this.deps.bindings.markProviderMutationStarted(
-        orgId,
-        binding.id,
-        binding.projectId,
-        owner,
-        new Date(nowMs + PROVISION_LEASE_MS),
-        new Date(nowMs)
-      )
-      if (!acquired) continue
-      try {
-        const token = await this.deps.oauth.withAccessToken(orgId, binding.installerConnectionId)
-        const project = (await gitlabProject(
-          token,
-          binding.projectId,
-          this.deps.fetchImpl
-        )) as GitlabProjectWithNamespace | null
-        if (!project?.namespace || binding.serviceAccountUserId === null) {
-          failedBindings.add(binding.id)
-          await this.degrade(orgId, binding.id, 'admin_degraded', 'rotation_identity_missing')
-          continue
-        }
-        const root = await gitlabRootNamespace(token, project.namespace, this.deps.fetchImpl)
-        // Revalidate UNDER the lease: the worklist is a pre-lease snapshot, so a
-        // peer sweep may have rotated this row already. A changed generation or
-        // a no-longer-due expiry skips; the reloaded predecessor (never the
-        // snapshot's) is what gets revoked — revoking the snapshot's id here
-        // would strand the peer's freshly minted token untracked.
-        const current = await this.deps.credentials.get(credential.bindingId, credential.purpose)
-        if (
-          !current ||
-          current.generation !== credential.generation ||
-          current.providerExpiresAt.getTime() >= this.deps.clock.now() + horizonMs
-        ) {
-          continue
-        }
-        const previousTokenId = current.externalTokenId
-        const serviceAccountUserId = binding.serviceAccountUserId
-        await this.mintCredential(orgId, binding, token, root.id, serviceAccountUserId, credential.purpose, owner)
-        await gitlabRevokeServiceAccountToken(
-          token,
-          root.id,
-          serviceAccountUserId,
-          previousTokenId,
-          this.deps.fetchImpl
-        ).catch(() => {
-          this.deps.log?.warn(
-            { bindingId: binding.id, purpose: credential.purpose },
-            'gitlab rotation could not revoke the previous token (it still expires on schedule)'
-          )
-        })
-        // A rotation-owned degradation heals on the first successful rotation:
-        // nothing else clears it, and repair should not be the only way out.
-        if (binding.state === 'admin_degraded' && binding.stateReason?.startsWith('rotation_')) {
-          await this.deps.bindings.update(orgId, binding.id, { state: 'ready', stateReason: null })
-        }
-      } catch (e) {
-        // The Console warns while administration is unavailable; runtime keeps
-        // working until the existing credential expires (§7.4).
-        failedBindings.add(binding.id)
-        // Every rotation-set reason is rotation_-prefixed: that namespace is
-        // exactly what a later successful sweep may clear.
-        const reason =
-          e instanceof GitlabClaimFenceLost
-            ? 'rotation_claim_fence_lost'
-            : e instanceof GitlabTokenPolicyViolation
-              ? 'rotation_out_of_policy_token'
-              : e instanceof GitlabApiError
-                ? `rotation_gitlab_${e.status || 'unreachable'}`
-                : 'rotation_admin_unavailable'
-        this.deps.log?.warn({ bindingId: binding.id, reason }, 'gitlab credential rotation failed')
-        await this.degrade(orgId, binding.id, 'admin_degraded', reason)
-      } finally {
-        await this.deps.bindings.endProviderMutation(orgId, binding.id, binding.projectId, owner).catch(() => {})
-      }
-    }
-  }
-
-  /**
    * §19.4 disconnect: local authority off first (epoch bump), then external
    * cleanup — webhook, PAT revocations, service account. Complete cleanup
    * removes the binding and releases the deployment-global claim; anything
@@ -732,50 +492,12 @@ export class GitlabProvisioner {
           }
         }
       }
-      const credentials = await this.deps.credentials.listForBinding(bindingId)
-      // Local ids are NOT proof of external absence: a crash between the
-      // service-account create and its id write leaves both empty while the
-      // marked account exists. Cleanup therefore always resolves the root group
-      // and reconciles the deterministic marker before the claim may release.
-      const project = (await gitlabProject(
-        token,
-        binding.projectId,
-        this.deps.fetchImpl
-      )) as GitlabProjectWithNamespace | null
-      if (!project?.namespace) {
-        throw new GitlabApiError('project namespace unavailable for cleanup', 0, 'INTERNAL', true)
-      }
-      const root = await gitlabRootNamespace(token, project.namespace, this.deps.fetchImpl)
-      if (root.kind === 'group') {
-        const username = gitlabServiceAccountUsername(binding.projectId)
-        const marked = await gitlabFindServiceAccount(token, root.id, username, this.deps.fetchImpl)
-        // The UNION of the recorded id and the marker result: a stale recorded
-        // account and a crash-left marked replacement can be two distinct
-        // accounts, and both must be gone before the claim may release.
-        const candidates = new Set<bigint>()
-        if (binding.serviceAccountUserId !== null) candidates.add(binding.serviceAccountUserId)
-        if (marked) candidates.add(BigInt(marked.id))
-        for (const accountUserId of candidates) {
-          // Recorded tokens are revoked individually (belt); deleting the
-          // account then invalidates anything a crash left unrecorded.
-          for (const credential of credentials) {
-            await gitlabRevokeServiceAccountToken(
-              token,
-              root.id,
-              accountUserId,
-              credential.externalTokenId,
-              this.deps.fetchImpl
-            ).catch(swallow404)
-          }
-          await gitlabDeleteServiceAccount(token, root.id, accountUserId, this.deps.fetchImpl).catch(swallow404)
-        }
-        // Release only on positive evidence: the deterministic marker is absent.
-        if (await gitlabFindServiceAccount(token, root.id, username, this.deps.fetchImpl)) {
-          throw new GitlabApiError('marked service account still present after cleanup', 0, 'INTERNAL', true)
-        }
-      } else if (binding.serviceAccountUserId !== null || credentials.length > 0) {
-        // Provider facts exist but their group is unreachable: never release.
-        throw new GitlabApiError('root group unavailable for cleanup', 0, 'INTERNAL', false)
+      // §19.4: this project's memberships go, but PATs are per account, not per
+      // membership — an account still serving another bound project in its root
+      // keeps them. Only an account left with nothing bound retires.
+      // Release only on positive evidence: no managed membership survives here.
+      if (!(await this.deps.accounts.unbindBinding(orgId, bindingId, binding.projectId, token))) {
+        throw new GitlabApiError('managed account memberships remain after cleanup', 0, 'INTERNAL', true)
       }
     } catch (e) {
       const reason = e instanceof GitlabApiError ? `gitlab_${e.status || 'unreachable'}` : 'cleanup_failed'
@@ -788,6 +510,13 @@ export class GitlabProvisioner {
   }
 }
 
+/** Someone else holds a fence this run needs: the binding lease, or — inside the
+ *  run — an account lease or generation the §7.2 loser must come back for. */
+function contended(outcome: ProvisionOutcome): boolean {
+  if (outcome.state === 'busy') return true
+  return outcome.state !== 'ready' && outcome.retryable === true
+}
+
 /** A definitively absent external resource IS cleaned up; anything else rethrows. */
 function swallow404(e: unknown): void {
   if (e instanceof GitlabApiError && e.code === 'NOT_FOUND') return
@@ -797,5 +526,3 @@ function swallow404(e: unknown): void {
 /** The sealed webhook signing key is relay material; this module never returns it. */
 export type { GitlabWebhookEvents }
 export const GITLAB_WEBHOOK_PATH = '/webhooks/gitlab'
-/** Test-facing alias for the deterministic marker (kept beside its consumer). */
-export { gitlabServiceAccountUsername as gitlabServiceAccountUsernameForTests }

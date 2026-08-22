@@ -13,10 +13,14 @@ import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { FakeGitlab, type FakeGitlabOptions } from '../fakes/gitlab-api.js'
 import { GitlabOauthService } from '../../src/gitlab/oauth.service.js'
 import { GitlabProvisioner } from '../../src/gitlab/provisioner.js'
+import { GitlabAccountService } from '../../src/gitlab/account.service.js'
+import { gitlabAgentAccountUsername } from '../../src/gitlab/api.js'
 import { GitlabMembershipAuthzService } from '../../src/gitlab/membership-authz.service.js'
 import { unionGitlabWebhookEvents } from '../../src/gitlab/webhook-events.js'
 import {
+  PgAgentRepo,
   PgCodeHostRepositoryRepo,
+  PgGitlabAgentAccountRepo,
   PgGitlabConnectionRepo,
   PgGitlabConnectionSecretStore,
   PgGitlabOauthStateStore,
@@ -65,14 +69,23 @@ async function harness(options: FakeGitlabOptions = {}) {
     publicCpUrl: 'https://api.example.test',
     fetchImpl: fake.fetch()
   })
+  const accounts = new PgGitlabAgentAccountRepo(prisma)
+  const accountService = new GitlabAccountService({
+    oauth,
+    accounts,
+    credentials: new PgGitlabProjectCredentialRepo(prisma),
+    credentialSecrets: new PgGitlabProjectCredentialSecretStore(prisma, cipher),
+    agents: new PgAgentRepo(prisma),
+    cipher,
+    clock: systemClock,
+    fetchImpl: fake.fetch()
+  })
   const provisioner = new GitlabProvisioner({
     oauth,
     bindings,
-    credentials: new PgGitlabProjectCredentialRepo(prisma),
-    credentialSecrets: new PgGitlabProjectCredentialSecretStore(prisma, cipher),
+    accounts: accountService,
     webhookSecrets: new PgGitlabWebhookSecretStore(prisma, cipher),
     catalog: new PgCodeHostRepositoryRepo(prisma),
-    cipher,
     clock: systemClock,
     publicRelayUrl: RELAY_URL,
     // The production union + rebroadcast (container wiring): the enabled
@@ -93,7 +106,7 @@ async function harness(options: FakeGitlabOptions = {}) {
     { PUBLIC_CP_URL: 'https://api.example.test', PUBLIC_RELAY_URL: RELAY_URL },
     undefined,
     undefined,
-    { gitlab: { oauth, provisioner, fetchImpl: fake.fetch() } }
+    { gitlab: { oauth, provisioner, accounts: accountService, fetchImpl: fake.fetch() } }
   )
   // A live relay row so the ingress gate passes.
   await prisma.relay.create({
@@ -128,7 +141,7 @@ async function harness(options: FakeGitlabOptions = {}) {
   // A second agent, so a test needing two hooks on one project clears the per-agent fence.
   const secondAgentId = randomUUID()
   await seedAgent(prisma, secondAgentId, { daemonId })
-  return { fake, a: running, hookRepo, bindings, provisioner, binding, agentId, secondAgentId }
+  return { fake, a: running, hookRepo, bindings, accounts, provisioner, binding, agentId, secondAgentId }
 }
 
 /** A stand-in relay socket. `answer` decides how it replies to a correlated
@@ -198,8 +211,8 @@ describe('gitlab hooks — routes, compile, webhook converge (§8.3/§11.1/§11.
         expect(rule.kind).toBe('gitlab')
         expect(rule.gitlab?.projectId).toBe(PROJECT.toString())
         expect(rule.gitlab?.sessionKeyPrefix).toBe(`gitlab:${PROJECT}`)
-        expect(rule.gitlab?.serviceAccountUsername).toBe(`agentconnect-p${PROJECT}`)
-        // §12.1 veto set: every account bound to the project, one per-project account today.
+        expect(rule.gitlab?.serviceAccountUsername).toBe(gitlabAgentAccountUsername(h.agentId, 900n))
+        // §12.1 veto set: every account bound to the project (§7.2).
         expect(rule.gitlab?.boundServiceAccountUserIds).toEqual([rule.gitlab!.serviceAccountUserId])
         expect(rule.gitlab?.signingToken).toBe(webhook.token)
         expect(rule.gitlab?.events).toEqual(['issues:*', 'merge_request:opened'])
@@ -452,9 +465,15 @@ describe('rc/codehost-membership-authz (§12.2)', () => {
     const created = await h.a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: glBody(h.agentId) })
     expect(created.statusCode).toBe(200)
     const hookRow = (await h.hookRepo.get(OrgId(DEFAULT_ORG_ID), HookId((created.json() as { id: string }).id)))!
+    // The hook made its agent a consumer: wait for the converge kick to give it
+    // its own account, since the live authorization resolves through that account.
+    await vi.waitFor(async () => expect(await h.accounts.listForBinding(h.binding.id)).toHaveLength(1), {
+      timeout: 20_000
+    })
     const service = new GitlabMembershipAuthzService({
       hooks: h.hookRepo,
       bindings: h.bindings,
+      accounts: h.accounts,
       credentials: new PgGitlabProjectCredentialRepo(prisma),
       credentialSecrets: new PgGitlabProjectCredentialSecretStore(prisma, cipher),
       clock: systemClock,
@@ -486,8 +505,8 @@ describe('rc/codehost-membership-authz (§12.2)', () => {
   it('never authorizes the managed service account, a stale fence, a foreign provider, or a disabled hook', async () => {
     const { h, hookRow, service, base } = await authzHarness()
     h.fake.members.set(7001, 30)
-    // The SA holds Developer by §7.2, but its identity must not summon (§12.1 belt).
-    const saId = (await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))!.serviceAccountUserId!.toString()
+    // The agent's own account holds a project role by §7.2, but its identity must not summon (§12.1 belt).
+    const saId = (await h.accounts.listForBinding(h.binding.id))[0]!.serviceAccountUserId!.toString()
     expect(await service.allowed({ ...base, actorExternalId: saId })).toBe(false)
     expect(await service.allowed({ ...base, configRevision: (hookRow.configRevision + 1n).toString() })).toBe(false)
     expect(await service.allowed({ ...base, provider: 'github' })).toBe(false)
