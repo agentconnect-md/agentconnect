@@ -43,6 +43,12 @@ import { handleGithubReviewAuthorize } from './github-review-authorize.js'
 import { handleGithubReviewResult } from './github-review-result.js'
 import { handleCodeHostNoteResult } from './codehost-note-result.js'
 import {
+  handleCodeHostReviewAuthorize,
+  handleCodeHostReviewLeaseRenew,
+  handleCodeHostReviewOp,
+  handleCodeHostReviewResult
+} from './codehost-review.js'
+import {
   handleWebchatMcpGrantAccept,
   handleWebchatMcpGrantIssue,
   handleWebchatMcpGrantRevoke
@@ -82,6 +88,10 @@ export class FrameRouter {
       'github/review-authorize': handleGithubReviewAuthorize,
       'github/review-result': handleGithubReviewResult,
       'codehost/note-result': handleCodeHostNoteResult,
+      'codehost/review-authz': handleCodeHostReviewAuthorize,
+      'codehost/review-op': handleCodeHostReviewOp,
+      'codehost/review-lease-renew': handleCodeHostReviewLeaseRenew,
+      'codehost/review-result': handleCodeHostReviewResult,
       'channel/agents': handleChannelAgents,
       'session/child-status': handleChildSessionStatus,
       'event/session': handleEventSession,
@@ -125,6 +135,10 @@ export {
   handleGithubReviewAuthorize,
   handleGithubReviewResult,
   handleCodeHostNoteResult,
+  handleCodeHostReviewAuthorize,
+  handleCodeHostReviewOp,
+  handleCodeHostReviewLeaseRenew,
+  handleCodeHostReviewResult,
   handleChannelAgents,
   handleChildSessionStatus,
   handleEventSession,

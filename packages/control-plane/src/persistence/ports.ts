@@ -27,8 +27,19 @@ import type {
   DecimalAmount,
   CodeHostNoteState,
   GithubPublishedComment,
-  OrganizationSuggestionInfo
+  OrganizationSuggestionInfo,
+  CodeHostReviewLeasePhase,
+  CodeHostReviewOpKind,
+  CodeHostReviewOpMethod,
+  CodeHostReviewOpOutcome,
+  CodeHostReviewOpState,
+  CodeHostReviewState
 } from '@agentconnect.md/protocol'
+import type {
+  CodeHostReviewLockReason,
+  CodeHostReviewOpRefusal,
+  CodeHostReviewTransferCondition
+} from '../domain/code-host-review.js'
 import type {
   DaemonId,
   AgentId,
@@ -3410,6 +3421,160 @@ export interface GitlabOauthStateStore {
   bindBrowser(nonce: string, browserHash: string, now: Date): Promise<GitlabOauthStateRecord | null>
   /** Callback: atomically delete and return the row — single use; null ⇒ replay/unknown/expired. */
   consume(nonce: string, now: Date): Promise<GitlabOauthStateRecord | null>
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// CodeHostReviewLeaseRepo — the formal-review publication lease, its single-use
+// operation ledger, and the body-free attempt outcome store
+// (gitlab-com-integration.md §15.1, §15.2). Every durable transition here is a
+// compare-and-swap under the subject's advisory lock; the transfer rules
+// themselves are pure (`domain/code-host-review.ts`).
+// ───────────────────────────────────────────────────────────────────────────
+
+/** The provider-side subject a lease serializes: one merge request, one publisher. */
+export interface CodeHostReviewSubject {
+  provider: string
+  projectExternalId: bigint
+  mergeRequestIid: number
+  serviceAccountExternalId: bigint
+}
+
+export interface CodeHostReviewLeaseRecord extends CodeHostReviewSubject {
+  id: string
+  orgId: string
+  fence: bigint
+  attemptId: string | null
+  ownerDaemonId: DaemonId | null
+  agentId: AgentId | null
+  hookId: HookId | null
+  deliveryKey: string | null
+  event: string | null
+  verdict: string | null
+  headSha: string | null
+  phase: CodeHostReviewLeasePhase
+  leaseUntil: Date | null
+  lockedReason: CodeHostReviewLockReason | null
+}
+
+export interface CodeHostReviewAcquireInput {
+  subject: CodeHostReviewSubject
+  orgId: string
+  attemptId: string
+  daemonId: DaemonId
+  agentId: AgentId
+  hookId: HookId
+  deliveryKey: string
+  event: string
+  verdict: string
+  headSha: string
+  leaseUntil: Date
+  now: Date
+}
+
+/** `held` is ordinary contention; `locked` is the indefinite fail-closed state. */
+export type CodeHostReviewAcquireResult =
+  | { outcome: 'acquired'; lease: CodeHostReviewLeaseRecord; condition: CodeHostReviewTransferCondition | 'fresh' }
+  | { outcome: 'idempotent'; lease: CodeHostReviewLeaseRecord }
+  | { outcome: 'held'; lease: CodeHostReviewLeaseRecord }
+  | { outcome: 'locked'; lease: CodeHostReviewLeaseRecord; lock: CodeHostReviewLockReason | null }
+
+export interface CodeHostReviewOperationRecord {
+  id: string
+  leaseId: string
+  orgId: string
+  attemptId: string
+  fence: bigint
+  ordinal: number
+  kind: CodeHostReviewOpKind
+  method: CodeHostReviewOpMethod
+  target: string
+  state: CodeHostReviewOpState
+  startToken: string | null
+  responseStatus: number | null
+  responseExternalId: string | null
+  resultCode: string | null
+}
+
+export interface CodeHostReviewIssueInput {
+  attemptId: string
+  orgId: string
+  fence: bigint
+  daemonId: DaemonId
+  kind: CodeHostReviewOpKind
+  method: CodeHostReviewOpMethod
+  target: string
+  ordinal: number
+  now: Date
+}
+
+export interface CodeHostReviewAdvanceInput {
+  attemptId: string
+  orgId: string
+  fence: bigint
+  daemonId: DaemonId
+  recordId: string
+  now: Date
+}
+
+/** Every ledger refusal is terminal for that record; none of them is a retry hint. */
+export type CodeHostReviewOpFailure =
+  | { failure: 'no_lease' }
+  | { failure: 'not_owner' }
+  | { failure: 'stale_fence' }
+  | { failure: 'lease_closed' }
+  | { failure: 'no_record' }
+  | { failure: 'permit_conflict' }
+  | { failure: 'transition'; reason: CodeHostReviewOpRefusal }
+
+export type CodeHostReviewOpResult =
+  { outcome: 'ok'; record: CodeHostReviewOperationRecord; phase: CodeHostReviewLeasePhase } | CodeHostReviewOpFailure
+
+/** The lease is resolved by `attemptId`; every other field is re-checked against it. */
+export interface CodeHostReviewOutcomeInput {
+  attemptId: string
+  orgId: string
+  hookId: HookId
+  deliveryKey: string
+  provider: string
+  projectExternalId: bigint
+  mergeRequestIid: number
+  daemonId: DaemonId
+  event: string
+  verdict: string
+  headSha: string
+  state: CodeHostReviewState
+  /** Already encoded as `"<kind>:<numeric id>"`; the repository refuses anything else. */
+  externalIds: string[]
+  now: Date
+}
+
+export type CodeHostReviewOutcomeResult =
+  | { outcome: 'recorded'; phase: CodeHostReviewLeasePhase }
+  | { outcome: 'idempotent'; phase: CodeHostReviewLeasePhase }
+  | { outcome: 'not_owner' }
+  | { outcome: 'conflict' }
+
+export interface CodeHostReviewLeaseRepo {
+  /** CAS acquisition under the subject's advisory lock; bumps the fence on every win. */
+  acquire(input: CodeHostReviewAcquireInput): Promise<CodeHostReviewAcquireResult>
+  /** Owner-only extension; a stale fence or a foreign daemon renews nothing. */
+  renew(input: {
+    attemptId: string
+    orgId: string
+    fence: bigint
+    daemonId: DaemonId
+    leaseUntil: Date
+  }): Promise<CodeHostReviewLeaseRecord | null>
+  byAttempt(attemptId: string): Promise<CodeHostReviewLeaseRecord | null>
+  bySubject(subject: CodeHostReviewSubject): Promise<CodeHostReviewLeaseRecord | null>
+  issueOperation(input: CodeHostReviewIssueInput): Promise<CodeHostReviewOpResult>
+  startOperation(input: CodeHostReviewAdvanceInput & { startToken: string }): Promise<CodeHostReviewOpResult>
+  settleOperation(
+    input: CodeHostReviewAdvanceInput & { outcome: CodeHostReviewOpOutcome }
+  ): Promise<CodeHostReviewOpResult>
+  returnOperationUnused(input: CodeHostReviewAdvanceInput): Promise<CodeHostReviewOpResult>
+  /** Persist the terminal classification and release or lock the lease with it. */
+  recordOutcome(input: CodeHostReviewOutcomeInput): Promise<CodeHostReviewOutcomeResult>
 }
 
 // ───────────────────────────────────────────────────────────────────────────

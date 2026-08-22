@@ -13,6 +13,7 @@
 import {
   isFrame,
   AGENT_EXISTS_FEATURE,
+  CODEHOST_REVIEW_V1_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
   GITCRED_PROVIDER_V2_FEATURE,
   GITLAB_EFFECT_V1_FEATURE,
@@ -89,6 +90,9 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
       GITCRED_PROVIDER_V2_FEATURE,
       // §14.2: …and decodes purpose 'gitlab_effect', the broker's action-time effect lease.
       GITLAB_EFFECT_V1_FEATURE,
+      // §15.1/§17.2: this CP serves the provider-neutral review authorization, the
+      // publication lease with its operation ledger, and the body-free result.
+      CODEHOST_REVIEW_V1_FEATURE,
       'agent-directory-org-scope-v1',
       SESSION_LIVE_TAIL_FEATURE,
       SESSION_METADATA_ACK_FEATURE,

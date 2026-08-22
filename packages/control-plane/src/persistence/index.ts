@@ -29,6 +29,7 @@ export {
   PgGitlabProjectCredentialSecretStore,
   PgGitlabWebhookSecretStore
 } from './repositories/gitlab.repo.js'
+export { PgCodeHostReviewLeaseRepo } from './repositories/code-host-review.repo.js'
 export { PgSocialIdentityMutationGate } from './repositories/social-identity-mutation.gate.js'
 export { PgAssignmentRepo } from './repositories/assignment.repo.js'
 export { PgSessionRepo } from './repositories/session.repo.js'
