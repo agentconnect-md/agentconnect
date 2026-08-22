@@ -43,7 +43,7 @@ function makeDeps(transport: FakeTransport, over: Partial<CpClientDeps> = {}): C
     log: silent,
     jitter: () => 0,
     ...over
-  }
+  } as CpClientDeps
 }
 
 const tick = () => new Promise((r) => setImmediate(r))

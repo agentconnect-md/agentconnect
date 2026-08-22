@@ -5,14 +5,8 @@ import { AGENT_CALL_HOP_LIMIT_NOTICE } from '../src/daemon/constants.js'
 import { transcriptChannelKey } from '../src/store/local-store.js'
 import { TurnOutputRegistry, type TurnOutputSurface } from '../src/platforms/turn-output.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
-import type {
-  CallMeta,
-  DaemonConverger,
-  DaemonRenderAction,
-  Pending,
-  QueueEntry,
-  WebchatTurnContext
-} from '../src/daemon/turn-types.js'
+import type { CallMeta, DaemonConverger, DaemonRenderAction, Pending, QueueEntry } from '../src/daemon/turn-types.js'
+import type { WebchatTurnContext } from '../src/webchat/types.js'
 
 /**
  * The PURE half of one dispatched turn: every decision `dispatchOne` makes before

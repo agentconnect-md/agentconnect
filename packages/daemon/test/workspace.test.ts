@@ -62,7 +62,7 @@ function fromScratchAgent(path: string): Agent {
     output: { mode: 'medium' },
     permissions: { policy: 'ask', autoApprove: [] },
     crons: []
-  } as Agent
+  } as unknown as Agent
 }
 
 function gitRepoAgent(path: string, agentDir?: string): Agent {
@@ -85,7 +85,7 @@ function gitRepoAgent(path: string, agentDir?: string): Agent {
     output: { mode: 'medium' },
     permissions: { policy: 'ask', autoApprove: [] },
     crons: []
-  } as Agent
+  } as unknown as Agent
 }
 
 /** gitRepoAgent + the github-app credential channel (usesGithubApp true). */

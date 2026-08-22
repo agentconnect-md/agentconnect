@@ -75,7 +75,7 @@ describe('toRuntimeDef', () => {
       id: 'x',
       name: 'x',
       version: '1',
-      distribution: { binary: { 'solaris-sparc': { archive: 'h', cmd: './x' } } }
+      distribution: { binary: { 'solaris-sparc': { archive: 'h', cmd: './x', args: [], env: {} } } }
     }
     expect(toRuntimeDef(entry)).toBeNull()
   })
@@ -100,7 +100,7 @@ describe('fetchRegistry', () => {
         headers: { etag: 'W/"abc"', 'last-modified': 'Wed, 01 Jan 2025 00:00:00 GMT' }
       })) as unknown as typeof fetch
     const doc = await fetchRegistry(root, { fetchImpl })
-    expect(doc.agents['claude-acp'].id).toBe('claude-acp')
+    expect(doc.agents['claude-acp']!.id).toBe('claude-acp')
     expect(existsSync(join(root, 'acp_registry.json'))).toBe(true)
     expect(JSON.parse(readFileSync(join(root, 'acp_registry.cache.json'), 'utf8')).etag).toBe('W/"abc"')
   })
@@ -111,7 +111,7 @@ describe('fetchRegistry', () => {
     writeFileSync(join(root, 'acp_registry.cache.json'), JSON.stringify({ etag: '"v1"' }))
     const fetchImpl = (async () => new Response(null, { status: 304 })) as unknown as typeof fetch
     const doc = await fetchRegistry(root, { fetchImpl })
-    expect(doc.agents['claude-acp'].id).toBe('claude-acp')
+    expect(doc.agents['claude-acp']!.id).toBe('claude-acp')
   })
 
   it('on network error falls back to cached body', async () => {
@@ -121,7 +121,7 @@ describe('fetchRegistry', () => {
       throw new Error('offline')
     }) as unknown as typeof fetch
     const doc = await fetchRegistry(root, { fetchImpl })
-    expect(doc.agents['claude-acp'].id).toBe('claude-acp')
+    expect(doc.agents['claude-acp']!.id).toBe('claude-acp')
   })
 
   it('on network error with no cache returns empty agents', async () => {
@@ -217,7 +217,7 @@ describe('resolveRuntimes', () => {
     const cfg: any = { runtimes: { fake: { command: 'node', args: [], env: [] } } }
     const out = await resolveRuntimes(cfg, '/nonexistent', { neededRuntimes: ['fake'], fetchImpl })
     expect(called).toBe(false)
-    expect(out.fake.command).toBe('node')
+    expect(out.fake!.command).toBe('node')
   })
 
   it('merges registry defaults with config (config wins by name)', async () => {
@@ -226,7 +226,7 @@ describe('resolveRuntimes', () => {
     const cfg: any = { runtimes: { 'claude-acp': { command: 'custom', args: [], env: [] } } }
     const out = await resolveRuntimes(cfg, root, { neededRuntimes: ['gemini'], mode: 'blocking', fetchImpl })
     expect(out['gemini']).toEqual({ command: 'npx', args: ['-y', 'gem@1', '--acp'], env: [] })
-    expect(out['claude-acp'].command).toBe('custom') // config override preserved
+    expect(out['claude-acp']!.command).toBe('custom') // config override preserved
   })
 
   it('works when config has no runtimes (all from registry)', async () => {
@@ -398,9 +398,9 @@ describe('curated native ACP runtimes', () => {
     })
 
     expect(fetched).toBe(false)
-    expect(catalog.entries.local.source).toBe('user')
-    expect(catalog.entries.gemini.source).toBe('registry')
-    expect(catalog.entries.maki.source).toBe('curated')
+    expect(catalog.entries.local!.source).toBe('user')
+    expect(catalog.entries.gemini!.source).toBe('registry')
+    expect(catalog.entries.maki!.source).toBe('curated')
   })
 
   it('collapses an automatic canonical Hermes entry behind an explicit legacy alias', async () => {
@@ -422,7 +422,7 @@ describe('curated native ACP runtimes', () => {
 
     const catalog = await resolveRuntimeCatalog(cfg, root, { mode: 'blocking', fetchImpl })
 
-    expect(catalog.entries.hermes.source).toBe('user')
+    expect(catalog.entries.hermes!.source).toBe('user')
     expect(catalog.entries['hermes-agent']).toBeUndefined()
   })
 
@@ -438,7 +438,7 @@ describe('curated native ACP runtimes', () => {
 
     const catalog = await resolveRuntimeCatalog(cfg, root, { mode: 'blocking', fetchImpl })
 
-    expect(catalog.entries.hermes.source).toBe('user')
-    expect(catalog.entries['hermes-agent'].source).toBe('user')
+    expect(catalog.entries.hermes!.source).toBe('user')
+    expect(catalog.entries['hermes-agent']!.source).toBe('user')
   })
 })

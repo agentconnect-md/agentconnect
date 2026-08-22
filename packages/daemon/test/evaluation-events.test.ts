@@ -163,7 +163,7 @@ describe('evaluation event evidence', () => {
   })
 
   it('starts a recording OTel provider when evaluation export is enabled', () => {
-    const env = {
+    const env: NodeJS.ProcessEnv = {
       ...process.env,
       OTEL_TRACES_EXPORTER: 'console',
       AGENTCONNECT_EVAL_TEST_PRIVATE_INPUT: 'PRIVATE-PROMPT-7319'

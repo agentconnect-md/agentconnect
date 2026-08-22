@@ -6,9 +6,21 @@ import type { RuntimeProbeResult } from '../src/runtimes/runtime-prober.js'
 const runtime = { command: 'hermes', args: ['acp'], env: [] }
 const catalog: ResolvedRuntimeCatalog = {
   entries: {
-    'hermes-agent': { runtime, source: 'curated', name: 'Hermes Agent', version: '' },
-    explicit: { runtime: { ...runtime, command: 'custom' }, source: 'user', name: 'explicit', version: '' },
-    registered: { runtime: { ...runtime, command: 'registry' }, source: 'registry', name: 'Registered', version: '1' }
+    'hermes-agent': { runtime, source: 'curated', name: 'Hermes Agent', version: '', skillsAgentId: null },
+    explicit: {
+      runtime: { ...runtime, command: 'custom' },
+      source: 'user',
+      name: 'explicit',
+      version: '',
+      skillsAgentId: null
+    },
+    registered: {
+      runtime: { ...runtime, command: 'registry' },
+      source: 'registry',
+      name: 'Registered',
+      version: '1',
+      skillsAgentId: null
+    }
   },
   runtimes: {
     'hermes-agent': runtime,

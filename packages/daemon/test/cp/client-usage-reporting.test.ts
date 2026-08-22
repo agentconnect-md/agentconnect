@@ -53,7 +53,7 @@ function makeDeps(transport: FakeTransport, over: Partial<CpClientDeps> = {}): C
     log: silent,
     jitter: () => 0,
     ...over
-  }
+  } as CpClientDeps
 }
 
 const tick = () => new Promise((r) => setImmediate(r))
@@ -122,7 +122,12 @@ describe('usage reporting as a deployment choice', () => {
     const before = t.sent.length
 
     client.emitUsageReport(report)
-    client.emitEventSession({ sessionId: 'acp-1', agentId: report.agentId, phase: 'start' })
+    client.emitEventSession({
+      sessionId: 'acp-1',
+      agentId: report.agentId,
+      phase: 'start',
+      ts: '2026-06-26T00:00:00.000Z'
+    })
 
     expect(framesOf(t, 'usage/report')).toEqual([])
     // The session milestone still goes: this switch is about who WRITES usage, not about
