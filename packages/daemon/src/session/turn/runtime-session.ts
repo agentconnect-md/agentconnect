@@ -56,13 +56,14 @@ export interface OpenRuntimeSessionInput {
   metaContext?: () => Promise<string | undefined>
   resumeSystemContext?: () => Promise<string | undefined>
   usesMeta: boolean
-  /** Bind the runtime's brand-new session id to this slot's OUTWARD one (session-concept.md §1.1)
-   *  at the raw `session/new` response, before the session is reachable. The host makes it live
-   *  and then awaits its configuration round trips, and the row lands later still, so a runtime
-   *  that advertises from inside that window would otherwise be reported under the hop's id —
-   *  durably, with nothing to repair it. Runs on every create path; a resumed session keeps the
-   *  id its row already carries. */
-  bindOutwardSessionId?: (acpSessionId: string) => Promise<void> | void
+  /** Mint this slot's OUTWARD id (session-concept.md §1.1) and hand back the binder that pairs the
+   *  runtime's id with it. Awaited BEFORE `session/new` is issued, so the binder itself is
+   *  synchronous: the host makes the session live and then awaits its configuration round trips,
+   *  and the row lands later still, so a runtime advertising from inside that window would
+   *  otherwise be reported under the hop's id — durably, with nothing to repair it. Anything
+   *  awaited at the response instead would widen the gap where such an update is dropped
+   *  outright. Runs on every create path; a resumed session keeps the id its row carries. */
+  prepareOutwardBinding?: () => Promise<(acpSessionId: string) => void>
   signal?: AbortSignal
   abortable: <T>(start: () => PromiseLike<T> | T, signal?: AbortSignal) => Promise<T>
   interrupted: (signal: AbortSignal) => Error
@@ -116,14 +117,12 @@ export async function openRuntimeSession(input: OpenRuntimeSessionInput): Promis
     fallbackMcpServers?: McpServer[]
   ): Promise<string> => {
     const additionalDirectories = await input.workspaceDirectories(cwd)
+    const bindOutward = await input.prepareOutwardBinding?.()
     while (true) {
       const selected = await sessionStartEffort()
       const create = (servers: McpServer[]) =>
         abortable(
-          () =>
-            host.newSession(cwd, servers, selected.value, systemAppend, additionalDirectories, (acpSessionId) =>
-              input.bindOutwardSessionId?.(acpSessionId)
-            ),
+          () => host.newSession(cwd, servers, selected.value, systemAppend, additionalDirectories, bindOutward),
           signal
         )
       const sessionId = await withAdditionalMcpFallback(

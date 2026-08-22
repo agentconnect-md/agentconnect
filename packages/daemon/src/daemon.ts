@@ -2463,7 +2463,7 @@ export class Daemon {
     )
 
     this.sessions = new SessionManager({
-      bindOutwardSessionId: (agentId, key, acpSessionId) => this.bindOutwardSessionId(agentId, key, acpSessionId),
+      prepareOutwardBinding: (agentId, key) => this.prepareOutwardBinding(agentId, key),
       // THIS daemon's plane. Omitting it hands the manager a local-mode one, and
       // `additionalWorkspaceDirectories` would then `realpathSync` a `--k8s` workspace's pod-side
       // cwd against this filesystem — failing session create/load before the runtime call.
@@ -11021,14 +11021,16 @@ export class Daemon {
    *  Dropped once the row can answer for itself; bounded so an aborted open cannot accumulate. */
   private readonly openingOutwardSessionIds = new Map<string, string>()
 
-  /** Called by the opener the instant `newSession()` returns — the outward id is already minted
-   *  (the credential that started this runtime carries it), so this only records the pairing. */
-  private async bindOutwardSessionId(agentId: string, key: string, acpSessionId: string): Promise<void> {
-    if (this.openingOutwardSessionIds.size >= 2000) this.openingOutwardSessionIds.clear()
-    this.openingOutwardSessionIds.set(
-      pendingTurnKey(agentId, acpSessionId),
-      await this.store.ensureOutwardSessionId(key, agentId, this.clock.now())
-    )
+  /** Mint the slot's outward id BEFORE the runtime is asked for a session, and hand back the
+   *  binder its raw response calls. The binder is synchronous by contract: it runs in the instant
+   *  between the runtime answering and its session becoming reachable, and an update that lands
+   *  while it awaited anything would be dropped for want of an owner. */
+  private async prepareOutwardBinding(agentId: string, key: string): Promise<(acpSessionId: string) => void> {
+    const outward = await this.store.ensureOutwardSessionId(key, agentId, this.clock.now())
+    return (acpSessionId) => {
+      if (this.openingOutwardSessionIds.size >= 2000) this.openingOutwardSessionIds.clear()
+      this.openingOutwardSessionIds.set(pendingTurnKey(agentId, acpSessionId), outward)
+    }
   }
 
   /** The console deep link to an agent: `<base>/<orgSlug>/agents/<agentId>`. Same

@@ -169,10 +169,13 @@ describe('the daemon records only its own host’s advertisement', () => {
     const advertise: { run: () => Promise<void> } = { run: async () => {} }
     const acpSessionId = 'fresh-acp'
     const hostFactory = (): unknown => {
+      // Ownership follows the real host: false until `newSession()` has announced and made the
+      // session live, so an advertisement in that window would be DROPPED, not merely misnamed.
+      let live = false
       const host = {
         start: async () => {},
         stop: async () => {},
-        hasSession: (id: string) => id === acpSessionId,
+        hasSession: (id: string) => live && id === acpSessionId,
         isLoadingSession: () => false,
         newSession: async (
           _cwd: string,
@@ -180,9 +183,10 @@ describe('the daemon records only its own host’s advertisement', () => {
           _effort: unknown,
           _append: unknown,
           _dirs: unknown,
-          announce?: (id: string) => Promise<void> | void
+          announce?: (id: string) => void
         ) => {
-          await announce?.(acpSessionId)
+          announce?.(acpSessionId)
+          live = true
           // Where `applySessionConfig()`'s awaited round trips would be.
           await advertise.run()
           return acpSessionId
