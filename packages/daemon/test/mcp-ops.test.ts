@@ -5,6 +5,7 @@ import {
   type SessionContext,
   type MessageGateway,
   type MessageAgentReq,
+  type MessageAgentResult,
   type ReplyToSessionReq,
   type SessionStatusReq
 } from '../src/mcp/ops.js'
@@ -19,7 +20,12 @@ const ctx: SessionContext = {
   channel: 'C_CURRENT',
   thread: '111.1',
   tools: toolsForIntegrations([
-    { id: 'int-1', platform: 'slack', core: { bindRules: [] }, config: { botToken: 'x', appToken: 'y' } }
+    {
+      id: 'int-1',
+      platform: 'slack',
+      core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false },
+      config: { botToken: 'x', appToken: 'y' }
+    }
   ]),
   integrations: [{ id: 'int-1', platform: 'slack' }]
 }
@@ -82,7 +88,7 @@ function makeDeps(over: Partial<OpsDeps> = {}): OpsDeps {
     getOrchestration: async () => null,
     cancelOrchestration: async () => false,
     memory: noMemory,
-    recordOutbound: () => {},
+    recordOutbound: async () => {},
     now: () => 1000,
     ...over
   }
@@ -99,7 +105,7 @@ function deps(gw: MessageGateway): { deps: OpsDeps; recorded: unknown[]; titleUp
         titleUpdates.push(req)
       },
       gatewayFor: () => gw,
-      recordOutbound: (_c, channel, thread, text, ts) => recorded.push({ channel, thread, text, ts }),
+      recordOutbound: async (_c, channel, thread, text, ts) => void recorded.push({ channel, thread, text, ts }),
       now: () => 1000
     })
   }
@@ -496,7 +502,7 @@ describe('executeTool: sendMessage (channel post)', () => {
       const wakes: MessageAgentReq[] = []
       const d = makeDeps({
         gatewayFor: () => fakeGateway({ postMessage: vi.fn(async () => '172'), ...gw }),
-        recordOutbound: (_c, channel, thread, text, ts) => recorded.push({ channel, thread, text, ts }),
+        recordOutbound: async (_c, channel, thread, text, ts) => void recorded.push({ channel, thread, text, ts }),
         spawnChannelRootSession: (req) => {
           spawns.push(req)
           return true
@@ -1203,7 +1209,7 @@ describe('executeTool: sendMessage (wake / reply)', () => {
         calls.push(req)
         return { delivered: true, targetSession: `slack:${req.channel}:${req.thread ?? 'root'}:${req.toAgentId}` }
       },
-      recordOutbound: (_c, channel, thread, text, ts) => recorded.push({ channel, thread, text, ts }),
+      recordOutbound: async (_c, channel, thread, text, ts) => void recorded.push({ channel, thread, text, ts }),
       now: () => 0,
       ...over
     })
@@ -1313,7 +1319,7 @@ describe('executeTool: sendMessage (wake / reply)', () => {
     const { deps: d, calls } = wakeDeps({ gatewayFor: () => gw })
     d.messageAgent = async (req) => {
       calls.push(req)
-      return { delivered: false, reason: 'self' }
+      return { delivered: false, reason: 'self' } as MessageAgentResult
     }
 
     const res = (await executeTool(

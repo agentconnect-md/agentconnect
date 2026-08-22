@@ -286,10 +286,10 @@ describe('completion + timeout', () => {
     expect(subs[1].status).toBe('timed_out') // unreported → timed_out
     // The main's session was woken by a DIRECT dispatch (agent source), not a platform post.
     expect(calls).toHaveLength(1)
-    expect(calls[0].agentId).toBe('main')
-    expect(calls[0].msg.source).toBe('agent')
-    expect(calls[0].msg.channel).toBe('C1')
-    expect(calls[0].msg.thread).toBe('T1')
+    expect(calls[0]!.agentId).toBe('main')
+    expect(calls[0]!.msg.source).toBe('agent')
+    expect(calls[0]!.msg.channel).toBe('C1')
+    expect(calls[0]!.msg.thread).toBe('T1')
     await daemon.stop()
   })
 

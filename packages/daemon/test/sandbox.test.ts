@@ -428,7 +428,7 @@ describe('Claude credential environment isolation', () => {
         'agent-1',
         'get'
       ]
-        .map(JSON.stringify)
+        .map((part) => JSON.stringify(part))
         .join(' ')
       const socketAttempt = await SandboxManager.wrapWithSandboxArgv(
         helperCommand,

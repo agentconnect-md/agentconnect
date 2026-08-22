@@ -20,13 +20,13 @@ import type { Integration } from '../src/agents/agent-schema.js'
 const slackInt: Integration = {
   id: 'int-1',
   platform: 'slack',
-  core: { bindRules: [] },
+  core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false },
   config: { botToken: 'xoxb', appToken: 'xapp' }
 }
 const telegramInt: Integration = {
   id: 'int-2',
   platform: 'telegram',
-  core: { bindRules: [] },
+  core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false },
   config: { botToken: '123456:ABC' }
 }
 

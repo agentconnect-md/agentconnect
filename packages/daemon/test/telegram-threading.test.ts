@@ -6,7 +6,12 @@ import { Daemon } from '../src/daemon.js'
 import { routeRules } from '../src/router/routing-table.js'
 import { sessionKey } from '../src/store/local-store.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
+import type { TelegramConnection } from '../src/telegram/connection.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
+
+type TelegramPost = TelegramConnection['postMessage']
+type TelegramChrome = TelegramConnection['postChrome']
+type TelegramCard = TelegramConnection['postCard']
 
 function scaffold(): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-tg-thread-'))
@@ -50,9 +55,9 @@ function makeTelegramRoutable(daemon: Daemon) {
     }
   ]
   const conn = {
-    postMessage: vi.fn(async () => 'out-1'),
-    postChrome: vi.fn(async () => 'out-1'),
-    postCard: vi.fn(async () => 'card-1'),
+    postMessage: vi.fn<TelegramPost>(async () => 'out-1'),
+    postChrome: vi.fn<TelegramChrome>(async () => 'out-1'),
+    postCard: vi.fn<TelegramCard>(async () => 'card-1'),
     editCard: vi.fn(async () => {}),
     answerCallback: vi.fn(async () => {}),
     sendChatAction: vi.fn(async () => {})
@@ -708,8 +713,8 @@ describe('continue-the-topic hint delivery', () => {
   /** A minimal Pending for a group turn, plus a fake connection recording sends/edits. */
   function pending(daemon: Daemon) {
     const conn = {
-      postMessage: vi.fn(async () => 'out-9'),
-      postChrome: vi.fn(async () => 'chrome-1'),
+      postMessage: vi.fn<TelegramPost>(async () => 'out-9'),
+      postChrome: vi.fn<TelegramChrome>(async () => 'chrome-1'),
       updateMessage: vi.fn(async () => {}),
       sendChatAction: vi.fn(async () => {})
     }

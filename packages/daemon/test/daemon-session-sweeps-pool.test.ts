@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
+import type { SessionPurged } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
 import { LocalStore } from '../src/store/local-store.js'
 import { SqliteAsyncDatabase } from '../src/store/sqlite-async-database.js'
@@ -62,7 +63,9 @@ async function boot(root: string, daemonId: string) {
   await daemon.start()
   const inner = daemon as any
   inner.cfg.daemonId = daemonId
-  const emitSessionPurged = vi.fn(async () => 'acknowledged' as const)
+  const emitSessionPurged = vi.fn<(purged: SessionPurged) => Promise<'acknowledged'>>(
+    async () => 'acknowledged' as const
+  )
   inner.cpClient = {
     organizationScope: () => 'frame',
     memberSet: () => ({ setId: '9f11e5e7-0000-4000-8000-000000000001', name: 'Cloud' }),

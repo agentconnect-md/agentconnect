@@ -9,7 +9,7 @@ import type { NormalizedMessage } from '../src/messages/normalized.js'
 // layer) → routeRules, mirroring the scenarios the legacy routing-table test
 // covered (subscribed-all, trigger=mention, thread affinity, explicit-@ override, DM, gates).
 
-function agent(id: string, bindRules: Agent['integrations'][number]['slack']['bindRules']): Agent {
+function agent(id: string, bindRules: Agent['integrations'][number]['core']['bindRules']): Agent {
   return {
     id,
     name: id,
@@ -27,7 +27,7 @@ function agent(id: string, bindRules: Agent['integrations'][number]['slack']['bi
     output: { mode: 'medium' },
     permissions: { policy: 'ask', autoApprove: [] },
     crons: []
-  } as Agent
+  } as unknown as Agent
 }
 
 const msg = (over: Partial<NormalizedMessage>): NormalizedMessage => ({

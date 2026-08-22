@@ -18,6 +18,7 @@ import {
   scanSkillsCliCell,
   SkillsCliCellError,
   stageSkillsCliCell,
+  type ResolvedSkillsCli,
   type SkillsCliRunOptions
 } from '../src/skills/skills-cli-cell.js'
 
@@ -209,7 +210,7 @@ describe('stageSkillsCliCell', () => {
   it('requires an absolute source snapshot and safe option values', async () => {
     const base = {
       agentId: 'codex',
-      resolveCli: () => ({ version: PINNED_SKILLS_CLI_VERSION, binPath: '/package/bin/cli.mjs' as const }),
+      resolveCli: (): ResolvedSkillsCli => ({ version: PINNED_SKILLS_CLI_VERSION, binPath: '/package/bin/cli.mjs' }),
       runner: async () => ({ exitCode: 0, stdout: '', stderr: '' })
     }
     await expect(stageSkillsCliCell({ ...base, sourceSnapshot: 'relative' })).rejects.toThrow(/must be absolute/)
