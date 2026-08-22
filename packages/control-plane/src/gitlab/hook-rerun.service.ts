@@ -22,6 +22,7 @@ import type { RelayControlSender } from '../orchestrator/relayControl.js'
 import { AgentId, HookId } from '../domain/ids.js'
 import type {
   AgentRecord,
+  GitlabAgentAccountRepo,
   GitlabProjectBindingRepo,
   GitlabProjectCredentialRepo,
   GitlabProjectCredentialSecretStore,
@@ -70,6 +71,7 @@ export interface GitlabHookRerunDeps {
   hooks: Pick<HookRepo, 'getUnscoped'>
   agents: { getUnscoped(agentId: AgentId): Promise<AgentRecord | null> }
   bindings: Pick<GitlabProjectBindingRepo, 'byProject'>
+  accounts: Pick<GitlabAgentAccountRepo, 'forAgentBinding'>
   credentials: Pick<GitlabProjectCredentialRepo, 'get'>
   credentialSecrets: Pick<GitlabProjectCredentialSecretStore, 'get'>
   hookService: Pick<HookService, 'compile'>
@@ -118,7 +120,8 @@ export class GitlabHookRerunService {
       return refuse(409, 'DISPATCH_UNAVAILABLE', 'this trigger cannot dispatch right now — check the agent placement')
     }
 
-    const token = await this.readToken(binding.id, binding.orgId)
+    // The subject read runs as the HOOK AGENT's own account (§7.2).
+    const token = await this.readToken(binding.orgId, hook.agentId, binding.id)
     if (!token) return refuse(409, 'BINDING_INACTIVE', 'this project has no usable GitLab read credential')
 
     let target: GitlabHookMetadata['target']
@@ -210,8 +213,10 @@ export class GitlabHookRerunService {
     return { configRevision: rule.configRevision, dispatchRevision: rule.dispatchRevision }
   }
 
-  private async readToken(bindingId: string, orgId: string): Promise<string | null> {
-    const credential = await this.deps.credentials.get(bindingId, 'read')
+  private async readToken(orgId: string, agentId: string, bindingId: string): Promise<string | null> {
+    const account = await this.deps.accounts.forAgentBinding(orgId, agentId, bindingId)
+    if (!account) return null
+    const credential = await this.deps.credentials.get(account.id, 'read')
     if (!credential) return null
     return this.deps.credentialSecrets.get(orgId, credential.id)
   }

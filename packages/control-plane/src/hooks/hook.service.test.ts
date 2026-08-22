@@ -8,6 +8,7 @@ import { HookService, type HookAgentReads } from './hook.service.js'
 import type {
   AgentRecord,
   GithubInstallationRecord,
+  GitlabAgentAccountRecord,
   GitlabProjectBindingRecord,
   GitlabWebhookSecretStore,
   HookRecord,
@@ -71,6 +72,25 @@ function installation(id: bigint, over: Partial<GithubInstallationRecord> = {}):
   }
 }
 
+/** One agent's ready service account on the binding (§7.2). */
+function account(agentId: string, userId: bigint): GitlabAgentAccountRecord {
+  return {
+    id: `account-${userId}`,
+    orgId: 'org',
+    agentId,
+    rootGroupId: 77n,
+    serviceAccountUserId: userId,
+    username: `agentconnect-a${agentId.replace(/-/g, '')}-g77`,
+    displayName: 'review-agent',
+    credentialEpoch: 1n,
+    administeringConnectionId: null,
+    generation: 1n,
+    lifecycle: 'active',
+    state: 'ready',
+    stateReason: null
+  }
+}
+
 /** A ready gitlab binding — the gitlab-compile source (§11.3). */
 function binding(over: Partial<GitlabProjectBindingRecord> = {}): GitlabProjectBindingRecord {
   return {
@@ -80,8 +100,6 @@ function binding(over: Partial<GitlabProjectBindingRecord> = {}): GitlabProjectB
     projectPath: 'example-group/example-project',
     defaultBranch: 'main',
     installerConnectionId: null,
-    serviceAccountUserId: 9042n,
-    serviceAccountUsername: 'agentconnect-p4455667',
     webhookId: 12n,
     desiredEventsHash: null,
     credentialEpoch: 1n,
@@ -102,6 +120,7 @@ function make(
     hooks?: Partial<HookRepo>
     pause?: boolean | null
     gitlabBinding?: Partial<GitlabProjectBindingRecord> | null
+    gitlabAccounts?: GitlabAgentAccountRecord[]
   } = {}
 ) {
   const agents: HookAgentReads = {
@@ -130,6 +149,10 @@ function make(
       ? undefined
       : { byProject: vi.fn(async () => (opts.gitlabBinding ? binding(opts.gitlabBinding) : null)) }
   const gitlabWebhookSecrets = { get: vi.fn(async () => 'whsec_example') } as unknown as GitlabWebhookSecretStore
+  const gitlabAccounts =
+    opts.gitlabBinding === undefined
+      ? undefined
+      : { listForBinding: vi.fn(async () => opts.gitlabAccounts ?? [account(AGENT, 9042n)]) }
   return {
     svc: new HookService(
       hooks,
@@ -141,7 +164,8 @@ function make(
       opts.appSlug,
       undefined,
       gitlabBindings,
-      gitlabWebhookSecrets
+      gitlabWebhookSecrets,
+      gitlabAccounts
     ),
     assigns,
     removes
@@ -359,13 +383,33 @@ describe('HookService.broadcast', () => {
   })
 })
 
+const GITLAB_HOOK: Partial<HookRecord> = {
+  kind: 'gitlab',
+  sessionMode: 'perThread',
+  urlToken: null,
+  repoId: 4455667n,
+  events: ['issues:*']
+}
+
 describe('HookService.compile — gitlab', () => {
-  it('projects the §12.1 veto set: every account bound to the project, the binding account today', async () => {
-    const { svc } = make({ gitlabBinding: {} })
-    const rule = await svc.compile(
-      hook({ kind: 'gitlab', sessionMode: 'perThread', urlToken: null, repoId: 4455667n, events: ['issues:*'] })
-    )
+  it('names the HOOK AGENT’s own account and vetoes every account bound to the project', async () => {
+    const sibling = account('11111111-2222-3333-4444-555555555555', 9043n)
+    const { svc } = make({ gitlabBinding: {}, gitlabAccounts: [account(AGENT, 9042n), sibling] })
+    const rule = await svc.compile(hook({ ...GITLAB_HOOK }))
     expect(rule?.gitlab?.serviceAccountUserId).toBe('9042')
-    expect(rule?.gitlab?.boundServiceAccountUserIds).toEqual(['9042'])
+    expect(rule?.gitlab?.serviceAccountUsername).toBe(account(AGENT, 9042n).username)
+    expect(rule?.gitlab?.boundServiceAccountUserIds).toEqual(['9042', '9043'])
+  })
+
+  it('leaves the pool while the hook agent has no ready account of its own', async () => {
+    const unready = { ...account(AGENT, 9042n), state: 'provisioning' as const }
+    const { svc } = make({ gitlabBinding: {}, gitlabAccounts: [unready] })
+    expect(await svc.compile(hook({ ...GITLAB_HOOK }))).toBeNull()
+    // A sibling agent's ready account is not this hook's identity either.
+    const foreign = make({
+      gitlabBinding: {},
+      gitlabAccounts: [account('11111111-2222-3333-4444-555555555555', 9043n)]
+    })
+    expect(await foreign.svc.compile(hook({ ...GITLAB_HOOK }))).toBeNull()
   })
 })

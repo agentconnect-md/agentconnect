@@ -13,8 +13,10 @@ export interface FakeGitlabOptions {
   path?: string
   accessLevel?: number
   namespaceKind?: 'group' | 'user'
-  /** Refuse service-account creation (Owner verification / Free quota, §5). */
+  /** Refuse service-account creation (Owner verification, §5). */
   refuseServiceAccountCreate?: boolean
+  /** Refuse service-account creation for the root's 100-account quota (§7.2). */
+  refuseServiceAccountQuota?: boolean
   /** Return this expires_at instead of echoing the request (out-of-policy). */
   patExpiryOverride?: string | null
   /** Fail PAT revocations with a 500 (ambiguous cleanup). */
@@ -33,6 +35,7 @@ export class FakeGitlab {
     { projectId: number; url: string; token: string; events: Record<string, boolean>; tested: number }
   >()
   members = new Map<number, number>() // userId → access_level
+  removedMembers: number[] = []
   /** §16.1 rerun subjects, by IID. `headSha` is what a live read reports NOW. */
   mergeRequests = new Map<number, { state: string; headSha: string; baseSha?: string; draft?: boolean }>()
   issues = new Map<number, { state: string }>()
@@ -94,6 +97,12 @@ export class FakeGitlab {
         const userId = Number(/members\/(\d+)$/.exec(url)![1])
         this.members.set(userId, Number(json().access_level))
         return Response.json({ id: userId, access_level: json().access_level, state: 'active' })
+      }
+      if (/\/api\/v4\/projects\/\d+\/members\/\d+$/.test(url) && method === 'DELETE') {
+        const userId = Number(/members\/(\d+)$/.exec(url)![1])
+        if (!this.members.delete(userId)) return Response.json({ message: 'Not Found' }, { status: 404 })
+        this.removedMembers.push(userId)
+        return new Response(null, { status: 204 })
       }
 
       if (/\/api\/v4\/projects\/\d+\/hooks\?/.test(url) && method === 'GET') {
@@ -208,6 +217,9 @@ export class FakeGitlab {
         return Response.json(this.serviceAccounts)
       }
       if (/\/api\/v4\/groups\/\d+\/service_accounts$/.test(url) && method === 'POST') {
+        if (this.opts.refuseServiceAccountQuota) {
+          return Response.json({ message: 'Maximum number of service accounts reached' }, { status: 400 })
+        }
         if (this.opts.refuseServiceAccountCreate) {
           return Response.json({ message: 'forbidden' }, { status: 403 })
         }

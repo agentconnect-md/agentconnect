@@ -5280,6 +5280,14 @@ export type GitlabProjectBindingState =
   'provisioning' | 'ready' | 'admin_degraded' | 'runtime_degraded' | 'cleanup_pending'
 
 /** One managed project — its lifecycle state and non-secret external identity. */
+/** One agent's GitLab identity on a managed project. */
+export interface GitlabProjectAccountDto {
+  agentId: string
+  username: string
+  displayName: string | null
+  userId: string | null
+}
+
 export interface GitlabProjectBindingDto {
   id: string
   projectId: string
@@ -5291,7 +5299,9 @@ export interface GitlabProjectBindingDto {
    *  project whose administering connection is not connected can neither be
    *  repaired nor removed — it is reconnected or transferred first. */
   installerConnectionId: string | null
-  serviceAccountUsername: string | null
+  /** The per-agent service accounts bound to this project: each agent acts on
+   *  GitLab as its own user, so a project has a member list, not one bot. */
+  accounts: GitlabProjectAccountDto[]
   webhookInstalled: boolean
   credentialEpoch: string
   createdAt: string

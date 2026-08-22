@@ -1822,7 +1822,16 @@ export const GitlabProjectBindingDto = z.object({
   /** The OAuth connection administering this project (§7.1); null once it was
    *  removed. Its state decides whether repair, removal, or takeover can run. */
   installerConnectionId: z.string().nullable(),
-  serviceAccountUsername: z.string().nullable(),
+  /** The per-agent service accounts bound to this project (§7.2): each agent
+   *  acts as its own GitLab user, so the project has a member list, not one bot. */
+  accounts: z.array(
+    z.object({
+      agentId: z.string(),
+      username: z.string(),
+      displayName: z.string().nullable(),
+      userId: z.string().nullable()
+    })
+  ),
   webhookInstalled: z.boolean(),
   credentialEpoch: z.string(),
   createdAt: z.string()

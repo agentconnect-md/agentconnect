@@ -2840,6 +2840,14 @@ export function agentRoutes(deps: HttpDeps) {
             await removeExternalMemoryFromDaemonIfUnused(current.orgId, current.daemonId, current.memory.connectionId)
           }
           for (const h of removedHooks) deps.hooks.remove(h.id)
+          // §19.4: the agent's GitLab accounts retire — memberships removed,
+          // PATs revoked, accounts deleted. Best-effort here; an account whose
+          // external cleanup fails stays `cleanup_pending` for a repair.
+          if (deps.gitlab) {
+            void deps.gitlab.accounts
+              .retireAgentAccounts(current.orgId, current.id)
+              .catch((err) => app.log.warn({ err, agentId: current.id }, 'gitlab account retirement failed'))
+          }
           return reply.code(204).send(null)
         } catch (e) {
           if (e instanceof MemoryConnectionBusy) {

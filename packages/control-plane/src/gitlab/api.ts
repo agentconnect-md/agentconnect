@@ -222,6 +222,7 @@ export async function gitlabProject(
 }
 
 /** GitLab access levels this integration reasons about. */
+export const GITLAB_ACCESS_REPORTER = 20
 export const GITLAB_ACCESS_DEVELOPER = 30
 export const GITLAB_ACCESS_MAINTAINER = 40
 
@@ -304,27 +305,22 @@ export interface GitlabServiceAccount {
   name: string
 }
 
-/** The binding's deterministic, non-secret service-account marker (§10.2). */
-export function gitlabServiceAccountUsername(projectId: bigint): string {
-  return `agentconnect-p${projectId}`
+/** The account's deterministic, non-secret marker (§7.2): one account per
+ *  (agent, top-level group), globally unique and rename-stable — an agent
+ *  rename never touches it. */
+export function gitlabAgentAccountUsername(agentId: string, rootGroupId: bigint): string {
+  return `agentconnect-a${agentId.replace(/-/g, '')}-g${rootGroupId}`
 }
 
-/** The account's human display name: the project's own last path segment plus
- *  `-bot`, folded to a conservative ASCII set and capped so no name we write can
- *  be refused. Falls back to the machine username when nothing survives (§7.2). */
-export function gitlabServiceAccountDisplayName(projectPath: string, username: string): string {
-  const segment = (projectPath.split('/').pop() ?? '')
+/** The account's human display name: the agent's own name, folded to a
+ *  conservative ASCII set and capped so no name we write can be refused, and
+ *  with no suffix. Falls back to the machine username when nothing survives. */
+export function gitlabAgentAccountDisplayName(agentName: string, username: string): string {
+  const folded = agentName
     .replace(/[^A-Za-z0-9._-]+/g, '-')
     .replace(/^[-._]+|[-._]+$/g, '')
     .slice(0, 48)
-  return segment ? `${segment}-bot` : username
-}
-
-/** "Still the default": empty, the machine username itself, or the `AgentConnect
- *  (<path>)` form earlier versions wrote — never a name a person chose. */
-export function gitlabServiceAccountNameIsDefault(name: string | undefined, username: string): boolean {
-  const trimmed = (name ?? '').trim()
-  return trimmed === '' || trimmed === username || /^AgentConnect \(.*\)$/.test(trimmed)
+  return folded || username
 }
 
 /** Find the marked account among the top-level group's service accounts. */
@@ -390,19 +386,20 @@ export interface GitlabMember {
   state: string
 }
 
-/** Ensure the service account is a Developer member (§7.2): add, or raise a lower
- *  direct membership to exactly Developer. Never raises beyond it. */
-export async function gitlabEnsureDeveloperMember(
+/** Ensure the service account is a project member at exactly `accessLevel`
+ *  (§7.2): add, or raise a lower direct membership. Never raises beyond it. */
+export async function gitlabEnsureMember(
   accessToken: string,
   projectId: bigint,
   userId: bigint,
+  accessLevel: number,
   fetchImpl?: FetchLike
 ): Promise<void> {
   try {
     await gitlabRequest<GitlabMember>(`/projects/${projectId}/members`, {
       method: 'POST',
       auth: accessToken,
-      body: { user_id: Number(userId), access_level: GITLAB_ACCESS_DEVELOPER },
+      body: { user_id: Number(userId), access_level: accessLevel },
       fetchImpl
     })
     return
@@ -411,11 +408,25 @@ export async function gitlabEnsureDeveloperMember(
     if (!(e instanceof GitlabApiError) || (e.status !== 409 && e.status !== 400)) throw e
   }
   const membership = await gitlabEffectiveMembership(accessToken, projectId, userId, fetchImpl)
-  if (membershipSatisfies(membership, GITLAB_ACCESS_DEVELOPER, Date.now())) return
+  if (membershipSatisfies(membership, accessLevel, Date.now())) return
   await gitlabRequest<GitlabMember>(`/projects/${projectId}/members/${userId}`, {
     method: 'PUT',
     auth: accessToken,
-    body: { access_level: GITLAB_ACCESS_DEVELOPER },
+    body: { access_level: accessLevel },
+    fetchImpl
+  })
+}
+
+/** Drop the account's direct project membership (§19.4 unbind). */
+export async function gitlabRemoveMember(
+  accessToken: string,
+  projectId: bigint,
+  userId: bigint,
+  fetchImpl?: FetchLike
+): Promise<void> {
+  await gitlabRequest<void>(`/projects/${projectId}/members/${userId}`, {
+    method: 'DELETE',
+    auth: accessToken,
     fetchImpl
   })
 }

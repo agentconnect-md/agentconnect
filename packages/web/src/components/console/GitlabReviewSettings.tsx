@@ -39,7 +39,8 @@ export function GitlabReviewSettings({
       notices={
         botMissing ? (
           <ReviewNotice icon="triangle-alert" tone="error">
-            This project has no bot yet. Reviews and run notes are posted by it, so finish connecting the project first.
+            This project is still being set up. Reviews and run notes are posted by the agent’s own bot account, so
+            finish connecting the project first.
           </ReviewNotice>
         ) : undefined
       }

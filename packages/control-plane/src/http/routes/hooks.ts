@@ -16,7 +16,13 @@ import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { z } from 'zod'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
-import { isSyntheticEmail, type AgentRecord, type HookRecord, type UpsertHookInput } from '../../persistence/ports.js'
+import {
+  isSyntheticEmail,
+  type AgentRecord,
+  type GitlabBindingState,
+  type HookRecord,
+  type UpsertHookInput
+} from '../../persistence/ports.js'
 import { GithubApiError } from '../../github/api.js'
 import { GitCredDeniedError, type ResolvedAgentRepoAuthorization } from '../../github/service.js'
 import { AgentId, HookId, IntegrationId, OrgId } from '../../domain/ids.js'
@@ -330,10 +336,11 @@ export function hookRoutes(deps: HttpDeps) {
     }
 
     // The GitLab counterpart. No repository-access clamp: the writer for BOTH effects is the
-    // project's service account under its provisioned role, not the agent's git grant, so the
-    // only configuration-time fact to check is that the binding actually has that writer.
+    // hook agent's own service account under its provisioned role (§7.2), not the agent's git
+    // grant. That account is created by the convergence this very write kicks, so the only
+    // configuration-time fact to check is that the binding itself has converged once.
     const validateGitlabEffects = (
-      binding: { serviceAccountUserId: bigint | null; projectPath: string },
+      binding: { state: GitlabBindingState; projectPath: string },
       cfg: CodeHostEffectConfig
     ): CodeHostEffectDenial | null => {
       // §16.2: GitLab commit statuses are external CI jobs, deliberately not this transport.
@@ -341,10 +348,10 @@ export function hookRoutes(deps: HttpDeps) {
         return { status: 409, message: 'commit status reporting is not available for GitLab projects' }
       }
       if (cfg.reviewPolicy === 'off' && cfg.reportingMode === 'off') return null
-      if (binding.serviceAccountUserId === null) {
+      if (binding.state === 'provisioning') {
         return {
           status: 409,
-          message: `${binding.projectPath} has no project bot yet — reviews and run reporting need one`
+          message: `${binding.projectPath} is still being set up — reviews and run reporting need its bot accounts`
         }
       }
       return null

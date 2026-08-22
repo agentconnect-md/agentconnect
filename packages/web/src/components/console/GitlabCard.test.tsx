@@ -62,7 +62,7 @@ const BINDING: GitlabProjectBindingDto = {
   state: 'ready',
   stateReason: null,
   installerConnectionId: 'conn-1',
-  serviceAccountUsername: 'project_4711_bot',
+  accounts: [{ agentId: 'agent-1', username: 'agentconnect-a1-g900', displayName: 'reviewer', userId: '9042' }],
   webhookInstalled: true,
   credentialEpoch: '1',
   createdAt: '2026-08-02T00:00:00.000Z'
@@ -139,7 +139,7 @@ describe('GitlabCard', () => {
     expect(host.textContent).toContain('octo-maintainer')
     expect(host.textContent).toContain('example-group/example-project')
     expect(host.textContent).toContain('ready')
-    expect(host.textContent).toContain('project_4711_bot')
+    expect(host.textContent).toContain('agentconnect-a1-g900')
     expect(host.textContent).not.toContain('Connect GitLab')
   })
 
@@ -369,14 +369,14 @@ describe('GitlabCard', () => {
     expect(buttonIn(host, 'Repair')).toBeTruthy()
   })
 
-  it('links the bot chip to the service account’s GitLab profile', async () => {
+  it('links each member account chip to its GitLab profile', async () => {
     mocks.fetchConnections.mockResolvedValue({ enabled: true, connections: [CONNECTION] })
     mocks.fetchProjects.mockResolvedValue([BINDING])
     await render()
 
     const chip = host.querySelector('[data-gitlab-project] a') as HTMLAnchorElement
-    expect(chip.textContent).toBe('bot @project_4711_bot')
-    expect(chip.getAttribute('href')).toBe('https://gitlab.com/project_4711_bot')
+    expect(chip.textContent).toBe('bot @agentconnect-a1-g900')
+    expect(chip.getAttribute('href')).toBe('https://gitlab.com/agentconnect-a1-g900')
     // A new tab, and never one that can reach back into the console.
     expect(chip.getAttribute('target')).toBe('_blank')
     expect(chip.getAttribute('rel')).toBe('noopener noreferrer')

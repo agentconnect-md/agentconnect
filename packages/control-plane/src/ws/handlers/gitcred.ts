@@ -112,7 +112,7 @@ export const handleGitCredRequest: Handler = async (frame, conn, deps) => {
           )
           return
         }
-        const grant = await deps.gitlabGitcred!.grantForHookReply(orgId, hook.repoId)
+        const grant = await deps.gitlabGitcred!.grantForHookReply(orgId, agentId, hook.repoId)
         conn.replyTo(frame, 'gitcred/grant', grant)
         return
       }

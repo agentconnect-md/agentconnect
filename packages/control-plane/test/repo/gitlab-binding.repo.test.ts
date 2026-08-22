@@ -9,6 +9,7 @@ import { randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 import {
+  PgGitlabAgentAccountRepo,
   PgGitlabProjectBindingRepo,
   PgGitlabProjectCredentialRepo,
   PgGitlabProjectCredentialSecretStore,
@@ -19,7 +20,28 @@ import { makeSecretCipher } from '../../src/secrets/cipher.js'
 
 const cipher = makeSecretCipher({ SECRET_CIPHER: 'none' } as never)
 const bindings = () => new PgGitlabProjectBindingRepo(prisma)
+const accounts = () => new PgGitlabAgentAccountRepo(prisma)
 const PROJECT = 4455667n
+const ROOT_GROUP = 900n
+
+/** One agent account in the project's root, bound to the given binding (§7.2). */
+async function boundAccount(orgId: string, bindingId: string, agentId = randomUUID()) {
+  const account = await accounts().ensure({
+    orgId,
+    agentId,
+    rootGroupId: ROOT_GROUP,
+    username: `agentconnect-a${agentId.replace(/-/g, '')}-g${ROOT_GROUP}`,
+    administeringConnectionId: null
+  })
+  await accounts().update(account.id, { serviceAccountUserId: 9042n, state: 'ready' })
+  await accounts().attachMembership({
+    accountId: account.id,
+    generation: account.generation,
+    bindingId,
+    accessLevel: 30
+  })
+  return account
+}
 
 async function otherOrg(): Promise<string> {
   const id = `org-${randomUUID().slice(0, 8)}`
@@ -82,10 +104,11 @@ describe('PgGitlabProjectBindingRepo (§10.2 claim transaction)', () => {
 describe('credential + webhook secret stores (§7.3)', () => {
   it('rotation commits metadata, sealed value, and the epoch fence atomically', async () => {
     const binding = await bindings().createWithClaim(await withConnection(DEFAULT_ORG_ID))
+    const account = await boundAccount(DEFAULT_ORG_ID, binding.id)
     const creds = new PgGitlabProjectCredentialRepo(prisma)
     const store = new PgGitlabProjectCredentialSecretStore(prisma, cipher)
     const first = await creds.commitRotation({
-      bindingId: binding.id,
+      accountId: account.id,
       purpose: 'read',
       externalTokenId: 111n,
       scopes: ['read_api', 'read_repository'],
@@ -94,7 +117,7 @@ describe('credential + webhook secret stores (§7.3)', () => {
     })
     expect(await store.get(DEFAULT_ORG_ID, first.id)).toBe('glpat-read-1')
     const rotated = await creds.commitRotation({
-      bindingId: binding.id,
+      accountId: account.id,
       purpose: 'read',
       externalTokenId: 222n,
       scopes: ['read_api', 'read_repository'],
@@ -105,12 +128,11 @@ describe('credential + webhook secret stores (§7.3)', () => {
     expect(rotated.generation).toBe(first.generation + 1n)
     expect(rotated.externalTokenId).toBe(222n)
     expect(await store.get(DEFAULT_ORG_ID, first.id)).toBe('glpat-read-2')
-    // Each rotation advanced the binding's purge fence with it.
-    const after = (await bindings().get(DEFAULT_ORG_ID, binding.id))!
-    expect(after.credentialEpoch).toBe(binding.credentialEpoch + 2n)
+    // Each rotation advanced the ACCOUNT's purge fence with it (§7.2).
+    expect((await accounts().get(account.id))!.credentialEpoch).toBe(account.credentialEpoch + 2n)
     // Org fence on the sealed value.
     expect(await store.get('not-the-org', first.id)).toBeNull()
-    expect((await creds.listForBinding(binding.id)).map((c) => c.purpose)).toEqual(['read'])
+    expect((await creds.listForAccount(account.id)).map((c) => c.purpose)).toEqual(['read'])
   })
 
   it('organization deletion releases an unmutated claim and tombstones a mutated one', async () => {
@@ -124,9 +146,10 @@ describe('credential + webhook secret stores (§7.3)', () => {
     // metadata-only cleanup tombstone (§10.2/§19.4).
     const orgB = await otherOrg()
     const bound = await bindings().createWithClaim(await withConnection(orgB))
-    await bindings().update(orgB, bound.id, { serviceAccountUserId: 9042n, webhookId: 7n })
+    await bindings().update(orgB, bound.id, { webhookId: 7n })
+    const account = await boundAccount(orgB, bound.id)
     await new PgGitlabProjectCredentialRepo(prisma).commitRotation({
-      bindingId: bound.id,
+      accountId: account.id,
       purpose: 'effect',
       externalTokenId: 333n,
       scopes: ['api'],
@@ -140,7 +163,7 @@ describe('credential + webhook secret stores (§7.3)', () => {
     expect(claim.state).toBe('cleanup_pending')
     expect(claim.bindingRef).toBeNull()
     expect(claim.tombstone).toMatchObject({
-      serviceAccountUserId: '9042',
+      serviceAccountUserIds: [9042],
       webhookId: '7',
       externalTokenIds: [333]
     })

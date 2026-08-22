@@ -44,7 +44,7 @@ const binding = (over: Record<string, unknown>) => ({
   defaultBranch: 'main',
   state: 'ready',
   stateReason: null,
-  serviceAccountUsername: 'project_1_bot',
+  accounts: [],
   webhookInstalled: true,
   credentialEpoch: '1',
   createdAt: '2026-08-01T00:00:00.000Z',

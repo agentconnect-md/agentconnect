@@ -3,6 +3,9 @@ import type { Clock } from '../domain/clock.js'
 import { GitCredDeniedError } from '../github/service.js'
 import type {
   AgentRecord,
+  GitlabAgentAccountRecord,
+  GitlabAgentAccountRepo,
+  GitlabProjectBindingRecord,
   GitlabProjectBindingRepo,
   GitlabProjectCredentialRepo,
   GitlabProjectCredentialSecretStore
@@ -17,6 +20,7 @@ const SKEW_SEC = 60
 
 export interface GitlabGitcredDeps {
   bindings: Pick<GitlabProjectBindingRepo, 'byProject'>
+  accounts: Pick<GitlabAgentAccountRepo, 'forAgentBinding'>
   credentials: Pick<GitlabProjectCredentialRepo, 'get'>
   credentialSecrets: Pick<GitlabProjectCredentialSecretStore, 'get'>
   clock: Clock
@@ -26,16 +30,16 @@ export interface GitlabGitcredDeps {
  * gitcred v2 GitLab grants (gitlab-com-integration.md §13.1/§17.1): serve the
  * workspace binding's purpose-separated PAT under the agent's access clamp.
  * The grant carries TOKEN MATERIAL — never log it. Every request re-resolves
- * the live binding, membership facts, and credential epoch; there is no
- * per-agent minting (the credential is the project service account's).
+ * the live binding, the AGENT's own account in that project's root (§7.2), and
+ * the credential epoch; the token is the agent account's, never a human's.
  */
 export class GitlabGitcredService {
   constructor(private readonly deps: GitlabGitcredDeps) {}
 
-  /** §14.1 effect lease: the binding's effect PAT for the note poster, authorized by the enabled hook, not the workspace gitAccess. */
-  async grantForHookReply(orgId: string, projectId: bigint): Promise<GitCredGrant> {
+  /** §14.1 effect lease: the HOOK AGENT's own effect PAT for the note poster, authorized by the enabled hook, not the workspace gitAccess. */
+  async grantForHookReply(orgId: string, agentId: string, projectId: bigint): Promise<GitCredGrant> {
     // The wire access field describes CONTENTS capability here — 'read' is the conservative label, as for the GitHub hook-reply grant.
-    return this.effectGrant(orgId, projectId, 'read')
+    return this.effectGrant(orgId, agentId, projectId, 'read')
   }
 
   /** §14.2 broker effect lease: the same never-agent-visible effect PAT, authorized by the agent's GitLab workspace binding or an enabled gitlab hook (§13.1). */
@@ -48,32 +52,21 @@ export class GitlabGitcredService {
     // The clamp the daemon broker enforces per operation (§13.1): only a write workspace earns full
     // effect authority; a read workspace or hook-only authorization stays comment-level.
     const access = workspace !== undefined && workspace.gitAccess !== 'read' ? 'write' : 'comment'
-    return this.effectGrant(agent.orgId, projectId, access)
+    return this.effectGrant(agent.orgId, agent.id, projectId, access)
   }
 
-  /** The purpose=effect PAT on an action-time lease; every request re-resolves the binding, membership, and epoch. */
+  /** The purpose=effect PAT on an action-time lease; every request re-resolves the binding, the agent's account, and the epoch. */
   private async effectGrant(
     orgId: string,
+    agentId: string,
     projectId: bigint,
     access: 'read' | 'comment' | 'write'
   ): Promise<GitCredGrant> {
-    const binding = await this.deps.bindings.byProject(orgId, projectId)
-    if (!binding || binding.state === 'cleanup_pending') {
-      throw new GitCredDeniedError(
-        'the project is not a managed GitLab binding in this organization',
-        'SCOPE_DENIED',
-        false
-      )
-    }
-    if (binding.state === 'runtime_degraded') {
-      throw new GitCredDeniedError('the project binding is runtime-degraded — repair it', 'LEASE_DENIED', true)
-    }
-    if (binding.serviceAccountUsername === null || binding.serviceAccountUserId === null) {
-      throw new GitCredDeniedError('the project binding has no service account yet — repair it', 'LEASE_DENIED', true)
-    }
-    const credential = await this.deps.credentials.get(binding.id, 'effect')
+    const binding = await this.servableBinding(orgId, projectId)
+    const account = await this.agentAccount(orgId, agentId, binding.id)
+    const credential = await this.deps.credentials.get(account.id, 'effect')
     if (!credential) {
-      throw new GitCredDeniedError('the project binding has no effect credential — repair it', 'LEASE_DENIED', true)
+      throw new GitCredDeniedError('the agent account has no effect credential — repair it', 'LEASE_DENIED', true)
     }
     const token = await this.deps.credentialSecrets.get(orgId, credential.id)
     if (!token) {
@@ -90,7 +83,7 @@ export class GitlabGitcredService {
       )
     }
     return {
-      username: binding.serviceAccountUsername,
+      username: account.username,
       token,
       ttlSec,
       expiresAt: new Date(nowMs + ttlSec * 1000).toISOString(),
@@ -98,9 +91,42 @@ export class GitlabGitcredService {
       access,
       provider: 'gitlab',
       externalRepoId: projectId.toString(),
-      credentialEpoch: binding.credentialEpoch.toString(),
+      credentialEpoch: account.credentialEpoch.toString(),
       providerExpiresAt: credential.providerExpiresAt.toISOString()
     }
+  }
+
+  /** The live binding, or the denial its lifecycle state earns (§19.2/§19.3). */
+  private async servableBinding(orgId: string, projectId: bigint): Promise<GitlabProjectBindingRecord> {
+    const binding = await this.deps.bindings.byProject(orgId, projectId)
+    if (!binding || binding.state === 'cleanup_pending') {
+      throw new GitCredDeniedError(
+        'the project is not a managed GitLab binding in this organization',
+        'SCOPE_DENIED',
+        false
+      )
+    }
+    // §19.3: runtime drift stops NEW authority — no fresh local lease until a
+    // repair reconverges. admin_degraded (§19.2) keeps serving existing runtime
+    // credentials; only the admin plane is broken there.
+    if (binding.state === 'runtime_degraded') {
+      throw new GitCredDeniedError('the project binding is runtime-degraded — repair it', 'LEASE_DENIED', true)
+    }
+    return binding
+  }
+
+  /** §7.2: the agent's own account on this project. Its membership IS its
+   *  authorization, so an unbound or unprovisioned agent gets nothing. */
+  private async agentAccount(orgId: string, agentId: string, bindingId: string): Promise<GitlabAgentAccountRecord> {
+    const account = await this.deps.accounts.forAgentBinding(orgId, agentId, bindingId)
+    if (!account || account.serviceAccountUserId === null || account.state !== 'ready') {
+      throw new GitCredDeniedError(
+        'the agent has no ready GitLab account on that project — repair it',
+        'LEASE_DENIED',
+        true
+      )
+    }
+    return account
   }
 
   async grantForAgent(
@@ -117,23 +143,8 @@ export class GitlabGitcredService {
     if (requestedExternalRepoId !== undefined && requestedExternalRepoId !== projectId) {
       throw new GitCredDeniedError('requested project is not this agent workspace', 'SCOPE_DENIED', false)
     }
-    const binding = await this.deps.bindings.byProject(agent.orgId, projectId)
-    if (!binding || binding.state === 'cleanup_pending') {
-      throw new GitCredDeniedError(
-        'the project is not a managed GitLab binding in this organization',
-        'SCOPE_DENIED',
-        false
-      )
-    }
-    // §19.3: runtime drift stops NEW authority — no fresh local lease until a
-    // repair reconverges. admin_degraded (§19.2) keeps serving existing runtime
-    // credentials; only the admin plane is broken there.
-    if (binding.state === 'runtime_degraded') {
-      throw new GitCredDeniedError('the project binding is runtime-degraded — repair it', 'LEASE_DENIED', true)
-    }
-    if (binding.serviceAccountUsername === null || binding.serviceAccountUserId === null) {
-      throw new GitCredDeniedError('the project binding has no service account yet — repair it', 'LEASE_DENIED', true)
-    }
+    const binding = await this.servableBinding(agent.orgId, projectId)
+    const account = await this.agentAccount(agent.orgId, agent.id, binding.id)
     // Access clamp (§13.1): the workspace gitAccess ceiling picks the purpose —
     // read → the read PAT, write → the git_write PAT. The effect PAT is never
     // served through this path (it backs daemon-owned effects, M5). A v2
@@ -142,9 +153,9 @@ export class GitlabGitcredService {
     const clamp: 'read' | 'write' = agent.workspace.gitAccess === 'read' ? 'read' : 'write'
     const access: 'read' | 'write' = requestedAccess === 'read' ? 'read' : clamp
     const purpose = access === 'read' ? 'read' : 'git_write'
-    const credential = await this.deps.credentials.get(binding.id, purpose)
+    const credential = await this.deps.credentials.get(account.id, purpose)
     if (!credential) {
-      throw new GitCredDeniedError('the project binding has no usable credential — repair it', 'LEASE_DENIED', true)
+      throw new GitCredDeniedError('the agent account has no usable credential — repair it', 'LEASE_DENIED', true)
     }
     const token = await this.deps.credentialSecrets.get(agent.orgId, credential.id)
     if (!token) {
@@ -161,7 +172,7 @@ export class GitlabGitcredService {
       )
     }
     return {
-      username: binding.serviceAccountUsername,
+      username: account.username,
       token,
       ttlSec,
       expiresAt: new Date(nowMs + ttlSec * 1000).toISOString(),
@@ -169,7 +180,7 @@ export class GitlabGitcredService {
       access,
       provider: 'gitlab',
       externalRepoId: projectId.toString(),
-      credentialEpoch: binding.credentialEpoch.toString(),
+      credentialEpoch: account.credentialEpoch.toString(),
       providerExpiresAt: credential.providerExpiresAt.toISOString()
     }
   }

@@ -2,6 +2,7 @@ import type { RcCodeHostMembershipAuthz } from '@agentconnect.md/protocol'
 import type { Clock } from '../domain/clock.js'
 import { HookId } from '../domain/ids.js'
 import type {
+  GitlabAgentAccountRepo,
   GitlabProjectBindingRepo,
   GitlabProjectCredentialRepo,
   GitlabProjectCredentialSecretStore,
@@ -13,6 +14,7 @@ import { GITLAB_ACCESS_DEVELOPER, gitlabEffectiveMembership, membershipSatisfies
 export interface GitlabMembershipAuthzDeps {
   hooks: Pick<HookRepo, 'getManyUnscoped'>
   bindings: Pick<GitlabProjectBindingRepo, 'byProject'>
+  accounts: Pick<GitlabAgentAccountRepo, 'listForBinding'>
   credentials: Pick<GitlabProjectCredentialRepo, 'get'>
   credentialSecrets: Pick<GitlabProjectCredentialSecretStore, 'get'>
   clock: Clock
@@ -78,16 +80,27 @@ export class GitlabMembershipAuthzService {
     // project; cleanup or a missing service account invalidates the rule.
     const binding = await this.deps.bindings.byProject(first.orgId, projectId)
     if (!binding || binding.state === 'cleanup_pending' || binding.state === 'provisioning') return false
-    if (binding.serviceAccountUserId === null) return false
+    const accounts = await this.deps.accounts.listForBinding(binding.id)
+    const bound = new Set(
+      accounts
+        .map((account) => account.serviceAccountUserId)
+        .filter((userId): userId is bigint => userId !== null)
+        .map((userId) => userId.toString())
+    )
+    if (bound.size === 0) return false
 
-    // Loop/self-summon guard (§12.1 belt): the managed service account holds
-    // Developer, but its own identity must never authorize a trigger.
+    // Loop/self-summon guard (§12.1 belt): every bound agent account holds a
+    // project role, but no managed identity may ever authorize a trigger.
     const actorIds = [
       ...new Set([req.actorExternalId, ...(req.subjectAuthorExternalId ? [req.subjectAuthorExternalId] : [])])
     ].map((id) => BigInt(id))
-    if (actorIds.some((id) => id === binding.serviceAccountUserId)) return false
+    if (actorIds.some((id) => bound.has(id.toString()))) return false
 
-    const credential = await this.deps.credentials.get(binding.id, 'read')
+    // The read PAT of the hook agent's own account: the live membership answer
+    // does not depend on WHICH managed account asks, only that one can.
+    const hookAccount = accounts.find((account) => account.agentId === first.agentId) ?? accounts[0]
+    if (!hookAccount) return false
+    const credential = await this.deps.credentials.get(hookAccount.id, 'read')
     if (!credential) return false
     const token = await this.deps.credentialSecrets.get(binding.orgId, credential.id)
     if (!token) return false
