@@ -6,7 +6,7 @@
 
 <p align="center">
   <strong>The open-source, multi-agent alternative to Claude Tag.</strong><br />
-  <sub>Tag any agent, wherever work happens.</sub>
+  @ any agent, wherever work happens.
 </p>
 
 <p align="center">
@@ -19,7 +19,7 @@
   <a href="https://gitlab.com"><img src="https://api.iconify.design/logos/gitlab-icon.svg" width="16" height="16" alt="GitLab" title="GitLab" /></a>&nbsp;&nbsp;
   <a href="https://en.wikipedia.org/wiki/Webhook"><img src="https://api.iconify.design/logos/webhooks.svg" width="16" height="16" alt="Webhook" title="Webhook" /></a>
   &nbsp;&nbsp;&nbsp;&nbsp;
-  <strong>TO</strong>&nbsp;&nbsp;
+  <strong>WITH</strong>&nbsp;&nbsp;
   <a href="https://claude.com"><img src="https://cdn.simpleicons.org/claude" width="16" height="16" alt="Claude" title="Claude" /></a>&nbsp;&nbsp;
   <a href="https://openai.com"><img src="https://api.iconify.design/tabler/brand-openai.svg?color=%23808896" width="16" height="16" alt="OpenAI" title="OpenAI" /></a>&nbsp;&nbsp;
   <a href="https://x.ai/build"><img src="https://cdn.simpleicons.org/x/000000/e6edf3" width="16" height="16" alt="Grok Build" title="Grok Build" /></a>&nbsp;&nbsp;
