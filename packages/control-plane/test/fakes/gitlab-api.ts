@@ -19,6 +19,8 @@ export interface FakeGitlabOptions {
   patExpiryOverride?: string | null
   /** Fail PAT revocations with a 500 (ambiguous cleanup). */
   failTokenRevoke?: boolean
+  /** Refuse the display-name rename (older provider, or a locked account). */
+  refuseServiceAccountRename?: boolean
 }
 
 export class FakeGitlab {
@@ -213,6 +215,14 @@ export class FakeGitlab {
         const account = { id: ++this.nextId, username: String(payload.username), name: String(payload.name) }
         this.serviceAccounts.push(account)
         return Response.json(account, { status: 201 })
+      }
+      if (/\/api\/v4\/groups\/\d+\/service_accounts\/\d+$/.test(url) && method === 'PATCH') {
+        const id = Number(/service_accounts\/(\d+)$/.exec(url)![1])
+        const account = this.serviceAccounts.find((candidate) => candidate.id === id)
+        if (!account) return Response.json({ message: 'Not Found' }, { status: 404 })
+        if (this.opts.refuseServiceAccountRename) return Response.json({ message: 'forbidden' }, { status: 403 })
+        account.name = String(json().name)
+        return Response.json(account)
       }
       if (/\/api\/v4\/groups\/\d+\/service_accounts\/\d+$/.test(url) && method === 'DELETE') {
         const id = Number(/service_accounts\/(\d+)$/.exec(url)![1])
