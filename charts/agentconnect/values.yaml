@@ -1,0 +1,776 @@
+# Default values for the agentconnect chart.
+# Routing is a Gateway-API HTTPRoute attached to a Gateway you already run (HTTP only;
+# TLS terminates at the edge). Secrets (DATABASE_URL, the API-key pepper) live in a
+# Secret you create in the namespace — the chart only references it.
+
+nameOverride: ''
+fullnameOverride: ''
+
+# Public website URL — the externally-reachable origin this release is served at
+# (the console at `/`; the CP under `/cp` in same-origin mode, or on its own host in
+# subdomain mode — see apiHost). Set it per install; there is no useful default.
+# In same-origin mode the chart derives the CP's PUBLIC_CP_URL from it (`<publicUrl>/cp`) so
+# the onboarding "Add daemon" command points daemons at the right host (subdomain mode uses
+# `https://<apiHost>` instead). Empty ⇒ no PUBLIC_CP_URL (onboarding falls back to 127.0.0.1,
+# local-only).
+publicUrl: ''
+
+# Dedicated API subdomain — how the browser reaches the CP's REST API.
+#
+#   • empty (DEFAULT) ⇒ SAME-ORIGIN mode: the console calls the CP under
+#     `/cp/api/v1` on the website host (web.cpUrl), no CORS needed.
+#   • set (e.g. `api.example.test`) ⇒ SUBDOMAIN mode: the WHOLE CP moves to the
+#     dedicated api host and the website host drops its `/cp` rule. The public surface is
+#     `/v1` — the edge rewrite hides the CP's internal `/api/v1` mount. The console targets
+#     `https://<apiHost>/v1` cross-origin; the chart gives the CP `CORS_ORIGIN=<publicUrl>`
+#     and renders a second HTTPRoute for <apiHost> with two rules — `/v1/* → CP /api/v1/*`
+#     (REST) and `/daemon/ws → CP /daemon/ws` (daemon channel, forwarded verbatim). The
+#     api host serves NO OAuth — the MCP endpoint and its whole OAuth surface live on the
+#     dedicated MCP host (`mcpHost` below). The onboarding "Add daemon" command dials
+#     `wss://<apiHost>/daemon/ws` (PUBLIC_CP_URL=https://<apiHost>).
+#     See templates/httproute.yaml.
+#
+# In subdomain mode you must also provision this host's DNS + TLS at your edge and ensure
+# the Gateway listener your route attaches to accepts <apiHost>. Both are outside this chart.
+apiHost: ''
+
+# Dedicated public MCP host (e.g. `mcp.example.test`) — the URL users paste into
+# claude.ai / Claude Code is just this host, and the WHOLE OAuth surface rides it
+# (the embedded AS exists solely for MCP; the api host serves no OAuth). Set ⇒ the
+# chart renders an HTTPRoute mapping the host's root onto the CP's internal
+# /api/v1/mcp and forwarding /.well-known/oauth-* + /oauth/* verbatim, and gives the
+# CP PUBLIC_MCP_URL=https://<mcpHost> so every URL it advertises (RFC 9728 PRM
+# `resource` + `authorization_servers`, RFC 8414 issuer/endpoints, the MCP 401
+# challenge) is that origin. The console gets the same value as MCP_URL, so its
+# "Connect your AI" dialog hands out this host rather than the api-host fallback.
+# Empty ⇒ no MCP route; the endpoint stays reachable as
+# <apiHost>/v1/mcp (the /v1 rewrite) but OAuth discovery is then unrouted — dedicated
+# host deployments are the supported shape.
+# PREREQ (same edge setup as apiHost/relay.host): DNS + TLS for <mcpHost> and a Gateway
+# listener that accepts it. A wildcard certificate covering the parent domain serves all
+# three hosts at once if they are single labels under it. Both are outside this chart.
+mcpHost: ''
+
+# Verified sender the waitlist copy names — served as WAITLIST_FROM_EMAIL to the CP and the
+# console ("check your inbox for mail from …"). Only NAMED here: what sends an activation mail is
+# whatever you wire to the CP's mint route, outside this chart, so use the address it is
+# configured with. Empty ⇒ the env is omitted. Moot unless controlPlane.config.WAITLIST_MODE is on.
+waitlistFromEmail: ''
+
+image:
+  # GitHub Container Registry. Full ref = "{registry}/{component.image}:{tag}".
+  registry: ghcr.io/agentconnect-md
+  # Shared FALLBACK tag for every component; each component may pin its own
+  # `<component>.tag` (below), which wins over this. Empty ⇒ Chart.appVersion,
+  # which the release pipeline stamps to the chart's own release — so installing
+  # chart version X.Y.Z runs that release's images with nothing to set here.
+  # Override with an immutable release version (vX.Y.Z / vX.Y.Z-rc.N) to run a
+  # different release than the chart's, plus a per-component tag wherever a
+  # component should keep its pod template — and not restart — across a release
+  # that did not change it.
+  tag: ''
+  # Always re-pull: protects an install that overrides the tag with a mutable
+  # one (e.g. `latest`), and is harmless with the immutable default.
+  pullPolicy: Always
+
+# Registry pull secrets, referenced BY NAME — the chart never holds the credential
+# itself (same rule as `secrets` below). Applied to every pod this chart renders.
+#
+# The first-party images (control-plane, web, relay, daemon, mem0*) are PUBLIC, so the
+# default empty list is enough for them. An image you host privately is not: an anonymous
+# pull gets a flat `401 Unauthorized` from the registry → ImagePullBackOff, so a release
+# that points `image.registry` at a private mirror needs a pull secret here.
+#
+# The namespace-scoped dockerconfigjson Secret is yours to create — the chart only names
+# it (the value never enters this file):
+#
+#   kubectl -n <namespace> create secret docker-registry <pull-secret-name> \
+#     --docker-server=<registry-host> \
+#     --docker-username=<username> \
+#     --docker-password=<token>
+#
+# then reference it here:
+#
+#   imagePullSecrets:
+#     - name: <pull-secret-name>
+#
+# One entry covers EVERY repository on that host the credential can read — the kubelet
+# matches a pull secret by registry host, not by image path. A name listed here that
+# doesn't exist in the namespace is not fatal: the kubelet logs a
+# FailedToRetrieveImagePullSecret event and falls back to an anonymous pull (fine for the
+# public images, still 401 for a private one) — so the Secret and this reference can land
+# in either order.
+imagePullSecrets: []
+
+# Pod scheduling affinity, applied to both Deployments (control-plane and web).
+affinity: {}
+
+# Install the vendored agent-sandbox CONTROLLER stack with this release. The stack is a
+# pinned copy this chart carries, so the default `true` bootstraps a fresh cluster
+# completely and offline — no registry, no cluster egress, nothing to apply by hand first.
+# The 4 CRDs are NOT behind this switch: they ship in the chart's crds/ directory, which
+# Helm applies on first install (before it resolves the daemon pool's templated custom
+# resources), skips when they already exist, and never touches on upgrade or uninstall —
+# `--skip-crds` opts out. Set this false when the stack is managed out-of-band — several
+# releases sharing one cluster, or a cluster that already runs agent-sandbox. The stack is
+# cluster-shared, so no single release of several may own it; apply it once per cluster
+# instead: `kubectl apply --server-side -f crds/agent-sandbox.yaml`, then
+# `helm template --set installCRD=true --show-only templates/agent-sandbox.yaml`.
+installCRD: true
+
+# The install-wide daemon pool, whose Pods are pool members. Every member serves agents
+# from every organization and derives the org from the CP agent registry. The fixed
+# ServiceAccount name (`ac-cloud-daemon`), token audience and mount paths are wire
+# contracts in AgentConnect; they are intentionally not configurable here.
+#
+# `enabled` is also the chart's cluster-scoped switch: it is what renders the TokenReview
+# ClusterRole and its two bindings (templates/cluster-rbac.yaml) and the agents namespace
+# with its default-deny baseline (templates/agents-namespace.yaml). It is also what gives the
+# control plane in-cluster access at all, so EVERY projected identity it verifies depends on
+# it — the in-cluster daemons this chart renders, and any other in-cluster workload an install
+# teaches it to accept. ON by default, so the installer must be allowed to write
+# cluster-scoped RBAC and the agent-sandbox CRDs must exist (the chart's crds/ directory
+# ships them on first install; `--skip-crds` opts out). Set false for an install that runs
+# no agents here: with `--skip-crds` it then needs and gains no cluster-scoped object.
+daemonPool:
+  enabled: true
+  image: daemon
+  # Per-component override; empty => image.tag.
+  tag: ''
+  # Three distinct Pod UIDs become three distinct install-wide pool members in the CP.
+  replicas: 3
+  # Existing Secret whose config.json is the strict data-plane document:
+  # {"version":1,"databaseUrl":"postgresql://...","maxConnections":4}
+  # Referenced BY NAME, like `secrets.existingSecret`: create it in the namespace
+  # (kubectl create secret generic agentconnect-data-plane --from-file=config.json=...);
+  # until it exists the pool members wait in ContainerCreating on the missing volume.
+  dataPlane:
+    existingSecret: agentconnect-data-plane
+    key: config.json
+  # There is no `warmPoolName` value. The warm pool the daemon claims against
+  # (AC_K8S_WARM_POOL) and the one the chart renders are one derived string,
+  # `<release>-runtime-pool`, so a free-form name cannot point the daemon at a warm pool
+  # that is not there. Override the release name itself (fullnameOverride) if you must move it.
+  # Namespace this member creates sandbox claims in, and where the chart renders the
+  # claim RBAC, the runtime SandboxTemplate and warm pool, and the shim NetworkPolicy.
+  # Empty => the release namespace, which is where a single-namespace install keeps
+  # everything. Environments that run agents point this at a dedicated agents namespace
+  # (`<release>-agents` by convention) so the agents side can carry the `restricted` Pod
+  # Security level and a default-deny baseline the control namespace must not. Set to
+  # anything other than the release namespace, the chart creates that namespace itself
+  # (templates/agents-namespace.yaml) — one value, so the namespace created and the one
+  # claimed into cannot differ. The SandboxTemplate is written to pass `restricted`.
+  # Changing this on a live install moves the chart-owned objects only: an existing
+  # SandboxClaim stays where it was minted, so migrate deliberately rather than in place.
+  sandboxNamespace: ''
+  shimPort: 8085
+  # Whether pool members report session usage to the control plane themselves. True is the
+  # daemon's own default. Set false ONLY when something upstream meters the same sessions (a
+  # model-egress gateway with a collector) — one writer per session is the contract, and the
+  # switch belongs in the SAME change that turns the other writer on, with active sessions
+  # drained across it (the application's usage-reporting design has no live writer handoff).
+  usageReporting: true
+  # Session-scoped model credentials (the `agentconnect.key-server/v1` contract). Empty url ⇒
+  # members mint nothing and sandboxes run on the `modelEgress` floor alone. Set, each member
+  # fetches a per-session credential from this endpoint and injects it into the sandbox at spawn,
+  # overriding that floor — which is what lets `modelEgress.clients.*.apiKey` retire to a
+  # placeholder and then disappear.
+  keyServer:
+    # http or https, whichever this deployment terminates, e.g. https://keys.example.test:8443 or
+    # http://keys.example-ns.svc:8080. Plaintext to an address that does not look in-cluster warns:
+    # the member's bearer then crosses the network in the clear. Over https the serving certificate
+    # must chain to a CA the daemon trusts — `caSecret` below for a private CA.
+    url: ''
+    # Audience of the projected ServiceAccount token each member presents. One audience per hop:
+    # deliberately NOT the control plane's, so a token minted for the CP cannot buy model
+    # credentials.
+    tokenAudience: ac-key-server
+    # Optional Secret (entry `ca.crt`) with the CA that signed the key server's certificate,
+    # handed to Node via NODE_EXTRA_CA_CERTS. Empty ⇒ the system trust store decides.
+    caSecret: ''
+  # The member's own readiness signal. The daemon serves `GET /readyz` on
+  # `port` and answers 200 only when it is servable — startup complete, the control plane has
+  # acknowledged registration, the install-wide runtime probe has returned, and the member is not
+  # draining — 503 otherwise, from SIGTERM through the whole shutdown drain. `port` is passed as
+  # AC_READINESS_PORT (the daemon serves nothing without it) and is a probe surface only: it is
+  # deliberately not a containerPort on any Service, so nothing routes traffic to it. The probe
+  # timings are values so an install can loosen them, not because they are expected to differ.
+  readiness:
+    port: 8081
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 2
+    successThreshold: 1
+    failureThreshold: 3
+  # Extra plain env (name: value), the same hook and conventions as controlPlane.extraEnv.
+  # OpenTelemetry goes here: the daemon already carries the instruments — sandbox launch
+  # latency and its stages, shim handshake/TokenReview rejections, drain timeouts, k8s API
+  # write retries and watch relists, the turn-output counters — but exports none of them
+  # without an endpoint. Values may reference $(OTEL_COLLECTOR_HOST) (node IP) and
+  # $(POD_NAME), downward-API vars the template defines ahead of these. Leave
+  # OTEL_SERVICE_NAME unset: the daemon names itself `agentconnect-daemon` in every
+  # environment, exactly as the control plane and relay do, and the dashboards tell
+  # environments apart by k8s.deployment.name (added by the collector's k8sattributes
+  # processor). Setting it here would split one service into three.
+  extraEnv: {}
+  resources:
+    requests:
+      cpu: 200m
+      memory: 512Mi
+    limits:
+      memory: 2Gi
+  # The orphan reconciler: a CronJob running the daemon image as
+  # `reconcile --once`, which sweeps the agents namespace for sandbox objects nobody will ever
+  # clean up — a claim or Sandbox whose agent the control plane no longer knows. Rendered with the
+  # daemon pool itself, because it sweeps that pool's objects with that pool's identity. It used to
+  # be a timer inside every member with a lease for mutual exclusion; the cluster owns the schedule
+  # (`schedule`), the mutual exclusion (`concurrencyPolicy: Forbid`) and the failure reporting (a
+  # failed Job), so none of the three is in the daemon any more.
+  reconciler:
+    # Every 10 minutes. Nothing here is urgent — a skipped tick is picked up by the next one,
+    # which sweeps the same objects only older.
+    schedule: '*/10 * * * *'
+    # AC_K8S_ORPHAN_DELETE. FALSE = dry run: the sweep reports what it would collect and deletes
+    # nothing. Deleting a claim deletes the agent's workspace PVC with it and there is no undo, so
+    # read the dry-run summary lines for an observation window before flipping this to true.
+    delete: false
+    # AC_K8S_ORPHAN_GRACE_MS: how old an object must be before the sweep may call it orphaned,
+    # which is what keeps a creation still racing the control plane's write out of the candidate
+    # set. Empty ⇒ the daemon's own 10-minute default.
+    graceMs: ''
+    # One short sweep: two list calls, one `agent/exists` read, then exit.
+    resources:
+      requests:
+        cpu: 25m
+        memory: 128Mi
+      limits:
+        memory: 512Mi
+  # The agent-sandbox prerequisites of this daemon pool: the namespaced SandboxTemplate every
+  # agent sandbox is minted from, and the SandboxWarmPool claims resolve through. Both
+  # render into `sandboxNamespace`, next to the claim RBAC and the shim NetworkPolicy,
+  # named `<release>-runtime` and `<release>-runtime-pool`.
+  # The sandbox NetworkPolicy itself is NOT rendered here — the controller owns it,
+  # generated from the template's `networkPolicy` field (`networkPolicyManagement:
+  # Managed`).
+  runtime:
+    # The runtime-sandbox image every agent sandbox is minted from. `tag` is the
+    # component's own EFFECTIVE tag, when a release pipeline supplies one per component;
+    # empty ⇒ the shared image.tag. It also stamps the daemon-pool Deployment's
+    # `agentconnect.md/runtime-sandbox-tag` annotation, so a runtime change rolls the
+    # members and repeats runtime discovery — and only a runtime change does. `image` pins a
+    # full reference outright; empty ⇒ `<image.registry>/runtime-sandbox:<tag>`.
+    tag: ''
+    image: ''
+    # Pre-warmed spares held ready in the warm pool. Each spare is a STANDING COST — a running
+    # sandbox pod and one bound workspace PVC apiece, held whether or not anybody claims it — and
+    # what it buys is narrow: only the FIRST mint for a new agent gets a warm sandbox instead of a
+    # cold one. Resuming an existing agent binds the sandbox it already has and never touches the
+    # warm pool, so this speeds up onboarding, not everyday turns. The default holds three so an
+    # interactively onboarded agent's first mint is warm; set 0 to mint every claim cold and pay
+    # no standing cost.
+    warmReplicas: 3
+    # One agent's runtime container. No CPU limit on purpose: an agent turn is bursty and
+    # a limit turns latency into throttling, while memory must stay bounded per agent.
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        memory: 4Gi
+    # The agent's working tree, mounted at /agent. Bound to the Sandbox: deleting a
+    # Sandbox deletes this PVC and the agent's work with it.
+    workspace:
+      size: 10Gi
+      storageClass: standard
+    # Where agent pods schedule. Empty ⇒ the scheduler's choice, which on a shared
+    # cluster means they land next to control-plane workloads. Each environment that runs
+    # agents should pin its node group here and tolerate that group's taint.
+    nodeSelector: {}
+    tolerations: []
+
+controlPlane:
+  image: control-plane
+  # Per-component tag override; empty ⇒ the shared image.tag. Set it to the
+  # component's EFFECTIVE version — the most recent release that actually
+  # changed this component — so a release that doesn't touch the CP doesn't
+  # restart it (and doesn't drop every daemon's control WebSocket with it).
+  tag: ''
+  # Dedicated ServiceAccount for the CP pod. `create: true` renders
+  # <release>-control-plane (templates/serviceaccount.yaml); its token is the
+  # workload JWT for Vault kubernetes auth when SECRET_CIPHER=vault-transit is set.
+  # `name` overrides the rendered name (e.g. to adopt an externally-managed SA), and
+  # must match the name the Vault kubernetes auth role binds — that role binds by exact
+  # name, so renaming here without updating Vault breaks the CP's first secret operation.
+  # Harmless when Vault is off — pods just stop using the namespace `default` SA.
+  serviceAccount:
+    create: true
+    name: ''
+  # Crypto-shred CronJob: destroys the Vault transit key of every deleted organization.
+  #
+  # OFF by default, and it must stay off until this install's Vault side is ready:
+  # the shred role and its policy exist AND the rewrap sweep has converged this
+  # install onto per-org keys. Enabling it earlier destroys a key
+  # some of that org's values were never sealed under — the deletion is real,
+  # the guarantee only partial.
+  shred:
+    enabled: false
+    # A distinct SA is what separates key deletion from the control plane's
+    # identity; the Vault role below binds to it.
+    serviceAccountName: ''
+    # Vault role for THIS job, on the same auth mount the CP uses. Its policy is
+    # delete-on-the-org-key-glob only — never `list`.
+    vaultRole: ''
+    vaultAuthMount: agentconnect
+    # Defaults to the CP's VAULT_ADDR; set only if the job must reach Vault by a
+    # different address.
+    vaultAddr: ''
+    # Nothing is time-critical: tombstones wait as long as they must, and a
+    # skipped tick is picked up by the next one.
+    schedule: '17 * * * *'
+    resources:
+      requests:
+        cpu: 10m
+        memory: 64Mi
+      limits:
+        memory: 128Mi
+  replicas: 1
+  # Keep a newly Ready CP in the Service endpoints long enough for Gateway
+  # endpoint discovery to converge before the rollout removes the old pod.
+  # This protects public browser callbacks from a transient no-healthy-upstream
+  # response during a single-replica rollout.
+  minReadySeconds: 15
+  port: 8080
+  # Non-secret env for the Fastify app (agentconnect-md/agentconnect,
+  # packages/control-plane/src/config/env.ts).
+  config:
+    NODE_ENV: production
+    WS_PATH: /daemon/ws
+    # Also the placement latency, not just a liveness ping: a duty grant reaches the member that
+    # will serve an agent on its next heartbeat and by no other route, so this is how long a newly
+    # placed agent waits before anything can pick it up. It is paid on the first turn of every
+    # agent an install creates, against a beat that costs a few indexed statements per daemon.
+    HEARTBEAT_SEC: '5'
+    # This one MULTIPLIES with the interval above: their product is the watchdog's freeze
+    # threshold and the offline grace the console reads. Move them together or shortening the
+    # interval quietly makes a daemon look dead sooner — nine beats of five seconds is the same
+    # 45 seconds three of fifteen were.
+    MISSED_BEATS: '9'
+    SECRETS_PROVIDER: memory
+    # CORS: unset in the default same-origin mode (browser talks to the CP under /cp).
+    # In SUBDOMAIN mode (top-level `apiHost` set) the chart derives
+    # CORS_ORIGIN=<publicUrl> automatically — see control-plane.yaml.
+    # PUBLIC_CP_URL is derived from the top-level `publicUrl` (see control-plane.yaml).
+  # Extra plain env (name: value). OpenTelemetry goes here when an install enables it —
+  # the standard OTEL_* vars the Node SDK reads. Values may reference
+  # $(OTEL_COLLECTOR_HOST) (node IP) and $(POD_NAME) — downward-API vars the template
+  # always defines ahead of these. No endpoint ⇒ the SDK stays off.
+  extraEnv: {}
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: '8'
+      memory: 4096Mi
+
+# Self-hosted deployment settings UI bundled in the Control Plane image. It is
+# deliberately NOT given a Service or HTTPRoute: operators reach the pod through
+# `kubectl port-forward deployment/<release>-setup-server 8091:8091`, so the
+# bootstrap surface never needs public DNS or TLS. The process shares the CP's
+# database and SecretCipher/Vault identity, but provider configuration itself is
+# stored in the deployment_config tables rather than passed as environment.
+setupServer:
+  enabled: true
+  # Dedicated Kubernetes identity, so this workload stops inheriting the control plane's
+  # RBAC. Empty ⇒ it keeps using the control-plane ServiceAccount.
+  #
+  # PREREQUISITE, in this order, or the workload breaks: the name below must be added to
+  # your Vault kubernetes auth role BEFORE it is deployed. The role binds
+  # `bound_service_account_names` by exact name and accepts a list, so the new name is
+  # added ALONGSIDE the control plane's — and stays there. This workload keeps using the
+  # control plane's VAULT_JWT_ROLE, so removing either name later breaks it; what the
+  # split separates is Kubernetes authority, not Vault access. Add the name to the Vault
+  # role first; setting it here first fail-fasts this workload on its first secret op.
+  serviceAccount:
+    name: ''
+  replicas: 1
+  port: 8091
+  # Browser-visible origin while kubectl port-forward is active. This also becomes
+  # the Logto SPA callback origin managed by Setup Server.
+  url: http://localhost:8091
+  resources:
+    requests:
+      cpu: 25m
+      memory: 96Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+# Logto endpoint topology. Provider identities, browser/M2M app identities,
+# audiences, and secrets are deployment data managed through Setup Server and
+# read from Postgres at process startup.
+logto:
+  endpoint: ''
+  # Canonical Management API origin. Keep separate when endpoint is a custom
+  # login domain; empty falls back to endpoint.
+  mgmtEndpoint: ''
+
+web:
+  image: web
+  # Per-component tag override; empty ⇒ the shared image.tag (see controlPlane.tag).
+  tag: ''
+  replicas: 1
+  port: 8080
+  # Browser-facing CP API base for the DEFAULT same-origin mode — the FULL versioned
+  # base (origin-relative + version path), not just an origin. The console fetches the
+  # CP same-origin under /cp/api/v1 (the edge routes /cp/* → control-plane, which serves
+  # under /api/v1), injected into window.__AC_ENV at runtime (web image: lib/public-env
+  # + lib/api). Relative so one image serves any host without a rebuild.
+  # NOTE: in SUBDOMAIN mode (top-level `apiHost` set) this is IGNORED — the chart uses
+  # `https://<apiHost>/v1` instead (see templates/web.yaml).
+  cpUrl: /cp/api/v1
+  # Extra plain env (name: value). WEB_TITLE_ENV adds a non-production label such as
+  # "(test)" to browser-tab titles; set it for non-production installs and leave production
+  # unset. Browser OpenTelemetry would also go here — the OTEL_WEB_* vars the web server
+  # injects into window.__AC_ENV (PUBLIC, they reach the browser). It needs a
+  # browser-reachable CORS OTLP endpoint
+  # (OTEL_WEB_TRACES_ENDPOINT), so it is left off.
+  extraEnv: {}
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: '1'
+      memory: 512Mi
+
+# Relay ingress pool. A DB-less edge server: the browser Playground dials it at
+# /webchat with a CP-minted token, daemons dial it at /rd/ws, and generic webhooks
+# POST to /webhooks/in. The relay bridges webchat so CONTENT never touches the CP,
+# and dispatches verified webhook deliveries to the owning daemon. The relay dials the
+# CP for control (rc/*) over the INTERNAL cluster Service, authenticating with a shared
+# RELAY_TOKEN; the CP must carry the SAME token to accept it. When enabled,
+# the CP is given PUBLIC_RELAY_URL (the relay public origin) — WITHOUT it the CP's mint
+# route 503s and the Playground shows "Webchat relay not configured".
+#
+# Routing (templates/httproute.yaml): /webchat + /relays/<ordinal>/rd/ws + /webhooks/in are added on the relay host
+# (`relay.host`, else apiHost, else the website host) — co-locating on apiHost needs no
+# new DNS. DAEMON_DIAL_URL must route to ONE pod (a daemon must reconnect to the SAME
+# relay it registered with). The chart
+# gives each StatefulSet pod a stable public path and single-endpoint Service, so replicas
+# can scale without putting the daemon WebSocket behind the pool load balancer.
+#
+# PREREQ before enabling: put a ≥32-char, dot-free RELAY_TOKEN in the namespace Secret:
+#   kubectl -n <namespace> patch secret <secret> --type merge \
+#     -p "{\"stringData\":{\"RELAY_TOKEN\":\"$(openssl rand -hex 24)\"}}"
+relay:
+  # ON by default, but the relay only RENDERS once a public host resolves (`relay.host`,
+  # else `apiHost`, else `publicUrl` — same rule as the HTTPRoute): with all three empty
+  # every origin it would advertise is broken, so a bare local install renders no relay.
+  # Once a host is set, put RELAY_TOKEN in the namespace Secret (see above) before
+  # installing, or the relay and the CP both wait on the missing key. Set false to run
+  # without public ingress (no webchat/webhooks; direct daemon-owned platform connections
+  # still work).
+  enabled: true
+  image: relay
+  # Per-component tag override; empty ⇒ the shared image.tag (see controlPlane.tag).
+  # Skipping unchanged relay releases matters most here: a relay rollout still
+  # opens per-pod ingest-loss windows (Slack acks are unconditional, webhooks
+  # are not redelivered), so don't roll the pool for releases that didn't
+  # change it.
+  tag: ''
+  # Two pods use deterministic per-pod daemon routes, soft hostname spreading, and a
+  # minAvailable:1 PDB. Set 1 for resource-constrained self-hosted installations.
+  replicas: 2
+  port: 8080
+  # Public host browsers (/webchat), daemons (/relays/<ordinal>/rd/ws), and webhook callers
+  # (/webhooks/in) reach this relay at. Empty ⇒ apiHost when set, else the website host
+  # (publicUrl). Webchat/daemon URLs use wss at the edge; webhook URLs use https.
+  host: ''
+  # Non-secret env for the relay (agentconnect-md/agentconnect, packages/relay/src/config.ts).
+  # CP_URL, RELAY_NAME and DAEMON_DIAL_URL are derived by the template; RELAY_TOKEN rides
+  # the Secret.
+  config:
+    NODE_ENV: production
+    HEARTBEAT_DEFAULT_MS: '15000'
+  extraEnv: {}
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+# open-connector (agentconnect connectors integration) — an INTERNAL-ONLY service the
+# CP and relay reach in-cluster to browse SaaS "connector" providers, provision
+# connections, and proxy each connection as an MCP tool. It has NO public ingress: the
+# Service is ClusterIP, and the CP/relay get OPEN_CONNECTOR_URL pointing at it
+# (control-plane.yaml / relay.yaml, both gated on enabled).
+#
+# OAuth EXCEPTION: completing a provider OAuth flow needs the provider to redirect the
+# user's BROWSER to open-connector's /oauth/callback, so that ONE path is published to
+# the public gateway when `callbackHost` is set (routed back to the internal Service).
+# Everything else stays cluster-internal. Empty `callbackHost` ⇒ no public path at all
+# (fully internal; api-key / no-auth connectors work, OAuth does not).
+openConnector:
+  # ON by default (internal-only ClusterIP + one PVC); set false to run without connectors.
+  enabled: true
+  # Full image ref WITHOUT tag/digest; empty ⇒ the official ghcr.io/oomol-lab/open-connector.
+  image: ''
+  # Immutable digest pin (sha256:…) — the DEFAULT for this third-party, credential-storing
+  # component: reproducible + supply-chain-safe (imagePullPolicy becomes IfNotPresent), so a
+  # default-on install never rides upstream's mutable `latest`. Moved deliberately, by a
+  # chart release. To run a tag instead, set this empty AND `tag` below — a non-empty
+  # digest always wins.
+  digest: 'sha256:455e7e843a392955186c59ff34f57fcf5477a281b669d10bcb330240ed02c492'
+  # Image tag used only when `digest` is empty; empty ⇒ `latest` (mutable — manual
+  # installs only). Prefer `digest` for real deploys.
+  tag: ''
+  # Fixed at 1 (single sqlite writer, Recreate strategy) — the template does not read a
+  # replicas value.
+  port: 3000
+  # Public host that serves ONLY open-connector's /oauth/callback (→ the internal
+  # Service). OOMOL_CONNECT_ORIGIN is derived as https://<callbackHost>, so the
+  # redirect_uri open-connector registers with each provider is
+  # https://<callbackHost>/oauth/callback — the URL you paste into the OAuth app.
+  # Empty ⇒ no public route (OAuth off; api-key connectors still work). Reuse the
+  # website host (publicUrl) to avoid new edge DNS/TLS/listener setup.
+  callbackHost: ''
+  # Persist connections + OAuth client configs + credentials (sqlite under /app/data)
+  # across restarts. A single ReadWriteOnce PVC (replicas is always 1).
+  persistence:
+    enabled: true
+    size: 1Gi
+    storageClass: ''
+    existingClaim: ''
+  # Non-secret env for open-connector (OOMOL_CONNECT_*). OOMOL_CONNECT_DATA_DIR and
+  # OOMOL_CONNECT_ORIGIN are set by the template; the at-rest encryption key rides the
+  # namespace Secret (secrets.openConnectorEncryptionKeyKey).
+  config: {}
+  extraEnv: {}
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# Centralized (org-wide) external-memory wrapper — the "remote" external-memory mode
+# (templates/mem0-wrapper.yaml). One wrapper serves the AgentConnect memory-plugin MCP
+# contract at /mcp and forwards to a Mem0 OSS backend; any org agent binds a REMOTE
+# memory connection pointed at it (no local daemon / no per-host Mem0). INTERNAL-ONLY
+# ClusterIP reached by the relay in-cluster. The pod holds NO Mem0 credential — the
+# relay injects each connection's key as the `X-Mem0-Api-Key` header per request.
+mem0:
+  # Off by default; opt in from your values.
+  enabled: false
+  # Wrapper image name under image.registry, published on the same release train as
+  # control-plane / relay / web.
+  image: memory-plugin-mem0
+  # Immutable digest pin (sha256:…) — preferred for real deploys (imagePullPolicy becomes
+  # IfNotPresent). Empty ⇒ fall back to `tag` (or the chart image tag) with the shared pull policy.
+  digest: ''
+  # Tag used only when `digest` is empty; empty ⇒ the chart's shared image tag.
+  tag: ''
+  replicas: 1
+  # The MCP HTTP port the wrapper listens on (matches the container's PORT).
+  port: 8788
+  # Mem0 backend dialect served by the wrapper. `oss` = self-hosted Mem0 OSS REST.
+  dialect: oss
+  # The Mem0 OSS REST server this wrapper forwards to. This is the heavy, stateful piece
+  # (vector store + LLM/embedder credentials for `infer`) — deploy it separately (or point
+  # at an existing org-wide Mem0 server) and set the in-cluster URL here.
+  backendUrl: ''
+  # Non-secret env passthrough for the wrapper (e.g. OTEL_* for observability).
+  config: {}
+  extraEnv: {}
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+  # The org-wide Mem0 OSS BACKEND the wrapper forwards to (templates/mem0-backend.yaml):
+  # the Mem0 REST server + its pgvector Postgres. This is the heavy, stateful half.
+  # Off by default; enable it once the image + secrets exist, and point
+  # `mem0.backendUrl` above at `http://<release>-mem0-backend.<namespace>:8000`.
+  backend:
+    enabled: false
+    # Pinned upstream Mem0 server build, published on the same release train. Like the
+    # wrapper, a digest wins; otherwise the effective component tag wins; otherwise
+    # it falls back to the shared release tag.
+    image: mem0-server
+    digest: ''
+    tag: ''
+    # Upstream stores per-record change history in SQLite. Keep it on its own RWO
+    # volume; the vector data and REST auth/config tables live in Postgres below.
+    historyStorage: 1Gi
+    historyStorageClass: ''
+    # Non-secret model config (OpenAI). The OPENAI_API_KEY itself rides the Secret below.
+    llmModel: gpt-4.1-nano-2025-04-14
+    embedderModel: text-embedding-3-small
+    # Secret keys read from the release's existingSecret (add these values):
+    openaiApiKeyKey: OPENAI_API_KEY
+    jwtSecretKey: MEM0_JWT_SECRET
+    adminApiKeyKey: MEM0_ADMIN_API_KEY # operators paste this as the connection's apiKey
+    extraEnv: {}
+    podSecurityContext:
+      fsGroup: 101
+      fsGroupChangePolicy: OnRootMismatch
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: '1'
+        memory: 1Gi
+    # pgvector Postgres (the vector store + mem0_app auth DB).
+    pg:
+      image: pgvector/pgvector:pg17@sha256:d2ef61f42ef767baa5a1475393303cc235bcd92febd9d7014eddb48b41f3bad0
+      user: postgres
+      passwordKey: MEM0_PG_PASSWORD # key in existingSecret
+      storage: 10Gi
+      storageClass: ''
+      dataDirectory: /var/lib/postgresql/data
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          cpu: '1'
+          memory: 1Gi
+
+# Public routing — a Gateway-API HTTPRoute this chart owns (templates/httproute.yaml),
+# attached to a Gateway you already run (HTTP; TLS terminates at the edge):
+#   /       → web console
+#   /cp/*   → control-plane (prefix stripped) — SAME-ORIGIN mode only (apiHost unset): the
+#             web calls the CP same-origin at /cp (web.cpUrl=/cp/api/v1 in window.__AC_ENV)
+#             and the daemon WS lives at /cp/daemon/ws. In SUBDOMAIN mode (apiHost set) this
+#             rule is dropped and the CP is served on <apiHost> (see apiHost / the -api route).
+# hostname defaults to the host of `publicUrl` (e.g. app.example.test), so a
+# release only sets publicUrl once. The route is skipped when no hostname resolves
+# (empty publicUrl ⇒ the no-auth local default renders nothing). Set route.hostname to
+# override, or route.enabled=false to manage routing elsewhere.
+route:
+  enabled: true
+  # Host this release answers on. Empty ⇒ derived from publicUrl's host.
+  hostname: ''
+  # The Gateway this route attaches to (parentRef).
+  gateway:
+    name: public-gateway
+    namespace: default
+    sectionName: http
+
+# Uploaded-icon object store — a NEUTRAL S3-compatible target (R2, MinIO, S3 itself;
+# nothing here is vendor-bound).
+# Non-secret config lives here; the access key id + secret ride the namespace Secret
+# (secrets.s3* below). Empty `endpoint` ⇒ the CP leaves the feature OFF: the upload
+# routes are unmounted, the console hides Upload, and icons stay glyph-only. The CP gate
+# is deliberately forgiving — a partial group (this block set but the Secret keys not yet
+# added, or vice-versa) also leaves it off rather than crash-looping, so the two Secret
+# keys and this block can roll out in either order.
+objectStore:
+  # Full S3 API origin, e.g. https://<accountId>.r2.cloudflarestorage.com (NOT an account id).
+  endpoint: ''
+  bucket: ''
+  # Public origin objects are served from (R2 custom domain / r2.dev / a CDN). Rendered
+  # into the console <img src> and the Slack per-message icon_url.
+  publicBaseUrl: ''
+  # SigV4 region — "auto" for R2; a concrete region for real S3 / MinIO.
+  region: auto
+
+# Bootstrap/runtime roots are read from an existing Secret you create in the
+# namespace (the chart never holds their values). Provider credentials are not
+# injected from this Secret; Setup Server seals them in deployment_secret.
+# API_KEY_PEPPER is the HMAC pepper for the CP's stored API-key hashes: required, ≥32 chars,
+# effectively immutable — rotating it invalidates every stored API-key hash.
+#   kubectl -n <namespace> create secret generic agentconnect-secrets \
+#     --from-literal=DATABASE_URL='postgresql://USER:PASS@HOST:5432/agentconnect?schema=public' \
+#     --from-literal=API_KEY_PEPPER="$(openssl rand -hex 32)"
+secrets:
+  existingSecret: agentconnect-secrets
+  databaseUrlKey: DATABASE_URL
+  apiKeyPepperKey: API_KEY_PEPPER
+  # Shared relay↔CP credential (see the `relay` block). Referenced by BOTH the CP
+  # (to accept the relay) and the relay (to authenticate) when relay.enabled — so both
+  # fail to start until it exists. Add it BEFORE enabling the relay.
+  relayTokenKey: RELAY_TOKEN
+  # Object store (icon uploads) S3 credentials for the `objectStore` block above.
+  # optional:true — a pod starts without them and the CP just leaves icon upload off;
+  # add BOTH (alongside the objectStore config) to turn the feature on.
+  s3AccessKeyIdKey: S3_ACCESS_KEY_ID
+  s3SecretAccessKeyKey: S3_SECRET_ACCESS_KEY
+  # open-connector at-rest encryption key (see the `openConnector` block). optional:true
+  # — unset stores its OAuth client configs + credentials in plaintext (acceptable: the
+  # service is ClusterIP-internal). Add a random ≥32-char value to encrypt them:
+  #   kubectl -n <namespace> patch secret <secret> --type merge \
+  #     -p "{\"stringData\":{\"OPEN_CONNECTOR_ENCRYPTION_KEY\":\"$(openssl rand -hex 32)\"}}"
+  openConnectorEncryptionKeyKey: OPEN_CONNECTOR_ENCRYPTION_KEY
+
+# Before boot, copy the version-matched schema/migrations from the control-plane
+# image into an emptyDir, then run them with this stable, generic Prisma CLI
+# image. The CLI image changes only when Prisma/Node is deliberately upgraded.
+migrate:
+  enabled: true
+  image: prisma-cli
+  tag: 7.8.0-node24-r1
+
+# ────────────────────────── managed model egress ───────────────────────────
+# Point agent runtimes at a managed egress endpoint instead of at the provider, so the provider
+# credential never enters a sandbox. Off by default: without it a daemon holds the key itself,
+# which is the existing behaviour and stays supported.
+#
+# This chart knows nothing about what serves that endpoint. It does not install it, does not name
+# a gateway implementation, and does not know whether the credential below is checked — it knows
+# only that a runtime can be pointed at a base URL with a key. Everything else is told to it. The
+# AgentConnect deployment's own egress gateway lives in charts/agentconnect-private;
+# any endpoint that speaks the providers' APIs works here.
+modelEgress:
+  enabled: false
+  # Where the endpoint lives, for the sandbox egress rule only — the agents namespace is
+  # default-deny and the existing allowlist is DNS + 443, so a plaintext in-cluster port needs
+  # naming or every model call times out with no obvious cause. Empty ⇒ the release namespace.
+  namespace: ''
+  # Every plaintext port the endpoint serves on — one entry per gateway listener. A gateway that
+  # gives each provider its own listener port lists them all here; a single-port endpoint lists
+  # one. A port missing from this list is a model call timing out with no obvious cause.
+  ports: [8080]
+  # The one gateway address this install's runtimes talk to. Each client is given
+  # `<gatewayUrl>/<provider dialect>` — `/anthropic`, `/openai`, `/deepseek` — because one
+  # address is one address, while the runtimes disagree about what they append to it (Claude
+  # Code adds `/v1/messages`, Codex `/responses`, the DeepSeek Harness `/chat/completions`).
+  # Routing those remainders onto real upstreams is the gateway's job; the chart states only
+  # which dialect a client speaks. A client may still set `baseUrl` to override the whole
+  # thing, for an endpoint laid out some other way.
+  gatewayUrl: ''
+  # One entry per runtime, keyed by client id (`claude`, `codex`, `deepseek`). Listing a client
+  # asserts its runtime actually honours an injected base URL: one that does not would take the
+  # key below straight to the provider and fail, or fall back to a real key and keep spending
+  # from inside the sandbox — the opposite of the point.
+  #
+  # Each entry reaches two surfaces: the daemon, which writes the runtime's own provider variables
+  # when it spawns one, and the sandbox pod, which carries the same values as a fill-in floor for a
+  # runtime the daemon aimed nowhere. The daemon's write wins.
+  #
+  # `apiKey` is whatever that endpoint expects; if it verifies nothing, a placeholder is honest
+  # about that.
+  #
+  # The codex entry may also carry `sessionConfig`, a map of codex session config this deployment
+  # asserts about the endpoint — e.g. disabling a feature whose request shape the gateway rejects.
+  # It reaches the sandbox pod as AC_CODEX_CONFIG, and the shim merges it under any daemon-sent
+  # CODEX_CONFIG key, so it is a floor on the same terms as the pair above.
+  #
+  #   gatewayUrl: http://gateway.example.test:8080
+  #   clients:
+  #     claude:
+  #       apiKey: unused-no-auth
+  #     codex:
+  #       apiKey: unused-no-auth
+  #       sessionConfig:
+  #         features:
+  #           multi_agent: false
+  clients: {}

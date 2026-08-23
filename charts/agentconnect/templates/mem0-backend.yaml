@@ -1,0 +1,316 @@
+{{- /*
+Org-wide Mem0 OSS backend (the server the mem0-wrapper forwards to), rendered only
+when mem0.backend.enabled. This is the heavy, STATEFUL half of the centralized memory
+mode: the Mem0 REST API server + its pgvector Postgres. The stateless wrapper
+(mem0-wrapper.yaml) points at this via mem0.backendUrl.
+
+Modeled on the upstream mem0 `server/docker-compose.yaml`:
+  - Postgres = pgvector/pgvector (the `postgres` DB holds memory vectors; a `mem0_app`
+    DB holds user/auth/api-key rows — created by the init script below).
+  - Mem0 server = uvicorn main:app :8000; runs `alembic upgrade head` on boot.
+  - LLM + embedder = OpenAI (models below; OPENAI_API_KEY from the namespace Secret).
+
+IMAGE: a pinned build of the upstream server source, published under `image.registry` on
+the same release train as the wrapper. Pass its effective component tag as
+`mem0.backend.tag`, the same way the wrapper takes one.
+
+SECRETS (add to the Secret named by `secrets.existingSecret`):
+  OPENAI_API_KEY, MEM0_JWT_SECRET, MEM0_PG_PASSWORD, and the Mem0 admin/API key
+  MEM0_ADMIN_API_KEY (this is the value operators paste as the connection's `apiKey`,
+  injected by the relay as X-Mem0-Api-Key).
+*/ -}}
+{{- if .Values.mem0.backend.enabled }}
+{{- $b := .Values.mem0.backend }}
+{{- $pgHost := printf "%s-mem0-pg" (include "agentconnect.fullname" .) }}
+{{- $backendImage := printf "%s/%s" .Values.image.registry $b.image }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "agentconnect.fullname" . }}-mem0-pg-init
+  labels:
+    {{- include "agentconnect.labels" . | nindent 4 }}
+data:
+  # Create the mem0_app DB (user/auth/api-key data); the default `postgres` DB is the
+  # pgvector memory store. Runs once, on first initdb.
+  init-db.sh: |
+    #!/bin/bash
+    set -e
+    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-EOSQL
+        SELECT 'CREATE DATABASE mem0_app' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'mem0_app')\gexec
+    EOSQL
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $pgHost }}
+  labels:
+    {{- include "agentconnect.labels" . | nindent 4 }}
+    {{- include "agentconnect.componentLabels" (dict "ctx" . "component" "mem0-pg") | nindent 4 }}
+spec:
+  serviceName: {{ $pgHost }}
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "agentconnect.selectorLabels" (dict "ctx" . "component" "mem0-pg") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "agentconnect.labels" . | nindent 8 }}
+        {{- include "agentconnect.componentLabels" (dict "ctx" . "component" "mem0-pg") | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      # This pod pulls pgvector from Docker Hub, not GHCR — the kubelet matches a
+      # pull secret by registry host and ignores the ones that don't apply. Carried
+      # anyway so every pod in the chart honours the same list (an install that
+      # mirrors images into a private registry needs it here too).
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: postgres
+          image: {{ $b.pg.image | quote }}
+          ports:
+            - name: pg
+              containerPort: 5432
+          env:
+            - name: PGDATA
+              value: {{ $b.pg.dataDirectory | quote }}
+            - name: POSTGRES_USER
+              value: {{ $b.pg.user | quote }}
+            - name: POSTGRES_DB
+              value: postgres
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret }}
+                  key: {{ $b.pg.passwordKey }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d
+            - name: dshm
+              mountPath: /dev/shm
+          startupProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -q -d postgres -U {{ $b.pg.user }}"]
+            periodSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -q -d postgres -U {{ $b.pg.user }}"]
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -q -d postgres -U {{ $b.pg.user }}"]
+            periodSeconds: 20
+            failureThreshold: 3
+          resources:
+            {{- toYaml $b.pg.resources | nindent 12 }}
+      volumes:
+        - name: init
+          configMap:
+            name: {{ include "agentconnect.fullname" . }}-mem0-pg-init
+            defaultMode: 0o755
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 128Mi
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if $b.pg.storageClass }}
+        storageClassName: {{ $b.pg.storageClass | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ $b.pg.storage | quote }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $pgHost }}
+  labels:
+    {{- include "agentconnect.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    {{- include "agentconnect.selectorLabels" (dict "ctx" . "component" "mem0-pg") | nindent 4 }}
+  ports:
+    - name: pg
+      port: 5432
+      targetPort: pg
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agentconnect.fullname" . }}-mem0-backend-headless
+  labels:
+    {{- include "agentconnect.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    {{- include "agentconnect.selectorLabels" (dict "ctx" . "component" "mem0-backend") | nindent 4 }}
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "agentconnect.fullname" . }}-mem0-backend
+  labels:
+    {{- include "agentconnect.labels" . | nindent 4 }}
+    {{- include "agentconnect.componentLabels" (dict "ctx" . "component" "mem0-backend") | nindent 4 }}
+spec:
+  serviceName: {{ include "agentconnect.fullname" . }}-mem0-backend-headless
+  replicas: 1
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      {{- include "agentconnect.selectorLabels" (dict "ctx" . "component" "mem0-backend") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "agentconnect.labels" . | nindent 8 }}
+        {{- include "agentconnect.componentLabels" (dict "ctx" . "component" "mem0-backend") | nindent 8 }}
+    spec:
+      securityContext:
+        {{- toYaml $b.podSecurityContext | nindent 8 }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: mem0-backend
+          {{- if $b.digest }}
+          image: "{{ $backendImage }}@{{ $b.digest }}"
+          imagePullPolicy: IfNotPresent
+          {{- else }}
+          image: "{{ $backendImage }}:{{ $b.tag | default (include "agentconnect.imageTag" .) }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- end }}
+          # Prod-shaped entrypoint: apply migrations, then serve (no --reload / no
+          # runtime pip install — the image must already bundle mem0ai + deps).
+          command: ["sh", "-c", "alembic upgrade head && uvicorn main:app --host 0.0.0.0 --port 8000"]
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: POSTGRES_HOST
+              value: {{ $pgHost | quote }}
+            - name: POSTGRES_PORT
+              value: "5432"
+            - name: POSTGRES_USER
+              value: {{ $b.pg.user | quote }}
+            - name: POSTGRES_DB
+              value: postgres
+            - name: APP_DB_NAME
+              value: mem0_app
+            - name: POSTGRES_COLLECTION_NAME
+              value: memories
+            - name: HISTORY_DB_PATH
+              value: /app/history/history.db
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret }}
+                  key: {{ $b.pg.passwordKey }}
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret }}
+                  key: {{ $b.openaiApiKeyKey }}
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret }}
+                  key: {{ $b.jwtSecretKey }}
+            - name: ADMIN_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret }}
+                  key: {{ $b.adminApiKeyKey }}
+            - name: MEM0_DEFAULT_LLM_MODEL
+              value: {{ $b.llmModel | quote }}
+            - name: MEM0_DEFAULT_EMBEDDER_MODEL
+              value: {{ $b.embedderModel | quote }}
+            - name: MEM0_TELEMETRY
+              value: "false"
+            {{- range $k, $v := $b.extraEnv }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          volumeMounts:
+            - name: history
+              mountPath: /app/history
+          # Upstream has no dedicated health route; /docs is local, public, and
+          # only answers after FastAPI has completed startup.
+          startupProbe:
+            httpGet:
+              path: /docs
+              port: http
+            periodSeconds: 5
+            failureThreshold: 24
+          readinessProbe:
+            httpGet:
+              path: /docs
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /docs
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            {{- toYaml $b.resources | nindent 12 }}
+  # A StatefulSet claim is retained if the workload is disabled or the Helm
+  # release is removed, protecting Mem0's SQLite record history from teardown.
+  volumeClaimTemplates:
+    - metadata:
+        name: history
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if $b.historyStorageClass }}
+        storageClassName: {{ $b.historyStorageClass | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ $b.historyStorage | quote }}
+---
+# ClusterIP the mem0-wrapper forwards to. Point mem0.backendUrl at
+# http://<release>-mem0-backend.<namespace>:8000.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agentconnect.fullname" . }}-mem0-backend
+  labels:
+    {{- include "agentconnect.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "agentconnect.selectorLabels" (dict "ctx" . "component" "mem0-backend") | nindent 4 }}
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+{{- end }}

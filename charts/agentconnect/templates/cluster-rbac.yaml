@@ -1,0 +1,53 @@
+{{- if .Values.daemonPool.enabled }}
+# The cluster-scoped half of the install: creating a TokenReview is a cluster-scoped API
+# call, so a namespaced Role cannot grant it. An in-cluster daemon carries no credential —
+# the kubelet projects an audience-scoped ServiceAccount token into its pod and the reader
+# verifies it with a TokenReview. Rendered with `daemonPool.enabled` because the daemon pool
+# is what puts in-cluster daemons in front of these two readers; an install without one has
+# nothing to review. Installing this chart therefore needs cluster-admin, or an installer
+# identity holding these cluster-scoped verbs — `create` on tokenreviews and write on
+# clusterroles/clusterrolebindings — granted out of band.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "agentconnect.fullname" . }}-ac-tokenreview
+  labels:
+    {{- include "agentconnect.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ['authentication.k8s.io']
+    resources: ['tokenreviews']
+    verbs: ['create']
+---
+# The control plane reviews an in-cluster daemon's projected token on every connect.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "agentconnect.fullname" . }}-ac-tokenreview-control-plane
+  labels:
+    {{- include "agentconnect.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "agentconnect.fullname" . }}-ac-tokenreview
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "agentconnect.controlPlaneServiceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+---
+# A pool member reviews each sandbox shim's ac-daemon-callback token. NOT renamed with the
+# daemon pool: this binding and its subject are the identity contract, not vocabulary.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "agentconnect.fullname" . }}-ac-tokenreview-cloud-daemon
+  labels:
+    {{- include "agentconnect.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "agentconnect.fullname" . }}-ac-tokenreview
+subjects:
+  - kind: ServiceAccount
+    name: ac-cloud-daemon
+    namespace: {{ .Release.Namespace }}
+{{- end }}

@@ -1,0 +1,219 @@
+{{- /*
+Relay ingress pool, rendered only when relay.enabled.
+A DB-less edge server: browsers dial /webchat (CP-minted token), daemons dial a
+per-pod /relays/<ordinal>/rd/ws route, and generic webhooks POST /webhooks/in. It bridges
+webchat and dispatches verified webhook deliveries so content never touches the CP.
+It dials the CP for control (rc/*) over the INTERNAL Service and authenticates with
+the shared RELAY_TOKEN.
+
+The StatefulSet gives every relay a stable ordinal. DAEMON_DIAL_URL includes that
+ordinal as a path segment; the HTTPRoute rewrites the path onto a per-pod Service, while
+the pool Service remains load-balanced for browser and webhook ingress.
+*/ -}}
+{{- if include "agentconnect.relayActive" . }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "agentconnect.fullname" . }}-relay
+  labels:
+    {{- include "agentconnect.labels" . | nindent 4 }}
+    {{- include "agentconnect.componentLabels" (dict "ctx" . "component" "relay") | nindent 4 }}
+spec:
+  serviceName: {{ include "agentconnect.fullname" . }}-relay-headless
+  replicas: {{ .Values.relay.replicas }}
+  # Relays have no ordering dependency. Parallel startup also lets a fresh two-replica
+  # release establish the whole daemon roster without waiting for ordinal 0.
+  podManagementPolicy: Parallel
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      {{- include "agentconnect.selectorLabels" (dict "ctx" . "component" "relay") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "agentconnect.labels" . | nindent 8 }}
+        {{- include "agentconnect.componentLabels" (dict "ctx" . "component" "relay") | nindent 8 }}
+    spec:
+      # On SIGTERM the relay closes its daemon + browser sockets 1012 (reconnect
+      # elsewhere) then exits — comfortably inside this grace period.
+      terminationGracePeriodSeconds: 30
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      # Keep the two default replicas on separate nodes when the cluster has room.
+      # ScheduleAnyway avoids making a small/single-node installation unschedulable.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              {{- include "agentconnect.selectorLabels" (dict "ctx" . "component" "relay") | nindent 14 }}
+      containers:
+        - name: relay
+          image: "{{ .Values.image.registry }}/{{ .Values.relay.image }}:{{ .Values.relay.tag | default (include "agentconnect.imageTag" .) }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.relay.port }}
+          env:
+            - name: PORT
+              value: {{ .Values.relay.port | quote }}
+            - name: HOST
+              value: "0.0.0.0"
+            {{- range $k, $v := .Values.relay.config }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+            # The CP control endpoint the relay dials for rc/* — the INTERNAL Service
+            # (in-cluster, no edge hop). http(s) is normalized to ws(s) and the relay
+            # appends /api/v1/relays/ws at dial time.
+            - name: CP_URL
+              value: {{ printf "http://%s-control-plane:%v" (include "agentconnect.fullname" .) .Values.controlPlane.port | quote }}
+            # The StatefulSet pod name is stable across restarts and scale cycles. The CP
+            # upserts each relay row by this name, reclaiming the same relayId on restart.
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            # Node IP of the OTel collector agent (DaemonSet on every node), so
+            # relay.extraEnv below can reference it as
+            # OTEL_EXPORTER_OTLP_ENDPOINT=http://$(OTEL_COLLECTOR_HOST):4317 —
+            # the same convention control-plane.yaml uses. K8s only expands
+            # $(VAR) against entries defined EARLIER in this list, which is why
+            # it sits here rather than beside extraEnv. Inert on its own: with no
+            # endpoint configured the relay's SDK never starts.
+            - name: OTEL_COLLECTOR_HOST
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: status.hostIP
+            - name: RELAY_NAME
+              value: "$(POD_NAME)"
+            # StatefulSet pods carry this stable zero-based ordinal label. Keep RELAY_NAME
+            # as the globally unique pod name, but use the compact ordinal in the public URL.
+            - name: POD_INDEX
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.labels['apps.kubernetes.io/pod-index']
+            # The origin daemons dial for THIS relay. The ordinal prefix is routed to the
+            # matching per-pod Service, then stripped before the request reaches /rd/ws.
+            # Browser and webhook traffic continues to use the pool-level public origin.
+            - name: DAEMON_DIAL_URL
+              value: {{ include "agentconnect.relayDaemonDialUrl" . | quote }}
+            # Shared relay↔CP credential — the CP must hold the SAME value (control-plane.yaml).
+            - name: RELAY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret }}
+                  key: {{ .Values.secrets.relayTokenKey }}
+            # Provider ingress secrets are delivered by the CP in rc/auth/ok
+            # from its immutable deployment-config snapshot. They are never
+            # injected into relay pods from the namespace Secret.
+            {{- if .Values.openConnector.enabled }}
+            # open-connector (connectors integration): the relay serves each connector
+            # connection as a synthesized MCP server backed by open-connector's runtime
+            # REST API, reached over this INTERNAL Service (ClusterIP). Overrides the
+            # origin the relay would otherwise derive from the binding upstream url.
+            - name: OPEN_CONNECTOR_URL
+              value: {{ printf "http://%s-open-connector:%v" (include "agentconnect.fullname" .) .Values.openConnector.port | quote }}
+            {{- end }}
+            {{- range $k, $v := .Values.relay.extraEnv }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          # readiness reflects rc/* registration (/readyz is 503 until the relay has
+          # registered with the CP), so the Service only sends traffic once it can route.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          # liveness is unconditional (/healthz = process up), never gated by drain.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          # preStop delays SIGTERM so this pod leaves the Service endpoints first — a
+          # daemon whose socket closes reconnects to the new pod, not this dying one.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 5"]
+          resources:
+            {{- toYaml .Values.relay.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agentconnect.fullname" . }}-relay
+  labels:
+    {{- include "agentconnect.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "agentconnect.selectorLabels" (dict "ctx" . "component" "relay") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.relay.port }}
+      targetPort: http
+---
+# Governing headless Service for stable StatefulSet network identity. Daemons use the
+# public per-pod routes below; this Service is intentionally not a public load balancer.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agentconnect.fullname" . }}-relay-headless
+  labels:
+    {{- include "agentconnect.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    {{- include "agentconnect.selectorLabels" (dict "ctx" . "component" "relay") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.relay.port }}
+      targetPort: http
+{{- range $ordinal := until (int .Values.relay.replicas) }}
+---
+# A single-endpoint Service for deterministic daemon-to-relay WebSocket routing.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ printf "%s-relay-%d" (include "agentconnect.fullname" $) $ordinal }}
+  labels:
+    {{- include "agentconnect.labels" $ | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    statefulset.kubernetes.io/pod-name: {{ printf "%s-relay-%d" (include "agentconnect.fullname" $) $ordinal }}
+  ports:
+    - name: http
+      port: {{ $.Values.relay.port }}
+      targetPort: http
+{{- end }}
+{{- if gt (int .Values.relay.replicas) 1 }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "agentconnect.fullname" . }}-relay
+  labels:
+    {{- include "agentconnect.labels" . | nindent 4 }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      {{- include "agentconnect.selectorLabels" (dict "ctx" . "component" "relay") | nindent 6 }}
+{{- end }}
+{{- end }}
