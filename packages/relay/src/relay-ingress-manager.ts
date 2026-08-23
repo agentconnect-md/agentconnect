@@ -1041,7 +1041,14 @@ export class RelayIngressManager {
     const name = msg.isDm ? await this.ingestFor(botId)?.egress?.lookupUserName(msg.sender.id) : undefined
     const sent = this.deps.reportBotConversation({
       botId,
-      conversation: { id: msg.channel, ...(name ? { name } : {}), kind: msg.isDm ? 'im' : 'mpim' }
+      conversation: {
+        id: msg.channel,
+        ...(name ? { name } : {}),
+        // Who the row is with (§14.8) — a 1:1 DM's whole human membership, and what lets
+        // the CP seed a gated install's row On for a member the agent is already shared with.
+        ...(msg.isDm ? { dmUserId: msg.sender.id } : {}),
+        kind: msg.isDm ? 'im' : 'mpim'
+      }
     })
     // Latch only a delivered report — a CP-link-down drop retries on the next DM.
     if (sent) this.observedConversationsReported.add(latch)

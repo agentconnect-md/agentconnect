@@ -43,6 +43,7 @@ import type { SessionEventSink } from '../events/sink.js'
 import type { AgentMutationGate } from '../orchestrator/agentMutationGate.js'
 import type { PlacementResolver } from '../orchestrator/placementResolver.js'
 import type { CollabRoutesService } from '../orchestrator/collabRoutes.service.js'
+import type { GatedDmSeedResolver } from '../orchestrator/linkedDm.js'
 import type { DutyLeaseService } from '../orchestrator/dutyLease.js'
 import type { AgentId, DaemonId } from '../domain/ids.js'
 import type { WebchatRemoteMcpService } from '../registry/webchatRemoteMcpService.js'
@@ -96,6 +97,14 @@ export interface DaemonWsDeps {
   /** §4.2(4) `isPrivate` cross-check (session-access-cold-visit.md): a snapshot observing a
    *  channel private drops its cached `public` audience verdict — invalidation only. */
   slackSessionAccess?: Pick<SlackSessionAccessService, 'dropPublicAudiences'>
+  /** §14.8: which of a gated install's reported DMs seed to the ordinary DM default
+   *  because their counterpart is in the agent's own audience; absent ⇒ all stay Off. */
+  gatedDmSeeds?: GatedDmSeedResolver
+  /** Republish the agent's integrations. Needed because §14.8 is the one path where a
+   *  daemon REPORT creates an ENABLED row: the reporter is still holding bindRules that
+   *  predate it, and it has already cached the conversation, so nothing re-reports and
+   *  the DM stays refused until an unrelated push or reconnect. Absent ⇒ exactly that. */
+  integrationConverge?: (agent: AgentRecord) => Promise<void>
   /** §4.1 activity poke (session-access-cold-visit.md): a committed live `event/session`
    *  milestone marks its external scope active so the warmer keeps its resource facts
    *  leased. Replayed `event/session-sync` frames never poke (§4.2(6)). */

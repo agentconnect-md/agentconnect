@@ -8,8 +8,8 @@
 > is the complete human audience; immutable creation attribution grants no
 > access. Normal member removal prunes all five visibility carriers atomically
 > and repairs only audiences that would otherwise become empty.
-> Section 14 (platform conversation gating) is a **proposed** addendum, not yet
-> implemented.
+> Section 14 (platform conversation gating) extends the same model to platform
+> ingress and is implemented.
 >
 > **Scope:** control-plane + web. The daemon execution data plane is unaffected
 > except for §14, which extends restricted visibility to platform ingress via a
@@ -677,9 +677,9 @@ while `visibilityWhere(undefined)` equals `{}`.
    `agentId -> canView` per envelope and send nothing when false. A restricted
    agent remains completely invisible, matching list/get 404 semantics.
 
-## 14. Platform conversation gating (private agents) — proposed
+## 14. Platform conversation gating (private agents)
 
-> **Status:** Proposed — product design agreed, implementation not started.
+> **Status:** Implemented.
 > Scope: protocol + daemon + control-plane + web. Slack is the driving case;
 > the mechanism is platform-generic (Telegram / Discord / Lark / Feishu integrations
 > share the same bind-rule shape).
@@ -938,11 +938,12 @@ Mention.
 
 ### 14.6 Out of scope / future overlays
 
-- **Identity mapping.** Resolving platform senders to AgentConnect users
-  (e.g. Slack `users.info` email ↔ OIDC email, with a manual link fallback)
-  would let ingress enforce agent visibility itself, making "private" mean the
-  same set of people on every surface. Conversation gating neither depends on
-  nor conflicts with this.
+- **Identity mapping at ingress.** Resolving platform senders to AgentConnect
+  users so ingress could enforce agent visibility itself — making "private" mean
+  the same set of people on every surface — remains out of scope as a general
+  mechanism. §14.8 takes the one case where the mapping is an identity
+  ASSERTION rather than an inference, and applies it to a default rather than to
+  admission. Conversation gating neither depends on nor conflicts with the rest.
 - **Auto-leave policy** (bot automatically leaves channels it is not enabled
   in), **user-group-based grants**, and webchat/GitHub surfaces (already gated
   by Console auth / repo authorization respectively).
@@ -956,3 +957,124 @@ Mention.
    (e.g. after 24 h) or be strictly once per conversation per daemon lifetime.
 3. Whether the DM boot-sweep ships in v1 or first-message reporting alone is
    enough.
+
+### 14.8 A private agent's DM follows its audience's linked identity
+
+**Status:** Implemented.
+
+**Problem.** §14.2 makes every conversation of a restricted agent default Off,
+including a DM. That is right for a channel and wrong for the person the agent
+was shared with: they can already see, edit and run it in the Console, yet their
+own DM with it answers a "not enabled" notice until an editor — often the same
+person — goes and enables it. The gate protects nobody there; it just makes a
+private agent feel broken to its own audience.
+
+**Rule.** A 1:1 DM row of a gated agent seeds to the ordinary DM default (On)
+instead of Off when its counterpart is BOTH:
+
+1. in the agent's own `sharedWith` audience, and
+2. carrying a linked Slack identity in that bot's workspace.
+
+Both arms are load-bearing. An unlinked audience member and a linked
+non-member each keep §14.2's Off. The link is Logto's — a Slack sign-in, or an
+Account API link driven by the user's own authenticated session — never an email
+guess, which is what keeps this an assertion rather than the inference §14.6
+parks.
+
+**Why only a 1:1 DM.** It is the one conversation whose entire human membership
+is known at discovery: one bot, one person. A channel's membership is a place
+and may change after the fact, which is exactly why §14.2 sends it to an editor;
+a group DM is a room by the same argument. Neither is seeded.
+
+**Why only Slack.** It is the driving case, and the one platform whose linked
+identity names the same id space a DM report carries. A Feishu link asserts a
+cross-app `union_id` while its messages carry an app-scoped `open_id`; matching
+there needs a resolution step that does not exist yet, and guessing would
+silently widen a private agent.
+
+**Mechanism.** The reporter adds the counterpart's platform member id to the
+conversation report (`IntegrationChannel.dmUserId`, persisted on the row as
+control metadata of the same class as `name`); both report paths — the daemon's
+`integration/channels` and the relay's `rc/bot-conversation` — carry it. The CP
+resolves the audience's own linked identities (one cached per-subject read each)
+and matches the reported counterpart against them; there is deliberately no
+reverse index from a platform member id to a console account. Every unresolvable
+case fails CLOSED to §14.2: no sign-in configured, no workspace on the bot, an
+oversized audience, or an upstream that cannot answer all leave the row Off.
+
+This report is also the one place where a CP write turns a daemon's own report
+into an ENABLED conversation, so it is the one that has to push: the reporting
+daemon still holds the `bindRules` it was given before the row existed, and it
+has already cached the conversation, so nothing re-reports and repairs it.
+Opening a row therefore re-converges the agent's integrations, the same push a
+visibility flip performs. (The shared-bot path already did this — `syncRoutes`
+recompiles the relay routes _and_ re-pushes the send-only specs.)
+
+**Order independence.** A seed decided at discovery would fire only for people
+whose link and audience seat both predate their first DM — which is the opposite
+of what happens, since people link _because_ they were refused. So the two
+writes that can make the answer true later — a landed identity link, a widened
+audience — re-ask it for the Off DM rows already on record. The rule that
+results does not depend on the order the three events arrive in.
+
+**A catch-up only ever touches a row still at its DEFAULT.** That is what
+`integration_channel.triggerChosen` exists for: it is set the moment a human
+picks a conversation's trigger, in the Console or the in-Slack modal, and never
+cleared.
+
+It has to be as complete as the trigger it accompanies, because on a shared bot
+the trigger is CONVERSATION-level state repeated across one row per install. So
+the marker replicates exactly the same way: a human decision marks every sibling
+row, including one that already carries the value and one the same call
+backfills with it; ownership convergence reads the flag from ANY row of the
+conversation and carries it onto siblings it backfills later. That last part is
+what survives the owner-removal lifecycle — the row that RECORDED the decision
+is deleted with its integration while siblings live on, and reading provenance
+from the owner row alone would lose the decision on precisely the path the
+backfill exists for. `dmUserId` replicates for the same reason and is the more
+brittle of the two: it IS §14.8's input, so a sibling that inherits `kind:'im'`
+without it is a DM whose counterpart is unknown, and once owner removal leaves
+that sibling as the only surviving row a linked audience member re-derives to
+Off with no way back — the later report that finally supplies the id cannot
+reopen a row that already exists. The backfill therefore takes the
+conversation's metadata PER FIELD from whichever sibling knows it, rather than
+from one template row that may not know all of it. For the same reason **a decided conversation is never
+re-derived**: a gated agent inheriting one keeps its trigger instead of
+recomputing the §14.2/§14.8 default over it. Without it a stored Off is indistinguishable from an operator's own
+choice — §14.2 lets an editor close a DM §14.8 opened — and a catch-up would
+reopen that DM on the next sharing edit or profile refresh, turning a DEFAULT
+into a standing rule that overrides the per-conversation control.
+
+The marker is load-bearing rather than an optimization, because **neither call
+site can prove it is the moment a link appeared.** The browser-driven Account
+API flow writes the link at the provider BEFORE calling the Console's refresh
+route, so a "was it linked before?" read on this side is only pre-link when a
+cache entry happens to survive the round trip — cold cache, a CP restart, or a
+link slower than the identity lease all make it read the already-linked
+identity and conclude nothing changed. Inferring novelty after an external
+mutation is not available here, so the catch-up runs unconditionally and leans
+on `triggerChosen` to be idempotent. (A widened audience still reconciles only
+the members it GAINED — there the diff IS available, and it bounds the work.)
+
+Rows that predate the marker are left at `false`: for a gated agent Off is the
+universal default, so before §14.8 a deliberately-closed DM required an editor
+to turn one On and then Off again. Marking the whole backlog "chosen" would be
+safer on paper and would keep the feature from ever reaching the DMs that
+already exist, which are exactly the ones it is for.
+
+**One-way even so: a catch-up never closes a row.** A close cannot be derived
+from absence — an audience seat lost, an unlink, and an editor's own Off all
+present the same way to the reconciler. So an opened DM stays open: a gated bind
+rule is conversation-scoped (`{channel, match:'dm'}`) with no user dimension, and
+losing the seat does not close the conversation the seat opened; an editor
+turning the row Off does, and that Off is now sticky. This is the same durability
+§14.2 already gives an editor-enabled conversation, with the difference that the
+grant originated from a membership that can later change. Revoking on seat loss
+is now expressible — `triggerChosen` tells the two apart — and is left to a
+change that can decide what should happen to the session history behind it.
+
+**Known edge.** The daemon and relay decide admission before the CP has the row,
+so the very first message of a brand-new DM is still refused with the §14.3
+notice; the conversation is open from the next message on. Closing that gap
+means shipping the authorized member ids to the edge in the integration spec,
+which is a separate change with its own recompute-and-push triggers.

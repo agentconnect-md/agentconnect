@@ -1,0 +1,12 @@
+-- Whether a human chose this conversation's trigger (resource-visibility.md §14.8).
+--
+-- No backfill, deliberately. Rows already on record are left at `false` — "still at
+-- their default" — because for a gated agent Off IS the universal default: before
+-- §14.8 a DM could only be On if an editor turned it On, so a stored Off that an
+-- editor deliberately chose required two opposite actions and is close to nonexistent.
+-- Marking the whole backlog `true` instead would be safer on paper and would keep the
+-- feature from ever reaching the DMs that already exist, which are exactly the ones it
+-- is for. The blast radius of the choice is bounded by the rest of the rule: a
+-- catch-up only ever opens a DM whose counterpart is a linked member of the agent's
+-- own audience, and the first close after this ships is sticky.
+ALTER TABLE "integration_channel" ADD COLUMN "triggerChosen" BOOLEAN NOT NULL DEFAULT false;

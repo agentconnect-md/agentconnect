@@ -700,6 +700,8 @@ function toChannelRecord(c: IntegrationChannel): IntegrationChannelRecord {
     isPrivate: c.isPrivate,
     kind: c.kind as ConversationKind,
     trigger: c.trigger as ChannelTrigger,
+    dmUserId: c.dmUserId,
+    triggerChosen: c.triggerChosen,
     agentId: c.agentId ? AgentId(c.agentId) : null
   }
 }
@@ -725,7 +727,12 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
   async replaceSnapshot(
     integrationId: IntegrationId,
     channels: ReportedChannel[],
-    opts?: { defaultTrigger?: ChannelTrigger; authoritative?: boolean; removed?: string[] }
+    opts?: {
+      defaultTrigger?: ChannelTrigger
+      defaultTriggerByChannel?: ReadonlyMap<string, ChannelTrigger>
+      authoritative?: boolean
+      removed?: string[]
+    }
   ): Promise<void> {
     if (opts?.authoritative !== false) {
       await this.db.integrationChannel.deleteMany({
@@ -748,15 +755,18 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
       // pass `defaultTrigger:'off'`; Everyone installs default a 1:1 DM On and a group
       // DM to Mention. An authoritative channel snapshot cannot delete either kind.
       const direct = c.kind === 'im' || c.kind === 'mpim'
-      const createTrigger: ChannelTrigger = opts?.defaultTrigger ?? (c.kind === 'im' ? 'any' : 'mention')
+      // A per-conversation seed (§14.8) outranks the install-wide default; both seed a
+      // NEW row only, and a late channel→direct conversion re-applies whichever won.
+      const createTrigger: ChannelTrigger =
+        opts?.defaultTriggerByChannel?.get(c.id) ?? opts?.defaultTrigger ?? (c.kind === 'im' ? 'any' : 'mention')
       await this.db.$executeRaw`
         INSERT INTO "integration_channel"
           ("integrationId", "channelId", "name", "spaceId", "space", "isPrivate", "kind", "trigger",
-           "firstSeenAt", "updatedAt")
+           "dmUserId", "firstSeenAt", "updatedAt")
         VALUES (
           ${integrationId}::uuid, ${c.id}, ${c.name ?? null}, ${c.spaceId ?? null}, ${c.space ?? null},
           ${c.isPrivate ?? false}, ${c.kind ?? 'channel'}::"ConversationKind",
-          ${createTrigger}::"ChannelTrigger", NOW(), NOW()
+          ${createTrigger}::"ChannelTrigger", ${c.dmUserId ?? null}, NOW(), NOW()
         )
         ON CONFLICT ("integrationId", "channelId") DO UPDATE SET
           "name" = CASE WHEN ${setName}::boolean THEN EXCLUDED."name" ELSE "integration_channel"."name" END,
@@ -766,6 +776,10 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
                          ELSE "integration_channel"."space" END,
           "isPrivate" = CASE WHEN ${setPrivate}::boolean THEN EXCLUDED."isPrivate"
                              ELSE "integration_channel"."isPrivate" END,
+          -- Learned once and never unlearned: an omitting report (a channel snapshot, an
+          -- older reporter) must not blank the member a DM row is with.
+          "dmUserId" = CASE WHEN ${c.dmUserId !== undefined}::boolean THEN EXCLUDED."dmUserId"
+                            ELSE "integration_channel"."dmUserId" END,
           -- A committed direct kind is never downgraded back to 'channel'. Slack
           -- classifies a group DM late, so a daemon that has lost its cache (a restart,
           -- a snapshot refresh) re-reports the conversation as a provisional 'channel'
@@ -822,6 +836,7 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
         space: conversation.space ?? null,
         isPrivate: conversation.isPrivate ?? false,
         kind: conversation.kind ?? 'channel',
+        dmUserId: conversation.dmUserId ?? null,
         // Restricted installs supply Off. Otherwise 1:1 DMs start On and rooms use
         // Mention, matching replaceSnapshot and the controls shown in the Console.
         trigger: opts?.defaultTrigger ?? (conversation.kind === 'im' ? 'any' : 'mention')
@@ -830,7 +845,8 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
       update: {
         ...(conversation.name ? { name: conversation.name } : {}),
         ...(conversation.spaceId ? { spaceId: conversation.spaceId } : {}),
-        ...(conversation.space ? { space: conversation.space } : {})
+        ...(conversation.space ? { space: conversation.space } : {}),
+        ...(conversation.dmUserId ? { dmUserId: conversation.dmUserId } : {})
       }
     })
     return toChannelRecord(row)
@@ -892,12 +908,15 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
   async setTrigger(
     integrationId: IntegrationId,
     channelId: string,
-    trigger: ChannelTrigger
+    trigger: ChannelTrigger,
+    opts?: { chosen?: boolean }
   ): Promise<IntegrationChannelRecord | null> {
     // updateMany → no throw on a missing row (the bot may have just left the channel).
+    // `triggerChosen` is only ever set, never cleared: a decision does not expire, and
+    // orchestration mirroring an owner's trigger must not unmark one either.
     const res = await this.db.integrationChannel.updateMany({
       where: { integrationId, channelId },
-      data: { trigger }
+      data: { trigger, ...(opts?.chosen ? { triggerChosen: true } : {}) }
     })
     if (res.count === 0) return null
     const row = await this.db.integrationChannel.findUnique({

@@ -22,6 +22,8 @@ import type { FastifyInstance, FastifyReply } from 'fastify'
 import { z } from 'zod'
 import { resolveWebAppUrl } from '../../config/env.js'
 import { LogtoApiError } from '../../github/logto-identity.js'
+import { convergeIntegrationGating } from '../../orchestrator/integrationPush.js'
+import { reconcileLinkedDms } from '../../orchestrator/linkedDmReconcile.js'
 import type { HttpDeps } from '../deps.js'
 import { ErrorDto } from '../dto/index.js'
 import { Tag } from '../plugins/openapi.js'
@@ -185,6 +187,44 @@ export function meSocialIdentityRoutes(deps: HttpDeps) {
       message: 'social sign-in management is not configured'
     } as const
 
+    /**
+     * §14.8 catch-up (resource-visibility.md): a link may have just authorized DMs this
+     * person already has open with a private agent they are shared with.
+     *
+     * Runs on every call rather than trying to detect "a Slack link appeared", because
+     * nothing observable here can: the browser writes the link at the provider BEFORE
+     * calling the refresh route, so a pre-link read is only pre-link when a cache entry
+     * happens to survive the round trip. Running unconditionally is safe because the
+     * catch-up only touches rows still at their default (`triggerChosen`), so a
+     * reauthorization or a link to another provider changes nothing.
+     *
+     * Awaited so the Console read that follows already shows the opened rows, and
+     * swallowed — the link itself succeeded, and a failure leaves the rows put.
+     */
+    const openLinkedDms = async (req: {
+      principal?: { userId: string }
+      oidcSubject?: string
+      log: { debug(obj: object, msg: string): void; warn(obj: object, msg?: string): void }
+    }): Promise<void> => {
+      const userId = req.principal?.userId
+      if (!userId || !req.oidcSubject || !deps.logtoIdentity) return
+      try {
+        await reconcileLinkedDms(userId, req.oidcSubject, {
+          users: deps.repos.user,
+          orgs: deps.repos.org,
+          agents: deps.repos.agent,
+          integrations: deps.repos.integration,
+          bots: deps.repos.bot,
+          channels: deps.repos.integrationChannel,
+          identity: deps.logtoIdentity,
+          push: (agent) => convergeIntegrationGating(deps, agent, req.log),
+          log: req.log
+        })
+      } catch (err) {
+        req.log.warn({ err, userId }, 'gated DM: opening conversations after an identity link failed')
+      }
+    }
+
     // The counterpart to linking happening in the browser: that write never
     // passes through the CP, so the console has to say when one landed or the
     // cached read would hide the new identity for its full TTL.
@@ -205,6 +245,7 @@ export function meSocialIdentityRoutes(deps: HttpDeps) {
         const identity = deps.logtoIdentity
         if (!identity) return reply.code(503).send(unavailable)
         identity.forgetUser(req.oidcSubject!)
+        await openLinkedDms(req)
         return reply.code(204).send(null)
       }
     )
@@ -273,6 +314,7 @@ export function meSocialIdentityRoutes(deps: HttpDeps) {
             ...req.body.connectorData,
             redirectUri
           })
+          await openLinkedDms(req)
           return { linked: true as const }
         } catch (error) {
           return logtoFailure(reply, error, 'link')

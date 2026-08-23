@@ -12752,19 +12752,22 @@ export class Daemon {
     // otherwise the two classifications would fight and re-emit on every message.
     const observed = isDm ? ('im' as const) : msg.isGroupDm ? ('mpim' as const) : ('channel' as const)
     const kind = observed === 'channel' && current?.kind === 'mpim' ? ('mpim' as const) : observed
+    // Who the row is with (§14.8), reported for a 1:1 DM only — the CP seeds a gated
+    // agent's DM to its ordinary default when this member is one of the agent's own.
+    const dmUserId = kind === 'im' ? { dmUserId: msg.sender.id } : undefined
     const known = (await this.store.getDisplayNames([channel])).get(channel)
     // Which Discord server the channel belongs to — see spaceFor. Direct rows have none.
     const found = kind === 'channel' ? await this.observedChannelsSync.spaceFor(msg.platform, channel) : undefined
     const space = found ? { spaceId: found.id, ...(found.name ? { space: found.name } : {}) } : undefined
     // Compare against what a write would actually change — a partially resolved space
     // (id known, name not yet) must not re-emit the snapshot on every message.
-    const merged = current ? { ...current, ...(known ? { name: known } : {}), ...space, kind } : undefined
+    const merged = current ? { ...current, ...(known ? { name: known } : {}), ...space, ...dmUserId, kind } : undefined
     if (merged && JSON.stringify(merged) === JSON.stringify(current)) return
     // A previously-observed DM (Telegram/Discord session snapshots are kind-less)
     // is upgraded to 'im' rather than skipped after an org→restricted flip.
     const next = merged
       ? existing.map((c) => (c.id === channel ? merged : c))
-      : [...existing, { id: channel, ...(known ? { name: known } : {}), ...space, kind }]
+      : [...existing, { id: channel, ...(known ? { name: known } : {}), ...space, ...dmUserId, kind }]
     this.channelSnapshots.set(integrationId, {
       channels: next,
       authoritative: cached?.authoritative ?? false

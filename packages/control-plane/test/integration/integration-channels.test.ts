@@ -17,7 +17,17 @@ import { prisma } from '../setup.db.js'
 import { seedDaemon, seedAgent, seedDutyGroup } from '../fixtures/seed.js'
 import { seedPoolMember } from '../fakes/member-set.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
-import { PgAgentRepo, PgDaemonRepo, PgIntegrationRepo, PgIntegrationChannelRepo } from '../../src/persistence/index.js'
+import {
+  PgAgentRepo,
+  PgBotRepo,
+  PgDaemonRepo,
+  PgIntegrationRepo,
+  PgIntegrationChannelRepo
+} from '../../src/persistence/index.js'
+import { PgOrgRepo } from '../../src/persistence/repositories/org.repo.js'
+import { gatedDmSeeds, type GatedDmSeedResolver } from '../../src/orchestrator/linkedDm.js'
+import { reconcileAgentLinkedDms, reconcileLinkedDms } from '../../src/orchestrator/linkedDmReconcile.js'
+import type { SlackIdentity } from '../../src/github/logto-identity.js'
 import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
 import { PgDutyGroupRepo } from '../../src/persistence/repositories/duty-group.repo.js'
 import { systemClock } from '../../src/domain/clock.js'
@@ -42,6 +52,11 @@ afterEach(async () => {
   await running?.close()
   running = undefined
 })
+
+// §14.8 OIDC subjects — the key a linked Slack identity is resolved by.
+const ALICE_SUB = 'oidc-alice'
+const BOB_SUB = 'oidc-bob'
+const CAROL_SUB = 'oidc-carol'
 
 const DAEMON = 'd1d1d1d1-dddd-4ddd-8ddd-dddddddddddd'
 const OTHER_DAEMON = 'd2d2d2d2-dddd-4ddd-8ddd-dddddddddddd'
@@ -134,7 +149,12 @@ async function report(
   agentMutations = new AgentMutationGate(),
   collabRoutes = { broadcast: async () => undefined } as unknown as CollabRoutesService,
   authoritative?: boolean,
-  removed?: string[]
+  removed?: string[],
+  /** §14.8: OIDC subject → the Slack identity that console account carries. Given, the
+   *  report runs the REAL seed resolver over these links instead of none. */
+  links?: Record<string, SlackIdentity>,
+  /** §14.8: records the re-converge a report that opened a DM has to trigger. */
+  integrationConverge?: (agent: unknown) => Promise<void>
 ): Promise<void> {
   const frame = {
     v: 1,
@@ -148,15 +168,27 @@ async function report(
       ...(removed === undefined ? {} : { removed })
     }
   } as AnyFrame
+  const users = new PgUserRepo(prisma)
   const deps = {
     integration: new PgIntegrationRepo(prisma),
     integrationChannel: new PgIntegrationChannelRepo(prisma),
     agent: new PgAgentRepo(prisma),
+    bot: new PgBotRepo(prisma),
     // Admission is the served set now — placement ∪ the duties this member holds.
     dutyLease: new PgDutyGroupRepo(prisma),
     clock: systemClock,
     agentMutations,
-    collabRoutes
+    collabRoutes,
+    ...(links
+      ? {
+          gatedDmSeeds: ((reported, agent, bot) =>
+            gatedDmSeeds(reported, agent, bot, {
+              users,
+              identity: { slackIdentityFor: async (sub: string) => links[sub] ?? null }
+            })) satisfies GatedDmSeedResolver
+        }
+      : {}),
+    ...(integrationConverge ? { integrationConverge } : {})
   } as unknown as DaemonWsDeps
   await handleIntegrationChannels(frame, { daemonId } as DaemonConnection, deps)
 }
@@ -302,6 +334,295 @@ describe('integration/channels EVT → integration_channel convergence', () => {
     res = await running.app.inject({ method: 'GET', url: `${ORG}/integrations` })
     ;[dto] = res.json() as { channels: { channelId: string; kind: string; trigger: string }[] }[]
     expect(dto!.channels.find((c) => c.channelId === 'D1')).toMatchObject({ kind: 'im' })
+  })
+
+  /** §14.8 fixture: a private agent shared with `audience`, on a bot in workspace T_ACME.
+   *  The seeded owner gets an OIDC subject so their own link can be resolved. */
+  async function privateAgentInWorkspace(app: HttpApp, audience: string[]): Promise<string> {
+    const id = await install(app)
+    const integration = await prisma.integration.findUniqueOrThrow({ where: { id } })
+    await prisma.agent.update({
+      where: { id: integration.agentId },
+      data: { visibility: 'restricted', sharedWith: audience }
+    })
+    await prisma.bot.update({ where: { id: integration.botId }, data: { teamId: 'T_ACME' } })
+    await prisma.user.update({ where: { id: DEFAULT_OWNER_ID }, data: { oidcSubject: ALICE_SUB } })
+    return id
+  }
+
+  /** A second console account in the default org, for the multi-member audience. */
+  async function seedMember(sub: string): Promise<string> {
+    const users = new PgUserRepo(prisma)
+    const email = `${sub}@example.test`
+    const { userId } = await users.provisionOidcUser({ oidcSubject: sub, email, emailVerified: true })
+    await users.addMemberByEmail(DEFAULT_ORG_ID, email, 'collaborator')
+    return userId
+  }
+
+  /** Real repos + a stubbed identity service keyed by OIDC subject. */
+  const reconcileDeps = (links: Record<string, SlackIdentity>) => ({
+    users: new PgUserRepo(prisma),
+    orgs: new PgOrgRepo(prisma),
+    agents: new PgAgentRepo(prisma),
+    integrations: new PgIntegrationRepo(prisma),
+    bots: new PgBotRepo(prisma),
+    channels: new PgIntegrationChannelRepo(prisma),
+    identity: { slackIdentityFor: async (sub: string) => links[sub] ?? null },
+    push: async () => {}
+  })
+
+  const triggersOf = async (id: string): Promise<Map<string, string>> =>
+    new Map(
+      (await new PgIntegrationChannelRepo(prisma).listForIntegration(IntegrationId(id))).map((row) => [
+        row.channelId,
+        row.trigger
+      ])
+    )
+
+  it("opens a private agent's DM with every audience member who linked their Slack identity (§14.8)", async () => {
+    await seedDaemon(prisma, DAEMON)
+    running = buildHttpApp(prisma, undefined, undefined, new SpyControl() as unknown as ControlSender)
+    const bob = await seedMember(BOB_SUB)
+    const carol = await seedMember(CAROL_SUB)
+    const id = await privateAgentInWorkspace(running, [DEFAULT_OWNER_ID, bob, carol])
+
+    // Alice (the owner), Bob and Carol are the audience and all three linked; Dave is a
+    // workspace member who is not, and Erin is in the audience but never linked.
+    await report(
+      DAEMON,
+      id,
+      [
+        { id: 'C1', name: 'deploys' },
+        { id: 'D_ALICE', name: '@alice', kind: 'im', dmUserId: 'U_ALICE' },
+        { id: 'D_BOB', name: '@bob', kind: 'im', dmUserId: 'U_BOB' },
+        { id: 'D_CAROL', name: '@carol', kind: 'im', dmUserId: 'U_CAROL' },
+        { id: 'D_DAVE', name: '@dave', kind: 'im', dmUserId: 'U_DAVE' }
+      ],
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {
+        [ALICE_SUB]: { teamId: 'T_ACME', userId: 'U_ALICE' },
+        [BOB_SUB]: { teamId: 'T_ACME', userId: 'U_BOB' },
+        [CAROL_SUB]: { teamId: 'T_ACME', userId: 'U_CAROL' }
+      }
+    )
+
+    const triggers = await triggersOf(id)
+    expect(triggers.get('D_ALICE')).toBe('any')
+    expect(triggers.get('D_BOB')).toBe('any')
+    expect(triggers.get('D_CAROL')).toBe('any')
+    // The two arms that must NOT open: a channel (its membership is a room, not a
+    // person) and a DM from someone outside the audience.
+    expect(triggers.get('C1')).toBe('off')
+    expect(triggers.get('D_DAVE')).toBe('off')
+  })
+
+  // The other regression the review caught. On a direct/socket integration this handler
+  // is the ONLY path where a REPORT creates an enabled row: the reporting daemon still
+  // holds bindRules with no scoped rule for that DM, and it has already cached the
+  // conversation, so nothing re-reports and the DM stays refused until an unrelated
+  // reconnect. Opening a row therefore has to push.
+  it('re-converges the reporting daemon when a report opens a gated DM (§14.8)', async () => {
+    await seedDaemon(prisma, DAEMON)
+    running = buildHttpApp(prisma, undefined, undefined, new SpyControl() as unknown as ControlSender)
+    const id = await privateAgentInWorkspace(running, [DEFAULT_OWNER_ID])
+    const links = { [ALICE_SUB]: { teamId: 'T_ACME', userId: 'U_ALICE' } }
+    const converged: unknown[] = []
+    const converge = async (agent: unknown) => void converged.push(agent)
+
+    // A channel-only report changes no gating, so it must NOT push.
+    await report(
+      DAEMON,
+      id,
+      [{ id: 'C1', name: 'deploys' }],
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      links,
+      converge
+    )
+    expect(converged).toHaveLength(0)
+
+    // The DM that opens does.
+    await report(
+      DAEMON,
+      id,
+      [{ id: 'D_ALICE', name: '@alice', kind: 'im', dmUserId: 'U_ALICE' }],
+      undefined,
+      undefined,
+      false,
+      undefined,
+      links,
+      converge
+    )
+    expect((await triggersOf(id)).get('D_ALICE')).toBe('any')
+    expect(converged).toHaveLength(1)
+  })
+
+  it('keeps the Off default for an audience member who linked a DIFFERENT workspace (§14.8)', async () => {
+    await seedDaemon(prisma, DAEMON)
+    running = buildHttpApp(prisma, undefined, undefined, new SpyControl() as unknown as ControlSender)
+    const id = await privateAgentInWorkspace(running, [DEFAULT_OWNER_ID])
+    await report(
+      DAEMON,
+      id,
+      [{ id: 'D_ALICE', name: '@alice', kind: 'im', dmUserId: 'U_ALICE' }],
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { [ALICE_SUB]: { teamId: 'T_OTHER', userId: 'U_ALICE' } }
+    )
+    expect((await triggersOf(id)).get('D_ALICE')).toBe('off')
+  })
+
+  it('opens an already-Off DM when its counterpart links afterwards, and pushes (§14.8)', async () => {
+    await seedDaemon(prisma, DAEMON)
+    running = buildHttpApp(prisma, undefined, undefined, new SpyControl() as unknown as ControlSender)
+    const id = await privateAgentInWorkspace(running, [DEFAULT_OWNER_ID])
+    // The real order of events: the DM is discovered and refused BEFORE the link.
+    await report(DAEMON, id, [{ id: 'D_ALICE', name: '@alice', kind: 'im', dmUserId: 'U_ALICE' }])
+    expect((await triggersOf(id)).get('D_ALICE')).toBe('off')
+
+    const pushed: string[] = []
+    const opened = await reconcileLinkedDms(DEFAULT_OWNER_ID, ALICE_SUB, {
+      users: new PgUserRepo(prisma),
+      orgs: new PgOrgRepo(prisma),
+      agents: new PgAgentRepo(prisma),
+      integrations: new PgIntegrationRepo(prisma),
+      bots: new PgBotRepo(prisma),
+      channels: new PgIntegrationChannelRepo(prisma),
+      identity: { slackIdentityFor: async () => ({ teamId: 'T_ACME', userId: 'U_ALICE' }) },
+      push: async (agent) => {
+        pushed.push(agent.id)
+      }
+    })
+    expect(opened).toBe(1)
+    expect(pushed).toHaveLength(1)
+    expect((await triggersOf(id)).get('D_ALICE')).toBe('any')
+  })
+
+  it('opens an already-Off DM when its counterpart JOINS the audience afterwards (§14.8)', async () => {
+    await seedDaemon(prisma, DAEMON)
+    running = buildHttpApp(prisma, undefined, undefined, new SpyControl() as unknown as ControlSender)
+    const bob = await seedMember(BOB_SUB)
+    const id = await privateAgentInWorkspace(running, [DEFAULT_OWNER_ID])
+    await report(DAEMON, id, [{ id: 'D_BOB', name: '@bob', kind: 'im', dmUserId: 'U_BOB' }])
+    expect((await triggersOf(id)).get('D_BOB')).toBe('off')
+
+    const integration = await prisma.integration.findUniqueOrThrow({ where: { id } })
+    const agent = await prisma.agent.update({
+      where: { id: integration.agentId },
+      data: { sharedWith: [DEFAULT_OWNER_ID, bob] }
+    })
+    const opened = await reconcileAgentLinkedDms(
+      agent as unknown as Parameters<typeof reconcileAgentLinkedDms>[0],
+      [bob],
+      reconcileDeps({ [BOB_SUB]: { teamId: 'T_ACME', userId: 'U_BOB' } })
+    )
+    expect(opened).toBe(1)
+    expect((await triggersOf(id)).get('D_BOB')).toBe('any')
+  })
+
+  // The regression the review caught: the catch-up is a DEFAULT for a pair that just
+  // became eligible, not a standing rule. Re-deriving it from the whole current
+  // audience on every later sharing edit would silently revert an editor's own Off.
+  it('a later sharing edit never reopens a DM the editor closed (§14.8)', async () => {
+    await seedDaemon(prisma, DAEMON)
+    running = buildHttpApp(prisma, undefined, undefined, new SpyControl() as unknown as ControlSender)
+    const bob = await seedMember(BOB_SUB)
+    const carol = await seedMember(CAROL_SUB)
+    const id = await privateAgentInWorkspace(running, [DEFAULT_OWNER_ID, bob])
+    const links = {
+      [BOB_SUB]: { teamId: 'T_ACME', userId: 'U_BOB' },
+      [CAROL_SUB]: { teamId: 'T_ACME', userId: 'U_CAROL' }
+    }
+    await report(
+      DAEMON,
+      id,
+      [
+        { id: 'D_BOB', name: '@bob', kind: 'im', dmUserId: 'U_BOB' },
+        { id: 'D_CAROL', name: '@carol', kind: 'im', dmUserId: 'U_CAROL' }
+      ],
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      links
+    )
+    expect((await triggersOf(id)).get('D_BOB')).toBe('any')
+
+    // The editor reconsiders and closes Bob's DM.
+    await new PgIntegrationChannelRepo(prisma).setTrigger(IntegrationId(id), 'D_BOB', 'off')
+
+    // Carol is added later. Only Carol's DM opens; Bob's stays where the editor put it.
+    const integration = await prisma.integration.findUniqueOrThrow({ where: { id } })
+    const agent = await prisma.agent.update({
+      where: { id: integration.agentId },
+      data: { sharedWith: [DEFAULT_OWNER_ID, bob, carol] }
+    })
+    await reconcileAgentLinkedDms(
+      agent as unknown as Parameters<typeof reconcileAgentLinkedDms>[0],
+      [carol],
+      reconcileDeps(links)
+    )
+    const triggers = await triggersOf(id)
+    expect(triggers.get('D_CAROL')).toBe('any')
+    expect(triggers.get('D_BOB')).toBe('off')
+  })
+
+  // The link path cannot prove a link just landed — the browser writes it at the
+  // provider BEFORE calling refresh — so it runs on every call. `triggerChosen` is what
+  // makes that safe: an editor's Off is a decision, not a pending authorization.
+  it('a repeated identity refresh never reopens a DM the editor closed (§14.8)', async () => {
+    await seedDaemon(prisma, DAEMON)
+    running = buildHttpApp(prisma, undefined, undefined, new SpyControl() as unknown as ControlSender)
+    const id = await privateAgentInWorkspace(running, [DEFAULT_OWNER_ID])
+    const links = { [ALICE_SUB]: { teamId: 'T_ACME', userId: 'U_ALICE' } }
+    await report(
+      DAEMON,
+      id,
+      [{ id: 'D_ALICE', name: '@alice', kind: 'im', dmUserId: 'U_ALICE' }],
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      links
+    )
+    expect((await triggersOf(id)).get('D_ALICE')).toBe('any')
+
+    // The editor closes it through the console route, which records the choice.
+    const closed = await running.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/integrations/${id}/channels/D_ALICE`,
+      payload: { trigger: 'off' }
+    })
+    expect(closed.statusCode).toBe(200)
+
+    // Any number of later refreshes leave it closed.
+    for (let i = 0; i < 3; i += 1) {
+      expect(await reconcileLinkedDms(DEFAULT_OWNER_ID, ALICE_SUB, reconcileDeps(links))).toBe(0)
+    }
+    expect((await triggersOf(id)).get('D_ALICE')).toBe('off')
+  })
+
+  it('never re-closes a DM an operator turned Off after §14.8 opened it', async () => {
+    await seedDaemon(prisma, DAEMON)
+    running = buildHttpApp(prisma, undefined, undefined, new SpyControl() as unknown as ControlSender)
+    const id = await privateAgentInWorkspace(running, [DEFAULT_OWNER_ID])
+    const links = { [ALICE_SUB]: { teamId: 'T_ACME', userId: 'U_ALICE' } }
+    const dm = { id: 'D_ALICE', name: '@alice', kind: 'im' as const, dmUserId: 'U_ALICE' }
+    await report(DAEMON, id, [dm], undefined, undefined, undefined, undefined, links)
+    expect((await triggersOf(id)).get('D_ALICE')).toBe('any')
+
+    // The seed is a DEFAULT, not a standing rule: once a row exists, its trigger is
+    // the operator's, and a re-report must not reassert the open state.
+    await new PgIntegrationChannelRepo(prisma).setTrigger(IntegrationId(id), 'D_ALICE', 'off')
+    await report(DAEMON, id, [dm], undefined, undefined, undefined, undefined, links)
+    expect((await triggersOf(id)).get('D_ALICE')).toBe('off')
   })
 
   it('stores a public DM as On, then atomically closes it when the agent becomes restricted (§14.3)', async () => {

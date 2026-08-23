@@ -122,9 +122,11 @@ describe('Telegram conversation discovery', () => {
 
     await (daemon as any).onInboundOutcome(tg(91, { channel: '424242', isDm: true }), ['i-tg'])
 
+    // `dmUserId` rides a 1:1 DM row (§14.8) — who the conversation is with, which is
+    // what lets the CP match it against a private agent's own audience.
     expect(emitIntegrationChannels).toHaveBeenCalledWith({
       integrationId: 'i-tg',
-      channels: [{ id: '424242', kind: 'im' }],
+      channels: [{ id: '424242', dmUserId: 'U1', kind: 'im' }],
       authoritative: false
     })
     await daemon.stop()

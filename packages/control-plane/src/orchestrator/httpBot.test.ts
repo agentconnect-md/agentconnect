@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import { HttpBotOrchestrator } from './httpBot.js'
 import { AgentDelivery } from './agentDelivery.js'
 import type { PlacementResolver } from './placementResolver.js'
+import type { GatedDmSeedResolver } from './linkedDm.js'
 import { RelayRegistry, type RelayChannel } from '../ws/relay-registry.js'
 import type { RcBotAssign, RelayCpFrameType } from '@agentconnect.md/protocol'
 import { AgentId, BotId, DaemonId, IntegrationId, OrgId } from '../domain/ids.js'
@@ -109,6 +110,8 @@ function channel(over: Partial<IntegrationChannelRecord>): IntegrationChannelRec
     isPrivate: false,
     kind: 'channel',
     trigger: 'mention',
+    dmUserId: null,
+    triggerChosen: false,
     agentId: null,
     ...over
   } as IntegrationChannelRecord
@@ -151,7 +154,11 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
 
   /** `placement` stands in for the duty ledger: absent ⇒ placement alone, which is what every
    *  expectation predating the pool was written against. */
-  function makeOrch(platforms = PLATFORMS, placement?: Pick<PlacementResolver, 'routableDaemon'>): HttpBotOrchestrator {
+  function makeOrch(
+    platforms = PLATFORMS,
+    placement?: Pick<PlacementResolver, 'routableDaemon'>,
+    gatedDmSeeds?: GatedDmSeedResolver
+  ): HttpBotOrchestrator {
     const agents: Record<string, AgentRecord> = {
       [ALICE]: agent(ALICE, 'alice', unplacedAgents.has(ALICE) ? null : D1),
       [BOB]: agent(BOB, 'bob', unplacedAgents.has(BOB) ? null : D2)
@@ -231,10 +238,12 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
         row.agentId = agentId
         return row
       },
-      setTrigger: async (integrationId, channelId, trigger) => {
+      setTrigger: async (integrationId, channelId, trigger, opts) => {
         const row = channels.find((c) => c.integrationId === integrationId && c.channelId === channelId)
         if (!row) return null
         row.trigger = trigger
+        // Set-only, exactly like the repo: a decision does not expire.
+        if (opts?.chosen) row.triggerChosen = true
         return row
       },
       upsertConversation: async (integrationId, conversation, opts) => {
@@ -245,11 +254,13 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
             channelId: conversation.id,
             name: conversation.name ?? null,
             kind: conversation.kind ?? 'channel',
+            dmUserId: conversation.dmUserId ?? null,
             trigger: opts?.defaultTrigger ?? 'mention'
           })
           channels.push(row)
         } else {
           if (conversation.name) row.name = conversation.name
+          if (conversation.dmUserId) row.dmUserId = conversation.dmUserId
         }
         return row
       },
@@ -320,7 +331,8 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       // No duty ledger wired ⇒ the delivery set is the placement alone, which is
       // exactly what every expectation in this file was written against.
       new AgentDelivery({ control: control as never, specs: undefined as never }),
-      ...(placement ? [placement] : [])
+      placement ?? undefined,
+      gatedDmSeeds
     )
   }
 
@@ -813,6 +825,138 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       expect(assign.routes.filter((route) => route.scope?.channel === 'D42')).toEqual([
         expect.objectContaining({ agentId: ALICE, match: { kind: 'auto' } })
       ])
+    })
+
+    // §14.8: the shared-bot mirror of the direct path. The seed has to survive the
+    // ownership convergence that immediately follows the report — that pass re-derives
+    // a gated owner's trigger, and forcing Off there would undo the seed on the very
+    // syncRoutes the report itself triggers.
+    // §14.8: `triggerChosen` is only useful if it is as complete as the trigger it
+    // accompanies. The shared-bot convergence has two ways to skip the write — a row
+    // that already carries the value, and one it backfills with that value — and both
+    // would leave a deliberate Off looking like an untouched default to a later
+    // catch-up.
+    it('records the human choice on every sibling row, including the ones needing no change (§14.8)', async () => {
+      gatedAgents = new Set([ALICE])
+      channels = [
+        // The owner row §14.8 opened, and a sibling that is already Off.
+        channel({ integrationId: INT_A, channelId: 'D42', kind: 'im', trigger: 'any', agentId: ALICE }),
+        channel({ integrationId: INT_B, channelId: 'D42', kind: 'im', trigger: 'off' })
+      ]
+      const orch = makeOrch()
+      await orch.updateConversation(BOT, 'D42', { trigger: 'off' }, { source: 'console' })
+      for (const integrationId of [INT_A, INT_B]) {
+        const row = channels.find((c) => c.integrationId === integrationId && c.channelId === 'D42')
+        expect(row).toMatchObject({ trigger: 'off', triggerChosen: true })
+      }
+    })
+
+    it('records the human choice on a sibling row the update itself backfills (§14.8)', async () => {
+      gatedAgents = new Set([ALICE])
+      channels = [channel({ integrationId: INT_A, channelId: 'D42', kind: 'im', trigger: 'any', agentId: ALICE })]
+      const orch = makeOrch()
+      await orch.updateConversation(BOT, 'D42', { trigger: 'off' }, { source: 'console' })
+      const backfilled = channels.find((c) => c.integrationId === INT_B && c.channelId === 'D42')
+      expect(backfilled).toMatchObject({ trigger: 'off', triggerChosen: true })
+    })
+
+    // §14.8 provenance is conversation-level, so it has to survive the owner-removal
+    // lifecycle the backfill exists for: the row that RECORDED the decision goes away
+    // with its integration, and a surviving sibling must not read the value it inherited
+    // as an undecided default.
+    it('carries the human decision onto a sibling backfilled long after it (§14.8)', async () => {
+      gatedAgents = new Set([ALICE, BOB])
+      channels = [
+        channel({
+          integrationId: INT_A,
+          channelId: 'D42',
+          kind: 'im',
+          trigger: 'off',
+          triggerChosen: true,
+          agentId: ALICE
+        })
+      ]
+      const orch = makeOrch(PLATFORMS, undefined, async () => new Map([['D42', 'any' as const]]))
+
+      // The sibling install arrives after the decision and is backfilled by ordinary
+      // convergence, which never passes `chosen` of its own.
+      await orch.prepareIntegrationRemoval(BOT)
+      const sibling = channels.find((c) => c.integrationId === INT_B && c.channelId === 'D42')
+      expect(sibling).toMatchObject({ trigger: 'off', triggerChosen: true })
+
+      // The owner integration is now gone with the row that recorded the decision.
+      channels = channels.filter((c) => c.integrationId !== INT_A)
+      integrations = integrations.filter((i) => i.id !== INT_A)
+      await orch.syncBot(BOT)
+      expect(channels.find((c) => c.integrationId === INT_B && c.channelId === 'D42')).toMatchObject({
+        trigger: 'off',
+        triggerChosen: true
+      })
+    })
+
+    // §14.8's input is the counterpart id, so it is conversation-level metadata like the
+    // name: a sibling that inherits kind:'im' without it is a DM whose counterpart is
+    // unknown, and when owner removal leaves it as the only surviving row a linked
+    // audience member re-derives to Off with no way back — the later report that
+    // supplies the id cannot reopen a row that already exists.
+    it('carries the DM counterpart onto a backfilled sibling, so owner removal keeps it open (§14.8)', async () => {
+      gatedAgents = new Set([ALICE, BOB])
+      channels = [
+        channel({
+          integrationId: INT_A,
+          channelId: 'D42',
+          name: '@Alice',
+          kind: 'im',
+          dmUserId: 'U_ALICE',
+          trigger: 'any',
+          agentId: ALICE
+        })
+      ]
+      const orch = makeOrch(PLATFORMS, undefined, async (reported) =>
+        reported.some((c) => c.dmUserId === 'U_ALICE') ? new Map([['D42', 'any' as const]]) : new Map()
+      )
+
+      await orch.prepareIntegrationRemoval(BOT)
+      expect(channels.find((c) => c.integrationId === INT_B && c.channelId === 'D42')).toMatchObject({
+        kind: 'im',
+        dmUserId: 'U_ALICE'
+      })
+
+      // The owner integration and its row are gone; the survivor inherits the
+      // conversation and must still be able to answer the §14.8 question.
+      channels = channels.filter((c) => c.integrationId !== INT_A)
+      integrations = integrations.filter((i) => i.id !== INT_A)
+      await orch.syncBot(BOT)
+      expect(channels.find((c) => c.integrationId === INT_B && c.channelId === 'D42')).toMatchObject({
+        trigger: 'any'
+      })
+    })
+
+    it('reportConversation opens a gated DM with a member of the agent’s own audience (§14.8)', async () => {
+      gatedAgents = new Set([ALICE])
+      channels = []
+      // Stands in for the real resolver, whose own policy is pinned in linkedDm.test.ts.
+      const orch = makeOrch(PLATFORMS, undefined, async (reported) =>
+        reported.some((c) => c.dmUserId === 'U_ALICE') ? new Map([['D42', 'any' as const]]) : new Map()
+      )
+      await orch.reportConversation(BOT, { id: 'D42', name: '@Alice', dmUserId: 'U_ALICE' })
+      const aliceRow = channels.find((c) => c.integrationId === INT_A && c.channelId === 'D42')
+      expect(aliceRow).toMatchObject({ kind: 'im', trigger: 'any', agentId: ALICE })
+
+      // And it routes: an open DM compiles the same channel-scoped auto rung an
+      // editor-enabled conversation gets.
+      const assign = ch.sends.filter((s) => s.type === 'rc/routes').at(-1)!.payload as RcBotAssign
+      expect(assign.routes.filter((route) => route.scope?.channel === 'D42')).toEqual([
+        expect.objectContaining({ agentId: ALICE, match: { kind: 'auto' } })
+      ])
+    })
+
+    it('reportConversation keeps a gated DM Off when its counterpart is outside the audience (§14.8)', async () => {
+      gatedAgents = new Set([ALICE])
+      channels = []
+      const orch = makeOrch(PLATFORMS, undefined, async () => new Map())
+      await orch.reportConversation(BOT, { id: 'D42', name: '@Dave', dmUserId: 'U_DAVE' })
+      expect(channels.find((c) => c.integrationId === INT_A && c.channelId === 'D42')).toMatchObject({ trigger: 'off' })
     })
 
     it('reportConversation preserves a group DM and converges it like a channel', async () => {

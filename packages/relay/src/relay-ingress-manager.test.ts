@@ -1420,9 +1420,11 @@ describe('RelayIngressManager conversation gating (resource-visibility §14.3)',
     internals.slackPool.set(BOT_ID, ingest)
 
     await internals.forward(BOT_ID, dm())
+    // `dmUserId` rides the report (§14.8): a 1:1 DM's whole human membership, and the
+    // only thing that lets the CP match it against a private agent's own audience.
     expect(reportBotConversation).toHaveBeenCalledWith({
       botId: BOT_ID,
-      conversation: { id: 'D42', name: '@Alice', kind: 'im' }
+      conversation: { id: 'D42', name: '@Alice', dmUserId: 'U1', kind: 'im' }
     })
     expect(ingest.postText).toHaveBeenCalledTimes(1)
     expect(ingest.postText.mock.calls[0]![0]).toBe('D42')
@@ -1538,7 +1540,7 @@ describe('RelayIngressManager conversation gating (resource-visibility §14.3)',
     // pending Off row, but nothing was unrouted so there is NO notice.
     expect(reportBotConversation).toHaveBeenCalledWith({
       botId: BOT_ID,
-      conversation: { id: 'D42', name: '@Alice', kind: 'im' }
+      conversation: { id: 'D42', name: '@Alice', dmUserId: 'U1', kind: 'im' }
     })
     expect(ingest.postText).not.toHaveBeenCalled()
   })
@@ -1832,7 +1834,7 @@ describe('RelayIngressManager conversation gating (resource-visibility §14.3)',
     await internals.forward(BOT_ID, dm())
     expect(reportBotConversation).toHaveBeenCalledWith({
       botId: BOT_ID,
-      conversation: { id: 'D42', name: '@Alice', kind: 'im' }
+      conversation: { id: 'D42', name: '@Alice', dmUserId: 'U1', kind: 'im' }
     })
     expect(ingest.postText).not.toHaveBeenCalled()
   })
