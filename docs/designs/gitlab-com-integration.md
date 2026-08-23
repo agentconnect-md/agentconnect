@@ -5,7 +5,7 @@
 >
 > Platform assumptions last verified: **2026-07-28**
 >
-> Codebase alignment last revised: **2026-08-21**
+> Codebase alignment last revised: **2026-08-23**
 >
 > Scope: **GitLab.com Free and Premium**. GitLab Self-Managed, GitLab
 > Dedicated, and Ultimate-only capabilities are outside the v1 support
@@ -354,14 +354,30 @@ The account:
   and is taken at creation; it is not re-derived on rename, because the
   row's numeric user id is the durable key. The derivation is a recovery
   marker only for an account the database does not know yet, and recovery
-  never adopts by name alone: the account row records the creation attempt
-  — its id and start time — before the provider request is sent, so the
-  window survives lease or process loss; after an ambiguous or interrupted
-  create, the account is claimed only when it is listed among this top-level
-  group's own service accounts and its creation time falls inside that
-  persisted window. A username that is already taken with no open attempt
-  covering it is a foreign account, and the row fails provisioning with a
-  translated `username_taken` reason rather than adopting it;
+  never adopts by name alone. Before the provider request is sent, the
+  account row records the creation attempt — its id, the moment it opened,
+  and the set of service-account user ids this top-level group held at that
+  moment — so the window survives lease or process loss. After an ambiguous
+  or interrupted create, the account is claimed only when it is listed among
+  this top-level group's own service accounts and its user id is absent from
+  that recorded set. Absence from the snapshot is what dates the account: it
+  did not exist when the window opened, which is the predicate a
+  creation-time comparison would have expressed. GitLab's service-account
+  API reports no creation time — list, create, and update return only the
+  id, username, name, and email — so the snapshot is read from the same
+  responses the claim is later evaluated against, and no clock-skew
+  allowance is needed. Both reads must exhaust the paginated listing rather
+  than stop at its first page: the predicate is sound only when an account
+  missing from the snapshot is genuinely new instead of merely further down
+  the pages, and a Premium root is not bounded by the Free tier's hundred
+  accounts. A 24-hour bound closes a window left open by a dead process, so
+  a stale one cannot claim indefinitely. A username already taken by
+  anything that window does not cover is a foreign account, and the row
+  fails provisioning with a translated `username_taken` reason rather than
+  adopting it. On resolution the numeric user id and the closed window
+  commit in one write, the first durable step and ahead of every cosmetic
+  pass, so a process exit during username or display-name convergence cannot
+  orphan the account;
 - carries the agent's display name, sanitized as the earlier `<project>-bot`
   derivation sanitized and without any suffix; on agent rename the next
   provisioning convergence updates it, and a refused rename is cosmetic and
@@ -532,16 +548,16 @@ numeric ID.
 
 ### 8.2 GitLab-Specific Resources
 
-| Resource                  | Non-secret contents                                                                                                                                                                                                                               |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GitlabConnection`        | org, AgentConnect user, GitLab user ID/username, granted scopes, access expiry, state, token version, refresh lease, last sync                                                                                                                    |
-| `GitlabProjectBinding`    | org, numeric project ID, current path, installer connection, webhook ID, desired event hash, credential epoch, lifecycle state                                                                                                                    |
-| `GitlabAgentAccount`      | org, agent, top-level group ID, numeric user ID, username, display-name and icon fingerprints, creation-attempt id and start time, credential epoch, administering connection, mutation-lease owner/expiry, lifecycle generation, lifecycle state |
-| `GitlabAccountMembership` | account, account generation, binding, role, membership state                                                                                                                                                                                      |
-| `GitlabProjectCredential` | issuing account, purpose, external token ID, scopes, provider expiry, active generation                                                                                                                                                           |
-| `GitlabReviewPublication` | binding, MR IID, service-account user ID, active attempt, lease owner/expiry, monotonic fence, phase, head SHA, external draft/note IDs, normalized outcome                                                                                       |
-| `GitlabWebhookSecret`     | binding relation only in normal reads                                                                                                                                                                                                             |
-| `GitlabConnectionSecret`  | connection relation only in normal reads                                                                                                                                                                                                          |
+| Resource                  | Non-secret contents                                                                                                                                                                                                                                                 |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GitlabConnection`        | org, AgentConnect user, GitLab user ID/username, granted scopes, access expiry, state, token version, refresh lease, last sync                                                                                                                                      |
+| `GitlabProjectBinding`    | org, numeric project ID, current path, installer connection, webhook ID, desired event hash, credential epoch, lifecycle state                                                                                                                                      |
+| `GitlabAgentAccount`      | org, agent, top-level group ID, numeric user ID, username, display-name and icon fingerprints, creation-attempt id/open time/known-account snapshot, credential epoch, administering connection, mutation-lease owner/expiry, lifecycle generation, lifecycle state |
+| `GitlabAccountMembership` | account, account generation, binding, role, membership state                                                                                                                                                                                                        |
+| `GitlabProjectCredential` | issuing account, purpose, external token ID, scopes, provider expiry, active generation                                                                                                                                                                             |
+| `GitlabReviewPublication` | binding, MR IID, service-account user ID, active attempt, lease owner/expiry, monotonic fence, phase, head SHA, external draft/note IDs, normalized outcome                                                                                                         |
+| `GitlabWebhookSecret`     | binding relation only in normal reads                                                                                                                                                                                                                               |
+| `GitlabConnectionSecret`  | connection relation only in normal reads                                                                                                                                                                                                                            |
 
 `GitlabProjectCredential` stores its sealed token value behind a dedicated
 secret-store port. `GitlabWebhookSecret` stores the sealed signing token.
@@ -1776,7 +1792,12 @@ external credentials by deleting only local metadata.
 > `running` edge waits on its GitLab arm
 > (`packages/control-plane/src/codehost/note-projection.service.ts`); that arm
 > is being finished as follow-up work. The session merge-request dock panel
-> stays out of scope per Section 18.1.
+> stays out of scope per Section 18.1. One defect is open rather than
+> deliberate: the service-account listing behind Section 7.2 reads a single
+> hundred-account page instead of following the pagination, so the recorded
+> window and its `username_taken` refusal hold only while a top-level group's
+> service accounts fit that first page — always true on Free, not guaranteed
+> on Premium.
 
 Milestones are merge order, not calendar. Each milestone is several small,
 independently mergeable PRs; GitHub behavior stays green at every merge; each
