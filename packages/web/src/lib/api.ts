@@ -5276,6 +5276,10 @@ export interface GitlabProjectDto {
   lastActivityAt: string | null
 }
 
+/** The managed webhook's state. `not_needed` is a normal resting state — a project with no
+ *  enabled trigger wants no ingress — not a condition anyone has to act on. */
+export type GitlabWebhookState = 'not_needed' | 'installed' | 'repairing' | 'failed'
+
 export type GitlabProjectBindingState =
   'provisioning' | 'ready' | 'admin_degraded' | 'runtime_degraded' | 'cleanup_pending'
 
@@ -5305,7 +5309,7 @@ export interface GitlabProjectBindingDto {
   /** The per-agent service accounts bound to this project: each agent acts on
    *  GitLab as its own user, so a project has a member list, not one bot. */
   accounts: GitlabProjectAccountDto[]
-  webhookInstalled: boolean
+  webhookState: GitlabWebhookState
   credentialEpoch: string
   createdAt: string
 }
@@ -5389,6 +5393,52 @@ export function transferGitlabProject(id: string): Promise<GitlabProjectBindingD
 
 export function deleteGitlabProject(id: string): Promise<GitlabProjectRemovalDto> {
   return apiDelete<GitlabProjectRemovalDto>(`${orgBase()}/gitlab/projects/${encodeURIComponent(id)}`)
+}
+
+/** Why one bot holds one project: the role, plus the authorizations that earned it. Dropping
+ *  an agent's triggers while its workspace stands must read as a change, not as a purposeless bot. */
+export interface GitlabMembershipDto {
+  bindingId: string
+  accessLevel: number
+  /** The agent's workspace on the project and the access it grants; null when it has none. */
+  workspace: 'read' | 'write' | null
+  /** Comment families the agent's enabled triggers cover here; may be empty. */
+  triggerFamilies: string[]
+  triggerCount: number
+}
+
+/** One organization bot for the Integrations card: the service account an agent acts as, one per
+ *  top-level group it has a bound project in, with the projects it is a member of. A project bound
+ *  to two agents therefore appears under both bots, once per membership. */
+export interface GitlabOrgAccountDto {
+  id: string
+  agentId: string
+  rootGroupId: string // numeric top-level group id, losslessly as a string
+  rootGroupPath: string | null // that group's current path, read off a bound project
+  username: string
+  displayName: string | null
+  userId: string | null // numeric GitLab user id; null until the account exists
+  state: GitlabProjectBindingState
+  stateReason: string | null
+  lifecycle: 'active' | 'retiring'
+  memberships: GitlabMembershipDto[]
+}
+
+/** The organization's bots, plus whether account convergence still owes it work — the console
+ *  cannot judge that itself, so it asks again only while the answer is yes.
+ *  Same enabled-probe shape as the connection list: 404 ⇒ no GitLab app. */
+export async function fetchGitlabAccounts(
+  orgId?: string
+): Promise<{ enabled: boolean; accounts: GitlabOrgAccountDto[]; converging: boolean }> {
+  try {
+    const body = await apiGet<{ accounts: GitlabOrgAccountDto[]; converging: boolean }>(
+      `${orgBase(orgId)}/gitlab/accounts`
+    )
+    return { enabled: true, accounts: body.accounts, converging: body.converging }
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 404) return { enabled: false, accounts: [], converging: false }
+    throw e
+  }
 }
 
 // ── agent repository authorizations (agent-multi-repo-authorization.md) ──────

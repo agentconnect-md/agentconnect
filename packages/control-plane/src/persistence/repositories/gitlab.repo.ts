@@ -18,6 +18,7 @@ import type { PrismaLike } from '../prisma.js'
 import { GitlabMembershipGone, GitlabProjectClaimConflict } from '../errors.js'
 import type {
   GitlabAccountConsumer,
+  GitlabProjectConsumer,
   GitlabAccountMembershipRecord,
   GitlabAccountState,
   GitlabAgentAccountRecord,
@@ -660,6 +661,11 @@ export class PgGitlabAgentAccountRepo implements GitlabAgentAccountRepo {
     return rows.map(toAccountRecord)
   }
 
+  async listForOrg(orgId: string): Promise<GitlabAgentAccountRecord[]> {
+    const rows = await this.prisma.gitlabAgentAccount.findMany({ orderBy: { createdAt: 'asc' }, where: { orgId } })
+    return rows.map(toAccountRecord)
+  }
+
   async update(
     accountId: string,
     patch: Partial<{
@@ -846,6 +852,54 @@ export class PgGitlabAgentAccountRepo implements GitlabAgentAccountRepo {
     // A hook consumer posts notes and may run the configured review policy.
     for (const row of hooks) if (row.agentId) raise(row.agentId, ACCESS_DEVELOPER)
     return [...levels].map(([agentId, accessLevel]) => ({ agentId, accessLevel }))
+  }
+
+  async consumersForOrg(orgId: string): Promise<GitlabProjectConsumer[]> {
+    const [workspaces, hooks] = await Promise.all([
+      this.prisma.agent.findMany({
+        where: { orgId, workspaceMode: 'gitlab', workspaceRepoId: { not: null } },
+        select: { id: true, gitAccess: true, workspaceRepoId: true }
+      }),
+      this.prisma.hookDef.findMany({
+        where: { orgId, kind: 'gitlab', enabled: true, repoId: { not: null }, agentId: { not: null } },
+        select: { agentId: true, repoId: true, commentFamilies: true }
+      })
+    ])
+    const found = new Map<string, GitlabProjectConsumer & { families: Set<string> }>()
+    const at = (projectId: bigint, agentId: string): GitlabProjectConsumer & { families: Set<string> } => {
+      const key = `${projectId}:${agentId}`
+      const held = found.get(key)
+      if (held) return held
+      const fresh = {
+        projectId,
+        agentId,
+        accessLevel: 0,
+        workspace: null,
+        triggerFamilies: [],
+        triggerCount: 0,
+        families: new Set<string>()
+      }
+      found.set(key, fresh)
+      return fresh
+    }
+    // The workspace gitAccess clamp derives the role (§7.2, §13.1).
+    for (const row of workspaces) {
+      const entry = at(row.workspaceRepoId!, row.id)
+      entry.workspace = row.gitAccess === 'read' ? 'read' : 'write'
+      entry.accessLevel = Math.max(entry.accessLevel, gitlabWorkspaceAccessLevel(row.gitAccess))
+    }
+    // A hook consumer posts notes and may run the configured review policy.
+    for (const row of hooks) {
+      if (!row.agentId || !row.repoId) continue
+      const entry = at(row.repoId, row.agentId)
+      entry.triggerCount += 1
+      entry.accessLevel = Math.max(entry.accessLevel, ACCESS_DEVELOPER)
+      for (const family of row.commentFamilies) entry.families.add(family)
+    }
+    return [...found.values()].map(({ families, ...consumer }) => ({
+      ...consumer,
+      triggerFamilies: [...families].sort()
+    }))
   }
 }
 

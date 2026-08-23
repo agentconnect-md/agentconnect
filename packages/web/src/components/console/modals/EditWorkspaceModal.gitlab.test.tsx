@@ -45,7 +45,7 @@ const binding = (over: Record<string, unknown>) => ({
   state: 'ready',
   stateReason: null,
   accounts: [],
-  webhookInstalled: true,
+  webhookState: 'installed',
   credentialEpoch: '1',
   createdAt: '2026-08-01T00:00:00.000Z',
   ...over
