@@ -354,7 +354,12 @@ export function gitlabRoutes(deps: HttpDeps) {
               const bindingIds = byAccount.get(account.id) ?? []
               return { ...accountToDto(account, bindingIds, projectPaths), agentId: account.agentId, bindingIds }
             }),
-          converging: stillConverging(accounts, bindings, consumers, memberLevels, await webhookWanted(orgId))
+          // Database state alone can read settled while a contended pass still
+          // owes a follow-up, and the console would stop watching one refresh
+          // before the binding actually heals — so ask what is still in flight.
+          converging:
+            gitlab.provisioner.hasPendingWork(orgId) ||
+            stillConverging(accounts, bindings, consumers, memberLevels, await webhookWanted(orgId))
         }
       }
     )

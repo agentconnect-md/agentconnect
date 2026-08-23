@@ -131,7 +131,8 @@ async function harness(
     accountService,
     provisioner,
     binding,
-    connection
+    connection,
+    connections
   }
 }
 
@@ -897,6 +898,51 @@ describe('GitlabProvisioner (§10.2) — per-agent identity', () => {
     await h.accounts.releaseLease(account.id, 'peer')
     await h.provisioner.convergeProject(DEFAULT_ORG_ID, PROJECT, { attempts: 0, followUp: false })
     expect(await h.bindings.get(DEFAULT_ORG_ID, h.binding.id)).toMatchObject({ state: 'ready', stateReason: null })
+  })
+
+  it('a contended pass owes a follow-up, and the console keeps watching until it lands', async () => {
+    const h = await harness()
+    await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
+    const account = (await h.accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP))!
+    expect(h.provisioner.hasPendingWork(DEFAULT_ORG_ID)).toBe(false)
+
+    // A peer holds the account lease, so a single pass — a create, a takeover,
+    // a repair — cannot converge and must leave the binding alone.
+    expect(await h.accounts.claimLease(account.id, 'peer', new Date(Date.now() + 300_000), new Date())).toBe(true)
+    expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toMatchObject({ retryable: true })
+    expect(await h.bindings.get(DEFAULT_ORG_ID, h.binding.id)).toMatchObject({ state: 'ready', stateReason: null })
+
+    // The work is owed and visible: the console is told to keep watching rather
+    // than reading a settled database one refresh too early.
+    expect(h.provisioner.hasPendingWork(DEFAULT_ORG_ID)).toBe(true)
+    expect(h.provisioner.hasPendingWork('another-org')).toBe(false)
+  })
+
+  it('a takeover that loses the account fence still gets converged later', async () => {
+    const h = await harness()
+    await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
+    const account = (await h.accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP))!
+    // A bot-wide takeover launches one transfer per project, so projects sharing
+    // an account contend exactly as repairs do.
+    expect(await h.accounts.claimLease(account.id, 'peer', new Date(Date.now() + 300_000), new Date())).toBe(true)
+
+    const taker = await h.connections.upsertOnCallback({
+      orgId: DEFAULT_ORG_ID,
+      userId: DEFAULT_OWNER_ID,
+      gitlabUserId: 7007n,
+      gitlabUsername: 'example-taker',
+      scopes: ['api'],
+      accessExpiresAt: new Date(Date.now() + 3600_000),
+      sealedPair: { accessToken: 'at-taker', refreshToken: 'rt-taker' }
+    })
+    h.fake.members.set(7007, 50)
+    expect(await h.provisioner.transfer(DEFAULT_ORG_ID, h.binding.id, { id: taker.id, gitlabUserId: 7007n })).toEqual({
+      outcome: 'transferred'
+    })
+
+    // The binding is not falsely degraded, and the convergence it never got is owed.
+    expect(await h.bindings.get(DEFAULT_ORG_ID, h.binding.id)).toMatchObject({ state: 'ready', stateReason: null })
+    expect(h.provisioner.hasPendingWork(DEFAULT_ORG_ID)).toBe(true)
   })
 
   it('two concurrent provisions: exactly one runs, the other observes busy', async () => {
