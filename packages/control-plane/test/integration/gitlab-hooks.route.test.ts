@@ -53,7 +53,11 @@ const RELAY_URL = 'https://relay.example.test'
 const cipher = makeSecretCipher({ SECRET_CIPHER: 'none' } as never)
 
 let running: HttpApp | undefined
+let settleConvergence: (() => Promise<void>) | undefined
 afterEach(async () => {
+  // Own the routes' fire-and-forget convergence: a run outliving its test writes into the next one's swept database.
+  await settleConvergence?.()
+  settleConvergence = undefined
   await running?.close()
   running = undefined
 })
@@ -105,6 +109,22 @@ async function harness(options: FakeGitlabOptions = {}) {
     },
     fetchImpl: fake.fetch()
   })
+  // Hook writes kick §11.1 convergence fire-and-forget, and that run provisions accounts and re-writes project
+  // facts — so a test asserting on either has to outwait the run instead of racing it.
+  const inFlightConvergence = new Set<Promise<void>>()
+  const convergeProject = provisioner.convergeProject.bind(provisioner)
+  provisioner.convergeProject = (orgId: string, projectId: bigint): Promise<void> => {
+    const run = convergeProject(orgId, projectId)
+    inFlightConvergence.add(run)
+    return run.finally(() => inFlightConvergence.delete(run))
+  }
+  const settled = async (): Promise<void> => {
+    while (inFlightConvergence.size > 0) {
+      await Promise.allSettled([...inFlightConvergence])
+      await new Promise<void>((resolve) => setImmediate(resolve))
+    }
+  }
+  settleConvergence = settled
   running = buildHttpApp(
     prisma,
     { PUBLIC_CP_URL: 'https://api.example.test', PUBLIC_RELAY_URL: RELAY_URL },
@@ -166,7 +186,8 @@ async function harness(options: FakeGitlabOptions = {}) {
     agentId,
     secondAgentId,
     daemonId,
-    authorize
+    authorize,
+    settled
   }
 }
 
@@ -356,9 +377,13 @@ describe('gitlab hooks — routes, compile, webhook converge (§8.3/§11.1/§11.
       url: `${ORG}/hooks`,
       payload: glBody(h.agentId, { enabled: false })
     })
+    // The 200 is the claim: a write that tried to provision would have hit the refused quota and 409'd, exactly as
+    // the enabled-hook case below does. Convergence separately serves the agent's pre-existing authorization, so
+    // read the SETTLED state rather than racing that run — the group still holds no bot for this agent.
     expect(created.statusCode).toBe(200)
-    expect(await h.accounts.listForAgent(DEFAULT_ORG_ID, h.agentId)).toHaveLength(0)
+    await h.settled()
     expect(h.fake.serviceAccounts).toHaveLength(0)
+    expect((await h.accounts.listForAgent(DEFAULT_ORG_ID, h.agentId)).filter((a) => a.state === 'ready')).toEqual([])
 
     // Disabling an enabled hook is likewise not blocked by the outage.
     await h.authorize(h.secondAgentId)
@@ -369,6 +394,7 @@ describe('gitlab hooks — routes, compile, webhook converge (§8.3/§11.1/§11.
       payload: glBody(h.secondAgentId)
     })
     expect(enabled.statusCode).toBe(200)
+    await h.settled()
     h.fake.opts.refuseServiceAccountQuota = true
     const disabled = await h.a.app.inject({
       method: 'PUT',
@@ -1100,6 +1126,8 @@ describe('gitlab run projection — the fence follows the agent account (§7.2/�
     const h = await harness()
     const created = await h.a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: glBody(h.agentId) })
     const hookId = (created.json() as { id: string }).id
+    // Outwait the write's kick: a run landing later would converge the account back to ready over the drift below.
+    await h.settled()
     const account = (await h.accounts.byAgentRoot(DEFAULT_ORG_ID, h.agentId, 900n))!
     // Runtime drift: the account is being repaired, so its lease would be refused.
     await h.accounts.update(account.id, { state: 'runtime_degraded', stateReason: 'drift' })
