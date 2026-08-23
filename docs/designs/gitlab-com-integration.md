@@ -2274,17 +2274,26 @@ exactly as Section 7 requires today.
 
 ### 24.4 Host Carriage and `gitlab-instance-v1`
 
-The daemon needs the host before the first fetch — it selects the
-`credential.https://<host>` git-config block written at spawn — so the
-carriers are the frames that already describe the work. The `mode: 'gitlab'`
-workspace arm and the compiled hook rule's GitLab member (plus the trusted
-hook metadata the relay forwards, since a hook turn can run for an agent
-whose workspace is not GitLab) gain `host`; absent means GitLab.com, so a
-new daemon reading an old Control Plane is correct without a second
-negotiation. The credential grant gains an optional `host` purely as an echo
+The daemon needs the host **before the agent spawns**, not merely before the
+first fetch: the `credential.https://<host>` git-config block, the helper
+table, and the `GITLAB_HOST` session export are all established at spawn, and
+a GitLab consumer is not always the workspace — an additional-repository
+authorization rides on a scratch or GitHub workspace, and a hook can arrive
+at an already-running session whose environment cannot be retroactively
+edited. So the carrier is one pre-spawn field on the replicated agent spec:
+an optional `gitlabHost`, set by the Control Plane whenever the assembled
+spec has any GitLab consumer — a GitLab workspace, a GitLab
+additional-repository authorization, or an enabled GitLab hook — and absent
+meaning GitLab.com, so a new daemon reading an old Control Plane is correct
+without a second negotiation. One field rather than a per-consumer or
+per-provider table is exactly the one-instance axiom made wire-visible. The
+compiled hook rule's GitLab member and the trusted hook metadata the relay
+forwards also carry `host`, but as the turn-time fence: a delivery whose
+host disagrees with the session's spec-carried value is refused, never
+re-targeted. The credential grant gains an optional `host` purely as an echo
 the consumer verifies, exactly as it verifies provider and project ID.
 `register/ok` gains nothing: handshake members have caused reconnect loops
-before, and the host is per-workspace data.
+before, and the host is per-agent data.
 
 On the daemon the two-literal `'github.com' | 'gitlab.com'` classifier is
 retired. The managed host resolves from the spec's provider and host, and
@@ -2303,10 +2312,11 @@ One feature string, `gitlab-instance-v1`, gates on the configured value.
 When the host is GitLab.com nothing is gated and a mixed fleet is today's
 fleet; when it is anything else the Control Plane never places a
 GitLab-backed agent on, projects a GitLab-shaped spec to, or assigns a
-GitLab hook to a daemon or relay that has not advertised it — **and the
-relay's dispatch-target daemon is gated too**, on delivery, retries, and
-authorized re-runs alike, because a hook may target an agent whose workspace
-never passed the placement gate. Fail-closed by omission: an old daemon
+GitLab hook to a daemon or relay that has not advertised it — where
+"GitLab-shaped" means any spec carrying a non-default `gitlabHost`, whichever
+consumer put it there — **and the relay's dispatch-target daemon is gated
+too**, on delivery, retries, and authorized re-runs alike, because a hook may
+target an agent whose workspace never passed the placement gate. Fail-closed by omission: an old daemon
 never sees self-managed work, so it cannot fall back to GitLab.com for it.
 Behind the gate sit the grant host echo, the trusted-origin check, and the
 operator origin allowlist, which stays authoritative: the managed feature
@@ -2356,14 +2366,17 @@ Merge order, GitLab.com green at every step:
   URLs; a prefixed non-default-port host keeps prefix and port everywhere.
 - **N1 — the floor.** Version parsing, `instance_version_unsupported`, the
   Setup Server probe.
-- **N2 — protocol carriage.** `host` on the workspace arm, hook rule, hook
-  metadata, and grant; the placement, projection, hook-assignment, and
-  hook-dispatch gates on `gitlab-instance-v1`. Exit: mixed-version tests in
-  both directions, including a hook targeting a non-GitLab-workspace agent
-  on an old daemon.
-- **N3 — daemon plumbing.** The resolved managed host, the injected helper
-  table with prefix stripping, the spec-admission origin refusal, per-turn
-  client bases, the `glab` export. Daemons carrying N3 advertise the
+- **N2 — protocol carriage.** `gitlabHost` on the agent spec, derived from
+  all three consumer sources; `host` on the hook rule, hook metadata, and
+  grant; the placement, projection, hook-assignment, and hook-dispatch gates
+  on `gitlab-instance-v1`. Exit: mixed-version tests in both directions,
+  including a self-managed additional repository on a scratch workspace and
+  a hook targeting a non-GitLab-workspace agent on an old daemon.
+- **N3 — daemon plumbing.** The managed host resolved from the spec's
+  `gitlabHost`, the injected helper table with prefix stripping, the
+  spec-admission origin refusal, per-turn client bases, the `glab` export at
+  spawn. Exit additionally covers a warm session receiving a hook whose
+  fence host disagrees with the spec. Daemons carrying N3 advertise the
   feature.
 - **N4 — authority and surfaces.** `service_account_creation_forbidden`
   with tier-aware copy, the expiry clamp with the re-derived horizon, Setup
