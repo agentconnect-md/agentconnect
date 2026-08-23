@@ -2,6 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 
 const repos = vi.hoisted(() => ({ rows: [] as Array<Record<string, unknown>> }))
+const gitlab = vi.hoisted(() => ({ bindings: [] as Array<Record<string, unknown>> }))
 
 vi.mock('swr', () => ({
   default: () => ({ data: repos.rows, error: undefined, isLoading: false, mutate: vi.fn() })
@@ -20,6 +21,7 @@ vi.mock('@/lib/profile', () => ({ useProfile: () => ({ me: null }) }))
 vi.mock('@/lib/data-context', () => ({ useConsoleData: () => ({ refresh: vi.fn() }) }))
 vi.mock('@/lib/swr-keys', () => ({ consoleKeys: { agentRepos: () => ['repos'] } }))
 vi.mock('@/components/console/modals/EditWorkspaceModal', () => ({ default: () => null }))
+vi.mock('@/lib/use-gitlab-projects', () => ({ useGitlabProjectBindings: () => gitlab.bindings }))
 
 import { WorkspaceCard } from './WorkspaceCard'
 import type { Agent } from '@/lib/data'
@@ -37,6 +39,32 @@ const agent = (
   }) as unknown as Agent
 
 const GITHUB = { mode: 'github', repo: 'acme/infra', branch: 'main', agentDir: '/' }
+const GITLAB = { mode: 'gitlab', repo: 'example-group/example-project', branch: 'main', agentDir: '/' }
+
+const gitlabBinding = (account: Record<string, unknown>) => [
+  {
+    id: 'b1',
+    projectId: '4455667',
+    projectPath: 'example-group/example-project',
+    defaultBranch: 'main',
+    state: 'ready',
+    stateReason: null,
+    installerConnectionId: 'conn-1',
+    accounts: [account],
+    webhookInstalled: true,
+    credentialEpoch: '1',
+    createdAt: '2026-08-20T00:00:00.000Z'
+  }
+]
+
+const BOT = {
+  agentId: 'agent-a',
+  username: 'agentconnect-a1-g900',
+  displayName: 'deploy-bot',
+  userId: '9001',
+  state: 'ready',
+  stateReason: null
+}
 
 it('does not repeat the checkout branch in the Source card', () => {
   repos.rows = []
@@ -90,5 +118,49 @@ describe('workspace repository authority', () => {
     )
     expect(html).toContain('Authorize repository')
     expect(html).toContain('Edit workspace')
+  })
+})
+
+// The workspace pushes as an identity: a GitHub workspace as its App installation, a GitLab one as
+// the agent's project bot. The source line names whichever it is (gitlab-com-integration.md §18.1).
+describe('workspace push identity', () => {
+  it('names the GitLab bot the agent pushes as, with its profile link', () => {
+    repos.rows = []
+    gitlab.bindings = gitlabBinding(BOT)
+    const html = renderToStaticMarkup(<WorkspaceCard agent={agent(GITLAB)} />)
+
+    expect(html).toContain('pushes as')
+    expect(html).toContain('deploy-bot')
+    expect(html).toContain('@agentconnect-a1-g900')
+    expect(html).toContain('https://gitlab.com/agentconnect-a1-g900')
+    // A healthy bot is named, not badged — the row stays quiet when nothing is wrong.
+    expect(html).not.toContain('bot access degraded')
+  })
+
+  it('shows the bot’s health when it is not ready', () => {
+    repos.rows = []
+    gitlab.bindings = gitlabBinding({ ...BOT, state: 'admin_degraded', stateReason: 'service_account_quota' })
+    const html = renderToStaticMarkup(<WorkspaceCard agent={agent(GITLAB)} />)
+
+    expect(html).toContain('setup incomplete')
+    expect(html).toContain('limit of bot accounts')
+  })
+
+  it('says nothing when this agent has no bot on the workspace project', () => {
+    repos.rows = []
+    gitlab.bindings = gitlabBinding({ ...BOT, agentId: 'someone-else' })
+    const html = renderToStaticMarkup(<WorkspaceCard agent={agent(GITLAB)} />)
+
+    expect(html).not.toContain('pushes as')
+    expect(html).not.toContain('agentconnect-a1-g900')
+  })
+
+  it('leaves a GitHub workspace naming its installation instead', () => {
+    repos.rows = []
+    gitlab.bindings = gitlabBinding(BOT)
+    const html = renderToStaticMarkup(<WorkspaceCard agent={agent({ ...GITHUB, installationId: 'inst-1' })} />)
+
+    expect(html).toContain('authorized implicitly by the GitHub App installation')
+    expect(html).not.toContain('pushes as')
   })
 })

@@ -1556,9 +1556,11 @@ administers — the shape the GitHub card already has. It shows:
 - credential expiry and rotation warning without token values; and
 - actions to reconnect, disconnect, or remove a released connection.
 
-The agent detail page owns the agent's own GitLab identity: a bot chip with
-the account username, display name, profile link, and account health, grouped
-by top-level group when the agent spans several. Account names derive from
+The agent detail page gives GitLab no surface of its own: the bot identity
+appears where every platform's does — inside the integration row, the way a
+Slack row shows its bot — and the Workspace tab's source line names the bot
+the agent pushes as, parallel to how a GitHub workspace names its
+installation. There is no standalone identity card. Account names derive from
 agents; there is no new required input.
 
 Webhook setup is automatic. The UI may show the desired endpoint and last

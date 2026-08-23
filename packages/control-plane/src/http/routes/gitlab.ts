@@ -18,9 +18,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { z } from 'zod'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
-import { orgOf, denyViewerWrite, ctxOf } from '../rbac.js'
-import { canView } from '../../authorization/policy.js'
-import { AgentId } from '../../domain/ids.js'
+import { orgOf, denyViewerWrite } from '../rbac.js'
 import { Tag } from '../plugins/openapi.js'
 import { GitlabOauthDenied, OAUTH_BROWSER_COOKIE } from '../../gitlab/oauth.service.js'
 import {
@@ -35,7 +33,6 @@ import { GitlabProjectClaimConflict } from '../../persistence/errors.js'
 import {
   CreateGitlabProjectBody,
   ErrorDto,
-  GitlabAgentAccountListDto,
   GitlabConnectionDeleteDto,
   GitlabConnectionListDto,
   GitlabOauthStartDto,
@@ -86,33 +83,6 @@ function bindingToDto(r: GitlabProjectBindingRecord, accounts: GitlabAgentAccoun
     webhookInstalled: r.webhookId !== null,
     credentialEpoch: r.credentialEpoch.toString(),
     createdAt: r.createdAt.toISOString()
-  }
-}
-
-/** One agent account (§7.2) — the group is a bare number on the row, so the readable heading comes off a bound project. */
-function accountToDto(
-  r: GitlabAgentAccountRecord,
-  bindingIds: readonly string[],
-  projectPaths: ReadonlyMap<string, string>
-) {
-  let rootGroupPath: string | null = null
-  for (const bindingId of bindingIds) {
-    const segment = projectPaths.get(bindingId)?.split('/')[0]
-    if (segment) {
-      rootGroupPath = segment
-      break
-    }
-  }
-  return {
-    id: r.id,
-    rootGroupId: r.rootGroupId.toString(),
-    rootGroupPath,
-    username: r.username,
-    displayName: r.displayName,
-    userId: r.serviceAccountUserId?.toString() ?? null,
-    state: r.state,
-    stateReason: r.stateReason,
-    lifecycle: r.lifecycle
   }
 }
 
@@ -237,46 +207,6 @@ export function gitlabRoutes(deps: HttpDeps) {
             return reply.code(up.status).send({ error: 'Bad Gateway', statusCode: up.status, message: up.message })
           }
           throw e
-        }
-      }
-    )
-
-    r.get(
-      '/gitlab/agents/:id/accounts',
-      {
-        schema: {
-          tags: [Tag.GitLab],
-          summary: 'List an agent’s GitLab accounts',
-          description:
-            'The service accounts this agent acts as on GitLab.com — one per top-level group it has a bound project in (§7.2) — with the account username, display name, numeric user id, and lifecycle state. Never token material.',
-          operationId: 'listGitlabAgentAccounts',
-          params: IdParam,
-          response: { 200: GitlabAgentAccountListDto, 404: ErrorDto }
-        }
-      },
-      async (req, reply) => {
-        const orgId = orgOf(req)
-        // Org boundary + canView: a cross-org or restricted agent reads as absent, never as someone else's bot.
-        const agent = await deps.repos.agent.get(orgId, AgentId(req.params.id))
-        if (!agent || !canView(agent, ctxOf(req))) {
-          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
-        }
-        const accounts = await deps.repos.gitlabAgentAccount.listForAgent(orgId, agent.id)
-        if (accounts.length === 0) return { accounts: [] }
-        const projectPaths = new Map(
-          (await deps.repos.gitlabProjectBinding.listForOrg(orgId)).map((b) => [b.id, b.projectPath])
-        )
-        const memberships = await Promise.all(
-          accounts.map(async (account) => deps.repos.gitlabAgentAccount.membershipsOfAccount(account.id))
-        )
-        return {
-          accounts: accounts.map((account, i) =>
-            accountToDto(
-              account,
-              memberships[i]!.map((m) => m.bindingId),
-              projectPaths
-            )
-          )
         }
       }
     )

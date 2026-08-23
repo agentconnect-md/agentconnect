@@ -13,6 +13,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import useSWR from 'swr'
 import {
   ApiError,
   createGitlabProject,
@@ -23,8 +24,14 @@ import {
   type GitlabProjectDto
 } from './api'
 import { mergeGitlabProjectChoices, type GitlabProjectChoice } from './gitlab-projects'
+import { useOrgs } from './org-context'
+import { consoleKeys } from './swr-keys'
 
 const SEARCH_DEBOUNCE_MS = 300
+
+// Bots are created and retired behind project and hook CRUD, so a read that never repeats would
+// show a project whose bot has not arrived yet as one that has none.
+const BINDINGS_REFRESH_MS = 30_000
 
 function errorText(e: unknown): string {
   return e instanceof Error ? e.message : String(e)
@@ -56,6 +63,18 @@ export interface GitlabProjectPicker {
   provisionError: string | null
   /** Bind an unadded project. Resolves to null when setup failed. */
   provision: (projectId: string) => Promise<GitlabProjectBindingDto | null>
+}
+
+/** The organization's managed project bindings, read-only: one request shared by SWR key with
+ *  every surface that names a project's bots. A deployment with no GitLab application has none. */
+export function useGitlabProjectBindings(enabled: boolean): GitlabProjectBindingDto[] {
+  const { activeOrg } = useOrgs()
+  const { data } = useSWR(
+    enabled ? consoleKeys.gitlabProjects(activeOrg?.id) : null,
+    () => fetchGitlabProjects().catch(absentAsEmpty),
+    { refreshInterval: BINDINGS_REFRESH_MS }
+  )
+  return data ?? []
 }
 
 /** `active` keeps a pane that is not showing from issuing any request at all. */
