@@ -44,7 +44,12 @@ afterEach(async () => {
   running = undefined
 })
 
-function gitlabApp(options: FakeGitlabOptions = {}, callerUserId?: string): HttpApp & { fake: FakeGitlab } {
+function gitlabApp(
+  options: FakeGitlabOptions = {},
+  callerUserId?: string,
+  /** A deployment with no public webhook address makes the webhook step fail for real. */
+  deployment: { publicRelayUrl?: string } = {}
+): HttpApp & { fake: FakeGitlab } {
   const fake = new FakeGitlab(options)
   const oauth = new GitlabOauthService({
     cfg: { clientId: 'client-1', clientSecret: 'secret-1' },
@@ -74,7 +79,7 @@ function gitlabApp(options: FakeGitlabOptions = {}, callerUserId?: string): Http
     webhookSecrets: new PgGitlabWebhookSecretStore(prisma, cipher),
     catalog: new PgCodeHostRepositoryRepo(prisma),
     clock: systemClock,
-    publicRelayUrl: 'https://relay.example.test',
+    publicRelayUrl: deployment.publicRelayUrl ?? 'https://relay.example.test',
     // The same authority container.ts wires: an enabled gitlab hook on the project wants ingress.
     desiredWebhookEvents: async (orgId, projectId) =>
       unionGitlabWebhookEvents(await new PgHookRepo(prisma).listForOrgKind(OrgId(orgId), 'gitlab'), projectId),
@@ -764,6 +769,79 @@ describe('gitlab organization bot roster (§7.2, §18.1)', () => {
   })
 
   /**
+   * Enabling a trigger commits before the convergence it fires, so the window between the two
+   * must not look like a broken webhook — and the console has to be told to wait it out.
+   */
+  describe('webhook state', () => {
+    async function hookOn(agentId: string): Promise<string> {
+      const hookId = randomUUID()
+      await prisma.hookDef.create({
+        data: {
+          id: hookId,
+          orgId: DEFAULT_ORG_ID,
+          agentId,
+          kind: 'gitlab',
+          name: 'reviews',
+          sessionMode: 'perDelivery',
+          repoId: 4455667n
+        }
+      })
+      return hookId
+    }
+
+    async function onlyBinding(a: HttpApp): Promise<{ id: string; webhookState: string }> {
+      const res = await a.app.inject({ method: 'GET', url: `${ORG}/gitlab/projects` })
+      return (res.json() as { bindings: Array<{ id: string; webhookState: string }> }).bindings[0]!
+    }
+
+    it('calls a webhook wanted but not yet installed transient, and keeps the roster asking', async () => {
+      const a = gitlabApp()
+      const { connectionId } = await connect(a)
+      const agentId = randomUUID()
+      await seedAgent(prisma, agentId, { name: 'reviewer', gitlabProjectId: 4455667n })
+      await bind(a, connectionId, '4455667')
+      expect((await onlyBinding(a)).webhookState).toBe('not_needed')
+
+      // The hook write lands; its convergence has not run yet. That is not a failure.
+      await hookOn(agentId)
+      expect((await onlyBinding(a)).webhookState).toBe('repairing')
+      // And the console is told to keep asking, so the badge cannot get stuck.
+      expect((await rosterRead(a)).converging).toBe(true)
+    })
+
+    it('clears once the install completes, and stops asking', async () => {
+      const a = gitlabApp()
+      const { connectionId } = await connect(a)
+      const agentId = randomUUID()
+      await seedAgent(prisma, agentId, { name: 'reviewer', gitlabProjectId: 4455667n })
+      await bind(a, connectionId, '4455667')
+      await hookOn(agentId)
+
+      const { id } = await onlyBinding(a)
+      expect((await a.app.inject({ method: 'POST', url: `${ORG}/gitlab/projects/${id}/repair` })).statusCode).toBe(200)
+      expect((await onlyBinding(a)).webhookState).toBe('installed')
+      expect((await rosterRead(a)).converging).toBe(false)
+    })
+
+    it('reports failed only once a run actually tried and could not, and then rests', async () => {
+      // No public webhook address configured: the webhook step runs and refuses (§10.2).
+      const a = gitlabApp({}, undefined, { publicRelayUrl: '' })
+      const { connectionId } = await connect(a)
+      const agentId = randomUUID()
+      await seedAgent(prisma, agentId, { name: 'reviewer', gitlabProjectId: 4455667n })
+      await bind(a, connectionId, '4455667')
+      await hookOn(agentId)
+
+      const { id } = await onlyBinding(a)
+      await a.app.inject({ method: 'POST', url: `${ORG}/gitlab/projects/${id}/repair` })
+      const settled = await onlyBinding(a)
+      expect(settled.webhookState).toBe('failed')
+      // Settled: a failure waits for a person, so the console stops polling on it.
+      expect((await rosterRead(a)).converging).toBe(false)
+    })
+  })
+
+  /**
    * The console cannot see an agent's hooks or workspace, so it cannot tell a converged
    * roster from one read mid-flight. `converging` is that answer, and it has to terminate.
    */
@@ -840,6 +918,29 @@ describe('gitlab organization bot roster (§7.2, §18.1)', () => {
       const settled = await rosterRead(a)
       expect(settled.accounts[0]!.memberships).toMatchObject([{ bindingId, accessLevel: 20 }])
       expect(settled.converging).toBe(false)
+    })
+
+    it('is unsettled by a membership whose consumer went away, even on a degraded account', async () => {
+      // The refusal exemption exists for a membership that cannot be CREATED without repair. A
+      // membership already recorded and no longer justified is a detach the saga owes regardless,
+      // and exempting it left the project sitting under that bot for good.
+      const a = gitlabApp()
+      const { connectionId } = await connect(a)
+      const agentId = randomUUID()
+      await seedAgent(prisma, agentId, { name: 'reviewer', gitlabProjectId: 4455667n })
+      await bind(a, connectionId, '4455667')
+      expect((await rosterRead(a)).converging).toBe(false)
+
+      // Rotation trouble degrades the account while it keeps its membership.
+      await prisma.gitlabAgentAccount.updateMany({
+        where: { orgId: DEFAULT_ORG_ID, agentId },
+        data: { state: 'admin_degraded', stateReason: 'rotation_gitlab_503' }
+      })
+      expect((await rosterRead(a)).converging).toBe(false)
+
+      // Now its last consumer goes; the detach is still owed and must be reported.
+      await prisma.agent.update({ where: { id: agentId }, data: { workspaceRepoId: null } })
+      expect((await rosterRead(a)).converging).toBe(true)
     })
 
     it('settles on a refused account rather than asking forever about one that needs Repair', async () => {

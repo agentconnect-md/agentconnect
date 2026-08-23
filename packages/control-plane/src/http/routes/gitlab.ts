@@ -74,7 +74,10 @@ function toDto(r: GitlabConnectionRecord, assignedProjects: number, callerUserId
 function webhookStateOf(r: GitlabProjectBindingRecord, wanted: boolean): GitlabWebhookState {
   if (!wanted) return 'not_needed'
   if (r.webhookId !== null) return 'installed'
-  return r.state === 'provisioning' ? 'repairing' : 'failed'
+  // Wanted but absent. Enabling a trigger commits before the convergence it fires, so a binding
+  // still reporting healthy simply has not been converged for this desire yet — that is transient,
+  // not a fault. Only a run that actually completed and left the binding degraded means failed.
+  return r.state === 'ready' || r.state === 'provisioning' ? 'repairing' : 'failed'
 }
 
 /** One binding with its member accounts (§7.2) — the project's bot identities. */
@@ -136,8 +139,14 @@ function stillConverging(
   accounts: readonly GitlabAgentAccountRecord[],
   bindings: readonly GitlabProjectBindingRecord[],
   consumers: readonly GitlabProjectConsumer[],
-  memberLevels: ReadonlyMap<string, ReadonlyMap<string, number>>
+  memberLevels: ReadonlyMap<string, ReadonlyMap<string, number>>,
+  webhookWanted: (projectId: bigint) => boolean
 ): boolean {
+  // A webhook still being installed is convergence the console must outwait, or a badge that
+  // is only transient would sit there until a reload. A failed one has settled and does not.
+  if (bindings.some((binding) => webhookStateOf(binding, webhookWanted(binding.projectId)) === 'repairing')) {
+    return true
+  }
   if (accounts.some((account) => account.lifecycle !== 'active' || account.state === 'provisioning')) return true
   // Past that guard every account is active and settled, so anything but ready is stuck awaiting Repair.
   const refused = new Set(accounts.filter((account) => account.state !== 'ready').map((account) => account.agentId))
@@ -158,7 +167,9 @@ function stillConverging(
     for (const [agentId, accessLevel] of desired) {
       if (!refused.has(agentId) && actual.get(agentId) !== accessLevel) return true
     }
-    for (const agentId of actual.keys()) if (!desired.has(agentId) && !refused.has(agentId)) return true
+    // A membership no consumer justifies is a detach the saga still owes, whatever shape the
+    // account is in — the refusal exemption covers creation that cannot proceed, never removal.
+    for (const agentId of actual.keys()) if (!desired.has(agentId)) return true
   }
   return false
 }
@@ -363,7 +374,7 @@ export function gitlabRoutes(deps: HttpDeps) {
                 memberships
               }
             }),
-          converging: stillConverging(accounts, bindings, consumers, memberLevels)
+          converging: stillConverging(accounts, bindings, consumers, memberLevels, await webhookWanted(orgId))
         }
       }
     )

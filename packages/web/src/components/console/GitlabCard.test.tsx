@@ -81,6 +81,16 @@ vi.mock('swr', () => ({
 
 interface SwrOptions {
   refreshInterval?: (latest: unknown) => number
+  onSuccess?: (latest: unknown) => void
+}
+
+/** Drive one successful revalidation of the roster read, the way SWR's poll would. */
+async function revalidate(): Promise<void> {
+  const onSuccess = lastSwr?.options.onSuccess
+  if (!onSuccess) throw new Error('the card handles no roster revalidation')
+  await act(async () => {
+    onSuccess(read())
+  })
 }
 
 /** What the roster read answers with right now, or undefined before it has answered. */
@@ -551,6 +561,36 @@ describe('GitlabCard', () => {
     await render()
     expect(projectRow(botRow('acct-1'), 'bind-1').textContent).toContain('Reporter')
     expect(pollInterval()).toBe(0)
+  })
+
+  it('re-reads the projects on every roster poll while convergence is pending', async () => {
+    // A webhook still installing lives on the project row, not the roster, and the projects were
+    // read once at mount — so without this the transient badge would sit there until a reload.
+    mocks.fetchConnections.mockResolvedValue({ enabled: true, connections: [CONNECTION] })
+    mocks.fetchProjects.mockResolvedValue([{ ...BINDING, webhookState: 'repairing' as const }])
+    roster = [BOT]
+    converging = true
+    await render()
+    expect(projectRow(botRow('acct-1'), 'bind-1').textContent).toContain('webhook repairing')
+    const reads = mocks.fetchProjects.mock.calls.length
+
+    // The install lands; the next poll picks the projects up with it.
+    mocks.fetchProjects.mockResolvedValue([BINDING])
+    await revalidate()
+    expect(mocks.fetchProjects.mock.calls.length).toBeGreaterThan(reads)
+    expect(projectRow(botRow('acct-1'), 'bind-1').textContent).not.toContain('webhook')
+  })
+
+  it('leaves the projects alone once nothing is converging', async () => {
+    mocks.fetchConnections.mockResolvedValue({ enabled: true, connections: [CONNECTION] })
+    mocks.fetchProjects.mockResolvedValue([BINDING])
+    roster = [BOT]
+    converging = false
+    await render()
+    const reads = mocks.fetchProjects.mock.calls.length
+
+    await revalidate()
+    expect(mocks.fetchProjects.mock.calls.length).toBe(reads)
   })
 
   it('keeps asking before the read has answered at all', async () => {

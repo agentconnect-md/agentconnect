@@ -224,6 +224,14 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
     // Convergence runs behind hook and workspace CRUD elsewhere, and a membership can change
     // while this project set does not — so only the server can say whether to ask again.
     refreshInterval: (latest) => (latest && !latest.converging ? 0 : GITLAB_CONVERGENCE_POLL_MS),
+    // The projects carry state the same saga moves — a webhook still installing among it — so they
+    // ride this poll rather than resting on the read taken at mount. A write in flight owns them.
+    onSuccess: (latest) => {
+      if (!latest.converging || busyId !== null) return
+      void fetchGitlabProjects()
+        .then((rows) => setProjects(rows))
+        .catch(() => undefined)
+    },
     shouldRetryOnError: false
   })
 
