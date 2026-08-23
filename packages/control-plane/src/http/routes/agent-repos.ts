@@ -165,21 +165,15 @@ export function agentRepoRoutes(deps: HttpDeps) {
           `${binding.projectPath} is already authorized for this agent — upgrade that grant or remove it to lower the tier`
         )
       }
-      // Readers-first catalog convergence (gitlab-com-integration.md §8.1).
-      await deps.repos.codeHostRepository.upsert({
-        orgId,
-        provider: 'gitlab',
-        externalId: projectId,
-        displayPath: binding.projectPath,
-        cloneUrl: `https://gitlab.com/${binding.projectPath}`,
-        ...(binding.defaultBranch ? { defaultBranch: binding.defaultBranch } : {})
-      })
-      const create = (): Promise<AgentRepoAuthorizationRecord> =>
+      // The path comes from the provider's answer INSIDE the lease, never from the
+      // binding read above: a rename between the two would otherwise persist and
+      // replicate the losing side, leaving the daemon unable to map the checkout.
+      const create = (live: { projectPath: string }): Promise<AgentRepoAuthorizationRecord> =>
         deps.repos.agentRepoAuth.create({
           agentId: agent.id,
           provider: 'gitlab',
           repoId: projectId,
-          repoFullName: binding.projectPath,
+          repoFullName: live.projectPath,
           access: body.access,
           ...(req.principal ? { createdByUserId: req.principal.userId } : {})
         })
@@ -241,6 +235,7 @@ export function agentRepoRoutes(deps: HttpDeps) {
         orgId,
         row.repoId,
         { agentId: agent.id, accessLevel: gitlabAuthorizationAccessLevel(access) },
+        // Access-only: the row's path is converged by the same lease's fact sync.
         () => deps.repos.agentRepoAuth.updateAccess(row.id, access)
       )
       if (!applied.ok) return conflict(gitlabAccountUnavailableMessage(applied.reason))

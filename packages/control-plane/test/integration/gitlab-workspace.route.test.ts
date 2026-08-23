@@ -700,6 +700,34 @@ describe('additional GitLab project authorizations (§8.3/§13.1)', () => {
     await expect(service.grantForAgent(gitlabAgent(), 999n)).rejects.toThrowError(GitCredDeniedError)
   })
 
+  it('commits the path the provider answers with inside the lease, not the pre-lease capture', async () => {
+    // A rename between the binding read and the write is exactly when a captured
+    // path becomes the losing side. The grant is what the daemon maps a NAMED
+    // project back to its numeric id with, so persisting the stale one would
+    // replicate a path the checkout can never be found under.
+    const h = await harness()
+    const fresh = await secondBinding(h)
+    expect(fresh.projectPath).toBe('example-group/example-second')
+
+    // The project is renamed at GitLab; no convergence has run since.
+    h.fake.opts.pathById = { [String(SECOND_PROJECT)]: 'example-group/renamed-second' }
+
+    const res = await h.a.app.inject(authorize({ provider: 'gitlab', projectId: SECOND_PROJECT.toString() }))
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toMatchObject({ repoFullName: 'example-group/renamed-second' })
+    expect(await grants()).toMatchObject([{ repoFullName: 'example-group/renamed-second' }])
+
+    // The same read converged the durable replicas, so nothing disagrees.
+    expect((await h.bindings.get(DEFAULT_ORG_ID, fresh.id))?.projectPath).toBe('example-group/renamed-second')
+    expect(
+      await prisma.codeHostRepository.findUnique({
+        where: {
+          orgId_provider_externalId: { orgId: DEFAULT_ORG_ID, provider: 'gitlab', externalId: SECOND_PROJECT }
+        }
+      })
+    ).toMatchObject({ displayPath: 'example-group/renamed-second' })
+  })
+
   it('raises the account’s project role when the tier is raised', async () => {
     const h = await harness()
     const fresh = await secondBinding(h)
