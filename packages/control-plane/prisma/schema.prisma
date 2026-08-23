@@ -1095,6 +1095,11 @@ model SessionMeta {
   triggeredBy         String?
   channelName         String?
   triggeredByName     String?
+  // Trigger-identity snapshot, frozen at creation beside triggeredBy/triggeredByName: the
+  // KIND of hook this session fired from. The hook row can be deleted and recreated, and
+  // without this the session would silently degrade to the generic webhook rendering.
+  // Null on rows written before this column — those still resolve through the live hook.
+  hookKind            HookKind?
   threadUrl           String?             @db.Text
   // ── execution-config snapshot (what the session actually ran with) ──
   // Daemon-reported via event/session (session override ?? agent config at run

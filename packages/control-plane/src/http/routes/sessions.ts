@@ -94,7 +94,7 @@ const SessionQueryDto = SessionFilterQueryDto.extend({
 type SessionCursor = { activityMs: number; startedMs: number; id: string }
 type SessionPageRow = Awaited<ReturnType<HttpDeps['repos']['session']['listPage']>>['sessions'][number]
 type SessionFacetIndex = Awaited<ReturnType<HttpDeps['repos']['session']['listFacets']>>
-type HookSessionRow = Pick<SessionPageRow, 'agentId' | 'platform' | 'channel' | 'triggeredBy'>
+type HookSessionRow = Pick<SessionPageRow, 'agentId' | 'platform' | 'channel' | 'triggeredBy' | 'hookKind'>
 type HookSessionMetadata = {
   agentId: string | null
   kind: HookKind
@@ -221,6 +221,14 @@ function decodeSessionCursor(raw: string): SessionCursor | null {
   }
 }
 
+/** A hook session's own source kind. The creation-time snapshot is authoritative — the
+ *  definition it fired from may have been deleted since, and a session's history must not
+ *  change when that happens. Only rows written before the snapshot existed read the live
+ *  hook, and a hook that no longer resolves leaves them with no kind at all. */
+function sessionHookKind(s: HookSessionRow, hook: HookSessionMetadata | undefined): HookKind | null {
+  return s.hookKind ?? hook?.kind ?? null
+}
+
 /** A hook session's integration facet. EVERY code host is promoted out of the generic
  *  hook bucket so each gets a first-class entry the console can filter by; only the
  *  generic kind keeps the raw `hook` platform. The predicate is derived from the shared
@@ -229,7 +237,8 @@ function decodeSessionCursor(raw: string): SessionCursor | null {
 function sessionIntegration(s: HookSessionRow, hook: HookSessionMetadata | undefined): string {
   const platform = s.platform ?? 'slack'
   if (platform !== 'hook') return platform
-  return hook && isCodeHostHookKind(hook.kind) ? hook.kind : platform
+  const kind = sessionHookKind(s, hook)
+  return kind && isCodeHostHookKind(kind) ? kind : platform
 }
 
 /** Display name for a hook source with no name of its own. TOTAL over the hook-kind
@@ -244,8 +253,9 @@ function sessionDisplayMetadata(
   // Hook kind remains valid after reassignment, but the current name only
   // describes historical rows while the hook still belongs to the same agent.
   const hookName = hook?.agentId === s.agentId ? hook.name : undefined
-  // An unresolvable hook has no kind to name, so it stays generic.
-  const sourceLabel = hook ? HOOK_KIND_LABEL[hook.kind] : HOOK_KIND_LABEL.webhook
+  // A row with neither a snapshot nor a resolvable hook has no kind to name, so it stays generic.
+  const kind = sessionHookKind(s, hook)
+  const sourceLabel = HOOK_KIND_LABEL[kind ?? 'webhook']
   return {
     channelName: s.platform === 'hook' ? (hookName ?? s.channelName ?? null) : (s.channelName ?? null),
     triggeredByName: s.triggeredBy?.startsWith(HOOK_TRIGGER_PREFIX)
@@ -311,7 +321,7 @@ function sessionFacets(
       value: triggeredBy,
       integration: sessionIntegration(session, hook),
       name: display.triggeredByName,
-      hookKind: hook?.kind ?? null,
+      hookKind: sessionHookKind(session, hook),
       githubRepoId
     })
   }
@@ -346,7 +356,7 @@ function sessionDto(
     lastActivityAt: s.lastActivityAt.toISOString(),
     usage: s.usage ?? null,
     triggeredBy: s.triggeredBy ?? null,
-    hookKind: hook?.kind ?? null,
+    hookKind: sessionHookKind(s, hook),
     channelName: display.channelName,
     triggeredByName: display.triggeredByName,
     threadUrl: s.threadUrl ?? null,
@@ -916,7 +926,7 @@ export function sessionRoutes(deps: HttpDeps) {
           lastActivityAt: s.lastActivityAt.toISOString(),
           usage,
           triggeredBy: s.triggeredBy,
-          hookKind: hook?.kind ?? null,
+          hookKind: sessionHookKind(s, hook),
           channelName: display.channelName,
           triggeredByName: display.triggeredByName,
           threadUrl: s.threadUrl,

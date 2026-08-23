@@ -22,8 +22,19 @@ the per-kind marks and labels — stops type-checking until it is extended:
 Only `webhook` is generic. Every code-host kind is promoted out of the generic
 bucket wherever a session is classified, so a code-host session is never
 filtered, marked, or labelled as a plain webhook. `webhook` is the mapping for
-the generic kind and for a hook whose definition can no longer be resolved — it
-is never the fallback for a kind nobody mapped.
+the generic kind and for a hook whose source cannot be determined at all — it is
+never the fallback for a kind nobody mapped.
+
+A session's kind is **snapshotted onto the session row at creation**
+(`session_meta."hookKind"`), beside the trigger id and display names it already
+records. A hook definition can be deleted and recreated, which leaves past
+sessions pointing at an id that resolves to nothing; reading the kind live would
+then rewrite their history as generic webhooks. Every read — display label,
+integration facet, and the filter predicate — prefers the snapshot and consults
+the live definition only when a row has none. Rows written before the column
+have no snapshot and keep resolving through the live hook exactly as before;
+they are deliberately **not** backfilled, so a code-host session that predates
+the column still degrades to the generic rendering once its hook is gone.
 
 For a numbered GitHub thread, `GithubPoster` owns the ordinary reply comment and
 publishes only the completed ACP final answer. A formal pull-request review is a
