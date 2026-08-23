@@ -1792,12 +1792,7 @@ external credentials by deleting only local metadata.
 > `running` edge waits on its GitLab arm
 > (`packages/control-plane/src/codehost/note-projection.service.ts`); that arm
 > is being finished as follow-up work. The session merge-request dock panel
-> stays out of scope per Section 18.1. One defect is open rather than
-> deliberate: the service-account listing behind Section 7.2 reads a single
-> hundred-account page instead of following the pagination, so the recorded
-> window and its `username_taken` refusal hold only while a top-level group's
-> service accounts fit that first page — always true on Free, not guaranteed
-> on Premium.
+> stays out of scope per Section 18.1.
 
 Milestones are merge order, not calendar. Each milestone is several small,
 independently mergeable PRs; GitHub behavior stays green at every merge; each

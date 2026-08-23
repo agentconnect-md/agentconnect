@@ -66,7 +66,12 @@ export async function gitlabRequest<T>(path: string, opts: GitlabRequestOpts): P
     if (!text) return undefined as T
     return JSON.parse(text) as T
   }
-  // Read the message for diagnostics only; NEVER include token material.
+  throw await gitlabError(res)
+}
+
+/** A non-2xx response as the typed error. Reads the body for diagnostics only;
+ *  NEVER include token material. */
+async function gitlabError(res: Response): Promise<GitlabApiError> {
   let detail = ''
   try {
     const body = (await res.json()) as { message?: unknown; error?: unknown; error_description?: unknown }
@@ -76,7 +81,43 @@ export async function gitlabRequest<T>(path: string, opts: GitlabRequestOpts): P
   } catch {
     // non-JSON error body — status alone
   }
-  throw new GitlabApiError(`gitlab ${res.status}${detail}`, res.status, codeFor(res.status), res.status >= 500)
+  return new GitlabApiError(`gitlab ${res.status}${detail}`, res.status, codeFor(res.status), res.status >= 500)
+}
+
+/** GitLab's own per-page ceiling for these listings. */
+const PAGE_SIZE = 100
+/** Runaway backstop on `gitlabPagedGet`; exceeding it refuses, never truncates. */
+const MAX_PAGES = 50
+
+/** EVERY row of a paginated GET, following GitLab's `x-next-page` header.
+ *  A caller's predicate is sound only over a complete listing (§7.2), so this
+ *  never returns a partial one: a bound or a stuck header raises instead. */
+async function gitlabPagedGet<T>(path: string, opts: { auth: string; fetchImpl?: FetchLike }): Promise<T[]> {
+  const fetchImpl = opts.fetchImpl ?? (fetch as FetchLike)
+  const rows: T[] = []
+  let page = 1
+  for (let requests = 0; requests < MAX_PAGES; requests++) {
+    const url = `${API_BASE}${path}${path.includes('?') ? '&' : '?'}per_page=${PAGE_SIZE}&page=${page}`
+    let res: Response
+    try {
+      res = await fetchImpl(url, {
+        headers: { accept: 'application/json', authorization: `Bearer ${opts.auth}` },
+        signal: AbortSignal.timeout(TIMEOUT_MS)
+      })
+    } catch (e) {
+      throw new GitlabApiError(`gitlab unreachable: ${(e as Error).message}`, 0, 'INTERNAL', true)
+    }
+    if (!res.ok) throw await gitlabError(res)
+    const batch = (await res.json()) as T[]
+    if (!Array.isArray(batch)) throw new GitlabApiError('gitlab listing is not an array', 0, 'INTERNAL', false)
+    rows.push(...batch)
+    const next = res.headers.get('x-next-page')
+    if (!next || !/^\d+$/.test(next)) return rows
+    // A header that does not advance would spin or silently truncate: refuse.
+    if (Number(next) <= page) throw new GitlabApiError('gitlab pagination did not advance', 0, 'INTERNAL', true)
+    page = Number(next)
+  }
+  throw new GitlabApiError(`gitlab listing exceeds ${MAX_PAGES} pages`, 0, 'INTERNAL', true)
 }
 
 /** The token grant GitLab's `/oauth/token` returns for code exchange and refresh. */
@@ -366,18 +407,17 @@ export function gitlabAgentAccountDisplayName(agentName: string, username: strin
   return folded || username
 }
 
-/** The top-level group's OWN service accounts. Deliberately the only listing
- *  the recovery path reads: a global user search would let an account outside
- *  this root answer for one of ours (§7.2). */
+/** The top-level group's OWN service accounts, ALL pages. Deliberately the only
+ *  listing the recovery path reads: a global user search would let an account
+ *  outside this root answer for one of ours (§7.2). It is also the snapshot the
+ *  create window is dated against, so a partial page would read an account that
+ *  merely sits further down as new — hence the exhaustive read. */
 export async function gitlabListServiceAccounts(
   accessToken: string,
   groupId: number,
   fetchImpl?: FetchLike
 ): Promise<GitlabServiceAccount[]> {
-  return gitlabRequest<GitlabServiceAccount[]>(`/groups/${groupId}/service_accounts?per_page=100`, {
-    auth: accessToken,
-    fetchImpl
-  })
+  return gitlabPagedGet<GitlabServiceAccount>(`/groups/${groupId}/service_accounts`, { auth: accessToken, fetchImpl })
 }
 
 /** Find the marked account among the top-level group's service accounts. */
@@ -574,17 +614,18 @@ export async function gitlabCreateServiceAccountToken(
   )
 }
 
-/** List the account's PATs (marker recovery); values are never returned here.
- *  Group-scoped on purpose: the installer OAuth identity is not an instance
- *  admin on GitLab.com and can manage ONLY the group's service-account tokens. */
+/** ALL pages of the account's PATs (marker recovery); values are never returned
+ *  here. Group-scoped on purpose: the installer OAuth identity is not an instance
+ *  admin on GitLab.com and can manage ONLY the group's service-account tokens.
+ *  Exhaustive because a stray this misses keeps a token whose plaintext is lost. */
 export async function gitlabListServiceAccountTokens(
   accessToken: string,
   groupId: number,
   serviceAccountUserId: bigint,
   fetchImpl?: FetchLike
 ): Promise<GitlabPatGrant[]> {
-  return gitlabRequest<GitlabPatGrant[]>(
-    `/groups/${groupId}/service_accounts/${serviceAccountUserId}/personal_access_tokens?per_page=100`,
+  return gitlabPagedGet<GitlabPatGrant>(
+    `/groups/${groupId}/service_accounts/${serviceAccountUserId}/personal_access_tokens`,
     { auth: accessToken, fetchImpl }
   )
 }
@@ -646,13 +687,15 @@ export async function gitlabUpdateWebhook(
   })
 }
 
-/** The project's webhooks — crash-left create reconciliation (exact-URL adoption). */
+/** ALL pages of the project's webhooks — crash-left create reconciliation
+ *  (exact-URL adoption). Exhaustive because a hook this misses is read as
+ *  absent: the converge creates a duplicate, and cleanup orphans it. */
 export async function gitlabListWebhooks(
   accessToken: string,
   projectId: bigint,
   fetchImpl?: FetchLike
 ): Promise<GitlabWebhook[]> {
-  return gitlabRequest<GitlabWebhook[]>(`/projects/${projectId}/hooks?per_page=100`, { auth: accessToken, fetchImpl })
+  return gitlabPagedGet<GitlabWebhook>(`/projects/${projectId}/hooks`, { auth: accessToken, fetchImpl })
 }
 
 export async function gitlabDeleteWebhook(

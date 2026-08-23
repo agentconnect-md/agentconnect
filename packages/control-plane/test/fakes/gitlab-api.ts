@@ -35,6 +35,16 @@ export interface FakeGitlabOptions {
   refuseAvatarUpload?: boolean
 }
 
+/** GitLab-shaped paging: one `per_page` slice plus `x-next-page`, empty on the
+ *  last page. Listings the recovery predicates read must follow it (§7.2). */
+function page<T>(url: string, rows: readonly T[]): Response {
+  const params = new URL(url).searchParams
+  const perPage = Number(params.get('per_page') ?? '20')
+  const index = Number(params.get('page') ?? '1')
+  const next = index * perPage < rows.length ? String(index + 1) : ''
+  return Response.json(rows.slice((index - 1) * perPage, index * perPage), { headers: { 'x-next-page': next } })
+}
+
 export class FakeGitlab {
   readonly opts: Required<Pick<FakeGitlabOptions, 'projectId' | 'path' | 'accessLevel' | 'namespaceKind'>> &
     FakeGitlabOptions
@@ -128,7 +138,8 @@ export class FakeGitlab {
       if (/\/api\/v4\/projects\/\d+\/hooks\?/.test(url) && method === 'GET') {
         const projectId = Number(/projects\/(\d+)\//.exec(url)![1])
         // Real GitLab scopes the listing to the addressed project.
-        return Response.json(
+        return page(
+          url,
           [...this.webhooks.entries()]
             .filter(([, hook]) => hook.projectId === projectId)
             .map(([id, hook]) => ({ id, url: hook.url }))
@@ -234,7 +245,7 @@ export class FakeGitlab {
       }
 
       if (/\/api\/v4\/groups\/\d+\/service_accounts\?/.test(url)) {
-        return Response.json(this.serviceAccounts)
+        return page(url, this.serviceAccounts)
       }
       if (/\/api\/v4\/groups\/\d+\/service_accounts$/.test(url) && method === 'POST') {
         if (this.opts.refuseServiceAccountQuota) {
@@ -309,7 +320,8 @@ export class FakeGitlab {
       }
       if (/\/api\/v4\/groups\/\d+\/service_accounts\/\d+\/personal_access_tokens\?/.test(url)) {
         const userId = Number(/service_accounts\/(\d+)\//.exec(url)![1])
-        return Response.json(
+        return page(
+          url,
           [...this.tokens.entries()]
             .filter(([, t]) => t.user_id === userId)
             .map(([id, t]) => ({ id, ...t, active: !t.revoked }))
