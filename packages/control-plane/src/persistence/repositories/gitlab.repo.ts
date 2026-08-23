@@ -525,18 +525,21 @@ export class PgGitlabProjectBindingRepo implements GitlabProjectBindingRepo {
   }
 
   async markConvergeOwed(orgId: string, bindingId: string, at: Date): Promise<void> {
-    // One statement: the EXISTS is evaluated with the write, so a cleanup that
-    // commits first simply leaves nothing to mark, and one that commits after
-    // clears the marker in its own transaction.
-    await this.prisma.$executeRaw`
-      UPDATE "gitlab_project_binding" AS b
-         SET "convergeOwedAt" = ${at}
-       WHERE b."id" = ${bindingId}::uuid AND b."orgId" = ${orgId}
-         AND EXISTS (
-           SELECT 1 FROM "code_host_repository_claim" AS c
-            WHERE c."provider" = 'gitlab' AND c."externalId" = b."projectId"
-              AND c."bindingRef" = b."id" AND c."state" IN ('provisioning', 'active')
-         )`
+    // Lock the CLAIM first, the same order cleanup takes, then decide. A single
+    // statement would not do: under read-committed its subquery is evaluated on
+    // the statement snapshot, so a cleanup committing while this waits on the
+    // binding row would not be seen, and the marker would land unsatisfiable.
+    await this.prisma.$transaction(async (tx) => {
+      const claim = await tx.$queryRaw<{ state: string }[]>`
+        SELECT c."state" FROM "code_host_repository_claim" AS c
+          JOIN "gitlab_project_binding" AS b
+            ON c."externalId" = b."projectId" AND c."bindingRef" = b."id"
+         WHERE c."provider" = 'gitlab' AND b."id" = ${bindingId}::uuid AND b."orgId" = ${orgId}
+           FOR UPDATE OF c`
+      const state = claim[0]?.state
+      if (state !== 'provisioning' && state !== 'active') return
+      await tx.gitlabProjectBinding.updateMany({ where: { id: bindingId, orgId }, data: { convergeOwedAt: at } })
+    })
   }
 
   async listConvergeOwed(before: Date, limit: number): Promise<GitlabProjectBindingRecord[]> {
