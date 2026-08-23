@@ -29,6 +29,9 @@ export interface FakeGitlabOptions {
   refuseServiceAccountUsernameChange?: boolean
   /** Observe the row the moment the provider sees a service-account PATCH. */
   onServiceAccountPatch?: () => Promise<void>
+  /** Act between the pages of a service-account listing — a peer that moves
+   *  while an exhaustive read is in flight (§7.2). */
+  onServiceAccountListPage?: (page: number) => Promise<void>
   /** Answer the avatar endpoint 404 — a provider that does not offer it. */
   avatarEndpointUnsupported?: boolean
   /** Refuse the avatar upload with a definitive 400. */
@@ -245,6 +248,7 @@ export class FakeGitlab {
       }
 
       if (/\/api\/v4\/groups\/\d+\/service_accounts\?/.test(url)) {
+        await this.opts.onServiceAccountListPage?.(Number(new URL(url).searchParams.get('page') ?? '1'))
         return page(url, this.serviceAccounts)
       }
       if (/\/api\/v4\/groups\/\d+\/service_accounts$/.test(url) && method === 'POST') {

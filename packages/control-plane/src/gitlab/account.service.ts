@@ -279,6 +279,9 @@ export class GitlabAccountService {
       }
       // This top-level group's OWN accounts — never a global user search (§7.2).
       let listing = await gitlabListServiceAccounts(input.token, input.rootGroupId, this.deps.fetchImpl)
+      // The listing is exhaustive, so a large root spends real time in it: prove
+      // the fence still holds before any write this listing decides.
+      await this.renew(account.id, owner)
       // The durable key first: an account we already recorded needs no marker.
       let external =
         (account.serviceAccountUserId === null
@@ -314,6 +317,7 @@ export class GitlabAccountService {
         } catch (e) {
           // Ambiguous create: re-read, then apply that same persisted window.
           listing = await gitlabListServiceAccounts(input.token, input.rootGroupId, this.deps.fetchImpl)
+          await this.renew(account.id, owner)
           external = this.claimFromAttempt(account, listing)
           if (!external) {
             const reason = listing.some((candidate) => candidate.username === account.username)

@@ -5,7 +5,7 @@
  * sweep, the exact-URL webhook adoption — so each must follow `x-next-page` and
  * must refuse rather than hand back a partial page.
  */
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { FetchLike } from './api.js'
 import { GitlabApiError, gitlabListServiceAccountTokens, gitlabListServiceAccounts, gitlabListWebhooks } from './api.js'
 
@@ -26,6 +26,10 @@ function pagedFetch(pages: unknown[][]): { fetch: FetchLike; urls: string[] } {
 }
 
 const account = (id: number) => ({ id, username: `bot-${id}`, name: `bot ${id}` })
+
+afterEach(() => {
+  vi.useRealTimers()
+})
 
 describe('gitlabListServiceAccounts', () => {
   it('follows x-next-page and returns every page, in order', async () => {
@@ -91,6 +95,24 @@ describe('gitlabListServiceAccounts', () => {
     }
     await expect(gitlabListServiceAccounts(TOKEN, 77, fetch)).rejects.toBeInstanceOf(GitlabApiError)
     expect(calls).toBe(1)
+  })
+
+  it('raises retryably once the walk outruns its time budget, so it cannot outlive a caller lease', async () => {
+    // Only Date is faked: AbortSignal.timeout keeps its real timer.
+    vi.useFakeTimers({ toFake: ['Date'] })
+    let calls = 0
+    const fetch: FetchLike = async (url) => {
+      calls++
+      // Each page answers slowly enough that a few of them spend the budget.
+      vi.setSystemTime(Date.now() + 25_000)
+      const page = Number(new URL(url).searchParams.get('page') ?? '1')
+      return Response.json([account(page)], { headers: { 'x-next-page': String(page + 1) } })
+    }
+    const error = await gitlabListServiceAccounts(TOKEN, 77, fetch).catch((e: unknown) => e)
+    expect(error).toBeInstanceOf(GitlabApiError)
+    expect((error as GitlabApiError).retryable).toBe(true)
+    // Three pages spend 75s of a 60s budget; the fourth is never attempted.
+    expect(calls).toBe(3)
   })
 
   it('raises retryably past the page bound rather than truncating the listing', async () => {

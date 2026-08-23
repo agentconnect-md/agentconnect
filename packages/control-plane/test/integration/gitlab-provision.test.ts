@@ -806,6 +806,31 @@ describe('GitlabAccountService listing pagination (§7.2)', () => {
     expect(accountListings(h).some((r) => r.url.includes('page=2'))).toBe(true)
   })
 
+  it('re-proves the account fence after the read, so a peer that took it mid-listing wins', async () => {
+    const h = await harness()
+    h.fake.serviceAccounts = others(120)
+    // A peer claims the account the moment our exhaustive read reaches page 2 —
+    // the shape a lease that expires under a slow multi-page listing produces.
+    h.fake.opts.onServiceAccountListPage = async (page) => {
+      if (page !== 2) return
+      const row = (await h.accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP))!
+      const later = new Date(Date.now() + 600_000)
+      expect(await h.accounts.claimLease(row.id, 'peer', later, later)).toBe(true)
+    }
+
+    expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toEqual({
+      state: 'admin_degraded',
+      reason: 'account_lease_lost'
+    })
+    // Nothing the stale listing decided was written at the provider.
+    expect(h.fake.serviceAccounts).toHaveLength(120)
+    expect(h.fake.tokens.size).toBe(0)
+    expect(await h.accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP)).toMatchObject({
+      serviceAccountUserId: null,
+      createAttempt: null
+    })
+  })
+
   it('sees a foreign account holding the username on a later page, and refuses it', async () => {
     const h = await harness()
     const foreign = { id: 7000, username: usernameOf(AGENT), name: 'somebody-else' }

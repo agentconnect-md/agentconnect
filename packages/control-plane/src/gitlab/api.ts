@@ -86,23 +86,29 @@ async function gitlabError(res: Response): Promise<GitlabApiError> {
 
 /** GitLab's own per-page ceiling for these listings. */
 const PAGE_SIZE = 100
-/** Runaway backstop on `gitlabPagedGet`; exceeding it refuses, never truncates. */
+/** Runaway backstops on `gitlabPagedGet`; exceeding either refuses, never truncates.
+ *  The wall-clock one is what keeps a paged read inside a caller's mutual-exclusion
+ *  lease: an unbounded walk could otherwise outlive the lease it reads under. */
 const MAX_PAGES = 50
+const LISTING_BUDGET_MS = 60_000
 
 /** EVERY row of a paginated GET, following GitLab's `x-next-page` header.
  *  A caller's predicate is sound only over a complete listing (§7.2), so this
  *  never returns a partial one: a bound or a stuck header raises instead. */
 async function gitlabPagedGet<T>(path: string, opts: { auth: string; fetchImpl?: FetchLike }): Promise<T[]> {
   const fetchImpl = opts.fetchImpl ?? (fetch as FetchLike)
+  const deadline = Date.now() + LISTING_BUDGET_MS
   const rows: T[] = []
   let page = 1
   for (let requests = 0; requests < MAX_PAGES; requests++) {
+    const budget = deadline - Date.now()
+    if (budget <= 0) throw new GitlabApiError('gitlab listing exceeded its time budget', 0, 'INTERNAL', true)
     const url = `${API_BASE}${path}${path.includes('?') ? '&' : '?'}per_page=${PAGE_SIZE}&page=${page}`
     let res: Response
     try {
       res = await fetchImpl(url, {
         headers: { accept: 'application/json', authorization: `Bearer ${opts.auth}` },
-        signal: AbortSignal.timeout(TIMEOUT_MS)
+        signal: AbortSignal.timeout(Math.min(TIMEOUT_MS, budget))
       })
     } catch (e) {
       throw new GitlabApiError(`gitlab unreachable: ${(e as Error).message}`, 0, 'INTERNAL', true)
