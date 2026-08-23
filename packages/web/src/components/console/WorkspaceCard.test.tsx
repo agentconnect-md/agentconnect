@@ -137,6 +137,16 @@ describe('workspace push identity', () => {
     expect(html).not.toContain('bot access degraded')
   })
 
+  // The binding path follows a GitLab rename; a workspace stored before it may not.
+  it('follows a renamed project by its numeric id', () => {
+    repos.rows = []
+    gitlab.bindings = gitlabBinding(BOT)
+    const stale = { ...GITLAB, projectId: '4455667', repo: 'example-group/old-name' }
+    const html = renderToStaticMarkup(<WorkspaceCard agent={agent(stale)} />)
+
+    expect(html).toContain('@agentconnect-a1-g900')
+  })
+
   it('shows the bot’s health when it is not ready', () => {
     repos.rows = []
     gitlab.bindings = gitlabBinding({ ...BOT, state: 'admin_degraded', stateReason: 'service_account_quota' })

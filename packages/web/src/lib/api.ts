@@ -5361,8 +5361,8 @@ export function searchGitlabProjects(
   )
 }
 
-export function fetchGitlabProjects(): Promise<GitlabProjectBindingDto[]> {
-  return apiGet<{ bindings: GitlabProjectBindingDto[] }>(`${orgBase()}/gitlab/projects`).then((r) => r.bindings)
+export function fetchGitlabProjects(orgId?: string): Promise<GitlabProjectBindingDto[]> {
+  return apiGet<{ bindings: GitlabProjectBindingDto[] }>(`${orgBase(orgId)}/gitlab/projects`).then((r) => r.bindings)
 }
 
 /** Bind a project. The server re-fetches it and requires current Maintainer or

@@ -271,7 +271,10 @@ export default function AgentDetailView() {
   const githubHooks = agentHooks.filter((h) => h.kind === 'github')
   const gitlabHooks = agentHooks.filter((h) => h.kind === 'gitlab')
   // The project bindings name each project's member bots, so a row can show the one this agent acts as.
-  const gitlabBindings = useGitlabProjectBindings(gitlabHooks.length > 0)
+  // The watched projects are the read's identity: adding or removing one re-reads instead of waiting.
+  const gitlabBindings = useGitlabProjectBindings(
+    gitlabHooks.length > 0 ? gitlabHooks.map((h) => h.repoId ?? h.repoFullName ?? h.id).join(',') : null
+  )
   const githubInstallationsKey =
     activeOrg && githubHooks.length > 0 ? (['github-review-installations', activeOrg.id] as const) : null
   const { data: githubInstallationsData } = useSWR<GithubInstallationDto[]>(githubInstallationsKey, () =>
@@ -1727,7 +1730,13 @@ export default function AgentDetailView() {
                               <span className="mono min-w-[90px] flex-1 truncate text-[12px] text-(--text-primary)">
                                 {h.repoFullName ?? h.name}
                               </span>
-                              <GitlabBotChip bot={gitlabAgentBot(gitlabBindings, h.repoFullName, da.id)} />
+                              <GitlabBotChip
+                                bot={gitlabAgentBot(
+                                  gitlabBindings,
+                                  { projectId: h.repoId, projectPath: h.repoFullName },
+                                  da.id
+                                )}
+                              />
                               {gitlabHookNeedsNormalization(h) && (
                                 <span
                                   className="badge flex-none bg-(--surface-active) text-(--text-tertiary)"

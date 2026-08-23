@@ -71,12 +71,16 @@ export function gitlabStateReasonText(reason: string | null): string | null {
  *  which is where the console names an agent's GitLab identity (§18.1). */
 export function gitlabAgentBot(
   bindings: readonly GitlabProjectBindingDto[],
-  projectPath: string | null | undefined,
+  project: { projectId?: string | null; projectPath?: string | null },
   agentId: string
 ): GitlabProjectAccountDto | null {
-  if (!projectPath) return null
-  const wanted = projectPath.toLowerCase()
-  const binding = bindings.find((candidate) => candidate.projectPath.toLowerCase() === wanted)
+  // The numeric id survives a project rename; the path is display-only, so it answers for a row carrying no id.
+  const path = project.projectPath?.toLowerCase()
+  const binding = bindings.find((candidate) =>
+    project.projectId
+      ? candidate.projectId === project.projectId
+      : path !== undefined && candidate.projectPath.toLowerCase() === path
+  )
   return binding?.accounts.find((account) => account.agentId === agentId) ?? null
 }
 

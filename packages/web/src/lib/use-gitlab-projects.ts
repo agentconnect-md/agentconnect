@@ -66,14 +66,27 @@ export interface GitlabProjectPicker {
 }
 
 /** The organization's managed project bindings, read-only: one request shared by SWR key with
- *  every surface that names a project's bots. A deployment with no GitLab application has none. */
-export function useGitlabProjectBindings(enabled: boolean): GitlabProjectBindingDto[] {
+ *  every surface that names a project's bots. A deployment with no GitLab application has none.
+ *  `consumers` identifies what the caller reads bots for — null reads nothing at all. */
+export function useGitlabProjectBindings(consumers: string | null): GitlabProjectBindingDto[] {
   const { activeOrg } = useOrgs()
-  const { data } = useSWR(
-    enabled ? consoleKeys.gitlabProjects(activeOrg?.id) : null,
-    () => fetchGitlabProjects().catch(absentAsEmpty),
+  const { data, mutate } = useSWR(
+    consumers === null ? null : consoleKeys.gitlabProjects(activeOrg?.id),
+    ([, orgId]) => fetchGitlabProjects(orgId).catch(absentAsEmpty),
     { refreshInterval: BINDINGS_REFRESH_MS }
   )
+  // Bots are created and retired behind project, hook, and workspace writes, so a changed consumer
+  // set re-reads at once instead of showing the row it just saved without its bot until the poll.
+  const read = useRef<string | null>(null)
+  useEffect(() => {
+    if (consumers === null || read.current === null) {
+      read.current = consumers
+      return
+    }
+    if (read.current === consumers) return
+    read.current = consumers
+    void mutate()
+  }, [consumers, mutate])
   return data ?? []
 }
 

@@ -139,8 +139,11 @@ export function WorkspaceCard({
   const remoteLabel = header?.remoteLabel ?? (isGitlab ? 'GitLab' : 'GitHub')
   // A GitLab workspace pushes as this agent's project bot, the way a GitHub workspace pushes as the
   // App installation — so the source line names it (gitlab-com-integration.md §18.1).
-  const gitlabBindings = useGitlabProjectBindings(isGitlab)
-  const bot = gitlabAgentBot(gitlabBindings, isGitlab ? ws.repo : null, agent.id)
+  const gitlabProject = isGitlab ? { projectId: ws.projectId, projectPath: ws.repo } : null
+  const gitlabBindings = useGitlabProjectBindings(
+    gitlabProject && (gitlabProject.projectId ?? gitlabProject.projectPath)
+  )
+  const bot = gitlabProject ? gitlabAgentBot(gitlabBindings, gitlabProject, agent.id) : null
   const botReason = bot ? gitlabStateReasonText(bot.stateReason) : null
 
   // The segment is the conversion entry point; picking the mode the agent is
