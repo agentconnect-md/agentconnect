@@ -860,6 +860,40 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       expect(backfilled).toMatchObject({ trigger: 'off', triggerChosen: true })
     })
 
+    // §14.8 provenance is conversation-level, so it has to survive the owner-removal
+    // lifecycle the backfill exists for: the row that RECORDED the decision goes away
+    // with its integration, and a surviving sibling must not read the value it inherited
+    // as an undecided default.
+    it('carries the human decision onto a sibling backfilled long after it (§14.8)', async () => {
+      gatedAgents = new Set([ALICE, BOB])
+      channels = [
+        channel({
+          integrationId: INT_A,
+          channelId: 'D42',
+          kind: 'im',
+          trigger: 'off',
+          triggerChosen: true,
+          agentId: ALICE
+        })
+      ]
+      const orch = makeOrch(PLATFORMS, undefined, async () => new Map([['D42', 'any' as const]]))
+
+      // The sibling install arrives after the decision and is backfilled by ordinary
+      // convergence, which never passes `chosen` of its own.
+      await orch.prepareIntegrationRemoval(BOT)
+      const sibling = channels.find((c) => c.integrationId === INT_B && c.channelId === 'D42')
+      expect(sibling).toMatchObject({ trigger: 'off', triggerChosen: true })
+
+      // The owner integration is now gone with the row that recorded the decision.
+      channels = channels.filter((c) => c.integrationId !== INT_A)
+      integrations = integrations.filter((i) => i.id !== INT_A)
+      await orch.syncBot(BOT)
+      expect(channels.find((c) => c.integrationId === INT_B && c.channelId === 'D42')).toMatchObject({
+        trigger: 'off',
+        triggerChosen: true
+      })
+    })
+
     it('reportConversation opens a gated DM with a member of the agent’s own audience (§14.8)', async () => {
       gatedAgents = new Set([ALICE])
       channels = []

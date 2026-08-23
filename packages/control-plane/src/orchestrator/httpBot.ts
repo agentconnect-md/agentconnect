@@ -782,8 +782,17 @@ export class HttpBotOrchestrator {
       if (!owner) continue
       const persistedOwner = conversationRows.some((row) => row.agentId === owner.agentId)
       const ownerRow = conversationOwnerRow(owner, conversationRows)
+      // Provenance is CONVERSATION-level, exactly like the trigger it qualifies, and is
+      // read from ANY row: a human decides a conversation once, but the decision is
+      // repeated per install, and the row that recorded it can be deleted with its
+      // integration while siblings survive. Reading it from the owner row alone would
+      // lose the decision on precisely the owner-removal path this method exists for.
+      const chosen = conversationRows.some((row) => row.triggerChosen)
       let trigger = ownerRow?.trigger
-      if (!persistedOwner) {
+      // A decision outranks every default: a conversation a human has ruled on is not
+      // re-derived, whoever ends up owning it. Only an undecided one falls through to
+      // the gated rule below.
+      if (!persistedOwner && !chosen) {
         const ownerAgent = await this.agents.getUnscoped(owner.agentId)
         // A gated agent inheriting a conversation it never owned fails closed — with
         // §14.8's one exception, re-derived here rather than trusted from the row: the
@@ -807,7 +816,11 @@ export class HttpBotOrchestrator {
       )
       if (!canonical || conflicting)
         await this.persistConversationOwner(installs, channelId, owner, conversationRows[0])
-      if (trigger !== undefined) await this.syncConversationTrigger(installs, channelId, trigger, conversationRows)
+      // Replicating, not introducing: `chosen` came from the rows themselves, so a
+      // sibling backfilled here — including one added long after the decision — carries
+      // the same provenance as the value it is given.
+      if (trigger !== undefined)
+        await this.syncConversationTrigger(installs, channelId, trigger, conversationRows, { chosen })
     }
   }
 

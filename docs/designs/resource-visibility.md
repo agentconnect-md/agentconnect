@@ -1020,11 +1020,20 @@ results does not depend on the order the three events arrive in.
 **A catch-up only ever touches a row still at its DEFAULT.** That is what
 `integration_channel.triggerChosen` exists for: it is set the moment a human
 picks a conversation's trigger, in the Console or the in-Slack modal, and never
-cleared. It has to be as complete as the trigger it accompanies — a shared bot's
-convergence writes the chosen trigger across every sibling row, so under a human
-decision a row that already carries the value, or one the same call backfills
-with it, is marked too. Skipping those as no-ops is what would leave a
-deliberate Off indistinguishable from an untouched default. Without it a stored Off is indistinguishable from an operator's own
+cleared.
+
+It has to be as complete as the trigger it accompanies, because on a shared bot
+the trigger is CONVERSATION-level state repeated across one row per install. So
+the marker replicates exactly the same way: a human decision marks every sibling
+row, including one that already carries the value and one the same call
+backfills with it; ownership convergence reads the flag from ANY row of the
+conversation and carries it onto siblings it backfills later. That last part is
+what survives the owner-removal lifecycle — the row that RECORDED the decision
+is deleted with its integration while siblings live on, and reading provenance
+from the owner row alone would lose the decision on precisely the path the
+backfill exists for. For the same reason **a decided conversation is never
+re-derived**: a gated agent inheriting one keeps its trigger instead of
+recomputing the §14.2/§14.8 default over it. Without it a stored Off is indistinguishable from an operator's own
 choice — §14.2 lets an editor close a DM §14.8 opened — and a catch-up would
 reopen that DM on the next sharing edit or profile refresh, turning a DEFAULT
 into a standing rule that overrides the per-conversation control.
