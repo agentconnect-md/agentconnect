@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { CODE_HOST_PROVIDERS, GENERIC_HOOK_KIND, HOOK_KINDS, isCodeHostHookKind } from '@agentconnect.md/protocol'
 import {
   mergeSessionDetailUsage,
   sessionFromDetailDto,
@@ -14,7 +15,13 @@ import {
   sessionSenderLabel,
   sessionTranscriptAgentIds,
   sessionTriggerFilterValue,
-  sessionTriggerKind
+  sessionTriggerKind,
+  hookKindFromIntegration,
+  hookSourceLabel,
+  primaryHookKind,
+  HOOK_KIND_GROUP_LABEL,
+  HOOK_KIND_LABEL,
+  HOOK_TRIGGER_KINDS
 } from './session-trigger'
 
 const sessionDto = (overrides: Partial<SessionDto>): SessionDto => ({
@@ -408,5 +415,84 @@ describe('retention-GC purge mark (#485)', () => {
     } satisfies SessionDetailDto
 
     expect(sessionFromDetailDto(detail).contentPurgedAt).toBe('2026-08-04T09:00:00.000Z')
+  })
+})
+
+/**
+ * The session source taxonomy, walked over the WHOLE hook-kind vocabulary rather than
+ * the hosts that exist today. GitLab regressed because the console kept its own copy of
+ * the union and a code host could be left out of it: the row then folded into the
+ * generic webhook rendering and dropped out of the trigger filter entirely. Every
+ * assertion here is derived, so a new code host has to earn its own mapping.
+ */
+describe('hook-kind taxonomy', () => {
+  const agents = { has: () => false }
+
+  it('makes every hook kind its own trigger kind', () => {
+    for (const kind of HOOK_KINDS) {
+      expect(sessionTriggerKind({ triggeredBy: 'hook:h1', hookKind: kind }, agents)).toBe(kind)
+    }
+    // The generic kind is the mapping for an UNRESOLVED hook, not a catch-all for
+    // kinds nobody mapped — that distinction is the whole fix.
+    expect(sessionTriggerKind({ triggeredBy: 'hook:h1' }, agents)).toBe(GENERIC_HOOK_KIND)
+  })
+
+  it('gives every code-host kind a distinct, non-generic label, group and platform', () => {
+    for (const provider of CODE_HOST_PROVIDERS) {
+      expect(isCodeHostHookKind(provider)).toBe(true)
+      expect(HOOK_KIND_LABEL[provider]).not.toBe(HOOK_KIND_LABEL[GENERIC_HOOK_KIND])
+      expect(HOOK_KIND_GROUP_LABEL[provider]).not.toBe(HOOK_KIND_GROUP_LABEL[GENERIC_HOOK_KIND])
+      expect(sessionPlatform({ platform: 'hook', hookKind: provider })).toBe(provider)
+    }
+    // Only the generic kind keeps the raw routing platform.
+    expect(sessionPlatform({ platform: 'hook', hookKind: GENERIC_HOOK_KIND })).toBe('hook')
+    expect(new Set(HOOK_KINDS.map((kind) => HOOK_KIND_LABEL[kind])).size).toBe(HOOK_KINDS.length)
+    expect(new Set(HOOK_KINDS.map((kind) => HOOK_KIND_GROUP_LABEL[kind])).size).toBe(HOOK_KINDS.length)
+  })
+
+  it('keeps the hook-kind labels in step with the platform label chain', () => {
+    for (const kind of HOOK_KINDS) expect(HOOK_KIND_LABEL[kind]).toBe(platName(kind))
+  })
+
+  it('names an unnamed hook by its source', () => {
+    expect(hookSourceLabel('gitlab')).toBe('GitLab')
+    expect(hookSourceLabel('github')).toBe('GitHub')
+    // A hook the CP could not resolve carries no kind, so generic is all it can say.
+    expect(hookSourceLabel(null)).toBe('Webhook')
+  })
+
+  it('orders the trigger groups code hosts first and covers the vocabulary exactly', () => {
+    expect([...HOOK_TRIGGER_KINDS]).toEqual([...CODE_HOST_PROVIDERS, GENERIC_HOOK_KIND])
+    expect([...HOOK_TRIGGER_KINDS].sort()).toEqual([...HOOK_KINDS].sort())
+  })
+
+  it('reads a hook kind back off the integration facet the server promoted', () => {
+    for (const provider of CODE_HOST_PROVIDERS) expect(hookKindFromIntegration(provider)).toBe(provider)
+    expect(hookKindFromIntegration('hook')).toBe(GENERIC_HOOK_KIND)
+    expect(hookKindFromIntegration('slack')).toBeUndefined()
+  })
+
+  it('represents a mixed trigger set by its code host, never by the generic mark', () => {
+    for (const provider of CODE_HOST_PROVIDERS) {
+      expect(primaryHookKind([GENERIC_HOOK_KIND, provider])).toBe(provider)
+    }
+    expect(primaryHookKind([GENERIC_HOOK_KIND])).toBe(GENERIC_HOOK_KIND)
+    expect(primaryHookKind([])).toBeUndefined()
+  })
+
+  it('carries the kind onto the session row so a GitLab delivery never reads as a webhook', () => {
+    const row = sessionFromDto(
+      sessionDto({
+        sessionKey: { platform: 'hook', channel: 'gitlab-hook-1' },
+        triggeredBy: 'hook:gitlab-hook-1',
+        hookKind: 'gitlab'
+      })
+    )
+
+    expect(row.hookKind).toBe('gitlab')
+    expect(sessionPlatform(row)).toBe('gitlab')
+    // Negative control: both cells named the generic endpoint before the fix.
+    expect(row.channel).toBe('GitLab')
+    expect(row.user).toBe('GitLab')
   })
 })

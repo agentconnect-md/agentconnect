@@ -10,6 +10,7 @@
  */
 import Fastify, { type FastifyInstance } from 'fastify'
 import { describe, expect, it, vi } from 'vitest'
+import { HOOK_KINDS, isCodeHostHookKind } from '@agentconnect.md/protocol'
 import type { HttpDeps } from '../deps.js'
 import type { SessionPageQuery, SessionPageRecord } from '../../persistence/ports.js'
 import { installZod } from '../plugins/zod.js'
@@ -59,11 +60,16 @@ const hookRows = [
   { id: WEBHOOK, agentId: AGENT_ID, kind: 'webhook', name: 'acme/build', repoId: null }
 ]
 
-function fakeDeps() {
+/** A hook session as the LIST projection reads it — the visibility trio the row DTO requires. */
+function pageRow(hookId: string, id: string) {
+  return { ...hookSession(hookId, id), visibility: 'org', externalProvider: null, externalResolution: null }
+}
+
+function fakeDeps(pageSessions: ReturnType<typeof pageRow>[] = []) {
   const listFacets = vi.fn(async () => facetIndex)
   const listPage = vi.fn<(q: SessionPageQuery) => Promise<SessionPageRecord>>(async () => ({
-    sessions: [],
-    total: 0,
+    sessions: pageSessions as unknown as SessionPageRecord['sessions'],
+    total: pageSessions.length,
     hasMore: false
   }))
   const listIdsForOrgKind = vi.fn(async (_orgId: string, kind: string) =>
@@ -153,5 +159,49 @@ describe('session integration facets across code hosts', () => {
 
     expect(res.statusCode).toBe(200)
     expect(listIdsForOrgKind).not.toHaveBeenCalled()
+  })
+
+  // The taxonomy is derived from the shared hook-kind vocabulary, so this walks the
+  // whole vocabulary rather than the two hosts that happen to exist today: every code
+  // host must project a facet of its own, and only the generic kind may say 'hook'.
+  it('gives every code-host kind a distinct, non-generic facet', async () => {
+    const hookById = new Map(hookRows.map((hook) => [hook.kind, hook.id]))
+    const { deps } = fakeDeps()
+    const res = await (await app(deps)).inject({ method: 'GET', url: '/sessions/facets' })
+    const triggers = (res.json() as { triggers: Array<{ value: string; integration: string; hookKind: string }> })
+      .triggers
+    const facetOf = (kind: string) => triggers.find((t) => t.value === `hook:${hookById.get(kind)}`)
+
+    const projected = HOOK_KINDS.map((kind) => [kind, facetOf(kind)?.integration] as const)
+    for (const [kind, integration] of projected) {
+      expect(facetOf(kind)?.hookKind).toBe(kind)
+      expect(integration).toBe(isCodeHostHookKind(kind) ? kind : 'hook')
+    }
+    // Distinctness is the property that failed in live testing: GitLab shared the
+    // generic bucket, so its sessions were unreachable from the integration filter.
+    expect(new Set(projected.map(([, integration]) => integration)).size).toBe(HOOK_KINDS.length)
+  })
+
+  it('carries the hook kind on the session row so the console never has to guess', async () => {
+    const { deps } = fakeDeps([pageRow(GITLAB_HOOK, 'sess-gitlab')])
+    const res = await (await app(deps)).inject({ method: 'GET', url: '/sessions?view=flat' })
+
+    expect(res.statusCode).toBe(200)
+    const [session] = (res.json() as { sessions: Array<{ hookKind: string; triggeredByName: string }> }).sessions
+    expect(session?.hookKind).toBe('gitlab')
+    expect(session?.triggeredByName).toBe('acme/platform')
+  })
+
+  it('names the source of an unnamed hook instead of calling every kind a webhook', async () => {
+    // A hook reassigned to another agent keeps its kind but loses its name for these
+    // historical rows, which is exactly when the generic label used to take over.
+    const { deps } = fakeDeps([pageRow(GITLAB_HOOK, 'sess-gitlab')])
+    deps.repos.hook.getMany = vi.fn(async () => [
+      { id: GITLAB_HOOK, agentId: 'agent-2', kind: 'gitlab', name: 'acme/platform', repoId: 4210n }
+    ]) as unknown as typeof deps.repos.hook.getMany
+    const res = await (await app(deps)).inject({ method: 'GET', url: '/sessions?view=flat' })
+
+    const [session] = (res.json() as { sessions: Array<{ hookKind: string; triggeredByName: string }> }).sessions
+    expect(session?.triggeredByName).toBe('GitLab')
   })
 })

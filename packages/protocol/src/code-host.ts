@@ -16,6 +16,24 @@ export function isCodeHostProvider(value: unknown): value is CodeHostProvider {
   return typeof value === 'string' && (CODE_HOST_PROVIDERS as readonly string[]).includes(value)
 }
 
+/** The generic inbound endpoint — the one hook kind that is not a code host. */
+export const GENERIC_HOOK_KIND = 'webhook'
+
+/**
+ * Inbound-trigger source vocabulary: the generic endpoint plus one entry per code
+ * host. Deriving it from `CODE_HOST_PROVIDERS` is what makes a new host a
+ * compile-time event — every `Record<HookKind, …>` mapping over this union stops
+ * type-checking until it is given an entry, so no host can silently inherit the
+ * generic webhook rendering the way GitLab once did.
+ */
+export const HOOK_KINDS = [GENERIC_HOOK_KIND, ...CODE_HOST_PROVIDERS] as const
+export type HookKind = (typeof HOOK_KINDS)[number]
+
+/** A hook kind that identifies a code host, as opposed to the generic endpoint. */
+export function isCodeHostHookKind(kind: HookKind): kind is CodeHostProvider {
+  return kind !== GENERIC_HOOK_KIND
+}
+
 /**
  * Wire form for provider fields — an OPEN string, mirroring the KNOWN_PLATFORMS
  * precedent (frames/route.ts): zod rejects unknown enum values wholesale, and an

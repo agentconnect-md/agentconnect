@@ -13,6 +13,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Session } from '@/lib/data'
+import { HOOK_KIND_GROUP_LABEL, HOOK_TRIGGER_KINDS } from '@/lib/session-trigger'
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
@@ -188,5 +189,37 @@ describe('SessionsView, GitLab triggers', () => {
     )!
     await act(async () => option.click())
     expect(mocks.replace).toHaveBeenCalledWith('/acme/sessions?trigger=hook%3Agl-1')
+  })
+})
+
+/**
+ * The trigger menu is built by walking the hook-kind vocabulary, not by listing the
+ * hosts that exist today — the bug was a `switch` whose arms were written by hand, so a
+ * kind nobody had added an arm for was collected nowhere and vanished from the menu.
+ */
+describe('SessionsView, trigger groups per hook kind', () => {
+  it('offers one group per hook kind, code hosts before generic webhooks', async () => {
+    mocks.sessions = [gitlabSession]
+    mocks.triggers = HOOK_TRIGGER_KINDS.map((kind) => ({
+      value: `hook:${kind}-1`,
+      integration: 'hook',
+      name: `acme/${kind}`,
+      hookKind: kind,
+      githubRepoId: null
+    }))
+    await render()
+    await openFilterMenu('triggers')
+
+    const headers = Array.from(document.querySelectorAll('.fhdr')).map((node) => node.textContent)
+    // Every kind earns its own heading, in the vocabulary's display order.
+    expect(headers).toEqual(HOOK_TRIGGER_KINDS.map((kind) => HOOK_KIND_GROUP_LABEL[kind]))
+    // Each group holds exactly its own subscription — nothing pooled into one bucket.
+    for (const kind of HOOK_TRIGGER_KINDS) {
+      const group = Array.from(document.querySelectorAll('.fhdr')).find(
+        (node) => node.textContent === HOOK_KIND_GROUP_LABEL[kind]
+      )!.parentElement!
+      const labels = Array.from(group.querySelectorAll('button')).map((button) => button.textContent)
+      expect(labels).toEqual([`acme/${kind}`])
+    }
   })
 })

@@ -1,10 +1,22 @@
+import type { ReactNode } from 'react'
 import { GithubMark, GitlabMark, PlatformMark } from '@/components/marks'
 import type { HookKind } from '@/lib/api'
 
-const HOOK_KIND_TITLE: Record<HookKind, string> = {
-  github: 'GitHub events',
-  gitlab: 'GitLab events',
-  webhook: 'Inbound webhook'
+// Total over the hook-kind vocabulary, so a new code host is given its own mark here
+// instead of inheriting the generic webhook glyph. The webhook mark is the brand-pink
+// plate rather than a white glyph, which had nothing to sit on when unplated on dark.
+const HOOK_KIND_MARK: Record<HookKind, ReactNode> = {
+  github: (
+    <span className="flex h-[13px] w-[13px] items-center justify-center">
+      <GithubMark fillPct={90} />
+    </span>
+  ),
+  gitlab: (
+    <span className="flex h-[13px] w-[13px] items-center justify-center">
+      <GitlabMark fillPct={90} />
+    </span>
+  ),
+  webhook: <PlatformMark platform="webhook" />
 }
 
 interface IntegrationMarkSource {
@@ -37,25 +49,13 @@ export function IntegrationMarks({
             <PlatformMark platform={integration.platform} />
           </span>
         ))}
+        {/* No hover title: these sit beside platform marks, which carry none either. */}
         {visibleHookKinds.map((kind, index) => (
           <span
             key={kind}
             className={`imark h-[21px] w-[21px] ${visibleIntegrations.length + index === 0 ? '' : 'imark-overlap -ml-[7px]'}`}
-            title={HOOK_KIND_TITLE[kind]}
           >
-            {kind === 'github' ? (
-              <span className="flex h-[13px] w-[13px] items-center justify-center">
-                <GithubMark fillPct={90} />
-              </span>
-            ) : kind === 'gitlab' ? (
-              <span className="flex h-[13px] w-[13px] items-center justify-center">
-                <GitlabMark fillPct={90} />
-              </span>
-            ) : (
-              // The brand-pink webhook mark, not a white glyph on an inverted plate:
-              // unplated on dark, that glyph had nothing left to sit on.
-              <PlatformMark platform="webhook" />
-            )}
+            {HOOK_KIND_MARK[kind]}
           </span>
         ))}
       </span>

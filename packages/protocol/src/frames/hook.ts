@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { CodeHostExternalId, CodeHostProviderString } from '../code-host.js'
+import { CodeHostExternalId, CodeHostProviderString, HOOK_KINDS } from '../code-host.js'
 
 /** Decimal wire form for Prisma/GitHub bigint values. */
 export const HookBigIntString = z.string().regex(/^(?:0|[1-9]\d*)$/)
@@ -190,7 +190,7 @@ export type PublishedHookOutput = z.infer<typeof PublishedHookOutput>
  * (P2) are untrusted third-party content the daemon fences in the prompt.
  */
 export const HookContext = z.object({
-  source: z.enum(['webhook', 'github', 'gitlab']),
+  source: z.enum(HOOK_KINDS),
   // ── github (P2) ──
   event: z.string().optional(), // 'issues' | 'pull_request' | 'issue_comment'
   action: z.string().optional(), // 'opened' | 'synchronize' | 'created' | …
