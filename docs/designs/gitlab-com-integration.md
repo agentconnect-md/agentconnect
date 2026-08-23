@@ -1698,6 +1698,18 @@ verified-external-cleanup discipline; lost administration authority degrades
 the account rows to `cleanup_pending` with the same reconnect-or-transfer
 exits.
 
+GitLab removes a user asynchronously, so the run that asks for the deletion
+cannot witness it: an account still listed immediately after an accepted delete
+is a deletion in flight, not a refusal. That run records `deletion_pending` and
+returns; a background retirement sweep re-reads the top-level group's
+service-account listing on a bounded cadence and closes the retirement out on
+the absence the paragraph above requires. The sweep re-drives the whole
+retirement rather than only observing it, so a run that failed part-way — an
+unconfirmed revocation, a refused delete — is finished rather than stranded,
+and a row never leaves the sweep's worklist by failing differently. A project
+removal that stopped on a pending deletion keeps its claim and completes once
+the sweep proves the account gone.
+
 If external cleanup cannot complete, retain a sealed, access-restricted
 tombstone only for bounded cleanup retries and mark `cleanup_pending`. Local
 authority remains disabled. The Console provides the exact GitLab resources

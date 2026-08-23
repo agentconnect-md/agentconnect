@@ -3455,6 +3455,10 @@ export interface GitlabAgentAccountRepo {
   /** Every account holding a membership on the binding (§12.1 veto set, DTO). */
   listForBinding(bindingId: string): Promise<GitlabAgentAccountRecord[]>
   listForAgent(orgId: string, agentId: string): Promise<GitlabAgentAccountRecord[]>
+  /** Retirement sweep worklist (§19.4): every account whose retirement is still
+   *  owed external cleanup, untouched since `before`. Keyed on the lifecycle, not
+   *  on a reason — a row must not fall out of the sweep by failing differently. */
+  listUnfinishedRetirements(before: Date, limit: number): Promise<GitlabAgentAccountRecord[]>
   update(
     accountId: string,
     patch: Partial<{

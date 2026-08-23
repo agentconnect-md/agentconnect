@@ -619,6 +619,15 @@ export class PgGitlabAgentAccountRepo implements GitlabAgentAccountRepo {
     return rows.map(toAccountRecord)
   }
 
+  async listUnfinishedRetirements(before: Date, limit: number): Promise<GitlabAgentAccountRecord[]> {
+    const rows = await this.prisma.gitlabAgentAccount.findMany({
+      orderBy: { updatedAt: 'asc' },
+      where: { lifecycle: 'retiring', state: 'cleanup_pending', updatedAt: { lt: before } },
+      take: limit
+    })
+    return rows.map(toAccountRecord)
+  }
+
   async update(
     accountId: string,
     patch: Partial<{
