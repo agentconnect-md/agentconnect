@@ -1066,8 +1066,13 @@ describe('GitlabProvisioner (§10.2) — per-agent identity', () => {
     expect((await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))!.convergeOwedAt).not.toBeNull()
     await h.accounts.releaseLease(account.id, 'peer')
 
-    // Removal takes the claim; convergence can never acquire it again, so the
-    // obligation is void whether or not the removal itself completes.
+    // Taking the claim for cleanup discharges the obligation in the SAME
+    // transaction: past that point convergence can never acquire the claim, so
+    // an obligation surviving the flip is one nothing could satisfy.
+    expect(await h.bindings.beginCleanup(DEFAULT_ORG_ID, h.binding.id, PROJECT, new Date())).toBe(true)
+    expect((await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))!.convergeOwedAt).toBeNull()
+    expect(await h.bindings.listConvergeOwed(new Date(Date.now() + 1_000), 50)).toHaveLength(0)
+
     expect((await h.provisioner.disconnect(DEFAULT_ORG_ID, h.binding.id)).removed).toBe(false)
     expect((await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))!.state).toBe('cleanup_pending')
     expect(await h.bindings.listConvergeOwed(new Date(Date.now() + 1_000), 50)).toHaveLength(0)

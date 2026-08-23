@@ -481,18 +481,32 @@ export class PgGitlabProjectBindingRepo implements GitlabProjectBindingRepo {
     const attached = await this.prisma.codeHostRepositoryClaim.count({
       where: { provider: 'gitlab', externalId: projectId, orgId, bindingRef: bindingId }
     })
-    if (attached === 0) return true
-    const res = await this.prisma.codeHostRepositoryClaim.updateMany({
-      where: {
-        provider: 'gitlab',
-        externalId: projectId,
-        orgId,
-        bindingRef: bindingId,
-        OR: [{ opOwner: null }, { opLeaseUntil: { lt: now } }]
-      },
-      data: { state: 'cleanup_pending', opOwner: null, opLeaseUntil: null }
+    if (attached === 0) {
+      await this.prisma.gitlabProjectBinding.updateMany({
+        where: { id: bindingId, orgId },
+        data: { convergeOwedAt: null }
+      })
+      return true
+    }
+    // The claim flip and the convergence discharge are ONE transaction: past
+    // this point provisioning can never acquire the claim, so an obligation
+    // surviving the flip is one nothing could ever satisfy — and it would hold
+    // the console at "converging" forever.
+    return this.prisma.$transaction(async (tx) => {
+      const res = await tx.codeHostRepositoryClaim.updateMany({
+        where: {
+          provider: 'gitlab',
+          externalId: projectId,
+          orgId,
+          bindingRef: bindingId,
+          OR: [{ opOwner: null }, { opLeaseUntil: { lt: now } }]
+        },
+        data: { state: 'cleanup_pending', opOwner: null, opLeaseUntil: null }
+      })
+      if (res.count !== 1) return false
+      await tx.gitlabProjectBinding.updateMany({ where: { id: bindingId, orgId }, data: { convergeOwedAt: null } })
+      return true
     })
-    return res.count === 1
   }
 
   async removeWithClaim(orgId: string, bindingId: string, projectId: bigint): Promise<boolean> {
