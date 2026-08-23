@@ -12056,9 +12056,6 @@ export class Daemon {
   private async ensureHostAsync(agentId: string, opts: { allowAgentDrain?: boolean } = {}): Promise<AcpHost> {
     const assertStartAllowed = (): void => {
       if (this.draining) throw new Error(`host start blocked while daemon is draining (${agentId})`)
-      if (this.workspaceDispatchFences.has(agentId)) {
-        throw new Error(`host start blocked while a workspace mutation is in progress (${agentId})`)
-      }
       // Already-admitted work in another logical session may keep using the warm
       // host while a conversation-scoped interrupt drains. It may not allocate a
       // replacement after that host/start generation has been evicted.
@@ -12069,10 +12066,21 @@ export class Daemon {
         throw new Error(`host start blocked while agent is draining (${agentId})`)
       }
     }
+    // A workspace mutation is a transient exclusion, not a refusal: join the fence and re-read the
+    // hard gates. The spawn queues behind the same per-agent tail one call deeper anyway, so waiting
+    // costs the same as failing did — and a cleanup for an unrelated session's worktree no longer
+    // kills an already-admitted cold turn.
+    const admitStart = async (): Promise<void> => {
+      assertStartAllowed()
+      while (this.workspaceDispatchFences.has(agentId)) {
+        await this.waitForWorkspaceDispatchFence(agentId)
+        assertStartAllowed()
+      }
+    }
     // The ordinary dispatch gates are the primary admission boundary; repeat them at
     // the lifecycle resource boundary so an already-admitted cold turn cannot spawn a
     // replacement child after reconcile/stop has begun.
-    assertStartAllowed()
+    await admitStart()
     // If this agent's previous host is mid-teardown, wait it out before (re)spawning
     // — otherwise we'd boot a second child while the first is still SIGTERM-ing.
     const stopping = this.hostStopping.get(agentId)
@@ -12080,7 +12088,7 @@ export class Daemon {
       await stopping
       // A reconcile gate may have been installed while this call waited. Re-check at
       // the exact promise boundary before allocating a new start generation.
-      assertStartAllowed()
+      await admitStart()
     }
     let p = this.hostStarts.get(agentId)
     if (!p) {
