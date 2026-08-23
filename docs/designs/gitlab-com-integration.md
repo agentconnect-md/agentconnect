@@ -1737,10 +1737,9 @@ both are projected into process configuration at boot. Plain
 `GITLAB_CLIENT_ID` / `GITLAB_CLIENT_SECRET` environment variables remain only
 the no-document fallback, mirroring the GitHub App credentials. The
 implementation has no `GITLAB_BASE_URL` or host override in v1: OAuth, API, and
-Git remotes are pinned to GitLab.com. Self-managed instances are extended by
-[gitlab-self-managed.md](gitlab-self-managed.md). The Web UI learns
-availability from the authenticated API instead of a build-time public
-environment flag.
+Git remotes are pinned to GitLab.com; Section 24 removes the pin for
+self-managed instances. The Web UI learns availability from the authenticated
+API instead of a build-time public environment flag.
 
 ## 19. Failure, Recovery, and Removal
 
@@ -2155,11 +2154,239 @@ Validation must also scan source, generated examples, fixtures, logs, and PR
 prose for real deployment addresses, account identifiers, OAuth application
 IDs, tokens, and signing secrets.
 
-## 24. References
+## 24. Self-Managed Instances
+
+> Status: **Proposed.** Everything above is implemented and pinned to
+> GitLab.com; this section removes the pin. Scope: **GitLab Self-Managed
+> 18.11 or later, one instance per deployment** — a deployment connects to
+> GitLab.com or to one self-managed instance, never both. GitLab Dedicated,
+> plain HTTP, mTLS, SSH remotes, and instances below the floor stay outside
+> the contract. Platform assumptions verified 2026-08-23.
+
+A self-managed instance is the same product against a different origin. The
+identity model, credential purposes, webhook verification, event mapping,
+session keys, review publication, and projection all stand unchanged, so this
+section is only as large as the delta: a host axis, a version floor, a
+creation-authority difference, and one feature string.
+
+### 24.1 One Instance, One Axis
+
+The Setup Server's GitLab document entry gains one value — the instance base
+URL — beside the OAuth application registered on that instance, and
+`GITLAB_BASE_URL` joins the managed environment keys with the same
+no-document fallback as the client pair. Absent means `https://gitlab.com`:
+the default value of the axis, not a separate mode, so existing deployments
+change nothing and no code path branches on "is this GitLab.com".
+
+Normalization happens once, where the application configuration is resolved:
+HTTPS only; userinfo, query, and fragment refused; host lower-cased,
+non-default port preserved, trailing slash stripped, and a path prefix
+preserved, because a relative URL root is a first-class install shape. API
+and OAuth URLs are composed by concatenation onto the normalized base — never
+by URL resolution against an absolute path, which silently discards a prefix.
+Clone URLs are never composed: the persisted `http_url_to_repo` is already
+correct on any host, and the three places that synthesize
+`https://gitlab.com/<path>` today are deleted rather than parameterized.
+
+**The base URL is immutable while GitLab state exists.** Connections, PATs,
+numeric project IDs, claims, and cleanup obligations carry no instance
+provenance, so retargeting the value would send the old host's credentials
+and host-relative IDs to the new one. A save that changes an effective base
+URL — including unsetting it — is refused with a named reason while any
+GitLab connection, binding, account, hook, tombstone, or pending cleanup
+obligation exists; changing instances means disconnecting first, which walks
+the ordinary removal path of Section 19. This is the whole rollback story,
+and it is what keeps resources free of a per-row instance column.
+
+Multi-instance is a non-goal with one blocking fact: the deployment-global
+repository claim's uniqueness key `(provider, externalId)` is only unique
+within one instance. Revisit for a customer with two instances they intend to
+keep; the claim-key migration is the first pull request then.
+
+### 24.2 The 18.11 Floor
+
+Service accounts became generally available on every tier, Community Edition
+included, at 18.11; below it the Free-tier answer hides behind instance
+feature flags the API does not report. Enforcement is two-stage: the Setup
+Server issues an unauthenticated `GET /api/v4/version` when the URL is saved
+— a healthy API root answers `401`, proving DNS, TLS trust, and shape, the
+things that fail more often than the version — and the Control Plane parses
+the authenticated version at first credentialed contact, recording it on the
+deployment and refreshing it on reconciliation. Below the floor, or
+unparseable (fail closed), the connection is refused with
+`instance_version_unsupported` before provisioning begins. The floor gates
+provisioning, not runtime: an instance downgraded under live bindings keeps
+serving existing sessions until credentials expire, the bounded degradation
+of Section 19.1.
+
+Only URL shape blocks a Setup Server save; unreachability and an untrusted
+chain warn, because the Setup Server and the Control Plane need not share a
+network position.
+
+### 24.3 Creation Authority
+
+On GitLab.com a top-level group Owner may create the group service account,
+so the installing user's OAuth connection is sufficient. Self-managed
+narrows that, and the honest contract follows GitLab's documented matrix:
+
+- **Premium and Ultimate** can enable "Allow top-level group Owners to
+  create service accounts" (Admin → Settings → General → Account and limit;
+  the setting is Premium/Ultimate-only). With it on, the installing user's
+  connection provisions exactly as on GitLab.com.
+- **Any tier** works when the connecting user is an instance administrator —
+  the same code path, no special handling — **unless Admin Mode is enabled**,
+  in which case administrator API actions require the `admin_mode` token
+  scope, which this product's OAuth application does not and will not
+  request. On an Admin-Mode instance the delegation setting is the only
+  path.
+- **Free and Community Edition** therefore onboard through an administrator
+  connection only.
+
+Authority is not probed — the setting is not API-readable, and probing by
+attempted creation converts a configuration question into half-provisioned
+external state. The truth arrives at the inline pre-activation ensure, where
+a `403` is classified `service_account_creation_forbidden` on the account
+row, with tier-aware remedy copy naming the setting, the Admin Area path,
+and the Admin Mode caveat. Existing accounts, webhooks, sessions, and
+reviews are unaffected by authority being withdrawn; whether the instance
+gates PAT rotation the same way is verified during implementation, and if it
+does, the rotation-horizon warning carries this reason so an operator learns
+from a warning rather than from a bot going silent.
+
+A deployment-wide instance-administrator credential (a PAT with `api` +
+`admin_mode`, confined to a service-account lifecycle port) was designed and
+rejected: it crosses the organization boundary every other GitLab credential
+respects, and it is a single point of provisioning failure with no
+self-healing. Project service accounts were also rejected despite being the
+one shape a Free/CE project Maintainer can create without any setting: the
+shipped identity is one account per (organization, agent, top-level group)
+following the agent across the root's projects, and a project service
+account cannot follow its agent anywhere.
+
+Two smaller authority-adjacent rules. Free and Community Edition allow 100
+service accounts **per instance** (GitLab.com Free allows 100 per top-level
+group); the shipped `service_account_quota` refusal covers the tighter
+ceiling. And an instance token-lifetime cap makes an earlier-than-requested
+PAT expiry legitimate operator policy: it is accepted and the rotation
+horizon re-derived from the returned value — a 30-day cap warns on a 30-day
+cycle — while a null or later expiry stays out of policy and fails closed
+exactly as Section 7 requires today.
+
+### 24.4 Host Carriage and `gitlab-instance-v1`
+
+The daemon needs the host before the first fetch — it selects the
+`credential.https://<host>` git-config block written at spawn — so the
+carriers are the frames that already describe the work. The `mode: 'gitlab'`
+workspace arm and the compiled hook rule's GitLab member (plus the trusted
+hook metadata the relay forwards, since a hook turn can run for an agent
+whose workspace is not GitLab) gain `host`; absent means GitLab.com, so a
+new daemon reading an old Control Plane is correct without a second
+negotiation. The credential grant gains an optional `host` purely as an echo
+the consumer verifies, exactly as it verifies provider and project ID.
+`register/ok` gains nothing: handshake members have caused reconnect loops
+before, and the host is per-workspace data.
+
+On the daemon the two-literal `'github.com' | 'gitlab.com'` classifier is
+retired. The managed host resolves from the spec's provider and host, and
+the clone URL is checked against it, never sniffed from it. The credential
+helper's gate becomes an injected table via the existing `AC_GITCRED_*`
+convention, and each entry carries the **full normalized base including any
+path prefix**: with `useHttpPath`, Git hands the helper
+`gitlab/group/project.git` on a prefixed install, and `glab` remotes carry
+the same prefix, so both strip the entry's prefix on an exact segment
+boundary before parsing the project path. The `.git`-suffix
+canonicalization keys on provider; the four daemon API clients resolve their
+base per turn; the `glab` shim exports `GITLAB_HOST` so the real CLI targets
+the instance, deferring only on a genuine mismatch.
+
+One feature string, `gitlab-instance-v1`, gates on the configured value.
+When the host is GitLab.com nothing is gated and a mixed fleet is today's
+fleet; when it is anything else the Control Plane never places a
+GitLab-backed agent on, projects a GitLab-shaped spec to, or assigns a
+GitLab hook to a daemon or relay that has not advertised it — **and the
+relay's dispatch-target daemon is gated too**, on delivery, retries, and
+authorized re-runs alike, because a hook may target an agent whose workspace
+never passed the placement gate. Fail-closed by omission: an old daemon
+never sees self-managed work, so it cannot fall back to GitLab.com for it.
+Behind the gate sit the grant host echo, the trusted-origin check, and the
+operator origin allowlist, which stays authoritative: the managed feature
+allows exactly the configured origin, never widens the list, and the
+boot-time warning keyed on the `https://gitlab.com` literal becomes a
+spec-admission refusal naming the origin actually required. `gitlab-com-v1`
+keeps its name; renaming a live feature string buys nothing.
+
+### 24.5 Trust and the Webhook Path
+
+TLS trust is process configuration, never a per-request escape hatch: the
+customer's authority bundle reaches the Control Plane and daemon through
+`NODE_EXTRA_CA_CERTS`, Git through `GIT_SSL_CAINFO` / `SSL_CERT_*`, and the
+sandbox by extending the same deliberately narrow environment allowlists the
+daemon already forwards to skill and probe environments. No skip-verify flag
+exists at any layer. There is exactly one base URL for every component —
+clone URLs, OAuth redirects, and GitLab's own `web_url` values only agree if
+there is one address — so split internal/external addressing is solved in
+DNS, not configuration. An egress proxy is out of the first slice; the
+eventual shape is a proxy-aware dispatcher at the Control Plane and daemon
+HTTP seams plus Git's proxy variables in the same allowlists.
+
+GitLab blocks webhook requests to the local network by default, so a relay
+origin resolving to a private address receives nothing and looks installed
+but silent. The operator adds the relay host to the instance's outbound
+allowlist — preferred over the instance-wide toggle — and webhook creation
+classifies the instance's rejection of a blocked URL as its own reason. The
+relay itself never dials GitLab; it needs no bundle and only passes the
+rule's host through.
+
+### 24.6 Surfaces and Milestones
+
+The Setup Server card gains the instance URL with a staged probe (invalid
+shape blocks the save; unreachable, untrusted TLS, and not-an-API-root
+warn), host-aware application links, and one line of authority copy it is
+honest about not being able to verify. The connection DTO gains a non-secret
+`instanceUrl` and `instanceVersion`; the Console's host badge, version row
+with floor status, and the bot rows' group-chip links follow it. Everything
+else is already host-correct because provider-supplied identity beats
+composed identity.
+
+Merge order, GitLab.com green at every step:
+
+- **N0 — the axis in the Control Plane.** Config, normalization, the
+  immutability fence, the API client bound to the resolved base, the three
+  synthesized clone URLs deleted. Exit: axis unset composes byte-identical
+  URLs; a prefixed non-default-port host keeps prefix and port everywhere.
+- **N1 — the floor.** Version parsing, `instance_version_unsupported`, the
+  Setup Server probe.
+- **N2 — protocol carriage.** `host` on the workspace arm, hook rule, hook
+  metadata, and grant; the placement, projection, hook-assignment, and
+  hook-dispatch gates on `gitlab-instance-v1`. Exit: mixed-version tests in
+  both directions, including a hook targeting a non-GitLab-workspace agent
+  on an old daemon.
+- **N3 — daemon plumbing.** The resolved managed host, the injected helper
+  table with prefix stripping, the spec-admission origin refusal, per-turn
+  client bases, the `glab` export. Daemons carrying N3 advertise the
+  feature.
+- **N4 — authority and surfaces.** `service_account_creation_forbidden`
+  with tier-aware copy, the expiry clamp with the re-derived horizon, Setup
+  and Console surfaces, operator documentation (authority bundle, egress for
+  Control Plane / daemon / sandbox, webhook allowlist, delegation setting
+  and Admin Mode caveat, instance quota).
+
+The integration fake gains a path-prefixed non-default-port mode, an
+admin-only mode returning `403` from creation, an expiry-clamping mode, and
+a below-floor mode. A real instance is a rollout pilot, not a continuous
+integration job: authority granted and withdrawn, Free or Community Edition
+and Premium, a private authority, a path prefix, the webhook allowlist, and
+the full connect-to-disconnect checklist.
+
+## 25. References
 
 - [GitLab OAuth 2.0 identity provider API](https://docs.gitlab.com/api/oauth2/)
 - [GitLab service accounts](https://docs.gitlab.com/user/profile/service_accounts/)
 - [GitLab service accounts API](https://docs.gitlab.com/api/service_accounts/)
+- [GitLab account and limit settings](https://docs.gitlab.com/administration/settings/account_and_limit_settings/)
+- [GitLab sign-in restrictions and Admin Mode](https://docs.gitlab.com/administration/settings/sign_in_restrictions/)
+- [GitLab webhooks and local network restrictions](https://docs.gitlab.com/security/webhooks/)
+- [GitLab version API](https://docs.gitlab.com/api/version/)
 - [GitLab access token scopes](https://docs.gitlab.com/security/tokens/access_token_scopes/)
 - [GitLab project access tokens](https://docs.gitlab.com/user/project/settings/project_access_tokens/)
 - [GitLab project members API](https://docs.gitlab.com/api/project_members/)
