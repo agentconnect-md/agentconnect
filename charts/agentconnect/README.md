@@ -42,8 +42,10 @@ A slimmer install turns the extras off explicitly — for example, no agent exec
 this cluster and no public ingress:
 
 ```bash
+# --skip-crds: installCRD=false suppresses only the controller templates; the
+# CRDs in crds/ install on first install unless the CLI opts out.
 helm install agentconnect oci://ghcr.io/agentconnect-md/charts/agentconnect \
-  --version 1.2.3 --namespace agentconnect \
+  --version 1.2.3 --namespace agentconnect --skip-crds \
   --set daemonPool.enabled=false --set installCRD=false --set relay.enabled=false
 ```
 

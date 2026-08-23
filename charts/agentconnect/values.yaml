@@ -129,9 +129,9 @@ installCRD: true
 # control plane in-cluster access at all, so EVERY projected identity it verifies depends on
 # it — the in-cluster daemons this chart renders, and any other in-cluster workload an install
 # teaches it to accept. ON by default, so the installer must be allowed to write
-# cluster-scoped RBAC and the agent-sandbox CRDs must exist (`installCRD` above ships them).
-# Set false for an install that runs no agents here: it then needs and gains no
-# cluster-scoped object.
+# cluster-scoped RBAC and the agent-sandbox CRDs must exist (the chart's crds/ directory
+# ships them on first install; `--skip-crds` opts out). Set false for an install that runs
+# no agents here: with `--skip-crds` it then needs and gains no cluster-scoped object.
 daemonPool:
   enabled: true
   image: daemon
