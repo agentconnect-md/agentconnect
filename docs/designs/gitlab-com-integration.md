@@ -2375,8 +2375,26 @@ Merge order, GitLab.com green at every step:
   GitLab-domain lease on a different key and a hook that will not be enabled
   takes none at all. A `disconnected` connection row is credential-free history
   and does not hold the axis.
-- **N1 — the floor.** Version parsing, `instance_version_unsupported`, the
-  Setup Server probe.
+- **N1 — the floor. Landed.** Version parsing (`MAJOR.MINOR` through the `-ee`
+  and `-pre` suffixes, unreadable ⇒ below the floor),
+  `instance_version_unsupported`, the Setup Server probe. The authenticated read
+  is the first credentialed call after the OAuth callback and is recorded on
+  deployment-level instance state keyed by the normalized base URL, so a
+  re-target after a full disconnect cannot inherit another instance's version;
+  the connection DTO carries `instanceUrl` and `instanceVersion` off it. The
+  reconciliation pass re-reads and re-records it, and the refusal sits at every
+  point that creates provider state: the binding convergence, the inline
+  pre-activation account ensure, and the PAT rotation sweep — rotation mints a
+  new long-lived token, so leaving it ungated would extend runtime authority past
+  the expiry this bound rests on. A refused rotation writes no account state,
+  because `admin_degraded` is what the credential port refuses on and degrading
+  the row there would cut the very runtime leases the bound exists to keep. A
+  downgraded instance therefore stops getting new accounts, credentials, and
+  webhooks while everything already provisioned keeps serving until it expires.
+  On the Setup Server the probe runs when
+  the base URL is saved, and only `invalid_url` refuses the save; `unreachable`,
+  `tls_untrusted`, and `not_a_gitlab_api_root` are returned with the saved
+  revision as warnings.
 - **N2 — protocol carriage.** `gitlabHost` on the agent spec, derived from
   all three consumer sources; `host` on the hook rule, hook metadata, and
   grant; the placement, projection, hook-assignment, and hook-dispatch gates

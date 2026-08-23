@@ -248,16 +248,19 @@ export const SETUP_HTML = String.raw`<!doctype html>
           <span id="gitlab-match" class="badge">Not configured</span>
         </div>
         <dl class="credentials">
+          <dt>Instance</dt><dd class="value-line"><code id="gitlab-instance">https://gitlab.com</code></dd>
           <dt>Application ID</dt><dd class="value-line"><code id="gitlab-client-id">Not configured</code><button class="edit-configuration" data-provider="gitlab">Edit</button></dd>
           <dt>Secret</dt><dd class="secret-line"><span id="gitlab-client-secret-display" class="redacted">Not configured</span><button class="edit-secret" data-secret-key="gitlab.clientSecret" data-secret-display="gitlab-client-secret-display">Edit</button></dd>
         </dl>
         <p id="gitlab-status" class="muted"></p>
+        <p id="gitlab-probe" class="muted" hidden></p>
         <div id="gitlab-drift" class="notice" hidden></div>
         <p>Redirect URI:</p><ul id="gitlab-callbacks" class="uris"></ul>
         <p>Scopes:</p><ul id="gitlab-scopes" class="uris"></ul>
         <p class="muted">GitLab does not expose OAuth application creation through an API. In User settings &rarr; Applications, or a group's Settings &rarr; Applications, add an application whose redirect URI is exactly the value above, keep Confidential selected, grant the scopes above, then save the generated Application ID and Secret here. GitLab shows the secret only once.</p>
         <div class="row"><a class="button" href="https://gitlab.com/-/user_settings/applications" target="_blank" rel="noopener">Open GitLab applications</a></div>
         <div id="gitlab-config-controls" class="subsection">
+          <label class="field">Instance base URL<input id="gitlab-base-url" autocomplete="off" placeholder="Leave empty for https://gitlab.com"></label>
           <label class="field">Application ID<input id="gitlab-id" autocomplete="off"></label>
           <label id="gitlab-initial-secret-field" class="field">Secret<input id="gitlab-secret" type="password" autocomplete="new-password" placeholder="Required when the Application ID changes"></label>
         </div>
@@ -639,6 +642,10 @@ export const SETUP_HTML = String.raw`<!doctype html>
       secretText('gitlab-client-secret-display', byKey, 'gitlab.clientSecret', Boolean(gitlab));
       showIdentityEditors('gitlab', Boolean(gitlab));
       el('gitlab-id').value = gitlab ? gitlab.clientId : '';
+      text('gitlab-instance', (gitlab && gitlab.baseUrl) || 'https://gitlab.com');
+      el('gitlab-base-url').value = (gitlab && gitlab.baseUrl) || '';
+      // A probe verdict belongs to the save that produced it, never to a reload.
+      el('gitlab-probe').hidden = true;
       el('gitlab-status').textContent = gitlab
         ? gitlab.clientId + ' is configured.'
         : expectedGitlab
@@ -1229,18 +1236,28 @@ export const SETUP_HTML = String.raw`<!doctype html>
 
     async function saveGitlab() {
       const clientSecret = el('gitlab-secret').value;
-      await json(await fetch(api + '/configure/gitlab', {
+      const baseUrl = el('gitlab-base-url').value.trim();
+      const saved = await json(await fetch(api + '/configure/gitlab', {
         method: 'POST', headers: { 'content-type': 'application/json', ...bearer() },
         body: JSON.stringify({
           application: {
             clientId: requiredInput('gitlab-id', 'the GitLab Application ID'),
-            ...(clientSecret ? { clientSecret } : {})
+            ...(clientSecret ? { clientSecret } : {}),
+            ...(baseUrl ? { baseUrl } : {})
           }
         })
       }));
       el('gitlab-secret').value = '';
       await load();
+      showGitlabProbe(saved.probe);
       message('GitLab OAuth application saved. Restart AgentConnect to apply it.');
+    }
+
+    // Only the URL shape blocks the save, so every other verdict is a line to read.
+    function showGitlabProbe(probe) {
+      const line = el('gitlab-probe');
+      line.hidden = !probe;
+      line.textContent = probe ? probe.message : '';
     }
 
     async function saveGoogle() {

@@ -5,6 +5,8 @@ import type {
   GitlabConnectionRemoval,
   GitlabConnectionRepo,
   GitlabConnectionSecretStore,
+  GitlabInstanceStateRecord,
+  GitlabInstanceStateRepo,
   GitlabOauthStateRecord,
   GitlabOauthStateStore
 } from '../persistence/ports.js'
@@ -38,6 +40,16 @@ class MemStates implements GitlabOauthStateStore {
     const row = this.rows.get(nonce)
     this.rows.delete(nonce)
     return row && row.expiresAt > now ? row : null
+  }
+}
+
+class MemInstanceState implements GitlabInstanceStateRepo {
+  rows = new Map<string, GitlabInstanceStateRecord>()
+  async record(input: GitlabInstanceStateRecord): Promise<void> {
+    this.rows.set(input.baseUrl, { ...input })
+  }
+  async get(baseUrl: string): Promise<GitlabInstanceStateRecord | null> {
+    return this.rows.get(baseUrl) ?? null
   }
 }
 
@@ -142,6 +154,8 @@ const unseal = (value: string) => value.replace(/^sealed:/, '')
 interface Scripted {
   tokenStatus?: number
   refreshCount?: number
+  /** What `GET /version` reports (§24.2); default is at the floor. */
+  version?: string
 }
 
 function gitlabFetch(script: Scripted = {}): FetchLike {
@@ -166,6 +180,7 @@ function gitlabFetch(script: Scripted = {}): FetchLike {
         scope: 'api'
       })
     }
+    if (url.endsWith('/api/v4/version')) return Response.json({ version: script.version ?? '18.11.0-ee' })
     if (url.endsWith('/user')) return Response.json({ id: 4242, username: 'example-admin' })
     if (url.endsWith('/oauth/revoke')) return Response.json({})
     throw new Error(`unexpected gitlab call: ${url}`)
@@ -176,6 +191,7 @@ function harness(opts: { script?: Scripted; now?: number; baseUrl?: string } = {
   const states = new MemStates()
   const secrets = new MemSecrets()
   const connections = new MemConnections(secrets)
+  const instanceState = new MemInstanceState()
   const clockNow = { value: opts.now ?? Date.parse('2026-08-22T00:00:00.000Z') }
   const baseUrl = opts.baseUrl ?? 'https://gitlab.com'
   const urls: string[] = []
@@ -188,13 +204,14 @@ function harness(opts: { script?: Scripted; now?: number; baseUrl?: string } = {
     connections,
     secrets,
     states,
+    instanceState,
     cipher,
     clock: { now: () => clockNow.value } as never,
     publicCpUrl: 'https://api.example.test',
     webAppUrl: 'https://console.example.test',
     api: new GitlabApiClient(baseUrl, record)
   })
-  return { service, states, connections, secrets, clockNow, urls }
+  return { service, states, connections, secrets, instanceState, clockNow, urls }
 }
 
 async function connectedHarness(opts: { script?: Scripted } = {}) {
@@ -248,8 +265,10 @@ describe('GitlabOauthService (§9)', () => {
     expect((await service.callback(nonce, 'code-1', begun.browserNonce)).result).toBe('connected')
     const connectionId = [...connections.rows.keys()][0]!
     expect(await service.disconnect(ORG, connectionId)).toBe(true)
+    // The version read is the FIRST credentialed call, ahead of the user read (§24.2).
     expect(urls).toEqual([
       'https://apps.example.test:8443/gitlab/oauth/token',
+      'https://apps.example.test:8443/gitlab/api/v4/version',
       'https://apps.example.test:8443/gitlab/api/v4/user',
       'https://apps.example.test:8443/gitlab/oauth/revoke'
     ])
@@ -279,6 +298,32 @@ describe('GitlabOauthService (§9)', () => {
     expect(service.redirectTarget('/settings', 'connected')).toBe(
       'https://console.example.test/settings?gitlab=connected'
     )
+  })
+
+  it('records the observed version and refuses a below-floor instance (§24.2)', async () => {
+    for (const version of ['18.10.9-ee', 'not-a-version']) {
+      const h = harness({ script: { version } })
+      const { url } = await h.service.start(ORG, USER, '/settings')
+      const nonce = new URL(url).searchParams.get('state')!
+      const begun = (await h.service.begin(nonce))!
+      const done = await h.service.callback(nonce, 'code-1', begun.browserNonce)
+      expect(done).toEqual({ redirectPath: '/settings', result: 'instance_version_unsupported' })
+      // Refused BEFORE the user read, so no connection and no credential exist.
+      expect(h.urls).toEqual(['https://gitlab.com/oauth/token', 'https://gitlab.com/api/v4/version'])
+      expect(h.connections.rows.size).toBe(0)
+      expect(h.secrets.rows.size).toBe(0)
+      // Recorded anyway: a refusal an operator cannot read is a silent one.
+      expect(await h.instanceState.get('https://gitlab.com')).toMatchObject({ version })
+    }
+  })
+
+  it('records the observed version of a supported instance on connect (§24.2)', async () => {
+    const h = await connectedHarness()
+    expect(await h.instanceState.get('https://gitlab.com')).toMatchObject({
+      baseUrl: 'https://gitlab.com',
+      version: '18.11.0-ee',
+      enterprise: true
+    })
   })
 
   it('rejects an expired state', async () => {

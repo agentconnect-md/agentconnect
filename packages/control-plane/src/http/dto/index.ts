@@ -1783,6 +1783,11 @@ export const GitlabConnectionDto = z.object({
   /** Managed projects this connection still administers (§7.1). A released
    *  connection with none can be removed; with any, removal is refused. */
   assignedProjects: z.number().int(),
+  /** The instance this deployment talks to (§24.1) — non-secret, the same for
+   *  every connection, because one deployment has exactly one host axis. */
+  instanceUrl: z.string(),
+  /** The version last observed on that instance (§24.2); null until first contact. */
+  instanceVersion: z.string().nullable(),
   createdAt: z.string()
 })
 export type GitlabConnectionDtoT = z.infer<typeof GitlabConnectionDto>

@@ -3322,6 +3322,22 @@ export interface GitlabOauthStateRecord {
   expiresAt: Date
 }
 
+/** The deployment-level observed instance facts (§24.2), keyed on the normalized
+ *  base URL so a re-targeted axis never inherits another instance's version. */
+export interface GitlabInstanceStateRecord {
+  baseUrl: string
+  version: string
+  enterprise: boolean
+  observedAt: Date
+}
+
+export interface GitlabInstanceStateRepo {
+  /** Last-observation-wins upsert: the authenticated version read at first
+   *  credentialed contact, and every reconciliation refresh after it. */
+  record(input: GitlabInstanceStateRecord): Promise<void>
+  get(baseUrl: string): Promise<GitlabInstanceStateRecord | null>
+}
+
 export type GitlabBindingState = 'provisioning' | 'ready' | 'admin_degraded' | 'runtime_degraded' | 'cleanup_pending'
 
 export interface GitlabProjectBindingRecord {

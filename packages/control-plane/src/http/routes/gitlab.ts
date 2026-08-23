@@ -56,7 +56,18 @@ import type {
 
 type GitlabWebhookState = 'not_needed' | 'installed' | 'repairing' | 'failed'
 
-function toDto(r: GitlabConnectionRecord, assignedProjects: number, callerUserId: string) {
+/** The deployment's one host axis and the version last observed on it (§24.1, §24.2). */
+interface GitlabInstanceFacts {
+  instanceUrl: string
+  instanceVersion: string | null
+}
+
+function toDto(
+  r: GitlabConnectionRecord,
+  assignedProjects: number,
+  callerUserId: string,
+  instance: GitlabInstanceFacts
+) {
   return {
     id: r.id,
     gitlabUserId: r.gitlabUserId.toString(),
@@ -67,6 +78,7 @@ function toDto(r: GitlabConnectionRecord, assignedProjects: number, callerUserId
     mine: r.userId !== null && r.userId === callerUserId,
     accessExpiresAt: r.accessExpiresAt ? r.accessExpiresAt.toISOString() : null,
     assignedProjects,
+    ...instance,
     createdAt: r.createdAt.toISOString()
   }
 }
@@ -198,6 +210,13 @@ export function gitlabRoutes(deps: HttpDeps) {
     if (!gitlab) return
     const r = app.withTypeProvider<ZodTypeProvider>()
 
+    // One deployment, one instance (§24.1), so this is read once per request and
+    // stamped on every connection row rather than joined per row.
+    const instanceFacts = async (): Promise<GitlabInstanceFacts> => {
+      const observed = await deps.repos.gitlabInstanceState.get(gitlab.api.baseUrl)
+      return { instanceUrl: gitlab.api.baseUrl, instanceVersion: observed?.version ?? null }
+    }
+
     // Whether a project wants ingress, from the same authority the provisioner converges against:
     // one org-wide hook read, unioned per project, so a route never re-derives the rule.
     const webhookWanted = async (orgId: string): Promise<(projectId: bigint) => boolean> => {
@@ -247,7 +266,8 @@ export function gitlabRoutes(deps: HttpDeps) {
         const orgId = orgOf(req)
         const rows = await deps.repos.gitlabConnection.listForOrg(orgId)
         const assigned = await deps.repos.gitlabProjectBinding.countByInstaller(orgId)
-        return { connections: rows.map((row) => toDto(row, assigned[row.id] ?? 0, req.principal!.userId)) }
+        const instance = await instanceFacts()
+        return { connections: rows.map((row) => toDto(row, assigned[row.id] ?? 0, req.principal!.userId, instance)) }
       }
     )
 
@@ -671,7 +691,7 @@ export function gitlabRoutes(deps: HttpDeps) {
         const record = await deps.repos.gitlabConnection.get(orgId, existing.id)
         if (!record) return notFound()
         const assigned = (await deps.repos.gitlabProjectBinding.countByInstaller(orgId))[existing.id] ?? 0
-        return { removed: false, connection: toDto(record, assigned, req.principal!.userId) }
+        return { removed: false, connection: toDto(record, assigned, req.principal!.userId, await instanceFacts()) }
       }
     )
   }

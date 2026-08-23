@@ -2899,6 +2899,21 @@ model GitlabOauthState {
   @@map("gitlab_oauth_state")
 }
 
+/// Deployment-level observed facts about the GitLab instance (§24.2): the
+/// authenticated `GET /api/v4/version` at first credentialed contact, refreshed
+/// on the reconciliation pass. Keyed on the normalized base URL, so a re-target
+/// after a full disconnect can never inherit another instance's version.
+model GitlabInstanceState {
+  baseUrl    String   @id
+  version    String // exactly what the instance reported, e.g. '18.11.0-ee'
+  enterprise Boolean  @default(false)
+  observedAt DateTime @db.Timestamptz(6)
+  createdAt  DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt  DateTime @updatedAt @db.Timestamptz(6)
+
+  @@map("gitlab_instance_state")
+}
+
 // ───────────────────────────────────────────────────────────────────────────
 // Centralized tool management — MCP provider registry (docs/designs/
 // centralized-tool-management.md). CP owns MCP provider definitions; the relay

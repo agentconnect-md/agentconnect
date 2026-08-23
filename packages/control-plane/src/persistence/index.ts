@@ -24,6 +24,7 @@ export {
   PgGitlabConnectionRepo,
   PgGitlabConnectionSecretStore,
   PgGitlabOauthStateStore,
+  PgGitlabInstanceStateStore,
   PgGitlabAgentAccountRepo,
   PgGitlabProjectBindingRepo,
   PgGitlabProjectCredentialRepo,

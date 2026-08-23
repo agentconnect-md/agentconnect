@@ -111,6 +111,7 @@ import {
   PgGitlabProjectCredentialRepo,
   PgGitlabProjectCredentialSecretStore,
   PgGitlabWebhookSecretStore,
+  PgGitlabInstanceStateStore,
   PgGitlabOauthStateStore,
   PgCodeHostReviewLeaseRepo,
   PgSocialIdentityMutationGate,
@@ -442,7 +443,8 @@ export function buildContainer(
     gitlabConnection: new PgGitlabConnectionRepo(prisma),
     gitlabProjectBinding: new PgGitlabProjectBindingRepo(prisma),
     gitlabAgentAccount: new PgGitlabAgentAccountRepo(prisma),
-    gitlabOauthState: new PgGitlabOauthStateStore(prisma)
+    gitlabOauthState: new PgGitlabOauthStateStore(prisma),
+    gitlabInstanceState: new PgGitlabInstanceStateStore(prisma)
   }
 
   // ── C3/C4/C5 services ─────────────────────────────────────────────────────
@@ -975,6 +977,7 @@ export function buildContainer(
           connections: repos.gitlabConnection,
           secrets: new PgGitlabConnectionSecretStore(prisma, secretCipher),
           states: repos.gitlabOauthState,
+          instanceState: repos.gitlabInstanceState,
           cipher: secretCipher,
           clock,
           publicCpUrl: config.PUBLIC_CP_URL,
@@ -995,6 +998,7 @@ export function buildContainer(
         credentials: new PgGitlabProjectCredentialRepo(prisma),
         credentialSecrets: new PgGitlabProjectCredentialSecretStore(prisma, secretCipher),
         agents: repos.agent,
+        instanceState: repos.gitlabInstanceState,
         cipher: secretCipher,
         clock,
         avatarPng: createGitlabAccountAvatarRenderer(iconStore),
@@ -1035,6 +1039,7 @@ export function buildContainer(
           accounts: gitlabAccountService!,
           webhookSecrets: gitlabWebhookSecretStore!,
           catalog: repos.codeHostRepository,
+          instanceState: repos.gitlabInstanceState,
           clock,
           ...(config.PUBLIC_RELAY_URL ? { publicRelayUrl: config.PUBLIC_RELAY_URL } : {}),
           // §11.1: the union every enabled gitlab hook on the project wants.
@@ -1429,6 +1434,7 @@ export function buildContainer(
       gitlabConnection: repos.gitlabConnection,
       gitlabProjectBinding: repos.gitlabProjectBinding,
       gitlabAgentAccount: repos.gitlabAgentAccount,
+      gitlabInstanceState: repos.gitlabInstanceState,
       audit: repos.audit,
       webchatMcpOperation: repos.webchatMcpOperation,
       oauth: repos.oauth

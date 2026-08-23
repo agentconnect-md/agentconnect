@@ -25,6 +25,7 @@ import {
   PgGitlabAgentAccountRepo,
   PgGitlabConnectionRepo,
   PgGitlabConnectionSecretStore,
+  PgGitlabInstanceStateStore,
   PgGitlabOauthStateStore,
   PgGitlabProjectBindingRepo,
   PgGitlabProjectCredentialRepo,
@@ -72,6 +73,7 @@ async function harness(options: FakeGitlabOptions = {}) {
     connections,
     secrets: new PgGitlabConnectionSecretStore(prisma, cipher),
     states: new PgGitlabOauthStateStore(prisma),
+    instanceState: new PgGitlabInstanceStateStore(prisma),
     cipher,
     clock: systemClock,
     publicCpUrl: 'https://api.example.test',
@@ -84,6 +86,7 @@ async function harness(options: FakeGitlabOptions = {}) {
     credentials: new PgGitlabProjectCredentialRepo(prisma),
     credentialSecrets: new PgGitlabProjectCredentialSecretStore(prisma, cipher),
     agents: new PgAgentRepo(prisma),
+    instanceState: new PgGitlabInstanceStateStore(prisma),
     cipher,
     clock: systemClock,
     api: fake.api
@@ -94,6 +97,7 @@ async function harness(options: FakeGitlabOptions = {}) {
     accounts: accountService,
     webhookSecrets: new PgGitlabWebhookSecretStore(prisma, cipher),
     catalog: new PgCodeHostRepositoryRepo(prisma),
+    instanceState: new PgGitlabInstanceStateStore(prisma),
     clock: systemClock,
     publicRelayUrl: RELAY_URL,
     // The production union + rebroadcast (container wiring): the enabled
