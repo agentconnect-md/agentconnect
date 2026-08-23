@@ -208,7 +208,11 @@ export const IntegrationChannel = z.object({
   spaceId: z.string().optional(), // enclosing Discord guild snowflake — the space's IDENTITY
   space: z.string().optional(), // that guild's display name; absent until resolved
   isPrivate: z.boolean().optional(),
-  kind: z.enum(['channel', 'im', 'mpim']).optional() // absent = 'channel'
+  kind: z.enum(['channel', 'im', 'mpim']).optional(), // absent = 'channel'
+  // The 1:1 DM counterpart's platform member id (§14.8) — control metadata of the same
+  // class as `name`, and the only thing that identifies WHO a private agent's DM row is
+  // with. Absent on channels and group DMs, whose membership is a room, not a person.
+  dmUserId: z.string().optional()
 })
 export type IntegrationChannel = z.infer<typeof IntegrationChannel>
 

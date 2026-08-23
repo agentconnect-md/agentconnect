@@ -90,6 +90,7 @@ const channel = (
   isPrivate: false,
   kind,
   trigger,
+  dmUserId: null,
   agentId: null
 })
 

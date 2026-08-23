@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import { HttpBotOrchestrator } from './httpBot.js'
 import { AgentDelivery } from './agentDelivery.js'
 import type { PlacementResolver } from './placementResolver.js'
+import type { GatedDmSeedResolver } from './linkedDm.js'
 import { RelayRegistry, type RelayChannel } from '../ws/relay-registry.js'
 import type { RcBotAssign, RelayCpFrameType } from '@agentconnect.md/protocol'
 import { AgentId, BotId, DaemonId, IntegrationId, OrgId } from '../domain/ids.js'
@@ -109,6 +110,7 @@ function channel(over: Partial<IntegrationChannelRecord>): IntegrationChannelRec
     isPrivate: false,
     kind: 'channel',
     trigger: 'mention',
+    dmUserId: null,
     agentId: null,
     ...over
   } as IntegrationChannelRecord
@@ -151,7 +153,11 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
 
   /** `placement` stands in for the duty ledger: absent ⇒ placement alone, which is what every
    *  expectation predating the pool was written against. */
-  function makeOrch(platforms = PLATFORMS, placement?: Pick<PlacementResolver, 'routableDaemon'>): HttpBotOrchestrator {
+  function makeOrch(
+    platforms = PLATFORMS,
+    placement?: Pick<PlacementResolver, 'routableDaemon'>,
+    gatedDmSeeds?: GatedDmSeedResolver
+  ): HttpBotOrchestrator {
     const agents: Record<string, AgentRecord> = {
       [ALICE]: agent(ALICE, 'alice', unplacedAgents.has(ALICE) ? null : D1),
       [BOB]: agent(BOB, 'bob', unplacedAgents.has(BOB) ? null : D2)
@@ -245,11 +251,13 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
             channelId: conversation.id,
             name: conversation.name ?? null,
             kind: conversation.kind ?? 'channel',
+            dmUserId: conversation.dmUserId ?? null,
             trigger: opts?.defaultTrigger ?? 'mention'
           })
           channels.push(row)
         } else {
           if (conversation.name) row.name = conversation.name
+          if (conversation.dmUserId) row.dmUserId = conversation.dmUserId
         }
         return row
       },
@@ -320,7 +328,8 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       // No duty ledger wired ⇒ the delivery set is the placement alone, which is
       // exactly what every expectation in this file was written against.
       new AgentDelivery({ control: control as never, specs: undefined as never }),
-      ...(placement ? [placement] : [])
+      placement ?? undefined,
+      gatedDmSeeds
     )
   }
 
@@ -813,6 +822,37 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       expect(assign.routes.filter((route) => route.scope?.channel === 'D42')).toEqual([
         expect.objectContaining({ agentId: ALICE, match: { kind: 'auto' } })
       ])
+    })
+
+    // §14.8: the shared-bot mirror of the direct path. The seed has to survive the
+    // ownership convergence that immediately follows the report — that pass re-derives
+    // a gated owner's trigger, and forcing Off there would undo the seed on the very
+    // syncRoutes the report itself triggers.
+    it('reportConversation opens a gated DM with a member of the agent’s own audience (§14.8)', async () => {
+      gatedAgents = new Set([ALICE])
+      channels = []
+      // Stands in for the real resolver, whose own policy is pinned in linkedDm.test.ts.
+      const orch = makeOrch(PLATFORMS, undefined, async (reported) =>
+        reported.some((c) => c.dmUserId === 'U_ALICE') ? new Map([['D42', 'any' as const]]) : new Map()
+      )
+      await orch.reportConversation(BOT, { id: 'D42', name: '@Alice', dmUserId: 'U_ALICE' })
+      const aliceRow = channels.find((c) => c.integrationId === INT_A && c.channelId === 'D42')
+      expect(aliceRow).toMatchObject({ kind: 'im', trigger: 'any', agentId: ALICE })
+
+      // And it routes: an open DM compiles the same channel-scoped auto rung an
+      // editor-enabled conversation gets.
+      const assign = ch.sends.filter((s) => s.type === 'rc/routes').at(-1)!.payload as RcBotAssign
+      expect(assign.routes.filter((route) => route.scope?.channel === 'D42')).toEqual([
+        expect.objectContaining({ agentId: ALICE, match: { kind: 'auto' } })
+      ])
+    })
+
+    it('reportConversation keeps a gated DM Off when its counterpart is outside the audience (§14.8)', async () => {
+      gatedAgents = new Set([ALICE])
+      channels = []
+      const orch = makeOrch(PLATFORMS, undefined, async () => new Map())
+      await orch.reportConversation(BOT, { id: 'D42', name: '@Dave', dmUserId: 'U_DAVE' })
+      expect(channels.find((c) => c.integrationId === INT_A && c.channelId === 'D42')).toMatchObject({ trigger: 'off' })
     })
 
     it('reportConversation preserves a group DM and converges it like a channel', async () => {

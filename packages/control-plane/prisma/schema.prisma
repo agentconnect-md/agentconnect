@@ -2393,6 +2393,11 @@ model IntegrationChannel {
   space         String?
   isPrivate     Boolean          @default(false)
   kind          ConversationKind @default(channel)
+  // The 1:1 DM counterpart's platform member id (resource-visibility.md §14.8). Control
+  // metadata of the same class as `name` — it says WHO the row is with, which is what
+  // lets a private agent's DM follow that person's linked console identity instead of
+  // defaulting Off. Null on channels, on group DMs, and on rows reported before §14.8.
+  dmUserId      String?
   // Relay-backed shared-bot rows repeat the effective trigger across each active
   // integration so deleting the canonical owner does not discard conversation state.
   // Classic integrations keep their trigger per integration.

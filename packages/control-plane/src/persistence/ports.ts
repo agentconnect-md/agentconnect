@@ -4326,6 +4326,9 @@ export interface IntegrationChannelRecord {
   kind: ConversationKind
   /** Repeated across shared-bot sibling rows; per-integration for non-shared bots. */
   trigger: ChannelTrigger
+  /** The 1:1 DM counterpart's platform member id (§14.8); null on rooms and on rows
+   *  discovered before the reporter carried it. */
+  dmUserId: string | null
   /** Per-conversation owner for a shared bot (§10.1); null on sibling non-owner rows. */
   agentId: AgentId | null
 }
@@ -4341,6 +4344,8 @@ export interface ReportedChannel {
   isPrivate?: boolean
   /** Absent = 'channel' (wire compatibility). */
   kind?: ConversationKind
+  /** The 1:1 DM counterpart's platform member id — reported for `kind:'im'` only. */
+  dmUserId?: string
 }
 
 /**
@@ -4374,7 +4379,14 @@ export interface IntegrationChannelRepo {
   replaceSnapshot(
     integrationId: IntegrationId,
     channels: ReportedChannel[],
-    opts?: { defaultTrigger?: ChannelTrigger; authoritative?: boolean; removed?: string[] }
+    opts?: {
+      defaultTrigger?: ChannelTrigger
+      /** Per-conversation seed overriding `defaultTrigger` on a NEW row (§14.8: a gated
+       *  agent's DM with a member of its own audience). Existing rows are unaffected. */
+      defaultTriggerByChannel?: ReadonlyMap<string, ChannelTrigger>
+      authoritative?: boolean
+      removed?: string[]
+    }
   ): Promise<void>
   /** Forget one conversation row. Console-driven cleanup for a conversation the bot
    *  is no longer in on a platform that cannot say so itself; returns whether a row

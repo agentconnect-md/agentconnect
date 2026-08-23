@@ -68,12 +68,19 @@ export const handleIntegrationChannels: Handler = async (frame, conn, deps) => {
     // Fenced on the org of the integration row this daemon just proved it owns.
     const owner = await deps.agent.get(OrgId(integration.orgId), AgentId(integration.agentId))
     const defaultTrigger = owner && isGatedAgent(owner) ? ('off' as const) : undefined
+    // §14.8: a gated DM whose counterpart is already in the agent's audience seeds to
+    // the ordinary DM default instead. Only the gated arm asks — a public install has
+    // no Off to override — and a resolver that answers nothing leaves §14.2 intact.
+    const bot = defaultTrigger && deps.bot ? await deps.bot.get(OrgId(integration.orgId), integration.botId) : null
+    const defaultTriggerByChannel =
+      owner && bot && deps.gatedDmSeeds ? await deps.gatedDmSeeds(p.channels, owner, bot) : undefined
     await deps.integrationChannel.replaceSnapshot(
       integration.id,
       p.channels,
       defaultTrigger || p.authoritative === false || p.removed?.length
         ? {
             ...(defaultTrigger ? { defaultTrigger } : {}),
+            ...(defaultTriggerByChannel?.size ? { defaultTriggerByChannel } : {}),
             ...(p.authoritative === false ? { authoritative: false } : {}),
             ...(p.removed?.length ? { removed: p.removed } : {})
           }

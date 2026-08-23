@@ -142,6 +142,7 @@ import { RelaySweeper } from './orchestrator/relaySweeper.js'
 import { RelayRoster } from './orchestrator/relayRoster.js'
 import { WebchatMcpOperationReaper } from './orchestrator/webchatMcpOperationReaper.js'
 import { HttpBotOrchestrator } from './orchestrator/httpBot.js'
+import { gatedDmSeeds, type GatedDmSeedResolver } from './orchestrator/linkedDm.js'
 import { SlackBotIdentityReconciler } from './orchestrator/slackBotIdentityReconciler.js'
 import { slackConfigApi } from './http/slack-config-api.js'
 import { findTool } from './http/mcp/tools.js'
@@ -797,6 +798,17 @@ export function buildContainer(
   // daemons on register/sweep via the `relay/roster` EVT (sender is the broadcaster).
   const relayRoster = new RelayRoster(repos.relay, sender, clock, relayStaleMs)
 
+  // §14.8 (resource-visibility.md): which of a gated install's reported DMs open to the
+  // ordinary DM default because their counterpart is already in the agent's audience.
+  // Lazy over `logtoIdentity` and `http.log` for the same reason as the logger below —
+  // both are assigned further down and this only runs at report time.
+  const gatedDmSeedResolver: GatedDmSeedResolver = (channels, agent, bot) =>
+    gatedDmSeeds(channels, agent, bot, {
+      users: repos.user,
+      ...(logtoIdentity ? { identity: logtoIdentity } : {}),
+      log: { debug: (o, m) => http.log.debug(o, m), warn: (o, m) => http.log.warn(o, m) }
+    })
+
   // HTTP-bot assignment + attributed-route compilation (shared-bot-relay.md §4.2/§10).
   // Its logger is lazy (a wrapper over `http.log`, which is created below) — only ever
   // invoked at request/sweep time, well after `http` is assigned, so no TDZ hazard.
@@ -818,7 +830,8 @@ export function buildContainer(
     },
     platforms,
     agentDelivery,
-    placementResolver
+    placementResolver,
+    gatedDmSeedResolver
   )
   const stagedAgentMoves = new AgentMoveService({
     agents: repos.agent,
@@ -1711,6 +1724,7 @@ export function buildContainer(
     githubInstallation: repos.githubInstallation,
     integrationChannel: repos.integrationChannel,
     slackSessionAccess,
+    gatedDmSeeds: gatedDmSeedResolver,
     sessionAccessWarmer,
     agentMutations,
     recoverStagedAgent: (agentId, daemonId, moveId) => stagedAgentMoves.recoverStaged(agentId, daemonId, moveId),
