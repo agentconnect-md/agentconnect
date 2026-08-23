@@ -125,13 +125,21 @@ always worked. `uploadFile` therefore reads `files.info` after the share and ret
 best-effort by construction: the file is already in the conversation, so a failure degrades
 to an unanchored share, never to a failed one.
 
-**The file post is _not_ identity-stamped today, on any platform** — no `uploadFile`
-implementation declares the identity parameter, and Telegram ignores identity by platform
-design. Slack briefly passed `username`/`icon_url` to the share step: documented for that
-method, absent from the SDK's argument type, and never confirmed against live Slack before
-it was dropped along with the hand-written transport it lived in (§9.4). On a shared Slack
-app the gap makes a shared file invisible to peer backfill and mis-attributable to
-whichever agent looks at it. Phase 1 states this degradation per platform rather than claiming otherwise; if
+**Only Slack can identity-stamp a file post, and the API's own arguments are the only way
+to do it.** `chat.postMessage` cannot attach a file at all, so the upload's completion IS
+the message — which is why the file path and the text path diverge in the first place, and
+why every consequence of that divergence lands here. `files.completeUploadExternal`
+documents `username`/`icon_url`/`icon_emoji` for the share message (behind
+`chat:write.customize`), so `uploadFile` passes the turn's identity there and falls back to
+the undecorated call when — and only when — Slack refused the DECORATION itself
+(`missing_scope`, `invalid_arguments`). The completion is one-shot, and Slack documents
+`internal_error`/`fatal_error` as possibly raised after part of it succeeded, so those join
+"no provider code at all" as outcomes that forfeit the proof of refusal and stay
+`indeterminate` rather than being retried into a second share. The other three
+implementations do not declare the parameter, and Telegram ignores identity by platform
+design. A file post still carries no `agentAuthorId`, so on a shared bot it stays invisible
+to peer backfill; the fix for that remains a paired anchor post, deferred until shared-bot
+usage demands it. Phase 1 states this degradation per platform rather than claiming otherwise; if
 attribution matters on shared bots, the fix is a paired zero-content anchor post stamped
 with `agentAuthorId` — which would also supply Slack's missing message id — and it is
 deferred until shared-bot usage demands it.
@@ -325,13 +333,13 @@ shim boundary, and generalizes to none of the other three platforms.
    steps, so an HTTP failure can never prove which step it came from. Only Slack answering
    `{ok:false}` counts as proof that nothing was published — everything else is
    `indeterminate`.
-4. **Slack file identity is an app setting, not an argument (settled).** A bot binds to ONE
-   agent, so the app's own name is already the agent's; what a file post shows for an avatar
-   is the app's ICON. No file method takes `username`/`icon_url`, and the app manifest has
-   no icon field — Slack exposes no way to set one programmatically. Text posts sidestep
-   this with `icon_url` on `chat.postMessage`; file posts cannot, so an installation whose
-   Slack app has no icon shows the placeholder on shared files and the agent's icon on its
-   replies. The fix is to upload the agent's icon once in the app's settings, not to change
-   this code.
+4. **Why the two paths differ at all (settled).** Slack has no way to attach a file to a
+   message: `chat.postMessage` takes no file, and the upload's completion creates its own
+   message instead. So a caption rides as `initial_comment` on a message the UPLOAD endpoint
+   built, and everything `chat.postMessage` returns for free — a `ts`, per-message identity —
+   has to be recovered separately here. `blocks` + `slack_file` would collapse the two paths
+   into one, but a file uploaded without `channel_id` is documented as private, and whether a
+   block reference makes it visible to anyone else is not documented either way; that is the
+   open question standing between this design and one code path.
 5. **Demand:** is there a concrete request behind "produced file → different
    conversation", or only the table's symmetry? Decides whether `attachFile` leaves §7.
