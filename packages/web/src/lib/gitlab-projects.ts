@@ -13,7 +13,12 @@
  * project that is about to change underneath it.
  */
 
-import type { GitlabProjectBindingDto, GitlabProjectBindingState, GitlabProjectDto } from './api'
+import type {
+  GitlabProjectAccountDto,
+  GitlabProjectBindingDto,
+  GitlabProjectBindingState,
+  GitlabProjectDto
+} from './api'
 
 export const GITLAB_PROJECT_STATE: Record<GitlabProjectBindingState, { label: string; badge: string }> = {
   provisioning: { label: 'setting up', badge: 'bg-(--status-info-soft) text-(--status-info)' },
@@ -60,6 +65,23 @@ export function gitlabStateReasonText(reason: string | null): string | null {
     return 'GitLab refused the last administration request — reconnect the account that manages this project, or transfer it to your own'
   }
   return GITLAB_STATE_REASON[reason] ?? null
+}
+
+/** The bot an agent acts as on a bound project — the member row the project list already carries,
+ *  which is where the console names an agent's GitLab identity (§18.1). */
+export function gitlabAgentBot(
+  bindings: readonly GitlabProjectBindingDto[],
+  project: { projectId?: string | null; projectPath?: string | null },
+  agentId: string
+): GitlabProjectAccountDto | null {
+  // The numeric id survives a project rename; the path is display-only, so it answers for a row carrying no id.
+  const path = project.projectPath?.toLowerCase()
+  const binding = bindings.find((candidate) =>
+    project.projectId
+      ? candidate.projectId === project.projectId
+      : path !== undefined && candidate.projectPath.toLowerCase() === path
+  )
+  return binding?.accounts.find((account) => account.agentId === agentId) ?? null
 }
 
 /** One pickable project: `binding` null means picking it sets it up first. */

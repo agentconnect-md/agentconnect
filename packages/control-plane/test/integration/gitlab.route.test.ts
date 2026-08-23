@@ -11,7 +11,6 @@ import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { GitlabOauthService } from '../../src/gitlab/oauth.service.js'
 import { PgAgentRepo } from '../../src/persistence/repositories/agent.repo.js'
-import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
 import {
   PgGitlabAgentAccountRepo,
   PgGitlabConnectionRepo,
@@ -509,6 +508,35 @@ describe('gitlab oauth routes', () => {
     expect((list.json() as { bindings: unknown[] }).bindings).toHaveLength(1)
   })
 
+  // The project list is the console's only GitLab identity read (§18.1): the agent page reads the
+  // bot it acts as off this member row, so the row carries its name, health, and profile id.
+  it('names each consuming agent’s bot on the project it is bound to (§7.2)', async () => {
+    const a = gitlabApp()
+    const { connectionId } = await connect(a)
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { name: 'reviewer', gitlabProjectId: 4455667n })
+    const bound = await a.app.inject({
+      method: 'POST',
+      url: `${ORG}/gitlab/projects`,
+      payload: { connectionId, projectId: '4455667' }
+    })
+    expect(bound.statusCode).toBe(200)
+
+    const list = await a.app.inject({ method: 'GET', url: `${ORG}/gitlab/projects` })
+    const { bindings } = list.json() as { bindings: Array<{ accounts: Array<Record<string, unknown>> }> }
+    expect(bindings[0]!.accounts).toHaveLength(1)
+    expect(bindings[0]!.accounts[0]).toMatchObject({
+      agentId,
+      username: gitlabAgentAccountUsername(agentId, 'reviewer', 900n),
+      displayName: 'reviewer',
+      state: 'ready',
+      stateReason: null
+    })
+    // The account exists on GitLab, so the console may link its profile — and never a token.
+    expect(bindings[0]!.accounts[0]!.userId).toMatch(/^\d+$/)
+    expect(JSON.stringify(bindings)).not.toContain('glpat')
+  })
+
   it('refuses managed installation below Maintainer (§10.1)', async () => {
     const a = gitlabApp({ accessLevel: 30 })
     const { connectionId } = await connect(a)
@@ -541,125 +569,6 @@ describe('gitlab oauth routes', () => {
   it('404s the whole surface when the deployment has no gitlab oauth app', async () => {
     running = buildHttpApp(prisma, { PUBLIC_CP_URL: PUBLIC_CP })
     const res = await running.app.inject({ method: 'GET', url: `${ORG}/gitlab/connections` })
-    expect(res.statusCode).toBe(404)
-  })
-})
-
-/**
- * The agent detail page's identity read (§18.1): an agent's OWN bot accounts,
- * one per top-level group, org-scoped and visibility-gated like every agent read.
- */
-describe('gitlab agent accounts (§7.2, §18.1)', () => {
-  const accountsUrl = (agentId: string, org = ORG) => `${org}/gitlab/agents/${agentId}/accounts`
-
-  /** A bound project WITH a consuming agent, so provisioning earns that agent an account. */
-  async function boundWithAgent(
-    a: HttpApp & { fake: FakeGitlab },
-    opts: { visibility?: 'org' | 'restricted' } = {}
-  ): Promise<string> {
-    const { connectionId } = await connect(a)
-    const agentId = randomUUID()
-    await seedAgent(prisma, agentId, { name: 'reviewer', gitlabProjectId: 4455667n, ...opts })
-    const bound = await a.app.inject({
-      method: 'POST',
-      url: `${ORG}/gitlab/projects`,
-      payload: { connectionId, projectId: '4455667' }
-    })
-    expect(bound.statusCode).toBe(200)
-    return agentId
-  }
-
-  it('reports the account username, display name, group, and health', async () => {
-    const a = gitlabApp()
-    const agentId = await boundWithAgent(a)
-
-    const res = await a.app.inject({ method: 'GET', url: accountsUrl(agentId) })
-    expect(res.statusCode).toBe(200)
-    const { accounts } = res.json() as { accounts: Array<Record<string, unknown>> }
-    expect(accounts).toHaveLength(1)
-    expect(accounts[0]).toMatchObject({
-      rootGroupId: '900',
-      // The readable heading comes off a bound project — the row itself holds only the number.
-      rootGroupPath: 'example-group',
-      username: gitlabAgentAccountUsername(agentId, 'reviewer', 900n),
-      displayName: 'reviewer',
-      state: 'ready',
-      stateReason: null,
-      lifecycle: 'active'
-    })
-    // The account exists on GitLab, so the console may link its profile.
-    expect(accounts[0]!.userId).toMatch(/^\d+$/)
-  })
-
-  it('translates a quota refusal into an actionable reason, naming no token material', async () => {
-    const a = gitlabApp({ refuseServiceAccountQuota: true })
-    const agentId = await boundWithAgent(a)
-
-    const res = await a.app.inject({ method: 'GET', url: accountsUrl(agentId) })
-    expect(res.statusCode).toBe(200)
-    const { accounts } = res.json() as { accounts: Array<Record<string, unknown>> }
-    expect(accounts[0]).toMatchObject({ state: 'admin_degraded', stateReason: 'service_account_quota' })
-    // Refused creation means no GitLab user and no project to read a group path from.
-    expect(accounts[0]!.userId).toBeNull()
-    expect(accounts[0]!.rootGroupPath).toBeNull()
-    expect(JSON.stringify(accounts)).not.toContain('glpat')
-  })
-
-  it('is empty for an agent with no GitLab project', async () => {
-    const a = gitlabApp()
-    await connect(a)
-    const agentId = randomUUID()
-    await seedAgent(prisma, agentId, { name: 'no-gitlab' })
-
-    const res = await a.app.inject({ method: 'GET', url: accountsUrl(agentId) })
-    expect(res.statusCode).toBe(200)
-    expect(res.json()).toEqual({ accounts: [] })
-  })
-
-  it('404s an unknown agent and another organization’s agent', async () => {
-    const a = gitlabApp()
-    const agentId = await boundWithAgent(a)
-
-    expect((await a.app.inject({ method: 'GET', url: accountsUrl(randomUUID()) })).statusCode).toBe(404)
-    // Cross-org reads as absent, never as someone else's resource.
-    const foreign = await a.app.inject({ method: 'GET', url: accountsUrl(agentId, '/api/v1/orgs/some-other-org') })
-    expect(foreign.statusCode).toBe(404)
-  })
-
-  it('404s a restricted agent the caller cannot see, with no oracle', async () => {
-    const a = gitlabApp()
-    const { connectionId } = await connect(a)
-    const visible = randomUUID()
-    const hidden = randomUUID()
-    await seedAgent(prisma, visible, { name: 'reviewer', gitlabProjectId: 4455667n })
-    await seedAgent(prisma, hidden, {
-      name: 'private-reviewer',
-      gitlabProjectId: 4455667n,
-      visibility: 'restricted',
-      sharedWith: [DEFAULT_OWNER_ID]
-    })
-    const bound = await a.app.inject({
-      method: 'POST',
-      url: `${ORG}/gitlab/projects`,
-      payload: { connectionId, projectId: '4455667' }
-    })
-    expect(bound.statusCode).toBe(200)
-    await a.close()
-
-    const users = new PgUserRepo(prisma)
-    const email = `outsider-${randomUUID().slice(0, 8)}@example.test`
-    const { userId: outsider } = await users.provisionOidcUser({ oidcSubject: email, email, emailVerified: true })
-    await users.addMemberByEmail(DEFAULT_ORG_ID, email, 'collaborator')
-    const asOutsider = gitlabApp({}, outsider)
-
-    expect((await asOutsider.app.inject({ method: 'GET', url: accountsUrl(hidden) })).statusCode).toBe(404)
-    // The same caller reads the org-visible agent fine, so the 404 is visibility, not the route.
-    expect((await asOutsider.app.inject({ method: 'GET', url: accountsUrl(visible) })).statusCode).toBe(200)
-  })
-
-  it('404s with the rest of the surface when the deployment has no gitlab oauth app', async () => {
-    running = buildHttpApp(prisma, { PUBLIC_CP_URL: PUBLIC_CP })
-    const res = await running.app.inject({ method: 'GET', url: accountsUrl(randomUUID()) })
     expect(res.statusCode).toBe(404)
   })
 })

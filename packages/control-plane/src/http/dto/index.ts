@@ -1848,26 +1848,6 @@ export const CreateGitlabProjectBody = z.object({
   projectId: z.string().regex(/^[1-9]\d*$/) // numeric id as a string; the server re-fetches and validates
 })
 
-/** One agent's own GitLab identity (§7.2): the group service account it acts as,
- *  one per top-level group it has a bound project in. No token material. */
-export const GitlabAgentAccountDto = z.object({
-  id: z.string(),
-  rootGroupId: z.string(), // numeric top-level group id, losslessly as a string
-  /** Current path of that top-level group, read off a bound project; null while none is bound. */
-  rootGroupPath: z.string().nullable(),
-  username: z.string(),
-  displayName: z.string().nullable(),
-  userId: z.string().nullable(), // numeric GitLab user id; null until the account exists
-  /** The §8.2 lifecycle vocabulary the binding uses, so the console translates one set. */
-  state: z.enum(['provisioning', 'ready', 'admin_degraded', 'runtime_degraded', 'cleanup_pending']),
-  stateReason: z.string().nullable(),
-  /** `retiring` once the agent's last project in the group went away (§7.2). */
-  lifecycle: z.enum(['active', 'retiring'])
-})
-export type GitlabAgentAccountDtoT = z.infer<typeof GitlabAgentAccountDto>
-
-export const GitlabAgentAccountListDto = z.object({ accounts: z.array(GitlabAgentAccountDto) })
-
 export const GithubAppDto = z.object({
   enabled: z.boolean(),
   /** github.com/apps/<slug>; null when the feature is disabled. */
