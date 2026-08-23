@@ -143,6 +143,7 @@ import { RelayRoster } from './orchestrator/relayRoster.js'
 import { WebchatMcpOperationReaper } from './orchestrator/webchatMcpOperationReaper.js'
 import { HttpBotOrchestrator } from './orchestrator/httpBot.js'
 import { gatedDmSeeds, type GatedDmSeedResolver } from './orchestrator/linkedDm.js'
+import { convergeIntegrationGating } from './orchestrator/integrationPush.js'
 import { SlackBotIdentityReconciler } from './orchestrator/slackBotIdentityReconciler.js'
 import { slackConfigApi } from './http/slack-config-api.js'
 import { findTool } from './http/mcp/tools.js'
@@ -1725,6 +1726,12 @@ export function buildContainer(
     integrationChannel: repos.integrationChannel,
     slackSessionAccess,
     gatedDmSeeds: gatedDmSeedResolver,
+    // §14.8: the report path can now create an ENABLED row, so it needs the same
+    // re-converge a visibility flip performs — the reporter's own bindRules predate it.
+    integrationConverge: (agent) =>
+      convergeIntegrationGating({ repos, agentDelivery, httpBot, platforms }, agent, {
+        warn: (o, m) => http.log.warn(o as Record<string, unknown>, m)
+      }),
     sessionAccessWarmer,
     agentMutations,
     recoverStagedAgent: (agentId, daemonId, moveId) => stagedAgentMoves.recoverStaged(agentId, daemonId, moveId),

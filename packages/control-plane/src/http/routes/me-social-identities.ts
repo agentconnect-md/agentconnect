@@ -21,7 +21,7 @@
 import type { FastifyInstance, FastifyReply } from 'fastify'
 import { z } from 'zod'
 import { resolveWebAppUrl } from '../../config/env.js'
-import { LogtoApiError } from '../../github/logto-identity.js'
+import { LogtoApiError, type SlackIdentity } from '../../github/logto-identity.js'
 import { convergeIntegrationGating } from '../../orchestrator/integrationPush.js'
 import { reconcileLinkedDms } from '../../orchestrator/linkedDmReconcile.js'
 import type { HttpDeps } from '../deps.js'
@@ -187,19 +187,44 @@ export function meSocialIdentityRoutes(deps: HttpDeps) {
       message: 'social sign-in management is not configured'
     } as const
 
-    // §14.8 catch-up (resource-visibility.md): a landed link may authorize DMs this
-    // person already has open with a private agent they are shared with. Awaited so
-    // the Console read that follows the link already shows them, and swallowed — the
-    // link itself succeeded, and a failure leaves the rows exactly where they were.
-    const openLinkedDms = async (req: {
+    type LinkedReq = {
       principal?: { userId: string }
       oidcSubject?: string
       log: { debug(obj: object, msg: string): void; warn(obj: object, msg?: string): void }
-    }): Promise<void> => {
+    }
+
+    /** The Slack identity this account carries right now, or null. Cheap and cached —
+     *  the point of reading it is to have a BEFORE to compare an AFTER against. */
+    const slackIdentityOf = async (sub: string): Promise<SlackIdentity | null> => {
+      try {
+        return (await deps.logtoIdentity?.slackIdentityFor(sub)) ?? null
+      } catch {
+        // Unknown reads as "unchanged": the catch-up below is an optimization, and
+        // refusing it costs a DM that stays Off, which is where it already was.
+        return null
+      }
+    }
+
+    /**
+     * §14.8 catch-up (resource-visibility.md): a link that JUST landed may authorize
+     * DMs this person already has open with a private agent they are shared with.
+     *
+     * `before` is what the account carried when the request started. Only a genuine
+     * change fires the catch-up — neither of these routes means "a Slack link
+     * appeared": the refresh is also used after a reauthorization, and the link route
+     * also links providers other than Slack. Re-deriving on every call would let the
+     * default reassert itself over an editor's per-conversation Off.
+     *
+     * Awaited so the Console read that follows already shows the opened rows, and
+     * swallowed — the link itself succeeded, and a failure leaves the rows put.
+     */
+    const openLinkedDms = async (req: LinkedReq, before: SlackIdentity | null): Promise<void> => {
       const userId = req.principal?.userId
       if (!userId || !req.oidcSubject || !deps.logtoIdentity) return
+      const after = await slackIdentityOf(req.oidcSubject)
+      if (!after || (before?.teamId === after.teamId && before?.userId === after.userId)) return
       try {
-        await reconcileLinkedDms(userId, req.oidcSubject, {
+        await reconcileLinkedDms(userId, after, {
           users: deps.repos.user,
           orgs: deps.repos.org,
           agents: deps.repos.agent,
@@ -234,8 +259,11 @@ export function meSocialIdentityRoutes(deps: HttpDeps) {
       async (req, reply) => {
         const identity = deps.logtoIdentity
         if (!identity) return reply.code(503).send(unavailable)
+        // Read the pre-change identity BEFORE dropping the cache, so the comparison
+        // has something to be a comparison against.
+        const before = await slackIdentityOf(req.oidcSubject!)
         identity.forgetUser(req.oidcSubject!)
-        await openLinkedDms(req)
+        await openLinkedDms(req, before)
         return reply.code(204).send(null)
       }
     )
@@ -297,6 +325,9 @@ export function meSocialIdentityRoutes(deps: HttpDeps) {
         const identity = deps.logtoIdentity
         const redirectUri = socialCallbackUrl(deps)
         if (!identity || !redirectUri) return reply.code(503).send(unavailable)
+        // Before the link invalidates the cache — this route links any provider, so
+        // only a comparison can say whether the SLACK identity is what changed.
+        const before = await slackIdentityOf(req.oidcSubject!)
         try {
           // redirectUri last: Logto exchanges the code against the URI it
           // authorized with, and only the server knows that one.
@@ -304,7 +335,7 @@ export function meSocialIdentityRoutes(deps: HttpDeps) {
             ...req.body.connectorData,
             redirectUri
           })
-          await openLinkedDms(req)
+          await openLinkedDms(req, before)
           return { linked: true as const }
         } catch (error) {
           return logtoFailure(reply, error, 'link')

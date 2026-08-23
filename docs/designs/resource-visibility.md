@@ -1002,6 +1002,14 @@ reverse index from a platform member id to a console account. Every unresolvable
 case fails CLOSED to §14.2: no sign-in configured, no workspace on the bot, an
 oversized audience, or an upstream that cannot answer all leave the row Off.
 
+This report is also the one place where a CP write turns a daemon's own report
+into an ENABLED conversation, so it is the one that has to push: the reporting
+daemon still holds the `bindRules` it was given before the row existed, and it
+has already cached the conversation, so nothing re-reports and repairs it.
+Opening a row therefore re-converges the agent's integrations, the same push a
+visibility flip performs. (The shared-bot path already did this — `syncRoutes`
+recompiles the relay routes _and_ re-pushes the send-only specs.)
+
 **Order independence.** A seed decided at discovery would fire only for people
 whose link and audience seat both predate their first DM — which is the opposite
 of what happens, since people link _because_ they were refused. So the two
@@ -1009,10 +1017,20 @@ writes that can make the answer true later — a landed identity link, a widened
 audience — re-ask it for the Off DM rows already on record. The rule that
 results does not depend on the order the three events arrive in.
 
-This catch-up is **one-way**: it opens rows and never closes them. A stored
-trigger is indistinguishable from an operator's own choice — §14.2 lets an
-editor enable a DM for anyone — so re-deriving a CLOSE would silently revert
-decisions §14.8 never made.
+**The catch-up asks about the pair that just became eligible, never about the
+current state.** A widened audience reconciles the members it GAINED, not
+everyone in it; a link reconciles only when the Slack identity actually changed,
+compared against what the account carried when the request started. This is not
+an optimization. A stored Off is indistinguishable from an operator's own choice
+— §14.2 lets an editor close a DM §14.8 opened — so re-deriving from "everyone
+currently in the audience who is currently linked" would reopen that DM on the
+next unrelated sharing edit or profile refresh, turning a DEFAULT into a
+standing rule that overrides the per-conversation control. Neither call site
+means "a Slack link appeared" on its own: the console's refresh is also used
+after a reauthorization, and the link route links providers other than Slack.
+
+For the same reason the catch-up is **one-way**: it opens rows and never closes
+them, because re-deriving a CLOSE would revert decisions §14.8 never made.
 
 **Consequence, stated plainly: an opened DM stays open.** A gated bind rule is
 conversation-scoped (`{channel, match:'dm'}`), with no user dimension, so losing

@@ -100,6 +100,11 @@ export interface DaemonWsDeps {
   /** §14.8: which of a gated install's reported DMs seed to the ordinary DM default
    *  because their counterpart is in the agent's own audience; absent ⇒ all stay Off. */
   gatedDmSeeds?: GatedDmSeedResolver
+  /** Republish the agent's integrations. Needed because §14.8 is the one path where a
+   *  daemon REPORT creates an ENABLED row: the reporter is still holding bindRules that
+   *  predate it, and it has already cached the conversation, so nothing re-reports and
+   *  the DM stays refused until an unrelated push or reconnect. Absent ⇒ exactly that. */
+  integrationConverge?: (agent: AgentRecord) => Promise<void>
   /** §4.1 activity poke (session-access-cold-visit.md): a committed live `event/session`
    *  milestone marks its external scope active so the warmer keeps its resource facts
    *  leased. Replayed `event/session-sync` frames never poke (§4.2(6)). */

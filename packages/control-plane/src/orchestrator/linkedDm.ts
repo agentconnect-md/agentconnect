@@ -60,12 +60,16 @@ async function mapLimited<T, R>(values: readonly T[], limit: number, fn: (value:
 }
 
 /**
- * The platform member ids of `agent`'s audience who have linked THIS bot's workspace.
- * Empty for a public agent (nothing is gated), a platform without a linked-identity
- * assertion, a bot whose workspace is unknown, or a deployment without sign-in.
+ * The platform member ids, among `userIds`, that have linked THIS bot's workspace.
+ * Empty for a platform without a linked-identity assertion, a bot whose workspace is
+ * unknown, or a deployment without sign-in.
+ *
+ * Takes an explicit user list rather than reading the audience, because the catch-up
+ * paths must ask about the members that just BECAME eligible, not the whole current
+ * audience — re-asking for everyone would reopen a DM an editor had since closed.
  */
-export async function linkedAudienceMemberIds(
-  agent: Pick<AgentRecord, 'visibility' | 'sharedWith'>,
+export async function linkedMemberIds(
+  userIds: readonly string[],
   bot: Pick<BotRecord, 'platform' | 'teamId'>,
   deps: LinkedDmDeps
 ): Promise<ReadonlySet<string>> {
@@ -74,14 +78,13 @@ export async function linkedAudienceMemberIds(
   // cross-app `union_id` while its messages carry an app-scoped `open_id`, so
   // matching there needs a resolution step this does not have — and guessing would
   // silently widen a private agent.
-  if (!deps.identity || !isGatedAgent(agent) || bot.platform !== 'slack' || !bot.teamId) return new Set()
-  const audience = agent.sharedWith
-  if (audience.length === 0) return new Set()
-  if (audience.length > MAX_AUDIENCE) {
-    deps.log?.debug({ audience: audience.length }, 'gated DM: audience too large to resolve — keeping the Off default')
+  if (!deps.identity || bot.platform !== 'slack' || !bot.teamId) return new Set()
+  if (userIds.length === 0) return new Set()
+  if (userIds.length > MAX_AUDIENCE) {
+    deps.log?.debug({ audience: userIds.length }, 'gated DM: audience too large to resolve — keeping the Off default')
     return new Set()
   }
-  const identities = await mapLimited(audience, AUDIENCE_CONCURRENCY, async (userId) => {
+  const identities = await mapLimited(userIds, AUDIENCE_CONCURRENCY, async (userId) => {
     try {
       const sub = await deps.users.getOidcSubject(userId)
       if (!sub) return null
@@ -94,6 +97,16 @@ export async function linkedAudienceMemberIds(
     }
   })
   return new Set(identities.filter((id): id is string => id !== null))
+}
+
+/** {@link linkedMemberIds} over a gated agent's whole audience — the seed path, where
+ *  every row under consideration is new and there is no operator choice to preserve. */
+export async function linkedAudienceMemberIds(
+  agent: Pick<AgentRecord, 'visibility' | 'sharedWith'>,
+  bot: Pick<BotRecord, 'platform' | 'teamId'>,
+  deps: LinkedDmDeps
+): Promise<ReadonlySet<string>> {
+  return isGatedAgent(agent) ? linkedMemberIds(agent.sharedWith, bot, deps) : new Set()
 }
 
 /**

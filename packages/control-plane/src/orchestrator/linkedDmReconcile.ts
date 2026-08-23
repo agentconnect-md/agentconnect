@@ -13,10 +13,16 @@
  * results is order-independent: an audience member with a linked identity has an open
  * DM, however the two arrived.
  *
- * Deliberately ONE-WAY: it opens rows and never closes them. A stored trigger is
- * indistinguishable from an operator's own choice — §14.2 lets an editor enable a DM
- * for anyone — so re-deriving a CLOSE would silently revert decisions §14.8 never
- * made. The consequence is that an opened DM stays open: a gated bind rule is
+ * Scoped to the pair that JUST became eligible, never to the current state. A stored
+ * Off is indistinguishable from an operator's own choice — §14.2 lets an editor close
+ * a DM §14.8 opened — so re-deriving from "everyone currently in the audience who is
+ * currently linked" would reopen that DM on the next unrelated sharing edit or profile
+ * refresh, turning a DEFAULT into a standing rule that overrides the per-conversation
+ * control. Hence the callers pass the members just added, and the link path fires only
+ * when the identity actually changed.
+ *
+ * Deliberately ONE-WAY: it opens rows and never closes them, for the same reason. The
+ * consequence is that an opened DM stays open — a gated bind rule is
  * conversation-scoped, with no user dimension, so losing the audience seat does not
  * close the conversation the seat opened, and only an editor's Off does. §14.8 records
  * why, and what telling the two apart would cost.
@@ -35,7 +41,7 @@ import type {
 } from '../persistence/ports.js'
 import { AgentId, IntegrationId, OrgId } from '../domain/ids.js'
 import type { SlackIdentity } from '../github/logto-identity.js'
-import { linkedAudienceMemberIds, type LinkedDmDeps } from './linkedDm.js'
+import { linkedMemberIds, type LinkedDmDeps } from './linkedDm.js'
 import { isGatedAgent } from './placement.js'
 
 export interface LinkedDmReconcileDeps extends LinkedDmDeps {
@@ -85,16 +91,17 @@ async function openDirectRows(
 /**
  * A link just landed on this account: open this person's Off DMs with every private
  * agent they are already in the audience of, across every org they belong to.
- * Returns how many rows were opened, for the caller's log line.
+ *
+ * `identity` is the one that just became true — the caller establishes that by
+ * comparing what it read before the change with what it reads after, so a profile
+ * refresh that changed nothing (a reauthorization, a link to some other provider)
+ * reconciles nothing. Returns how many rows were opened, for the caller's log line.
  */
 export async function reconcileLinkedDms(
   userId: string,
-  oidcSubject: string,
+  identity: SlackIdentity,
   deps: LinkedDmReconcileDeps
 ): Promise<number> {
-  if (!deps.identity) return 0
-  const identity = await deps.identity.slackIdentityFor(oidcSubject)
-  if (!identity) return 0
   // The workspace fence: a Slack member id is scoped to its team, so the same `U…` in
   // another workspace is a different person entirely.
   const admits = async (bot: BotRecord): Promise<ReadonlySet<string>> =>
@@ -113,11 +120,19 @@ export async function reconcileLinkedDms(
 }
 
 /**
- * An audience just widened: open the Off DMs of everyone now in it who has a linked
- * identity. The mirror of {@link reconcileLinkedDms} — same rule, other input.
+ * An audience just widened: open the Off DMs of the members it GAINED who have a
+ * linked identity. The mirror of {@link reconcileLinkedDms} — same rule, other input.
+ *
+ * `addedUserIds` is the diff, not the audience. Passing the whole current audience
+ * would make every later sharing edit reassert the default over an editor's Off.
  */
-export async function reconcileAgentLinkedDms(agent: AgentRecord, deps: LinkedDmReconcileDeps): Promise<number> {
-  const opened = await openDirectRows(agent, (bot) => linkedAudienceMemberIds(agent, bot, deps), deps)
+export async function reconcileAgentLinkedDms(
+  agent: AgentRecord,
+  addedUserIds: readonly string[],
+  deps: LinkedDmReconcileDeps
+): Promise<number> {
+  if (addedUserIds.length === 0) return 0
+  const opened = await openDirectRows(agent, (bot) => linkedMemberIds(addedUserIds, bot, deps), deps)
   if (opened > 0)
     deps.log?.debug({ agentId: agent.id, opened }, 'gated DM: opened conversations after a sharing change')
   return opened

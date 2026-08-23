@@ -3011,10 +3011,13 @@ export function agentRoutes(deps: HttpDeps) {
           if (agent.visibility !== existing.visibility) {
             await convergeIntegrationGating(deps, agent, req.log)
           }
-          // §14.8: a widened audience may authorize DMs its new members already have
-          // open with this agent. Best-effort — the sharing write itself has landed,
-          // and a failure leaves those rows Off, which is where they already were.
-          await reconcileAgentLinkedDms(agent, {
+          // §14.8: an audience that GAINED members may authorize DMs those members
+          // already have open with this agent. The diff, never the whole audience — a
+          // later edit must not reassert the default over an editor's own Off.
+          // Best-effort: the sharing write has landed, and a failure leaves those rows
+          // Off, which is where they already were.
+          const gained = agent.sharedWith.filter((id) => !existing.sharedWith.includes(id))
+          await reconcileAgentLinkedDms(agent, gained, {
             users: deps.repos.user,
             orgs: deps.repos.org,
             agents: deps.repos.agent,
