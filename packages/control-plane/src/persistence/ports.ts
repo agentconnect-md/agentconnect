@@ -3439,16 +3439,10 @@ export interface GitlabAccountConsumer {
   accessLevel: number
 }
 
-/** A consumer with WHY it consumes the project: the console names the reason on the row, so
- *  dropping an agent's triggers cannot leave its still-working workspace looking like a ghost. */
+/** One consumer, addressed by the project it consumes — the desired membership set convergence
+ *  is judged against, across the whole organization rather than a project at a time. */
 export interface GitlabProjectConsumer extends GitlabAccountConsumer {
   projectId: bigint
-  /** The agent's gitlab workspace on this project and the access it grants; null when it has none. */
-  workspace: 'read' | 'write' | null
-  /** Comment families the agent's enabled triggers cover here, sorted; may be empty. */
-  triggerFamilies: string[]
-  /** How many enabled triggers the agent has on the project. */
-  triggerCount: number
 }
 
 export interface GitlabAgentAccountRepo {

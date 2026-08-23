@@ -592,7 +592,7 @@ describe('gitlab organization bot roster (§7.2, §18.1)', () => {
   const rosterUrl = (org = ORG) => `${org}/gitlab/accounts`
 
   type RosterAccount = Record<string, unknown> & {
-    memberships: Array<{ bindingId: string; accessLevel: number; workspace: string | null }>
+    bindingIds: string[]
   }
 
   async function rosterRead(a: HttpApp): Promise<{ accounts: RosterAccount[]; converging: boolean }> {
@@ -635,39 +635,9 @@ describe('gitlab organization bot roster (§7.2, §18.1)', () => {
       lifecycle: 'active'
     })
     // The membership carries the role GitLab enforces, so the card can name it.
-    expect(accounts[0]!.memberships).toMatchObject([{ bindingId, accessLevel: 30 }])
+    expect(accounts[0]!.bindingIds).toEqual([bindingId])
     expect(accounts[0]!.userId).toMatch(/^\d+$/)
     expect(JSON.stringify(accounts)).not.toContain('glpat')
-  })
-
-  it('reports why each bot holds its project: workspace access and enabled trigger families', async () => {
-    // The role alone cannot say this, and it is what stops a workspace-only bot reading as
-    // a leftover once someone deletes the triggers that used to justify it too.
-    const a = gitlabApp()
-    const { connectionId } = await connect(a)
-    const agentId = randomUUID()
-    await seedAgent(prisma, agentId, { name: 'reviewer', gitlabProjectId: 4455667n, gitAccess: 'read' })
-    await prisma.hookDef.create({
-      data: {
-        id: randomUUID(),
-        orgId: DEFAULT_ORG_ID,
-        agentId,
-        kind: 'gitlab',
-        name: 'reviews',
-        sessionMode: 'perDelivery',
-        repoId: 4455667n,
-        commentFamilies: ['merge_request', 'issues']
-      }
-    })
-    await bind(a, connectionId, '4455667')
-
-    const accounts = await roster(a)
-    expect(accounts[0]!.memberships[0]).toMatchObject({
-      workspace: 'read',
-      // Sorted, so the console never has to care what order the rows came back in.
-      triggerFamilies: ['issues', 'merge_request'],
-      triggerCount: 1
-    })
   })
 
   it('gives a project consumed by two agents one bot each, with the role each derives', async () => {
@@ -682,10 +652,8 @@ describe('gitlab organization bot roster (§7.2, §18.1)', () => {
     const accounts = await roster(a)
     expect(accounts).toHaveLength(2)
     // One account per AGENT, not per project: the binding appears under both.
-    expect(accounts.every((account) => account.memberships[0]!.bindingId === bindingId)).toBe(true)
-    const byAgent = new Map(accounts.map((account) => [account.agentId as string, account]))
-    expect(byAgent.get(writer)!.memberships[0]!.accessLevel).toBe(30)
-    expect(byAgent.get(reader)!.memberships[0]!.accessLevel).toBe(20)
+    expect(accounts.every((account) => account.bindingIds[0] === bindingId)).toBe(true)
+    expect(new Set(accounts.map((account) => account.agentId))).toEqual(new Set([writer, reader]))
   })
 
   it('omits a bot whose agent the caller cannot see, and keeps the visible one', async () => {
@@ -903,20 +871,20 @@ describe('gitlab organization bot roster (§7.2, §18.1)', () => {
       const bindingId = await bind(a, connectionId, '4455667')
 
       const raised = await rosterRead(a)
-      expect(raised.accounts[0]!.memberships).toMatchObject([{ bindingId, accessLevel: 30 }])
+      expect(raised.accounts[0]!.bindingIds).toEqual([bindingId])
       expect(raised.converging).toBe(false)
 
       // The hook goes; the membership survives at the role only the hook justified.
       await prisma.hookDef.delete({ where: { id: hookId } })
       const pending = await rosterRead(a)
-      expect(pending.accounts[0]!.memberships).toMatchObject([{ bindingId, accessLevel: 30 }])
+      expect(pending.accounts[0]!.bindingIds).toEqual([bindingId])
       expect(pending.converging).toBe(true)
 
       // Convergence writes the workspace's own role, and the answer settles on it.
       const repaired = await a.app.inject({ method: 'POST', url: `${ORG}/gitlab/projects/${bindingId}/repair` })
       expect(repaired.statusCode).toBe(200)
       const settled = await rosterRead(a)
-      expect(settled.accounts[0]!.memberships).toMatchObject([{ bindingId, accessLevel: 20 }])
+      expect(settled.accounts[0]!.bindingIds).toEqual([bindingId])
       expect(settled.converging).toBe(false)
     })
 
@@ -953,7 +921,7 @@ describe('gitlab organization bot roster (§7.2, §18.1)', () => {
 
       const read = await rosterRead(a)
       expect(read.accounts[0]).toMatchObject({ state: 'admin_degraded', stateReason: 'service_account_quota' })
-      expect(read.accounts[0]!.memberships).toEqual([])
+      expect(read.accounts[0]!.bindingIds).toEqual([])
       expect(read.converging).toBe(false)
     })
   })

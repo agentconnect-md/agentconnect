@@ -5395,18 +5395,6 @@ export function deleteGitlabProject(id: string): Promise<GitlabProjectRemovalDto
   return apiDelete<GitlabProjectRemovalDto>(`${orgBase()}/gitlab/projects/${encodeURIComponent(id)}`)
 }
 
-/** Why one bot holds one project: the role, plus the authorizations that earned it. Dropping
- *  an agent's triggers while its workspace stands must read as a change, not as a purposeless bot. */
-export interface GitlabMembershipDto {
-  bindingId: string
-  accessLevel: number
-  /** The agent's workspace on the project and the access it grants; null when it has none. */
-  workspace: 'read' | 'write' | null
-  /** Comment families the agent's enabled triggers cover here; may be empty. */
-  triggerFamilies: string[]
-  triggerCount: number
-}
-
 /** One organization bot for the Integrations card: the service account an agent acts as, one per
  *  top-level group it has a bound project in, with the projects it is a member of. A project bound
  *  to two agents therefore appears under both bots, once per membership. */
@@ -5421,7 +5409,9 @@ export interface GitlabOrgAccountDto {
   state: GitlabProjectBindingState
   stateReason: string | null
   lifecycle: 'active' | 'retiring'
-  memberships: GitlabMembershipDto[]
+  /** The bound projects this account is a member of — which, not how: a project is managed
+   *  where it is used, and this only tells a held binding from an orphaned one. */
+  bindingIds: string[]
 }
 
 /** The organization's bots, plus whether account convergence still owes it work — the console

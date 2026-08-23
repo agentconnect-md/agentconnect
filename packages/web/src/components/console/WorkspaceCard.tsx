@@ -29,8 +29,6 @@ import { GithubMark, GitlabMark, LoadingState } from '@/components/marks'
 import { Icon } from '@/components/ui'
 import { isPoolPlacementKind, type Agent, type WorkspaceStatusInfo } from '@/lib/data'
 import { creatorLabel, fetchAgentRepos } from '@/lib/api'
-import { GITLAB_PROJECT_STATE, gitlabAgentBot, gitlabProfileUrl, gitlabStateReasonText } from '@/lib/gitlab-projects'
-import { useGitlabProjectBindings } from '@/lib/use-gitlab-projects'
 import { useOrgs } from '@/lib/org-context'
 import { useProfile } from '@/lib/profile'
 import { consoleKeys } from '@/lib/swr-keys'
@@ -137,14 +135,6 @@ export function WorkspaceCard({
         ? (ws.gitAccess ?? 'write')
         : null
   const remoteLabel = header?.remoteLabel ?? (isGitlab ? 'GitLab' : 'GitHub')
-  // A GitLab workspace pushes as this agent's project bot, the way a GitHub workspace pushes as the
-  // App installation — so the source line names it (gitlab-com-integration.md §18.1).
-  const gitlabProject = isGitlab ? { projectId: ws.projectId, projectPath: ws.repo } : null
-  const gitlabBindings = useGitlabProjectBindings(
-    gitlabProject && (gitlabProject.projectId ?? gitlabProject.projectPath)
-  )
-  const bot = gitlabProject ? gitlabAgentBot(gitlabBindings, gitlabProject, agent.id) : null
-  const botReason = bot ? gitlabStateReasonText(bot.stateReason) : null
 
   // The segment is the conversion entry point; picking the mode the agent is
   // already on is a no-op (the pencil edits the current source's settings).
@@ -210,35 +200,6 @@ export function WorkspaceCard({
           <span className="badge flex-none" style={{ background: header.status.bg, color: header.status.text }}>
             <span className="dot h-[6px] w-[6px]" style={{ background: header.status.dot }} />
             {header.status.label}
-          </span>
-        )}
-        {bot && (
-          <span className="inline-flex min-w-0 items-center gap-[6px]">
-            <span className="flex-none font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-              pushes as
-            </span>
-            <a
-              className="inline-flex min-w-0 items-center gap-[5px] no-underline hover:underline"
-              href={gitlabProfileUrl(bot.username)}
-              target="_blank"
-              rel="noopener noreferrer"
-              title="The GitLab bot this agent acts as on this project"
-            >
-              {bot.displayName && (
-                <span className="min-w-0 truncate font-sans text-[12px] font-medium leading-normal text-(--text-secondary)">
-                  {bot.displayName}
-                </span>
-              )}
-              <span className="mono min-w-0 truncate text-[11.5px] text-(--text-tertiary)">@{bot.username}</span>
-            </a>
-            {bot.state !== 'ready' && (
-              <span
-                className={`badge flex-none ${GITLAB_PROJECT_STATE[bot.state].badge}`}
-                {...(botReason ? { title: botReason } : {})}
-              >
-                {GITLAB_PROJECT_STATE[bot.state].label}
-              </span>
-            )}
           </span>
         )}
 

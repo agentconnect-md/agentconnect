@@ -1541,37 +1541,37 @@ administers — the shape the GitHub card already has. It shows:
 
 - connected GitLab username and GitLab.com host;
 - OAuth state: connected, reconnect required, or disconnected;
-- the organization's bots, one row per agent account — the agent's icon and
-  name linking to it, `@username` linking to its GitLab profile, top-level
-  group, and account health — mirroring the chat-platform cards, where the
-  bot is the row;
-- under each bot, the projects it is a member of: path, role, binding state,
-  and why the bot holds it — its workspace access, the enabled trigger
-  families, or both. Naming the reason is what keeps a bot whose triggers
-  were deleted, but whose workspace still uses the project, from reading as
-  a leftover. The project-level actions sit on that project line, and a
-  project two bots hold appears under both. An account with no project left
-  still shows, with its health: a retiring one says it is being removed, a
-  refused one says it is not a member of anything yet and waits for repair.
-  A managed project no bot is a member of keeps its own group at the end,
-  since the binding still owns the webhook and the claim;
-- webhook state only where it needs attention — repairing or failed. A
-  healthy webhook, and one that a project with no trigger never needed, show
-  nothing at all: not wanting ingress is a resting state, not a condition to
-  report;
+- the organization's bots, one row per AGENT — its icon and name linking to
+  it, then a pair for each top-level group it reaches: the group, the
+  `@username` there linking to that GitLab profile, and that account's health.
+  An account cannot cross a top-level group, so an agent spanning two owns two
+  accounts; that is one bot with two faces, not two bots, and the row reads
+  that way. A healthy account is named and not badged — only trouble and
+  departure are worth saying;
+- per-bot actions in the same compact controls the messaging rows use: repair,
+  which re-runs convergence on each project the bot holds, and taking that
+  administration over, offered only where it has actually been lost — the
+  administering connection disconnected or removed, or a removal waiting for an
+  account to finish it;
+- no project rows under a bot. A project is managed where it is used, on the
+  agent that uses it, so listing every healthy project here only repeats what
+  that page already owns;
+- a final group for managed projects no bot holds, which is the one place they
+  can be reached at all: a binding outlives its last consumer, still owning the
+  webhook and the deployment-global claim, so it keeps its state, its webhook
+  state, and its repair, removal, and take-over. Webhook state appears only
+  where it needs attention — repairing or failed. A healthy webhook, and one
+  that a project with no trigger never needed, show nothing at all: not wanting
+  ingress is a resting state, not a condition to report;
 - credential expiry and rotation warning without token values; and
-- actions to reconnect, repair, remove a project, disconnect, or remove a
-  released connection. Taking a project's administration over is offered only
-  where administration has lost its authority — the administering connection
-  is disconnected or removed, or the binding is awaiting cleanup and needs an
-  account to finish it — never on a healthy row.
+- actions to reconnect, disconnect, or remove a released connection.
 
-The agent detail page gives GitLab no surface of its own: the bot identity
-appears where every platform's does — inside the integration row, the way a
-Slack row shows its bot — and the Workspace tab's source line names the bot
-the agent pushes as, parallel to how a GitHub workspace names its
-installation. There is no standalone identity card. Account names derive from
-agents; there is no new required input.
+The agent detail page carries no GitLab identity surface at all. Its
+integration row names the project the way every platform's row names its
+subject, and the Workspace tab's source line names the project and the access
+the agent holds on it — nothing about the bot, exactly as a GitHub workspace
+names nothing there. The bot roster lives on the Connections page alone.
+Account names derive from agents; there is no new required input.
 
 Webhook setup is automatic. The UI may show the desired endpoint and last
 verification result for diagnosis, but v1 does not make a manually copied

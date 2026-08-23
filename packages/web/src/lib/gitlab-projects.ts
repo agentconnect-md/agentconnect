@@ -13,13 +13,7 @@
  * project that is about to change underneath it.
  */
 
-import type {
-  GitlabProjectAccountDto,
-  GitlabProjectBindingDto,
-  GitlabProjectBindingState,
-  GitlabProjectDto,
-  GitlabWebhookState
-} from './api'
+import type { GitlabProjectBindingDto, GitlabProjectBindingState, GitlabProjectDto, GitlabWebhookState } from './api'
 
 export const GITLAB_PROJECT_STATE: Record<GitlabProjectBindingState, { label: string; badge: string }> = {
   provisioning: { label: 'setting up', badge: 'bg-(--status-info-soft) text-(--status-info)' },
@@ -37,27 +31,6 @@ const GITLAB_WEBHOOK_ATTENTION: Partial<Record<GitlabWebhookState, { label: stri
   failed: { label: 'webhook failed', badge: 'bg-(--status-error-soft) text-(--status-error)' }
 }
 
-/** GitLab's own words for the comment families a trigger covers. */
-const GITLAB_TRIGGER_FAMILY: Record<string, string> = { issues: 'Issues', merge_request: 'MRs' }
-
-/** Why a bot is on a project, in one phrase: its workspace, its triggers, or both. Null when the
- *  membership is on its way out and no authorization justifies it any more. */
-export function gitlabMembershipReason(membership: {
-  workspace: 'read' | 'write' | null
-  triggerFamilies: string[]
-  triggerCount: number
-}): string | null {
-  const parts: string[] = []
-  if (membership.workspace) {
-    parts.push(membership.workspace === 'write' ? 'workspace (read & write)' : 'workspace (read)')
-  }
-  if (membership.triggerCount > 0) {
-    const named = membership.triggerFamilies.map((family) => GITLAB_TRIGGER_FAMILY[family] ?? family)
-    parts.push(named.length > 0 ? `triggers: ${named.join(', ')}` : 'triggers')
-  }
-  return parts.length > 0 ? parts.join(' · ') : null
-}
-
 /** The webhook badge for a project row, or null when there is nothing worth saying. */
 export function gitlabWebhookBadge(state: GitlabWebhookState): { label: string; badge: string } | null {
   return GITLAB_WEBHOOK_ATTENTION[state] ?? null
@@ -65,21 +38,6 @@ export function gitlabWebhookBadge(state: GitlabWebhookState): { label: string; 
 
 /** Account convergence runs behind hook and workspace CRUD; this is how often we ask whether it landed. */
 export const GITLAB_CONVERGENCE_POLL_MS = 5_000
-
-const GITLAB_ROLE: Record<number, string> = {
-  10: 'Guest',
-  15: 'Planner',
-  20: 'Reporter',
-  30: 'Developer',
-  40: 'Maintainer',
-  50: 'Owner'
-}
-
-/** GitLab's own word for an access level. An unknown level is shown as the bare number
- *  rather than guessed at — the role is what GitLab enforces, not what we hoped for. */
-export function gitlabRoleLabel(accessLevel: number): string {
-  return GITLAB_ROLE[accessLevel] ?? `level ${accessLevel}`
-}
 
 /** gitlab.com is pinned in v1 — no host override exists to thread through here. */
 export function gitlabProfileUrl(username: string): string {
@@ -121,23 +79,6 @@ export function gitlabStateReasonText(reason: string | null): string | null {
     return 'GitLab refused the last administration request — reconnect the account that manages this project, or transfer it to your own'
   }
   return GITLAB_STATE_REASON[reason] ?? null
-}
-
-/** The bot an agent acts as on a bound project — the member row the project list already carries,
- *  which is where the console names an agent's GitLab identity (§18.1). */
-export function gitlabAgentBot(
-  bindings: readonly GitlabProjectBindingDto[],
-  project: { projectId?: string | null; projectPath?: string | null },
-  agentId: string
-): GitlabProjectAccountDto | null {
-  // The numeric id survives a project rename; the path is display-only, so it answers for a row carrying no id.
-  const path = project.projectPath?.toLowerCase()
-  const binding = bindings.find((candidate) =>
-    project.projectId
-      ? candidate.projectId === project.projectId
-      : path !== undefined && candidate.projectPath.toLowerCase() === path
-  )
-  return binding?.accounts.find((account) => account.agentId === agentId) ?? null
 }
 
 /** One pickable project: `binding` null means picking it sets it up first. */

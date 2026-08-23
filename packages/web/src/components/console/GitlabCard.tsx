@@ -21,9 +21,7 @@ import { consoleKeys } from '@/lib/swr-keys'
 import {
   GITLAB_CONVERGENCE_POLL_MS,
   GITLAB_PROJECT_STATE,
-  gitlabMembershipReason,
   gitlabProfileUrl,
-  gitlabRoleLabel,
   gitlabStateReasonText,
   gitlabWebhookBadge
 } from '@/lib/gitlab-projects'
@@ -38,7 +36,6 @@ import {
   startGitlabOauth,
   transferGitlabProject,
   type GitlabConnectionDto,
-  type GitlabMembershipDto,
   type GitlabOrgAccountDto,
   type GitlabProjectBindingDto
 } from '@/lib/api'
@@ -58,25 +55,23 @@ function errorText(e: unknown): string {
   return e instanceof Error ? e.message : String(e)
 }
 
-/** One bot row: the account, and the bindings it is a member of, in path order. */
+/** One bot row: an AGENT, and the account it holds in each top-level group it reaches. GitLab bot
+ *  accounts cannot cross a top-level group, so one agent legitimately owns several — that is a
+ *  detail of the same bot, not several bots, and the row shows them as pairs. */
 interface BotRow {
-  account: GitlabOrgAccountDto
-  projects: Array<{ binding: GitlabProjectBindingDto; membership: GitlabMembershipDto }>
+  agentId: string
+  accounts: GitlabOrgAccountDto[]
 }
 
-/** Bots in the order the server returns them, each with its member projects. A binding
- *  two bots share appears under both — the membership is what the row is keyed by. */
-function botRows(accounts: readonly GitlabOrgAccountDto[], bindings: readonly GitlabProjectBindingDto[]): BotRow[] {
-  const byId = new Map(bindings.map((binding) => [binding.id, binding]))
-  return accounts.map((account) => ({
-    account,
-    projects: account.memberships
-      .flatMap((membership) => {
-        const binding = byId.get(membership.bindingId)
-        return binding ? [{ binding, membership }] : []
-      })
-      .sort((a, b) => a.binding.projectPath.localeCompare(b.binding.projectPath))
-  }))
+/** Bots in the order the server first names each agent, each carrying its accounts by group. */
+function botRows(accounts: readonly GitlabOrgAccountDto[]): BotRow[] {
+  const rows: BotRow[] = []
+  for (const account of accounts) {
+    const held = rows.find((row) => row.agentId === account.agentId)
+    if (held) held.accounts.push(account)
+    else rows.push({ agentId: account.agentId, accounts: [account] })
+  }
+  return rows
 }
 
 /** Managed projects no listed bot is a member of. A binding outlives its last consumer —
@@ -85,15 +80,14 @@ function orphanBindings(
   accounts: readonly GitlabOrgAccountDto[],
   bindings: readonly GitlabProjectBindingDto[]
 ): GitlabProjectBindingDto[] {
-  const claimed = new Set(accounts.flatMap((account) => account.memberships.map((m) => m.bindingId)))
+  const claimed = new Set(accounts.flatMap((account) => account.bindingIds))
   return bindings.filter((binding) => !claimed.has(binding.id))
 }
 
-/** One managed project: its state, its webhook, and the actions that act on the binding. */
-function ProjectRow({
+/** One managed project no bot holds — the only project surface left on this card, and the only
+ *  home for an orphaned binding's repair, removal, and take-over. */
+function OrphanProjectRow({
   binding,
-  membership,
-  indented,
   canWrite,
   busy,
   stuck,
@@ -102,9 +96,6 @@ function ProjectRow({
   onTransfer
 }: {
   binding: GitlabProjectBindingDto
-  /** The bot's hold on it; absent on a project no bot is a member of. */
-  membership?: GitlabMembershipDto
-  indented: boolean
   canWrite: boolean
   busy: boolean
   stuck: boolean
@@ -114,69 +105,48 @@ function ProjectRow({
 }) {
   const reason = gitlabStateReasonText(binding.stateReason)
   const webhook = gitlabWebhookBadge(binding.webhookState)
-  const why = membership ? gitlabMembershipReason(membership) : null
   // Taking a project over is only meaningful where administration has actually lost its
   // authority: a connection that is gone, or a removal waiting for one. Never on a healthy row.
   const takeable = stuck || binding.state === 'cleanup_pending'
   return (
-    <div
-      className={`row grid-cols-1 gap-2 desktop:grid-cols-[minmax(0,1fr)_auto] desktop:gap-[11px] ${
-        indented ? 'pl-[34px] desktop:pl-[50px]' : ''
-      }`}
-      data-gitlab-project={binding.id}
-    >
-      <div className="flex min-w-0 flex-wrap items-center gap-[10px]">
-        <span className="mono min-w-0 truncate text-[12.5px]">{binding.projectPath}</span>
-        {membership && (
-          <span className="badge bg-(--surface-active) text-(--text-tertiary)">
-            {gitlabRoleLabel(membership.accessLevel)}
+    <div className="row grid-cols-[minmax(0,1fr)_auto] items-center gap-[11px]" data-gitlab-project={binding.id}>
+      <div className="min-w-0">
+        <div className="flex min-w-0 flex-wrap items-center gap-[10px]">
+          <span className="mono min-w-0 truncate text-[12.5px]">{binding.projectPath}</span>
+          <span className={`badge ${GITLAB_PROJECT_STATE[binding.state].badge}`}>
+            {GITLAB_PROJECT_STATE[binding.state].label}
           </span>
+          {/* Silent unless the webhook needs attention: not needing one is a normal state. */}
+          {webhook && <span className={`badge ${webhook.badge}`}>{webhook.label}</span>}
+        </div>
+        {reason && (
+          <div className="mt-[3px] font-sans text-[11.5px] font-normal leading-[1.45] text-(--text-tertiary)">
+            {reason}
+          </div>
         )}
-        <span className={`badge ${GITLAB_PROJECT_STATE[binding.state].badge}`}>
-          {GITLAB_PROJECT_STATE[binding.state].label}
-        </span>
-        {/* Silent unless the webhook needs attention: not needing one is a normal state. */}
-        {webhook && <span className={`badge ${webhook.badge}`}>{webhook.label}</span>}
       </div>
-      <span className="flex items-center justify-end gap-3">
-        {/* Only a project whose administration is stuck can be taken over — and one
-            awaiting cleanup always can, since that is what unblocks its removal. */}
+      <span className="flex items-center justify-end gap-2">
         {canWrite && takeable && (
-          <Button variant="ghost" size="xs" disabled={busy} onClick={onTransfer}>
-            <Icon name="key-round" size={13} />
-            Take over
-          </Button>
+          <button className="iconbtn h-7 w-7 flex-none" title="Take over administration" onClick={onTransfer}>
+            <Icon name="key-round" size={14} />
+          </button>
         )}
         {canWrite && (
-          <Button variant="ghost" size="xs" disabled={busy} onClick={onRepair}>
-            <Icon name="wrench" size={13} />
-            {busy ? 'Working…' : 'Repair'}
-          </Button>
-        )}
-        {canWrite && (
-          <Button
-            variant="ghost"
-            size="xs"
-            className="text-(--status-error) hover:text-(--status-error)"
+          <button
+            className="iconbtn h-7 w-7 flex-none"
+            title={busy ? 'Working…' : 'Repair this project'}
             disabled={busy}
-            onClick={onRemove}
+            onClick={onRepair}
           >
-            <Icon name="trash-2" size={13} />
-            Remove
-          </Button>
+            <Icon name="wrench" size={14} />
+          </button>
+        )}
+        {canWrite && (
+          <button className="iconbtn h-7 w-7 flex-none" title="Remove this project" onClick={onRemove}>
+            <Icon name="trash-2" size={14} />
+          </button>
         )}
       </span>
-      {/* Why this bot is here at all: dropping one authorization while another stands is a change to read, not a ghost. */}
-      {why && (
-        <span className="font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary) desktop:col-span-2">
-          {why}
-        </span>
-      )}
-      {reason && (
-        <span className="font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary) desktop:col-span-2">
-          {reason}
-        </span>
-      )}
     </div>
   )
 }
@@ -194,6 +164,8 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
   const [pending, setPending] = useState<{ target: GitlabConnectionDto; remove: boolean } | null>(null)
   const [removing, setRemoving] = useState<GitlabProjectBindingDto | null>(null)
   const [taking, setTaking] = useState<GitlabProjectBindingDto | null>(null)
+  // A take-over launched from a bot row covers every project of that bot whose administration is stuck.
+  const [takingBot, setTakingBot] = useState<{ name: string; bindingIds: string[] } | null>(null)
   // Removal needs an administering account: without one the saga cannot finish, so it is explained, not run.
   const [blocked, setBlocked] = useState<GitlabProjectBindingDto | null>(null)
 
@@ -221,21 +193,10 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
     }
   }, [activeOrg])
 
-  // Whether the last roster answer still owed convergence, so the settling one can be recognized.
-  const wasConverging = useRef(false)
-  // Roster answers launch project reads independently, so two can be in flight at once and the
-  // slower one may land last. Only the newest generation may commit; a write or an organization
-  // switch supersedes every read still out there, since both know better than any of them.
+  // The projects are read once and then owned by this card's own writes, so a write must be able
+  // to say that the read it raced no longer speaks for them.
   const readSeq = useRef(0)
   const supersedeReads = (): number => ++readSeq.current
-  const refreshProjects = (): void => {
-    const seq = supersedeReads()
-    void fetchGitlabProjects()
-      .then((rows) => {
-        if (seq === readSeq.current) setProjects(rows)
-      })
-      .catch(() => undefined)
-  }
   // The bound-project set is part of the key, so adding or removing a project makes the
   // entry recorded under the old set unreachable and no action site has to invalidate it.
   const signature = [...projects.map((project) => project.id)].sort().join(',')
@@ -244,18 +205,6 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
     // Convergence runs behind hook and workspace CRUD elsewhere, and a membership can change
     // while this project set does not — so only the server can say whether to ask again.
     refreshInterval: (latest) => (latest && !latest.converging ? 0 : GITLAB_CONVERGENCE_POLL_MS),
-    // The projects carry state the same saga moves — a webhook still installing among it — so they
-    // ride this poll rather than resting on the read taken at mount. A write in flight owns them,
-    // and leaves the edge below unconsumed so the settling read still happens afterwards.
-    onSuccess: (latest) => {
-      if (busyId !== null) return
-      // The response that reports settled is the one carrying the finished state, and polling
-      // stops right after it — so the pending→settled edge earns one last read of its own.
-      const settling = wasConverging.current && !latest.converging
-      wasConverging.current = latest.converging
-      if (!latest.converging && !settling) return
-      refreshProjects()
-    },
     shouldRetryOnError: false
   })
 
@@ -339,6 +288,43 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
     }
   }
 
+  // Convergence for an account runs per project, so repairing a bot re-runs it on each project the
+  // bot holds — including the one whose group its refused account belongs to.
+  const repairBot = async (agentId: string, bindingIds: readonly string[]) => {
+    if (busyId) return
+    setBusyId(agentId)
+    setErr(null)
+    try {
+      const updated = await Promise.all(bindingIds.map(async (id) => repairGitlabProject(id)))
+      supersedeReads()
+      setProjects((current) => current.map((p) => updated.find((row) => row.id === p.id) ?? p))
+      await rereadBots()
+    } catch (e) {
+      setErr(errorText(e))
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  const takeOverBot = async (bindingIds: readonly string[]) => {
+    if (busyId) return
+    setBusyId(bindingIds.join(','))
+    setErr(null)
+    try {
+      const updated = await Promise.all(bindingIds.map(async (id) => transferGitlabProject(id)))
+      supersedeReads()
+      setProjects((current) => current.map((p) => updated.find((row) => row.id === p.id) ?? p))
+      await rereadBots()
+      const fresh = await fetchGitlabConnections().catch(() => null)
+      if (fresh) setConnections(fresh.connections)
+    } catch (e) {
+      setErr(errorText(e))
+    } finally {
+      setTakingBot(null)
+      setBusyId(null)
+    }
+  }
+
   const remove = async (binding: GitlabProjectBindingDto) => {
     if (busyId) return
     setBusyId(binding.id)
@@ -373,12 +359,8 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
   }
 
   const accounts = bots?.accounts ?? []
-  const rows = botRows(accounts, projects)
+  const rows = botRows(accounts)
   const orphans = orphanBindings(accounts, projects)
-  // How many bots a removal would take off the project — the confirmation says so plainly.
-  const membersOf = (binding: GitlabProjectBindingDto): number =>
-    accounts.filter((account) => account.memberships.some((m) => m.bindingId === binding.id)).length
-
   const projectActions = (binding: GitlabProjectBindingDto) => ({
     canWrite,
     busy: busyId === binding.id,
@@ -514,84 +496,105 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
       {enabled === true && rows.length > 0 && (
         <div className="row h hidden grid-cols-[minmax(0,1fr)_auto] gap-[11px] desktop:grid">
           <span>Bot</span>
-          <span>State</span>
+          <span />
         </div>
       )}
       {enabled === true &&
-        rows.map(({ account, projects: members }) => {
-          const agent = getAgent(account.agentId)
-          const name = agent ? agentLabel(agent) : (account.displayName ?? account.username)
-          const reason = gitlabStateReasonText(account.stateReason)
+        rows.map((row) => {
+          const agent = getAgent(row.agentId)
+          const first = row.accounts[0]!
+          const name = agent ? agentLabel(agent) : (first.displayName ?? first.username)
+          const repairable = [...new Set(row.accounts.flatMap((account) => account.bindingIds))]
+          const takeable = repairable.filter((id) => {
+            const binding = projects.find((project) => project.id === id)
+            return binding !== undefined && (stuck(binding) || binding.state === 'cleanup_pending')
+          })
           return (
-            <div key={account.id} data-gitlab-bot={account.id}>
-              <div className="row grid-cols-1 gap-2">
-                <div className="flex min-w-0 flex-wrap items-center gap-[10px]">
-                  {/* The bot IS an agent: its face and its name lead back to that agent's page. */}
-                  <Link
-                    href={orgPath(`/agents/${encodeURIComponent(account.agentId)}?tab=config`)}
-                    title={`Open ${name}`}
-                    className="flex min-w-0 items-center gap-[10px] no-underline"
-                  >
-                    <span className="av h-7 w-7 flex-none rounded-[7px]">
-                      <AgentIconView icon={agent?.icon} runtime={agent?.runtime || agent?.model || ''} size={28} />
-                    </span>
-                    <span className="min-w-0 truncate font-sans text-[13px] font-semibold leading-normal text-(--text-primary) hover:underline">
-                      {name}
-                    </span>
-                  </Link>
-                  {/* The username is deterministic, so the profile links only once the account exists. */}
-                  {account.userId ? (
-                    <a
-                      href={gitlabProfileUrl(account.username)}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      data-gitlab-account={account.username}
-                      className="mono min-w-0 truncate text-[12px] text-(--text-tertiary) hover:underline"
-                    >
-                      @{account.username}
-                    </a>
-                  ) : (
-                    <span
-                      data-gitlab-account={account.username}
-                      className="mono min-w-0 truncate text-[12px] text-(--text-tertiary)"
-                    >
-                      @{account.username}
-                    </span>
-                  )}
-                  <span className="badge bg-(--surface-active) text-(--text-tertiary)">
-                    {account.rootGroupPath ?? `group ${account.rootGroupId}`}
+            <div
+              key={row.agentId}
+              data-gitlab-bot={row.agentId}
+              className="row grid-cols-[minmax(0,1fr)_auto] items-center gap-[11px]"
+            >
+              <div className="flex min-w-0 items-center gap-[10px]">
+                {/* The bot IS an agent: its face and its name lead back to that agent's page. */}
+                <Link
+                  href={orgPath(`/agents/${encodeURIComponent(row.agentId)}?tab=config`)}
+                  title={`Open ${name}`}
+                  className="flex min-w-0 flex-none items-center gap-[10px] no-underline"
+                >
+                  <span className="av h-7 w-7 flex-none rounded-[7px]">
+                    <AgentIconView icon={agent?.icon} runtime={agent?.runtime || agent?.model || ''} size={28} />
                   </span>
-                  <span className={`badge ${GITLAB_PROJECT_STATE[account.state].badge}`}>
-                    {GITLAB_PROJECT_STATE[account.state].label}
+                  <span className="min-w-0 truncate font-sans text-[13px] font-semibold leading-normal text-(--text-primary) hover:underline">
+                    {name}
                   </span>
-                  {account.lifecycle === 'retiring' && (
-                    <span className="badge bg-(--surface-active) text-(--text-tertiary)">removing</span>
-                  )}
+                </Link>
+                {/* One pair per top-level group the agent reaches: where, who it is there, how it is. */}
+                <div className="flex min-w-0 flex-wrap items-center gap-x-[10px] gap-y-[4px]">
+                  {row.accounts.map((account) => {
+                    const reason = gitlabStateReasonText(account.stateReason)
+                    return (
+                      <span
+                        key={account.id}
+                        data-gitlab-account={account.username}
+                        className="inline-flex min-w-0 items-center gap-[6px]"
+                      >
+                        <span className="badge flex-none bg-(--surface-active) text-(--text-tertiary)">
+                          {account.rootGroupPath ?? `group ${account.rootGroupId}`}
+                        </span>
+                        {/* The username is deterministic, so the profile links only once the account exists. */}
+                        {account.userId ? (
+                          <a
+                            href={gitlabProfileUrl(account.username)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="mono min-w-0 truncate text-[11.5px] text-(--text-tertiary) hover:underline"
+                          >
+                            @{account.username}
+                          </a>
+                        ) : (
+                          <span className="mono min-w-0 truncate text-[11.5px] text-(--text-tertiary)">
+                            @{account.username}
+                          </span>
+                        )}
+                        {/* A healthy bot says nothing; only trouble and departure are worth a badge. */}
+                        {account.state !== 'ready' && (
+                          <span
+                            className={`badge flex-none ${GITLAB_PROJECT_STATE[account.state].badge}`}
+                            {...(reason ? { title: reason } : {})}
+                          >
+                            {GITLAB_PROJECT_STATE[account.state].label}
+                          </span>
+                        )}
+                        {account.lifecycle === 'retiring' && (
+                          <span className="badge flex-none bg-(--surface-active) text-(--text-tertiary)">removing</span>
+                        )}
+                      </span>
+                    )
+                  })}
                 </div>
-                {reason && (
-                  <span className="font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-                    {reason}
-                  </span>
-                )}
               </div>
-              {/* An account with no project still shows, so its health can be acted on. Only a
-                  retiring one is leaving: an active one was refused and is waiting for Repair. */}
-              {members.length === 0 && (
-                <div className="row grid-cols-1 pl-[34px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary) desktop:pl-[50px]">
-                  {account.lifecycle === 'retiring' || account.state === 'cleanup_pending'
-                    ? 'Removing…'
-                    : 'Not a member of any project yet.'}
-                </div>
-              )}
-              {members.map(({ binding, membership }) => (
-                <ProjectRow
-                  key={binding.id}
-                  binding={binding}
-                  membership={membership}
-                  indented
-                  {...projectActions(binding)}
-                />
-              ))}
+              <span className="flex items-center justify-end gap-2">
+                {canWrite && takeable.length > 0 && (
+                  <button
+                    className="iconbtn h-7 w-7 flex-none"
+                    title="Take over administration of this bot's projects"
+                    onClick={() => setTakingBot({ name, bindingIds: takeable })}
+                  >
+                    <Icon name="key-round" size={14} />
+                  </button>
+                )}
+                {canWrite && repairable.length > 0 && (
+                  <button
+                    className="iconbtn h-7 w-7 flex-none"
+                    title={busyId === row.agentId ? 'Working…' : 'Repair this bot'}
+                    disabled={busyId === row.agentId}
+                    onClick={() => void repairBot(row.agentId, repairable)}
+                  >
+                    <Icon name="wrench" size={14} />
+                  </button>
+                )}
+              </span>
             </div>
           )
         })}
@@ -606,7 +609,7 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
             </span>
           </div>
           {orphans.map((binding) => (
-            <ProjectRow key={binding.id} binding={binding} indented={false} {...projectActions(binding)} />
+            <OrphanProjectRow key={binding.id} binding={binding} {...projectActions(binding)} />
           ))}
         </div>
       )}
@@ -668,6 +671,31 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
         </div>
       )}
 
+      {takingBot && (
+        <div className="scrim" onClick={() => setTakingBot(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <ConfirmGitlab
+              title="Take over project administration"
+              body={
+                <>
+                  Take over the{' '}
+                  {takingBot.bindingIds.length === 1 ? 'project' : `${takingBot.bindingIds.length} projects`}{' '}
+                  <span className="mono text-(--text-primary)">{takingBot.name}</span> works on? GitLab is asked whether
+                  your own account has Maintainer or Owner access to each one right now, and where it does, your account
+                  becomes the one AgentConnect uses to set it up and repair it.
+                </>
+              }
+              verb="Take over"
+              icon="key-round"
+              busy={busyId === takingBot.bindingIds.join(',')}
+              danger={false}
+              onClose={() => setTakingBot(null)}
+              onConfirm={() => takeOverBot(takingBot.bindingIds)}
+            />
+          </div>
+        </div>
+      )}
+
       {blocked && (
         <div className="scrim" onClick={() => setBlocked(null)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
@@ -695,11 +723,8 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
               body={
                 <>
                   Remove <span className="mono text-(--text-primary)">{removing.projectPath}</span> from this
-                  organization? The webhook and every project bot on it are deleted on GitLab, and
-                  {membersOf(removing) > 1
-                    ? ` all ${membersOf(removing)} bots listed on it stop answering there.`
-                    : ' agents stop answering there.'}{' '}
-                  Nothing in the project&rsquo;s code or history changes.
+                  organization? The webhook and every project bot on it are deleted on GitLab, and agents stop answering
+                  there. Nothing in the project&rsquo;s code or history changes.
                 </>
               }
               verb="Remove"

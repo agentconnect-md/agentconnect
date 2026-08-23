@@ -39,7 +39,6 @@ import {
   GitlabConnectionListDto,
   GitlabOauthStartDto,
   GitlabOrgAccountListDto,
-  type GitlabOrgAccountDtoT,
   GitlabProjectBindingDto,
   GitlabProjectBindingListDto,
   GitlabProjectPageDto,
@@ -326,15 +325,8 @@ export function gitlabRoutes(deps: HttpDeps) {
         const visible = new Set<string>((await deps.repos.agent.list(orgId, ctxOf(req))).map((agent) => agent.id))
         const projectPaths = new Map(bindings.map((binding) => [binding.id, binding.projectPath]))
         // Walking the bindings — not the accounts — is one query per project and carries the access level with it.
-        const byAccount = new Map<string, GitlabOrgAccountDtoT['memberships']>()
+        const byAccount = new Map<string, string[]>()
         const consumers = await deps.repos.gitlabAgentAccount.consumersForOrg(orgId)
-        const byProject = new Map<string, string>(bindings.map((b) => [b.projectId.toString(), b.id]))
-        // Why each agent consumes each project, keyed the way a membership is.
-        const reasons = new Map<string, GitlabProjectConsumer>()
-        for (const consumer of consumers) {
-          const bindingId = byProject.get(consumer.projectId.toString())
-          if (bindingId) reasons.set(`${bindingId}:${consumer.agentId}`, consumer)
-        }
         const memberLevels = new Map<string, Map<string, number>>()
         const agentOfAccount = new Map(accounts.map((account) => [account.id, account.agentId]))
         for (const rows of await Promise.all(
@@ -342,14 +334,7 @@ export function gitlabRoutes(deps: HttpDeps) {
         )) {
           for (const row of rows) {
             const held = byAccount.get(row.accountId) ?? []
-            const why = reasons.get(`${row.bindingId}:${agentOfAccount.get(row.accountId) ?? ''}`)
-            held.push({
-              bindingId: row.bindingId,
-              accessLevel: row.accessLevel,
-              workspace: why?.workspace ?? null,
-              triggerFamilies: why?.triggerFamilies ?? [],
-              triggerCount: why?.triggerCount ?? 0
-            })
+            held.push(row.bindingId)
             byAccount.set(row.accountId, held)
             const agentId = agentOfAccount.get(row.accountId)
             if (agentId) {
@@ -363,16 +348,8 @@ export function gitlabRoutes(deps: HttpDeps) {
           accounts: accounts
             .filter((account) => visible.has(account.agentId))
             .map((account) => {
-              const memberships = byAccount.get(account.id) ?? []
-              return {
-                ...accountToDto(
-                  account,
-                  memberships.map((membership) => membership.bindingId),
-                  projectPaths
-                ),
-                agentId: account.agentId,
-                memberships
-              }
+              const bindingIds = byAccount.get(account.id) ?? []
+              return { ...accountToDto(account, bindingIds, projectPaths), agentId: account.agentId, bindingIds }
             }),
           converging: stillConverging(accounts, bindings, consumers, memberLevels, await webhookWanted(orgId))
         }
