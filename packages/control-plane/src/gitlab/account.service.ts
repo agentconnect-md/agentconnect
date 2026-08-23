@@ -277,7 +277,6 @@ export class GitlabAccountService {
         // fresh generation rather than reviving the one it was tearing down.
         account = (await this.deps.accounts.reactivate(account.id)) ?? account
       }
-      const displayName = gitlabAgentAccountDisplayName(agentName, account.username)
       // This top-level group's OWN accounts — never a global user search (§7.2).
       let listing = await gitlabListServiceAccounts(input.token, input.rootGroupId, this.deps.fetchImpl)
       // The durable key first: an account we already recorded needs no marker.
@@ -309,7 +308,7 @@ export class GitlabAccountService {
           external = await gitlabCreateServiceAccount(
             input.token,
             input.rootGroupId,
-            { username: account.username, name: displayName },
+            { username: account.username, name: gitlabAgentAccountDisplayName(agentName, account.username) },
             this.deps.fetchImpl
           )
         } catch (e) {
@@ -325,8 +324,18 @@ export class GitlabAccountService {
           }
         }
       }
-      // Resolved — a window that was open has done its job and closes.
-      if (account.createAttempt) await this.deps.accounts.closeCreateAttempt(account.id)
+      // The FIRST durable step after resolution, before anything cosmetic: the
+      // numeric key and the closed window commit together, so an exit anywhere
+      // below still finds this account by its id instead of reading it as a
+      // foreign one holding the username (§7.2).
+      const serviceAccountUserId = BigInt(external.id)
+      account =
+        (await this.deps.accounts.commitServiceAccount({
+          accountId: account.id,
+          serviceAccountUserId,
+          username: external.username,
+          administeringConnectionId: input.installerConnectionId
+        })) ?? account
       // Cosmetic username convergence (§7.2): an account whose username predates
       // the readable scheme is renamed once. The slug half is creation-time, so
       // only the shape and the key suffix decide — a later agent rename is not a
@@ -336,10 +345,13 @@ export class GitlabAccountService {
           external = await gitlabUpdateServiceAccount(
             input.token,
             input.rootGroupId,
-            BigInt(external.id),
+            serviceAccountUserId,
             { username: derived },
             this.deps.fetchImpl
           )
+          if (account.username !== external.username) {
+            account = (await this.deps.accounts.update(account.id, { username: external.username })) ?? account
+          }
         } catch (e) {
           this.deps.log?.warn(
             { accountId: account.id, status: e instanceof GitlabApiError ? e.status : undefined },
@@ -349,12 +361,13 @@ export class GitlabAccountService {
       }
       // A refused rename is cosmetic: the account and its credentials matter,
       // its label does not, so the fingerprint simply stays behind (§7.2).
+      const displayName = gitlabAgentAccountDisplayName(agentName, account.username)
       if (external.name !== displayName) {
         try {
           external = await gitlabUpdateServiceAccount(
             input.token,
             input.rootGroupId,
-            BigInt(external.id),
+            serviceAccountUserId,
             { name: displayName },
             this.deps.fetchImpl
           )
@@ -365,15 +378,10 @@ export class GitlabAccountService {
           )
         }
       }
-      const serviceAccountUserId = BigInt(external.id)
-      account =
-        (await this.deps.accounts.update(account.id, {
-          serviceAccountUserId,
-          // The provider's own answer, so a refused rename keeps the old name.
-          username: external.username,
-          displayName: external.name === displayName ? displayName : account.displayName,
-          administeringConnectionId: input.installerConnectionId
-        })) ?? account
+      // Record what the provider actually carries, never what was wanted.
+      if (account.displayName !== external.name) {
+        account = (await this.deps.accounts.update(account.id, { displayName: external.name })) ?? account
+      }
       for (const purpose of PURPOSES) {
         const existing = await this.deps.credentials.get(account.id, purpose)
         const stillValid =

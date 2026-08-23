@@ -703,6 +703,35 @@ describe('GitlabAccountService create recovery (§7.2)', () => {
     expect(h.fake.serviceAccounts).toHaveLength(1)
   })
 
+  it('commits the resolved id and closes the window before anything cosmetic', async () => {
+    const h = await harness()
+    // The crash state again, but under a username the scheme will want to
+    // converge — so the run resolves, commits, and only then PATCHes.
+    const legacy = legacyUsername()
+    const crashed = await seedAccountRow(h, legacy)
+    await h.accounts.openCreateAttempt({
+      accountId: crashed.id,
+      attemptId: 'attempt-1',
+      openedAt: new Date(),
+      knownServiceAccountUserIds: []
+    })
+    h.fake.serviceAccounts = [{ id: 7000, username: legacy, name: 'review-agent' }]
+    // A process that exits at this instant must still own its account, so the
+    // row has to carry the durable id and no window ALREADY.
+    let atPatch: Awaited<ReturnType<typeof h.accounts.byAgentRoot>> = null
+    h.fake.opts.onServiceAccountPatch = async () => {
+      atPatch = await h.accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP)
+    }
+
+    expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toEqual({ state: 'ready' })
+    expect(atPatch).toMatchObject({ serviceAccountUserId: 7000n, createAttempt: null })
+    expect(await h.accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP)).toMatchObject({
+      serviceAccountUserId: 7000n,
+      username: usernameOf(AGENT),
+      createAttempt: null
+    })
+  })
+
   it('refuses a username a pre-existing account holds, and adopts nothing', async () => {
     const h = await harness()
     h.fake.serviceAccounts = [{ id: 7000, username: usernameOf(AGENT), name: 'somebody-else' }]

@@ -27,6 +27,8 @@ export interface FakeGitlabOptions {
   ambiguousServiceAccountCreate?: boolean
   /** Refuse the username convergence specifically (the name is taken). */
   refuseServiceAccountUsernameChange?: boolean
+  /** Observe the row the moment the provider sees a service-account PATCH. */
+  onServiceAccountPatch?: () => Promise<void>
   /** Answer the avatar endpoint 404 — a provider that does not offer it. */
   avatarEndpointUnsupported?: boolean
   /** Refuse the avatar upload with a definitive 400. */
@@ -259,6 +261,7 @@ export class FakeGitlab {
         const account = this.serviceAccounts.find((candidate) => candidate.id === id)
         if (!account) return Response.json({ message: 'Not Found' }, { status: 404 })
         if (this.opts.refuseServiceAccountRename) return Response.json({ message: 'forbidden' }, { status: 403 })
+        await this.opts.onServiceAccountPatch?.()
         const patch = json()
         if (typeof patch.username === 'string') {
           if (this.opts.refuseServiceAccountUsernameChange) {

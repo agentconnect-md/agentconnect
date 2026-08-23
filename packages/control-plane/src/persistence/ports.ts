@@ -3477,8 +3477,16 @@ export interface GitlabAgentAccountRepo {
     openedAt: Date
     knownServiceAccountUserIds: bigint[]
   }): Promise<GitlabAgentAccountRecord | null>
-  /** The account is resolved — the window closes. */
-  closeCreateAttempt(accountId: string): Promise<void>
+  /** §7.2: the resolved provider account becomes durable. The numeric user id,
+   *  the username it actually carries, and the closed window commit in ONE
+   *  write, so no exit can leave the row holding neither the id nor a window
+   *  while the account exists at the provider. */
+  commitServiceAccount(input: {
+    accountId: string
+    serviceAccountUserId: bigint
+    username: string
+    administeringConnectionId: string
+  }): Promise<GitlabAgentAccountRecord | null>
   /** §7.2 mutation lease, CAS-acquired: free, same-owner, or expired only. */
   claimLease(accountId: string, owner: string, until: Date, now: Date): Promise<boolean>
   renewLease(accountId: string, owner: string, until: Date): Promise<boolean>

@@ -654,11 +654,27 @@ export class PgGitlabAgentAccountRepo implements GitlabAgentAccountRepo {
     return this.get(input.accountId)
   }
 
-  async closeCreateAttempt(accountId: string): Promise<void> {
-    await this.prisma.gitlabAgentAccount.updateMany({
-      where: { id: accountId },
-      data: { createAttemptId: null, createAttemptAt: null, createAttemptKnownIds: [] }
+  async commitServiceAccount(input: {
+    accountId: string
+    serviceAccountUserId: bigint
+    username: string
+    administeringConnectionId: string
+  }): Promise<GitlabAgentAccountRecord | null> {
+    // One write: the id lands and the window closes together, so a process that
+    // exits right after this still resolves its own account by the durable key.
+    const res = await this.prisma.gitlabAgentAccount.updateMany({
+      where: { id: input.accountId },
+      data: {
+        serviceAccountUserId: input.serviceAccountUserId,
+        username: input.username,
+        administeringConnectionId: input.administeringConnectionId,
+        createAttemptId: null,
+        createAttemptAt: null,
+        createAttemptKnownIds: []
+      }
     })
+    if (res.count !== 1) return null
+    return this.get(input.accountId)
   }
 
   async claimLease(accountId: string, owner: string, until: Date, now: Date): Promise<boolean> {
