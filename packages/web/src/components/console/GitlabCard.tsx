@@ -209,6 +209,16 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
   // to say that the read it raced no longer speaks for them.
   const readSeq = useRef(0)
   const supersedeReads = (): number => ++readSeq.current
+  // Whether the last roster answer still owed convergence, so the settling one can be recognized.
+  const wasConverging = useRef(false)
+  const refreshProjects = (): void => {
+    const seq = supersedeReads()
+    void fetchGitlabProjects()
+      .then((rows) => {
+        if (seq === readSeq.current) setProjects(rows)
+      })
+      .catch(() => undefined)
+  }
   // The bound-project set is part of the key, so adding or removing a project makes the
   // entry recorded under the old set unreachable and no action site has to invalidate it.
   const signature = [...projects.map((project) => project.id)].sort().join(',')
@@ -217,6 +227,18 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
     // Convergence runs behind hook and workspace CRUD elsewhere, and a membership can change
     // while this project set does not — so only the server can say whether to ask again.
     refreshInterval: (latest) => (latest && !latest.converging ? 0 : GITLAB_CONVERGENCE_POLL_MS),
+    // A held project degrades or heals on its own schedule, and the attention count on a bot row
+    // reads it — so the projects ride this poll rather than resting on the read taken at mount.
+    // A write in flight owns them, and leaves the edge below unconsumed for afterwards.
+    onSuccess: (latest) => {
+      if (busyId !== null) return
+      // The answer that reports settled is the one carrying the finished state, and polling stops
+      // right after it — so the pending-to-settled edge earns one last read of its own.
+      const settling = wasConverging.current && !latest.converging
+      wasConverging.current = latest.converging
+      if (!latest.converging && !settling) return
+      refreshProjects()
+    },
     shouldRetryOnError: false
   })
 
@@ -302,7 +324,7 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
 
   // A batch over several projects is not one operation: each request stands or falls alone, so the
   // card re-reads what actually happened rather than trusting either outcome of the batch.
-  const refreshAfterBatch = async (): Promise<void> => {
+  const refreshAfterBatch = async (): Promise<boolean> => {
     const seq = supersedeReads()
     const [fresh, conns] = await Promise.all([
       fetchGitlabProjects().catch(() => null),
@@ -312,8 +334,16 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
       if (fresh) setProjects(fresh)
       if (conns) setConnections(conns.connections)
     }
-    await rereadBots()
+    // The bound revalidation rejects by default, and a failed re-read is a stale card, not a
+    // stuck one — so it is reported, never thrown past the cleanup that re-enables the controls.
+    const roster = await rereadBots().then(
+      () => true,
+      () => false
+    )
+    return fresh !== null && conns !== null && roster
   }
+
+  const STALE_AFTER_BATCH = 'The change went through, but the card could not read the result — reload to see it.'
 
   /** What to say when some of a batch landed and some did not — the count first, then the reason. */
   const partialText = (verb: string, done: number, failures: readonly PromiseRejectedResult[]): string =>
@@ -325,37 +355,43 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
     if (busyId) return
     setBusyId(agentId)
     setErr(null)
-    const results = await Promise.allSettled(bindingIds.map(async (id) => repairGitlabProject(id)))
-    const failures = results.filter((r) => r.status === 'rejected')
-    // Whatever each request did, the authoritative state is the answer — never the batch's.
-    await refreshAfterBatch()
-    if (failures.length > 0) {
-      setErr(
-        failures.length === results.length
-          ? errorText(failures[0]!.reason)
-          : partialText('Repaired', results.length - failures.length, failures)
-      )
+    try {
+      const results = await Promise.allSettled(bindingIds.map(async (id) => repairGitlabProject(id)))
+      const failures = results.filter((r) => r.status === 'rejected')
+      // Whatever each request did, the authoritative state is the answer — never the batch's.
+      const reconciled = await refreshAfterBatch()
+      if (failures.length > 0) {
+        setErr(
+          failures.length === results.length
+            ? errorText(failures[0]!.reason)
+            : partialText('Repaired', results.length - failures.length, failures)
+        )
+      } else if (!reconciled) setErr(STALE_AFTER_BATCH)
+    } finally {
+      setBusyId(null)
     }
-    setBusyId(null)
   }
 
   const takeOverBot = async (bindingIds: readonly string[]) => {
     if (busyId) return
     setBusyId(bindingIds.join(','))
     setErr(null)
-    const results = await Promise.allSettled(bindingIds.map(async (id) => transferGitlabProject(id)))
-    const failures = results.filter((r) => r.status === 'rejected')
-    // A mixed outcome is expected here: the caller may hold Maintainer on some projects and not others.
-    await refreshAfterBatch()
-    if (failures.length > 0) {
-      setErr(
-        failures.length === results.length
-          ? errorText(failures[0]!.reason)
-          : partialText('Took over', results.length - failures.length, failures)
-      )
+    try {
+      const results = await Promise.allSettled(bindingIds.map(async (id) => transferGitlabProject(id)))
+      const failures = results.filter((r) => r.status === 'rejected')
+      // A mixed outcome is expected here: the caller may hold Maintainer on some projects and not others.
+      const reconciled = await refreshAfterBatch()
+      if (failures.length > 0) {
+        setErr(
+          failures.length === results.length
+            ? errorText(failures[0]!.reason)
+            : partialText('Took over', results.length - failures.length, failures)
+        )
+      } else if (!reconciled) setErr(STALE_AFTER_BATCH)
+    } finally {
+      setTakingBot(null)
+      setBusyId(null)
     }
-    setTakingBot(null)
-    setBusyId(null)
   }
 
   const remove = async (binding: GitlabProjectBindingDto) => {

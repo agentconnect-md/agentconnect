@@ -76,6 +76,16 @@ vi.mock('swr', () => ({
 
 interface SwrOptions {
   refreshInterval?: (latest: unknown) => number
+  onSuccess?: (latest: unknown) => void
+}
+
+/** Drive one successful revalidation of the roster read, the way SWR's poll would. */
+async function revalidate(): Promise<void> {
+  const onSuccess = lastSwr?.options.onSuccess
+  if (!onSuccess) throw new Error('the card handles no roster revalidation')
+  await act(async () => {
+    onSuccess(read())
+  })
 }
 
 /** What the roster read answers with right now, or undefined before it has answered. */
@@ -249,6 +259,8 @@ beforeEach(() => {
   vi.clearAllMocks()
   document.body.innerHTML = ''
   mocks.fetchProjects.mockResolvedValue([])
+  // The bound revalidation is a promise; the card chains on it.
+  mocks.reread.mockResolvedValue(undefined)
   roster = []
   converging = false
 })
@@ -478,6 +490,71 @@ describe('GitlabCard', () => {
     expect(mocks.reread).toHaveBeenCalled()
     // And the card says what actually happened, not just that something failed.
     expect(host.textContent).toContain('Repaired 1 of 2 projects')
+  })
+
+  it('picks up a project that degrades after mount, on the next roster cycle', async () => {
+    // The attention count reads the projects, which are otherwise read once at mount — so without
+    // the roster driving a re-read, a project going bad after arrival would never show up here.
+    mocks.fetchConnections.mockResolvedValue({ enabled: true, connections: [CONNECTION] })
+    mocks.fetchProjects.mockResolvedValue([BINDING])
+    roster = [BOT]
+    converging = true
+    await render()
+    expect(botRow('agent-1').textContent).not.toContain('needs attention')
+
+    mocks.fetchProjects.mockResolvedValue([{ ...BINDING, state: 'admin_degraded' as const }])
+    await revalidate()
+    expect(botRow('agent-1').textContent).toContain('1 project needs attention')
+  })
+
+  it('re-reads the projects once more on the cycle that reports convergence finished', async () => {
+    mocks.fetchConnections.mockResolvedValue({ enabled: true, connections: [CONNECTION] })
+    mocks.fetchProjects.mockResolvedValue([{ ...BINDING, state: 'admin_degraded' as const }])
+    roster = [BOT]
+    converging = true
+    await render()
+    expect(botRow('agent-1').textContent).toContain('1 project needs attention')
+    // One cycle while it is still converging, so the settling one below is an edge.
+    await revalidate()
+
+    // The project heals, and the roster settles in the same answer that carries it.
+    mocks.fetchProjects.mockResolvedValue([BINDING])
+    converging = false
+    await revalidate()
+    expect(botRow('agent-1').textContent).not.toContain('needs attention')
+    expect(pollInterval()).toBe(0)
+  })
+
+  it('re-enables the bot controls when reconciliation itself fails', async () => {
+    // The bound revalidation rejects by default; swallowing that is what keeps Repair from
+    // being disabled for good after one transient failure.
+    mocks.fetchConnections.mockResolvedValue({ enabled: true, connections: [CONNECTION] })
+    mocks.fetchProjects.mockResolvedValue([BINDING])
+    roster = [BOT]
+    mocks.repairProject.mockResolvedValue(BINDING)
+    mocks.reread.mockRejectedValue(new Error('revalidation failed'))
+    await render()
+
+    await clickIcon('Repair this bot', botRow('agent-1'))
+    // The control is usable again, and the card says the result could not be read.
+    expect(iconButtonIn(botRow('agent-1'), 'Repair this bot').disabled).toBe(false)
+    expect(host.textContent).toContain('could not read the result')
+  })
+
+  it('closes the take-over dialog even when reconciliation fails', async () => {
+    mocks.fetchConnections.mockResolvedValue({
+      enabled: true,
+      connections: [{ ...CONNECTION, state: 'disconnected' as const, assignedProjects: 1 }]
+    })
+    mocks.fetchProjects.mockResolvedValue([BINDING])
+    roster = [BOT]
+    mocks.transferProject.mockResolvedValue(BINDING)
+    mocks.reread.mockRejectedValue(new Error('revalidation failed'))
+    await render()
+
+    await clickIcon('Take over', botRow('agent-1'))
+    await click('Take over', modal())
+    expect(host.querySelector('.modal')).toBeNull()
   })
 
   it('offers a take-over on a bot only where administration lost its authority', async () => {
