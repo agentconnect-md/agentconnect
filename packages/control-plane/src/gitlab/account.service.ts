@@ -837,7 +837,9 @@ export class GitlabAccountService {
     const failed = new Set<string>()
     // §24.2: rotation mints a NEW long-lived PAT, so a downgraded instance must
     // stop getting them — otherwise runtime authority is extended past the
-    // expiry the bounded degradation of §19.1 rests on. Observed once per sweep.
+    // expiry the bounded degradation of §19.1 rests on. Observed once per sweep,
+    // and a refusal writes nothing: the existing PATs keep serving to their own
+    // expiry, which is exactly the bound.
     let instance: GitlabInstanceVersion | undefined
     for (const { credential, orgId } of due) {
       if (failed.has(credential.accountId)) continue
@@ -862,14 +864,17 @@ export class GitlabAccountService {
         const token = await this.deps.oauth.withAccessToken(orgId, account.administeringConnectionId)
         instance ??= await observeInstanceVersion(this.deps, token)
         if (!instance.supported) {
-          failed.add(account.id)
-          // `rotation_`-prefixed like every other rotation reason, so an upgrade
-          // heals it on the next successful sweep.
-          await this.deps.accounts.update(account.id, {
-            state: 'admin_degraded',
-            stateReason: `rotation_${INSTANCE_VERSION_UNSUPPORTED_REASON}`
-          })
-          continue
+          // Deliberately NO account state write: `admin_degraded` is what the
+          // credential port refuses on, so degrading the row here would cut the
+          // runtime leases this bound exists to keep serving. The account is
+          // healthy; the instance is not, and the binding and the recorded
+          // instance version already carry that. Every account would refuse the
+          // same way, so the whole sweep ends here.
+          this.deps.log?.warn(
+            { version: instance.raw, reason: INSTANCE_VERSION_UNSUPPORTED_REASON },
+            'gitlab credential rotation skipped: the instance is below the supported version floor'
+          )
+          break
         }
         // Revalidate UNDER the lease: the worklist is a pre-lease snapshot, so a
         // peer sweep may have rotated this row already. The reloaded predecessor

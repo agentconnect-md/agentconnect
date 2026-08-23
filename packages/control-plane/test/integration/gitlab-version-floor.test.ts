@@ -303,12 +303,18 @@ describe('the GitLab version floor (§24.2)', () => {
     expect(after.generation).toBe(before.generation)
     expect(after.externalTokenId).toBe(before.externalTokenId)
     expect(a.fake.tokens.get(Number(before.externalTokenId))!.revoked).toBe(false)
+    // The account stays `ready`: that state is what the credential port refuses
+    // on, so degrading it would cut the very runtime leases this bound keeps.
     expect(await prisma.gitlabAgentAccount.findUniqueOrThrow({ where: { id: before.accountId } })).toMatchObject({
-      state: 'admin_degraded',
-      stateReason: `rotation_${INSTANCE_VERSION_UNSUPPORTED_REASON}`
+      state: 'ready',
+      stateReason: null
     })
     expect(await prisma.gitlabInstanceState.findUnique({ where: { baseUrl: INSTANCE } })).toMatchObject({
       version: BELOW_FLOOR
     })
+    // The refused sweep leaves no lease behind either.
+    expect(
+      await prisma.gitlabAgentAccount.findMany({ where: { orgId: DEFAULT_ORG_ID, leaseOwner: { not: null } } })
+    ).toEqual([])
   })
 })

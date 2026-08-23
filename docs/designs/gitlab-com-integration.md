@@ -2386,9 +2386,12 @@ Merge order, GitLab.com green at every step:
   point that creates provider state: the binding convergence, the inline
   pre-activation account ensure, and the PAT rotation sweep — rotation mints a
   new long-lived token, so leaving it ungated would extend runtime authority past
-  the expiry this bound rests on. A downgraded instance therefore stops getting
-  new accounts, credentials, and webhooks while everything already provisioned
-  keeps serving until it expires. On the Setup Server the probe runs when
+  the expiry this bound rests on. A refused rotation writes no account state,
+  because `admin_degraded` is what the credential port refuses on and degrading
+  the row there would cut the very runtime leases the bound exists to keep. A
+  downgraded instance therefore stops getting new accounts, credentials, and
+  webhooks while everything already provisioned keeps serving until it expires.
+  On the Setup Server the probe runs when
   the base URL is saved, and only `invalid_url` refuses the save; `unreachable`,
   `tls_untrusted`, and `not_a_gitlab_api_root` are returned with the saved
   revision as warnings.
