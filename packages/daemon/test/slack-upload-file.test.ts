@@ -135,6 +135,35 @@ describe('SlackConnection.uploadFile', () => {
     expect(completeUploadExternal.mock.calls[1]![0]).not.toHaveProperty('username')
   })
 
+  it('does NOT retry a completion Slack answered with a partial-success code', async () => {
+    // Slack documents `internal_error`/`fatal_error` as possibly raised AFTER some aspect of
+    // the operation succeeded, so a provider code is not by itself proof of a refusal — the
+    // share may be visible already, and a second completion would publish it twice.
+    for (const code of ['internal_error', 'fatal_error']) {
+      const completeUploadExternal = vi.fn(async () => {
+        throw slackError(code)
+      })
+      const conn = connWith({ completeUploadExternal })
+      await expect(
+        conn.uploadFile('C1', { bytes: Buffer.from('x'), name: 'a.png' }, 'hi', undefined, { username: 'Scout' })
+      ).resolves.toEqual({ ok: false, reason: 'indeterminate', detail: code })
+      expect(completeUploadExternal).toHaveBeenCalledOnce()
+    }
+  })
+
+  it('does NOT retry a refusal the decoration cannot have caused, even before publication', async () => {
+    // `not_in_channel` precedes publication, so retrying would be safe — but undecorated it
+    // fails identically, spending a call and replacing the real error with its echo.
+    const completeUploadExternal = vi.fn(async () => {
+      throw slackError('not_in_channel')
+    })
+    const conn = connWith({ completeUploadExternal })
+    await expect(
+      conn.uploadFile('C1', { bytes: Buffer.from('x'), name: 'a.png' }, 'hi', undefined, { username: 'Scout' })
+    ).resolves.toMatchObject({ ok: false, detail: 'not_in_channel' })
+    expect(completeUploadExternal).toHaveBeenCalledOnce()
+  })
+
   it('does NOT retry a completion whose outcome Slack never confirmed', async () => {
     // It is one-shot: a transport failure may have been ACCEPTED with its response lost, so a
     // second call could double-post and "nothing was sent" could be a lie.

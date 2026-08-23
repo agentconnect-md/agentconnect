@@ -131,7 +131,11 @@ the message — which is why the file path and the text path diverge in the firs
 why every consequence of that divergence lands here. `files.completeUploadExternal`
 documents `username`/`icon_url`/`icon_emoji` for the share message (behind
 `chat:write.customize`), so `uploadFile` passes the turn's identity there and falls back to
-the undecorated call on a definite refusal, exactly as the text path does. The other three
+the undecorated call when — and only when — Slack refused the DECORATION itself
+(`missing_scope`, `invalid_arguments`). The completion is one-shot, and Slack documents
+`internal_error`/`fatal_error` as possibly raised after part of it succeeded, so those join
+"no provider code at all" as outcomes that forfeit the proof of refusal and stay
+`indeterminate` rather than being retried into a second share. The other three
 implementations do not declare the parameter, and Telegram ignores identity by platform
 design. A file post still carries no `agentAuthorId`, so on a shared bot it stays invisible
 to peer backfill; the fix for that remains a paired anchor post, deferred until shared-bot

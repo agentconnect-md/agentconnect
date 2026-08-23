@@ -534,6 +534,22 @@ const SLACK_API_TIMEOUT_MS = 30_000
 /** The `files.info` share record, keyed by channel id (docs: `shares.public|private`). */
 type SlackFileShares = Record<string, { ts?: string }[] | undefined>
 
+/**
+ * Completion outcomes that do NOT prove the share was refused. Slack documents both as
+ * possibly raised AFTER some aspect of the operation succeeded, so a one-shot completion that
+ * answers with either may already be visible in the channel.
+ */
+const COMPLETION_MAY_HAVE_LANDED = new Set(['internal_error', 'fatal_error'])
+
+/**
+ * The only completion refusals worth a second, undecorated attempt: pure request validation
+ * (so provably before publication) AND plausibly caused by `username`/`icon_url` themselves,
+ * which is the one thing the retry can change. A pre-publication refusal this set omits —
+ * `not_in_channel`, `channel_not_found` — would fail identically undecorated, so retrying it
+ * only spends a call and replaces the real error with its echo.
+ */
+const DECORATION_REFUSALS = new Set(['missing_scope', 'invalid_arguments', 'invalid_arg_name', 'invalid_array_arg'])
+
 /** `uploadV2` answers with one `completeUploadExternal` response per file. */
 type SlackUploadV2Result = { files?: { files?: { id?: string }[] }[] } | undefined
 
@@ -1417,11 +1433,12 @@ export class SlackConnection implements PlatformConnection {
         this.deps.log?.debug(`slack: uploadFile ${file.name} → ch=${channel} failed: ${(err as Error).message}`)
         // A share whose outcome Slack never confirmed must say "may have landed", never
         // "nothing was sent" — the same rule the send queue's abandonment already follows.
-        // Only Slack answering `{ok:false}` proves nothing was published. An HTTP failure
-        // cannot: the SDK raises the same `WebAPIHTTPError` for every non-200 in all three
-        // steps, so a rejected byte POST and a lost response from the already-accepted share
-        // are indistinguishable here, and the ambiguous reading is the safe one.
-        return slackApiErrorCode(err) !== undefined
+        // Two things forfeit that proof, and BOTH have to be read here: a completion Slack
+        // marked as possibly-partial (`completeShare` stamps it), and any failure with no
+        // provider code at all — the SDK raises one `WebAPIHTTPError` for every non-200, so a
+        // rejected byte POST and a lost response to an accepted share look identical.
+        const mayHaveLanded = (err as { shareMayHaveLanded?: unknown } | null)?.shareMayHaveLanded === true
+        return !mayHaveLanded && slackApiErrorCode(err) !== undefined
           ? { ok: false, reason: classifySlackUploadError(err), ...slackErrorDetail(err) }
           : { ok: false, reason: 'indeterminate', ...slackErrorDetail(err) }
       }
@@ -1513,12 +1530,16 @@ export class SlackConnection implements PlatformConnection {
   }
 
   /** `completeUploadExternal` is ONE-SHOT — a second call after a lost response would double
-   *  post — so a failure that is not a DEFINITE refusal is marked ambiguous, not retried. */
+   *  post — so any outcome that does not PROVE a refusal is marked ambiguous, not retried.
+   *  A lost response is one such outcome; so is Slack answering with a partial-success code. */
   private async completeShare(payload: Record<string, unknown>): Promise<void> {
     try {
       await this.app.client.files.completeUploadExternal(payload)
     } catch (err) {
-      if (slackApiErrorCode(err) === undefined) throw Object.assign(err as Error, { shareMayHaveLanded: true })
+      const code = slackApiErrorCode(err)
+      if (code === undefined || COMPLETION_MAY_HAVE_LANDED.has(code)) {
+        throw Object.assign(err as Error, { shareMayHaveLanded: true })
+      }
       throw err
     }
   }
@@ -1542,12 +1563,13 @@ export class SlackConnection implements PlatformConnection {
       this.customUsernameRetryAt = 0
     } catch (err) {
       this.rememberMissingScopes(err)
-      // A second completion is only safe when Slack DEFINITELY refused the first.
-      if (slackApiErrorCode(err) === undefined) throw err
+      // A second completion is only safe when the FIRST provably published nothing and the
+      // decoration is what it refused — anything else is re-sending a share that may already
+      // be visible, which is the double post this whole vocabulary exists to prevent.
+      const code = slackApiErrorCode(err)
+      if (code === undefined || !DECORATION_REFUSALS.has(code)) throw err
       if (isMissingCustomizeScope(err)) this.customUsernameRetryAt = Date.now() + CUSTOM_USERNAME_REPROBE_MS
-      this.deps.log?.debug(
-        `slack: decorated file share refused (${slackApiErrorCode(err)}) — retrying under the app identity`
-      )
+      this.deps.log?.debug(`slack: decorated file share refused (${code}) — retrying under the app identity`)
       await this.completeShare(share)
     }
   }
