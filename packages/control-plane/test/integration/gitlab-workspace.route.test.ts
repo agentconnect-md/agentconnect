@@ -45,7 +45,11 @@ const AGENT = '11111111-1111-4111-8111-111111111111'
 const cipher = makeSecretCipher({ SECRET_CIPHER: 'none' } as never)
 
 let running: HttpApp | undefined
+let settleConvergence: (() => Promise<void>) | undefined
 afterEach(async () => {
+  // Own the routes' fire-and-forget convergence: a run outliving its test writes into the next one's swept database.
+  await settleConvergence?.()
+  settleConvergence = undefined
   await running?.close()
   running = undefined
 })
@@ -93,6 +97,23 @@ async function harness(liveness?: DaemonLiveness) {
     },
     fetchImpl: fake.fetch()
   })
+  // Route writes kick §10.2 convergence fire-and-forget, and the run re-writes every replicated project path from
+  // what the provider answers with — so a test writing those paths itself has to outwait the run, not race it.
+  const inFlightConvergence = new Set<Promise<void>>()
+  const convergeProject = provisioner.convergeProject.bind(provisioner)
+  provisioner.convergeProject = (orgId: string, projectId: bigint): Promise<void> => {
+    const run = convergeProject(orgId, projectId)
+    inFlightConvergence.add(run)
+    return run.finally(() => inFlightConvergence.delete(run))
+  }
+  // A retarget converges two projects SEQUENTIALLY, so drain until nothing new is enqueued.
+  const settled = async (): Promise<void> => {
+    while (inFlightConvergence.size > 0) {
+      await Promise.allSettled([...inFlightConvergence])
+      await new Promise<void>((resolve) => setImmediate(resolve))
+    }
+  }
+  settleConvergence = settled
   running = buildHttpApp(prisma, { PUBLIC_CP_URL: 'https://api.example.test' }, liveness, undefined, {
     gitlab: { oauth, provisioner, accounts: accountService, fetchImpl: fake.fetch() }
   })
@@ -116,7 +137,7 @@ async function harness(liveness?: DaemonLiveness) {
   await seedAgent(prisma, AGENT, { name: 'workspace-agent', gitlabProjectId: PROJECT })
   expect(await provisioner.provision(DEFAULT_ORG_ID, binding.id)).toEqual({ state: 'ready' })
   const account = (await accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP))!
-  return { fake, a: running, bindings, accounts, binding, account, provisioner, connection }
+  return { fake, a: running, bindings, accounts, binding, account, provisioner, connection, settled }
 }
 
 function credService(bindings: PgGitlabProjectBindingRepo) {
@@ -299,6 +320,9 @@ describe('gitlab workspaces — agent create/edit (§8.3)', () => {
     })
     expect(created.statusCode).toBe(201)
     const agentId = (created.json() as { id: string }).id
+    // Outwait the create's kick: the rename below is a provider-side fact this fake never learns, so a run landing
+    // after it would legitimately converge the clone URL back to the path the provider still answers with.
+    await h.settled()
     const before = await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })
     const agents = new PgAgentRepo(prisma)
     const refreshed = await agents.refreshGitlabProjectPath(
@@ -803,6 +827,8 @@ describe('additional GitLab project authorizations (§8.3/§13.1)', () => {
     await secondBinding(h)
     const created = await h.a.app.inject(authorize({ provider: 'gitlab', projectId: SECOND_PROJECT.toString() }))
     expect(created.statusCode).toBe(200)
+    // Same as the workspace half: outwait the authorization's kick, which re-writes the grant path from the provider.
+    await h.settled()
     const before = await prisma.agent.findUniqueOrThrow({ where: { id: AGENT } })
 
     const agents = new PgAgentRepo(prisma)
