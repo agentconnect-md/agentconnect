@@ -1,0 +1,120 @@
+{{- $reconciler := .Values.daemonPool.reconciler }}
+{{- if .Values.daemonPool.enabled }}
+{{- $daemonTag := .Values.daemonPool.tag | default (include "agentconnect.imageTag" .) }}
+# The pool's orphan reconciler: one sweep of the agents namespace for sandbox objects nobody
+# will ever clean up, then exit. It used to be a timer inside every member with a lease for
+# mutual exclusion; the cluster
+# already owns all three of those things, so it is a CronJob instead — the schedule is the
+# schedule, `concurrencyPolicy: Forbid` is the mutual exclusion, and a sweep that could not read
+# the control plane is a failed Job rather than a warning inside a daemon that keeps serving.
+#
+# It runs the daemon image at the pool's own tag as the pool's ServiceAccount, so its cluster
+# rights are exactly the members' claim Role and its control-plane identity is the same projected
+# `ac-control-plane` token. The connection registers as an OBSERVER: same TokenReview path, but
+# enrolled in no member set and granted no duty, so the sweeper is never handed work to serve.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "agentconnect.fullname" . }}-daemon-pool-reconciler
+  labels:
+    {{- include "agentconnect.labels" . | nindent 4 }}
+    {{- include "agentconnect.componentLabels" (dict "ctx" . "component" "daemon-pool-reconciler") | nindent 4 }}
+spec:
+  schedule: {{ $reconciler.schedule | quote }}
+  # The mutual exclusion the in-process lease used to provide. Two concurrent sweeps would read
+  # the same listing and race each other's deletes.
+  concurrencyPolicy: Forbid
+  # A tick the controller could not start on time is dropped rather than run late; the next one
+  # sweeps the same objects, only older.
+  startingDeadlineSeconds: 120
+  successfulJobsHistoryLimit: 1
+  # Keep failures around — a sweep that cannot complete is the signal, and it is the only place
+  # its reason is recorded.
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      # No retry inside a tick: a sweep that failed has a reason (the control plane is
+      # unreachable, the namespace is unset) that a retry 10 seconds later does not change, and
+      # the next tick is 10 minutes away. Bounded by its own deadline so a hung run cannot sit
+      # across the following tick and block it under `Forbid`.
+      backoffLimit: 0
+      activeDeadlineSeconds: 300
+      template:
+        metadata:
+          labels:
+            {{- include "agentconnect.labels" . | nindent 12 }}
+            {{- include "agentconnect.componentLabels" (dict "ctx" . "component" "daemon-pool-reconciler") | nindent 12 }}
+        spec:
+          restartPolicy: Never
+          # The pool members' identity: same TokenReview subject, same sandbox-namespace Role
+          # (list/delete on claims and Sandboxes). Nothing extra is granted for the sweep.
+          serviceAccountName: ac-cloud-daemon
+          # The Kubernetes API credential the sweep lists and deletes with; the projected token
+          # below is the separate CP-audience identity.
+          automountServiceAccountToken: true
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10002
+            runAsGroup: 10002
+            fsGroup: 10002
+            seccompProfile:
+              type: RuntimeDefault
+          {{- with .Values.imagePullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.affinity }}
+          affinity:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          containers:
+            - name: reconcile
+              # The daemon image at the pool's effective tag: the sweep's rules ship with the
+              # daemon the members run, so the two cannot disagree about what an orphan is.
+              image: "{{ .Values.image.registry }}/{{ .Values.daemonPool.image }}:{{ $daemonTag }}"
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              # `args` replaces the image's CMD and leaves its tini ENTRYPOINT in place, so the
+              # node invocation is spelled out here — `args: ['reconcile','--once']` alone would
+              # ask tini to exec a binary named `reconcile`.
+              args: ['node', 'dist/index.js', 'reconcile', '--once']
+              env:
+                # The same partial the members read (daemon-pool.yaml), so the namespace swept,
+                # the warm pool and the control-plane address cannot drift from the pool's.
+                {{- include "agentconnect.daemonPoolClusterEnv" . | nindent 16 }}
+                {{- if $reconciler.delete }}
+                # Collection is opt-in and off by default: deleting a claim deletes the agent's
+                # workspace PVC with it, so observe the dry-run summary lines first and turn
+                # this on afterwards. Unset ⇒ the sweep reports what it would collect and
+                # deletes nothing.
+                - name: AC_K8S_ORPHAN_DELETE
+                  value: 'true'
+                {{- end }}
+                {{- with $reconciler.graceMs }}
+                # How old an object must be before it can be called orphaned — the guard against
+                # collecting a creation still racing the control plane's write. Unset ⇒ the
+                # daemon's own 10-minute default.
+                - name: AC_K8S_ORPHAN_GRACE_MS
+                  value: {{ . | quote }}
+                {{- end }}
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ['ALL']
+              resources:
+                {{- toYaml $reconciler.resources | nindent 16 }}
+              volumeMounts:
+                - name: cp-identity
+                  mountPath: /var/run/ac-cp-identity
+                  readOnly: true
+          volumes:
+            # The projected control-plane audience token, exactly as the members mount it — the
+            # observer registration presents this and nothing else.
+            - name: cp-identity
+              projected:
+                defaultMode: 0400
+                sources:
+                  - serviceAccountToken:
+                      path: token
+                      audience: ac-control-plane
+                      expirationSeconds: 3600
+{{- end }}

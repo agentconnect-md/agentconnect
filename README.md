@@ -116,8 +116,11 @@ Open `http://localhost:3000`, add a daemon from the console, run its generated
 command, and create your first agent. The default stack listens only on
 `127.0.0.1` and uses local no-auth mode for evaluation.
 
-For Kubernetes, authentication, public URLs, Linux sandbox requirements,
-provider apps, image pinning, secrets, and optional Mem0 configuration, follow the
+For Kubernetes, install the official Helm chart in
+[`charts/agentconnect`](charts/agentconnect), published to
+`oci://ghcr.io/agentconnect-md/charts/agentconnect` on every release. For
+authentication, public URLs, Linux sandbox requirements, provider apps, image
+pinning, secrets, and optional Mem0 configuration, follow the
 [AgentConnect OSS guide](https://docs.agentconnect.md/docs/oss-get-started).
 
 ## Community

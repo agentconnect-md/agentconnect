@@ -1,0 +1,289 @@
+{{- /*
+Public routing for this release, attached to the Gateway named in `route.gateway`
+(HTTP:80 — TLS terminates at the edge in front of it). Main HTTPRoute on the website host
+(`publicUrl`):
+  /*    → web console
+  /cp/* → control-plane (prefix stripped) — SAME-ORIGIN mode only (apiHost unset).
+          Carries both the console's REST calls and the daemon WS (/cp/daemon/ws).
+When apiHost is set (SUBDOMAIN mode) the whole CP moves to the dedicated api host
+(second route below) and this /cp rule is dropped — the website host then serves the
+console only. Gateway API ranks matches by path specificity, so /cp wins over / regardless
+of rule order. Hostname defaults to the host of `publicUrl`; override
+with route.hostname. Emitted only when a hostname is resolvable, so the no-auth default
+(empty publicUrl) renders nothing.
+*/ -}}
+{{- $host := .Values.route.hostname | default (.Values.publicUrl | trimPrefix "https://" | trimPrefix "http://" | trimSuffix "/") -}}
+{{- if and .Values.route.enabled $host }}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "agentconnect.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agentconnect.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+    - name: {{ .Values.route.gateway.name }}
+      namespace: {{ .Values.route.gateway.namespace }}
+      sectionName: {{ .Values.route.gateway.sectionName }}
+  hostnames:
+    - {{ $host | quote }}
+  rules:
+    {{- if not .Values.apiHost }}
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /cp
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /
+      backendRefs:
+        - name: {{ include "agentconnect.fullname" . }}-control-plane
+          port: {{ .Values.controlPlane.port }}
+    {{- end }}
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: {{ include "agentconnect.fullname" . }}-web
+          port: {{ .Values.web.port }}
+{{- end }}
+{{- /*
+SUBDOMAIN mode (top-level `apiHost` set): a second HTTPRoute putting the whole CP on the
+dedicated api host, so the website host no longer needs a /cp rule. Two rules:
+  /v1/*      → CP /api/v1/*  (REST; the console targets https://<apiHost>/v1, web CP_URL.
+               /api is an INTERNAL mount detail — the public surface is /v1 only; the
+               /v1 form is hardcoded CP-side, same convention for the MCP endpoint
+               (MCP_PUBLIC_PATH) as for the Slack/GitHub OAuth callbacks — no chart
+               config involved.)
+  /daemon/ws → CP /daemon/ws (daemon control channel, forwarded verbatim; PUBLIC_CP_URL is
+               https://<apiHost> ⇒ the "Add daemon" command dials wss://<apiHost>/daemon/ws)
+The api host serves NO OAuth — the MCP OAuth surface (PRM, AS metadata, /oauth/*) lives
+entirely on the dedicated MCP host below (agentconnect-md/agentconnect
+docs/designs/agent-assistant.md §6.1/§7). The CP is given
+CORS_ORIGIN=<publicUrl> for the cross-origin REST calls (the daemon WS is not a browser
+origin, so it needs none). The subdomain's DNS + TLS at the edge and the gateway
+listener accepting <apiHost> are provisioned at the edge, outside this chart.
+*/ -}}
+{{- if and .Values.route.enabled .Values.apiHost }}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "agentconnect.fullname" . }}-api
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agentconnect.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+    - name: {{ .Values.route.gateway.name }}
+      namespace: {{ .Values.route.gateway.namespace }}
+      sectionName: {{ .Values.route.gateway.sectionName }}
+  hostnames:
+    - {{ .Values.apiHost | quote }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /v1
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /api/v1
+      backendRefs:
+        - name: {{ include "agentconnect.fullname" . }}-control-plane
+          port: {{ .Values.controlPlane.port }}
+    - matches:
+        - path:
+            type: PathPrefix
+            value: {{ .Values.controlPlane.config.WS_PATH | default "/daemon/ws" | quote }}
+      backendRefs:
+        - name: {{ include "agentconnect.fullname" . }}-control-plane
+          port: {{ .Values.controlPlane.port }}
+{{- end }}
+{{- /*
+Dedicated MCP host (top-level `mcpHost` set): the connector URL users paste into
+claude.ai / Claude Code is just this host (root resource — agentconnect-md/agentconnect
+docs/designs/agent-assistant.md §6.1;
+the CP gets PUBLIC_MCP_URL=https://<mcpHost>), and the WHOLE OAuth surface rides it —
+the embedded AS exists solely for MCP, so the api host serves no OAuth. Two rules:
+  /  (Exact) → CP /api/v1/mcp  (the MCP wire; ReplaceFullPath onto the internal mount)
+  /.well-known/oauth-*, /oauth/* → CP verbatim (agent-assistant.md, that repo, §7): RFC 9728 PRM
+               (the origin-root document IS the path-inserted location for a root
+               resource; its `resource` and `authorization_servers` both echo this
+               origin), RFC 8414 AS metadata (issuer = this origin), and
+               /oauth/{register,authorize,token}.
+Anything else on the host falls through to the gateway 404 — the surface stays minimal.
+The host's DNS + TLS at the edge and the gateway listener accepting <mcpHost> are
+provisioned at the edge, outside this chart — same prereqs as apiHost/relay.host.
+*/ -}}
+{{- if and .Values.route.enabled .Values.mcpHost }}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "agentconnect.fullname" . }}-mcp
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agentconnect.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+    - name: {{ .Values.route.gateway.name }}
+      namespace: {{ .Values.route.gateway.namespace }}
+      sectionName: {{ .Values.route.gateway.sectionName }}
+  hostnames:
+    - {{ .Values.mcpHost | quote }}
+  rules:
+    - matches:
+        - path:
+            type: Exact
+            value: /
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplaceFullPath
+              replaceFullPath: /api/v1/mcp
+      backendRefs:
+        - name: {{ include "agentconnect.fullname" . }}-control-plane
+          port: {{ .Values.controlPlane.port }}
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /.well-known/oauth-protected-resource
+        - path:
+            type: PathPrefix
+            value: /.well-known/oauth-authorization-server
+        - path:
+            type: PathPrefix
+            value: /oauth
+      backendRefs:
+        - name: {{ include "agentconnect.fullname" . }}-control-plane
+          port: {{ .Values.controlPlane.port }}
+{{- end }}
+{{- /*
+Relay routes, rendered only when relay.enabled. Public paths on
+the relay host (relay.host, else apiHost, else the website host):
+  /mcp/:providerId              → relay pool (MCP reverse proxy; bearer grant key.
+                                  The CP's daemon proxy def dials <relayHttpOrigin>/mcp/:id,
+                                  where relayHttpOrigin is the http(s) form of the relay
+                                  host — so this route MUST exist on the relay host.)
+  /memory/:connectionId         → relay pool (daemon-private external-memory proxy;
+                                  bearer grant key. The CP advertises this path to daemons
+                                  after an external-memory connection is installed.)
+  /webchat                      → relay pool (browser Playground; token in the query)
+  /webhooks/in                  → relay pool (generic inbound webhook HTTP POST)
+  /webhooks/github              → relay pool (GitHub App webhook)
+  /webhooks/gitlab              → relay pool (GitLab project webhook, Standard Webhooks)
+  /slack/events                 → relay pool (Slack Events API, http transport)
+  /slack/interactions           → relay pool (Slack interactivity + block_suggestion)
+  /relays/<ordinal>/rd/ws       → that exact relay pod, rewritten to /rd/ws
+When the relay host == apiHost / the website host, Gateway API merges these rules with
+that host's existing route (ranked by path specificity) — no new listener needed. A
+dedicated relay.host needs its own DNS + TLS + gateway listener at the edge, like apiHost.
+*/ -}}
+{{- $relayHost := include "agentconnect.relayHost" . -}}
+{{- if and .Values.relay.enabled .Values.route.enabled $relayHost }}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "agentconnect.fullname" . }}-relay
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agentconnect.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+    - name: {{ .Values.route.gateway.name }}
+      namespace: {{ .Values.route.gateway.namespace }}
+      sectionName: {{ .Values.route.gateway.sectionName }}
+  hostnames:
+    - {{ $relayHost | quote }}
+  rules:
+    {{- range $ordinal := until (int .Values.relay.replicas) }}
+    # A daemon gets this pod-specific origin from the CP relay roster. Match only
+    # the daemon WS endpoint so callers cannot use the prefix to pin pool traffic.
+    - matches:
+        - path:
+            type: PathPrefix
+            value: {{ printf "/relays/%d/rd/ws" $ordinal | quote }}
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /rd/ws
+      backendRefs:
+        - name: {{ printf "%s-relay-%d" (include "agentconnect.fullname" $) $ordinal }}
+          port: {{ $.Values.relay.port }}
+    {{- end }}
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /mcp
+        - path:
+            type: PathPrefix
+            value: /memory
+        - path:
+            type: PathPrefix
+            value: /webchat
+        - path:
+            type: PathPrefix
+            value: /webhooks/in
+        - path:
+            type: PathPrefix
+            value: /webhooks/github
+        - path:
+            type: PathPrefix
+            value: /webhooks/gitlab
+        - path:
+            type: PathPrefix
+            value: /slack/events
+        - path:
+            type: PathPrefix
+            value: /slack/interactions
+      backendRefs:
+        - name: {{ include "agentconnect.fullname" . }}-relay
+          port: {{ .Values.relay.port }}
+{{- end }}
+{{- /*
+open-connector OAuth callback (connectors integration), rendered only when
+openConnector.enabled AND openConnector.callbackHost is set. open-connector is otherwise
+cluster-internal (ClusterIP, no ingress); this is the SOLE public path — the provider
+redirects the user's browser to https://<callbackHost>/oauth/callback, which the gateway
+routes to the internal open-connector Service. open-connector correlates it by the
+unguessable OAuth `state` and returns an HTML completion page. Nothing else on the host
+reaches open-connector. Reusing the website host needs no new edge setup; a dedicated
+host needs its own DNS + TLS + gateway listener (like apiHost/mcpHost/relay.host).
+*/ -}}
+{{- if and .Values.route.enabled .Values.openConnector.enabled .Values.openConnector.callbackHost }}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "agentconnect.fullname" . }}-open-connector-callback
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agentconnect.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+    - name: {{ .Values.route.gateway.name }}
+      namespace: {{ .Values.route.gateway.namespace }}
+      sectionName: {{ .Values.route.gateway.sectionName }}
+  hostnames:
+    - {{ .Values.openConnector.callbackHost | quote }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /oauth/callback
+      backendRefs:
+        - name: {{ include "agentconnect.fullname" . }}-open-connector
+          port: {{ .Values.openConnector.port }}
+{{- end }}

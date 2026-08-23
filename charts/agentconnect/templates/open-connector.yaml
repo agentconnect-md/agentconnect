@@ -1,0 +1,158 @@
+{{- /*
+open-connector (agentconnect connectors integration), rendered only when
+openConnector.enabled. An INTERNAL-ONLY service: the CP and relay reach it in-cluster
+over the ClusterIP Service below (OPEN_CONNECTOR_URL, wired in control-plane.yaml /
+relay.yaml) to browse providers, provision connections, and proxy them as MCP tools.
+It has NO public ingress of its own.
+
+OAuth exception: completing a provider OAuth flow requires the provider to redirect the
+user's BROWSER to open-connector's /oauth/callback, so that ONE path is published to the
+public gateway (httproute.yaml) when openConnector.callbackHost is set — routed to this
+same ClusterIP Service, which stays cluster-internal. OOMOL_CONNECT_ORIGIN is derived as
+https://<callbackHost> so the redirect_uri open-connector hands the provider matches.
+
+Persistence: connections, OAuth client configs, and credentials live in a sqlite db under
+OOMOL_CONNECT_DATA_DIR (/app/data), backed by a PVC so they survive restarts. Set the
+OPEN_CONNECTOR_ENCRYPTION_KEY Secret key to encrypt those credentials at rest.
+*/ -}}
+{{- if .Values.openConnector.enabled }}
+{{- $oc := .Values.openConnector }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "agentconnect.fullname" . }}-open-connector
+  labels:
+    {{- include "agentconnect.labels" . | nindent 4 }}
+    {{- include "agentconnect.componentLabels" (dict "ctx" . "component" "open-connector") | nindent 4 }}
+spec:
+  # Single writer: the sqlite store is not multi-writer safe, and a connection is
+  # provisioned once then read — one replica is correct.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "agentconnect.selectorLabels" (dict "ctx" . "component" "open-connector") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "agentconnect.labels" . | nindent 8 }}
+        {{- include "agentconnect.componentLabels" (dict "ctx" . "component" "open-connector") | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+        - name: data
+          {{- if $oc.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ $oc.persistence.existingClaim | default (printf "%s-open-connector" (include "agentconnect.fullname" .)) }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+      containers:
+        - name: open-connector
+          # Pin by digest (immutable, reproducible) when `digest` is set — recommended for
+          # this third-party, credential-storing component; else fall back to a tag
+          # (`latest` for manual installs). A digest pin needs no re-pull; a tag might.
+          {{- $ocImage := $oc.image | default "ghcr.io/oomol-lab/open-connector" }}
+          {{- if $oc.digest }}
+          image: "{{ $ocImage }}@{{ $oc.digest }}"
+          imagePullPolicy: IfNotPresent
+          {{- else }}
+          image: "{{ $ocImage }}:{{ $oc.tag | default "latest" }}"
+          imagePullPolicy: Always
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ $oc.port }}
+          env:
+            - name: PORT
+              value: {{ $oc.port | quote }}
+            - name: HOST
+              value: "0.0.0.0"
+            - name: OOMOL_CONNECT_DATA_DIR
+              value: /app/data
+            {{- if $oc.callbackHost }}
+            # The public origin the provider redirects the browser back to. open-connector
+            # builds redirect_uri = <origin>/oauth/callback — the URL registered in each
+            # OAuth provider app (Google/GitHub/…). Only that one path is published
+            # publicly (httproute.yaml); the rest of the service stays cluster-internal.
+            - name: OOMOL_CONNECT_ORIGIN
+              value: {{ printf "https://%s" $oc.callbackHost | quote }}
+            {{- end }}
+            # Encrypt stored OAuth client configs + credentials at rest. optional:true —
+            # unset just stores them plaintext (the service is ClusterIP-internal).
+            - name: OOMOL_CONNECT_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret }}
+                  key: {{ .Values.secrets.openConnectorEncryptionKeyKey }}
+                  optional: true
+            {{- range $k, $v := $oc.config }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+            {{- range $k, $v := $oc.extraEnv }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            {{- toYaml $oc.resources | nindent 12 }}
+---
+# ClusterIP only — reachable by the CP and relay in-cluster, never from the public
+# gateway (the OAuth callback route in httproute.yaml is the sole public path, and it
+# targets this same Service via the in-cluster Envoy).
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agentconnect.fullname" . }}-open-connector
+  labels:
+    {{- include "agentconnect.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "agentconnect.selectorLabels" (dict "ctx" . "component" "open-connector") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ $oc.port }}
+      targetPort: http
+{{- if and $oc.persistence.enabled (not $oc.persistence.existingClaim) }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "agentconnect.fullname" . }}-open-connector
+  labels:
+    {{- include "agentconnect.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- if $oc.persistence.storageClass }}
+  storageClassName: {{ $oc.persistence.storageClass | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ $oc.persistence.size | quote }}
+{{- end }}
+{{- end }}

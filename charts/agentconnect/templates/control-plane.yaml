@@ -1,0 +1,293 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "agentconnect.fullname" . }}-control-plane
+  labels:
+    {{- include "agentconnect.labels" . | nindent 4 }}
+    {{- include "agentconnect.componentLabels" (dict "ctx" . "component" "control-plane") | nindent 4 }}
+spec:
+  replicas: {{ .Values.controlPlane.replicas }}
+  # Kubernetes treats readiness as immediately available by default. Keep the
+  # new endpoint stable long enough for Gateway/Envoy discovery before it may
+  # terminate the old singleton CP pod.
+  minReadySeconds: {{ .Values.controlPlane.minReadySeconds }}
+  # Surge-first rollout: the new pod must pass readiness BEFORE the old one is
+  # torn down (maxUnavailable: 0), so daemons whose sockets close during the
+  # switchover reconnect to an already-serving pod. maxSurge: 1 is required for
+  # progress at replicas: 1 (0/0 would deadlock).
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      {{- include "agentconnect.selectorLabels" (dict "ctx" . "component" "control-plane") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "agentconnect.labels" . | nindent 8 }}
+        {{- include "agentconnect.componentLabels" (dict "ctx" . "component" "control-plane") | nindent 8 }}
+    spec:
+      # Own SA per release — its token is the workload JWT for Vault kubernetes
+      # auth (SECRET_CIPHER=vault-transit). automount is the k8s default; kept
+      # explicit because the CP reads the token to log in to Vault.
+      serviceAccountName: {{ include "agentconnect.controlPlaneServiceAccountName" . }}
+      automountServiceAccountToken: true
+      # Give the CP time to drain daemon WS sockets on SIGTERM (it closes them
+      # 1012 so daemons reconnect to the new pod, then exits; a 10s in-process
+      # failsafe caps it) — comfortably inside this grace period.
+      terminationGracePeriodSeconds: 30
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.migrate.enabled }}
+      volumes:
+        - name: prisma-migration-files
+          emptyDir: {}
+      initContainers:
+        # The CP image owns the versioned schema and migration SQL. Export only
+        # those files into a shared volume; no application process is started.
+        - name: export-prisma-files
+          image: "{{ .Values.image.registry }}/{{ .Values.controlPlane.image }}:{{ .Values.controlPlane.tag | default (include "agentconnect.imageTag" .) }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              mkdir -p /migration/prisma
+              cp /app/packages/control-plane/prisma/schema.prisma /migration/prisma/schema.prisma
+              cp -R /app/packages/control-plane/prisma/migrations /migration/prisma/migrations
+          volumeMounts:
+            - name: prisma-migration-files
+              mountPath: /migration
+        - name: migrate
+          image: "{{ .Values.image.registry }}/{{ .Values.migrate.image }}:{{ .Values.migrate.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # Retry until Postgres accepts connections, then apply migrations.
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              until node_modules/.bin/prisma migrate deploy; do
+                echo "migrate: database not ready, retrying in 3s..."; sleep 3;
+              done
+          volumeMounts:
+            - name: prisma-migration-files
+              mountPath: /migration
+              readOnly: true
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret }}
+                  key: {{ .Values.secrets.databaseUrlKey }}
+      {{- end }}
+      containers:
+        - name: control-plane
+          image: "{{ .Values.image.registry }}/{{ .Values.controlPlane.image }}:{{ .Values.controlPlane.tag | default (include "agentconnect.imageTag" .) }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.controlPlane.port }}
+          env:
+            - name: PORT
+              value: {{ .Values.controlPlane.port | quote }}
+            - name: HOST
+              value: "0.0.0.0"
+            # Downward-API values that later env entries (config / extraEnv) can
+            # reference via K8s $(…) expansion — e.g. a node-local OTel collector
+            # agent, OTEL_EXPORTER_OTLP_ENDPOINT=http://$(OTEL_COLLECTOR_HOST):4317.
+            # Set the consuming vars in your values. Inert on their own.
+            - name: OTEL_COLLECTOR_HOST
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: status.hostIP
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            {{- range $k, $v := .Values.controlPlane.config }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret }}
+                  key: {{ .Values.secrets.databaseUrlKey }}
+            - name: API_KEY_PEPPER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret }}
+                  key: {{ .Values.secrets.apiKeyPepperKey }}
+            # Logto origins are startup topology. Browser/M2M identities,
+            # audiences, provider ids, and provider secrets are loaded from the
+            # CP-owned deployment_config singleton instead of pod env.
+            {{- if .Values.logto.endpoint }}
+            - name: LOGTO_ENDPOINT
+              value: {{ trimSuffix "/" .Values.logto.endpoint | quote }}
+            - name: OIDC_ISSUER
+              value: {{ printf "%s/oidc" (trimSuffix "/" .Values.logto.endpoint) | quote }}
+            {{- end }}
+            # The canonical Management API origin remains separate startup
+            # topology for Logto Cloud custom-domain deployments.
+            {{- $mgmtEndpoint := .Values.logto.mgmtEndpoint | default .Values.logto.endpoint }}
+            {{- if $mgmtEndpoint }}
+            - name: LOGTO_MGMT_ENDPOINT
+              value: {{ trimSuffix "/" $mgmtEndpoint | quote }}
+            {{- end }}
+            {{- if or .Values.apiHost .Values.publicUrl }}
+            # Onboarding daemon WS origin — the "Add daemon" command dials
+            # <PUBLIC_CP_URL> + WS_PATH (/daemon/ws).
+            #   • SUBDOMAIN mode (apiHost set): the CP lives on its own host, so
+            #     PUBLIC_CP_URL = https://<apiHost> ⇒ daemons dial
+            #     wss://<apiHost>/daemon/ws (the -api HTTPRoute forwards WS_PATH verbatim).
+            #   • same-origin (default): the CP is mounted under `/cp` on the website host
+            #     (the prefix the web image bakes + the edge route), so
+            #     PUBLIC_CP_URL = <publicUrl>/cp ⇒ wss://<host>/cp/daemon/ws.
+            # Absent (no apiHost, no publicUrl) ⇒ CP falls back to ws://127.0.0.1:8080.
+            - name: PUBLIC_CP_URL
+              value: {{ if .Values.apiHost }}{{ printf "https://%s" .Values.apiHost | quote }}{{ else }}{{ printf "%s/cp" (trimSuffix "/" .Values.publicUrl) | quote }}{{ end }}
+            {{- end }}
+            {{- if and .Values.apiHost .Values.publicUrl }}
+            # SUBDOMAIN mode (top-level `apiHost` set): the browser served at `publicUrl`
+            # calls the CP on the dedicated api host cross-origin, so allow the website
+            # origin. Bearer-token auth (no cookies) ⇒ one explicit origin is enough;
+            # same-origin mode leaves this unset (@fastify/cors stays disabled).
+            - name: CORS_ORIGIN
+              value: {{ trimSuffix "/" .Values.publicUrl | quote }}
+            {{- end }}
+            {{- if .Values.mcpHost }}
+            # Dedicated public MCP origin (the -mcp HTTPRoute): the canonical MCP
+            # resource URL becomes this origin's root — every URL the CP advertises
+            # (PRM `resource`, the MCP 401 challenge) says it, and RFC 9728 clients
+            # validate it byte-for-byte against the URL they dialed.
+            - name: PUBLIC_MCP_URL
+              value: {{ printf "https://%s" .Values.mcpHost | quote }}
+            {{- end }}
+            {{- if .Values.publicUrl }}
+            # The web console origin. The CP 302s BROWSERS here — the OAuth consent
+            # page (/oauth/consent; agentconnect-md/agentconnect docs/designs/agent-assistant.md §7.3) and other console
+            # destinations — and daemons build session deep links from it. Without
+            # it the CP falls back to its own public origin (PUBLIC_CP_URL), which
+            # serves no console in subdomain mode: the MCP consent redirect would
+            # 404 at the api host.
+            - name: PUBLIC_WEB_URL
+              value: {{ trimSuffix "/" .Values.publicUrl | quote }}
+            {{- end }}
+            {{- if .Values.relay.enabled }}
+            # Webchat rides the relay pool: the mint route
+            # (POST …/agents/:id/webchat/token) returns this URL for the browser to dial.
+            # Absent ⇒ the mint route 503s and the Playground is disabled. RELAY_TOKEN is
+            # the shared relay↔CP credential the relay presents on rc/auth — the CP must
+            # hold the SAME value to accept it (unset ⇒ token-mode auth is rejected).
+            - name: PUBLIC_RELAY_URL
+              value: {{ include "agentconnect.relayPublicUrl" . | quote }}
+            - name: RELAY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret }}
+                  key: {{ .Values.secrets.relayTokenKey }}
+            {{- end }}
+            {{- if .Values.openConnector.enabled }}
+            # open-connector (connectors integration): the CP brokers connector browsing
+            # + connection provisioning through this INTERNAL Service (ClusterIP, no edge
+            # hop). Set ⇒ the console shows "Add connectors"; unset ⇒ the routes 404.
+            - name: OPEN_CONNECTOR_URL
+              value: {{ printf "http://%s-open-connector:%v" (include "agentconnect.fullname" .) .Values.openConnector.port | quote }}
+            {{- end }}
+            {{- if .Values.objectStore.endpoint }}
+            # Uploaded-icon object store (agentconnect-md/agentconnect docs/designs/icon-uploads.md): non-secret S3 config from the
+            # `objectStore` block; the access key id + secret ride the namespace Secret with
+            # optional:true, so the pod starts even before they're added — the CP then just
+            # leaves icon upload off (its gate needs the full group) instead of crash-looping.
+            - name: S3_ENDPOINT
+              value: {{ .Values.objectStore.endpoint | quote }}
+            - name: S3_BUCKET
+              value: {{ .Values.objectStore.bucket | quote }}
+            - name: S3_PUBLIC_BASE_URL
+              value: {{ .Values.objectStore.publicBaseUrl | quote }}
+            - name: S3_REGION
+              value: {{ .Values.objectStore.region | default "auto" | quote }}
+            - name: S3_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret }}
+                  key: {{ .Values.secrets.s3AccessKeyIdKey }}
+                  optional: true
+            - name: S3_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret }}
+                  key: {{ .Values.secrets.s3SecretAccessKeyKey }}
+                  optional: true
+            {{- end }}
+            {{- if .Values.daemonPool.enabled }}
+            # The control plane's cluster-access switch: it asserts the CP runs in-cluster (the
+            # pod's ServiceAccount is the credential) and accepts daemon-pool member identities
+            # only from its own namespace. The ServiceAccount name and the token audience are
+            # the app's identity contract.
+            - name: DAEMON_POOL_ENABLED
+              value: 'true'
+            {{- end }}
+            {{- with (include "agentconnect.emailFrom" .) }}
+            # Sender the waitlist flow shows users ("check your inbox for mail from …"). Only
+            # NAMED here — whatever actually sends the activation mail lives outside this chart,
+            # and a mismatch sends people looking for mail from an address nothing sent.
+            - name: WAITLIST_FROM_EMAIL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- range $k, $v := .Values.controlPlane.extraEnv }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          # readiness = "should this pod get traffic?" — /readyz pings the DB and
+          # goes 503 the moment SIGTERM lands (before the WS drain), so a rolling
+          # update removes the pod from the Service endpoints while it can still
+          # finish in-flight requests.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          # liveness = "is the process alive?" — /livez is static and NEVER gated by
+          # shutdown, so the kubelet won't restart a pod that is merely draining.
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          # preStop delays SIGTERM so this pod is removed from the Service endpoints
+          # first — a daemon whose socket closes (drained 1012) then reconnects to the
+          # new pod rather than racing back into this dying one. The Node slim
+          # runtime includes sh + sleep.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 5"]
+          resources:
+            {{- toYaml .Values.controlPlane.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agentconnect.fullname" . }}-control-plane
+  labels:
+    {{- include "agentconnect.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "agentconnect.selectorLabels" (dict "ctx" . "component" "control-plane") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.controlPlane.port }}
+      targetPort: http

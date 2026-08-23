@@ -103,6 +103,23 @@ jobs:
           pnpm_config_enable_pre_post_scripts: false
         run: pnpm --workspace-concurrency=5 run "/^(lint|format:check|typecheck:ci)$/"
 
+  # The Helm chart's own gate: lint plus the render contract in
+  # scripts/test-chart-render.rb (both preinstalled on the hosted image — helm, ruby).
+  # It runs unconditionally: chart edits are rare but every release publishes the chart,
+  # so a broken chart must fail the same gate that blocks a broken package.
+  chart:
+    name: Chart
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: helm lint
+        run: helm lint charts/agentconnect
+      - name: Render contract
+        run: ruby scripts/test-chart-render.rb
+
   # Keep the fast, Docker-free suites away from the resource-heavy build group
   # so their short per-test timeouts measure code rather than runner contention.
   unit:

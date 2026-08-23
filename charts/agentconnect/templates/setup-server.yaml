@@ -1,0 +1,115 @@
+{{- /*
+Setup Server is the self-hosted deployment settings UI bundled in the Control
+Plane image. It intentionally has no Service or HTTPRoute. An operator with
+Kubernetes access reaches it through:
+
+  kubectl -n <namespace> port-forward deployment/<release>-setup-server 8091:8091
+
+The browser therefore sees the loopback SETUP_SERVER_URL even though the process
+binds to the pod network. It uses the CP database and the same Vault workload
+identity so deployment secrets are sealed and opened through the same cipher.
+*/ -}}
+{{- if .Values.setupServer.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "agentconnect.fullname" . }}-setup-server
+  labels:
+    {{- include "agentconnect.labels" . | nindent 4 }}
+    {{- include "agentconnect.componentLabels" (dict "ctx" . "component" "setup-server") | nindent 4 }}
+spec:
+  replicas: {{ .Values.setupServer.replicas }}
+  selector:
+    matchLabels:
+      {{- include "agentconnect.selectorLabels" (dict "ctx" . "component" "setup-server") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "agentconnect.labels" . | nindent 8 }}
+        {{- include "agentconnect.componentLabels" (dict "ctx" . "component" "setup-server") | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "agentconnect.setupServerServiceAccountName" . }}
+      automountServiceAccountToken: true
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: setup-server
+          image: "{{ .Values.image.registry }}/{{ .Values.controlPlane.image }}:{{ .Values.controlPlane.tag | default (include "agentconnect.imageTag" .) }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["node", "/app/packages/setup/dist/index.js"]
+          ports:
+            - name: http
+              containerPort: {{ .Values.setupServer.port }}
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: HOST
+              value: "0.0.0.0"
+            - name: PORT
+              value: {{ .Values.setupServer.port | quote }}
+            - name: SETUP_SERVER_URL
+              value: {{ .Values.setupServer.url | quote }}
+            # The browser still reaches localhost through kubectl port-forward;
+            # Fastify sees the pod-side proxy peer because the process binds in a
+            # container, so explicitly admit that loopback proxy shape.
+            - name: SETUP_SERVER_ALLOW_CONTAINER_PROXY
+              value: "true"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret }}
+                  key: {{ .Values.secrets.databaseUrlKey }}
+            {{- $cpConfig := .Values.controlPlane.config }}
+            {{- range $key := list "SECRET_CIPHER" "VAULT_ADDR" "VAULT_TRANSIT_KEY" "VAULT_TRANSIT_MOUNT" "VAULT_NAMESPACE" "VAULT_JWT_ROLE" "VAULT_JWT_PATH" "VAULT_AUTH_MOUNT" }}
+            {{- if hasKey $cpConfig $key }}
+            - name: {{ $key }}
+              value: {{ index $cpConfig $key | quote }}
+            {{- end }}
+            {{- end }}
+            {{- if .Values.logto.endpoint }}
+            - name: LOGTO_ENDPOINT
+              value: {{ trimSuffix "/" .Values.logto.endpoint | quote }}
+            - name: OIDC_ISSUER
+              value: {{ printf "%s/oidc" (trimSuffix "/" .Values.logto.endpoint) | quote }}
+            {{- end }}
+            {{- $mgmtEndpoint := .Values.logto.mgmtEndpoint | default .Values.logto.endpoint }}
+            {{- if $mgmtEndpoint }}
+            # Cloud Logto custom login domains do not serve the Management API.
+            # Keep its canonical endpoint as startup topology, separate from the
+            # write-only M2M identity stored by Setup Server.
+            - name: LOGTO_MGMT_ENDPOINT
+              value: {{ trimSuffix "/" $mgmtEndpoint | quote }}
+            {{- end }}
+            {{- if .Values.publicUrl }}
+            - name: AGENTCONNECT_PUBLIC_WEB_URL
+              value: {{ trimSuffix "/" .Values.publicUrl | quote }}
+            {{- end }}
+            {{- if .Values.apiHost }}
+            - name: AGENTCONNECT_PUBLIC_CP_URL
+              value: {{ printf "https://%s" .Values.apiHost | quote }}
+            {{- end }}
+            {{- if .Values.relay.enabled }}
+            - name: AGENTCONNECT_PUBLIC_RELAY_URL
+              value: {{ include "agentconnect.relayPublicUrl" . | quote }}
+            {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /livez
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            {{- toYaml .Values.setupServer.resources | nindent 12 }}
+{{- end }}

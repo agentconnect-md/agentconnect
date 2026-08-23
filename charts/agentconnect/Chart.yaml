@@ -1,0 +1,14 @@
+apiVersion: v2
+name: agentconnect
+description: AgentConnect control-plane (Fastify BFF + daemon WS gateway), web console, webchat relay, open-connector, and the install-wide daemon pool with its cluster-scoped TokenReview RBAC and agents namespace
+type: application
+home: https://agentconnect.md
+sources:
+  - https://github.com/agentconnect-md/agentconnect
+# The relay reads the `apps.kubernetes.io/pod-index` StatefulSet label (K8s >= 1.28).
+kubeVersion: '>=1.28.0-0'
+# Placeholders: the release workflow stamps both at publish (`helm package --version
+# X.Y.Z --app-version vX.Y.Z`), so the published chart version tracks the AgentConnect
+# release and appVersion is that release's image tag.
+version: 0.0.0-dev
+appVersion: 'v0.0.0-dev'

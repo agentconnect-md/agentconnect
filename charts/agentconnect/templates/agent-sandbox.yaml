@@ -1,0 +1,23 @@
+{{- if .Values.installCRD }}
+# The agent-sandbox stack cluster execution builds on — CRDs, controller, its namespace
+# and RBAC — pinned and vendored, because upstream publishes release manifests but no
+# chart to any registry. Version, source URL and upstream digest are in the vendored
+# file's header; re-vendor from the upstream release rather than editing it. Its CRDs carry
+# helm.sh/resource-policy: keep, like ours, so no uninstall cascade-deletes live
+# Sandboxes.
+{{ .Files.Get "vendor/agent-sandbox.yaml" }}
+---
+# The controller's label allowlist REPLACES its built-in `sandbox.users.io` default,
+# so both domains are named. Without ours it rejects every claim the daemon makes with
+# InvalidMetadata; it reads the file once at startup, from a mount the vendored
+# Deployment already declares (optional, so this ConfigMap is the whole opt-in).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agent-sandbox-config
+  namespace: agent-sandbox-system
+  labels:
+    {{- include "agentconnect.labels" . | nindent 4 }}
+data:
+  allowed-label-domains: sandbox.users.io,agentconnect.md
+{{- end }}

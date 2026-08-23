@@ -1,0 +1,106 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "agentconnect.fullname" . }}-web
+  labels:
+    {{- include "agentconnect.labels" . | nindent 4 }}
+    {{- include "agentconnect.componentLabels" (dict "ctx" . "component" "web") | nindent 4 }}
+spec:
+  replicas: {{ .Values.web.replicas }}
+  selector:
+    matchLabels:
+      {{- include "agentconnect.selectorLabels" (dict "ctx" . "component" "web") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "agentconnect.labels" . | nindent 8 }}
+        {{- include "agentconnect.componentLabels" (dict "ctx" . "component" "web") | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: web
+          image: "{{ .Values.image.registry }}/{{ .Values.web.image }}:{{ .Values.web.tag | default (include "agentconnect.imageTag" .) }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.web.port }}
+          env:
+            - name: PORT
+              value: {{ .Values.web.port | quote }}
+            # Topology-only internal base. The Web server reads the CP's
+            # immutable public runtime snapshot for browser auth/provider config.
+            - name: CP_INTERNAL_URL
+              value: {{ printf "http://%s-control-plane:%v/api/v1" (include "agentconnect.fullname" .) .Values.controlPlane.port | quote }}
+            # Browser → CP API base, injected into window.__AC_ENV at runtime so the
+            # image isn't pinned to a CP at build time. SUBDOMAIN mode (top-level
+            # `apiHost` set) ⇒ https://<apiHost>/v1 (cross-origin; the api HTTPRoute
+            # rewrites /v1/* → CP /api/v1/*). Otherwise same-origin /cp/api/v1 (the edge
+            # routes /cp/* → control-plane, which serves under /api/v1).
+            - name: CP_URL
+              value: {{ if .Values.apiHost }}{{ printf "https://%s/v1" .Values.apiHost | quote }}{{ else }}{{ .Values.web.cpUrl | quote }}{{ end }}
+            {{- if .Values.mcpHost }}
+            # Dedicated public MCP origin — mirrors the CP's PUBLIC_MCP_URL so the
+            # console's "Connect your AI" dialog hands out the SAME URL the CP
+            # advertises as the OAuth resource. Unset, the console falls back to
+            # CP_URL + /mcp (<apiHost>/v1/mcp): still the MCP wire, but the api host
+            # serves no OAuth and the PRM `resource` is this origin, so an RFC 9728
+            # client that dialled the api form fails discovery/audience validation.
+            - name: MCP_URL
+              value: {{ printf "https://%s" .Values.mcpHost | quote }}
+            {{- end }}
+            {{- if .Values.relay.enabled }}
+            # Browser → relay public origin, injected into window.__AC_ENV at runtime
+            # (mirrors the CP's PUBLIC_RELAY_URL). The agent API panel derives its WSS
+            # endpoint (and the Playground its webchat dial target) from this https origin,
+            # converting http(s)→ws(s) client-side. Empty ⇒ the panel shows "Relay endpoint
+            # not configured", even though the CP's mint route still returns the URL.
+            - name: RELAY_URL
+              value: {{ include "agentconnect.relayPublicUrl" . | quote }}
+            {{- end }}
+            {{- with (include "agentconnect.emailFrom" .) }}
+            # Mirrors the CP's WAITLIST_FROM_EMAIL (both from `waitlistFromEmail`) so the
+            # browser-side waitlist copy names the same verified sender the activation mail
+            # actually comes from.
+            - name: WAITLIST_FROM_EMAIL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- range $k, $v := .Values.web.extraEnv }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            {{- toYaml .Values.web.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agentconnect.fullname" . }}-web
+  labels:
+    {{- include "agentconnect.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "agentconnect.selectorLabels" (dict "ctx" . "component" "web") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.web.port }}
+      targetPort: http
