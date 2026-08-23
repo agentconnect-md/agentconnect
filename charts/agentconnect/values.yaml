@@ -106,13 +106,14 @@ imagePullSecrets: []
 affinity: {}
 
 # Install the vendored agent-sandbox stack (its 4 CRDs + the controller) with this release.
-# The stack is a pinned copy this chart carries, so `true` bootstraps a fresh cluster
-# completely and offline — no registry, no cluster egress, nothing to apply by hand first.
-# Leave it false when the stack is managed out-of-band — several releases sharing one cluster,
-# or a cluster that already runs agent-sandbox. The stack is cluster-shared, so no single
-# release may own it; apply it once per cluster instead, with
+# The stack is a pinned copy this chart carries, so the default `true` bootstraps a fresh
+# cluster completely and offline — no registry, no cluster egress, nothing to apply by hand
+# first — which the default-on daemon pool below needs to render at all. Set it false when
+# the stack is managed out-of-band — several releases sharing one cluster, or a cluster that
+# already runs agent-sandbox. The stack is cluster-shared, so no single release of several
+# may own it; apply it once per cluster instead, with
 # `helm template --set installCRD=true --show-only templates/agent-sandbox.yaml`.
-installCRD: false
+installCRD: true
 
 # The install-wide daemon pool, whose Pods are pool members. Every member serves agents
 # from every organization and derives the org from the CP agent registry. The fixed
@@ -124,10 +125,12 @@ installCRD: false
 # with its default-deny baseline (templates/agents-namespace.yaml). It is also what gives the
 # control plane in-cluster access at all, so EVERY projected identity it verifies depends on
 # it — the in-cluster daemons this chart renders, and any other in-cluster workload an install
-# teaches it to accept. An install with no pool needs none of it and gains no cluster-scoped
-# object. Turning it on requires an installer that may write cluster-scoped RBAC.
+# teaches it to accept. ON by default, so the installer must be allowed to write
+# cluster-scoped RBAC and the agent-sandbox CRDs must exist (`installCRD` above ships them).
+# Set false for an install that runs no agents here: it then needs and gains no
+# cluster-scoped object.
 daemonPool:
-  enabled: false
+  enabled: true
   image: daemon
   # Per-component override; empty => image.tag.
   tag: ''
@@ -135,8 +138,11 @@ daemonPool:
   replicas: 3
   # Existing Secret whose config.json is the strict data-plane document:
   # {"version":1,"databaseUrl":"postgresql://...","maxConnections":4}
+  # Referenced BY NAME, like `secrets.existingSecret`: create it in the namespace
+  # (kubectl create secret generic agentconnect-data-plane --from-file=config.json=...);
+  # until it exists the pool members wait in ContainerCreating on the missing volume.
   dataPlane:
-    existingSecret: ''
+    existingSecret: agentconnect-data-plane
     key: config.json
   # There is no `warmPoolName` value. The warm pool the daemon claims against
   # (AC_K8S_WARM_POOL) and the one the chart renders are one derived string,
@@ -256,9 +262,10 @@ daemonPool:
     # sandbox pod and one bound workspace PVC apiece, held whether or not anybody claims it — and
     # what it buys is narrow: only the FIRST mint for a new agent gets a warm sandbox instead of a
     # cold one. Resuming an existing agent binds the sandbox it already has and never touches the
-    # warm pool, so this speeds up onboarding, not everyday turns. 0 ⇒ every claim mints cold.
-    # Raise it where agents are onboarded interactively and the first mint is user-visible.
-    warmReplicas: 0
+    # warm pool, so this speeds up onboarding, not everyday turns. The default holds three so an
+    # interactively onboarded agent's first mint is warm; set 0 to mint every claim cold and pay
+    # no standing cost.
+    warmReplicas: 3
     # One agent's runtime container. No CPU limit on purpose: an agent turn is bursty and
     # a limit turns latency into throttling, while memory must stay bounded per agent.
     resources:
@@ -454,8 +461,10 @@ web:
 #   kubectl -n <namespace> patch secret <secret> --type merge \
 #     -p "{\"stringData\":{\"RELAY_TOKEN\":\"$(openssl rand -hex 24)\"}}"
 relay:
-  # Off by default; opt in from your values once RELAY_TOKEN exists.
-  enabled: false
+  # ON by default — put RELAY_TOKEN in the namespace Secret (see above) before installing,
+  # or the relay and the CP both wait on the missing key. Set false to run without public
+  # ingress (no webchat/webhooks; direct daemon-owned platform connections still work).
+  enabled: true
   image: relay
   # Per-component tag override; empty ⇒ the shared image.tag (see controlPlane.tag).
   # Skipping unchanged relay releases matters most here: a relay rollout still
@@ -498,8 +507,8 @@ relay:
 # Everything else stays cluster-internal. Empty `callbackHost` ⇒ no public path at all
 # (fully internal; api-key / no-auth connectors work, OAuth does not).
 openConnector:
-  # Off by default; opt in from your values.
-  enabled: false
+  # ON by default (internal-only ClusterIP + one PVC); set false to run without connectors.
+  enabled: true
   # Full image ref WITHOUT tag/digest; empty ⇒ the official ghcr.io/oomol-lab/open-connector.
   image: ''
   # Immutable digest pin (e.g. sha256:…) — PREFERRED for this third-party,

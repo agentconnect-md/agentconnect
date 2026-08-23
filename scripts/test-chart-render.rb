@@ -21,7 +21,10 @@ command = [
   '--set-json', 'daemonPool.runtime.tolerations=' \
     '[{"key":"example.com/agents","operator":"Equal","value":"true","effect":"NoSchedule"}]',
   # Set to prove propagation into controller-created sandbox pods, not just chart-rendered ones.
-  '--set-json', 'imagePullSecrets=[{"name":"example-pull"}]'
+  '--set-json', 'imagePullSecrets=[{"name":"example-pull"}]',
+  # Off here so the object-count assertions below see only chart-owned objects, not the
+  # vendored stack; the defaults render at the end covers the default-on stack.
+  '--set', 'installCRD=false'
 ]
 
 rendered, error, status = Open3.capture3(*command)
@@ -212,7 +215,7 @@ abort('workspace claim must be a 10Gi standard RWO volume') unless workspace_cla
 warm_pool = find.call('SandboxWarmPool', 'example-agentconnect-runtime-pool')
 abort('warm pool must live with the sandboxes') unless warm_pool.dig('metadata', 'namespace') == 'agentconnect-example-agents'
 abort('warm pool must reference the rendered template') unless warm_pool.dig('spec', 'sandboxTemplateRef', 'name') == 'example-agentconnect-runtime'
-abort('warm pool must hold no spares by default') unless warm_pool.dig('spec', 'replicas') == 0
+abort('warm pool must hold three spares by default') unless warm_pool.dig('spec', 'replicas') == 3
 abort('warm pool must push template changes to its spares') unless warm_pool.dig('spec', 'updateStrategy', 'type') == 'Recreate'
 abort('warm pool name must match what a daemon-pool member claims against') unless warm_pool.dig('metadata', 'name') == env['AC_K8S_WARM_POOL']
 
@@ -321,9 +324,9 @@ abort('default-deny must live in the agents namespace') unless default_deny.dig(
 abort('default-deny must select every pod') unless default_deny.dig('spec', 'podSelector') == {}
 abort('default-deny must deny both directions') unless default_deny.dig('spec', 'policyTypes')&.sort == %w[Egress Ingress]
 abort('default-deny must carry no allow rules') if default_deny.fetch('spec').key?('ingress') || default_deny.fetch('spec').key?('egress')
-# The vendored agent-sandbox stack is cluster-shared and may be managed out-of-band; nothing
-# here may render a CRD unless an install explicitly asks for it.
-abort('installCRD must default off') if documents.any? { |doc| doc['kind'] == 'CustomResourceDefinition' }
+# The vendored agent-sandbox stack is cluster-shared: a release told the stack is managed
+# out-of-band must render none of it.
+abort('installCRD=false must render no CRD') if documents.any? { |doc| doc['kind'] == 'CustomResourceDefinition' }
 
 control_plane = find.call('Deployment', 'example-agentconnect-control-plane')
 cp_container = control_plane.dig('spec', 'template', 'spec', 'containers').find { |item| item['name'] == 'control-plane' }
@@ -368,6 +371,31 @@ abort('vendored CRDs must survive an uninstall') unless crds.all? { |doc| doc.di
 allowlist = vendored_documents.find { |doc| doc['kind'] == 'ConfigMap' && doc.dig('metadata', 'name') == 'agent-sandbox-config' } ||
             abort('installCRD must render the controller label allowlist')
 abort('label allowlist must name both domains') unless allowlist.dig('data', 'allowed-label-domains') == 'sandbox.users.io,agentconnect.md'
+
+# ── the batteries-included defaults: a bare install carries the whole product ──
+# Pure defaults, no values at all: the daemon pool (with its bundled agent-sandbox stack and
+# three warm spares), the relay, and open-connector all render. Turning one off is the
+# consumer's explicit values choice, not a discovery.
+defaults_rendered, defaults_error, defaults_status = Open3.capture3(
+  'helm', 'template', 'example-agentconnect', chart, '--namespace', 'agentconnect-example'
+)
+abort("helm template (pure defaults) failed:\n#{defaults_error}") unless defaults_status.success?
+defaults_documents = YAML.load_stream(defaults_rendered).compact
+defaults_find = lambda do |kind, name|
+  defaults_documents.find { |doc| doc['kind'] == kind && doc.dig('metadata', 'name') == name } ||
+    abort("defaults must render #{kind}/#{name}")
+end
+default_pool = defaults_find.call('Deployment', 'example-agentconnect-daemon-pool')
+defaults_find.call('StatefulSet', 'example-agentconnect-relay')
+defaults_find.call('Deployment', 'example-agentconnect-open-connector')
+default_warm = defaults_find.call('SandboxWarmPool', 'example-agentconnect-runtime-pool')
+abort('defaults must hold three warm spares') unless default_warm.dig('spec', 'replicas') == 3
+# The pool's data-plane Secret is referenced by a default NAME the operator creates, like
+# `secrets.existingSecret` — a required-but-empty value would fail the default render outright.
+default_data_plane = default_pool.dig('spec', 'template', 'spec', 'volumes').find { |v| v['name'] == 'data-plane' }
+abort('defaults must reference the documented data-plane Secret name') unless default_data_plane.dig('secret', 'secretName') == 'agentconnect-data-plane'
+# installCRD defaults on so the default-on daemon pool has the CRDs it renders against.
+abort('defaults must carry the vendored agent-sandbox CRDs') unless defaults_documents.count { |doc| doc['kind'] == 'CustomResourceDefinition' } == 4
 
 # ── the published-artifact defaults: no tag set means the chart's own release ──
 # The release pipeline stamps appVersion; with image.tag empty by default, installing chart
