@@ -596,6 +596,34 @@ describe('GitlabCard', () => {
     expect(mocks.fetchProjects.mock.calls.length).toBe(settling + 1)
   })
 
+  it('lets the newest project read win when an older one resolves after it', async () => {
+    // Each roster answer launches its own project read, so two are in flight at once and the
+    // network decides the order they land in. Unfenced, a slow read of the transient state
+    // paints over the finished one that already arrived — after polling has stopped for good.
+    mocks.fetchConnections.mockResolvedValue({ enabled: true, connections: [CONNECTION] })
+    mocks.fetchProjects.mockResolvedValue([{ ...BINDING, webhookState: 'repairing' as const }])
+    roster = [BOT]
+    converging = true
+    await render()
+    const row = () => projectRow(botRow('acct-1'), 'bind-1')
+
+    let older!: (rows: GitlabProjectBindingDto[]) => void
+    let newer!: (rows: GitlabProjectBindingDto[]) => void
+    mocks.fetchProjects.mockReturnValueOnce(new Promise((resolve) => (older = resolve)))
+    mocks.fetchProjects.mockReturnValueOnce(new Promise((resolve) => (newer = resolve)))
+    await revalidate()
+    converging = false
+    await revalidate()
+
+    // The newer read lands first and shows the install finished.
+    await act(async () => newer([BINDING]))
+    expect(row().textContent).not.toContain('webhook')
+
+    // The older one answers last, still describing the install as running, and is discarded.
+    await act(async () => older([{ ...BINDING, webhookState: 'repairing' as const }]))
+    expect(row().textContent).not.toContain('webhook')
+  })
+
   it('leaves the projects alone once nothing is converging', async () => {
     mocks.fetchConnections.mockResolvedValue({ enabled: true, connections: [CONNECTION] })
     mocks.fetchProjects.mockResolvedValue([BINDING])

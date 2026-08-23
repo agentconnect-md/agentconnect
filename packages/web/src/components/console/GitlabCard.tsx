@@ -200,6 +200,8 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
   useEffect(() => {
     if (!activeOrg) return
     let alive = true
+    // A different organization: nothing already in flight may speak for this one.
+    supersedeReads()
     setEnabled(null)
     fetchGitlabConnections()
       .then(async ({ enabled, connections }) => {
@@ -218,6 +220,19 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
 
   // Whether the last roster answer still owed convergence, so the settling one can be recognized.
   const wasConverging = useRef(false)
+  // Roster answers launch project reads independently, so two can be in flight at once and the
+  // slower one may land last. Only the newest generation may commit; a write or an organization
+  // switch supersedes every read still out there, since both know better than any of them.
+  const readSeq = useRef(0)
+  const supersedeReads = (): number => ++readSeq.current
+  const refreshProjects = (): void => {
+    const seq = supersedeReads()
+    void fetchGitlabProjects()
+      .then((rows) => {
+        if (seq === readSeq.current) setProjects(rows)
+      })
+      .catch(() => undefined)
+  }
   // The bound-project set is part of the key, so adding or removing a project makes the
   // entry recorded under the old set unreachable and no action site has to invalidate it.
   const signature = [...projects.map((project) => project.id)].sort().join(',')
@@ -236,9 +251,7 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
       const settling = wasConverging.current && !latest.converging
       wasConverging.current = latest.converging
       if (!latest.converging && !settling) return
-      void fetchGitlabProjects()
-        .then((rows) => setProjects(rows))
-        .catch(() => undefined)
+      refreshProjects()
     },
     shouldRetryOnError: false
   })
@@ -289,6 +302,7 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
     setErr(null)
     try {
       const updated = await transferGitlabProject(binding.id)
+      supersedeReads()
       setProjects((current) => current.map((p) => (p.id === updated.id ? updated : p)))
       // The takeover re-runs convergence under the new account, so the roster moves with it.
       await rereadBots()
@@ -310,6 +324,7 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
     setErr(null)
     try {
       const updated = await repairGitlabProject(binding.id)
+      supersedeReads()
       setProjects((current) => current.map((p) => (p.id === updated.id ? updated : p)))
       // Repair can create or heal an account and its membership while the project set stays put,
       // so the roster under this unchanged key is stale until it is re-read.
@@ -327,6 +342,7 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
     setErr(null)
     try {
       const outcome = await deleteGitlabProject(binding.id)
+      supersedeReads()
       // Incomplete external cleanup keeps the row, in its reported state — GitLab still holds something.
       if (outcome.removed) {
         setProjects((current) => current.filter((p) => p.id !== binding.id))
