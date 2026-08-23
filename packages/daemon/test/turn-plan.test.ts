@@ -164,11 +164,23 @@ describe('buildTurnPlan', () => {
   })
 
   it('activates a github reply batch only when it is sealed and holds more than one item', () => {
-    const batch = (over: Record<string, unknown>) => entryFor({ hookContext: { githubReviewBatch: over } as never })
+    const batch = (over: Record<string, unknown>) =>
+      entryFor({ hookContext: { github: { subjectKind: 'pull_request' }, githubReviewBatch: over } as never })
     expect(planFor({ entry: batch({ sealed: true, items: [1, 2] }) }).githubReplyBatchActive).toBe(true)
     expect(planFor({ entry: batch({ sealed: true, items: [1] }) }).githubReplyBatchActive).toBe(false)
     expect(planFor({ entry: batch({ sealed: false, items: [1, 2] }) }).githubReplyBatchActive).toBe(false)
     expect(planFor().githubReplyBatchActive).toBe(false)
+  })
+
+  it('opens the batched reply tool for no provider that publishes its batch as one ordinary reply', () => {
+    // A GitLab note batch is answered by the single daemon-owned note, so the GitHub tool stays closed.
+    const gitlab = entryFor({
+      hookContext: {
+        gitlab: { target: { kind: 'merge_request', iid: 7 } },
+        githubReviewBatch: { sealed: true, items: [1, 2] }
+      } as never
+    })
+    expect(planFor({ entry: gitlab }).githubReplyBatchActive).toBe(false)
   })
 
   it('keys the transcript channel by channel plus transport scope', () => {

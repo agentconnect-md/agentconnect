@@ -325,6 +325,26 @@ under that Agent's `worktrees` directory; concurrent pull requests therefore
 use different working directories while later events for one pull request
 reuse its directory.
 
+### Revision Admission
+
+Deliveries for one pull request contend for the next generation rather than each
+queueing its own turn. Within one (hook, repository, pull-request) lane the
+newest relay-fired head supersedes queued turns and preempts an active turn on an
+older head with the normalized `superseded` outcome. A re-request names the head
+already current, so a burst of them collapses onto the newest delivery and
+re-runs that head once. Inline comments belonging to one submitted review
+coalesce into a single batched turn, sealed by the first of three gates — a
+maximum comment count, a quiet window since the last comment, and a maximum wait
+since the batch opened — and answered through the daemon-owned batched reply
+tool, which takes over publication from the ordinary reply.
+
+That admission plan is a provider-neutral seam with two implementers. Each code
+host supplies its own lane identity, revision and re-run event sets, comment
+batch stream and prompt, and whether a sealed batch publishes each item itself;
+the daemon core consults the seam and never a provider module. GitLab's
+implementation, and the two places the hosts deliberately differ, are in
+[gitlab-com-integration.md](gitlab-com-integration.md) Section 12.3.
+
 ### Prompt Boundary
 
 GitHub content is untrusted external input. The daemon wraps model-visible

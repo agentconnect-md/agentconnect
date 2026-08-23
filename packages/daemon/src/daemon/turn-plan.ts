@@ -15,6 +15,7 @@ import type { NormalizedMessage } from '../messages/normalized.js'
 import { slackStatusOptions } from '../platforms/slack/turn-output.js'
 import { turnChromeFor } from '../platforms/turn-chrome.js'
 import { TurnOutputRegistry, type TurnOutputContext, type TurnOutputSurface } from '../platforms/turn-output.js'
+import { batchPublishesItems } from '../codehost/hook-admission.js'
 import { transcriptChannelKey } from '../store/local-store.js'
 import { AGENT_CALL_HOP_LIMIT_NOTICE } from './constants.js'
 import { loopGuardScope } from './loop-guard-scope.js'
@@ -172,7 +173,9 @@ export function buildTurnPlan(input: TurnPlanInput): TurnPlan {
     codexUsageIsPerPrompt: input.codexUsageIsPerPrompt,
     githubTurnEligible:
       githubReply !== undefined && entry.posterPublishState !== 'in_flight' && entry.posterPublishState !== 'settled',
-    githubReplyBatchActive: !!(githubReplyBatch?.sealed && githubReplyBatch.items.length > 1),
+    // Only a provider whose sealed batch publishes each item itself opens the batched-reply tool.
+    githubReplyBatchActive:
+      !!(githubReplyBatch?.sealed && githubReplyBatch.items.length > 1) && batchPublishesItems(hookContext),
     deliveryBinding: {
       agentId,
       platform: msg.platform,

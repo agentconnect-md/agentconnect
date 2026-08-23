@@ -18,7 +18,6 @@ import {
 } from '@agentconnect.md/protocol'
 import type { GithubReviewEffect, GithubReviewEvent, GithubReviewTarget, GithubReviewVerdict } from './review.js'
 import type { SessionWorktreeRemoval } from '../workspace/workspace-manager.js'
-import type { NormalizedMessage } from '../messages/normalized.js'
 import type { QueueEntry } from '../daemon/turn-types.js'
 import type { GitlabPublishFailure } from '../gitlab/poster.js'
 
@@ -82,11 +81,13 @@ export interface GithubReviewBatchItem {
   deliveryKey: string
   firedAt: string
   text: string
-  reply: GithubReplyTarget & { reviewThreadRootCommentId: string }
+  /** The per-item reply target, present only where the provider publishes each item itself. */
+  reply?: GithubReplyTarget & { reviewThreadRootCommentId: string }
   publishState?: 'not_started' | 'in_flight' | 'settled'
   publishedComment?: GithubPublishedComment
 }
 
+/** One code host's coalesced comment deliveries; how a sealed batch publishes is the admission seam's to say. */
 export interface GithubReviewBatch {
   reviewId: string
   openedAt: number
@@ -114,9 +115,11 @@ function notePublishFailureOf(value: unknown): NotePublishFailure | undefined {
 /** Terminal hook reason for a cleanly finished turn, undefined ⇒ success: an unfinished multi-reply review batch, else a final that never became a note (14.1 — a silently absent note must never read as a successful run). */
 export function hookOutcomeFailure(
   batch: GithubReviewBatch | undefined,
+  perItemPublication: boolean,
   notePublishFailure: unknown
 ): string | undefined {
-  if (batch && batch.items.length > 1) {
+  // The seam's answer for this provider: a batch answered by one ordinary reply owes no per-item receipts.
+  if (perItemPublication && batch && batch.items.length > 1) {
     if (batch.items.some((item) => item.publishState === 'in_flight')) return 'review_batch_publish_ambiguous'
     if (batch.items.some((item) => item.publishState !== 'settled')) return 'review_batch_replies_missing'
   }
@@ -227,131 +230,6 @@ export function githubDeletedHookEvent(hook: Pick<HookDispatchContext, 'event'> 
   return hook?.event !== undefined && GITHUB_DELETED_HOOK_EVENTS.has(hook.event)
 }
 
-export interface GithubHookCoordinates {
-  agentId: string
-  platform: string
-  channel: string
-  integrationId?: string
-}
-
-export type GithubCoordinatedHook = Pick<HookDispatchContext, 'hookId' | 'agentId' | 'event' | 'github'>
-
-export function githubHookCoordinates(
-  agentId: string,
-  msg: Pick<NormalizedMessage, 'platform' | 'channel'>,
-  integrationId?: string
-): GithubHookCoordinates {
-  return {
-    agentId,
-    platform: msg.platform,
-    channel: msg.channel,
-    ...(integrationId !== undefined ? { integrationId } : {})
-  }
-}
-
-export function githubPullRequestLane(
-  hook: GithubCoordinatedHook | undefined,
-  coords: GithubHookCoordinates
-): string | undefined {
-  const github = hook?.github
-  if (hook?.agentId !== coords.agentId || github?.subjectKind !== 'pull_request' || github.pullNumber === undefined)
-    return undefined
-  return JSON.stringify([
-    hook.hookId,
-    hook.agentId,
-    github.repoId,
-    github.pullNumber,
-    coords.platform,
-    coords.channel,
-    coords.integrationId ?? null
-  ])
-}
-
-/** Deliveries that establish a new head. */
-const GITHUB_PULL_REVISION_EVENTS = new Set(['pull_request:opened', 'pull_request:synchronize'])
-
-/** Deliveries that re-run the head already current; a burst of them is one review asked for repeatedly. */
-const GITHUB_PULL_RERUN_EVENTS = new Set([
-  'pull_request:review_requested',
-  'check_run:rerequested',
-  'check_suite:rerequested',
-  'check_run:requested_action'
-])
-
-/** One lane's contest for the next generation; a re-run is `pinned` to its own head and contests that alone. */
-export interface GithubRevisionStream {
-  lane: string
-  headSha: string
-  pinned: boolean
-}
-
-export function githubPullRevisionStream(
-  hook: GithubCoordinatedHook | undefined,
-  coords: GithubHookCoordinates
-): GithubRevisionStream | undefined {
-  const lane = githubPullRequestLane(hook, coords)
-  const headSha = hook?.github?.headSha
-  if (!lane || !headSha) return undefined
-  const event = hook?.event ?? ''
-  if (GITHUB_PULL_REVISION_EVENTS.has(event)) return { lane, headSha, pinned: false }
-  if (GITHUB_PULL_RERUN_EVENTS.has(event)) return { lane, headSha, pinned: true }
-  return undefined
-}
-
-/** Contenders share a lane, and share a head whenever either only re-runs its own. */
-export function githubRevisionStreamsContest(a: GithubRevisionStream, b: GithubRevisionStream): boolean {
-  return a.lane === b.lane && (!(a.pinned || b.pinned) || a.headSha === b.headSha)
-}
-
-/** A re-run means re-run: only the winner's generation is reported, so an older one is dead work. */
-export function githubRerunsCurrentHead(hook: Pick<HookDispatchContext, 'event'> | undefined): boolean {
-  return GITHUB_PULL_RERUN_EVENTS.has(hook?.event ?? '')
-}
-
-export function githubReviewBatchStream(
-  hook: GithubCoordinatedHook | undefined,
-  coords: GithubHookCoordinates
-): string | undefined {
-  const github = hook?.github
-  const lane = githubPullRequestLane(hook, coords)
-  if (
-    !github ||
-    !lane ||
-    hook?.event !== 'pull_request_review_comment:created' ||
-    github.pullRequestReviewId === undefined ||
-    github.reviewCommentId === undefined ||
-    github.reviewThreadRootCommentId === undefined ||
-    github.reviewCommentId !== github.reviewThreadRootCommentId
-  ) {
-    return undefined
-  }
-  return JSON.stringify(['review', lane, github.pullRequestReviewId])
-}
-
-export function renderGithubReviewBatchPrompt(batch: GithubReviewBatch): string {
-  const items = [...batch.items].sort(
-    (a, b) => a.firedAt.localeCompare(b.firedAt) || a.deliveryKey.localeCompare(b.deliveryKey)
-  )
-  return [
-    `GitHub submitted-review inline comment batch (review ${batch.reviewId})`,
-    `Authorized thread roots: ${items.map((item) => item.reply.reviewThreadRootCommentId).join(', ')}`,
-    '',
-    ...items.flatMap((item, index) => [
-      `===== REVIEW THREAD ${index + 1} · ROOT ${item.reply.reviewThreadRootCommentId} =====`,
-      item.text,
-      `===== END REVIEW THREAD ${index + 1} =====`,
-      ''
-    ]),
-    'Inspect shared PR context once, then call `replyGithubReviewThreads` exactly once with one complete answer for every authorized root above. Do not omit, combine, or add roots. The tool owns all public replies; keep the final answer transcript-only.'
-  ].join('\n')
-}
-
-export function compareGithubPullRevisionRecency(a: HookDispatchContext, b: HookDispatchContext): number {
-  if (a.firedAt !== b.firedAt) return a.firedAt < b.firedAt ? -1 : 1
-  if (a.deliveryKey === b.deliveryKey) return 0
-  return a.deliveryKey < b.deliveryKey ? -1 : 1
-}
-
 /** Relay-authored lifecycle events that remove the isolated checkout without
  * opening a model turn. Pair the normalized event with trusted subject metadata
  * so an old or malformed frame cannot turn an ordinary hook into maintenance. */
@@ -451,10 +329,6 @@ export interface ActiveGithubReplyBatchMeta {
   called: boolean
 }
 
-export const GITHUB_REVIEW_BATCH_QUIET_MS = 5_000
-export const GITHUB_REVIEW_BATCH_MAX_WAIT_MS = 30_000
-export const GITHUB_REVIEW_BATCH_MAX_COMMENTS = 25
-
 /** Review-comment follow-ups already belong to one existing inline thread.
  * They may receive exactly one daemon-owned inline reply, but must never gain
  * authority to create a second, top-level formal PR review. */
@@ -497,17 +371,6 @@ export function authorizedReviewTarget(
     attemptId,
     ...(recovering ? { recovering: true } : {})
   }
-}
-
-export interface GithubQueueCandidate {
-  key: string
-  entry: QueueEntry
-  state: 'active' | 'queued' | 'incoming'
-}
-
-export interface GithubRevisionAdmissionPlan {
-  winner: GithubQueueCandidate
-  superseded: GithubQueueCandidate[]
 }
 
 /** The narrow persistence ownership needed to terminalize a hook delivery.

@@ -988,6 +988,106 @@ describe('Daemon rd/msg hook fires', () => {
     15_000
   )
 
+  it('seals a batch only after a coalesce already in flight lands in it', async () => {
+    // The durable coalesce awaits mid-flight. If the seal could run in that window it would build
+    // the prompt without the follower while the follower was reported as coalesced into it.
+    const clock = new FakeClock(Date.parse('2026-08-12T00:00:00.000Z'))
+    let onUpdate!: (sid: string, update: unknown) => void
+    const prompts: string[] = []
+    const host = {
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => 'acp-review-race-1'),
+      modelOptions: vi.fn(() => null),
+      hasSession: vi.fn(() => true),
+      prompt: vi.fn(async (sid: string, blocks: unknown) => {
+        prompts.push(JSON.stringify(blocks))
+        onUpdate(sid, {
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: 'Batch replies posted.' }
+        })
+        return { stopReason: 'end_turn' }
+      }),
+      cancel: vi.fn(async () => {}),
+      stop: vi.fn(async () => {})
+    }
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      clock,
+      hostFactory: (_agent, cb) => {
+        onUpdate = cb
+        return host as never
+      }
+    })
+    await daemon.start()
+    const cp = fakeCpClient()
+    ;(daemon as never as { cpClient: unknown }).cpClient = cp
+    ;(daemon as any).githubReviews.makeGithubReviewBatchReplies = undefined
+    ;(daemon as any).githubReviews.replyGithubReviewThreads = vi.fn(async () => ({ replies: [] }))
+
+    // Hold the durable coalesce open so the seal deadline elapses while it is still in flight.
+    const store = (daemon as any).store
+    const realCoalesce = store.coalesceHookInbox.bind(store)
+    let openCoalesce!: () => void
+    const coalesceReached = new Promise<void>((reachedResolve) => {
+      const gate = new Promise<void>((releaseResolve) => (openCoalesce = releaseResolve))
+      store.coalesceHookInbox = async (args: unknown) => {
+        reachedResolve()
+        await gate
+        return realCoalesce(args)
+      }
+    })
+
+    const reviewComment = (deliveryKey: string, commentId: string, rootId: string, body: string): RdMsgHook =>
+      fire({
+        sessionKey: 'acme/infra#42',
+        msgId: `${HOOK_ID}:${deliveryKey}`,
+        deliveryKey,
+        firedAt: `2026-08-12T00:00:0${deliveryKey === 'root-1' ? '0' : '1'}.000Z`,
+        event: 'pull_request_review_comment:created',
+        github: {
+          repoId: '123',
+          repoFullName: 'acme/infra',
+          sourceInstallationId: '456',
+          subjectKind: 'pull_request',
+          pullNumber: 42,
+          pullRequestReviewId: '900',
+          reviewCommentId: commentId,
+          reviewThreadRootCommentId: rootId
+        },
+        context: {
+          source: 'github',
+          event: 'pull_request_review_comment',
+          action: 'created',
+          repo: 'acme/infra',
+          number: 42,
+          senderLogin: 'reviewer',
+          bodyExcerpt: body,
+          truncated: false
+        }
+      })
+
+    await expect(
+      (daemon as any).handleRelayMsg(reviewComment('root-1', '101', '101', 'First finding.'), () => {})
+    ).resolves.toMatchObject({ accepted: true })
+    await vi.waitFor(() => expect((daemon as any).activeGateEntries.size).toBe(1), WAIT)
+
+    const second = (daemon as any).handleRelayMsg(reviewComment('root-2', '102', '102', 'Second finding.'), () => {})
+    await coalesceReached
+    // The seal is now due, but the coalesce owns the batch until it commits.
+    clock.advance(5_000)
+    await Promise.resolve()
+    expect(host.prompt).not.toHaveBeenCalled()
+
+    openCoalesce()
+    await expect(second).resolves.toMatchObject({ accepted: true })
+    await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledOnce(), WAIT)
+    expect(prompts[0]).toContain('First finding.')
+    expect(prompts[0]).toContain('Second finding.')
+    expect(prompts[0]).toContain('Authorized thread roots: 101, 102')
+    await daemon.stop()
+  }, 15_000)
+
   it('grants formal-review authority only when an issue_comment explicitly requests review', async () => {
     const daemon = new Daemon({
       slackAppFactory: fakeSlackAppFactory(),
