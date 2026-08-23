@@ -3367,6 +3367,10 @@ export interface GitlabProjectBindingRepo {
       stateReason: string | null
     }>
   ): Promise<GitlabProjectBindingRecord | null>
+  /** Record that a contended pass still owes convergence — but ONLY while the
+   *  claim is still provisionable. A repair that loses to cleanup must not arm
+   *  an obligation nothing can satisfy; one statement, so either order is safe. */
+  markConvergeOwed(orgId: string, bindingId: string, at: Date): Promise<void>
   /** Bindings a contended convergence still owes work, oldest first (§10.2). */
   listConvergeOwed(before: Date, limit: number): Promise<GitlabProjectBindingRecord[]>
   /** Purge fence: every rotation/revocation/disconnect bumps it (§7.4/§19.4). */

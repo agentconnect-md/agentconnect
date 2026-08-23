@@ -524,6 +524,21 @@ export class PgGitlabProjectBindingRepo implements GitlabProjectBindingRepo {
     })
   }
 
+  async markConvergeOwed(orgId: string, bindingId: string, at: Date): Promise<void> {
+    // One statement: the EXISTS is evaluated with the write, so a cleanup that
+    // commits first simply leaves nothing to mark, and one that commits after
+    // clears the marker in its own transaction.
+    await this.prisma.$executeRaw`
+      UPDATE "gitlab_project_binding" AS b
+         SET "convergeOwedAt" = ${at}
+       WHERE b."id" = ${bindingId}::uuid AND b."orgId" = ${orgId}
+         AND EXISTS (
+           SELECT 1 FROM "code_host_repository_claim" AS c
+            WHERE c."provider" = 'gitlab' AND c."externalId" = b."projectId"
+              AND c."bindingRef" = b."id" AND c."state" IN ('provisioning', 'active')
+         )`
+  }
+
   async listConvergeOwed(before: Date, limit: number): Promise<GitlabProjectBindingRecord[]> {
     const rows = await this.prisma.gitlabProjectBinding.findMany({
       orderBy: { convergeOwedAt: 'asc' },

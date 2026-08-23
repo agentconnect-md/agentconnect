@@ -205,7 +205,7 @@ export class GitlabProvisioner {
     // AWAITED: an obligation nobody waited for is not durable, and this write is
     // the whole reason a restart can still find the work.
     await this.deps.bindings
-      .update(orgId, bindingId, { convergeOwedAt: new Date(this.deps.clock.now()) })
+      .markConvergeOwed(orgId, bindingId, new Date(this.deps.clock.now()))
       .catch((err) => this.deps.log?.warn({ err, bindingId }, 'gitlab converge obligation not recorded'))
     const key = `${orgId}:${projectId}`
     if (this.pendingFollowUps.has(key)) return

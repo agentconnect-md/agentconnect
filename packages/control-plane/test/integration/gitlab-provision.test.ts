@@ -1076,6 +1076,13 @@ describe('GitlabProvisioner (§10.2) — per-agent identity', () => {
     expect((await h.provisioner.disconnect(DEFAULT_ORG_ID, h.binding.id)).removed).toBe(false)
     expect((await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))!.state).toBe('cleanup_pending')
     expect(await h.bindings.listConvergeOwed(new Date(Date.now() + 1_000), 50)).toHaveLength(0)
+
+    // The inverse order too: a repair that loses to cleanup must not arm an
+    // obligation afterwards, or the console would report converging forever.
+    await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
+    expect((await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))!.convergeOwedAt).toBeNull()
+    await h.bindings.markConvergeOwed(DEFAULT_ORG_ID, h.binding.id, new Date())
+    expect((await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))!.convergeOwedAt).toBeNull()
   })
 
   it('two concurrent provisions: exactly one runs, the other observes busy', async () => {
