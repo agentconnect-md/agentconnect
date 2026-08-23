@@ -1,12 +1,11 @@
 /**
- * Thin GitLab.com REST wrapper — the only spot the CP talks to gitlab.com (the
- * pattern set by `github/api.ts`). `fetch` is injectable so tests stub the API
- * without network; timeouts are short; every error is typed.
+ * Thin GitLab REST wrapper — the only spot the CP talks to a GitLab instance
+ * (the pattern set by `github/api.ts`). Every call takes the deployment's
+ * {@link GitlabApiClient}, which carries the normalized base URL and the
+ * injectable `fetch` tests stub with; timeouts are short; every error is typed.
  *
  * NEVER log request headers, token parameters, or token-bearing response bodies.
  */
-import { GITLAB_HOST } from './config.js'
-
 export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>
 
 export type GitlabErrorCode = 'AUTH_REQUIRED' | 'RATE_LIMITED' | 'NOT_FOUND' | 'INTERNAL'
@@ -24,8 +23,36 @@ export class GitlabApiError extends Error {
   }
 }
 
-const API_BASE = `${GITLAB_HOST}/api/v4`
 const TIMEOUT_MS = 10_000
+
+/** The one GitLab endpoint this deployment talks to (§24.1): a normalized base
+ *  URL bound to one `fetch`, built once in the container. There is no
+ *  module-level host, so nothing can fall back to GitLab.com. */
+export class GitlabApiClient {
+  private readonly fetchImpl: FetchLike
+
+  constructor(
+    /** Normalized by `normalizeGitlabBaseUrl`: no trailing slash, a path prefix kept. */
+    readonly baseUrl: string,
+    fetchImpl?: FetchLike
+  ) {
+    this.fetchImpl = fetchImpl ?? (fetch as FetchLike)
+  }
+
+  /** Concatenation, never URL resolution: an absolute path would drop a base path prefix. */
+  apiUrl(path: string): string {
+    return `${this.baseUrl}/api/v4${path}`
+  }
+
+  /** An instance-root path — the OAuth endpoints, which do not sit under `/api/v4`. */
+  rootUrl(path: string): string {
+    return `${this.baseUrl}${path}`
+  }
+
+  fetch(url: string, init?: RequestInit): Promise<Response> {
+    return this.fetchImpl(url, init)
+  }
+}
 
 function codeFor(status: number): GitlabErrorCode {
   if (status === 401 || status === 403) return 'AUTH_REQUIRED'
@@ -34,33 +61,54 @@ function codeFor(status: number): GitlabErrorCode {
   return 'INTERNAL'
 }
 
-export interface GitlabRequestOpts {
+interface GitlabDispatchOpts {
   method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
-  /** OAuth or PAT bearer. Pass null only for the token endpoint itself. */
+  /** OAuth or PAT bearer. Pass null only for the OAuth endpoints themselves. */
   auth: string | null
+  /** JSON body; mutually exclusive with `form` and `multipart`. */
   body?: unknown
-  fetchImpl?: FetchLike
-  baseUrl?: string
+  form?: Record<string, string>
+  multipart?: FormData
+  /** Compose against the instance root instead of `/api/v4`. */
+  root?: boolean
+  /** Below the 10s default only — a paged walk shrinks it to fit its budget. */
+  timeoutMs?: number
+  client: GitlabApiClient
 }
 
-/** One GitLab REST call → parsed JSON. Throws `GitlabApiError` on any non-2xx. */
-export async function gitlabRequest<T>(path: string, opts: GitlabRequestOpts): Promise<T> {
-  const fetchImpl = opts.fetchImpl ?? (fetch as FetchLike)
-  let res: Response
+/** The ONE place a GitLab URL is composed and a request is dispatched. */
+async function gitlabFetch(path: string, opts: GitlabDispatchOpts): Promise<Response> {
+  const url = opts.root ? opts.client.rootUrl(path) : opts.client.apiUrl(path)
+  const headers: Record<string, string> = { accept: 'application/json' }
+  if (opts.auth) headers.authorization = `Bearer ${opts.auth}`
+  let body: RequestInit['body']
+  if (opts.form !== undefined) {
+    headers['content-type'] = 'application/x-www-form-urlencoded'
+    body = new URLSearchParams(opts.form).toString()
+  } else if (opts.multipart !== undefined) {
+    body = opts.multipart
+  } else if (opts.body !== undefined) {
+    headers['content-type'] = 'application/json'
+    body = JSON.stringify(opts.body)
+  }
   try {
-    res = await fetchImpl(`${opts.baseUrl ?? API_BASE}${path}`, {
+    return await opts.client.fetch(url, {
       method: opts.method ?? 'GET',
-      headers: {
-        accept: 'application/json',
-        ...(opts.auth ? { authorization: `Bearer ${opts.auth}` } : {}),
-        ...(opts.body !== undefined ? { 'content-type': 'application/json' } : {})
-      },
-      body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
-      signal: AbortSignal.timeout(TIMEOUT_MS)
+      headers,
+      ...(body !== undefined ? { body } : {}),
+      signal: AbortSignal.timeout(opts.timeoutMs ?? TIMEOUT_MS)
     })
   } catch (e) {
     throw new GitlabApiError(`gitlab unreachable: ${(e as Error).message}`, 0, 'INTERNAL', true)
   }
+}
+
+/** The JSON REST subset: no form, multipart, root path, or custom timeout. */
+type GitlabRequestOpts = Omit<GitlabDispatchOpts, 'form' | 'multipart' | 'root' | 'timeoutMs'>
+
+/** One GitLab REST call → parsed JSON. Throws `GitlabApiError` on any non-2xx. */
+async function gitlabRequest<T>(path: string, opts: GitlabRequestOpts): Promise<T> {
+  const res = await gitlabFetch(path, opts)
   if (res.ok) {
     const text = await res.text()
     if (!text) return undefined as T
@@ -95,24 +143,19 @@ const LISTING_BUDGET_MS = 60_000
 /** EVERY row of a paginated GET, following GitLab's `x-next-page` header.
  *  A caller's predicate is sound only over a complete listing (§7.2), so this
  *  never returns a partial one: a bound or a stuck header raises instead. */
-async function gitlabPagedGet<T>(path: string, opts: { auth: string; fetchImpl?: FetchLike }): Promise<T[]> {
-  const fetchImpl = opts.fetchImpl ?? (fetch as FetchLike)
+async function gitlabPagedGet<T>(path: string, opts: { auth: string; client: GitlabApiClient }): Promise<T[]> {
   const deadline = Date.now() + LISTING_BUDGET_MS
   const rows: T[] = []
   let page = 1
   for (let requests = 0; requests < MAX_PAGES; requests++) {
     const budget = deadline - Date.now()
     if (budget <= 0) throw new GitlabApiError('gitlab listing exceeded its time budget', 0, 'INTERNAL', true)
-    const url = `${API_BASE}${path}${path.includes('?') ? '&' : '?'}per_page=${PAGE_SIZE}&page=${page}`
-    let res: Response
-    try {
-      res = await fetchImpl(url, {
-        headers: { accept: 'application/json', authorization: `Bearer ${opts.auth}` },
-        signal: AbortSignal.timeout(Math.min(TIMEOUT_MS, budget))
-      })
-    } catch (e) {
-      throw new GitlabApiError(`gitlab unreachable: ${(e as Error).message}`, 0, 'INTERNAL', true)
-    }
+    const query = `${path.includes('?') ? '&' : '?'}per_page=${PAGE_SIZE}&page=${page}`
+    const res = await gitlabFetch(`${path}${query}`, {
+      auth: opts.auth,
+      timeoutMs: Math.min(TIMEOUT_MS, budget),
+      client: opts.client
+    })
     if (!res.ok) throw await gitlabError(res)
     const batch = (await res.json()) as T[]
     if (!Array.isArray(batch)) throw new GitlabApiError('gitlab listing is not an array', 0, 'INTERNAL', false)
@@ -144,7 +187,7 @@ export async function gitlabExchangeCode(
     verifier: string
     redirectUri: string
   },
-  fetchImpl?: FetchLike
+  client: GitlabApiClient
 ): Promise<GitlabTokenGrant> {
   return gitlabTokenCall(
     {
@@ -155,14 +198,14 @@ export async function gitlabExchangeCode(
       code_verifier: args.verifier,
       redirect_uri: args.redirectUri
     },
-    fetchImpl
+    client
   )
 }
 
 /** One refresh. Rotates BOTH tokens — the caller owns the single-writer/CAS discipline (§9.3). */
 export async function gitlabRefreshToken(
   args: { clientId: string; clientSecret: string; refreshToken: string; redirectUri: string },
-  fetchImpl?: FetchLike
+  client: GitlabApiClient
 ): Promise<GitlabTokenGrant> {
   return gitlabTokenCall(
     {
@@ -172,23 +215,40 @@ export async function gitlabRefreshToken(
       refresh_token: args.refreshToken,
       redirect_uri: args.redirectUri
     },
-    fetchImpl
+    client
   )
 }
 
-async function gitlabTokenCall(params: Record<string, string>, fetchImpl?: FetchLike): Promise<GitlabTokenGrant> {
-  const impl = fetchImpl ?? (fetch as FetchLike)
-  let res: Response
-  try {
-    res = await impl(`${GITLAB_HOST}/oauth/token`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' },
-      body: new URLSearchParams(params).toString(),
-      signal: AbortSignal.timeout(TIMEOUT_MS)
-    })
-  } catch (e) {
-    throw new GitlabApiError(`gitlab token endpoint unreachable: ${(e as Error).message}`, 0, 'INTERNAL', true)
-  }
+/** Grant revoke on disconnect (§9.5). A provider refusal is ignored — local
+ *  removal is the authority — so only a transport failure reaches the caller. */
+export async function gitlabRevokeToken(
+  args: { clientId: string; clientSecret: string; token: string },
+  client: GitlabApiClient
+): Promise<void> {
+  await gitlabFetch('/oauth/revoke', {
+    method: 'POST',
+    auth: null,
+    root: true,
+    form: { client_id: args.clientId, client_secret: args.clientSecret, token: args.token },
+    client
+  })
+}
+
+/** The authorize URL a browser is sent to (§9.1) — the instance root, not `/api/v4`. */
+export function gitlabAuthorizeUrl(client: GitlabApiClient, params: Record<string, string>): string {
+  const url = new URL(client.rootUrl('/oauth/authorize'))
+  for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value)
+  return url.toString()
+}
+
+async function gitlabTokenCall(params: Record<string, string>, client: GitlabApiClient): Promise<GitlabTokenGrant> {
+  const res = await gitlabFetch('/oauth/token', {
+    method: 'POST',
+    auth: null,
+    root: true,
+    form: params,
+    client
+  })
   if (!res.ok) {
     // Deliberately status-only: an OAuth error body can echo request parameters.
     throw new GitlabApiError(`gitlab token endpoint ${res.status}`, res.status, codeFor(res.status), res.status >= 500)
@@ -200,14 +260,14 @@ async function gitlabTokenCall(params: Record<string, string>, fetchImpl?: Fetch
   return grant
 }
 
-/** The authenticated GitLab.com user (`GET /user`) — administration identity facts. */
+/** The authenticated GitLab user (`GET /user`) — administration identity facts. */
 export interface GitlabCurrentUser {
   id: number
   username: string
 }
 
-export async function gitlabCurrentUser(accessToken: string, fetchImpl?: FetchLike): Promise<GitlabCurrentUser> {
-  const user = await gitlabRequest<GitlabCurrentUser>('/user', { auth: accessToken, fetchImpl })
+export async function gitlabCurrentUser(accessToken: string, client: GitlabApiClient): Promise<GitlabCurrentUser> {
+  const user = await gitlabRequest<GitlabCurrentUser>('/user', { auth: accessToken, client })
   if (typeof user?.id !== 'number' || typeof user.username !== 'string') {
     throw new GitlabApiError('gitlab /user response is not a user', 0, 'INTERNAL', false)
   }
@@ -227,7 +287,7 @@ export interface GitlabProjectSummary {
 export async function gitlabListProjects(
   accessToken: string,
   opts: { search?: string; page?: number; perPage?: number },
-  fetchImpl?: FetchLike
+  client: GitlabApiClient
 ): Promise<{ projects: GitlabProjectSummary[]; nextPage: number | null }> {
   const params = new URLSearchParams({
     membership: 'true',
@@ -236,16 +296,7 @@ export async function gitlabListProjects(
     page: String(opts.page ?? 1)
   })
   if (opts.search) params.set('search', opts.search)
-  const impl = fetchImpl ?? (fetch as FetchLike)
-  let res: Response
-  try {
-    res = await impl(`${GITLAB_HOST}/api/v4/projects?${params.toString()}`, {
-      headers: { accept: 'application/json', authorization: `Bearer ${accessToken}` },
-      signal: AbortSignal.timeout(TIMEOUT_MS)
-    })
-  } catch (e) {
-    throw new GitlabApiError(`gitlab unreachable: ${(e as Error).message}`, 0, 'INTERNAL', true)
-  }
+  const res = await gitlabFetch(`/projects?${params.toString()}`, { auth: accessToken, client })
   if (!res.ok) {
     throw new GitlabApiError(`gitlab ${res.status}`, res.status, codeFor(res.status), res.status >= 500)
   }
@@ -258,10 +309,10 @@ export async function gitlabListProjects(
 export async function gitlabProject(
   accessToken: string,
   projectId: bigint,
-  fetchImpl?: FetchLike
+  client: GitlabApiClient
 ): Promise<GitlabProjectSummary | null> {
   try {
-    return await gitlabRequest<GitlabProjectSummary>(`/projects/${projectId}`, { auth: accessToken, fetchImpl })
+    return await gitlabRequest<GitlabProjectSummary>(`/projects/${projectId}`, { auth: accessToken, client })
   } catch (e) {
     if (e instanceof GitlabApiError && e.code === 'NOT_FOUND') return null
     throw e
@@ -299,12 +350,12 @@ export async function gitlabEffectiveMembership(
   accessToken: string,
   projectId: bigint,
   userId: bigint,
-  fetchImpl?: FetchLike
+  client: GitlabApiClient
 ): Promise<GitlabEffectiveMembership | null> {
   try {
     return await gitlabRequest<GitlabEffectiveMembership>(`/projects/${projectId}/members/all/${userId}`, {
       auth: accessToken,
-      fetchImpl
+      client
     })
   } catch (e) {
     if (e instanceof GitlabApiError && e.code === 'NOT_FOUND') return null
@@ -348,13 +399,13 @@ export interface GitlabProjectWithNamespace extends GitlabProjectSummary {
 export async function gitlabRootNamespace(
   accessToken: string,
   start: GitlabNamespaceRef,
-  fetchImpl?: FetchLike
+  client: GitlabApiClient
 ): Promise<GitlabNamespaceRef> {
   let current = start
   for (let depth = 0; depth < 20 && current.parent_id !== null; depth++) {
     current = await gitlabRequest<GitlabNamespaceRef>(`/namespaces/${current.parent_id}`, {
       auth: accessToken,
-      fetchImpl
+      client
     })
   }
   return current
@@ -428,9 +479,9 @@ export function gitlabAgentAccountDisplayName(agentName: string, username: strin
 export async function gitlabListServiceAccounts(
   accessToken: string,
   groupId: number,
-  fetchImpl?: FetchLike
+  client: GitlabApiClient
 ): Promise<GitlabServiceAccount[]> {
-  return gitlabPagedGet<GitlabServiceAccount>(`/groups/${groupId}/service_accounts`, { auth: accessToken, fetchImpl })
+  return gitlabPagedGet<GitlabServiceAccount>(`/groups/${groupId}/service_accounts`, { auth: accessToken, client })
 }
 
 /** Find the marked account among the top-level group's service accounts. */
@@ -438,9 +489,9 @@ export async function gitlabFindServiceAccount(
   accessToken: string,
   groupId: number,
   username: string,
-  fetchImpl?: FetchLike
+  client: GitlabApiClient
 ): Promise<GitlabServiceAccount | null> {
-  const accounts = await gitlabListServiceAccounts(accessToken, groupId, fetchImpl)
+  const accounts = await gitlabListServiceAccounts(accessToken, groupId, client)
   return accounts.find((account) => account.username === username) ?? null
 }
 
@@ -448,13 +499,13 @@ export async function gitlabCreateServiceAccount(
   accessToken: string,
   groupId: number,
   input: { username: string; name: string },
-  fetchImpl?: FetchLike
+  client: GitlabApiClient
 ): Promise<GitlabServiceAccount> {
   return gitlabRequest<GitlabServiceAccount>(`/groups/${groupId}/service_accounts`, {
     method: 'POST',
     auth: accessToken,
     body: { username: input.username, name: input.name },
-    fetchImpl
+    client
   })
 }
 
@@ -465,13 +516,13 @@ export async function gitlabUpdateServiceAccount(
   groupId: number,
   userId: bigint,
   input: { name?: string; username?: string },
-  fetchImpl?: FetchLike
+  client: GitlabApiClient
 ): Promise<GitlabServiceAccount> {
   return gitlabRequest<GitlabServiceAccount>(`/groups/${groupId}/service_accounts/${userId}`, {
     method: 'PATCH',
     auth: accessToken,
     body: input,
-    fetchImpl
+    client
   })
 }
 
@@ -479,12 +530,12 @@ export async function gitlabDeleteServiceAccount(
   accessToken: string,
   groupId: number,
   userId: bigint,
-  fetchImpl?: FetchLike
+  client: GitlabApiClient
 ): Promise<void> {
   await gitlabRequest<void>(`/groups/${groupId}/service_accounts/${userId}`, {
     method: 'DELETE',
     auth: accessToken,
-    fetchImpl
+    client
   })
 }
 
@@ -500,22 +551,16 @@ export const GITLAB_AVATAR_SIZE = 192
 export async function gitlabUploadCurrentUserAvatar(
   accountToken: string,
   png: Uint8Array,
-  fetchImpl?: FetchLike
+  client: GitlabApiClient
 ): Promise<void> {
-  const impl = fetchImpl ?? (fetch as FetchLike)
   const form = new FormData()
   form.set('avatar', new Blob([png], { type: 'image/png' }), 'agent-icon.png')
-  let res: Response
-  try {
-    res = await impl(`${API_BASE}/user/avatar`, {
-      method: 'PUT',
-      headers: { accept: 'application/json', authorization: `Bearer ${accountToken}` },
-      body: form,
-      signal: AbortSignal.timeout(TIMEOUT_MS)
-    })
-  } catch (e) {
-    throw new GitlabApiError(`gitlab unreachable: ${(e as Error).message}`, 0, 'INTERNAL', true)
-  }
+  const res = await gitlabFetch('/user/avatar', {
+    method: 'PUT',
+    auth: accountToken,
+    multipart: form,
+    client
+  })
   if (!res.ok) {
     throw new GitlabApiError(`gitlab ${res.status}`, res.status, codeFor(res.status), res.status >= 500)
   }
@@ -533,12 +578,12 @@ export async function gitlabProjectMember(
   accessToken: string,
   projectId: bigint,
   userId: bigint,
-  fetchImpl?: FetchLike
+  client: GitlabApiClient
 ): Promise<GitlabMember | null> {
   try {
     return await gitlabRequest<GitlabMember>(`/projects/${projectId}/members/${userId}`, {
       auth: accessToken,
-      fetchImpl
+      client
     })
   } catch (e) {
     if (e instanceof GitlabApiError && e.code === 'NOT_FOUND') return null
@@ -556,31 +601,31 @@ export async function gitlabEnsureMember(
   projectId: bigint,
   userId: bigint,
   accessLevel: number,
-  fetchImpl?: FetchLike
+  client: GitlabApiClient
 ): Promise<void> {
   try {
     await gitlabRequest<GitlabMember>(`/projects/${projectId}/members`, {
       method: 'POST',
       auth: accessToken,
       body: { user_id: Number(userId), access_level: accessLevel },
-      fetchImpl
+      client
     })
     return
   } catch (e) {
     // 409: already a member — converge the existing level below.
     if (!(e instanceof GitlabApiError) || (e.status !== 409 && e.status !== 400)) throw e
   }
-  const direct = await gitlabProjectMember(accessToken, projectId, userId, fetchImpl)
+  const direct = await gitlabProjectMember(accessToken, projectId, userId, client)
   if (direct?.access_level === accessLevel) return
   if (direct === null) {
-    const inherited = await gitlabEffectiveMembership(accessToken, projectId, userId, fetchImpl)
+    const inherited = await gitlabEffectiveMembership(accessToken, projectId, userId, client)
     if (membershipSatisfies(inherited, accessLevel, Date.now())) return
   }
   await gitlabRequest<GitlabMember>(`/projects/${projectId}/members/${userId}`, {
     method: 'PUT',
     auth: accessToken,
     body: { access_level: accessLevel },
-    fetchImpl
+    client
   })
 }
 
@@ -589,12 +634,12 @@ export async function gitlabRemoveMember(
   accessToken: string,
   projectId: bigint,
   userId: bigint,
-  fetchImpl?: FetchLike
+  client: GitlabApiClient
 ): Promise<void> {
   await gitlabRequest<void>(`/projects/${projectId}/members/${userId}`, {
     method: 'DELETE',
     auth: accessToken,
-    fetchImpl
+    client
   })
 }
 
@@ -614,7 +659,7 @@ export async function gitlabCreateServiceAccountToken(
   groupId: number,
   serviceAccountUserId: bigint,
   input: { name: string; scopes: string[]; expiresAt: string },
-  fetchImpl?: FetchLike
+  client: GitlabApiClient
 ): Promise<GitlabPatGrant> {
   return gitlabRequest<GitlabPatGrant>(
     `/groups/${groupId}/service_accounts/${serviceAccountUserId}/personal_access_tokens`,
@@ -622,7 +667,7 @@ export async function gitlabCreateServiceAccountToken(
       method: 'POST',
       auth: accessToken,
       body: { name: input.name, scopes: input.scopes, expires_at: input.expiresAt },
-      fetchImpl
+      client
     }
   )
 }
@@ -635,11 +680,11 @@ export async function gitlabListServiceAccountTokens(
   accessToken: string,
   groupId: number,
   serviceAccountUserId: bigint,
-  fetchImpl?: FetchLike
+  client: GitlabApiClient
 ): Promise<GitlabPatGrant[]> {
   return gitlabPagedGet<GitlabPatGrant>(
     `/groups/${groupId}/service_accounts/${serviceAccountUserId}/personal_access_tokens`,
-    { auth: accessToken, fetchImpl }
+    { auth: accessToken, client }
   )
 }
 
@@ -649,11 +694,11 @@ export async function gitlabRevokeServiceAccountToken(
   groupId: number,
   serviceAccountUserId: bigint,
   tokenId: bigint,
-  fetchImpl?: FetchLike
+  client: GitlabApiClient
 ): Promise<void> {
   await gitlabRequest<void>(
     `/groups/${groupId}/service_accounts/${serviceAccountUserId}/personal_access_tokens/${tokenId}`,
-    { method: 'DELETE', auth: accessToken, fetchImpl }
+    { method: 'DELETE', auth: accessToken, client }
   )
 }
 
@@ -673,7 +718,7 @@ export async function gitlabCreateWebhook(
   accessToken: string,
   projectId: bigint,
   input: { url: string; signingToken: string; events: GitlabWebhookEvents },
-  fetchImpl?: FetchLike
+  client: GitlabApiClient
 ): Promise<GitlabWebhook> {
   return gitlabRequest<GitlabWebhook>(`/projects/${projectId}/hooks`, {
     method: 'POST',
@@ -681,7 +726,7 @@ export async function gitlabCreateWebhook(
     // `signing_token` is the whsec HMAC key producing `webhook-signature`;
     // `token` would configure the legacy X-Gitlab-Token header instead (§11.1).
     body: { url: input.url, signing_token: input.signingToken, enable_ssl_verification: true, ...input.events },
-    fetchImpl
+    client
   })
 }
 
@@ -690,13 +735,13 @@ export async function gitlabUpdateWebhook(
   projectId: bigint,
   webhookId: bigint,
   input: { url: string; signingToken: string; events: GitlabWebhookEvents },
-  fetchImpl?: FetchLike
+  client: GitlabApiClient
 ): Promise<GitlabWebhook> {
   return gitlabRequest<GitlabWebhook>(`/projects/${projectId}/hooks/${webhookId}`, {
     method: 'PUT',
     auth: accessToken,
     body: { url: input.url, signing_token: input.signingToken, enable_ssl_verification: true, ...input.events },
-    fetchImpl
+    client
   })
 }
 
@@ -706,21 +751,21 @@ export async function gitlabUpdateWebhook(
 export async function gitlabListWebhooks(
   accessToken: string,
   projectId: bigint,
-  fetchImpl?: FetchLike
+  client: GitlabApiClient
 ): Promise<GitlabWebhook[]> {
-  return gitlabPagedGet<GitlabWebhook>(`/projects/${projectId}/hooks`, { auth: accessToken, fetchImpl })
+  return gitlabPagedGet<GitlabWebhook>(`/projects/${projectId}/hooks`, { auth: accessToken, client })
 }
 
 export async function gitlabDeleteWebhook(
   accessToken: string,
   projectId: bigint,
   webhookId: bigint,
-  fetchImpl?: FetchLike
+  client: GitlabApiClient
 ): Promise<void> {
   await gitlabRequest<void>(`/projects/${projectId}/hooks/${webhookId}`, {
     method: 'DELETE',
     auth: accessToken,
-    fetchImpl
+    client
   })
 }
 
@@ -730,12 +775,12 @@ export async function gitlabTestWebhook(
   projectId: bigint,
   webhookId: bigint,
   trigger: 'push_events' | 'issues_events' | 'merge_requests_events' | 'note_events',
-  fetchImpl?: FetchLike
+  client: GitlabApiClient
 ): Promise<void> {
   await gitlabRequest<void>(`/projects/${projectId}/hooks/${webhookId}/test/${trigger}`, {
     method: 'POST',
     auth: accessToken,
-    fetchImpl
+    client
   })
 }
 
@@ -759,12 +804,12 @@ export async function gitlabMergeRequest(
   accessToken: string,
   projectId: bigint,
   iid: number,
-  fetchImpl?: FetchLike
+  client: GitlabApiClient
 ): Promise<GitlabMergeRequest | null> {
   try {
     return await gitlabRequest<GitlabMergeRequest>(`/projects/${projectId}/merge_requests/${iid}`, {
       auth: accessToken,
-      fetchImpl
+      client
     })
   } catch (e) {
     if (e instanceof GitlabApiError && e.code === 'NOT_FOUND') return null
@@ -784,10 +829,10 @@ export async function gitlabIssue(
   accessToken: string,
   projectId: bigint,
   iid: number,
-  fetchImpl?: FetchLike
+  client: GitlabApiClient
 ): Promise<GitlabIssue | null> {
   try {
-    return await gitlabRequest<GitlabIssue>(`/projects/${projectId}/issues/${iid}`, { auth: accessToken, fetchImpl })
+    return await gitlabRequest<GitlabIssue>(`/projects/${projectId}/issues/${iid}`, { auth: accessToken, client })
   } catch (e) {
     if (e instanceof GitlabApiError && e.code === 'NOT_FOUND') return null
     throw e

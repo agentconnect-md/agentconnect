@@ -1735,11 +1735,11 @@ document: the application ID is a deployment configuration value, the client
 secret is a write-only deployment secret sealed by the configured cipher, and
 both are projected into process configuration at boot. Plain
 `GITLAB_CLIENT_ID` / `GITLAB_CLIENT_SECRET` environment variables remain only
-the no-document fallback, mirroring the GitHub App credentials. The
-implementation has no `GITLAB_BASE_URL` or host override in v1: OAuth, API, and
-Git remotes are pinned to GitLab.com; Section 24 removes the pin for
-self-managed instances. The Web UI learns availability from the authenticated
-API instead of a build-time public environment flag.
+the no-document fallback, mirroring the GitHub App credentials. The document
+entry and `GITLAB_BASE_URL` carry the instance the application is registered on
+(Section 24.1); absent means GitLab.com, so a deployment that never sets it is
+configured exactly as before. The Web UI learns availability from the
+authenticated API instead of a build-time public environment flag.
 
 ## 19. Failure, Recovery, and Removal
 
@@ -2360,10 +2360,21 @@ composed identity.
 
 Merge order, GitLab.com green at every step:
 
-- **N0 — the axis in the Control Plane.** Config, normalization, the
+- **N0 — the axis in the Control Plane. Landed.** Config, normalization, the
   immutability fence, the API client bound to the resolved base, the three
   synthesized clone URLs deleted. Exit: axis unset composes byte-identical
   URLs; a prefixed non-default-port host keeps prefix and port everywhere.
+  The fence is two-sided on one advisory key: the document writer holds it
+  exclusively around its state count and refuses with `gitlab_base_url_locked`
+  — comparing against the axis in effect now, which for the first persisted
+  document is the environment fallback — while every transaction that creates
+  GitLab state holds it shared and refuses with `gitlab_base_url_changed` if the
+  persisted axis no longer matches the base it composed against. Creation is
+  fenced uniformly: the connection upsert, the binding claim, the agent account,
+  and the hook insert. A binding lease is not a substitute, because it is a
+  GitLab-domain lease on a different key and a hook that will not be enabled
+  takes none at all. A `disconnected` connection row is credential-free history
+  and does not hold the axis.
 - **N1 — the floor.** Version parsing, `instance_version_unsupported`, the
   Setup Server probe.
 - **N2 — protocol carriage.** `gitlabHost` on the agent spec, derived from

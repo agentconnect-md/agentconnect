@@ -1,16 +1,22 @@
 /**
- * Stateful fake gitlab.com edge for integration tests — the `FetchLike` twin of
+ * Stateful fake GitLab edge for integration tests — the `FetchLike` twin of
  * the recording GitHub stubs (M2 test infrastructure). Serves OAuth token
  * exchange, the current user, project reads/search, effective membership, and
  * the §10.2 administration surface (service accounts, PATs, webhooks) with
- * scriptable failures. Grows with the milestones; the real-GitLab.com contract
+ * scriptable failures. Grows with the milestones; the real-GitLab contract
  * suite stays §23's job.
+ *
+ * Route matching is base-relative, so the same fake serves a GitLab.com base
+ * and a path-prefixed self-managed one (§24.1); `baseUrl` is the instance its
+ * own payload URLs compose against.
  */
-import type { FetchLike } from '../../src/gitlab/api.js'
+import { GitlabApiClient, type FetchLike } from '../../src/gitlab/api.js'
 
 export interface FakeGitlabOptions {
   projectId?: number
   path?: string
+  /** The instance this fake stands in for; default GitLab.com. */
+  baseUrl?: string
   /** Per-project paths, for a test holding more than one binding; `path` is the fallback. */
   pathById?: Record<string, string>
   accessLevel?: number
@@ -56,8 +62,10 @@ function page<T>(url: string, rows: readonly T[]): Response {
 }
 
 export class FakeGitlab {
-  readonly opts: Required<Pick<FakeGitlabOptions, 'projectId' | 'path' | 'accessLevel' | 'namespaceKind'>> &
+  readonly opts: Required<Pick<FakeGitlabOptions, 'projectId' | 'path' | 'accessLevel' | 'namespaceKind' | 'baseUrl'>> &
     FakeGitlabOptions
+  /** The base-bound client every collaborator under test shares. */
+  readonly api: GitlabApiClient
   serviceAccounts: { id: number; username: string; name: string }[] = []
   tokens = new Map<number, { name: string; scopes: string[]; expires_at: string; revoked: boolean; user_id: number }>()
   webhooks = new Map<
@@ -84,8 +92,10 @@ export class FakeGitlab {
       path: options.path ?? 'example-group/example-project',
       accessLevel: options.accessLevel ?? 50,
       namespaceKind: options.namespaceKind ?? 'group',
+      baseUrl: options.baseUrl ?? 'https://gitlab.com',
       ...options
     }
+    this.api = new GitlabApiClient(this.opts.baseUrl, this.fetch())
   }
 
   /** One project's namespaced path — per-id when a test holds several bindings. */
@@ -218,7 +228,7 @@ export class FakeGitlab {
           iid,
           state: mr.state,
           title: `merge request ${iid}`,
-          web_url: `https://gitlab.com/${this.opts.path}/-/merge_requests/${iid}`,
+          web_url: `${this.opts.baseUrl}/${this.opts.path}/-/merge_requests/${iid}`,
           draft: mr.draft ?? false,
           sha: mr.headSha,
           source_project_id: projectId,
@@ -234,7 +244,7 @@ export class FakeGitlab {
           iid,
           state: issue.state,
           title: `issue ${iid}`,
-          web_url: `https://gitlab.com/${this.opts.path}/-/issues/${iid}`
+          web_url: `${this.opts.baseUrl}/${this.opts.path}/-/issues/${iid}`
         })
       }
 
@@ -245,7 +255,7 @@ export class FakeGitlab {
           id,
           path_with_namespace: path,
           default_branch: 'main',
-          http_url_to_repo: `https://gitlab.com/${path}.git`,
+          http_url_to_repo: `${this.opts.baseUrl}/${path}.git`,
           namespace: {
             id: 900,
             parent_id: null,
@@ -377,7 +387,7 @@ export class FakeGitlab {
           token: authorization?.replace(/^Bearer /, '') ?? null,
           bytes: file.size
         })
-        return Response.json({ id: 1, avatar_url: 'https://gitlab.com/uploads/-/system/user/avatar/1/avatar.png' })
+        return Response.json({ id: 1, avatar_url: `${this.opts.baseUrl}/uploads/-/system/user/avatar/1/avatar.png` })
       }
       if (/\/api\/v4\/namespaces\/\d+$/.test(url)) {
         return Response.json({ id: 900, parent_id: null, kind: this.opts.namespaceKind, full_path: 'example-group' })

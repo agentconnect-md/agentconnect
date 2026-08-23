@@ -52,7 +52,7 @@ function gitlabApp(
 ): HttpApp & { fake: FakeGitlab } {
   const fake = new FakeGitlab(options)
   const oauth = new GitlabOauthService({
-    cfg: { clientId: 'client-1', clientSecret: 'secret-1' },
+    cfg: { clientId: 'client-1', clientSecret: 'secret-1', baseUrl: fake.opts.baseUrl },
     connections: new PgGitlabConnectionRepo(prisma),
     secrets: new PgGitlabConnectionSecretStore(prisma, cipher),
     states: new PgGitlabOauthStateStore(prisma),
@@ -60,7 +60,7 @@ function gitlabApp(
     clock: systemClock,
     publicCpUrl: PUBLIC_CP,
     webAppUrl: 'https://console.example.test',
-    fetchImpl: fake.fetch()
+    api: fake.api
   })
   const accountService = new GitlabAccountService({
     oauth,
@@ -70,7 +70,7 @@ function gitlabApp(
     agents: new PgAgentRepo(prisma),
     cipher,
     clock: systemClock,
-    fetchImpl: fake.fetch()
+    api: fake.api
   })
   const provisioner = new GitlabProvisioner({
     oauth,
@@ -83,14 +83,14 @@ function gitlabApp(
     // The same authority container.ts wires: an enabled gitlab hook on the project wants ingress.
     desiredWebhookEvents: async (orgId, projectId) =>
       unionGitlabWebhookEvents(await new PgHookRepo(prisma).listForOrgKind(OrgId(orgId), 'gitlab'), projectId),
-    fetchImpl: fake.fetch()
+    api: fake.api
   })
   running = buildHttpApp(
     prisma,
     { PUBLIC_CP_URL: PUBLIC_CP, ...(callerUserId ? { DEFAULT_OWNER_ID: callerUserId } : {}) },
     undefined,
     undefined,
-    { gitlab: { oauth, provisioner, accounts: accountService, fetchImpl: fake.fetch() } }
+    { gitlab: { oauth, provisioner, accounts: accountService, api: fake.api } }
   )
   return { ...running, fake }
 }
@@ -167,7 +167,8 @@ async function ownConnection(fake: FakeGitlab, accessLevel: number): Promise<{ i
     gitlabUsername: 'example-successor',
     scopes: ['api'],
     accessExpiresAt: new Date(Date.now() + 3_600_000),
-    sealedPair: { accessToken: 'at-taker', refreshToken: 'rt-taker' }
+    sealedPair: { accessToken: 'at-taker', refreshToken: 'rt-taker' },
+    axisBaseUrl: 'https://gitlab.com'
   })
 }
 

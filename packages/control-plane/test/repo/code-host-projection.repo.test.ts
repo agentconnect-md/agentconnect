@@ -42,6 +42,7 @@ async function owner(): Promise<{ hookId: HookId; agentId: AgentId }> {
     orgId: OrgId(DEFAULT_ORG_ID),
     agentId,
     kind: 'gitlab',
+    axisBaseUrl: 'https://gitlab.com',
     name: `gitlab review ${randomUUID().slice(0, 8)}`,
     sessionMode: 'perThread',
     repoId: PROJECT,

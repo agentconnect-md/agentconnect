@@ -68,14 +68,14 @@ async function harness(options: FakeGitlabOptions = {}) {
   const bindings = new PgGitlabProjectBindingRepo(prisma)
   const connections = new PgGitlabConnectionRepo(prisma)
   const oauth = new GitlabOauthService({
-    cfg: { clientId: 'client-1', clientSecret: 'secret-1' },
+    cfg: { clientId: 'client-1', clientSecret: 'secret-1', baseUrl: fake.opts.baseUrl },
     connections,
     secrets: new PgGitlabConnectionSecretStore(prisma, cipher),
     states: new PgGitlabOauthStateStore(prisma),
     cipher,
     clock: systemClock,
     publicCpUrl: 'https://api.example.test',
-    fetchImpl: fake.fetch()
+    api: fake.api
   })
   const accounts = new PgGitlabAgentAccountRepo(prisma)
   const accountService = new GitlabAccountService({
@@ -86,7 +86,7 @@ async function harness(options: FakeGitlabOptions = {}) {
     agents: new PgAgentRepo(prisma),
     cipher,
     clock: systemClock,
-    fetchImpl: fake.fetch()
+    api: fake.api
   })
   const provisioner = new GitlabProvisioner({
     oauth,
@@ -107,7 +107,7 @@ async function harness(options: FakeGitlabOptions = {}) {
         for (const row of rows) if (row.repoId === projectId) await app.deps.hooks.broadcast(row)
       })
     },
-    fetchImpl: fake.fetch()
+    api: fake.api
   })
   // Hook writes kick §11.1 convergence fire-and-forget, and that run provisions accounts and re-writes project
   // facts — so a test asserting on either has to outwait the run instead of racing it.
@@ -130,7 +130,7 @@ async function harness(options: FakeGitlabOptions = {}) {
     { PUBLIC_CP_URL: 'https://api.example.test', PUBLIC_RELAY_URL: RELAY_URL },
     undefined,
     undefined,
-    { gitlab: { oauth, provisioner, accounts: accountService, fetchImpl: fake.fetch() } }
+    { gitlab: { oauth, provisioner, accounts: accountService, api: fake.api } }
   )
   // A live relay row so the ingress gate passes.
   await prisma.relay.create({
@@ -149,13 +149,15 @@ async function harness(options: FakeGitlabOptions = {}) {
     gitlabUsername: 'example-admin',
     scopes: ['api'],
     accessExpiresAt: new Date(Date.now() + 3600_000),
-    sealedPair: { accessToken: 'at-1', refreshToken: 'rt-1' }
+    sealedPair: { accessToken: 'at-1', refreshToken: 'rt-1' },
+    axisBaseUrl: 'https://gitlab.com'
   })
   const binding = await bindings.createWithClaim({
     orgId: DEFAULT_ORG_ID,
     projectId: PROJECT,
     projectPath: 'example-group/example-project',
-    installerConnectionId: connection.id
+    installerConnectionId: connection.id,
+    axisBaseUrl: 'https://gitlab.com'
   })
   expect(await provisioner.provision(DEFAULT_ORG_ID, binding.id)).toEqual({ state: 'ready' })
   const daemonId = randomUUID()
@@ -638,7 +640,8 @@ describe('gitlab hooks — binding lifecycle rebroadcast (§11.1/§11.3 round 2)
       orgId: DEFAULT_ORG_ID,
       projectId: OTHER,
       projectPath: 'example-group/other-project',
-      installerConnectionId: connection.id
+      installerConnectionId: connection.id,
+      axisBaseUrl: 'https://gitlab.com'
     })
     expect(await h.provisioner.provision(DEFAULT_ORG_ID, other.id)).toEqual({ state: 'ready' })
     // Retargeting is a binding change, so the destination needs its own grant (§8.3).
@@ -737,7 +740,7 @@ describe('rc/codehost-membership-authz (§12.2)', () => {
       credentials: new PgGitlabProjectCredentialRepo(prisma),
       credentialSecrets: new PgGitlabProjectCredentialSecretStore(prisma, cipher),
       clock: systemClock,
-      fetchImpl: h.fake.fetch()
+      api: h.fake.api
     })
     const base = {
       hookId: hookRow.id,

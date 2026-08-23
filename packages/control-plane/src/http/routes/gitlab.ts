@@ -284,7 +284,7 @@ export function gitlabRoutes(deps: HttpDeps) {
               ...(req.query.search ? { search: req.query.search } : {}),
               ...(req.query.page ? { page: req.query.page } : {})
             },
-            gitlab.fetchImpl
+            gitlab.api
           )
           return {
             projects: projects.map((project) => ({
@@ -427,14 +427,9 @@ export function gitlabRoutes(deps: HttpDeps) {
         try {
           const token = await gitlab.oauth.withAccessToken(orgId, connection.id)
           // The server re-fetches; the client-supplied id is never trusted for facts (§10.1).
-          const project = await gitlabProject(token, projectId, gitlab.fetchImpl)
+          const project = await gitlabProject(token, projectId, gitlab.api)
           if (!project) return err(400, 'project is not accessible through this connection')
-          const membership = await gitlabEffectiveMembership(
-            token,
-            projectId,
-            connection.gitlabUserId,
-            gitlab.fetchImpl
-          )
+          const membership = await gitlabEffectiveMembership(token, projectId, connection.gitlabUserId, gitlab.api)
           if (!membershipSatisfies(membership, GITLAB_ACCESS_MAINTAINER, Date.now())) {
             return err(403, 'Maintainer or Owner access to the project is required for managed installation')
           }
@@ -444,7 +439,8 @@ export function gitlabRoutes(deps: HttpDeps) {
             projectPath: project.path_with_namespace,
             ...(project.default_branch ? { defaultBranch: project.default_branch } : {}),
             ...(project.http_url_to_repo ? { cloneUrl: project.http_url_to_repo } : {}),
-            installerConnectionId: connection.id
+            installerConnectionId: connection.id,
+            axisBaseUrl: gitlab.api.baseUrl
           })
           // The §10.2 saga converges the external resources; the binding records
           // the outcome state either way and repair re-runs it.

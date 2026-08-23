@@ -1077,6 +1077,7 @@ describe('gitlab hook/start records the started head', () => {
       orgId: OrgId(DEFAULT_ORG_ID),
       agentId: AgentId(agentId),
       kind: 'gitlab',
+      axisBaseUrl: 'https://gitlab.com',
       name: 'gitlab-review',
       sessionMode: 'perThread',
       repoId: PROJECT,

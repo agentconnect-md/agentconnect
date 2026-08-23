@@ -31,7 +31,8 @@ async function boundAccount(orgId: string, bindingId: string, agentId = randomUU
     agentId,
     rootGroupId: ROOT_GROUP,
     username: `agentconnect-a${agentId.replace(/-/g, '')}-g${ROOT_GROUP}`,
-    administeringConnectionId: null
+    administeringConnectionId: null,
+    axisBaseUrl: 'https://gitlab.com'
   })
   await accounts().update(account.id, { serviceAccountUserId: 9042n, state: 'ready' })
   await accounts().attachMembership({
@@ -56,7 +57,8 @@ function input(orgId: string) {
     projectPath: 'example-group/example-project',
     defaultBranch: 'main',
     cloneUrl: 'https://gitlab.com/example-group/example-project.git',
-    installerConnectionId: randomUUID()
+    installerConnectionId: randomUUID(),
+    axisBaseUrl: 'https://gitlab.com'
   }
 }
 

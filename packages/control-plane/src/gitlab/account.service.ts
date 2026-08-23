@@ -44,7 +44,7 @@ import {
   gitlabRemoveMember,
   gitlabRevokeServiceAccountToken,
   gitlabUpdateServiceAccount,
-  type FetchLike,
+  type GitlabApiClient,
   type GitlabServiceAccount
 } from './api.js'
 import { GitlabEffectBroker, type GitlabEffectOutcome } from './effect-broker.js'
@@ -169,7 +169,7 @@ export interface GitlabAccountServiceDeps {
   /** Fired when the sweep retires an account, so a removal that was waiting on
    *  it can finish; absent in tests, which drive the sweep directly. */
   onRetired?: (orgId: string) => void
-  fetchImpl?: FetchLike
+  api: GitlabApiClient
   log?: { warn(obj: object, msg: string): void }
 }
 
@@ -196,7 +196,7 @@ export class GitlabAccountService {
       credentials: deps.credentials,
       credentialSecrets: deps.credentialSecrets,
       clock: deps.clock,
-      ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {})
+      api: deps.api
     })
   }
 
@@ -304,7 +304,8 @@ export class GitlabAccountService {
       agentId: consumer.agentId,
       rootGroupId,
       username: derived,
-      administeringConnectionId: input.installerConnectionId
+      administeringConnectionId: input.installerConnectionId,
+      axisBaseUrl: this.deps.api.baseUrl
     })
     const owner = randomBytes(9).toString('base64url')
     const nowMs = this.deps.clock.now()
@@ -324,7 +325,7 @@ export class GitlabAccountService {
         return { ok: false, reason: ACCOUNT_RETIRING_REASON, retryable: true }
       }
       // This top-level group's OWN accounts — never a global user search (§7.2).
-      let listing = await gitlabListServiceAccounts(input.token, input.rootGroupId, this.deps.fetchImpl)
+      let listing = await gitlabListServiceAccounts(input.token, input.rootGroupId, this.deps.api)
       // The listing is exhaustive, so a large root spends real time in it: prove
       // the fence still holds before any write this listing decides.
       await this.renew(account.id, owner)
@@ -358,11 +359,11 @@ export class GitlabAccountService {
             input.token,
             input.rootGroupId,
             { username: account.username, name: gitlabAgentAccountDisplayName(agentName, account.username) },
-            this.deps.fetchImpl
+            this.deps.api
           )
         } catch (e) {
           // Ambiguous create: re-read, then apply that same persisted window.
-          listing = await gitlabListServiceAccounts(input.token, input.rootGroupId, this.deps.fetchImpl)
+          listing = await gitlabListServiceAccounts(input.token, input.rootGroupId, this.deps.api)
           await this.renew(account.id, owner)
           external = this.claimFromAttempt(account, listing)
           if (!external) {
@@ -397,7 +398,7 @@ export class GitlabAccountService {
             input.rootGroupId,
             serviceAccountUserId,
             { username: derived },
-            this.deps.fetchImpl
+            this.deps.api
           )
           if (account.username !== external.username) {
             account = (await this.deps.accounts.update(account.id, { username: external.username })) ?? account
@@ -419,7 +420,7 @@ export class GitlabAccountService {
             input.rootGroupId,
             serviceAccountUserId,
             { name: displayName },
-            this.deps.fetchImpl
+            this.deps.api
           )
         } catch (e) {
           this.deps.log?.warn(
@@ -560,13 +561,7 @@ export class GitlabAccountService {
     accessLevel: number
   ): Promise<boolean> {
     if (account.serviceAccountUserId === null) return false
-    await gitlabEnsureMember(
-      input.token,
-      input.projectId,
-      account.serviceAccountUserId,
-      accessLevel,
-      this.deps.fetchImpl
-    )
+    await gitlabEnsureMember(input.token, input.projectId, account.serviceAccountUserId, accessLevel, this.deps.api)
     return this.deps.accounts.attachMembership({
       accountId: account.id,
       generation: account.generation,
@@ -585,7 +580,7 @@ export class GitlabAccountService {
     token: string
   ): Promise<RetirementOutcome> {
     if (account.serviceAccountUserId !== null) {
-      await gitlabRemoveMember(token, projectId, account.serviceAccountUserId, this.deps.fetchImpl).catch(swallow404)
+      await gitlabRemoveMember(token, projectId, account.serviceAccountUserId, this.deps.api).catch(swallow404)
     }
     // The detach and the obligation commit together, BEFORE the provider work:
     // once the membership is gone nothing else links this retirement to the
@@ -629,7 +624,7 @@ export class GitlabAccountService {
             input.projectId,
             account.serviceAccountUserId,
             surviving.accessLevel,
-            this.deps.fetchImpl
+            this.deps.api
           )
         }
         await this.deps.accounts.attachMembership({
@@ -650,12 +645,9 @@ export class GitlabAccountService {
       const bound = await this.deps.accounts.membershipsForBinding(input.bindingId)
       if (bound.some((membership) => membership.accountId === account.id)) {
         if (account.serviceAccountUserId !== null) {
-          await gitlabRemoveMember(
-            input.token,
-            input.projectId,
-            account.serviceAccountUserId,
-            this.deps.fetchImpl
-          ).catch(swallow404)
+          await gitlabRemoveMember(input.token, input.projectId, account.serviceAccountUserId, this.deps.api).catch(
+            swallow404
+          )
         }
         await this.deps.accounts.detachMembership(account.id, input.bindingId)
       }
@@ -701,15 +693,15 @@ export class GitlabAccountService {
             rootGroupId,
             account.serviceAccountUserId,
             credential.externalTokenId,
-            this.deps.fetchImpl
+            this.deps.api
           ).catch(swallow404)
         }
-        await gitlabDeleteServiceAccount(token, rootGroupId, account.serviceAccountUserId, this.deps.fetchImpl).catch(
+        await gitlabDeleteServiceAccount(token, rootGroupId, account.serviceAccountUserId, this.deps.api).catch(
           swallow404
         )
         // The delete was accepted, but GitLab removes the user asynchronously:
         // still being listed here means the deletion is in flight, not refused.
-        if (await gitlabFindServiceAccount(token, rootGroupId, account.username, this.deps.fetchImpl)) {
+        if (await gitlabFindServiceAccount(token, rootGroupId, account.username, this.deps.api)) {
           await this.deps.accounts.update(accountId, {
             state: 'cleanup_pending',
             stateReason: DELETION_PENDING_REASON
@@ -778,12 +770,9 @@ export class GitlabAccountService {
         const token = await this.deps.oauth.withAccessToken(orgId, account.administeringConnectionId)
         for (const membership of await this.deps.accounts.membershipsOfAccount(account.id)) {
           if (account.serviceAccountUserId !== null) {
-            await gitlabRemoveMember(
-              token,
-              membership.projectId,
-              account.serviceAccountUserId,
-              this.deps.fetchImpl
-            ).catch(swallow404)
+            await gitlabRemoveMember(token, membership.projectId, account.serviceAccountUserId, this.deps.api).catch(
+              swallow404
+            )
           }
           await this.deps.accounts.detachMembership(account.id, membership.bindingId)
         }
@@ -889,7 +878,7 @@ export class GitlabAccountService {
           rootGroupId,
           account.serviceAccountUserId,
           previousTokenId,
-          this.deps.fetchImpl
+          this.deps.api
         ).catch(() => {
           this.deps.log?.warn(
             { accountId: account.id, purpose: credential.purpose },
@@ -939,7 +928,7 @@ export class GitlabAccountService {
     const recorded = await this.deps.credentials.get(account.id, purpose)
     const name = patName(account.username, purpose)
     const strays = (
-      await gitlabListServiceAccountTokens(token, rootGroupId, serviceAccountUserId, this.deps.fetchImpl)
+      await gitlabListServiceAccountTokens(token, rootGroupId, serviceAccountUserId, this.deps.api)
     ).filter((t) => t.name === name && t.active !== false && t.revoked !== true)
     // That listing is exhaustive too: re-prove the fence before the revokes it
     // decides, not only before the create further down.
@@ -951,7 +940,7 @@ export class GitlabAccountService {
         rootGroupId,
         serviceAccountUserId,
         BigInt(stray.id),
-        this.deps.fetchImpl
+        this.deps.api
       ).catch(() =>
         this.deps.log?.warn({ accountId: account.id, purpose }, 'gitlab stray token revocation is unconfirmed')
       )
@@ -964,7 +953,7 @@ export class GitlabAccountService {
       rootGroupId,
       serviceAccountUserId,
       { name, scopes, expiresAt },
-      this.deps.fetchImpl
+      this.deps.api
     )
     // §7.3 validation before sealing: identity, scopes, active, EXACT expiry.
     const valid =
@@ -985,7 +974,7 @@ export class GitlabAccountService {
           rootGroupId,
           serviceAccountUserId,
           BigInt(grant.id),
-          this.deps.fetchImpl
+          this.deps.api
         ).catch(() => {
           this.deps.log?.warn(
             { accountId: account.id, purpose, tokenId: grant.id },

@@ -9,7 +9,7 @@ import type {
   HookRecord,
   HookRepo
 } from '../persistence/ports.js'
-import { GITLAB_ACCESS_DEVELOPER, gitlabEffectiveMembership, membershipSatisfies, type FetchLike } from './api.js'
+import { GITLAB_ACCESS_DEVELOPER, gitlabEffectiveMembership, membershipSatisfies, type GitlabApiClient } from './api.js'
 
 export interface GitlabMembershipAuthzDeps {
   hooks: Pick<HookRepo, 'getManyUnscoped'>
@@ -18,7 +18,7 @@ export interface GitlabMembershipAuthzDeps {
   credentials: Pick<GitlabProjectCredentialRepo, 'get'>
   credentialSecrets: Pick<GitlabProjectCredentialSecretStore, 'get'>
   clock: Clock
-  fetchImpl?: FetchLike
+  api: GitlabApiClient
   /** Test override; production stays below the relay's 5 second correlator. */
   timeoutMs?: number
 }
@@ -107,7 +107,7 @@ export class GitlabMembershipAuthzService {
 
     const nowMs = this.deps.clock.now()
     const memberships = await Promise.all(
-      actorIds.map((id) => gitlabEffectiveMembership(token, projectId, id, this.deps.fetchImpl))
+      actorIds.map((id) => gitlabEffectiveMembership(token, projectId, id, this.deps.api))
     )
     if (memberships.some((membership) => !membershipSatisfies(membership, GITLAB_ACCESS_DEVELOPER, nowMs))) {
       return false

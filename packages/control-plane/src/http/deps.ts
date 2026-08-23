@@ -59,7 +59,7 @@ import type { Clock } from '../domain/clock.js'
 import type { OAuthService } from '../registry/oauthService.js'
 import type { GithubService } from '../github/service.js'
 import type { GitlabOauthService } from '../gitlab/oauth.service.js'
-import type { FetchLike as GitlabFetchLike } from '../gitlab/api.js'
+import type { GitlabApiClient } from '../gitlab/api.js'
 import type { GitlabAccountService } from '../gitlab/account.service.js'
 import type { GitlabProvisioner } from '../gitlab/provisioner.js'
 import type { GitlabHookRerunService } from '../gitlab/hook-rerun.service.js'
@@ -380,8 +380,8 @@ export interface HttpDeps {
   /** github-app workspaces façade; absent ⇒ feature disabled (GITHUB_APP_* unset) and
    *  every github route 404s. */
   github?: GithubService
-  /** GitLab.com OAuth surface (gitlab-com-integration.md §9); absent ⇒ routes 404.
-   *  `fetchImpl` is the injectable gitlab.com edge the admin routes share with the service. */
+  /** GitLab OAuth surface (gitlab-com-integration.md §9); absent ⇒ routes 404.
+   *  `api` is the base-bound GitLab edge the admin routes share with the service. */
   gitlab?: {
     oauth: GitlabOauthService
     provisioner: GitlabProvisioner
@@ -389,7 +389,7 @@ export interface HttpDeps {
     accounts: GitlabAccountService
     /** The §16.1 Console rerun authorizer; the route 404s without the GitLab app. */
     hookRerun: GitlabHookRerunService
-    fetchImpl?: GitlabFetchLike
+    api: GitlabApiClient
   }
   /** The PR panel's read projection; absent like {@link github} ⇒ the route 404s, hiding the tab. */
   pullRequestView?: PullRequestViewService

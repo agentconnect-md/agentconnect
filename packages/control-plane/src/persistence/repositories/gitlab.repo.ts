@@ -48,6 +48,7 @@ import {
   gitlabAuthorizationAccessLevel,
   gitlabWorkspaceAccessLevel
 } from '../../gitlab/api.js'
+import { joinAxisFence } from './gitlab-axis.js'
 
 const CONNECTION_STATES: readonly GitlabConnectionState[] = ['connected', 'reauth_required', 'disconnected']
 
@@ -83,6 +84,7 @@ export class PgGitlabConnectionRepo implements GitlabConnectionRepo {
     scopes: string[]
     accessExpiresAt: Date | null
     sealedPair: GitlabSealedTokenPair
+    axisBaseUrl: string
   }): Promise<GitlabConnectionRecord> {
     const facts = {
       userId: input.userId,
@@ -95,6 +97,9 @@ export class PgGitlabConnectionRepo implements GitlabConnectionRepo {
     // Metadata and the sealed pair land in ONE transaction: no reader can see a
     // connected row whose side-table pair is absent or stale.
     return this.prisma.$transaction(async (tx) => {
+      // §24.1: this pair was minted on one instance and carries no provenance,
+      // so it may not land after the axis moved under it.
+      await joinAxisFence(tx, input.axisBaseUrl)
       // §9.4, serialized: FOR SHARE pins the membership row for the length of
       // this transaction, so a concurrent removal either waits for this commit
       // (and its trigger then disconnects the fresh row) or wins first (and
@@ -318,9 +323,13 @@ export class PgGitlabProjectBindingRepo implements GitlabProjectBindingRepo {
     defaultBranch?: string
     cloneUrl?: string
     installerConnectionId: string
+    axisBaseUrl: string
   }): Promise<GitlabProjectBindingRecord> {
     try {
       return await this.prisma.$transaction(async (tx) => {
+        // §24.1: the claim and the numeric project id are host-relative, so they
+        // may not land after the axis moved under this operation.
+        await joinAxisFence(tx, input.axisBaseUrl)
         // The deployment-global single-owner claim (§8.1): the unique
         // (provider, externalId) insert selects one winner BEFORE any provider
         // mutation may begin; a loser aborts the whole transaction.
@@ -608,26 +617,32 @@ export class PgGitlabAgentAccountRepo implements GitlabAgentAccountRepo {
     rootGroupId: bigint
     username: string
     administeringConnectionId: string | null
+    axisBaseUrl: string
   }): Promise<GitlabAgentAccountRecord> {
-    const row = await this.prisma.gitlabAgentAccount.upsert({
-      where: {
-        orgId_agentId_rootGroupId: {
+    // §24.1: the root group id is host-relative, and the binding lease this runs
+    // under is a GitLab-domain lease, not the axis key — so join it here.
+    const row = await this.prisma.$transaction(async (tx) => {
+      await joinAxisFence(tx, input.axisBaseUrl)
+      return tx.gitlabAgentAccount.upsert({
+        where: {
+          orgId_agentId_rootGroupId: {
+            orgId: input.orgId,
+            agentId: input.agentId,
+            rootGroupId: input.rootGroupId
+          }
+        },
+        create: {
           orgId: input.orgId,
           agentId: input.agentId,
-          rootGroupId: input.rootGroupId
-        }
-      },
-      create: {
-        orgId: input.orgId,
-        agentId: input.agentId,
-        rootGroupId: input.rootGroupId,
-        username: input.username,
-        administeringConnectionId: input.administeringConnectionId,
-        state: 'provisioning'
-      },
-      // An existing row keeps its lifecycle facts: only the administering
-      // connection follows the binding that is converging it right now.
-      update: { administeringConnectionId: input.administeringConnectionId }
+          rootGroupId: input.rootGroupId,
+          username: input.username,
+          administeringConnectionId: input.administeringConnectionId,
+          state: 'provisioning'
+        },
+        // An existing row keeps its lifecycle facts: only the administering
+        // connection follows the binding that is converging it right now.
+        update: { administeringConnectionId: input.administeringConnectionId }
+      })
     })
     return toAccountRecord(row)
   }

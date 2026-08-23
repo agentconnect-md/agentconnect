@@ -236,6 +236,20 @@ export class GitlabProjectClaimConflict extends Error {
   }
 }
 
+/** The host axis moved under an in-flight GitLab write (§24.1): the persisted
+ * document now names another instance, so this operation's credentials and
+ * host-relative ids must not be committed against it. */
+export class GitlabAxisRetargeted extends Error {
+  readonly code = 'gitlab_base_url_changed' as const
+  constructor(
+    readonly operationBaseUrl: string,
+    readonly persistedBaseUrl: string
+  ) {
+    super(`the gitlab instance changed to ${persistedBaseUrl} while this ${operationBaseUrl} operation was in flight`)
+    this.name = 'GitlabAxisRetargeted'
+  }
+}
+
 /** The OAuth callback lost the race with a membership removal (§9.4): the
  * starting user is no longer a member, so no connection may be (re)created. */
 export class GitlabMembershipGone extends Error {

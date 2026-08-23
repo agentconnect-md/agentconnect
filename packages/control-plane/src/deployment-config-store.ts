@@ -14,7 +14,9 @@ export {
   DEFAULT_DEPLOYMENT_CONFIG_VALUES_V1,
   DEPLOYMENT_CONFIG_SCHEMA_VERSION,
   DEPLOYMENT_SECRET_KEYS,
+  GITLAB_BASE_URL_LOCKED_REASON,
   DeploymentConfigConflictError,
+  DeploymentConfigGitlabBaseUrlLockedError,
   DeploymentConfigMissingSecretsError,
   DeploymentConfigSecretRefreshRequiredError,
   DeploymentConfigValuesV1Schema,
@@ -36,6 +38,9 @@ export type { SecretCipherConfig } from './secrets/cipher.js'
 
 export interface OpenDeploymentConfigStoreOptions extends SecretCipherConfig {
   databaseUrl: string
+  /** The deployment's `GITLAB_BASE_URL` fallback: with no persisted document it
+   *  is the axis already in effect, so the first write is fenced against it. */
+  gitlabBaseUrl?: string
 }
 
 export interface DeploymentConfigStoreHandle {
@@ -46,6 +51,6 @@ export interface DeploymentConfigStoreHandle {
 /** Open exactly the DB + SecretCipher slice shared by CP and setup tooling. */
 export function openDeploymentConfigStore(options: OpenDeploymentConfigStoreOptions): DeploymentConfigStoreHandle {
   const prisma = createPrisma(options.databaseUrl)
-  const store = new PgDeploymentConfigStore(prisma, makeSecretCipher(options))
+  const store = new PgDeploymentConfigStore(prisma, makeSecretCipher(options), options.gitlabBaseUrl)
   return { store, close: disconnectPrisma }
 }

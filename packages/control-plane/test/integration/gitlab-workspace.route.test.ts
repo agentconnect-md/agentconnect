@@ -61,14 +61,14 @@ async function harness(liveness?: DaemonLiveness) {
   const bindings = new PgGitlabProjectBindingRepo(prisma)
   const connections = new PgGitlabConnectionRepo(prisma)
   const oauth = new GitlabOauthService({
-    cfg: { clientId: 'client-1', clientSecret: 'secret-1' },
+    cfg: { clientId: 'client-1', clientSecret: 'secret-1', baseUrl: fake.opts.baseUrl },
     connections,
     secrets: new PgGitlabConnectionSecretStore(prisma, cipher),
     states: new PgGitlabOauthStateStore(prisma),
     cipher,
     clock: systemClock,
     publicCpUrl: 'https://api.example.test',
-    fetchImpl: fake.fetch()
+    api: fake.api
   })
   const accounts = new PgGitlabAgentAccountRepo(prisma)
   const accountService = new GitlabAccountService({
@@ -79,7 +79,7 @@ async function harness(liveness?: DaemonLiveness) {
     agents: new PgAgentRepo(prisma),
     cipher,
     clock: systemClock,
-    fetchImpl: fake.fetch()
+    api: fake.api
   })
   const provisioner = new GitlabProvisioner({
     oauth,
@@ -92,10 +92,10 @@ async function harness(liveness?: DaemonLiveness) {
     desiredWebhookEvents: async () => null,
     // Mirrors the container: the durable clone-URL convergence is AWAITED
     // inside the run, under the saga lease.
-    syncWorkspacePaths: async (orgId, projectId, projectPath) => {
-      await new PgAgentRepo(prisma).refreshGitlabProjectPath(OrgId(orgId), projectId, projectPath)
+    syncWorkspacePaths: async (orgId, projectId, projectPath, cloneUrl) => {
+      await new PgAgentRepo(prisma).refreshGitlabProjectPath(OrgId(orgId), projectId, projectPath, cloneUrl)
     },
-    fetchImpl: fake.fetch()
+    api: fake.api
   })
   // Route writes kick §10.2 convergence fire-and-forget, and the run re-writes every replicated project path from
   // what the provider answers with — so a test writing those paths itself has to outwait the run, not race it.
@@ -115,7 +115,7 @@ async function harness(liveness?: DaemonLiveness) {
   }
   settleConvergence = settled
   running = buildHttpApp(prisma, { PUBLIC_CP_URL: 'https://api.example.test' }, liveness, undefined, {
-    gitlab: { oauth, provisioner, accounts: accountService, fetchImpl: fake.fetch() }
+    gitlab: { oauth, provisioner, accounts: accountService, api: fake.api }
   })
   const connection = await connections.upsertOnCallback({
     orgId: DEFAULT_ORG_ID,
@@ -124,13 +124,16 @@ async function harness(liveness?: DaemonLiveness) {
     gitlabUsername: 'example-admin',
     scopes: ['api'],
     accessExpiresAt: new Date(Date.now() + 3600_000),
-    sealedPair: { accessToken: 'at-1', refreshToken: 'rt-1' }
+    sealedPair: { accessToken: 'at-1', refreshToken: 'rt-1' },
+    axisBaseUrl: 'https://gitlab.com'
   })
   const binding = await bindings.createWithClaim({
     orgId: DEFAULT_ORG_ID,
     projectId: PROJECT,
     projectPath: 'example-group/example-project',
-    installerConnectionId: connection.id
+    cloneUrl: 'https://gitlab.com/example-group/example-project.git',
+    installerConnectionId: connection.id,
+    axisBaseUrl: 'https://gitlab.com'
   })
   // The consuming agent exists BEFORE convergence, so the run gives it its own
   // account and project membership (§7.2) — the grants below resolve through it.
@@ -178,7 +181,7 @@ describe('gitlab workspaces — agent create/edit (§8.3)', () => {
     expect(dto.workspace).toMatchObject({
       mode: 'gitlab',
       worktree: true,
-      gitRepo: 'https://gitlab.com/example-group/example-project',
+      gitRepo: 'https://gitlab.com/example-group/example-project.git',
       projectId: PROJECT.toString(),
       gitAccess: 'write'
     })
@@ -325,20 +328,17 @@ describe('gitlab workspaces — agent create/edit (§8.3)', () => {
     await h.settled()
     const before = await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })
     const agents = new PgAgentRepo(prisma)
-    const refreshed = await agents.refreshGitlabProjectPath(
-      OrgId(DEFAULT_ORG_ID),
-      PROJECT,
-      'example-group/renamed-project'
-    )
+    const renamed = { path: 'example-group/renamed-project', clone: 'https://gitlab.com/example-group/renamed.git' }
+    const refreshed = await agents.refreshGitlabProjectPath(OrgId(DEFAULT_ORG_ID), PROJECT, renamed.path, renamed.clone)
     // Every gitlab-workspace agent on the project drifts, the harness's included.
     expect(refreshed).toContain(agentId)
     const after = await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })
-    expect(after.gitRepo).toBe('https://gitlab.com/example-group/renamed-project')
+    expect(after.gitRepo).toBe(renamed.clone)
     expect(after.configRevision).toBe(before.configRevision + 1n)
     // Idempotent: an unchanged path touches nothing.
-    expect(
-      await agents.refreshGitlabProjectPath(OrgId(DEFAULT_ORG_ID), PROJECT, 'example-group/renamed-project')
-    ).toEqual([])
+    expect(await agents.refreshGitlabProjectPath(OrgId(DEFAULT_ORG_ID), PROJECT, renamed.path, renamed.clone)).toEqual(
+      []
+    )
   })
 
   it('the SAGA converges renamed clone URLs durably, inside the leased run (round 3)', async () => {
@@ -362,7 +362,7 @@ describe('gitlab workspaces — agent create/edit (§8.3)', () => {
     await h.provisioner.convergeProject(DEFAULT_ORG_ID, PROJECT)
     expect((await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))!.state).toBe('ready')
     const row = await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })
-    expect(row.gitRepo).toBe('https://gitlab.com/example-group/project-renamed')
+    expect(row.gitRepo).toBe('https://gitlab.com/example-group/project-renamed.git')
     expect((await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))!.projectPath).toBe('example-group/project-renamed')
   })
 
@@ -396,7 +396,9 @@ describe('gitlab workspaces — agent create/edit (§8.3)', () => {
       orgId: DEFAULT_ORG_ID,
       projectId: SECOND_PROJECT,
       projectPath: 'example-group/example-second',
-      installerConnectionId: h.connection.id
+      cloneUrl: 'https://gitlab.com/example-group/example-second.git',
+      installerConnectionId: h.connection.id,
+      axisBaseUrl: 'https://gitlab.com'
     })
     expect(await h.provisioner.provision(DEFAULT_ORG_ID, fresh.id)).toEqual({ state: 'ready' })
     expect(await h.accounts.listForBinding(fresh.id)).toHaveLength(0)
@@ -439,7 +441,9 @@ describe('gitlab workspaces — agent create/edit (§8.3)', () => {
       orgId: DEFAULT_ORG_ID,
       projectId: SECOND_PROJECT,
       projectPath: 'example-group/example-second',
-      installerConnectionId: h.connection.id
+      cloneUrl: 'https://gitlab.com/example-group/example-second.git',
+      installerConnectionId: h.connection.id,
+      axisBaseUrl: 'https://gitlab.com'
     })
     await h.provisioner.provision(DEFAULT_ORG_ID, fresh.id)
     const created = await h.a.app.inject({
@@ -470,7 +474,9 @@ describe('gitlab workspaces — agent create/edit (§8.3)', () => {
       orgId: DEFAULT_ORG_ID,
       projectId: SECOND_PROJECT,
       projectPath: 'example-group/example-second',
-      installerConnectionId: h.connection.id
+      cloneUrl: 'https://gitlab.com/example-group/example-second.git',
+      installerConnectionId: h.connection.id,
+      axisBaseUrl: 'https://gitlab.com'
     })
     const before = h.account
     expect(before.serviceAccountUserId).not.toBeNull()
@@ -652,7 +658,9 @@ describe('additional GitLab project authorizations (§8.3/§13.1)', () => {
       orgId: DEFAULT_ORG_ID,
       projectId: SECOND_PROJECT,
       projectPath: 'example-group/example-second',
-      installerConnectionId: h.connection.id
+      cloneUrl: 'https://gitlab.com/example-group/example-second.git',
+      installerConnectionId: h.connection.id,
+      axisBaseUrl: 'https://gitlab.com'
     })
     expect(await h.provisioner.provision(DEFAULT_ORG_ID, fresh.id)).toEqual({ state: 'ready' })
     expect(await h.accounts.listForBinding(fresh.id)).toHaveLength(0)
@@ -845,7 +853,7 @@ describe('additional GitLab project authorizations (§8.3/§13.1)', () => {
     const after = await prisma.agent.findUniqueOrThrow({ where: { id: AGENT } })
     expect(after.configRevision).toBe(before.configRevision + 1n)
     // The workspace project is a different project: its own path is untouched.
-    expect(after.gitRepo).toBe('https://gitlab.com/example-group/example-project')
+    expect(after.gitRepo).toBe('https://gitlab.com/example-group/example-project.git')
     // Idempotent, exactly as the workspace half is.
     expect(
       await agents.refreshGitlabProjectPath(OrgId(DEFAULT_ORG_ID), SECOND_PROJECT, 'example-group/renamed-second')
@@ -869,12 +877,13 @@ describe('additional GitLab project authorizations (§8.3/§13.1)', () => {
     const before = await prisma.agent.findUniqueOrThrow({ where: { id: AGENT } })
     const agents = new PgAgentRepo(prisma)
 
+    const clone = 'https://gitlab.com/example-group/renamed-project.git'
     expect(
-      await agents.refreshGitlabProjectPath(OrgId(DEFAULT_ORG_ID), PROJECT, 'example-group/renamed-project')
+      await agents.refreshGitlabProjectPath(OrgId(DEFAULT_ORG_ID), PROJECT, 'example-group/renamed-project', clone)
     ).toEqual([AGENT])
     const after = await prisma.agent.findUniqueOrThrow({ where: { id: AGENT } })
     expect(after.configRevision).toBe(before.configRevision + 1n)
-    expect(after.gitRepo).toBe('https://gitlab.com/example-group/renamed-project')
+    expect(after.gitRepo).toBe(clone)
     expect(await grants()).toMatchObject([{ repoFullName: 'example-group/renamed-project' }])
   })
 

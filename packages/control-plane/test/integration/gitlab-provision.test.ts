@@ -12,7 +12,7 @@ import { seedAgent } from '../fixtures/seed.js'
 import { FakeGitlab, type FakeGitlabOptions } from '../fakes/gitlab-api.js'
 import { GitlabOauthService } from '../../src/gitlab/oauth.service.js'
 import { GitlabProvisioner } from '../../src/gitlab/provisioner.js'
-import { gitlabAgentAccountUsername, type GitlabWebhookEvents } from '../../src/gitlab/api.js'
+import { GitlabApiClient, gitlabAgentAccountUsername, type GitlabWebhookEvents } from '../../src/gitlab/api.js'
 import { GitlabAccountService, gitlabAccountUnavailableMessage } from '../../src/gitlab/account.service.js'
 import { PgAgentRepo } from '../../src/persistence/repositories/agent.repo.js'
 import {
@@ -64,14 +64,14 @@ async function harness(
   const credentials = new PgGitlabProjectCredentialRepo(prisma)
   const credentialSecrets = new PgGitlabProjectCredentialSecretStore(prisma, cipher)
   const oauth = new GitlabOauthService({
-    cfg: { clientId: 'client-1', clientSecret: 'secret-1' },
+    cfg: { clientId: 'client-1', clientSecret: 'secret-1', baseUrl: fake.opts.baseUrl },
     connections,
     secrets: new PgGitlabConnectionSecretStore(prisma, cipher),
     states: new PgGitlabOauthStateStore(prisma),
     cipher,
     clock: systemClock,
     publicCpUrl: 'https://api.example.test',
-    fetchImpl: fake.fetch()
+    api: fake.api
   })
   const accountService = new GitlabAccountService({
     oauth,
@@ -85,7 +85,7 @@ async function harness(
       avatarRenders.push(agent.id)
       return AVATAR_PNG
     },
-    fetchImpl: fake.fetch()
+    api: fake.api
   })
   const buildProvisioner = (): GitlabProvisioner =>
     new GitlabProvisioner({
@@ -97,7 +97,7 @@ async function harness(
       clock: systemClock,
       publicRelayUrl: 'https://relay.example.test',
       desiredWebhookEvents: async () => webhookEvents,
-      fetchImpl: fake.fetch()
+      api: fake.api
     })
   const provisioner = buildProvisioner()
   const connection = await connections.upsertOnCallback({
@@ -107,13 +107,15 @@ async function harness(
     gitlabUsername: 'example-admin',
     scopes: ['api'],
     accessExpiresAt: new Date(Date.now() + 3600_000),
-    sealedPair: { accessToken: 'at-1', refreshToken: 'rt-1' }
+    sealedPair: { accessToken: 'at-1', refreshToken: 'rt-1' },
+    axisBaseUrl: 'https://gitlab.com'
   })
   const binding = await bindings.createWithClaim({
     orgId: DEFAULT_ORG_ID,
     projectId: PROJECT,
     projectPath: 'example-group/example-project',
-    installerConnectionId: connection.id
+    installerConnectionId: connection.id,
+    axisBaseUrl: 'https://gitlab.com'
   })
   for (const agent of agents) {
     await seedAgent(prisma, agent.id, {
@@ -153,7 +155,8 @@ async function seedAccountRow(h: Awaited<ReturnType<typeof harness>>, username: 
     agentId: AGENT,
     rootGroupId: ROOT_GROUP,
     username,
-    administeringConnectionId: h.connection.id
+    administeringConnectionId: h.connection.id,
+    axisBaseUrl: 'https://gitlab.com'
   })
   return (await h.accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP))!
 }
@@ -403,7 +406,8 @@ describe('GitlabProvisioner (§10.2) — per-agent identity', () => {
       orgId: DEFAULT_ORG_ID,
       projectId: SECOND_PROJECT,
       projectPath: 'example-group/example-second',
-      installerConnectionId: h.connection.id
+      installerConnectionId: h.connection.id,
+      axisBaseUrl: 'https://gitlab.com'
     })
     await prisma.agent.update({ where: { id: AGENT }, data: { workspaceRepoId: SECOND_PROJECT } })
 
@@ -559,9 +563,9 @@ describe('GitlabProvisioner (§10.2) — per-agent identity', () => {
       agents: new PgAgentRepo(prisma),
       cipher,
       clock: systemClock,
-      fetchImpl: async () => {
+      api: new GitlabApiClient(h.fake.opts.baseUrl, async () => {
         throw new Error('connect ECONNREFUSED')
-      }
+      })
     })
     await offline.sweepPendingRetirements(0)
     expect((await h.accounts.get(account.id))?.stateReason).toBe('gitlab_unreachable')
@@ -685,7 +689,8 @@ describe('GitlabProvisioner (§10.2) — per-agent identity', () => {
         orgId: DEFAULT_ORG_ID,
         projectId: SECOND_PROJECT,
         projectPath: 'example-group/example-second',
-        installerConnectionId: h.connection.id
+        installerConnectionId: h.connection.id,
+        axisBaseUrl: 'https://gitlab.com'
       })
 
       const [, bound] = await Promise.all([
@@ -856,7 +861,8 @@ describe('GitlabProvisioner (§10.2) — per-agent identity', () => {
       orgId: DEFAULT_ORG_ID,
       projectId: SECOND_PROJECT,
       projectPath: 'example-group/example-second',
-      installerConnectionId: h.connection.id
+      installerConnectionId: h.connection.id,
+      axisBaseUrl: 'https://gitlab.com'
     })
     // One agent consuming both projects in the same root: both convergences want
     // the SAME account mutation lease, which is what a bot-level repair triggers.
@@ -938,7 +944,8 @@ describe('GitlabProvisioner (§10.2) — per-agent identity', () => {
       gitlabUsername: 'example-taker',
       scopes: ['api'],
       accessExpiresAt: new Date(Date.now() + 3600_000),
-      sealedPair: { accessToken: 'at-taker', refreshToken: 'rt-taker' }
+      sealedPair: { accessToken: 'at-taker', refreshToken: 'rt-taker' },
+      axisBaseUrl: 'https://gitlab.com'
     })
     h.fake.members.set(7007, 50)
     expect(await h.provisioner.transfer(DEFAULT_ORG_ID, h.binding.id, { id: taker.id, gitlabUserId: 7007n })).toEqual({

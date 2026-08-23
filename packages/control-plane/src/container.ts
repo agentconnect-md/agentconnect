@@ -23,7 +23,7 @@ import {
 import { type AppConfig, resolveWebAppUrl } from './config/env.js'
 import { resolveGithubAppConfig } from './github/config.js'
 import { resolveGitlabAppConfig } from './gitlab/config.js'
-import type { FetchLike as GitlabFetchLike } from './gitlab/api.js'
+import { GitlabApiClient, type FetchLike as GitlabFetchLike } from './gitlab/api.js'
 import { GitlabOauthService } from './gitlab/oauth.service.js'
 import { DELETION_PENDING_REASON, GitlabAccountService } from './gitlab/account.service.js'
 import { GitlabProvisioner } from './gitlab/provisioner.js'
@@ -686,6 +686,9 @@ export function buildContainer(
   // GitLab OAuth app config resolves here (not at the service block below) so the
   // hook compiler can receive its gitlab-kind sources; absent ⇒ gitlab hooks never compile.
   const gitlabAppCfg = resolveGitlabAppConfig(config)
+  // §24.1: the resolved instance base, bound once here. Every GitLab URL in the
+  // process is composed from this client, so nothing can address another host.
+  const gitlabApi = gitlabAppCfg ? new GitlabApiClient(gitlabAppCfg.baseUrl, opts.gitlabFetch) : undefined
   const gitlabWebhookSecretStore = gitlabAppCfg ? new PgGitlabWebhookSecretStore(prisma, secretCipher) : undefined
   const hookService = new HookService(
     repos.hook,
@@ -976,7 +979,7 @@ export function buildContainer(
           clock,
           publicCpUrl: config.PUBLIC_CP_URL,
           ...(gitlabWebAppUrl ? { webAppUrl: gitlabWebAppUrl } : {}),
-          ...(opts.gitlabFetch ? { fetchImpl: opts.gitlabFetch } : {}),
+          api: gitlabApi!,
           log: { warn: (obj, msg) => http.log.warn(obj, msg) }
         })
       : undefined
@@ -1005,13 +1008,13 @@ export function buildContainer(
             }
           })().catch((err) => http.log.warn({ err, orgId }, 'gitlab removal resume after retirement failed'))
         },
-        ...(opts.gitlabFetch ? { fetchImpl: opts.gitlabFetch } : {}),
+        api: gitlabApi!,
         log: { warn: (obj, msg) => http.log.warn(obj, msg) }
       })
     : undefined
   const gitlab = gitlabOauthService
     ? {
-        ...(opts.gitlabFetch ? { fetchImpl: opts.gitlabFetch } : {}),
+        api: gitlabApi!,
         oauth: gitlabOauthService,
         // The Console "Run again" action (§16.1) — fences here, dispatch on the relay.
         hookRerun: new GitlabHookRerunService({
@@ -1023,7 +1026,7 @@ export function buildContainer(
           credentialSecrets: new PgGitlabProjectCredentialSecretStore(prisma, secretCipher),
           hookService,
           relayControl,
-          ...(opts.gitlabFetch ? { fetchImpl: opts.gitlabFetch } : {})
+          api: gitlabApi!
         }),
         accounts: gitlabAccountService!,
         provisioner: new GitlabProvisioner({
@@ -1039,8 +1042,8 @@ export function buildContainer(
             unionGitlabWebhookEvents(await repos.hook.listForOrgKind(OrgId(orgId), 'gitlab'), projectId),
           // Awaited under the run lease (§17.3 round 3): the durable clone-URL
           // convergence rides the saga; only the daemon fan-out stays async.
-          syncWorkspacePaths: async (orgId, projectId, projectPath) => {
-            const agentIds = await repos.agent.refreshGitlabProjectPath(OrgId(orgId), projectId, projectPath)
+          syncWorkspacePaths: async (orgId, projectId, projectPath, cloneUrl) => {
+            const agentIds = await repos.agent.refreshGitlabProjectPath(OrgId(orgId), projectId, projectPath, cloneUrl)
             for (const agentId of agentIds) {
               void repos.agent
                 .getUnscoped(agentId)
@@ -1067,7 +1070,7 @@ export function buildContainer(
               }
             })().catch((err) => http.log.warn({ err }, 'gitlab converge fan-out failed'))
           },
-          ...(opts.gitlabFetch ? { fetchImpl: opts.gitlabFetch } : {}),
+          api: gitlabApi!,
           log: { warn: (obj, msg) => http.log.warn(obj, msg) }
         })
       }
@@ -1113,7 +1116,7 @@ export function buildContainer(
         credentials: new PgGitlabProjectCredentialRepo(prisma),
         credentialSecrets: new PgGitlabProjectCredentialSecretStore(prisma, secretCipher),
         clock,
-        ...(opts.gitlabFetch ? { fetchImpl: opts.gitlabFetch } : {})
+        api: gitlabApi!
       })
     : undefined
 

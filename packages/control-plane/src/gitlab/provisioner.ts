@@ -38,7 +38,7 @@ import {
   gitlabTestWebhook,
   gitlabUpdateWebhook,
   membershipSatisfies,
-  type FetchLike,
+  type GitlabApiClient,
   type GitlabProjectWithNamespace,
   type GitlabWebhookEvents
 } from './api.js'
@@ -69,6 +69,14 @@ export type ProvisionOutcome =
   // A live peer owns the claim (provisioning or cleanup in progress): nothing
   // was written and no binding state was overwritten; the caller observes.
   | { state: 'busy'; reason: string }
+
+/** The project's live facts as the lease's own read answered them: the current
+ *  path, and the provider's `http_url_to_repo`, which is the ONLY clone URL —
+ *  it is host-correct on any instance, so nothing composes one (§24.1). */
+export interface GitlabLiveProject {
+  projectPath: string
+  cloneUrl?: string
+}
 
 /** One agent's identity provisioned ahead of a write that will act as it, and
  *  that write's own result. The reason is the account's own repair category
@@ -117,14 +125,15 @@ export interface GitlabProvisionerDeps {
   publicRelayUrl?: string
   /** The enabled-hook event union for a project; null ⇒ no webhook wanted (§10.3). */
   desiredWebhookEvents: (orgId: string, projectId: bigint) => Promise<GitlabWebhookEvents | null>
-  /** AWAITED mid-run under the lease: converge dependent workspace clone URLs
-   *  to the freshly read canonical path (agents keyed by this project id). */
-  syncWorkspacePaths?: (orgId: string, projectId: bigint, projectPath: string) => Promise<void>
+  /** AWAITED mid-run under the lease: converge dependent workspace clone URLs to
+   *  the freshly read canonical facts. `cloneUrl` is the provider's own
+   *  `http_url_to_repo` — never composed (§24.1). */
+  syncWorkspacePaths?: (orgId: string, projectId: bigint, projectPath: string, cloneUrl?: string) => Promise<void>
   /** Fired after any run that may have changed binding/webhook facts — the
    *  container rebroadcasts the project's compiled hook rules (assign or
    *  remove) so relays never keep a rule built from stale facts. */
   onConverged?: (orgId: string, projectId: bigint) => void
-  fetchImpl?: FetchLike
+  api: GitlabApiClient
   log?: { warn(obj: object, msg: string): void }
 }
 
@@ -304,7 +313,7 @@ export class GitlabProvisioner {
     orgId: string,
     projectId: bigint,
     consumer: GitlabAccountConsumer,
-    commit: (live: { projectPath: string }) => Promise<T>
+    commit: (live: GitlabLiveProject) => Promise<T>
   ): Promise<AgentAccountOutcome<T>> {
     const deadline = this.deps.clock.now() + AGENT_ACCOUNT_BUDGET_MS
     let outcome = await this.agentAccountAttempt(orgId, projectId, consumer, commit)
@@ -351,14 +360,14 @@ export class GitlabProvisioner {
       ...(project.http_url_to_repo ? { cloneUrl: project.http_url_to_repo } : {}),
       ...(project.default_branch ? { defaultBranch: project.default_branch } : {})
     })
-    await this.deps.syncWorkspacePaths?.(orgId, projectId, project.path_with_namespace)
+    await this.deps.syncWorkspacePaths?.(orgId, projectId, project.path_with_namespace, project.http_url_to_repo)
   }
 
   private async agentAccountAttempt<T>(
     orgId: string,
     projectId: bigint,
     consumer: GitlabAccountConsumer,
-    commit: (live: { projectPath: string }) => Promise<T>
+    commit: (live: GitlabLiveProject) => Promise<T>
   ): Promise<AgentAccountOutcome<T>> {
     const binding = await this.deps.bindings.byProject(orgId, projectId)
     if (!binding || binding.state === 'cleanup_pending') {
@@ -384,7 +393,7 @@ export class GitlabProvisioner {
     let scope: { orgId: string; bindingId: string; projectId: bigint; rootGroupId: bigint; token: string } | undefined
     // The provider's own current answer, handed to `commit` so the row it writes
     // carries the live path rather than the caller's pre-lease capture.
-    let livePath = binding.projectPath
+    let live: GitlabLiveProject = { projectPath: binding.projectPath }
     try {
       let ensured: { ok: true } | { ok: false; reason: string; retryable: boolean }
       try {
@@ -392,7 +401,7 @@ export class GitlabProvisioner {
         const project = (await gitlabProject(
           token,
           binding.projectId,
-          this.deps.fetchImpl
+          this.deps.api
         )) as GitlabProjectWithNamespace | null
         if (!project?.namespace) return { ok: false, reason: 'project_not_accessible', retryable: false }
         // The path this read answers with is the CURRENT one; a caller committing a
@@ -400,8 +409,11 @@ export class GitlabProvisioner {
         // Converging the replicas here first means the binding, the catalog, the
         // projected paths, and the row `commit` writes all agree on one answer.
         await this.syncProjectFacts(orgId, binding.id, binding.projectId, project)
-        livePath = project.path_with_namespace
-        const root = await gitlabRootNamespace(token, project.namespace, this.deps.fetchImpl)
+        live = {
+          projectPath: project.path_with_namespace,
+          ...(project.http_url_to_repo ? { cloneUrl: project.http_url_to_repo } : {})
+        }
+        const root = await gitlabRootNamespace(token, project.namespace, this.deps.api)
         // Service accounts hang off a top-level GROUP; a personal namespace has none (§5).
         if (root.kind !== 'group') return { ok: false, reason: 'personal_namespace_unsupported', retryable: false }
         scope = {
@@ -431,7 +443,7 @@ export class GitlabProvisioner {
       // STILL under the binding lease: the authorization row and the membership
       // become visible to convergence together, never one without the other.
       try {
-        const result = await commit({ projectPath: livePath })
+        const result = await commit(live)
         // The commit just made a new account and membership visible — and, after a
         // rename, a new path. Compiled rules bake the project's bound
         // service-account ids into their §12.1 veto set, and push events are
@@ -496,7 +508,7 @@ export class GitlabProvisioner {
         token,
         binding.projectId,
         connection.gitlabUserId,
-        this.deps.fetchImpl
+        this.deps.api
       )
       if (!membershipSatisfies(membership, GITLAB_ACCESS_MAINTAINER, this.deps.clock.now())) {
         return { outcome: 'not_maintainer' }
@@ -593,13 +605,13 @@ export class GitlabProvisioner {
     token: string,
     owner: string
   ): Promise<ProvisionOutcome> {
-    const { fetchImpl } = this.deps
+    const { api } = this.deps
     // 1. Refresh the mutable facts by numeric id (rename-proof, §10.2 step 1).
-    const project = (await gitlabProject(token, binding.projectId, fetchImpl)) as GitlabProjectWithNamespace | null
+    const project = (await gitlabProject(token, binding.projectId, api)) as GitlabProjectWithNamespace | null
     if (!project) return { state: 'admin_degraded', reason: 'project_not_accessible' }
     await this.syncProjectFacts(orgId, binding.id, binding.projectId, project)
     if (!project.namespace) return { state: 'admin_degraded', reason: 'project_namespace_unknown' }
-    const root = await gitlabRootNamespace(token, project.namespace, fetchImpl)
+    const root = await gitlabRootNamespace(token, project.namespace, api)
     // Service accounts hang off a top-level GROUP; a personal namespace has none (§5).
     if (root.kind !== 'group') return { state: 'admin_degraded', reason: 'personal_namespace_unsupported' }
 
@@ -632,7 +644,7 @@ export class GitlabProvisioner {
       if (!(await this.renewLease(orgId, fresh, owner))) {
         return { state: 'admin_degraded', reason: 'claim_fence_lost' }
       }
-      const hooks = await gitlabListWebhooks(token, binding.projectId, this.deps.fetchImpl)
+      const hooks = await gitlabListWebhooks(token, binding.projectId, this.deps.api)
       const recordedExists = fresh.webhookId !== null && hooks.some((hook) => BigInt(hook.id) === fresh.webhookId)
       if (!recordedExists && fresh.webhookId !== null) {
         // The recorded webhook is gone at the provider: forget it so the
@@ -654,7 +666,7 @@ export class GitlabProvisioner {
           const ours =
             (recordedExists && BigInt(hook.id) === fresh.webhookId) || (url !== undefined && hook.url === url)
           if (!ours) continue
-          await gitlabDeleteWebhook(token, binding.projectId, BigInt(hook.id), this.deps.fetchImpl).catch(swallow404)
+          await gitlabDeleteWebhook(token, binding.projectId, BigInt(hook.id), this.deps.api).catch(swallow404)
         }
         await this.deps.webhookSecrets.delete(orgId, binding.id)
         await this.deps.bindings.update(orgId, binding.id, { webhookId: null, desiredEventsHash: null })
@@ -703,39 +715,33 @@ export class GitlabProvisioner {
       // URL for this project is ours (the URL is this deployment's endpoint) —
       // re-key it in place instead of creating a duplicate. A merely similar
       // URL never matches (§10.3).
-      const existing = (await gitlabListWebhooks(token, binding.projectId, this.deps.fetchImpl)).find(
+      const existing = (await gitlabListWebhooks(token, binding.projectId, this.deps.api)).find(
         (hook) => hook.url === url
       )
       if (existing) {
         webhookId = BigInt(existing.id)
-        await gitlabUpdateWebhook(
-          token,
-          binding.projectId,
-          webhookId,
-          { url, signingToken, events },
-          this.deps.fetchImpl
-        )
+        await gitlabUpdateWebhook(token, binding.projectId, webhookId, { url, signingToken, events }, this.deps.api)
         fresh = false
       } else {
         const created = await gitlabCreateWebhook(
           token,
           binding.projectId,
           { url, signingToken, events },
-          this.deps.fetchImpl
+          this.deps.api
         )
         webhookId = BigInt(created.id)
       }
     } else {
       // Ownership = stored id + marker URL (§10.3); never adopt by URL alone.
       webhookId = binding.webhookId!
-      await gitlabUpdateWebhook(token, binding.projectId, webhookId, { url, signingToken, events }, this.deps.fetchImpl)
+      await gitlabUpdateWebhook(token, binding.projectId, webhookId, { url, signingToken, events }, this.deps.api)
     }
     await this.deps.bindings.update(orgId, binding.id, {
       webhookId,
       desiredEventsHash: JSON.stringify(events)
     })
     if (fresh) {
-      await gitlabTestWebhook(token, binding.projectId, webhookId, 'push_events', this.deps.fetchImpl).catch((e) => {
+      await gitlabTestWebhook(token, binding.projectId, webhookId, 'push_events', this.deps.api).catch((e) => {
         this.deps.log?.warn(
           { bindingId: binding.id, status: e instanceof GitlabApiError ? e.status : undefined },
           'gitlab webhook test delivery failed'
@@ -775,15 +781,15 @@ export class GitlabProvisioner {
     try {
       const token = await this.deps.oauth.withAccessToken(orgId, binding.installerConnectionId)
       if (binding.webhookId !== null) {
-        await gitlabDeleteWebhook(token, binding.projectId, binding.webhookId, this.deps.fetchImpl).catch(swallow404)
+        await gitlabDeleteWebhook(token, binding.projectId, binding.webhookId, this.deps.api).catch(swallow404)
       } else if (this.deps.publicRelayUrl) {
         // A crash-left create may exist without a recorded id: our exact managed
         // URL identifies it (the URL is this deployment's endpoint), so cleanup
         // retires it rather than orphaning it.
         const url = `${this.deps.publicRelayUrl.replace(/\/$/, '')}/webhooks/gitlab`
-        for (const hook of await gitlabListWebhooks(token, binding.projectId, this.deps.fetchImpl)) {
+        for (const hook of await gitlabListWebhooks(token, binding.projectId, this.deps.api)) {
           if (hook.url === url) {
-            await gitlabDeleteWebhook(token, binding.projectId, BigInt(hook.id), this.deps.fetchImpl).catch(swallow404)
+            await gitlabDeleteWebhook(token, binding.projectId, BigInt(hook.id), this.deps.api).catch(swallow404)
           }
         }
       }
