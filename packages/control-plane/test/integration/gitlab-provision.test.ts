@@ -81,6 +81,7 @@ async function harness(
     credentials,
     credentialSecrets,
     agents: new PgAgentRepo(prisma),
+    instanceState: new PgGitlabInstanceStateStore(prisma),
     cipher,
     clock: systemClock,
     avatarPng: async (agent) => {
@@ -564,6 +565,7 @@ describe('GitlabProvisioner (§10.2) — per-agent identity', () => {
       credentials: h.credentials,
       credentialSecrets: h.credentialSecrets,
       agents: new PgAgentRepo(prisma),
+      instanceState: new PgGitlabInstanceStateStore(prisma),
       cipher,
       clock: systemClock,
       api: new GitlabApiClient(h.fake.opts.baseUrl, async () => {

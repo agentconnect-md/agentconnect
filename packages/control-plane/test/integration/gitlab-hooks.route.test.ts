@@ -86,6 +86,7 @@ async function harness(options: FakeGitlabOptions = {}) {
     credentials: new PgGitlabProjectCredentialRepo(prisma),
     credentialSecrets: new PgGitlabProjectCredentialSecretStore(prisma, cipher),
     agents: new PgAgentRepo(prisma),
+    instanceState: new PgGitlabInstanceStateStore(prisma),
     cipher,
     clock: systemClock,
     api: fake.api

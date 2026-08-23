@@ -56,6 +56,7 @@ afterEach(async () => {
 function app(version: string): HttpApp & {
   fake: FakeGitlab
   provisioner: GitlabProvisioner
+  accountService: GitlabAccountService
   settled: () => Promise<void>
 } {
   const fake = new FakeGitlab({
@@ -68,6 +69,7 @@ function app(version: string): HttpApp & {
   })
   const instanceState = new PgGitlabInstanceStateStore(prisma)
   const bindings = new PgGitlabProjectBindingRepo(prisma)
+  const credentials = new PgGitlabProjectCredentialRepo(prisma)
   const oauth = new GitlabOauthService({
     cfg: { clientId: 'client-1', clientSecret: 'secret-1', baseUrl: INSTANCE },
     connections: new PgGitlabConnectionRepo(prisma),
@@ -83,9 +85,10 @@ function app(version: string): HttpApp & {
   const accounts = new GitlabAccountService({
     oauth,
     accounts: new PgGitlabAgentAccountRepo(prisma),
-    credentials: new PgGitlabProjectCredentialRepo(prisma),
+    credentials,
     credentialSecrets: new PgGitlabProjectCredentialSecretStore(prisma, cipher),
     agents: new PgAgentRepo(prisma),
+    instanceState,
     cipher,
     clock: systemClock,
     api: fake.api
@@ -122,7 +125,7 @@ function app(version: string): HttpApp & {
   running = buildHttpApp(prisma, { PUBLIC_CP_URL: PUBLIC_CP }, undefined, undefined, {
     gitlab: { oauth, provisioner, accounts, api: fake.api }
   })
-  return { ...running, fake, provisioner, settled }
+  return { ...running, fake, provisioner, accountService: accounts, settled }
 }
 
 /** The OAuth three-hop, returning the final console redirect it landed on. */
@@ -272,5 +275,40 @@ describe('the GitLab version floor (§24.2)', () => {
     expect(second.agentStatus).toBe(409)
     expect(second.agentMessage).toContain(INSTANCE_VERSION_UNSUPPORTED_REASON)
     expect(a.fake.serviceAccounts).toEqual(accountsAtProvider)
+  })
+
+  it('refuses to rotate a PAT on a downgraded instance, so runtime authority still expires', async () => {
+    const a = app(AT_FLOOR)
+    await connect(a)
+    const connection = await prisma.gitlabConnection.findFirstOrThrow({ where: { orgId: DEFAULT_ORG_ID } })
+    await bind(a, connection.id, PROJECT, 'rotation-bot')
+    await a.settled()
+    const before = await prisma.gitlabProjectCredential.findFirstOrThrow({
+      where: { account: { orgId: DEFAULT_ORG_ID } }
+    })
+    // Bring the credential inside the rotation horizon so the sweep is due.
+    await prisma.gitlabProjectCredential.update({
+      where: { id: before.id },
+      data: { providerExpiresAt: new Date(Date.now() + 3 * 86_400_000) }
+    })
+    const tokensAtProvider = a.fake.tokens.size
+
+    a.fake.version = BELOW_FLOOR
+    await a.accountService.rotateDueCredentials(14 * 86_400_000)
+
+    // Rotation mints a NEW long-lived PAT, so refusing it is what keeps the
+    // degradation bounded by the existing credential's own expiry (§19.1).
+    expect(a.fake.tokens.size).toBe(tokensAtProvider)
+    const after = await prisma.gitlabProjectCredential.findUniqueOrThrow({ where: { id: before.id } })
+    expect(after.generation).toBe(before.generation)
+    expect(after.externalTokenId).toBe(before.externalTokenId)
+    expect(a.fake.tokens.get(Number(before.externalTokenId))!.revoked).toBe(false)
+    expect(await prisma.gitlabAgentAccount.findUniqueOrThrow({ where: { id: before.accountId } })).toMatchObject({
+      state: 'admin_degraded',
+      stateReason: `rotation_${INSTANCE_VERSION_UNSUPPORTED_REASON}`
+    })
+    expect(await prisma.gitlabInstanceState.findUnique({ where: { baseUrl: INSTANCE } })).toMatchObject({
+      version: BELOW_FLOOR
+    })
   })
 })

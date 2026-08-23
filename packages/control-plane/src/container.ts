@@ -998,6 +998,7 @@ export function buildContainer(
         credentials: new PgGitlabProjectCredentialRepo(prisma),
         credentialSecrets: new PgGitlabProjectCredentialSecretStore(prisma, secretCipher),
         agents: repos.agent,
+        instanceState: repos.gitlabInstanceState,
         cipher: secretCipher,
         clock,
         avatarPng: createGitlabAccountAvatarRenderer(iconStore),

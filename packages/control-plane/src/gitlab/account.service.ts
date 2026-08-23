@@ -26,6 +26,7 @@ import type {
   GitlabAgentAccountRecord,
   GitlabAgentAccountRepo,
   GitlabCredentialPurpose,
+  GitlabInstanceStateRepo,
   GitlabProjectCredentialRepo,
   GitlabProjectCredentialSecretStore
 } from '../persistence/ports.js'
@@ -49,6 +50,8 @@ import {
 } from './api.js'
 import { GitlabEffectBroker, type GitlabEffectOutcome } from './effect-broker.js'
 import type { GitlabOauthService } from './oauth.service.js'
+import { observeInstanceVersion } from './instance-version.js'
+import { INSTANCE_VERSION_UNSUPPORTED_REASON, type GitlabInstanceVersion } from './version.js'
 
 /** The exclusive account lease a run holds across its provider writes. */
 export const ACCOUNT_LEASE_MS = 5 * 60 * 1000
@@ -161,6 +164,8 @@ export interface GitlabAccountServiceDeps {
   credentials: GitlabProjectCredentialRepo
   credentialSecrets: GitlabProjectCredentialSecretStore
   agents: Pick<AgentRepo, 'getUnscoped'>
+  /** §24.2: rotation mints new PATs, so it re-reads and records the floor too. */
+  instanceState: GitlabInstanceStateRepo
   cipher: SecretCipher
   clock: Clock
   /** Renders the agent's icon as the PNG its account wears (§7.2). Absent ⇒ the
@@ -830,6 +835,10 @@ export class GitlabAccountService {
   async rotateDueCredentials(horizonMs: number): Promise<void> {
     const due = await this.deps.credentials.listExpiring(new Date(this.deps.clock.now() + horizonMs))
     const failed = new Set<string>()
+    // §24.2: rotation mints a NEW long-lived PAT, so a downgraded instance must
+    // stop getting them — otherwise runtime authority is extended past the
+    // expiry the bounded degradation of §19.1 rests on. Observed once per sweep.
+    let instance: GitlabInstanceVersion | undefined
     for (const { credential, orgId } of due) {
       if (failed.has(credential.accountId)) continue
       const account = await this.deps.accounts.get(credential.accountId)
@@ -851,6 +860,17 @@ export class GitlabAccountService {
       }
       try {
         const token = await this.deps.oauth.withAccessToken(orgId, account.administeringConnectionId)
+        instance ??= await observeInstanceVersion(this.deps, token)
+        if (!instance.supported) {
+          failed.add(account.id)
+          // `rotation_`-prefixed like every other rotation reason, so an upgrade
+          // heals it on the next successful sweep.
+          await this.deps.accounts.update(account.id, {
+            state: 'admin_degraded',
+            stateReason: `rotation_${INSTANCE_VERSION_UNSUPPORTED_REASON}`
+          })
+          continue
+        }
         // Revalidate UNDER the lease: the worklist is a pre-lease snapshot, so a
         // peer sweep may have rotated this row already. The reloaded predecessor
         // (never the snapshot's) is what gets revoked.

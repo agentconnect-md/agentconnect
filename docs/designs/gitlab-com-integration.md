@@ -2382,11 +2382,13 @@ Merge order, GitLab.com green at every step:
   deployment-level instance state keyed by the normalized base URL, so a
   re-target after a full disconnect cannot inherit another instance's version;
   the connection DTO carries `instanceUrl` and `instanceVersion` off it. The
-  reconciliation pass re-reads and re-records it, and the refusal sits at the top
-  of both provisioning entry points — the binding convergence and the inline
-  pre-activation account ensure — so a downgraded instance stops getting new
-  accounts, credentials, and webhooks while everything already provisioned keeps
-  serving until its credentials expire. On the Setup Server the probe runs when
+  reconciliation pass re-reads and re-records it, and the refusal sits at every
+  point that creates provider state: the binding convergence, the inline
+  pre-activation account ensure, and the PAT rotation sweep — rotation mints a
+  new long-lived token, so leaving it ungated would extend runtime authority past
+  the expiry this bound rests on. A downgraded instance therefore stops getting
+  new accounts, credentials, and webhooks while everything already provisioned
+  keeps serving until it expires. On the Setup Server the probe runs when
   the base URL is saved, and only `invalid_url` refuses the save; `unreachable`,
   `tls_untrusted`, and `not_a_gitlab_api_root` are returned with the saved
   revision as warnings.
