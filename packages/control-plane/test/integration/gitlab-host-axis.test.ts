@@ -9,7 +9,7 @@ import { describe, expect, it, afterEach } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
 import { seedAgent } from '../fixtures/seed.js'
-import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
+import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { FakeGitlab } from '../fakes/gitlab-api.js'
 import { GitlabOauthService } from '../../src/gitlab/oauth.service.js'
@@ -257,6 +257,70 @@ describe('the base URL is immutable while GitLab state exists (§24.1)', () => {
 
     const moved = await store.replace({ expectedRevision: same.revision, ...retarget })
     expect(moved.values.gitlab?.baseUrl).toBe('https://other.example.test')
+  })
+
+  it('fences the FIRST persisted document against the environment axis', async () => {
+    // The supported no-document configuration: the axis comes from the process
+    // environment, and the live GitLab state below belongs to that instance.
+    const a = app(PREFIXED)
+    await install(a)
+    await a.settled()
+    expect(await prisma.deploymentConfig.findUnique({ where: { id: 1 } })).toBeNull()
+
+    const store = new PgDeploymentConfigStore(prisma, cipher, PREFIXED)
+    const secrets = { 'gitlab.clientSecret': 'secret-1' }
+    // Omitting the base on the first write moves the axis to GitLab.com.
+    await expect(store.replace({ expectedRevision: 0, values: document(null), secrets })).rejects.toMatchObject({
+      code: GITLAB_BASE_URL_LOCKED_REASON
+    })
+    await expect(
+      store.replace({ expectedRevision: 0, values: document('https://other.example.test'), secrets })
+    ).rejects.toMatchObject({ code: GITLAB_BASE_URL_LOCKED_REASON })
+    // Adopting the axis the environment already serves is not a change.
+    const adopted = await store.replace({ expectedRevision: 0, values: document(PREFIXED), secrets })
+    expect(adopted.values.gitlab?.baseUrl).toBe(PREFIXED)
+  })
+
+  it('refuses a GitLab state write whose operation base no longer matches the persisted axis', async () => {
+    // The write side of the fence: the document moved while an operation that
+    // had already composed its provider calls against PREFIXED was in flight.
+    const store = new PgDeploymentConfigStore(prisma, cipher, PREFIXED)
+    const secrets = { 'gitlab.clientSecret': 'secret-1' }
+    const first = await store.replace({ expectedRevision: 0, values: document(PREFIXED), secrets })
+    const moved = await store.replace({
+      expectedRevision: first.revision,
+      values: document('https://other.example.test'),
+      secrets: { 'gitlab.clientSecret': 'secret-2' }
+    })
+    expect(moved.values.gitlab?.baseUrl).toBe('https://other.example.test')
+
+    const connections = new PgGitlabConnectionRepo(prisma)
+    const stale = {
+      orgId: DEFAULT_ORG_ID,
+      userId: DEFAULT_OWNER_ID,
+      gitlabUserId: 4242n,
+      gitlabUsername: 'example-admin',
+      scopes: ['api'],
+      accessExpiresAt: null,
+      sealedPair: { accessToken: 'at-1', refreshToken: 'rt-1' },
+      axisBaseUrl: PREFIXED
+    }
+    await expect(connections.upsertOnCallback(stale)).rejects.toMatchObject({ code: 'gitlab_base_url_changed' })
+    expect(await prisma.gitlabConnection.count()).toBe(0)
+
+    // Same fence on the binding side, where the numeric project id is host-relative.
+    const live = await connections.upsertOnCallback({ ...stale, axisBaseUrl: 'https://other.example.test' })
+    await expect(
+      new PgGitlabProjectBindingRepo(prisma).createWithClaim({
+        orgId: DEFAULT_ORG_ID,
+        projectId: PROJECT,
+        projectPath: 'example-group/example-project',
+        installerConnectionId: live.id,
+        axisBaseUrl: PREFIXED
+      })
+    ).rejects.toMatchObject({ code: 'gitlab_base_url_changed' })
+    expect(await prisma.gitlabProjectBinding.count()).toBe(0)
+    expect(await prisma.codeHostRepositoryClaim.count()).toBe(0)
   })
 
   it('requires the client secret again, because a new instance is a new application', async () => {

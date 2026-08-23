@@ -439,7 +439,8 @@ export function gitlabRoutes(deps: HttpDeps) {
             projectPath: project.path_with_namespace,
             ...(project.default_branch ? { defaultBranch: project.default_branch } : {}),
             ...(project.http_url_to_repo ? { cloneUrl: project.http_url_to_repo } : {}),
-            installerConnectionId: connection.id
+            installerConnectionId: connection.id,
+            axisBaseUrl: gitlab.api.baseUrl
           })
           // The §10.2 saga converges the external resources; the binding records
           // the outcome state either way and repair re-runs it.

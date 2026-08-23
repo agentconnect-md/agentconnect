@@ -2364,9 +2364,14 @@ Merge order, GitLab.com green at every step:
   immutability fence, the API client bound to the resolved base, the three
   synthesized clone URLs deleted. Exit: axis unset composes byte-identical
   URLs; a prefixed non-default-port host keeps prefix and port everywhere.
-  `gitlab_base_url_locked` is the fence's named reason, raised inside the
-  deployment-document write's own lock; a `disconnected` connection row is
-  credential-free history and does not hold the axis.
+  The fence is two-sided on one advisory key: the document writer holds it
+  exclusively around its state count and refuses with `gitlab_base_url_locked`
+  — comparing against the axis in effect now, which for the first persisted
+  document is the environment fallback — while a transaction creating
+  first-of-its-kind GitLab state holds it shared and refuses with
+  `gitlab_base_url_changed` if the persisted axis no longer matches the base it
+  composed against. A `disconnected` connection row is credential-free history
+  and does not hold the axis.
 - **N1 — the floor.** Version parsing, `instance_version_unsupported`, the
   Setup Server probe.
 - **N2 — protocol carriage.** `gitlabHost` on the agent spec, derived from

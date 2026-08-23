@@ -124,14 +124,16 @@ async function harness(liveness?: DaemonLiveness) {
     gitlabUsername: 'example-admin',
     scopes: ['api'],
     accessExpiresAt: new Date(Date.now() + 3600_000),
-    sealedPair: { accessToken: 'at-1', refreshToken: 'rt-1' }
+    sealedPair: { accessToken: 'at-1', refreshToken: 'rt-1' },
+    axisBaseUrl: 'https://gitlab.com'
   })
   const binding = await bindings.createWithClaim({
     orgId: DEFAULT_ORG_ID,
     projectId: PROJECT,
     projectPath: 'example-group/example-project',
     cloneUrl: 'https://gitlab.com/example-group/example-project.git',
-    installerConnectionId: connection.id
+    installerConnectionId: connection.id,
+    axisBaseUrl: 'https://gitlab.com'
   })
   // The consuming agent exists BEFORE convergence, so the run gives it its own
   // account and project membership (§7.2) — the grants below resolve through it.
@@ -395,7 +397,8 @@ describe('gitlab workspaces — agent create/edit (§8.3)', () => {
       projectId: SECOND_PROJECT,
       projectPath: 'example-group/example-second',
       cloneUrl: 'https://gitlab.com/example-group/example-second.git',
-      installerConnectionId: h.connection.id
+      installerConnectionId: h.connection.id,
+      axisBaseUrl: 'https://gitlab.com'
     })
     expect(await h.provisioner.provision(DEFAULT_ORG_ID, fresh.id)).toEqual({ state: 'ready' })
     expect(await h.accounts.listForBinding(fresh.id)).toHaveLength(0)
@@ -439,7 +442,8 @@ describe('gitlab workspaces — agent create/edit (§8.3)', () => {
       projectId: SECOND_PROJECT,
       projectPath: 'example-group/example-second',
       cloneUrl: 'https://gitlab.com/example-group/example-second.git',
-      installerConnectionId: h.connection.id
+      installerConnectionId: h.connection.id,
+      axisBaseUrl: 'https://gitlab.com'
     })
     await h.provisioner.provision(DEFAULT_ORG_ID, fresh.id)
     const created = await h.a.app.inject({
@@ -471,7 +475,8 @@ describe('gitlab workspaces — agent create/edit (§8.3)', () => {
       projectId: SECOND_PROJECT,
       projectPath: 'example-group/example-second',
       cloneUrl: 'https://gitlab.com/example-group/example-second.git',
-      installerConnectionId: h.connection.id
+      installerConnectionId: h.connection.id,
+      axisBaseUrl: 'https://gitlab.com'
     })
     const before = h.account
     expect(before.serviceAccountUserId).not.toBeNull()
@@ -654,7 +659,8 @@ describe('additional GitLab project authorizations (§8.3/§13.1)', () => {
       projectId: SECOND_PROJECT,
       projectPath: 'example-group/example-second',
       cloneUrl: 'https://gitlab.com/example-group/example-second.git',
-      installerConnectionId: h.connection.id
+      installerConnectionId: h.connection.id,
+      axisBaseUrl: 'https://gitlab.com'
     })
     expect(await h.provisioner.provision(DEFAULT_ORG_ID, fresh.id)).toEqual({ state: 'ready' })
     expect(await h.accounts.listForBinding(fresh.id)).toHaveLength(0)

@@ -25,8 +25,8 @@ import {
   type StoredDeploymentConfigRuntime
 } from '../deployment-config.js'
 
-const DEPLOYMENT_CONFIG_ID = 1
-const DEPLOYMENT_CONFIG_LOCK_KEY = 'agentconnect:deployment-config'
+import { DEPLOYMENT_CONFIG_ID, lockAxisExclusive } from './gitlab-axis.js'
+import { GITLAB_DEFAULT_BASE_URL, normalizeGitlabBaseUrl } from '../../gitlab/config.js'
 
 const adminSelect = {
   schemaVersion: true,
@@ -91,7 +91,18 @@ async function gitlabStateExists(tx: Prisma.TransactionClient): Promise<boolean>
 }
 
 export class PgDeploymentConfigRepository implements DeploymentConfigPersistence {
-  constructor(private readonly prisma: PrismaClient) {}
+  /** The axis the process-level fallback selects, for the FIRST persisted
+   *  document: with no row, `GITLAB_BASE_URL` is what the running deployment
+   *  already serves, so it — not GitLab.com — is what a first write must match. */
+  private readonly envGitlabBaseUrl: string
+
+  constructor(
+    private readonly prisma: PrismaClient,
+    envGitlabBaseUrl?: string
+  ) {
+    const raw = envGitlabBaseUrl?.trim()
+    this.envGitlabBaseUrl = raw ? normalizeGitlabBaseUrl(raw) : GITLAB_DEFAULT_BASE_URL
+  }
 
   async readAdmin(): Promise<StoredDeploymentConfigAdmin | null> {
     const row = await this.prisma.deploymentConfig.findUnique({
@@ -112,10 +123,9 @@ export class PgDeploymentConfigRepository implements DeploymentConfigPersistence
   async replace(input: PreparedDeploymentConfigReplace): Promise<StoredDeploymentConfigAdmin> {
     return withTx(this.prisma, async (tx) => {
       // A row lock cannot serialize the first write because the singleton row
-      // does not exist yet. One stable advisory key covers both create and update.
-      await tx.$queryRaw(
-        Prisma.sql`SELECT pg_advisory_xact_lock(hashtextextended(${DEPLOYMENT_CONFIG_LOCK_KEY}, 0)) IS NULL AS "locked"`
-      )
+      // does not exist yet. One stable advisory key covers both create and
+      // update — and, held exclusively, also excludes GitLab state creation.
+      await lockAxisExclusive(tx)
 
       const current = await tx.deploymentConfig.findUnique({
         where: { id: DEPLOYMENT_CONFIG_ID },
@@ -127,14 +137,13 @@ export class PgDeploymentConfigRepository implements DeploymentConfigPersistence
       }
 
       const previousValues = current ? parseDeploymentConfigValues(current.schemaVersion, current.values) : null
-      if (previousValues) {
-        // §24.1: inside the same advisory lock as the revision check, so a
-        // concurrent connect cannot slip past a retarget it should have blocked.
-        const previousBaseUrl = effectiveGitlabBaseUrl(previousValues)
-        const nextBaseUrl = effectiveGitlabBaseUrl(input.values)
-        if (previousBaseUrl !== nextBaseUrl && (await gitlabStateExists(tx))) {
-          throw new DeploymentConfigGitlabBaseUrlLockedError(previousBaseUrl, nextBaseUrl)
-        }
+      // §24.1, under the exclusive lock taken above so no GitLab state can be
+      // created alongside this count. The baseline is the axis in effect NOW,
+      // which for the first persisted document is the environment fallback.
+      const previousBaseUrl = previousValues ? effectiveGitlabBaseUrl(previousValues) : this.envGitlabBaseUrl
+      const nextBaseUrl = effectiveGitlabBaseUrl(input.values)
+      if (previousBaseUrl !== nextBaseUrl && (await gitlabStateExists(tx))) {
+        throw new DeploymentConfigGitlabBaseUrlLockedError(previousBaseUrl, nextBaseUrl)
       }
       const refreshKeys = previousValues ? deploymentSecretsRequiringRefresh(previousValues, input.values) : []
       const missingRefresh = refreshKeys.filter((key) => !input.secrets[key])
@@ -211,7 +220,7 @@ export class PgDeploymentConfigRepository implements DeploymentConfigPersistence
 
 /** Composition convenience used by the CP container and tests. */
 export class PgDeploymentConfigStore extends DeploymentConfigService {
-  constructor(prisma: PrismaClient, cipher: SecretCipher) {
-    super(new PgDeploymentConfigRepository(prisma), cipher)
+  constructor(prisma: PrismaClient, cipher: SecretCipher, envGitlabBaseUrl?: string) {
+    super(new PgDeploymentConfigRepository(prisma, envGitlabBaseUrl), cipher)
   }
 }

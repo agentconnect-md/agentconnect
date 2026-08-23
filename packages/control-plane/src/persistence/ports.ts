@@ -3265,6 +3265,8 @@ export interface GitlabConnectionRepo {
     scopes: string[]
     accessExpiresAt: Date | null
     sealedPair: GitlabSealedTokenPair
+    /** The instance this pair was minted on; the write joins the §24.1 axis fence with it. */
+    axisBaseUrl: string
   }): Promise<GitlabConnectionRecord>
   get(orgId: string, connectionId: string): Promise<GitlabConnectionRecord | null>
   listForOrg(orgId: string): Promise<GitlabConnectionRecord[]>
@@ -3346,6 +3348,8 @@ export interface GitlabProjectBindingRepo {
     defaultBranch?: string
     cloneUrl?: string
     installerConnectionId: string
+    /** The instance these host-relative ids came from; joins the §24.1 axis fence. */
+    axisBaseUrl: string
   }): Promise<GitlabProjectBindingRecord>
   get(orgId: string, bindingId: string): Promise<GitlabProjectBindingRecord | null>
   byProject(orgId: string, projectId: bigint): Promise<GitlabProjectBindingRecord | null>

@@ -107,13 +107,15 @@ async function harness(
     gitlabUsername: 'example-admin',
     scopes: ['api'],
     accessExpiresAt: new Date(Date.now() + 3600_000),
-    sealedPair: { accessToken: 'at-1', refreshToken: 'rt-1' }
+    sealedPair: { accessToken: 'at-1', refreshToken: 'rt-1' },
+    axisBaseUrl: 'https://gitlab.com'
   })
   const binding = await bindings.createWithClaim({
     orgId: DEFAULT_ORG_ID,
     projectId: PROJECT,
     projectPath: 'example-group/example-project',
-    installerConnectionId: connection.id
+    installerConnectionId: connection.id,
+    axisBaseUrl: 'https://gitlab.com'
   })
   for (const agent of agents) {
     await seedAgent(prisma, agent.id, {
@@ -403,7 +405,8 @@ describe('GitlabProvisioner (§10.2) — per-agent identity', () => {
       orgId: DEFAULT_ORG_ID,
       projectId: SECOND_PROJECT,
       projectPath: 'example-group/example-second',
-      installerConnectionId: h.connection.id
+      installerConnectionId: h.connection.id,
+      axisBaseUrl: 'https://gitlab.com'
     })
     await prisma.agent.update({ where: { id: AGENT }, data: { workspaceRepoId: SECOND_PROJECT } })
 
@@ -685,7 +688,8 @@ describe('GitlabProvisioner (§10.2) — per-agent identity', () => {
         orgId: DEFAULT_ORG_ID,
         projectId: SECOND_PROJECT,
         projectPath: 'example-group/example-second',
-        installerConnectionId: h.connection.id
+        installerConnectionId: h.connection.id,
+        axisBaseUrl: 'https://gitlab.com'
       })
 
       const [, bound] = await Promise.all([
@@ -856,7 +860,8 @@ describe('GitlabProvisioner (§10.2) — per-agent identity', () => {
       orgId: DEFAULT_ORG_ID,
       projectId: SECOND_PROJECT,
       projectPath: 'example-group/example-second',
-      installerConnectionId: h.connection.id
+      installerConnectionId: h.connection.id,
+      axisBaseUrl: 'https://gitlab.com'
     })
     // One agent consuming both projects in the same root: both convergences want
     // the SAME account mutation lease, which is what a bot-level repair triggers.
@@ -938,7 +943,8 @@ describe('GitlabProvisioner (§10.2) — per-agent identity', () => {
       gitlabUsername: 'example-taker',
       scopes: ['api'],
       accessExpiresAt: new Date(Date.now() + 3600_000),
-      sealedPair: { accessToken: 'at-taker', refreshToken: 'rt-taker' }
+      sealedPair: { accessToken: 'at-taker', refreshToken: 'rt-taker' },
+      axisBaseUrl: 'https://gitlab.com'
     })
     h.fake.members.set(7007, 50)
     expect(await h.provisioner.transfer(DEFAULT_ORG_ID, h.binding.id, { id: taker.id, gitlabUserId: 7007n })).toEqual({

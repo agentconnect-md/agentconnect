@@ -149,13 +149,15 @@ async function harness(options: FakeGitlabOptions = {}) {
     gitlabUsername: 'example-admin',
     scopes: ['api'],
     accessExpiresAt: new Date(Date.now() + 3600_000),
-    sealedPair: { accessToken: 'at-1', refreshToken: 'rt-1' }
+    sealedPair: { accessToken: 'at-1', refreshToken: 'rt-1' },
+    axisBaseUrl: 'https://gitlab.com'
   })
   const binding = await bindings.createWithClaim({
     orgId: DEFAULT_ORG_ID,
     projectId: PROJECT,
     projectPath: 'example-group/example-project',
-    installerConnectionId: connection.id
+    installerConnectionId: connection.id,
+    axisBaseUrl: 'https://gitlab.com'
   })
   expect(await provisioner.provision(DEFAULT_ORG_ID, binding.id)).toEqual({ state: 'ready' })
   const daemonId = randomUUID()
@@ -638,7 +640,8 @@ describe('gitlab hooks — binding lifecycle rebroadcast (§11.1/§11.3 round 2)
       orgId: DEFAULT_ORG_ID,
       projectId: OTHER,
       projectPath: 'example-group/other-project',
-      installerConnectionId: connection.id
+      installerConnectionId: connection.id,
+      axisBaseUrl: 'https://gitlab.com'
     })
     expect(await h.provisioner.provision(DEFAULT_ORG_ID, other.id)).toEqual({ state: 'ready' })
     // Retargeting is a binding change, so the destination needs its own grant (§8.3).

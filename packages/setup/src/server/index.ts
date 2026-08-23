@@ -1619,6 +1619,9 @@ export async function serveSetupServer(env: NodeJS.ProcessEnv = process.env): Pr
   }
   const handle = openDeploymentConfigStore({
     databaseUrl: config.DATABASE_URL,
+    // The no-document GitLab axis this deployment already serves: a first write
+    // that would move it while GitLab state exists is refused.
+    ...(env.GITLAB_BASE_URL ? { gitlabBaseUrl: env.GITLAB_BASE_URL } : {}),
     SECRET_CIPHER: config.SECRET_CIPHER,
     VAULT_TRANSIT_KEY: config.VAULT_TRANSIT_KEY,
     VAULT_TRANSIT_MOUNT: config.VAULT_TRANSIT_MOUNT,

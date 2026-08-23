@@ -167,7 +167,8 @@ async function ownConnection(fake: FakeGitlab, accessLevel: number): Promise<{ i
     gitlabUsername: 'example-successor',
     scopes: ['api'],
     accessExpiresAt: new Date(Date.now() + 3_600_000),
-    sealedPair: { accessToken: 'at-taker', refreshToken: 'rt-taker' }
+    sealedPair: { accessToken: 'at-taker', refreshToken: 'rt-taker' },
+    axisBaseUrl: 'https://gitlab.com'
   })
 }
 

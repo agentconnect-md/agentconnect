@@ -56,7 +56,8 @@ function input(orgId: string) {
     projectPath: 'example-group/example-project',
     defaultBranch: 'main',
     cloneUrl: 'https://gitlab.com/example-group/example-project.git',
-    installerConnectionId: randomUUID()
+    installerConnectionId: randomUUID(),
+    axisBaseUrl: 'https://gitlab.com'
   }
 }
 

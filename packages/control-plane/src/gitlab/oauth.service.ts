@@ -170,7 +170,8 @@ export class GitlabOauthService {
         sealedPair: {
           accessToken: await this.deps.cipher.seal(grant.access_token, scope),
           refreshToken: await this.deps.cipher.seal(grant.refresh_token, scope)
-        }
+        },
+        axisBaseUrl: this.deps.api.baseUrl
       })
       return { redirectPath, result: 'connected' }
     } catch (e) {

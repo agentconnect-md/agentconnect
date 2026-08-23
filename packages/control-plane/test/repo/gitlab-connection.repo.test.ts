@@ -41,7 +41,8 @@ async function connected() {
     gitlabUsername: 'example-admin',
     scopes: ['api'],
     accessExpiresAt: null,
-    sealedPair: pair('v1')
+    sealedPair: pair('v1'),
+    axisBaseUrl: 'https://gitlab.com'
   })
 }
 
@@ -56,7 +57,8 @@ describe('PgGitlabConnectionRepo transitions', () => {
       gitlabUsername: 'example-admin',
       scopes: ['api'],
       accessExpiresAt: null,
-      sealedPair: pair('v2')
+      sealedPair: pair('v2'),
+      axisBaseUrl: 'https://gitlab.com'
     })
     expect(again.id).toBe(first.id)
     expect(again.tokenVersion).toBe(first.tokenVersion + 1n)
@@ -149,7 +151,8 @@ describe('PgGitlabConnectionRepo transitions', () => {
       gitlabUsername: 'departing',
       scopes: ['api'],
       accessExpiresAt: null,
-      sealedPair: pair('member')
+      sealedPair: pair('member'),
+      axisBaseUrl: 'https://gitlab.com'
     })
     await users.removeMember(DEFAULT_ORG_ID, member.userId, DEFAULT_OWNER_ID)
     const after = (await repo().get(DEFAULT_ORG_ID, record.id))!
@@ -170,7 +173,8 @@ describe('PgGitlabConnectionRepo transitions', () => {
       gitlabUsername: 'raw-departing',
       scopes: ['api'],
       accessExpiresAt: null,
-      sealedPair: pair('raw')
+      sealedPair: pair('raw'),
+      axisBaseUrl: 'https://gitlab.com'
     })
     await prisma.membership.delete({
       where: { orgId_userId: { orgId: DEFAULT_ORG_ID, userId: member.userId } }
@@ -190,7 +194,8 @@ describe('PgGitlabConnectionRepo transitions', () => {
       gitlabUsername: 'deleted-account',
       scopes: ['api'],
       accessExpiresAt: null,
-      sealedPair: pair('gone')
+      sealedPair: pair('gone'),
+      axisBaseUrl: 'https://gitlab.com'
     })
     // The external admin app deletes app_user directly: memberships cascade,
     // the connection userId SET-NULLs — both triggers close both orderings.
@@ -215,7 +220,8 @@ describe('PgGitlabConnectionRepo transitions', () => {
         gitlabUsername: 'toctou',
         scopes: ['api'],
         accessExpiresAt: null,
-        sealedPair: pair('never')
+        sealedPair: pair('never'),
+        axisBaseUrl: 'https://gitlab.com'
       })
     ).rejects.toThrow(GitlabMembershipGone)
     expect(await prisma.gitlabConnection.count({ where: { gitlabUserId: 780n } })).toBe(0)
