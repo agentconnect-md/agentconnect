@@ -1541,20 +1541,30 @@ administers — the shape the GitHub card already has. It shows:
 
 - connected GitLab username and GitLab.com host;
 - OAuth state: connected, reconnect required, or disconnected;
-- the organization's bots, one row per agent account — avatar, display
-  name, `@username` linking to its GitLab profile, top-level group, and
-  account health — mirroring the chat-platform cards, where the bot is the
-  row;
+- the organization's bots, one row per agent account — the agent's icon and
+  name linking to it, `@username` linking to its GitLab profile, top-level
+  group, and account health — mirroring the chat-platform cards, where the
+  bot is the row;
 - under each bot, the projects it is a member of: path, role, binding state,
-  and webhook state (not needed, installed, repairing, or failed), with the
-  project-level actions — repair, remove, transfer administration — on that
-  project line;
-- a final "projects without a bot" group for every managed binding no
-  account is currently a member of — a binding outlives its last consumer
-  until it is removed, and it keeps its state and the same project-level
-  actions there;
+  and why the bot holds it — its workspace access, the enabled trigger
+  families, or both. Naming the reason is what keeps a bot whose triggers
+  were deleted, but whose workspace still uses the project, from reading as
+  a leftover. The project-level actions sit on that project line, and a
+  project two bots hold appears under both. An account with no project left
+  still shows, with its health: a retiring one says it is being removed, a
+  refused one says it is not a member of anything yet and waits for repair.
+  A managed project no bot is a member of keeps its own group at the end,
+  since the binding still owns the webhook and the claim;
+- webhook state only where it needs attention — repairing or failed. A
+  healthy webhook, and one that a project with no trigger never needed, show
+  nothing at all: not wanting ingress is a resting state, not a condition to
+  report;
 - credential expiry and rotation warning without token values; and
-- actions to reconnect, disconnect, or remove a released connection.
+- actions to reconnect, repair, remove a project, disconnect, or remove a
+  released connection. Taking a project's administration over is offered only
+  where administration has lost its authority — the administering connection
+  is disconnected or removed, or the binding is awaiting cleanup and needs an
+  account to finish it — never on a healthy row.
 
 The agent detail page gives GitLab no surface of its own: the bot identity
 appears where every platform's does — inside the integration row, the way a

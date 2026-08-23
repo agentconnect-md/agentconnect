@@ -53,7 +53,7 @@ const BINDING: GitlabProjectBindingDto = {
   stateReason: null,
   installerConnectionId: 'conn-1',
   accounts: [],
-  webhookInstalled: true,
+  webhookState: 'installed',
   credentialEpoch: '1',
   createdAt: '2026-08-02T00:00:00.000Z'
 }

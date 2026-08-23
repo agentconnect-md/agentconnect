@@ -18,7 +18,8 @@ import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { z } from 'zod'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
-import { orgOf, denyViewerWrite } from '../rbac.js'
+import { orgOf, denyViewerWrite, ctxOf } from '../rbac.js'
+import { OrgId } from '../../domain/ids.js'
 import { Tag } from '../plugins/openapi.js'
 import { GitlabOauthDenied, OAUTH_BROWSER_COOKIE } from '../../gitlab/oauth.service.js'
 import {
@@ -30,12 +31,15 @@ import {
   membershipSatisfies
 } from '../../gitlab/api.js'
 import { GitlabProjectClaimConflict } from '../../persistence/errors.js'
+import { unionGitlabWebhookEvents } from '../../gitlab/webhook-events.js'
 import {
   CreateGitlabProjectBody,
   ErrorDto,
   GitlabConnectionDeleteDto,
   GitlabConnectionListDto,
   GitlabOauthStartDto,
+  GitlabOrgAccountListDto,
+  type GitlabOrgAccountDtoT,
   GitlabProjectBindingDto,
   GitlabProjectBindingListDto,
   GitlabProjectPageDto,
@@ -44,8 +48,11 @@ import {
 import type {
   GitlabAgentAccountRecord,
   GitlabConnectionRecord,
-  GitlabProjectBindingRecord
+  GitlabProjectBindingRecord,
+  GitlabProjectConsumer
 } from '../../persistence/ports.js'
+
+type GitlabWebhookState = 'not_needed' | 'installed' | 'repairing' | 'failed'
 
 function toDto(r: GitlabConnectionRecord, assignedProjects: number, callerUserId: string) {
   return {
@@ -62,8 +69,16 @@ function toDto(r: GitlabConnectionRecord, assignedProjects: number, callerUserId
   }
 }
 
+/** The managed webhook's state (§11.1). A project no enabled trigger points at wants no ingress
+ *  at all, which is normal — never the same fact as one that was wanted and is missing. */
+function webhookStateOf(r: GitlabProjectBindingRecord, wanted: boolean): GitlabWebhookState {
+  if (!wanted) return 'not_needed'
+  if (r.webhookId !== null) return 'installed'
+  return r.state === 'provisioning' ? 'repairing' : 'failed'
+}
+
 /** One binding with its member accounts (§7.2) — the project's bot identities. */
-function bindingToDto(r: GitlabProjectBindingRecord, accounts: GitlabAgentAccountRecord[]) {
+function bindingToDto(r: GitlabProjectBindingRecord, accounts: GitlabAgentAccountRecord[], webhookWanted: boolean) {
   return {
     id: r.id,
     projectId: r.projectId.toString(),
@@ -80,10 +95,72 @@ function bindingToDto(r: GitlabProjectBindingRecord, accounts: GitlabAgentAccoun
       state: account.state,
       stateReason: account.stateReason
     })),
-    webhookInstalled: r.webhookId !== null,
+    webhookState: webhookStateOf(r, webhookWanted),
     credentialEpoch: r.credentialEpoch.toString(),
     createdAt: r.createdAt.toISOString()
   }
+}
+
+/** One agent account (§7.2) — the group is a bare number on the row, so the readable heading comes off a bound project. */
+function accountToDto(
+  r: GitlabAgentAccountRecord,
+  bindingIds: readonly string[],
+  projectPaths: ReadonlyMap<string, string>
+) {
+  let rootGroupPath: string | null = null
+  for (const bindingId of bindingIds) {
+    const segment = projectPaths.get(bindingId)?.split('/')[0]
+    if (segment) {
+      rootGroupPath = segment
+      break
+    }
+  }
+  return {
+    id: r.id,
+    rootGroupId: r.rootGroupId.toString(),
+    rootGroupPath,
+    username: r.username,
+    displayName: r.displayName,
+    userId: r.serviceAccountUserId?.toString() ?? null,
+    state: r.state,
+    stateReason: r.stateReason,
+    lifecycle: r.lifecycle
+  }
+}
+
+/** Whether account convergence still owes the organization work (§18.1). True while an account is
+ *  mid-flight, or a binding's memberships differ from what its consumers want — the ROLE included,
+ *  since dropping one authorization downgrades a surviving membership rather than removing it.
+ *  A refused account is EXCLUDED: it waits for a human to run Repair, and counting it would ask forever. */
+function stillConverging(
+  accounts: readonly GitlabAgentAccountRecord[],
+  bindings: readonly GitlabProjectBindingRecord[],
+  consumers: readonly GitlabProjectConsumer[],
+  memberLevels: ReadonlyMap<string, ReadonlyMap<string, number>>
+): boolean {
+  if (accounts.some((account) => account.lifecycle !== 'active' || account.state === 'provisioning')) return true
+  // Past that guard every account is active and settled, so anything but ready is stuck awaiting Repair.
+  const refused = new Set(accounts.filter((account) => account.state !== 'ready').map((account) => account.agentId))
+  const byProject = new Map<string, string>(bindings.map((binding) => [binding.projectId.toString(), binding.id]))
+  const wanted = new Map<string, Map<string, number>>()
+  for (const consumer of consumers) {
+    const bindingId = byProject.get(consumer.projectId.toString())
+    // A consumer of a project this organization does not manage owes nothing here.
+    if (!bindingId) continue
+    const holders = wanted.get(bindingId) ?? new Map<string, number>()
+    holders.set(consumer.agentId, consumer.accessLevel)
+    wanted.set(bindingId, holders)
+  }
+  for (const binding of bindings) {
+    const desired = wanted.get(binding.id) ?? new Map<string, number>()
+    const actual = memberLevels.get(binding.id) ?? new Map<string, number>()
+    // Absent and held-at-the-wrong-role are the same debt: the level the saga would write differs.
+    for (const [agentId, accessLevel] of desired) {
+      if (!refused.has(agentId) && actual.get(agentId) !== accessLevel) return true
+    }
+    for (const agentId of actual.keys()) if (!desired.has(agentId) && !refused.has(agentId)) return true
+  }
+  return false
 }
 
 /** Upstream trouble is upstream trouble, not policy: 429 stays 429, the rest 502. */
@@ -107,6 +184,13 @@ export function gitlabRoutes(deps: HttpDeps) {
     const gitlab = deps.gitlab
     if (!gitlab) return
     const r = app.withTypeProvider<ZodTypeProvider>()
+
+    // Whether a project wants ingress, from the same authority the provisioner converges against:
+    // one org-wide hook read, unioned per project, so a route never re-derives the rule.
+    const webhookWanted = async (orgId: string): Promise<(projectId: bigint) => boolean> => {
+      const hooks = await deps.repos.hook.listForOrgKind(OrgId(orgId), 'gitlab')
+      return (projectId) => unionGitlabWebhookEvents(hooks, projectId) !== null
+    }
 
     r.post(
       '/gitlab/oauth/start',
@@ -212,6 +296,79 @@ export function gitlabRoutes(deps: HttpDeps) {
     )
 
     r.get(
+      '/gitlab/accounts',
+      {
+        schema: {
+          tags: [Tag.GitLab],
+          summary: 'List the organization’s GitLab bot accounts',
+          description:
+            'Every service account this organization owns on GitLab.com (§7.2), with the agent it acts for, its top-level group, its health, and the bound projects it is a member of. The Integrations card keys its rows by this (§18.1). `converging` reports whether membership convergence still owes the organization work, so the console can stop asking once it does not. Visibility-gated: a bot belonging to an agent the caller cannot see is absent, exactly as that agent is. Never token material.',
+          operationId: 'listGitlabAccounts',
+          response: { 200: GitlabOrgAccountListDto }
+        }
+      },
+      async (req) => {
+        const orgId = orgOf(req)
+        const accounts = await deps.repos.gitlabAgentAccount.listForOrg(orgId)
+        const bindings = await deps.repos.gitlabProjectBinding.listForOrg(orgId)
+        if (accounts.length === 0 && bindings.length === 0) return { accounts: [], converging: false }
+        const visible = new Set<string>((await deps.repos.agent.list(orgId, ctxOf(req))).map((agent) => agent.id))
+        const projectPaths = new Map(bindings.map((binding) => [binding.id, binding.projectPath]))
+        // Walking the bindings — not the accounts — is one query per project and carries the access level with it.
+        const byAccount = new Map<string, GitlabOrgAccountDtoT['memberships']>()
+        const consumers = await deps.repos.gitlabAgentAccount.consumersForOrg(orgId)
+        const byProject = new Map<string, string>(bindings.map((b) => [b.projectId.toString(), b.id]))
+        // Why each agent consumes each project, keyed the way a membership is.
+        const reasons = new Map<string, GitlabProjectConsumer>()
+        for (const consumer of consumers) {
+          const bindingId = byProject.get(consumer.projectId.toString())
+          if (bindingId) reasons.set(`${bindingId}:${consumer.agentId}`, consumer)
+        }
+        const memberLevels = new Map<string, Map<string, number>>()
+        const agentOfAccount = new Map(accounts.map((account) => [account.id, account.agentId]))
+        for (const rows of await Promise.all(
+          bindings.map(async (binding) => deps.repos.gitlabAgentAccount.membershipsForBinding(binding.id))
+        )) {
+          for (const row of rows) {
+            const held = byAccount.get(row.accountId) ?? []
+            const why = reasons.get(`${row.bindingId}:${agentOfAccount.get(row.accountId) ?? ''}`)
+            held.push({
+              bindingId: row.bindingId,
+              accessLevel: row.accessLevel,
+              workspace: why?.workspace ?? null,
+              triggerFamilies: why?.triggerFamilies ?? [],
+              triggerCount: why?.triggerCount ?? 0
+            })
+            byAccount.set(row.accountId, held)
+            const agentId = agentOfAccount.get(row.accountId)
+            if (agentId) {
+              const holders = memberLevels.get(row.bindingId) ?? new Map<string, number>()
+              holders.set(agentId, row.accessLevel)
+              memberLevels.set(row.bindingId, holders)
+            }
+          }
+        }
+        return {
+          accounts: accounts
+            .filter((account) => visible.has(account.agentId))
+            .map((account) => {
+              const memberships = byAccount.get(account.id) ?? []
+              return {
+                ...accountToDto(
+                  account,
+                  memberships.map((membership) => membership.bindingId),
+                  projectPaths
+                ),
+                agentId: account.agentId,
+                memberships
+              }
+            }),
+          converging: stillConverging(accounts, bindings, consumers, memberLevels)
+        }
+      }
+    )
+
+    r.get(
       '/gitlab/projects',
       {
         schema: {
@@ -223,10 +380,14 @@ export function gitlabRoutes(deps: HttpDeps) {
         }
       },
       async (req) => {
-        const rows = await deps.repos.gitlabProjectBinding.listForOrg(orgOf(req))
+        const orgId = orgOf(req)
+        const rows = await deps.repos.gitlabProjectBinding.listForOrg(orgId)
+        const wanted = await webhookWanted(orgId)
         return {
           bindings: await Promise.all(
-            rows.map(async (row) => bindingToDto(row, await deps.repos.gitlabAgentAccount.listForBinding(row.id)))
+            rows.map(async (row) =>
+              bindingToDto(row, await deps.repos.gitlabAgentAccount.listForBinding(row.id), wanted(row.projectId))
+            )
           )
         }
       }
@@ -290,7 +451,12 @@ export function gitlabRoutes(deps: HttpDeps) {
           // the outcome state either way and repair re-runs it.
           await gitlab.provisioner.provision(orgId, binding.id)
           const converged = await deps.repos.gitlabProjectBinding.get(orgId, binding.id)
-          return bindingToDto(converged ?? binding, await deps.repos.gitlabAgentAccount.listForBinding(binding.id))
+          const wanted = await webhookWanted(orgId)
+          return bindingToDto(
+            converged ?? binding,
+            await deps.repos.gitlabAgentAccount.listForBinding(binding.id),
+            wanted(binding.projectId)
+          )
         } catch (e) {
           if (e instanceof GitlabProjectClaimConflict) {
             // The deployment-global claim (§7.2): one managing organization per
@@ -333,7 +499,12 @@ export function gitlabRoutes(deps: HttpDeps) {
         if (!binding) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'gitlab project not found' })
         }
-        return bindingToDto(binding, await deps.repos.gitlabAgentAccount.listForBinding(binding.id))
+        const wanted = await webhookWanted(orgId)
+        return bindingToDto(
+          binding,
+          await deps.repos.gitlabAgentAccount.listForBinding(binding.id),
+          wanted(binding.projectId)
+        )
       }
     )
 
@@ -409,7 +580,12 @@ export function gitlabRoutes(deps: HttpDeps) {
           }
           const converged = await deps.repos.gitlabProjectBinding.get(orgId, binding.id)
           if (!converged) return notFound()
-          return bindingToDto(converged, await deps.repos.gitlabAgentAccount.listForBinding(binding.id))
+          const wanted = await webhookWanted(orgId)
+          return bindingToDto(
+            converged,
+            await deps.repos.gitlabAgentAccount.listForBinding(binding.id),
+            wanted(converged.projectId)
+          )
         } catch (e) {
           if (e instanceof GitlabOauthDenied) {
             return reply.code(e.status).send({ error: 'Conflict', statusCode: e.status, message: e.message })

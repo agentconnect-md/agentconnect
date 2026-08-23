@@ -1835,7 +1835,9 @@ export const GitlabProjectBindingDto = z.object({
       stateReason: z.string().nullable()
     })
   ),
-  webhookInstalled: z.boolean(),
+  /** The managed webhook's state (§11.1). `not_needed` is NORMAL — a project with no enabled
+   *  trigger wants no ingress — so the console badges only the two that need attention. */
+  webhookState: z.enum(['not_needed', 'installed', 'repairing', 'failed']),
   credentialEpoch: z.string(),
   createdAt: z.string()
 })
@@ -1846,6 +1848,50 @@ export const GitlabProjectBindingListDto = z.object({ bindings: z.array(GitlabPr
 export const CreateGitlabProjectBody = z.object({
   connectionId: z.string().uuid(),
   projectId: z.string().regex(/^[1-9]\d*$/) // numeric id as a string; the server re-fetches and validates
+})
+
+/** One organization bot for the Integrations card (§18.1): the service account an agent acts as,
+ *  one per top-level group it has a bound project in, plus the projects it is a member of.
+ *  No token material. */
+export const GitlabOrgAccountDto = z.object({
+  id: z.string(),
+  /** The agent whose identity this is; the console joins it to that agent's own name, icon, and page. */
+  agentId: z.string(),
+  rootGroupId: z.string(), // numeric top-level group id, losslessly as a string
+  /** Current path of that top-level group, read off a bound project; null while none is bound. */
+  rootGroupPath: z.string().nullable(),
+  username: z.string(),
+  displayName: z.string().nullable(),
+  userId: z.string().nullable(), // numeric GitLab user id; null until the account exists
+  /** The §8.2 lifecycle vocabulary the binding uses, so the console translates one set. */
+  state: z.enum(['provisioning', 'ready', 'admin_degraded', 'runtime_degraded', 'cleanup_pending']),
+  stateReason: z.string().nullable(),
+  /** `retiring` once the agent's last project in the group went away (§7.2). */
+  lifecycle: z.enum(['active', 'retiring']),
+  /** The bound projects this account is a member of, each with the role its authorization derives
+   *  and WHY it holds it — a workspace, triggers, or both. Dropping one reason while the other
+   *  stands must read as a change, never as a bot with no purpose left. */
+  memberships: z.array(
+    z.object({
+      bindingId: z.string(),
+      accessLevel: z.number().int(),
+      /** The agent's workspace on the project and the access it grants; null when it has none. */
+      workspace: z.enum(['read', 'write']).nullable(),
+      /** Comment families the agent's enabled triggers cover here; may be empty. */
+      triggerFamilies: z.array(z.string()),
+      /** How many enabled triggers the agent has on the project. */
+      triggerCount: z.number().int()
+    })
+  )
+})
+export type GitlabOrgAccountDtoT = z.infer<typeof GitlabOrgAccountDto>
+
+export const GitlabOrgAccountListDto = z.object({
+  accounts: z.array(GitlabOrgAccountDto),
+  /** Whether account convergence still owes this organization work: an account mid-flight, a
+   *  membership no consumer justifies, or a consumer with none yet. The console cannot judge
+   *  this — it cannot see an agent's hooks or workspace — so it polls on this answer. */
+  converging: z.boolean()
 })
 
 export const GithubAppDto = z.object({

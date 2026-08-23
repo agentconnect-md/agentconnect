@@ -3439,6 +3439,18 @@ export interface GitlabAccountConsumer {
   accessLevel: number
 }
 
+/** A consumer with WHY it consumes the project: the console names the reason on the row, so
+ *  dropping an agent's triggers cannot leave its still-working workspace looking like a ghost. */
+export interface GitlabProjectConsumer extends GitlabAccountConsumer {
+  projectId: bigint
+  /** The agent's gitlab workspace on this project and the access it grants; null when it has none. */
+  workspace: 'read' | 'write' | null
+  /** Comment families the agent's enabled triggers cover here, sorted; may be empty. */
+  triggerFamilies: string[]
+  /** How many enabled triggers the agent has on the project. */
+  triggerCount: number
+}
+
 export interface GitlabAgentAccountRepo {
   /** Find-or-create the (org, agent, root) row; an existing row keeps its state. */
   ensure(input: {
@@ -3466,6 +3478,8 @@ export interface GitlabAgentAccountRepo {
   detachMembershipForRemoval(accountId: string, bindingId: string): Promise<void>
   /** The retirements that removal is still owed evidence for. */
   listRetiringForBinding(bindingId: string): Promise<GitlabAgentAccountRecord[]>
+  /** Every account the organization owns — the console's bot roster (§18.1). */
+  listForOrg(orgId: string): Promise<GitlabAgentAccountRecord[]>
   update(
     accountId: string,
     patch: Partial<{
@@ -3524,6 +3538,9 @@ export interface GitlabAgentAccountRepo {
   /** The agents consuming a project: gitlab-workspace agents and enabled gitlab
    *  hooks, each with the access level its authorization derives (§7.2). */
   consumers(orgId: string, projectId: bigint): Promise<GitlabAccountConsumer[]>
+  /** Every consumer in the organization, in two queries — the desired membership set the
+   *  console's convergence signal is judged against, and the reasons it names on a row (§18.1). */
+  consumersForOrg(orgId: string): Promise<GitlabProjectConsumer[]>
 }
 
 export type GitlabCredentialPurpose = 'read' | 'git_write' | 'effect'
