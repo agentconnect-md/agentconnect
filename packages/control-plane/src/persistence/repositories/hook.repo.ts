@@ -1031,20 +1031,17 @@ export class PgHookRepo implements HookRepo {
       // The grants carry the renamed display name into `workspace.additionalRepos`, so their
       // owners join the same configuration-ordering domain — and the same convergence fan-out —
       // as the workspace agents below. Read the owners BEFORE the write erases the predicate.
+      // Provider-qualified: a GitLab project carrying this same number is a different
+      // repository, and a GitHub rename must never overwrite its path (§8.1).
+      const renamedGrants = { provider: 'github', repoId, agent: { orgId }, repoFullName: { not: repoFullName } }
       const renamedGrantAgentIds = [
         ...new Set(
-          (
-            await tx.agentRepoAuthorization.findMany({
-              where: { repoId, agent: { orgId }, repoFullName: { not: repoFullName } },
-              select: { agentId: true }
-            })
-          ).map((row) => row.agentId)
+          (await tx.agentRepoAuthorization.findMany({ where: renamedGrants, select: { agentId: true } })).map(
+            (row) => row.agentId
+          )
         )
       ]
-      await tx.agentRepoAuthorization.updateMany({
-        where: { repoId, agent: { orgId }, repoFullName: { not: repoFullName } },
-        data: { repoFullName }
-      })
+      await tx.agentRepoAuthorization.updateMany({ where: renamedGrants, data: { repoFullName } })
       await bumpAgentConfigRevisions(tx, renamedGrantAgentIds)
       const gitRepo = normalizeGitUrl(repoFullName)
       const workspaceWhere = {

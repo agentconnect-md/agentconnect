@@ -211,6 +211,34 @@ describe('GitCredServer routing (gitcred.sock)', () => {
     expect(gets).toEqual([{ agentId: 'a1', opts: { plane: 'git' } }]) // no repo → workspace key
   })
 
+  it('erases the provider-qualified key a named gitlab project was served under', async () => {
+    // A scratch or github-workspace agent holding a gitlab additional project has a
+    // cache entry keyed gitlab, while its WORKSPACE says github. Deriving erase from
+    // the workspace alone would invalidate the github key and leave the rejected
+    // GitLab token live until its TTL.
+    const { sockPath, erases, capability } = boot(undefined, {
+      providerOf: () => 'github',
+      gitlabProjectOf: (_agentId, repoFullName) =>
+        repoFullName === 'example-group/example-second' ? '4455668' : undefined
+    })
+    const res = await roundtrip(sockPath, {
+      op: 'erase',
+      agentId: 'a1',
+      capability,
+      password: 'glpat_dead',
+      repoFullName: 'example-group/example-second',
+      provider: 'gitlab'
+    })
+    expect(res.ok).toBe(true)
+    expect(erases).toEqual([
+      {
+        agentId: 'a1',
+        password: 'glpat_dead',
+        opts: { plane: 'git', repo: 'example-group/example-second', provider: 'gitlab' }
+      }
+    ])
+  })
+
   it('routes erase to the same key the get used', async () => {
     const { sockPath, erases, capability } = boot()
     const res = await roundtrip(sockPath, {

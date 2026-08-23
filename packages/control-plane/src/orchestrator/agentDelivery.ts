@@ -95,13 +95,16 @@ export class AgentDelivery {
   /** Push an edited spec to every delivery target. The spec is assembled ONCE:
    *  the targets replicate the same agent, and two assemblies could disagree. */
   async upsert(agent: AgentRecord, onError: DeliveryErrorHandler): Promise<void> {
-    // §17.3 projection gate: a target that has not advertised the agent's required
-    // features is skipped rather than sent a frame it cannot decode.
-    const targets = (await this.daemonsFor(agent)).filter((daemonId) =>
-      daemonSupportsAgent(agent, this.deps.daemonFeatures?.(daemonId))
-    )
-    if (targets.length === 0) return
+    const candidates = await this.daemonsFor(agent)
+    if (candidates.length === 0) return
     const spec = await this.deps.specs.assemble(agent)
+    // §17.3 projection gate, judged on the ASSEMBLED spec: a gitlab additional
+    // repository is only visible there (grants are their own table), and a target
+    // that has not advertised the required features is skipped rather than sent a
+    // frame it would decode into the wrong host.
+    const shaped = spec.workspace ? { workspace: spec.workspace } : agent
+    const targets = candidates.filter((daemonId) => daemonSupportsAgent(shaped, this.deps.daemonFeatures?.(daemonId)))
+    if (targets.length === 0) return
     await this.fanOut(targets, onError, (daemonId) =>
       this.deps.control.agentUpsert(daemonId, { agentId: agent.id, spec }, agent.orgId)
     )

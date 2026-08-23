@@ -603,6 +603,11 @@ the top-level group's account quota refuses a creation.
   the workspace-collision checks, the Checks ledger — is qualified by provider.
   An absent provider means `github`, which is what every row predating GitLab
   is.
+  A pre-GitLab daemon strips the unknown provider key, so a two-segment project
+  path would read there as an `owner/repo` GitHub entry; the §17.3 projection
+  gate therefore reads the assembled additional-repository list as well as the
+  workspace arm, and withholds such a spec from a daemon that has not advertised
+  `gitlab-com-v1`.
 - `RepoAccess` remains `read | comment | write`. On GitLab the tier derives the
   account's project role exactly as a workspace does: `write` earns Developer,
   and `read` and `comment` both earn Reporter, since a note is a read-level
@@ -1060,6 +1065,15 @@ a fallback onto the workspace. A named project is asked for by its numeric id,
 because the grant echo the consumer verifies is keyed on that identity: an ask
 carrying only a display path would be answered with the workspace grant and
 then correctly rejected by the daemon.
+
+A rename reaches both places the project's path is replicated into. The binding
+and the catalog converge on the numeric id, and so must every gitlab workspace's
+clone URL AND every explicit authorization's display path — the latter is what
+the daemon maps a named project back to its numeric id with. Leaving a grant
+stale orphans the new path, and an ask under the old one is answered with the
+binding's new path and then correctly rejected by the consumer's echo check.
+Both writes join one configuration-ordering domain and bump each affected
+agent's revision exactly once, so a spec never carries half a rename.
 
 One half is deliberately not built yet: an authorized additional GitLab project
 receives credentials but is not materialized as a secondary workspace root. The

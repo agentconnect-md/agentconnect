@@ -15,6 +15,21 @@ describe('§17.3 snapshot projection gate predicate', () => {
     expect(requiredDaemonFeatures(workspace('gitlab'))).toEqual([GITLAB_COM_V1_FEATURE])
   })
 
+  it('gates a gitlab ADDITIONAL repository, whatever the workspace is', () => {
+    // The quieter half: an older daemon strips the unknown `provider` key, so a
+    // two-segment project path would read as an owner/repo GitHub entry and be
+    // cloned from github.com. Only the assembled spec carries this, which is why
+    // the predicate takes it structurally.
+    const withGrant = (mode: string, provider: string) => ({
+      workspace: { mode, additionalRepos: [{ repoFullName: 'a/b', repoId: '1', provider }] } as never
+    })
+    expect(requiredDaemonFeatures(withGrant('scratch', 'gitlab'))).toEqual([GITLAB_COM_V1_FEATURE])
+    expect(requiredDaemonFeatures(withGrant('github', 'gitlab'))).toEqual([GITLAB_COM_V1_FEATURE])
+    expect(requiredDaemonFeatures(withGrant('scratch', 'github'))).toEqual([])
+    expect(daemonSupportsAgent(withGrant('scratch', 'gitlab'), [])).toBe(false)
+    expect(daemonSupportsAgent(withGrant('scratch', 'gitlab'), [GITLAB_COM_V1_FEATURE])).toBe(true)
+  })
+
   it('fails closed: absent or feature-less advertisements support only ungated agents', () => {
     expect(daemonSupportsAgent(workspace('github'), undefined)).toBe(true)
     expect(daemonSupportsAgent(workspace('gitlab'), undefined)).toBe(false)

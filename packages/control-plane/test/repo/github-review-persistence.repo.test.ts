@@ -1609,8 +1609,21 @@ describe('R1/R2a persistence foundation', () => {
     await prisma.agentRepoAuthorization.create({
       data: {
         agentId,
+        provider: 'github',
         repoId: 44n,
         repoFullName: 'acme/old-name',
+        access: 'read'
+      }
+    })
+    // The SAME agent may hold GitLab project 44 — the hosts number their
+    // repositories independently, so the unique key permits both. A GitHub rename
+    // must not reach across and rewrite this one's path (§8.1).
+    await prisma.agentRepoAuthorization.create({
+      data: {
+        agentId,
+        provider: 'gitlab',
+        repoId: 44n,
+        repoFullName: 'example-group/example-project',
         access: 'read'
       }
     })
@@ -1686,6 +1699,13 @@ describe('R1/R2a persistence foundation', () => {
         select: { repoFullName: true }
       })
     ).toEqual({ repoFullName: 'acme/new-name' })
+    // The same-numbered GitLab grant kept its own path and its owner was counted once.
+    expect(
+      await prisma.agentRepoAuthorization.findUniqueOrThrow({
+        where: { agentId_provider_repoId: { agentId, provider: 'gitlab', repoId: 44n } },
+        select: { repoFullName: true }
+      })
+    ).toEqual({ repoFullName: 'example-group/example-project' })
     expect(await agents.get(OrgId(DEFAULT_ORG_ID), workspaceAgentId)).toMatchObject({
       workspace: { mode: 'github', gitRepo: 'https://github.com/acme/new-name' },
       workspaceRepoId: 44n,

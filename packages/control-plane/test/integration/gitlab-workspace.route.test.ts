@@ -89,11 +89,7 @@ async function harness(liveness?: DaemonLiveness) {
     // Mirrors the container: the durable clone-URL convergence is AWAITED
     // inside the run, under the saga lease.
     syncWorkspacePaths: async (orgId, projectId, projectPath) => {
-      await new PgAgentRepo(prisma).refreshGitlabWorkspacePath(
-        OrgId(orgId),
-        projectId,
-        `https://gitlab.com/${projectPath}`
-      )
+      await new PgAgentRepo(prisma).refreshGitlabProjectPath(OrgId(orgId), projectId, projectPath)
     },
     fetchImpl: fake.fetch()
   })
@@ -305,10 +301,10 @@ describe('gitlab workspaces — agent create/edit (§8.3)', () => {
     const agentId = (created.json() as { id: string }).id
     const before = await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })
     const agents = new PgAgentRepo(prisma)
-    const refreshed = await agents.refreshGitlabWorkspacePath(
+    const refreshed = await agents.refreshGitlabProjectPath(
       OrgId(DEFAULT_ORG_ID),
       PROJECT,
-      'https://gitlab.com/example-group/renamed-project'
+      'example-group/renamed-project'
     )
     // Every gitlab-workspace agent on the project drifts, the harness's included.
     expect(refreshed).toContain(agentId)
@@ -317,11 +313,7 @@ describe('gitlab workspaces — agent create/edit (§8.3)', () => {
     expect(after.configRevision).toBe(before.configRevision + 1n)
     // Idempotent: an unchanged path touches nothing.
     expect(
-      await agents.refreshGitlabWorkspacePath(
-        OrgId(DEFAULT_ORG_ID),
-        PROJECT,
-        'https://gitlab.com/example-group/renamed-project'
-      )
+      await agents.refreshGitlabProjectPath(OrgId(DEFAULT_ORG_ID), PROJECT, 'example-group/renamed-project')
     ).toEqual([])
   })
 
@@ -772,6 +764,64 @@ describe('additional GitLab project authorizations (§8.3/§13.1)', () => {
     const again = await h.a.app.inject(authorize({ provider: 'gitlab', projectId: SECOND_PROJECT.toString() }))
     expect(again.statusCode).toBe(409)
     expect((again.json() as { message: string }).message).toContain('already authorized')
+  })
+
+  it('carries a project rename into the grant path and the replicated spec', async () => {
+    // The daemon maps a NAMED gitlab project back to its numeric id through this
+    // path in the replicated spec. A rename that refreshed only the binding and
+    // the workspace would orphan the new path, and an ask under the old one is
+    // answered with the binding's new path and then rejected by the echo check.
+    const h = await harness()
+    await secondBinding(h)
+    const created = await h.a.app.inject(authorize({ provider: 'gitlab', projectId: SECOND_PROJECT.toString() }))
+    expect(created.statusCode).toBe(200)
+    const before = await prisma.agent.findUniqueOrThrow({ where: { id: AGENT } })
+
+    const agents = new PgAgentRepo(prisma)
+    const refreshed = await agents.refreshGitlabProjectPath(
+      OrgId(DEFAULT_ORG_ID),
+      SECOND_PROJECT,
+      'example-group/renamed-second'
+    )
+
+    // The grant's owner joins the rename's configuration-ordering domain, so the
+    // spec push replicates the new path.
+    expect(refreshed).toContain(AGENT)
+    expect(await grants()).toMatchObject([{ repoFullName: 'example-group/renamed-second' }])
+    const after = await prisma.agent.findUniqueOrThrow({ where: { id: AGENT } })
+    expect(after.configRevision).toBe(before.configRevision + 1n)
+    // The workspace project is a different project: its own path is untouched.
+    expect(after.gitRepo).toBe('https://gitlab.com/example-group/example-project')
+    // Idempotent, exactly as the workspace half is.
+    expect(
+      await agents.refreshGitlabProjectPath(OrgId(DEFAULT_ORG_ID), SECOND_PROJECT, 'example-group/renamed-second')
+    ).toEqual([])
+  })
+
+  it('bumps one revision when a rename moves an agent’s workspace AND its grant', async () => {
+    // The same agent may hold the workspace on one project and a grant on it too
+    // only transiently, but a rename touching both halves must still advance the
+    // revision once: two bumps for one rename would be a spec the daemon refuses.
+    const h = await harness()
+    await prisma.agentRepoAuthorization.create({
+      data: {
+        agentId: AGENT,
+        provider: 'gitlab',
+        repoId: PROJECT,
+        repoFullName: 'example-group/example-project',
+        access: 'read'
+      }
+    })
+    const before = await prisma.agent.findUniqueOrThrow({ where: { id: AGENT } })
+    const agents = new PgAgentRepo(prisma)
+
+    expect(
+      await agents.refreshGitlabProjectPath(OrgId(DEFAULT_ORG_ID), PROJECT, 'example-group/renamed-project')
+    ).toEqual([AGENT])
+    const after = await prisma.agent.findUniqueOrThrow({ where: { id: AGENT } })
+    expect(after.configRevision).toBe(before.configRevision + 1n)
+    expect(after.gitRepo).toBe('https://gitlab.com/example-group/renamed-project')
+    expect(await grants()).toMatchObject([{ repoFullName: 'example-group/renamed-project' }])
   })
 
   it('undoes the account a refused authorization speculatively created (§7.2)', async () => {

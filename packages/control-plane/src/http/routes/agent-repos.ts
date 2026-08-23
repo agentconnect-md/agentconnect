@@ -373,7 +373,13 @@ export function agentRepoRoutes(deps: HttpDeps) {
               message: 'this is already the agent’s workspace repository'
             })
           }
-          if ((await deps.repos.agentRepoAuth.listForAgent(agent.id)).some((row) => row.repoId === ref.repoId)) {
+          // Provider-qualified: a GitLab project numbered the same is a different
+          // repository, and the unique key permits both (§8.1).
+          if (
+            (await deps.repos.agentRepoAuth.listForAgent(agent.id)).some(
+              (row) => row.provider === 'github' && row.repoId === ref.repoId
+            )
+          ) {
             return reply.code(409).send({
               error: 'Conflict',
               statusCode: 409,

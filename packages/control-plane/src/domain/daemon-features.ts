@@ -12,17 +12,27 @@
  */
 import { GITLAB_COM_V1_FEATURE } from '@agentconnect.md/protocol'
 
-// Structural on purpose: the predicate reads only the workspace-mode
-// discriminant, so DOMAIN records and WIRE AgentSpec bundles both fit — the
-// sender-level activation gate checks the exact spec it is about to transmit.
-type WorkspaceShapedAgent = { workspace: { mode: string } }
+// Structural on purpose: the predicate reads the workspace-mode discriminant and,
+// when the caller holds one, the assembled additional-repository list — so DOMAIN
+// records and WIRE AgentSpec bundles both fit. The sender-level activation gate
+// checks the exact spec it is about to transmit, which is the only place the
+// second source is visible: grants live in their own table, not on the agent row.
+type WorkspaceShapedAgent = {
+  workspace: { mode: string; additionalRepos?: readonly { provider?: string }[] }
+}
 
 /** Features a daemon must advertise before this agent's spec can decode there. */
 export function requiredDaemonFeatures(agent: WorkspaceShapedAgent): readonly string[] {
-  // The workspace union's 'gitlab' arm arrives with the M4 daemon slice; until a
-  // row can carry it this returns [] for every agent, and the comparison stays a
-  // string so the arm lights the gate up without touching this file again.
-  return agent.workspace.mode === 'gitlab' ? [GITLAB_COM_V1_FEATURE] : []
+  // Two sources, not one. The workspace union's 'gitlab' arm is frame-fatal on a
+  // pre-GitLab daemon; a gitlab ADDITIONAL repository is quieter and worse — the
+  // old schema strips the unknown `provider` key, so a two-segment project path
+  // reads as an `owner/repo` GitHub entry and would be cloned from github.com.
+  // Comparisons stay strings so a new host lights the gate up without touching
+  // this file again.
+  const gitlab =
+    agent.workspace.mode === 'gitlab' ||
+    (agent.workspace.additionalRepos ?? []).some((repo) => repo.provider === 'gitlab')
+  return gitlab ? [GITLAB_COM_V1_FEATURE] : []
 }
 
 /** Fail-closed: unknown/absent advertised features support only feature-free agents. */

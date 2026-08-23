@@ -1039,11 +1039,7 @@ export function buildContainer(
           // Awaited under the run lease (§17.3 round 3): the durable clone-URL
           // convergence rides the saga; only the daemon fan-out stays async.
           syncWorkspacePaths: async (orgId, projectId, projectPath) => {
-            const agentIds = await repos.agent.refreshGitlabWorkspacePath(
-              OrgId(orgId),
-              projectId,
-              `https://gitlab.com/${projectPath}`
-            )
+            const agentIds = await repos.agent.refreshGitlabProjectPath(OrgId(orgId), projectId, projectPath)
             for (const agentId of agentIds) {
               void repos.agent
                 .getUnscoped(agentId)

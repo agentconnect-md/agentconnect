@@ -188,15 +188,29 @@ export class GitCredServer {
       const workspace = this.workspaceRepoOf?.(req.agentId)
       if (workspace && workspace.toLowerCase() === repo.toLowerCase()) repo = undefined
     }
+    // The SPEC decides the provider; a helper whose host hint disagrees is
+    // asking for another host's credential and gets a clean denial (§13.2).
+    // A named project the spec lists as a gitlab additional authorization (§8.3) is
+    // the second spec-derived gitlab authority; the host hint only disambiguates
+    // between authorities the spec already carries, it never introduces one.
+    //
+    // Resolved BEFORE the op split: erase has to reach the key get stored, and a
+    // gitlab additional project on a scratch or github workspace is keyed gitlab
+    // while the workspace alone says github. Deriving erase from the workspace
+    // would invalidate the wrong entry and leave the rejected token live to TTL.
+    const workspaceProvider = this.providerOf?.(req.agentId) ?? 'github'
+    const gitlabProject = repo !== undefined ? this.gitlabProjectOf?.(req.agentId, repo) : undefined
+    const provider: 'github' | 'gitlab' =
+      gitlabProject !== undefined && (req.provider === 'gitlab' || workspaceProvider === 'gitlab')
+        ? 'gitlab'
+        : workspaceProvider
     if (req.op === 'erase') {
       // Git presents the rejected credential — the provider revokes instantly on
-      // uninstall/suspend/rotation, and this is how the daemon cache learns. The
-      // SPEC-derived provider keys the entry, exactly as the get stored it.
-      const eraseProvider = this.providerOf?.(req.agentId) ?? 'github'
+      // uninstall/suspend/rotation, and this is how the daemon cache learns.
       this.cache.invalidate(req.agentId, req.password, {
         plane,
         ...(repo !== undefined ? { repo } : {}),
-        ...(eraseProvider === 'gitlab' ? { provider: 'gitlab' as const } : {})
+        ...(provider === 'gitlab' ? { provider: 'gitlab' as const } : {})
       })
       this.audit('erased', req.agentId, plane, repo)
       return reply({ ok: true })
@@ -204,17 +218,6 @@ export class GitCredServer {
     if (req.op !== 'get') {
       return reply({ ok: false, error: 'unsupported op' })
     }
-    // The SPEC decides the provider; a helper whose host hint disagrees is
-    // asking for another host's credential and gets a clean denial (§13.2).
-    // A named project the spec lists as a gitlab additional authorization (§8.3) is
-    // the second spec-derived gitlab authority; the host hint only disambiguates
-    // between authorities the spec already carries, it never introduces one.
-    const workspaceProvider = this.providerOf?.(req.agentId) ?? 'github'
-    const gitlabProject = repo !== undefined ? this.gitlabProjectOf?.(req.agentId, repo) : undefined
-    const provider: 'github' | 'gitlab' =
-      gitlabProject !== undefined && (req.provider === 'gitlab' || workspaceProvider === 'gitlab')
-        ? 'gitlab'
-        : workspaceProvider
     if (req.provider !== undefined && req.provider !== provider) {
       this.audit('denied', req.agentId, plane, repo)
       return reply({ ok: false, error: `this workspace has no managed ${req.provider} credential` })
