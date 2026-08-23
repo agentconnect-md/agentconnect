@@ -2778,6 +2778,11 @@ model GitlabAgentAccount {
   leaseUntil                DateTime? @db.Timestamptz(6)
   generation                BigInt    @default(1) // lifecycle generation a membership insert fences on
   lifecycle                 String    @default("active") // active | retiring
+  // The binding removal, if any, that is waiting on this retirement. Memberships
+  // are detached before a deletion settles, so without this the removal would
+  // lose track of what it still owes evidence for. No relation: the row must
+  // outlive a binding that is removed once every obligation clears.
+  retiringForBindingId      String?   @db.Uuid
   state                     String
   stateReason               String? // bounded repair category, e.g. service_account_quota
   createdAt                 DateTime  @default(now()) @db.Timestamptz(6)
@@ -2791,6 +2796,7 @@ model GitlabAgentAccount {
   @@unique([orgId, agentId, rootGroupId])
   @@index([orgId])
   @@index([agentId])
+  @@index([retiringForBindingId])
   @@map("gitlab_agent_account")
 }
 

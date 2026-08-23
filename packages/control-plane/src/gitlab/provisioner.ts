@@ -42,7 +42,12 @@ import {
   type GitlabProjectWithNamespace,
   type GitlabWebhookEvents
 } from './api.js'
-import { GitlabTokenPolicyViolation, type GitlabAccountService } from './account.service.js'
+import {
+  DELETION_PENDING_REASON,
+  GitlabCleanupUnverified,
+  GitlabTokenPolicyViolation,
+  type GitlabAccountService
+} from './account.service.js'
 import type { GitlabOauthService } from './oauth.service.js'
 
 /** The exclusive provisioning lease a run holds across its provider writes. */
@@ -615,12 +620,23 @@ export class GitlabProvisioner {
       // §19.4: this project's memberships go, but PATs are per account, not per
       // membership — an account still serving another bound project in its root
       // keeps them. Only an account left with nothing bound retires.
-      // Release only on positive evidence: no managed membership survives here.
-      if (!(await this.deps.accounts.unbindBinding(orgId, bindingId, binding.projectId, token))) {
-        throw new GitlabApiError('managed account memberships remain after cleanup', 0, 'INTERNAL', true)
+      // Release only on positive evidence: no managed membership survives here,
+      // and every emptied account is provably gone from its root.
+      const unbound = await this.deps.accounts.unbindBinding(orgId, bindingId, binding.projectId, token)
+      if (unbound !== 'retired') {
+        // A pending deletion is in flight, not refused: the retirement sweep
+        // closes it out and this removal finishes on the next attempt.
+        throw new GitlabCleanupUnverified(
+          unbound === 'deletion_pending' ? DELETION_PENDING_REASON : 'account_cleanup_incomplete'
+        )
       }
     } catch (e) {
-      const reason = e instanceof GitlabApiError ? `gitlab_${e.status || 'unreachable'}` : 'cleanup_failed'
+      const reason =
+        e instanceof GitlabCleanupUnverified
+          ? e.reason
+          : e instanceof GitlabApiError
+            ? `gitlab_${e.status || 'unreachable'}`
+            : 'cleanup_failed'
       await this.deps.bindings.update(orgId, bindingId, { state: 'cleanup_pending', stateReason: reason })
       return { removed: false, reason }
     }

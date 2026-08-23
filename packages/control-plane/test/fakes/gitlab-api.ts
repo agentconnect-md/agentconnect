@@ -21,6 +21,9 @@ export interface FakeGitlabOptions {
   patExpiryOverride?: string | null
   /** Fail PAT revocations with a 500 (ambiguous cleanup). */
   failTokenRevoke?: boolean
+  /** GitLab deletes a user asynchronously: accept the DELETE but keep listing
+   *  the account until `settleServiceAccountDeletions()` runs. */
+  deferServiceAccountDeletion?: boolean
   /** Refuse the display-name rename (older provider, or a locked account). */
   refuseServiceAccountRename?: boolean
   /** Create the account, then fail the response — the ambiguous create (§7.2). */
@@ -81,6 +84,11 @@ export class FakeGitlab {
       namespaceKind: options.namespaceKind ?? 'group',
       ...options
     }
+  }
+
+  /** The asynchronous half of a deferred deletion finally landing. */
+  settleServiceAccountDeletions(): void {
+    this.serviceAccounts = this.serviceAccounts.filter((account) => !this.deletedServiceAccounts.includes(account.id))
   }
 
   fetch(): FetchLike {
@@ -295,7 +303,11 @@ export class FakeGitlab {
       if (/\/api\/v4\/groups\/\d+\/service_accounts\/\d+$/.test(url) && method === 'DELETE') {
         const id = Number(/service_accounts\/(\d+)$/.exec(url)![1])
         this.deletedServiceAccounts.push(id)
-        this.serviceAccounts = this.serviceAccounts.filter((account) => account.id !== id)
+        // Real GitLab accepts the delete and removes the user later; a deferred
+        // fake keeps it listed until the test says the deletion landed.
+        if (!this.opts.deferServiceAccountDeletion) {
+          this.serviceAccounts = this.serviceAccounts.filter((account) => account.id !== id)
+        }
         return Response.json({})
       }
       if (/\/api\/v4\/groups\/\d+\/service_accounts\/\d+\/personal_access_tokens$/.test(url) && method === 'POST') {

@@ -3455,6 +3455,17 @@ export interface GitlabAgentAccountRepo {
   /** Every account holding a membership on the binding (§12.1 veto set, DTO). */
   listForBinding(bindingId: string): Promise<GitlabAgentAccountRecord[]>
   listForAgent(orgId: string, agentId: string): Promise<GitlabAgentAccountRecord[]>
+  /** Retirement sweep worklist (§19.4): every account whose retirement is still
+   *  owed external cleanup, untouched since `before`. Keyed on the lifecycle, not
+   *  on a reason — a row must not fall out of the sweep by failing differently. */
+  listUnfinishedRetirements(before: Date, limit: number): Promise<GitlabAgentAccountRecord[]>
+  /** Detach a membership as part of a binding's removal, recording in the SAME
+   *  transaction that the removal now owes this account's retirement when the
+   *  detach empties it. Durable before any provider write: a crash after the
+   *  detach would otherwise lose the only link between the two. */
+  detachMembershipForRemoval(accountId: string, bindingId: string): Promise<void>
+  /** The retirements that removal is still owed evidence for. */
+  listRetiringForBinding(bindingId: string): Promise<GitlabAgentAccountRecord[]>
   update(
     accountId: string,
     patch: Partial<{
@@ -3510,8 +3521,6 @@ export interface GitlabAgentAccountRepo {
   beginRetirement(accountId: string): Promise<boolean>
   /** Verified-complete retirement: the row and its cascaded credentials go. */
   finishRetirement(accountId: string): Promise<void>
-  /** A bind that lost the race re-provisions a FRESH generation off `retiring`. */
-  reactivate(accountId: string): Promise<GitlabAgentAccountRecord | null>
   /** The agents consuming a project: gitlab-workspace agents and enabled gitlab
    *  hooks, each with the access level its authorization derives (§7.2). */
   consumers(orgId: string, projectId: bigint): Promise<GitlabAccountConsumer[]>

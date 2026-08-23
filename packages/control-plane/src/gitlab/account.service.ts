@@ -68,11 +68,35 @@ const PURPOSE_SCOPES: Record<GitlabCredentialPurpose, string[]> = {
 
 const PURPOSES: readonly GitlabCredentialPurpose[] = ['read', 'git_write', 'effect']
 
+/** The account was deleted at GitLab but is still listed: deletion is in flight. */
+export const DELETION_PENDING_REASON = 'deletion_pending'
+
+/** A consumer asked for an account whose retirement has not finished. Distinct
+ *  from `deletion_pending`, which is the retirement's own state, because a
+ *  retirement can also be waiting on repair rather than on GitLab. */
+export const ACCOUNT_RETIRING_REASON = 'account_retiring'
+
+/** How one retirement attempt settled. `deletion_pending` is in progress, not failed. */
+export type RetirementOutcome = 'retired' | 'deletion_pending' | 'failed'
+
 /** §7.3: the provider returned a token outside the requested policy. */
 export class GitlabTokenPolicyViolation extends Error {
   constructor(readonly purpose: GitlabCredentialPurpose) {
     super(`gitlab returned an out-of-policy ${purpose} token`)
     this.name = 'GitlabTokenPolicyViolation'
+  }
+}
+
+/**
+ * The positive evidence a cleanup step needs could not be established. A LOCAL
+ * verdict about provider state, never a transport failure — so it carries its
+ * own reason instead of borrowing the `gitlab_<status>` family, whose status-0
+ * member means "we could not reach GitLab at all".
+ */
+export class GitlabCleanupUnverified extends Error {
+  constructor(readonly reason: string) {
+    super(`gitlab cleanup unverified: ${reason}`)
+    this.name = 'GitlabCleanupUnverified'
   }
 }
 
@@ -96,10 +120,21 @@ export function gitlabAccountUnavailableMessage(reason: string): string {
   if (reason === 'service_account_create_forbidden') {
     return 'the connected GitLab account must be an Owner of the top-level group to create bot accounts'
   }
+  if (reason === ACCOUNT_RETIRING_REASON || reason === DELETION_PENDING_REASON) {
+    return 'This agent’s previous GitLab bot account is still being removed — try again in a moment'
+  }
   if (reason === 'provisioning_or_cleanup_in_progress' || reason === 'account_busy') {
     return 'GitLab project setup is already running — try again shortly'
   }
   return `the agent’s GitLab bot account could not be provisioned (${reason})`
+}
+
+/** A cleanup failure's honest category: `gitlab_unreachable` is reserved for a
+ *  transport failure, the only thing `gitlabRequest` reports as status 0. */
+function retirementReason(e: unknown): string {
+  if (e instanceof GitlabCleanupUnverified) return e.reason
+  if (e instanceof GitlabApiError) return `gitlab_${e.status || 'unreachable'}`
+  return 'cleanup_failed'
 }
 
 function expiresAtDate(nowMs: number): string {
@@ -131,6 +166,9 @@ export interface GitlabAccountServiceDeps {
   /** Renders the agent's icon as the PNG its account wears (§7.2). Absent ⇒ the
    *  avatar is simply never converged; nothing else changes. */
   avatarPng?: (agent: Pick<AgentRecord, 'id' | 'icon' | 'runtime'>) => Promise<Uint8Array>
+  /** Fired when the sweep retires an account, so a removal that was waiting on
+   *  it can finish; absent in tests, which drive the sweep directly. */
+  onRetired?: (orgId: string) => void
   fetchImpl?: FetchLike
   log?: { warn(obj: object, msg: string): void }
 }
@@ -236,7 +274,12 @@ export class GitlabAccountService {
     const outcome = await this.ensureAccount(input, consumer)
     // A contended account lease resolves itself; every other refusal is the
     // account's own recorded state and needs a repair, not another attempt.
-    if (!outcome.ok) return { ok: false, reason: outcome.reason, retryable: outcome.reason === 'account_busy' }
+    if (!outcome.ok) {
+      // Both resolve themselves: a peer finishes its account mutation, and a
+      // pending deletion is closed out by the sweep.
+      const retryable = outcome.reason === 'account_busy' || outcome.reason === ACCOUNT_RETIRING_REASON
+      return { ok: false, reason: outcome.reason, retryable }
+    }
     if (!(await this.bindMembership(input, outcome.account, consumer.accessLevel))) {
       return { ok: false, reason: 'account_membership_contended', retryable: true }
     }
@@ -273,9 +316,12 @@ export class GitlabAccountService {
     }
     try {
       if (account.lifecycle === 'retiring') {
-        // The retirement released its lease, so it is over — re-provision a
-        // fresh generation rather than reviving the one it was tearing down.
-        account = (await this.deps.accounts.reactivate(account.id)) ?? account
+        // A retirement in progress is never revived, whatever its latest reason
+        // says: GitLab may already have accepted the deletion, and adopting that
+        // user would mint PATs that die with it. The row is a work item until
+        // the retirement deletes it, and the next attempt then provisions a
+        // genuinely fresh account — the §7.2 "wait, then re-provision".
+        return { ok: false, reason: ACCOUNT_RETIRING_REASON, retryable: true }
       }
       // This top-level group's OWN accounts — never a global user search (§7.2).
       let listing = await gitlabListServiceAccounts(input.token, input.rootGroupId, this.deps.fetchImpl)
@@ -537,11 +583,14 @@ export class GitlabAccountService {
     bindingId: string,
     projectId: bigint,
     token: string
-  ): Promise<boolean> {
+  ): Promise<RetirementOutcome> {
     if (account.serviceAccountUserId !== null) {
       await gitlabRemoveMember(token, projectId, account.serviceAccountUserId, this.deps.fetchImpl).catch(swallow404)
     }
-    await this.deps.accounts.detachMembership(account.id, bindingId)
+    // The detach and the obligation commit together, BEFORE the provider work:
+    // once the membership is gone nothing else links this retirement to the
+    // removal that caused it, so a crash in between must not lose the link.
+    await this.deps.accounts.detachMembershipForRemoval(account.id, bindingId)
     return this.retireIfEmpty(orgId, account.id, token)
   }
 
@@ -621,21 +670,29 @@ export class GitlabAccountService {
     }
   }
 
-  /** §19.4: an account with no membership left in its root is retired — PATs
-   *  revoked, account deleted — never kept warm. */
-  async retireIfEmpty(orgId: string, accountId: string, token: string): Promise<boolean> {
+  /**
+   * §19.4: an account with no membership left in its root is retired — PATs
+   *  revoked, account deleted — never kept warm.
+   *
+   * `deletion_pending` is the normal path, not a failure: GitLab deletes a user
+   * ASYNCHRONOUSLY, so the account is still listed for a while after the delete
+   * is accepted. The row records that and the retirement sweep closes it out on
+   * the positive evidence the design asks for — absence from the root's
+   * service-account listing — rather than this run pretending to see it early.
+   */
+  async retireIfEmpty(orgId: string, accountId: string, token: string): Promise<RetirementOutcome> {
     const account = await this.deps.accounts.get(accountId)
-    if (!account) return true
-    if ((await this.deps.accounts.countMemberships(accountId)) > 0) return true
+    if (!account) return 'retired'
+    if ((await this.deps.accounts.countMemberships(accountId)) > 0) return 'retired'
     const owner = randomBytes(9).toString('base64url')
     const nowMs = this.deps.clock.now()
     if (!(await this.deps.accounts.claimLease(accountId, owner, new Date(nowMs + ACCOUNT_LEASE_MS), new Date(nowMs)))) {
-      return false
+      return 'failed'
     }
     try {
       // The CAS and the emptiness check are one transaction: a bind that landed
       // first keeps the account alive and this run withdraws (§7.2).
-      if (!(await this.deps.accounts.beginRetirement(accountId))) return true
+      if (!(await this.deps.accounts.beginRetirement(accountId))) return 'retired'
       if (account.serviceAccountUserId !== null) {
         const rootGroupId = Number(account.rootGroupId)
         for (const credential of await this.deps.credentials.listForAccount(accountId)) {
@@ -650,22 +707,59 @@ export class GitlabAccountService {
         await gitlabDeleteServiceAccount(token, rootGroupId, account.serviceAccountUserId, this.deps.fetchImpl).catch(
           swallow404
         )
-        // Release only on positive evidence: the deterministic marker is absent.
+        // The delete was accepted, but GitLab removes the user asynchronously:
+        // still being listed here means the deletion is in flight, not refused.
         if (await gitlabFindServiceAccount(token, rootGroupId, account.username, this.deps.fetchImpl)) {
-          throw new GitlabApiError('marked service account still present after retirement', 0, 'INTERNAL', true)
+          await this.deps.accounts.update(accountId, {
+            state: 'cleanup_pending',
+            stateReason: DELETION_PENDING_REASON
+          })
+          return 'deletion_pending'
         }
       }
       // No lease renewal guards this one: the delete is CAS-fenced on `retiring`,
       // so a peer that reclaimed an expired lease and reactivated the row wins it.
       await this.deps.accounts.finishRetirement(accountId)
-      return true
+      return 'retired'
     } catch (e) {
-      const reason = e instanceof GitlabApiError ? `gitlab_${e.status || 'unreachable'}` : 'cleanup_failed'
+      const reason = retirementReason(e)
       this.deps.log?.warn({ accountId, reason }, 'gitlab account retirement failed')
       await this.deps.accounts.update(accountId, { state: 'cleanup_pending', stateReason: reason })
-      return false
+      return 'failed'
     } finally {
       await this.deps.accounts.releaseLease(accountId, owner).catch(() => {})
+    }
+  }
+
+  /**
+   * §19.4 retirement sweep: close out the accounts whose GitLab deletion was
+   * accepted but not yet observable. GitLab removes a user asynchronously, so
+   * absence from the root's service-account listing is evidence that only a
+   * later read can produce — this is the read, on a bounded cadence.
+   *
+   * An account still listed stays pending and is picked up again; a transport
+   * failure records its own reason and the next pass retries.
+   */
+  async sweepPendingRetirements(quietMs: number, limit = 50): Promise<void> {
+    const before = new Date(this.deps.clock.now() - quietMs)
+    for (const account of await this.deps.accounts.listUnfinishedRetirements(before, limit)) {
+      if (!account.administeringConnectionId) {
+        await this.deps.accounts.update(account.id, { state: 'cleanup_pending', stateReason: 'no_admin_connection' })
+        continue
+      }
+      try {
+        const token = await this.deps.oauth.withAccessToken(account.orgId, account.administeringConnectionId)
+        // Re-drive the whole retirement, not just the observation: a run that
+        // failed part-way — an unconfirmed revocation, a refused delete — has to
+        // be finished, and one that only lacked evidence closes on this read.
+        if ((await this.retireIfEmpty(account.orgId, account.id, token)) === 'retired') {
+          this.deps.onRetired?.(account.orgId)
+        }
+      } catch (e) {
+        const reason = retirementReason(e)
+        this.deps.log?.warn({ accountId: account.id, reason }, 'gitlab retirement sweep failed')
+        await this.deps.accounts.update(account.id, { state: 'cleanup_pending', stateReason: reason })
+      }
     }
   }
 
@@ -706,13 +800,36 @@ export class GitlabAccountService {
    *  an account left with nothing bound in its root retires. True only when no
    *  membership survives AND every emptied account retired — the caller's
    *  positive evidence for releasing the deployment-global claim. */
-  async unbindBinding(orgId: string, bindingId: string, projectId: bigint, token: string): Promise<boolean> {
-    let clean = true
+  async unbindBinding(orgId: string, bindingId: string, projectId: bigint, token: string): Promise<RetirementOutcome> {
+    let worst: RetirementOutcome = 'retired'
+    // A real failure outranks a pending deletion: only one of them is repair work.
+    const record = (outcome: RetirementOutcome): void => {
+      if (outcome === 'failed' || (outcome === 'deletion_pending' && worst === 'retired')) worst = outcome
+    }
+    const handled = new Set<string>()
     for (const membership of await this.deps.accounts.membershipsForBinding(bindingId)) {
       const account = await this.deps.accounts.get(membership.accountId)
-      if (account && !(await this.unbindOne(orgId, account, bindingId, projectId, token))) clean = false
+      if (!account) continue
+      handled.add(account.id)
+      record(await this.unbindOne(orgId, account, bindingId, projectId, token))
     }
-    return clean && (await this.deps.accounts.membershipsForBinding(bindingId)).length === 0
+    // Finish what an earlier pass already owes. Its memberships are long gone,
+    // so these rows are the only record of them — and a retried removal has to
+    // be able to complete on its own rather than wait for the sweep.
+    for (const account of await this.deps.accounts.listRetiringForBinding(bindingId)) {
+      if (handled.has(account.id)) continue
+      record(await this.retireIfEmpty(orgId, account.id, token))
+    }
+    if (worst === 'retired' && (await this.deps.accounts.membershipsForBinding(bindingId)).length > 0) {
+      return 'failed'
+    }
+    // The durable invariant, re-read: the claim may release only when no
+    // retirement still names this removal, never when merely the first of
+    // several has finished.
+    if (worst === 'retired' && (await this.deps.accounts.listRetiringForBinding(bindingId)).length > 0) {
+      return 'deletion_pending'
+    }
+    return worst
   }
 
   /**

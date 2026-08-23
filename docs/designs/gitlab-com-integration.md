@@ -1700,6 +1700,36 @@ verified-external-cleanup discipline; lost administration authority degrades
 the account rows to `cleanup_pending` with the same reconnect-or-transfer
 exits.
 
+GitLab removes a user asynchronously, so the run that asks for the deletion
+cannot witness it: an account still listed immediately after an accepted delete
+is a deletion in flight, not a refusal. That run records `deletion_pending` and
+returns; a background retirement sweep re-reads the top-level group's
+service-account listing on a bounded cadence and closes the retirement out on
+the absence the paragraph above requires. The sweep re-drives the whole
+retirement rather than only observing it, so a run that failed part-way — an
+unconfirmed revocation, a refused delete — is finished rather than stranded,
+and a row never leaves the sweep's worklist by failing differently. A project
+removal that stopped on a pending deletion keeps its claim and completes once
+the sweep proves the account gone. Because that removal detaches every
+membership before any deletion settles, and a project may have one account per
+agent, the obligation is recorded on the account rows themselves — in the same
+transaction as the detach that creates it, before any provider write — so the
+claim releases only when no retirement still names that removal, never when
+merely the first of several has finished.
+
+A retirement in progress is not a retirement that ended: a consumer arriving
+while one is still `retiring` waits rather than reviving that row, which could
+adopt a user id GitLab is about to remove and mint credentials that die with it.
+The lifecycle itself is the signal — never the latest failure reason, which a
+later attempt overwrites — and a finished retirement deletes its row, so any
+surviving one is by definition still owed work. The sweep removes it once the
+user is gone, and the next attempt provisions a genuinely fresh account, which
+is what the generation fence means by re-provisioning after the wait.
+
+The `active`→`retiring` transition happens in the same transaction that detaches
+the last membership and records the obligation, before any provider call, so a
+crash anywhere after it still leaves a row both worklists select.
+
 If external cleanup cannot complete, retain a sealed, access-restricted
 tombstone only for bounded cleanup retries and mark `cleanup_pending`. Local
 authority remains disabled. The Console provides the exact GitLab resources

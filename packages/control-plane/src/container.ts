@@ -25,10 +25,11 @@ import { resolveGithubAppConfig } from './github/config.js'
 import { resolveGitlabAppConfig } from './gitlab/config.js'
 import type { FetchLike as GitlabFetchLike } from './gitlab/api.js'
 import { GitlabOauthService } from './gitlab/oauth.service.js'
-import { GitlabAccountService } from './gitlab/account.service.js'
+import { DELETION_PENDING_REASON, GitlabAccountService } from './gitlab/account.service.js'
 import { GitlabProvisioner } from './gitlab/provisioner.js'
 import { GitlabGitcredService } from './gitlab/gitcred.service.js'
 import { GitlabCredentialRotator } from './gitlab/rotator.js'
+import { GitlabRetirementSweeper } from './gitlab/retirement-sweeper.js'
 import { GitlabMembershipAuthzService } from './gitlab/membership-authz.service.js'
 import { GitlabHookRerunService } from './gitlab/hook-rerun.service.js'
 import { CodeHostReviewBrokerService } from './codehost/review-lease.service.js'
@@ -978,6 +979,9 @@ export function buildContainer(
           log: { warn: (obj, msg) => http.log.warn(obj, msg) }
         })
       : undefined
+  // Late-bound, like the other orchestrator refs here: the account service is
+  // built before the provisioner that owns the removal saga it resumes.
+  const gitlabRef: { current?: { provisioner: GitlabProvisioner } } = {}
   // §7.2 identity: per-agent accounts, their PATs, and their memberships. Its
   // mutation lease is the account row's, never a binding's.
   const gitlabAccountService = gitlabOauthService
@@ -990,6 +994,16 @@ export function buildContainer(
         cipher: secretCipher,
         clock,
         avatarPng: createGitlabAccountAvatarRenderer(iconStore),
+        // A removal that stopped at a pending deletion finishes once the sweep
+        // proves the account gone; nothing else would revisit that binding.
+        onRetired: (orgId) => {
+          void (async () => {
+            for (const binding of await repos.gitlabProjectBinding.listForOrg(orgId)) {
+              if (binding.state !== 'cleanup_pending' || binding.stateReason !== DELETION_PENDING_REASON) continue
+              await gitlabRef.current?.provisioner.disconnect(orgId, binding.id)
+            }
+          })().catch((err) => http.log.warn({ err, orgId }, 'gitlab removal resume after retirement failed'))
+        },
         ...(opts.gitlabFetch ? { fetchImpl: opts.gitlabFetch } : {}),
         log: { warn: (obj, msg) => http.log.warn(obj, msg) }
       })
@@ -1061,9 +1075,21 @@ export function buildContainer(
         })
       }
     : undefined
+  if (gitlab) gitlabRef.current = gitlab
+
   // §7.4 PAT-rotation sweep; armed only by startBackground().
   const gitlabRotator = gitlab
     ? new GitlabCredentialRotator({
+        accounts: gitlab.accounts,
+        clock,
+        log: { warn: (obj, msg) => http.log.warn(obj, msg) }
+      })
+    : undefined
+
+  // §19.4 retirement sweep: GitLab deletes a user asynchronously, so the run
+  // that asked cannot witness it — this loop does. Armed by startBackground().
+  const gitlabRetirementSweeper = gitlab
+    ? new GitlabRetirementSweeper({
         accounts: gitlab.accounts,
         clock,
         log: { warn: (obj, msg) => http.log.warn(obj, msg) }
@@ -2102,6 +2128,7 @@ export function buildContainer(
       githubRunReporter?.start()
       hookRedeliveryReconciler?.start()
       gitlabRotator?.start()
+      gitlabRetirementSweeper?.start()
       for (const reaper of pendingInstallReapers) reaper.start()
       relaySweeper.start()
       dutyRecompute.start()
@@ -2119,6 +2146,7 @@ export function buildContainer(
       githubRunReporter?.stop()
       hookRedeliveryReconciler?.stop()
       gitlabRotator?.stop()
+      gitlabRetirementSweeper?.stop()
       installationDoorbell?.stop()
       for (const reaper of pendingInstallReapers) reaper.stop()
       relaySweeper.stop()
