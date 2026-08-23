@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { CodeHostProviderString } from '../code-host.js'
 import { AgentMemoryBinding } from './memory-connection.js'
 import { IntegrationSpec } from './integration.js'
 import { CronUpsert } from './cron.js'
@@ -14,8 +15,15 @@ import { normalizeGitHubSkillSource } from '../git-url.js'
  */
 
 // One repository of the agent's additional-repository allowlist (multi-repository-workspaces.md decision 2).
-// `repoId` is GitHub's numeric repository id as a decimal string — rename-immune, the identity minting matches on.
-export const AgentAdditionalRepo = z.object({ repoFullName: z.string(), repoId: z.string() })
+// `repoId` is the host's numeric repository/project id as a decimal string — rename-immune, the identity
+// minting matches on. `provider` qualifies it (gitlab-com-integration.md §8.1): the hosts number their
+// repositories independently, so the pair is the identity. Absent ⇒ `github`, which is what every row a
+// pre-GitLab control plane projects means, so an older peer's list still decodes.
+export const AgentAdditionalRepo = z.object({
+  repoFullName: z.string(),
+  repoId: z.string(),
+  provider: CodeHostProviderString.default('github')
+})
 export type AgentAdditionalRepo = z.infer<typeof AgentAdditionalRepo>
 
 /**

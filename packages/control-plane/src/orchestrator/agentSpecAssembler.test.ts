@@ -71,6 +71,7 @@ function repoAuthWith(rows: Array<[fullName: string, repoId: bigint]>): AgentRep
       rows.map(([repoFullName, repoId], index) => ({
         id: `auth-${index}`,
         agentId,
+        provider: 'github' as const,
         repoId,
         repoFullName,
         access: 'read' as const,
@@ -239,7 +240,7 @@ describe('AgentSpecAssembler', () => {
 
   it('project trusts the caller-snapshotted allowlist (the move bundle pins it)', () => {
     const specs = assemblerWith(repoAuthWith([['acme/infra', 4711n]]))
-    const pinned = [{ repoFullName: 'example-co/shared-library', repoId: '815' }]
+    const pinned = [{ repoFullName: 'example-co/shared-library', repoId: '815', provider: 'github' }]
 
     const spec = specs.project(AGENT, {}, [], [], undefined, pinned)
 

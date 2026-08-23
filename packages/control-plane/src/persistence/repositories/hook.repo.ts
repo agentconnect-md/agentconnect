@@ -2326,19 +2326,22 @@ export class PgHookRepo implements HookRepo {
         })
         const agent = await tx.agent.findUnique({
           where: { id: input.agentId },
-          select: { orgId: true, workspaceRepoId: true, gitAccess: true }
+          select: { orgId: true, workspaceRepoId: true, workspaceMode: true, gitAccess: true }
         })
-        const additionalGrant =
-          agent?.workspaceRepoId === input.repoId
-            ? null
-            : await tx.agentRepoAuthorization.findUnique({
-                where: { agentId_repoId: { agentId: input.agentId, repoId: input.repoId } },
-                select: { access: true }
-              })
+        // HookReviewProjection is the GitHub Checks ledger, so both authorities read
+        // github here — the hosts number their repositories independently (§8.1).
+        const workspaceIsThisRepo = agent?.workspaceRepoId === input.repoId && agent.workspaceMode === 'github'
+        const additionalGrant = workspaceIsThisRepo
+          ? null
+          : await tx.agentRepoAuthorization.findUnique({
+              where: {
+                agentId_provider_repoId: { agentId: input.agentId, provider: 'github', repoId: input.repoId }
+              },
+              select: { access: true }
+            })
         const currentRepoAuthority =
           agent?.orgId === input.orgId &&
-          ((agent.workspaceRepoId === input.repoId && agent.gitAccess === 'write') ||
-            additionalGrant?.access === 'write')
+          ((workspaceIsThisRepo && agent.gitAccess === 'write') || additionalGrant?.access === 'write')
         const currentLifecycle =
           hook?.kind === 'github' &&
           hook.enabled &&

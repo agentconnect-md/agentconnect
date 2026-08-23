@@ -770,7 +770,9 @@ export class PgAgentRepo implements AgentRepo {
         where: { id: agentId },
         data: { workspaceRepoId: repoId, configRevision: { increment: 1 } }
       })
-      await tx.agentRepoAuthorization.deleteMany({ where: { agentId, repoId } })
+      // Only the github grant is redundant with a github workspace: a gitlab project
+      // that happens to carry the same number is a different repository (§8.1).
+      await tx.agentRepoAuthorization.deleteMany({ where: { agentId, provider: 'github', repoId } })
       return true
     })
   }

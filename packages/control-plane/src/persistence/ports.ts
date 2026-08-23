@@ -3761,8 +3761,9 @@ export type RepoAccess = 'read' | 'comment' | 'write'
 export interface AgentRepoAuthorizationRecord {
   id: string
   agentId: AgentId
+  provider: CodeHostProvider // the host that numbers `repoId` — identity is (provider, repoId)
   repoId: bigint
-  repoFullName: string // "owner/repo" as GitHub cases it; refreshed on rename detection
+  repoFullName: string // "owner/repo" as GitHub cases it, or a GitLab namespaced project path; refreshed on rename detection
   access: RepoAccess
   createdAt: Date
   createdBy: AgentCreator | null // audit: who authorized (identity-assertion subject)
@@ -3775,6 +3776,7 @@ export interface AgentRepoAuthorizationRepo {
    *  may grant any covered repo. */
   create(input: {
     agentId: AgentId
+    provider: CodeHostProvider
     repoId: bigint
     repoFullName: string
     access: RepoAccess
@@ -3796,6 +3798,7 @@ export interface AgentRepoAuthorizationRepo {
   removeWithReviewProjectionCleanup(
     id: string,
     agentId: AgentId,
+    provider: CodeHostProvider,
     repoId: bigint,
     at: Date,
     desiredState: string

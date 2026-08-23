@@ -81,6 +81,10 @@ export interface GitCredServerDeps {
   /** The gitlab workspace's numeric project id from the REPLICATED SPEC — the
    *  §17.1 request identity the grant echo is verified against. */
   projectIdOf?: (agentId: string) => string | undefined
+  /** The numeric project id of a NAMED gitlab project the spec lists as an additional
+   *  authorization (§8.3), or undefined when the path is not one. Also from the
+   *  replicated spec, so a named project never introduces a provider the spec lacks. */
+  gitlabProjectOf?: (agentId: string, repoFullName: string) => string | undefined
 }
 
 export class GitCredServer {
@@ -90,6 +94,7 @@ export class GitCredServer {
   private readonly workspaceRepoOf?: (agentId: string) => string | undefined
   private readonly providerOf?: (agentId: string) => 'github' | 'gitlab' | undefined
   private readonly projectIdOf?: (agentId: string) => string | undefined
+  private readonly gitlabProjectOf?: (agentId: string, repoFullName: string) => string | undefined
 
   constructor(
     private readonly cache: GitCredentialCache,
@@ -100,6 +105,7 @@ export class GitCredServer {
     if (deps.workspaceRepoOf) this.workspaceRepoOf = deps.workspaceRepoOf
     if (deps.providerOf) this.providerOf = deps.providerOf
     if (deps.projectIdOf) this.projectIdOf = deps.projectIdOf
+    if (deps.gitlabProjectOf) this.gitlabProjectOf = deps.gitlabProjectOf
   }
 
   start(): void {
@@ -200,7 +206,15 @@ export class GitCredServer {
     }
     // The SPEC decides the provider; a helper whose host hint disagrees is
     // asking for another host's credential and gets a clean denial (§13.2).
-    const provider = this.providerOf?.(req.agentId) ?? 'github'
+    // A named project the spec lists as a gitlab additional authorization (§8.3) is
+    // the second spec-derived gitlab authority; the host hint only disambiguates
+    // between authorities the spec already carries, it never introduces one.
+    const workspaceProvider = this.providerOf?.(req.agentId) ?? 'github'
+    const gitlabProject = repo !== undefined ? this.gitlabProjectOf?.(req.agentId, repo) : undefined
+    const provider: 'github' | 'gitlab' =
+      gitlabProject !== undefined && (req.provider === 'gitlab' || workspaceProvider === 'gitlab')
+        ? 'gitlab'
+        : workspaceProvider
     if (req.provider !== undefined && req.provider !== provider) {
       this.audit('denied', req.agentId, plane, repo)
       return reply({ ok: false, error: `this workspace has no managed ${req.provider} credential` })
@@ -210,14 +224,19 @@ export class GitCredServer {
       return reply({ ok: false, error: 'glab credentials require a managed GitLab workspace' })
     }
     try {
-      const projectId = provider === 'gitlab' ? this.projectIdOf?.(req.agentId) : undefined
+      // §17.1: every gitlab ask names the rename-stable numeric identity so the
+      // consumer can reject a wrong-project grant echo — the workspace project for
+      // the repo-less ask, the authorized project for a named one. Without it a
+      // named project resolves to the workspace grant and the echo check rejects it.
+      const projectId =
+        provider !== 'gitlab'
+          ? undefined
+          : (gitlabProject ?? (repo === undefined ? this.projectIdOf?.(req.agentId) : undefined))
       const cred = await this.cache.get(req.agentId, 'helper', {
         plane,
         ...(repo !== undefined ? { repo } : {}),
         ...(provider === 'gitlab' ? { provider: 'gitlab' as const } : {}),
-        // §17.1: the workspace ask names the rename-stable numeric identity so
-        // the consumer can reject a wrong-project grant echo.
-        ...(projectId !== undefined && repo === undefined ? { externalRepoId: projectId } : {}),
+        ...(projectId !== undefined ? { externalRepoId: projectId } : {}),
         // §13.3: the CLI wrapper is read-only BY DESIGN — a mutating glab
         // command never receives effect authority and fails at GitLab.
         ...(plane === 'glab' ? { requestedAccess: 'read' as const } : {})

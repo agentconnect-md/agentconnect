@@ -20,6 +20,7 @@ import {
   RESERVED_MCP_SERVER_NAME,
   SESSION_RETENTION_RE,
   GitCloneUrlError,
+  CODE_HOST_PROVIDERS,
   HOOK_KINDS,
   RepoSubdirError,
   SessionImageAttachment,
@@ -1959,11 +1960,13 @@ export const GithubOwnerRepoParam = z.object({ id: z.string(), owner: z.string()
  *  hook write-back shape); `read`/`write` are uniform across capabilities. */
 export const RepoAccessDto = z.enum(['read', 'comment', 'write'])
 
-/** One explicit repo grant on an agent (the Repositories card). */
+/** One explicit repository grant on an agent (the Repositories card). */
 export const AgentRepoAuthDto = z.object({
   id: z.string(),
-  repoId: z.string(), // rename-proof GitHub numeric id
-  repoFullName: z.string(), // owner/repo as GitHub cases it (refreshed on rename)
+  /** The host that numbers `repoId` — identity is the pair, never the id alone (§8.1). */
+  provider: z.enum(CODE_HOST_PROVIDERS),
+  repoId: z.string(), // rename-proof numeric repository/project id
+  repoFullName: z.string(), // owner/repo as GitHub cases it, or the GitLab project path (refreshed on rename)
   access: RepoAccessDto,
   createdBy: z.string().nullable(), // app_user id (member directory resolves display)
   createdAt: z.string() // ISO-8601
@@ -1971,15 +1974,30 @@ export const AgentRepoAuthDto = z.object({
 export const AgentRepoAuthListDto = z.array(AgentRepoAuthDto)
 export type AgentRepoAuthDtoT = z.infer<typeof AgentRepoAuthDto>
 
-/** `POST /agents/:agentId/repos` — repo named by full name; the server resolves
- *  the numeric id through an org installation (never client-supplied). */
-export const CreateAgentRepoAuthBody = z.strictObject({
-  repoFullName: z
-    .string()
-    .trim()
-    .regex(/^[^/\s]+\/[^/\s]+$/, 'expected "owner/repo"'),
-  access: RepoAccessDto.default('read')
-})
+/** `POST /agents/:agentId/repos` — one arm per code host, keyed by `provider`.
+ *  A github repository is named by full name and the server resolves its numeric id
+ *  through an org installation; a gitlab project is named by the numeric project id
+ *  alone (§10.1 — the client never supplies facts, and a namespaced project path is
+ *  not `owner/repo` shaped).
+ *
+ *  Plain `z.union`, not `discriminatedUnion`: `provider` STAYS OPTIONAL on the github
+ *  arm because the published body never carried it, and a versioned surface must not
+ *  400 yesterday's valid body — a defaulted discriminator does not match an absent key. */
+export const CreateAgentRepoAuthBody = z.union([
+  z.strictObject({
+    provider: z.literal('gitlab'),
+    projectId: z.string().regex(/^[1-9]\d*$/),
+    access: RepoAccessDto.default('read')
+  }),
+  z.strictObject({
+    provider: z.literal('github').default('github'),
+    repoFullName: z
+      .string()
+      .trim()
+      .regex(/^[^/\s]+\/[^/\s]+$/, 'expected "owner/repo"'),
+    access: RepoAccessDto.default('read')
+  })
+])
 
 /** `PATCH /agents/:agentId/repos/:repoAuthId` — raise an existing grant's tier. */
 export const UpdateAgentRepoAuthBody = z.strictObject({ access: RepoAccessDto })

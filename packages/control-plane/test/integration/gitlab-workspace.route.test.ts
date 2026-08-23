@@ -17,6 +17,7 @@ import { GitlabGitcredService } from '../../src/gitlab/gitcred.service.js'
 import { GitCredDeniedError } from '../../src/github/service.js'
 import {
   PgAgentRepo,
+  PgAgentRepoAuthorizationRepo,
   PgCodeHostRepositoryRepo,
   PgGitlabAgentAccountRepo,
   PgGitlabConnectionRepo,
@@ -126,6 +127,7 @@ function credService(bindings: PgGitlabProjectBindingRepo) {
     accounts: new PgGitlabAgentAccountRepo(prisma),
     credentials: new PgGitlabProjectCredentialRepo(prisma),
     credentialSecrets: new PgGitlabProjectCredentialSecretStore(prisma, cipher),
+    repoAuths: new PgAgentRepoAuthorizationRepo(prisma),
     clock: systemClock
   })
 }

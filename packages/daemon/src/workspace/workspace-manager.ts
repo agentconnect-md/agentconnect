@@ -350,6 +350,11 @@ export class WorkspaceManager {
     const parent = this.secondaryRootsDirAt(agent, mount)
     const roots: SecondaryWorkspaceRoot[] = []
     for (const row of agent.workspace.additionalRepos ?? []) {
+      // Secondary roots are GitHub-only: the clone URL below is github.com, so a
+      // GitLab project would be fetched from the wrong host entirely. Its grant
+      // still serves credentials — only the materialized root is not built yet
+      // (gitlab-com-integration.md §13.1; multi-repository-workspaces.md).
+      if ((row.provider ?? 'github') !== 'github') continue
       const [owner, repo, ...rest] = row.repoFullName.split('/')
       // A row that is not two plain segments would place its subtree by its own text; refuse it here.
       if (rest.length > 0 || !isRepoSegment(owner) || !isRepoSegment(repo)) {

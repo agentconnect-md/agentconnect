@@ -1,23 +1,37 @@
 /**
- * `http/routes/agent-repos.ts` — explicit repo grants per agent
- * (issue #457, agent-multi-repo-authorization.md).
+ * `http/routes/agent-repos.ts` — explicit repository grants per agent
+ * (issue #457, agent-multi-repo-authorization.md; gitlab-com-integration.md §8.3).
  *
  * Authorization is anchored on the AGENT (a grant is subordinate to it, like a
  * hook): reads gate on the owning agent's visibility, writes on
  * `denyViewerWrite` — the hook-route precedent for agent-subordinate resources.
- * The numeric repo id is resolved server-side through an org installation
- * (create-time attribution proof, same as github-hook creation); with the
- * identity-assertion gate configured, the CALLER must hold the corresponding
- * GitHub permission on the repo (read/comment ⇒ ≥read, write ⇒ ≥write).
+ * The numeric repository id is resolved server-side, never client-supplied: github
+ * resolves it through an org installation (create-time attribution proof, same as
+ * github-hook creation) and gitlab through the org's own managed project binding.
+ * With the identity-assertion gate configured, a github CALLER must hold the
+ * corresponding permission on the repo (read/comment ⇒ ≥read, write ⇒ ≥write); the
+ * gitlab arm's proof is the binding, whose creation already required the installing
+ * user's Maintainer-or-Owner membership (§10.1).
+ *
+ * Authorizing a gitlab project makes the agent a CONSUMER of it (§7.2), so the arm
+ * runs the same inline account/membership ensure the workspace and hook arms run,
+ * and revoking converges the membership away.
  */
 import { gitRepoLabel } from '@agentconnect.md/protocol'
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import { z } from 'zod'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
-import { isSyntheticEmail, type AgentRecord, type AgentRepoAuthorizationRecord } from '../../persistence/ports.js'
+import {
+  isSyntheticEmail,
+  type AgentRecord,
+  type AgentRepoAuthorizationRecord,
+  type RepoAccess
+} from '../../persistence/ports.js'
 import { AgentWorkspaceRepoConflict } from '../../persistence/errors.js'
 import { GithubApiError } from '../../github/api.js'
+import { gitlabAuthorizationAccessLevel } from '../../gitlab/api.js'
+import { gitlabAccountUnavailableMessage } from '../../gitlab/account.service.js'
 import { UserAuthzDeniedError } from '../../github/user-authz.js'
 import { LogtoApiError } from '../../github/logto-identity.js'
 import { AgentId, OrgId } from '../../domain/ids.js'
@@ -38,6 +52,7 @@ import {
 function toDto(r: AgentRepoAuthorizationRecord): AgentRepoAuthDtoT {
   return {
     id: r.id,
+    provider: r.provider,
     repoId: r.repoId.toString(),
     repoFullName: r.repoFullName,
     access: r.access,
@@ -110,6 +125,150 @@ export function agentRepoRoutes(deps: HttpDeps) {
       })
     }
 
+    // Authorization changed who consumes the project, so the §7.2 accounts and
+    // memberships must reconverge — the same kick a gitlab workspace or hook write
+    // does. Fire-and-forget: the saga outwaits a peer's lease on its own.
+    const convergeGitlabProject = (orgId: string, projectId: bigint): void => {
+      const gitlab = deps.gitlab
+      if (!gitlab) return
+      void gitlab.provisioner
+        .convergeProject(OrgId(orgId), projectId)
+        .catch((err) => app.log.warn({ err, projectId: projectId.toString() }, 'gitlab authorization converge failed'))
+    }
+
+    /** The gitlab arm of `POST /agents/:agentId/repos` (§8.3). */
+    const authorizeGitlabProject = async (
+      req: FastifyRequest,
+      reply: FastifyReply,
+      agent: AgentRecord,
+      body: { projectId: string; access: RepoAccess }
+    ): Promise<AgentRepoAuthDtoT | undefined> => {
+      const conflict = (message: string): undefined => {
+        void reply.code(409).send({ error: 'Conflict', statusCode: 409, message })
+      }
+      const gitlab = deps.gitlab
+      if (!gitlab) return conflict('GitLab is not configured on this deployment')
+      const orgId = orgOf(req)
+      const projectId = BigInt(body.projectId)
+      // A grant never creates a binding, exactly as a hook never does (§8.3): the
+      // numeric id is validated against the organization's own row, never trusted.
+      const binding = await deps.repos.gitlabProjectBinding.byProject(orgId, projectId)
+      if (!binding || binding.state === 'cleanup_pending') {
+        return conflict('the project is not a managed GitLab project in this organization')
+      }
+      if (agent.workspace.mode === 'gitlab' && agent.workspaceRepoId === projectId) {
+        return conflict('this is already the agent’s workspace project')
+      }
+      const held = await deps.repos.agentRepoAuth.listForAgent(agent.id)
+      if (held.some((row) => row.provider === 'gitlab' && row.repoId === projectId)) {
+        return conflict(
+          `${binding.projectPath} is already authorized for this agent — upgrade that grant or remove it to lower the tier`
+        )
+      }
+      // Readers-first catalog convergence (gitlab-com-integration.md §8.1).
+      await deps.repos.codeHostRepository.upsert({
+        orgId,
+        provider: 'gitlab',
+        externalId: projectId,
+        displayPath: binding.projectPath,
+        cloneUrl: `https://gitlab.com/${binding.projectPath}`,
+        ...(binding.defaultBranch ? { defaultBranch: binding.defaultBranch } : {})
+      })
+      const create = (): Promise<AgentRepoAuthorizationRecord> =>
+        deps.repos.agentRepoAuth.create({
+          agentId: agent.id,
+          provider: 'gitlab',
+          repoId: projectId,
+          repoFullName: binding.projectPath,
+          access: body.access,
+          ...(req.principal ? { createdByUserId: req.principal.userId } : {})
+        })
+      // §7.2 identity bracket, exactly as the workspace and hook arms take it: the
+      // agent's own account and membership are provisioned FIRST and the grant row
+      // commits while the binding lease is still HELD, so convergence never sees a
+      // membership without the authorization that justifies it.
+      let applied
+      try {
+        applied = await gitlab.provisioner.provisionAgentAccount(
+          orgId,
+          projectId,
+          { agentId: agent.id, accessLevel: gitlabAuthorizationAccessLevel(body.access) },
+          create
+        )
+      } catch (err) {
+        // The grant rolled back, so the membership just bound belongs to an agent
+        // that does not consume the project: converge it away.
+        convergeGitlabProject(orgId, projectId)
+        throw err
+      }
+      if (!applied.ok) return conflict(gitlabAccountUnavailableMessage(applied.reason))
+      const row = applied.result
+      void deps.repos.audit
+        .append({
+          kind: 'agent_repo_change',
+          orgId,
+          agentId: agent.id,
+          ...(req.principal ? { actorUserId: req.principal.userId } : {}),
+          frameType: 'gitcred/grant',
+          message: `gitlab project ${row.repoFullName} authorized (${row.access})`,
+          details: { repoAuthId: row.id, provider: 'gitlab', repoFullName: row.repoFullName, access: row.access }
+        })
+        .catch(() => {})
+      await replicateUpsert(agent)
+      return toDto(row)
+    }
+
+    /** The gitlab arm of `PATCH /agents/:agentId/repos/:repoAuthId`: raising the tier
+     *  raises the account's project role, so it re-runs the same ensure the grant took. */
+    const upgradeGitlabAuthorization = async (
+      req: FastifyRequest,
+      reply: FastifyReply,
+      agent: AgentRecord,
+      row: AgentRepoAuthorizationRecord,
+      access: RepoAccess
+    ): Promise<AgentRepoAuthDtoT | undefined> => {
+      const conflict = (message: string): undefined => {
+        void reply.code(409).send({ error: 'Conflict', statusCode: 409, message })
+      }
+      const gitlab = deps.gitlab
+      if (!gitlab) return conflict('GitLab is not configured on this deployment')
+      const orgId = orgOf(req)
+      const binding = await deps.repos.gitlabProjectBinding.byProject(orgId, row.repoId)
+      if (!binding || binding.state === 'cleanup_pending') {
+        return conflict('the project is not a managed GitLab project in this organization')
+      }
+      const applied = await gitlab.provisioner.provisionAgentAccount(
+        orgId,
+        row.repoId,
+        { agentId: agent.id, accessLevel: gitlabAuthorizationAccessLevel(access) },
+        () => deps.repos.agentRepoAuth.updateAccess(row.id, access)
+      )
+      if (!applied.ok) return conflict(gitlabAccountUnavailableMessage(applied.reason))
+      const updated = applied.result
+      if (!updated) {
+        void reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'authorization not found' })
+        return undefined
+      }
+      void deps.repos.audit
+        .append({
+          kind: 'agent_repo_change',
+          orgId,
+          agentId: agent.id,
+          ...(req.principal ? { actorUserId: req.principal.userId } : {}),
+          frameType: 'gitcred/grant',
+          message: `gitlab project ${updated.repoFullName} authorization upgraded (${row.access} → ${updated.access})`,
+          details: {
+            repoAuthId: updated.id,
+            provider: 'gitlab',
+            repoFullName: updated.repoFullName,
+            previousAccess: row.access,
+            access: updated.access
+          }
+        })
+        .catch(() => {})
+      return toDto(updated)
+    }
+
     r.get(
       '/agents/:agentId/repos',
       {
@@ -138,7 +297,7 @@ export function agentRepoRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Authorize a repository for an agent',
           description:
-            'Grant the agent access to a GitHub repository. App-backed workspaces may add repositories beyond their implicit workspace grant, scratch workspaces may add any covered repository, and a manual GitHub workspace may explicitly authorize only its own repository for control-plane review/check effects. The repository must be covered by one of the organization’s GitHub App installations; with the per-user gate configured, the caller must hold the matching GitHub permission (`read`/`comment` tiers need read, `write` needs write).',
+            'Grant the agent access to one code-host repository. With `provider: github` (the default) the repository is named `owner/repo` and must be covered by one of the organization’s GitHub App installations; App-backed workspaces may add repositories beyond their implicit workspace grant, scratch workspaces may add any covered repository, and a manual GitHub workspace may explicitly authorize only its own repository for control-plane review/check effects. With the per-user gate configured, the caller must hold the matching GitHub permission (`read`/`comment` tiers need read, `write` needs write). With `provider: gitlab` the project is named by its numeric id and must already be a managed GitLab project in this organization; authorizing it provisions the agent’s own GitLab bot account and project membership before the grant lands.',
           operationId: 'createAgentRepoAuthorization',
           params: z.object({ agentId: z.string() }),
           body: CreateAgentRepoAuthBody,
@@ -157,6 +316,7 @@ export function agentRepoRoutes(deps: HttpDeps) {
         if (denyViewerWrite(req, reply)) return
         const agent = await getViewableAgent(req, req.params.agentId)
         if (!agent) return agentNotFound(reply)
+        if (req.body.provider === 'gitlab') return authorizeGitlabProject(req, reply, agent, req.body)
         if (!deps.github) {
           return reply.code(409).send({
             error: 'Conflict',
@@ -235,6 +395,7 @@ export function agentRepoRoutes(deps: HttpDeps) {
           }
           const row = await deps.repos.agentRepoAuth.create({
             agentId: agent.id,
+            provider: 'github',
             repoId: ref.repoId,
             repoFullName: ref.fullName,
             access: req.body.access,
@@ -319,6 +480,7 @@ export function agentRepoRoutes(deps: HttpDeps) {
           })
         }
         if (req.body.access === row.access) return toDto(row)
+        if (row.provider === 'gitlab') return upgradeGitlabAuthorization(req, reply, agent, row, req.body.access)
 
         const [owner, repo] = row.repoFullName.split('/')
         const installation = owner
@@ -417,12 +579,21 @@ export function agentRepoRoutes(deps: HttpDeps) {
           }
           throw e
         }
-        const redundantWorkspaceGrant = workspaceRepoId === row.repoId
+        // The workspace is redundant with this grant only when it is the SAME host's
+        // repository: the two number theirs independently (§8.1).
+        const redundantWorkspaceGrant = workspaceRepoId === row.repoId && agent.workspace.mode === row.provider
         const now = new Date()
         // Persist one-way cleanup authority and drop the grant atomically under
         // the projection lifecycle lock. Deleting first could leave a passing
         // Check that the normal reporter is no longer authorized to clean up.
-        await deps.repos.agentRepoAuth.removeWithReviewProjectionCleanup(row.id, agent.id, row.repoId, now, 'failure')
+        await deps.repos.agentRepoAuth.removeWithReviewProjectionCleanup(
+          row.id,
+          agent.id,
+          row.provider,
+          row.repoId,
+          now,
+          'failure'
+        )
         void deps.repos.audit
           .append({
             kind: 'agent_repo_change',
@@ -433,9 +604,17 @@ export function agentRepoRoutes(deps: HttpDeps) {
             message: redundantWorkspaceGrant
               ? `redundant workspace repo ${row.repoFullName} authorization removed`
               : `repo ${row.repoFullName} authorization revoked`,
-            details: { repoAuthId: row.id, repoFullName: row.repoFullName, redundantWorkspaceGrant }
+            details: {
+              repoAuthId: row.id,
+              provider: row.provider,
+              repoFullName: row.repoFullName,
+              redundantWorkspaceGrant
+            }
           })
           .catch(() => {})
+        // Revoked authorization ⇒ the agent is no longer a consumer, so the §7.2
+        // membership must go — and with nothing left in its root, the account retires.
+        if (row.provider === 'gitlab' && !redundantWorkspaceGrant) convergeGitlabProject(orgOf(req), row.repoId)
         await replicateUpsert(agent)
         return reply.code(204).send(null)
       }

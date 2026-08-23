@@ -1782,6 +1782,7 @@ export function buildContainer(
             accounts: repos.gitlabAgentAccount,
             credentials: new PgGitlabProjectCredentialRepo(prisma),
             credentialSecrets: new PgGitlabProjectCredentialSecretStore(prisma, secretCipher),
+            repoAuths: repos.agentRepoAuth,
             clock
           })
         }

@@ -43,6 +43,9 @@ import {
 /** The wire spec plus the id it is keyed by on `agent/upsert` / the roster. */
 export type AssembledAgentSpec = AgentSpec & { agentId: string }
 
+/** Byte-order string compare — deliberately not `localeCompare`, whose order is host-dependent. */
+const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0)
+
 export class AgentSpecAssembler {
   constructor(
     private readonly secrets: AgentSecretStore,
@@ -114,14 +117,15 @@ export class AgentSpecAssembler {
     return this.secrets.get(a.orgId, a.id)
   }
 
-  /** The agent's authorized additional repositories, sorted by full name so the
-   *  projection is stable (a reordered read must not change the spec digest).
+  /** The agent's authorized additional repositories, sorted by provider then full name
+   *  so the projection is stable (a reordered read must not change the spec digest) —
+   *  two hosts can display the same path, so the name alone is not a total order.
    *  Pinned into the move {@link MoveBundle} for the same reason as skills. */
   async additionalReposOf(a: Pick<AgentRecord, 'id'>): Promise<AgentAdditionalRepo[]> {
     const rows = (await this.agentRepoAuth?.listForAgent(a.id)) ?? []
     return rows
-      .map((row) => ({ repoFullName: row.repoFullName, repoId: row.repoId.toString() }))
-      .sort((x, y) => (x.repoFullName < y.repoFullName ? -1 : x.repoFullName > y.repoFullName ? 1 : 0))
+      .map((row) => ({ repoFullName: row.repoFullName, repoId: row.repoId.toString(), provider: row.provider }))
+      .sort((x, y) => cmp(x.provider, y.provider) || cmp(x.repoFullName, y.repoFullName))
   }
 
   /** Resolve the agent's skill entries — pinned into the move {@link MoveBundle} so

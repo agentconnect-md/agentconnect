@@ -891,27 +891,32 @@ enum RepoAccess {
   write // all write — secondary working repo
 }
 
-/// Explicit grant of a GitHub repo to an agent (issue #457,
-/// agent-multi-repo-authorization.md). Anchored on the agent, NOT on hooks —
-/// creating a hook must never silently widen credentials. `repoId` (numeric,
-/// rename-immune) is the match key; `repoFullName` is display + the request
-/// fast-path. The covering installation is deliberately NOT bound here: minting
-/// re-resolves the live installation by repo owner (gitcred decision 7), so an
-/// uninstall→reinstall self-heals. Rows are mutable (add/remove) — the
-/// workspace-immutability convention is untouched.
+/// Explicit grant of one code-host repository to an agent (issue #457,
+/// agent-multi-repo-authorization.md; gitlab-com-integration.md §8.3). Anchored on
+/// the agent, NOT on hooks — creating a hook must never silently widen
+/// credentials. `repoId` (numeric, rename-immune) is the match key WITHIN a
+/// provider; `repoFullName` is display + the request fast-path. The covering
+/// installation is deliberately NOT bound here: minting re-resolves the live
+/// installation by repo owner (gitcred decision 7), so an uninstall→reinstall
+/// self-heals. Rows are mutable (add/remove) — the workspace-immutability
+/// convention is untouched.
 model AgentRepoAuthorization {
-  id              String     @id @default(uuid()) @db.Uuid
-  agentId         String     @db.Uuid
-  repoId          BigInt // GitHub numeric repo id — the match key
-  repoFullName    String // "owner/repo" — display + case-insensitive fast-path; refreshed on rename detection
-  access          RepoAccess
+  id String @id @default(uuid()) @db.Uuid
+  agentId String @db.Uuid
+  /// 'github' | 'gitlab' — TEXT with the closed-set guard at the application layer,
+  /// matching CodeHostRepository. The two hosts number their repositories
+  /// independently, so identity is (provider, repoId), never repoId alone.
+  provider String @default("github")
+  repoId BigInt // numeric repository/project id — the match key
+  repoFullName String // "owner/repo" or "group/subgroup/project" — display + case-insensitive fast-path; refreshed on rename detection
+  access RepoAccess
   createdByUserId String? // audit: who authorized (the identity-assertion subject)
-  createdAt       DateTime   @default(now()) @db.Timestamptz(6)
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
 
   agent     Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
   createdBy User? @relation("AgentRepoAuthCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
 
-  @@unique([agentId, repoId])
+  @@unique([agentId, provider, repoId])
   @@index([agentId])
   @@map("agent_repo_authorization")
 }

@@ -364,6 +364,7 @@ describe('R1/R2a persistence foundation', () => {
     })
     const duplicate = await grants.create({
       agentId: legacyAgent,
+      provider: 'github',
       repoId,
       repoFullName: 'acme/infra',
       access: 'write'
@@ -404,7 +405,7 @@ describe('R1/R2a persistence foundation', () => {
         installationId: 'legacy-installation'
       })
       await Promise.allSettled([
-        grants.create({ agentId, repoId, repoFullName: 'acme/infra', access: 'write' }),
+        grants.create({ agentId, provider: 'github', repoId, repoFullName: 'acme/infra', access: 'write' }),
         agents.setWorkspaceRepoId(agentId, repoId)
       ])
       expect(await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })).toMatchObject({
@@ -1681,7 +1682,7 @@ describe('R1/R2a persistence foundation', () => {
     )
     expect(
       await prisma.agentRepoAuthorization.findUniqueOrThrow({
-        where: { agentId_repoId: { agentId, repoId: 44n } },
+        where: { agentId_provider_repoId: { agentId, provider: 'github', repoId: 44n } },
         select: { repoFullName: true }
       })
     ).toEqual({ repoFullName: 'acme/new-name' })

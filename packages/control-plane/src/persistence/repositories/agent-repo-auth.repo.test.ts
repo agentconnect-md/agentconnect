@@ -33,7 +33,9 @@ describe('workspace repository identity and additional grants', () => {
       where: { id: AGENT },
       data: { workspaceRepoId: REPO, configRevision: { increment: 1 } }
     })
-    expect(tx.agentRepoAuthorization.deleteMany).toHaveBeenCalledWith({ where: { agentId: AGENT, repoId: REPO } })
+    expect(tx.agentRepoAuthorization.deleteMany).toHaveBeenCalledWith({
+      where: { agentId: AGENT, provider: 'github', repoId: REPO }
+    })
     // No HookReviewProjection operation is part of redundant-grant repair.
     expect(Object.hasOwn(tx, 'hookReviewProjection')).toBe(false)
   })
@@ -42,21 +44,52 @@ describe('workspace repository identity and additional grants', () => {
     const create = vi.fn()
     const tx = {
       $queryRaw: vi.fn(async () => []),
-      agent: { findUnique: vi.fn(async () => ({ workspaceRepoId: REPO })) },
+      agent: { findUnique: vi.fn(async () => ({ workspaceMode: 'github', workspaceRepoId: REPO })) },
       agentRepoAuthorization: { create }
     }
     const repo = new PgAgentRepoAuthorizationRepo(transactionalDb(tx) as never)
 
     await expect(
-      repo.create({ agentId: AGENT, repoId: REPO, repoFullName: 'acme/infra', access: 'write' })
+      repo.create({ agentId: AGENT, provider: 'github', repoId: REPO, repoFullName: 'acme/infra', access: 'write' })
     ).rejects.toBeInstanceOf(AgentWorkspaceRepoConflict)
     expect(create).not.toHaveBeenCalled()
+  })
+
+  it('lets a gitlab grant name the numeric id a github workspace already holds', async () => {
+    const create = vi.fn(async () => ({
+      id: 'ra-1',
+      agentId: AGENT,
+      provider: 'gitlab',
+      repoId: REPO,
+      repoFullName: 'example-group/example-project',
+      access: 'read',
+      createdAt: new Date(0),
+      createdBy: null
+    }))
+    const tx = {
+      $queryRaw: vi.fn(async () => [{ id: AGENT }]),
+      agent: {
+        findUnique: vi.fn(async () => ({ workspaceMode: 'github', workspaceRepoId: REPO })),
+        updateMany: vi.fn(async () => ({ count: 1 }))
+      },
+      agentRepoAuthorization: { create }
+    }
+    const repo = new PgAgentRepoAuthorizationRepo(transactionalDb(tx) as never)
+
+    await repo.create({
+      agentId: AGENT,
+      provider: 'gitlab',
+      repoId: REPO,
+      repoFullName: 'example-group/example-project',
+      access: 'read'
+    })
+    expect(create).toHaveBeenCalledOnce()
   })
 
   it('deletes a redundant workspace grant without tombstoning live projections', async () => {
     const tx = {
       $queryRaw: vi.fn(async () => []),
-      agent: { findUnique: vi.fn(async () => ({ workspaceRepoId: REPO })) },
+      agent: { findUnique: vi.fn(async () => ({ workspaceMode: 'github', workspaceRepoId: REPO })) },
       agentRepoAuthorization: { deleteMany: vi.fn(async () => ({ count: 1 })) }
     }
     const repo = new PgAgentRepoAuthorizationRepo(transactionalDb(tx) as never)
@@ -64,6 +97,7 @@ describe('workspace repository identity and additional grants', () => {
     await repo.removeWithReviewProjectionCleanup(
       '22222222-2222-4222-8222-222222222222',
       AGENT,
+      'github',
       REPO,
       new Date('2026-07-11T00:00:00.000Z'),
       'failure'
