@@ -701,6 +701,7 @@ function toChannelRecord(c: IntegrationChannel): IntegrationChannelRecord {
     kind: c.kind as ConversationKind,
     trigger: c.trigger as ChannelTrigger,
     dmUserId: c.dmUserId,
+    triggerChosen: c.triggerChosen,
     agentId: c.agentId ? AgentId(c.agentId) : null
   }
 }
@@ -907,12 +908,15 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
   async setTrigger(
     integrationId: IntegrationId,
     channelId: string,
-    trigger: ChannelTrigger
+    trigger: ChannelTrigger,
+    opts?: { chosen?: boolean }
   ): Promise<IntegrationChannelRecord | null> {
     // updateMany → no throw on a missing row (the bot may have just left the channel).
+    // `triggerChosen` is only ever set, never cleared: a decision does not expire, and
+    // orchestration mirroring an owner's trigger must not unmark one either.
     const res = await this.db.integrationChannel.updateMany({
       where: { integrationId, channelId },
-      data: { trigger }
+      data: { trigger, ...(opts?.chosen ? { triggerChosen: true } : {}) }
     })
     if (res.count === 0) return null
     const row = await this.db.integrationChannel.findUnique({

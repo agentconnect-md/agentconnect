@@ -4329,6 +4329,9 @@ export interface IntegrationChannelRecord {
   /** The 1:1 DM counterpart's platform member id (§14.8); null on rooms and on rows
    *  discovered before the reporter carried it. */
   dmUserId: string | null
+  /** True once a HUMAN chose this trigger — the one thing that tells an operator's Off
+   *  apart from a default nobody has decided yet (§14.8). */
+  triggerChosen: boolean
   /** Per-conversation owner for a shared bot (§10.1); null on sibling non-owner rows. */
   agentId: AgentId | null
 }
@@ -4404,11 +4407,14 @@ export interface IntegrationChannelRepo {
   /** Conversations across EVERY integration of a shared bot — the route compiler's
    *  ownership source. */
   listForBot(botId: BotId): Promise<IntegrationChannelRecord[]>
-  /** Per-conversation trigger choice; returns null when the row doesn't exist. */
+  /** Per-conversation trigger choice; returns null when the row doesn't exist.
+   *  `chosen` records that a HUMAN picked this value (§14.8) — omitted leaves the flag
+   *  as it was, so orchestration mirroring a trigger never fabricates a decision. */
   setTrigger(
     integrationId: IntegrationId,
     channelId: string,
-    trigger: ChannelTrigger
+    trigger: ChannelTrigger,
+    opts?: { chosen?: boolean }
   ): Promise<IntegrationChannelRecord | null>
   /** Set or clear this integration row's owner marker. The orchestrator keeps
    *  exactly one row marked per shared conversation. Returns null when missing. */

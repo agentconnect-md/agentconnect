@@ -663,7 +663,9 @@ export class HttpBotOrchestrator {
         targetAgent && isGatedAgent(targetAgent)
           ? ('off' as const)
           : (patch.trigger ?? currentRow?.trigger ?? rows[0]?.trigger ?? updated.trigger)
-      await this.syncConversationTrigger(installs, channelId, trigger, rows)
+      // This call IS the human's action (console patch or the in-Slack modal), so the
+      // resulting trigger is a decision on every sibling row, not a default (§14.8).
+      await this.syncConversationTrigger(installs, channelId, trigger, rows, { chosen: true })
       updated = { ...updated, trigger }
       await this.syncRoutes(botId)
       return updated
@@ -734,7 +736,8 @@ export class HttpBotOrchestrator {
     installs: IntegrationRecord[],
     channelId: string,
     trigger: ChannelTrigger,
-    knownRows: IntegrationChannelRecord[]
+    knownRows: IntegrationChannelRecord[],
+    opts?: { chosen?: boolean }
   ): Promise<void> {
     const known = new Map(knownRows.map((row) => [row.integrationId, row]))
     const template = knownRows.find((row) => row.name !== null) ?? knownRows[0]
@@ -754,7 +757,7 @@ export class HttpBotOrchestrator {
         )
         if (backfilled.trigger === trigger) continue
       }
-      await this.channels.setTrigger(integration.id, channelId, trigger)
+      await this.channels.setTrigger(integration.id, channelId, trigger, opts)
     }
   }
 

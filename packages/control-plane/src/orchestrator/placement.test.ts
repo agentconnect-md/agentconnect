@@ -91,6 +91,7 @@ const channel = (
   kind,
   trigger,
   dmUserId: null,
+  triggerChosen: false,
   agentId: null
 })
 

@@ -111,6 +111,7 @@ function channel(over: Partial<IntegrationChannelRecord>): IntegrationChannelRec
     kind: 'channel',
     trigger: 'mention',
     dmUserId: null,
+    triggerChosen: false,
     agentId: null,
     ...over
   } as IntegrationChannelRecord

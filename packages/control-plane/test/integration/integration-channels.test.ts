@@ -488,21 +488,18 @@ describe('integration/channels EVT → integration_channel convergence', () => {
     expect((await triggersOf(id)).get('D_ALICE')).toBe('off')
 
     const pushed: string[] = []
-    const opened = await reconcileLinkedDms(
-      DEFAULT_OWNER_ID,
-      { teamId: 'T_ACME', userId: 'U_ALICE' },
-      {
-        users: new PgUserRepo(prisma),
-        orgs: new PgOrgRepo(prisma),
-        agents: new PgAgentRepo(prisma),
-        integrations: new PgIntegrationRepo(prisma),
-        bots: new PgBotRepo(prisma),
-        channels: new PgIntegrationChannelRepo(prisma),
-        push: async (agent) => {
-          pushed.push(agent.id)
-        }
+    const opened = await reconcileLinkedDms(DEFAULT_OWNER_ID, ALICE_SUB, {
+      users: new PgUserRepo(prisma),
+      orgs: new PgOrgRepo(prisma),
+      agents: new PgAgentRepo(prisma),
+      integrations: new PgIntegrationRepo(prisma),
+      bots: new PgBotRepo(prisma),
+      channels: new PgIntegrationChannelRepo(prisma),
+      identity: { slackIdentityFor: async () => ({ teamId: 'T_ACME', userId: 'U_ALICE' }) },
+      push: async (agent) => {
+        pushed.push(agent.id)
       }
-    )
+    })
     expect(opened).toBe(1)
     expect(pushed).toHaveLength(1)
     expect((await triggersOf(id)).get('D_ALICE')).toBe('any')
@@ -575,6 +572,41 @@ describe('integration/channels EVT → integration_channel convergence', () => {
     const triggers = await triggersOf(id)
     expect(triggers.get('D_CAROL')).toBe('any')
     expect(triggers.get('D_BOB')).toBe('off')
+  })
+
+  // The link path cannot prove a link just landed — the browser writes it at the
+  // provider BEFORE calling refresh — so it runs on every call. `triggerChosen` is what
+  // makes that safe: an editor's Off is a decision, not a pending authorization.
+  it('a repeated identity refresh never reopens a DM the editor closed (§14.8)', async () => {
+    await seedDaemon(prisma, DAEMON)
+    running = buildHttpApp(prisma, undefined, undefined, new SpyControl() as unknown as ControlSender)
+    const id = await privateAgentInWorkspace(running, [DEFAULT_OWNER_ID])
+    const links = { [ALICE_SUB]: { teamId: 'T_ACME', userId: 'U_ALICE' } }
+    await report(
+      DAEMON,
+      id,
+      [{ id: 'D_ALICE', name: '@alice', kind: 'im', dmUserId: 'U_ALICE' }],
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      links
+    )
+    expect((await triggersOf(id)).get('D_ALICE')).toBe('any')
+
+    // The editor closes it through the console route, which records the choice.
+    const closed = await running.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/integrations/${id}/channels/D_ALICE`,
+      payload: { trigger: 'off' }
+    })
+    expect(closed.statusCode).toBe(200)
+
+    // Any number of later refreshes leave it closed.
+    for (let i = 0; i < 3; i += 1) {
+      expect(await reconcileLinkedDms(DEFAULT_OWNER_ID, ALICE_SUB, reconcileDeps(links))).toBe(0)
+    }
+    expect((await triggersOf(id)).get('D_ALICE')).toBe('off')
   })
 
   it('never re-closes a DM an operator turned Off after §14.8 opened it', async () => {

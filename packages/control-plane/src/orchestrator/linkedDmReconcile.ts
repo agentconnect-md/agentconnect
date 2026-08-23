@@ -13,19 +13,19 @@
  * results is order-independent: an audience member with a linked identity has an open
  * DM, however the two arrived.
  *
- * Scoped to the pair that JUST became eligible, never to the current state. A stored
- * Off is indistinguishable from an operator's own choice — §14.2 lets an editor close
- * a DM §14.8 opened — so re-deriving from "everyone currently in the audience who is
- * currently linked" would reopen that DM on the next unrelated sharing edit or profile
- * refresh, turning a DEFAULT into a standing rule that overrides the per-conversation
- * control. Hence the callers pass the members just added, and the link path fires only
- * when the identity actually changed.
+ * Only ever opens rows still at their DEFAULT. `triggerChosen` is what makes that
+ * expressible: without it a stored Off is indistinguishable from an operator's own
+ * choice — §14.2 lets an editor close a DM §14.8 opened — and a catch-up would reopen
+ * that DM on the next sharing edit or profile refresh, turning a default into a
+ * standing rule that overrides the per-conversation control. With it, running the
+ * catch-up more often than strictly necessary is harmless, which matters because
+ * neither caller can prove it is the moment a link appeared: the console's refresh
+ * lands AFTER the browser already wrote the link, so nothing observable on this side
+ * separates a new link from a reauthorization.
  *
- * Deliberately ONE-WAY: it opens rows and never closes them, for the same reason. The
- * consequence is that an opened DM stays open — a gated bind rule is
- * conversation-scoped, with no user dimension, so losing the audience seat does not
- * close the conversation the seat opened, and only an editor's Off does. §14.8 records
- * why, and what telling the two apart would cost.
+ * Deliberately ONE-WAY even so: it never closes a row, because a close cannot be
+ * derived from absence — an audience seat lost, an unlink, and an editor's own Off all
+ * present the same way. §14.8 records the consequence.
  *
  * Best-effort at every call site: a failure leaves the rows Off, which is where they
  * already were.
@@ -74,7 +74,11 @@ async function openDirectRows(
     const bot = await deps.bots.getUnscoped(integration.botId)
     if (!bot) continue
     const rows = await deps.channels.listForIntegration(IntegrationId(integration.id))
-    const candidates = rows.filter((row) => row.kind === 'im' && row.trigger === 'off' && row.dmUserId)
+    // `!triggerChosen` is the whole safety property: a row an editor closed is not a
+    // pending authorization, it is a decision, and this must not relitigate it.
+    const candidates = rows.filter(
+      (row) => row.kind === 'im' && row.trigger === 'off' && !row.triggerChosen && row.dmUserId
+    )
     if (candidates.length === 0) continue
     const allowed = await admits(bot)
     if (allowed.size === 0) continue
@@ -92,16 +96,18 @@ async function openDirectRows(
  * A link just landed on this account: open this person's Off DMs with every private
  * agent they are already in the audience of, across every org they belong to.
  *
- * `identity` is the one that just became true — the caller establishes that by
- * comparing what it read before the change with what it reads after, so a profile
- * refresh that changed nothing (a reauthorization, a link to some other provider)
- * reconciles nothing. Returns how many rows were opened, for the caller's log line.
+ * Safe to run whenever a link MIGHT have landed — the caller does not have to prove
+ * one did, because `openDirectRows` only touches rows still at their default. Returns
+ * how many rows were opened, for the caller's log line.
  */
 export async function reconcileLinkedDms(
   userId: string,
-  identity: SlackIdentity,
+  oidcSubject: string,
   deps: LinkedDmReconcileDeps
 ): Promise<number> {
+  if (!deps.identity) return 0
+  const identity = await deps.identity.slackIdentityFor(oidcSubject)
+  if (!identity) return 0
   // The workspace fence: a Slack member id is scoped to its team, so the same `U…` in
   // another workspace is a different person entirely.
   const admits = async (bot: BotRecord): Promise<ReadonlySet<string>> =>

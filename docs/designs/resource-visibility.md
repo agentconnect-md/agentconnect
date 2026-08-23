@@ -1017,30 +1017,41 @@ writes that can make the answer true later — a landed identity link, a widened
 audience — re-ask it for the Off DM rows already on record. The rule that
 results does not depend on the order the three events arrive in.
 
-**The catch-up asks about the pair that just became eligible, never about the
-current state.** A widened audience reconciles the members it GAINED, not
-everyone in it; a link reconciles only when the Slack identity actually changed,
-compared against what the account carried when the request started. This is not
-an optimization. A stored Off is indistinguishable from an operator's own choice
-— §14.2 lets an editor close a DM §14.8 opened — so re-deriving from "everyone
-currently in the audience who is currently linked" would reopen that DM on the
-next unrelated sharing edit or profile refresh, turning a DEFAULT into a
-standing rule that overrides the per-conversation control. Neither call site
-means "a Slack link appeared" on its own: the console's refresh is also used
-after a reauthorization, and the link route links providers other than Slack.
+**A catch-up only ever touches a row still at its DEFAULT.** That is what
+`integration_channel.triggerChosen` exists for: it is set the moment a human
+picks a conversation's trigger, in the Console or the in-Slack modal, and never
+cleared. Without it a stored Off is indistinguishable from an operator's own
+choice — §14.2 lets an editor close a DM §14.8 opened — and a catch-up would
+reopen that DM on the next sharing edit or profile refresh, turning a DEFAULT
+into a standing rule that overrides the per-conversation control.
 
-For the same reason the catch-up is **one-way**: it opens rows and never closes
-them, because re-deriving a CLOSE would revert decisions §14.8 never made.
+The marker is load-bearing rather than an optimization, because **neither call
+site can prove it is the moment a link appeared.** The browser-driven Account
+API flow writes the link at the provider BEFORE calling the Console's refresh
+route, so a "was it linked before?" read on this side is only pre-link when a
+cache entry happens to survive the round trip — cold cache, a CP restart, or a
+link slower than the identity lease all make it read the already-linked
+identity and conclude nothing changed. Inferring novelty after an external
+mutation is not available here, so the catch-up runs unconditionally and leans
+on `triggerChosen` to be idempotent. (A widened audience still reconciles only
+the members it GAINED — there the diff IS available, and it bounds the work.)
 
-**Consequence, stated plainly: an opened DM stays open.** A gated bind rule is
-conversation-scoped (`{channel, match:'dm'}`), with no user dimension, so losing
-the audience seat or unlinking the identity does NOT close the conversation the
-seat opened; an editor turning the row Off in the Console does. That is the same
-durability §14.2 already gives an editor-enabled conversation — "enabling
-entrusts the conversation" — but the grant now originates from an audience
-membership that can later change, which an editor-made one does not. Making it
-revocable needs the rows §14.8 opened to be told apart from the rows an editor
-chose, which is a marker this deliberately does not add yet.
+Rows that predate the marker are left at `false`: for a gated agent Off is the
+universal default, so before §14.8 a deliberately-closed DM required an editor
+to turn one On and then Off again. Marking the whole backlog "chosen" would be
+safer on paper and would keep the feature from ever reaching the DMs that
+already exist, which are exactly the ones it is for.
+
+**One-way even so: a catch-up never closes a row.** A close cannot be derived
+from absence — an audience seat lost, an unlink, and an editor's own Off all
+present the same way to the reconciler. So an opened DM stays open: a gated bind
+rule is conversation-scoped (`{channel, match:'dm'}`) with no user dimension, and
+losing the seat does not close the conversation the seat opened; an editor
+turning the row Off does, and that Off is now sticky. This is the same durability
+§14.2 already gives an editor-enabled conversation, with the difference that the
+grant originated from a membership that can later change. Revoking on seat loss
+is now expressible — `triggerChosen` tells the two apart — and is left to a
+change that can decide what should happen to the session history behind it.
 
 **Known edge.** The daemon and relay decide admission before the CP has the row,
 so the very first message of a brand-new DM is still refused with the §14.3

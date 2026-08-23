@@ -2402,6 +2402,11 @@ model IntegrationChannel {
   // integration so deleting the canonical owner does not discard conversation state.
   // Classic integrations keep their trigger per integration.
   trigger       ChannelTrigger   @default(mention)
+  // True once a HUMAN chose this conversation's trigger (resource-visibility.md §14.8).
+  // A stored Off is otherwise indistinguishable from a default nobody has decided yet,
+  // and the two need opposite treatment: §14.8's catch-up may open a defaulted row and
+  // must never reopen one an editor deliberately closed.
+  triggerChosen Boolean          @default(false)
   // Per-conversation default/owning agent for a SHARED bot (shared-bot-relay.md §10.1
   // conversation ownership — the primary disambiguation path). Exactly one active
   // integration row per shared conversation carries the owner; sibling rows are null.
