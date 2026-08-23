@@ -617,26 +617,32 @@ export class PgGitlabAgentAccountRepo implements GitlabAgentAccountRepo {
     rootGroupId: bigint
     username: string
     administeringConnectionId: string | null
+    axisBaseUrl: string
   }): Promise<GitlabAgentAccountRecord> {
-    const row = await this.prisma.gitlabAgentAccount.upsert({
-      where: {
-        orgId_agentId_rootGroupId: {
+    // §24.1: the root group id is host-relative, and the binding lease this runs
+    // under is a GitLab-domain lease, not the axis key — so join it here.
+    const row = await this.prisma.$transaction(async (tx) => {
+      await joinAxisFence(tx, input.axisBaseUrl)
+      return tx.gitlabAgentAccount.upsert({
+        where: {
+          orgId_agentId_rootGroupId: {
+            orgId: input.orgId,
+            agentId: input.agentId,
+            rootGroupId: input.rootGroupId
+          }
+        },
+        create: {
           orgId: input.orgId,
           agentId: input.agentId,
-          rootGroupId: input.rootGroupId
-        }
-      },
-      create: {
-        orgId: input.orgId,
-        agentId: input.agentId,
-        rootGroupId: input.rootGroupId,
-        username: input.username,
-        administeringConnectionId: input.administeringConnectionId,
-        state: 'provisioning'
-      },
-      // An existing row keeps its lifecycle facts: only the administering
-      // connection follows the binding that is converging it right now.
-      update: { administeringConnectionId: input.administeringConnectionId }
+          rootGroupId: input.rootGroupId,
+          username: input.username,
+          administeringConnectionId: input.administeringConnectionId,
+          state: 'provisioning'
+        },
+        // An existing row keeps its lifecycle facts: only the administering
+        // connection follows the binding that is converging it right now.
+        update: { administeringConnectionId: input.administeringConnectionId }
+      })
     })
     return toAccountRecord(row)
   }

@@ -175,7 +175,11 @@ export function hookRoutes(deps: HttpDeps) {
     // route's fast preflight instead of leaking it as a generic 500.
     const persistHook = async (input: UpsertHookInput): Promise<HookRecord | AgentWorkspaceIntegrationConflict> => {
       try {
-        return await deps.repos.hook.upsert(input)
+        // §24.1: every gitlab-kind write carries the instance its repoId names,
+        // enabled or not — the disabled path reaches this with no lease at all.
+        const fenced =
+          input.kind === 'gitlab' && deps.gitlab ? { ...input, axisBaseUrl: deps.gitlab.api.baseUrl } : input
+        return await deps.repos.hook.upsert(fenced)
       } catch (err) {
         if (err instanceof AgentWorkspaceIntegrationConflict) return err
         throw err

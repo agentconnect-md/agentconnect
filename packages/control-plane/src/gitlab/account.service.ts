@@ -304,7 +304,8 @@ export class GitlabAccountService {
       agentId: consumer.agentId,
       rootGroupId,
       username: derived,
-      administeringConnectionId: input.installerConnectionId
+      administeringConnectionId: input.installerConnectionId,
+      axisBaseUrl: this.deps.api.baseUrl
     })
     const owner = randomBytes(9).toString('base64url')
     const nowMs = this.deps.clock.now()

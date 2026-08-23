@@ -35,7 +35,8 @@ import {
 } from '../../src/persistence/deployment-config.js'
 import { makeSecretCipher } from '../../src/secrets/cipher.js'
 import { systemClock } from '../../src/domain/clock.js'
-import { OrgId } from '../../src/domain/ids.js'
+import { AgentId, HookId, OrgId } from '../../src/domain/ids.js'
+import { PgHookRepo } from '../../src/persistence/repositories/hook.repo.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
 const PUBLIC_CP = 'https://api.example.test'
@@ -321,6 +322,54 @@ describe('the base URL is immutable while GitLab state exists (§24.1)', () => {
     ).rejects.toMatchObject({ code: 'gitlab_base_url_changed' })
     expect(await prisma.gitlabProjectBinding.count()).toBe(0)
     expect(await prisma.codeHostRepositoryClaim.count()).toBe(0)
+  })
+
+  it('refuses a gitlab hook insert after the axis moved, including the disabled path', async () => {
+    // The disabled path takes NO binding lease: the route checks the binding,
+    // cleanup can then remove the last one, the retarget counts zero, and the
+    // insert would land an old-instance repoId that a same-numbered project on
+    // the new instance could later answer for.
+    const store = new PgDeploymentConfigStore(prisma, cipher, PREFIXED)
+    const first = await store.replace({
+      expectedRevision: 0,
+      values: document(PREFIXED),
+      secrets: { 'gitlab.clientSecret': 'secret-1' }
+    })
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { name: 'axis-hook-agent' })
+    const moved = await store.replace({
+      expectedRevision: first.revision,
+      values: document('https://other.example.test'),
+      secrets: { 'gitlab.clientSecret': 'secret-2' }
+    })
+    expect(moved.values.gitlab?.baseUrl).toBe('https://other.example.test')
+
+    const hooks = new PgHookRepo(prisma)
+    const stale = {
+      orgId: OrgId(DEFAULT_ORG_ID),
+      agentId: AgentId(agentId),
+      kind: 'gitlab' as const,
+      name: 'axis-hook',
+      sessionMode: 'perThread' as const,
+      targetPlatform: 'slack' as const,
+      repoId: PROJECT,
+      axisBaseUrl: PREFIXED
+    }
+    for (const enabled of [false, true]) {
+      await expect(hooks.upsert({ ...stale, hookId: HookId(randomUUID()), enabled })).rejects.toMatchObject({
+        code: 'gitlab_base_url_changed'
+      })
+    }
+    expect(await prisma.hookDef.count({ where: { kind: 'gitlab' } })).toBe(0)
+
+    // The same insert against the axis now persisted is accepted.
+    const ok = await hooks.upsert({
+      ...stale,
+      hookId: HookId(randomUUID()),
+      enabled: false,
+      axisBaseUrl: 'https://other.example.test'
+    })
+    expect(ok.repoId).toBe(PROJECT)
   })
 
   it('requires the client secret again, because a new instance is a new application', async () => {

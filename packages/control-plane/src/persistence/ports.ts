@@ -2133,6 +2133,10 @@ export interface UpsertHookInput {
   /** Trigger text (control metadata, same as CronDef.trigger). */
   sessionMode: HookSessionMode
   enabled?: boolean
+  /** REQUIRED for kind=gitlab: the instance `repoId` names, joining the §24.1
+   *  axis fence inside the insert transaction. Omitting it on a gitlab hook is
+   *  refused, because a disabled hook takes no binding lease of any kind. */
+  axisBaseUrl?: string
   /** Generic-endpoint routing key — minted server-side on CREATE, immutable
    *  after (the capability URL must survive edits). */
   urlToken?: string
@@ -3477,6 +3481,8 @@ export interface GitlabAgentAccountRepo {
     rootGroupId: bigint
     username: string
     administeringConnectionId: string | null
+    /** The instance this root group id came from; joins the §24.1 axis fence. */
+    axisBaseUrl: string
   }): Promise<GitlabAgentAccountRecord>
   get(accountId: string): Promise<GitlabAgentAccountRecord | null>
   byAgentRoot(orgId: string, agentId: string, rootGroupId: bigint): Promise<GitlabAgentAccountRecord | null>

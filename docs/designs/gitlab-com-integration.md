@@ -2367,10 +2367,13 @@ Merge order, GitLab.com green at every step:
   The fence is two-sided on one advisory key: the document writer holds it
   exclusively around its state count and refuses with `gitlab_base_url_locked`
   — comparing against the axis in effect now, which for the first persisted
-  document is the environment fallback — while a transaction creating
-  first-of-its-kind GitLab state holds it shared and refuses with
-  `gitlab_base_url_changed` if the persisted axis no longer matches the base it
-  composed against. A `disconnected` connection row is credential-free history
+  document is the environment fallback — while every transaction that creates
+  GitLab state holds it shared and refuses with `gitlab_base_url_changed` if the
+  persisted axis no longer matches the base it composed against. Creation is
+  fenced uniformly: the connection upsert, the binding claim, the agent account,
+  and the hook insert. A binding lease is not a substitute, because it is a
+  GitLab-domain lease on a different key and a hook that will not be enabled
+  takes none at all. A `disconnected` connection row is credential-free history
   and does not hold the axis.
 - **N1 — the floor.** Version parsing, `instance_version_unsupported`, the
   Setup Server probe.

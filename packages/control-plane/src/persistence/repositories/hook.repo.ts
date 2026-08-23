@@ -64,6 +64,7 @@ import {
 import { authoritativeHookProjectionState } from '../../github/projection-state.js'
 import { AgentWorkspaceIntegrationConflict, HookMissing } from '../errors.js'
 import { bumpAgentConfigRevisions } from './organization-environment-fence.js'
+import { joinAxisFence } from './gitlab-axis.js'
 
 type HookWithUsers = HookDef & {
   createdBy: User | null
@@ -526,6 +527,12 @@ export class PgHookRepo implements HookRepo {
         // existing agent -> hook order. This also avoids a parent-FK row-lock /
         // agent advisory-lock inversion with concurrent org deletion.
         await lockHookReviewOrgProducerScope(tx, input.orgId)
+        // §24.1: `repoId` is a host-relative GitLab project id, and a hook that
+        // will not be enabled takes no binding lease, so this is its only fence.
+        if (input.kind === 'gitlab') {
+          if (!input.axisBaseUrl) throw new Error('gitlab hook write is missing its axis base url')
+          await joinAxisFence(tx, input.axisBaseUrl)
+        }
         const lockedAgentIds = await this.lockAgentLifecycleScopes(tx, [
           ownerHint ? AgentId(ownerHint) : null,
           input.agentId

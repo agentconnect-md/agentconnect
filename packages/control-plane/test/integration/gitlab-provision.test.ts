@@ -155,7 +155,8 @@ async function seedAccountRow(h: Awaited<ReturnType<typeof harness>>, username: 
     agentId: AGENT,
     rootGroupId: ROOT_GROUP,
     username,
-    administeringConnectionId: h.connection.id
+    administeringConnectionId: h.connection.id,
+    axisBaseUrl: 'https://gitlab.com'
   })
   return (await h.accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP))!
 }
