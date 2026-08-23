@@ -238,10 +238,12 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
         row.agentId = agentId
         return row
       },
-      setTrigger: async (integrationId, channelId, trigger) => {
+      setTrigger: async (integrationId, channelId, trigger, opts) => {
         const row = channels.find((c) => c.integrationId === integrationId && c.channelId === channelId)
         if (!row) return null
         row.trigger = trigger
+        // Set-only, exactly like the repo: a decision does not expire.
+        if (opts?.chosen) row.triggerChosen = true
         return row
       },
       upsertConversation: async (integrationId, conversation, opts) => {
@@ -829,6 +831,35 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
     // ownership convergence that immediately follows the report — that pass re-derives
     // a gated owner's trigger, and forcing Off there would undo the seed on the very
     // syncRoutes the report itself triggers.
+    // §14.8: `triggerChosen` is only useful if it is as complete as the trigger it
+    // accompanies. The shared-bot convergence has two ways to skip the write — a row
+    // that already carries the value, and one it backfills with that value — and both
+    // would leave a deliberate Off looking like an untouched default to a later
+    // catch-up.
+    it('records the human choice on every sibling row, including the ones needing no change (§14.8)', async () => {
+      gatedAgents = new Set([ALICE])
+      channels = [
+        // The owner row §14.8 opened, and a sibling that is already Off.
+        channel({ integrationId: INT_A, channelId: 'D42', kind: 'im', trigger: 'any', agentId: ALICE }),
+        channel({ integrationId: INT_B, channelId: 'D42', kind: 'im', trigger: 'off' })
+      ]
+      const orch = makeOrch()
+      await orch.updateConversation(BOT, 'D42', { trigger: 'off' }, { source: 'console' })
+      for (const integrationId of [INT_A, INT_B]) {
+        const row = channels.find((c) => c.integrationId === integrationId && c.channelId === 'D42')
+        expect(row).toMatchObject({ trigger: 'off', triggerChosen: true })
+      }
+    })
+
+    it('records the human choice on a sibling row the update itself backfills (§14.8)', async () => {
+      gatedAgents = new Set([ALICE])
+      channels = [channel({ integrationId: INT_A, channelId: 'D42', kind: 'im', trigger: 'any', agentId: ALICE })]
+      const orch = makeOrch()
+      await orch.updateConversation(BOT, 'D42', { trigger: 'off' }, { source: 'console' })
+      const backfilled = channels.find((c) => c.integrationId === INT_B && c.channelId === 'D42')
+      expect(backfilled).toMatchObject({ trigger: 'off', triggerChosen: true })
+    })
+
     it('reportConversation opens a gated DM with a member of the agent’s own audience (§14.8)', async () => {
       gatedAgents = new Set([ALICE])
       channels = []

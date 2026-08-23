@@ -743,7 +743,14 @@ export class HttpBotOrchestrator {
     const template = knownRows.find((row) => row.name !== null) ?? knownRows[0]
     for (const integration of installs) {
       const row = known.get(integration.id)
-      if (row?.trigger === trigger) continue
+      // A human decision has to reach EVERY sibling row, including one that already
+      // carries the value and one this call is about to create. `triggerChosen` is what
+      // tells a decision from an untouched default later (§14.8), so under `chosen` a
+      // trigger that needs no change is still a write — otherwise the marker would be
+      // missing on exactly the rows the shared-bot paths converge, and a later catch-up
+      // would read a deliberate Off as pending and reopen it.
+      const marked = opts?.chosen !== true || row?.triggerChosen === true
+      if (row?.trigger === trigger && marked) continue
       if (!row) {
         const backfilled = await this.channels.upsertConversation(
           integration.id,
@@ -755,7 +762,7 @@ export class HttpBotOrchestrator {
           },
           { defaultTrigger: trigger }
         )
-        if (backfilled.trigger === trigger) continue
+        if (backfilled.trigger === trigger && opts?.chosen !== true) continue
       }
       await this.channels.setTrigger(integration.id, channelId, trigger, opts)
     }
