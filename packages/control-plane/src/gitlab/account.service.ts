@@ -655,6 +655,8 @@ export class GitlabAccountService {
           throw new GitlabApiError('marked service account still present after retirement', 0, 'INTERNAL', true)
         }
       }
+      // No lease renewal guards this one: the delete is CAS-fenced on `retiring`,
+      // so a peer that reclaimed an expired lease and reactivated the row wins it.
       await this.deps.accounts.finishRetirement(accountId)
       return true
     } catch (e) {
@@ -822,6 +824,9 @@ export class GitlabAccountService {
     const strays = (
       await gitlabListServiceAccountTokens(token, rootGroupId, serviceAccountUserId, this.deps.fetchImpl)
     ).filter((t) => t.name === name && t.active !== false && t.revoked !== true)
+    // That listing is exhaustive too: re-prove the fence before the revokes it
+    // decides, not only before the create further down.
+    await this.renew(account.id, owner)
     for (const stray of strays) {
       if (recorded && BigInt(stray.id) === recorded.externalTokenId) continue
       await gitlabRevokeServiceAccountToken(

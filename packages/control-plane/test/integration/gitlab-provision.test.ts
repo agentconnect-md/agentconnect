@@ -788,6 +788,14 @@ describe('GitlabAccountService listing pagination (§7.2)', () => {
   const accountListings = (h: Awaited<ReturnType<typeof harness>>) =>
     h.fake.requests.filter((r) => r.method === 'GET' && /\/service_accounts\?/.test(r.url))
 
+  /** A peer takes the account the way it legitimately can: the run's lease has
+   *  expired, so the CAS lets the next worker claim it. */
+  const stealLease = async (h: Awaited<ReturnType<typeof harness>>) => {
+    const row = (await h.accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP))!
+    const later = new Date(Date.now() + 600_000)
+    expect(await h.accounts.claimLease(row.id, 'peer', later, later)).toBe(true)
+  }
+
   it('claims the account an ambiguous create landed past the first page', async () => {
     const h = await harness({ ambiguousServiceAccountCreate: true })
     h.fake.serviceAccounts = others(120)
@@ -811,11 +819,9 @@ describe('GitlabAccountService listing pagination (§7.2)', () => {
     h.fake.serviceAccounts = others(120)
     // A peer claims the account the moment our exhaustive read reaches page 2 —
     // the shape a lease that expires under a slow multi-page listing produces.
-    h.fake.opts.onServiceAccountListPage = async (page) => {
-      if (page !== 2) return
-      const row = (await h.accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP))!
-      const later = new Date(Date.now() + 600_000)
-      expect(await h.accounts.claimLease(row.id, 'peer', later, later)).toBe(true)
+    h.fake.opts.onListPage = async (resource, page) => {
+      if (resource !== 'service_accounts' || page !== 2) return
+      await stealLease(h)
     }
 
     expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toEqual({
@@ -846,6 +852,27 @@ describe('GitlabAccountService listing pagination (§7.2)', () => {
     expect(h.fake.serviceAccounts).toHaveLength(101)
     expect(h.fake.serviceAccounts.at(-1)).toEqual(foreign)
     expect(h.fake.tokens.size).toBe(0)
+  })
+
+  it('re-proves the fence after the token listing, so a stolen lease revokes nothing', async () => {
+    const h = await harness()
+    expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toEqual({ state: 'ready' })
+    const account = (await h.accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP))!
+    const read = (await h.credentials.get(account.id, 'read'))!
+    // The crash shape again: the PAT is live at the provider, our record is gone,
+    // so the next mint would sweep it as a stray.
+    await prisma.gitlabProjectCredential.delete({ where: { id: read.id } })
+    h.fake.opts.onListPage = async (resource) => {
+      if (resource !== 'personal_access_tokens') return
+      await stealLease(h)
+    }
+
+    expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toEqual({
+      state: 'admin_degraded',
+      reason: 'account_lease_lost'
+    })
+    // The revokes the stale listing decided never reached the provider.
+    expect(h.fake.tokens.get(Number(read.externalTokenId))!.revoked).toBe(false)
   })
 
   it('sweeps a stray PAT that a long revocation history pushed past the first page', async () => {

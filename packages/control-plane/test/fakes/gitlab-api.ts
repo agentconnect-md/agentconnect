@@ -29,9 +29,9 @@ export interface FakeGitlabOptions {
   refuseServiceAccountUsernameChange?: boolean
   /** Observe the row the moment the provider sees a service-account PATCH. */
   onServiceAccountPatch?: () => Promise<void>
-  /** Act between the pages of a service-account listing — a peer that moves
-   *  while an exhaustive read is in flight (§7.2). */
-  onServiceAccountListPage?: (page: number) => Promise<void>
+  /** Act between the pages of a paginated listing — a peer that moves while an
+   *  exhaustive read is in flight (§7.2). */
+  onListPage?: (resource: 'service_accounts' | 'personal_access_tokens' | 'hooks', page: number) => Promise<void>
   /** Answer the avatar endpoint 404 — a provider that does not offer it. */
   avatarEndpointUnsupported?: boolean
   /** Refuse the avatar upload with a definitive 400. */
@@ -40,6 +40,8 @@ export interface FakeGitlabOptions {
 
 /** GitLab-shaped paging: one `per_page` slice plus `x-next-page`, empty on the
  *  last page. Listings the recovery predicates read must follow it (§7.2). */
+const pageOf = (url: string): number => Number(new URL(url).searchParams.get('page') ?? '1')
+
 function page<T>(url: string, rows: readonly T[]): Response {
   const params = new URL(url).searchParams
   const perPage = Number(params.get('per_page') ?? '20')
@@ -248,7 +250,7 @@ export class FakeGitlab {
       }
 
       if (/\/api\/v4\/groups\/\d+\/service_accounts\?/.test(url)) {
-        await this.opts.onServiceAccountListPage?.(Number(new URL(url).searchParams.get('page') ?? '1'))
+        await this.opts.onListPage?.('service_accounts', pageOf(url))
         return page(url, this.serviceAccounts)
       }
       if (/\/api\/v4\/groups\/\d+\/service_accounts$/.test(url) && method === 'POST') {
@@ -324,6 +326,7 @@ export class FakeGitlab {
       }
       if (/\/api\/v4\/groups\/\d+\/service_accounts\/\d+\/personal_access_tokens\?/.test(url)) {
         const userId = Number(/service_accounts\/(\d+)\//.exec(url)![1])
+        await this.opts.onListPage?.('personal_access_tokens', pageOf(url))
         return page(
           url,
           [...this.tokens.entries()]
