@@ -115,6 +115,9 @@ export function gitlabAccountUnavailableMessage(reason: string): string {
   if (reason === 'service_account_create_forbidden') {
     return 'the connected GitLab account must be an Owner of the top-level group to create bot accounts'
   }
+  if (reason === DELETION_PENDING_REASON) {
+    return 'GitLab is still deleting this agent’s previous bot account — try again in a moment'
+  }
   if (reason === 'provisioning_or_cleanup_in_progress' || reason === 'account_busy') {
     return 'GitLab project setup is already running — try again shortly'
   }
@@ -266,7 +269,12 @@ export class GitlabAccountService {
     const outcome = await this.ensureAccount(input, consumer)
     // A contended account lease resolves itself; every other refusal is the
     // account's own recorded state and needs a repair, not another attempt.
-    if (!outcome.ok) return { ok: false, reason: outcome.reason, retryable: outcome.reason === 'account_busy' }
+    if (!outcome.ok) {
+      // Both resolve themselves: a peer finishes its account mutation, and a
+      // pending deletion is closed out by the sweep.
+      const retryable = outcome.reason === 'account_busy' || outcome.reason === DELETION_PENDING_REASON
+      return { ok: false, reason: outcome.reason, retryable }
+    }
     if (!(await this.bindMembership(input, outcome.account, consumer.accessLevel))) {
       return { ok: false, reason: 'account_membership_contended', retryable: true }
     }
@@ -302,9 +310,16 @@ export class GitlabAccountService {
       return { ok: false, reason: 'account_busy', retryable: true }
     }
     try {
+      if (account.lifecycle === 'retiring' && account.stateReason === DELETION_PENDING_REASON) {
+        // GitLab accepted this account's deletion and has not finished it yet.
+        // Reviving the row would adopt a user id about to vanish and mint PATs
+        // that die with it, on a row the sweep no longer watches. Wait instead:
+        // the sweep removes the row and the next attempt creates a fresh one.
+        return { ok: false, reason: DELETION_PENDING_REASON, retryable: true }
+      }
       if (account.lifecycle === 'retiring') {
-        // The retirement released its lease, so it is over — re-provision a
-        // fresh generation rather than reviving the one it was tearing down.
+        // The retirement released its lease and is not deleting, so it is over —
+        // re-provision a fresh generation rather than reviving what it tore down.
         account = (await this.deps.accounts.reactivate(account.id)) ?? account
       }
       // This top-level group's OWN accounts — never a global user search (§7.2).
@@ -567,12 +582,11 @@ export class GitlabAccountService {
     if (account.serviceAccountUserId !== null) {
       await gitlabRemoveMember(token, projectId, account.serviceAccountUserId, this.deps.fetchImpl).catch(swallow404)
     }
-    await this.deps.accounts.detachMembership(account.id, bindingId)
-    const outcome = await this.retireIfEmpty(orgId, account.id, token)
-    // The membership is gone, so nothing else links this retirement to the
-    // removal that caused it — record the obligation before that link is lost.
-    if (outcome !== 'retired') await this.deps.accounts.markRetiringFor(account.id, bindingId)
-    return outcome
+    // The detach and the obligation commit together, BEFORE the provider work:
+    // once the membership is gone nothing else links this retirement to the
+    // removal that caused it, so a crash in between must not lose the link.
+    await this.deps.accounts.detachMembershipForRemoval(account.id, bindingId)
+    return this.retireIfEmpty(orgId, account.id, token)
   }
 
   /**

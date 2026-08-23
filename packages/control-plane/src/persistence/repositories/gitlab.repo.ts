@@ -628,10 +628,13 @@ export class PgGitlabAgentAccountRepo implements GitlabAgentAccountRepo {
     return rows.map(toAccountRecord)
   }
 
-  async markRetiringFor(accountId: string, bindingId: string): Promise<void> {
-    await this.prisma.gitlabAgentAccount.updateMany({
-      where: { id: accountId, lifecycle: 'retiring' },
-      data: { retiringForBindingId: bindingId }
+  async detachMembershipForRemoval(accountId: string, bindingId: string): Promise<void> {
+    await this.prisma.$transaction(async (tx) => {
+      await tx.gitlabAccountMembership.deleteMany({ where: { accountId, bindingId } })
+      // Emptied by this detach ⇒ the removal owes this account's retirement.
+      // Recorded here, not after the provider work, so a crash cannot lose it.
+      if ((await tx.gitlabAccountMembership.count({ where: { accountId } })) > 0) return
+      await tx.gitlabAgentAccount.updateMany({ where: { id: accountId }, data: { retiringForBindingId: bindingId } })
     })
   }
 
@@ -744,6 +747,8 @@ export class PgGitlabAgentAccountRepo implements GitlabAgentAccountRepo {
          WHERE "id" = ${input.accountId}::uuid FOR UPDATE`
       const row = locked[0]
       if (!row || row.lifecycle !== 'active' || row.generation !== input.generation) return false
+      // Bound again ⇒ no removal is owed this account's retirement any more.
+      await tx.gitlabAgentAccount.updateMany({ where: { id: input.accountId }, data: { retiringForBindingId: null } })
       await tx.gitlabAccountMembership.upsert({
         where: { accountId_bindingId: { accountId: input.accountId, bindingId: input.bindingId } },
         create: {

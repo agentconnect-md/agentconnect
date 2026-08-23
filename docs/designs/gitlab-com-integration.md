@@ -1710,9 +1710,16 @@ and a row never leaves the sweep's worklist by failing differently. A project
 removal that stopped on a pending deletion keeps its claim and completes once
 the sweep proves the account gone. Because that removal detaches every
 membership before any deletion settles, and a project may have one account per
-agent, the obligation is recorded on the account rows themselves: the claim
-releases only when no retirement still names that removal, never when merely the
-first of several has finished.
+agent, the obligation is recorded on the account rows themselves — in the same
+transaction as the detach that creates it, before any provider write — so the
+claim releases only when no retirement still names that removal, never when
+merely the first of several has finished.
+
+A retirement awaiting deletion is not a retirement that ended: a consumer
+arriving in that window waits rather than reviving the row, which would adopt a
+user id GitLab is about to remove and mint credentials that die with it. The
+sweep deletes the row once the user is gone, and the next attempt provisions a
+genuinely fresh account.
 
 If external cleanup cannot complete, retain a sealed, access-restricted
 tombstone only for bounded cleanup retries and mark `cleanup_pending`. Local
