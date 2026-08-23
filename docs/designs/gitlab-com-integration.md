@@ -1715,11 +1715,18 @@ transaction as the detach that creates it, before any provider write — so the
 claim releases only when no retirement still names that removal, never when
 merely the first of several has finished.
 
-A retirement awaiting deletion is not a retirement that ended: a consumer
-arriving in that window waits rather than reviving the row, which would adopt a
-user id GitLab is about to remove and mint credentials that die with it. The
-sweep deletes the row once the user is gone, and the next attempt provisions a
-genuinely fresh account.
+A retirement in progress is not a retirement that ended: a consumer arriving
+while one is still `retiring` waits rather than reviving that row, which could
+adopt a user id GitLab is about to remove and mint credentials that die with it.
+The lifecycle itself is the signal — never the latest failure reason, which a
+later attempt overwrites — and a finished retirement deletes its row, so any
+surviving one is by definition still owed work. The sweep removes it once the
+user is gone, and the next attempt provisions a genuinely fresh account, which
+is what the generation fence means by re-provisioning after the wait.
+
+The `active`→`retiring` transition happens in the same transaction that detaches
+the last membership and records the obligation, before any provider call, so a
+crash anywhere after it still leaves a row both worklists select.
 
 If external cleanup cannot complete, retain a sealed, access-restricted
 tombstone only for bounded cleanup retries and mark `cleanup_pending`. Local

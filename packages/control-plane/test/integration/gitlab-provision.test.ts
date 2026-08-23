@@ -418,24 +418,34 @@ describe('GitlabProvisioner (§10.2) — per-agent identity', () => {
     expect((await h.accounts.membershipsForBinding(second.id)).map((m) => m.accountId)).toEqual([account.id])
   })
 
-  it('reactivating a generation drops the credentials the interrupted retirement left', async () => {
+  it('a retirement in flight is finished, never revived, and its credentials go with it', async () => {
     const h = await harness()
     await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
     const account = (await h.accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP))!
     const before = (await h.credentials.get(account.id, 'read'))!
-    await h.accounts.detachMembership(account.id, h.binding.id)
-    expect(await h.accounts.beginRetirement(account.id)).toBe(true)
+    await h.accounts.detachMembershipForRemoval(account.id, h.binding.id)
+    // The detach that empties the account IS the active→retiring CAS, so the
+    // row is a durable work item before any provider call runs (§7.2).
+    expect(await h.accounts.get(account.id)).toMatchObject({ lifecycle: 'retiring' })
 
-    // Those PATs belong to the identity the retirement was tearing down: keeping
-    // them would let the fresh generation read `ready` holding dead tokens.
-    expect(await h.accounts.reactivate(account.id)).not.toBeNull()
-    expect(await h.credentials.listForAccount(account.id)).toHaveLength(0)
+    // A consumer arriving now waits: reviving the row would keep credentials
+    // whose account the retirement is tearing down.
+    expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toEqual({
+      state: 'admin_degraded',
+      reason: 'account_retiring',
+      retryable: true
+    })
+
+    // The sweep finishes the retirement; the row and its credentials go together.
+    await h.accountService.sweepPendingRetirements(0)
+    expect(await h.accounts.get(account.id)).toBeNull()
     expect(await prisma.gitlabProjectCredentialSecret.count({ where: { credentialId: before.id } })).toBe(0)
 
-    // The next converge re-provisions the identity from scratch.
+    // Only then does the next converge provision a genuinely fresh identity.
     expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toEqual({ state: 'ready' })
-    const fresh = (await h.credentials.get(account.id, 'read'))!
-    expect(fresh.externalTokenId).not.toBe(before.externalTokenId)
+    const fresh = (await h.accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP))!
+    expect(fresh.id).not.toBe(account.id)
+    expect((await h.credentials.get(fresh.id, 'read'))!.externalTokenId).not.toBe(before.externalTokenId)
   })
 
   it('the lifecycle-generation fence decides a bind racing a retirement (§7.2)', async () => {
@@ -458,18 +468,14 @@ describe('GitlabProvisioner (§10.2) — per-agent identity', () => {
       })
     ).toBe(false)
 
-    // The loser waits out the retirement and re-provisions a fresh generation.
-    const revived = (await h.accounts.reactivate(account.id))!
-    expect(revived.generation).toBe(account.generation + 1n)
-    expect(revived.lifecycle).toBe('active')
-    expect(
-      await h.accounts.attachMembership({
-        accountId: account.id,
-        generation: revived.generation,
-        bindingId: h.binding.id,
-        accessLevel: 30
-      })
-    ).toBe(true)
+    // The loser waits out the retirement rather than reviving the row: once the
+    // sweep has finished it, the next converge provisions a fresh account.
+    await h.accountService.sweepPendingRetirements(0)
+    expect(await h.accounts.get(account.id)).toBeNull()
+    expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toEqual({ state: 'ready' })
+    const fresh = (await h.accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP))!
+    expect(fresh.id).not.toBe(account.id)
+    expect((await h.accounts.membershipsForBinding(h.binding.id)).map((m) => m.accountId)).toEqual([fresh.id])
   })
 
   it('deleting an agent retires every account it earned (§19.4)', async () => {
@@ -600,7 +606,7 @@ describe('GitlabProvisioner (§10.2) — per-agent identity', () => {
     })
     expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toEqual({
       state: 'admin_degraded',
-      reason: 'deletion_pending',
+      reason: 'account_retiring',
       retryable: true
     })
     expect(await h.accounts.get(doomed.id)).toMatchObject({
@@ -627,21 +633,32 @@ describe('GitlabProvisioner (§10.2) — per-agent identity', () => {
     const account = (await h.accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP))!
 
     // Detaching the last membership IS the moment the removal takes on the
-    // retirement, so the link is durable even if nothing else runs afterwards.
+    // retirement: the same transaction performs the active→retiring CAS and
+    // records the obligation, so a crash right here still leaves a work item.
     await h.accounts.detachMembershipForRemoval(account.id, h.binding.id)
     const row = await prisma.gitlabAgentAccount.findUniqueOrThrow({ where: { id: account.id } })
     expect(row.retiringForBindingId).toBe(h.binding.id)
+    expect(row.lifecycle).toBe('retiring')
 
-    // Binding the account again is the inverse: no removal is owed it any more.
-    await h.accounts.attachMembership({
-      accountId: account.id,
-      generation: account.generation,
-      bindingId: h.binding.id,
-      accessLevel: 30
+    // Crash simulated: nothing else ran after that transaction. Both worklists
+    // still select the row, so the retirement resumes rather than stranding.
+    expect((await h.accounts.listUnfinishedRetirements(new Date(Date.now() + 1_000), 50)).map((a) => a.id)).toEqual([
+      account.id
+    ])
+    expect((await h.accounts.listRetiringForBinding(h.binding.id)).map((a) => a.id)).toEqual([account.id])
+
+    // A removal retried after that crash cannot release the claim…
+    expect(await h.provisioner.disconnect(DEFAULT_ORG_ID, h.binding.id)).toEqual({
+      removed: false,
+      reason: 'deletion_pending'
     })
-    expect(
-      (await prisma.gitlabAgentAccount.findUniqueOrThrow({ where: { id: account.id } })).retiringForBindingId
-    ).toBeNull()
+    expect(await prisma.codeHostRepositoryClaim.count({ where: { provider: 'gitlab' } })).toBe(1)
+
+    // …until the deletion lands and the sweep discharges the obligation.
+    h.fake.settleServiceAccountDeletions()
+    await h.accountService.sweepPendingRetirements(0)
+    expect(await h.accounts.get(account.id)).toBeNull()
+    expect(await h.provisioner.disconnect(DEFAULT_ORG_ID, h.binding.id)).toEqual({ removed: true })
   })
 
   it('a removal waits for EVERY emptied account, not just the first to disappear', async () => {

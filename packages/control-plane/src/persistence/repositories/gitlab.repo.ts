@@ -622,7 +622,10 @@ export class PgGitlabAgentAccountRepo implements GitlabAgentAccountRepo {
   async listUnfinishedRetirements(before: Date, limit: number): Promise<GitlabAgentAccountRecord[]> {
     const rows = await this.prisma.gitlabAgentAccount.findMany({
       orderBy: { updatedAt: 'asc' },
-      where: { lifecycle: 'retiring', state: 'cleanup_pending', updatedAt: { lt: before } },
+      // Every surviving `retiring` row is unfinished by definition — a finished
+      // retirement deletes its row — so the worklist keys on the lifecycle and
+      // never on a reason or state a later failure may have overwritten.
+      where: { lifecycle: 'retiring', updatedAt: { lt: before } },
       take: limit
     })
     return rows.map(toAccountRecord)
@@ -632,9 +635,15 @@ export class PgGitlabAgentAccountRepo implements GitlabAgentAccountRepo {
     await this.prisma.$transaction(async (tx) => {
       await tx.gitlabAccountMembership.deleteMany({ where: { accountId, bindingId } })
       // Emptied by this detach ⇒ the removal owes this account's retirement.
-      // Recorded here, not after the provider work, so a crash cannot lose it.
+      // This transaction is the §7.2 `active`→`retiring` CAS: it has just
+      // verified the membership set is empty, and committing the lifecycle with
+      // the marker is what makes the row a durable work item — a crash before
+      // the provider work would otherwise leave it in no worklist at all.
       if ((await tx.gitlabAccountMembership.count({ where: { accountId } })) > 0) return
-      await tx.gitlabAgentAccount.updateMany({ where: { id: accountId }, data: { retiringForBindingId: bindingId } })
+      await tx.gitlabAgentAccount.updateMany({
+        where: { id: accountId, lifecycle: 'active' },
+        data: { lifecycle: 'retiring', retiringForBindingId: bindingId }
+      })
     })
   }
 
@@ -810,35 +819,6 @@ export class PgGitlabAgentAccountRepo implements GitlabAgentAccountRepo {
 
   async finishRetirement(accountId: string): Promise<void> {
     await this.prisma.gitlabAgentAccount.deleteMany({ where: { id: accountId, lifecycle: 'retiring' } })
-  }
-
-  async reactivate(accountId: string): Promise<GitlabAgentAccountRecord | null> {
-    // A fresh generation: whatever the abandoned retirement did externally, the
-    // next converge re-provisions and re-binds. The credential rows go with the
-    // identity they were issued to — an interrupted retirement may have revoked
-    // them, or deleted the very user they name, so keeping them would let the
-    // account read `ready` holding tokens that authenticate nothing. The numeric
-    // user id STAYS: it is the durable key (§7.2), and dropping it would leave
-    // the next converge unable to tell its own surviving account from a foreign
-    // one holding the same username. A deleted account simply misses the lookup.
-    return this.prisma.$transaction(async (tx) => {
-      const res = await tx.gitlabAgentAccount.updateMany({
-        where: { id: accountId, lifecycle: 'retiring' },
-        data: {
-          lifecycle: 'active',
-          generation: { increment: 1n },
-          createAttemptId: null,
-          createAttemptAt: null,
-          createAttemptKnownIds: [],
-          state: 'provisioning',
-          stateReason: null
-        }
-      })
-      if (res.count !== 1) return null
-      await tx.gitlabProjectCredential.deleteMany({ where: { accountId } })
-      const row = await tx.gitlabAgentAccount.findUnique({ where: { id: accountId } })
-      return row ? toAccountRecord(row) : null
-    })
   }
 
   async consumers(orgId: string, projectId: bigint): Promise<GitlabAccountConsumer[]> {

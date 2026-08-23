@@ -3521,8 +3521,6 @@ export interface GitlabAgentAccountRepo {
   beginRetirement(accountId: string): Promise<boolean>
   /** Verified-complete retirement: the row and its cascaded credentials go. */
   finishRetirement(accountId: string): Promise<void>
-  /** A bind that lost the race re-provisions a FRESH generation off `retiring`. */
-  reactivate(accountId: string): Promise<GitlabAgentAccountRecord | null>
   /** The agents consuming a project: gitlab-workspace agents and enabled gitlab
    *  hooks, each with the access level its authorization derives (§7.2). */
   consumers(orgId: string, projectId: bigint): Promise<GitlabAccountConsumer[]>

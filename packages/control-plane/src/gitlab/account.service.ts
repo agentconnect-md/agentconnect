@@ -71,6 +71,11 @@ const PURPOSES: readonly GitlabCredentialPurpose[] = ['read', 'git_write', 'effe
 /** The account was deleted at GitLab but is still listed: deletion is in flight. */
 export const DELETION_PENDING_REASON = 'deletion_pending'
 
+/** A consumer asked for an account whose retirement has not finished. Distinct
+ *  from `deletion_pending`, which is the retirement's own state, because a
+ *  retirement can also be waiting on repair rather than on GitLab. */
+export const ACCOUNT_RETIRING_REASON = 'account_retiring'
+
 /** How one retirement attempt settled. `deletion_pending` is in progress, not failed. */
 export type RetirementOutcome = 'retired' | 'deletion_pending' | 'failed'
 
@@ -115,8 +120,8 @@ export function gitlabAccountUnavailableMessage(reason: string): string {
   if (reason === 'service_account_create_forbidden') {
     return 'the connected GitLab account must be an Owner of the top-level group to create bot accounts'
   }
-  if (reason === DELETION_PENDING_REASON) {
-    return 'GitLab is still deleting this agent’s previous bot account — try again in a moment'
+  if (reason === ACCOUNT_RETIRING_REASON || reason === DELETION_PENDING_REASON) {
+    return 'This agent’s previous GitLab bot account is still being removed — try again in a moment'
   }
   if (reason === 'provisioning_or_cleanup_in_progress' || reason === 'account_busy') {
     return 'GitLab project setup is already running — try again shortly'
@@ -272,7 +277,7 @@ export class GitlabAccountService {
     if (!outcome.ok) {
       // Both resolve themselves: a peer finishes its account mutation, and a
       // pending deletion is closed out by the sweep.
-      const retryable = outcome.reason === 'account_busy' || outcome.reason === DELETION_PENDING_REASON
+      const retryable = outcome.reason === 'account_busy' || outcome.reason === ACCOUNT_RETIRING_REASON
       return { ok: false, reason: outcome.reason, retryable }
     }
     if (!(await this.bindMembership(input, outcome.account, consumer.accessLevel))) {
@@ -310,17 +315,13 @@ export class GitlabAccountService {
       return { ok: false, reason: 'account_busy', retryable: true }
     }
     try {
-      if (account.lifecycle === 'retiring' && account.stateReason === DELETION_PENDING_REASON) {
-        // GitLab accepted this account's deletion and has not finished it yet.
-        // Reviving the row would adopt a user id about to vanish and mint PATs
-        // that die with it, on a row the sweep no longer watches. Wait instead:
-        // the sweep removes the row and the next attempt creates a fresh one.
-        return { ok: false, reason: DELETION_PENDING_REASON, retryable: true }
-      }
       if (account.lifecycle === 'retiring') {
-        // The retirement released its lease and is not deleting, so it is over —
-        // re-provision a fresh generation rather than reviving what it tore down.
-        account = (await this.deps.accounts.reactivate(account.id)) ?? account
+        // A retirement in progress is never revived, whatever its latest reason
+        // says: GitLab may already have accepted the deletion, and adopting that
+        // user would mint PATs that die with it. The row is a work item until
+        // the retirement deletes it, and the next attempt then provisions a
+        // genuinely fresh account — the §7.2 "wait, then re-provision".
+        return { ok: false, reason: ACCOUNT_RETIRING_REASON, retryable: true }
       }
       // This top-level group's OWN accounts — never a global user search (§7.2).
       let listing = await gitlabListServiceAccounts(input.token, input.rootGroupId, this.deps.fetchImpl)

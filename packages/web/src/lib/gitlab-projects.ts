@@ -47,6 +47,7 @@ export const GITLAB_STATE_REASON: Record<string, string> = {
   claim_fence_lost: 'Setup was interrupted — run Repair again',
   relay_url_unconfigured: 'This deployment has no public webhook address configured',
   deletion_pending: 'GitLab is still deleting the bot account — this finishes on its own',
+  account_retiring: 'The previous bot account for this agent is still being removed — this finishes on its own',
   account_cleanup_incomplete: 'Removal did not finish cleaning up the bot accounts — remove the project again',
   provisioning_in_progress: 'Setup is already running',
   provisioning_or_cleanup_in_progress: 'Setup or removal is already running'
