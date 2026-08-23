@@ -1737,8 +1737,10 @@ both are projected into process configuration at boot. Plain
 `GITLAB_CLIENT_ID` / `GITLAB_CLIENT_SECRET` environment variables remain only
 the no-document fallback, mirroring the GitHub App credentials. The
 implementation has no `GITLAB_BASE_URL` or host override in v1: OAuth, API, and
-Git remotes are pinned to GitLab.com. The Web UI learns availability from the
-authenticated API instead of a build-time public environment flag.
+Git remotes are pinned to GitLab.com. Self-managed instances are extended by
+[gitlab-self-managed.md](gitlab-self-managed.md). The Web UI learns
+availability from the authenticated API instead of a build-time public
+environment flag.
 
 ## 19. Failure, Recovery, and Removal
 
