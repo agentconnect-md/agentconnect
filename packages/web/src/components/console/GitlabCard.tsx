@@ -350,13 +350,23 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
     `${verb} ${done} of ${done + failures.length} projects. ${errorText(failures[0]!.reason)}`
 
   // Convergence for an account runs per project, so repairing a bot re-runs it on each project the
-  // bot holds — including the one whose group its refused account belongs to.
+  // bot holds — including the one whose group its refused account belongs to. SEQUENTIAL: those
+  // projects share one bot account, so firing them together only makes them queue on its lease.
+  // The server coalesces regardless; this just keeps the common case from contending at all.
   const repairBot = async (agentId: string, bindingIds: readonly string[]) => {
     if (busyId) return
     setBusyId(agentId)
     setErr(null)
     try {
-      const results = await Promise.allSettled(bindingIds.map(async (id) => repairGitlabProject(id)))
+      const results: PromiseSettledResult<GitlabProjectBindingDto>[] = []
+      for (const id of bindingIds) {
+        results.push(
+          await repairGitlabProject(id).then(
+            (value): PromiseSettledResult<GitlabProjectBindingDto> => ({ status: 'fulfilled', value }),
+            (reason: unknown): PromiseSettledResult<GitlabProjectBindingDto> => ({ status: 'rejected', reason })
+          )
+        )
+      }
       const failures = results.filter((r) => r.status === 'rejected')
       // Whatever each request did, the authoritative state is the answer — never the batch's.
       const reconciled = await refreshAfterBatch()

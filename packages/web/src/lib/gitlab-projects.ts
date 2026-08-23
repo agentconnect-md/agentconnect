@@ -66,7 +66,9 @@ export const GITLAB_STATE_REASON: Record<string, string> = {
   account_retiring: 'The previous bot account for this agent is still being removed — this finishes on its own',
   account_cleanup_incomplete: 'Removal did not finish cleaning up the bot accounts — remove the project again',
   provisioning_in_progress: 'Setup is already running',
-  provisioning_or_cleanup_in_progress: 'Setup or removal is already running'
+  provisioning_or_cleanup_in_progress: 'Setup or removal is already running',
+  account_busy: 'Another setup for this bot account is already running — this finishes on its own',
+  account_membership_contended: 'Another setup for this bot account is already running — this finishes on its own'
 }
 
 /** User-facing copy for a state reason, or null to show nothing but the state badge — an

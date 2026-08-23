@@ -30,6 +30,7 @@ import { GitlabProvisioner } from './gitlab/provisioner.js'
 import { GitlabGitcredService } from './gitlab/gitcred.service.js'
 import { GitlabCredentialRotator } from './gitlab/rotator.js'
 import { GitlabRetirementSweeper } from './gitlab/retirement-sweeper.js'
+import { GitlabConvergeSweeper } from './gitlab/converge-sweeper.js'
 import { GitlabMembershipAuthzService } from './gitlab/membership-authz.service.js'
 import { GitlabHookRerunService } from './gitlab/hook-rerun.service.js'
 import { CodeHostReviewBrokerService } from './codehost/review-lease.service.js'
@@ -1092,6 +1093,16 @@ export function buildContainer(
       })
     : undefined
 
+  // §10.2 convergence sweep: re-drives what a contended pass still owes, the
+  // half of that obligation which survives a restart. Armed by startBackground().
+  const gitlabConvergeSweeper = gitlab
+    ? new GitlabConvergeSweeper({
+        provisioner: gitlab.provisioner,
+        clock,
+        log: { warn: (obj, msg) => http.log.warn(obj, msg) }
+      })
+    : undefined
+
   // The GitLab arm of rc/codehost-membership-authz (§12.2): live effective
   // membership through the binding's read PAT. Absent configuration fails closed.
   const gitlabMembershipAuthz = gitlab
@@ -2126,6 +2137,7 @@ export function buildContainer(
       hookRedeliveryReconciler?.start()
       gitlabRotator?.start()
       gitlabRetirementSweeper?.start()
+      gitlabConvergeSweeper?.start()
       for (const reaper of pendingInstallReapers) reaper.start()
       relaySweeper.start()
       dutyRecompute.start()
@@ -2144,6 +2156,7 @@ export function buildContainer(
       hookRedeliveryReconciler?.stop()
       gitlabRotator?.stop()
       gitlabRetirementSweeper?.stop()
+      gitlabConvergeSweeper?.stop()
       installationDoorbell?.stop()
       for (const reaper of pendingInstallReapers) reaper.stop()
       relaySweeper.stop()

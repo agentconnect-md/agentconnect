@@ -2748,6 +2748,10 @@ model GitlabProjectBinding {
   webhookId              BigInt? // the one AgentConnect-managed project webhook (§10.3)
   desiredEventsHash      String? // hash of the enabled-hook event union the webhook was last converged to
   credentialEpoch        BigInt    @default(1) // purge fence: bumped on rotation/revocation/disconnect
+  // A convergence that lost a fence wrote nothing, so this is the only record
+  // that one is still owed. Neutral, not a degraded state: the binding keeps
+  // whatever it was, and a sweep re-drives it — including after a restart.
+  convergeOwedAt         DateTime? @db.Timestamptz(6)
   state                  String
   stateReason            String? // bounded normalized repair category for degraded states
   createdAt              DateTime  @default(now()) @db.Timestamptz(6)
@@ -2760,6 +2764,7 @@ model GitlabProjectBinding {
 
   @@unique([orgId, projectId])
   @@index([orgId])
+  @@index([convergeOwedAt])
   @@map("gitlab_project_binding")
 }
 

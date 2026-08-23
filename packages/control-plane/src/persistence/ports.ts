@@ -3327,6 +3327,8 @@ export interface GitlabProjectBindingRecord {
   webhookId: bigint | null
   desiredEventsHash: string | null
   credentialEpoch: bigint
+  /** Set when a convergence lost a fence and wrote nothing; a sweep re-drives it. */
+  convergeOwedAt: Date | null
   state: GitlabBindingState
   stateReason: string | null
   createdAt: Date
@@ -3360,10 +3362,17 @@ export interface GitlabProjectBindingRepo {
       installerConnectionId: string | null
       webhookId: bigint | null
       desiredEventsHash: string | null
+      convergeOwedAt: Date | null
       state: GitlabBindingState
       stateReason: string | null
     }>
   ): Promise<GitlabProjectBindingRecord | null>
+  /** Record that a contended pass still owes convergence — but ONLY while the
+   *  claim is still provisionable. A repair that loses to cleanup must not arm
+   *  an obligation nothing can satisfy; one statement, so either order is safe. */
+  markConvergeOwed(orgId: string, bindingId: string, at: Date): Promise<void>
+  /** Bindings a contended convergence still owes work, oldest first (§10.2). */
+  listConvergeOwed(before: Date, limit: number): Promise<GitlabProjectBindingRecord[]>
   /** Purge fence: every rotation/revocation/disconnect bumps it (§7.4/§19.4). */
   bumpCredentialEpoch(orgId: string, bindingId: string): Promise<bigint | null>
   /** §10.2 EXCLUSIVE run-owned provisioning lease, CAS-acquired before the

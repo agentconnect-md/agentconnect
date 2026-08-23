@@ -75,8 +75,29 @@ export type ProvisionOutcome =
  *  (`service_account_quota`, …); nothing was committed when it is present. */
 export type AgentAccountOutcome<T> = { ok: true; result: T } | { ok: false; reason: string; retryable: boolean }
 
-/** Inline in a request: retry a contended attempt on a short bound, then report. */
-const AGENT_ACCOUNT_ATTEMPTS = 5
+/** How a joined convergence run is shared, and whether it owes a trailing pass. */
+interface ConvergeRun {
+  done: Promise<void>
+  again: boolean
+}
+
+export interface ConvergeProjectOpts {
+  /** Contention retries before giving up on this pass; a request-inline caller
+   *  passes a small number rather than blocking for the background bound. */
+  attempts?: number
+  /** False ⇒ this IS the follow-up; it does not schedule another. */
+  followUp?: boolean
+}
+
+/** Background convergence outwaits a full 10-minute peer lease plus slack. */
+const BACKGROUND_CONVERGE_ATTEMPTS = 92
+/** A contended pass re-drives itself after this, so nothing needs a second Repair. */
+const FOLLOW_UP_DELAY_MS = 30 * 1000
+
+/** Inline in a request: keep retrying a contended attempt for this long — long
+ *  enough to outlast a peer route write or to join a convergence already
+ *  running, short enough to answer the request — then report it as transient. */
+const AGENT_ACCOUNT_BUDGET_MS = 15_000
 
 /** §9.4 takeover result; every refusal leaves the binding exactly as it was.
  *  The binding row carries the convergence outcome, so the caller re-reads it. */
@@ -108,10 +129,21 @@ export interface GitlabProvisionerDeps {
 }
 
 export class GitlabProvisioner {
+  /** One convergence per project at a time, keyed `<org>:<project>`; late
+   *  callers join it and ask for a trailing pass instead of racing its leases. */
+  private readonly convergeRuns = new Map<string, ConvergeRun>()
+  /** Projects whose contended pass has a follow-up armed. Together with the runs
+   *  above this is "work this process still owes", which the console asks for so
+   *  it keeps watching until the binding really has settled. */
+  private readonly pendingFollowUps = new Set<string>()
+
   constructor(private readonly deps: GitlabProvisionerDeps) {}
 
   /** Converge one binding to ready; persists the outcome state on the binding. */
-  async provision(orgId: string, bindingId: string): Promise<ProvisionOutcome> {
+  async provision(orgId: string, bindingId: string, opts: { followUp?: boolean } = {}): Promise<ProvisionOutcome> {
+    // A caller with its own retry loop owns coming back; every other one — a
+    // create, a takeover, a single repair — leaves a contended pass owing it.
+    const followUp = opts.followUp !== false
     const binding = await this.deps.bindings.get(orgId, bindingId)
     if (!binding) return { state: 'admin_degraded', reason: 'binding_missing' }
     if (!binding.installerConnectionId) {
@@ -133,11 +165,12 @@ export class GitlabProvisioner {
     ) {
       // Held by a live peer, or the claim is gone/detached/in-cleanup: no
       // provider writes, and no state overwrite of whatever is in progress.
+      if (followUp) await this.scheduleFollowUp(orgId, bindingId, binding.projectId)
       return { state: 'busy', reason: 'provisioning_or_cleanup_in_progress' }
     }
     try {
       const token = await this.deps.oauth.withAccessToken(orgId, binding.installerConnectionId)
-      return await this.convergeAndPersist(orgId, binding, token, owner)
+      return await this.convergeAndPersist(orgId, binding, token, owner, followUp)
     } catch (e) {
       // Only the administration-token acquisition reaches here; convergence maps its own failures.
       return this.failed(orgId, bindingId, e)
@@ -159,18 +192,95 @@ export class GitlabProvisioner {
    * attempts, which outlasts a full 10-minute lease plus slack while
    * back-to-back writes converge in seconds.
    */
-  async convergeProject(orgId: string, projectId: bigint): Promise<void> {
+  /** Does this process still owe convergence work in the organization? */
+  hasPendingWork(orgId: string): boolean {
+    const mine = (key: string): boolean => key.startsWith(`${orgId}:`)
+    return [...this.convergeRuns.keys()].some(mine) || [...this.pendingFollowUps].some(mine)
+  }
+
+  /** Arm one follow-up for a contended pass; a project already owing one keeps it.
+   *  The obligation is ALSO written to the binding, because this timer does not
+   *  survive a restart and the contended pass wrote no state to rediscover. */
+  private async scheduleFollowUp(orgId: string, bindingId: string, projectId: bigint): Promise<void> {
+    // AWAITED: an obligation nobody waited for is not durable, and this write is
+    // the whole reason a restart can still find the work.
+    await this.deps.bindings
+      .markConvergeOwed(orgId, bindingId, new Date(this.deps.clock.now()))
+      .catch((err) => this.deps.log?.warn({ err, bindingId }, 'gitlab converge obligation not recorded'))
+    const key = `${orgId}:${projectId}`
+    if (this.pendingFollowUps.has(key)) return
+    this.pendingFollowUps.add(key)
+    this.deps.clock.setTimeout(() => {
+      this.pendingFollowUps.delete(key)
+      void (async () => {
+        // Re-read the obligation: anything that converged in the meantime — a
+        // later write, the sweep, another follow-up — has already discharged it,
+        // and re-running would only take the lease from whoever needs it next.
+        const owed = await this.deps.bindings.byProject(orgId, projectId)
+        if (!owed || owed.convergeOwedAt === null) return
+        await this.convergeProject(orgId, projectId, { followUp: false })
+      })().catch((err) =>
+        this.deps.log?.warn({ err, projectId: projectId.toString() }, 'gitlab converge follow-up failed')
+      )
+    }, FOLLOW_UP_DELAY_MS)
+  }
+
+  async convergeProject(orgId: string, projectId: bigint, opts: ConvergeProjectOpts = {}): Promise<void> {
+    const key = `${orgId}:${projectId}`
+    const running = this.convergeRuns.get(key)
+    if (running) {
+      // Someone is already converging this project. Join them rather than race
+      // for the same leases — but ask for one more pass, because their reads may
+      // predate whatever this caller just wrote.
+      running.again = true
+      await running.done
+      return
+    }
+    const entry: ConvergeRun = { again: false, done: Promise.resolve() }
+    this.convergeRuns.set(key, entry)
+    entry.done = (async () => {
+      try {
+        do {
+          entry.again = false
+          await this.convergeProjectOnce(orgId, projectId, opts)
+        } while (entry.again)
+      } finally {
+        this.convergeRuns.delete(key)
+      }
+    })()
+    await entry.done
+  }
+
+  /**
+   * §10.2 convergence sweep: re-drive the bindings a contended pass still owes.
+   * The in-process follow-up handles the common case; this is what survives a
+   * restart, because a contended pass deliberately writes no state a degraded
+   * binding could be rediscovered by — only this neutral marker.
+   */
+  async sweepOwedConvergences(quietMs: number, limit = 50): Promise<void> {
+    const before = new Date(this.deps.clock.now() - quietMs)
+    for (const binding of await this.deps.bindings.listConvergeOwed(before, limit)) {
+      await this.convergeProject(binding.orgId, binding.projectId, { followUp: false })
+    }
+  }
+
+  private async convergeProjectOnce(orgId: string, projectId: bigint, opts: ConvergeProjectOpts): Promise<void> {
     const binding = await this.deps.bindings.byProject(orgId, projectId)
     if (!binding) return
-    let outcome = await this.provision(orgId, binding.id)
-    for (let attempt = 0; contended(outcome) && attempt < 92; attempt++) {
+    const attempts = opts.attempts ?? BACKGROUND_CONVERGE_ATTEMPTS
+    // This loop owns the retrying, so no attempt arms a follow-up of its own.
+    let outcome = await this.provision(orgId, binding.id, { followUp: false })
+    for (let attempt = 0; contended(outcome) && attempt < attempts; attempt++) {
       const delayMs = Math.min(8_000, 1_000 * 2 ** attempt)
       await new Promise<void>((resolve) => this.deps.clock.setTimeout(() => resolve(), delayMs))
-      outcome = await this.provision(orgId, binding.id)
+      outcome = await this.provision(orgId, binding.id, { followUp: false })
     }
-    if (contended(outcome)) {
-      this.deps.log?.warn({ projectId: projectId.toString() }, 'gitlab converge still contended — gave up')
-    }
+    if (!contended(outcome)) return
+    // Still contended: the binding keeps its previous state, so nothing settles
+    // as degraded on account of a race. A follow-up re-drives it so it heals
+    // without anyone pressing Repair again.
+    this.deps.log?.warn({ projectId: projectId.toString() }, 'gitlab converge still contended — retrying later')
+    if (opts.followUp !== false) await this.scheduleFollowUp(orgId, binding.id, projectId)
   }
 
   /**
@@ -196,10 +306,18 @@ export class GitlabProvisioner {
     consumer: GitlabAccountConsumer,
     commit: (live: { projectPath: string }) => Promise<T>
   ): Promise<AgentAccountOutcome<T>> {
+    const deadline = this.deps.clock.now() + AGENT_ACCOUNT_BUDGET_MS
     let outcome = await this.agentAccountAttempt(orgId, projectId, consumer, commit)
-    for (let attempt = 0; !outcome.ok && outcome.retryable && attempt < AGENT_ACCOUNT_ATTEMPTS; attempt++) {
-      const delayMs = Math.min(1_000, 200 * 2 ** attempt)
-      await new Promise<void>((resolve) => this.deps.clock.setTimeout(() => resolve(), delayMs))
+    for (let attempt = 0; !outcome.ok && outcome.retryable && this.deps.clock.now() < deadline; attempt++) {
+      // A background convergence of this project can hold the binding lease for
+      // minutes, and out-waiting it attempt by attempt would spend this budget
+      // losing the same race. JOIN it instead: when it finishes, the account it
+      // was provisioning is usually the very one this write needs.
+      const running = this.convergeRuns.get(`${orgId}:${projectId}`)
+      const backoff = new Promise<void>((resolve) =>
+        this.deps.clock.setTimeout(() => resolve(), Math.min(1_000, 200 * 2 ** attempt))
+      )
+      await (running ? Promise.race([running.done, backoff]) : backoff)
       outcome = await this.agentAccountAttempt(orgId, projectId, consumer, commit)
     }
     return outcome
@@ -401,15 +519,29 @@ export class GitlabProvisioner {
     orgId: string,
     binding: GitlabProjectBindingRecord,
     token: string,
-    owner: string
+    owner: string,
+    followUp = true
   ): Promise<ProvisionOutcome> {
     try {
       const outcome = await this.converge(orgId, binding, token, owner)
+      // Settled either way ⇒ nothing is owed any more; only a contended pass
+      // leaves the marker standing for the sweep.
+      const settled = !contended(outcome) && binding.convergeOwedAt !== null ? { convergeOwedAt: null } : {}
       if (outcome.state === 'ready') {
-        await this.deps.bindings.update(orgId, binding.id, { state: 'ready', stateReason: null })
-      } else if (outcome.state !== 'busy') {
-        await this.deps.bindings.update(orgId, binding.id, { state: outcome.state, stateReason: outcome.reason })
+        await this.deps.bindings.update(orgId, binding.id, { state: 'ready', stateReason: null, ...settled })
+      } else if (outcome.state !== 'busy' && !contended(outcome)) {
+        // A contended outcome is a lost fence, not a verdict on this binding:
+        // persisting it would turn "someone else is converging right now" into a
+        // sticky degraded state that only a racing repair could ever clear.
+        await this.deps.bindings.update(orgId, binding.id, {
+          state: outcome.state,
+          stateReason: outcome.reason,
+          ...settled
+        })
       }
+      // Nothing was written for a contended pass, so something must come back
+      // for it: a create, a takeover, or a single repair has no loop of its own.
+      if (contended(outcome) && followUp) await this.scheduleFollowUp(orgId, binding.id, binding.projectId)
       this.deps.onConverged?.(orgId, binding.projectId)
       return outcome
     } catch (e) {
@@ -436,7 +568,10 @@ export class GitlabProvisioner {
     state: 'admin_degraded' | 'runtime_degraded',
     reason: string
   ): Promise<ProvisionOutcome> {
-    await this.deps.bindings.update(orgId, bindingId, { state, stateReason: reason })
+    // A degrade is a settled verdict asking for human repair, so nothing is owed
+    // automatically any more: leaving the marker would have every sweep repeat
+    // an outcome that has already settled, and report `converging` forever.
+    await this.deps.bindings.update(orgId, bindingId, { state, stateReason: reason, convergeOwedAt: null })
     return { state, reason }
   }
 

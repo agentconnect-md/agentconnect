@@ -105,6 +105,7 @@ function binding(over: Partial<GitlabProjectBindingRecord> = {}): GitlabProjectB
     webhookId: 12n,
     desiredEventsHash: null,
     credentialEpoch: 1n,
+    convergeOwedAt: null,
     state: 'ready',
     stateReason: null,
     createdAt: new Date(),

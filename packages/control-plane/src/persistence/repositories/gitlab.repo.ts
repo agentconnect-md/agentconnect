@@ -301,6 +301,7 @@ function toBindingRecord(r: GitlabProjectBinding): GitlabProjectBindingRecord {
     webhookId: r.webhookId,
     desiredEventsHash: r.desiredEventsHash,
     credentialEpoch: r.credentialEpoch,
+    convergeOwedAt: r.convergeOwedAt,
     state: toBindingState(r.state),
     stateReason: r.stateReason,
     createdAt: r.createdAt
@@ -480,18 +481,32 @@ export class PgGitlabProjectBindingRepo implements GitlabProjectBindingRepo {
     const attached = await this.prisma.codeHostRepositoryClaim.count({
       where: { provider: 'gitlab', externalId: projectId, orgId, bindingRef: bindingId }
     })
-    if (attached === 0) return true
-    const res = await this.prisma.codeHostRepositoryClaim.updateMany({
-      where: {
-        provider: 'gitlab',
-        externalId: projectId,
-        orgId,
-        bindingRef: bindingId,
-        OR: [{ opOwner: null }, { opLeaseUntil: { lt: now } }]
-      },
-      data: { state: 'cleanup_pending', opOwner: null, opLeaseUntil: null }
+    if (attached === 0) {
+      await this.prisma.gitlabProjectBinding.updateMany({
+        where: { id: bindingId, orgId },
+        data: { convergeOwedAt: null }
+      })
+      return true
+    }
+    // The claim flip and the convergence discharge are ONE transaction: past
+    // this point provisioning can never acquire the claim, so an obligation
+    // surviving the flip is one nothing could ever satisfy — and it would hold
+    // the console at "converging" forever.
+    return this.prisma.$transaction(async (tx) => {
+      const res = await tx.codeHostRepositoryClaim.updateMany({
+        where: {
+          provider: 'gitlab',
+          externalId: projectId,
+          orgId,
+          bindingRef: bindingId,
+          OR: [{ opOwner: null }, { opLeaseUntil: { lt: now } }]
+        },
+        data: { state: 'cleanup_pending', opOwner: null, opLeaseUntil: null }
+      })
+      if (res.count !== 1) return false
+      await tx.gitlabProjectBinding.updateMany({ where: { id: bindingId, orgId }, data: { convergeOwedAt: null } })
+      return true
     })
-    return res.count === 1
   }
 
   async removeWithClaim(orgId: string, bindingId: string, projectId: bigint): Promise<boolean> {
@@ -507,6 +522,36 @@ export class PgGitlabProjectBindingRepo implements GitlabProjectBindingRepo {
       await tx.gitlabProjectBinding.deleteMany({ where: { id: bindingId, orgId } })
       return true
     })
+  }
+
+  async markConvergeOwed(orgId: string, bindingId: string, at: Date): Promise<void> {
+    // Lock the CLAIM first, the same order cleanup takes, then decide. A single
+    // statement would not do: under read-committed its subquery is evaluated on
+    // the statement snapshot, so a cleanup committing while this waits on the
+    // binding row would not be seen, and the marker would land unsatisfiable.
+    await this.prisma.$transaction(async (tx) => {
+      const claim = await tx.$queryRaw<{ state: string }[]>`
+        SELECT c."state" FROM "code_host_repository_claim" AS c
+          JOIN "gitlab_project_binding" AS b
+            ON c."externalId" = b."projectId" AND c."bindingRef" = b."id"
+         WHERE c."provider" = 'gitlab' AND b."id" = ${bindingId}::uuid AND b."orgId" = ${orgId}
+           FOR UPDATE OF c`
+      const state = claim[0]?.state
+      if (state !== 'provisioning' && state !== 'active') return
+      await tx.gitlabProjectBinding.updateMany({ where: { id: bindingId, orgId }, data: { convergeOwedAt: at } })
+    })
+  }
+
+  async listConvergeOwed(before: Date, limit: number): Promise<GitlabProjectBindingRecord[]> {
+    const rows = await this.prisma.gitlabProjectBinding.findMany({
+      orderBy: { convergeOwedAt: 'asc' },
+      // A binding in cleanup can never acquire its claim again, so its
+      // obligation is void — selecting it would burn the sweep's budget and
+      // hold it "converging" forever.
+      where: { convergeOwedAt: { not: null, lt: before }, state: { not: 'cleanup_pending' } },
+      take: limit
+    })
+    return rows.map(toBindingRecord)
   }
 
   async bumpCredentialEpoch(orgId: string, bindingId: string): Promise<bigint | null> {
