@@ -1708,7 +1708,11 @@ retirement rather than only observing it, so a run that failed part-way — an
 unconfirmed revocation, a refused delete — is finished rather than stranded,
 and a row never leaves the sweep's worklist by failing differently. A project
 removal that stopped on a pending deletion keeps its claim and completes once
-the sweep proves the account gone.
+the sweep proves the account gone. Because that removal detaches every
+membership before any deletion settles, and a project may have one account per
+agent, the obligation is recorded on the account rows themselves: the claim
+releases only when no retirement still names that removal, never when merely the
+first of several has finished.
 
 If external cleanup cannot complete, retain a sealed, access-restricted
 tombstone only for bounded cleanup retries and mark `cleanup_pending`. Local

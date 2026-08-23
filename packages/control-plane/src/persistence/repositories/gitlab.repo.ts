@@ -628,6 +628,21 @@ export class PgGitlabAgentAccountRepo implements GitlabAgentAccountRepo {
     return rows.map(toAccountRecord)
   }
 
+  async markRetiringFor(accountId: string, bindingId: string): Promise<void> {
+    await this.prisma.gitlabAgentAccount.updateMany({
+      where: { id: accountId, lifecycle: 'retiring' },
+      data: { retiringForBindingId: bindingId }
+    })
+  }
+
+  async listRetiringForBinding(bindingId: string): Promise<GitlabAgentAccountRecord[]> {
+    const rows = await this.prisma.gitlabAgentAccount.findMany({
+      orderBy: { createdAt: 'asc' },
+      where: { lifecycle: 'retiring', retiringForBindingId: bindingId }
+    })
+    return rows.map(toAccountRecord)
+  }
+
   async update(
     accountId: string,
     patch: Partial<{

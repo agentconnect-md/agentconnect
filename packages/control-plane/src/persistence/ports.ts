@@ -3459,6 +3459,11 @@ export interface GitlabAgentAccountRepo {
    *  owed external cleanup, untouched since `before`. Keyed on the lifecycle, not
    *  on a reason — a row must not fall out of the sweep by failing differently. */
   listUnfinishedRetirements(before: Date, limit: number): Promise<GitlabAgentAccountRecord[]>
+  /** Record that a binding's removal is waiting on this retirement — memberships
+   *  are detached before the deletion settles, so the obligation must be durable. */
+  markRetiringFor(accountId: string, bindingId: string): Promise<void>
+  /** The retirements that removal is still owed evidence for. */
+  listRetiringForBinding(bindingId: string): Promise<GitlabAgentAccountRecord[]>
   update(
     accountId: string,
     patch: Partial<{

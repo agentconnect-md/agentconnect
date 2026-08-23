@@ -578,6 +578,48 @@ describe('GitlabProvisioner (§10.2) — per-agent identity', () => {
     expect(await prisma.codeHostRepositoryClaim.count({ where: { provider: 'gitlab' } })).toBe(0)
   })
 
+  it('a removal waits for EVERY emptied account, not just the first to disappear', async () => {
+    // Two agents on one project means two bot accounts; the removal detaches
+    // both memberships up front, so nothing but the recorded obligation still
+    // links the second retirement to the removal that caused it.
+    const h = await harness({ deferServiceAccountDeletion: true }, EVENTS, [
+      { id: AGENT, name: 'reviewer' },
+      { id: SIBLING, name: 'builder' }
+    ])
+    await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
+    const first = (await h.accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP))!
+    const second = (await h.accounts.byAgentRoot(DEFAULT_ORG_ID, SIBLING, ROOT_GROUP))!
+
+    expect(await h.provisioner.disconnect(DEFAULT_ORG_ID, h.binding.id)).toEqual({
+      removed: false,
+      reason: 'deletion_pending'
+    })
+    expect(await h.accounts.membershipsForBinding(h.binding.id)).toHaveLength(0)
+
+    // Only the FIRST account's deletion lands. Its retirement completing must
+    // not let the removal release the claim while the second is still listed.
+    h.fake.serviceAccounts = h.fake.serviceAccounts.filter(
+      (candidate) => candidate.id !== Number(first.serviceAccountUserId)
+    )
+    await h.accountService.sweepPendingRetirements(0)
+    expect(await h.accounts.get(first.id)).toBeNull()
+    expect(await h.accounts.get(second.id)).not.toBeNull()
+
+    expect(await h.provisioner.disconnect(DEFAULT_ORG_ID, h.binding.id)).toEqual({
+      removed: false,
+      reason: 'deletion_pending'
+    })
+    expect(await prisma.codeHostRepositoryClaim.count({ where: { provider: 'gitlab' } })).toBe(1)
+    expect(await prisma.gitlabProjectBinding.count()).toBe(1)
+
+    // The second lands too: now every obligation is discharged and the claim goes.
+    h.fake.settleServiceAccountDeletions()
+    await h.accountService.sweepPendingRetirements(0)
+    expect(await h.accounts.get(second.id)).toBeNull()
+    expect(await h.provisioner.disconnect(DEFAULT_ORG_ID, h.binding.id)).toEqual({ removed: true })
+    expect(await prisma.codeHostRepositoryClaim.count({ where: { provider: 'gitlab' } })).toBe(0)
+  })
+
   it('disconnect retires webhook, memberships, tokens, and accounts, then releases the claim (§19.4)', async () => {
     const h = await harness({}, EVENTS)
     await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)

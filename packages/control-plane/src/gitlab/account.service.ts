@@ -568,7 +568,11 @@ export class GitlabAccountService {
       await gitlabRemoveMember(token, projectId, account.serviceAccountUserId, this.deps.fetchImpl).catch(swallow404)
     }
     await this.deps.accounts.detachMembership(account.id, bindingId)
-    return this.retireIfEmpty(orgId, account.id, token)
+    const outcome = await this.retireIfEmpty(orgId, account.id, token)
+    // The membership is gone, so nothing else links this retirement to the
+    // removal that caused it — record the obligation before that link is lost.
+    if (outcome !== 'retired') await this.deps.accounts.markRetiringFor(account.id, bindingId)
+    return outcome
   }
 
   /**
@@ -777,15 +781,32 @@ export class GitlabAccountService {
    *  positive evidence for releasing the deployment-global claim. */
   async unbindBinding(orgId: string, bindingId: string, projectId: bigint, token: string): Promise<RetirementOutcome> {
     let worst: RetirementOutcome = 'retired'
+    // A real failure outranks a pending deletion: only one of them is repair work.
+    const record = (outcome: RetirementOutcome): void => {
+      if (outcome === 'failed' || (outcome === 'deletion_pending' && worst === 'retired')) worst = outcome
+    }
+    const handled = new Set<string>()
     for (const membership of await this.deps.accounts.membershipsForBinding(bindingId)) {
       const account = await this.deps.accounts.get(membership.accountId)
       if (!account) continue
-      const outcome = await this.unbindOne(orgId, account, bindingId, projectId, token)
-      // A real failure outranks a pending deletion: only one of them is repair work.
-      if (outcome === 'failed' || (outcome === 'deletion_pending' && worst === 'retired')) worst = outcome
+      handled.add(account.id)
+      record(await this.unbindOne(orgId, account, bindingId, projectId, token))
+    }
+    // Finish what an earlier pass already owes. Its memberships are long gone,
+    // so these rows are the only record of them — and a retried removal has to
+    // be able to complete on its own rather than wait for the sweep.
+    for (const account of await this.deps.accounts.listRetiringForBinding(bindingId)) {
+      if (handled.has(account.id)) continue
+      record(await this.retireIfEmpty(orgId, account.id, token))
     }
     if (worst === 'retired' && (await this.deps.accounts.membershipsForBinding(bindingId)).length > 0) {
       return 'failed'
+    }
+    // The durable invariant, re-read: the claim may release only when no
+    // retirement still names this removal, never when merely the first of
+    // several has finished.
+    if (worst === 'retired' && (await this.deps.accounts.listRetiringForBinding(bindingId)).length > 0) {
+      return 'deletion_pending'
     }
     return worst
   }
