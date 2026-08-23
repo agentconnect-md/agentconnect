@@ -7322,7 +7322,32 @@ export class Daemon {
     return selectReviewBatchLeader(incoming, this.hookQueueCandidates())
   }
 
-  private async coalesceReviewBatch(leader: QueueEntry, follower: QueueEntry): Promise<boolean> {
+  /** Serialize one leader's batch mutations. The durable coalesce awaits mid-flight, and the seal that
+   *  dispatches the batch is what it would interleave with: a follower must never be terminalized as
+   *  coalesced into a generation whose prompt was already built without it. */
+  private async withReviewBatchLock<T>(leader: QueueEntry, work: () => Promise<T>): Promise<T> {
+    const previous = this.reviewBatchChains.get(leader) ?? Promise.resolve()
+    let release!: () => void
+    const held = new Promise<void>((settle) => (release = settle))
+    this.reviewBatchChains.set(
+      leader,
+      previous.then(() => held)
+    )
+    await previous
+    try {
+      return await work()
+    } finally {
+      release()
+    }
+  }
+
+  private coalesceReviewBatch(leader: QueueEntry, follower: QueueEntry): Promise<boolean> {
+    // Re-planned INSIDE the lock: a leader that sealed while this delivery waited refuses it, and the
+    // follower runs as its own turn instead of vanishing into a prompt that never carried it.
+    return this.withReviewBatchLock(leader, () => this.coalesceIntoLeader(leader, follower))
+  }
+
+  private async coalesceIntoLeader(leader: QueueEntry, follower: QueueEntry): Promise<boolean> {
     const plan = planReviewBatchCoalesce(leader, follower, this.clock.now())
     if (!plan || !leader.inboxId || !follower.inboxId) return false
     const { nextHook } = plan
@@ -7353,22 +7378,24 @@ export class Daemon {
   }
 
   private async settleReviewBatch(entry: QueueEntry): Promise<void> {
+    // Every hook turn passes here; only one carrying a batch takes the lock.
+    if (!entry.hookContext?.githubReviewBatch) return
     while (true) {
-      const step = reviewBatchSettleStep(entry.hookContext, Boolean(entry.cancelledReason), this.clock.now())
-      if (step.action === 'stop') {
-        if (step.clearReply) entry.githubReply = undefined
-        return
-      }
-      if (step.action === 'wait') {
-        await new Promise<void>((resolve) => this.clock.setTimeout(resolve, step.delayMs))
-        continue
-      }
-      entry.hookContext = { ...entry.hookContext!, githubReviewBatch: step.sealed }
-      if (step.promptText !== undefined) entry.msg = { ...entry.msg, text: step.promptText }
-      // Only a provider whose batch tool publishes each item withdraws the ordinary reply target.
-      if (step.clearReply) entry.githubReply = undefined
-      await this.persistHookPayload(entry, true)
-      return
+      // Reading the batch and sealing it are one critical section, so a coalesce mid-durable-write
+      // either lands in the generation this seals or is refused by it.
+      const step = await this.withReviewBatchLock(entry, async () => {
+        const next = reviewBatchSettleStep(entry.hookContext, Boolean(entry.cancelledReason), this.clock.now())
+        if (next.action !== 'seal') return next
+        entry.hookContext = { ...entry.hookContext!, githubReviewBatch: next.sealed }
+        if (next.promptText !== undefined) entry.msg = { ...entry.msg, text: next.promptText }
+        // Only a provider whose batch tool publishes each item withdraws the ordinary reply target.
+        if (next.clearReply) entry.githubReply = undefined
+        await this.persistHookPayload(entry, true)
+        return next
+      })
+      if (step.action === 'stop' && step.clearReply) entry.githubReply = undefined
+      if (step.action !== 'wait') return
+      await new Promise<void>((resolve) => this.clock.setTimeout(resolve, step.delayMs))
     }
   }
 
@@ -7401,6 +7428,8 @@ export class Daemon {
   private serialQueue = new Map<string, QueueEntry[]>()
   /** Per-key tail of the queued-branch admission chain — see {@link admitInArrivalOrder}. */
   private readonly dispatchAdmissionChains = new Map<string, Promise<void>>()
+  /** Per-leader tail of the review-batch mutation chain — see {@link withReviewBatchLock}. */
+  private readonly reviewBatchChains = new WeakMap<QueueEntry, Promise<void>>()
   /** Per-ACP-session tail of the update chain — see {@link enqueueAcpUpdate}. */
   private readonly acpUpdateChains = new Map<string, Promise<void>>()
   /** Current head for every owned serial gate, including the cold pre-Pending phase.
