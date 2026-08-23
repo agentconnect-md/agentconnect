@@ -87,6 +87,7 @@ export interface GithubReviewBatchItem {
   publishedComment?: GithubPublishedComment
 }
 
+/** One code host's coalesced comment deliveries; how a sealed batch publishes is the admission seam's to say. */
 export interface GithubReviewBatch {
   reviewId: string
   openedAt: number
@@ -117,6 +118,7 @@ export function hookOutcomeFailure(
   perItemPublication: boolean,
   notePublishFailure: unknown
 ): string | undefined {
+  // The seam's answer for this provider: a batch answered by one ordinary reply owes no per-item receipts.
   if (perItemPublication && batch && batch.items.length > 1) {
     if (batch.items.some((item) => item.publishState === 'in_flight')) return 'review_batch_publish_ambiguous'
     if (batch.items.some((item) => item.publishState !== 'settled')) return 'review_batch_replies_missing'
