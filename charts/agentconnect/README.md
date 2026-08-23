@@ -53,11 +53,14 @@ helm install agentconnect oci://ghcr.io/agentconnect-md/charts/agentconnect \
 - **PostgreSQL** you operate, reachable as `DATABASE_URL`. Migrations run in an init
   container on Control Plane startup (`migrate.enabled`).
 - **Cluster-scoped install rights** by default: the daemon pool renders the TokenReview
-  ClusterRole/Bindings and the vendored agent-sandbox stack ships with the release
-  (`installCRD`), so the installer must be allowed to write CRDs and cluster RBAC.
-  `daemonPool.enabled=false` needs neither. On a cluster shared by several releases, set
-  `installCRD=false` everywhere and apply the stack once out-of-band
-  (`helm template --set installCRD=true --show-only templates/agent-sandbox.yaml`).
+  ClusterRole/Bindings, the agent-sandbox CRDs ship in the chart's `crds/` directory
+  (applied on first install, skipped when present, never upgraded or deleted by Helm —
+  `--skip-crds` opts out), and the vendored controller stack installs with the release
+  (`installCRD`). `daemonPool.enabled=false` with `--skip-crds` needs none of it. On a
+  cluster shared by several releases, no single release may own the cluster-shared stack:
+  install every release with `--skip-crds` and `installCRD=false`, and apply the stack
+  once out-of-band (`kubectl apply --server-side -f crds/agent-sandbox.yaml`, then
+  `helm template --set installCRD=true --show-only templates/agent-sandbox.yaml`).
 - **Gateway API** for public routing: the chart renders HTTPRoutes attached to a Gateway
   you already run (`route.gateway`), with TLS terminated at your edge. Set
   `route.enabled=false` to manage routing yourself; with `publicUrl` empty the chart

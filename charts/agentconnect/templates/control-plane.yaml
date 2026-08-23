@@ -182,7 +182,7 @@ spec:
             - name: PUBLIC_WEB_URL
               value: {{ trimSuffix "/" .Values.publicUrl | quote }}
             {{- end }}
-            {{- if .Values.relay.enabled }}
+            {{- if include "agentconnect.relayActive" . }}
             # Webchat rides the relay pool: the mint route
             # (POST …/agents/:id/webchat/token) returns this URL for the browser to dial.
             # Absent ⇒ the mint route 503s and the Playground is disabled. RELAY_TOKEN is

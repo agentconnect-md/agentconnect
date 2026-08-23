@@ -105,13 +105,16 @@ imagePullSecrets: []
 # Pod scheduling affinity, applied to both Deployments (control-plane and web).
 affinity: {}
 
-# Install the vendored agent-sandbox stack (its 4 CRDs + the controller) with this release.
-# The stack is a pinned copy this chart carries, so the default `true` bootstraps a fresh
-# cluster completely and offline — no registry, no cluster egress, nothing to apply by hand
-# first — which the default-on daemon pool below needs to render at all. Set it false when
-# the stack is managed out-of-band — several releases sharing one cluster, or a cluster that
-# already runs agent-sandbox. The stack is cluster-shared, so no single release of several
-# may own it; apply it once per cluster instead, with
+# Install the vendored agent-sandbox CONTROLLER stack with this release. The stack is a
+# pinned copy this chart carries, so the default `true` bootstraps a fresh cluster
+# completely and offline — no registry, no cluster egress, nothing to apply by hand first.
+# The 4 CRDs are NOT behind this switch: they ship in the chart's crds/ directory, which
+# Helm applies on first install (before it resolves the daemon pool's templated custom
+# resources), skips when they already exist, and never touches on upgrade or uninstall —
+# `--skip-crds` opts out. Set this false when the stack is managed out-of-band — several
+# releases sharing one cluster, or a cluster that already runs agent-sandbox. The stack is
+# cluster-shared, so no single release of several may own it; apply it once per cluster
+# instead: `kubectl apply --server-side -f crds/agent-sandbox.yaml`, then
 # `helm template --set installCRD=true --show-only templates/agent-sandbox.yaml`.
 installCRD: true
 
@@ -461,9 +464,13 @@ web:
 #   kubectl -n <namespace> patch secret <secret> --type merge \
 #     -p "{\"stringData\":{\"RELAY_TOKEN\":\"$(openssl rand -hex 24)\"}}"
 relay:
-  # ON by default — put RELAY_TOKEN in the namespace Secret (see above) before installing,
-  # or the relay and the CP both wait on the missing key. Set false to run without public
-  # ingress (no webchat/webhooks; direct daemon-owned platform connections still work).
+  # ON by default, but the relay only RENDERS once a public host resolves (`relay.host`,
+  # else `apiHost`, else `publicUrl` — same rule as the HTTPRoute): with all three empty
+  # every origin it would advertise is broken, so a bare local install renders no relay.
+  # Once a host is set, put RELAY_TOKEN in the namespace Secret (see above) before
+  # installing, or the relay and the CP both wait on the missing key. Set false to run
+  # without public ingress (no webchat/webhooks; direct daemon-owned platform connections
+  # still work).
   enabled: true
   image: relay
   # Per-component tag override; empty ⇒ the shared image.tag (see controlPlane.tag).
@@ -511,11 +518,12 @@ openConnector:
   enabled: true
   # Full image ref WITHOUT tag/digest; empty ⇒ the official ghcr.io/oomol-lab/open-connector.
   image: ''
-  # Immutable digest pin (e.g. sha256:…) — PREFERRED for this third-party,
-  # credential-storing component: reproducible + supply-chain-safe (imagePullPolicy
-  # becomes IfNotPresent). Set it in your values. When empty the chart falls back to
-  # `tag` below (with imagePullPolicy: Always, since a tag is mutable).
-  digest: ''
+  # Immutable digest pin (sha256:…) — the DEFAULT for this third-party, credential-storing
+  # component: reproducible + supply-chain-safe (imagePullPolicy becomes IfNotPresent), so a
+  # default-on install never rides upstream's mutable `latest`. Moved deliberately, by a
+  # chart release. To run a tag instead, set this empty AND `tag` below — a non-empty
+  # digest always wins.
+  digest: 'sha256:455e7e843a392955186c59ff34f57fcf5477a281b669d10bcb330240ed02c492'
   # Image tag used only when `digest` is empty; empty ⇒ `latest` (mutable — manual
   # installs only). Prefer `digest` for real deploys.
   tag: ''

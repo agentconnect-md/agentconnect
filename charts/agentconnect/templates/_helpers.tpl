@@ -106,6 +106,15 @@ app.kubernetes.io/component: {{ .component }}
 {{- printf "https://%s" (include "agentconnect.relayHost" .) -}}
 {{- end -}}
 
+{{/* Whether the relay actually renders: enabled AND a public host resolves. With every host
+     input empty (the bare local default) an enabled relay would render only broken origins —
+     PUBLIC_RELAY_URL "https://", DAEMON_DIAL_URL "wss:///…" — and force RELAY_TOKEN on a CP
+     nothing can dial, so like the HTTPRoute it waits for a hostname instead. Emits "true" or
+     "": usable directly as an `if` condition. */}}
+{{- define "agentconnect.relayActive" -}}
+{{- if and .Values.relay.enabled (include "agentconnect.relayHost" .) -}}true{{- end -}}
+{{- end -}}
+
 {{/* The verified sender address the waitlist copy names. The CP and web both read it as
      WAITLIST_FROM_EMAIL, from one value, so the two cannot disagree about who the activation
      mail comes from. Whatever actually SENDS that mail is outside this chart, which is why

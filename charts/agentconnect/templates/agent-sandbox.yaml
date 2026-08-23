@@ -1,10 +1,10 @@
 {{- if .Values.installCRD }}
-# The agent-sandbox stack cluster execution builds on — CRDs, controller, its namespace
-# and RBAC — pinned and vendored, because upstream publishes release manifests but no
-# chart to any registry. Version, source URL and upstream digest are in the vendored
-# file's header; re-vendor from the upstream release rather than editing it. Its CRDs carry
-# helm.sh/resource-policy: keep, like ours, so no uninstall cascade-deletes live
-# Sandboxes.
+# The CONTROLLER half of the vendored agent-sandbox stack — its namespace, RBAC, webhook
+# service and Deployment. The 4 CRDs live in crds/agent-sandbox.yaml instead, which Helm
+# applies on FIRST INSTALL before resolving any templated custom resource (what lets one
+# release bootstrap a fresh cluster) and never upgrades or deletes. Version, source URL
+# and upstream digest are in the vendored file's header; re-vendor with
+# scripts/vendor-agent-sandbox.mjs rather than editing it.
 {{ .Files.Get "vendor/agent-sandbox.yaml" }}
 ---
 # The controller's label allowlist REPLACES its built-in `sandbox.users.io` default,

@@ -55,7 +55,7 @@ spec:
             - name: MCP_URL
               value: {{ printf "https://%s" .Values.mcpHost | quote }}
             {{- end }}
-            {{- if .Values.relay.enabled }}
+            {{- if include "agentconnect.relayActive" . }}
             # Browser → relay public origin, injected into window.__AC_ENV at runtime
             # (mirrors the CP's PUBLIC_RELAY_URL). The agent API panel derives its WSS
             # endpoint (and the Playground its webchat dial target) from this https origin,

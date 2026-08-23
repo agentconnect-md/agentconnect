@@ -98,7 +98,7 @@ spec:
             - name: AGENTCONNECT_PUBLIC_CP_URL
               value: {{ if .Values.apiHost }}{{ printf "https://%s" .Values.apiHost | quote }}{{ else }}{{ printf "%s/cp" (trimSuffix "/" .Values.publicUrl) | quote }}{{ end }}
             {{- end }}
-            {{- if .Values.relay.enabled }}
+            {{- if include "agentconnect.relayActive" . }}
             - name: AGENTCONNECT_PUBLIC_RELAY_URL
               value: {{ include "agentconnect.relayPublicUrl" . | quote }}
             {{- end }}

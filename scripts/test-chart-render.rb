@@ -359,23 +359,23 @@ same_rendered, same_error, same_status = Open3.capture3(*same_namespace_command)
 abort("helm template (sandboxes in the release namespace) failed:\n#{same_error}") unless same_status.success?
 abort('the chart must not render its own release namespace') if YAML.load_stream(same_rendered).compact.any? { |doc| doc['kind'] == 'Namespace' }
 
-# The vendored agent-sandbox stack: off by default, and the file is still there when asked
-# for. `helm template --set installCRD=true` is also how it is applied out-of-band.
+# The vendored agent-sandbox CONTROLLER stack, behind installCRD (the CRDs ride crds/ and
+# are asserted above). `helm template --set installCRD=true --show-only
+# templates/agent-sandbox.yaml` is also how the stack is applied out-of-band.
 vendored_rendered, vendored_error, vendored_status = Open3.capture3(*(command + ['--set', 'installCRD=true']))
 abort("helm template (installCRD) failed:\n#{vendored_error}") unless vendored_status.success?
 vendored_documents = YAML.load_stream(vendored_rendered).compact
-crds = vendored_documents.select { |doc| doc['kind'] == 'CustomResourceDefinition' }
-abort('installCRD must render the four vendored agent-sandbox CRDs') unless crds.length == 4
-abort('vendored CRDs must survive an uninstall') unless crds.all? { |doc| doc.dig('metadata', 'annotations', 'helm.sh/resource-policy') == 'keep' }
+abort('the controller stack must template no CRD (crds/ owns them)') if vendored_documents.any? { |doc| doc['kind'] == 'CustomResourceDefinition' }
+abort('installCRD must render the controller Deployment') unless vendored_documents.any? { |doc| doc['kind'] == 'Deployment' && doc.dig('metadata', 'namespace') == 'agent-sandbox-system' }
 # Without this ConfigMap the controller rejects every claim the daemon makes as InvalidMetadata.
 allowlist = vendored_documents.find { |doc| doc['kind'] == 'ConfigMap' && doc.dig('metadata', 'name') == 'agent-sandbox-config' } ||
             abort('installCRD must render the controller label allowlist')
 abort('label allowlist must name both domains') unless allowlist.dig('data', 'allowed-label-domains') == 'sandbox.users.io,agentconnect.md'
 
 # ── the batteries-included defaults: a bare install carries the whole product ──
-# Pure defaults, no values at all: the daemon pool (with its bundled agent-sandbox stack and
-# three warm spares), the relay, and open-connector all render. Turning one off is the
-# consumer's explicit values choice, not a discovery.
+# Pure defaults, no values at all: the daemon pool (three warm spares) and open-connector
+# render; the relay is enabled but WAITS for a public host (below). Turning a component off
+# is the consumer's explicit values choice, not a discovery.
 defaults_rendered, defaults_error, defaults_status = Open3.capture3(
   'helm', 'template', 'example-agentconnect', chart, '--namespace', 'agentconnect-example'
 )
@@ -386,16 +386,34 @@ defaults_find = lambda do |kind, name|
     abort("defaults must render #{kind}/#{name}")
 end
 default_pool = defaults_find.call('Deployment', 'example-agentconnect-daemon-pool')
-defaults_find.call('StatefulSet', 'example-agentconnect-relay')
-defaults_find.call('Deployment', 'example-agentconnect-open-connector')
+default_oc = defaults_find.call('Deployment', 'example-agentconnect-open-connector')
 default_warm = defaults_find.call('SandboxWarmPool', 'example-agentconnect-runtime-pool')
 abort('defaults must hold three warm spares') unless default_warm.dig('spec', 'replicas') == 3
 # The pool's data-plane Secret is referenced by a default NAME the operator creates, like
 # `secrets.existingSecret` — a required-but-empty value would fail the default render outright.
 default_data_plane = default_pool.dig('spec', 'template', 'spec', 'volumes').find { |v| v['name'] == 'data-plane' }
 abort('defaults must reference the documented data-plane Secret name') unless default_data_plane.dig('secret', 'secretName') == 'agentconnect-data-plane'
-# installCRD defaults on so the default-on daemon pool has the CRDs it renders against.
-abort('defaults must carry the vendored agent-sandbox CRDs') unless defaults_documents.count { |doc| doc['kind'] == 'CustomResourceDefinition' } == 4
+# The default-on third-party component must not ride upstream's mutable `latest`: the chart
+# pins a digest, moved deliberately by a chart release.
+default_oc_container = default_oc.dig('spec', 'template', 'spec', 'containers').first
+abort('open-connector default must be a digest pin') unless default_oc_container['image'].include?('@sha256:')
+abort('a digest pin must not force re-pulls') unless default_oc_container['imagePullPolicy'] == 'IfNotPresent'
+# The relay is enabled by default but every public-host input is empty, so it must render
+# NOTHING — an origin like "https://" or "wss:///relays/…" is worse than absence — and the
+# CP must not then demand a RELAY_TOKEN nothing can dial with.
+abort('a hostless default must render no relay') if defaults_documents.any? { |doc| doc['kind'] == 'StatefulSet' && doc.dig('metadata', 'name').to_s.include?('relay') }
+defaults_cp = defaults_find.call('Deployment', 'example-agentconnect-control-plane')
+defaults_cp_env = defaults_cp.dig('spec', 'template', 'spec', 'containers').first.fetch('env').map { |item| item['name'] }
+%w[PUBLIC_RELAY_URL RELAY_TOKEN].each do |key|
+  abort("a hostless default must not give the CP #{key}") if defaults_cp_env.include?(key)
+end
+# The CRDs are NOT templated: they ship in crds/, which Helm applies on first install
+# before resolving the templated SandboxTemplate/SandboxWarmPool — a templated CRD would
+# fail a fresh cluster at discovery, before anything applies.
+abort('defaults must template no CRD') if defaults_documents.any? { |doc| doc['kind'] == 'CustomResourceDefinition' }
+crds_file = YAML.load_stream(File.read(File.join(chart, 'crds/agent-sandbox.yaml'))).compact
+abort('crds/ must carry the four vendored agent-sandbox CRDs') unless crds_file.count { |doc| doc['kind'] == 'CustomResourceDefinition' } == 4
+abort('vendored CRDs must survive an uninstall') unless crds_file.all? { |doc| doc.dig('metadata', 'annotations', 'helm.sh/resource-policy') == 'keep' }
 
 # ── the published-artifact defaults: no tag set means the chart's own release ──
 # The release pipeline stamps appVersion; with image.tag empty by default, installing chart
@@ -417,6 +435,16 @@ public_rendered, public_error, public_status = Open3.capture3(
 )
 abort("helm template (publicUrl + relay) failed:\n#{public_error}") unless public_status.success?
 public_documents = YAML.load_stream(public_rendered).compact
+# With a public host resolvable the default-on relay renders, and every origin it and the
+# CP advertise is a real one — the assertions the hostless render above holds in absence.
+public_relay = public_documents.find { |doc| doc['kind'] == 'StatefulSet' && doc.dig('metadata', 'name') == 'example-agentconnect-relay' } ||
+               abort('relay must render once a public host resolves')
+public_relay_env = public_relay.dig('spec', 'template', 'spec', 'containers').first.fetch('env').to_h { |item| [item.fetch('name'), item['value']] }
+abort('relay must dial back through the resolved public host') unless public_relay_env['DAEMON_DIAL_URL'] == 'wss://app.example.test/relays/$(POD_INDEX)'
+public_cp = public_documents.find { |doc| doc['kind'] == 'Deployment' && doc.dig('metadata', 'name') == 'example-agentconnect-control-plane' } ||
+            abort('missing control-plane Deployment in the public render')
+public_cp_env = public_cp.dig('spec', 'template', 'spec', 'containers').first.fetch('env').to_h { |item| [item.fetch('name'), item['value']] }
+abort('CP must advertise the resolved relay origin') unless public_cp_env['PUBLIC_RELAY_URL'] == 'https://app.example.test'
 setup = public_documents.find { |doc| doc['kind'] == 'Deployment' && doc.dig('metadata', 'name') == 'example-agentconnect-setup-server' } ||
         abort('missing setup-server Deployment in the public render')
 setup_env = setup.dig('spec', 'template', 'spec', 'containers').first.fetch('env').to_h { |item| [item.fetch('name'), item['value']] }

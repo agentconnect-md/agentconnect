@@ -10,7 +10,7 @@ The StatefulSet gives every relay a stable ordinal. DAEMON_DIAL_URL includes tha
 ordinal as a path segment; the HTTPRoute rewrites the path onto a per-pod Service, while
 the pool Service remains load-balanced for browser and webhook ingress.
 */ -}}
-{{- if .Values.relay.enabled }}
+{{- if include "agentconnect.relayActive" . }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
