@@ -568,7 +568,10 @@ export class GitlabProvisioner {
     state: 'admin_degraded' | 'runtime_degraded',
     reason: string
   ): Promise<ProvisionOutcome> {
-    await this.deps.bindings.update(orgId, bindingId, { state, stateReason: reason })
+    // A degrade is a settled verdict asking for human repair, so nothing is owed
+    // automatically any more: leaving the marker would have every sweep repeat
+    // an outcome that has already settled, and report `converging` forever.
+    await this.deps.bindings.update(orgId, bindingId, { state, stateReason: reason, convergeOwedAt: null })
     return { state, reason }
   }
 
@@ -759,6 +762,9 @@ export class GitlabProvisioner {
       return { removed: false, reason: 'provisioning_in_progress' }
     }
     await this.deps.bindings.bumpCredentialEpoch(orgId, bindingId)
+    // Cleanup owns the claim from here, so provisioning can never acquire it:
+    // any convergence obligation on this binding is void (§19.4).
+    await this.deps.bindings.update(orgId, bindingId, { convergeOwedAt: null })
     // The binding just left the servable states — pull the project's compiled
     // rules off the relay pool now, not when cleanup eventually completes.
     this.deps.onConverged?.(orgId, binding.projectId)

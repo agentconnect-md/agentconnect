@@ -513,7 +513,10 @@ export class PgGitlabProjectBindingRepo implements GitlabProjectBindingRepo {
   async listConvergeOwed(before: Date, limit: number): Promise<GitlabProjectBindingRecord[]> {
     const rows = await this.prisma.gitlabProjectBinding.findMany({
       orderBy: { convergeOwedAt: 'asc' },
-      where: { convergeOwedAt: { not: null, lt: before } },
+      // A binding in cleanup can never acquire its claim again, so its
+      // obligation is void — selecting it would burn the sweep's budget and
+      // hold it "converging" forever.
+      where: { convergeOwedAt: { not: null, lt: before }, state: { not: 'cleanup_pending' } },
       take: limit
     })
     return rows.map(toBindingRecord)

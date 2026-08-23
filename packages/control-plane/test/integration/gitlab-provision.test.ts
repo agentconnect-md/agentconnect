@@ -1037,6 +1037,42 @@ describe('GitlabProvisioner (§10.2) — per-agent identity', () => {
     expect(await h.bindings.get(DEFAULT_ORG_ID, h.binding.id)).toMatchObject({ state: 'ready', stateReason: null })
   }, 30_000)
 
+  it('a settled degrade discharges the obligation instead of sweeping forever', async () => {
+    const h = await harness()
+    await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
+    const account = (await h.accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP))!
+    expect(await h.accounts.claimLease(account.id, 'peer', new Date(Date.now() + 300_000), new Date())).toBe(true)
+    await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
+    expect((await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))!.convergeOwedAt).not.toBeNull()
+
+    // The administering connection goes away: the next pass is a verdict asking
+    // for human repair, not something a sweep should keep repeating.
+    await h.bindings.update(DEFAULT_ORG_ID, h.binding.id, { installerConnectionId: null })
+    expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toEqual({
+      state: 'admin_degraded',
+      reason: 'no_admin_connection'
+    })
+    const settled = (await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))!
+    expect(settled.convergeOwedAt).toBeNull()
+    expect(await h.bindings.listConvergeOwed(new Date(Date.now() + 1_000), 50)).toHaveLength(0)
+  })
+
+  it('a binding entering cleanup owes no more convergence', async () => {
+    const h = await harness({ failTokenRevoke: true })
+    await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
+    const account = (await h.accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP))!
+    expect(await h.accounts.claimLease(account.id, 'peer', new Date(Date.now() + 300_000), new Date())).toBe(true)
+    await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
+    expect((await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))!.convergeOwedAt).not.toBeNull()
+    await h.accounts.releaseLease(account.id, 'peer')
+
+    // Removal takes the claim; convergence can never acquire it again, so the
+    // obligation is void whether or not the removal itself completes.
+    expect((await h.provisioner.disconnect(DEFAULT_ORG_ID, h.binding.id)).removed).toBe(false)
+    expect((await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))!.state).toBe('cleanup_pending')
+    expect(await h.bindings.listConvergeOwed(new Date(Date.now() + 1_000), 50)).toHaveLength(0)
+  })
+
   it('two concurrent provisions: exactly one runs, the other observes busy', async () => {
     const h = await harness()
     const [a, b] = await Promise.all([
