@@ -33,6 +33,9 @@ import {
   type ReviewIntentRow
 } from '../src/gitlab/review-adapter.js'
 import { ReviewMarkerSigner } from '../src/gitlab/review-marker.js'
+import { hookCoordinates, reviewSubjectLane, type HookQueueCandidate } from '../src/codehost/hook-admission.js'
+import { planRevisionAdmission, planRevisionAdmissionEffects } from '../src/codehost/queue-admission.js'
+import type { QueueEntry } from '../src/daemon/turn-types.js'
 
 const BASE = 'https://gitlab.example.test/api/v4'
 const PROJECT = '4455667'
@@ -793,6 +796,40 @@ describe('GitLab review adapter — head and draft-set fencing (§15 steps 5, 9,
     expect(outcome.state).toBe('not_submitted')
     expect(published(h.calls)).toEqual([])
     expect(state.drafts).toEqual([])
+  })
+
+  it('preempts a stale-head turn without leaving the publication coordinator held', async () => {
+    // The revision plan preempts the running HEAD generation once OTHER_HEAD arrives...
+    const queued = (hook: HookDispatchContext): QueueEntry =>
+      ({ agentId: AGENT_ID, msg: { platform: 'hook', channel: HOOK_ID }, hookContext: hook }) as unknown as QueueEntry
+    const running = queued(hookContext())
+    const pushed = queued(
+      hookContext({
+        deliveryKey: 'delivery-2',
+        firedAt: '2026-01-01T00:01:00.000Z',
+        event: 'merge_request:synchronize',
+        gitlab: {
+          projectId: PROJECT,
+          projectPath: 'example-group/example-project',
+          target: { kind: 'merge_request', iid: IID, headSha: OTHER_HEAD, baseSha: BASE_SHA }
+        }
+      })
+    )
+    const candidates: HookQueueCandidate[] = [{ key: KEY, entry: running, state: 'active' }]
+    const plan = planRevisionAdmission(KEY, pushed, candidates)
+    const effects = planRevisionAdmissionEffects(plan!, pushed)
+    expect(effects.preemptableActiveLosers.map((candidate) => candidate.entry)).toEqual([running])
+    expect(effects.winnerLane).toBe(
+      reviewSubjectLane(pushed.hookContext, hookCoordinates(AGENT_ID, { platform: 'hook', channel: HOOK_ID }))
+    )
+
+    // ...and the preempted turn's own attempt still reaches a terminal result, so the lease is released.
+    const h = harness({ state: gitlabState({ sha: OTHER_HEAD }) })
+    const outcome = (await h.adapter.submit(KEY, request())) as GitlabReviewOutcome
+    expect(outcome.state).toBe('not_submitted')
+    expect(h.results.at(-1)).toMatchObject({ state: 'not_submitted' })
+    h.adapter.closeTurn(KEY)
+    expect(h.adapter.owns(KEY, AGENT_ID)).toBe(false)
   })
 
   it('fails closed when the pending draft set is not exactly this attempt’s', async () => {

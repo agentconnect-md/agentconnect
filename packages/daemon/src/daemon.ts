@@ -187,15 +187,22 @@ import { GithubReviewOrchestrator, type GithubReviewHost } from './github/review
 import { CodeHostReviewRouter } from './codehost/review-adapter.js'
 import { GitlabReviewAdapter, type GitlabReviewAdapterDeps, type GitlabReviewTurn } from './gitlab/review-adapter.js'
 import {
-  collectGithubQueueCandidates,
+  collectHookQueueCandidates,
   combineCoordinationWaits,
-  githubReviewBatchSettleStep,
-  planGithubReviewBatchCoalesce,
-  planGithubRevisionAdmission,
-  planGithubRevisionAdmissionEffects,
-  planQueuedGithubRevisionRemovals,
-  selectGithubReviewBatchLeader
-} from './github/queue-admission.js'
+  planQueuedRevisionRemovals,
+  planReviewBatchCoalesce,
+  planRevisionAdmission,
+  planRevisionAdmissionEffects,
+  reviewBatchSettleStep,
+  selectReviewBatchLeader
+} from './codehost/queue-admission.js'
+import {
+  batchPublishesItems,
+  hookCoordinates,
+  reviewSubjectLane,
+  type HookQueueCandidate,
+  type RevisionAdmissionPlan
+} from './codehost/hook-admission.js'
 import { resolveRuntimeCatalog, type ResolvedRuntimeCatalog } from './runtimes/registry.js'
 import {
   internalPassSlot,
@@ -417,17 +424,13 @@ import {
   foreignHookDispatch,
   githubDeletedHookEvent,
   hookOutputFallbackAllowed,
-  githubHookCoordinates,
-  githubPullRequestLane,
   githubReviewResultForCompletion,
   githubThreadWorktreeCleanup,
   hookOutcomeFailure,
   MAX_HOOK_REPORT_INFLIGHT,
   type ActiveGithubReplyBatchMeta,
   type ActiveGithubTurnMeta,
-  type GithubQueueCandidate,
   type GithubReplyTarget,
-  type GithubRevisionAdmissionPlan,
   type HookCompletionOwner,
   type HookDispatchContext,
   type NotePublishFailure,
@@ -992,7 +995,7 @@ export class Daemon {
   private safetyDrainWaits = new Map<string, Set<Promise<void>>>()
   private safetyDrainRuns = new Map<string, symbol>()
   private safetyDrainAdmissionKeys = new Map<string, Set<string>>()
-  private safetyDrainGithubLanes = new Map<string, Set<string>>()
+  private safetyDrainReviewLanes = new Map<string, Set<string>>()
   // Cold-move staging is distinct from an ordinary agent/stop gate: staged
   // agents are excluded from the effective roster, so restoring an old archive
   // during bootstrap cannot reopen stale platform credentials before activate
@@ -6706,7 +6709,7 @@ export class Daemon {
       paused: (agentId) => this.paused(agentId),
       draining: (agentId) => this.draining || this.drainingAgents.has(agentId),
       safetyDraining: (agentId) => this.safetyDrainingAgents.has(agentId),
-      safetyDrainAllows: (agentId, key, githubLane) => this.safetyDrainAllows(agentId, key, githubLane),
+      safetyDrainAllows: (agentId, key, reviewLane) => this.safetyDrainAllows(agentId, key, reviewLane),
       persistInbox: async (entry, key, options) => await this.persistInbox(entry, key, options),
       persistHookState: (entry, posterPublishState, required) =>
         this.persistHookState(entry, posterPublishState, required),
@@ -6718,8 +6721,8 @@ export class Daemon {
       sessionHasReferenceDirectories: async (agent, request) =>
         (await this.workspaces.sessionAdditionalRoots(agent, request)).length > 0,
       warmHostFor: (agentId) => (this.readyHosts.has(agentId) ? this.hosts.get(agentId) : undefined),
-      anchorTrigger: (agentId, msg, target, anchorText, label, safetyGithubLane) =>
-        this.anchorTrigger(agentId, msg, target, anchorText, label, safetyGithubLane),
+      anchorTrigger: (agentId, msg, target, anchorText, label, safetyReviewLane) =>
+        this.anchorTrigger(agentId, msg, target, anchorText, label, safetyReviewLane),
       dispatch: (agentId, msg, integrationId, webchat, callMeta, opts, githubReply, hookContext) =>
         this.dispatch(agentId, msg, integrationId, webchat, callMeta, opts, githubReply, hookContext),
       activeGithubTurn: (key) => this.activeGithubTurnMeta.get(key),
@@ -7198,12 +7201,12 @@ export class Daemon {
     return count
   }
 
-  private githubQueueCandidates(): GithubQueueCandidate[] {
-    return collectGithubQueueCandidates(this.activeGateEntries, this.serialQueue)
+  private hookQueueCandidates(): HookQueueCandidate[] {
+    return collectHookQueueCandidates(this.activeGateEntries, this.serialQueue)
   }
 
-  private githubRevisionAdmissionPlan(key: string, incoming: QueueEntry): GithubRevisionAdmissionPlan | undefined {
-    return planGithubRevisionAdmission(key, incoming, this.githubQueueCandidates())
+  private revisionAdmissionPlan(key: string, incoming: QueueEntry): RevisionAdmissionPlan | undefined {
+    return planRevisionAdmission(key, incoming, this.hookQueueCandidates())
   }
 
   /** Run one session key's queued-branch admission after every earlier arrival for that key
@@ -7255,14 +7258,14 @@ export class Daemon {
     else this.inflight.delete(key)
   }
 
-  private removeQueuedGithubRevisions(candidates: readonly GithubQueueCandidate[]): void {
-    for (const [key, next] of planQueuedGithubRevisionRemovals(candidates, this.serialQueue)) {
+  private removeQueuedHookRevisions(candidates: readonly HookQueueCandidate[]): void {
+    for (const [key, next] of planQueuedRevisionRemovals(candidates, this.serialQueue)) {
       if (next) this.serialQueue.set(key, next)
       else this.serialQueue.delete(key)
     }
   }
 
-  private async settleSupersededGithubRevisions(entries: readonly QueueEntry[], successor: QueueEntry): Promise<void> {
+  private async settleSupersededHookRevisions(entries: readonly QueueEntry[], successor: QueueEntry): Promise<void> {
     if (entries.length === 0) return
     for (const entry of entries) {
       this.terminateQueuedSink(entry)
@@ -7279,23 +7282,20 @@ export class Daemon {
       })
     }
     defaultTurnOutputMetrics.queueCoalesced(successor.msg.platform, entries.length)
-    this.log.info(`github review: superseded ${entries.length} queued or incoming revision(s)`)
+    this.log.info(`code host review: superseded ${entries.length} queued or incoming revision(s)`)
   }
 
-  private extendGithubCoordinationWait(entry: QueueEntry, waits: readonly Promise<void>[]): void {
+  private extendHookCoordinationWait(entry: QueueEntry, waits: readonly Promise<void>[]): void {
     const next = combineCoordinationWaits(entry.coordinationWait, waits)
     if (next) entry.coordinationWait = next
   }
 
-  private async applyGithubRevisionAdmissionPlan(
-    plan: GithubRevisionAdmissionPlan,
-    incoming: QueueEntry
-  ): Promise<boolean> {
+  private async applyRevisionAdmissionPlan(plan: RevisionAdmissionPlan, incoming: QueueEntry): Promise<boolean> {
     const { terminalLosers, activeLosers, preemptableActiveLosers, winnerLane, winnerNeedsWait, incomingWins } =
-      planGithubRevisionAdmissionEffects(plan, incoming)
+      planRevisionAdmissionEffects(plan, incoming)
     const preemptable = new Set(preemptableActiveLosers)
-    this.removeQueuedGithubRevisions(terminalLosers)
-    await this.settleSupersededGithubRevisions(
+    this.removeQueuedHookRevisions(terminalLosers)
+    await this.settleSupersededHookRevisions(
       terminalLosers.map((candidate) => candidate.entry),
       plan.winner.entry
     )
@@ -7308,22 +7308,22 @@ export class Daemon {
       await this.interruptTurn(candidate.entry.agentId, candidate.key, 'superseded', undefined, {
         preserveQueued: true,
         allowSameKeyAdmissions: true,
-        ...(winnerLane ? { allowGithubLane: winnerLane } : {})
+        ...(winnerLane ? { allowReviewLane: winnerLane } : {})
       })
     }
     if (this.safetyDrainingAgents.has(plan.winner.entry.agentId)) {
       waits.push(this.waitForSafetyDrain(plan.winner.entry.agentId))
     }
-    if (winnerNeedsWait) this.extendGithubCoordinationWait(plan.winner.entry, waits)
+    if (winnerNeedsWait) this.extendHookCoordinationWait(plan.winner.entry, waits)
     return incomingWins
   }
 
-  private githubReviewBatchLeader(incoming: QueueEntry): QueueEntry | undefined {
-    return selectGithubReviewBatchLeader(incoming, this.githubQueueCandidates())
+  private reviewBatchLeader(incoming: QueueEntry): QueueEntry | undefined {
+    return selectReviewBatchLeader(incoming, this.hookQueueCandidates())
   }
 
-  private async coalesceGithubReviewBatch(leader: QueueEntry, follower: QueueEntry): Promise<boolean> {
-    const plan = planGithubReviewBatchCoalesce(leader, follower, this.clock.now())
+  private async coalesceReviewBatch(leader: QueueEntry, follower: QueueEntry): Promise<boolean> {
+    const plan = planReviewBatchCoalesce(leader, follower, this.clock.now())
     if (!plan || !leader.inboxId || !follower.inboxId) return false
     const { nextHook } = plan
     const report = this.buildHookReport(follower.hookContext!, 'success', { reason: 'coalesced_review_batch' })
@@ -7348,17 +7348,13 @@ export class Daemon {
     this.liveInboxIds.delete(follower.inboxId)
     await this.sendHookReport(report, follower.inboxId)
     defaultTurnOutputMetrics.queueCoalesced(follower.msg.platform, 1)
-    this.log.info(`github review batch: coalesced thread ${plan.threadRootCommentId} into review ${plan.reviewId}`)
+    this.log.info(`code host review batch: coalesced ${plan.itemKey} into review ${plan.reviewId}`)
     return true
   }
 
-  private async settleGithubReviewBatch(entry: QueueEntry): Promise<void> {
+  private async settleReviewBatch(entry: QueueEntry): Promise<void> {
     while (true) {
-      const step = githubReviewBatchSettleStep(
-        entry.hookContext?.githubReviewBatch,
-        Boolean(entry.cancelledReason),
-        this.clock.now()
-      )
+      const step = reviewBatchSettleStep(entry.hookContext, Boolean(entry.cancelledReason), this.clock.now())
       if (step.action === 'stop') {
         if (step.clearReply) entry.githubReply = undefined
         return
@@ -7368,10 +7364,9 @@ export class Daemon {
         continue
       }
       entry.hookContext = { ...entry.hookContext!, githubReviewBatch: step.sealed }
-      if (step.promptText !== undefined) {
-        entry.msg = { ...entry.msg, text: step.promptText }
-        entry.githubReply = undefined
-      }
+      if (step.promptText !== undefined) entry.msg = { ...entry.msg, text: step.promptText }
+      // Only a provider whose batch tool publishes each item withdraws the ordinary reply target.
+      if (step.clearReply) entry.githubReply = undefined
       await this.persistHookPayload(entry, true)
       return
     }
@@ -8326,7 +8321,7 @@ export class Daemon {
     return new Promise<string | null>((resolve, reject) => {
       void (async () => {
         const key = sessionKey(msg.platform, msg.channel, msg.thread ?? msg.msgId, agentId, msg.transportScope)
-        const githubLane = githubPullRequestLane(hookContext, githubHookCoordinates(agentId, msg, integrationId))
+        const reviewLane = reviewSubjectLane(hookContext, hookCoordinates(agentId, msg, integrationId))
         const safetyDrainByKey = this.safetyDrainAdmissionKeys.get(agentId)?.has(key) === true
         let admissionSettled = false
         const settleAdmission = async (result: {
@@ -8392,7 +8387,7 @@ export class Daemon {
         // selected old dispatches fully unwind. Live platform arrivals are intentionally
         // dropped; a DURABLE startup replay cannot be lost/dormant, so retry that same row
         // after the transient drain closes (its inbox id has not been adopted yet).
-        if (this.safetyDrainingAgents.has(agentId) && !this.safetyDrainAllows(agentId, key, githubLane)) {
+        if (this.safetyDrainingAgents.has(agentId) && !this.safetyDrainAllows(agentId, key, reviewLane)) {
           if (opts?.fromInboxReplay) {
             void this.waitForSafetyDrain(agentId)
               .then(async () => {
@@ -8492,8 +8487,8 @@ export class Daemon {
           resolve,
           reject
         }
-        let batchLeader = this.githubReviewBatchLeader(entry)
-        let revisionPlan = this.githubRevisionAdmissionPlan(key, entry)
+        let batchLeader = this.reviewBatchLeader(entry)
+        let revisionPlan = this.revisionAdmissionPlan(key, entry)
         // ── atomic claim-or-enqueue (single synchronous tick, no await before add) ──
         // An outstanding chain link IS a reservation: the owner may have released the gate
         // while an earlier arrival was still persisting, and a direct claim here would start
@@ -8507,8 +8502,8 @@ export class Daemon {
           await this.admitInArrivalOrder(key, async () => {
             // This link may have waited on a peer's placement, so read the queue it actually
             // admits into rather than the one this delivery arrived at.
-            batchLeader = this.githubReviewBatchLeader(entry)
-            revisionPlan = this.githubRevisionAdmissionPlan(key, entry)
+            batchLeader = this.reviewBatchLeader(entry)
+            revisionPlan = this.revisionAdmissionPlan(key, entry)
             const q = this.serialQueue.get(key) ?? []
             const supersededQueued =
               revisionPlan?.superseded.filter((candidate) => candidate.state === 'queued' && candidate.key === key)
@@ -8557,7 +8552,7 @@ export class Daemon {
             // Admission settles only once the entry is on the queue (or coalesced away): the
             // caller's accepted ACK has always meant "this delivery is placed", and awaiting a
             // Promise-returning store must not let the ACK outrun the placement.
-            if (batchLeader && (await this.coalesceGithubReviewBatch(batchLeader, entry))) {
+            if (batchLeader && (await this.coalesceReviewBatch(batchLeader, entry))) {
               await settleAdmission({ accepted: true })
               entry.resolve(null)
               return
@@ -8586,7 +8581,7 @@ export class Daemon {
             const reclaimedGate = !this.inflight.has(key)
             if (reclaimedGate) this.inflight.add(key)
             try {
-              if (revisionPlan && !(await this.applyGithubRevisionAdmissionPlan(revisionPlan, entry))) {
+              if (revisionPlan && !(await this.applyRevisionAdmissionPlan(revisionPlan, entry))) {
                 settleHold('drop')
                 this.removeQueuedEntry(key, entry)
                 if (reclaimedGate) await this.releaseDispatchClaim(key)
@@ -8647,13 +8642,13 @@ export class Daemon {
           }
           // Admission settles only once the entry is placed (or coalesced away), exactly as in
           // the queued branch: the accepted ACK must not outrun the batch this delivery joins.
-          if (batchLeader && (await this.coalesceGithubReviewBatch(batchLeader, entry))) {
+          if (batchLeader && (await this.coalesceReviewBatch(batchLeader, entry))) {
             await this.releaseDispatchClaim(key)
             await settleAdmission({ accepted: true })
             entry.resolve(null)
             return
           }
-          if (revisionPlan && !(await this.applyGithubRevisionAdmissionPlan(revisionPlan, entry))) {
+          if (revisionPlan && !(await this.applyRevisionAdmissionPlan(revisionPlan, entry))) {
             await this.releaseDispatchClaim(key)
             await settleAdmission({ accepted: true })
             return
@@ -8699,10 +8694,10 @@ export class Daemon {
     }
   }
 
-  private safetyDrainAllows(agentId: string, key: string, githubLane?: string): boolean {
+  private safetyDrainAllows(agentId: string, key: string, reviewLane?: string): boolean {
     return (
       this.safetyDrainAdmissionKeys.get(agentId)?.has(key) === true ||
-      (githubLane !== undefined && this.safetyDrainGithubLanes.get(agentId)?.has(githubLane) === true)
+      (reviewLane !== undefined && this.safetyDrainReviewLanes.get(agentId)?.has(reviewLane) === true)
     )
   }
 
@@ -8730,7 +8725,7 @@ export class Daemon {
     reason: TurnInterruptReason,
     keys?: Iterable<string>,
     admissionKeys?: Iterable<string>,
-    admissionGithubLanes?: Iterable<string>
+    admissionReviewLanes?: Iterable<string>
   ): void {
     const selected =
       keys === undefined
@@ -8740,7 +8735,7 @@ export class Daemon {
             .filter((done): done is Promise<void> => done !== undefined)
     if (selected.length === 0) return
     this.intersectSafetyDrainAdmissions(this.safetyDrainAdmissionKeys, agentId, admissionKeys)
-    this.intersectSafetyDrainAdmissions(this.safetyDrainGithubLanes, agentId, admissionGithubLanes)
+    this.intersectSafetyDrainAdmissions(this.safetyDrainReviewLanes, agentId, admissionReviewLanes)
     const waits = this.safetyDrainWaits.get(agentId) ?? new Set<Promise<void>>()
     for (const done of selected) waits.add(done)
     this.safetyDrainWaits.set(agentId, waits)
@@ -8765,7 +8760,7 @@ export class Daemon {
         this.safetyDrainRuns.delete(agentId)
         this.safetyDrainingAgents.delete(agentId)
         this.safetyDrainAdmissionKeys.delete(agentId)
-        this.safetyDrainGithubLanes.delete(agentId)
+        this.safetyDrainReviewLanes.delete(agentId)
         this.log.info(`${reason}: interrupted turns fully stopped for agent "${agentId}"`)
       }
     })()
@@ -9025,7 +9020,7 @@ export class Daemon {
             const releaseDispatch = await this.admitActiveDispatch(entry.agentId, key)
             let sessionId: string | null
             try {
-              await this.settleGithubReviewBatch(entry)
+              await this.settleReviewBatch(entry)
               sessionId = await this.dispatchOne(entry, key)
             } finally {
               releaseDispatch()
@@ -10716,7 +10711,11 @@ export class Daemon {
       ? undefined
       : (hookContext.notePublishFailure ??
         (entry.githubReply?.provider === 'gitlab' ? p.github?.poster.failure : undefined))
-    const failure = hookOutcomeFailure(hookContext.githubReviewBatch, notePublishFailure)
+    const failure = hookOutcomeFailure(
+      hookContext.githubReviewBatch,
+      batchPublishesItems(hookContext),
+      notePublishFailure
+    )
     await this.emitHookCompletion(
       hookContext,
       failure ? 'failed' : 'success',
@@ -10762,7 +10761,7 @@ export class Daemon {
       dropQueued?: boolean
       preserveQueued?: boolean
       allowSameKeyAdmissions?: boolean
-      allowGithubLane?: string
+      allowReviewLane?: string
       /** Duty handoff: stop running the work here, but leave its durable rows for the successor. */
       handoffInbox?: boolean
     } = {}
@@ -10774,7 +10773,7 @@ export class Daemon {
       reason,
       [key],
       opts.allowSameKeyAdmissions ? [key] : undefined,
-      opts.allowGithubLane ? [opts.allowGithubLane] : undefined
+      opts.allowReviewLane ? [opts.allowReviewLane] : undefined
     )
     // Latch the current head even during the cold pre-Pending window. A quick reset
     // must not let pre-interrupt work resume once sessions.handle() returns.
@@ -14948,7 +14947,7 @@ export class Daemon {
     target: { channel?: string; integrationId?: string } | undefined,
     anchorText: string,
     label: string,
-    safetyGithubLane?: string
+    safetyReviewLane?: string
   ): Promise<NormalizedMessage | null> {
     const key = sessionKey(msg.platform, msg.channel, msg.thread ?? msg.msgId, agentId, msg.transportScope)
     // Gate BEFORE the anchor side effect. Cron scheduling remains registered while an
@@ -14958,7 +14957,7 @@ export class Daemon {
       this.draining ||
       this.drainingAgents.has(agentId) ||
       this.paused(agentId) ||
-      (this.safetyDrainingAgents.has(agentId) && !this.safetyDrainAllows(agentId, key, safetyGithubLane))
+      (this.safetyDrainingAgents.has(agentId) && !this.safetyDrainAllows(agentId, key, safetyReviewLane))
     ) {
       this.log.info(`${label}: skipped for agent "${agentId}" (paused or draining)`)
       return null

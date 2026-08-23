@@ -1021,19 +1021,37 @@ one MR or ref resolve to the same durable ACP session, while different IIDs,
 subject kinds, projects, or refs remain disjoint. A daemon without this mapping
 cannot advertise `gitlab-com-v1` and cannot receive a GitLab assignment.
 
-Turn admission reuses GitHub's per-revision lane. Within one
-(hook, project, MR IID) lane the newest relay-fired head supersedes queued
-turns and preempts an active older-head turn with the normalized `superseded`
-outcome, and a re-request burst coalesces into one generation pinned to its
-head. One-turn batching of a submitted review's diff notes is deliberately out
-of scope for GitLab v1: GitHub batches on the webhook's durable review
-identifier, and GitLab's Note Hook payload and bulk-publish response expose no
-equivalent batch key, so batching would require a same-author time-window
-heuristic this design refuses. Each GitLab note delivery is therefore its own
-turn, serialized on the per-thread session; under mention-only cadence a
-multi-comment review still yields one turn per mentioning note. An interrupted
-review attempt still follows Section 15.1's fail-closed publication ownership
-rules.
+Turn admission runs through the provider-neutral hook-admission seam extracted
+from the GitHub implementation at the moment GitLab became its second
+implementer (Section 6.5). The lane is (hook, project, MR IID). Within one lane
+the newest relay-fired head supersedes queued turns and preempts an active
+older-head turn with the normalized `superseded` outcome. `merge_request:opened`
+and `merge_request:synchronize` establish a head; a reviewer request and the
+console re-run are instead pinned to the head already current, so a burst of
+them collapses onto the newest delivery and contests that head alone. Preemption
+reuses GitHub's criterion unchanged — a newer head, or an explicit re-run of the
+active turn's own head — and adds no GitLab-specific rule. Issue deliveries carry
+no revision and never contend, exactly as GitHub's do not.
+
+Note deliveries on one merge request coalesce into a single batched turn under
+the same three gates GitHub uses: a maximum comment count, a quiet window since
+the last note, and a maximum wait since the batch opened. GitLab's Note Hook
+carries no durable review identifier, so the merge request itself is the batch
+key and the timing gates bound the batch. This deliberately revises the earlier
+position, which refused batching for want of that identifier: the identifier
+decides only which notes belong together, and one merge request within one short
+window is a better answer than a turn per note. Two consequences of the missing
+identifier are accepted rather than approximated — notes from different authors
+inside one window join one batch, and the batch is answered by one ordinary note
+instead of per-thread replies, because GitLab has no equivalent of GitHub's
+per-thread batched reply tool. A sealed GitLab batch therefore keeps its ordinary
+reply target and publishes exactly one note, preserving the Section 14.1
+single-writer contract; only GitHub's batch withdraws that target in favour of
+its tool. Issue notes keep one turn each.
+
+An interrupted review attempt still follows Section 15.1's fail-closed
+publication ownership rules: a preempted generation's head fence classifies it
+`not_submitted` and releases the publication lease rather than holding it.
 
 The relay sends only bounded excerpts. The daemon wraps them in the same
 explicit untrusted-content boundary used for GitHub. The agent reads current

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import type { GithubQueueCandidate } from '../src/github/hook-coords.js'
-import { planGithubRevisionAdmission, planGithubRevisionAdmissionEffects } from '../src/github/queue-admission.js'
+import type { HookQueueCandidate } from '../src/codehost/hook-admission.js'
+import { planRevisionAdmission, planRevisionAdmissionEffects } from '../src/codehost/queue-admission.js'
 import type { QueueEntry } from '../src/daemon/turn-types.js'
 
 const KEY = 'acme/infra#42'
@@ -30,17 +30,17 @@ const entry = (deliveryKey: string, event: string, headSha: string, firedAt: str
     }
   }) as unknown as QueueEntry
 
-const active = (entry: QueueEntry): GithubQueueCandidate[] => [{ key: KEY, entry, state: 'active' }]
+const active = (entry: QueueEntry): HookQueueCandidate[] => [{ key: KEY, entry, state: 'active' }]
 
 describe('planGithubRevisionAdmission', () => {
   it('preempts a running pull_request:opened review with a newer pushed revision', () => {
     const opened = entry('opened', 'pull_request:opened', HEAD_A, '2026-08-19T01:24:44.000Z')
     const pushed = entry('pushed', 'pull_request:synchronize', HEAD_B, '2026-08-19T01:28:20.000Z')
 
-    const plan = planGithubRevisionAdmission(KEY, pushed, active(opened))
+    const plan = planRevisionAdmission(KEY, pushed, active(opened))
 
     expect(plan?.winner.entry).toBe(pushed)
-    const effects = planGithubRevisionAdmissionEffects(plan!, pushed)
+    const effects = planRevisionAdmissionEffects(plan!, pushed)
     expect(effects.incomingWins).toBe(true)
     expect(effects.preemptableActiveLosers.map((candidate) => candidate.entry)).toEqual([opened])
   })
@@ -49,9 +49,9 @@ describe('planGithubRevisionAdmission', () => {
     const opened = entry('opened', 'pull_request:opened', HEAD_A, '2026-08-19T01:24:44.000Z')
     const redelivered = entry('redelivered', 'pull_request:synchronize', HEAD_A, '2026-08-19T01:25:00.000Z')
 
-    const plan = planGithubRevisionAdmission(KEY, redelivered, active(opened))
+    const plan = planRevisionAdmission(KEY, redelivered, active(opened))
 
-    const effects = planGithubRevisionAdmissionEffects(plan!, redelivered)
+    const effects = planRevisionAdmissionEffects(plan!, redelivered)
     expect(effects.activeLosers.map((candidate) => candidate.entry)).toEqual([opened])
     expect(effects.preemptableActiveLosers).toEqual([])
   })
@@ -60,10 +60,10 @@ describe('planGithubRevisionAdmission', () => {
     const opened = entry('opened', 'pull_request:opened', HEAD_A, '2026-08-19T01:24:44.000Z')
     const rerequested = entry('rerequested', 'check_run:rerequested', HEAD_A, '2026-08-19T01:26:00.000Z')
 
-    const plan = planGithubRevisionAdmission(KEY, rerequested, active(opened))
+    const plan = planRevisionAdmission(KEY, rerequested, active(opened))
 
     expect(plan?.winner.entry).toBe(rerequested)
-    const effects = planGithubRevisionAdmissionEffects(plan!, rerequested)
+    const effects = planRevisionAdmissionEffects(plan!, rerequested)
     expect(effects.incomingWins).toBe(true)
     expect(effects.preemptableActiveLosers.map((candidate) => candidate.entry)).toEqual([opened])
   })
@@ -73,13 +73,13 @@ describe('planGithubRevisionAdmission', () => {
     const second = entry('second', 'check_suite:rerequested', HEAD_A, '2026-08-19T17:55:42.947Z')
     const third = entry('third', 'check_suite:rerequested', HEAD_A, '2026-08-19T17:55:43.456Z')
 
-    const plan = planGithubRevisionAdmission(KEY, third, [
+    const plan = planRevisionAdmission(KEY, third, [
       { key: KEY, entry: first, state: 'active' },
       { key: KEY, entry: second, state: 'queued' }
     ])
 
     expect(plan?.winner.entry).toBe(third)
-    const effects = planGithubRevisionAdmissionEffects(plan!, third)
+    const effects = planRevisionAdmissionEffects(plan!, third)
     expect(effects.incomingWins).toBe(true)
     expect(effects.terminalLosers.map((candidate) => candidate.entry)).toEqual([second])
     expect(effects.preemptableActiveLosers.map((candidate) => candidate.entry)).toEqual([first])
@@ -89,7 +89,7 @@ describe('planGithubRevisionAdmission', () => {
     const pushed = entry('pushed', 'pull_request:synchronize', HEAD_B, '2026-08-19T01:28:20.000Z')
     const rerequested = entry('rerequested', 'check_suite:rerequested', HEAD_A, '2026-08-19T01:29:00.000Z')
 
-    const plan = planGithubRevisionAdmission(KEY, rerequested, active(pushed))
+    const plan = planRevisionAdmission(KEY, rerequested, active(pushed))
 
     expect(plan?.winner.entry).toBe(rerequested)
     expect(plan?.superseded).toEqual([])
