@@ -661,6 +661,54 @@ describe('GitlabProvisioner (§10.2) — per-agent identity', () => {
     expect(await h.provisioner.disconnect(DEFAULT_ORG_ID, h.binding.id)).toEqual({ removed: true })
   })
 
+  it('a bind racing the removal detach never leaves a retiring account holding a membership', async () => {
+    // The bind is for a DIFFERENT project in the same root, so it is a genuine
+    // "someone still needs this account" against "this account is being freed".
+    // Both take the account row lock, so they serialize: either the bind commits
+    // first and the detach sees its membership, or the detach retires first and
+    // the bind loses the generation fence. The state this rules out is a
+    // `retiring` row holding a membership — nothing could use the account then,
+    // and nothing could retire it either.
+    for (let round = 0; round < 8; round++) {
+      const h = await harness()
+      await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
+      const account = (await h.accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP))!
+      const second = await h.bindings.createWithClaim({
+        orgId: DEFAULT_ORG_ID,
+        projectId: SECOND_PROJECT,
+        projectPath: 'example-group/example-second',
+        installerConnectionId: h.connection.id
+      })
+
+      const [, bound] = await Promise.all([
+        h.accounts.detachMembershipForRemoval(account.id, h.binding.id),
+        h.accounts.attachMembership({
+          accountId: account.id,
+          generation: account.generation,
+          bindingId: second.id,
+          accessLevel: 30
+        })
+      ])
+
+      const after = await prisma.gitlabAgentAccount.findUniqueOrThrow({ where: { id: account.id } })
+      const memberships = await h.accounts.countMemberships(account.id)
+      // The invariant, whichever order won.
+      expect(after.lifecycle === 'retiring' && memberships > 0).toBe(false)
+      if (after.lifecycle === 'retiring') {
+        expect(bound).toBe(false)
+        expect(after.retiringForBindingId).toBe(h.binding.id)
+      } else {
+        expect(bound).toBe(true)
+        expect(memberships).toBe(1)
+        expect(after.retiringForBindingId).toBeNull()
+      }
+      await prisma.gitlabAgentAccount.deleteMany({})
+      await prisma.gitlabProjectBinding.deleteMany({})
+      await prisma.codeHostRepositoryClaim.deleteMany({})
+      await prisma.agent.deleteMany({ where: { id: AGENT } })
+    }
+  })
+
   it('a removal waits for EVERY emptied account, not just the first to disappear', async () => {
     // Two agents on one project means two bot accounts; the removal detaches
     // both memberships up front, so nothing but the recorded obligation still

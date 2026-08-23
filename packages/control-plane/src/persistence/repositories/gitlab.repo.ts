@@ -633,6 +633,11 @@ export class PgGitlabAgentAccountRepo implements GitlabAgentAccountRepo {
 
   async detachMembershipForRemoval(accountId: string, bindingId: string): Promise<void> {
     await this.prisma.$transaction(async (tx) => {
+      // Lock the account row FIRST, exactly as attachMembership and
+      // beginRetirement do. Counting before taking it would let a concurrent
+      // attach hold the lock with an uncommitted membership this count cannot
+      // see, and the CAS below would then retire a row that has one.
+      await tx.$queryRaw`SELECT "id" FROM "gitlab_agent_account" WHERE "id" = ${accountId}::uuid FOR UPDATE`
       await tx.gitlabAccountMembership.deleteMany({ where: { accountId, bindingId } })
       // Emptied by this detach ⇒ the removal owes this account's retirement.
       // This transaction is the §7.2 `active`→`retiring` CAS: it has just
