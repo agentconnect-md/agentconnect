@@ -3,6 +3,7 @@ import type { Clock } from '../domain/clock.js'
 import { GitCredDeniedError } from '../github/service.js'
 import type {
   AgentRecord,
+  AgentRepoAuthorizationRepo,
   GitlabAgentAccountRecord,
   GitlabAgentAccountRepo,
   GitlabProjectBindingRecord,
@@ -23,12 +24,16 @@ export interface GitlabGitcredDeps {
   accounts: Pick<GitlabAgentAccountRepo, 'forAgentBinding'>
   credentials: Pick<GitlabProjectCredentialRepo, 'get'>
   credentialSecrets: Pick<GitlabProjectCredentialSecretStore, 'get'>
+  /** The §8.3 additional-project allowlist — the second authority beside the workspace. */
+  repoAuths: Pick<AgentRepoAuthorizationRepo, 'listForAgent'>
   clock: Clock
 }
 
 /**
  * gitcred v2 GitLab grants (gitlab-com-integration.md §13.1/§17.1): serve the
- * workspace binding's purpose-separated PAT under the agent's access clamp.
+ * authorized binding's purpose-separated PAT under the agent's access clamp —
+ * the workspace project, or a project the agent holds an explicit additional
+ * authorization on (§8.3).
  * The grant carries TOKEN MATERIAL — never log it. Every request re-resolves
  * the live binding, the AGENT's own account in that project's root (§7.2), and
  * the credential epoch; the token is the agent account's, never a human's.
@@ -129,28 +134,49 @@ export class GitlabGitcredService {
     return account
   }
 
+  /**
+   * The project this request may be served for, and the ceiling it carries (§13.1
+   * step 3, §8.3). Two authorities, exactly as GitHub has: the agent's workspace
+   * project, and an explicit additional authorization. A project that is neither is
+   * a denial, never a fallback onto the workspace.
+   */
+  private async authority(
+    agent: AgentRecord,
+    requestedExternalRepoId?: bigint
+  ): Promise<{ projectId: bigint; clamp: 'read' | 'write' }> {
+    const workspaceProject = agent.workspace.mode === 'gitlab' ? agent.workspaceRepoId : undefined
+    if (requestedExternalRepoId === undefined || requestedExternalRepoId === workspaceProject) {
+      if (agent.workspace.mode !== 'gitlab' || workspaceProject === undefined) {
+        throw new GitCredDeniedError('agent workspace is not a managed GitLab project', 'SCOPE_DENIED', false)
+      }
+      return { projectId: workspaceProject, clamp: agent.workspace.gitAccess === 'read' ? 'read' : 'write' }
+    }
+    const grants = await this.deps.repoAuths.listForAgent(agent.id)
+    const grant = grants.find((row) => row.provider === 'gitlab' && row.repoId === requestedExternalRepoId)
+    if (!grant) {
+      throw new GitCredDeniedError(
+        'requested project is neither this agent’s workspace nor an authorized additional project',
+        'SCOPE_DENIED',
+        false
+      )
+    }
+    // `comment` earns no push: on Git it is contents-read, the same as `read` (§13.1).
+    return { projectId: requestedExternalRepoId, clamp: grant.access === 'write' ? 'write' : 'read' }
+  }
+
   async grantForAgent(
     agent: AgentRecord,
     requestedExternalRepoId?: bigint,
     requestedAccess?: 'read' | 'write'
   ): Promise<GitCredGrant> {
-    if (agent.workspace.mode !== 'gitlab' || agent.workspaceRepoId === undefined) {
-      throw new GitCredDeniedError('agent workspace is not a managed GitLab project', 'SCOPE_DENIED', false)
-    }
-    const projectId = agent.workspaceRepoId
-    // v1 scope: the workspace project only. Additional-repo authorization rows
-    // are GitHub-shaped today; a foreign id is a denial, not a fallback.
-    if (requestedExternalRepoId !== undefined && requestedExternalRepoId !== projectId) {
-      throw new GitCredDeniedError('requested project is not this agent workspace', 'SCOPE_DENIED', false)
-    }
+    const { projectId, clamp } = await this.authority(agent, requestedExternalRepoId)
     const binding = await this.servableBinding(agent.orgId, projectId)
     const account = await this.agentAccount(agent.orgId, agent.id, binding.id)
-    // Access clamp (§13.1): the workspace gitAccess ceiling picks the purpose —
-    // read → the read PAT, write → the git_write PAT. The effect PAT is never
-    // served through this path (it backs daemon-owned effects, M5). A v2
-    // `requestedAccess` may only NARROW the clamp (§17.1): the read-only CLI
-    // wrapper asks for read even on a write workspace.
-    const clamp: 'read' | 'write' = agent.workspace.gitAccess === 'read' ? 'read' : 'write'
+    // Access clamp (§13.1): the authority's ceiling picks the purpose — read → the
+    // read PAT, write → the git_write PAT. The effect PAT is never served through
+    // this path (it backs daemon-owned effects, M5). A v2 `requestedAccess` may only
+    // NARROW the clamp (§17.1): the read-only CLI wrapper asks for read even on a
+    // write workspace.
     const access: 'read' | 'write' = requestedAccess === 'read' ? 'read' : clamp
     const purpose = access === 'read' ? 'read' : 'git_write'
     const credential = await this.deps.credentials.get(account.id, purpose)

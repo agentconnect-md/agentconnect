@@ -1753,6 +1753,13 @@ export class Daemon {
       projectIdOf: (agentId: string) => {
         const ws = this.agents.get(agentId)?.workspace
         return ws?.mode === 'git-repo' ? ws.gitlabProjectId : undefined
+      },
+      // The §8.3 allowlist, matched case-insensitively on the project path.
+      gitlabProjectOf: (agentId: string, repoFullName: string) => {
+        const wanted = repoFullName.toLowerCase()
+        return (this.agents.get(agentId)?.workspace.additionalRepos ?? []).find(
+          (row) => row.provider === 'gitlab' && row.repoFullName.toLowerCase() === wanted
+        )?.repoId
       }
     })
     const daemonCredentialTarget = daemonGitCredentialTarget({

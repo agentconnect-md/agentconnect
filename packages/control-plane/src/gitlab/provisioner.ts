@@ -194,7 +194,7 @@ export class GitlabProvisioner {
     orgId: string,
     projectId: bigint,
     consumer: GitlabAccountConsumer,
-    commit: () => Promise<T>
+    commit: (live: { projectPath: string }) => Promise<T>
   ): Promise<AgentAccountOutcome<T>> {
     let outcome = await this.agentAccountAttempt(orgId, projectId, consumer, commit)
     for (let attempt = 0; !outcome.ok && outcome.retryable && attempt < AGENT_ACCOUNT_ATTEMPTS; attempt++) {
@@ -205,11 +205,42 @@ export class GitlabProvisioner {
     return outcome
   }
 
+  /**
+   * §10.2 step 1: the project's mutable facts, keyed by its immutable numeric id,
+   * converged onto every durable replica — the binding, the catalog, and every
+   * projected path (workspace clone URLs and authorization display paths).
+   *
+   * AWAITED under the caller's lease: those paths are hints keyed by the numeric
+   * id, and a fire-and-forget refresh can be skipped by a crash or reordered by an
+   * overlapping callback. Runs never overlap, so converging here is both durable
+   * and ordered; the daemon fan-out stays best-effort on the container side.
+   */
+  private async syncProjectFacts(
+    orgId: string,
+    bindingId: string,
+    projectId: bigint,
+    project: GitlabProjectWithNamespace
+  ): Promise<void> {
+    await this.deps.bindings.update(orgId, bindingId, {
+      projectPath: project.path_with_namespace,
+      defaultBranch: project.default_branch ?? null
+    })
+    await this.deps.catalog.upsert({
+      orgId,
+      provider: 'gitlab',
+      externalId: projectId,
+      displayPath: project.path_with_namespace,
+      ...(project.http_url_to_repo ? { cloneUrl: project.http_url_to_repo } : {}),
+      ...(project.default_branch ? { defaultBranch: project.default_branch } : {})
+    })
+    await this.deps.syncWorkspacePaths?.(orgId, projectId, project.path_with_namespace)
+  }
+
   private async agentAccountAttempt<T>(
     orgId: string,
     projectId: bigint,
     consumer: GitlabAccountConsumer,
-    commit: () => Promise<T>
+    commit: (live: { projectPath: string }) => Promise<T>
   ): Promise<AgentAccountOutcome<T>> {
     const binding = await this.deps.bindings.byProject(orgId, projectId)
     if (!binding || binding.state === 'cleanup_pending') {
@@ -233,6 +264,9 @@ export class GitlabProvisioner {
     // Set once the run knows where it is working, so a failure can undo exactly
     // what it speculatively created.
     let scope: { orgId: string; bindingId: string; projectId: bigint; rootGroupId: bigint; token: string } | undefined
+    // The provider's own current answer, handed to `commit` so the row it writes
+    // carries the live path rather than the caller's pre-lease capture.
+    let livePath = binding.projectPath
     try {
       let ensured: { ok: true } | { ok: false; reason: string; retryable: boolean }
       try {
@@ -243,6 +277,12 @@ export class GitlabProvisioner {
           this.deps.fetchImpl
         )) as GitlabProjectWithNamespace | null
         if (!project?.namespace) return { ok: false, reason: 'project_not_accessible', retryable: false }
+        // The path this read answers with is the CURRENT one; a caller committing a
+        // path it captured before the lease would persist a rename's losing side.
+        // Converging the replicas here first means the binding, the catalog, the
+        // projected paths, and the row `commit` writes all agree on one answer.
+        await this.syncProjectFacts(orgId, binding.id, binding.projectId, project)
+        livePath = project.path_with_namespace
         const root = await gitlabRootNamespace(token, project.namespace, this.deps.fetchImpl)
         // Service accounts hang off a top-level GROUP; a personal namespace has none (§5).
         if (root.kind !== 'group') return { ok: false, reason: 'personal_namespace_unsupported', retryable: false }
@@ -273,7 +313,19 @@ export class GitlabProvisioner {
       // STILL under the binding lease: the authorization row and the membership
       // become visible to convergence together, never one without the other.
       try {
-        return { ok: true, result: await commit() }
+        const result = await commit({ projectPath: livePath })
+        // The commit just made a new account and membership visible — and, after a
+        // rename, a new path. Compiled rules bake the project's bound
+        // service-account ids into their §12.1 veto set, and push events are
+        // relay-trusted once past it, so a rule left compiled from the old set
+        // would let this bot's own pushes trigger its siblings' hooks.
+        this.deps.onConverged?.(orgId, binding.projectId)
+        // The commit just made a new account and membership visible — and, after a
+        // rename, a new path. Compiled rules bake the project's bound
+        // service-account ids into their §12.1 veto set, and push events are
+        // relay-trusted once past it, so a rule left compiled from the old set
+        // would let this bot's own pushes trigger its siblings' hooks.
+        return { ok: true, result }
       } catch (e) {
         // The write never landed, so the bind it was for must not outlive it.
         if (scope) await this.deps.accounts.rollbackSpeculativeBind(scope, consumer.agentId)
@@ -410,24 +462,7 @@ export class GitlabProvisioner {
     // 1. Refresh the mutable facts by numeric id (rename-proof, §10.2 step 1).
     const project = (await gitlabProject(token, binding.projectId, fetchImpl)) as GitlabProjectWithNamespace | null
     if (!project) return { state: 'admin_degraded', reason: 'project_not_accessible' }
-    await this.deps.bindings.update(orgId, binding.id, {
-      projectPath: project.path_with_namespace,
-      defaultBranch: project.default_branch ?? null
-    })
-    await this.deps.catalog.upsert({
-      orgId,
-      provider: 'gitlab',
-      externalId: binding.projectId,
-      displayPath: project.path_with_namespace,
-      ...(project.http_url_to_repo ? { cloneUrl: project.http_url_to_repo } : {}),
-      ...(project.default_branch ? { defaultBranch: project.default_branch } : {})
-    })
-    // AWAITED under the run lease (round 3): the projected agent clone URLs are
-    // a mutable hint keyed by the numeric id, and a fire-and-forget refresh can
-    // be skipped by a crash or reordered by an overlapping callback. Runs never
-    // overlap, so converging here is both durable and ordered; the daemon
-    // fan-out stays best-effort on the container side.
-    await this.deps.syncWorkspacePaths?.(orgId, binding.projectId, project.path_with_namespace)
+    await this.syncProjectFacts(orgId, binding.id, binding.projectId, project)
     if (!project.namespace) return { state: 'admin_degraded', reason: 'project_namespace_unknown' }
     const root = await gitlabRootNamespace(token, project.namespace, fetchImpl)
     // Service accounts hang off a top-level GROUP; a personal namespace has none (§5).

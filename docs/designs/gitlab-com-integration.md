@@ -594,7 +594,30 @@ the top-level group's account quota refuses a creation.
 
 - An agent workspace and each `AgentRepoAuthorization` reference a
   `CodeHostRepository`.
-- `RepoAccess` remains `read | comment | write`.
+- `AgentRepoAuthorization` carries the provider beside its numeric id, and its
+  uniqueness is `(agent, provider, repository)`. The reference converged on the
+  catalog through a provider column rather than a foreign key, for the same
+  readers-first reason `HookDef` did: the two hosts number their repositories
+  independently, so a bare numeric id stopped being an identity the moment
+  GitLab grants existed, and every reader that matched on it — the mint gates,
+  the workspace-collision checks, the Checks ledger — is qualified by provider.
+  An absent provider means `github`, which is what every row predating GitLab
+  is.
+  A pre-GitLab daemon strips the unknown provider key, so a two-segment project
+  path would read there as an `owner/repo` GitHub entry; the §17.3 projection
+  gate therefore reads the assembled additional-repository list as well as the
+  workspace arm, and withholds such a spec from a daemon that has not advertised
+  `gitlab-com-v1`.
+- `RepoAccess` remains `read | comment | write`. On GitLab the tier derives the
+  account's project role exactly as a workspace does: `write` earns Developer,
+  and `read` and `comment` both earn Reporter, since a note is a read-level
+  action there.
+- Authorizing a project makes the agent a **consumer** of it (§7.2), so the
+  write runs the same inline account/membership ensure the workspace and hook
+  writes run, under the same binding lease, and revoking converges the
+  membership away. The consumer query that computes the desired membership set
+  counts grants alongside workspaces and enabled hooks; without that, the next
+  convergence would unbind the membership the grant had just bound.
 - A code-host hook references a `CodeHostRepository` and a provider
   discriminator. Common cadence, labels, session, review, reporting, revision,
   placement, and output-target fields stay on `HookDef`.
@@ -603,7 +626,11 @@ the top-level group's account quota refuses a creation.
   `HookDef`.
 - Creating a hook never creates a general repository grant. The watched project
   must already be the workspace repository or an explicit additional
-  authorization.
+  authorization, enforced on create and on a binding-changing edit with a 409
+  that names the fix; hooks predating the check keep firing, exactly as the
+  GitHub precedent grandfathers its own. Without the check the trigger plane
+  outruns the credential plane: the hook fires, the review's exact checkout can
+  obtain no credential, and the agent posts a note saying it could not review.
 
 ## 9. OAuth Flow and Correctness
 
@@ -1029,6 +1056,31 @@ Workspace `gitAccess` remains `read | write`. The daemon-owned ordinary hook
 poster is authorized by the enabled hook, not by an agent-visible general
 grant. This preserves the existing behavior where a read-only workspace can
 return one final comment without receiving a write credential.
+
+An agent therefore has **two** credential authorities on GitLab, as it does on
+GitHub: its workspace project, and any project it holds an explicit additional
+authorization on. The grant's own tier is that project's ceiling — a write
+workspace does not widen it — and a project that is neither is a denial, never
+a fallback onto the workspace. A named project is asked for by its numeric id,
+because the grant echo the consumer verifies is keyed on that identity: an ask
+carrying only a display path would be answered with the workspace grant and
+then correctly rejected by the daemon.
+
+A rename reaches both places the project's path is replicated into. The binding
+and the catalog converge on the numeric id, and so must every gitlab workspace's
+clone URL AND every explicit authorization's display path — the latter is what
+the daemon maps a named project back to its numeric id with. Leaving a grant
+stale orphans the new path, and an ask under the old one is answered with the
+binding's new path and then correctly rejected by the consumer's echo check.
+Both writes join one configuration-ordering domain and bump each affected
+agent's revision exactly once, so a spec never carries half a rename.
+
+One half is deliberately not built yet: an authorized additional GitLab project
+receives credentials but is not materialized as a secondary workspace root. The
+existing root layout is `owner/repo` and clones from github.com, which a
+namespaced GitLab path cannot express and a GitLab project must not be fetched
+from. Until that layout is provider-aware, GitLab entries are skipped when
+roots are built rather than cloned from the wrong host.
 
 Every broker request is re-resolved by:
 
@@ -1590,8 +1642,18 @@ Choosing a project happens where the project is used, not on that page: the
 hook wizard and the agent workspace and additional-repository pickers list the
 connection's Maintainer-or-Owner projects merged with the ones already added,
 and picking one that is not added yet runs the Section 10.2 provisioning saga
-inline before the selection lands. Hook configuration retains the existing
-family, cadence, review, reporting, and output controls. Premium-only
+inline before the selection lands. The additional-repository picker chooses the
+code host first and then a repository or a project, because a grant is
+provider-qualified; it offers the same tiers on both hosts and says project,
+merge request, and pipeline on the GitLab side. A project the agent already
+holds — as its workspace, or through an existing grant — is named as taken
+rather than offered again.
+
+Because a trigger may only watch a project the agent already holds (§8.3), the
+trigger wizard says so where the pick is rather than letting the create reach
+the same refusal from the server, and names the two ways to satisfy it. Hook
+configuration retains the existing family, cadence, review, reporting, and
+output controls. Premium-only
 effective behavior is described where relevant; the UI does not imply that
 Free request changes block merges.
 
@@ -1634,7 +1696,12 @@ provisioning state and non-secret external identifiers. They never return OAuth
 tokens, PAT values, signing tokens, or token hashes.
 
 Existing agent repository-authorization and hook routes gain a provider-aware
-repository reference rather than GitLab-only copies. Every new or changed route
+repository reference rather than GitLab-only copies. On
+`POST /orgs/:orgId/agents/:agentId/repos` that reference is a `provider` field
+whose GitHub arm names `owner/repo` and whose GitLab arm names the numeric
+project id, since a namespaced project path is not `owner/repo` shaped and the
+client supplies no facts (§10.1). The field is optional and means `github` when
+absent, so the published body stays valid. Every new or changed route
 must include OpenAPI tags, summary, description, and a unique operation ID.
 
 ### 18.3 Deployment Configuration

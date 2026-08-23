@@ -6,7 +6,7 @@
 // rejects edits that conflict with enabled GitHub review or Check actions.
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { GithubMark, LoadingState } from '@/components/marks'
+import { GithubMark, GitlabMark, LoadingState } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 import { agentLabel, isPoolPlacementKind, type Agent } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
@@ -23,6 +23,7 @@ import {
   fetchGithubRepoRoster,
   fetchGithubRepoAccess,
   invalidateGithubRepoRosterCache,
+  repoAuthProvider,
   syncGithubInstallations,
   type AgentRepoAuthDto,
   type GithubInstallationDto,
@@ -213,8 +214,15 @@ export default function EditWorkspaceModal({
     }
   }
 
+  // Keyed by github name only: `grantOf` answers questions about the GitHub arm,
+  // and a GitLab project path shares no namespace with `owner/repo`.
   const authorizedByName = useMemo(
-    () => new Map(authorizations.map((r) => [r.repoFullName.toLowerCase(), r])),
+    () =>
+      new Map(
+        authorizations
+          .filter((r) => repoAuthProvider(r) === 'github')
+          .map((r) => [r.repoFullName.toLowerCase(), r] as const)
+      ),
     [authorizations]
   )
   const grantOf = (fullName: string) => authorizedByName.get(fullName.toLowerCase())
@@ -789,7 +797,7 @@ export default function EditWorkspaceModal({
                     className="flex min-w-0 items-center gap-[10px] rounded-md border border-(--border-subtle) bg-(--surface-card) px-3 py-[9px]"
                   >
                     <span className="imark h-4 w-4 flex-none border-0 bg-transparent">
-                      <GithubMark />
+                      {repoAuthProvider(authorization) === 'gitlab' ? <GitlabMark /> : <GithubMark />}
                     </span>
                     <span
                       className="mono min-w-0 flex-1 truncate text-[12.5px] font-semibold text-(--text-primary)"

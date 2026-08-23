@@ -280,6 +280,13 @@ export function gitlabWorkspaceAccessLevel(gitAccess: 'read' | 'write' | undefin
   return gitAccess === 'read' ? GITLAB_ACCESS_REPORTER : GITLAB_ACCESS_DEVELOPER
 }
 
+/** The project role an additional-repository authorization derives (§8.3, §13.1).
+ *  `comment` sits with `read` at Reporter — on GitLab a note is a read-level social
+ *  action — and only `write` earns the push role, matching the workspace mapping. */
+export function gitlabAuthorizationAccessLevel(access: 'read' | 'comment' | 'write'): number {
+  return access === 'write' ? GITLAB_ACCESS_DEVELOPER : GITLAB_ACCESS_REPORTER
+}
+
 export interface GitlabEffectiveMembership {
   access_level: number
   state: string

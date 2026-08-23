@@ -2488,8 +2488,18 @@ export function agentRoutes(deps: HttpDeps) {
           // cannot serve this — activation would be refused, the edit would roll
           // back, and the agent would never become the consumer that convergence
           // needs a reason to provision for.
-          const applyWorkspace = (): Promise<AgentRecord> =>
-            agentMoves.setWorkspace(existing, workspace, workspaceRepoId, req.principal?.userId)
+          // A gitlab clone URL is built from the binding read BEFORE the lease, and
+          // the lease's own project read converges every replicated path. Rebuilding
+          // from the live answer keeps this write from putting the stale one back.
+          const applyWorkspace = (live?: { projectPath: string }): Promise<AgentRecord> =>
+            agentMoves.setWorkspace(
+              existing,
+              live && workspace.mode === 'gitlab'
+                ? { ...workspace, gitRepo: `https://gitlab.com/${live.projectPath}` }
+                : workspace,
+              workspaceRepoId,
+              req.principal?.userId
+            )
           let converted: AgentRecord
           if (workspace.mode === 'gitlab' && workspaceRepoId !== undefined && deps.gitlab) {
             let applied

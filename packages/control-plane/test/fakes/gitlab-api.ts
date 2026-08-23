@@ -11,6 +11,8 @@ import type { FetchLike } from '../../src/gitlab/api.js'
 export interface FakeGitlabOptions {
   projectId?: number
   path?: string
+  /** Per-project paths, for a test holding more than one binding; `path` is the fallback. */
+  pathById?: Record<string, string>
   accessLevel?: number
   namespaceKind?: 'group' | 'user'
   /** Refuse service-account creation (Owner verification, §5). */
@@ -84,6 +86,11 @@ export class FakeGitlab {
       namespaceKind: options.namespaceKind ?? 'group',
       ...options
     }
+  }
+
+  /** One project's namespaced path — per-id when a test holds several bindings. */
+  private pathOf(projectId: number): string {
+    return this.opts.pathById?.[String(projectId)] ?? this.opts.path
   }
 
   /** The asynchronous half of a deferred deletion finally landing. */
@@ -233,16 +240,17 @@ export class FakeGitlab {
 
       if (/\/api\/v4\/projects\/\d+$/.test(url)) {
         const id = Number(/projects\/(\d+)$/.exec(url)![1])
+        const path = this.pathOf(id)
         return Response.json({
           id,
-          path_with_namespace: this.opts.path,
+          path_with_namespace: path,
           default_branch: 'main',
-          http_url_to_repo: `https://gitlab.com/${this.opts.path}.git`,
+          http_url_to_repo: `https://gitlab.com/${path}.git`,
           namespace: {
             id: 900,
             parent_id: null,
             kind: this.opts.namespaceKind,
-            full_path: this.opts.path.split('/')[0]!
+            full_path: path.split('/')[0]!
           }
         })
       }

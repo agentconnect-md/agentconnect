@@ -17,6 +17,7 @@ import { GitlabGitcredService } from '../../src/gitlab/gitcred.service.js'
 import { GitCredDeniedError } from '../../src/github/service.js'
 import {
   PgAgentRepo,
+  PgAgentRepoAuthorizationRepo,
   PgCodeHostRepositoryRepo,
   PgGitlabAgentAccountRepo,
   PgGitlabConnectionRepo,
@@ -50,7 +51,9 @@ afterEach(async () => {
 })
 
 async function harness(liveness?: DaemonLiveness) {
-  const fake = new FakeGitlab()
+  // The second project answers with its own path, so a test holding both can tell
+  // which one a grant or a credential resolved to.
+  const fake = new FakeGitlab({ pathById: { [String(SECOND_PROJECT)]: 'example-group/example-second' } })
   const bindings = new PgGitlabProjectBindingRepo(prisma)
   const connections = new PgGitlabConnectionRepo(prisma)
   const oauth = new GitlabOauthService({
@@ -86,11 +89,7 @@ async function harness(liveness?: DaemonLiveness) {
     // Mirrors the container: the durable clone-URL convergence is AWAITED
     // inside the run, under the saga lease.
     syncWorkspacePaths: async (orgId, projectId, projectPath) => {
-      await new PgAgentRepo(prisma).refreshGitlabWorkspacePath(
-        OrgId(orgId),
-        projectId,
-        `https://gitlab.com/${projectPath}`
-      )
+      await new PgAgentRepo(prisma).refreshGitlabProjectPath(OrgId(orgId), projectId, projectPath)
     },
     fetchImpl: fake.fetch()
   })
@@ -126,6 +125,7 @@ function credService(bindings: PgGitlabProjectBindingRepo) {
     accounts: new PgGitlabAgentAccountRepo(prisma),
     credentials: new PgGitlabProjectCredentialRepo(prisma),
     credentialSecrets: new PgGitlabProjectCredentialSecretStore(prisma, cipher),
+    repoAuths: new PgAgentRepoAuthorizationRepo(prisma),
     clock: systemClock
   })
 }
@@ -301,10 +301,10 @@ describe('gitlab workspaces — agent create/edit (§8.3)', () => {
     const agentId = (created.json() as { id: string }).id
     const before = await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })
     const agents = new PgAgentRepo(prisma)
-    const refreshed = await agents.refreshGitlabWorkspacePath(
+    const refreshed = await agents.refreshGitlabProjectPath(
       OrgId(DEFAULT_ORG_ID),
       PROJECT,
-      'https://gitlab.com/example-group/renamed-project'
+      'example-group/renamed-project'
     )
     // Every gitlab-workspace agent on the project drifts, the harness's included.
     expect(refreshed).toContain(agentId)
@@ -313,11 +313,7 @@ describe('gitlab workspaces — agent create/edit (§8.3)', () => {
     expect(after.configRevision).toBe(before.configRevision + 1n)
     // Idempotent: an unchanged path touches nothing.
     expect(
-      await agents.refreshGitlabWorkspacePath(
-        OrgId(DEFAULT_ORG_ID),
-        PROJECT,
-        'https://gitlab.com/example-group/renamed-project'
-      )
+      await agents.refreshGitlabProjectPath(OrgId(DEFAULT_ORG_ID), PROJECT, 'example-group/renamed-project')
     ).toEqual([])
   })
 
@@ -622,5 +618,258 @@ describe('gitcred v2 GitLab grants (§13.1/§17.1)', () => {
       .catch((e: GitCredDeniedError) => e)
     expect((degraded as GitCredDeniedError).code).toBe('LEASE_DENIED')
     expect((degraded as GitCredDeniedError).retryable).toBe(true)
+  })
+})
+
+describe('additional GitLab project authorizations (§8.3/§13.1)', () => {
+  /** A second managed binding under the same top-level group, with no consumer yet. */
+  async function secondBinding(h: Awaited<ReturnType<typeof harness>>) {
+    const fresh = await h.bindings.createWithClaim({
+      orgId: DEFAULT_ORG_ID,
+      projectId: SECOND_PROJECT,
+      projectPath: 'example-group/example-second',
+      installerConnectionId: h.connection.id
+    })
+    expect(await h.provisioner.provision(DEFAULT_ORG_ID, fresh.id)).toEqual({ state: 'ready' })
+    expect(await h.accounts.listForBinding(fresh.id)).toHaveLength(0)
+    return fresh
+  }
+
+  const authorize = (payload: Record<string, unknown>) => ({
+    method: 'POST' as const,
+    url: `${ORG}/agents/${AGENT}/repos`,
+    payload
+  })
+
+  const grants = () => running!.app.inject({ method: 'GET', url: `${ORG}/agents/${AGENT}/repos` }).then((r) => r.json())
+
+  it('authorizes a project, provisioning the agent’s account and membership inline (§7.2)', async () => {
+    const h = await harness()
+    const fresh = await secondBinding(h)
+
+    const res = await h.a.app.inject(authorize({ provider: 'gitlab', projectId: SECOND_PROJECT.toString() }))
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toMatchObject({
+      provider: 'gitlab',
+      repoId: SECOND_PROJECT.toString(),
+      repoFullName: 'example-group/example-second',
+      access: 'read'
+    })
+
+    // Asserted with NO polling: the account is the write's own precondition, so it
+    // exists by the time the response is written — the grant row and the membership
+    // become visible to convergence together.
+    const account = (await h.accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP))!
+    expect((await h.accounts.membershipsForBinding(fresh.id)).map((m) => m.accountId)).toEqual([account.id])
+    // read ⇒ Reporter, the same clamp a read workspace derives (§13.1).
+    expect(h.fake.members.get(Number(account.serviceAccountUserId))).toBe(20)
+
+    // The catalog converged on the project too (§8.1).
+    expect(
+      await prisma.codeHostRepository.findUnique({
+        where: {
+          orgId_provider_externalId: { orgId: DEFAULT_ORG_ID, provider: 'gitlab', externalId: SECOND_PROJECT }
+        }
+      })
+    ).toMatchObject({ displayPath: 'example-group/example-second' })
+
+    expect(await grants()).toMatchObject([{ provider: 'gitlab', repoId: SECOND_PROJECT.toString() }])
+  })
+
+  it('serves a read credential for the authorized project, not the workspace one (§13.1)', async () => {
+    const h = await harness()
+    await secondBinding(h)
+    const created = await h.a.app.inject(authorize({ provider: 'gitlab', projectId: SECOND_PROJECT.toString() }))
+    expect(created.statusCode).toBe(200)
+    const service = credService(h.bindings)
+    const creds = new PgGitlabProjectCredentialRepo(prisma)
+    const store = new PgGitlabProjectCredentialSecretStore(prisma, cipher)
+
+    const grant = await service.grantForAgent(gitlabAgent(), SECOND_PROJECT)
+    expect(grant.provider).toBe('gitlab')
+    expect(grant.externalRepoId).toBe(SECOND_PROJECT.toString())
+    expect(grant.repoFullName).toBe('example-group/example-second')
+    // The grant's own tier is the ceiling — a write WORKSPACE does not widen it.
+    expect(grant.access).toBe('read')
+    const account = (await h.accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP))!
+    expect(grant.token).toBe(await store.get(DEFAULT_ORG_ID, (await creds.get(account.id, 'read'))!.id))
+
+    // The workspace ask still resolves to the workspace project.
+    expect((await service.grantForAgent(gitlabAgent())).externalRepoId).toBe(PROJECT.toString())
+    // A project that is neither remains a denial, never a fallback onto the workspace.
+    await expect(service.grantForAgent(gitlabAgent(), 999n)).rejects.toThrowError(GitCredDeniedError)
+  })
+
+  it('commits the path the provider answers with inside the lease, not the pre-lease capture', async () => {
+    // A rename between the binding read and the write is exactly when a captured
+    // path becomes the losing side. The grant is what the daemon maps a NAMED
+    // project back to its numeric id with, so persisting the stale one would
+    // replicate a path the checkout can never be found under.
+    const h = await harness()
+    const fresh = await secondBinding(h)
+    expect(fresh.projectPath).toBe('example-group/example-second')
+
+    // The project is renamed at GitLab; no convergence has run since.
+    h.fake.opts.pathById = { [String(SECOND_PROJECT)]: 'example-group/renamed-second' }
+
+    const res = await h.a.app.inject(authorize({ provider: 'gitlab', projectId: SECOND_PROJECT.toString() }))
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toMatchObject({ repoFullName: 'example-group/renamed-second' })
+    expect(await grants()).toMatchObject([{ repoFullName: 'example-group/renamed-second' }])
+
+    // The same read converged the durable replicas, so nothing disagrees.
+    expect((await h.bindings.get(DEFAULT_ORG_ID, fresh.id))?.projectPath).toBe('example-group/renamed-second')
+    expect(
+      await prisma.codeHostRepository.findUnique({
+        where: {
+          orgId_provider_externalId: { orgId: DEFAULT_ORG_ID, provider: 'gitlab', externalId: SECOND_PROJECT }
+        }
+      })
+    ).toMatchObject({ displayPath: 'example-group/renamed-second' })
+  })
+
+  it('raises the account’s project role when the tier is raised', async () => {
+    const h = await harness()
+    const fresh = await secondBinding(h)
+    const created = await h.a.app.inject(authorize({ provider: 'gitlab', projectId: SECOND_PROJECT.toString() }))
+    expect(created.statusCode).toBe(200)
+    const account = (await h.accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP))!
+    expect(h.fake.members.get(Number(account.serviceAccountUserId))).toBe(20)
+
+    const raised = await h.a.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/agents/${AGENT}/repos/${(created.json() as { id: string }).id}`,
+      payload: { access: 'write' }
+    })
+    expect(raised.statusCode).toBe(200)
+    expect(raised.json()).toMatchObject({ provider: 'gitlab', access: 'write' })
+    // write ⇒ Developer, the push role.
+    expect(h.fake.members.get(Number(account.serviceAccountUserId))).toBe(30)
+    expect(await h.accounts.membershipsForBinding(fresh.id)).toHaveLength(1)
+
+    const service = credService(h.bindings)
+    expect((await service.grantForAgent(gitlabAgent(), SECOND_PROJECT)).access).toBe('write')
+  })
+
+  it('drops the consumer when the authorization is revoked', async () => {
+    const h = await harness()
+    const fresh = await secondBinding(h)
+    const created = await h.a.app.inject(authorize({ provider: 'gitlab', projectId: SECOND_PROJECT.toString() }))
+    expect(created.statusCode).toBe(200)
+    expect(await h.accounts.membershipsForBinding(fresh.id)).toHaveLength(1)
+
+    const removed = await h.a.app.inject({
+      method: 'DELETE',
+      url: `${ORG}/agents/${AGENT}/repos/${(created.json() as { id: string }).id}`
+    })
+    expect(removed.statusCode).toBe(204)
+    expect(await grants()).toEqual([])
+    // Membership detach is the converge kick's, so it settles just after the reply.
+    await vi.waitFor(async () => expect(await h.accounts.membershipsForBinding(fresh.id)).toHaveLength(0), {
+      timeout: 20_000
+    })
+    // The workspace project keeps the account alive in this root.
+    expect((await h.accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP))?.state).toBe('ready')
+
+    const service = credService(h.bindings)
+    await expect(service.grantForAgent(gitlabAgent(), SECOND_PROJECT)).rejects.toThrowError(GitCredDeniedError)
+  })
+
+  it('refuses an unmanaged project, the workspace project, and a duplicate', async () => {
+    const h = await harness()
+    await secondBinding(h)
+
+    const unmanaged = await h.a.app.inject(authorize({ provider: 'gitlab', projectId: '999' }))
+    expect(unmanaged.statusCode).toBe(409)
+    expect((unmanaged.json() as { message: string }).message).toContain('not a managed GitLab project')
+
+    const workspace = await h.a.app.inject(authorize({ provider: 'gitlab', projectId: PROJECT.toString() }))
+    expect(workspace.statusCode).toBe(409)
+    expect((workspace.json() as { message: string }).message).toContain('workspace project')
+
+    const first = await h.a.app.inject(authorize({ provider: 'gitlab', projectId: SECOND_PROJECT.toString() }))
+    expect(first.statusCode).toBe(200)
+    const again = await h.a.app.inject(authorize({ provider: 'gitlab', projectId: SECOND_PROJECT.toString() }))
+    expect(again.statusCode).toBe(409)
+    expect((again.json() as { message: string }).message).toContain('already authorized')
+  })
+
+  it('carries a project rename into the grant path and the replicated spec', async () => {
+    // The daemon maps a NAMED gitlab project back to its numeric id through this
+    // path in the replicated spec. A rename that refreshed only the binding and
+    // the workspace would orphan the new path, and an ask under the old one is
+    // answered with the binding's new path and then rejected by the echo check.
+    const h = await harness()
+    await secondBinding(h)
+    const created = await h.a.app.inject(authorize({ provider: 'gitlab', projectId: SECOND_PROJECT.toString() }))
+    expect(created.statusCode).toBe(200)
+    const before = await prisma.agent.findUniqueOrThrow({ where: { id: AGENT } })
+
+    const agents = new PgAgentRepo(prisma)
+    const refreshed = await agents.refreshGitlabProjectPath(
+      OrgId(DEFAULT_ORG_ID),
+      SECOND_PROJECT,
+      'example-group/renamed-second'
+    )
+
+    // The grant's owner joins the rename's configuration-ordering domain, so the
+    // spec push replicates the new path.
+    expect(refreshed).toContain(AGENT)
+    expect(await grants()).toMatchObject([{ repoFullName: 'example-group/renamed-second' }])
+    const after = await prisma.agent.findUniqueOrThrow({ where: { id: AGENT } })
+    expect(after.configRevision).toBe(before.configRevision + 1n)
+    // The workspace project is a different project: its own path is untouched.
+    expect(after.gitRepo).toBe('https://gitlab.com/example-group/example-project')
+    // Idempotent, exactly as the workspace half is.
+    expect(
+      await agents.refreshGitlabProjectPath(OrgId(DEFAULT_ORG_ID), SECOND_PROJECT, 'example-group/renamed-second')
+    ).toEqual([])
+  })
+
+  it('bumps one revision when a rename moves an agent’s workspace AND its grant', async () => {
+    // The same agent may hold the workspace on one project and a grant on it too
+    // only transiently, but a rename touching both halves must still advance the
+    // revision once: two bumps for one rename would be a spec the daemon refuses.
+    const h = await harness()
+    await prisma.agentRepoAuthorization.create({
+      data: {
+        agentId: AGENT,
+        provider: 'gitlab',
+        repoId: PROJECT,
+        repoFullName: 'example-group/example-project',
+        access: 'read'
+      }
+    })
+    const before = await prisma.agent.findUniqueOrThrow({ where: { id: AGENT } })
+    const agents = new PgAgentRepo(prisma)
+
+    expect(
+      await agents.refreshGitlabProjectPath(OrgId(DEFAULT_ORG_ID), PROJECT, 'example-group/renamed-project')
+    ).toEqual([AGENT])
+    const after = await prisma.agent.findUniqueOrThrow({ where: { id: AGENT } })
+    expect(after.configRevision).toBe(before.configRevision + 1n)
+    expect(after.gitRepo).toBe('https://gitlab.com/example-group/renamed-project')
+    expect(await grants()).toMatchObject([{ repoFullName: 'example-group/renamed-project' }])
+  })
+
+  it('undoes the account a refused authorization speculatively created (§7.2)', async () => {
+    const h = await harness()
+    // Nothing else makes the agent a consumer once its workspace account is gone,
+    // so this write is the only thing that would — and its PATs come back out of
+    // policy, failing the ensure with real provider state already behind it.
+    const fresh = await secondBinding(h)
+    await prisma.agent.update({
+      where: { id: AGENT },
+      data: { workspaceMode: 'scratch', workspaceRepoId: null, gitRepo: null }
+    })
+    await prisma.gitlabAccountMembership.deleteMany({})
+    await prisma.gitlabAgentAccount.deleteMany({})
+    h.fake.opts.patExpiryOverride = null
+
+    const res = await h.a.app.inject(authorize({ provider: 'gitlab', projectId: SECOND_PROJECT.toString() }))
+    expect(res.statusCode).toBe(409)
+    expect(await grants()).toEqual([])
+    expect(await h.accounts.listForAgent(DEFAULT_ORG_ID, AGENT)).toHaveLength(0)
+    expect(await h.accounts.membershipsForBinding(fresh.id)).toHaveLength(0)
   })
 })

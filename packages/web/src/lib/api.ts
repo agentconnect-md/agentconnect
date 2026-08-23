@@ -5457,11 +5457,18 @@ export type RepoAccess = 'read' | 'comment' | 'write'
 
 export interface AgentRepoAuthDto {
   id: string
-  repoId?: string // rename-proof GitHub numeric id (absent on an older CP)
-  repoFullName: string // owner/repo as GitHub cases it (refreshed on rename)
+  /** Which host numbers `repoId`. Absent on an older CP, where every grant is GitHub. */
+  provider?: 'github' | 'gitlab'
+  repoId?: string // rename-proof numeric repository/project id (absent on an older CP)
+  repoFullName: string // owner/repo as GitHub cases it, or the GitLab project path (refreshed on rename)
   access: RepoAccess
   createdBy: string | null // authorizer's userId (resolved to a name / "You" in the UI); null for key-created
   createdAt: string // ISO-8601
+}
+
+/** Which host a grant row names — an older CP omits the field and means GitHub. */
+export function repoAuthProvider(row: AgentRepoAuthDto): 'github' | 'gitlab' {
+  return row.provider ?? 'github'
 }
 
 // Gated by the agent's visibility server-side (404 for an agent you can't see) —
@@ -5476,7 +5483,9 @@ export async function fetchAgentRepos(agentId: string, orgId?: string): Promise<
 // USER_NO_ACCESS) that the add-repo modal words inline.
 export async function createAgentRepo(
   agentId: string,
-  input: { repoFullName: string; access: RepoAccess }
+  // One arm per host: a GitHub repository by full name, a GitLab project by its
+  // numeric id (the namespaced path is never a match key).
+  input: { repoFullName: string; access: RepoAccess } | { provider: 'gitlab'; projectId: string; access: RepoAccess }
 ): Promise<AgentRepoAuthDto> {
   const path = `${orgBase()}/agents/${encodeURIComponent(agentId)}/repos`
   const res = await authenticatedFetch(

@@ -53,7 +53,12 @@ function placementCreateColumns(input: { placementKind?: PlacementKind; daemonId
     return { placementKind: 'set', setId: input.setId, status: 'active' }
   return input.daemonId ? { daemonId: input.daemonId, status: 'active' } : {}
 }
-import { fenceAgentLocalConfigWrite, lockOrgForConfigWrite, orgIdOfAgent } from './organization-environment-fence.js'
+import {
+  bumpAgentConfigRevisions,
+  fenceAgentLocalConfigWrite,
+  lockOrgForConfigWrite,
+  orgIdOfAgent
+} from './organization-environment-fence.js'
 import {
   AgentMissing,
   AgentWorkspaceIntegrationConflict,
@@ -728,21 +733,46 @@ export class PgAgentRepo implements AgentRepo {
     }
   }
 
-  async refreshGitlabWorkspacePath(orgId: OrgId, projectId: bigint, cloneUrl: string): Promise<AgentId[]> {
-    // The clone URL is a mutable display/transport hint keyed by the immutable
-    // project id (§8.1); a rename refresh must reach every replicated spec, so
-    // the write joins the configRevision ordering domain the daemon fences on.
-    const drifted = await this.db.agent.findMany({
-      where: { orgId, workspaceMode: 'gitlab', workspaceRepoId: projectId, NOT: { gitRepo: cloneUrl } },
-      select: { id: true }
+  async refreshGitlabProjectPath(orgId: OrgId, projectId: bigint, projectPath: string): Promise<AgentId[]> {
+    // The path is a mutable display/transport hint keyed by the immutable project
+    // id (§8.1). Both places that replicate it drift on a rename: a gitlab
+    // workspace's clone URL, and every explicit authorization's display path,
+    // which is what the daemon maps a NAMED project back to its numeric id with
+    // (§13.1). Leaving a grant stale orphans the new path and makes an ask under
+    // the old one fail the daemon's echo check against the binding's new path.
+    // Both writes join the configRevision ordering domain the daemon fences on,
+    // in one transaction, so a spec never carries one half of the rename.
+    const cloneUrl = `https://gitlab.com/${projectPath}`
+    return this.transaction(async (tx) => {
+      const workspaces = await tx.agent.findMany({
+        where: { orgId, workspaceMode: 'gitlab', workspaceRepoId: projectId, NOT: { gitRepo: cloneUrl } },
+        select: { id: true }
+      })
+      const workspaceIds = workspaces.map((row: { id: string }) => row.id)
+      if (workspaceIds.length > 0) {
+        await tx.agent.updateMany({
+          where: { id: { in: workspaceIds }, orgId, workspaceMode: 'gitlab', workspaceRepoId: projectId },
+          data: { gitRepo: cloneUrl }
+        })
+      }
+      const staleGrants = {
+        provider: 'gitlab',
+        repoId: projectId,
+        agent: { orgId },
+        repoFullName: { not: projectPath }
+      }
+      const grantAgentIds = (
+        await tx.agentRepoAuthorization.findMany({ where: staleGrants, select: { agentId: true } })
+      ).map((row: { agentId: string }) => row.agentId)
+      if (grantAgentIds.length > 0) {
+        await tx.agentRepoAuthorization.updateMany({ where: staleGrants, data: { repoFullName: projectPath } })
+      }
+      const ids = [...new Set([...workspaceIds, ...grantAgentIds])].sort()
+      // One bump per agent, after both writes: an agent holding the workspace AND
+      // a grant on the same project must not advance two revisions for one rename.
+      await bumpAgentConfigRevisions(tx, ids)
+      return ids.map((id: string) => AgentId(id))
     })
-    if (drifted.length === 0) return []
-    const ids = drifted.map((row: { id: string }) => row.id)
-    await this.db.agent.updateMany({
-      where: { id: { in: ids }, orgId, workspaceMode: 'gitlab', workspaceRepoId: projectId },
-      data: { gitRepo: cloneUrl, configRevision: { increment: 1 } }
-    })
-    return ids.map((id: string) => AgentId(id))
   }
 
   async setWorkspaceRepoId(agentId: AgentId, repoId: bigint): Promise<boolean> {
@@ -770,7 +800,9 @@ export class PgAgentRepo implements AgentRepo {
         where: { id: agentId },
         data: { workspaceRepoId: repoId, configRevision: { increment: 1 } }
       })
-      await tx.agentRepoAuthorization.deleteMany({ where: { agentId, repoId } })
+      // Only the github grant is redundant with a github workspace: a gitlab project
+      // that happens to carry the same number is a different repository (§8.1).
+      await tx.agentRepoAuthorization.deleteMany({ where: { agentId, provider: 'github', repoId } })
       return true
     })
   }

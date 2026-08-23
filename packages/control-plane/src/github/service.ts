@@ -804,7 +804,10 @@ export class GithubService {
       }
     }
 
-    const auth = (await this.deps.repoAuths?.listForAgent(agent.id))?.find((row) => row.repoId === repoId)
+    // Grants are provider-qualified: a GitLab project sharing this numeric id is a different repository.
+    const auth = (await this.deps.repoAuths?.listForAgent(agent.id))?.find(
+      (row) => row.provider === 'github' && row.repoId === repoId
+    )
     if (!auth) {
       throw new GitCredDeniedError(
         `${repoFullName} is not authorized for this agent — add it under the agent's Repositories settings`,
@@ -1037,7 +1040,9 @@ export class GithubService {
       }
     }
 
-    const grants = (await this.deps.repoAuths?.listForAgent(agent.id)) ?? []
+    const grants = ((await this.deps.repoAuths?.listForAgent(agent.id)) ?? []).filter(
+      (row) => row.provider === 'github'
+    )
     const exact = grants.find((row) => row.repoFullName.toLowerCase() === repoFullName.toLowerCase())
     // Never probe an unrelated owner merely because the daemon named it. A
     // same-owner grant is enough to justify the slow rename lookup below.

@@ -878,10 +878,12 @@ export interface AgentRepo {
    *  numeric repo without tombstoning projections: workspace authority remains
    *  live. A concurrently deleted or differently repaired agent is a no-op. */
   setWorkspaceRepoId(agentId: AgentId, repoId: bigint): Promise<boolean>
-  /** Converge gitlab-workspace clone URLs after a binding path refresh (rename)
-   *  — bumps configRevision so the fenced spec push replicates. Returns the
-   *  affected agent ids. */
-  refreshGitlabWorkspacePath(orgId: OrgId, projectId: bigint, cloneUrl: string): Promise<AgentId[]>
+  /** Converge everything a gitlab project path is replicated into after a binding
+   *  path refresh (rename): gitlab-workspace clone URLs AND every explicit
+   *  authorization's display path, which is how the daemon maps a named project
+   *  back to its numeric id. Bumps configRevision once per agent so the fenced
+   *  spec push replicates. Returns the affected agent ids. */
+  refreshGitlabProjectPath(orgId: OrgId, projectId: bigint, projectPath: string): Promise<AgentId[]>
   /** Set the visibility + share set (the dedicated `/sharing` write path, kept
    *  separate from content `update`). An org→restricted transition atomically
    *  closes known direct-conversation rows. Stamps the last-modified audit;
@@ -3766,8 +3768,9 @@ export type RepoAccess = 'read' | 'comment' | 'write'
 export interface AgentRepoAuthorizationRecord {
   id: string
   agentId: AgentId
+  provider: CodeHostProvider // the host that numbers `repoId` — identity is (provider, repoId)
   repoId: bigint
-  repoFullName: string // "owner/repo" as GitHub cases it; refreshed on rename detection
+  repoFullName: string // "owner/repo" as GitHub cases it, or a GitLab namespaced project path; refreshed on rename detection
   access: RepoAccess
   createdAt: Date
   createdBy: AgentCreator | null // audit: who authorized (identity-assertion subject)
@@ -3780,6 +3783,7 @@ export interface AgentRepoAuthorizationRepo {
    *  may grant any covered repo. */
   create(input: {
     agentId: AgentId
+    provider: CodeHostProvider
     repoId: bigint
     repoFullName: string
     access: RepoAccess
@@ -3801,6 +3805,7 @@ export interface AgentRepoAuthorizationRepo {
   removeWithReviewProjectionCleanup(
     id: string,
     agentId: AgentId,
+    provider: CodeHostProvider,
     repoId: bigint,
     at: Date,
     desiredState: string

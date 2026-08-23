@@ -11,7 +11,7 @@
  * echoed EXACTLY ONCE in the create response and never retrievable after.
  */
 import { randomBytes, randomUUID } from 'node:crypto'
-import { gitRepoLabel } from '@agentconnect.md/protocol'
+import { gitRepoLabel, type CodeHostProvider } from '@agentconnect.md/protocol'
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { z } from 'zod'
 import type { ZodTypeProvider } from '../plugins/zod.js'
@@ -239,29 +239,36 @@ export function hookRoutes(deps: HttpDeps) {
     } as const
 
     // The trigger plane must not outrun the credential plane (issue #457,
-    // multi-repo design decision 6): a github hook may only watch the agent's
-    // workspace repo or an explicitly authorized one — otherwise the agent's
-    // `gh` write-back on the watched repo is credential-less by construction.
-    // Enforced on create and on a repo-CHANGING edit; pre-existing rows are
-    // grandfathered (the console badges them instead).
+    // multi-repo design decision 6; gitlab-com-integration.md §8.3): a code-host
+    // hook may only watch the agent's workspace repository or an explicitly
+    // authorized one — otherwise the agent's write-back on the watched repository
+    // is credential-less by construction, which is exactly the "could not review"
+    // note both agents post. Enforced on create and on a binding-CHANGING edit;
+    // pre-existing rows are grandfathered (the console badges them instead).
     type WatchRepoAuthz = { ok: true } | { ok: false; status: 409 | 429 | 502; message: string }
     const watchRepoAuthorized = async (
       agent: AgentRecord,
+      provider: CodeHostProvider,
       repoId: bigint,
       repoFullName: string
     ): Promise<WatchRepoAuthz> => {
+      const subject = provider === 'gitlab' ? 'project' : 'repository'
       const denied = {
         ok: false,
         status: 409,
-        message: `${repoFullName} is not authorized for this agent — add it under the agent's Repositories settings first`
+        message: `${repoFullName} is not authorized for this agent — authorize the ${subject} for it, or make it the agent's workspace ${subject}, then create the trigger`
       } as const
       const explicitlyGranted = async () =>
-        (await deps.repos.agentRepoAuth.listForAgent(agent.id)).some((row) => row.repoId === repoId)
-      if (agent.workspaceRepoId === repoId) return { ok: true }
+        (await deps.repos.agentRepoAuth.listForAgent(agent.id)).some(
+          (row) => row.provider === provider && row.repoId === repoId
+        )
+      // The workspace is this repository only when it is the SAME host's: the two
+      // number theirs independently, so `workspaceMode` qualifies the id (§8.1).
+      if (agent.workspaceRepoId === repoId && agent.workspace.mode === provider) return { ok: true }
       // Legacy workspace rows acquire their rename-proof id lazily. The stored
       // name is only an endpoint hint: after a GitHub rename the requested
       // canonical name differs, so always resolve and compare numeric identity.
-      if (agent.workspace.mode === 'github' && deps.github) {
+      if (provider === 'github' && agent.workspace.mode === 'github' && deps.github) {
         const workspaceLabel = gitRepoLabel(agent.workspace.gitRepo)
         const [owner, repo] = workspaceLabel.split('/')
         const ins = owner ? await deps.repos.githubInstallation.liveByOrgAndAccount(agent.orgId, owner) : null
@@ -458,6 +465,10 @@ export function hookRoutes(deps: HttpDeps) {
                       message: `this agent already watches ${binding.projectPath}`
                     }
                   }
+                  // §8.3: creating a hook never creates a grant, so the project must
+                  // ALREADY be the workspace or an explicit additional authorization.
+                  const authz = await watchRepoAuthorized(agent, 'gitlab', projectId, binding.projectPath)
+                  if (!authz.ok) return authz
                   const effectError = validateGitlabEffects(binding, {
                     reviewPolicy: req.body.kind === 'gitlab' ? req.body.reviewPolicy : 'off',
                     reportingMode: req.body.kind === 'gitlab' ? req.body.reportingMode : 'off'
@@ -487,7 +498,7 @@ export function hookRoutes(deps: HttpDeps) {
                       message: `this agent already watches ${repo.repoFullName}`
                     }
                   }
-                  const authz = await watchRepoAuthorized(agent, repo.repoId, repo.repoFullName)
+                  const authz = await watchRepoAuthorized(agent, 'github', repo.repoId, repo.repoFullName)
                   if (!authz.ok) return authz
                   const configError = await validateGithubEffects(agent, repo.repoId, repo.repoFullName, {
                     reviewPolicy: req.body.kind === 'github' ? req.body.reviewPolicy : 'off',
@@ -753,7 +764,7 @@ export function hookRoutes(deps: HttpDeps) {
           // not brick an existing hook.
           const bindingChanged = repo.repoId !== existing.repoId || agent.id !== existing.agentId
           if (bindingChanged) {
-            const authz = await watchRepoAuthorized(agent, repo.repoId, repo.repoFullName)
+            const authz = await watchRepoAuthorized(agent, 'github', repo.repoId, repo.repoFullName)
             if (!authz.ok) {
               return reply.code(authz.status).send({
                 error: ERROR_NAMES[authz.status],
@@ -802,6 +813,19 @@ export function hookRoutes(deps: HttpDeps) {
               statusCode: 409,
               message: `this agent already watches ${binding.projectPath}`
             })
+          }
+          // Binding-CHANGING edits go through the §8.3 gate — a new project, or the
+          // same project moved onto a different agent. An edit that keeps the
+          // (grandfathered) pair must not brick an existing hook, exactly as github.
+          if (projectId !== existing.repoId || agent.id !== existing.agentId) {
+            const authz = await watchRepoAuthorized(agent, 'gitlab', projectId, binding.projectPath)
+            if (!authz.ok) {
+              return reply.code(authz.status).send({
+                error: ERROR_NAMES[authz.status],
+                statusCode: authz.status,
+                message: authz.message
+              })
+            }
           }
           const effectConfig = {
             reviewPolicy: req.body.reviewPolicy ?? existing.reviewPolicy,

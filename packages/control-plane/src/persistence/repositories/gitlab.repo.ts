@@ -43,7 +43,11 @@ import type {
 import type { SecretCipher } from '../../secrets/cipher.js'
 import { orgScope } from '../../secrets/scope.js'
 import { OrgId } from '../../domain/ids.js'
-import { GITLAB_ACCESS_DEVELOPER as ACCESS_DEVELOPER, gitlabWorkspaceAccessLevel } from '../../gitlab/api.js'
+import {
+  GITLAB_ACCESS_DEVELOPER as ACCESS_DEVELOPER,
+  gitlabAuthorizationAccessLevel,
+  gitlabWorkspaceAccessLevel
+} from '../../gitlab/api.js'
 
 const CONNECTION_STATES: readonly GitlabConnectionState[] = ['connected', 'reauth_required', 'disconnected']
 
@@ -833,7 +837,7 @@ export class PgGitlabAgentAccountRepo implements GitlabAgentAccountRepo {
   }
 
   async consumers(orgId: string, projectId: bigint): Promise<GitlabAccountConsumer[]> {
-    const [workspaces, hooks] = await Promise.all([
+    const [workspaces, hooks, grants] = await Promise.all([
       this.prisma.agent.findMany({
         where: { orgId, workspaceMode: 'gitlab', workspaceRepoId: projectId },
         select: { id: true, gitAccess: true }
@@ -841,6 +845,10 @@ export class PgGitlabAgentAccountRepo implements GitlabAgentAccountRepo {
       this.prisma.hookDef.findMany({
         where: { orgId, kind: 'gitlab', enabled: true, repoId: projectId, agentId: { not: null } },
         select: { agentId: true }
+      }),
+      this.prisma.agentRepoAuthorization.findMany({
+        where: { provider: 'gitlab', repoId: projectId, agent: { orgId } },
+        select: { agentId: true, access: true }
       })
     ])
     const levels = new Map<string, number>()
@@ -851,11 +859,14 @@ export class PgGitlabAgentAccountRepo implements GitlabAgentAccountRepo {
     for (const row of workspaces) raise(row.id, gitlabWorkspaceAccessLevel(row.gitAccess))
     // A hook consumer posts notes and may run the configured review policy.
     for (const row of hooks) if (row.agentId) raise(row.agentId, ACCESS_DEVELOPER)
+    // An explicit additional-project authorization is a consumer too (§8.3): without
+    // it, the membership such a grant binds would be unbound by the next converge.
+    for (const row of grants) raise(row.agentId, gitlabAuthorizationAccessLevel(row.access))
     return [...levels].map(([agentId, accessLevel]) => ({ agentId, accessLevel }))
   }
 
   async consumersForOrg(orgId: string): Promise<GitlabProjectConsumer[]> {
-    const [workspaces, hooks] = await Promise.all([
+    const [workspaces, hooks, grants] = await Promise.all([
       this.prisma.agent.findMany({
         where: { orgId, workspaceMode: 'gitlab', workspaceRepoId: { not: null } },
         select: { id: true, gitAccess: true, workspaceRepoId: true }
@@ -863,6 +874,10 @@ export class PgGitlabAgentAccountRepo implements GitlabAgentAccountRepo {
       this.prisma.hookDef.findMany({
         where: { orgId, kind: 'gitlab', enabled: true, repoId: { not: null }, agentId: { not: null } },
         select: { agentId: true, repoId: true }
+      }),
+      this.prisma.agentRepoAuthorization.findMany({
+        where: { provider: 'gitlab', agent: { orgId } },
+        select: { agentId: true, repoId: true, access: true }
       })
     ])
     const levels = new Map<string, GitlabProjectConsumer>()
@@ -876,6 +891,8 @@ export class PgGitlabAgentAccountRepo implements GitlabAgentAccountRepo {
     for (const row of workspaces) raise(row.workspaceRepoId!, row.id, gitlabWorkspaceAccessLevel(row.gitAccess))
     // A hook consumer posts notes and may run the configured review policy.
     for (const row of hooks) if (row.agentId && row.repoId) raise(row.repoId, row.agentId, ACCESS_DEVELOPER)
+    // An explicit additional-project authorization is a consumer too (§8.3).
+    for (const row of grants) raise(row.repoId, row.agentId, gitlabAuthorizationAccessLevel(row.access))
     return [...levels.values()]
   }
 }

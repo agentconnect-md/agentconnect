@@ -1007,6 +1007,7 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
     return {
       id: 'ra-1',
       agentId: 'agent-1' as never,
+      provider: 'github',
       repoId: 111n,
       repoFullName: 'Acme/Tools', // stored as GitHub cases it — may differ from the request
       access: 'comment',

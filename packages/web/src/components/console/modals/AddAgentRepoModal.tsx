@@ -1,9 +1,13 @@
 'use client'
 
 // Authorize a repository for one agent (issue #457,
-// agent-multi-repo-authorization.md §web 1): repo picker over the org's GitHub
-// App installations + an access choice, preflighted against the
-// per-user identity-assertion gate when the deployment has one.
+// agent-multi-repo-authorization.md §web 1; gitlab-com-integration.md §18.1):
+// one picker per code host — GitHub repositories across the org's App
+// installations, GitLab projects the connection administers — plus an access
+// choice, preflighted against the per-user identity-assertion gate when the
+// deployment has one. Picking a GitLab project that is not set up yet runs the
+// §10.2 provisioning saga inline before the selection lands, exactly as the
+// workspace and trigger pickers do.
 //
 // This renders its own scrim/modal overlay because Edit workspace can expose it
 // as a preserved-state subview while another editor (such as GitHub hook setup)
@@ -11,11 +15,18 @@
 // so a nested open never tears down the caller.
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { GithubMark } from '@/components/marks'
+import { GithubMark, GitlabMark, LoadingState } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 import { agentLabel, type Agent } from '@/lib/data'
 import { useOrgs } from '@/lib/org-context'
-import { GithubPrivateReposNotice } from '@/components/console/WorkspaceFormFields'
+import {
+  GithubPrivateReposNotice,
+  GitlabNoProjectsNotice,
+  GitlabProjectField,
+  GitlabProjectOption
+} from '@/components/console/WorkspaceFormFields'
+import { matchGitlabProjects, type GitlabProjectChoice } from '@/lib/gitlab-projects'
+import { useGitlabProjects } from '@/lib/use-gitlab-projects'
 import {
   ApiError,
   createAgentRepo,
@@ -24,6 +35,7 @@ import {
   fetchGithubRepoRoster,
   fetchGithubRepoAccess,
   invalidateGithubRepoRosterCache,
+  repoAuthProvider,
   syncGithubInstallations,
   type AgentRepoAuthDto,
   type GithubInstallationDto,
@@ -31,6 +43,9 @@ import {
   type GithubRepoDto,
   type RepoAccess
 } from '@/lib/api'
+
+/** Which host the picker is offering. Grants are provider-qualified (§8.1). */
+type GrantProvider = 'github' | 'gitlab'
 
 // The two grant tiers. Read is a clone/read scope; write additionally grants
 // push access, pull_requests:write for formal reviews, and actions:write for
@@ -44,6 +59,18 @@ const TIERS: { v: RepoAccess; label: string; icon: string; desc: string }[] = [
     label: 'Read & write',
     icon: 'git-branch',
     desc: 'Push, open PRs & run GitHub Actions'
+  }
+]
+
+// The same two tiers in GitLab's vocabulary — merge requests and pipelines, and a
+// project rather than a repository.
+const GITLAB_TIERS: { v: RepoAccess; label: string; icon: string; desc: string }[] = [
+  { v: 'read', label: 'Read only', icon: 'eye', desc: 'Clone & read files only' },
+  {
+    v: 'write',
+    label: 'Read & write',
+    icon: 'git-branch',
+    desc: 'Push, open merge requests & run pipelines'
   }
 ]
 
@@ -81,6 +108,9 @@ export default function AddAgentRepoModal({
   onCreated: (row: AgentRepoAuthDto) => void
 }) {
   const { orgPath } = useOrgs()
+  // A repository locked by a manual GitHub workspace pins the host too — that arm
+  // may authorize only its own repository, so the choice would be a dead end.
+  const [provider, setProvider] = useState<GrantProvider>('github')
   const [gh, setGh] = useState<{ enabled: boolean; installations: GithubInstallationDto[] } | null>(null)
   const [ghSyncing, setGhSyncing] = useState(false)
   // Repos merged across every installation; partial pages render immediately
@@ -101,6 +131,13 @@ export default function AddAgentRepoModal({
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const busyRef = useRef(false)
+  // GitLab arm: the connection's Maintainer-or-Owner projects merged with the ones
+  // already added. Inert until the GitLab tile is picked, so a GitHub-only
+  // deployment issues no GitLab request at all.
+  const [glQ, setGlQ] = useState('')
+  const [glPick, setGlPick] = useState('')
+  const [glPickOpen, setGlPickOpen] = useState(false)
+  const gl = useGitlabProjects(provider === 'gitlab', glQ)
 
   // Escape closes THIS layer only: capture-phase + stopPropagation beats the
   // ModalProvider's bubble-phase window listener when we're nested in a dialog.
@@ -175,9 +212,34 @@ export default function AddAgentRepoModal({
     }
   }
 
-  const authorizedByName = useMemo(() => new Set(authorized.map((r) => r.repoFullName.toLowerCase())), [authorized])
+  const authorizedByName = useMemo(
+    () => new Set(authorized.filter((r) => repoAuthProvider(r) === 'github').map((r) => r.repoFullName.toLowerCase())),
+    [authorized]
+  )
   const isWorkspace = (fullName: string) => !!workspaceRepo && workspaceRepo.toLowerCase() === fullName.toLowerCase()
   const isAuthorized = (fullName: string) => authorizedByName.has(fullName.toLowerCase())
+
+  // GitLab identity is the numeric project id, never the namespaced path.
+  const authorizedProjects = useMemo(
+    () =>
+      new Set(authorized.filter((r) => repoAuthProvider(r) === 'gitlab' && r.repoId).map((r) => r.repoId as string)),
+    [authorized]
+  )
+  const workspaceProject = agent.workspace.mode === 'gitlab' ? agent.workspace.projectId : undefined
+  const glMatches = matchGitlabProjects(gl.choices, glQ)
+  const glPicked = gl.choices.find((c) => c.projectId === glPick)
+  const glTakenBy = (projectId: string): 'workspace' | 'authorized' | null =>
+    workspaceProject === projectId ? 'workspace' : authorizedProjects.has(projectId) ? 'authorized' : null
+  const glNoProjects = gl.empty || !gl.enabled || !gl.connected
+
+  // Picking a project that is not set up yet runs the provisioning saga first; a
+  // failed setup selects nothing, so the footer stays inert (§18.1).
+  const selectProject = async (choice: GitlabProjectChoice) => {
+    if (!choice.binding && !(await gl.provision(choice.projectId))) return
+    setGlPick(choice.projectId)
+    setGlPickOpen(false)
+    setErr(null)
+  }
 
   const picked = repos?.find((r) => r.fullName.toLowerCase() === pick.toLowerCase())
   const pickOwner = pick.split('/')[0] ?? ''
@@ -223,7 +285,10 @@ export default function AddAgentRepoModal({
   const typedIsListed = !!typedRepo && matches.some((r) => r.fullName.toLowerCase() === typedRepo.toLowerCase())
   const typedTaken = !!typedRepo && (isWorkspace(typedRepo) || isAuthorized(typedRepo))
 
-  const canSubmit = !!pick && !isWorkspace(pick) && !isAuthorized(pick) && !uncovered && !probeDenies
+  const canSubmit =
+    provider === 'gitlab'
+      ? !!glPick && glTakenBy(glPick) === null && gl.provisioning === null
+      : !!pick && !isWorkspace(pick) && !isAuthorized(pick) && !uncovered && !probeDenies
 
   const submit = async () => {
     if (busyRef.current || !canSubmit) return
@@ -231,7 +296,10 @@ export default function AddAgentRepoModal({
     setSaving(true)
     setErr(null)
     try {
-      const row = await createAgentRepo(agent.id, { repoFullName: pick, access })
+      const row = await createAgentRepo(
+        agent.id,
+        provider === 'gitlab' ? { provider: 'gitlab', projectId: glPick, access } : { repoFullName: pick, access }
+      )
       onCreated(row)
     } catch (e) {
       if (e instanceof ApiError && e.code === 'GITHUB_IDENTITY_REQUIRED') {
@@ -272,7 +340,13 @@ export default function AddAgentRepoModal({
               {workspaceContext ? 'Edit workspace' : 'Add repository'}
             </div>
             <div className="mt-[1px] truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-              {workspaceContext ? 'authorize an additional repository for ' : 'authorize a GitHub repository for '}
+              {workspaceContext
+                ? provider === 'gitlab'
+                  ? 'authorize an additional project for '
+                  : 'authorize an additional repository for '
+                : provider === 'gitlab'
+                  ? 'authorize a GitLab project for '
+                  : 'authorize a GitHub repository for '}
               <span className="mono">{agentLabel(agent)}</span>
             </div>
           </div>
@@ -281,7 +355,149 @@ export default function AddAgentRepoModal({
           </button>
         </div>
         <div className="modalbody">
-          {gh === null ? (
+          {/* A repository fixed by a manual GitHub workspace pins the host too. */}
+          {!fixedRepo && (
+            <div className="fld mb-[18px]">
+              <span className="fldlbl">Code host</span>
+              <div className="grid grid-cols-2 gap-[10px]">
+                {(
+                  [
+                    {
+                      v: 'github',
+                      label: 'GitHub',
+                      hint: 'Authorize a repository.',
+                      mark: <GithubMark color="var(--text-primary)" />
+                    },
+                    { v: 'gitlab', label: 'GitLab', hint: 'Authorize a project.', mark: <GitlabMark /> }
+                  ] as const
+                ).map((host) => (
+                  <button
+                    key={host.v}
+                    type="button"
+                    className={provider === host.v ? 'ptile on items-start text-left' : 'ptile items-start text-left'}
+                    onClick={() => {
+                      setProvider(host.v)
+                      setErr(null)
+                    }}
+                  >
+                    <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] border border-(--border-default) bg-(--surface-card)">
+                      <span className="flex h-4 w-4 items-center justify-center">{host.mark}</span>
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block font-sans text-[13px] font-semibold leading-normal">{host.label}</span>
+                      <span className="mt-[2px] block truncate font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-tertiary)">
+                        {host.hint}
+                      </span>
+                    </span>
+                    <span
+                      className={
+                        provider === host.v
+                          ? 'ml-auto flex h-4 w-4 flex-none items-center justify-center self-center rounded-full border-[1.5px] border-(--brand)'
+                          : 'ml-auto flex h-4 w-4 flex-none items-center justify-center self-center rounded-full border-[1.5px] border-(--border-strong)'
+                      }
+                    >
+                      {provider === host.v && <span className="h-2 w-2 rounded-full bg-(--brand)" />}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          {provider === 'gitlab' ? (
+            gl.error ? (
+              <div className="mb-4 font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">
+                Couldn&rsquo;t load your GitLab projects — {gl.error}
+              </div>
+            ) : gl.loading ? (
+              <div className="mb-4">
+                <LoadingState size={20} padding={16} />
+              </div>
+            ) : glNoProjects ? (
+              <div className="mb-4">
+                <GitlabNoProjectsNotice
+                  integrationsHref={orgPath('/integrations')}
+                  connected={gl.connected}
+                  enabled={gl.enabled}
+                />
+              </div>
+            ) : (
+              <>
+                <div className="mb-[18px]">
+                  <GitlabProjectField
+                    value={glPicked?.projectPath ?? ''}
+                    icon="book-marked"
+                    loading={false}
+                    open={glPickOpen}
+                    query={glQ}
+                    onToggle={() => {
+                      setGlQ('')
+                      setGlPickOpen((value) => !value)
+                    }}
+                    onClose={() => setGlPickOpen(false)}
+                    onQueryChange={setGlQ}
+                    error={gl.provisionError ? `Couldn’t set up that project — ${gl.provisionError}` : undefined}
+                  >
+                    {glMatches.map((choice) => {
+                      const taken = glTakenBy(choice.projectId)
+                      if (taken !== null) {
+                        return (
+                          <div key={choice.projectId} className="fnohit">
+                            {choice.projectPath}
+                            {taken === 'workspace'
+                              ? ' is the agent’s workspace project'
+                              : ' is already authorized for this agent'}
+                          </div>
+                        )
+                      }
+                      return (
+                        <GitlabProjectOption
+                          key={choice.projectId}
+                          choice={choice}
+                          selected={glPick === choice.projectId}
+                          busy={gl.provisioning === choice.projectId}
+                          onSelect={() => void selectProject(choice)}
+                        />
+                      )
+                    })}
+                    {glMatches.length === 0 && <div className="fnohit">No projects match &ldquo;{glQ}&rdquo;</div>}
+                  </GitlabProjectField>
+                </div>
+
+                <div className="fldlbl mb-2">Access</div>
+                <div className="mb-4 flex flex-col gap-[9px]">
+                  {GITLAB_TIERS.map((t) => {
+                    const on = access === t.v
+                    return (
+                      <div
+                        key={t.v}
+                        className={`flex cursor-pointer items-center gap-[11px] rounded-[9px] border px-[13px] py-[11px] ${
+                          on ? 'border-(--brand) bg-(--brand-soft)' : 'border-(--border-subtle) bg-(--surface-card)'
+                        }`}
+                        onClick={() => setAccess(t.v)}
+                      >
+                        <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] border border-(--border-default) bg-(--surface-card)">
+                          <Icon name={t.icon} size={16} color={on ? 'var(--brand)' : 'var(--text-tertiary)'} />
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <div className="font-sans text-[13px] font-semibold leading-normal">{t.label}</div>
+                          <div className="mt-[2px] font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-tertiary)">
+                            {t.desc}
+                          </div>
+                        </div>
+                        <span
+                          className={`flex h-4 w-4 flex-none items-center justify-center rounded-full border-[1.5px] ${
+                            on ? 'border-(--brand)' : 'border-(--border-strong)'
+                          }`}
+                        >
+                          {on && <span className="h-2 w-2 rounded-full bg-(--brand)" />}
+                        </span>
+                      </div>
+                    )
+                  })}
+                </div>
+              </>
+            )
+          ) : gh === null ? (
             <div className="mb-4 flex items-center gap-[10px] rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px] font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
               <Icon name="loader" size={15} className="flex-none animate-spin" />
               Checking your GitHub setup…
@@ -537,7 +753,9 @@ export default function AddAgentRepoModal({
         </div>
         <div className="modalfoot">
           <span className="flex-1 font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-tertiary)">
-            Access applies only to this repository and can be revoked at any time.
+            {provider === 'gitlab'
+              ? 'Access applies only to this project and can be revoked at any time.'
+              : 'Access applies only to this repository and can be revoked at any time.'}
           </span>
           <Button variant="ghost" onClick={onClose}>
             Cancel
