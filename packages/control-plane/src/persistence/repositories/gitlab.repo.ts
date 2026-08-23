@@ -528,6 +528,15 @@ function toAccountRecord(r: GitlabAgentAccount): GitlabAgentAccountRecord {
     serviceAccountUserId: r.serviceAccountUserId,
     username: r.username,
     displayName: r.displayName,
+    avatarFingerprint: r.avatarFingerprint,
+    createAttempt:
+      r.createAttemptId === null || r.createAttemptAt === null
+        ? null
+        : {
+            id: r.createAttemptId,
+            openedAt: r.createAttemptAt,
+            knownServiceAccountUserIds: r.createAttemptKnownIds
+          },
     credentialEpoch: r.credentialEpoch,
     administeringConnectionId: r.administeringConnectionId,
     generation: r.generation,
@@ -614,7 +623,9 @@ export class PgGitlabAgentAccountRepo implements GitlabAgentAccountRepo {
     accountId: string,
     patch: Partial<{
       serviceAccountUserId: bigint | null
+      username: string
       displayName: string | null
+      avatarFingerprint: string | null
       administeringConnectionId: string | null
       state: GitlabAccountState
       stateReason: string | null
@@ -623,6 +634,31 @@ export class PgGitlabAgentAccountRepo implements GitlabAgentAccountRepo {
     const res = await this.prisma.gitlabAgentAccount.updateMany({ where: { id: accountId }, data: patch })
     if (res.count !== 1) return null
     return this.get(accountId)
+  }
+
+  async openCreateAttempt(input: {
+    accountId: string
+    attemptId: string
+    openedAt: Date
+    knownServiceAccountUserIds: bigint[]
+  }): Promise<GitlabAgentAccountRecord | null> {
+    const res = await this.prisma.gitlabAgentAccount.updateMany({
+      where: { id: input.accountId },
+      data: {
+        createAttemptId: input.attemptId,
+        createAttemptAt: input.openedAt,
+        createAttemptKnownIds: input.knownServiceAccountUserIds
+      }
+    })
+    if (res.count !== 1) return null
+    return this.get(input.accountId)
+  }
+
+  async closeCreateAttempt(accountId: string): Promise<void> {
+    await this.prisma.gitlabAgentAccount.updateMany({
+      where: { id: accountId },
+      data: { createAttemptId: null, createAttemptAt: null, createAttemptKnownIds: [] }
+    })
   }
 
   async claimLease(accountId: string, owner: string, until: Date, now: Date): Promise<boolean> {
@@ -733,17 +769,22 @@ export class PgGitlabAgentAccountRepo implements GitlabAgentAccountRepo {
 
   async reactivate(accountId: string): Promise<GitlabAgentAccountRecord | null> {
     // A fresh generation: whatever the abandoned retirement did externally, the
-    // next converge re-creates and re-binds from scratch. The credential rows go
-    // with the identity they were issued to — an interrupted retirement may have
-    // revoked them, or deleted the very user they name, so keeping them would
-    // let the account read `ready` holding tokens that authenticate nothing.
+    // next converge re-provisions and re-binds. The credential rows go with the
+    // identity they were issued to — an interrupted retirement may have revoked
+    // them, or deleted the very user they name, so keeping them would let the
+    // account read `ready` holding tokens that authenticate nothing. The numeric
+    // user id STAYS: it is the durable key (§7.2), and dropping it would leave
+    // the next converge unable to tell its own surviving account from a foreign
+    // one holding the same username. A deleted account simply misses the lookup.
     return this.prisma.$transaction(async (tx) => {
       const res = await tx.gitlabAgentAccount.updateMany({
         where: { id: accountId, lifecycle: 'retiring' },
         data: {
           lifecycle: 'active',
           generation: { increment: 1n },
-          serviceAccountUserId: null,
+          createAttemptId: null,
+          createAttemptAt: null,
+          createAttemptKnownIds: [],
           state: 'provisioning',
           stateReason: null
         }

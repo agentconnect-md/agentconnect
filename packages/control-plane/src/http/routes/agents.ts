@@ -2286,7 +2286,10 @@ export function agentRoutes(deps: HttpDeps) {
           if ((existing.pause === true) !== (agent.pause === true)) {
             await deps.hooks.rebroadcastForAgent(AgentId(agent.id))
           }
-          if (req.body.icon !== undefined) void syncAgentBotIcons(deps, agent, app.log)
+          if (req.body.icon !== undefined) {
+            void syncAgentBotIcons(deps, agent, app.log)
+            void deps.gitlab?.accounts.syncAgentAvatars(agent.orgId, agent.id)
+          }
           await removeUnusedExternalMemoryAfterAgent(existing, agent)
           // Provision/drop MCP proxy defs for an enable-list change with the placement
           // unchanged (a daemon move goes through AgentMoveService + reconcile, not

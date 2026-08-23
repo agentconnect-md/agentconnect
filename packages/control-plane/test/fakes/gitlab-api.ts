@@ -23,6 +23,14 @@ export interface FakeGitlabOptions {
   failTokenRevoke?: boolean
   /** Refuse the display-name rename (older provider, or a locked account). */
   refuseServiceAccountRename?: boolean
+  /** Create the account, then fail the response — the ambiguous create (§7.2). */
+  ambiguousServiceAccountCreate?: boolean
+  /** Refuse the username convergence specifically (the name is taken). */
+  refuseServiceAccountUsernameChange?: boolean
+  /** Answer the avatar endpoint 404 — a provider that does not offer it. */
+  avatarEndpointUnsupported?: boolean
+  /** Refuse the avatar upload with a definitive 400. */
+  refuseAvatarUpload?: boolean
 }
 
 export class FakeGitlab {
@@ -40,6 +48,9 @@ export class FakeGitlab {
   mergeRequests = new Map<number, { state: string; headSha: string; baseSha?: string; draft?: boolean }>()
   issues = new Map<number, { state: string }>()
   deletedServiceAccounts: number[] = []
+  /** Every accepted `PUT /user/avatar`, by the PAT that presented it (§7.3:
+   *  only an account's own `api` token may wear its avatar). */
+  avatarUploads: { token: string | null; bytes: number }[] = []
   /** Every call the CP made, with the bearer it presented — WHICH token a check
    *  used is part of the contract (§9.4 takeover proves the caller's own access). */
   requests: { method: string; url: string; token: string | null }[] = []
@@ -231,8 +242,16 @@ export class FakeGitlab {
           return Response.json({ message: 'forbidden' }, { status: 403 })
         }
         const payload = json()
-        const account = { id: ++this.nextId, username: String(payload.username), name: String(payload.name) }
+        const username = String(payload.username)
+        if (this.serviceAccounts.some((existing) => existing.username === username)) {
+          return Response.json({ message: 'Username has already been taken' }, { status: 409 })
+        }
+        const account = { id: ++this.nextId, username, name: String(payload.name) }
         this.serviceAccounts.push(account)
+        // The account landed but the answer did not — what recovery must survive.
+        if (this.opts.ambiguousServiceAccountCreate) {
+          return Response.json({ message: 'gateway timeout' }, { status: 504 })
+        }
         return Response.json(account, { status: 201 })
       }
       if (/\/api\/v4\/groups\/\d+\/service_accounts\/\d+$/.test(url) && method === 'PATCH') {
@@ -240,7 +259,17 @@ export class FakeGitlab {
         const account = this.serviceAccounts.find((candidate) => candidate.id === id)
         if (!account) return Response.json({ message: 'Not Found' }, { status: 404 })
         if (this.opts.refuseServiceAccountRename) return Response.json({ message: 'forbidden' }, { status: 403 })
-        account.name = String(json().name)
+        const patch = json()
+        if (typeof patch.username === 'string') {
+          if (this.opts.refuseServiceAccountUsernameChange) {
+            return Response.json({ message: 'Username has already been taken' }, { status: 409 })
+          }
+          if (this.serviceAccounts.some((other) => other.id !== id && other.username === patch.username)) {
+            return Response.json({ message: 'Username has already been taken' }, { status: 409 })
+          }
+          account.username = patch.username
+        }
+        if (typeof patch.name === 'string') account.name = patch.name
         return Response.json(account)
       }
       if (/\/api\/v4\/groups\/\d+\/service_accounts\/\d+$/.test(url) && method === 'DELETE') {
@@ -295,6 +324,18 @@ export class FakeGitlab {
         if (!token || token.user_id !== userId) return Response.json({ message: 'Not Found' }, { status: 404 })
         token.revoked = true
         return new Response(null, { status: 204 })
+      }
+      if (url.endsWith('/api/v4/user/avatar') && method === 'PUT') {
+        if (this.opts.avatarEndpointUnsupported) return Response.json({ message: '404 Not Found' }, { status: 404 })
+        if (this.opts.refuseAvatarUpload) return Response.json({ message: 'avatar is invalid' }, { status: 400 })
+        const form = init?.body instanceof FormData ? init.body : null
+        const file = form?.get('avatar')
+        if (!(file instanceof Blob)) return Response.json({ message: 'avatar is missing' }, { status: 400 })
+        this.avatarUploads.push({
+          token: authorization?.replace(/^Bearer /, '') ?? null,
+          bytes: file.size
+        })
+        return Response.json({ id: 1, avatar_url: 'https://gitlab.com/uploads/-/system/user/avatar/1/avatar.png' })
       }
       if (/\/api\/v4\/namespaces\/\d+$/.test(url)) {
         return Response.json({ id: 900, parent_id: null, kind: this.opts.namespaceKind, full_path: 'example-group' })

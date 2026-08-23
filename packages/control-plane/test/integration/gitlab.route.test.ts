@@ -581,7 +581,7 @@ describe('gitlab agent accounts (§7.2, §18.1)', () => {
       rootGroupId: '900',
       // The readable heading comes off a bound project — the row itself holds only the number.
       rootGroupPath: 'example-group',
-      username: gitlabAgentAccountUsername(agentId, 900n),
+      username: gitlabAgentAccountUsername(agentId, 'reviewer', 900n),
       displayName: 'reviewer',
       state: 'ready',
       stateReason: null,

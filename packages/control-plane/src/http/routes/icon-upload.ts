@@ -109,6 +109,7 @@ export function iconUploadRoutes(deps: HttpDeps) {
         })
         void replicateAgent(agent.orgId, agent.id)
         void syncAgentBotIcons(deps, updated, app.log)
+        void deps.gitlab?.accounts.syncAgentAvatars(agent.orgId, agent.id)
         return reply.send({
           icon: { kind: 'image' as const },
           iconUrl: resolveAgentIconUrl(agent.id, imageIcon, iconBases, updated.lastModifiedAt.getTime())
@@ -152,6 +153,7 @@ export function iconUploadRoutes(deps: HttpDeps) {
         })
         void replicateAgent(agent.orgId, agent.id)
         void syncAgentBotIcons(deps, updated, app.log)
+        void deps.gitlab?.accounts.syncAgentAvatars(agent.orgId, agent.id)
         return reply.send({ icon: glyph, iconUrl: null })
       }
     )
