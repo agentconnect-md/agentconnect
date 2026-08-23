@@ -301,6 +301,7 @@ function toBindingRecord(r: GitlabProjectBinding): GitlabProjectBindingRecord {
     webhookId: r.webhookId,
     desiredEventsHash: r.desiredEventsHash,
     credentialEpoch: r.credentialEpoch,
+    convergeOwedAt: r.convergeOwedAt,
     state: toBindingState(r.state),
     stateReason: r.stateReason,
     createdAt: r.createdAt
@@ -507,6 +508,15 @@ export class PgGitlabProjectBindingRepo implements GitlabProjectBindingRepo {
       await tx.gitlabProjectBinding.deleteMany({ where: { id: bindingId, orgId } })
       return true
     })
+  }
+
+  async listConvergeOwed(before: Date, limit: number): Promise<GitlabProjectBindingRecord[]> {
+    const rows = await this.prisma.gitlabProjectBinding.findMany({
+      orderBy: { convergeOwedAt: 'asc' },
+      where: { convergeOwedAt: { not: null, lt: before } },
+      take: limit
+    })
+    return rows.map(toBindingRecord)
   }
 
   async bumpCredentialEpoch(orgId: string, bindingId: string): Promise<bigint | null> {

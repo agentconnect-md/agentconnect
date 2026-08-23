@@ -87,17 +87,19 @@ async function harness(
     },
     fetchImpl: fake.fetch()
   })
-  const provisioner = new GitlabProvisioner({
-    oauth,
-    bindings,
-    accounts: accountService,
-    webhookSecrets: new PgGitlabWebhookSecretStore(prisma, cipher),
-    catalog: new PgCodeHostRepositoryRepo(prisma),
-    clock: systemClock,
-    publicRelayUrl: 'https://relay.example.test',
-    desiredWebhookEvents: async () => webhookEvents,
-    fetchImpl: fake.fetch()
-  })
+  const buildProvisioner = (): GitlabProvisioner =>
+    new GitlabProvisioner({
+      oauth,
+      bindings,
+      accounts: accountService,
+      webhookSecrets: new PgGitlabWebhookSecretStore(prisma, cipher),
+      catalog: new PgCodeHostRepositoryRepo(prisma),
+      clock: systemClock,
+      publicRelayUrl: 'https://relay.example.test',
+      desiredWebhookEvents: async () => webhookEvents,
+      fetchImpl: fake.fetch()
+    })
+  const provisioner = buildProvisioner()
   const connection = await connections.upsertOnCallback({
     orgId: DEFAULT_ORG_ID,
     userId: DEFAULT_OWNER_ID,
@@ -130,6 +132,9 @@ async function harness(
     oauth,
     accountService,
     provisioner,
+    /** A second instance over the same rows — what survives a restart is only
+     *  what the database holds, never this process's timers. */
+    restarted: buildProvisioner,
     binding,
     connection,
     connections
@@ -944,6 +949,93 @@ describe('GitlabProvisioner (§10.2) — per-agent identity', () => {
     expect(await h.bindings.get(DEFAULT_ORG_ID, h.binding.id)).toMatchObject({ state: 'ready', stateReason: null })
     expect(h.provisioner.hasPendingWork(DEFAULT_ORG_ID)).toBe(true)
   })
+
+  it('records the contended obligation durably, and a sweep re-drives it after a restart', async () => {
+    const h = await harness()
+    await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
+    const account = (await h.accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP))!
+    expect((await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))!.convergeOwedAt).toBeNull()
+
+    // A peer holds the account lease, so this pass writes no binding state.
+    expect(await h.accounts.claimLease(account.id, 'peer', new Date(Date.now() + 300_000), new Date())).toBe(true)
+    await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
+
+    // The obligation is on the row, not only in this process's timer — which is
+    // what a restart would otherwise erase along with the console's signal.
+    const owed = (await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))!
+    expect(owed.convergeOwedAt).not.toBeNull()
+    expect(owed).toMatchObject({ state: 'ready', stateReason: null })
+    expect((await h.bindings.listConvergeOwed(new Date(Date.now() + 1_000), 50)).map((b) => b.id)).toEqual([
+      h.binding.id
+    ])
+
+    // A fresh provisioner — the restart — rediscovers and discharges it.
+    await h.accounts.releaseLease(account.id, 'peer')
+    await h.restarted().sweepOwedConvergences(0)
+    const settled = (await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))!
+    expect(settled.convergeOwedAt).toBeNull()
+    expect(settled).toMatchObject({ state: 'ready', stateReason: null })
+    expect(await h.bindings.listConvergeOwed(new Date(Date.now() + 1_000), 50)).toHaveLength(0)
+  })
+
+  it('a route write waits out a background convergence instead of refusing it', async () => {
+    const h = await harness()
+    await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
+
+    // A background convergence holds the binding lease. The pre-activation
+    // ensure a route write runs must outlast that rather than 409 on a race
+    // with a perfectly healthy convergence.
+    const held = 'background-converge'
+    expect(
+      await h.bindings.markProviderMutationStarted(
+        DEFAULT_ORG_ID,
+        h.binding.id,
+        PROJECT,
+        held,
+        new Date(Date.now() + 600_000),
+        new Date()
+      )
+    ).toBe(true)
+    setTimeout(() => {
+      void h.bindings.endProviderMutation(DEFAULT_ORG_ID, h.binding.id, PROJECT, held)
+    }, 5_000)
+
+    const committed = await h.provisioner.provisionAgentAccount(
+      DEFAULT_ORG_ID,
+      PROJECT,
+      { agentId: AGENT, accessLevel: 30 },
+      async () => 'written'
+    )
+    expect(committed).toEqual({ ok: true, result: 'written' })
+    expect((await h.accounts.membershipsForBinding(h.binding.id)).map((m) => m.accessLevel)).toEqual([30])
+  }, 30_000)
+
+  it('reports a still-contended route write as transient, never as a degraded binding', async () => {
+    const h = await harness()
+    await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
+    // Held for longer than any request should wait.
+    expect(
+      await h.bindings.markProviderMutationStarted(
+        DEFAULT_ORG_ID,
+        h.binding.id,
+        PROJECT,
+        'stuck',
+        new Date(Date.now() + 600_000),
+        new Date()
+      )
+    ).toBe(true)
+
+    const refused = await h.provisioner.provisionAgentAccount(
+      DEFAULT_ORG_ID,
+      PROJECT,
+      { agentId: AGENT, accessLevel: 30 },
+      async () => 'written'
+    )
+    expect(refused).toMatchObject({ ok: false, retryable: true, reason: 'provisioning_or_cleanup_in_progress' })
+    // Transient wording, and the binding is untouched — a race is not a verdict.
+    expect(gitlabAccountUnavailableMessage('provisioning_or_cleanup_in_progress')).toContain('try again')
+    expect(await h.bindings.get(DEFAULT_ORG_ID, h.binding.id)).toMatchObject({ state: 'ready', stateReason: null })
+  }, 30_000)
 
   it('two concurrent provisions: exactly one runs, the other observes busy', async () => {
     const h = await harness()

@@ -94,8 +94,10 @@ const BACKGROUND_CONVERGE_ATTEMPTS = 92
 /** A contended pass re-drives itself after this, so nothing needs a second Repair. */
 const FOLLOW_UP_DELAY_MS = 30 * 1000
 
-/** Inline in a request: retry a contended attempt on a short bound, then report. */
-const AGENT_ACCOUNT_ATTEMPTS = 5
+/** Inline in a request: keep retrying a contended attempt for this long — long
+ *  enough to outlast a peer route write or to join a convergence already
+ *  running, short enough to answer the request — then report it as transient. */
+const AGENT_ACCOUNT_BUDGET_MS = 15_000
 
 /** §9.4 takeover result; every refusal leaves the binding exactly as it was.
  *  The binding row carries the convergence outcome, so the caller re-reads it. */
@@ -163,7 +165,7 @@ export class GitlabProvisioner {
     ) {
       // Held by a live peer, or the claim is gone/detached/in-cleanup: no
       // provider writes, and no state overwrite of whatever is in progress.
-      if (followUp) this.scheduleFollowUp(orgId, binding.projectId)
+      if (followUp) await this.scheduleFollowUp(orgId, bindingId, binding.projectId)
       return { state: 'busy', reason: 'provisioning_or_cleanup_in_progress' }
     }
     try {
@@ -196,14 +198,28 @@ export class GitlabProvisioner {
     return [...this.convergeRuns.keys()].some(mine) || [...this.pendingFollowUps].some(mine)
   }
 
-  /** Arm one follow-up for a contended pass; a project already owing one keeps it. */
-  private scheduleFollowUp(orgId: string, projectId: bigint): void {
+  /** Arm one follow-up for a contended pass; a project already owing one keeps it.
+   *  The obligation is ALSO written to the binding, because this timer does not
+   *  survive a restart and the contended pass wrote no state to rediscover. */
+  private async scheduleFollowUp(orgId: string, bindingId: string, projectId: bigint): Promise<void> {
+    // AWAITED: an obligation nobody waited for is not durable, and this write is
+    // the whole reason a restart can still find the work.
+    await this.deps.bindings
+      .update(orgId, bindingId, { convergeOwedAt: new Date(this.deps.clock.now()) })
+      .catch((err) => this.deps.log?.warn({ err, bindingId }, 'gitlab converge obligation not recorded'))
     const key = `${orgId}:${projectId}`
     if (this.pendingFollowUps.has(key)) return
     this.pendingFollowUps.add(key)
     this.deps.clock.setTimeout(() => {
       this.pendingFollowUps.delete(key)
-      void this.convergeProject(orgId, projectId, { followUp: false }).catch((err) =>
+      void (async () => {
+        // Re-read the obligation: anything that converged in the meantime — a
+        // later write, the sweep, another follow-up — has already discharged it,
+        // and re-running would only take the lease from whoever needs it next.
+        const owed = await this.deps.bindings.byProject(orgId, projectId)
+        if (!owed || owed.convergeOwedAt === null) return
+        await this.convergeProject(orgId, projectId, { followUp: false })
+      })().catch((err) =>
         this.deps.log?.warn({ err, projectId: projectId.toString() }, 'gitlab converge follow-up failed')
       )
     }, FOLLOW_UP_DELAY_MS)
@@ -235,6 +251,19 @@ export class GitlabProvisioner {
     await entry.done
   }
 
+  /**
+   * §10.2 convergence sweep: re-drive the bindings a contended pass still owes.
+   * The in-process follow-up handles the common case; this is what survives a
+   * restart, because a contended pass deliberately writes no state a degraded
+   * binding could be rediscovered by — only this neutral marker.
+   */
+  async sweepOwedConvergences(quietMs: number, limit = 50): Promise<void> {
+    const before = new Date(this.deps.clock.now() - quietMs)
+    for (const binding of await this.deps.bindings.listConvergeOwed(before, limit)) {
+      await this.convergeProject(binding.orgId, binding.projectId, { followUp: false })
+    }
+  }
+
   private async convergeProjectOnce(orgId: string, projectId: bigint, opts: ConvergeProjectOpts): Promise<void> {
     const binding = await this.deps.bindings.byProject(orgId, projectId)
     if (!binding) return
@@ -251,7 +280,7 @@ export class GitlabProvisioner {
     // as degraded on account of a race. A follow-up re-drives it so it heals
     // without anyone pressing Repair again.
     this.deps.log?.warn({ projectId: projectId.toString() }, 'gitlab converge still contended — retrying later')
-    if (opts.followUp !== false) this.scheduleFollowUp(orgId, projectId)
+    if (opts.followUp !== false) await this.scheduleFollowUp(orgId, binding.id, projectId)
   }
 
   /**
@@ -277,10 +306,18 @@ export class GitlabProvisioner {
     consumer: GitlabAccountConsumer,
     commit: (live: { projectPath: string }) => Promise<T>
   ): Promise<AgentAccountOutcome<T>> {
+    const deadline = this.deps.clock.now() + AGENT_ACCOUNT_BUDGET_MS
     let outcome = await this.agentAccountAttempt(orgId, projectId, consumer, commit)
-    for (let attempt = 0; !outcome.ok && outcome.retryable && attempt < AGENT_ACCOUNT_ATTEMPTS; attempt++) {
-      const delayMs = Math.min(1_000, 200 * 2 ** attempt)
-      await new Promise<void>((resolve) => this.deps.clock.setTimeout(() => resolve(), delayMs))
+    for (let attempt = 0; !outcome.ok && outcome.retryable && this.deps.clock.now() < deadline; attempt++) {
+      // A background convergence of this project can hold the binding lease for
+      // minutes, and out-waiting it attempt by attempt would spend this budget
+      // losing the same race. JOIN it instead: when it finishes, the account it
+      // was provisioning is usually the very one this write needs.
+      const running = this.convergeRuns.get(`${orgId}:${projectId}`)
+      const backoff = new Promise<void>((resolve) =>
+        this.deps.clock.setTimeout(() => resolve(), Math.min(1_000, 200 * 2 ** attempt))
+      )
+      await (running ? Promise.race([running.done, backoff]) : backoff)
       outcome = await this.agentAccountAttempt(orgId, projectId, consumer, commit)
     }
     return outcome
@@ -487,17 +524,24 @@ export class GitlabProvisioner {
   ): Promise<ProvisionOutcome> {
     try {
       const outcome = await this.converge(orgId, binding, token, owner)
+      // Settled either way ⇒ nothing is owed any more; only a contended pass
+      // leaves the marker standing for the sweep.
+      const settled = !contended(outcome) && binding.convergeOwedAt !== null ? { convergeOwedAt: null } : {}
       if (outcome.state === 'ready') {
-        await this.deps.bindings.update(orgId, binding.id, { state: 'ready', stateReason: null })
+        await this.deps.bindings.update(orgId, binding.id, { state: 'ready', stateReason: null, ...settled })
       } else if (outcome.state !== 'busy' && !contended(outcome)) {
         // A contended outcome is a lost fence, not a verdict on this binding:
         // persisting it would turn "someone else is converging right now" into a
         // sticky degraded state that only a racing repair could ever clear.
-        await this.deps.bindings.update(orgId, binding.id, { state: outcome.state, stateReason: outcome.reason })
+        await this.deps.bindings.update(orgId, binding.id, {
+          state: outcome.state,
+          stateReason: outcome.reason,
+          ...settled
+        })
       }
       // Nothing was written for a contended pass, so something must come back
       // for it: a create, a takeover, or a single repair has no loop of its own.
-      if (contended(outcome) && followUp) this.scheduleFollowUp(orgId, binding.projectId)
+      if (contended(outcome) && followUp) await this.scheduleFollowUp(orgId, binding.id, binding.projectId)
       this.deps.onConverged?.(orgId, binding.projectId)
       return outcome
     } catch (e) {
