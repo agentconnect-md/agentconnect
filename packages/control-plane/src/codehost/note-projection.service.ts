@@ -30,6 +30,7 @@ import type { Clock } from '../domain/clock.js'
 import { AgentId, HookId, type OrgId } from '../domain/ids.js'
 import type {
   AgentRepo,
+  GitlabAgentAccountRepo,
   CodeHostRunProjectionRecord,
   CodeHostRunProjectionRepo,
   GitlabProjectBindingRepo,
@@ -119,6 +120,9 @@ export interface CodeHostNoteProjectionDeps {
   runs: Pick<HookRepo, 'getRun'>
   agents: Pick<AgentRepo, 'getUnscoped'>
   bindings: Pick<GitlabProjectBindingRepo, 'byProject'>
+  /** §7.2: the acting agent's own account on the project — the identity the
+   *  effect lease is minted against, and so the epoch the daemon fences on. */
+  accounts: Pick<GitlabAgentAccountRepo, 'forAgentBinding'>
   orgs?: Pick<OrgRepo, 'slugById'>
   sender: NoteProjectionSender
   clock: Clock
@@ -224,6 +228,12 @@ export class CodeHostNoteProjectionService {
     if (!agent || agent.orgId !== edge.orgId) return
     const binding = await this.deps.bindings.byProject(edge.orgId, subject.projectId)
     if (!binding) return
+    // The daemon fences the write on the epoch of the lease it mints, and that
+    // lease is the ACTING AGENT's account (§7.2) — never the binding's counter,
+    // which advances on its own schedule and would refuse every write. An agent
+    // with no ready account there cannot write the note, so no projection opens.
+    const account = await this.deps.accounts.forAgentBinding(edge.orgId, edge.agentId, binding.id)
+    if (!account || account.serviceAccountUserId === null || account.state !== 'ready') return
 
     // A newer head preempts every older generation on the same merge request before the new one
     // opens, so exactly one note per head reads current.
@@ -246,7 +256,7 @@ export class CodeHostNoteProjectionService {
       desiredState: edge.state,
       currentDeliveryKey: edge.deliveryKey,
       currentRunAt: edge.at,
-      credentialEpoch: binding.credentialEpoch,
+      credentialEpoch: account.credentialEpoch,
       configRevision: BigInt(snapshot.configRevision),
       dispatchRevision: BigInt(snapshot.dispatchRevision),
       dispatchDaemonId: snapshot.dispatchDaemonId,

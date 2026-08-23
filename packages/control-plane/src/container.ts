@@ -1070,13 +1070,14 @@ export function buildContainer(
 
   // §16 informational run projection: the CP records the desired generation, the OWNING DAEMON
   // writes the note. Assembled with the GitLab administration surface, since the ledger's
-  // credential fence comes from a project binding.
+  // credential fence comes from the acting agent's account on a project binding.
   const codeHostNoteProjection = gitlab
     ? new CodeHostNoteProjectionService({
         projections: new PgCodeHostRunProjectionRepo(prisma),
         runs: repos.hook,
         agents: repos.agent,
         bindings: repos.gitlabProjectBinding,
+        accounts: repos.gitlabAgentAccount,
         orgs: repos.org,
         clock,
         ...(gitlabWebAppUrl ? { webAppUrl: gitlabWebAppUrl } : {}),

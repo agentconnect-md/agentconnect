@@ -14,12 +14,14 @@ import { FakeGitlab, type FakeGitlabOptions } from '../fakes/gitlab-api.js'
 import { GitlabOauthService } from '../../src/gitlab/oauth.service.js'
 import { GitlabProvisioner } from '../../src/gitlab/provisioner.js'
 import { GitlabAccountService } from '../../src/gitlab/account.service.js'
+import { CodeHostNoteProjectionService } from '../../src/codehost/note-projection.service.js'
 import { gitlabAgentAccountUsername } from '../../src/gitlab/api.js'
 import { GitlabMembershipAuthzService } from '../../src/gitlab/membership-authz.service.js'
 import { unionGitlabWebhookEvents } from '../../src/gitlab/webhook-events.js'
 import {
   PgAgentRepo,
   PgCodeHostRepositoryRepo,
+  PgCodeHostRunProjectionRepo,
   PgGitlabAgentAccountRepo,
   PgGitlabConnectionRepo,
   PgGitlabConnectionSecretStore,
@@ -34,8 +36,10 @@ import { makeSecretCipher } from '../../src/secrets/cipher.js'
 import { systemClock } from '../../src/domain/clock.js'
 import { AgentId, HookId, OrgId } from '../../src/domain/ids.js'
 import {
+  CODEHOST_NOTE_PROJECTION_V1_FEATURE,
   GITLAB_COM_V1_FEATURE,
   GITLAB_RERUN_V1_FEATURE,
+  type CodeHostNoteDesired,
   type RcHookAssign,
   type RcHookRerun,
   type RcHookRerunResult
@@ -141,7 +145,7 @@ async function harness(options: FakeGitlabOptions = {}) {
   // A second agent, so a test needing two hooks on one project clears the per-agent fence.
   const secondAgentId = randomUUID()
   await seedAgent(prisma, secondAgentId, { daemonId })
-  return { fake, a: running, hookRepo, bindings, accounts, provisioner, binding, agentId, secondAgentId }
+  return { fake, a: running, hookRepo, bindings, accounts, provisioner, binding, agentId, secondAgentId, daemonId }
 }
 
 /** A stand-in relay socket. `answer` decides how it replies to a correlated
@@ -881,5 +885,103 @@ describe('gitlab hook rerun — the Console "Run again" route (§16.1/§18.2)', 
     const none = await rerun(h.a, hookId, { kind: 'merge_request', iid: MR_IID })
     expect(none.statusCode).toBe(503)
     expect((none.json() as { code: string }).code).toBe('RELAY_UNAVAILABLE')
+  })
+})
+
+/**
+ * §16 run-projection credential fence, against real rows: the daemon mints its
+ * effect lease from the ACTING AGENT's account (§7.2) and refuses the write when
+ * the frame's epoch disagrees, so the projection must carry that account's
+ * counter — not the binding's, which advances independently.
+ */
+describe('gitlab run projection — the fence follows the agent account (§7.2/§16)', () => {
+  const PROJECTION_HEAD = 'a'.repeat(40)
+
+  function projectionService(sent: CodeHostNoteDesired[]) {
+    return new CodeHostNoteProjectionService({
+      projections: new PgCodeHostRunProjectionRepo(prisma),
+      runs: { getRun: async () => ({ projectionEpoch: 1n }) } as never,
+      agents: new PgAgentRepo(prisma),
+      bindings: new PgGitlabProjectBindingRepo(prisma),
+      accounts: new PgGitlabAgentAccountRepo(prisma),
+      clock: systemClock,
+      sender: {
+        daemonFeatures: () => [CODEHOST_NOTE_PROJECTION_V1_FEATURE],
+        send: (_daemonId: string, desired: CodeHostNoteDesired) => sent.push(desired)
+      }
+    })
+  }
+
+  function edge(agentId: string, hookId: string, daemonId: string, headSha = PROJECTION_HEAD) {
+    return {
+      hookId,
+      agentId,
+      deliveryKey: `delivery-${randomUUID().slice(0, 8)}`,
+      orgId: OrgId(DEFAULT_ORG_ID),
+      state: 'queued' as const,
+      gitlab: {
+        projectId: PROJECT.toString(),
+        projectPath: 'example-group/example-project',
+        target: { kind: 'merge_request' as const, iid: 42, headSha }
+      },
+      snapshot: {
+        configRevision: '1',
+        dispatchRevision: '1',
+        dispatchDaemonId: daemonId,
+        reviewPolicy: 'off' as const,
+        reportingMode: 'check' as const,
+        gateMode: 'informational' as const
+      },
+      at: new Date()
+    }
+  }
+
+  it('carries the agent account’s epoch, and follows it across a rotation', async () => {
+    const h = await harness()
+    const created = await h.a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: glBody(h.agentId) })
+    expect(created.statusCode).toBe(200)
+    const hookId = (created.json() as { id: string }).id
+    const account = (await h.accounts.byAgentRoot(DEFAULT_ORG_ID, h.agentId, 900n))!
+    const binding = (await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))!
+    // The two counters really do differ, which is what made the mismatch bite.
+    expect(account.credentialEpoch).not.toBe(binding.credentialEpoch)
+
+    const sent: CodeHostNoteDesired[] = []
+    await projectionService(sent).afterAccepted(edge(h.agentId, hookId, h.daemonId) as never)
+    expect(sent).toHaveLength(1)
+    expect(sent[0]!.credentialEpoch).toBe(account.credentialEpoch.toString())
+    const row = await prisma.codeHostRunProjection.findFirstOrThrow({ where: { hookId } })
+    expect(row.credentialEpoch).toBe(account.credentialEpoch)
+
+    // A PAT rotation bumps the account's epoch; the next generation follows it.
+    await new PgGitlabProjectCredentialRepo(prisma).commitRotation({
+      accountId: account.id,
+      purpose: 'effect',
+      externalTokenId: 4242n,
+      scopes: ['api'],
+      providerExpiresAt: new Date(Date.now() + 86_400_000),
+      sealedToken: 'glpat-rotated'
+    })
+    const rotated = (await h.accounts.get(account.id))!
+    expect(rotated.credentialEpoch).toBe(account.credentialEpoch + 1n)
+
+    const after: CodeHostNoteDesired[] = []
+    await projectionService(after).afterAccepted(edge(h.agentId, hookId, h.daemonId, 'b'.repeat(40)) as never)
+    expect(after[0]!.credentialEpoch).toBe(rotated.credentialEpoch.toString())
+  })
+
+  it('opens no projection while the agent has no ready account on the project', async () => {
+    const h = await harness()
+    const created = await h.a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: glBody(h.agentId) })
+    const hookId = (created.json() as { id: string }).id
+    const account = (await h.accounts.byAgentRoot(DEFAULT_ORG_ID, h.agentId, 900n))!
+    // Runtime drift: the account is being repaired, so its lease would be refused.
+    await h.accounts.update(account.id, { state: 'runtime_degraded', stateReason: 'drift' })
+
+    const sent: CodeHostNoteDesired[] = []
+    await projectionService(sent).afterAccepted(edge(h.agentId, hookId, h.daemonId) as never)
+    // Fail closed, like every other missing-authority early return.
+    expect(sent).toHaveLength(0)
+    expect(await prisma.codeHostRunProjection.count({ where: { hookId } })).toBe(0)
   })
 })

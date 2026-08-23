@@ -123,19 +123,28 @@ function harness(
     setDesired?: boolean
     retiredOwner?: boolean
     runEpoch?: bigint | null
+    /** The acting agent's §7.2 account on the project; null ⇒ it has none. */
+    account?: { credentialEpoch: bigint; state?: string; serviceAccountUserId?: bigint | null } | null
   } = {}
 ) {
   const row = options.row ?? projection()
+  // The stored row carries whatever converge computed, as the real repository
+  // does — the dispatched frame is then read back from it.
+  let stored = row
   const sent: Array<{ daemonId: string; desired: CodeHostNoteDesired; orgId: string }> = []
   const projections = {
-    upsert: vi.fn(async () => (options.retiredOwner ? null : row)),
+    upsert: vi.fn(async (input: { credentialEpoch: bigint }) => {
+      if (options.retiredOwner) return null
+      stored = { ...row, credentialEpoch: input.credentialEpoch }
+      return stored
+    }),
     setDesired: vi.fn(async () => options.setDesired ?? true),
     supersede: vi.fn(async () => 0),
     beginWrite: vi.fn(async () => options.beginWrite ?? true),
     completeWrite: vi.fn(async () => true),
     failWrite: vi.fn(async () => true),
     advancePending: vi.fn(async () => null),
-    get: vi.fn(async () => row)
+    get: vi.fn(async () => stored)
   } satisfies Record<keyof CodeHostRunProjectionRepo, unknown> as unknown as CodeHostRunProjectionRepo & {
     upsert: ReturnType<typeof vi.fn>
     setDesired: ReturnType<typeof vi.fn>
@@ -149,11 +158,19 @@ function harness(
   const runs = {
     getRun: vi.fn(async () => ({ projectionEpoch: options.runEpoch === undefined ? 1n : options.runEpoch }))
   }
+  // The account's own epoch, deliberately DIFFERENT from the binding's: the two
+  // counters advance independently and the daemon fences on the account's.
+  const account =
+    options.account === undefined
+      ? { credentialEpoch: 7n, state: 'ready', serviceAccountUserId: 9042n }
+      : options.account
+  const accounts = { forAgentBinding: vi.fn(async () => account) }
   const service = new CodeHostNoteProjectionService({
     projections,
     runs: runs as never,
     agents: { getUnscoped: vi.fn(async () => agent) },
-    bindings: { byProject: vi.fn(async () => ({ credentialEpoch: 2n })) } as never,
+    bindings: { byProject: vi.fn(async () => ({ id: 'binding-1', credentialEpoch: 2n })) } as never,
+    accounts: accounts as never,
     orgs: { slugById: vi.fn(async () => 'acme') },
     webAppUrl: 'https://console.example.test',
     clock: new FakeClock(NOW),
@@ -162,7 +179,7 @@ function harness(
       send: (id, desired, org) => sent.push({ daemonId: id, desired, orgId: org })
     }
   })
-  return { service, projections, sent, row, runs }
+  return { service, projections, sent, row, runs, accounts }
 }
 
 describe('reportedNoteState (gitlab-com-integration.md §16)', () => {
@@ -208,10 +225,35 @@ describe('CodeHostNoteProjectionService', () => {
     expect(desired.projectId).toBe('4455667')
     expect(desired.mergeRequestIid).toBe(42)
     expect(desired.headSha).toBe(HEAD)
-    expect(desired.credentialEpoch).toBe('2')
+    // §7.2: the ACTING AGENT's account epoch, never the binding's (2n here) —
+    // the daemon mints its effect lease against that account and fences on it.
+    expect(desired.credentialEpoch).toBe('7')
     // The fence echoes the ACCEPTED tuple verbatim, never a value the projection invented.
     expect(desired.snapshot).toEqual(snapshot)
     expect(desired.writeMarker).not.toBe(desired.projectionKey)
+  })
+
+  it('follows the account epoch across a rotation, and asks for the ACTING agent’s account', async () => {
+    const rotated = harness({ account: { credentialEpoch: 8n, state: 'ready', serviceAccountUserId: 9042n } })
+    await rotated.service.afterAccepted(edge())
+    expect(rotated.sent[0]!.desired.credentialEpoch).toBe('8')
+    // Resolved for this agent on this project's binding — the same identity the
+    // effect lease is minted against, so the two counters cannot diverge.
+    expect(rotated.accounts.forAgentBinding).toHaveBeenCalledWith(orgId, agentId, 'binding-1')
+  })
+
+  it('opens no projection when the agent has no usable account on the project (§7.2)', async () => {
+    for (const account of [
+      null,
+      { credentialEpoch: 7n, state: 'provisioning', serviceAccountUserId: 9042n },
+      { credentialEpoch: 7n, state: 'ready', serviceAccountUserId: null }
+    ]) {
+      const { service, projections, sent } = harness({ account })
+      await service.afterAccepted(edge())
+      // Fail closed: the note could never be written, so no row and no frame.
+      expect(projections.upsert).not.toHaveBeenCalled()
+      expect(sent).toHaveLength(0)
+    }
   })
 
   it('advances the generation to running when the start barrier is crossed', async () => {
@@ -259,7 +301,10 @@ describe('CodeHostNoteProjectionService', () => {
       projections,
       runs: runs as never,
       agents: { getUnscoped: vi.fn(async () => agent) },
-      bindings: { byProject: vi.fn(async () => ({ credentialEpoch: 2n })) } as never,
+      bindings: { byProject: vi.fn(async () => ({ id: 'binding-1', credentialEpoch: 2n })) } as never,
+      accounts: {
+        forAgentBinding: vi.fn(async () => ({ credentialEpoch: 7n, state: 'ready', serviceAccountUserId: 9042n }))
+      } as never,
       clock: new FakeClock(NOW),
       sender: { daemonFeatures: () => undefined, send: () => sent.push(undefined as never) }
     })
