@@ -582,6 +582,55 @@ describe('Daemon session lifecycle (#118)', () => {
     await daemon.stop()
   }, 20_000)
 
+  it('waits out a workspace mutation instead of failing an admitted cold host start', async () => {
+    const host = quietHost()
+    const factory = vi.fn(() => host as any)
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold(), hostFactory: factory })
+    await daemon.start()
+
+    // A per-session worktree cleanup fences the WHOLE agent, so a cold turn admitted just
+    // before it used to die on an unrelated session's cleanup rather than wait the seconds out.
+    let releaseMutation!: () => void
+    const mutationBlocked = new Promise<void>((resolve) => (releaseMutation = resolve))
+    const mutating = (daemon as any).withWorkspaceAdmissionFence('bot-a', () => mutationBlocked) as Promise<void>
+    expect((daemon as any).workspaceDispatchFences.has('bot-a')).toBe(true)
+
+    const starting = (daemon as any).ensureHostAsync('bot-a') as Promise<unknown>
+    const settled = vi.fn()
+    void starting.then(settled, settled)
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    // Still the old invariant: no child is constructed while the mutation holds the tree.
+    expect(settled).not.toHaveBeenCalled()
+    expect(factory).not.toHaveBeenCalled()
+
+    releaseMutation()
+    await mutating
+    await expect(starting).resolves.toBe(host)
+    expect(host.start).toHaveBeenCalledOnce()
+    await daemon.stop()
+  }, 20_000)
+
+  it('still refuses a host start when a hard gate closes while the mutation drains', async () => {
+    const factory = vi.fn(() => quietHost() as any)
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold(), hostFactory: factory })
+    await daemon.start()
+
+    let releaseMutation!: () => void
+    const mutationBlocked = new Promise<void>((resolve) => (releaseMutation = resolve))
+    const mutating = (daemon as any).withWorkspaceAdmissionFence('bot-a', () => mutationBlocked) as Promise<void>
+    const starting = (daemon as any).ensureHostAsync('bot-a') as Promise<unknown>
+    await new Promise<void>((resolve) => setImmediate(resolve))
+
+    // Joining the fence must not launder a real refusal: the gates are re-read on the far side.
+    ;(daemon as any).drainingAgents.add('bot-a')
+    releaseMutation()
+    await mutating
+    await expect(starting).rejects.toThrow(/agent is draining/)
+    expect(factory).not.toHaveBeenCalled()
+    ;(daemon as any).drainingAgents.delete('bot-a')
+    await daemon.stop()
+  }, 20_000)
+
   it('serializes workspace preparation and file publication in both admission orders', async () => {
     const daemon = new Daemon({
       slackAppFactory: fakeSlackAppFactory(),
