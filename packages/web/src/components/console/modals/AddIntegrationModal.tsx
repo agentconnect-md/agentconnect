@@ -49,6 +49,7 @@ import {
   creatorLabel,
   fetchAgentHooks,
   fetchAgentRepos,
+  repoAuthProvider,
   fetchGithubInstallationRepo,
   fetchGithubInstallations,
   fetchGithubInstallUrl,
@@ -821,6 +822,13 @@ export default function AddIntegrationModal({
     [agentHooksData]
   )
   const glAlreadyWatched = !!glProject && glWatchedProjects.has(glProject)
+  // §8.3: a trigger never creates a grant, so the watched project must already be the
+  // agent's workspace project or an authorized additional one — the CP 409s anything
+  // else, and saying so here beats letting the user reach a refusal at the last click.
+  const glProjectAuthorized =
+    !glProject ||
+    (agent.workspace.mode === 'gitlab' && agent.workspace.projectId === glProject) ||
+    authorizedRepos.some((r) => repoAuthProvider(r) === 'gitlab' && r.repoId === glProject)
 
   // One subscription = one hook row on this agent, named after the project.
   const submitGitlab = async () => {
@@ -828,6 +836,13 @@ export default function AddIntegrationModal({
     if (glAlreadyWatched) {
       setErr(
         `This agent already watches ${glPicked?.projectPath ?? 'this project'} — edit its events on the agent page instead.`
+      )
+      return
+    }
+    // §8.3, the same refusal the CP would return — said here instead of after a round trip.
+    if (!glProjectAuthorized) {
+      setErr(
+        `This agent isn’t authorized for ${glPicked?.projectPath ?? 'this project'} — authorize the project on the agent’s Workspace tab, or make it the agent’s workspace project, then create the trigger.`
       )
       return
     }
@@ -955,7 +970,7 @@ export default function AddIntegrationModal({
           ? {
               label: 'Connect',
               act: () => void submitGitlab(),
-              enabled: !!glProject && !glAlreadyWatched && glFams.size > 0,
+              enabled: !!glProject && !glAlreadyWatched && glProjectAuthorized && glFams.size > 0,
               hidden: false
             }
           : mode === 'existing'
@@ -1692,6 +1707,18 @@ export default function AddIntegrationModal({
                     {glMatches.length === 0 && <div className="fnohit">No projects match &ldquo;{glQ}&rdquo;</div>}
                   </GitlabProjectField>
                 </div>
+                {/* §8.3 — stated where the pick is, not only inside the closed dropdown. */}
+                {!glProjectAuthorized && (
+                  <div className="mb-4 flex items-start gap-2 rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) px-3 py-[11px] font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">
+                    <Icon name="shield-alert" size={14} className="mt-[1px] flex-none" />
+                    <span>
+                      This agent isn&rsquo;t authorized for{' '}
+                      <span className="mono">{glPicked?.projectPath ?? 'this project'}</span>. Authorize the project on
+                      the agent&rsquo;s Workspace tab, or make it the agent&rsquo;s workspace project, then create the
+                      trigger.
+                    </span>
+                  </div>
+                )}
                 <div className="fldlbl mb-2">Listen for</div>
                 <div className="mb-4 grid grid-cols-1 gap-[9px] min-[440px]:grid-cols-2">
                   {GL_FAMILIES.map((r) => {

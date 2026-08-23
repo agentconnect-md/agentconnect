@@ -28,7 +28,7 @@ import useSWR from 'swr'
 import { GithubMark, GitlabMark, LoadingState } from '@/components/marks'
 import { Icon } from '@/components/ui'
 import { isPoolPlacementKind, type Agent, type WorkspaceStatusInfo } from '@/lib/data'
-import { creatorLabel, fetchAgentRepos } from '@/lib/api'
+import { creatorLabel, fetchAgentRepos, repoAuthProvider } from '@/lib/api'
 import { useOrgs } from '@/lib/org-context'
 import { useProfile } from '@/lib/profile'
 import { consoleKeys } from '@/lib/swr-keys'
@@ -123,7 +123,11 @@ export function WorkspaceCard({
   const manualWorkspaceAuthorized =
     ws.mode === 'github' &&
     !isGithubApp &&
-    repos.some((authorization) => authorization.repoFullName.toLowerCase() === ws.repo.toLowerCase())
+    repos.some(
+      (authorization) =>
+        repoAuthProvider(authorization) === 'github' &&
+        authorization.repoFullName.toLowerCase() === ws.repo.toLowerCase()
+    )
   // A manual checkout has no App installation to mint a write token from, so its
   // effective workspace access is read regardless of the stored preference.
   const workspaceAccess =
@@ -285,7 +289,7 @@ export function WorkspaceCard({
                 title={`${r.repoFullName} — ${r.access} access${poolPlaced ? '' : ', checked out alongside the workspace'}; added by ${creatorLabel(r.createdBy, me)}`}
               >
                 <span className="imark h-[14px] w-[14px] border-0 bg-transparent">
-                  <GithubMark />
+                  {repoAuthProvider(r) === 'gitlab' ? <GitlabMark /> : <GithubMark />}
                 </span>
                 <span className="mono text-[11.5px] text-(--text-primary)">{r.repoFullName}</span>
                 <span className={REPOSITORY_ACCESS_BADGE[r.access]}>{r.access}</span>

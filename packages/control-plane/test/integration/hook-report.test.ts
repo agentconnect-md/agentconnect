@@ -574,7 +574,10 @@ describe('HookRun bookkeeping — delivery opens, completion closes', () => {
     expect(
       await repo().claimRetryableDeliveryRedelivery('projection-before-recovery', [HookId(hookId)], firedAt, [30_000])
     ).toBe(true)
-    await prisma.agent.update({ where: { id: agentId }, data: { workspaceRepoId: hook.repoId, gitAccess: 'write' } })
+    await prisma.agent.update({
+      where: { id: agentId },
+      data: { workspaceMode: 'github', workspaceRepoId: hook.repoId, gitAccess: 'write' }
+    })
     const failed = (await repo().getRun(HookId(hookId), 'projection-before-recovery'))!
     const projection = await repo().upsertReviewProjection({
       hookId: HookId(hookId),

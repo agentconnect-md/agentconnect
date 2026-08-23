@@ -26,6 +26,7 @@ const mocks = vi.hoisted(() => ({
   fetchGitlabConnections: vi.fn(),
   searchGitlabProjects: vi.fn(),
   createGitlabProject: vi.fn(),
+  fetchAgentRepos: vi.fn(),
   daemons: [] as unknown[]
 }))
 
@@ -49,7 +50,7 @@ vi.mock('@/lib/data-context', () => ({
 vi.mock('@/lib/api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/api')>()),
   fetchAgentHooks: vi.fn(async () => []),
-  fetchAgentRepos: vi.fn(async () => []),
+  fetchAgentRepos: mocks.fetchAgentRepos,
   fetchGithubInstallations: vi.fn(async () => ({ enabled: false, installations: [] })),
   fetchGithubInstallUrl: vi.fn(async () => null),
   fetchGithubRepoRoster: vi.fn(async () => ({ repos: [], privateReposHidden: false, failed: false })),
@@ -120,10 +121,23 @@ async function pickProject() {
   await act(async () => clickText('acme/platform')?.click())
 }
 
+/** The agent already holds the project a trigger may watch (§8.3) — the precondition
+ *  every compilation test is about something else than. */
+const authorization = {
+  id: 'ra-1',
+  provider: 'gitlab' as const,
+  repoId: '4210',
+  repoFullName: 'acme/platform',
+  access: 'read' as const,
+  createdBy: null,
+  createdAt: '2026-08-01T00:00:00.000Z'
+}
+
 /** One usable connection with nothing else on offer; a test that needs another shape overrides it. */
 beforeEach(() => {
   mocks.fetchGitlabConnections.mockResolvedValue({ enabled: true, connections: [connection] })
   mocks.searchGitlabProjects.mockResolvedValue({ projects: [], nextPage: null })
+  mocks.fetchAgentRepos.mockResolvedValue([authorization])
 })
 
 /** Candidates are searched on GitLab behind a debounce; let it elapse for real. */
@@ -143,6 +157,7 @@ afterEach(async () => {
   mocks.fetchGitlabConnections.mockReset()
   mocks.searchGitlabProjects.mockReset()
   mocks.createGitlabProject.mockReset()
+  mocks.fetchAgentRepos.mockReset()
   mocks.daemons = []
 })
 
@@ -350,5 +365,45 @@ describe('AddIntegrationModal, GitLab trigger', () => {
     expect(mocks.createGitlabHook).toHaveBeenCalledWith(
       expect.objectContaining({ agentId: 'agent-a', name: 'acme/platform', projectId: '4210' })
     )
+  })
+
+  // Each case renders a DISTINCT agent id: the grant read is cached per agent, so
+  // reusing one would serve the previous case's authorization set.
+  async function renderAgent(over: Record<string, unknown>) {
+    host = document.createElement('div')
+    document.body.append(host)
+    root = createRoot(host)
+    await act(async () => {
+      root?.render(<AddIntegrationModal agent={{ ...agent, ...over } as unknown as Agent} onClose={() => undefined} />)
+    })
+  }
+
+  it('refuses a project the agent is not authorized for, and names the fix', async () => {
+    // A trigger never creates a grant (§8.3): the project must already be the
+    // workspace project or an authorized additional one, so the wizard says so
+    // rather than letting the create reach the same refusal from the server.
+    mocks.fetchGitlabProjects.mockResolvedValue([project])
+    mocks.fetchAgentRepos.mockResolvedValue([])
+    await renderAgent({ id: 'agent-unauthorized' })
+    await pickProject()
+    await settleSearch()
+
+    expect(document.body.textContent).toContain('isn’t authorized for')
+    expect(document.body.textContent).toContain('Workspace tab')
+
+    await act(async () => clickText('Connect')?.click())
+    expect(mocks.createGitlabHook).not.toHaveBeenCalled()
+  })
+
+  it('accepts the agent’s own workspace project without a separate grant', async () => {
+    mocks.fetchGitlabProjects.mockResolvedValue([project])
+    mocks.fetchAgentRepos.mockResolvedValue([])
+    await renderAgent({ id: 'agent-workspace', workspace: { mode: 'gitlab', projectId: '4210' } })
+    await pickProject()
+    await settleSearch()
+
+    expect(document.body.textContent).not.toContain('isn’t authorized for')
+    await act(async () => clickText('Connect')?.click())
+    expect(mocks.createGitlabHook).toHaveBeenCalledWith(expect.objectContaining({ projectId: '4210' }))
   })
 })

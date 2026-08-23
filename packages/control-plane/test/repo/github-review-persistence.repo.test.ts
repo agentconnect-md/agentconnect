@@ -426,7 +426,7 @@ describe('R1/R2a persistence foundation', () => {
       installationId: 'workspace-installation',
       gitAccess: 'write'
     })
-    await prisma.agent.update({ where: { id: agentId }, data: { workspaceRepoId: repoId } })
+    await prisma.agent.update({ where: { id: agentId }, data: { workspaceMode: 'github', workspaceRepoId: repoId } })
     const original = await agents.get(OrgId(DEFAULT_ORG_ID), agentId)
     if (!original || original.workspace.mode !== 'github') throw new Error('expected GitHub workspace fixture')
 
@@ -701,7 +701,7 @@ describe('R1/R2a persistence foundation', () => {
     const repoId = 777n
     const reportSha = 'c'.repeat(40)
     await seedAgent(prisma, agentId, { daemonId: D1, gitAccess: 'write', name: 'concurrent-agent' })
-    await prisma.agent.update({ where: { id: agentId }, data: { workspaceRepoId: repoId } })
+    await prisma.agent.update({ where: { id: agentId }, data: { workspaceMode: 'github', workspaceRepoId: repoId } })
     const hook = await repo.upsert({
       hookId,
       orgId: OrgId(DEFAULT_ORG_ID),
@@ -1757,7 +1757,10 @@ describe('R1/R2a persistence foundation', () => {
     await seedDaemon(prisma, D1)
     const agentId = AgentId(randomUUID())
     await seedAgent(prisma, agentId, { daemonId: D1, name: 'review-agent' })
-    await prisma.agent.update({ where: { id: agentId }, data: { workspaceRepoId: 22n, gitAccess: 'write' } })
+    await prisma.agent.update({
+      where: { id: agentId },
+      data: { workspaceMode: 'github', workspaceRepoId: 22n, gitAccess: 'write' }
+    })
     const repo = new PgHookRepo(prisma)
     const hookId = HookId(randomUUID())
     const hook = await repo.upsert({
@@ -2198,7 +2201,10 @@ describe('R1/R2a persistence foundation', () => {
     await seedDaemon(prisma, D1)
     const agentId = AgentId(randomUUID())
     await seedAgent(prisma, agentId, { daemonId: D1, name: 'review-agent' })
-    await prisma.agent.update({ where: { id: agentId }, data: { workspaceRepoId: 24n, gitAccess: 'write' } })
+    await prisma.agent.update({
+      where: { id: agentId },
+      data: { workspaceMode: 'github', workspaceRepoId: 24n, gitAccess: 'write' }
+    })
     const repo = new PgHookRepo(prisma)
     const hookId = HookId(randomUUID())
     const hook = await repo.upsert({
@@ -2352,7 +2358,7 @@ describe('R1/R2a persistence foundation', () => {
     await seedAgent(prisma, agentId, { daemonId: D1, name: 'quota-agent' })
     await prisma.agent.update({
       where: { id: agentId },
-      data: { status: 'active', workspaceRepoId: 23n, gitAccess: 'write' }
+      data: { status: 'active', workspaceMode: 'github', workspaceRepoId: 23n, gitAccess: 'write' }
     })
     const repo = new PgHookRepo(prisma)
     const hookId = HookId(randomUUID())

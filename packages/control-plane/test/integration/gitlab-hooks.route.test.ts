@@ -145,7 +145,29 @@ async function harness(options: FakeGitlabOptions = {}) {
   // A second agent, so a test needing two hooks on one project clears the per-agent fence.
   const secondAgentId = randomUUID()
   await seedAgent(prisma, secondAgentId, { daemonId })
-  return { fake, a: running, hookRepo, bindings, accounts, provisioner, binding, agentId, secondAgentId, daemonId }
+  // §8.3: a trigger never creates a grant, so the agent must already hold the
+  // project. Written straight to the row, not through the authorize route, so the
+  // account these tests watch the hook write provision is still absent. Only the
+  // first agent holds one by default — a grant is an authorization, so granting an
+  // agent no test needs would make it a consumer convergence has to serve.
+  const authorize = (id: string, projectId = PROJECT, path = 'example-group/example-project') =>
+    prisma.agentRepoAuthorization.create({
+      data: { agentId: id, provider: 'gitlab', repoId: projectId, repoFullName: path, access: 'write' }
+    })
+  await authorize(agentId)
+  return {
+    fake,
+    a: running,
+    hookRepo,
+    bindings,
+    accounts,
+    provisioner,
+    binding,
+    agentId,
+    secondAgentId,
+    daemonId,
+    authorize
+  }
 }
 
 /** A stand-in relay socket. `answer` decides how it replies to a correlated
@@ -247,21 +269,10 @@ describe('gitlab hooks — routes, compile, webhook converge (§8.3/§11.1/§11.
     expect(h.fake.members.get(Number(account.serviceAccountUserId))).toBe(30)
   })
 
-  it('rolls back the account a refused hook write speculatively created', async () => {
-    // The account is created, then its PATs come back out of policy: the ensure
-    // fails with real provider state already behind it, and the hook row that
-    // would have made the agent a consumer is never written. Nothing would ever
-    // visit that account again, so the write has to undo it (§7.2).
-    const h = await harness({ patExpiryOverride: null })
-    const created = await h.a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: glBody(h.agentId) })
-    expect(created.statusCode).toBe(409)
-    expect(await h.hookRepo.listForAgent(AgentId(h.agentId))).toHaveLength(0)
-
-    // No account row, no service account left in the group, no live token.
-    expect(await h.accounts.listForAgent(DEFAULT_ORG_ID, h.agentId)).toHaveLength(0)
-    expect(h.fake.serviceAccounts).toHaveLength(0)
-    expect([...h.fake.tokens.values()].every((token) => token.revoked)).toBe(true)
-  })
+  // The account a refused hook write speculatively created is NOT rolled back here:
+  // §8.3 makes the hook agent an authorized consumer before the write, so the
+  // membership survives it either way. The full undo is reachable where the write
+  // really is what makes the agent a consumer — see the authorize route's own suite.
 
   it('keeps a membership another authorization still earns when a hook write is refused', async () => {
     const h = await harness()
@@ -308,6 +319,7 @@ describe('gitlab hooks — routes, compile, webhook converge (§8.3/§11.1/§11.
     expect(h.fake.serviceAccounts).toHaveLength(0)
 
     // Disabling an enabled hook is likewise not blocked by the outage.
+    await h.authorize(h.secondAgentId)
     h.fake.opts.refuseServiceAccountQuota = false
     const enabled = await h.a.app.inject({
       method: 'POST',
@@ -331,7 +343,74 @@ describe('gitlab hooks — routes, compile, webhook converge (§8.3/§11.1/§11.
     expect(created.statusCode).toBe(409)
     expect((created.json() as { message: string }).message).toContain('no service-account slots left')
     expect(await h.hookRepo.listForAgent(AgentId(h.agentId))).toHaveLength(0)
-    expect(await h.accounts.membershipsForBinding(h.binding.id)).toHaveLength(0)
+    // The group refused the slot, so no bot exists there to carry the membership.
+    expect(h.fake.serviceAccounts).toHaveLength(0)
+  })
+
+  it('refuses a project the agent does not hold, and accepts it once authorized (§8.3)', async () => {
+    // Creating a hook never creates a grant. Without one the trigger would fire
+    // into a review whose exact checkout can get no credential, so the route
+    // refuses rather than leaving the agent to post a "could not review" note.
+    const h = await harness()
+    const unauthorized = await h.a.app.inject({
+      method: 'POST',
+      url: `${ORG}/hooks`,
+      payload: glBody(h.secondAgentId)
+    })
+    expect(unauthorized.statusCode).toBe(409)
+    const message = (unauthorized.json() as { message: string }).message
+    expect(message).toContain('example-group/example-project is not authorized for this agent')
+    // Actionable, and in GitLab's own nouns.
+    expect(message).toContain('authorize the project')
+    expect(message).toContain('workspace project')
+    expect(await h.hookRepo.listForAgent(AgentId(h.secondAgentId))).toHaveLength(0)
+
+    await h.authorize(h.secondAgentId)
+    const authorized = await h.a.app.inject({
+      method: 'POST',
+      url: `${ORG}/hooks`,
+      payload: glBody(h.secondAgentId)
+    })
+    expect(authorized.statusCode).toBe(200)
+  })
+
+  it('accepts the agent’s own workspace project with no separate grant (§8.3)', async () => {
+    const h = await harness()
+    await prisma.agent.update({
+      where: { id: h.secondAgentId },
+      data: {
+        workspaceMode: 'gitlab',
+        workspaceRepoId: PROJECT,
+        gitRepo: 'https://gitlab.com/example-group/example-project'
+      }
+    })
+    const created = await h.a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: glBody(h.secondAgentId) })
+    expect(created.statusCode).toBe(200)
+  })
+
+  it('grandfathers an existing hook through edits that do not change its binding (§8.3)', async () => {
+    const h = await harness()
+    const created = await h.a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: glBody(h.agentId) })
+    expect(created.statusCode).toBe(200)
+    const hookId = (created.json() as { id: string }).id
+    // The grant goes away underneath it; the definition itself may still be edited.
+    await prisma.agentRepoAuthorization.deleteMany({ where: { agentId: h.agentId } })
+
+    const edited = await h.a.app.inject({
+      method: 'PUT',
+      url: `${ORG}/hooks/${hookId}`,
+      payload: { ...glBody(h.agentId), name: 'renamed' }
+    })
+    expect(edited.statusCode).toBe(200)
+    expect((edited.json() as { name: string }).name).toBe('renamed')
+
+    // Moving it onto another agent IS a binding change, and that is refused.
+    const moved = await h.a.app.inject({
+      method: 'PUT',
+      url: `${ORG}/hooks/${hookId}`,
+      payload: glBody(h.secondAgentId)
+    })
+    expect(moved.statusCode).toBe(409)
   })
 
   it('create is fenced on a managed binding; a second hook on the same project+agent is a 409', async () => {
@@ -383,6 +462,7 @@ describe('gitlab hooks — routes, compile, webhook converge (§8.3/§11.1/§11.
     expect((plain.json() as { reviewPolicy: string }).reviewPolicy).toBe('off')
 
     // A second agent so the one-hook-per-(agent, project) fence does not fire.
+    await h.authorize(h.secondAgentId)
     const second = await h.a.app.inject({
       method: 'POST',
       url: `${ORG}/hooks`,
@@ -493,6 +573,8 @@ describe('gitlab hooks — binding lifecycle rebroadcast (§11.1/§11.3 round 2)
       installerConnectionId: connection.id
     })
     expect(await h.provisioner.provision(DEFAULT_ORG_ID, other.id)).toEqual({ state: 'ready' })
+    // Retargeting is a binding change, so the destination needs its own grant (§8.3).
+    await h.authorize(h.agentId, OTHER, 'example-group/other-project')
 
     const created = await h.a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: glBody(h.agentId) })
     expect(created.statusCode).toBe(200)

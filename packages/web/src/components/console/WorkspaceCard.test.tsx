@@ -8,7 +8,8 @@ vi.mock('swr', () => ({
 }))
 vi.mock('@/lib/api', () => ({
   creatorLabel: () => 'Dana Reyes',
-  fetchAgentRepos: vi.fn()
+  fetchAgentRepos: vi.fn(),
+  repoAuthProvider: (row: { provider?: string }) => row.provider ?? 'github'
 }))
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ replace: vi.fn() }),
