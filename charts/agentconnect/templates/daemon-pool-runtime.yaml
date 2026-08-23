@@ -63,6 +63,13 @@ spec:
     spec:
       # The only credential an agent gets is the audience-scoped projection below.
       automountServiceAccountToken: false
+      {{- with $.Values.imagePullSecrets }}
+      # The same install-wide pull secrets every chart-rendered pod carries: these pods are
+      # created by the agent-sandbox controller from this template, so an install pulling
+      # from a private mirror needs them here or the first sandbox stops in ImagePullBackOff.
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       # Together with the container's securityContext this is the `restricted` Pod
       # Security profile the agents namespace enforces (templates/agents-namespace.yaml).
       securityContext:
@@ -87,6 +94,12 @@ spec:
             # Where the shim rooted the agent's workspace — the `workspace` claim's mount.
             - name: AC_SHIM_WORKSPACE_ROOT
               value: /agent
+            # The port the in-sandbox shim listens on. One value serves all three surfaces —
+            # this listener, the member's dialer (AC_K8S_SHIM_PORT), and the shim ingress
+            # NetworkPolicy — so an override cannot leave the shim on its baked-in default
+            # while the other two move.
+            - name: AC_SHIM_PORT
+              value: {{ $.Values.daemonPool.shimPort | quote }}
             {{- if $.Values.modelEgress.enabled }}
             # Point the runtimes at a managed egress endpoint instead of the provider. The shim
             # maps these onto the runtime's own ANTHROPIC_*/OPENAI_* at spawn, fill-in only —

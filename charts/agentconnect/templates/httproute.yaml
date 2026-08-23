@@ -183,6 +183,7 @@ the relay host (relay.host, else apiHost, else the website host):
   /webhooks/gitlab              → relay pool (GitLab project webhook, Standard Webhooks)
   /slack/events                 → relay pool (Slack Events API, http transport)
   /slack/interactions           → relay pool (Slack interactivity + block_suggestion)
+  /feishu/events                → relay pool (Feishu/Lark HTTP event callback)
   /relays/<ordinal>/rd/ws       → that exact relay pod, rewritten to /rd/ws
 When the relay host == apiHost / the website host, Gateway API merges these rules with
 that host's existing route (ranked by path specificity) — no new listener needed. A
@@ -248,6 +249,9 @@ spec:
         - path:
             type: PathPrefix
             value: /slack/interactions
+        - path:
+            type: PathPrefix
+            value: /feishu/events
       backendRefs:
         - name: {{ include "agentconnect.fullname" . }}-relay
           port: {{ .Values.relay.port }}

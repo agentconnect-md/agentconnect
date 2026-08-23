@@ -61,14 +61,16 @@ image:
   # GitHub Container Registry. Full ref = "{registry}/{component.image}:{tag}".
   registry: ghcr.io/agentconnect-md
   # Shared FALLBACK tag for every component; each component may pin its own
-  # `<component>.tag` (below), which wins over this. Pass an immutable release
-  # version (vX.Y.Z / vX.Y.Z-rc.N) here, plus a per-component tag wherever a
+  # `<component>.tag` (below), which wins over this. Empty ⇒ Chart.appVersion,
+  # which the release pipeline stamps to the chart's own release — so installing
+  # chart version X.Y.Z runs that release's images with nothing to set here.
+  # Override with an immutable release version (vX.Y.Z / vX.Y.Z-rc.N) to run a
+  # different release than the chart's, plus a per-component tag wherever a
   # component should keep its pod template — and not restart — across a release
-  # that did not change it. This `latest` default is only for manual installs;
-  # empty ⇒ Chart.appVersion.
-  tag: latest
-  # Always re-pull — the default `latest` tag is mutable. (Harmless with an
-  # immutable version tag.)
+  # that did not change it.
+  tag: ''
+  # Always re-pull: protects an install that overrides the tag with a mutable
+  # one (e.g. `latest`), and is harmless with the immutable default.
   pullPolicy: Always
 
 # Registry pull secrets, referenced BY NAME — the chart never holds the credential

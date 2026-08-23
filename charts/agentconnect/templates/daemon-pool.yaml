@@ -115,8 +115,10 @@ spec:
     metadata:
       annotations:
         # Runtime discovery happens at daemon startup. Roll the daemon pool when its
-        # install-wide sandbox image changes so every member probes the new image.
-        agentconnect.md/runtime-sandbox-tag: {{ .Values.daemonPool.runtime.tag | default (include "agentconnect.imageTag" .) | quote }}
+        # install-wide sandbox image changes so every member probes the new image — keyed
+        # from the EFFECTIVE full reference, so a `runtime.image` pin or digest change
+        # rolls the members exactly like a tag change does.
+        agentconnect.md/runtime-sandbox-image: {{ include "agentconnect.runtimeSandboxImage" . | quote }}
       labels:
         {{- include "agentconnect.labels" . | nindent 8 }}
         {{- include "agentconnect.componentLabels" (dict "ctx" . "component" "daemon-pool") | nindent 8 }}

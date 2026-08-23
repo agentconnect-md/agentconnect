@@ -90,9 +90,13 @@ spec:
             - name: AGENTCONNECT_PUBLIC_WEB_URL
               value: {{ trimSuffix "/" .Values.publicUrl | quote }}
             {{- end }}
-            {{- if .Values.apiHost }}
+            {{- if or .Values.apiHost .Values.publicUrl }}
+            # Same derivation as the CP's PUBLIC_CP_URL (control-plane.yaml): the api host in
+            # subdomain mode, else <publicUrl>/cp. Setup Server builds the provider callback and
+            # setup URLs it hands out from this; omitted, it falls back to its own loopback
+            # origin and every generated URL points at the operator's port-forward.
             - name: AGENTCONNECT_PUBLIC_CP_URL
-              value: {{ printf "https://%s" .Values.apiHost | quote }}
+              value: {{ if .Values.apiHost }}{{ printf "https://%s" .Values.apiHost | quote }}{{ else }}{{ printf "%s/cp" (trimSuffix "/" .Values.publicUrl) | quote }}{{ end }}
             {{- end }}
             {{- if .Values.relay.enabled }}
             - name: AGENTCONNECT_PUBLIC_RELAY_URL

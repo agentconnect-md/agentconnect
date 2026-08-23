@@ -19,7 +19,9 @@ command = [
   # Placement is per-install, so the contract only holds if a consumer's values can set it.
   '--set-json', 'daemonPool.runtime.nodeSelector={"example.com/agents":"true"}',
   '--set-json', 'daemonPool.runtime.tolerations=' \
-    '[{"key":"example.com/agents","operator":"Equal","value":"true","effect":"NoSchedule"}]'
+    '[{"key":"example.com/agents","operator":"Equal","value":"true","effect":"NoSchedule"}]',
+  # Set to prove propagation into controller-created sandbox pods, not just chart-rendered ones.
+  '--set-json', 'imagePullSecrets=[{"name":"example-pull"}]'
 ]
 
 rendered, error, status = Open3.capture3(*command)
@@ -56,7 +58,9 @@ abort('daemon-pool grace period must outlast the shutdown drain budget') unless 
 # deliberately left behind when everything else took the daemon-pool vocabulary.
 abort('daemon pool must use the fixed Kubernetes identity') unless pod['serviceAccountName'] == 'ac-cloud-daemon'
 abort('daemon pool must use its effective component tag') unless container['image'] == 'ghcr.io/agentconnect-md/daemon:v1.41.0-rc.89'
-abort('runtime image changes must roll daemon-pool probes') unless pod_template.dig('metadata', 'annotations', 'agentconnect.md/runtime-sandbox-tag') == 'v1.41.0-rc.88'
+# Keyed from the EFFECTIVE full reference so a `runtime.image` pin or digest change rolls the
+# members and repeats runtime discovery exactly like a tag change does.
+abort('runtime image changes must roll daemon-pool probes') unless pod_template.dig('metadata', 'annotations', 'agentconnect.md/runtime-sandbox-image') == 'ghcr.io/agentconnect-md/runtime-sandbox:v1.41.0-rc.88'
 abort('daemon pool must use in-cluster CP websocket') unless env['AC_CP_URL'] == 'ws://example-agentconnect-control-plane:8080/daemon/ws'
 abort('daemon pool must declare Kubernetes supervision') unless env['AGENTCONNECT_SUPERVISOR'] == 'k8s'
 abort('daemon pool must claim against the release-prefixed warm pool') unless env['AC_K8S_WARM_POOL'] == 'example-agentconnect-runtime-pool'
@@ -176,7 +180,19 @@ abort('agent pods must tolerate the configured node taint') unless template_pod[
 ]
 runtime_container = template_pod.fetch('containers').find { |item| item['name'] == 'runtime' } || abort('missing runtime container')
 abort('runtime container must use the effective runtime-sandbox tag') unless runtime_container['image'] == 'ghcr.io/agentconnect-md/runtime-sandbox:v1.41.0-rc.88'
-abort('runtime container must root the workspace') unless runtime_container.fetch('env') == [{ 'name' => 'AC_SHIM_WORKSPACE_ROOT', 'value' => '/agent' }]
+abort('runtime container must root the workspace and place the shim listener') unless runtime_container.fetch('env') == [
+  { 'name' => 'AC_SHIM_WORKSPACE_ROOT', 'value' => '/agent' },
+  { 'name' => 'AC_SHIM_PORT', 'value' => '8085' }
+]
+# One value serves all three shim surfaces: the sandbox listener, the member's dialer, and the
+# ingress policy port. Split them and an override leaves the shim on its baked-in default while
+# every daemon-to-sandbox bind times out.
+shim_listen = runtime_container.fetch('env').find { |item| item['name'] == 'AC_SHIM_PORT' }&.fetch('value')
+abort('the shim listener, the dialer, and the policy must share one port') unless
+  shim_listen == env['AC_K8S_SHIM_PORT'] && Integer(shim_listen) == ingress['ports'].first['port']
+# Controller-created sandbox pods must carry the same install-wide pull secrets as every
+# chart-rendered pod, or a private-mirror install stops at its first sandbox.
+abort('sandboxes must carry the install-wide pull secrets') unless template_pod['imagePullSecrets'] == [{ 'name' => 'example-pull' }]
 abort('runtime container must satisfy restricted Pod Security') unless runtime_container['securityContext'] == {
   'allowPrivilegeEscalation' => false, 'capabilities' => { 'drop' => ['ALL'] }
 }
@@ -352,5 +368,41 @@ abort('vendored CRDs must survive an uninstall') unless crds.all? { |doc| doc.di
 allowlist = vendored_documents.find { |doc| doc['kind'] == 'ConfigMap' && doc.dig('metadata', 'name') == 'agent-sandbox-config' } ||
             abort('installCRD must render the controller label allowlist')
 abort('label allowlist must name both domains') unless allowlist.dig('data', 'allowed-label-domains') == 'sandbox.users.io,agentconnect.md'
+
+# ── the published-artifact defaults: no tag set means the chart's own release ──
+# The release pipeline stamps appVersion; with image.tag empty by default, installing chart
+# X.Y.Z runs that release's images. A non-empty tag default would silently pin every install
+# to a mutable reference the stamp never touches.
+untagged = command.each_slice(2).reject { |flag, value| flag == '--set' && value.to_s.start_with?('image.tag=') }.flatten
+untagged_rendered, untagged_error, untagged_status = Open3.capture3(*untagged)
+abort("helm template (no image.tag) failed:\n#{untagged_error}") unless untagged_status.success?
+untagged_cp = YAML.load_stream(untagged_rendered).compact.find do |doc|
+  doc['kind'] == 'Deployment' && doc.dig('metadata', 'name') == 'example-agentconnect-control-plane'
+end || abort('missing control-plane Deployment in the untagged render')
+untagged_image = untagged_cp.dig('spec', 'template', 'spec', 'containers').find { |c| c['name'] == 'control-plane' }['image']
+abort("image.tag unset must fall back to Chart.appVersion, got #{untagged_image}") unless untagged_image.end_with?(':v0.0.0-dev')
+
+# ── the public-surface renders: same-origin setup URLs and the relay's ingress paths ──
+public_rendered, public_error, public_status = Open3.capture3(
+  'helm', 'template', 'example-agentconnect', chart, '--namespace', 'agentconnect-example',
+  '--set', 'publicUrl=https://app.example.test', '--set', 'relay.enabled=true'
+)
+abort("helm template (publicUrl + relay) failed:\n#{public_error}") unless public_status.success?
+public_documents = YAML.load_stream(public_rendered).compact
+setup = public_documents.find { |doc| doc['kind'] == 'Deployment' && doc.dig('metadata', 'name') == 'example-agentconnect-setup-server' } ||
+        abort('missing setup-server Deployment in the public render')
+setup_env = setup.dig('spec', 'template', 'spec', 'containers').first.fetch('env').to_h { |item| [item.fetch('name'), item['value']] }
+# Setup Server derives the provider callback/setup URLs it hands out from this; omitted, it
+# falls back to its loopback origin and every generated URL points at the operator's
+# port-forward. Same derivation as the CP's PUBLIC_CP_URL, in both routing modes.
+abort('setup server must carry the same-origin public CP base') unless setup_env['AGENTCONNECT_PUBLIC_CP_URL'] == 'https://app.example.test/cp'
+relay_route = public_documents.find { |doc| doc['kind'] == 'HTTPRoute' && doc.dig('metadata', 'name') == 'example-agentconnect-relay' } ||
+              abort('missing relay HTTPRoute in the public render')
+relay_paths = relay_route.dig('spec', 'rules').flat_map { |rule| rule['matches'].to_a }.map { |match| match.dig('path', 'value') }
+# Every HTTP ingress path the relay registry mounts; a path the route omits falls through to
+# the web catch-all (or the gateway 404) and that platform's ingress silently receives nothing.
+%w[/mcp /memory /webchat /webhooks/in /webhooks/github /webhooks/gitlab /slack/events /slack/interactions /feishu/events].each do |path|
+  abort("relay route must forward #{path}") unless relay_paths.include?(path)
+end
 
 puts 'chart render contract: ok'
