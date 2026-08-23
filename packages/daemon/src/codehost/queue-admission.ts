@@ -10,7 +10,6 @@
  * their ordering is production-visible.
  */
 import {
-  batchNeedsOwnPrompt,
   compareHookDeliveryRecency,
   hookAdmissionFor,
   hookCoordinates,
@@ -219,6 +218,11 @@ export type ReviewBatchStep =
   /** Quiet or max-wait window elapsed; `promptText` is set only for a genuinely multi-delivery batch. */
   | { action: 'seal'; sealed: GithubReviewBatch; promptText?: string; clearReply: boolean }
 
+/** A batch earns its own prompt and publication surface only once it actually coalesced something. */
+function coalesced(batch: GithubReviewBatch): boolean {
+  return batch.items.length > 1
+}
+
 /** One turn of the batch settle loop: stop, sleep until the next deadline, or seal. */
 export function reviewBatchSettleStep(
   hook: HookDispatchContext | undefined,
@@ -226,20 +230,21 @@ export function reviewBatchSettleStep(
   now: number
 ): ReviewBatchStep {
   const batch = hook?.githubReviewBatch
-  if (!batch) return { action: 'stop', clearReply: false }
+  const admission = hookAdmissionFor(hook)
+  if (!batch || !admission) return { action: 'stop', clearReply: false }
   // Only a provider whose batch publishes each item itself withdraws the ordinary reply target.
-  const toolOwnsReply = hookAdmissionFor(hook)?.batchPublishesItems === true
-  if (batch.sealed) return { action: 'stop', clearReply: toolOwnsReply && batchNeedsOwnPrompt(batch) }
+  const toolOwnsReply = admission.batchPublishesItems
+  if (batch.sealed) return { action: 'stop', clearReply: toolOwnsReply && coalesced(batch) }
   if (cancelled) return { action: 'stop', clearReply: false }
   const deadline = Math.min(batch.updatedAt + REVIEW_BATCH_QUIET_MS, batch.openedAt + REVIEW_BATCH_MAX_WAIT_MS)
   const delayMs = deadline - now
   if (delayMs > 0) return { action: 'wait', delayMs }
   const sealed: GithubReviewBatch = { ...batch, sealed: true }
-  const ownPrompt = batchNeedsOwnPrompt(sealed)
+  const ownPrompt = coalesced(sealed)
   return {
     action: 'seal',
     sealed,
     clearReply: toolOwnsReply && ownPrompt,
-    ...(ownPrompt ? { promptText: hookAdmissionFor(hook)!.renderBatchPrompt(sealed) } : {})
+    ...(ownPrompt ? { promptText: admission.renderBatchPrompt(sealed) } : {})
   }
 }

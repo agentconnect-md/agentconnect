@@ -127,11 +127,6 @@ export function batchPublishesItems(hook: CodeHostCoordinatedHook | undefined): 
   return hookAdmissionFor(hook)?.batchPublishesItems === true
 }
 
-/** A sealed batch is only worth its own prompt and tool surface once it holds more than one delivery. */
-export function batchNeedsOwnPrompt(batch: GithubReviewBatch | undefined): boolean {
-  return batch !== undefined && batch.items.length > 1
-}
-
 /** Contenders share a lane, and share a head whenever either only re-runs its own. */
 export function revisionStreamsContest(a: CodeHostRevisionStream, b: CodeHostRevisionStream): boolean {
   return a.lane === b.lane && (!(a.pinned || b.pinned) || a.headSha === b.headSha)
