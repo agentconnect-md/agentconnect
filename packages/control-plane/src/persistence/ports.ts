@@ -1160,6 +1160,9 @@ export interface SessionMetaRecord {
   triggeredBy: string | null
   channelName: string | null
   triggeredByName: string | null
+  /** Creation-time hook-kind snapshot, so a deleted hook cannot rewrite this session's
+   *  source. Null on rows written before the column; those resolve through the live hook. */
+  hookKind: HookKind | null
   threadUrl: string | null
   runtime: string | null
   model: string | null
@@ -1301,6 +1304,8 @@ export interface SessionFacetRecord {
   triggeredBy: string | null
   channelName: string | null
   triggeredByName: string | null
+  /** Creation-time hook-kind snapshot; null on rows written before it existed. */
+  hookKind: HookKind | null
   lastActivityAt: Date
   startedAt: Date
 }

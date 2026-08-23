@@ -61,8 +61,14 @@ const hookRows = [
 ]
 
 /** A hook session as the LIST projection reads it — the visibility trio the row DTO requires. */
-function pageRow(hookId: string, id: string) {
-  return { ...hookSession(hookId, id), visibility: 'org', externalProvider: null, externalResolution: null }
+function pageRow(hookId: string, id: string, hookKind: string | null = null) {
+  return {
+    ...hookSession(hookId, id),
+    hookKind,
+    visibility: 'org',
+    externalProvider: null,
+    externalResolution: null
+  }
 }
 
 function fakeDeps(pageSessions: ReturnType<typeof pageRow>[] = []) {
@@ -202,6 +208,26 @@ describe('session integration facets across code hosts', () => {
     const [session] = (res.json() as { sessions: Array<{ hookKind: string; triggeredByName: string }> }).sessions
     expect(session?.hookKind).toBe('gitlab')
     expect(session?.triggeredByName).toBe('acme/platform')
+  })
+
+  it('lets the row own snapshot outrank the hook definition it points at', async () => {
+    // A hook can be deleted and recreated, so the definition a session points at is not
+    // evidence about what fired it. The creation-time snapshot is, and it wins.
+    const { deps } = fakeDeps([pageRow(WEBHOOK, 'sess-snapshot', 'gitlab')])
+    const res = await (await app(deps)).inject({ method: 'GET', url: '/sessions?view=flat' })
+
+    expect(res.statusCode).toBe(200)
+    const [session] = (res.json() as { sessions: Array<{ hookKind: string }> }).sessions
+    expect(session?.hookKind).toBe('gitlab')
+  })
+
+  it('falls back to the live hook only for a row with no snapshot', async () => {
+    const { deps } = fakeDeps([pageRow(GITLAB_HOOK, 'sess-legacy', null)])
+    const res = await (await app(deps)).inject({ method: 'GET', url: '/sessions?view=flat' })
+
+    expect(res.statusCode).toBe(200)
+    const [session] = (res.json() as { sessions: Array<{ hookKind: string }> }).sessions
+    expect(session?.hookKind).toBe('gitlab')
   })
 
   it('names the source of an unnamed hook instead of calling every kind a webhook', async () => {
