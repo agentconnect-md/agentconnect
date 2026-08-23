@@ -33,7 +33,8 @@ import type {
   CodeHostReviewOpMethod,
   CodeHostReviewOpOutcome,
   CodeHostReviewOpState,
-  CodeHostReviewState
+  CodeHostReviewState,
+  HookKind
 } from '@agentconnect.md/protocol'
 import type {
   CodeHostReviewLockReason,
@@ -2096,7 +2097,8 @@ export interface CronRepo {
 //   HookDef rows into rc/hook-assign rules; event payloads never land here.
 // ───────────────────────────────────────────────────────────────────────────
 
-export type HookKind = 'webhook' | 'github' | 'gitlab'
+/** Re-exported so the repository layer keeps one hook-kind vocabulary with the wire contract. */
+export type { HookKind }
 export type HookSessionMode = 'perDelivery' | 'perThread' | 'shared'
 export type GithubCommentFamily = 'issues' | 'pull_request'
 /** The stored comment-family vocabulary across code hosts; rows carry one host's subset. */

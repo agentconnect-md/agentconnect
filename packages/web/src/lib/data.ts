@@ -2,7 +2,8 @@
 // Ported from the AgentConnect design (static demo content for the console UI).
 
 import type { AgentIcon } from '@/lib/agent-icon'
-import type { DaemonSessionRetention, HookKind, ManagedMemoryScope, MemoryDreamingConfig } from '@/lib/api'
+import { isCodeHostHookKind, type HookKind } from '@agentconnect.md/protocol'
+import type { DaemonSessionRetention, ManagedMemoryScope, MemoryDreamingConfig } from '@/lib/api'
 import { featureFlagEnabled } from '@/lib/feature-flags'
 import { platformLabel } from '@/lib/platform-labels'
 import { randomUuid } from '@/lib/random-uuid'
@@ -2168,13 +2169,14 @@ export function platName(p: string): string {
   return p.charAt(0).toUpperCase() + p.slice(1)
 }
 
-/** A session's display integration. The code hosts are hook sources rather than
- * routing Platforms, so the CP supplies the stable hook kind explicitly — without
- * it a GitLab session would render as a generic webhook. */
+/** A session's display integration. Code hosts are hook sources rather than routing
+ * Platforms, so the CP supplies the stable hook kind explicitly — without it a GitLab
+ * session renders as a generic webhook. The promotion asks the shared vocabulary which
+ * kinds are code hosts instead of listing them, so no future host can miss it. */
 export function sessionPlatform(s: { platform: string; hookKind?: HookKind }): string {
   if (s.platform === 'playground') return 'webchat'
   if (s.platform !== 'hook') return s.platform
-  return s.hookKind === 'github' || s.hookKind === 'gitlab' ? s.hookKind : s.platform
+  return s.hookKind && isCodeHostHookKind(s.hookKind) ? s.hookKind : s.platform
 }
 
 /** Channel-cell identity (mark + label) for a session row. A headless schedule

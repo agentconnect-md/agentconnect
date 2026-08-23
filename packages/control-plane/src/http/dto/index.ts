@@ -20,6 +20,7 @@ import {
   RESERVED_MCP_SERVER_NAME,
   SESSION_RETENTION_RE,
   GitCloneUrlError,
+  HOOK_KINDS,
   RepoSubdirError,
   SessionImageAttachment,
   MAX_WORKSPACE_COMMIT_MESSAGE,
@@ -801,10 +802,9 @@ export const AgentDto = z.object({
   sandboxSupported: z.boolean(),
   // #642: daemon policy forces the effective value true and makes it immutable.
   sandboxRequired: z.boolean(),
-  // Distinct kinds of ENABLED inbound triggers (hooks) on this agent — the list
-  // view's integrations cell renders a mark per kind (github repo subscriptions,
-  // generic webhooks) without an org-wide hook list existing anywhere.
-  hookKinds: z.array(z.enum(['webhook', 'github', 'gitlab']))
+  // Distinct kinds of ENABLED inbound triggers on this agent — one mark per kind in the
+  // list's integrations cell, without an org-wide hook list existing anywhere.
+  hookKinds: z.array(z.enum(HOOK_KINDS))
 })
 export const AgentListDto = z.array(AgentDto)
 
@@ -2535,7 +2535,7 @@ export const HookDto = z.object({
   id: z.string(),
   orgId: z.string(),
   agentId: z.string().nullable(), // null ⇒ legacy inert row
-  kind: z.enum(['webhook', 'github', 'gitlab']),
+  kind: z.enum(HOOK_KINDS),
   name: z.string(),
   sessionMode: HookSessionModeEnum,
   enabled: z.boolean(),
@@ -2646,7 +2646,7 @@ export const SessionDto = z.object({
   triggeredBy: z.string().nullable(),
   // Stable source kind for hook-triggered sessions. null for non-hook or a
   // deleted/legacy hook whose definition can no longer be resolved.
-  hookKind: z.enum(['webhook', 'github', 'gitlab']).nullable(),
+  hookKind: z.enum(HOOK_KINDS).nullable(),
   // Daemon-resolved display names (pure passthrough — the raw ids above stay
   // canonical; null when the daemon hasn't resolved them).
   channelName: z.string().nullable(),
@@ -2698,7 +2698,7 @@ export const SessionFacetsDto = z.object({
       value: z.string(),
       integration: z.string(),
       name: z.string().nullable(),
-      hookKind: z.enum(['webhook', 'github', 'gitlab']).nullable(),
+      hookKind: z.enum(HOOK_KINDS).nullable(),
       githubRepoId: z.string().nullable()
     })
   )
@@ -2782,7 +2782,7 @@ export const SessionDetailDto = z.object({
   lastActivityAt: z.string(),
   usage: SessionUsageDto.nullable(),
   triggeredBy: z.string().nullable(),
-  hookKind: z.enum(['webhook', 'github', 'gitlab']).nullable(),
+  hookKind: z.enum(HOOK_KINDS).nullable(),
   channelName: z.string().nullable(),
   triggeredByName: z.string().nullable(),
   threadUrl: z.string().nullable(),

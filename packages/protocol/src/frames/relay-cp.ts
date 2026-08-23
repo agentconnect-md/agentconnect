@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { frameSchema } from '../envelope.js'
+import { HOOK_KINDS } from '../code-host.js'
 import { ErrorFrame } from './error.js'
 import { BindMatch, IntegrationChannel } from './integration.js'
 import { CronTarget } from './cron.js'
@@ -311,7 +312,7 @@ export type RcGithubRerequestResult = z.infer<typeof RcGithubRerequestResult>
 export const RcHookAssign = z
   .object({
     hookId: z.string().uuid(),
-    kind: z.enum(['webhook', 'github', 'gitlab']),
+    kind: z.enum(HOOK_KINDS),
     agentId: z.string().uuid(),
     daemonId: z.string().uuid(), // the agent's CURRENT placement; re-sent on moves
     // R1/R2a rolling fields. Partial/absent remains decodable, but the relay

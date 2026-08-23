@@ -5,13 +5,25 @@ one inbound delivery to one agent turn. The relay is the public ingress and data
 plane, the daemon runs the turn, and the Control Plane (CP) stores definitions
 and body-free run metadata.
 
-Two hook kinds share this execution path:
+The hook kinds sharing this execution path are the generic endpoint plus one per
+code host. The vocabulary is `HOOK_KINDS` in `packages/protocol/src/code-host.ts`,
+derived from `CODE_HOST_PROVIDERS`, so a new host widens it in one place and every
+mapping over it — the session integration facet, the console's trigger taxonomy,
+the per-kind marks and labels — stops type-checking until it is extended:
 
 - `webhook`: an unguessable capability URL accepts a caller-supplied
   instruction.
 - `github`: a GitHub App webhook accepts signed repository events, applies
   subscription and authorization rules, and preserves issue or pull-request
   session continuity.
+- `gitlab`: the GitLab counterpart, described in
+  [gitlab-com-integration.md](gitlab-com-integration.md).
+
+Only `webhook` is generic. Every code-host kind is promoted out of the generic
+bucket wherever a session is classified, so a code-host session is never
+filtered, marked, or labelled as a plain webhook. `webhook` is the mapping for
+the generic kind and for a hook whose definition can no longer be resolved — it
+is never the fallback for a kind nobody mapped.
 
 For a numbered GitHub thread, `GithubPoster` owns the ordinary reply comment and
 publishes only the completed ACP final answer. A formal pull-request review is a
@@ -582,7 +594,7 @@ The implementation does not provide:
 
 - synchronous webhook responses containing agent output;
 - arbitrary payload transformation or filter programs;
-- structured GitLab or Bitbucket event semantics;
+- structured Bitbucket event semantics;
 - per-repository webhook registration managed by AgentConnect;
 - daemon polling as an alternative public ingress;
 - queueing arbitrary generic deliveries while a daemon is offline;

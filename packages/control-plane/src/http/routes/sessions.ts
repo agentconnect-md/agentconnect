@@ -20,7 +20,7 @@ import { AgentId, HookId, OrgId, SessionId } from '../../domain/ids.js'
 import { orgOf, ctxOf, denyNonOwner } from '../rbac.js'
 import { decodeConversationKey, encodeConversationKey } from '../conversation-key.js'
 import { canChangeSessionVisibility, canContinueSession, canView, canViewSession } from '../../authorization/policy.js'
-import { originKindOf } from '@agentconnect.md/protocol'
+import { isCodeHostHookKind, originKindOf, type HookKind } from '@agentconnect.md/protocol'
 import { makeSessionAccessResolver } from '../session-access.js'
 import { resolveContinuationHost } from '../session-continuation.js'
 import { Tag } from '../plugins/openapi.js'
@@ -88,7 +88,7 @@ type SessionFacetIndex = Awaited<ReturnType<HttpDeps['repos']['session']['listFa
 type HookSessionRow = Pick<SessionPageRow, 'agentId' | 'platform' | 'channel' | 'triggeredBy'>
 type HookSessionMetadata = {
   agentId: string | null
-  kind: 'webhook' | 'github' | 'gitlab'
+  kind: HookKind
   name: string
   repoId: bigint | null
 }
@@ -209,14 +209,21 @@ function decodeSessionCursor(raw: string): SessionCursor | null {
   }
 }
 
-/** A hook session's integration facet. Both code hosts are promoted out of the
- *  generic hook bucket so each gets a first-class entry the console can filter by;
- *  the value matches the client's own `sessionPlatform` classification. */
+/** A hook session's integration facet. EVERY code host is promoted out of the generic
+ *  hook bucket so each gets a first-class entry the console can filter by; only the
+ *  generic kind keeps the raw `hook` platform. The predicate is derived from the shared
+ *  hook-kind vocabulary, so a new host is promoted here without a code change, and the
+ *  value matches the client's own `sessionPlatform` classification. */
 function sessionIntegration(s: HookSessionRow, hook: HookSessionMetadata | undefined): string {
   const platform = s.platform ?? 'slack'
   if (platform !== 'hook') return platform
-  return hook?.kind === 'github' || hook?.kind === 'gitlab' ? hook.kind : platform
+  return hook && isCodeHostHookKind(hook.kind) ? hook.kind : platform
 }
+
+/** Display name for a hook source with no name of its own. TOTAL over the hook-kind
+ *  vocabulary, so a new code host cannot inherit the generic "Webhook" label the way
+ *  GitLab did — adding one to the shared union fails this file's type-check first. */
+const HOOK_KIND_LABEL: Record<HookKind, string> = { webhook: 'Webhook', github: 'GitHub', gitlab: 'GitLab' }
 
 function sessionDisplayMetadata(
   s: HookSessionRow & { channelName: string | null; triggeredByName: string | null },
@@ -225,10 +232,12 @@ function sessionDisplayMetadata(
   // Hook kind remains valid after reassignment, but the current name only
   // describes historical rows while the hook still belongs to the same agent.
   const hookName = hook?.agentId === s.agentId ? hook.name : undefined
+  // An unresolvable hook has no kind to name, so it stays generic.
+  const sourceLabel = hook ? HOOK_KIND_LABEL[hook.kind] : HOOK_KIND_LABEL.webhook
   return {
     channelName: s.platform === 'hook' ? (hookName ?? s.channelName ?? null) : (s.channelName ?? null),
     triggeredByName: s.triggeredBy?.startsWith(HOOK_TRIGGER_PREFIX)
-      ? (hookName ?? s.triggeredByName ?? 'Webhook')
+      ? (hookName ?? s.triggeredByName ?? sourceLabel)
       : (s.triggeredByName ?? null)
   }
 }
@@ -250,7 +259,7 @@ function sessionFacets(
       value: string
       integration: string
       name: string | null
-      hookKind: 'webhook' | 'github' | 'gitlab' | null
+      hookKind: HookKind | null
       githubRepoId: string | null
     }
   >()

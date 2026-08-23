@@ -17,6 +17,8 @@ import type {
   PlacementKindValue
 } from '@/lib/data'
 import { isSelfSender, lifecycleStatus, MOCK_MODE, placementValueOf, poolLabel } from '@/lib/data'
+import type { HookKind } from '@agentconnect.md/protocol'
+import { hookKindFromIntegration, hookSourceLabel } from '@/lib/session-trigger'
 import type { AgentIcon } from '@/lib/agent-icon'
 import { withIconUrl } from '@/lib/agent-icon'
 import {
@@ -1926,7 +1928,8 @@ function sessionChannelLabel(
   platform: string,
   rawChannel: string,
   channelName: string | null,
-  triggeredByName: string | null
+  triggeredByName: string | null,
+  hookKind: HookKind | null | undefined
 ): string {
   // webchat's `channel` is the conversationId (a UUID) — never a human channel. Show the
   // "Playground" label (matching platName + the live playground session), and keep the raw
@@ -1936,7 +1939,8 @@ function sessionChannelLabel(
   // A headless webhook's `channel` is the hook id (and `thread` may be the delivery key),
   // so render the CP-enriched hook name when present and otherwise hide the raw UUID.
   const isHook = platform === 'hook'
-  const hookLabel = channelName?.trim() || 'Webhook'
+  // An unnamed hook still names its SOURCE — a GitLab delivery is "GitLab", not "Webhook".
+  const hookLabel = channelName?.trim() || hookSourceLabel(hookKind)
   // Name-first display: "#general" when the daemon resolved a channel name, or the
   // DM counterpart verbatim ("@Dana Reyes" — already @-prefixed by the daemon). A
   // Slack DM ("D…" im id) the daemon hasn't labeled yet falls back to the
@@ -1963,7 +1967,7 @@ export function sessionFromDto(d: SessionDto): Session {
   const isWebchat = platform === 'webchat'
   const isHook = platform === 'hook'
   const isDream = platform === 'dream'
-  const channel = sessionChannelLabel(platform, rawChannel, d.channelName, d.triggeredByName)
+  const channel = sessionChannelLabel(platform, rawChannel, d.channelName, d.triggeredByName, d.hookKind)
   const isSlackDm = platform === 'slack' && /^D/.test(rawChannel)
   const dmFallback = isSlackDm ? (d.triggeredByName ? `@${d.triggeredByName}` : 'DM') : null
   const user = isDream
@@ -1972,7 +1976,9 @@ export function sessionFromDto(d: SessionDto): Session {
       : d.triggeredBy === 'auto'
         ? 'Automatic'
         : 'Manual'
-    : d.triggeredByName || (isHook && d.triggeredBy?.startsWith('hook:') ? 'Webhook' : d.triggeredBy) || PLACEHOLDER
+    : d.triggeredByName ||
+      (isHook && d.triggeredBy?.startsWith('hook:') ? hookSourceLabel(d.hookKind) : d.triggeredBy) ||
+      PLACEHOLDER
   return {
     id: d.sessionId,
     title: d.title || `Session ${d.sessionId.slice(0, 8)}`,
@@ -2316,7 +2322,13 @@ export async function fetchSessionFacets(orgId?: string, filters: SessionListFil
     integrations: facets.integrations,
     channels: facets.channels.map((channel) => ({
       value: channel.value,
-      label: sessionChannelLabel(channel.platform, channel.value, channel.name, channel.triggeredByName),
+      label: sessionChannelLabel(
+        channel.platform,
+        channel.value,
+        channel.name,
+        channel.triggeredByName,
+        hookKindFromIntegration(channel.integration)
+      ),
       platform: channel.integration
     })),
     triggers: facets.triggers.map((trigger) => ({
@@ -3823,7 +3835,9 @@ export async function deleteIntegration(id: string): Promise<void> {
 
 // A hook definition row. `url` is the full public ingress URL (relay-pool based),
 // a capability URL the CP surfaces only to callers with edit rights.
-export type HookKind = 'webhook' | 'github' | 'gitlab'
+// The hook-kind vocabulary is the shared wire contract's, not a copy: a new code
+// host widens it there and every mapping over it in the console must be extended.
+export type { HookKind }
 export type GithubCommentFamily = 'issues' | 'pull_request'
 /** GitLab's own note families — the merge-request counterpart of a pull request. */
 export type GitlabCommentFamily = 'issues' | 'merge_request'
