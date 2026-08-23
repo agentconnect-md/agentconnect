@@ -325,8 +325,8 @@ export class GitlabAccountService {
           }
         }
       }
-      // Resolved — the recovery window has done its job and closes.
-      await this.deps.accounts.closeCreateAttempt(account.id)
+      // Resolved — a window that was open has done its job and closes.
+      if (account.createAttempt) await this.deps.accounts.closeCreateAttempt(account.id)
       // Cosmetic username convergence (§7.2): an account whose username predates
       // the readable scheme is renamed once. The slug half is creation-time, so
       // only the shape and the key suffix decide — a later agent rename is not a
