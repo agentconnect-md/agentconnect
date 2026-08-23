@@ -740,7 +740,26 @@ export class HttpBotOrchestrator {
     opts?: { chosen?: boolean }
   ): Promise<void> {
     const known = new Map(knownRows.map((row) => [row.integrationId, row]))
-    const template = knownRows.find((row) => row.name !== null) ?? knownRows[0]
+    // Conversation-level metadata, taken PER FIELD from whichever sibling knows it: one
+    // row may carry the name while another carries the DM counterpart, and picking a
+    // single template row would silently drop whatever that row happens not to know. A
+    // committed direct kind wins over 'channel' for the same reason `replaceSnapshot`
+    // never downgrades one.
+    const first = <T>(get: (row: IntegrationChannelRecord) => T | null | undefined): T | undefined => {
+      for (const row of knownRows) {
+        const value = get(row)
+        if (value !== null && value !== undefined) return value
+      }
+      return undefined
+    }
+    const template = {
+      name: first((row) => row.name),
+      spaceId: first((row) => row.spaceId),
+      space: first((row) => row.space),
+      dmUserId: first((row) => row.dmUserId),
+      isPrivate: first((row) => row.isPrivate) ?? false,
+      kind: knownRows.find((row) => row.kind !== 'channel')?.kind ?? knownRows[0]?.kind ?? 'channel'
+    }
     for (const integration of installs) {
       const row = known.get(integration.id)
       // A human decision has to reach EVERY sibling row, including one that already
@@ -752,13 +771,23 @@ export class HttpBotOrchestrator {
       const marked = opts?.chosen !== true || row?.triggerChosen === true
       if (row?.trigger === trigger && marked) continue
       if (!row) {
+        // The template carries the CONVERSATION's own metadata, so a sibling gets all
+        // of it rather than a subset. `dmUserId` is the load-bearing one: it is the
+        // whole §14.8 input, and a sibling that inherits `kind:'im'` without it becomes
+        // a DM whose counterpart is unknown — so when owner removal leaves that sibling
+        // as the only surviving row, a linked audience member re-derives to Off, and
+        // the later report that finally supplies the id cannot reopen a row that
+        // already exists.
         const backfilled = await this.channels.upsertConversation(
           integration.id,
           {
             id: channelId,
-            ...(template?.name ? { name: template.name } : {}),
-            isPrivate: template?.isPrivate ?? false,
-            kind: template?.kind ?? 'channel'
+            ...(template.name ? { name: template.name } : {}),
+            ...(template.spaceId ? { spaceId: template.spaceId } : {}),
+            ...(template.space ? { space: template.space } : {}),
+            ...(template.dmUserId ? { dmUserId: template.dmUserId } : {}),
+            isPrivate: template.isPrivate,
+            kind: template.kind
           },
           { defaultTrigger: trigger }
         )

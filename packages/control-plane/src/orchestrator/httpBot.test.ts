@@ -894,6 +894,44 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       })
     })
 
+    // §14.8's input is the counterpart id, so it is conversation-level metadata like the
+    // name: a sibling that inherits kind:'im' without it is a DM whose counterpart is
+    // unknown, and when owner removal leaves it as the only surviving row a linked
+    // audience member re-derives to Off with no way back — the later report that
+    // supplies the id cannot reopen a row that already exists.
+    it('carries the DM counterpart onto a backfilled sibling, so owner removal keeps it open (§14.8)', async () => {
+      gatedAgents = new Set([ALICE, BOB])
+      channels = [
+        channel({
+          integrationId: INT_A,
+          channelId: 'D42',
+          name: '@Alice',
+          kind: 'im',
+          dmUserId: 'U_ALICE',
+          trigger: 'any',
+          agentId: ALICE
+        })
+      ]
+      const orch = makeOrch(PLATFORMS, undefined, async (reported) =>
+        reported.some((c) => c.dmUserId === 'U_ALICE') ? new Map([['D42', 'any' as const]]) : new Map()
+      )
+
+      await orch.prepareIntegrationRemoval(BOT)
+      expect(channels.find((c) => c.integrationId === INT_B && c.channelId === 'D42')).toMatchObject({
+        kind: 'im',
+        dmUserId: 'U_ALICE'
+      })
+
+      // The owner integration and its row are gone; the survivor inherits the
+      // conversation and must still be able to answer the §14.8 question.
+      channels = channels.filter((c) => c.integrationId !== INT_A)
+      integrations = integrations.filter((i) => i.id !== INT_A)
+      await orch.syncBot(BOT)
+      expect(channels.find((c) => c.integrationId === INT_B && c.channelId === 'D42')).toMatchObject({
+        trigger: 'any'
+      })
+    })
+
     it('reportConversation opens a gated DM with a member of the agent’s own audience (§14.8)', async () => {
       gatedAgents = new Set([ALICE])
       channels = []

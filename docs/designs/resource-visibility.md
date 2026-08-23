@@ -1031,7 +1031,14 @@ conversation and carries it onto siblings it backfills later. That last part is
 what survives the owner-removal lifecycle — the row that RECORDED the decision
 is deleted with its integration while siblings live on, and reading provenance
 from the owner row alone would lose the decision on precisely the path the
-backfill exists for. For the same reason **a decided conversation is never
+backfill exists for. `dmUserId` replicates for the same reason and is the more
+brittle of the two: it IS §14.8's input, so a sibling that inherits `kind:'im'`
+without it is a DM whose counterpart is unknown, and once owner removal leaves
+that sibling as the only surviving row a linked audience member re-derives to
+Off with no way back — the later report that finally supplies the id cannot
+reopen a row that already exists. The backfill therefore takes the
+conversation's metadata PER FIELD from whichever sibling knows it, rather than
+from one template row that may not know all of it. For the same reason **a decided conversation is never
 re-derived**: a gated agent inheriting one keeps its trigger instead of
 recomputing the §14.2/§14.8 default over it. Without it a stored Off is indistinguishable from an operator's own
 choice — §14.2 lets an editor close a DM §14.8 opened — and a catch-up would
