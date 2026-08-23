@@ -624,6 +624,29 @@ describe('GitlabCard', () => {
     expect(row().textContent).not.toContain('webhook')
   })
 
+  it('discards the read taken at mount when a newer one has already answered', async () => {
+    // The mount read is launched before the roster surface is even enabled, so it races every
+    // fenced read that follows. Left unfenced it answers last and paints its own snapshot back.
+    mocks.fetchConnections.mockResolvedValue({ enabled: true, connections: [CONNECTION] })
+    let initial!: (rows: GitlabProjectBindingDto[]) => void
+    mocks.fetchProjects.mockReturnValueOnce(new Promise((resolve) => (initial = resolve)))
+    roster = [BOT]
+    converging = true
+    await render()
+
+    // A fenced poll answers first, with the install finished.
+    let newer!: (rows: GitlabProjectBindingDto[]) => void
+    mocks.fetchProjects.mockReturnValueOnce(new Promise((resolve) => (newer = resolve)))
+    await revalidate()
+    await act(async () => newer([BINDING]))
+    const row = () => projectRow(botRow('acct-1'), 'bind-1')
+    expect(row().textContent).not.toContain('webhook')
+
+    // The mount read finally lands, still describing the install as running, and is dropped.
+    await act(async () => initial([{ ...BINDING, webhookState: 'repairing' as const }]))
+    expect(row().textContent).not.toContain('webhook')
+  })
+
   it('leaves the projects alone once nothing is converging', async () => {
     mocks.fetchConnections.mockResolvedValue({ enabled: true, connections: [CONNECTION] })
     mocks.fetchProjects.mockResolvedValue([BINDING])

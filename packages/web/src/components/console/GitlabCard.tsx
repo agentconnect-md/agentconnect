@@ -209,8 +209,11 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
         setEnabled(enabled)
         setConnections(connections)
         if (!enabled) return
+        // This read races the roster's own the moment the surface is enabled, so it takes a
+        // generation like every other one: `alive` answers unmount, not which answer is newest.
+        const seq = supersedeReads()
         const bindings = await fetchGitlabProjects()
-        if (alive) setProjects(bindings)
+        if (alive && seq === readSeq.current) setProjects(bindings)
       })
       .catch(() => alive && setEnabled(false))
     return () => {
