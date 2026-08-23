@@ -343,13 +343,34 @@ account in each; in the common case this is exactly one account per agent.
 
 The account:
 
-- has the username `agentconnect-a<agentIdHex>-g<rootGroupId>` — deterministic
-  from its key, globally unique across deployments, and rename-stable: agent
-  renames never touch it;
+- has the username `<agentSlug>-<agentId12>-<root36>`: the agent's name
+  slugged to lower-case `[a-z0-9-]` and capped at 20 characters, the first
+  twelve hex characters of the agent id, and the top-level group id in base
+  36 — for example `gitlab-pilot-5b350c0aeba7-2bmzez`. GitLab.com usernames
+  are one global namespace, so the suffixes carry the uniqueness: 48 bits of
+  agent identity put an accidental collision among even millions of accounts
+  below one in a billion, and the root component is what lets one agent own
+  an account in each root it spans. The slug is readable in `@`-completion
+  and is taken at creation; it is not re-derived on rename, because the
+  row's numeric user id is the durable key. The derivation is a recovery
+  marker only for an account the database does not know yet, and recovery
+  never adopts by name alone: the account row records the creation attempt
+  — its id and start time — before the provider request is sent, so the
+  window survives lease or process loss; after an ambiguous or interrupted
+  create, the account is claimed only when it is listed among this top-level
+  group's own service accounts and its creation time falls inside that
+  persisted window. A username that is already taken with no open attempt
+  covering it is a foreign account, and the row fails provisioning with a
+  translated `username_taken` reason rather than adopting it;
 - carries the agent's display name, sanitized as the earlier `<project>-bot`
   derivation sanitized and without any suffix; on agent rename the next
   provisioning convergence updates it, and a refused rename is cosmetic and
   never degrades credentials;
+- wears the agent's icon as its avatar: the same rendered PNG the chat
+  platforms receive, uploaded through the account's own `api` token with
+  GitLab's current-user avatar endpoint, converged on provisioning and on
+  icon change under the account lease. Like the display name it is cosmetic:
+  a refused or unsupported upload never degrades credentials;
 - cannot sign in through the GitLab UI and does not consume a licensed seat;
   and
 - is assigned the Developer role by default. GitLab branch rules, approval
@@ -511,16 +532,16 @@ numeric ID.
 
 ### 8.2 GitLab-Specific Resources
 
-| Resource                  | Non-secret contents                                                                                                                                                                                 |
-| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GitlabConnection`        | org, AgentConnect user, GitLab user ID/username, granted scopes, access expiry, state, token version, refresh lease, last sync                                                                      |
-| `GitlabProjectBinding`    | org, numeric project ID, current path, installer connection, webhook ID, desired event hash, credential epoch, lifecycle state                                                                      |
-| `GitlabAgentAccount`      | org, agent, top-level group ID, numeric user ID, username, display-name fingerprint, credential epoch, administering connection, mutation-lease owner/expiry, lifecycle generation, lifecycle state |
-| `GitlabAccountMembership` | account, account generation, binding, role, membership state                                                                                                                                        |
-| `GitlabProjectCredential` | issuing account, purpose, external token ID, scopes, provider expiry, active generation                                                                                                             |
-| `GitlabReviewPublication` | binding, MR IID, service-account user ID, active attempt, lease owner/expiry, monotonic fence, phase, head SHA, external draft/note IDs, normalized outcome                                         |
-| `GitlabWebhookSecret`     | binding relation only in normal reads                                                                                                                                                               |
-| `GitlabConnectionSecret`  | connection relation only in normal reads                                                                                                                                                            |
+| Resource                  | Non-secret contents                                                                                                                                                                                                                               |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GitlabConnection`        | org, AgentConnect user, GitLab user ID/username, granted scopes, access expiry, state, token version, refresh lease, last sync                                                                                                                    |
+| `GitlabProjectBinding`    | org, numeric project ID, current path, installer connection, webhook ID, desired event hash, credential epoch, lifecycle state                                                                                                                    |
+| `GitlabAgentAccount`      | org, agent, top-level group ID, numeric user ID, username, display-name and icon fingerprints, creation-attempt id and start time, credential epoch, administering connection, mutation-lease owner/expiry, lifecycle generation, lifecycle state |
+| `GitlabAccountMembership` | account, account generation, binding, role, membership state                                                                                                                                                                                      |
+| `GitlabProjectCredential` | issuing account, purpose, external token ID, scopes, provider expiry, active generation                                                                                                                                                           |
+| `GitlabReviewPublication` | binding, MR IID, service-account user ID, active attempt, lease owner/expiry, monotonic fence, phase, head SHA, external draft/note IDs, normalized outcome                                                                                       |
+| `GitlabWebhookSecret`     | binding relation only in normal reads                                                                                                                                                                                                             |
+| `GitlabConnectionSecret`  | connection relation only in normal reads                                                                                                                                                                                                          |
 
 `GitlabProjectCredential` stores its sealed token value behind a dedicated
 secret-store port. `GitlabWebhookSecret` stores the sealed signing token.
@@ -1504,12 +1525,20 @@ administers — the shape the GitHub card already has. It shows:
 
 - connected GitLab username and GitLab.com host;
 - OAuth state: connected, reconnect required, or disconnected;
-- project binding state and the agent accounts that are members, each
-  linking to its GitLab profile;
-- webhook state: not needed, installed, repairing, or failed;
+- the organization's bots, one row per agent account — avatar, display
+  name, `@username` linking to its GitLab profile, top-level group, and
+  account health — mirroring the chat-platform cards, where the bot is the
+  row;
+- under each bot, the projects it is a member of: path, role, binding state,
+  and webhook state (not needed, installed, repairing, or failed), with the
+  project-level actions — repair, remove, transfer administration — on that
+  project line;
+- a final "projects without a bot" group for every managed binding no
+  account is currently a member of — a binding outlives its last consumer
+  until it is removed, and it keeps its state and the same project-level
+  actions there;
 - credential expiry and rotation warning without token values; and
-- actions to reconnect, repair, remove a project, transfer administration,
-  disconnect, or remove a released connection.
+- actions to reconnect, disconnect, or remove a released connection.
 
 The agent detail page owns the agent's own GitLab identity: a bot chip with
 the account username, display name, profile link, and account health, grouped
