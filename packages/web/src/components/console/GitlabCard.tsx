@@ -587,7 +587,7 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
                 <div className="flex min-w-0 items-center gap-[10px]">
                   {/* The bot IS an agent: its face and its name lead back to that agent's page. */}
                   <Link
-                    href={orgPath(`/agents/${encodeURIComponent(row.agentId)}?tab=config`)}
+                    href={orgPath(`/agents/${encodeURIComponent(row.agentId)}`)}
                     title={`Open ${name}`}
                     className="flex min-w-0 flex-none items-center gap-[10px] no-underline"
                   >
@@ -601,28 +601,33 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
                   {/* One pair per top-level group the agent reaches: where, who it is there, how it is. */}
                   <div className="flex min-w-0 flex-wrap items-center gap-x-[10px] gap-y-[4px]">
                     {row.accounts.map((account) => {
+                      const group = account.rootGroupPath ?? `group ${account.rootGroupId}`
                       return (
                         <span
                           key={account.id}
                           data-gitlab-account={account.username}
                           className="inline-flex min-w-0 items-center gap-[6px]"
                         >
-                          <span className="badge flex-none bg-(--surface-active) text-(--text-tertiary)">
-                            {account.rootGroupPath ?? `group ${account.rootGroupId}`}
-                          </span>
-                          {/* The username is deterministic, so the profile links only once the account exists. */}
+                          {/* The group IS the link: a generated handle is long, and unreadable next to
+                              a name people do read. It stays reachable by tooltip and to a screen reader.
+                              The handle is deterministic, so it links only once the account exists. */}
                           {account.userId ? (
                             <a
                               href={gitlabProfileUrl(account.username)}
                               target="_blank"
                               rel="noopener noreferrer"
-                              className="mono min-w-0 truncate text-[11.5px] text-(--text-tertiary) hover:underline"
+                              title={`@${account.username}`}
+                              aria-label={`${group} — @${account.username} on GitLab`}
+                              className="badge flex-none bg-(--surface-active) text-(--text-tertiary) no-underline hover:underline"
                             >
-                              @{account.username}
+                              {group}
                             </a>
                           ) : (
-                            <span className="mono min-w-0 truncate text-[11.5px] text-(--text-tertiary)">
-                              @{account.username}
+                            <span
+                              title={`@${account.username}`}
+                              className="badge flex-none bg-(--surface-active) text-(--text-tertiary)"
+                            >
+                              {group}
                             </span>
                           )}
                           {/* A healthy bot says nothing; only trouble and departure are worth a badge. */}

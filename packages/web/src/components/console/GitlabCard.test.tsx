@@ -297,7 +297,8 @@ describe('GitlabCard', () => {
     expect(row.textContent).toContain('GitLab pilot')
     expect(row.querySelector('[data-agent-icon-glyph]')).toBeTruthy()
     const toAgent = row.querySelector('a[href^="/agents/"]') as HTMLAnchorElement
-    expect(toAgent.getAttribute('href')).toBe('/agents/agent-1?tab=config')
+    // The agent's own page, not one of its tabs.
+    expect(toAgent.getAttribute('href')).toBe('/agents/agent-1')
     expect(host.textContent).not.toContain('Connect GitLab')
   })
 
@@ -314,9 +315,10 @@ describe('GitlabCard', () => {
     const pairs = [...row.querySelectorAll('[data-gitlab-account]')]
     expect(pairs).toHaveLength(2)
     expect(pairs[0]!.textContent).toContain('example-group')
-    expect(pairs[0]!.textContent).toContain('@gitlab-pilot-5b350c0aeba7-2bivoj')
     expect(pairs[1]!.textContent).toContain('other-group')
-    expect(pairs[1]!.textContent).toContain('@gitlab-pilot-5b350c0aeba7-rwzj7')
+    // The generated handle is not shown: it is long, and unreadable beside a name people read.
+    expect(row.textContent).not.toContain('gitlab-pilot-5b350c0aeba7-2bivoj')
+    expect(row.textContent).not.toContain('gitlab-pilot-5b350c0aeba7-rwzj7')
     // One agent, so its name appears once rather than once per account.
     expect(row.querySelectorAll('a[href^="/agents/"]')).toHaveLength(1)
   })
@@ -343,7 +345,7 @@ describe('GitlabCard', () => {
     expect(botRow('agent-2')).toBeTruthy()
   })
 
-  it('links each pair’s handle to its GitLab profile, in a tab that cannot reach back', async () => {
+  it('makes each group chip the link to that account’s profile, in a tab that cannot reach back', async () => {
     mocks.fetchConnections.mockResolvedValue({ enabled: true, connections: [CONNECTION] })
     mocks.fetchProjects.mockResolvedValue([BINDING, BINDING_TWO])
     roster = [BOT, BOT_OTHER_GROUP]
@@ -354,8 +356,23 @@ describe('GitlabCard', () => {
       'https://gitlab.com/gitlab-pilot-5b350c0aeba7-2bivoj',
       'https://gitlab.com/gitlab-pilot-5b350c0aeba7-rwzj7'
     ])
+    // The chip carries the group as its text, and the handle where it can still be read or copied.
+    expect(links[0]!.textContent).toBe('example-group')
+    expect(links[0]!.getAttribute('title')).toBe('@gitlab-pilot-5b350c0aeba7-2bivoj')
+    expect(links[0]!.getAttribute('aria-label')).toContain('@gitlab-pilot-5b350c0aeba7-2bivoj')
     expect(links.every((link) => link.getAttribute('target') === '_blank')).toBe(true)
     expect(links.every((link) => link.getAttribute('rel') === 'noopener noreferrer')).toBe(true)
+  })
+
+  it('leaves the chip unlinked, but still named, before the account exists on GitLab', async () => {
+    mocks.fetchConnections.mockResolvedValue({ enabled: true, connections: [CONNECTION] })
+    roster = [{ ...BOT, userId: null, bindingIds: [] }]
+    await render()
+
+    const row = botRow('agent-1')
+    expect(row.querySelector('a[href^="https://gitlab.com/"]')).toBeNull()
+    expect(row.textContent).toContain('example-group')
+    expect(row.querySelector('[title="@gitlab-pilot-5b350c0aeba7-2bivoj"]')).toBeTruthy()
   })
 
   it('names no project under a bot: projects are managed where they are used', async () => {
