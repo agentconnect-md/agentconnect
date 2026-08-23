@@ -407,10 +407,12 @@ describe('GitlabProvisioner (§10.2) — per-agent identity', () => {
       true
     )
     const converging = h.provisioner.convergeProject(DEFAULT_ORG_ID, SECOND_PROJECT)
-    await vi.waitFor(
-      async () => expect((await h.bindings.get(DEFAULT_ORG_ID, second.id))!.stateReason).toBe('account_busy'),
-      { timeout: 20_000 }
-    )
+    // Losing the fence leaves the binding exactly as it was — a race is not a
+    // verdict — so the peer's grip is what this waits on, not a degraded state.
+    await vi.waitFor(() => expect(h.fake.requests.some((r) => r.url.includes('service_accounts'))).toBe(true), {
+      timeout: 20_000
+    })
+    expect((await h.bindings.get(DEFAULT_ORG_ID, second.id))!.stateReason).toBeNull()
     await h.accounts.releaseLease(account.id, 'old-project-run')
 
     await converging
@@ -824,6 +826,77 @@ describe('GitlabProvisioner (§10.2) — per-agent identity', () => {
     expect(await h.accounts.claimLease(account.id, 'C', until, now)).toBe(true)
     await h.accounts.releaseLease(account.id, 'A')
     expect(await h.accounts.claimLease(account.id, 'D', until, now)).toBe(false)
+  })
+
+  it('concurrent convergences of one project join instead of racing, and settle ready', async () => {
+    const h = await harness()
+    // Four callers at once — a repair, a hook write, and two background kicks.
+    await Promise.all([
+      h.provisioner.convergeProject(DEFAULT_ORG_ID, PROJECT),
+      h.provisioner.convergeProject(DEFAULT_ORG_ID, PROJECT),
+      h.provisioner.convergeProject(DEFAULT_ORG_ID, PROJECT),
+      h.provisioner.convergeProject(DEFAULT_ORG_ID, PROJECT)
+    ])
+    const binding = (await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))!
+    expect(binding).toMatchObject({ state: 'ready', stateReason: null })
+    // One account and one set of PATs: the joined callers did not each provision.
+    expect(h.fake.serviceAccounts).toHaveLength(1)
+    expect(h.fake.tokens.size).toBe(3)
+  })
+
+  it('a bot repair across two projects sharing one account settles both clean', async () => {
+    const h = await harness()
+    const second = await h.bindings.createWithClaim({
+      orgId: DEFAULT_ORG_ID,
+      projectId: SECOND_PROJECT,
+      projectPath: 'example-group/example-second',
+      installerConnectionId: h.connection.id
+    })
+    // One agent consuming both projects in the same root: both convergences want
+    // the SAME account mutation lease, which is what a bot-level repair triggers.
+    await prisma.hookDef.create({
+      data: {
+        orgId: DEFAULT_ORG_ID,
+        agentId: AGENT,
+        kind: 'gitlab',
+        name: 'second-hook',
+        sessionMode: 'perThread',
+        repoId: SECOND_PROJECT,
+        events: ['issues:*']
+      }
+    })
+
+    await Promise.all([
+      h.provisioner.convergeProject(DEFAULT_ORG_ID, PROJECT),
+      h.provisioner.convergeProject(DEFAULT_ORG_ID, SECOND_PROJECT)
+    ])
+
+    // Neither binding settled degraded on account of the other holding the lease.
+    expect(await h.bindings.get(DEFAULT_ORG_ID, h.binding.id)).toMatchObject({ state: 'ready', stateReason: null })
+    expect(await h.bindings.get(DEFAULT_ORG_ID, second.id)).toMatchObject({ state: 'ready', stateReason: null })
+    // One account, bound to both.
+    const accounts = await h.accounts.listForAgent(DEFAULT_ORG_ID, AGENT)
+    expect(accounts).toHaveLength(1)
+    expect(await h.accounts.countMemberships(accounts[0]!.id)).toBe(2)
+  })
+
+  it('exhausted contention leaves the binding alone and re-drives itself', async () => {
+    const h = await harness()
+    await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
+    const account = (await h.accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP))!
+    // A peer holds the account lease for longer than this pass will wait.
+    expect(await h.accounts.claimLease(account.id, 'peer', new Date(Date.now() + 300_000), new Date())).toBe(true)
+
+    await h.provisioner.convergeProject(DEFAULT_ORG_ID, PROJECT, { attempts: 0, followUp: false })
+
+    // A lost fence is not a verdict: the binding keeps the state it had, so the
+    // console never shows "setup incomplete" because two repairs overlapped.
+    expect(await h.bindings.get(DEFAULT_ORG_ID, h.binding.id)).toMatchObject({ state: 'ready', stateReason: null })
+
+    // Once the peer is done, the next pass converges normally — no user action.
+    await h.accounts.releaseLease(account.id, 'peer')
+    await h.provisioner.convergeProject(DEFAULT_ORG_ID, PROJECT, { attempts: 0, followUp: false })
+    expect(await h.bindings.get(DEFAULT_ORG_ID, h.binding.id)).toMatchObject({ state: 'ready', stateReason: null })
   })
 
   it('two concurrent provisions: exactly one runs, the other observes busy', async () => {

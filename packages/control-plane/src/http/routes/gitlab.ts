@@ -31,6 +31,9 @@ import {
   membershipSatisfies
 } from '../../gitlab/api.js'
 import { GitlabProjectClaimConflict } from '../../persistence/errors.js'
+/** A repair is an HTTP request: outwait a brief contention, then let the
+ *  scheduled follow-up finish the job rather than holding the connection. */
+const REPAIR_CONTENTION_ATTEMPTS = 6
 import { unionGitlabWebhookEvents } from '../../gitlab/webhook-events.js'
 import {
   CreateGitlabProjectBody,
@@ -479,10 +482,15 @@ export function gitlabRoutes(deps: HttpDeps) {
       async (req, reply) => {
         if (denyViewerWrite(req, reply)) return
         const orgId = orgOf(req)
-        if (!(await deps.repos.gitlabProjectBinding.get(orgId, req.params.id))) {
+        const target = await deps.repos.gitlabProjectBinding.get(orgId, req.params.id)
+        if (!target) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'gitlab project not found' })
         }
-        await gitlab.provisioner.provision(orgId, req.params.id)
+        // Repairing a bot re-runs this per project it holds, so several requests
+        // arrive at once. Converge through the project-keyed path: concurrent
+        // repairs JOIN one run instead of racing it for the same leases, and a
+        // request waits only a request-sized bound before the follow-up takes over.
+        await gitlab.provisioner.convergeProject(orgId, target.projectId, { attempts: REPAIR_CONTENTION_ATTEMPTS })
         const binding = await deps.repos.gitlabProjectBinding.get(orgId, req.params.id)
         if (!binding) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'gitlab project not found' })
