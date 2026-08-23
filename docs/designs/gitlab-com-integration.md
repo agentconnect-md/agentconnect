@@ -1552,10 +1552,17 @@ administers — the shape the GitHub card already has. It shows:
   which re-runs convergence on each project the bot holds, and taking that
   administration over, offered only where it has actually been lost — the
   administering connection disconnected or removed, or a removal waiting for an
-  account to finish it;
+  account to finish it. Each project's request stands alone, so a batch that
+  half-lands re-reads the authoritative state either way and says how many
+  landed rather than reporting one failure over stale rows;
 - no project rows under a bot. A project is managed where it is used, on the
   agent that uses it, so listing every healthy project here only repeats what
-  that page already owns;
+  that page already owns. A binding's own health is a separate axis from its
+  bots' — every account can be ready while the project is degraded or its
+  webhook has failed — so the row carries a count of the projects it holds that
+  need attention, and reveals those with their repair and take-over. A bot whose
+  projects are all healthy says nothing. An account's own repair instruction is
+  rendered text, never a hover tooltip: it has to survive a touch screen;
 - a final group for managed projects no bot holds, which is the one place they
   can be reached at all: a binding outlives its last consumer, still owning the
   webhook and the deployment-global claim, so it keeps its state, its webhook

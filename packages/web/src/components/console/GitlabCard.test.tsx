@@ -406,6 +406,80 @@ describe('GitlabCard', () => {
     expect(mocks.reread).toHaveBeenCalled()
   })
 
+  it('raises attention on the bot row when a project it holds is degraded, and reveals it', async () => {
+    // A binding's health is its own axis: every account can be ready while the project is not.
+    // With no project rows under a bot, the row is the only place that can say so.
+    mocks.fetchConnections.mockResolvedValue({ enabled: true, connections: [CONNECTION] })
+    mocks.fetchProjects.mockResolvedValue([
+      { ...BINDING, state: 'admin_degraded' as const, stateReason: 'project_not_accessible' }
+    ])
+    mocks.repairProject.mockResolvedValue(BINDING)
+    roster = [BOT]
+    await render()
+
+    const row = botRow('agent-1')
+    expect(row.textContent).toContain('1 project needs attention')
+    // Collapsed by default: the count is the signal, the project is the detail.
+    expect(row.querySelectorAll('[data-gitlab-project]')).toHaveLength(0)
+
+    await click('1 project needs attention', row)
+    const project = projectRow(botRow('agent-1'), 'bind-1')
+    expect(project.textContent).toContain('example-group/example-project')
+    expect(project.textContent).toContain('GitLab project is no longer accessible')
+    expect(iconButtonIn(project, 'Repair')).toBeTruthy()
+    // Removing a project a bot still holds belongs where it is used, not from under the bot.
+    expect(() => iconButtonIn(project, 'Remove')).toThrow()
+  })
+
+  it('raises attention for a failed webhook on an otherwise healthy project', async () => {
+    mocks.fetchConnections.mockResolvedValue({ enabled: true, connections: [CONNECTION] })
+    mocks.fetchProjects.mockResolvedValue([{ ...BINDING, webhookState: 'failed' as const }])
+    roster = [BOT]
+    await render()
+    expect(botRow('agent-1').textContent).toContain('1 project needs attention')
+  })
+
+  it('says nothing when every project the bot holds is healthy', async () => {
+    mocks.fetchConnections.mockResolvedValue({ enabled: true, connections: [CONNECTION] })
+    mocks.fetchProjects.mockResolvedValue([BINDING, BINDING_TWO])
+    roster = [BOT, BOT_OTHER_GROUP]
+    await render()
+
+    const row = botRow('agent-1')
+    expect(row.textContent).not.toContain('needs attention')
+    expect(row.textContent).not.toContain('need attention')
+  })
+
+  it('renders an account’s repair instruction as text, not as a tooltip', async () => {
+    // A hover title is unreachable on a touch screen, and this is the sentence that says what to do.
+    mocks.fetchConnections.mockResolvedValue({ enabled: true, connections: [CONNECTION] })
+    roster = [{ ...BOT, userId: null, state: 'admin_degraded', stateReason: 'service_account_quota', bindingIds: [] }]
+    await render()
+    expect(botRow('agent-1').textContent).toContain('limit of bot accounts')
+  })
+
+  it('keeps a partial repair’s successes, refreshes, and says how many failed', async () => {
+    // The requests are independent: one rejecting must not discard the others or strand the card
+    // reporting an error against state it never re-read.
+    mocks.fetchConnections.mockResolvedValue({ enabled: true, connections: [CONNECTION] })
+    mocks.fetchProjects.mockResolvedValue([BINDING, BINDING_TWO])
+    roster = [BOT, BOT_OTHER_GROUP]
+    mocks.repairProject.mockImplementation(async (id: string) => {
+      if (id === 'bind-2') throw new ApiError('gitlab: nope', 502)
+      return BINDING
+    })
+    await render()
+    const readsBefore = mocks.fetchProjects.mock.calls.length
+
+    await clickIcon('Repair this bot', botRow('agent-1'))
+    expect(mocks.repairProject.mock.calls.map((call) => call[0]).sort()).toEqual(['bind-1', 'bind-2'])
+    // The authoritative state is re-read whatever the batch did, and the roster with it.
+    expect(mocks.fetchProjects.mock.calls.length).toBeGreaterThan(readsBefore)
+    expect(mocks.reread).toHaveBeenCalled()
+    // And the card says what actually happened, not just that something failed.
+    expect(host.textContent).toContain('Repaired 1 of 2 projects')
+  })
+
   it('offers a take-over on a bot only where administration lost its authority', async () => {
     mocks.fetchConnections.mockResolvedValue({ enabled: true, connections: [CONNECTION] })
     mocks.fetchProjects.mockResolvedValue([BINDING])
