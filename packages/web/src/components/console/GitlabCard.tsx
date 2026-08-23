@@ -9,7 +9,7 @@
 // Deployment-config opt-in: with no GitLab application configured these routes 404 and the card says so.
 // Connections and projects are org-level infrastructure — visible to all, writable by non-viewers.
 
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import useSWR from 'swr'
 import { Button, Icon } from '@/components/ui'
@@ -216,6 +216,8 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
     }
   }, [activeOrg])
 
+  // Whether the last roster answer still owed convergence, so the settling one can be recognized.
+  const wasConverging = useRef(false)
   // The bound-project set is part of the key, so adding or removing a project makes the
   // entry recorded under the old set unreachable and no action site has to invalidate it.
   const signature = [...projects.map((project) => project.id)].sort().join(',')
@@ -225,9 +227,15 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
     // while this project set does not — so only the server can say whether to ask again.
     refreshInterval: (latest) => (latest && !latest.converging ? 0 : GITLAB_CONVERGENCE_POLL_MS),
     // The projects carry state the same saga moves — a webhook still installing among it — so they
-    // ride this poll rather than resting on the read taken at mount. A write in flight owns them.
+    // ride this poll rather than resting on the read taken at mount. A write in flight owns them,
+    // and leaves the edge below unconsumed so the settling read still happens afterwards.
     onSuccess: (latest) => {
-      if (!latest.converging || busyId !== null) return
+      if (busyId !== null) return
+      // The response that reports settled is the one carrying the finished state, and polling
+      // stops right after it — so the pending→settled edge earns one last read of its own.
+      const settling = wasConverging.current && !latest.converging
+      wasConverging.current = latest.converging
+      if (!latest.converging && !settling) return
       void fetchGitlabProjects()
         .then((rows) => setProjects(rows))
         .catch(() => undefined)

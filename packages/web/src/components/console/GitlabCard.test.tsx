@@ -563,22 +563,37 @@ describe('GitlabCard', () => {
     expect(pollInterval()).toBe(0)
   })
 
-  it('re-reads the projects on every roster poll while convergence is pending', async () => {
+  it('re-reads the projects while convergence is pending, and once more when it settles', async () => {
     // A webhook still installing lives on the project row, not the roster, and the projects were
     // read once at mount — so without this the transient badge would sit there until a reload.
+    // The response that reports settled is the one carrying the finished state AND the one that
+    // stops the poll, so skipping the read there would strand the badge for good.
     mocks.fetchConnections.mockResolvedValue({ enabled: true, connections: [CONNECTION] })
     mocks.fetchProjects.mockResolvedValue([{ ...BINDING, webhookState: 'repairing' as const }])
     roster = [BOT]
     converging = true
     await render()
-    expect(projectRow(botRow('acct-1'), 'bind-1').textContent).toContain('webhook repairing')
-    const reads = mocks.fetchProjects.mock.calls.length
+    const row = () => projectRow(botRow('acct-1'), 'bind-1')
+    expect(row().textContent).toContain('webhook repairing')
 
-    // The install lands; the next poll picks the projects up with it.
-    mocks.fetchProjects.mockResolvedValue([BINDING])
+    // A poll taken while it is still installing re-reads, and the badge honestly stays.
+    const pending = mocks.fetchProjects.mock.calls.length
     await revalidate()
-    expect(mocks.fetchProjects.mock.calls.length).toBeGreaterThan(reads)
-    expect(projectRow(botRow('acct-1'), 'bind-1').textContent).not.toContain('webhook')
+    expect(mocks.fetchProjects.mock.calls.length).toBeGreaterThan(pending)
+    expect(row().textContent).toContain('webhook repairing')
+
+    // The install completes, and the roster settles in the same breath.
+    mocks.fetchProjects.mockResolvedValue([BINDING])
+    converging = false
+    const settling = mocks.fetchProjects.mock.calls.length
+    await revalidate()
+    expect(mocks.fetchProjects.mock.calls.length).toBe(settling + 1)
+    expect(row().textContent).not.toContain('webhook')
+    expect(pollInterval()).toBe(0)
+
+    // Exactly one: a settled answer following a settled one reads nothing more.
+    await revalidate()
+    expect(mocks.fetchProjects.mock.calls.length).toBe(settling + 1)
   })
 
   it('leaves the projects alone once nothing is converging', async () => {
