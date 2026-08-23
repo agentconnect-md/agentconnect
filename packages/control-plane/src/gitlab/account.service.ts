@@ -279,6 +279,9 @@ export class GitlabAccountService {
       }
       // This top-level group's OWN accounts — never a global user search (§7.2).
       let listing = await gitlabListServiceAccounts(input.token, input.rootGroupId, this.deps.fetchImpl)
+      // The listing is exhaustive, so a large root spends real time in it: prove
+      // the fence still holds before any write this listing decides.
+      await this.renew(account.id, owner)
       // The durable key first: an account we already recorded needs no marker.
       let external =
         (account.serviceAccountUserId === null
@@ -314,6 +317,7 @@ export class GitlabAccountService {
         } catch (e) {
           // Ambiguous create: re-read, then apply that same persisted window.
           listing = await gitlabListServiceAccounts(input.token, input.rootGroupId, this.deps.fetchImpl)
+          await this.renew(account.id, owner)
           external = this.claimFromAttempt(account, listing)
           if (!external) {
             const reason = listing.some((candidate) => candidate.username === account.username)
@@ -651,6 +655,8 @@ export class GitlabAccountService {
           throw new GitlabApiError('marked service account still present after retirement', 0, 'INTERNAL', true)
         }
       }
+      // No lease renewal guards this one: the delete is CAS-fenced on `retiring`,
+      // so a peer that reclaimed an expired lease and reactivated the row wins it.
       await this.deps.accounts.finishRetirement(accountId)
       return true
     } catch (e) {
@@ -818,6 +824,9 @@ export class GitlabAccountService {
     const strays = (
       await gitlabListServiceAccountTokens(token, rootGroupId, serviceAccountUserId, this.deps.fetchImpl)
     ).filter((t) => t.name === name && t.active !== false && t.revoked !== true)
+    // That listing is exhaustive too: re-prove the fence before the revokes it
+    // decides, not only before the create further down.
+    await this.renew(account.id, owner)
     for (const stray of strays) {
       if (recorded && BigInt(stray.id) === recorded.externalTokenId) continue
       await gitlabRevokeServiceAccountToken(

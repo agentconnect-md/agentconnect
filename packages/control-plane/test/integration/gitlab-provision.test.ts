@@ -779,6 +779,135 @@ describe('GitlabAccountService create recovery (§7.2)', () => {
   })
 })
 
+describe('GitlabAccountService listing pagination (§7.2)', () => {
+  /** A root already holding this many other service accounts — Premium puts no
+   *  bound on the quantity (§5), so a first page is not the whole set. */
+  const others = (count: number, from = 6000) =>
+    Array.from({ length: count }, (_, i) => ({ id: from + i, username: `other-${from + i}`, name: `other ${i}` }))
+
+  const accountListings = (h: Awaited<ReturnType<typeof harness>>) =>
+    h.fake.requests.filter((r) => r.method === 'GET' && /\/service_accounts\?/.test(r.url))
+
+  /** A peer takes the account the way it legitimately can: the run's lease has
+   *  expired, so the CAS lets the next worker claim it. */
+  const stealLease = async (h: Awaited<ReturnType<typeof harness>>) => {
+    const row = (await h.accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP))!
+    const later = new Date(Date.now() + 600_000)
+    expect(await h.accounts.claimLease(row.id, 'peer', later, later)).toBe(true)
+  }
+
+  it('claims the account an ambiguous create landed past the first page', async () => {
+    const h = await harness({ ambiguousServiceAccountCreate: true })
+    h.fake.serviceAccounts = others(120)
+
+    expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toEqual({ state: 'ready' })
+    const created = h.fake.serviceAccounts.find((a) => a.username === usernameOf(AGENT))!
+    // It landed at index 120, so only an exhausted listing ever sees it.
+    expect(h.fake.serviceAccounts.indexOf(created)).toBeGreaterThan(99)
+    expect(await h.accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP)).toMatchObject({
+      serviceAccountUserId: BigInt(created.id),
+      createAttempt: null,
+      state: 'ready'
+    })
+    // One account, not a second one created because the first looked absent.
+    expect(h.fake.serviceAccounts.filter((a) => a.username === usernameOf(AGENT))).toHaveLength(1)
+    expect(accountListings(h).some((r) => r.url.includes('page=2'))).toBe(true)
+  })
+
+  it('re-proves the account fence after the read, so a peer that took it mid-listing wins', async () => {
+    const h = await harness()
+    h.fake.serviceAccounts = others(120)
+    // A peer claims the account the moment our exhaustive read reaches page 2 —
+    // the shape a lease that expires under a slow multi-page listing produces.
+    h.fake.opts.onListPage = async (resource, page) => {
+      if (resource !== 'service_accounts' || page !== 2) return
+      await stealLease(h)
+    }
+
+    expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toEqual({
+      state: 'admin_degraded',
+      reason: 'account_lease_lost'
+    })
+    // Nothing the stale listing decided was written at the provider.
+    expect(h.fake.serviceAccounts).toHaveLength(120)
+    expect(h.fake.tokens.size).toBe(0)
+    expect(await h.accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP)).toMatchObject({
+      serviceAccountUserId: null,
+      createAttempt: null
+    })
+  })
+
+  it('sees a foreign account holding the username on a later page, and refuses it', async () => {
+    const h = await harness()
+    const foreign = { id: 7000, username: usernameOf(AGENT), name: 'somebody-else' }
+    h.fake.serviceAccounts = [...others(100), foreign]
+
+    expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toEqual({
+      state: 'admin_degraded',
+      reason: 'username_taken'
+    })
+    const [account] = await h.accounts.listForAgent(DEFAULT_ORG_ID, AGENT)
+    expect(account).toMatchObject({ serviceAccountUserId: null, stateReason: 'username_taken' })
+    // Nothing was created behind its back, and the foreign account is untouched.
+    expect(h.fake.serviceAccounts).toHaveLength(101)
+    expect(h.fake.serviceAccounts.at(-1)).toEqual(foreign)
+    expect(h.fake.tokens.size).toBe(0)
+  })
+
+  it('re-proves the fence after the token listing, so a stolen lease revokes nothing', async () => {
+    const h = await harness()
+    expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toEqual({ state: 'ready' })
+    const account = (await h.accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP))!
+    const read = (await h.credentials.get(account.id, 'read'))!
+    // The crash shape again: the PAT is live at the provider, our record is gone,
+    // so the next mint would sweep it as a stray.
+    await prisma.gitlabProjectCredential.delete({ where: { id: read.id } })
+    h.fake.opts.onListPage = async (resource) => {
+      if (resource !== 'personal_access_tokens') return
+      await stealLease(h)
+    }
+
+    expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toEqual({
+      state: 'admin_degraded',
+      reason: 'account_lease_lost'
+    })
+    // The revokes the stale listing decided never reached the provider.
+    expect(h.fake.tokens.get(Number(read.externalTokenId))!.revoked).toBe(false)
+  })
+
+  it('sweeps a stray PAT that a long revocation history pushed past the first page', async () => {
+    const h = await harness()
+    expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toEqual({ state: 'ready' })
+    const account = (await h.accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP))!
+    const userId = Number(account.serviceAccountUserId)
+    // Re-lay the account's tokens behind a hundred revoked ones, so the live
+    // PATs answer on page 2 — what years of rotation leave on a real account.
+    const live = [...h.fake.tokens.entries()]
+    h.fake.tokens.clear()
+    for (let i = 0; i < 100; i++) {
+      const stale = {
+        name: `spent-${i}`,
+        scopes: ['read_api'],
+        expires_at: '2027-01-01',
+        revoked: true,
+        user_id: userId
+      }
+      h.fake.tokens.set(9000 + i, stale)
+    }
+    for (const [id, grant] of live) h.fake.tokens.set(id, grant)
+    // The crash shape: the provider token exists but our record of it is gone,
+    // so the next mint must find it as a stray and revoke it before re-minting.
+    const read = (await h.credentials.get(account.id, 'read'))!
+    await prisma.gitlabProjectCredential.delete({ where: { id: read.id } })
+
+    expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toEqual({ state: 'ready' })
+    const listings = h.fake.requests.filter((r) => r.method === 'GET' && /personal_access_tokens\?/.test(r.url))
+    expect(listings.some((r) => r.url.includes('page=2'))).toBe(true)
+    // A first-page-only read would have left this token live with no plaintext.
+    expect(h.fake.tokens.get(Number(read.externalTokenId))!.revoked).toBe(true)
+  })
+})
+
 describe('GitlabAccountService avatar sync (§7.2)', () => {
   it('dresses the account in the agent icon on provisioning, through its OWN api token', async () => {
     const h = await harness()
