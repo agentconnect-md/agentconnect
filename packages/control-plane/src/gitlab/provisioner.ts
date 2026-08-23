@@ -313,7 +313,19 @@ export class GitlabProvisioner {
       // STILL under the binding lease: the authorization row and the membership
       // become visible to convergence together, never one without the other.
       try {
-        return { ok: true, result: await commit({ projectPath: livePath }) }
+        const result = await commit({ projectPath: livePath })
+        // The commit just made a new account and membership visible — and, after a
+        // rename, a new path. Compiled rules bake the project's bound
+        // service-account ids into their §12.1 veto set, and push events are
+        // relay-trusted once past it, so a rule left compiled from the old set
+        // would let this bot's own pushes trigger its siblings' hooks.
+        this.deps.onConverged?.(orgId, binding.projectId)
+        // The commit just made a new account and membership visible — and, after a
+        // rename, a new path. Compiled rules bake the project's bound
+        // service-account ids into their §12.1 veto set, and push events are
+        // relay-trusted once past it, so a rule left compiled from the old set
+        // would let this bot's own pushes trigger its siblings' hooks.
+        return { ok: true, result }
       } catch (e) {
         // The write never landed, so the bind it was for must not outlive it.
         if (scope) await this.deps.accounts.rollbackSpeculativeBind(scope, consumer.agentId)

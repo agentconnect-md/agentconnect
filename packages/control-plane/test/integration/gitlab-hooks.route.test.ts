@@ -274,6 +274,48 @@ describe('gitlab hooks — routes, compile, webhook converge (§8.3/§11.1/§11.
   // membership survives it either way. The full undo is reachable where the write
   // really is what makes the agent a consumer — see the authorize route's own suite.
 
+  it('recompiles the project rules when an authorization adds or drops a bot (§12.1)', async () => {
+    // The veto set is baked into the compiled rule, and push events are
+    // relay-trusted once past it. A rule left compiled from the pre-grant account
+    // set would let the newly authorized bot's own pushes trigger sibling hooks.
+    const h = await harness()
+    const glab = channel([GITLAB_COM_V1_FEATURE])
+    h.a.relayReg.add(glab.ch)
+    expect((await h.a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: glBody(h.agentId) })).statusCode).toBe(
+      200
+    )
+    const first = (await h.accounts.byAgentRoot(DEFAULT_ORG_ID, h.agentId, 900n))!
+    const boundIds = () => {
+      const assigns = glab.sent.filter((frame) => frame.type === 'rc/hook-assign')
+      return [
+        ...((assigns.at(-1)?.payload as RcHookAssign | undefined)?.gitlab?.boundServiceAccountUserIds ?? [])
+      ].sort()
+    }
+    await vi.waitFor(() => expect(boundIds()).toEqual([first.serviceAccountUserId!.toString()]), { timeout: 20_000 })
+
+    // A SECOND agent is authorized on the same project — a new bot joins it.
+    const authorized = await h.a.app.inject({
+      method: 'POST',
+      url: `${ORG}/agents/${h.secondAgentId}/repos`,
+      payload: { provider: 'gitlab', projectId: PROJECT.toString(), access: 'write' }
+    })
+    expect(authorized.statusCode).toBe(200)
+    const second = (await h.accounts.byAgentRoot(DEFAULT_ORG_ID, h.secondAgentId, 900n))!
+    const both = [first.serviceAccountUserId!.toString(), second.serviceAccountUserId!.toString()].sort()
+    await vi.waitFor(() => expect(boundIds()).toEqual(both), { timeout: 20_000 })
+
+    // …and drops back out of the veto set when the authorization is revoked.
+    expect(
+      (
+        await h.a.app.inject({
+          method: 'DELETE',
+          url: `${ORG}/agents/${h.secondAgentId}/repos/${(authorized.json() as { id: string }).id}`
+        })
+      ).statusCode
+    ).toBe(204)
+    await vi.waitFor(() => expect(boundIds()).toEqual([first.serviceAccountUserId!.toString()]), { timeout: 20_000 })
+  })
+
   it('keeps a membership another authorization still earns when a hook write is refused', async () => {
     const h = await harness()
     // The agent already consumes the project through its workspace, so the
