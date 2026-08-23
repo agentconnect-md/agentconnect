@@ -361,18 +361,23 @@ The account:
   or interrupted create, the account is claimed only when it is listed among
   this top-level group's own service accounts and its user id is absent from
   that recorded set. Absence from the snapshot is what dates the account: it
-  did not exist when the window opened, which is the predicate a creation-time
-  comparison would have expressed. GitLab's service-account API reports no
-  creation time — list, create, and update return only the id, username,
-  name, and email — so the snapshot is read from the same responses the
-  claim is later evaluated against, and no clock-skew allowance is needed. A
-  24-hour bound closes a window left open by a dead process, so a stale one
-  cannot claim indefinitely. A username already taken by anything that window
-  does not cover is a foreign account, and the row fails provisioning with a
-  translated `username_taken` reason rather than adopting it. On resolution
-  the numeric user id and the closed window commit in one write, the first
-  durable step and ahead of every cosmetic pass, so a process exit during
-  username or display-name convergence cannot orphan the account;
+  did not exist when the window opened, which is the predicate a
+  creation-time comparison would have expressed. GitLab's service-account
+  API reports no creation time — list, create, and update return only the
+  id, username, name, and email — so the snapshot is read from the same
+  responses the claim is later evaluated against, and no clock-skew
+  allowance is needed. Both reads must exhaust the paginated listing rather
+  than stop at its first page: the predicate is sound only when an account
+  missing from the snapshot is genuinely new instead of merely further down
+  the pages, and a Premium root is not bounded by the Free tier's hundred
+  accounts. A 24-hour bound closes a window left open by a dead process, so
+  a stale one cannot claim indefinitely. A username already taken by
+  anything that window does not cover is a foreign account, and the row
+  fails provisioning with a translated `username_taken` reason rather than
+  adopting it. On resolution the numeric user id and the closed window
+  commit in one write, the first durable step and ahead of every cosmetic
+  pass, so a process exit during username or display-name convergence cannot
+  orphan the account;
 - carries the agent's display name, sanitized as the earlier `<project>-bot`
   derivation sanitized and without any suffix; on agent rename the next
   provisioning convergence updates it, and a refused rename is cosmetic and
@@ -1787,7 +1792,12 @@ external credentials by deleting only local metadata.
 > `running` edge waits on its GitLab arm
 > (`packages/control-plane/src/codehost/note-projection.service.ts`); that arm
 > is being finished as follow-up work. The session merge-request dock panel
-> stays out of scope per Section 18.1.
+> stays out of scope per Section 18.1. One defect is open rather than
+> deliberate: the service-account listing behind Section 7.2 reads a single
+> hundred-account page instead of following the pagination, so the recorded
+> window and its `username_taken` refusal hold only while a top-level group's
+> service accounts fit that first page — always true on Free, not guaranteed
+> on Premium.
 
 Milestones are merge order, not calendar. Each milestone is several small,
 independently mergeable PRs; GitHub behavior stays green at every merge; each
