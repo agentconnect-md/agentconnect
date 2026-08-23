@@ -1542,12 +1542,14 @@ administers — the shape the GitHub card already has. It shows:
 - connected GitLab username and GitLab.com host;
 - OAuth state: connected, reconnect required, or disconnected;
 - the organization's bots, one row per AGENT — its icon and name linking to
-  it, then a pair for each top-level group it reaches: the group, the
-  `@username` there linking to that GitLab profile, and that account's health.
-  An account cannot cross a top-level group, so an agent spanning two owns two
-  accounts; that is one bot with two faces, not two bots, and the row reads
-  that way. A healthy account is named and not badged — only trouble and
-  departure are worth saying;
+  that agent's page, then a chip for each top-level group it reaches, which is
+  itself the link to the account's GitLab profile there, followed by that
+  account's health. The generated username is not shown: it is long, and
+  unreadable beside a name people actually read, so it lives in the chip's
+  tooltip and accessible label instead. An account cannot cross a top-level
+  group, so an agent spanning two owns two accounts; that is one bot with two
+  faces, not two bots, and the row reads that way. A healthy account is named
+  and not badged — only trouble and departure are worth saying;
 - per-bot actions in the same compact controls the messaging rows use: repair,
   which re-runs convergence on each project the bot holds, and taking that
   administration over, offered only where it has actually been lost — the
