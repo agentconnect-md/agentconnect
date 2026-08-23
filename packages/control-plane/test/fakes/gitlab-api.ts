@@ -17,6 +17,9 @@ export interface FakeGitlabOptions {
   path?: string
   /** The instance this fake stands in for; default GitLab.com. */
   baseUrl?: string
+  /** What `GET /version` reports initially (§24.2). Default is at the floor; a
+   *  below-floor or unreadable string is how the refusal path is driven. */
+  version?: string
   /** Per-project paths, for a test holding more than one binding; `path` is the fallback. */
   pathById?: Record<string, string>
   accessLevel?: number
@@ -62,10 +65,14 @@ function page<T>(url: string, rows: readonly T[]): Response {
 }
 
 export class FakeGitlab {
-  readonly opts: Required<Pick<FakeGitlabOptions, 'projectId' | 'path' | 'accessLevel' | 'namespaceKind' | 'baseUrl'>> &
+  readonly opts: Required<
+    Pick<FakeGitlabOptions, 'projectId' | 'path' | 'accessLevel' | 'namespaceKind' | 'baseUrl' | 'version'>
+  > &
     FakeGitlabOptions
   /** The base-bound client every collaborator under test shares. */
   readonly api: GitlabApiClient
+  /** What `GET /version` answers NOW — assign it mid-test to downgrade (§24.2). */
+  version: string
   serviceAccounts: { id: number; username: string; name: string }[] = []
   tokens = new Map<number, { name: string; scopes: string[]; expires_at: string; revoked: boolean; user_id: number }>()
   webhooks = new Map<
@@ -93,8 +100,10 @@ export class FakeGitlab {
       accessLevel: options.accessLevel ?? 50,
       namespaceKind: options.namespaceKind ?? 'group',
       baseUrl: options.baseUrl ?? 'https://gitlab.com',
+      version: options.version ?? '18.11.0-ee',
       ...options
     }
+    this.version = this.opts.version
     this.api = new GitlabApiClient(this.opts.baseUrl, this.fetch())
   }
 
@@ -133,6 +142,9 @@ export class FakeGitlab {
       }
       if (url.endsWith('/oauth/revoke')) return Response.json({})
       if (url.endsWith('/api/v4/user')) return Response.json({ id: 4242, username: 'example-admin' })
+      if (url.endsWith('/api/v4/version')) {
+        return Response.json({ version: this.version, revision: 'abc1234' })
+      }
 
       if (/\/api\/v4\/projects\/\d+\/members\/all\/\d+$/.test(url)) {
         const userId = Number(/members\/all\/(\d+)$/.exec(url)![1])

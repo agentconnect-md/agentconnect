@@ -50,6 +50,7 @@ import type {
   CodeHostRepositoryRepo,
   GitlabConnectionRepo,
   GitlabAgentAccountRepo,
+  GitlabInstanceStateRepo,
   GitlabProjectBindingRepo,
   DaemonLifecycleOpRepo,
   OAuthRepo,
@@ -250,6 +251,8 @@ export interface HttpDeps {
     gitlabProjectBinding: GitlabProjectBindingRepo
     /** Per-agent GitLab service accounts and their memberships (§7.2/§8.2). */
     gitlabAgentAccount: GitlabAgentAccountRepo
+    /** Deployment-level observed instance version (§24.2). */
+    gitlabInstanceState: GitlabInstanceStateRepo
     /** Append-only events feed (§3.12) — WebUI CRUD writes land here (`cron_change`, …). */
     audit: AuditRepo
     /** Durable browser-confirmed delegated MCP operation ledger. */

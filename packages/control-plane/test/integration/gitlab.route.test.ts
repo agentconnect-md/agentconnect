@@ -19,6 +19,7 @@ import {
   PgGitlabAgentAccountRepo,
   PgGitlabConnectionRepo,
   PgGitlabConnectionSecretStore,
+  PgGitlabInstanceStateStore,
   PgGitlabOauthStateStore,
   PgGitlabProjectBindingRepo,
   PgGitlabProjectCredentialRepo,
@@ -56,6 +57,7 @@ function gitlabApp(
     connections: new PgGitlabConnectionRepo(prisma),
     secrets: new PgGitlabConnectionSecretStore(prisma, cipher),
     states: new PgGitlabOauthStateStore(prisma),
+    instanceState: new PgGitlabInstanceStateStore(prisma),
     cipher,
     clock: systemClock,
     publicCpUrl: PUBLIC_CP,
@@ -78,6 +80,7 @@ function gitlabApp(
     accounts: accountService,
     webhookSecrets: new PgGitlabWebhookSecretStore(prisma, cipher),
     catalog: new PgCodeHostRepositoryRepo(prisma),
+    instanceState: new PgGitlabInstanceStateStore(prisma),
     clock: systemClock,
     publicRelayUrl: deployment.publicRelayUrl ?? 'https://relay.example.test',
     // The same authority container.ts wires: an enabled gitlab hook on the project wants ingress.

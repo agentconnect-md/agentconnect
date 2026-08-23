@@ -274,6 +274,22 @@ export async function gitlabCurrentUser(accessToken: string, client: GitlabApiCl
   return user
 }
 
+/** The instance's self-reported version (`GET /version`, §24.2). */
+export interface GitlabVersion {
+  version: string
+  revision?: string
+}
+
+/** The FIRST authenticated call after a successful OAuth callback (§24.2), and
+ *  the read the reconciliation pass refreshes the recorded version from. */
+export async function gitlabVersion(accessToken: string, client: GitlabApiClient): Promise<GitlabVersion> {
+  const body = await gitlabRequest<GitlabVersion>('/version', { auth: accessToken, client })
+  if (typeof body?.version !== 'string') {
+    throw new GitlabApiError('gitlab /version response carries no version', 0, 'INTERNAL', false)
+  }
+  return body
+}
+
 /** One accessible project row for the picker (§10.1) — metadata only. */
 export interface GitlabProjectSummary {
   id: number

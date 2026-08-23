@@ -6,7 +6,10 @@
  * the unauthenticated `begin` top-level navigation stamps a browser-binding
  * cookie hash onto the row exactly once and 302s to GitLab; the callback
  * consumes the row exactly once, requires the same browser, exchanges the code
- * with the stored verifier, and upserts only the starting user's org connection.
+ * with the stored verifier, reads the instance version, and upserts only the
+ * starting user's org connection. That version read is the first credentialed
+ * call the CP makes (§24.2): below the 18.11 floor the connection is refused
+ * with `instance_version_unsupported` before any provisioning can begin.
  *
  * Refresh is a distributed single-writer (§9.3): a short lease elects one
  * refresher, the committed pair advances a tokenVersion CAS, and any failed or
@@ -22,6 +25,7 @@ import type {
   GitlabConnectionRecord,
   GitlabConnectionRepo,
   GitlabConnectionSecretStore,
+  GitlabInstanceStateRepo,
   GitlabOauthStateStore
 } from '../persistence/ports.js'
 import type { SecretCipher } from '../secrets/cipher.js'
@@ -37,6 +41,8 @@ import {
   type GitlabApiClient
 } from './api.js'
 import { GITLAB_OAUTH_BEGIN_PATH, GITLAB_OAUTH_CALLBACK_PATH, type GitlabAppConfig } from './config.js'
+import { INSTANCE_VERSION_UNSUPPORTED_REASON } from './version.js'
+import { observeInstanceVersion } from './instance-version.js'
 
 export const OAUTH_STATE_TTL_MS = 15 * 60 * 1000
 const REFRESH_LEASE_MS = 30 * 1000
@@ -45,7 +51,13 @@ const ACCESS_EXPIRY_SKEW_MS = 60 * 1000
 export const OAUTH_BROWSER_COOKIE = 'ac_gitlab_oauth'
 
 export type GitlabOauthResultCode =
-  'connected' | 'state_invalid' | 'browser_mismatch' | 'exchange_failed' | 'config_missing'
+  | 'connected'
+  | 'state_invalid'
+  | 'browser_mismatch'
+  | 'exchange_failed'
+  | 'config_missing'
+  /** §24.2: the instance is below the 18.11 floor, or would not say what it is. */
+  | typeof INSTANCE_VERSION_UNSUPPORTED_REASON
 
 export class GitlabOauthDenied extends Error {
   constructor(
@@ -73,6 +85,8 @@ export interface GitlabOauthServiceDeps {
   connections: GitlabConnectionRepo
   secrets: GitlabConnectionSecretStore
   states: GitlabOauthStateStore
+  /** §24.2: where the authenticated version read at first contact is recorded. */
+  instanceState: GitlabInstanceStateRepo
   cipher: SecretCipher
   clock: Clock
   /** Public CP origin — the begin/callback URLs derive from it (gateway `/v1` form). */
@@ -157,6 +171,13 @@ export class GitlabOauthService {
         },
         this.deps.api
       )
+      // §24.2: the floor is checked on the FIRST authenticated call, so a
+      // below-floor instance is refused before any provisioning can begin.
+      const version = await observeInstanceVersion(this.deps, grant.access_token)
+      if (!version.supported) {
+        this.deps.log?.warn({ version: version.raw }, 'gitlab instance is below the supported version floor')
+        return { redirectPath, result: INSTANCE_VERSION_UNSUPPORTED_REASON }
+      }
       const user = await gitlabCurrentUser(grant.access_token, this.deps.api)
       const scope = orgScope(OrgId(row.orgId))
       await this.deps.connections.upsertOnCallback({

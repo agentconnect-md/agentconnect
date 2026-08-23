@@ -47,6 +47,7 @@ import {
   githubManifestRegistrationUrl
 } from '../github-app.js'
 import { gitlabConfiguredUrls } from '../gitlab-app.js'
+import { probeBlocksSave, probeGitlabInstance } from '../gitlab-probe.js'
 import {
   auditSlackManifest,
   buildSlackDeploymentManifest,
@@ -119,7 +120,9 @@ const ConfigureGitlabBody = z.strictObject({
   application: z
     .strictObject({
       clientId: z.string().trim().min(1).max(500),
-      clientSecret: z.string().min(1).max(10_000).optional()
+      clientSecret: z.string().min(1).max(10_000).optional(),
+      /** Empty or absent means GitLab.com — the default value of the axis (§24.1). */
+      baseUrl: z.string().trim().max(500).nullable().optional()
     })
     .nullable()
 })
@@ -865,17 +868,24 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
   app.post('/api/v1/configure/gitlab', { preHandler: requireConfigurationAccess }, async (request, reply) => {
     const parsed = ConfigureGitlabBody.safeParse(request.body)
     if (!parsed.success) return problem(reply, 400, 'a valid GitLab OAuth application id is required')
+    const application = parsed.data.application
+    const requestedBaseUrl = application?.baseUrl?.trim()
+    // The staged probe (§24.2): shape refuses the save, everything else is a
+    // warning the operator reads, because this process and the Control Plane
+    // need not share a network position.
+    const probe = requestedBaseUrl ? await probeGitlabInstance(requestedBaseUrl, fetchImpl) : null
+    if (probe && probeBlocksSave(probe)) return problem(reply, 400, probe.message, probe.status)
     return serializeMutation(async () => {
       const current = await deps.store.getAdmin()
       if (!current) return problem(reply, 409, 'save deployment settings before configuring GitLab')
       let put: ReturnType<typeof gitlabDeploymentPut>
       try {
-        put = gitlabDeploymentPut(current, parsed.data.application)
+        put = gitlabDeploymentPut(current, application ? { ...application, baseUrl: probe?.baseUrl ?? null } : null)
       } catch (error) {
         return problem(reply, 400, error instanceof Error ? error.message : 'invalid GitLab OAuth application')
       }
       const saved = await deps.store.replace({ expectedRevision: current.revision, ...put })
-      return { revision: saved.revision, restartRequired: true as const }
+      return { revision: saved.revision, restartRequired: true as const, ...(probe ? { probe } : {}) }
     })
   })
 

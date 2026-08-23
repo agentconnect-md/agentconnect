@@ -30,6 +30,8 @@ import type {
   GitlabConnectionSecretStore,
   GitlabConnectionState,
   GitlabCredentialPurpose,
+  GitlabInstanceStateRecord,
+  GitlabInstanceStateRepo,
   GitlabOauthStateRecord,
   GitlabOauthStateStore,
   GitlabProjectBindingRecord,
@@ -277,6 +279,28 @@ export class PgGitlabOauthStateStore implements GitlabOauthStateStore {
     } catch {
       return null
     }
+  }
+}
+
+// ── §24.2 the observed instance version ──────────────────────────────────────
+
+export class PgGitlabInstanceStateStore implements GitlabInstanceStateRepo {
+  constructor(private readonly prisma: PrismaClient) {}
+
+  async record(input: GitlabInstanceStateRecord): Promise<void> {
+    const observed = { version: input.version, enterprise: input.enterprise, observedAt: input.observedAt }
+    await this.prisma.gitlabInstanceState.upsert({
+      where: { baseUrl: input.baseUrl },
+      create: { baseUrl: input.baseUrl, ...observed },
+      update: observed
+    })
+  }
+
+  get(baseUrl: string): Promise<GitlabInstanceStateRecord | null> {
+    return this.prisma.gitlabInstanceState.findUnique({
+      where: { baseUrl },
+      select: { baseUrl: true, version: true, enterprise: true, observedAt: true }
+    })
   }
 }
 

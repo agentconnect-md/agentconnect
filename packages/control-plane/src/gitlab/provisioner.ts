@@ -13,7 +13,10 @@
  *   webhooks are never adopted by name alone — webhook ownership needs BOTH the
  *   stored id and the marker URL (§10.3);
  * - cleanup that cannot be completed leaves `cleanup_pending` and RETAINS the
- *   deployment-global claim; elapsed time never releases it (§10.2, §19.4).
+ *   deployment-global claim; elapsed time never releases it (§10.2, §19.4);
+ * - the §24.2 version floor is re-read at the top of every pass and gates
+ *   provisioning only — a downgraded instance gets no new accounts, credentials,
+ *   or webhooks, while everything already provisioned keeps serving.
  *
  * NEVER log token material or upstream token responses.
  */
@@ -22,6 +25,7 @@ import type { Clock } from '../domain/clock.js'
 import type {
   CodeHostRepositoryRepo,
   GitlabAccountConsumer,
+  GitlabInstanceStateRepo,
   GitlabProjectBindingRecord,
   GitlabProjectBindingRepo,
   GitlabWebhookSecretStore
@@ -49,6 +53,8 @@ import {
   type GitlabAccountService
 } from './account.service.js'
 import type { GitlabOauthService } from './oauth.service.js'
+import { observeInstanceVersion } from './instance-version.js'
+import { INSTANCE_VERSION_UNSUPPORTED_REASON } from './version.js'
 
 /** The exclusive provisioning lease a run holds across its provider writes. */
 export const PROVISION_LEASE_MS = 10 * 60 * 1000
@@ -119,6 +125,8 @@ export interface GitlabProvisionerDeps {
   accounts: GitlabAccountService
   webhookSecrets: GitlabWebhookSecretStore
   catalog: CodeHostRepositoryRepo
+  /** §24.2: this pass refreshes the recorded instance version and gates on it. */
+  instanceState: GitlabInstanceStateRepo
   clock: Clock
   /** Public relay origin the managed webhook URL derives from; absent ⇒ the
    *  webhook step reports a configuration reason instead of guessing. */
@@ -398,6 +406,12 @@ export class GitlabProvisioner {
       let ensured: { ok: true } | { ok: false; reason: string; retryable: boolean }
       try {
         const token = await this.deps.oauth.withAccessToken(orgId, binding.installerConnectionId)
+        // §24.2: this ensure is new provisioning too, so the floor gates it as
+        // well — nothing has been created yet, so there is nothing to roll back.
+        const version = await observeInstanceVersion(this.deps, token)
+        if (!version.supported) {
+          return { ok: false, reason: INSTANCE_VERSION_UNSUPPORTED_REASON, retryable: false }
+        }
         const project = (await gitlabProject(
           token,
           binding.projectId,
@@ -606,6 +620,14 @@ export class GitlabProvisioner {
     owner: string
   ): Promise<ProvisionOutcome> {
     const { api } = this.deps
+    // 0. Refresh the recorded instance version (§24.2). Below the floor this
+    // refuses BEFORE any account, credential, or webhook write, so a downgraded
+    // instance converges on refusing new provisioning while everything already
+    // provisioned keeps serving until its credentials expire (§19.1).
+    const version = await observeInstanceVersion(this.deps, token)
+    if (!version.supported) {
+      return { state: 'admin_degraded', reason: INSTANCE_VERSION_UNSUPPORTED_REASON }
+    }
     // 1. Refresh the mutable facts by numeric id (rename-proof, §10.2 step 1).
     const project = (await gitlabProject(token, binding.projectId, api)) as GitlabProjectWithNamespace | null
     if (!project) return { state: 'admin_degraded', reason: 'project_not_accessible' }
