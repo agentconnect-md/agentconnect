@@ -862,44 +862,21 @@ export class PgGitlabAgentAccountRepo implements GitlabAgentAccountRepo {
       }),
       this.prisma.hookDef.findMany({
         where: { orgId, kind: 'gitlab', enabled: true, repoId: { not: null }, agentId: { not: null } },
-        select: { agentId: true, repoId: true, commentFamilies: true }
+        select: { agentId: true, repoId: true }
       })
     ])
-    const found = new Map<string, GitlabProjectConsumer & { families: Set<string> }>()
-    const at = (projectId: bigint, agentId: string): GitlabProjectConsumer & { families: Set<string> } => {
+    const levels = new Map<string, GitlabProjectConsumer>()
+    const raise = (projectId: bigint, agentId: string, accessLevel: number): void => {
       const key = `${projectId}:${agentId}`
-      const held = found.get(key)
-      if (held) return held
-      const fresh = {
-        projectId,
-        agentId,
-        accessLevel: 0,
-        workspace: null,
-        triggerFamilies: [],
-        triggerCount: 0,
-        families: new Set<string>()
-      }
-      found.set(key, fresh)
-      return fresh
+      const held = levels.get(key)
+      if (held) held.accessLevel = Math.max(held.accessLevel, accessLevel)
+      else levels.set(key, { projectId, agentId, accessLevel })
     }
     // The workspace gitAccess clamp derives the role (§7.2, §13.1).
-    for (const row of workspaces) {
-      const entry = at(row.workspaceRepoId!, row.id)
-      entry.workspace = row.gitAccess === 'read' ? 'read' : 'write'
-      entry.accessLevel = Math.max(entry.accessLevel, gitlabWorkspaceAccessLevel(row.gitAccess))
-    }
+    for (const row of workspaces) raise(row.workspaceRepoId!, row.id, gitlabWorkspaceAccessLevel(row.gitAccess))
     // A hook consumer posts notes and may run the configured review policy.
-    for (const row of hooks) {
-      if (!row.agentId || !row.repoId) continue
-      const entry = at(row.repoId, row.agentId)
-      entry.triggerCount += 1
-      entry.accessLevel = Math.max(entry.accessLevel, ACCESS_DEVELOPER)
-      for (const family of row.commentFamilies) entry.families.add(family)
-    }
-    return [...found.values()].map(({ families, ...consumer }) => ({
-      ...consumer,
-      triggerFamilies: [...families].sort()
-    }))
+    for (const row of hooks) if (row.agentId && row.repoId) raise(row.repoId, row.agentId, ACCESS_DEVELOPER)
+    return [...levels.values()]
   }
 }
 

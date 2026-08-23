@@ -13,7 +13,6 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import useSWR from 'swr'
 import {
   ApiError,
   createGitlabProject,
@@ -24,14 +23,11 @@ import {
   type GitlabProjectDto
 } from './api'
 import { mergeGitlabProjectChoices, type GitlabProjectChoice } from './gitlab-projects'
-import { useOrgs } from './org-context'
-import { consoleKeys } from './swr-keys'
 
 const SEARCH_DEBOUNCE_MS = 300
 
 // Bots are created and retired behind project and hook CRUD, so a read that never repeats would
 // show a project whose bot has not arrived yet as one that has none.
-const BINDINGS_REFRESH_MS = 30_000
 
 function errorText(e: unknown): string {
   return e instanceof Error ? e.message : String(e)
@@ -63,31 +59,6 @@ export interface GitlabProjectPicker {
   provisionError: string | null
   /** Bind an unadded project. Resolves to null when setup failed. */
   provision: (projectId: string) => Promise<GitlabProjectBindingDto | null>
-}
-
-/** The organization's managed project bindings, read-only: one request shared by SWR key with
- *  every surface that names a project's bots. A deployment with no GitLab application has none.
- *  `consumers` identifies what the caller reads bots for — null reads nothing at all. */
-export function useGitlabProjectBindings(consumers: string | null): GitlabProjectBindingDto[] {
-  const { activeOrg } = useOrgs()
-  const { data, mutate } = useSWR(
-    consumers === null ? null : consoleKeys.gitlabProjects(activeOrg?.id),
-    ([, orgId]) => fetchGitlabProjects(orgId).catch(absentAsEmpty),
-    { refreshInterval: BINDINGS_REFRESH_MS }
-  )
-  // Bots are created and retired behind project, hook, and workspace writes, so a changed consumer
-  // set re-reads at once instead of showing the row it just saved without its bot until the poll.
-  const read = useRef<string | null>(null)
-  useEffect(() => {
-    if (consumers === null || read.current === null) {
-      read.current = consumers
-      return
-    }
-    if (read.current === consumers) return
-    read.current = consumers
-    void mutate()
-  }, [consumers, mutate])
-  return data ?? []
 }
 
 /** `active` keeps a pane that is not showing from issuing any request at all. */

@@ -36,7 +36,6 @@ import {
   updateGitlabHook,
   uploadAgentIcon,
   type GithubInstallationDto,
-  type GitlabProjectAccountDto,
   type HookDto,
   type HookRunDto
 } from '@/lib/api'
@@ -87,8 +86,6 @@ import {
   type GlFamily,
   type GlTriggerMode
 } from '@/lib/gitlab-events'
-import { GITLAB_PROJECT_STATE, gitlabAgentBot, gitlabProfileUrl, gitlabStateReasonText } from '@/lib/gitlab-projects'
-import { useGitlabProjectBindings } from '@/lib/use-gitlab-projects'
 import { AgentIconPicker } from '@/components/console/AgentIconPicker'
 import { BuiltinBadge } from '@/components/console/BuiltinBadge'
 import { NotFound } from '@/components/console/NotFound'
@@ -139,37 +136,6 @@ function FeishuRegionBadge({ integration }: { integration: Pick<IntegrationRow, 
   return (
     <span className="badge flex-none bg-(--surface-active) text-(--text-tertiary)">
       {integration.region === 'lark' ? 'Lark' : 'Feishu'}
-    </span>
-  )
-}
-
-// The bot this agent acts as on a GitLab project. Identity lives in the integration row, the way
-// every platform's row names its bot (gitlab-com-integration.md §18.1) — health only when it is off.
-function GitlabBotChip({ bot }: { bot: GitlabProjectAccountDto | null }) {
-  if (!bot) return null
-  const handle = `bot @${bot.username}`
-  const reason = gitlabStateReasonText(bot.stateReason)
-  const state = GITLAB_PROJECT_STATE[bot.state]
-  return (
-    <span className="inline-flex min-w-0 flex-none items-center gap-[6px]">
-      {bot.userId ? (
-        <a
-          href={gitlabProfileUrl(bot.username)}
-          target="_blank"
-          rel="noopener noreferrer"
-          title={bot.displayName ? `Shown on GitLab as ${bot.displayName}` : 'The bot this agent acts as on GitLab'}
-          className="mono min-w-0 truncate text-[11.5px] text-(--text-tertiary) hover:underline"
-        >
-          {handle}
-        </a>
-      ) : (
-        <span className="mono min-w-0 truncate text-[11.5px] text-(--text-tertiary)">{handle}</span>
-      )}
-      {bot.state !== 'ready' && (
-        <span className={`badge flex-none ${state.badge}`} {...(reason ? { title: reason } : {})}>
-          {state.label}
-        </span>
-      )}
     </span>
   )
 }
@@ -270,11 +236,6 @@ export default function AgentDetailView() {
   const webhookHooks = agentHooks.filter((h) => h.kind === 'webhook')
   const githubHooks = agentHooks.filter((h) => h.kind === 'github')
   const gitlabHooks = agentHooks.filter((h) => h.kind === 'gitlab')
-  // The project bindings name each project's member bots, so a row can show the one this agent acts as.
-  // The watched projects are the read's identity: adding or removing one re-reads instead of waiting.
-  const gitlabBindings = useGitlabProjectBindings(
-    gitlabHooks.length > 0 ? gitlabHooks.map((h) => h.repoId ?? h.repoFullName ?? h.id).join(',') : null
-  )
   const githubInstallationsKey =
     activeOrg && githubHooks.length > 0 ? (['github-review-installations', activeOrg.id] as const) : null
   const { data: githubInstallationsData } = useSWR<GithubInstallationDto[]>(githubInstallationsKey, () =>
@@ -1730,13 +1691,6 @@ export default function AgentDetailView() {
                               <span className="mono min-w-[90px] flex-1 truncate text-[12px] text-(--text-primary)">
                                 {h.repoFullName ?? h.name}
                               </span>
-                              <GitlabBotChip
-                                bot={gitlabAgentBot(
-                                  gitlabBindings,
-                                  { projectId: h.repoId, projectPath: h.repoFullName },
-                                  da.id
-                                )}
-                              />
                               {gitlabHookNeedsNormalization(h) && (
                                 <span
                                   className="badge flex-none bg-(--surface-active) text-(--text-tertiary)"

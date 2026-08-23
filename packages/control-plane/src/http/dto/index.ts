@@ -1868,21 +1868,9 @@ export const GitlabOrgAccountDto = z.object({
   stateReason: z.string().nullable(),
   /** `retiring` once the agent's last project in the group went away (§7.2). */
   lifecycle: z.enum(['active', 'retiring']),
-  /** The bound projects this account is a member of, each with the role its authorization derives
-   *  and WHY it holds it — a workspace, triggers, or both. Dropping one reason while the other
-   *  stands must read as a change, never as a bot with no purpose left. */
-  memberships: z.array(
-    z.object({
-      bindingId: z.string(),
-      accessLevel: z.number().int(),
-      /** The agent's workspace on the project and the access it grants; null when it has none. */
-      workspace: z.enum(['read', 'write']).nullable(),
-      /** Comment families the agent's enabled triggers cover here; may be empty. */
-      triggerFamilies: z.array(z.string()),
-      /** How many enabled triggers the agent has on the project. */
-      triggerCount: z.number().int()
-    })
-  )
+  /** The bound projects this account is a member of. The console manages a project where it is
+   *  used, so this says only WHICH — enough to tell an orphaned binding from a held one. */
+  bindingIds: z.array(z.string())
 })
 export type GitlabOrgAccountDtoT = z.infer<typeof GitlabOrgAccountDto>
 
