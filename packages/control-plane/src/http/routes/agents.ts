@@ -35,6 +35,7 @@ import type {
   DreamFileReadContent
 } from '@agentconnect.md/protocol'
 import { gitlabWorkspaceAccessLevel } from '../../gitlab/api.js'
+import type { GitlabLiveProject } from '../../gitlab/provisioner.js'
 import { gitlabAccountUnavailableMessage } from '../../gitlab/account.service.js'
 import {
   GITLAB_COM_V1_FEATURE,
@@ -1545,12 +1546,17 @@ export function agentRoutes(deps: HttpDeps) {
               return conflict('the selected daemon does not support GitLab workspaces yet — upgrade it first')
             }
           }
-          // The binding, not caller input, is the authority for the clone URL
-          // and, absent an explicit branch, for the default branch.
+          // The persisted catalog row, not caller input and never a composed
+          // URL, is the authority for the clone URL (§24.1); the binding still
+          // is for the default branch absent an explicit one.
+          const catalogRow = await deps.repos.codeHostRepository.byExternalId(orgOf(req), 'gitlab', projectId)
+          if (!catalogRow?.cloneUrl) {
+            return conflict('the GitLab project binding has no clone URL yet — repair the project first')
+          }
           workspace = {
             mode: 'gitlab',
             isolation: ws.worktree === false ? 'shared' : 'session',
-            gitRepo: `https://gitlab.com/${binding.projectPath}`,
+            gitRepo: catalogRow.cloneUrl,
             gitBranch: ws.gitBranch ?? binding.defaultBranch ?? 'main',
             ...(ws.agentDir !== undefined ? { agentDir: ws.agentDir } : {}),
             gitAccess: ws.gitAccess ?? 'write'
@@ -2443,13 +2449,17 @@ export function agentRoutes(deps: HttpDeps) {
             if (!binding || binding.state === 'cleanup_pending') {
               return conflict('the project is not a managed GitLab binding in this organization')
             }
+            const catalogRow = await deps.repos.codeHostRepository.byExternalId(existing.orgId, 'gitlab', projectId)
+            if (!catalogRow?.cloneUrl) {
+              return conflict('the GitLab project binding has no clone URL yet — repair the project first')
+            }
             const worktree =
               req.body.worktree ??
               (existing.workspace.mode !== 'scratch' ? existing.workspace.isolation === 'session' : true)
             workspace = {
               mode: 'gitlab',
               isolation: worktree ? 'session' : 'shared',
-              gitRepo: `https://gitlab.com/${binding.projectPath}`,
+              gitRepo: catalogRow.cloneUrl,
               gitBranch: req.body.gitBranch ?? binding.defaultBranch ?? 'main',
               ...(req.body.agentDir ? { agentDir: req.body.agentDir } : {}),
               gitAccess: req.body.gitAccess
@@ -2488,15 +2498,13 @@ export function agentRoutes(deps: HttpDeps) {
           // cannot serve this — activation would be refused, the edit would roll
           // back, and the agent would never become the consumer that convergence
           // needs a reason to provision for.
-          // A gitlab clone URL is built from the binding read BEFORE the lease, and
-          // the lease's own project read converges every replicated path. Rebuilding
-          // from the live answer keeps this write from putting the stale one back.
-          const applyWorkspace = (live?: { projectPath: string }): Promise<AgentRecord> =>
+          // A gitlab clone URL is read from the catalog BEFORE the lease, and the
+          // lease's own project read converges every replicated path. Taking the
+          // live answer keeps this write from putting the stale one back.
+          const applyWorkspace = (live?: GitlabLiveProject): Promise<AgentRecord> =>
             agentMoves.setWorkspace(
               existing,
-              live && workspace.mode === 'gitlab'
-                ? { ...workspace, gitRepo: `https://gitlab.com/${live.projectPath}` }
-                : workspace,
+              live?.cloneUrl && workspace.mode === 'gitlab' ? { ...workspace, gitRepo: live.cloneUrl } : workspace,
               workspaceRepoId,
               req.principal?.userId
             )

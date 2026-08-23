@@ -882,8 +882,9 @@ export interface AgentRepo {
    *  path refresh (rename): gitlab-workspace clone URLs AND every explicit
    *  authorization's display path, which is how the daemon maps a named project
    *  back to its numeric id. Bumps configRevision once per agent so the fenced
-   *  spec push replicates. Returns the affected agent ids. */
-  refreshGitlabProjectPath(orgId: OrgId, projectId: bigint, projectPath: string): Promise<AgentId[]>
+   *  spec push replicates. Returns the affected agent ids. `cloneUrl` is the
+   *  provider's own value (§24.1) — omitted ⇒ only display paths converge. */
+  refreshGitlabProjectPath(orgId: OrgId, projectId: bigint, projectPath: string, cloneUrl?: string): Promise<AgentId[]>
   /** Set the visibility + share set (the dedicated `/sharing` write path, kept
    *  separate from content `update`). An org→restricted transition atomically
    *  closes known direct-conversation rows. Stamps the last-modified audit;

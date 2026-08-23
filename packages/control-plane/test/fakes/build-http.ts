@@ -418,7 +418,7 @@ export function buildHttpApp(
         credentialSecrets: new PgGitlabProjectCredentialSecretStore(prisma, cipher),
         hookService,
         relayControl,
-        ...(coreOverrides.gitlab.fetchImpl ? { fetchImpl: coreOverrides.gitlab.fetchImpl } : {})
+        api: coreOverrides.gitlab.api
       })
     }
   }

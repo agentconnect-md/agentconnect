@@ -17,6 +17,7 @@ import {
   DEPLOYMENT_CONFIG_SCHEMA_VERSION,
   DEPLOYMENT_SECRET_KEYS,
   DeploymentConfigConflictError,
+  DeploymentConfigGitlabBaseUrlLockedError,
   DeploymentConfigMissingSecretsError,
   DeploymentConfigSecretRefreshRequiredError,
   DeploymentConfigValuesV1Schema,
@@ -607,6 +608,9 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
       return problem(reply, 400, error.message, error.code)
     }
     if (error instanceof DeploymentConfigConflictError) {
+      return problem(reply, 409, error.message, error.code)
+    }
+    if (error instanceof DeploymentConfigGitlabBaseUrlLockedError) {
       return problem(reply, 409, error.message, error.code)
     }
     if (error instanceof LogtoManagementError) {

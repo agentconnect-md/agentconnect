@@ -733,7 +733,12 @@ export class PgAgentRepo implements AgentRepo {
     }
   }
 
-  async refreshGitlabProjectPath(orgId: OrgId, projectId: bigint, projectPath: string): Promise<AgentId[]> {
+  async refreshGitlabProjectPath(
+    orgId: OrgId,
+    projectId: bigint,
+    projectPath: string,
+    cloneUrl?: string
+  ): Promise<AgentId[]> {
     // The path is a mutable display/transport hint keyed by the immutable project
     // id (§8.1). Both places that replicate it drift on a rename: a gitlab
     // workspace's clone URL, and every explicit authorization's display path,
@@ -742,14 +747,17 @@ export class PgAgentRepo implements AgentRepo {
     // the old one fail the daemon's echo check against the binding's new path.
     // Both writes join the configRevision ordering domain the daemon fences on,
     // in one transaction, so a spec never carries one half of the rename.
-    const cloneUrl = `https://gitlab.com/${projectPath}`
+    // The clone URL is the provider's own `http_url_to_repo`, never composed
+    // (§24.1); a provider answer without one leaves the existing URL alone.
     return this.transaction(async (tx) => {
-      const workspaces = await tx.agent.findMany({
-        where: { orgId, workspaceMode: 'gitlab', workspaceRepoId: projectId, NOT: { gitRepo: cloneUrl } },
-        select: { id: true }
-      })
+      const workspaces = cloneUrl
+        ? await tx.agent.findMany({
+            where: { orgId, workspaceMode: 'gitlab', workspaceRepoId: projectId, NOT: { gitRepo: cloneUrl } },
+            select: { id: true }
+          })
+        : []
       const workspaceIds = workspaces.map((row: { id: string }) => row.id)
-      if (workspaceIds.length > 0) {
+      if (cloneUrl && workspaceIds.length > 0) {
         await tx.agent.updateMany({
           where: { id: { in: workspaceIds }, orgId, workspaceMode: 'gitlab', workspaceRepoId: projectId },
           data: { gitRepo: cloneUrl }

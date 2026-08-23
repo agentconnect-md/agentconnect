@@ -27,8 +27,16 @@ import type {
 import type { SecretCipher } from '../secrets/cipher.js'
 import { orgScope } from '../secrets/scope.js'
 import { GitlabMembershipGone } from '../persistence/errors.js'
-import { GitlabApiError, gitlabCurrentUser, gitlabExchangeCode, gitlabRefreshToken, type FetchLike } from './api.js'
-import { GITLAB_HOST, GITLAB_OAUTH_BEGIN_PATH, GITLAB_OAUTH_CALLBACK_PATH, type GitlabAppConfig } from './config.js'
+import {
+  GitlabApiError,
+  gitlabAuthorizeUrl,
+  gitlabCurrentUser,
+  gitlabExchangeCode,
+  gitlabRefreshToken,
+  gitlabRevokeToken,
+  type GitlabApiClient
+} from './api.js'
+import { GITLAB_OAUTH_BEGIN_PATH, GITLAB_OAUTH_CALLBACK_PATH, type GitlabAppConfig } from './config.js'
 
 export const OAUTH_STATE_TTL_MS = 15 * 60 * 1000
 const REFRESH_LEASE_MS = 30 * 1000
@@ -71,7 +79,7 @@ export interface GitlabOauthServiceDeps {
   publicCpUrl: string
   /** Console origin for the final redirect; absent ⇒ redirect stays on the CP origin. */
   webAppUrl?: string
-  fetchImpl?: FetchLike
+  api: GitlabApiClient
   log?: { warn(obj: object, msg: string): void }
 }
 
@@ -107,15 +115,16 @@ export class GitlabOauthService {
     if (!row) return null
     const verifier = await this.deps.cipher.open(row.verifier, orgScope(OrgId(row.orgId)))
     const challenge = createHash('sha256').update(verifier).digest('base64url')
-    const url = new URL(`${GITLAB_HOST}/oauth/authorize`)
-    url.searchParams.set('client_id', this.deps.cfg.clientId)
-    url.searchParams.set('redirect_uri', this.callbackUrl)
-    url.searchParams.set('response_type', 'code')
-    url.searchParams.set('scope', 'api')
-    url.searchParams.set('state', nonce)
-    url.searchParams.set('code_challenge', challenge)
-    url.searchParams.set('code_challenge_method', 'S256')
-    return { redirectUrl: url.toString(), browserNonce }
+    const redirectUrl = gitlabAuthorizeUrl(this.deps.api, {
+      client_id: this.deps.cfg.clientId,
+      redirect_uri: this.callbackUrl,
+      response_type: 'code',
+      scope: 'api',
+      state: nonce,
+      code_challenge: challenge,
+      code_challenge_method: 'S256'
+    })
+    return { redirectUrl, browserNonce }
   }
 
   /**
@@ -146,9 +155,9 @@ export class GitlabOauthService {
           verifier,
           redirectUri: this.callbackUrl
         },
-        this.deps.fetchImpl
+        this.deps.api
       )
-      const user = await gitlabCurrentUser(grant.access_token, this.deps.fetchImpl)
+      const user = await gitlabCurrentUser(grant.access_token, this.deps.api)
       const scope = orgScope(OrgId(row.orgId))
       await this.deps.connections.upsertOnCallback({
         orgId: row.orgId,
@@ -243,7 +252,7 @@ export class GitlabOauthService {
             refreshToken: pair.refreshToken,
             redirectUri: this.callbackUrl
           },
-          this.deps.fetchImpl
+          this.deps.api
         )
       } catch (e) {
         // Deterministic rejection or ambiguous outcome alike: the old pair may
@@ -289,17 +298,14 @@ export class GitlabOauthService {
     const pair = await this.deps.secrets.get(orgId, connectionId)
     if (pair) {
       try {
-        const impl = this.deps.fetchImpl ?? (fetch as FetchLike)
-        await impl(`${GITLAB_HOST}/oauth/revoke`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/x-www-form-urlencoded' },
-          body: new URLSearchParams({
-            client_id: this.deps.cfg.clientId,
-            client_secret: this.deps.cfg.clientSecret,
+        await gitlabRevokeToken(
+          {
+            clientId: this.deps.cfg.clientId,
+            clientSecret: this.deps.cfg.clientSecret,
             token: pair.accessToken
-          }).toString(),
-          signal: AbortSignal.timeout(10_000)
-        })
+          },
+          this.deps.api
+        )
       } catch {
         // Best-effort: local removal is the authority; the provider grant ages out.
       }

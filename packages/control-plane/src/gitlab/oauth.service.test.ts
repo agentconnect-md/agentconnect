@@ -9,7 +9,7 @@ import type {
   GitlabOauthStateStore
 } from '../persistence/ports.js'
 import type { SecretCipher } from '../secrets/cipher.js'
-import type { FetchLike } from './api.js'
+import { GitlabApiClient, type FetchLike } from './api.js'
 import { GitlabOauthDenied, GitlabOauthService, normalizeReturnPath } from './oauth.service.js'
 import { GitlabMembershipGone } from '../persistence/errors.js'
 
@@ -172,13 +172,19 @@ function gitlabFetch(script: Scripted = {}): FetchLike {
   }
 }
 
-function harness(opts: { script?: Scripted; now?: number } = {}) {
+function harness(opts: { script?: Scripted; now?: number; baseUrl?: string } = {}) {
   const states = new MemStates()
   const secrets = new MemSecrets()
   const connections = new MemConnections(secrets)
   const clockNow = { value: opts.now ?? Date.parse('2026-08-22T00:00:00.000Z') }
+  const baseUrl = opts.baseUrl ?? 'https://gitlab.com'
+  const urls: string[] = []
+  const record: FetchLike = (url, init) => {
+    urls.push(url)
+    return gitlabFetch(opts.script ?? {})(url, init)
+  }
   const service = new GitlabOauthService({
-    cfg: { clientId: 'client-1', clientSecret: 'secret-1' },
+    cfg: { clientId: 'client-1', clientSecret: 'secret-1', baseUrl },
     connections,
     secrets,
     states,
@@ -186,9 +192,9 @@ function harness(opts: { script?: Scripted; now?: number } = {}) {
     clock: { now: () => clockNow.value } as never,
     publicCpUrl: 'https://api.example.test',
     webAppUrl: 'https://console.example.test',
-    fetchImpl: gitlabFetch(opts.script ?? {})
+    api: new GitlabApiClient(baseUrl, record)
   })
-  return { service, states, connections, secrets, clockNow }
+  return { service, states, connections, secrets, clockNow, urls }
 }
 
 async function connectedHarness(opts: { script?: Scripted } = {}) {
@@ -230,6 +236,23 @@ describe('GitlabOauthService (§9)', () => {
     expect(authorize.searchParams.get('redirect_uri')).toBe('https://api.example.test/v1/gitlab/oauth/callback')
     // A replayed begin link cannot re-bind another browser.
     expect(await service.begin(nonce)).toBeNull()
+  })
+
+  it('composes authorize, token, user, and revoke on a prefixed non-default-port instance (§24.1)', async () => {
+    const { service, connections, urls } = harness({ baseUrl: 'https://apps.example.test:8443/gitlab' })
+    const { url } = await service.start(ORG, USER)
+    const nonce = new URL(url).searchParams.get('state')!
+    const begun = (await service.begin(nonce))!
+    expect(begun.redirectUrl.startsWith('https://apps.example.test:8443/gitlab/oauth/authorize?')).toBe(true)
+
+    expect((await service.callback(nonce, 'code-1', begun.browserNonce)).result).toBe('connected')
+    const connectionId = [...connections.rows.keys()][0]!
+    expect(await service.disconnect(ORG, connectionId)).toBe(true)
+    expect(urls).toEqual([
+      'https://apps.example.test:8443/gitlab/oauth/token',
+      'https://apps.example.test:8443/gitlab/api/v4/user',
+      'https://apps.example.test:8443/gitlab/oauth/revoke'
+    ])
   })
 
   it('callback consumes once, requires the bound browser, and upserts the starting user', async () => {

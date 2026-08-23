@@ -12,7 +12,7 @@ import { seedAgent } from '../fixtures/seed.js'
 import { FakeGitlab, type FakeGitlabOptions } from '../fakes/gitlab-api.js'
 import { GitlabOauthService } from '../../src/gitlab/oauth.service.js'
 import { GitlabProvisioner } from '../../src/gitlab/provisioner.js'
-import { gitlabAgentAccountUsername, type GitlabWebhookEvents } from '../../src/gitlab/api.js'
+import { GitlabApiClient, gitlabAgentAccountUsername, type GitlabWebhookEvents } from '../../src/gitlab/api.js'
 import { GitlabAccountService, gitlabAccountUnavailableMessage } from '../../src/gitlab/account.service.js'
 import { PgAgentRepo } from '../../src/persistence/repositories/agent.repo.js'
 import {
@@ -64,14 +64,14 @@ async function harness(
   const credentials = new PgGitlabProjectCredentialRepo(prisma)
   const credentialSecrets = new PgGitlabProjectCredentialSecretStore(prisma, cipher)
   const oauth = new GitlabOauthService({
-    cfg: { clientId: 'client-1', clientSecret: 'secret-1' },
+    cfg: { clientId: 'client-1', clientSecret: 'secret-1', baseUrl: fake.opts.baseUrl },
     connections,
     secrets: new PgGitlabConnectionSecretStore(prisma, cipher),
     states: new PgGitlabOauthStateStore(prisma),
     cipher,
     clock: systemClock,
     publicCpUrl: 'https://api.example.test',
-    fetchImpl: fake.fetch()
+    api: fake.api
   })
   const accountService = new GitlabAccountService({
     oauth,
@@ -85,7 +85,7 @@ async function harness(
       avatarRenders.push(agent.id)
       return AVATAR_PNG
     },
-    fetchImpl: fake.fetch()
+    api: fake.api
   })
   const buildProvisioner = (): GitlabProvisioner =>
     new GitlabProvisioner({
@@ -97,7 +97,7 @@ async function harness(
       clock: systemClock,
       publicRelayUrl: 'https://relay.example.test',
       desiredWebhookEvents: async () => webhookEvents,
-      fetchImpl: fake.fetch()
+      api: fake.api
     })
   const provisioner = buildProvisioner()
   const connection = await connections.upsertOnCallback({
@@ -559,9 +559,9 @@ describe('GitlabProvisioner (§10.2) — per-agent identity', () => {
       agents: new PgAgentRepo(prisma),
       cipher,
       clock: systemClock,
-      fetchImpl: async () => {
+      api: new GitlabApiClient(h.fake.opts.baseUrl, async () => {
         throw new Error('connect ECONNREFUSED')
-      }
+      })
     })
     await offline.sweepPendingRetirements(0)
     expect((await h.accounts.get(account.id))?.stateReason).toBe('gitlab_unreachable')

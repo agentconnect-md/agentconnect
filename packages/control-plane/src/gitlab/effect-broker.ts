@@ -13,7 +13,7 @@ import type {
   GitlabProjectCredentialRepo,
   GitlabProjectCredentialSecretStore
 } from '../persistence/ports.js'
-import { GITLAB_AVATAR_MAX_BYTES, GitlabApiError, gitlabUploadCurrentUserAvatar, type FetchLike } from './api.js'
+import { GITLAB_AVATAR_MAX_BYTES, GitlabApiError, gitlabUploadCurrentUserAvatar, type GitlabApiClient } from './api.js'
 
 /** What an allowlisted operation did. Everything but `done` is cosmetic — the
  *  caller records nothing and the account's credentials are untouched. */
@@ -23,7 +23,7 @@ export interface GitlabEffectBrokerDeps {
   credentials: Pick<GitlabProjectCredentialRepo, 'get'>
   credentialSecrets: Pick<GitlabProjectCredentialSecretStore, 'get'>
   clock: Clock
-  fetchImpl?: FetchLike
+  api: GitlabApiClient
 }
 
 export class GitlabEffectBroker {
@@ -41,7 +41,7 @@ export class GitlabEffectBroker {
     const token = await this.effectToken(orgId, account)
     if (!token) return 'unavailable'
     try {
-      await gitlabUploadCurrentUserAvatar(token, png, this.deps.fetchImpl)
+      await gitlabUploadCurrentUserAvatar(token, png, this.deps.api)
       return 'done'
     } catch (e) {
       if (!(e instanceof GitlabApiError)) return 'unavailable'

@@ -29,7 +29,7 @@ import type {
   HookRecord,
   HookRepo
 } from '../persistence/ports.js'
-import { GitlabApiError, gitlabIssue, gitlabMergeRequest, type FetchLike } from './api.js'
+import { GitlabApiError, gitlabIssue, gitlabMergeRequest, type GitlabApiClient } from './api.js'
 
 /** One rerun subject the Console can name — §12.3's two thread-bearing kinds. */
 export interface GitlabRerunSubject {
@@ -76,7 +76,7 @@ export interface GitlabHookRerunDeps {
   credentialSecrets: Pick<GitlabProjectCredentialSecretStore, 'get'>
   hookService: Pick<HookService, 'compile'>
   relayControl: Pick<RelayControlSender, 'hookRerun'>
-  fetchImpl?: FetchLike
+  api: GitlabApiClient
 }
 
 function refuse(status: 409 | 429 | 502 | 503, code: GitlabRerunCode, message: string): GitlabRerunResult {
@@ -128,7 +128,7 @@ export class GitlabHookRerunService {
     let headSha: string | null = null
     try {
       if (subject.kind === 'merge_request') {
-        const mr = await gitlabMergeRequest(token, projectId, subject.iid, this.deps.fetchImpl)
+        const mr = await gitlabMergeRequest(token, projectId, subject.iid, this.deps.api)
         if (!mr) return refuse(409, 'SUBJECT_NOT_FOUND', 'this merge request no longer exists')
         if (mr.state !== 'opened') return refuse(409, 'SUBJECT_CLOSED', `this merge request is ${mr.state}`)
         // The CURRENT head, read now — a stored one could re-run a stale revision.
@@ -146,7 +146,7 @@ export class GitlabHookRerunService {
           explicitReviewRequest: true
         }
       } else {
-        const issue = await gitlabIssue(token, projectId, subject.iid, this.deps.fetchImpl)
+        const issue = await gitlabIssue(token, projectId, subject.iid, this.deps.api)
         if (!issue) return refuse(409, 'SUBJECT_NOT_FOUND', 'this issue no longer exists')
         if (issue.state !== 'opened') return refuse(409, 'SUBJECT_CLOSED', `this issue is ${issue.state}`)
         target = { kind: 'issue', iid: subject.iid }
