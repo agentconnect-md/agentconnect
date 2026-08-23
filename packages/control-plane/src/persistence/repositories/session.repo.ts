@@ -5,7 +5,12 @@
  * `sessionId`, advancing `phase` and keeping the latest `link`/`summary`; the
  * `end` phase stamps `endedAt`. The launch tie (`launchId`) is set on create.
  */
-import type { Platform } from '@agentconnect.md/protocol'
+import {
+  CODE_HOST_PROVIDERS,
+  isCodeHostProvider,
+  type CodeHostProvider,
+  type Platform
+} from '@agentconnect.md/protocol'
 import {
   Prisma,
   type ExternalScope,
@@ -244,15 +249,16 @@ function genericHookSql(codeHostHookIds: string[], a: Prisma.Sql = S): Prisma.Sq
 }
 
 /** Every promoted code-host hook id, in one list, for the generic-hook exclusion. */
-function codeHostHookIds(q: Pick<SessionFilterQuery, 'githubHookIds' | 'gitlabHookIds'>): string[] {
-  return [...(q.githubHookIds ?? []), ...(q.gitlabHookIds ?? [])]
+function allCodeHostHookIds(q: Pick<SessionFilterQuery, 'codeHostHookIds'>): string[] {
+  return CODE_HOST_PROVIDERS.flatMap((provider) => q.codeHostHookIds?.[provider] ?? [])
 }
 
 function integrationSql(q: SessionFilterQuery, a: Prisma.Sql = S): Prisma.Sql | null {
   if (!q.integration) return null
-  if (q.integration === 'github') return codeHostHookSql(q.githubHookIds ?? [], a)
-  if (q.integration === 'gitlab') return codeHostHookSql(q.gitlabHookIds ?? [], a)
-  if (q.integration === 'hook') return genericHookSql(codeHostHookIds(q), a)
+  // Each code host reads its own promoted ids; asking the shared provider list means a
+  // new host is filterable here without an arm of its own.
+  if (isCodeHostProvider(q.integration)) return codeHostHookSql(q.codeHostHookIds?.[q.integration] ?? [], a)
+  if (q.integration === 'hook') return genericHookSql(allCodeHostHookIds(q), a)
   return platformSql(q.integration, a)
 }
 
@@ -315,12 +321,14 @@ function pageWhereSql(
   return Prisma.sql`WHERE ${Prisma.join(filters, ' AND ')}`
 }
 
-function integrationFacetSql(githubHookIds: string[], gitlabHookIds: string[]): Prisma.Sql {
-  if (githubHookIds.length === 0 && gitlabHookIds.length === 0) return Prisma.sql`COALESCE(s."platform", 'slack')`
-  const arms = [
-    ...(githubHookIds.length > 0 ? [Prisma.sql`WHEN ${codeHostHookSql(githubHookIds)} THEN 'github'`] : []),
-    ...(gitlabHookIds.length > 0 ? [Prisma.sql`WHEN ${codeHostHookSql(gitlabHookIds)} THEN 'gitlab'`] : [])
-  ]
+/** One CASE arm per code host that has promoted ids, built from the shared provider
+ *  list so a new host projects its own facet value without an arm written by hand. */
+function integrationFacetSql(codeHostHookIds: Partial<Record<CodeHostProvider, string[]>>): Prisma.Sql {
+  const arms = CODE_HOST_PROVIDERS.flatMap((provider) => {
+    const ids = codeHostHookIds[provider] ?? []
+    return ids.length > 0 ? [Prisma.sql`WHEN ${codeHostHookSql(ids)} THEN ${provider}`] : []
+  })
+  if (arms.length === 0) return Prisma.sql`COALESCE(s."platform", 'slack')`
   return Prisma.sql`
     CASE
       ${Prisma.join(arms, ' ')}
@@ -1191,7 +1199,7 @@ export class PgSessionRepo implements SessionRepo {
     delete triggerQuery.triggeredBy
     delete triggerQuery.hookTriggerIds
 
-    const integrationFacet = integrationFacetSql(q.githubHookIds ?? [], q.gitlabHookIds ?? [])
+    const integrationFacet = integrationFacetSql(q.codeHostHookIds ?? {})
     const [agents, integrations, channels, triggers] = await Promise.all([
       this.db.$queryRaw<SessionAgentFacetDbRow[]>(Prisma.sql`
         SELECT DISTINCT s."agentId"

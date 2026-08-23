@@ -20,7 +20,13 @@ import { AgentId, HookId, OrgId, SessionId } from '../../domain/ids.js'
 import { orgOf, ctxOf, denyNonOwner } from '../rbac.js'
 import { decodeConversationKey, encodeConversationKey } from '../conversation-key.js'
 import { canChangeSessionVisibility, canContinueSession, canView, canViewSession } from '../../authorization/policy.js'
-import { isCodeHostHookKind, originKindOf, type HookKind } from '@agentconnect.md/protocol'
+import {
+  CODE_HOST_PROVIDERS,
+  isCodeHostHookKind,
+  originKindOf,
+  type CodeHostProvider,
+  type HookKind
+} from '@agentconnect.md/protocol'
 import { makeSessionAccessResolver } from '../session-access.js'
 import { resolveContinuationHost } from '../session-continuation.js'
 import { Tag } from '../plugins/openapi.js'
@@ -53,16 +59,19 @@ import {
   SessionExternalAccessDto
 } from '../dto/index.js'
 
+const SESSION_PLATFORM_IDS = ['slack', 'telegram', 'webchat', 'discord', 'feishu', 'hook', 'dream'] as const
+
 const SessionFilterQueryDto = z.object({
   // Repeatable: `?agentId=a` scopes to one agent's rows (unchanged), while
   // `?agentId=a&agentId=b` asks for the CONVERSATIONS both took part in and
   // returns each of their sessions in those threads. Fastify's querystring
   // parser hands repeated keys over as an array.
   agentId: z.union([z.string(), z.array(z.string()).min(1)]).optional(),
-  platform: z.enum(['slack', 'telegram', 'webchat', 'discord', 'feishu', 'hook', 'dream']).optional(),
-  integration: z
-    .enum(['slack', 'telegram', 'webchat', 'discord', 'feishu', 'hook', 'github', 'gitlab', 'dream'])
-    .optional(),
+  platform: z.enum(SESSION_PLATFORM_IDS).optional(),
+  // The integration axis is every routing platform plus each code host, which the facet
+  // projection promotes out of the generic hook bucket. Derived from the shared provider
+  // list, so a promoted host is selectable the moment it can be emitted.
+  integration: z.enum([...SESSION_PLATFORM_IDS, ...CODE_HOST_PROVIDERS]).optional(),
   channel: z.string().optional(),
   triggeredBy: z.string().optional(),
   githubRepoId: z
@@ -105,31 +114,34 @@ function requestedAgentIds(query: z.infer<typeof SessionFilterQueryDto>): string
 const HOOK_TRIGGER_PREFIX = 'hook:'
 const HookIdString = z.string().uuid()
 
-/** Which code-host hook definitions this request has to resolve. A repository
- *  filter is GitHub-only (the numeric repo id is GitHub's); otherwise each host's
- *  ids are read when the facet projection classifies everything, when that host is
- *  the requested integration, or when `hook` needs to exclude it. */
+/** Which code-host hook definitions this request has to resolve, keyed by provider. A
+ *  repository filter stays GitHub-only — the numeric repo id is GitHub's alone; otherwise
+ *  each host's ids are read when the facet projection classifies everything, when that
+ *  host is the requested integration, or when `hook` needs to exclude it. Iterating the
+ *  shared provider list is what keeps this seam level with the facet projection: a host
+ *  that can be emitted as a facet is resolved here too, so it can also be selected. */
 async function codeHostHookFilters(
   deps: HttpDeps,
   orgId: OrgId,
   query: z.infer<typeof SessionFilterQueryDto>,
   classifyAll: boolean
-): Promise<{ githubHookIds: HookId[]; gitlabHookIds: HookId[]; repoHookIds?: HookId[] }> {
+): Promise<{ codeHostHookIds: Partial<Record<CodeHostProvider, HookId[]>>; repoHookIds?: HookId[] }> {
   if (query.githubRepoId) {
     const githubHooks = await deps.repos.hook.listForOrgKind(orgId, 'github')
     return {
-      githubHookIds: githubHooks.map((hook) => hook.id),
-      gitlabHookIds: [],
+      codeHostHookIds: { github: githubHooks.map((hook) => hook.id) },
       repoHookIds: githubHooks.filter((hook) => hook.repoId?.toString() === query.githubRepoId).map((hook) => hook.id)
     }
   }
-  const wanted = (kind: 'github' | 'gitlab') =>
-    classifyAll || query.integration === kind || query.integration === 'hook'
-  const [githubHookIds, gitlabHookIds] = await Promise.all([
-    wanted('github') ? deps.repos.hook.listIdsForOrgKind(orgId, 'github') : Promise.resolve([]),
-    wanted('gitlab') ? deps.repos.hook.listIdsForOrgKind(orgId, 'gitlab') : Promise.resolve([])
-  ])
-  return { githubHookIds, gitlabHookIds }
+  const wanted = (provider: CodeHostProvider) =>
+    classifyAll || query.integration === provider || query.integration === 'hook'
+  const codeHostHookIds: Partial<Record<CodeHostProvider, HookId[]>> = {}
+  await Promise.all(
+    CODE_HOST_PROVIDERS.filter(wanted).map(async (provider) => {
+      codeHostHookIds[provider] = await deps.repos.hook.listIdsForOrgKind(orgId, provider)
+    })
+  )
+  return { codeHostHookIds }
 }
 
 function hookIdForSession(s: HookSessionRow): string | null {
@@ -606,12 +618,7 @@ export function sessionRoutes(deps: HttpDeps) {
         if (requested.some((id) => !new Set<string>(orgAgentIds).has(id))) {
           return { agents: [], agentNames: {}, integrations: [], channels: [], triggers: [] }
         }
-        const { githubHookIds, gitlabHookIds, repoHookIds } = await codeHostHookFilters(
-          deps,
-          orgOf(req),
-          req.query,
-          true
-        )
+        const { codeHostHookIds, repoHookIds } = await codeHostHookFilters(deps, orgOf(req), req.query, true)
         // A multi-agent request narrows to the qualifying CONVERSATIONS and then
         // reads facets off every member row the caller can see, rather than only
         // the selected agents' rows: a facet answers "what else can I narrow by",
@@ -624,8 +631,7 @@ export function sessionRoutes(deps: HttpDeps) {
           ...(req.query.integration ? { integration: req.query.integration } : {}),
           ...(req.query.channel ? { channel: req.query.channel } : {}),
           ...(req.query.triggeredBy ? { triggeredBy: req.query.triggeredBy } : {}),
-          githubHookIds,
-          gitlabHookIds,
+          codeHostHookIds,
           ...(repoHookIds ? { hookTriggerIds: repoHookIds } : {})
         }
         // Each facet drops its own active filter, so its external-audience
@@ -698,12 +704,7 @@ export function sessionRoutes(deps: HttpDeps) {
 
         // Each code host is a semantic subtype of hook sessions. Resolve definitions
         // only when integration classification or a repository-wide trigger filter needs them.
-        const { githubHookIds, gitlabHookIds, repoHookIds } = await codeHostHookFilters(
-          deps,
-          orgOf(req),
-          req.query,
-          false
-        )
+        const { codeHostHookIds, repoHookIds } = await codeHostHookFilters(deps, orgOf(req), req.query, false)
         // Two or more selected agents ask for the threads they SHARE. The rows stay
         // scoped to those agents (`agentIds`), so `?agentId=a` keeps returning
         // exactly what it always did. Every branch below reads this one binding —
@@ -723,8 +724,7 @@ export function sessionRoutes(deps: HttpDeps) {
           ...(req.query.integration ? { integration: req.query.integration } : {}),
           ...(req.query.channel ? { channel: req.query.channel } : {}),
           ...(req.query.triggeredBy ? { triggeredBy: req.query.triggeredBy } : {}),
-          ...(githubHookIds.length > 0 ? { githubHookIds } : {}),
-          ...(gitlabHookIds.length > 0 ? { gitlabHookIds } : {}),
+          ...(Object.keys(codeHostHookIds).length > 0 ? { codeHostHookIds } : {}),
           ...(repoHookIds ? { hookTriggerIds: repoHookIds } : {}),
           ...(cursor ? { cursor } : {}),
           limit: req.query.limit,

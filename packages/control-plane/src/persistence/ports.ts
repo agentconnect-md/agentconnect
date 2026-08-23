@@ -34,6 +34,7 @@ import type {
   CodeHostReviewOpOutcome,
   CodeHostReviewOpState,
   CodeHostReviewState,
+  CodeHostProvider,
   HookKind
 } from '@agentconnect.md/protocol'
 import type {
@@ -1212,12 +1213,12 @@ export interface SessionQuery {
 }
 
 export interface SessionFilterQuery extends SessionQuery {
-  integration?: Platform | 'github' | 'gitlab'
+  integration?: Platform | CodeHostProvider
   triggeredBy?: string
-  /** Code-host hook ids, per host: each one is promoted out of the generic hook
-   *  bucket into its own integration, and `integration: 'hook'` excludes them all. */
-  githubHookIds?: HookId[]
-  gitlabHookIds?: HookId[]
+  /** Code-host hook ids keyed by provider: each provider is promoted out of the generic
+   *  hook bucket into its own integration, and `integration: 'hook'` excludes them all.
+   *  Keyed rather than one field per host, so a new provider needs no new field here. */
+  codeHostHookIds?: Partial<Record<CodeHostProvider, HookId[]>>
   hookTriggerIds?: HookId[]
   /** Agents whose sessions count as conversation MEMBERS, when the caller may see
    *  more than the filter returns. Absent ⇒ `agentIds`, i.e. membership and row

@@ -10,7 +10,7 @@
  */
 import Fastify, { type FastifyInstance } from 'fastify'
 import { describe, expect, it, vi } from 'vitest'
-import { HOOK_KINDS, isCodeHostHookKind } from '@agentconnect.md/protocol'
+import { CODE_HOST_PROVIDERS, HOOK_KINDS, isCodeHostHookKind } from '@agentconnect.md/protocol'
 import type { HttpDeps } from '../deps.js'
 import type { SessionPageQuery, SessionPageRecord } from '../../persistence/ports.js'
 import { installZod } from '../plugins/zod.js'
@@ -98,6 +98,11 @@ function fakeDeps(pageSessions: ReturnType<typeof pageRow>[] = []) {
   return { deps, listFacets, listPage, listIdsForOrgKind }
 }
 
+/** The filter query the route handed the repository, as these assertions read it. */
+function filterQueryOf(listPage: { mock: { calls: unknown[][] } }) {
+  return listPage.mock.calls[0]?.[0] as { integration?: string; codeHostHookIds: Record<string, string[]> }
+}
+
 async function app(deps: HttpDeps): Promise<FastifyInstance> {
   const instance = Fastify()
   installZod(instance)
@@ -131,26 +136,33 @@ describe('session integration facets across code hosts', () => {
     expect(body.triggers.find((t) => t.hookKind === 'gitlab')?.githubRepoId).toBeNull()
   })
 
-  it('accepts gitlab as a filter value and hands the repository its own hook ids', async () => {
-    const { deps, listPage } = fakeDeps()
-    const res = await (await app(deps)).inject({ method: 'GET', url: '/sessions?view=flat&integration=gitlab' })
+  // The read path is what the facet projection promises: a host it can EMIT must also
+  // be selectable. Walking the provider list pins both halves for every host at once —
+  // the query vocabulary accepting the value, and the filter resolving that host's ids.
+  it('accepts every code host as a filter value and hands each one its own hook ids', async () => {
+    const hookByProvider = new Map(hookRows.map((hook) => [hook.kind, hook.id]))
+    for (const provider of CODE_HOST_PROVIDERS) {
+      const { deps, listPage } = fakeDeps()
+      const res = await (await app(deps)).inject({ method: 'GET', url: `/sessions?view=flat&integration=${provider}` })
 
-    expect(res.statusCode).toBe(200)
-    expect(listPage.mock.calls[0]?.[0]).toMatchObject({ integration: 'gitlab', gitlabHookIds: [GITLAB_HOOK] })
-    // GitHub's ids are irrelevant to a gitlab filter, so they are never read.
-    expect(listPage.mock.calls[0]?.[0]).not.toHaveProperty('githubHookIds')
+      expect(res.statusCode).toBe(200)
+      const passed = filterQueryOf(listPage)
+      expect(passed.integration).toBe(provider)
+      // Exact, so another host's ids are never read for this filter.
+      expect(passed.codeHostHookIds).toEqual({ [provider]: [hookByProvider.get(provider)] })
+    }
   })
 
-  it('gives the generic hook filter both hosts to exclude', async () => {
+  it('gives the generic hook filter every host to exclude', async () => {
     const { deps, listPage } = fakeDeps()
     const res = await (await app(deps)).inject({ method: 'GET', url: '/sessions?view=flat&integration=hook' })
 
     expect(res.statusCode).toBe(200)
-    expect(listPage.mock.calls[0]?.[0]).toMatchObject({
-      integration: 'hook',
-      githubHookIds: [GITHUB_HOOK],
-      gitlabHookIds: [GITLAB_HOOK]
-    })
+    const passed = filterQueryOf(listPage)
+    expect(passed.integration).toBe('hook')
+    // A promoted host missing here would be counted twice: once as its own, once as a webhook.
+    expect(Object.keys(passed.codeHostHookIds).sort()).toEqual([...CODE_HOST_PROVIDERS].sort())
+    expect(passed.codeHostHookIds).toMatchObject({ github: [GITHUB_HOOK], gitlab: [GITLAB_HOOK] })
   })
 
   it('resolves no code-host definitions for a filter that needs none', async () => {
