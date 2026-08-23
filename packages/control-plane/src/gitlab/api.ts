@@ -312,11 +312,47 @@ export interface GitlabServiceAccount {
   name: string
 }
 
-/** The account's deterministic, non-secret marker (§7.2): one account per
- *  (agent, top-level group), globally unique and rename-stable — an agent
- *  rename never touches it. */
-export function gitlabAgentAccountUsername(agentId: string, rootGroupId: bigint): string {
-  return `agentconnect-a${agentId.replace(/-/g, '')}-g${rootGroupId}`
+/** How much of the agent's name the username carries (§7.2). */
+export const GITLAB_ACCOUNT_SLUG_MAX = 20
+
+/** The agent's name folded to the lower-case `[a-z0-9-]` a GitLab username
+ *  accepts: runs collapse, the ends are trimmed, and `agent` stands in when
+ *  nothing survives. */
+export function gitlabAccountSlug(agentName: string): string {
+  const slug = agentName
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, GITLAB_ACCOUNT_SLUG_MAX)
+    .replace(/-+$/, '')
+  return slug || 'agent'
+}
+
+/** The uniqueness half of the username: the agent id's first twelve hex
+ *  characters and the top-level group id in base 36. Those 48 bits put an
+ *  accidental collision among even millions of accounts below one in a billion,
+ *  and the root component is what lets one agent own an account in every root
+ *  it spans. */
+function accountKeySuffix(agentId: string, rootGroupId: bigint): string {
+  return `${agentId.replace(/-/g, '').slice(0, 12)}-${rootGroupId.toString(36)}`
+}
+
+/** The account's non-secret marker (§7.2): `<agentSlug>-<agentId12>-<root36>`,
+ *  readable in `@`-completion and globally unique. Taken at CREATION only — the
+ *  row's numeric user id is the durable key, and this derivation is a recovery
+ *  marker for an account the database does not know yet. */
+export function gitlabAgentAccountUsername(agentId: string, agentName: string, rootGroupId: bigint): string {
+  return `${gitlabAccountSlug(agentName)}-${accountKeySuffix(agentId, rootGroupId)}`
+}
+
+/** Does an existing username already carry this account's scheme? Only the
+ *  shape and the key suffix are checked: the slug half is creation-time, so an
+ *  agent renamed afterwards must NOT be renamed at the provider (§7.2). */
+export function gitlabAccountUsernameMatchesScheme(username: string, agentId: string, rootGroupId: bigint): boolean {
+  const suffix = `-${accountKeySuffix(agentId, rootGroupId)}`
+  if (!username.endsWith(suffix)) return false
+  const slug = username.slice(0, -suffix.length)
+  return slug.length > 0 && slug.length <= GITLAB_ACCOUNT_SLUG_MAX && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)
 }
 
 /** The account's human display name: the agent's own name, folded to a
@@ -330,6 +366,20 @@ export function gitlabAgentAccountDisplayName(agentName: string, username: strin
   return folded || username
 }
 
+/** The top-level group's OWN service accounts. Deliberately the only listing
+ *  the recovery path reads: a global user search would let an account outside
+ *  this root answer for one of ours (§7.2). */
+export async function gitlabListServiceAccounts(
+  accessToken: string,
+  groupId: number,
+  fetchImpl?: FetchLike
+): Promise<GitlabServiceAccount[]> {
+  return gitlabRequest<GitlabServiceAccount[]>(`/groups/${groupId}/service_accounts?per_page=100`, {
+    auth: accessToken,
+    fetchImpl
+  })
+}
+
 /** Find the marked account among the top-level group's service accounts. */
 export async function gitlabFindServiceAccount(
   accessToken: string,
@@ -337,10 +387,7 @@ export async function gitlabFindServiceAccount(
   username: string,
   fetchImpl?: FetchLike
 ): Promise<GitlabServiceAccount | null> {
-  const accounts = await gitlabRequest<GitlabServiceAccount[]>(`/groups/${groupId}/service_accounts?per_page=100`, {
-    auth: accessToken,
-    fetchImpl
-  })
+  const accounts = await gitlabListServiceAccounts(accessToken, groupId, fetchImpl)
   return accounts.find((account) => account.username === username) ?? null
 }
 
@@ -358,18 +405,19 @@ export async function gitlabCreateServiceAccount(
   })
 }
 
-/** Rename an existing account (display name only — the username is the §7.2 identity). */
+/** Relabel an existing account. Both members are cosmetic (§7.2): the durable
+ *  identity is the numeric user id, never the display name or the username. */
 export async function gitlabUpdateServiceAccount(
   accessToken: string,
   groupId: number,
   userId: bigint,
-  input: { name: string },
+  input: { name?: string; username?: string },
   fetchImpl?: FetchLike
 ): Promise<GitlabServiceAccount> {
   return gitlabRequest<GitlabServiceAccount>(`/groups/${groupId}/service_accounts/${userId}`, {
     method: 'PATCH',
     auth: accessToken,
-    body: { name: input.name },
+    body: input,
     fetchImpl
   })
 }
@@ -385,6 +433,39 @@ export async function gitlabDeleteServiceAccount(
     auth: accessToken,
     fetchImpl
   })
+}
+
+/** GitLab's avatar ceiling for `PUT /user/avatar`; the ideal edge is 192px. */
+export const GITLAB_AVATAR_MAX_BYTES = 200 * 1024
+export const GITLAB_AVATAR_SIZE = 192
+
+/** Set the AUTHENTICATED user's avatar (`PUT /user/avatar`, GitLab 17.0+):
+ *  multipart, form field `avatar`. Called with an agent account's own `api` PAT,
+ *  so the authenticated user IS the account (§7.2). A provider that does not
+ *  offer the endpoint answers 404, which the caller treats as a cosmetic skip.
+ *  Status-only errors: the request body carries image bytes and a bearer. */
+export async function gitlabUploadCurrentUserAvatar(
+  accountToken: string,
+  png: Uint8Array,
+  fetchImpl?: FetchLike
+): Promise<void> {
+  const impl = fetchImpl ?? (fetch as FetchLike)
+  const form = new FormData()
+  form.set('avatar', new Blob([png], { type: 'image/png' }), 'agent-icon.png')
+  let res: Response
+  try {
+    res = await impl(`${API_BASE}/user/avatar`, {
+      method: 'PUT',
+      headers: { accept: 'application/json', authorization: `Bearer ${accountToken}` },
+      body: form,
+      signal: AbortSignal.timeout(TIMEOUT_MS)
+    })
+  } catch (e) {
+    throw new GitlabApiError(`gitlab unreachable: ${(e as Error).message}`, 0, 'INTERNAL', true)
+  }
+  if (!res.ok) {
+    throw new GitlabApiError(`gitlab ${res.status}`, res.status, codeFor(res.status), res.status >= 500)
+  }
 }
 
 export interface GitlabMember {

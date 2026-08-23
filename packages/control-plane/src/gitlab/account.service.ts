@@ -20,6 +20,7 @@ import type { Clock } from '../domain/clock.js'
 import type { SecretCipher } from '../secrets/cipher.js'
 import { orgScope } from '../secrets/scope.js'
 import type {
+  AgentRecord,
   AgentRepo,
   GitlabAccountConsumer,
   GitlabAgentAccountRecord,
@@ -30,6 +31,7 @@ import type {
 } from '../persistence/ports.js'
 import {
   GitlabApiError,
+  gitlabAccountUsernameMatchesScheme,
   gitlabAgentAccountDisplayName,
   gitlabAgentAccountUsername,
   gitlabCreateServiceAccount,
@@ -38,11 +40,14 @@ import {
   gitlabEnsureMember,
   gitlabFindServiceAccount,
   gitlabListServiceAccountTokens,
+  gitlabListServiceAccounts,
   gitlabRemoveMember,
   gitlabRevokeServiceAccountToken,
   gitlabUpdateServiceAccount,
-  type FetchLike
+  type FetchLike,
+  type GitlabServiceAccount
 } from './api.js'
+import { GitlabEffectBroker, type GitlabEffectOutcome } from './effect-broker.js'
 import type { GitlabOauthService } from './oauth.service.js'
 
 /** The exclusive account lease a run holds across its provider writes. */
@@ -50,6 +55,10 @@ export const ACCOUNT_LEASE_MS = 5 * 60 * 1000
 
 /** §7.3 v1 policy: every PAT is created with exactly this lifetime. */
 export const PAT_LIFETIME_DAYS = 90
+
+/** How long a recorded create window can still claim an account (§7.2). Bounded
+ *  so a window left open by a dead process cannot adopt one created much later. */
+export const CREATE_ATTEMPT_WINDOW_MS = 24 * 60 * 60 * 1000
 
 const PURPOSE_SCOPES: Record<GitlabCredentialPurpose, string[]> = {
   read: ['read_api', 'read_repository'],
@@ -80,6 +89,9 @@ export class GitlabAccountLeaseLost extends Error {
 export function gitlabAccountUnavailableMessage(reason: string): string {
   if (reason === 'service_account_quota') {
     return 'the GitLab group has no service-account slots left — free one, then try again'
+  }
+  if (reason === 'username_taken') {
+    return 'another GitLab account already holds the bot username — remove or rename it, then try again'
   }
   if (reason === 'service_account_create_forbidden') {
     return 'the connected GitLab account must be an Owner of the top-level group to create bot accounts'
@@ -116,8 +128,20 @@ export interface GitlabAccountServiceDeps {
   agents: Pick<AgentRepo, 'getUnscoped'>
   cipher: SecretCipher
   clock: Clock
+  /** Renders the agent's icon as the PNG its account wears (§7.2). Absent ⇒ the
+   *  avatar is simply never converged; nothing else changes. */
+  avatarPng?: (agent: Pick<AgentRecord, 'id' | 'icon' | 'runtime'>) => Promise<Uint8Array>
   fetchImpl?: FetchLike
   log?: { warn(obj: object, msg: string): void }
+}
+
+/** The account's avatar identity: exactly what the rendered PNG depends on, so
+ *  an agent rename never re-uploads the same image (§7.2). */
+export function gitlabAccountAvatarFingerprint(agent: Pick<AgentRecord, 'icon' | 'runtime'>): string {
+  const icon = agent.icon
+  if (icon?.kind === 'glyph') return `glyph:${icon.glyph}:${icon.color}`
+  if (icon?.kind === 'image') return `image:${icon.generation ?? 'legacy'}`
+  return `runtime:${agent.runtime ?? ''}`
 }
 
 /** One agent's converged identity on one project, or why it is not usable yet. */
@@ -125,7 +149,18 @@ export type AccountConvergeOutcome =
   { ok: true; account: GitlabAgentAccountRecord } | { ok: false; reason: string; retryable: boolean }
 
 export class GitlabAccountService {
-  constructor(private readonly deps: GitlabAccountServiceDeps) {}
+  /** §7.3: the only holder of effect-token material in the Control Plane. Built
+   *  here, never injected, so no other collaborator can reach an `api` PAT. */
+  private readonly effects: GitlabEffectBroker
+
+  constructor(private readonly deps: GitlabAccountServiceDeps) {
+    this.effects = new GitlabEffectBroker({
+      credentials: deps.credentials,
+      credentialSecrets: deps.credentialSecrets,
+      clock: deps.clock,
+      ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {})
+    })
+  }
 
   /**
    * Converge the accounts of one binding's agent consumers (§10.2 steps 2–5)
@@ -217,12 +252,15 @@ export class GitlabAccountService {
     const agent = await this.deps.agents.getUnscoped(AgentId(consumer.agentId))
     if (!agent) return { ok: false, reason: 'agent_missing', retryable: false }
     const rootGroupId = BigInt(input.rootGroupId)
-    const username = gitlabAgentAccountUsername(consumer.agentId, rootGroupId)
+    const agentName = agent.displayName ?? agent.name
+    // The derivation names a NEW account only: an existing row's username is its
+    // own creation-time fact, and the numeric user id is the durable key (§7.2).
+    const derived = gitlabAgentAccountUsername(consumer.agentId, agentName, rootGroupId)
     let account = await this.deps.accounts.ensure({
       orgId: input.orgId,
       agentId: consumer.agentId,
       rootGroupId,
-      username,
+      username: derived,
       administeringConnectionId: input.installerConnectionId
     })
     const owner = randomBytes(9).toString('base64url')
@@ -239,34 +277,97 @@ export class GitlabAccountService {
         // fresh generation rather than reviving the one it was tearing down.
         account = (await this.deps.accounts.reactivate(account.id)) ?? account
       }
-      const displayName = gitlabAgentAccountDisplayName(agent.displayName ?? agent.name, username)
-      let external = await gitlabFindServiceAccount(input.token, input.rootGroupId, username, this.deps.fetchImpl)
+      // This top-level group's OWN accounts — never a global user search (§7.2).
+      let listing = await gitlabListServiceAccounts(input.token, input.rootGroupId, this.deps.fetchImpl)
+      // The durable key first: an account we already recorded needs no marker.
+      let external =
+        (account.serviceAccountUserId === null
+          ? undefined
+          : listing.find((candidate) => BigInt(candidate.id) === account.serviceAccountUserId)) ?? null
+      // A create that was recorded but never committed may have landed anyway —
+      // an interrupted attempt is recovered from its PERSISTED window alone.
+      if (!external) external = this.claimFromAttempt(account, listing)
       if (!external) {
+        const taken = listing.find((candidate) => candidate.username === account.username)
+        if (taken) {
+          // Held by an account no open window of ours covers: it is somebody
+          // else's, and adopting it would hand them this agent's credentials.
+          await this.deps.accounts.update(account.id, { state: 'admin_degraded', stateReason: 'username_taken' })
+          return { ok: false, reason: 'username_taken', retryable: false }
+        }
+        // Record-first: the window is committed BEFORE the provider write, so it
+        // survives a lost lease and a process that dies mid-create.
+        account =
+          (await this.deps.accounts.openCreateAttempt({
+            accountId: account.id,
+            attemptId: randomBytes(9).toString('base64url'),
+            openedAt: new Date(this.deps.clock.now()),
+            knownServiceAccountUserIds: listing.map((candidate) => BigInt(candidate.id))
+          })) ?? account
         try {
           external = await gitlabCreateServiceAccount(
             input.token,
             input.rootGroupId,
-            { username, name: displayName },
+            { username: account.username, name: gitlabAgentAccountDisplayName(agentName, account.username) },
             this.deps.fetchImpl
           )
         } catch (e) {
-          // Ambiguous create: list by the deterministic marker before failing.
-          external = await gitlabFindServiceAccount(input.token, input.rootGroupId, username, this.deps.fetchImpl)
+          // Ambiguous create: re-read, then apply that same persisted window.
+          listing = await gitlabListServiceAccounts(input.token, input.rootGroupId, this.deps.fetchImpl)
+          external = this.claimFromAttempt(account, listing)
           if (!external) {
-            const reason = refusalReason(e)
+            const reason = listing.some((candidate) => candidate.username === account.username)
+              ? 'username_taken'
+              : refusalReason(e)
             await this.deps.accounts.update(account.id, { state: 'admin_degraded', stateReason: reason })
-            return { ok: false, reason, retryable: true }
+            return { ok: false, reason, retryable: reason !== 'username_taken' }
           }
+        }
+      }
+      // The FIRST durable step after resolution, before anything cosmetic: the
+      // numeric key and the closed window commit together, so an exit anywhere
+      // below still finds this account by its id instead of reading it as a
+      // foreign one holding the username (§7.2).
+      const serviceAccountUserId = BigInt(external.id)
+      account =
+        (await this.deps.accounts.commitServiceAccount({
+          accountId: account.id,
+          serviceAccountUserId,
+          username: external.username,
+          administeringConnectionId: input.installerConnectionId
+        })) ?? account
+      // Cosmetic username convergence (§7.2): an account whose username predates
+      // the readable scheme is renamed once. The slug half is creation-time, so
+      // only the shape and the key suffix decide — a later agent rename is not a
+      // reason to rename the account. A refusal leaves the durable key untouched.
+      if (!gitlabAccountUsernameMatchesScheme(external.username, consumer.agentId, rootGroupId)) {
+        try {
+          external = await gitlabUpdateServiceAccount(
+            input.token,
+            input.rootGroupId,
+            serviceAccountUserId,
+            { username: derived },
+            this.deps.fetchImpl
+          )
+          if (account.username !== external.username) {
+            account = (await this.deps.accounts.update(account.id, { username: external.username })) ?? account
+          }
+        } catch (e) {
+          this.deps.log?.warn(
+            { accountId: account.id, status: e instanceof GitlabApiError ? e.status : undefined },
+            'gitlab service account username convergence failed'
+          )
         }
       }
       // A refused rename is cosmetic: the account and its credentials matter,
       // its label does not, so the fingerprint simply stays behind (§7.2).
+      const displayName = gitlabAgentAccountDisplayName(agentName, account.username)
       if (external.name !== displayName) {
         try {
           external = await gitlabUpdateServiceAccount(
             input.token,
             input.rootGroupId,
-            BigInt(external.id),
+            serviceAccountUserId,
             { name: displayName },
             this.deps.fetchImpl
           )
@@ -277,13 +378,10 @@ export class GitlabAccountService {
           )
         }
       }
-      const serviceAccountUserId = BigInt(external.id)
-      account =
-        (await this.deps.accounts.update(account.id, {
-          serviceAccountUserId,
-          displayName: external.name === displayName ? displayName : account.displayName,
-          administeringConnectionId: input.installerConnectionId
-        })) ?? account
+      // Record what the provider actually carries, never what was wanted.
+      if (account.displayName !== external.name) {
+        account = (await this.deps.accounts.update(account.id, { displayName: external.name })) ?? account
+      }
       for (const purpose of PURPOSES) {
         const existing = await this.deps.credentials.get(account.id, purpose)
         const stillValid =
@@ -301,6 +399,7 @@ export class GitlabAccountService {
           owner
         )
       }
+      account = await this.convergeAvatar(input.orgId, account, agent)
       account = (await this.deps.accounts.update(account.id, { state: 'ready', stateReason: null })) ?? account
       return { ok: true, account }
     } catch (e) {
@@ -318,6 +417,88 @@ export class GitlabAccountService {
     } finally {
       await this.deps.accounts.releaseLease(account.id, owner).catch(() => {})
     }
+  }
+
+  /**
+   * §7.2 record-first recovery. An account holding this row's username is
+   * claimed ONLY when the row's own persisted create window covers it: the
+   * window is still open and not stale, the account is listed among this
+   * top-level group's own service accounts, and it was absent when the window
+   * opened. GitLab reports no creation time for a service account, so the
+   * window's recorded membership snapshot is what dates the account — and
+   * because it was committed before the provider write, it survives a lost
+   * lease and a process that died between GitLab creating the account and the
+   * row committing its numeric id. Anything else is a foreign account.
+   */
+  private claimFromAttempt(
+    account: GitlabAgentAccountRecord,
+    listing: readonly GitlabServiceAccount[]
+  ): GitlabServiceAccount | null {
+    const attempt = account.createAttempt
+    if (!attempt) return null
+    if (this.deps.clock.now() - attempt.openedAt.getTime() > CREATE_ATTEMPT_WINDOW_MS) return null
+    const candidate = listing.find((entry) => entry.username === account.username)
+    if (!candidate) return null
+    return attempt.knownServiceAccountUserIds.includes(BigInt(candidate.id)) ? null : candidate
+  }
+
+  /**
+   * §7.2: the agent's icon changed — reconverge the avatar of every account it
+   * holds, each under that account's own mutation lease. Cosmetic end to end,
+   * so a contended lease, a refusal, or an unsupported endpoint is dropped and
+   * nothing here touches credentials. Never throws: callers fire and forget.
+   */
+  async syncAgentAvatars(orgId: string, agentId: string): Promise<void> {
+    if (!this.deps.avatarPng) return
+    try {
+      const agent = await this.deps.agents.getUnscoped(AgentId(agentId))
+      if (!agent) return
+      for (const account of await this.deps.accounts.listForAgent(orgId, agentId)) {
+        if (account.lifecycle !== 'active' || account.serviceAccountUserId === null) continue
+        const owner = randomBytes(9).toString('base64url')
+        const nowMs = this.deps.clock.now()
+        const claimed = await this.deps.accounts.claimLease(
+          account.id,
+          owner,
+          new Date(nowMs + ACCOUNT_LEASE_MS),
+          new Date(nowMs)
+        )
+        if (!claimed) continue
+        try {
+          await this.convergeAvatar(orgId, account, agent)
+        } finally {
+          await this.deps.accounts.releaseLease(account.id, owner).catch(() => {})
+        }
+      }
+    } catch (e) {
+      this.deps.log?.warn({ agentId, err: e }, 'gitlab account avatar fan-out failed')
+    }
+  }
+
+  /** §7.2 cosmetic avatar convergence, under the caller's account lease and
+   *  through the §7.3 effect broker. Only a completed upload is recorded, so a
+   *  skip simply retries on the next convergence; nothing degrades credentials. */
+  private async convergeAvatar(
+    orgId: string,
+    account: GitlabAgentAccountRecord,
+    agent: Pick<AgentRecord, 'id' | 'icon' | 'runtime'>
+  ): Promise<GitlabAgentAccountRecord> {
+    const render = this.deps.avatarPng
+    if (!render || account.serviceAccountUserId === null) return account
+    const fingerprint = gitlabAccountAvatarFingerprint(agent)
+    if (account.avatarFingerprint === fingerprint) return account
+    let outcome: GitlabEffectOutcome
+    try {
+      outcome = await this.effects.uploadAccountAvatar(orgId, account, await render(agent))
+    } catch (e) {
+      this.deps.log?.warn({ accountId: account.id, err: e }, 'gitlab account avatar render failed')
+      return account
+    }
+    if (outcome !== 'done') {
+      this.deps.log?.warn({ accountId: account.id, outcome }, 'gitlab account avatar upload skipped')
+      return account
+    }
+    return (await this.deps.accounts.update(account.id, { avatarFingerprint: fingerprint })) ?? account
   }
 
   /** Project membership at the derived role, then the generation-fenced local

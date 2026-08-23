@@ -166,6 +166,7 @@ import { DaemonReleaseResolver } from './registry/daemonRelease.js'
 import { InMemorySessionEventSink } from './events/sink.js'
 import { SessionUsageWriter } from './usage/writer.js'
 import { createIconStore } from './icons/icon-store.js'
+import { createGitlabAccountAvatarRenderer } from './http/gitlab-account-avatar.js'
 import type { IconUrlBases } from './agents/agent-icon.js'
 
 import type { SecretsProvider } from './secrets/providers/provider.js'
@@ -974,6 +975,7 @@ export function buildContainer(
         agents: repos.agent,
         cipher: secretCipher,
         clock,
+        avatarPng: createGitlabAccountAvatarRenderer(iconStore),
         ...(opts.gitlabFetch ? { fetchImpl: opts.gitlabFetch } : {}),
         log: { warn: (obj, msg) => http.log.warn(obj, msg) }
       })

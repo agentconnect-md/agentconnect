@@ -11,9 +11,9 @@ import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 import { seedAgent } from '../fixtures/seed.js'
 import { FakeGitlab, type FakeGitlabOptions } from '../fakes/gitlab-api.js'
 import { GitlabOauthService } from '../../src/gitlab/oauth.service.js'
-import { GitlabAccountService } from '../../src/gitlab/account.service.js'
 import { GitlabProvisioner } from '../../src/gitlab/provisioner.js'
 import { gitlabAgentAccountUsername, type GitlabWebhookEvents } from '../../src/gitlab/api.js'
+import { GitlabAccountService, gitlabAccountUnavailableMessage } from '../../src/gitlab/account.service.js'
 import { PgAgentRepo } from '../../src/persistence/repositories/agent.repo.js'
 import {
   PgGitlabAgentAccountRepo,
@@ -44,9 +44,12 @@ const EVENTS: GitlabWebhookEvents = {
 }
 
 /** The account this agent must hold in the project's top-level group (§7.2). */
-function usernameOf(agentId: string): string {
-  return gitlabAgentAccountUsername(agentId, ROOT_GROUP)
+function usernameOf(agentId: string, agentName = 'review-agent'): string {
+  return gitlabAgentAccountUsername(agentId, agentName, ROOT_GROUP)
 }
+
+/** Stand-in for the rendered agent-icon PNG the account wears (§7.2). */
+const AVATAR_PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
 
 async function harness(
   options: FakeGitlabOptions = {},
@@ -54,6 +57,7 @@ async function harness(
   agents: Array<{ id: string; name?: string; gitAccess?: 'read' | 'write' }> = [{ id: AGENT, name: 'review-agent' }]
 ) {
   const fake = new FakeGitlab(options)
+  const avatarRenders: string[] = []
   const connections = new PgGitlabConnectionRepo(prisma)
   const bindings = new PgGitlabProjectBindingRepo(prisma)
   const accounts = new PgGitlabAgentAccountRepo(prisma)
@@ -77,6 +81,10 @@ async function harness(
     agents: new PgAgentRepo(prisma),
     cipher,
     clock: systemClock,
+    avatarPng: async (agent) => {
+      avatarRenders.push(agent.id)
+      return AVATAR_PNG
+    },
     fetchImpl: fake.fetch()
   })
   const provisioner = new GitlabProvisioner({
@@ -114,6 +122,7 @@ async function harness(
   }
   return {
     fake,
+    avatarRenders,
     bindings,
     accounts,
     credentials,
@@ -126,6 +135,34 @@ async function harness(
   }
 }
 
+/** The pre-M8 machine username this agent's account would have carried. */
+function legacyUsername(): string {
+  return `agentconnect-a${AGENT.replace(/-/g, '')}-g${ROOT_GROUP}`
+}
+
+/** The account row alone — no provider twin, as first provisioning leaves it. */
+async function seedAccountRow(h: Awaited<ReturnType<typeof harness>>, username: string) {
+  await h.accounts.ensure({
+    orgId: DEFAULT_ORG_ID,
+    agentId: AGENT,
+    rootGroupId: ROOT_GROUP,
+    username,
+    administeringConnectionId: h.connection.id
+  })
+  return (await h.accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP))!
+}
+
+/** A row that already records its provider account, under `username`. */
+async function seedLegacyAccount(
+  h: Awaited<ReturnType<typeof harness>>,
+  username: string,
+  name = 'review-agent'
+): Promise<void> {
+  const seeded = await seedAccountRow(h, username)
+  await h.accounts.update(seeded.id, { serviceAccountUserId: 7000n })
+  h.fake.serviceAccounts = [{ id: 7000, username, name }]
+}
+
 describe('GitlabProvisioner (§10.2) — per-agent identity', () => {
   it('converges to ready: one account per agent, member at the derived role, three sealed PATs', async () => {
     const h = await harness()
@@ -134,7 +171,7 @@ describe('GitlabProvisioner (§10.2) — per-agent identity', () => {
 
     const [account] = await h.accounts.listForBinding(h.binding.id)
     expect(account).toMatchObject({ agentId: AGENT, username: usernameOf(AGENT), state: 'ready', lifecycle: 'active' })
-    // The username is machine and rename-stable; the display name is the agent's.
+    // The username reads as the agent and is creation-time; so is the display name.
     expect(h.fake.serviceAccounts).toEqual([
       { id: Number(account!.serviceAccountUserId), username: usernameOf(AGENT), name: 'review-agent' }
     ])
@@ -166,7 +203,9 @@ describe('GitlabProvisioner (§10.2) — per-agent identity', () => {
     ])
     expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toEqual({ state: 'ready' })
     const accounts = await h.accounts.listForBinding(h.binding.id)
-    expect(accounts.map((a) => a.username).sort()).toEqual([usernameOf(AGENT), usernameOf(SIBLING)].sort())
+    expect(accounts.map((a) => a.username).sort()).toEqual(
+      [usernameOf(AGENT, 'reviewer'), usernameOf(SIBLING, 'builder')].sort()
+    )
     expect(new Set(accounts.map((a) => a.serviceAccountUserId)).size).toBe(2)
     expect(h.fake.serviceAccounts.map((a) => a.name).sort()).toEqual(['builder', 'reviewer'])
     // Six PATs: three purposes per account, none shared.
@@ -571,14 +610,229 @@ describe('GitlabProvisioner (§10.2) — per-agent identity', () => {
     expect(h.fake.tokens.get(Number(after.externalTokenId))!.revoked).toBe(false)
   })
 
-  it('an existing marked account is reused, never duplicated', async () => {
+  it('reuses the account its own row already records, never duplicating it', async () => {
     const h = await harness()
-    h.fake.serviceAccounts = [{ id: 7000, username: usernameOf(AGENT), name: 'stale-label' }]
+    await seedLegacyAccount(h, usernameOf(AGENT), 'stale-label')
     expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toEqual({ state: 'ready' })
     expect(h.fake.serviceAccounts).toHaveLength(1)
     const account = (await h.accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP))!
     expect(account.serviceAccountUserId).toBe(7000n)
     expect(h.fake.serviceAccounts[0]).toMatchObject({ id: 7000, name: 'review-agent' })
+  })
+})
+
+describe('GitlabAccountService account naming (§7.2)', () => {
+  it('names the account after the agent, twelve hex of its id, and the root in base 36', async () => {
+    const h = await harness({}, null, [{ id: AGENT, name: 'GitLab Pilot' }])
+    expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toEqual({ state: 'ready' })
+    const account = (await h.accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP))!
+    expect(account.username).toBe(`gitlab-pilot-${AGENT.replace(/-/g, '').slice(0, 12)}-${ROOT_GROUP.toString(36)}`)
+    expect(h.fake.serviceAccounts).toEqual([
+      { id: Number(account.serviceAccountUserId), username: account.username, name: 'GitLab-Pilot' }
+    ])
+  })
+
+  it('renames an account whose username predates the readable scheme, and records it', async () => {
+    const h = await harness()
+    await seedLegacyAccount(h, legacyUsername())
+
+    expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toEqual({ state: 'ready' })
+    expect(h.fake.serviceAccounts).toEqual([{ id: 7000, username: usernameOf(AGENT), name: 'review-agent' }])
+    expect(await h.accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP)).toMatchObject({
+      serviceAccountUserId: 7000n,
+      username: usernameOf(AGENT)
+    })
+  })
+
+  it('leaves the username alone once it carries the scheme, agent renames included', async () => {
+    const h = await harness()
+    expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toEqual({ state: 'ready' })
+    await prisma.agent.update({ where: { id: AGENT }, data: { displayName: 'Release Robot' } })
+    expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toEqual({ state: 'ready' })
+    // The display name follows the rename; the username is creation-time (§7.2).
+    expect(h.fake.serviceAccounts[0]).toMatchObject({ username: usernameOf(AGENT), name: 'Release-Robot' })
+    expect(h.fake.requests.filter((r) => r.method === 'PATCH')).toHaveLength(1)
+  })
+
+  it('a refused username convergence is cosmetic and never degrades credentials', async () => {
+    const h = await harness({ refuseServiceAccountUsernameChange: true })
+    const legacy = legacyUsername()
+    await seedLegacyAccount(h, legacy)
+
+    expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toEqual({ state: 'ready' })
+    expect(h.fake.serviceAccounts[0]).toMatchObject({ id: 7000, username: legacy })
+    const account = (await h.accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP))!
+    expect(account).toMatchObject({ username: legacy, state: 'ready' })
+    expect(await h.credentials.listForAccount(account.id)).toHaveLength(3)
+  })
+})
+
+describe('GitlabAccountService create recovery (§7.2)', () => {
+  it('recovers an ambiguous create through the window recorded before it', async () => {
+    const h = await harness({ ambiguousServiceAccountCreate: true })
+    expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toEqual({ state: 'ready' })
+    expect(h.fake.serviceAccounts).toHaveLength(1)
+    expect(await h.accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP)).toMatchObject({
+      serviceAccountUserId: BigInt(h.fake.serviceAccounts[0]!.id),
+      createAttempt: null,
+      state: 'ready'
+    })
+  })
+
+  it('recovers the account a crash left behind, from the window recorded before the create', async () => {
+    const h = await harness()
+    // Exactly what a process that died between GitLab creating the account and
+    // the row committing its numeric id leaves behind.
+    const crashed = await seedAccountRow(h, usernameOf(AGENT))
+    expect(crashed.serviceAccountUserId).toBeNull()
+    await h.accounts.openCreateAttempt({
+      accountId: crashed.id,
+      attemptId: 'attempt-1',
+      openedAt: new Date(),
+      knownServiceAccountUserIds: []
+    })
+    h.fake.serviceAccounts = [{ id: 7000, username: usernameOf(AGENT), name: 'review-agent' }]
+
+    expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toEqual({ state: 'ready' })
+    expect(await h.accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP)).toMatchObject({
+      serviceAccountUserId: 7000n,
+      createAttempt: null,
+      state: 'ready'
+    })
+    // Recovered, not duplicated: no second account burns a slot in the root.
+    expect(h.fake.serviceAccounts).toHaveLength(1)
+  })
+
+  it('commits the resolved id and closes the window before anything cosmetic', async () => {
+    const h = await harness()
+    // The crash state again, but under a username the scheme will want to
+    // converge — so the run resolves, commits, and only then PATCHes.
+    const legacy = legacyUsername()
+    const crashed = await seedAccountRow(h, legacy)
+    await h.accounts.openCreateAttempt({
+      accountId: crashed.id,
+      attemptId: 'attempt-1',
+      openedAt: new Date(),
+      knownServiceAccountUserIds: []
+    })
+    h.fake.serviceAccounts = [{ id: 7000, username: legacy, name: 'review-agent' }]
+    // A process that exits at this instant must still own its account, so the
+    // row has to carry the durable id and no window ALREADY.
+    let atPatch: Awaited<ReturnType<typeof h.accounts.byAgentRoot>> = null
+    h.fake.opts.onServiceAccountPatch = async () => {
+      atPatch = await h.accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP)
+    }
+
+    expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toEqual({ state: 'ready' })
+    expect(atPatch).toMatchObject({ serviceAccountUserId: 7000n, createAttempt: null })
+    expect(await h.accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP)).toMatchObject({
+      serviceAccountUserId: 7000n,
+      username: usernameOf(AGENT),
+      createAttempt: null
+    })
+  })
+
+  it('refuses a username a pre-existing account holds, and adopts nothing', async () => {
+    const h = await harness()
+    h.fake.serviceAccounts = [{ id: 7000, username: usernameOf(AGENT), name: 'somebody-else' }]
+    expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toEqual({
+      state: 'admin_degraded',
+      reason: 'username_taken'
+    })
+    const [account] = await h.accounts.listForAgent(DEFAULT_ORG_ID, AGENT)
+    expect(account).toMatchObject({ serviceAccountUserId: null, stateReason: 'username_taken' })
+    // The foreign account is untouched and was issued nothing.
+    expect(h.fake.serviceAccounts).toEqual([{ id: 7000, username: usernameOf(AGENT), name: 'somebody-else' }])
+    expect(h.fake.tokens.size).toBe(0)
+    expect(await h.accounts.membershipsForBinding(h.binding.id)).toHaveLength(0)
+    expect(gitlabAccountUnavailableMessage('username_taken')).toContain('already holds the bot username')
+  })
+
+  it('will not claim through a window that already knew the account', async () => {
+    const h = await harness()
+    const row = await seedAccountRow(h, usernameOf(AGENT))
+    await h.accounts.openCreateAttempt({
+      accountId: row.id,
+      attemptId: 'attempt-1',
+      openedAt: new Date(),
+      // The account was already there when the window opened, so it is not ours.
+      knownServiceAccountUserIds: [7000n]
+    })
+    h.fake.serviceAccounts = [{ id: 7000, username: usernameOf(AGENT), name: 'somebody-else' }]
+
+    expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toEqual({
+      state: 'admin_degraded',
+      reason: 'username_taken'
+    })
+    expect(await h.accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP)).toMatchObject({
+      serviceAccountUserId: null
+    })
+  })
+
+  it('resolves only through this root’s own service-account listing, never a user search', async () => {
+    const h = await harness()
+    expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toEqual({ state: 'ready' })
+    const lookups = h.fake.requests.filter((r) => r.method === 'GET' && r.url.includes('/service_accounts'))
+    expect(lookups.length).toBeGreaterThan(0)
+    for (const lookup of lookups) expect(lookup.url).toContain(`/api/v4/groups/${ROOT_GROUP}/service_accounts`)
+    expect(h.fake.requests.some((r) => /\/api\/v4\/users(\?|\/|$)/.test(r.url))).toBe(false)
+  })
+})
+
+describe('GitlabAccountService avatar sync (§7.2)', () => {
+  it('dresses the account in the agent icon on provisioning, through its OWN api token', async () => {
+    const h = await harness()
+    expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toEqual({ state: 'ready' })
+    const account = (await h.accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP))!
+    expect(h.avatarRenders).toEqual([AGENT])
+    expect(h.fake.avatarUploads).toHaveLength(1)
+    expect(h.fake.avatarUploads[0]!.bytes).toBe(AVATAR_PNG.byteLength)
+    // §7.3: the account's own effect PAT wore it — never the installer's OAuth bearer.
+    const effect = (await h.credentials.get(account.id, 'effect'))!
+    expect(h.fake.avatarUploads[0]!.token).toBe(await h.credentialSecrets.get(DEFAULT_ORG_ID, effect.id))
+    expect(account.avatarFingerprint).toBe('runtime:claude')
+
+    // Converged, not re-sent: an unchanged icon uploads nothing.
+    expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toEqual({ state: 'ready' })
+    expect(h.fake.avatarUploads).toHaveLength(1)
+  })
+
+  it('re-uploads when the agent icon changes, and only then', async () => {
+    const h = await harness()
+    await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
+    expect(h.fake.avatarUploads).toHaveLength(1)
+
+    await prisma.agent.update({
+      where: { id: AGENT },
+      data: { icon: { kind: 'glyph', glyph: 'bot', color: '#123456' } }
+    })
+    await h.accountService.syncAgentAvatars(DEFAULT_ORG_ID, AGENT)
+    expect(h.fake.avatarUploads).toHaveLength(2)
+    expect(await h.accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP)).toMatchObject({
+      avatarFingerprint: 'glyph:bot:#123456'
+    })
+
+    await h.accountService.syncAgentAvatars(DEFAULT_ORG_ID, AGENT)
+    expect(h.fake.avatarUploads).toHaveLength(2)
+  })
+
+  it('an avatar endpoint the provider does not offer is a cosmetic skip', async () => {
+    const h = await harness({ avatarEndpointUnsupported: true })
+    expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toEqual({ state: 'ready' })
+    const account = (await h.accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP))!
+    expect(h.fake.avatarUploads).toHaveLength(0)
+    // Nothing recorded, so a provider that later gains the endpoint converges.
+    expect(account).toMatchObject({ state: 'ready', avatarFingerprint: null })
+    expect(await h.credentials.listForAccount(account.id)).toHaveLength(3)
+    expect(h.fake.members.get(Number(account.serviceAccountUserId))).toBe(30)
+  })
+
+  it('a refused avatar upload is cosmetic and never degrades credentials', async () => {
+    const h = await harness({ refuseAvatarUpload: true })
+    expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toEqual({ state: 'ready' })
+    const account = (await h.accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP))!
+    expect(account).toMatchObject({ state: 'ready', stateReason: null, avatarFingerprint: null })
+    expect(await h.credentials.listForAccount(account.id)).toHaveLength(3)
   })
 })
 

@@ -2756,8 +2756,12 @@ model GitlabAgentAccount {
   agentId                   String    @db.Uuid
   rootGroupId               BigInt // numeric TOP-LEVEL group id — accounts cannot cross it
   serviceAccountUserId      BigInt? // numeric GitLab user id; null until created
-  username                  String // agentconnect-a<agentIdHex>-g<rootGroupId>
+  username                  String // <agentSlug>-<agentId12>-<root36>, taken at creation
   displayName               String? // fingerprint of the agent name last synced to the provider
+  avatarFingerprint         String? // fingerprint of the agent icon last uploaded as the avatar
+  createAttemptId           String? // open service-account create attempt (§7.2 recovery window)
+  createAttemptAt           DateTime? @db.Timestamptz(6) // when that attempt opened
+  createAttemptKnownIds     BigInt[] // the root's service accounts when it opened
   credentialEpoch           BigInt    @default(1) // purge fence: bumped on every PAT rotation
   administeringConnectionId String?   @db.Uuid // the OAuth connection currently administering it
   leaseOwner                String? // account mutation lease (§7.2): create/rotate/rename/retire

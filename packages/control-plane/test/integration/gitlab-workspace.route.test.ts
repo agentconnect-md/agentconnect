@@ -495,7 +495,7 @@ describe('gitcred v2 GitLab grants (§13.1/§17.1)', () => {
     expect(write.access).toBe('write')
     expect(write.provider).toBe('gitlab')
     expect(write.externalRepoId).toBe(PROJECT.toString())
-    expect(write.username).toBe(gitlabAgentAccountUsername(AGENT, ROOT_GROUP))
+    expect(write.username).toBe(gitlabAgentAccountUsername(AGENT, 'workspace-agent', ROOT_GROUP))
     expect(write.repoFullName).toBe('example-group/example-project')
     expect(write.credentialEpoch).toBe((await h.accounts.get(h.account.id))!.credentialEpoch.toString())
     expect(write.ttlSec).toBeGreaterThan(0)
@@ -569,7 +569,7 @@ describe('gitcred v2 GitLab grants (§13.1/§17.1)', () => {
     expect(grant.token).not.toBe(await store.get(DEFAULT_ORG_ID, (await creds.get(h.account.id, 'git_write'))!.id))
     expect(grant.access).toBe('read')
     expect(grant.provider).toBe('gitlab')
-    expect(grant.username).toBe(gitlabAgentAccountUsername(AGENT, ROOT_GROUP))
+    expect(grant.username).toBe(gitlabAgentAccountUsername(AGENT, 'workspace-agent', ROOT_GROUP))
     expect(grant.externalRepoId).toBe(PROJECT.toString())
     expect(grant.repoFullName).toBe('example-group/example-project')
     // Action-time, not the hourly workspace lease.

@@ -3397,6 +3397,16 @@ export type GitlabAccountState = GitlabBindingState
 /** The generation fence a membership insert commits against (§7.2). */
 export type GitlabAccountLifecycle = 'active' | 'retiring'
 
+/** One recorded service-account creation attempt. `knownServiceAccountUserIds`
+ *  is the root group's own service accounts at the moment the attempt opened,
+ *  so an account absent from it is one this attempt created — the window a
+ *  provider that reports no creation time for a service account still gives. */
+export interface GitlabAccountCreateAttempt {
+  id: string
+  openedAt: Date
+  knownServiceAccountUserIds: bigint[]
+}
+
 export interface GitlabAgentAccountRecord {
   id: string
   orgId: string
@@ -3405,6 +3415,9 @@ export interface GitlabAgentAccountRecord {
   serviceAccountUserId: bigint | null
   username: string
   displayName: string | null
+  avatarFingerprint: string | null
+  /** The open, record-first service-account create window (§7.2), or null. */
+  createAttempt: GitlabAccountCreateAttempt | null
   credentialEpoch: bigint
   administeringConnectionId: string | null
   generation: bigint
@@ -3446,12 +3459,34 @@ export interface GitlabAgentAccountRepo {
     accountId: string,
     patch: Partial<{
       serviceAccountUserId: bigint | null
+      /** Cosmetic username convergence (§7.2) — the numeric user id stays the key. */
+      username: string
       displayName: string | null
+      avatarFingerprint: string | null
       administeringConnectionId: string | null
       state: GitlabAccountState
       stateReason: string | null
     }>
   ): Promise<GitlabAgentAccountRecord | null>
+  /** §7.2 record-first create window: persisted BEFORE the provider write, so a
+   *  crash between GitLab creating the account and the row committing its
+   *  numeric id can still recover that account instead of refusing it. */
+  openCreateAttempt(input: {
+    accountId: string
+    attemptId: string
+    openedAt: Date
+    knownServiceAccountUserIds: bigint[]
+  }): Promise<GitlabAgentAccountRecord | null>
+  /** §7.2: the resolved provider account becomes durable. The numeric user id,
+   *  the username it actually carries, and the closed window commit in ONE
+   *  write, so no exit can leave the row holding neither the id nor a window
+   *  while the account exists at the provider. */
+  commitServiceAccount(input: {
+    accountId: string
+    serviceAccountUserId: bigint
+    username: string
+    administeringConnectionId: string
+  }): Promise<GitlabAgentAccountRecord | null>
   /** §7.2 mutation lease, CAS-acquired: free, same-owner, or expired only. */
   claimLease(accountId: string, owner: string, until: Date, now: Date): Promise<boolean>
   renewLease(accountId: string, owner: string, until: Date): Promise<boolean>
