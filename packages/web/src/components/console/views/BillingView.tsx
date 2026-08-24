@@ -883,18 +883,19 @@ export default function BillingView() {
                 {transactions.data && (
                   <span className="mono text-[11.5px] text-(--text-tertiary)">{txItems.length} loaded</span>
                 )}
-              </span>
-              <span className="flex items-center gap-2">
-                <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-                  Newest first · amounts in USD
-                </span>
-                <span className="pillbar">
+                {/* `self-center`: the group stays baseline-aligned so the title and the count
+                    keep sitting on one line, while the pillbar — a control with its own box,
+                    taller than both — centres in the line instead of hanging off its text. */}
+                <span className="pillbar self-center">
                   {TX_SIDES.map((s) => (
                     <button key={s.key} className={side === s.key ? 'pill on' : 'pill'} onClick={() => setSide(s.key)}>
                       {s.label}
                     </button>
                   ))}
                 </span>
+              </span>
+              <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+                Newest first · amounts in USD
               </span>
             </div>
             {/* The two requests fail independently, so this card carries its own
