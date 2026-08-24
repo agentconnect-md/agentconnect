@@ -3508,10 +3508,12 @@ export class Daemon {
     const githubAppCredentials = !excludeAgentToolCredentials && agent.workspace.gitCredential === 'github-app'
     const gitlabCredentials = !excludeAgentToolCredentials && agent.workspace.gitCredential === 'gitlab'
     const managedCredentials = githubAppCredentials || gitlabCredentials
-    // §24.4: the pinned host comes from the SPEC; a non-workspace consumer rides the table beside it.
+    // §24.4: the pinned host comes from the SPEC, and a repo-bearing GitLab consumer that is not
+    // the workspace pins its instance beside it. A dream host gets no tool credentials at all.
     const managedScope = managedCredentialScope(
       gitlabCredentials ? 'gitlab' : githubAppCredentials ? 'github' : undefined,
-      agent.gitlabHost
+      agent.gitlabHost,
+      !excludeAgentToolCredentials && this.workspaces.gitlabRepoBearing(agent)
     )
     // The Git session policy runs for every configured repository, not only
     // GitHub review: repository hooks/fsmonitor stay disabled without rewriting

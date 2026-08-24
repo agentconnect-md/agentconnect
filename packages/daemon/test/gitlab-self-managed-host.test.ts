@@ -171,7 +171,7 @@ describe('the credential helper on a prefixed instance (§24.4)', () => {
     stdin: string,
     socketPath: string,
     table: string | undefined
-  ): Promise<{ stdout: string; stderr: string }> {
+  ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
     const input = new PassThrough()
     input.end(stdin)
     const stdinDescriptor = Object.getOwnPropertyDescriptor(process, 'stdin')!
@@ -191,8 +191,11 @@ describe('the credential helper on a prefixed instance (§24.4)', () => {
     if (table === undefined) delete process.env[GITCRED_HOSTS_ENV]
     else process.env[GITCRED_HOSTS_ENV] = table
     process.env[GITCRED_CAPABILITY_ENV] = 'cap-test'
+    let exitCode = 0
     try {
       await runGitCredential('get', AGENT, socketPath)
+      // The helper reports a refusal by SETTING exitCode; git reads that as a failed helper.
+      exitCode = typeof process.exitCode === 'number' ? process.exitCode : 0
     } finally {
       Object.defineProperty(process, 'stdin', stdinDescriptor)
       stdout.mockRestore()
@@ -203,7 +206,7 @@ describe('the credential helper on a prefixed instance (§24.4)', () => {
       else process.env[GITCRED_CAPABILITY_ENV] = previousCapability
       process.exitCode = 0
     }
-    return { stdout: out.join(''), stderr: err.join('') }
+    return { stdout: out.join(''), stderr: err.join(''), exitCode }
   }
 
   const table = encodeManagedHostTable(managedHostTableFor(INSTANCE))
@@ -280,6 +283,98 @@ describe('the credential helper on a prefixed instance (§24.4)', () => {
     // A github workspace on the same deployment still carries the instance in its table: an
     // additional-repository authorization is a GitLab consumer that is not the workspace.
     expect(gitCredentialEnv(AGENT, target, managedCredentialScope('github', INSTANCE))[GITCRED_HOSTS_ENV]).toBe(table)
+  })
+
+  // §24.4: the session config pins the instance for a REPO-BEARING consumer — a gitlab workspace or
+  // an authorized gitlab additional repository. A hook-only host does not, because a hook holds no
+  // repository authorization and pinning would only cut the agent's ambient credentials.
+  describe('the second credential block for a repo-bearing consumer', () => {
+    const workspaces = new WorkspaceManager()
+    const target = daemonGitCredentialTarget({ shimPath: join(runDir, 'helper.sh'), runDir })
+    const agentWith = (workspace: Record<string, unknown>) =>
+      ({
+        id: AGENT,
+        gitlabHost: INSTANCE,
+        workspace: { gitBranch: 'main', path: '/tmp/ws', additionalRepos: [], ...workspace }
+      }) as unknown as Parameters<WorkspaceManager['managedScopeOf']>[0]
+    const githubWorkspace = { mode: 'git-repo', gitRepo: 'https://github.com/acme/infra', gitCredential: 'github-app' }
+    const gitlabRepoRow = { repoFullName: 'example-group/example-project', repoId: '4455667', provider: 'gitlab' }
+    const configFor = (workspace: Record<string, unknown>) =>
+      sessionGitConfig(AGENT, undefined, target, workspaces.managedScopeOf(agentWith(workspace))).content
+
+    it('pins both hosts for a github workspace holding a gitlab additional-repository grant', () => {
+      const content = configFor({ ...githubWorkspace, additionalRepos: [gitlabRepoRow] })
+      expect(content).toContain('[credential "https://github.com"]')
+      expect(content).toContain(`[credential "${INSTANCE}"]`)
+      // Both blocks reset the accumulated helper list and keep the path the helper routes on.
+      expect(content.match(/\thelper = $/gm)).toHaveLength(2)
+      expect(content.match(/\tuseHttpPath = true/g)).toHaveLength(2)
+    })
+
+    it('pins a scratch workspace the same way — the grant, not the workspace, is what bears the repo', () => {
+      const content = configFor({ mode: 'from-scratch', gitCredential: 'github-app', additionalRepos: [gitlabRepoRow] })
+      expect(content).toContain(`[credential "${INSTANCE}"]`)
+      expect(workspaces.gitlabRepoBearing(agentWith({ mode: 'from-scratch', additionalRepos: [gitlabRepoRow] }))).toBe(
+        true
+      )
+    })
+
+    it('leaves a HOOK-ONLY agent unpinned, so its ambient gitlab credentials still answer', () => {
+      const content = configFor(githubWorkspace)
+      expect(content).toContain('[credential "https://github.com"]')
+      expect(content).not.toContain(INSTANCE)
+      expect(workspaces.gitlabRepoBearing(agentWith(githubWorkspace))).toBe(false)
+      // A github additional repository is not a gitlab consumer either.
+      const githubRow = { repoFullName: 'acme/other', repoId: '77', provider: 'github' }
+      expect(workspaces.gitlabRepoBearing(agentWith({ ...githubWorkspace, additionalRepos: [githubRow] }))).toBe(false)
+    })
+
+    it('still pins exactly one block for a gitlab workspace — the instance is already its own host', () => {
+      const content = configFor({ mode: 'git-repo', gitRepo: `${INSTANCE}/g/p.git`, gitCredential: 'gitlab' })
+      expect(content.match(/\[credential /g)).toHaveLength(1)
+      expect(content).toContain(`[credential "${INSTANCE}"]`)
+    })
+  })
+
+  it('serves an authorized additional repository on the instance, and DECLINES an unauthorized one', async () => {
+    // The block above is what makes git ask at all; the injected table is what routes the ask.
+    const authorized = await socket({
+      ok: true,
+      username: 'agent-sa',
+      password: 'glpat-x',
+      repoFullName: 'example-group/example-project'
+    })
+    try {
+      const served = await helper(
+        'protocol=https\nhost=gitlab.example.test:8443\npath=gitlab/example-group/example-project.git\n',
+        authorized.path,
+        table
+      )
+      expect(served.stdout).toBe('username=agent-sa\npassword=glpat-x\n')
+      expect(served.exitCode).toBe(0)
+      expect(authorized.requests[0]).toMatchObject({
+        provider: 'gitlab',
+        repoFullName: 'example-group/example-project'
+      })
+    } finally {
+      authorized.close()
+    }
+    // The new failure mode the second block introduces: our helper now OWNS this host's credential
+    // path, so an unauthorized project on it fails closed instead of falling through to ambient auth.
+    const refused = await socket({ ok: false, error: 'repository is not authorized for this agent' })
+    try {
+      const denied = await helper(
+        'protocol=https\nhost=gitlab.example.test:8443\npath=gitlab/example-group/not-authorized.git\n',
+        refused.path,
+        table
+      )
+      expect(denied.stdout).toBe('')
+      expect(denied.exitCode).toBe(1)
+      expect(denied.stderr).toContain('no git credentials')
+      expect(denied.stderr).toContain('example-group/not-authorized')
+    } finally {
+      refused.close()
+    }
   })
 
   rmSync(runDir, { recursive: true, force: true })

@@ -356,6 +356,14 @@ export interface ManagedCredentialScope {
   host: ManagedCredentialHost
   /** The GitLab instance this spec's GitLab consumers address, for the injected classifier table. */
   gitlabHost?: string
+  /**
+   * The spec carries a REPO-BEARING GitLab consumer — a gitlab workspace, or at least one gitlab
+   * additional-repository authorization (§24.4). Such an agent already accepts that the managed
+   * identity owns that instance's credential path, so the session config pins the helper there too.
+   * A hook-only host does NOT set this: a hook holds no repository authorization, so pinning would
+   * cut the agent's ambient credentials with nothing to serve in their place.
+   */
+  gitlabRepoBearing?: boolean
 }
 
 /** Anonymous and github-app operations both pin github.com; only a gitlab consumer moves the axis. */
@@ -371,10 +379,29 @@ function scopeHostTable(scope: ManagedCredentialScope): ManagedCredentialHost[] 
 
 export function managedCredentialScope(
   provider: 'github' | 'gitlab' | undefined,
-  gitlabHost?: string
+  gitlabHost?: string,
+  gitlabRepoBearing = false
 ): ManagedCredentialScope {
   const host = provider === 'gitlab' ? gitlabManagedHost(gitlabHost) : GITHUB_MANAGED_HOST
-  return { host, ...(gitlabHost !== undefined ? { gitlabHost } : {}) }
+  return {
+    host,
+    ...(gitlabHost !== undefined ? { gitlabHost } : {}),
+    // A gitlab workspace is repo-bearing by construction; the flag only adds the other consumer.
+    ...(gitlabRepoBearing || provider === 'gitlab' ? { gitlabRepoBearing: true } : {})
+  }
+}
+
+/**
+ * The hosts the SESSION config pins the helper for: the operation's own host, plus the GitLab
+ * instance when the spec carries a repo-bearing consumer that is not the workspace (§24.4). Only
+ * the session channel widens — a daemon-run clone, fetch or push always knows its exact target.
+ */
+function sessionCredentialBases(scope: ManagedCredentialScope): string[] {
+  const bases = [scope.host.baseUrl]
+  if (scope.gitlabRepoBearing !== true || scope.host.provider === 'gitlab') return bases
+  const instance = gitlabManagedHost(scope.gitlabHost).baseUrl
+  if (instance !== scope.host.baseUrl) bases.push(instance)
+  return bases
 }
 
 /**
@@ -558,15 +585,17 @@ export function sessionGitConfig(
   scope: ManagedCredentialScope = GITHUB_CREDENTIAL_SCOPE
 ): { path: string; content: string; env: Record<string, string> } {
   const file = join(target.configDir, `${agentId}.gitconfig`)
-  const base = scope.host.baseUrl
+  const bases = sessionCredentialBases(scope)
   const lines = [
     '# agentconnect session git config — regenerated on agent start; NO secrets.',
-    `# Keeps non-identity host config, then pins ${base} credentials to the daemon helper.`,
+    `# Keeps non-identity host config, then pins ${bases.join(' + ')} credentials to the daemon helper.`,
     ...(target.hostConfig ? ['[include]', `\tpath = ${target.hostConfig}`] : []),
-    `[credential "${base}"]`,
-    '\thelper = ', // reset the accumulated helper list for this host
-    `\thelper = ${quotedHelper(agentId, target)}`,
-    '\tuseHttpPath = true',
+    ...bases.flatMap((base) => [
+      `[credential "${base}"]`,
+      '\thelper = ', // reset the accumulated helper list for this host
+      `\thelper = ${quotedHelper(agentId, target)}`,
+      '\tuseHttpPath = true'
+    ]),
     ''
   ]
   return {

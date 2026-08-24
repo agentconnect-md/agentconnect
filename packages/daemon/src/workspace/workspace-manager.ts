@@ -288,10 +288,24 @@ export class WorkspaceManager {
     return this.managedCredentialProvider(agent) !== undefined
   }
 
+  /**
+   * Whether the spec carries a REPO-BEARING GitLab consumer (§24.4): a gitlab workspace, or an
+   * authorized gitlab additional repository. A hook is deliberately not one — it authorizes a turn,
+   * not a repository, so it must not take over the instance's credential path.
+   */
+  gitlabRepoBearing(agent: Agent): boolean {
+    if (this.managedCredentialProvider(agent) === 'gitlab') return true
+    return (agent.workspace.additionalRepos ?? []).some((row) => (row.provider ?? 'github') === 'gitlab')
+  }
+
   /** The credential scope this agent's primary workspace pins: its provider plus the spec's
    *  GitLab instance (§24.4). Anonymous workspaces resolve to github.com, as they always did. */
   managedScopeOf(agent: Agent): ManagedCredentialScope {
-    return managedCredentialScope(this.managedCredentialProvider(agent), agent.gitlabHost)
+    return managedCredentialScope(
+      this.managedCredentialProvider(agent),
+      agent.gitlabHost,
+      this.gitlabRepoBearing(agent)
+    )
   }
 
   /**

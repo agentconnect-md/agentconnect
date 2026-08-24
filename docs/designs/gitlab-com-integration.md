@@ -2303,10 +2303,17 @@ convention, and each entry carries the **full normalized base including any
 path prefix**: with `useHttpPath`, Git hands the helper
 `gitlab/group/project.git` on a prefixed install, and `glab` remotes carry
 the same prefix, so both strip the entry's prefix on an exact segment
-boundary before parsing the project path. The `.git`-suffix
-canonicalization keys on provider; the four daemon API clients resolve their
-base per turn; the `glab` shim exports `GITLAB_HOST` so the real CLI targets
-the instance, deferring only on a genuine mismatch.
+boundary before parsing the project path. The session config pins the
+helper for the instance whenever the spec carries a **repo-bearing** GitLab
+consumer — a GitLab workspace or an authorized GitLab additional repository,
+never a hook alone, because such an agent already accepts that the managed
+identity owns that host's credential path while a hook authorizes a turn and
+no repository, so pinning for it would cut ambient access with nothing to
+serve. The `.git`-suffix canonicalization keys on provider, falling back for
+an anonymous remote to the instance its address is checked against; the four
+daemon API clients resolve their base per turn; the `glab` shim exports
+`GITLAB_HOST` so the real CLI targets the instance, deferring only on a
+genuine mismatch.
 
 One feature string, `gitlab-instance-v1`, gates on the configured value.
 When the host is GitLab.com nothing is gated and a mixed fleet is today's
@@ -2446,7 +2453,9 @@ Merge order, GitLab.com green at every step:
   `AC_GITCRED_HOSTS` beside the capability it is minted with, carries GitHub
   plus the one GitLab instance the spec names — a GitLab consumer is not always
   the workspace — and is stripped from the daemon's own inherited environment so
-  an ambient value can never be read as a hint. The `glab` token entry reads the
+  an ambient value can never be read as a hint. The table only classifies, so the
+  session config additionally pins the helper for the instance on a repo-bearing
+  spec: git has to select a configured helper before any table can route the ask. The `glab` token entry reads the
   instance off that same table rather than off the `GITLAB_HOST` it exports,
   which it only compares against. The spec-admission refusal rides the
   `agent/upsert` ack, which is the control plane's own record of why the daemon
