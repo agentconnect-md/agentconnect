@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { GET } from '@/app/api/acp-registry/route'
 import { acpRuntime } from './acp-registry'
-import { runtimeLabel } from './data'
+import { FALLBACK_RUNTIME_IDS, runtimeLabel } from './data'
 
 describe('ACP Registry metadata', () => {
   afterEach(() => vi.unstubAllGlobals())
@@ -48,6 +48,19 @@ describe('ACP Registry metadata', () => {
     expect(response.status).toBe(200)
     const { agents } = (await response.json()) as { agents: Record<string, unknown> }
     expect(agents['kiro-cli']).toBeDefined()
+  })
+
+  // The alias table above is DISPLAY-only: it gives `claude`/`codex` a name and a mark, and
+  // nothing rewrites them on the way to a daemon. So the ids the picker offers when a daemon
+  // reports no profiles must be the registry's own — a bare `claude` looked right in the menu
+  // and then failed activation with `runtime "claude" is unavailable`.
+  it('offers only real registry ids as the no-profile fallback, never a display alias', () => {
+    const registry = {
+      'claude-acp': { name: 'Claude Agent', icon: null },
+      'codex-acp': { name: 'Codex', icon: null },
+      opencode: { name: 'OpenCode', icon: null }
+    }
+    for (const id of FALLBACK_RUNTIME_IDS) expect(registry[id as keyof typeof registry]).toBeDefined()
   })
 
   it('resolves legacy runtime ids and applies the product-name exception', () => {
