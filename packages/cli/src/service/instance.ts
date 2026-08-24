@@ -48,6 +48,23 @@ export function resolveServiceTarget(opts: { root?: string; instance?: string } 
   return { root, ...(instance ? { instance } : {}) }
 }
 
+/**
+ * The selector to reproduce in a suggested follow-up command, so an operator who
+ * copies it addresses the instance they are working on instead of the default
+ * one: ` --instance <name>` when a name is in play, else ` --root <dir>` for a
+ * non-default root, else nothing.
+ */
+export function commandSelector(target: { root?: string; instance?: string }): string {
+  if (target.instance) return ` --instance ${target.instance}`
+  if (target.root !== undefined && target.root !== defaultRoot()) return ` --root ${shellArg(target.root)}`
+  return ''
+}
+
+/** Quote a path for a command line the operator will paste back into a shell. */
+function shellArg(value: string): string {
+  return /^[A-Za-z0-9_@%+=:,./-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`
+}
+
 /** Should the unit carry `AGENTCONNECT_ROOT`? Only a non-default root needs it —
  *  computed from the resolved root, NOT from whether a flag was typed, so an
  *  `AGENTCONNECT_ROOT`-driven install cannot write a unit that points elsewhere. */

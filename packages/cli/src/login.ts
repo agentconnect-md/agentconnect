@@ -15,7 +15,7 @@ import { createInterface } from 'node:readline'
 import { resolveRoot, configPath } from './paths.js'
 import { CLI_VERSION } from './version.js'
 import { probeAuth, type ProbeResult } from './cp/auth-probe.js'
-import { installService as installUnit, shouldBakeRootEnv, type InstallOpts } from './service/index.js'
+import { commandSelector, installService as installUnit, shouldBakeRootEnv, type InstallOpts } from './service/index.js'
 import { ensureDaemonInstalled, runShell } from './run-shell.js'
 
 export interface PersistCredsOpts {
@@ -220,7 +220,13 @@ export async function runLogin(opts: RunLoginOpts, partial: Partial<LoginDeps> =
     const ans = (await nextLine(iter, 'Install AgentConnect as a background service? (y/N) ', out)).toLowerCase()
     if (ans === 'y' || ans === 'yes') {
       await deps.installService()
-      out.write('Service installed and started. Manage it with `agentconnect up` / `down` / `status`.\n')
+      // Repeat the selector: after `login --instance dev`, a bare `agentconnect
+      // status` would report the DEFAULT instance, not the one just installed.
+      const sel = commandSelector({
+        root: resolveRoot(opts.root),
+        ...(opts.instance !== undefined ? { instance: opts.instance } : {})
+      })
+      out.write(`Service installed and started. Manage it with \`agentconnect${sel} up\` / \`down\` / \`status\`.\n`)
       return
     }
     out.write('Starting in the foreground (Ctrl-C to stop)…\n')

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   assertInstanceName,
+  commandSelector,
   clearInstancePointer,
   instanceRoot,
   readInstancePointer,
@@ -124,5 +125,24 @@ describe('instance pointer', () => {
     const root = join(mkdtempSync(join(tmpdir(), 'ac-root-')), 'missing')
     mkdirSync(root, { recursive: false })
     expect(() => writeInstancePointer(join(root, 'nope'), { label: 'x' })).not.toThrow()
+  })
+})
+
+describe('commandSelector', () => {
+  it('is empty for the default instance on the default root', () => {
+    const home = fakeHome()
+    expect(commandSelector({ root: join(home, '.agentconnect') })).toBe('')
+    expect(commandSelector({})).toBe('')
+  })
+
+  it('prefers the instance name an operator typed', () => {
+    const home = fakeHome()
+    expect(commandSelector({ root: join(home, '.agentconnect-dev'), instance: 'dev' })).toBe(' --instance dev')
+  })
+
+  it('falls back to --root for an unnamed non-default root, shell-quoting when needed', () => {
+    fakeHome()
+    expect(commandSelector({ root: '/srv/ac-b' })).toBe(' --root /srv/ac-b')
+    expect(commandSelector({ root: '/srv/ac b' })).toBe(" --root '/srv/ac b'")
   })
 })

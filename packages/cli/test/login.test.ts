@@ -145,6 +145,24 @@ describe('runLogin — interactive', () => {
     expect(readConfig(root).controlPlane.key).toBe('tok')
   })
 
+  it('repeats the instance selector in the manage-it hint', async () => {
+    const root = emptyRoot()
+    const { out, lines } = sink()
+    await runLogin(
+      { root, instance: 'dev', apiUrl: 'wss://cp/daemon/ws', apiKey: 'tok' },
+      {
+        isTTY: true,
+        out,
+        input: tty(['y']),
+        probe: async () => ({ ok: true, daemonId: 'd1' }),
+        installService: async () => {},
+        runForeground: async () => {}
+      }
+    )
+    // A bare `agentconnect status` after this would report the DEFAULT instance.
+    expect(lines.join('')).toContain('`agentconnect --instance dev up`')
+  })
+
   it('accepts an uppercase Y / YES at the install prompt', async () => {
     const root = emptyRoot()
     const { out } = sink()

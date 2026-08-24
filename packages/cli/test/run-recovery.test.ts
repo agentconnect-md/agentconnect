@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough, Readable } from 'node:stream'
 import {
-  MANUAL_VERSION_HELP,
+  manualVersionHelp,
   recoveryOptions,
   runRecoveryFlow,
   shouldOfferRecovery,
@@ -119,7 +119,7 @@ describe('runRecoveryFlow', () => {
     const r = rootWithHistory()
     const f = fakeDeps(['3'])
     await expect(runRecoveryFlow(r, failed, f.deps)).resolves.toBe('exit')
-    expect(f.output()).toContain(MANUAL_VERSION_HELP)
+    expect(f.output()).toContain(manualVersionHelp(r))
     expect(f.rollback).not.toHaveBeenCalled()
     expect(f.reinstall).not.toHaveBeenCalled()
   })

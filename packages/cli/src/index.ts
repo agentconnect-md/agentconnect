@@ -7,6 +7,7 @@ import { runShell } from './run-shell.js'
 import { classifyInvocation, parseInstanceFlag, parseRootFlag, withResolvedRoot } from './route.js'
 import { runLogin } from './login.js'
 import {
+  commandSelector,
   controllerFor,
   installService,
   listInstances,
@@ -69,14 +70,16 @@ async function main(): Promise<void> {
     .option('--dry-run', 'load + validate config and print the reconcile plan, then exit')
     .option('--agent <name>', 'select a single agent by id (run/chat)')
 
-  // Every service command addresses the same target the argv scan above resolved.
+  // Every service command addresses the same target the argv scan above resolved,
+  // and every suggested follow-up command repeats that selector so a copy-paste
+  // lands on this instance rather than the default one.
   const serviceTarget = () => ({ root, ...(instance !== undefined ? { instance } : {}) })
+  const selector = commandSelector(serviceTarget())
   const controller = () => resolveController(serviceTarget())
   const requireInstalled = (c: ReturnType<typeof controller>): void => {
     if (!c.isInstalled()) {
-      const flag = instance ? ` --instance ${instance}` : ''
       console.error(
-        `agentconnect: no service installed (${c.label}) — run \`agentconnect${flag} install-service\` first, or \`agentconnect${flag} run\` for foreground`
+        `agentconnect: no service installed (${c.label}) — run \`agentconnect${selector} install-service\` first, or \`agentconnect${selector} run\` for foreground`
       )
       process.exit(1)
     }
@@ -135,7 +138,7 @@ async function main(): Promise<void> {
         console.log('agentconnect: service restarted')
       } catch (err) {
         console.error(
-          `agentconnect restart: service stopped but failed to start again — run \`agentconnect up\` to retry: ${(err as Error).message}`
+          `agentconnect restart: service stopped but failed to start again — run \`agentconnect${selector} up\` to retry: ${(err as Error).message}`
         )
         process.exit(1)
       }
@@ -149,7 +152,7 @@ async function main(): Promise<void> {
         const s = await controller().status()
         if (!s.installed) {
           console.log(
-            `service: not installed (${s.label}). Run \`agentconnect install-service\` or \`agentconnect run\`.`
+            `service: not installed (${s.label}). Run \`agentconnect${selector} install-service\` or \`agentconnect${selector} run\`.`
           )
           return
         }
@@ -168,9 +171,8 @@ async function main(): Promise<void> {
     .action(async () => {
       try {
         const c = await installService(serviceTarget(), installOpts())
-        const flag = instance ? ` --instance ${instance}` : ''
         console.log(`agentconnect: service installed (${c.label}, root ${root}).`)
-        console.log(`Run \`agentconnect${flag} up\` to start it.`)
+        console.log(`Run \`agentconnect${selector} up\` to start it.`)
       } catch (err) {
         fail('install-service', err)
       }

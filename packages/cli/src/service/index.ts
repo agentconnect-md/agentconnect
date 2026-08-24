@@ -12,6 +12,7 @@ import type { ControllerDeps, Exec, InstalledUnit, InstallOpts, ServiceControlle
 export type { ServiceController, ServiceStatus, InstallOpts, InstalledUnit } from './types.js'
 export {
   assertInstanceName,
+  commandSelector,
   instanceRoot,
   readInstancePointer,
   resolveServiceTarget,
