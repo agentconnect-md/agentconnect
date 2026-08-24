@@ -115,6 +115,25 @@ describe('the injected host→provider table (§24.4)', () => {
     // …and GitLab.com keeps trusting exactly GitLab.com when the axis is unset.
     expect(originOnManagedHost('https://gitlab.com/group/proj.git', managedCredentialScope('gitlab').host)).toBe(true)
   })
+
+  it('gives an ANONYMOUS gitlab remote the provider whose `.git` rule it needs, checked not sniffed', () => {
+    const workspaces = new WorkspaceManager()
+    const anonymous = (gitRepo: string, gitlabHost?: string) =>
+      ({
+        id: AGENT,
+        workspace: { mode: 'git-repo', gitRepo, gitBranch: 'main', path: '/tmp/ws', additionalRepos: [] },
+        ...(gitlabHost !== undefined ? { gitlabHost } : {})
+      }) as unknown as Parameters<WorkspaceManager['remoteProviderOf']>[0]
+    // A public GitLab.com clone has no credential provider on the spec, and still needs the suffix
+    // rule: GitLab 301s the suffix-less probe and daemon git refuses redirects.
+    const repo = 'https://gitlab.com/example-group/example-project'
+    expect(workspaces.remoteProviderOf(anonymous(repo), repo)).toBe('gitlab')
+    expect(workspaces.gitRepoOf(anonymous(repo))).toBe(`${repo}.git`)
+    // Another host is nobody's provider, so nothing is appended.
+    const other = 'https://github.com/acme/infra'
+    expect(workspaces.remoteProviderOf(anonymous(other), other)).toBeUndefined()
+    expect(workspaces.gitRepoOf(anonymous(other))).toBe(other)
+  })
 })
 
 describe('the credential helper on a prefixed instance (§24.4)', () => {

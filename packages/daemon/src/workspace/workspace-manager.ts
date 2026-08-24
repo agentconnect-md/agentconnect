@@ -36,6 +36,7 @@ import {
   workspaceGitRemoteTarget,
   writeRepoHelperConfig,
   GITHUB_CREDENTIAL_SCOPE,
+  gitlabManagedHost,
   managedCredentialScope,
   originOnManagedHost,
   type ManagedCredentialScope
@@ -293,6 +294,18 @@ export class WorkspaceManager {
     return managedCredentialScope(this.managedCredentialProvider(agent), agent.gitlabHost)
   }
 
+  /**
+   * Whose URL conventions a remote follows. The spec's credential provider answers for a managed
+   * workspace; an ANONYMOUS remote has no provider on the spec, so its address is CHECKED against
+   * the deployment's GitLab instance (§24.4) — a public clone from that instance still needs
+   * GitLab's `.git` suffix rule, and checking is not the same as sniffing a host out of the URL.
+   */
+  remoteProviderOf(agent: Agent, repository: string): 'github' | 'gitlab' | undefined {
+    const managed = this.managedCredentialProvider(agent)
+    if (managed !== undefined) return managed
+    return originOnManagedHost(repository, gitlabManagedHost(agent.gitlabHost)) ? 'gitlab' : undefined
+  }
+
   gitRepoOf(agent: Agent): string {
     if (agent.workspace.mode !== 'git-repo' || !agent.workspace.gitRepo) {
       throw new Error(`workspace clone: agent "${agent.id}" has git-repo mode but no gitRepo configured`)
@@ -300,7 +313,7 @@ export class WorkspaceManager {
     return authorizeWorkspaceGitUrl(
       canonicalWorkspaceGitUrl(
         this.usesGithubApp(agent) ? normalizeGithubRepoUrl(agent.workspace.gitRepo) : agent.workspace.gitRepo,
-        this.managedCredentialProvider(agent)
+        this.remoteProviderOf(agent, agent.workspace.gitRepo)
       )
     )
   }
@@ -860,7 +873,7 @@ export class WorkspaceManager {
     if (agent.workspace.mode === 'from-scratch') return JSON.stringify({ mode: 'scratch' })
     const repo = this.gitRepoOf(agent)
     // Both providers treat `.git` as the same repository, so neither canonicalization may replace a checkout over an access-only edit.
-    const suffixInsensitive = this.managedCredentialProvider(agent) !== undefined
+    const suffixInsensitive = this.remoteProviderOf(agent, agent.workspace.gitRepo ?? '') !== undefined
     return JSON.stringify({
       mode: 'github',
       repo: (suffixInsensitive ? repo.replace(/\.git$/i, '') : repo).toLowerCase(),

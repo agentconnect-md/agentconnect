@@ -165,13 +165,18 @@ function serveGitcred(path: string): { server: Server; requests: Record<string, 
   return { server, requests }
 }
 
+// A CI runner has no global git identity, so every commit here supplies its own — both halves,
+// since git refuses on the committer as readily as on the author.
+const COMMIT_IDENTITY = {
+  GIT_AUTHOR_NAME: 'a',
+  GIT_AUTHOR_EMAIL: 'a@example.test',
+  GIT_COMMITTER_NAME: 'a',
+  GIT_COMMITTER_EMAIL: 'a@example.test'
+}
+
 /** Local-only git: nothing here reaches the instance, so a blocking call is safe. */
 function git(cwd: string, args: string[]): string {
-  return execFileSync('git', args, {
-    cwd,
-    encoding: 'utf8',
-    env: { ...process.env, GIT_AUTHOR_NAME: 'a', GIT_AUTHOR_EMAIL: 'a@example.test' }
-  })
+  return execFileSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, ...COMMIT_IDENTITY } })
 }
 
 // The instance, the gitcred socket and the test all live in ONE process, so every command that has

@@ -210,6 +210,8 @@ export interface WorkspaceGitTarget {
   githubApp: boolean
   /** The managed host this scope's credential channel pins, resolved from the spec (§24.4). */
   managed?: ManagedCredentialScope
+  /** Whose URL conventions this remote follows; absent ⇒ neither provider's (§24.4). */
+  remoteProvider?: 'github' | 'gitlab'
 }
 
 export function createWorkspaceGit(
@@ -294,9 +296,9 @@ export function createWorkspaceGit(
     try {
       currentOrigin = safeExplicitOrigin(await git.raw(['remote', 'get-url', 'origin']))
       if (!target) throw new Error('workspace target is unavailable')
-      // Canonicalization follows the spec's PROVIDER: only a gitlab project keeps its subgroups.
-      const provider = target.managed?.host.provider ?? 'github'
-      const github = target.githubApp && provider === 'github'
+      // Canonicalization follows the remote's PROVIDER: only a gitlab project keeps its subgroups.
+      const provider = target.remoteProvider
+      const github = target.githubApp && provider !== 'gitlab'
       expectedOrigin = authorizeWorkspaceGitUrl(
         canonicalWorkspaceGitUrl(github ? normalizeGithubRepoUrl(target.repo) : target.repo, provider)
       )
