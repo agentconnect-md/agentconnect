@@ -9,7 +9,12 @@
 // connections — it never shows or manages existing ones.
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { fetchConnectorCatalog, type ConnectorAuthDefinition, type ConnectorProviderDto } from '@/lib/api'
+import {
+  fetchConnectorCatalog,
+  type ConnectorAuthDefinition,
+  type ConnectorConnectionCreatedDto,
+  type ConnectorProviderDto
+} from '@/lib/api'
 import {
   credentialFieldsFor,
   filterByCategory,
@@ -29,7 +34,14 @@ import { Button, Icon } from '@/components/ui'
 // Must match the CP's CreateConnectorConnectionBody rule (≤32, alphanumeric-led).
 const CONNECTION_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/
 
-export function ConnectorsModal({ onClose }: { onClose: () => void }) {
+export function ConnectorsModal({
+  onClose,
+  onCreated
+}: {
+  onClose: () => void
+  /** Fired with the connection's provider row, so a caller can attach it to an agent. */
+  onCreated?: (created: ConnectorConnectionCreatedDto) => void
+}) {
   const [providers, setProviders] = useState<ConnectorProviderDto[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [selected, setSelected] = useState<string | null>(null)
@@ -83,7 +95,7 @@ export function ConnectorsModal({ onClose }: { onClose: () => void }) {
         ) : !providers ? (
           <LoadingState size={22} padding={24} />
         ) : provider ? (
-          <ProviderDetail provider={provider} onDone={onClose} />
+          <ProviderDetail provider={provider} onDone={onClose} onCreated={onCreated} />
         ) : (
           <ProviderBrowser providers={providers} onSelect={setSelected} />
         )}
@@ -257,7 +269,15 @@ function ProviderIcon({ provider, large }: { provider: ConnectorProviderDto; lar
 }
 
 // ── detail / new connection ───────────────────────────────────────────────────
-function ProviderDetail({ provider, onDone }: { provider: ConnectorProviderDto; onDone: () => void }) {
+function ProviderDetail({
+  provider,
+  onDone,
+  onCreated
+}: {
+  provider: ConnectorProviderDto
+  onDone: () => void
+  onCreated?: (created: ConnectorConnectionCreatedDto) => void
+}) {
   const [authType, setAuthType] = useState<ConnectorAuthDefinition['type'] | undefined>(() => initialAuthType(provider))
   const auth = provider.auth.find((a) => a.type === authType) ?? provider.auth[0]
   const hasMultiple = provider.auth.length > 1
@@ -308,7 +328,13 @@ function ProviderDetail({ provider, onDone }: { provider: ConnectorProviderDto; 
       )}
 
       {auth ? (
-        <ConnectionForm key={`${provider.service}:${auth.type}`} provider={provider} auth={auth} onDone={onDone} />
+        <ConnectionForm
+          key={`${provider.service}:${auth.type}`}
+          provider={provider}
+          auth={auth}
+          onDone={onDone}
+          onCreated={onCreated}
+        />
       ) : (
         <div className="font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
           This connector has no supported connection method.
@@ -321,11 +347,13 @@ function ProviderDetail({ provider, onDone }: { provider: ConnectorProviderDto; 
 function ConnectionForm({
   provider,
   auth,
-  onDone
+  onDone,
+  onCreated
 }: {
   provider: ConnectorProviderDto
   auth: ConnectorAuthDefinition
   onDone: () => void
+  onCreated?: (created: ConnectorConnectionCreatedDto) => void
 }) {
   const { createConnectorConnection } = useConsoleData()
   const { me } = useProfile()
@@ -352,6 +380,10 @@ function ConnectionForm({
           ? { visibility: 'restricted' as const, sharedWith: sharing.sharedWith }
           : {})
       })
+      // The provider row exists the moment the CP accepts the connection — including
+      // on the oauth2 path, where the popup finishes independently — so a caller
+      // attaching it to an agent hears about it here, not after the sign-in lands.
+      onCreated?.(created)
       if (auth.type === 'oauth2') {
         if (created.authorizationUrl) {
           window.open(created.authorizationUrl, 'connectors_oauth', oauthPopupFeatures())

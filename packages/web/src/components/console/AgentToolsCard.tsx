@@ -79,16 +79,15 @@ export function AgentToolsCard({
   // Always fetch the saved allow-list (even with no eligible servers) so saved
   // names the daemon no longer reports — or whose transport the current runtime
   // can't attach — can still be shown and removed; without it a consolidated
-  // Tools card offers no way to clear a stale name. Mock agents (canEdit false)
-  // have no spec to fetch.
+  // Tools card offers no way to clear a stale name.
   useEffect(() => {
     if (fetched.current) return
-    // Demo agents (canEdit false) have no spec to fetch — mock mode seeds a plausible
-    // saved set instead so the card isn't uniformly empty. A read-only agent settles
-    // on the empty list rather than null: null means "still asking", and nobody is
-    // going to ask, so the card would sit on its loading line forever.
-    if (!canEdit) {
-      setEnabled(MOCK_MODE ? ['grafana', 'linear'] : [])
+    // Only DEMO agents lack a spec to fetch — `canEdit` is also false for a real
+    // agent the caller may see but not change, and `GET /agents/:id` is view-gated,
+    // so that case fetches like any other and just renders without the mutation
+    // controls. Short-circuiting it would claim an empty roster it never checked.
+    if (!canEdit && MOCK_MODE) {
+      setEnabled(['grafana', 'linear'])
       return
     }
     fetched.current = true
@@ -117,9 +116,10 @@ export function AgentToolsCard({
     }
   }
 
-  // A server registered from this card is what the operator wanted on THIS agent,
-  // so it is attached as soon as the registry accepts it — no second trip through
-  // the Add menu. Its name is the allow-list key, exactly as a registry candidate's is.
+  // A server registered from this card — by URL, or as a connector connection — is
+  // what the operator wanted on THIS agent, so it is attached as soon as the registry
+  // accepts it, with no second trip through the Add menu. Its name is the allow-list
+  // key, exactly as a registry candidate's is.
   const attachCreated = (created: McpProviderCreatedDto) => void attach(created.name, true)
 
   const attached = enabled ?? []
@@ -240,7 +240,7 @@ export function AgentToolsCard({
       {browsing && (
         <div className="scrim">
           <div className="modal max-w-[920px]">
-            <ConnectorsModal onClose={() => setBrowsing(false)} />
+            <ConnectorsModal onClose={() => setBrowsing(false)} onCreated={attachCreated} />
           </div>
         </div>
       )}

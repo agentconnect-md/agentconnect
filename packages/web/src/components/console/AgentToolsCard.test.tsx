@@ -103,13 +103,19 @@ describe('AgentToolsCard', () => {
     expect(await render(undefined)).toContain('No MCP servers')
   })
 
-  // A read-only agent is never asked for its spec, so the card must settle on the
-  // empty state instead of sitting on its loading line forever.
-  it('does not hang on the loading line for an agent the caller cannot edit', async () => {
+  // `canEdit` is false for a real agent the caller may see but not change, and
+  // `GET /agents/:id` is view-gated — so the saved roster must still be fetched and
+  // shown, just without the mutation controls. Short-circuiting to [] would claim an
+  // empty roster the card never checked.
+  it('shows the saved roster read-only for an agent the caller cannot edit', async () => {
+    mocks.saved = ['grafana']
     const text = await render(undefined, false)
-    expect(text).toContain('No MCP servers')
+    expect(text).toContain('grafana')
     expect(text).not.toContain('Loading tools')
+    expect(text).not.toContain('No MCP servers')
+    // No Add menu, and no per-row remove.
     expect(text).not.toContain('Add')
+    expect(host?.querySelector('button[title="Remove from this agent"]')).toBeNull()
   })
 
   it('says so in the menu when the org registry is empty too', async () => {
