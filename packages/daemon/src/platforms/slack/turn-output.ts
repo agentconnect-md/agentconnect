@@ -39,16 +39,26 @@
  * option builders are what make that safe: a non-Slack origin gets `undefined`
  * options and posts without Slack identity decoration.
  */
-import type { SlackConnection, SlackPostOptions, SlackStatusOptions } from '../../slack/connection.js'
+import type { SlackConnection, SlackPostOptions, SlackStatusOptions, SlackTurnStream } from '../../slack/connection.js'
 import { splitIntoSections } from '../../slack/formatter.js'
 import type { SlackAction } from '../../slack/render.js'
 
-/** Slack's opaque per-turn state (§7.3) — the footer edits still owed. */
+/** Slack's opaque per-turn state (§7.3) — the footer edits still owed, plus the turn's
+ *  native stream (slack-streaming-turn-output.md §3). */
 export interface SlackTurnState {
   /** Older reply sections whose footer-removal update failed. Retried on the next
    *  body section and once more at finalization, so a transient Slack error cannot
    *  leave two footers standing. */
   staleReplyFooters?: { ts: string; text: string }[]
+  /** The turn's OPEN streaming message. Dropped the moment it settles — a stopped stream
+   *  is unrecoverable, so a rollover opens a new one rather than reviving this. */
+  stream?: SlackTurnStream
+  /** Coalescing timer for stream appends (§3.5), the Slack analogue of Feishu's. */
+  streamTimer?: NodeJS.Timeout
+  /** The human a streamed message is addressed to (`recipient_user_id`, required outside
+   *  DMs). Absent on a cron / hook / dream / agent-to-agent turn, which is exactly why
+   *  those cannot stream in a channel (§7). */
+  recipient?: string
 }
 
 /** The core turn, as Slack's applier sees it. `Pending` satisfies it structurally.
@@ -140,6 +150,10 @@ export interface SlackTurnHost<TTurn> {
   /** Monotonic transcript timestamp — core owns ordering across surfaces. */
   monotonicTs(): string
   debug(message: string): void
+  /** Demote this turn to the legacy pipeline after a mid-turn streaming failure (§7). The
+   *  converger is core's, so only core can flip its axis; the applier only knows the append
+   *  was refused. Optional so a non-streaming host need not supply it. */
+  degradeStreaming?(turn: TTurn): void
 }
 
 /** Conversational authorship for Slack rows: the agent's name and icon, applied
@@ -193,6 +207,21 @@ export function slackAgentPostOptions(
         }
       : {})
   }
+}
+
+/**
+ * The human a streamed message is addressed to (`recipient_user_id`, which Slack requires
+ * outside a DM). A cron fire, a webhook, a dream, or an agent→agent delivery has no honest
+ * value to supply — which is precisely why those turns cannot stream in a channel (§7).
+ *
+ * Structural in its parameter so this module stays free of core message types.
+ */
+export function slackStreamRecipient(msg: {
+  source: string
+  headless?: boolean
+  sender: { id: string; isBot?: boolean }
+}): string | undefined {
+  return msg.source === 'user' && !msg.headless && !msg.sender.isBot ? msg.sender.id : undefined
 }
 
 /** Keep Slack's transient loading state visually owned by the same agent as its reply. */
@@ -433,6 +462,9 @@ export async function applySlackAction<TTurn extends SlackTurn>(
   const chromeOptions: SlackPostOptions = { ...(postOptions ?? {}), chrome: true }
   switch (action.kind) {
     case 'set-status':
+      // A streaming turn owns the whole status slot through its stream: the two status APIs
+      // share that slot, so writing either would replace the native UI with free text (§5).
+      if (state.stream) return
       if (p.plan.statusThread)
         await conn.setStatus(
           p.plan.channel,
@@ -572,6 +604,65 @@ export async function applySlackAction<TTurn extends SlackTurn>(
         if (ts) {
           p.chrome.liveReplyTs = ts
           p.chrome.liveReplyText = section
+        }
+      }
+      return
+    }
+    case 'stream-start': {
+      // Streamed messages must be thread replies (§7), and a rollover only ever opens the
+      // NEXT message — never a second stream beside a live one.
+      if (state.stream || !p.plan.thread) return
+      state.stream = await conn.startTurnStream(p.plan.channel, p.plan.thread, {
+        ...(state.recipient ? { recipientUserId: state.recipient } : {}),
+        // Per-agent authorship moves here from the status text: same username/icon a reply
+        // carries today, under the same chat:write.customize cooldown (§5).
+        ...(statusBarPostOptions ? { identity: statusBarPostOptions } : {})
+      })
+      return
+    }
+    case 'stream-append': {
+      if (!state.stream || action.chunks.length === 0) return
+      if (await conn.appendTurnStream(state.stream, action.chunks)) return
+      // §7: a mid-turn append failure must not lose the answer. Settle the stream and let
+      // the rest of the turn reach the channel through the ordinary post path.
+      const dead = state.stream
+      state.stream = undefined
+      await conn.stopTurnStream(dead)
+      host.degradeStreaming?.(p)
+      return
+    }
+    case 'stream-stop': {
+      const stream = state.stream
+      if (!stream) return
+      state.stream = undefined
+      const final = action.settle === 'final'
+      const agentOptions = final
+        ? slackAgentPostOptions({ ...p.plan, ...(p.reply.responseId ? { responseId: p.reply.responseId } : {}) })
+        : undefined
+      // The footer is attached exactly once, on the LAST stop — a rollover carries none, and
+      // teardown after suppression carries none either (§3.3).
+      const footer = final && p.attribution ? p.attribution.blocks : undefined
+      await conn.stopTurnStream(stream, {
+        ...(footer ? { blocks: footer } : {}),
+        // A rollover must not release the session mid-turn: `active` is the default (§3.4).
+        ...(action.settle === 'rollover' ? { sessionStatus: 'processing' as const } : {}),
+        ...(agentOptions?.agentAuthorId ? { agentAuthorId: agentOptions.agentAuthorId } : {}),
+        ...(agentOptions?.response ? { response: agentOptions.response } : {})
+      })
+      if (!final) return
+      if (action.discard) {
+        // Nothing ever reached this message — a suppressed reply must not leave an empty
+        // bubble where the agent deliberately stayed silent.
+        await conn.deleteMessage(p.plan.channel, stream.ts)
+        return
+      }
+      if (action.text !== undefined) {
+        // §5.5 closes the response by editing THIS message, so record what it displays.
+        p.reply.lastResponse = { ts: stream.ts, text: action.text }
+        p.reply.lastReply = {
+          ts: stream.ts,
+          text: action.text,
+          ...(footer && p.attribution ? { footerKey: p.attribution.key } : {})
         }
       }
       return

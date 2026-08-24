@@ -36,6 +36,8 @@ const EXEMPT: Record<string, string> = {
   postIfThreadExists: 'private Slack root-existence guard',
   postChatMessage: 'private shared post boundary behind postMessage/postBlocks',
   setSessionLifecycle: 'private agent-session lifecycle call, behind setStatus',
+  noteStreamFailure: 'private streaming error classification, behind the startTurnStream trio',
+  closeStream: 'private streaming handle bookkeeping, behind the startTurnStream trio',
   agentSessionStopped: 'native stop button (Bolt event / relay-forwarded), no arena equivalent',
   shareWithIdentity: 'private identity-carrying upload path, behind uploadFile',
   putUploadBytes: 'private step 2 of the external upload, behind uploadFile',
