@@ -153,9 +153,10 @@ export class AutoMergeWatcher {
       pollMs: this.deps.pollMs ?? AUTO_MERGE_POLL_MS,
       ...(this.deps.timers ? { timers: this.deps.timers } : {}),
       onStatus: (status) => {
-        // Merged is terminal: the loop already disarmed itself, and holding the entry would keep
-        // reporting `armed` for a pull request nothing is watching.
-        if (status.merged) this.local.delete(key)
+        // Both terminal states DROP the entry, not just its timer. The loop stops itself either way,
+        // but a stopped loop left in this map is what `arm`'s fast path would hand back forever — so a
+        // pull request that was closed and later reopened could never be armed again.
+        if (status.merged || status.closed) this.local.delete(key)
       }
     })
     this.local.set(key, loop)
@@ -173,9 +174,15 @@ export class AutoMergeWatcher {
       return this.project(target, undefined, await sandbox.disarm(this.call(target)))
     }
     const key = keyOf(target)
-    this.local.get(key)?.stop()
+    const loop = this.local.get(key)
     this.local.delete(key)
-    return this.project(target, undefined, { armed: false })
+    if (!loop) return this.project(target, undefined, { armed: false })
+    // `stop()` fences the tick in flight before its merge; awaiting it means this `armed:false` is not
+    // answered while a squash could still land behind it. A merge that had already been SENT is
+    // reported rather than hidden — the toggle is off either way, but not silently.
+    loop.stop()
+    await loop.settle()
+    return this.project(target, undefined, { armed: false, ...(loop.current().merged ? { merged: true } : {}) })
   }
 
   private require(target: AutoMergeTarget): void {

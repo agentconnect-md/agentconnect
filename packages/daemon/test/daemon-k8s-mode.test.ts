@@ -345,13 +345,13 @@ describe('daemon --k8s mode', () => {
     try {
       await k8sDaemon.start()
       // What the keep-alive route renews: a lease taken because that session's worktree is dirty.
-      ;(k8sDaemon as any).sandboxHolds.renew('watched', ['uncommitted-files'])
+      ;(k8sDaemon as any).sandboxHolds.renew('watched', 'session-1', ['uncommitted-files'])
       ;(k8sDaemon as any).sweepIdle()
       await vi.waitFor(() => expect(suspended).toEqual(['abandoned']))
 
       // The page closes: nothing renews, the lease lapses, and the next sweep suspends normally. The
       // fake plane re-answers for `abandoned` too, so the assertion is about the held one arriving.
-      ;(k8sDaemon as any).sandboxHolds.release('watched')
+      ;(k8sDaemon as any).sandboxHolds.release('watched', 'session-1')
       ;(k8sDaemon as any).sweepIdle()
       await vi.waitFor(() => expect(suspended).toContain('watched'))
     } finally {

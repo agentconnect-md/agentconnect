@@ -203,13 +203,34 @@ export type TickOutcome =
   /** Terminal for a reason that is not a merge: the pull request was CLOSED. The intent expired with
    *  it, and a watcher left polling would merge it if the branch were ever reopened. */
   | { kind: 'closed' }
+  /** The fence below closed while this tick was in flight, so the merge was never attempted. */
+  | { kind: 'aborted' }
   | { kind: 'waiting'; waitingOn: string }
   | { kind: 'error'; error: string }
 
+export interface TickOptions {
+  /**
+   * Checked once, synchronously, in the instant before the merge mutation is sent.
+   *
+   * A tick awaits a snapshot and a token before it decides anything, and a disarm arriving inside
+   * that window used to be invisible to it: the continuation went on to squash-merge a pull request
+   * whose box the operator had already unticked and been told was off. Because the check is
+   * synchronous and immediately precedes the only mutation here, a caller that flips this predicate
+   * knows that once it has, no merge can still BEGIN — which is what lets `disarm` answer honestly.
+   */
+  aborted?: () => boolean
+}
+
 /** One poll: read, judge, and merge if the verdict says so. Never throws — a tick's failure is
  *  DATA the watcher keeps armed through, because the usual cure is the next commit. */
-export async function tick(access: GithubAccess, repoFullName: string, prNumber: number): Promise<TickOutcome> {
+export async function tick(
+  access: GithubAccess,
+  repoFullName: string,
+  prNumber: number,
+  opts: TickOptions = {}
+): Promise<TickOutcome> {
   try {
+    if (opts.aborted?.()) return { kind: 'aborted' }
     const pr = await fetchSnapshot(access, repoFullName, prNumber)
     if (pr.state === 'MERGED') return { kind: 'merged' }
     // Closed without merging ends the watch. Keeping it armed would leave a poll running for the life
@@ -217,6 +238,8 @@ export async function tick(access: GithubAccess, repoFullName: string, prNumber:
     if (pr.state === 'CLOSED') return { kind: 'closed' }
     const verdict = readiness(pr)
     if (!verdict.ready) return { kind: 'waiting', waitingOn: verdict.waitingOn }
+    // The last gate before an irreversible act: everything above is a read, this is the mutation.
+    if (opts.aborted?.()) return { kind: 'aborted' }
     await squashMerge(access, pr)
     return { kind: 'merged' }
   } catch (err) {

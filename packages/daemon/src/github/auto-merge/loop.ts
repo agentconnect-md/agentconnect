@@ -36,6 +36,10 @@ export interface AutoMergeLoopDeps {
 export class AutoMergeLoop {
   private handle?: unknown
   private running = false
+  /** Bumped by every `stop()`. A tick captures it on entry and refuses to merge once it has moved,
+   *  which is how a disarm arriving mid-tick fences the mutation instead of racing it. */
+  private generation = 0
+  private inflight?: Promise<AutoMergeStatus>
   private status: AutoMergeStatus = { merged: false }
   private readonly timers: NonNullable<AutoMergeLoopDeps['timers']>
 
@@ -54,10 +58,19 @@ export class AutoMergeLoop {
     void this.run()
   }
 
+  /** Disarm. The generation moves FIRST and unconditionally: a tick already awaiting GitHub reads it
+   *  before it merges, and bumping it even for an already-stopped loop keeps that fence honest. */
   stop(): void {
+    this.generation++
     if (this.handle === undefined) return
     this.timers.clearInterval(this.handle)
     this.handle = undefined
+  }
+
+  /** Resolves once no tick is in flight. `stop()` guarantees no merge can BEGIN; awaiting this also
+   *  means none is still in the air, so a caller can answer "off" without a merge landing behind it. */
+  async settle(): Promise<void> {
+    while (this.inflight) await this.inflight.catch(() => undefined)
   }
 
   /** True until the watch ENDS — a merge, or the pull request being closed. The host drops the entry
@@ -74,13 +87,23 @@ export class AutoMergeLoop {
   async run(): Promise<AutoMergeStatus> {
     if (this.running) return this.current()
     this.running = true
-    try {
-      this.apply(await tick(this.deps.access, this.deps.repoFullName, this.deps.prNumber))
-    } finally {
-      this.running = false
-    }
-    this.deps.onStatus?.(this.current())
-    return this.current()
+    const generation = this.generation
+    const attempt = (async () => {
+      try {
+        this.apply(
+          await tick(this.deps.access, this.deps.repoFullName, this.deps.prNumber, {
+            aborted: () => this.generation !== generation
+          })
+        )
+      } finally {
+        this.running = false
+        this.inflight = undefined
+      }
+      this.deps.onStatus?.(this.current())
+      return this.current()
+    })()
+    this.inflight = attempt
+    return attempt
   }
 
   /** A merge is terminal (the timer goes); an error keeps the loop armed, because the usual cure
@@ -96,6 +119,9 @@ export class AutoMergeLoop {
       this.stop()
       return
     }
+    // Disarmed mid-flight: the status this tick would have written describes a watch that no longer
+    // exists, so the last one the operator actually saw stands.
+    if (outcome.kind === 'aborted') return
     this.status =
       outcome.kind === 'waiting'
         ? { merged: false, waitingOn: outcome.waitingOn }

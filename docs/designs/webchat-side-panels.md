@@ -1031,8 +1031,8 @@ Decisions recorded while building it:
   (`src/shim/auto-merge-handler.ts`) spawns one `/opt/agentconnect/shim/auto-merge.js`
   per armed pull request, which fetches its own clamped `gh` token per tick over
   the existing gitcred tunnel. A locally-placed agent has no pod, so the loop
-  runs in its daemon (`github/auto-merge/watcher.ts` dispatches on the same
-  `runsInSandbox` predicate the git runner uses). Its own capability rather than
+  runs in its daemon (`github/auto-merge/watcher.ts` dispatches on `clusterPlaced`,
+  for the reason the next bullet records). Its own capability rather than
   a widening of `exec`: that channel is git-only and enforced IN the pod on
   purpose, and reaching `gh` through it would convert a deliberate boundary into
   an arbitrary-execution surface. The armed set is IN MEMORY at both placements
@@ -1058,10 +1058,26 @@ Decisions recorded while building it:
   `readiness` the loop uses, so "ready" has one definition; a probe that cannot
   reach GitHub does not block arming, since refusing on it would make an
   unreachable GitHub unarmable.
-- **A closed pull request ends the watch, like a merge does.** `CLOSED` is
-  terminal rather than "waiting": the operator's intent expired with the pull
-  request, and a watcher left polling would merge it if the branch were reopened
-  weeks later.
+- **A closed pull request ends the watch, like a merge does — and the ENTRY goes
+  with it, not just its timer.** `CLOSED` is terminal rather than "waiting": the
+  operator's intent expired with the pull request, and a watcher left polling
+  would merge it if the branch were reopened weeks later. Stopping the loop is
+  not enough at either placement: a stopped loop left in the daemon's map is what
+  `arm`'s idempotent fast path would hand back forever, so a reopened pull request
+  could never be armed again. The daemon drops the map entry on the terminal
+  status; in the pod the child EXITS on it, and the exit is what drops the
+  handler's entry — the same path a merge already took.
+- **Disarm fences the tick already in flight; it does not race it.** A tick reads
+  a snapshot and a token before it decides anything, and an unticked box arriving
+  inside that window used to be invisible to it: the continuation went on to
+  squash-merge a pull request the operator had just been told was no longer
+  watched. `AutoMergeLoop.stop()` therefore moves a generation counter that
+  `tick` re-reads synchronously in the instant before the merge mutation — so
+  once `stop()` has returned, no merge can still BEGIN — and `disarm` awaits
+  `settle()` before answering, so `armed: false` is never reported while one could
+  still be in the air. The in-pod child runs the same fence off `SIGTERM`, and the
+  handler's disarm waits for that exit (SIGKILL bounds a wedged child) rather than
+  answering the moment the signal is sent.
 - **Both status strings are clamped where they are PROJECTED, not per hop.**
   `AutoMergeState` bounds `waitingOn`/`lastError` at `MAX_AUTO_MERGE_DETAIL` and
   the daemon does not validate on send, so one long GitHub message (the
@@ -1086,7 +1102,14 @@ Decisions recorded while building it:
   lease the page renews (`POST /sessions/:id/sandbox-keep-alive`, 60 s inside the
   daemon's 180 s TTL); the DAEMON decides whether to hold, so the console asserts
   nothing, and the lease lapses on its own when the page closes. See
-  [k8s-daemon-pool.md](k8s-daemon-pool.md) §4. The PR panel opts in only once a
+  [k8s-daemon-pool.md](k8s-daemon-pool.md) §4. **The lease is keyed by the page's
+  SESSION, not by the agent**, because the dirty-tree fact is per session: two
+  pages on one agent read two different worktrees, and a single agent-wide entry
+  let the page polling a clean session erase the lease a page watching a dirty one
+  was renewing — last poll wins, and the sweep could suspend the pod out from
+  under it. Each page now renews and releases only its own holder, the sweep asks
+  whether ANY is live and logs the deduped union of their reasons, and a pod found
+  asleep drops every holder at once — the volume they were taken on is gone. The PR panel opts in only once a
   pull request is actually LINKED: re-asking a 404 behind a hidden tab costs a
   daemon read and, for a pushed branch, a GitHub list, and the bounded retry
   ladder already covers a pull request that appears later.

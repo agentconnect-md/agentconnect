@@ -1,5 +1,5 @@
 import type { SandboxHoldReason, SandboxKeepAlive, SandboxKeepAliveReq } from '@agentconnect.md/protocol'
-import type { SandboxHolds } from '../k8s/sandbox-hold.js'
+import { AGENT_WIDE_HOLDER, type SandboxHolds } from '../k8s/sandbox-hold.js'
 
 /**
  * The keep-alive decision: does an open console page's agent hold work a pod suspend would throw
@@ -17,6 +17,10 @@ import type { SandboxHolds } from '../k8s/sandbox-hold.js'
  *
  * A SUSPENDED pod holds nothing and is not woken. Resurrecting a sandbox from a keep-alive poll
  * would invert the rule this exists to serve, and there is nothing to read in a pod that is down.
+ *
+ * The lease is taken per SESSION, because the dirty-tree fact is: two console pages on one agent read
+ * two different worktrees, and an agent-wide lease let the page polling a clean session release the
+ * one a page watching a dirty session was keeping alive.
  */
 export interface SandboxKeepAliveDepsInternal {
   /** Whether this agent's work runs in a pod right now; false ⇒ asleep or never placed there. */
@@ -36,9 +40,12 @@ export function createSandboxKeepAlive(
 ): (req: SandboxKeepAliveReq) => Promise<SandboxKeepAlive> {
   return async (req) => {
     const agentId = req.agentId
+    // This page's own lease. A poll that names no session speaks for the agent, not for a worktree.
+    const holder = req.sessionId ?? AGENT_WIDE_HOLDER
     if (!deps.knownAgent(agentId)) return { agentId, held: false, reasons: [] }
     if (!deps.runsInSandbox(agentId)) {
-      deps.holds.release(agentId)
+      // An asleep pod invalidates EVERY page's lease, not just this one's: the volume it held is gone.
+      deps.holds.releaseAll(agentId)
       return { agentId, held: false, reasons: [], placement: 'sandbox', asleep: true }
     }
     const reasons: SandboxHoldReason[] = []
@@ -53,10 +60,19 @@ export function createSandboxKeepAlive(
     }
     if (reasons.length === 0) {
       // RELEASE rather than lapse: a tree that just went clean should be suspendable on the sweep's
-      // own schedule, not a TTL later because of a hold the previous poll took.
-      deps.holds.release(agentId)
+      // own schedule, not a TTL later because of a hold the previous poll took. Only THIS page's
+      // lease goes — another session's dirty worktree is still a reason to keep the pod.
+      deps.holds.release(agentId, holder)
+      // `held:false` is this page's answer about its own session, so it is reported even while a
+      // sibling page holds the pod: what it must not do is claim a lease it did not take.
       return { agentId, held: false, reasons: [], placement: 'sandbox' }
     }
-    return { agentId, held: true, reasons, ttlMs: deps.holds.renew(agentId, reasons), placement: 'sandbox' }
+    return {
+      agentId,
+      held: true,
+      reasons,
+      ttlMs: deps.holds.renew(agentId, holder, reasons),
+      placement: 'sandbox'
+    }
   }
 }

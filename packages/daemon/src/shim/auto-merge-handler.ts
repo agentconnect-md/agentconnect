@@ -40,6 +40,8 @@ export interface AutoMergeHandlerState {
   waitingOn?: string
   lastError?: string
   merged?: boolean
+  /** The pull request was closed without merging — terminal here for the same reason `merged` is. */
+  closed?: boolean
 }
 
 interface Entry {
@@ -59,6 +61,10 @@ export interface AutoMergeHandlerDeps {
  *  STRING and nothing else, so the daemon side matches on it to turn this into a typed reason — one
  *  constant both halves import beats the substring literal each side would otherwise carry. */
 export const AUTO_MERGE_UNSUPPORTED_IMAGE = 'this runtime image ships no in-sandbox merge-when-ready watcher'
+
+/** How long a disarm waits for the watcher to exit on its own before SIGKILL. Generous next to a
+ *  fenced tick's remaining work, and still far inside the console's own request timeout. */
+export const AUTO_MERGE_DISARM_GRACE_MS = 2_000
 
 /** Raised for a request this pod cannot serve at all, as opposed to one whose answer is "waiting".
  *  The shim maps it to a failed response and the daemon relays the reason as data. */
@@ -90,9 +96,12 @@ export function createAutoMergeHandler(
     if (p.op === 'state') return entry ? { ...entry.status } : { armed: false }
 
     if (p.op === 'disarm') {
+      // Dropped from the registry FIRST, so a concurrent `state` never reports a watcher being torn
+      // down, then awaited: the child fences its own in-flight tick before exiting, so answering only
+      // after it is gone means this `armed:false` cannot have a squash landing behind it.
       if (entry) {
-        entry.child.kill('SIGTERM')
         entries.delete(id)
+        await endChild(entry.child)
       }
       return { armed: false }
     }
@@ -117,12 +126,12 @@ export function createAutoMergeHandler(
       const text = chunk.toString('utf8').trim()
       if (text) created.status = { ...created.status, lastError: text.slice(0, MAX_AUTO_MERGE_DETAIL) }
     })
-    // A watcher that exited merged the pull request or died; either way nothing is watching now,
-    // so the entry goes and the next `state` answers `armed:false` truthfully.
+    // A watcher that exited merged the pull request, saw it closed, or died; either way nothing is
+    // watching now, so the entry goes and the next `state` answers `armed:false` truthfully.
     child.on('exit', (code) => {
       const held = entries.get(id)
       if (held?.child !== child) return
-      if (code !== 0 && !held.status.merged) {
+      if (code !== 0 && !held.status.merged && !held.status.closed) {
         deps.log?.warn(`automerge: watcher for ${p.repoFullName}#${p.prNumber} exited with ${code}`)
       }
       entries.delete(id)
@@ -130,6 +139,23 @@ export function createAutoMergeHandler(
     deps.log?.info(`automerge: watching ${p.repoFullName}#${p.prNumber}`)
     return { armed: true }
   }
+}
+
+/** SIGTERM, then wait for the child to actually go. Its handler fences the tick in flight before it
+ *  exits, so returning only after the exit is what makes "disarmed" true rather than merely requested.
+ *  SIGKILL bounds a child that ignores the signal — an answer must not wait on a wedged process. */
+async function endChild(child: ChildProcess): Promise<void> {
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL')
+      resolve()
+    }, AUTO_MERGE_DISARM_GRACE_MS)
+    child.once('exit', () => {
+      clearTimeout(timer)
+      resolve()
+    })
+    child.kill('SIGTERM')
+  })
 }
 
 /** The child reports one NDJSON status per tick; a partial line waits for its newline. */
@@ -142,12 +168,20 @@ function absorb(entry: Entry, text: string): void {
     entry.buffer = entry.buffer.slice(nl + 1)
     if (!line) continue
     try {
-      const status = JSON.parse(line) as { waitingOn?: string; lastError?: string; merged?: boolean }
+      const status = JSON.parse(line) as {
+        waitingOn?: string
+        lastError?: string
+        merged?: boolean
+        closed?: boolean
+      }
       entry.status = {
-        armed: !status.merged,
+        // A closed pull request is as unarmed as a merged one: the child is exiting either way, and
+        // reporting `armed` for the moment in between would draw a watcher that is already gone.
+        armed: !status.merged && !status.closed,
         ...(status.waitingOn ? { waitingOn: status.waitingOn.slice(0, MAX_AUTO_MERGE_DETAIL) } : {}),
         ...(status.lastError ? { lastError: status.lastError.slice(0, MAX_AUTO_MERGE_DETAIL) } : {}),
-        ...(status.merged ? { merged: true } : {})
+        ...(status.merged ? { merged: true } : {}),
+        ...(status.closed ? { closed: true } : {})
       }
     } catch {
       /* a line that is not the contract is not a status; the next tick supersedes it */

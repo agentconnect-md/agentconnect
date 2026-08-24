@@ -122,6 +122,34 @@ describe('AutoMergeLoop', () => {
     expect(loop.current().waitingOn).toBe('the pull request was closed')
   })
 
+  it('does NOT merge when disarm lands while the tick is awaiting GitHub', async () => {
+    // The whole point of the fence: a tick that is already in flight decides to merge from a snapshot
+    // read BEFORE the operator unticked the box. Without it, the toggle reports off and merges anyway.
+    let release: ((value: Response) => void) | undefined
+    const calls: string[] = []
+    const fetchImpl = vi.fn((_url: string, init?: RequestInit) => {
+      calls.push(String(init?.body).includes('mergePullRequest') ? 'merge' : 'snapshot')
+      return new Promise<Response>((resolve) => (release = resolve))
+    })
+    const { timers } = fakeTimers()
+    const loop = new AutoMergeLoop({
+      access: { token: async () => 'ghs_x', fetchImpl },
+      repoFullName: 'acme/repo',
+      prNumber: 7,
+      timers
+    })
+
+    loop.start()
+    await vi.waitFor(() => expect(release).toBeDefined())
+    // Disarm arrives with the snapshot still in the air, then the snapshot says "ready to merge".
+    loop.stop()
+    release!(json(prAnswer()))
+    await loop.settle()
+
+    expect(calls).toEqual(['snapshot'])
+    expect(loop.current().merged).toBe(false)
+  })
+
   it('does not stack ticks behind a slow GitHub', async () => {
     let release: ((value: Response) => void) | undefined
     const fetchImpl = vi.fn(() => new Promise<Response>((resolve) => (release = resolve)))
@@ -347,6 +375,90 @@ describe('AutoMergeWatcher', () => {
       const state = await watcher.state(TARGET)
       expect(state.lastError?.length).toBe(MAX_AUTO_MERGE_DETAIL)
     })
+  })
+
+  it('answers a local disarm only after the tick in flight has settled, and never merges behind it', async () => {
+    let release: ((value: Response) => void) | undefined
+    const calls: string[] = []
+    const fetchImpl = vi.fn((_url: string, init?: RequestInit) => {
+      const body = String(init?.body)
+      calls.push(body.includes('mergePullRequest') ? 'merge' : 'snapshot')
+      // The pre-arm probe answers at once (not ready); only the LOOP's snapshot is held open.
+      if (calls.length === 1) {
+        return Promise.resolve(
+          json(prAnswer([{ __typename: 'CheckRun', name: 'ci', status: 'QUEUED', conclusion: null }]))
+        )
+      }
+      return new Promise<Response>((resolve) => (release = resolve))
+    })
+    const { timers } = fakeTimers()
+    const watcher = new AutoMergeWatcher({
+      knownAgent: () => true,
+      clusterPlaced: () => false,
+      sandboxFor: () => undefined,
+      capabilityFor: () => 'cap_secret',
+      tokenFor: async () => 'ghs_x',
+      fetchImpl,
+      timers
+    })
+
+    expect(await watcher.set(TARGET, true)).toMatchObject({ armed: true, placement: 'daemon' })
+    await vi.waitFor(() => expect(release).toBeDefined())
+
+    // Disarm while that snapshot is open, and let it come back GREEN — the tick would merge.
+    const answered = watcher.set(TARGET, false)
+    release!(json(prAnswer()))
+    expect(await answered).toEqual({ ...TARGET, armed: false })
+    expect(calls).toEqual(['snapshot', 'snapshot'])
+    expect(await watcher.state(TARGET)).toEqual({ ...TARGET, armed: false })
+  })
+
+  it('drops a CLOSED local entry, so the pull request can be armed again if it reopens', async () => {
+    const closedPr = (state: 'CLOSED' | 'OPEN') => ({
+      data: {
+        repository: {
+          pullRequest: {
+            id: 'PR_1',
+            headRefOid: 'sha_head',
+            state,
+            isDraft: false,
+            mergeable: 'MERGEABLE',
+            reviewDecision: null,
+            commits: {
+              nodes: [
+                {
+                  commit: {
+                    statusCheckRollup: {
+                      contexts: { nodes: [{ __typename: 'CheckRun', name: 'ci', status: 'QUEUED', conclusion: null }] }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    })
+    // pre-arm probe (open, checks running) → loop tick (closed) → pre-arm probe again → loop tick.
+    const github = githubStub([closedPr('OPEN'), closedPr('CLOSED'), closedPr('OPEN'), closedPr('OPEN')])
+    const { timers } = fakeTimers()
+    const watcher = new AutoMergeWatcher({
+      knownAgent: () => true,
+      clusterPlaced: () => false,
+      sandboxFor: () => undefined,
+      capabilityFor: () => 'cap_secret',
+      tokenFor: async () => 'ghs_x',
+      fetchImpl: github.fetchImpl,
+      timers
+    })
+
+    await watcher.set(TARGET, true)
+    // The closed tick is terminal: the entry goes, not just its timer.
+    await vi.waitFor(async () => expect(await watcher.state(TARGET)).toEqual({ ...TARGET, armed: false }))
+    expect(await watcher.armedFor(TARGET.agentId)).toBe(false)
+
+    // Reopened: arming must build a NEW loop rather than hand back the stale stopped one forever.
+    expect(await watcher.set(TARGET, true)).toMatchObject({ armed: true, placement: 'daemon' })
   })
 
   it('reports nothing armed after stop() — the restart the console projects as an unchecked box', async () => {

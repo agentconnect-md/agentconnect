@@ -139,4 +139,61 @@ describe('sandbox keep-alive', () => {
     // The committed tree stops being reported: reasons describe what the last poll saw, not a union.
     expect(holds.reasons('agent-1')).toEqual(['auto-merge-armed'])
   })
+
+  it('a clean session page does not release the pod another session page is holding dirty', async () => {
+    // Two console pages, one agent, two worktrees. The lease is keyed by the page's session, so the
+    // clean one releasing its own lease must not suspend the pod out from under the dirty one.
+    let now = 1_000
+    const holds = new SandboxHolds({ now: () => now })
+    const keepAlive = createSandboxKeepAlive({
+      runsInSandbox: () => true,
+      knownAgent: () => true,
+      armedFor: async () => false,
+      gitStatus: async (_agentId, sessionId) => ({ isRepo: true, clean: sessionId !== 'dirty-session' }),
+      holds
+    })
+
+    expect(await keepAlive({ agentId: 'agent-1', sessionId: 'dirty-session' })).toMatchObject({
+      held: true,
+      reasons: ['uncommitted-files']
+    })
+    // The clean page answers for ITSELF — `held:false` is true of its session and claims no lease.
+    expect(await keepAlive({ agentId: 'agent-1', sessionId: 'clean-session' })).toMatchObject({ held: false })
+
+    expect(holds.holds('agent-1')).toBe(true)
+    expect(holds.reasons('agent-1')).toEqual(['uncommitted-files'])
+
+    // …and the dirty page's own lease still lapses on its own schedule once it stops polling.
+    now += SANDBOX_HOLD_TTL_MS + 1
+    expect(holds.holds('agent-1')).toBe(false)
+  })
+
+  it('an asleep pod drops EVERY page’s lease, not just the polling one’s', async () => {
+    const now = 1_000
+    const holds = new SandboxHolds({ now: () => now })
+    holds.renew('agent-1', 'other-session', ['uncommitted-files'])
+    const asleep = createSandboxKeepAlive({
+      runsInSandbox: () => false,
+      knownAgent: () => true,
+      armedFor: async () => false,
+      gitStatus: async () => ({ isRepo: true, clean: true }),
+      holds
+    })
+
+    expect(await asleep(REQ)).toMatchObject({ held: false, asleep: true })
+    // The volume those leases were taken on is gone with the pod; none of them survives it.
+    expect(holds.holds('agent-1')).toBe(false)
+  })
+
+  it('unions the reasons across live pages, deduped', async () => {
+    const holds = new SandboxHolds({ now: () => 1_000 })
+    holds.renew('agent-1', 'session-a', ['uncommitted-files'])
+    holds.renew('agent-1', 'session-b', ['uncommitted-files', 'auto-merge-armed'])
+
+    expect(holds.reasons('agent-1')).toEqual(['uncommitted-files', 'auto-merge-armed'])
+    holds.release('agent-1', 'session-b')
+    expect(holds.reasons('agent-1')).toEqual(['uncommitted-files'])
+    holds.release('agent-1', 'session-a')
+    expect(holds.holds('agent-1')).toBe(false)
+  })
 })

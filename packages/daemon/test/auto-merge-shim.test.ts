@@ -2,8 +2,8 @@
 // its liveness IS the armed fact. Nothing is written to the pod's volume, so a resumed sandbox comes
 // back with nothing armed rather than silently resuming merges nobody is waiting for.
 import { EventEmitter } from 'node:events'
-import { describe, expect, it } from 'vitest'
-import { createAutoMergeHandler } from '../src/shim/auto-merge-handler.js'
+import { describe, expect, it, vi } from 'vitest'
+import { AUTO_MERGE_DISARM_GRACE_MS, createAutoMergeHandler } from '../src/shim/auto-merge-handler.js'
 import { GITCRED_CAPABILITY_ENV } from '../src/gitcred/env.js'
 
 /** A child process double: stdout/stderr streams plus an `exit` the test can fire. */
@@ -17,6 +17,17 @@ function fakeChild() {
   child.stdout = new EventEmitter()
   child.stderr = new EventEmitter()
   child.killed = []
+  child.kill = (signal?: string) => {
+    child.killed.push(signal ?? 'SIGTERM')
+    // A real child answers SIGTERM by exiting, and the handler's disarm waits for exactly that.
+    if (signal !== 'SIGKILL') setImmediate(() => child.emit('exit', 0))
+  }
+  return child
+}
+
+/** A child that ignores SIGTERM, so a disarm cannot rely on it going quietly. */
+function wedgedChild() {
+  const child = fakeChild()
   child.kill = (signal?: string) => {
     child.killed.push(signal ?? 'SIGTERM')
   }
@@ -96,6 +107,59 @@ describe('in-sandbox automerge handler', () => {
     expect(await handler({ ...READ, op: 'disarm' })).toEqual({ armed: false })
     expect(spawned[0]!.child.killed).toEqual(['SIGTERM'])
     expect(await handler(READ)).toEqual({ armed: false })
+  })
+
+  it('exits the entry on a CLOSED pull request, so a reopened one can be armed again', async () => {
+    const { handler, spawned } = build()
+    await handler(ARM)
+    const child = spawned[0]!.child
+
+    // The child reports closed and exits; both halves must read it as terminal, not as armed.
+    child.stdout.emit('data', Buffer.from('{"merged":false,"closed":true,"waitingOn":"the pull request was closed"}\n'))
+    expect(await handler(READ)).toEqual({
+      armed: false,
+      closed: true,
+      waitingOn: 'the pull request was closed'
+    })
+    child.emit('exit', 0)
+    expect(await handler(READ)).toEqual({ armed: false })
+
+    // Reopened: arming spawns a NEW watcher rather than returning the dead entry's state.
+    expect(await handler(ARM)).toEqual({ armed: true })
+    expect(spawned).toHaveLength(2)
+  })
+
+  it('waits for the watcher to actually go before answering a disarm', async () => {
+    const { handler, spawned } = build()
+    await handler(ARM)
+
+    expect(await handler({ ...READ, op: 'disarm' })).toEqual({ armed: false })
+    // The child fences its own in-flight tick before exiting, so answering after the exit is what
+    // makes "disarmed" a fact rather than a request that a merge could still outrun.
+    expect(spawned[0]!.child.killed).toEqual(['SIGTERM'])
+  })
+
+  it('SIGKILLs a watcher that ignores SIGTERM instead of hanging the disarm', async () => {
+    const spawned: ReturnType<typeof wedgedChild>[] = []
+    const handler = createAutoMergeHandler({
+      entryPath: import.meta.filename,
+      spawnChild: () => {
+        const child = wedgedChild()
+        spawned.push(child)
+        return child as never
+      }
+    })
+    await handler(ARM)
+
+    vi.useFakeTimers()
+    try {
+      const answered = handler({ ...READ, op: 'disarm' })
+      await vi.advanceTimersByTimeAsync(AUTO_MERGE_DISARM_GRACE_MS)
+      expect(await answered).toEqual({ armed: false })
+    } finally {
+      vi.useRealTimers()
+    }
+    expect(spawned[0]!.killed).toEqual(['SIGTERM', 'SIGKILL'])
   })
 
   it('refuses to arm without a capability, and on an image that ships no watcher', async () => {

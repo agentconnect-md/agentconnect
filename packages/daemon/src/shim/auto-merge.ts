@@ -38,10 +38,11 @@ async function main(): Promise<number> {
     prNumber,
     pollMs,
     onStatus: (status) => {
-      // Merged is terminal: the loop disarmed itself, so exiting is what tells the shim to drop the
-      // entry rather than leaving a process that will never do anything again. The exit waits for the
-      // WRITE to flush — stdout is a pipe here, and exiting first would lose the terminal status.
-      const done = status.merged
+      // BOTH terminal states exit: merged, and the pull request being closed. Exiting is what tells the
+      // shim to drop its entry rather than leaving a process that will never do anything again — and a
+      // closed watcher left alive is one that would merge the branch if it were ever reopened. The exit
+      // waits for the WRITE to flush: stdout is a pipe here, and exiting first would lose the status.
+      const done = status.merged || status.closed === true
       process.stdout.write(JSON.stringify(status) + '\n', () => {
         if (done) process.exit(0)
       })
@@ -50,8 +51,11 @@ async function main(): Promise<number> {
   })
   for (const signal of ['SIGTERM', 'SIGINT'] as const) {
     process.on(signal, () => {
+      // The same fence the daemon-local watcher uses: `stop()` moves the generation the tick in flight
+      // checks before it merges, and settling before exit means the disarm this signal IS cannot be
+      // answered while a squash could still begin in here.
       loop.stop()
-      process.exit(0)
+      void loop.settle().then(() => process.exit(0))
     })
   }
   loop.start()
