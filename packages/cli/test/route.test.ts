@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest'
-import { classifyInvocation, firstPositional, parseRootFlag } from '../src/route.js'
+import {
+  classifyInvocation,
+  firstPositional,
+  parseInstanceFlag,
+  parseRootFlag,
+  withResolvedRoot
+} from '../src/route.js'
 
 describe('firstPositional', () => {
   it('finds a bare command', () => {
@@ -95,5 +101,52 @@ describe('parseRootFlag', () => {
   it('returns undefined when no root is given', () => {
     expect(parseRootFlag(['status'])).toBeUndefined()
     expect(parseRootFlag([])).toBeUndefined()
+  })
+})
+
+describe('parseInstanceFlag', () => {
+  it('reads the flag before or after the command, in both spellings', () => {
+    expect(parseInstanceFlag(['--instance', 'dev', 'up'])).toBe('dev')
+    expect(parseInstanceFlag(['install-service', '--instance=dev'])).toBe('dev')
+    expect(parseInstanceFlag(['up'])).toBeUndefined()
+  })
+
+  it("never reads another option's value as the flag", () => {
+    expect(parseInstanceFlag(['upgrade', '--to', '--instance=evil', '--instance', 'dev'])).toBe('dev')
+    expect(parseInstanceFlag(['chat', '--', '--instance', 'dev'])).toBeUndefined()
+  })
+})
+
+describe('withResolvedRoot', () => {
+  it('translates --instance into the --root the daemon understands', () => {
+    expect(withResolvedRoot(['--instance', 'dev', 'chat'], '/home/u/.agentconnect-dev')).toEqual([
+      'chat',
+      '--root',
+      '/home/u/.agentconnect-dev'
+    ])
+    expect(withResolvedRoot(['run', '--instance=dev'], '/r')).toEqual(['run', '--root', '/r'])
+  })
+
+  it('leaves an explicit --root alone', () => {
+    expect(withResolvedRoot(['--instance', 'dev', '--root', '/elsewhere', 'up'], '/r')).toEqual([
+      '--root',
+      '/elsewhere',
+      'up'
+    ])
+  })
+
+  it('copies other option values across untouched, including past --', () => {
+    expect(
+      withResolvedRoot(['--instance', 'dev', 'upgrade', '--to', '--instance', '--', '--instance', 'x'], '/r')
+    ).toEqual(['upgrade', '--to', '--instance', '--', '--instance', 'x', '--root', '/r'])
+  })
+})
+
+describe('classifyInvocation with instances', () => {
+  it('owns `instances` and keeps routing past the --instance value', () => {
+    expect(classifyInvocation(['instances'])).toBe('cli')
+    expect(classifyInvocation(['--instance', 'dev', 'up'])).toBe('cli')
+    expect(classifyInvocation(['--instance', 'dev', 'run'])).toBe('run')
+    expect(classifyInvocation(['--instance', 'dev', 'chat'])).toBe('delegate')
   })
 })

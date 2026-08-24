@@ -1,8 +1,14 @@
 import { describe, it, expect } from 'vitest'
-import { mkdtempSync, existsSync, readFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { mkdtempSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { buildPlist, LaunchdController } from '../src/service/launchd.js'
+import {
+  buildPlist,
+  launchdLabel,
+  LaunchdController,
+  parsePlistRoot,
+  scanLaunchAgents
+} from '../src/service/launchd.js'
 import type { Exec, ExecResult } from '../src/service/types.js'
 
 function fakeExec(): { exec: Exec; calls: Array<{ cmd: string; args: string[] }> } {
@@ -31,6 +37,9 @@ describe('buildPlist', () => {
     // Entry is the stable current-symlink path, not a versioned dist.
     expect(plist).toContain('<string>/home/u/.agentconnect/current/dist/index.js</string>')
     expect(plist).toContain('<string>run</string>')
+    // `--root` is explicit so a login-shell profile exporting AGENTCONNECT_ROOT
+    // cannot drag this agent onto another instance's root.
+    expect(plist).toContain('<string>--root</string>')
     expect(plist).toContain('<string>/home/u/.agentconnect/logs/daemon.log</string>')
     // Supervisor marker is always present so the daemon accepts CP restart/upgrade.
     expect(plist).toContain('<key>AGENTCONNECT_SUPERVISOR</key>')
@@ -123,5 +132,82 @@ describe('LaunchdController', () => {
         (k) => k.cmd === 'launchctl' && k.args[0] === 'bootout' && k.args[1] === 'gui/501/md.agentconnect.daemon'
       )
     ).toBe(true)
+  })
+})
+
+describe('launchdLabel', () => {
+  it('keeps the historical label for the default instance', () => {
+    expect(launchdLabel()).toBe('md.agentconnect.daemon')
+  })
+  it('suffixes a named instance', () => {
+    expect(launchdLabel('dev')).toBe('md.agentconnect.daemon.dev')
+  })
+})
+
+describe('parsePlistRoot', () => {
+  it('reads the baked --root argument', () => {
+    const plist = buildPlist({
+      label: 'md.agentconnect.daemon.dev',
+      execPath: '/usr/bin/node',
+      logPath: '/srv/ac dev/logs/daemon.log',
+      root: '/srv/ac dev',
+      includeRootEnv: true
+    })
+    expect(parsePlistRoot(plist)).toBe('/srv/ac dev')
+  })
+  it('falls back to AGENTCONNECT_ROOT, then to the default root (legacy agents)', () => {
+    const legacy =
+      '<key>EnvironmentVariables</key><dict><key>AGENTCONNECT_ROOT</key><string>/srv/legacy</string></dict>'
+    expect(parsePlistRoot(legacy)).toBe('/srv/legacy')
+    expect(parsePlistRoot('<plist></plist>')).toBe(join(homedir(), '.agentconnect'))
+  })
+})
+
+describe('scanLaunchAgents', () => {
+  it('finds the default and every named instance with its root, ignoring other agents', async () => {
+    const h = home()
+    const [rootA, rootB] = [root(), root()]
+    const { exec } = fakeExec()
+    await new LaunchdController({ root: rootA, home: h, uid: 501, exec }).install({
+      execPath: '/usr/bin/node',
+      includeRootEnv: true
+    })
+    await new LaunchdController({ root: rootB, home: h, uid: 501, exec, instance: 'b' }).install({
+      execPath: '/usr/bin/node',
+      includeRootEnv: true
+    })
+    writeFileSync(join(h, 'Library', 'LaunchAgents', 'com.other.agent.plist'), '<plist></plist>')
+
+    expect(scanLaunchAgents(h)).toEqual([
+      {
+        label: 'md.agentconnect.daemon',
+        root: rootA,
+        unitPath: join(h, 'Library', 'LaunchAgents', 'md.agentconnect.daemon.plist')
+      },
+      {
+        instance: 'b',
+        label: 'md.agentconnect.daemon.b',
+        root: rootB,
+        unitPath: join(h, 'Library', 'LaunchAgents', 'md.agentconnect.daemon.b.plist')
+      }
+    ])
+  })
+
+  it('returns nothing when the LaunchAgents directory does not exist', () => {
+    expect(scanLaunchAgents(join(home(), 'nope'))).toEqual([])
+  })
+})
+
+describe('LaunchdController instances', () => {
+  it('a named instance owns its own plist and launchctl target', async () => {
+    const h = home()
+    const { exec, calls } = fakeExec()
+    const c = new LaunchdController({ root: root(), home: h, uid: 501, exec, instance: 'b' })
+    expect(c.label).toBe('md.agentconnect.daemon.b')
+    await c.install({ execPath: '/usr/bin/node', includeRootEnv: true })
+    expect(existsSync(join(h, 'Library', 'LaunchAgents', 'md.agentconnect.daemon.b.plist'))).toBe(true)
+    expect(existsSync(join(h, 'Library', 'LaunchAgents', 'md.agentconnect.daemon.plist'))).toBe(false)
+    await c.down()
+    expect(calls.some((k) => k.args[1] === 'gui/501/md.agentconnect.daemon.b')).toBe(true)
   })
 })

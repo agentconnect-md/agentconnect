@@ -15,7 +15,7 @@ import { createInterface } from 'node:readline'
 import { resolveRoot, configPath } from './paths.js'
 import { CLI_VERSION } from './version.js'
 import { probeAuth, type ProbeResult } from './cp/auth-probe.js'
-import { resolveController, type InstallOpts } from './service/index.js'
+import { installService as installUnit, shouldBakeRootEnv, type InstallOpts } from './service/index.js'
 import { ensureDaemonInstalled, runShell } from './run-shell.js'
 
 export interface PersistCredsOpts {
@@ -88,6 +88,8 @@ export interface RunLoginOpts {
   apiKey?: string
   daemonId?: string
   root?: string
+  /** Named service instance to install as (service/instance.ts). */
+  instance?: string
   configPath?: string
   /** This CLI's own dist entry, pinned into the service unit (InstallOpts.cliEntry). */
   cliEntry?: string
@@ -102,7 +104,9 @@ export interface RunLoginOpts {
 export function buildInstallOpts(opts: { root?: string; cliEntry?: string }): InstallOpts {
   return {
     execPath: process.execPath,
-    includeRootEnv: resolveRoot(opts.root) !== resolveRoot(undefined),
+    // Follows the RESOLVED root, so an AGENTCONNECT_ROOT-driven login cannot
+    // write a unit that omits the root and starts on ~/.agentconnect instead.
+    includeRootEnv: shouldBakeRootEnv(resolveRoot(opts.root)),
     ...(opts.cliEntry ? { cliEntry: opts.cliEntry } : {}),
     ...(process.env.PATH ? { envPath: process.env.PATH } : {})
   }
@@ -134,8 +138,10 @@ function realDeps(opts: RunLoginOpts): LoginDeps {
     installService: async () => {
       const root = resolveRoot(opts.root)
       await ensureDaemonInstalled(root)
-      const controller = resolveController({ root })
-      await controller.install(buildInstallOpts(opts))
+      const controller = await installUnit(
+        { root, ...(opts.instance !== undefined ? { instance: opts.instance } : {}) },
+        buildInstallOpts(opts)
+      )
       await controller.up()
     },
     // Foreground onboarding runs the daemon via the same respawn shell as
@@ -180,10 +186,11 @@ export async function runLogin(opts: RunLoginOpts, partial: Partial<LoginDeps> =
   // runs `… run` (no `--config`), and the foreground daemon loads by root. A
   // custom `--config` would persist credentials the daemon never reads, so the
   // install/run branch would look successful but start without them. Reject it;
-  // `--root` is the knob that keeps persist + service + foreground in sync.
+  // `--root`/`--instance` are the knobs that keep persist + service + foreground
+  // in sync.
   if (opts.configPath) {
     throw new Error(
-      'interactive login does not support --config — use --root <dir> so the daemon and the installed service read the same config'
+      'interactive login does not support --config — use --root <dir> (or --instance <name>) so the daemon and the installed service read the same config'
     )
   }
 

@@ -18,6 +18,9 @@ export interface ControllerDeps {
   home: string
   uid: number
   exec: Exec
+  /** Named service instance (instance.ts). Undefined = the default instance,
+   *  whose unit keeps the historical name so existing installs stay addressable. */
+  instance?: string
 }
 
 /**
@@ -46,6 +49,15 @@ export interface InstallOpts {
    * re-install, like `execPath`.
    */
   envPath?: string
+}
+
+/** One installed unit as found on disk by the instance lister — enough to build
+ *  a controller for it and to tell the operator which root it drives. */
+export interface InstalledUnit {
+  instance?: string
+  label: string
+  unitPath: string
+  root: string
 }
 
 export interface ServiceStatus {
