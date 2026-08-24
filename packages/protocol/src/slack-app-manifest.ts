@@ -46,6 +46,8 @@ export const SLACK_BOT_SCOPES = [
 ] as const
 
 export const SLACK_BOT_EVENTS = [
+  // The native stop button on an agent session; without the subscription Slack never shows it.
+  'agent_session_stopped',
   'app_mention',
   'app_uninstalled',
   'assistant_thread_started',

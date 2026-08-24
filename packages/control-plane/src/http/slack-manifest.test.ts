@@ -106,6 +106,7 @@ describe('buildInstallManifest', () => {
 
   it('pins the exact bot events (drift guard)', () => {
     expect([...SLACK_BOT_EVENTS]).toEqual([
+      'agent_session_stopped',
       'app_mention',
       'app_uninstalled',
       'assistant_thread_started',
