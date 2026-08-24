@@ -53,6 +53,9 @@ export interface BillingAccount {
 //            a statement line is a reconciliation fact. The service rounds in exactly
 //            two places and a history row is neither of them, so it hands the exact
 //            value over and formatting it for a human is this side's job.
+// `agentId` / `note` are optional on BOTH arms for the same reason `type` is: a service
+// that predates them omits them, and the console routinely runs ahead of that image.
+// Absent or null ⇒ the row simply renders without that detail.
 export interface BillingCredit {
   type: 'credit'
   id: string
@@ -64,6 +67,10 @@ export interface BillingCredit {
   // `type` is: a service that predates it omits it, and the console runs ahead of that
   // image. Absent or null ⇒ the row renders with no receipt link, never a broken one.
   receiptUrl?: string | null
+  /** The agent the row is attributed to. */
+  agentId?: string | null
+  /** Free-text note from the service, shown verbatim. */
+  note?: string | null
 }
 
 export interface BillingDebit {
@@ -75,6 +82,8 @@ export interface BillingDebit {
   amount: string
   /** ISO 8601 instant. */
   at: string
+  agentId?: string | null
+  note?: string | null
 }
 
 export type BillingTransaction = BillingCredit | BillingDebit
@@ -196,6 +205,11 @@ export function assertTransactionsPage(
     // to `never`.
     const t = row as unknown as Record<string, unknown> | null
     if (!t || typeof t.id !== 'string' || typeof t.at !== 'string') throw new BillingShapeError('transaction')
+    // Both arms may carry them; a non-string, non-null value is a shape error, ABSENT is the
+    // older contract.
+    for (const k of ['agentId', 'note'] as const) {
+      if (!(t[k] === undefined || t[k] === null || typeof t[k] === 'string')) throw new BillingShapeError('transaction')
+    }
     // An ABSENT `type` is the shape this API had before the history merged both ledger
     // sides, and it is read as a credit — which is exactly what it was.
     //

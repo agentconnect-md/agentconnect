@@ -932,6 +932,25 @@ export default function BillingView() {
                         >
                           {credit ? t.kind : 'usage'}
                         </span>
+                        {t.agentId && (
+                          <span
+                            className="mono inline-flex h-[19px] max-w-[160px] flex-none items-center gap-1 rounded-[4px] bg-(--surface-active) px-[7px] text-[10.5px] text-(--text-secondary)"
+                            title={t.agentId}
+                          >
+                            <Icon name="bot" size={11} />
+                            <span className="truncate">{t.agentId}</span>
+                          </span>
+                        )}
+                        {/* Service-authored free text: truncated with the full value on hover,
+                            so a long note cannot push the amount column out of line. */}
+                        {t.note && (
+                          <span
+                            className="truncate font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)"
+                            title={t.note}
+                          >
+                            {t.note}
+                          </span>
+                        )}
                         {credit && t.receiptUrl && (
                           <a
                             className="inline-flex flex-none items-center gap-0.5 font-sans text-[12px] font-medium text-(--text-brand) hover:underline"

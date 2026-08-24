@@ -102,6 +102,22 @@ describe('assertTransactionsPage', () => {
     expect(() => assertTransactionsPage({ items: [legacy], nextCursor: null })).not.toThrow()
   })
 
+  it('accepts agentId and note on either arm, and refuses an unusable one', () => {
+    // Absent is the older contract; null is the natural serialization of "not attributed".
+    expect(() =>
+      assertTransactionsPage({
+        items: [
+          { ...tx, agentId: 'agt_1', note: 'manual top-up' },
+          { ...debit, agentId: null, note: null }
+        ],
+        nextCursor: null
+      })
+    ).not.toThrow()
+    expect(() => assertTransactionsPage({ items: [{ ...debit, agentId: 7 }], nextCursor: null })).toThrow(
+      BillingShapeError
+    )
+  })
+
   it('refuses a row whose type this build cannot read', () => {
     // Unlike an unknown `kind`, an unknown `type` has no sensible fallback rendering.
     expect(() => assertTransactionsPage({ items: [{ ...tx, type: 'hold' }], nextCursor: null })).toThrow(
