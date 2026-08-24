@@ -103,6 +103,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     old.exec('ALTER TABLE session_metadata_outbox DROP COLUMN claimedAt')
     dropTranscriptOrg(old)
     old.exec('ALTER TABLE sessions DROP COLUMN sessionId')
+    old.exec('ALTER TABLE sessions DROP COLUMN directDestination')
     old.exec('PRAGMA user_version = 1')
     old.close()
 
@@ -130,7 +131,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     expect(cronColumns).toContain('definition')
     // Purge receipts are leased per pool member (#1032).
     expect(purgeColumns).toEqual(expect.arrayContaining(['ownerId', 'claimedAt']))
-    expect(userVersion(path)).toBe(12)
+    expect(userVersion(path)).toBe(13)
   })
 
   it.skipIf(pg)('never persists the CP routing map on a shared store, and still does on an owned one', async () => {
@@ -178,6 +179,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     old.exec('ALTER TABLE session_metadata_outbox DROP COLUMN claimedAt')
     dropTranscriptOrg(old)
     old.exec('ALTER TABLE sessions DROP COLUMN sessionId')
+    old.exec('ALTER TABLE sessions DROP COLUMN directDestination')
     old.exec('PRAGMA user_version = 5')
     old.close()
 
@@ -193,7 +195,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     expect(await upgraded.isCaptureExcluded('bot-c', 'acp-2')).toBe(true)
     await upgraded.close()
 
-    expect(userVersion(path)).toBe(12)
+    expect(userVersion(path)).toBe(13)
   })
 
   it('re-keys the runtime catalog cache on its owning member when upgrading a v7 store', async () => {
@@ -223,6 +225,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     old.exec('ALTER TABLE session_metadata_outbox DROP COLUMN claimedAt')
     dropTranscriptOrg(old)
     old.exec('ALTER TABLE sessions DROP COLUMN sessionId')
+    old.exec('ALTER TABLE sessions DROP COLUMN directDestination')
     old.exec('PRAGMA user_version = 7')
     old.close()
 
@@ -244,7 +247,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
         .map((column) => column.name)
     expect(primaryKey(metaColumns)).toEqual(['ownerId', 'runtimeId'])
     expect(primaryKey(capColumns)).toEqual(['ownerId', 'runtimeId', 'modelId'])
-    expect(userVersion(path)).toBe(12)
+    expect(userVersion(path)).toBe(13)
   })
 
   it('backfills a v11 store with the outward id its sessions were already reported under', async () => {
@@ -257,6 +260,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     // A session that never launched has no id to inherit — it gets one when it next needs one.
     old.exec(`INSERT INTO sessions (key, agentId, platform, channel, thread, acpSessionId, state, updatedAt)
       VALUES ('k2', 'bot-a', 'slack', 'C1', 'T2', NULL, 'idle', 100)`)
+    old.exec('ALTER TABLE sessions DROP COLUMN directDestination')
     old.exec('PRAGMA user_version = 11')
     old.close()
 
@@ -267,7 +271,29 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     expect((await upgraded.getSession('k2'))?.sessionId).toBeNull()
     expect(await upgraded.ensureOutwardSessionId('k2', 'bot-a')).toMatch(/^[0-9a-f-]{36}$/)
     await upgraded.close()
-    expect(userVersion(path)).toBe(12)
+    expect(userVersion(path)).toBe(13)
+  })
+
+  // The regression that made `directDestination` reachable on fresh databases only: the step was
+  // appended to SCHEMA_MIGRATIONS without bumping SCHEMA_VERSION, so `upgradeSchema` stopped short
+  // of it and every established store failed at query time instead of at boot.
+  it('adds directDestination to a v12 store', async () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-v12-')), 'local.sqlite')
+    await (await LocalStore.open(path)).close()
+    const old = new DatabaseSync(path)
+    old.exec('ALTER TABLE sessions DROP COLUMN directDestination')
+    old.exec(`INSERT INTO sessions (key, agentId, platform, channel, thread, acpSessionId, state, updatedAt)
+      VALUES ('k1', 'bot-a', 'slack', 'C1', 'T1', 'acp-1', 'idle', 100)`)
+    old.exec('PRAGMA user_version = 12')
+    old.close()
+
+    const upgraded = await LocalStore.open(path)
+    // The read path that broke: every dispatch resolves a session's classification.
+    expect(await upgraded.getSessionClassification('bot-a', 'acp-1')).toEqual({})
+    await upgraded.setSessionClassification('k1', { sourceBindingKind: 'external', directDestination: true })
+    expect(await upgraded.getSessionClassification('bot-a', 'acp-1')).toMatchObject({ directDestination: true })
+    await upgraded.close()
+    expect(userVersion(path)).toBe(13)
   })
 
   it('refuses a store written by a newer daemon WITHOUT touching it first', async () => {
@@ -2489,6 +2515,7 @@ describe.skipIf(pg)('transcript org migration from a v10 store', () => {
       VALUES ('C1', 'T1', '1', 'U', 'text', 'kept', 'agent-a', 1000000, 1)`)
     old.exec("INSERT INTO transcript_recipient (channel, thread, ts, agentId) VALUES ('C1', 'T1', '1', 'agent-b')")
     old.exec('ALTER TABLE sessions DROP COLUMN sessionId')
+    old.exec('ALTER TABLE sessions DROP COLUMN directDestination')
     old.exec('PRAGMA user_version = 10')
     old.close()
     return path
