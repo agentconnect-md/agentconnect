@@ -128,8 +128,16 @@ export function hookRoutes(deps: HttpDeps) {
 
     // Re-converge the relay pool after a write. Fire-and-forget: a push failure
     // never fails the CRUD (a relay converges via its register replay).
-    const converge = (hook: HookRecord): void => {
-      void deps.hooks.broadcast(hook).catch((err) => app.log.warn({ hookId: hook.id, err }, 'hook broadcast failed'))
+    //
+    // `afterAssigned` runs once the rule has actually been assigned, for work that is only
+    // safe on the far side of it. It is deliberately skipped when the broadcast REJECTS: the
+    // old rule may still be live in the pool, and its callers use this to drop state that
+    // rule still depends on. Leaving that state stale is safe and the roster reconciles it.
+    const converge = (hook: HookRecord, afterAssigned?: () => Promise<void>): void => {
+      void deps.hooks
+        .broadcast(hook)
+        .then(() => afterAssigned?.())
+        .catch((err) => app.log.warn({ hookId: hook.id, err }, 'hook broadcast failed'))
     }
 
     // §24.4: the hook's OWN agent is re-projected by `HookService.broadcast`, which is the
@@ -917,12 +925,12 @@ export function hookRoutes(deps: HttpDeps) {
             details: { hookId: hook.id, kind: hook.kind, enabled: hook.enabled }
           })
           .catch(() => {})
-        converge(hook)
-        // A retarget moved the hook OFF `existing.agentId`, which may have just lost its
-        // last GitLab consumer. That one is re-projected after the rule moved, never before.
-        if (existing.agentId && existing.agentId !== agent.id) {
-          await replicateUpsert(orgOf(req), existing.agentId)
-        }
+        // A retarget moved the hook OFF this agent, which may have just lost its last GitLab
+        // consumer — so it is re-projected only once the rule has actually MOVED. Until
+        // `hookAssign` runs, the pool still holds the old rule targeting this very agent, and
+        // dropping its host first would have a delivery in that window refused.
+        const retargetedFrom = existing.agentId && existing.agentId !== agent.id ? existing.agentId : null
+        converge(hook, retargetedFrom ? () => replicateUpsert(orgOf(req), retargetedFrom) : undefined)
         if (hook.kind === 'gitlab') {
           convergeGitlabWebhook(orgOf(req), hook.repoId)
           // A retarget moved this hook off `existing.repoId`: the source

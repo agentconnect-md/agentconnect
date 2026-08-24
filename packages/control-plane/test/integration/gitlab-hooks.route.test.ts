@@ -1332,15 +1332,15 @@ describe('§24.4 a hook write converges the agent spec it changes', () => {
       payload: glBody(h.secondAgentId)
     })
     expect(moved.statusCode).toBe(200)
-    await vi.waitFor(() => expect(t.events).toContain('assign'), { timeout: 20_000 })
+    await vi.waitFor(() => expect(t.events).toContain(`spec:${h.agentId}`), { timeout: 20_000 })
 
-    // The gaining agent carries the host before the rule is assigned to it — the guarantee
-    // `broadcast` makes atomically, so no caller has to remember the order.
-    const joined = t.events.indexOf(`spec:${h.secondAgentId}`)
-    expect(joined).toBeGreaterThanOrEqual(0)
-    expect(joined).toBeLessThan(t.events.indexOf('assign'))
-    // And the agent the hook moved OFF is re-projected too, dropping a host it no longer
-    // earns. Its timing against the new assign is free: no rule points at it any more.
-    expect(t.events).toContain(`spec:${h.agentId}`)
+    // Joining, then the rule moving, then leaving. The old agent's host may only drop once
+    // the rule has actually moved off it — until `hookAssign` runs the pool still holds the
+    // old rule targeting it, so an earlier drop would have a delivery refused. Asserted as an
+    // order rather than an exact list: the webhook converge legitimately rebroadcasts, and a
+    // later assign of the MOVED rule no longer names the agent that left.
+    expect(t.events[0]).toBe(`spec:${h.secondAgentId}`)
+    expect(t.events.indexOf('assign')).toBe(1)
+    expect(t.events.indexOf(`spec:${h.agentId}`)).toBeGreaterThan(t.events.indexOf('assign'))
   })
 })
