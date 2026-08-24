@@ -135,9 +135,17 @@ describe('commandSelector', () => {
     expect(commandSelector({})).toBe('')
   })
 
-  it('prefers the instance name an operator typed', () => {
+  it('emits just the name when the root is the one that name implies', () => {
     const home = fakeHome()
     expect(commandSelector({ root: join(home, '.agentconnect-dev'), instance: 'dev' })).toBe(' --instance dev')
+  })
+
+  it('keeps a custom root alongside the name', () => {
+    fakeHome()
+    // `--instance dev` alone would resolve ~/.agentconnect-dev, so a follow-up
+    // command that dropped --root would act on the wrong root.
+    expect(commandSelector({ root: '/srv/ac-dev', instance: 'dev' })).toBe(' --instance dev --root /srv/ac-dev')
+    expect(commandSelector({ root: '/srv/ac dev', instance: 'dev' })).toBe(" --instance dev --root '/srv/ac dev'")
   })
 
   it('falls back to --root for an unnamed non-default root, shell-quoting when needed', () => {

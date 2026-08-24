@@ -13,6 +13,7 @@
  * instead of the default one.
  */
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { defaultRoot, resolveRoot, servicePointerPath } from '../paths.js'
 
 /** Instance names must be safe in a systemd unit name AND a launchd label, and
@@ -50,14 +51,19 @@ export function resolveServiceTarget(opts: { root?: string; instance?: string } 
 
 /**
  * The selector to reproduce in a suggested follow-up command, so an operator who
- * copies it addresses the instance they are working on instead of the default
- * one: ` --instance <name>` when a name is in play, else ` --root <dir>` for a
- * non-default root, else nothing.
+ * copies it addresses the target they are working on instead of the default one.
+ * `--root` travels along whenever the root is not the one the rest of the
+ * selector would resolve by itself — `--instance dev` alone means
+ * `~/.agentconnect-dev`, so a custom root paired with a name must be kept.
  */
 export function commandSelector(target: { root?: string; instance?: string }): string {
-  if (target.instance) return ` --instance ${target.instance}`
-  if (target.root !== undefined && target.root !== defaultRoot()) return ` --root ${shellArg(target.root)}`
-  return ''
+  const parts: string[] = []
+  if (target.instance) parts.push(`--instance ${target.instance}`)
+  const implied = target.instance ? instanceRoot(target.instance) : defaultRoot()
+  if (target.root !== undefined && resolve(target.root) !== resolve(implied)) {
+    parts.push(`--root ${shellArg(target.root)}`)
+  }
+  return parts.length > 0 ? ` ${parts.join(' ')}` : ''
 }
 
 /** Quote a path for a command line the operator will paste back into a shell. */

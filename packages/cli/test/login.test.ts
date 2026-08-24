@@ -159,8 +159,10 @@ describe('runLogin — interactive', () => {
         runForeground: async () => {}
       }
     )
-    // A bare `agentconnect status` after this would report the DEFAULT instance.
-    expect(lines.join('')).toContain('`agentconnect --instance dev up`')
+    // A bare `agentconnect status` after this would report the DEFAULT instance;
+    // the custom root travels along because `--instance dev` alone means
+    // ~/.agentconnect-dev.
+    expect(lines.join('')).toContain(`\`agentconnect --instance dev --root ${root} up\``)
   })
 
   it('accepts an uppercase Y / YES at the install prompt', async () => {
