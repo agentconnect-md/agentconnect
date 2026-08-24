@@ -1619,10 +1619,11 @@ export class Daemon {
     })
     this.cfg = cfg
     configureWorkspaceGitOrigins(cfg.security.workspaceGitAllowedOrigins)
-    // §24.4: an excluded origin is named at SPEC admission; only the degenerate case is known here.
+    // §24.4: an excluded origin is named at SPEC admission. All this knows is the operator list —
+    // whether a spec names an instance of its own, which stays cloneable either way, is per-agent.
     if (permitsNoHttpsOrigin()) {
       this.log.warn(
-        'workspace policy: workspaceGitAllowedOrigins permits no https origin — no managed GitLab workspace can clone on this daemon'
+        'workspace policy: workspaceGitAllowedOrigins lists no https origin — the only https clone left is the instance a spec names, and an empty list permits nothing at all'
       )
     }
     return { root, cfg }

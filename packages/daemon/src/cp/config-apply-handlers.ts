@@ -328,18 +328,22 @@ export async function applyReconcileSnapshot(host: ConfigApplyHost, snap: Regist
 }
 
 /**
- * §24.4 spec admission: the operator's `workspaceGitAllowedOrigins` stays authoritative, and the
- * managed GitLab feature never widens it. A GitLab workspace whose instance the policy excludes is
- * refused HERE, naming the origin an operator has to add, and the refusal travels back on the
- * upsert ack — the control plane's own record of why this daemon will not serve the agent.
+ * §24.4 spec admission. The deployment's own code host is ADOPTED from the spec that names it —
+ * it is deployment configuration, not tenant input, and this daemon already trusts it to decide
+ * where an agent's git credential may go, so refusing to clone the same host protected nothing and
+ * made every self-managed install restate an address the control plane had already sent. What is
+ * still refused HERE is a repository somewhere else entirely: the refusal names the origin and
+ * travels back on the upsert ack, the control plane's own record of why this daemon will not serve
+ * the agent. An operator who set `workspaceGitAllowedOrigins: []` turned remote workspaces off, and
+ * nothing adopts past that.
  */
 function gitlabOriginRefusal(spec: AgentUpsert['spec']): string | undefined {
   const workspace = spec.workspace
   if (workspace?.mode !== 'gitlab') return undefined
-  const origin = unauthorizedWorkspaceGitOrigin(workspace.gitRepo)
+  const origin = unauthorizedWorkspaceGitOrigin(workspace.gitRepo, spec.gitlabHost)
   return origin === undefined
     ? undefined
-    : `workspace refused: security.workspaceGitAllowedOrigins on this daemon excludes ${origin} — add that origin to serve this GitLab instance`
+    : `workspace refused: ${origin} is neither this deployment's code host nor in security.workspaceGitAllowedOrigins on this daemon`
 }
 
 export function applyAgentUpsert(host: ConfigApplyHost, { agentId, spec }: AgentUpsert): Promise<Ack> {

@@ -328,7 +328,8 @@ export class WorkspaceManager {
       canonicalWorkspaceGitUrl(
         this.usesGithubApp(agent) ? normalizeGithubRepoUrl(agent.workspace.gitRepo) : agent.workspace.gitRepo,
         this.remoteProviderOf(agent, agent.workspace.gitRepo)
-      )
+      ),
+      agent.gitlabHost
     )
   }
 
@@ -871,7 +872,7 @@ export class WorkspaceManager {
     const normalizedCurrent = normalizeGitUrl(current)
     let unsafeCurrent = redactGitUrlSecrets(current) !== normalizedCurrent
     try {
-      authorizeWorkspaceGitUrl(current)
+      authorizeWorkspaceGitUrl(current, root.managed?.gitlabHost)
       if (!/^(?:https|ssh):\/\//i.test(current) && !/^[\w.-]+@[\w.-]+:/.test(current)) unsafeCurrent = true
     } catch {
       unsafeCurrent = true

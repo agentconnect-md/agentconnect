@@ -272,11 +272,11 @@ export function createWorkspaceGit(
     return msg.split(root).join('<workspace>').trim()
   }
 
-  function safeExplicitOrigin(input: string): string | undefined {
+  function safeExplicitOrigin(input: string, deploymentCodeHost?: string): string | undefined {
     const raw = input.trim()
     if (!/^(?:https|ssh):\/\//i.test(raw) && !/^[\w.-]+@[\w.-]+:/.test(raw)) return undefined
     try {
-      return authorizeWorkspaceGitUrl(raw)
+      return authorizeWorkspaceGitUrl(raw, deploymentCodeHost)
     } catch {
       return undefined
     }
@@ -294,13 +294,14 @@ export function createWorkspaceGit(
     let currentOrigin: string | undefined
     let expectedOrigin: string
     try {
-      currentOrigin = safeExplicitOrigin(await git.raw(['remote', 'get-url', 'origin']))
       if (!target) throw new Error('workspace target is unavailable')
+      currentOrigin = safeExplicitOrigin(await git.raw(['remote', 'get-url', 'origin']), target.managed?.gitlabHost)
       // Canonicalization follows the remote's PROVIDER: only a gitlab project keeps its subgroups.
       const provider = target.remoteProvider
       const github = target.githubApp && provider !== 'gitlab'
       expectedOrigin = authorizeWorkspaceGitUrl(
-        canonicalWorkspaceGitUrl(github ? normalizeGithubRepoUrl(target.repo) : target.repo, provider)
+        canonicalWorkspaceGitUrl(github ? normalizeGithubRepoUrl(target.repo) : target.repo, provider),
+        target.managed?.gitlabHost
       )
     } catch {
       return undefined
@@ -720,7 +721,9 @@ export function createWorkspaceGit(
         // itself answers (a push with nothing to send is cheap and honest).
         const upstreamRemote = upstream.includes('/') ? upstream.slice(0, upstream.indexOf('/')) : null
         const upstreamBranch = upstreamRemote ? upstream.slice(upstreamRemote.length + 1) : null
-        const upstreamOrigin = upstreamRemote ? await remoteUrl(git, upstreamRemote) : null
+        const upstreamOrigin = upstreamRemote
+          ? await remoteUrl(git, upstreamRemote, authorized.managed?.gitlabHost)
+          : null
         const upstreamIsDestination =
           upstreamOrigin !== null &&
           upstreamOrigin.toLowerCase() === authorized.origin.toLowerCase() &&
@@ -980,11 +983,11 @@ async function pathExists(git: GitRunner, rel: string): Promise<boolean> {
 
 /** One remote's fetch URL, authorized through the same policy the origin goes through, or null
  *  when it does not exist or is not a URL this daemon may talk to. */
-async function remoteUrl(git: GitRunner, remote: string): Promise<string | null> {
+async function remoteUrl(git: GitRunner, remote: string, deploymentCodeHost?: string): Promise<string | null> {
   try {
     const raw = (await git.readBounded(['remote', 'get-url', remote], 4096)).out.toString('utf8').trim()
     if (raw === '') return null
-    return authorizeWorkspaceGitUrl(raw)
+    return authorizeWorkspaceGitUrl(raw, deploymentCodeHost)
   } catch {
     return null
   }
