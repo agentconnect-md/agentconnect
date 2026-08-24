@@ -34,7 +34,7 @@ import { PlatformMark } from '@/components/marks'
 
 /** The action-runner + the agent the agent-scoped steps act on, wired to the live console. */
 export function useGsActions() {
-  const { agents } = useConsoleData()
+  const { agents, daemons } = useConsoleData()
   const { orgPath } = useOrgs()
   const { openModal } = useModal()
   const router = useRouter()
@@ -47,10 +47,15 @@ export function useGsActions() {
   const runAction = useCallback(
     (action: GsAction) => {
       switch (action.kind) {
-        case 'daemon':
-          return openModal('daemon')
         case 'agent':
-          return builtinAgent ? openModal('editAgent', builtinAgent, { focusSection: 'basics' }) : openModal('agent')
+          if (!builtinAgent) return openModal('agent')
+          // Same chain the Agents / Agent detail "Add daemon" chips use (preset-agents.md
+          // §3.4): with no daemon in the org the edit modal's picker would offer only "No
+          // daemon", so mint one first and chain back into the edit dialog, where the
+          // fresh (and only) daemon is auto-preselected.
+          return daemons.length === 0
+            ? openModal('daemon', builtinAgent, { focusSection: 'basics' })
+            : openModal('editAgent', builtinAgent, { focusSection: 'basics' })
         case 'slack': {
           // The action targets the built-in preset; honor it — agents[0] is commonly an
           // older custom agent in backfilled orgs, and the manual fallback must not
@@ -81,7 +86,7 @@ export function useGsActions() {
           return router.push(orgPath('/settings#session-access'))
       }
     },
-    [openModal, router, orgPath, firstAgent, builtinAgent, agents]
+    [openModal, router, orgPath, firstAgent, builtinAgent, agents, daemons]
   )
 
   return { runAction, firstAgent }

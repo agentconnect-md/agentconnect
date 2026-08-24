@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { computeGettingStarted } from './getting-started'
-import type { Agent, DaemonRow, IntegrationRow, Session } from '@/lib/data'
+import type { Agent, IntegrationRow, Session } from '@/lib/data'
 import type { MemberDto } from '@/lib/api'
 
 const agent = (over: Partial<Agent> = {}): Agent =>
@@ -13,8 +13,7 @@ const agent = (over: Partial<Agent> = {}): Agent =>
     workspace: { mode: 'scratch' },
     ...over
   }) as Agent
-const daemon = (status: DaemonRow['status']): DaemonRow => ({ daemonId: 'd1', status }) as DaemonRow
-const empty = { agents: [], daemons: [], integrations: [], sessions: [], members: [], authOn: true }
+const empty = { agents: [], integrations: [], sessions: [], members: [], authOn: true }
 
 describe('computeGettingStarted', () => {
   it('starts all-incomplete for a fresh org and reports progress', () => {
@@ -23,16 +22,15 @@ describe('computeGettingStarted', () => {
     // see its `optional` comment in getting-started.ts), so it contributes to both
     // done and total and never moves the fraction.
     expect(gs.done).toBe(1)
-    expect(gs.total).toBe(7) // 5 core + session-access + invite (auth mode)
-    expect(gs.fraction).toBe(1 / 7)
+    expect(gs.total).toBe(6) // 4 core + session-access + invite (auth mode)
+    expect(gs.fraction).toBe(1 / 6)
     expect(gs.allDone).toBe(false)
   })
 
-  it('orders the steps per the design: daemon, agent, slack, github, conversation, session-access, invite', () => {
+  it('orders the steps per the design: agent, slack, github, conversation, session-access, invite', () => {
     // The "Runtime signed in" step is deferred until the explicit probe-status
     // signal ships (neither authRequired nor advertised models encode readiness).
     expect(computeGettingStarted(empty).items.map((i) => i.key)).toEqual([
-      'daemon',
       'agent',
       'slack',
       'github',
@@ -43,7 +41,7 @@ describe('computeGettingStarted', () => {
   })
 
   it('drops the invite AND session-access items in no-auth mode (no /settings there)', () => {
-    expect(computeGettingStarted({ ...empty, authOn: false }).total).toBe(5)
+    expect(computeGettingStarted({ ...empty, authOn: false }).total).toBe(4)
     expect(computeGettingStarted({ ...empty, authOn: false }).items.some((i) => i.key === 'invite')).toBe(false)
     expect(computeGettingStarted({ ...empty, authOn: false }).items.some((i) => i.key === 'session-access')).toBe(false)
   })
@@ -62,14 +60,6 @@ describe('computeGettingStarted', () => {
     // undefined (probe in flight / failed) keeps the step — same convention as githubEnabled
     expect(has(undefined)).toBe(true)
     expect(has(true)).toBe(true)
-  })
-
-  it('marks daemon done for any registered daemon, connected or not', () => {
-    const done = (rows: DaemonRow[]) =>
-      computeGettingStarted({ ...empty, daemons: rows }).items.find((i) => i.key === 'daemon')!.done
-    expect(done([])).toBe(false)
-    expect(done([daemon('offline')])).toBe(true)
-    expect(done([daemon('online')])).toBe(true)
   })
 
   it('marks agent done only once some agent is placed (daemon + runtime)', () => {
@@ -168,7 +158,6 @@ describe('computeGettingStarted', () => {
   it('reaches allDone with a full ring when every signal is satisfied', () => {
     const gs = computeGettingStarted({
       agents: [agent({ workspace: { mode: 'github', repo: 'acme/x' } as Agent['workspace'], hookKinds: ['github'] })],
-      daemons: [daemon('online')],
       integrations: [{ platform: 'slack', name: 's' } as IntegrationRow],
       sessions: [{ id: 's1', statusLabel: 'completed' } as Session],
       members: [{ userId: 'u1' } as MemberDto, { userId: 'u2' } as MemberDto],

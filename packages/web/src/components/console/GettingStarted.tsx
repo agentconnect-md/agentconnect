@@ -65,7 +65,7 @@ export function openGettingStarted() {
 }
 
 export default function GettingStarted() {
-  const { agents, daemons, integrations, allSessions, orgHasSessions, members, loading } = useConsoleData()
+  const { agents, integrations, allSessions, orgHasSessions, members, loading } = useConsoleData()
   const { runAction, firstAgent } = useGsActions()
   const pathname = usePathname()
   const authOn = isAuthConfigured()
@@ -100,7 +100,6 @@ export default function GettingStarted() {
     () =>
       computeGettingStarted({
         agents,
-        daemons,
         integrations,
         sessions: allSessions,
         members,
@@ -112,7 +111,6 @@ export default function GettingStarted() {
       }),
     [
       agents,
-      daemons,
       integrations,
       allSessions,
       members,
@@ -125,7 +123,7 @@ export default function GettingStarted() {
   )
 
   // Show on every console page while the checklist is incomplete — including a
-  // brand-new org, where "Connect a daemon" is the first open step. The full-screen
+  // brand-new org, where setting up the built-in agent is the first open step. The full-screen
   // /onboarding wizard is a separate route (AgentsView redirects an empty org there);
   // the pill only steps aside for that route, not for the empty-org state itself.
   const onOnboardingRoute = pathname?.includes('/onboarding')
@@ -172,18 +170,30 @@ export default function GettingStarted() {
       {/* 1a — floating pill. On mobile it floats above the bottom-tab chrome (the
           drawer below is already full-width there). */}
       {showPill && !drawerOpen && (
-        <button
-          type="button"
-          onClick={() => setDrawerOpen(true)}
-          title="Getting started — open checklist"
-          className="fixed right-[26px] bottom-[22px] z-[60] inline-flex h-10 cursor-pointer items-center gap-[9px] rounded-full border border-(--border-default) bg-(--surface-card) pr-[15px] pl-[9px] shadow-(--shadow-lg) hover:border-(--border-strong) hover:shadow-(--shadow-xl) max-desktop:right-4 max-desktop:bottom-[96px]"
-        >
-          <Ring ring={gs.ring} size={22} track={3.4} />
-          <span className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
-            Getting started
-          </span>
-          <span className="font-mono text-[12px] leading-normal text-(--text-tertiary)">{shortLabel}</span>
-        </button>
+        <div className="fixed right-[26px] bottom-[22px] z-[60] inline-flex h-10 items-center rounded-full border border-(--border-default) bg-(--surface-card) pr-[5px] pl-[9px] shadow-(--shadow-lg) hover:border-(--border-strong) hover:shadow-(--shadow-xl) max-desktop:right-4 max-desktop:bottom-[96px]">
+          <button
+            type="button"
+            onClick={() => setDrawerOpen(true)}
+            title="Getting started — open checklist"
+            className="inline-flex cursor-pointer items-center gap-[9px] border-0 bg-transparent pr-[9px]"
+          >
+            <Ring ring={gs.ring} size={22} track={3.4} />
+            <span className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
+              Getting started
+            </span>
+            <span className="font-mono text-[12px] leading-normal text-(--text-tertiary)">{shortLabel}</span>
+          </button>
+          {/* Same "Skip for now" the drawer offers — dismissible without opening it first. */}
+          <button
+            type="button"
+            onClick={skip}
+            title="Hide the checklist — reopen it from the account menu"
+            aria-label="Hide the getting-started checklist"
+            className="flex h-[26px] w-[26px] flex-none cursor-pointer items-center justify-center rounded-full border-0 bg-transparent text-(--text-tertiary) hover:bg-(--surface-hover) hover:text-(--text-primary)"
+          >
+            <Icon name="x" size={14} />
+          </button>
+        </div>
       )}
 
       {/* 1b — slide-over drawer */}
