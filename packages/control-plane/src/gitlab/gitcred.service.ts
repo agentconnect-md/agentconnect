@@ -1,6 +1,7 @@
 import type { GitCredGrant } from '@agentconnect.md/protocol'
 import type { Clock } from '../domain/clock.js'
 import { GitCredDeniedError } from '../github/service.js'
+import { GITLAB_CREATION_FORBIDDEN_STATE } from '../persistence/ports.js'
 import type {
   AgentRecord,
   AgentRepoAuthorizationRepo,
@@ -128,7 +129,11 @@ export class GitlabGitcredService {
    *  authorization, so an unbound or unprovisioned agent gets nothing. */
   private async agentAccount(orgId: string, agentId: string, bindingId: string): Promise<GitlabAgentAccountRecord> {
     const account = await this.deps.accounts.forAgentBinding(orgId, agentId, bindingId)
-    if (!account || account.serviceAccountUserId === null || account.state !== 'ready') {
+    // §24.3: withdrawn creation authority is the one non-ready state that still
+    // serves. It cannot mint or rotate, so the credential's own expiry — checked
+    // by every caller below — is the bound, exactly the §19.1 degradation.
+    const servable = account?.state === 'ready' || account?.state === GITLAB_CREATION_FORBIDDEN_STATE
+    if (!account || account.serviceAccountUserId === null || !servable) {
       throw new GitCredDeniedError(
         'the agent has no ready GitLab account on that project — repair it',
         'LEASE_DENIED',

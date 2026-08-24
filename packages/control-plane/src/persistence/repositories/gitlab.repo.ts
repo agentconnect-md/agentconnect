@@ -16,6 +16,7 @@ import type {
 import { Prisma } from '../../generated/prisma/client.js'
 import type { PrismaLike } from '../prisma.js'
 import { GitlabMembershipGone, GitlabProjectClaimConflict } from '../errors.js'
+import { GITLAB_CREATION_FORBIDDEN_STATE } from '../ports.js'
 import type {
   GitlabAccountConsumer,
   GitlabProjectConsumer,
@@ -600,7 +601,7 @@ export class PgGitlabProjectBindingRepo implements GitlabProjectBindingRepo {
 
 // ── §7.2/§8.2 per-agent accounts, their memberships, and their PATs ──────────
 
-const ACCOUNT_STATES: readonly GitlabAccountState[] = BINDING_STATES
+const ACCOUNT_STATES: readonly GitlabAccountState[] = [...BINDING_STATES, GITLAB_CREATION_FORBIDDEN_STATE]
 
 function toAccountRecord(r: GitlabAgentAccount): GitlabAgentAccountRecord {
   return {

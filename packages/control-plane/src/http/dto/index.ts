@@ -1768,7 +1768,18 @@ export const SlackBotRefreshDto = z.object({
 
 // ── github app (github-app workspaces) ────────────────────────────────────
 /** Deployment GitHub App status + the org-bound install deep link. NEVER key material. */
-/** One organization GitLab.com OAuth connection — administration identity, no token material. */
+/** An agent account's own health: the §8.2 binding vocabulary plus §24.3's
+ *  withdrawn-authority state, which a binding has no equivalent of. */
+export const GitlabAccountStateSchema = z.enum([
+  'provisioning',
+  'ready',
+  'admin_degraded',
+  'runtime_degraded',
+  'cleanup_pending',
+  'service_account_creation_forbidden'
+])
+
+/** One organization GitLab OAuth connection — administration identity, no token material. */
 export const GitlabConnectionDto = z.object({
   id: z.string(),
   gitlabUserId: z.string(), // numeric GitLab.com user id, losslessly as a string
@@ -1788,6 +1799,11 @@ export const GitlabConnectionDto = z.object({
   instanceUrl: z.string(),
   /** The version last observed on that instance (§24.2); null until first contact. */
   instanceVersion: z.string().nullable(),
+  /** Whether that observation clears the floor (§24.2). Null until first contact;
+   *  the Control Plane answers so no second version parser lives in a browser. */
+  instanceVersionSupported: z.boolean().nullable(),
+  /** The `MAJOR.MINOR` floor this deployment enforces, so the console names it. */
+  instanceVersionFloor: z.string(),
   createdAt: z.string()
 })
 export type GitlabConnectionDtoT = z.infer<typeof GitlabConnectionDto>
@@ -1836,8 +1852,10 @@ export const GitlabProjectBindingDto = z.object({
       username: z.string(),
       displayName: z.string().nullable(),
       userId: z.string().nullable(),
-      /** The account's OWN health: an agent's identity can be broken on a project whose binding is ready. */
-      state: z.enum(['provisioning', 'ready', 'admin_degraded', 'runtime_degraded', 'cleanup_pending']),
+      /** The account's OWN health: an agent's identity can be broken on a project
+       *  whose binding is ready. Carries the one authority state a binding has no
+       *  equivalent of (§24.3), which still serves until its credentials expire. */
+      state: GitlabAccountStateSchema,
       stateReason: z.string().nullable()
     })
   ),
@@ -1869,8 +1887,9 @@ export const GitlabOrgAccountDto = z.object({
   username: z.string(),
   displayName: z.string().nullable(),
   userId: z.string().nullable(), // numeric GitLab user id; null until the account exists
-  /** The §8.2 lifecycle vocabulary the binding uses, so the console translates one set. */
-  state: z.enum(['provisioning', 'ready', 'admin_degraded', 'runtime_degraded', 'cleanup_pending']),
+  /** The §8.2 lifecycle vocabulary the binding uses plus the §24.3 authority
+   *  state, so the console translates one set. */
+  state: GitlabAccountStateSchema,
   stateReason: z.string().nullable(),
   /** `retiring` once the agent's last project in the group went away (§7.2). */
   lifecycle: z.enum(['active', 'retiring']),

@@ -25,11 +25,13 @@ import type {
   GitlabAccountConsumer,
   GitlabAgentAccountRecord,
   GitlabAgentAccountRepo,
+  GitlabAccountState,
   GitlabCredentialPurpose,
   GitlabInstanceStateRepo,
   GitlabProjectCredentialRepo,
   GitlabProjectCredentialSecretStore
 } from '../persistence/ports.js'
+import { GITLAB_CREATION_FORBIDDEN_STATE } from '../persistence/ports.js'
 import {
   GitlabApiError,
   gitlabAccountUsernameMatchesScheme,
@@ -120,8 +122,11 @@ export function gitlabAccountUnavailableMessage(reason: string): string {
   if (reason === 'username_taken') {
     return 'another GitLab account already holds the bot username — remove or rename it, then try again'
   }
-  if (reason === 'service_account_create_forbidden') {
-    return 'the connected GitLab account must be an Owner of the top-level group to create bot accounts'
+  if (reason === CREATION_FORBIDDEN_REASON) {
+    return 'this GitLab instance does not allow the connected account to create bot accounts — allow top-level group Owners to create service accounts, or connect an instance administrator, then try again'
+  }
+  if (reason === PAT_LIFETIME_CAPPED_REASON) {
+    return `this GitLab instance refuses a ${PAT_LIFETIME_DAYS}-day bot credential — raise the instance maximum access-token lifetime, then try again`
   }
   if (reason === ACCOUNT_RETIRING_REASON || reason === DELETION_PENDING_REASON) {
     return 'This agent’s previous GitLab bot account is still being removed — try again in a moment'
@@ -132,6 +137,18 @@ export function gitlabAccountUnavailableMessage(reason: string): string {
   return `the agent’s GitLab bot account could not be provisioned (${reason})`
 }
 
+/**
+ * §24.3: the instance refused to create a service account or one of its tokens.
+ * Authority is not probeable, so this refusal IS the answer — and it is a
+ * settled one: nothing retries it until an operator changes the instance
+ * setting, connects an administrator, and re-attempts through Repair.
+ */
+export const CREATION_FORBIDDEN_REASON = 'service_account_creation_forbidden'
+
+/** §24.3: the instance capped personal-access-token lifetime below what this
+ *  policy asks for and rejected the create outright instead of clamping it. */
+export const PAT_LIFETIME_CAPPED_REASON = 'pat_lifetime_exceeds_instance_maximum'
+
 /** A cleanup failure's honest category: `gitlab_unreachable` is reserved for a
  *  transport failure, the only thing `gitlabRequest` reports as status 0. */
 function retirementReason(e: unknown): string {
@@ -139,6 +156,9 @@ function retirementReason(e: unknown): string {
   if (e instanceof GitlabApiError) return `gitlab_${e.status || 'unreachable'}`
   return 'cleanup_failed'
 }
+
+/** GitLab's PAT expiry shape. An unparseable answer is not a clamp (§24.3). */
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/
 
 function expiresAtDate(nowMs: number): string {
   return new Date(nowMs + PAT_LIFETIME_DAYS * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
@@ -153,9 +173,27 @@ function patName(username: string, purpose: GitlabCredentialPurpose): string {
 function refusalReason(e: unknown): string {
   if (!(e instanceof GitlabApiError)) return 'service_account_create_failed'
   if (/quota|limit|maximum/i.test(e.message)) return 'service_account_quota'
-  return e.status === 403 || e.status === 401
-    ? 'service_account_create_forbidden'
-    : `gitlab_${e.status || 'unreachable'}`
+  // 403 is the §24.3 authority answer; a 401 is our own admin token, whose repair
+  // is the `gitlab_<status>` family's "reconnect the account that manages this".
+  return e.status === 403 ? CREATION_FORBIDDEN_REASON : `gitlab_${e.status || 'unreachable'}`
+}
+
+/**
+ * §24.3: an instance POLICY refusal, which is a settled verdict rather than a
+ * transport fault — the authority to create service accounts or their tokens was
+ * withdrawn, or the requested token lifetime exceeds an instance cap. Null when
+ * the failure is not one of those, so the caller keeps its own mapping.
+ */
+function policyRefusal(e: unknown): string | null {
+  if (!(e instanceof GitlabApiError)) return null
+  if (e.status === 403) return CREATION_FORBIDDEN_REASON
+  return e.status === 400 && /expir|lifetime/i.test(e.message) ? PAT_LIFETIME_CAPPED_REASON : null
+}
+
+/** Which state a refusal earns: only withdrawn authority gets its own, because
+ *  only it must leave an already-provisioned account serving (§24.3). */
+function refusalState(reason: string): GitlabAccountState {
+  return reason.endsWith(CREATION_FORBIDDEN_REASON) ? GITLAB_CREATION_FORBIDDEN_STATE : 'admin_degraded'
 }
 
 export interface GitlabAccountServiceDeps {
@@ -375,7 +413,7 @@ export class GitlabAccountService {
             const reason = listing.some((candidate) => candidate.username === account.username)
               ? 'username_taken'
               : refusalReason(e)
-            await this.deps.accounts.update(account.id, { state: 'admin_degraded', stateReason: reason })
+            await this.deps.accounts.update(account.id, { state: refusalState(reason), stateReason: reason })
             return { ok: false, reason, retryable: reason !== 'username_taken' }
           }
         }
@@ -459,17 +497,21 @@ export class GitlabAccountService {
       account = (await this.deps.accounts.update(account.id, { state: 'ready', stateReason: null })) ?? account
       return { ok: true, account }
     } catch (e) {
+      // §24.3: a token create the instance refused on authority or lifetime policy
+      // is a settled verdict, so it outranks the transport mapping and never retries.
+      const policy = policyRefusal(e)
       const reason =
-        e instanceof GitlabTokenPolicyViolation
+        policy ??
+        (e instanceof GitlabTokenPolicyViolation
           ? 'out_of_policy_token'
           : e instanceof GitlabAccountLeaseLost
             ? 'account_lease_lost'
             : e instanceof GitlabApiError
               ? `gitlab_${e.status || 'unreachable'}`
-              : 'admin_unavailable'
+              : 'admin_unavailable')
       this.deps.log?.warn({ accountId: account.id, reason }, 'gitlab account provisioning failed')
-      await this.deps.accounts.update(account.id, { state: 'admin_degraded', stateReason: reason })
-      return { ok: false, reason, retryable: true }
+      await this.deps.accounts.update(account.id, { state: refusalState(reason), stateReason: reason })
+      return { ok: false, reason, retryable: policy === null }
     } finally {
       await this.deps.accounts.releaseLease(account.id, owner).catch(() => {})
     }
@@ -910,16 +952,22 @@ export class GitlabAccountService {
             'gitlab rotation could not revoke the previous token (it still expires on schedule)'
           )
         })
-        // A rotation-owned degradation heals on the first successful rotation.
-        if (account.state === 'admin_degraded' && account.stateReason?.startsWith('rotation_')) {
+        // A rotation-owned degradation heals on the first successful rotation. The
+        // reason's namespace decides, not the state: §24.3 authority refusals get
+        // their own state and must heal from it the moment authority is back.
+        if (account.stateReason?.startsWith('rotation_')) {
           await this.deps.accounts.update(account.id, { state: 'ready', stateReason: null })
         }
       } catch (e) {
         failed.add(account.id)
         // Every rotation-set reason is rotation_-prefixed: that namespace is
-        // exactly what a later successful sweep may clear.
-        const reason =
-          e instanceof GitlabTokenPolicyViolation
+        // exactly what a later successful sweep may clear. §24.3: an instance
+        // policy refusal is named specifically, so the horizon warning says the
+        // authority was withdrawn instead of reporting a bare upstream status.
+        const policy = policyRefusal(e)
+        const reason = policy
+          ? `rotation_${policy}`
+          : e instanceof GitlabTokenPolicyViolation
             ? 'rotation_out_of_policy_token'
             : e instanceof GitlabAccountLeaseLost
               ? 'rotation_lease_lost'
@@ -927,7 +975,7 @@ export class GitlabAccountService {
                 ? `rotation_gitlab_${e.status || 'unreachable'}`
                 : 'rotation_admin_unavailable'
         this.deps.log?.warn({ accountId: account.id, reason }, 'gitlab credential rotation failed')
-        await this.deps.accounts.update(account.id, { state: 'admin_degraded', stateReason: reason })
+        await this.deps.accounts.update(account.id, { state: refusalState(reason), stateReason: reason })
       } finally {
         await this.deps.accounts.releaseLease(account.id, owner).catch(() => {})
       }
@@ -980,13 +1028,20 @@ export class GitlabAccountService {
       { name, scopes, expiresAt },
       this.deps.api
     )
-    // §7.3 validation before sealing: identity, scopes, active, EXACT expiry.
+    // §24.3: an instance token-lifetime cap makes an EARLIER expiry legitimate
+    // operator policy, so it is accepted and becomes the recorded one — the
+    // rotation horizon reads that column, so a 30-day cap warns on a 30-day
+    // cycle. Null or LATER stays out of policy and fails closed as §7.3 requires.
+    // `YYYY-MM-DD` compares lexicographically exactly as it compares in time.
+    const granted = typeof grant.expires_at === 'string' ? grant.expires_at : ''
+    const withinPolicy = ISO_DATE.test(granted) && granted <= expiresAt
+    // §7.3 validation before sealing: identity, scopes, active, bounded expiry.
     const valid =
       typeof grant.token === 'string' &&
       grant.token.length > 0 &&
       grant.active !== false &&
       grant.revoked !== true &&
-      grant.expires_at === expiresAt &&
+      withinPolicy &&
       (grant.user_id === undefined || BigInt(grant.user_id) === serviceAccountUserId) &&
       scopes.every((scope) => grant.scopes?.includes(scope)) &&
       grant.scopes?.length === scopes.length
@@ -1017,7 +1072,7 @@ export class GitlabAccountService {
       purpose,
       externalTokenId: BigInt(grant.id),
       scopes,
-      providerExpiresAt: new Date(`${expiresAt}T00:00:00.000Z`),
+      providerExpiresAt: new Date(`${granted}T00:00:00.000Z`),
       sealedToken: await this.deps.cipher.seal(grant.token!, orgScope(OrgId(orgId)))
     })
   }

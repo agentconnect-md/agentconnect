@@ -3435,8 +3435,14 @@ export interface GitlabProjectBindingRepo {
 // under the binding's provisioning lease.
 // ───────────────────────────────────────────────────────────────────────────
 
-/** Account rows reuse the binding lifecycle vocabulary and Console translations (§8.2). */
-export type GitlabAccountState = GitlabBindingState
+/** §24.3: the instance withdrew the authority to create service accounts or their
+ *  tokens. Its OWN state, never `admin_degraded`, because an account already
+ *  provisioned keeps serving its unexpired credentials while authority is away. */
+export const GITLAB_CREATION_FORBIDDEN_STATE = 'service_account_creation_forbidden'
+
+/** Account rows reuse the binding lifecycle vocabulary and Console translations
+ *  (§8.2), plus the one authority state a binding has no equivalent of (§24.3). */
+export type GitlabAccountState = GitlabBindingState | typeof GITLAB_CREATION_FORBIDDEN_STATE
 
 /** The generation fence a membership insert commits against (§7.2). */
 export type GitlabAccountLifecycle = 'active' | 'retiring'
