@@ -9,18 +9,14 @@
  */
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
+import { SWRConfig } from 'swr'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+// `fetchTransactions` answers with the whole ledger whatever was asked for — the stale-service
+// case on purpose, since that is what a billing image predating `?type=` does.
 const mocks = vi.hoisted(() => ({
-  fetchAccount: vi.fn(async () => ({ orgId: 'org-1', balanceMicro: 5_000_000, state: 'active' })),
-  // The stale-service case on purpose: the whole ledger whatever was asked for.
-  fetchTransactions: vi.fn(async () => ({
-    items: [
-      { type: 'credit', id: 'c1', kind: 'promo', amountMicro: 5_000_000, at: '2026-08-24T15:09:00Z' },
-      { type: 'debit', id: 'd1', period: '2026-08', amount: '0.42', at: '2026-08-20T04:00:00Z' }
-    ],
-    nextCursor: null
-  })),
+  fetchAccount: vi.fn(),
+  fetchTransactions: vi.fn(),
   fetchSince: vi.fn(async () => [])
 }))
 
@@ -49,15 +45,31 @@ const BillingView = (await import('./BillingView')).default
 let host: HTMLDivElement
 let root: Root
 
-beforeEach(async () => {
+const ACCOUNT = { orgId: 'org-1', balanceMicro: 5_000_000, state: 'active' }
+const CREDIT = { type: 'credit', id: 'c1', kind: 'promo', amountMicro: 5_000_000, at: '2026-08-24T15:09:00Z' }
+const DEBIT = { type: 'debit', id: 'd1', period: '2026-08', amount: '0.42', at: '2026-08-20T04:00:00Z' }
+
+// A FRESH SWR cache per mount. Without it the global one carries a previous test's page one
+// into this one's key, and a test that asserts on an empty filtered page passes on cached rows
+// — which is how the never-funded regression below went green against the bug it exists for.
+async function mount() {
+  await act(async () => {
+    root.render(
+      <SWRConfig value={{ provider: () => new Map() }}>
+        <BillingView />
+      </SWRConfig>
+    )
+  })
+}
+
+beforeEach(() => {
   mocks.fetchTransactions.mockClear()
+  mocks.fetchAccount.mockResolvedValue(ACCOUNT)
+  mocks.fetchTransactions.mockResolvedValue({ items: [CREDIT, DEBIT], nextCursor: null })
   ;(window as unknown as { __AC_ENV?: Record<string, string> }).__AC_ENV = { FEATURE_FLAGS: 'billing' }
   host = document.createElement('div')
   document.body.appendChild(host)
   root = createRoot(host)
-  await act(async () => {
-    root.render(<BillingView />)
-  })
 })
 afterEach(async () => {
   await act(async () => root.unmount())
@@ -81,6 +93,7 @@ async function clickPill(label: string) {
 
 describe('Transactions — the ledger-side filter', () => {
   it('asks the service for one side, and for the whole ledger by default', async () => {
+    await mount()
     // The default view shares its key with the balance card's own unfiltered read, so it must
     // be the same request — one page one, not two spellings of it.
     expect(mocks.fetchTransactions).toHaveBeenCalledWith('org-1')
@@ -93,6 +106,7 @@ describe('Transactions — the ledger-side filter', () => {
   })
 
   it('cuts a stale service’s rows to the side that was asked for', async () => {
+    await mount()
     // The stub answers with both sides whatever the request said, which is exactly what a
     // billing image predating `?type=` does.
     expect(host.innerHTML).toContain('Promotional credit')
@@ -107,7 +121,27 @@ describe('Transactions — the ledger-side filter', () => {
     expect(host.innerHTML).not.toContain('Usage — 2026-08')
   })
 
+  it('keeps the never-funded banner off the table’s filter', async () => {
+    // A suspended org with usage and no top-ups. Reading "has this account ever moved money"
+    // off the table's current side told it, on Top-ups alone, that it never had.
+    mocks.fetchAccount.mockResolvedValue({ orgId: 'org-1', balanceMicro: 0, state: 'suspended' })
+    // A service that HONOURS the side, so the Top-ups page is genuinely empty — the stub used
+    // elsewhere here answers with everything, which would hide this regression.
+    mocks.fetchTransactions.mockImplementation(
+      async (_orgId: string, _cursor?: string, filter?: { type?: string }) => ({
+        items: filter?.type === 'credit' ? [] : [DEBIT],
+        nextCursor: null
+      })
+    )
+    await mount()
+
+    await clickPill('Top-ups')
+    expect(host.innerHTML).not.toContain('Add credits to start serving traffic')
+  })
+
   it('keeps “last deduction” off the table’s filter', async () => {
+    await mount()
+
     // It is a fact about the ACCOUNT, not about whichever side is on screen — reading it off
     // the table's rows had it vanish the moment someone filtered to Top-ups.
     const posted = /Last deduction<\/div><div class="[^"]*">([^<]*)</

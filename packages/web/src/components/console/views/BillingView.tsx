@@ -808,7 +808,11 @@ export default function BillingView() {
         <>
           <BalanceBannerCard
             acct={acct}
-            hasHistory={ledgerHistory(transactions.data)}
+            // The UNFILTERED read, like "last deduction" below: whether this account has ever
+            // moved money is a fact about the account, and reading it off the table's current
+            // side told a suspended org with usage and no top-ups that it had never been
+            // funded the moment someone pressed Top-ups.
+            hasHistory={ledgerHistory(ledger.data)}
             canPay={myRole === 'owner'}
             // The banner's CTA leads INTO the inline form (the design's modal equivalent):
             // scroll to it, blink the card, and land focus in the amount field.
