@@ -344,8 +344,11 @@ Notes:
   shared destination re-binds its own trusted candidate, which outranks both.
   Classifying itself does not exempt it from privacy travelling DOWN the
   lineage: a settled-private parent tightens it exactly as §4.3 would, whichever
-  of the two rows arrives first, and its own `explicit` re-classification
-  survives that convergence (only a human tighten of the parent overrides it).
+  of the two rows arrives first — and if the parent landed inside the child's own
+  classification window, the child re-runs that tightening after it commits, the
+  same recheck `inherited_pending` rows get. Its own `explicit`
+  re-classification survives the convergence; only a human tighten of the parent
+  overrides that.
 
 ### 4.3 Changing visibility after the fact
 

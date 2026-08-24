@@ -617,6 +617,54 @@ describe('session visibility — external conversation audiences', () => {
     })
   })
 
+  // The concurrent window between those two orders: the child reads no parent (there is no row to
+  // lock), the parent then inserts and finishes its own descendant scan before the child is
+  // visible to it, and the child commits its own classification. Neither side would revisit the
+  // row, so a committed self-classifying child re-runs the parent's tightening. Straddling that
+  // window is not reachable through the public API without a concurrency hook, so the post-commit
+  // half is driven directly here; the two fully ordered paths are covered above.
+  it('converges a direct-destination child whose parent landed inside its classification window', async () => {
+    const daemonId = await seedDaemon(prisma, randomUUID())
+    const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
+    const repo = new PgSessionRepo(prisma)
+    const parentId = `s-dd-race-parent-${randomUUID()}`
+    const childId = `s-dd-race-child-${randomUUID()}`
+
+    // The child commits with no parent row in sight, keeping its own classification.
+    const child = await repo.recordMilestone({
+      sessionId: SessionId(childId),
+      parentSessionId: SessionId(parentId),
+      agentId,
+      phase: 'start',
+      platform: 'slack',
+      channel: 'C_POSTED',
+      at: new Date(),
+      classification: { visibility: 'org', ownerIdentity: null, source: 'default' }
+    })
+    expect(child.session).toMatchObject({ visibility: 'org', visibilitySource: 'default' })
+
+    // The parent is now present, private, and its descendant scan already ran without seeing
+    // this child (seeded raw, exactly like a cascade that finished a moment too early).
+    await seedSessionMeta(prisma, parentId, agentId, {
+      daemonId,
+      visibility: 'private',
+      ownerIdentity: 'user:origin-owner'
+    })
+    const converged = await (
+      repo as unknown as {
+        convergeFromParent(orgId: string, parentSessionId: string): Promise<Array<{ id: string }>>
+      }
+    ).convergeFromParent(DEFAULT_ORG_ID, parentId)
+
+    // Reported back so the caller owes this row a §5.1 gate push at its new tier.
+    expect(converged.map((row) => row.id)).toContain(childId)
+    expect(await prisma.sessionMeta.findUnique({ where: { id: childId } })).toMatchObject({
+      visibility: 'private',
+      ownerIdentity: 'user:origin-owner',
+      visibilitySource: 'inherited'
+    })
+  })
+
   // The post-commit settlement path (§4.5) inherits the parent's audience after
   // the child's own transaction closed — including the interleaving where the
   // parent lands and is stamped legacy in between. Provenance must ride along, or

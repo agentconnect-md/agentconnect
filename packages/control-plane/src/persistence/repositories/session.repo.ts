@@ -413,6 +413,11 @@ type ResolvedSessionClassification = {
   visibility: SessionVisibility
   ownerIdentity: string | null
   source: VisibilitySource
+  /** Internal, never a column: this row classified ITSELF while its parent was absent or still
+   *  `inherited_pending`, so no parent state could be consumed under the lock. Such a row owes a
+   *  post-commit recheck — the parent may have inserted and finished its own descendant scan
+   *  while this one was invisible to it. */
+  parentUnsettled?: boolean
   externalProvider: string | null
   externalScopeId: string | null
   externalResolution: ExternalResolution | null
@@ -507,8 +512,11 @@ export class PgSessionRepo implements SessionRepo {
     // applies the same rewrite now. Tightening only — it never widens a row, and a parent
     // still holding the `inherited_pending` placeholder is NOT evidence of privacy (copying
     // it would strand this row private when the real ancestor settles `org`).
-    const parentTightened =
-      parent.length === 1 && parent[0]!.visibility === 'private' && parent[0]!.visibilitySource !== 'inherited_pending'
+    const parentSettled = parent.length === 1 && parent[0]!.visibilitySource !== 'inherited_pending'
+    const parentTightened = parentSettled && parent[0]!.visibility === 'private'
+    // Only meaningful for a row that classifies itself; the inheriting path below marks the same
+    // situation `inherited_pending` and is rechecked by `settleFromParent`.
+    const parentUnsettled = ev.parentSessionId !== undefined && !parentSettled
     const applyParentTightening = (row: ResolvedSessionClassification): ResolvedSessionClassification =>
       !parentTightened
         ? row
@@ -569,6 +577,7 @@ export class PgSessionRepo implements SessionRepo {
       const base = direct ?? { visibility: 'org' as const, ownerIdentity: null, source: 'default' as const }
       return applyParentTightening({
         ...base,
+        ...(parentUnsettled ? { parentUnsettled } : {}),
         // A Feishu/Lark p2p conversation is both a private direct session and a
         // provider-bound candidate. Keep its owner-only baseline while sync is
         // disabled; enabling the policy atomically switches every candidate to
@@ -581,7 +590,7 @@ export class PgSessionRepo implements SessionRepo {
         classifiedPolicyRev: policy.currentRev
       })
     }
-    if (direct) return applyParentTightening(direct)
+    if (direct) return applyParentTightening({ ...direct, ...(parentUnsettled ? { parentUnsettled } : {}) })
     if (!classification) {
       return {
         visibility: 'org',
@@ -770,7 +779,7 @@ export class PgSessionRepo implements SessionRepo {
   }
 
   async recordMilestone(ev: EventSessionInput): Promise<SessionMilestoneResult> {
-    const result = await withAmbientTx(this.db, async (tx) => this.upsertMilestone(tx, ev))
+    const { parentUnsettled, ...result } = await withAmbientTx(this.db, async (tx) => this.upsertMilestone(tx, ev))
     if (!result.recorded || !result.session) return result
     // Out-of-order arrival: our parent may have landed while we were writing.
     // Settling ourselves can in turn settle descendants that were waiting on us,
@@ -782,11 +791,59 @@ export class PgSessionRepo implements SessionRepo {
         result.session.parentSessionId
       )
       if (self) return { ...result, session: self, settled: [...result.settled, ...descendants] }
+      return result
+    }
+    // The same window for a row that classified ITSELF: our parent could have inserted AND
+    // finished its descendant scan while this row was still invisible to it, so neither side
+    // would revisit us. Re-run the parent's tightening now that we are committed — it is
+    // idempotent, and a non-private parent leaves this row's own classification alone.
+    if (parentUnsettled && result.session.parentSessionId) {
+      const converged = await this.convergeFromParent(result.session.orgId, result.session.parentSessionId)
+      if (converged.length > 0) {
+        const self = converged.find((row) => row.id === result.session!.id)
+        return {
+          ...result,
+          ...(self ? { session: self } : {}),
+          settled: [...result.settled, ...converged.filter((row) => row.id !== result.session!.id)]
+        }
+      }
     }
     return result
   }
 
-  private async upsertMilestone(tx: PrismaLike, ev: EventSessionInput): Promise<SessionMilestoneResult> {
+  /**
+   * Post-commit half of §4.2 direct-destination convergence, mirroring `settleFromParent` for
+   * rows that classify themselves: tightening only, never inheritance. Runs the parent's own
+   * descendant rewrite, so it also catches siblings that raced through the same window.
+   */
+  private async convergeFromParent(orgId: OrgId, parentSessionId: SessionId): Promise<SessionMetaRecord[]> {
+    return withAmbientTx(this.db, async (tx) => {
+      const parent = await tx.$queryRaw<
+        Array<{ visibility: string; ownerIdentity: string | null; visibilitySource: string }>
+      >(
+        Prisma.sql`
+          SELECT "visibility", "ownerIdentity", "visibilitySource"
+          FROM "session_meta"
+          WHERE "id" = ${parentSessionId} AND "orgId" = ${orgId}
+          FOR SHARE
+        `
+      )
+      // Still absent, still a placeholder, or not private: nothing to converge — and when it
+      // settles later, its own milestone runs this rewrite from the other side.
+      if (parent.length !== 1 || parent[0]!.visibilitySource === 'inherited_pending') return []
+      if (parent[0]!.visibility !== 'private') return []
+      return await this.tightenDescendants(
+        tx,
+        { id: parentSessionId, orgId, ownerIdentity: parent[0]!.ownerIdentity },
+        { includeExplicit: false }
+      )
+    })
+  }
+
+  private async upsertMilestone(
+    tx: PrismaLike,
+    ev: EventSessionInput
+  ): Promise<SessionMilestoneResult & { parentUnsettled?: boolean }> {
     const endedAt = ev.phase === 'end' ? ev.at : undefined
     const lastActivityAt = ev.lastActivityAt ?? ev.at
     // Webchat current-session fence: lock the durable conversation row BEFORE
@@ -1050,7 +1107,7 @@ export class PgSessionRepo implements SessionRepo {
           AND p."state" <> 'disabled'::"ExternalAccessPolicyState"
       `)
     }
-    return { recorded: true, session, settled }
+    return { recorded: true, session, settled, ...(cls.parentUnsettled ? { parentUnsettled: true } : {}) }
   }
 
   async listPage(q: SessionPageQuery): Promise<SessionPageRecord> {
