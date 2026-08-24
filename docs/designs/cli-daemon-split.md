@@ -279,7 +279,12 @@ that separates them (`packages/cli/src/service/instance.ts`):
   template instantiation) or `md.agentconnect.daemon.<name>`; the **default
   instance keeps `agentconnect.service` / `md.agentconnect.daemon` unchanged**,
   so an existing install is never orphaned;
-- without `--root`, a named instance's root is `~/.agentconnect-<name>`;
+- without `--root`, a named instance takes the root **its installed unit
+  drives** — the file on disk is the authority — and `~/.agentconnect-<name>`
+  only when nothing is installed yet. Resolving from the name alone would let
+  `--instance dev restart` drive a unit on `/srv/ac-dev` while
+  `--instance dev chat` delegated to `~/.agentconnect-dev`: one selector, two
+  daemons. Moving an instance to a new root clears the abandoned root's pointer;
 - `install-service` records `{ instance, label }` in `<root>/service.json`, so a
   command that knows only the root — notably the CP-commanded
   `upgrade --to <v> --root <root>` the daemon spawns (§6.2) — addresses that
