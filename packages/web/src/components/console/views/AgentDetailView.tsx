@@ -29,6 +29,7 @@ import {
   fetchAgentHooks,
   fetchAgentRepos,
   fetchGithubInstallations,
+  fetchGitlabConnections,
   fetchHookRuns,
   fetchSessionDetail,
   sessionFromDetailDto,
@@ -86,6 +87,7 @@ import {
   type GlFamily,
   type GlTriggerMode
 } from '@/lib/gitlab-events'
+import { GITLAB_DEFAULT_INSTANCE_URL, gitlabInstanceHost } from '@/lib/gitlab-projects'
 import { AgentIconPicker } from '@/components/console/AgentIconPicker'
 import { BuiltinBadge } from '@/components/console/BuiltinBadge'
 import { NotFound } from '@/components/console/NotFound'
@@ -242,6 +244,13 @@ export default function AgentDetailView() {
     fetchGithubInstallations().then((result) => result.installations)
   )
   const githubInstallations = githubInstallationsData ?? []
+  // One deployment talks to exactly one GitLab instance (§24.1), so any connection names the host.
+  const gitlabConnectionsKey =
+    activeOrg && gitlabHooks.length > 0 ? (['gitlab-connections', activeOrg.id] as const) : null
+  const { data: gitlabConnectionsData } = useSWR(gitlabConnectionsKey, () =>
+    fetchGitlabConnections().then((result) => result.connections)
+  )
+  const gitlabInstanceUrl = gitlabConnectionsData?.[0]?.instanceUrl ?? GITLAB_DEFAULT_INSTANCE_URL
 
   // Authorization provenance for the unauthorized-watch badge (multi-repo
   // design §web 3): numeric repo ids first, names only for rolling legacy rows.
@@ -1679,7 +1688,7 @@ export default function AgentDetailView() {
                             </span>
                           </div>
                           <div className="mono mt-[3px] text-[11.5px] font-normal text-(--text-tertiary)">
-                            gitlab.com
+                            {gitlabInstanceHost(gitlabInstanceUrl)}
                           </div>
                         </div>
                       </div>
