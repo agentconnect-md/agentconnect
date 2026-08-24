@@ -47,7 +47,19 @@ describe('estimateOpenAiTurnCost', () => {
       outputTokens: 19_000
     })
     expect(estimate).toMatchObject({ ok: true, longContext: false })
-    if (estimate.ok) expect(estimate.amount).toBeCloseTo(4.945)
+    if (estimate.ok) expect(estimate.amount).toBeCloseTo(3.88)
+  })
+
+  it('prices GPT-5.6 Sol long context at the promotional 2x-input/1.5x-output tier', () => {
+    const estimate = estimateOpenAiTurnCost('gpt-5.6-sol', {
+      inputTokens: 280_000,
+      cachedReadTokens: 20_000,
+      cachedWriteTokens: 10_000,
+      outputTokens: 5_000,
+      tierInputTokens: 300_000
+    })
+    expect(estimate).toMatchObject({ ok: true, longContext: true })
+    if (estimate.ok) expect(estimate.amount).toBeCloseTo(0.28 * 8 + 0.02 * 0.8 + 0.01 * 10 + 0.005 * 30)
   })
 
   it('uses GPT-5.6 public cache-write pricing when the adapter supplies that bucket', () => {
