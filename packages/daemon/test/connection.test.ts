@@ -1000,6 +1000,36 @@ describe('SlackConnection.setStatus', () => {
     ])
   })
 
+  // Slack bridges both calls onto ONE status slot, last writer wins. The enum therefore has to
+  // land first: written second it blanks the free text it just displayed, and the dedupe means
+  // that happens exactly once — on the turn's first status, which is the flash users saw.
+  it('writes the lifecycle enum before the free text, and never again mid-turn', async () => {
+    const order: string[] = []
+    const conn = new SlackConnection(
+      { ...deps(), sendIntervalMs: 0 } as any,
+      () =>
+        fakeAppWith(
+          async (a) => void order.push(`text:${a.status || '(clear)'}`),
+          async (method, a) => {
+            if (method === 'agents.sessions.setStatus') order.push(`lifecycle:${a.status}`)
+            return {}
+          }
+        ) as any
+    )
+
+    await conn.setStatus('C1', '123.45', 'is thinking…')
+    await conn.setStatus('C1', '123.45', 'Searching…')
+    await conn.setStatus('C1', '123.45', '')
+
+    expect(order).toEqual([
+      'lifecycle:processing',
+      'text:is thinking…',
+      'text:Searching…',
+      'lifecycle:active',
+      'text:(clear)'
+    ])
+  })
+
   it('refires nothing for an unchanged lifecycle state, per channel and thread', async () => {
     const lifecycle: any[] = []
     const conn = lifecycleConn((a) => lifecycle.push(a))

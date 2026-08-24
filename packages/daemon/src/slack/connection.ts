@@ -1778,6 +1778,10 @@ export class SlackConnection implements PlatformConnection {
     options?: SlackStatusOptions
   ): Promise<void> {
     await this.queue.enqueue(async () => {
+      // Slack bridges both calls onto one status slot, last writer wins — so the enum goes
+      // first and the free text second, or the enum blanks the text just written.
+      // Already inside the send queue — setSessionLifecycle must not enqueue again.
+      await this.setSessionLifecycle(channel, threadTs, status ? 'processing' : 'active')
       try {
         // A clear only needs the status coordinates. Keeping authorship off that request
         // also makes the identity override specific to the visible loading state.
@@ -1795,8 +1799,6 @@ export class SlackConnection implements PlatformConnection {
         this.rememberMissingScopes(err)
         this.deps.log?.debug(`slack: setStatus failed (ch=${channel} thread=${threadTs}): ${(err as Error).message}`)
       }
-      // Already inside the send queue — setSessionLifecycle must not enqueue again.
-      await this.setSessionLifecycle(channel, threadTs, status ? 'processing' : 'active')
       await this.postPermissionUpdateCard(channel, threadTs)
     })
   }
