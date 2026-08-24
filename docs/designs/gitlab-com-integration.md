@@ -2156,12 +2156,14 @@ IDs, tokens, and signing secrets.
 
 ## 24. Self-Managed Instances
 
-> Status: **Proposed.** Everything above is implemented and pinned to
-> GitLab.com; this section removes the pin. Scope: **GitLab Self-Managed
-> 18.11 or later, one instance per deployment** — a deployment connects to
-> GitLab.com or to one self-managed instance, never both. GitLab Dedicated,
-> plain HTTP, mTLS, SSH remotes, and instances below the floor stay outside
-> the contract. Platform assumptions verified 2026-08-23.
+> Status: **Implemented** — the N0–N4 sequence in §24.6 is merged. Everything
+> above was pinned to GitLab.com; this section removes the pin. Scope:
+> **GitLab Self-Managed 18.11 or later, one instance per deployment** — a
+> deployment connects to GitLab.com or to one self-managed instance, never
+> both. GitLab Dedicated, plain HTTP, mTLS, SSH remotes, and instances below
+> the floor stay outside the contract. Platform assumptions verified
+> 2026-08-23. Operator-facing setup is
+> [`docs/self-managed-gitlab.md`](../self-managed-gitlab.md).
 
 A self-managed instance is the same product against a different origin. The
 identity model, credential purposes, webhook verification, event mapping,
@@ -2248,10 +2250,14 @@ external state. The truth arrives at the inline pre-activation ensure, where
 a `403` is classified `service_account_creation_forbidden` on the account
 row, with tier-aware remedy copy naming the setting, the Admin Area path,
 and the Admin Mode caveat. Existing accounts, webhooks, sessions, and
-reviews are unaffected by authority being withdrawn; whether the instance
-gates PAT rotation the same way is verified during implementation, and if it
-does, the rotation-horizon warning carries this reason so an operator learns
-from a warning rather than from a bot going silent.
+reviews are unaffected by authority being withdrawn, which is why the
+classification is the account row's own state rather than an `admin_degraded`
+reason: the credential port refuses on `admin_degraded`, so filing it there
+would cut exactly the runtime leases this sentence promises. An instance that
+gates PAT minting the same way is classified the same way under a
+`rotation_`-prefixed reason, so the rotation-horizon warning names the
+withdrawn authority and an operator learns from a warning rather than from a
+bot going silent.
 
 A deployment-wide instance-administrator credential (a PAT with `api` +
 `admin_mode`, confined to a service-account lifecycle port) was designed and
@@ -2463,11 +2469,34 @@ Merge order, GitLab.com green at every step:
   spec it cannot clone, because one unservable roster entry must not fail
   registration, and the clone boundary refuses it as it always did. The boot
   warning survives only as "no https origin is permitted at all".
-- **N4 — authority and surfaces.** `service_account_creation_forbidden`
+- **N4 — authority and surfaces. Landed.** `service_account_creation_forbidden`
   with tier-aware copy, the expiry clamp with the re-derived horizon, Setup
   and Console surfaces, operator documentation (authority bundle, egress for
   Control Plane / daemon / sandbox, webhook allowlist, delegation setting
-  and Admin Mode caveat, instance quota).
+  and Admin Mode caveat, instance quota). The classification is the account
+  row's OWN state, not an `admin_degraded` reason, and that distinction is
+  load-bearing rather than cosmetic: `admin_degraded` is what the credential
+  port refuses on, so filing withdrawn authority there would cut the very
+  runtime leases §24.3 says survive it. The credential port therefore serves
+  a `service_account_creation_forbidden` account exactly as it serves a ready
+  one, and the PAT's own expiry — already checked on every grant — is the
+  bound. It is also a settled verdict rather than a fault, so the inline
+  pre-activation ensure reports it instead of spending its retry budget on an
+  answer that cannot change without a human; the ordinary Repair path
+  re-attempts. A `403` from minting or rotating a PAT on an existing account
+  classifies the same way under a `rotation_`-prefixed reason, which keeps it
+  inside the namespace a later successful sweep clears — and that heal now
+  keys on the reason's namespace alone, since the state it has to clear is no
+  longer only `admin_degraded`. Both surfaces read a NAMED reason before its
+  family, so the specific remedy is not buried under the generic rotation
+  line. The clamp is one predicate at the §7.3 validation: a `YYYY-MM-DD`
+  expiry at or below the request is accepted and RECORDED, which is the whole
+  re-derivation, because the rotation sweep reads that column; null, later,
+  or unparseable stays out of policy and fails closed. A create the instance
+  rejects for its lifetime cap gets its own reason rather than the bare
+  status. The console's floor status is answered BY the Control Plane
+  (`instanceVersionSupported` plus the enforced floor on the connection DTO)
+  rather than by a second version parser in a browser.
 
 The integration fake gains a path-prefixed non-default-port mode, an
 admin-only mode returning `403` from creation, an expiry-clamping mode, and
