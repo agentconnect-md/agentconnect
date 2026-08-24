@@ -17,8 +17,9 @@ import { useConsoleData } from '@/lib/data-context'
 import { useOrgs } from '@/lib/org-context'
 import { useModal } from './ModalProvider'
 import type { GsAction, GsItem } from '@/lib/getting-started'
-import { agentIsPlaced, agentLabel, modelLabel, runtimeLabel } from '@/lib/data'
+import { agentIsPlaced, agentLabel, localDaemons, modelLabel, runtimeLabel } from '@/lib/data'
 import { isAuthConfigured } from '@/lib/auth'
+import { featureFlagEnabled } from '@/lib/feature-flags'
 import {
   fetchGithubInstallations,
   fetchMySocialAccount,
@@ -43,17 +44,21 @@ export function useGsActions() {
   // (placement + runtime/model) rather than creating a new one — only a truly empty org
   // (no preset row) falls back to the create modal.
   const builtinAgent = agents.find((a) => a.builtin) ?? firstAgent
+  const placeableDaemons = featureFlagEnabled('daemon-pool') ? daemons : localDaemons(daemons)
 
   const runAction = useCallback(
     (action: GsAction) => {
       switch (action.kind) {
+        case 'daemon':
+          return openModal('daemon')
         case 'agent':
           if (!builtinAgent) return openModal('agent')
           // Same chain the Agents / Agent detail "Add daemon" chips use (preset-agents.md
-          // §3.4): with no daemon in the org the edit modal's picker would offer only "No
+          // §3.4): with nothing to place onto the edit modal's picker would offer only "No
           // daemon", so mint one first and chain back into the edit dialog, where the
-          // fresh (and only) daemon is auto-preselected.
-          return daemons.length === 0
+          // fresh (and only) daemon is auto-preselected. Cloud counts only where the
+          // deployment offers it — the picker hides pool Pods otherwise.
+          return placeableDaemons.length === 0
             ? openModal('daemon', builtinAgent, { focusSection: 'basics' })
             : openModal('editAgent', builtinAgent, { focusSection: 'basics' })
         case 'slack': {
@@ -86,7 +91,7 @@ export function useGsActions() {
           return router.push(orgPath('/settings#session-access'))
       }
     },
-    [openModal, router, orgPath, firstAgent, builtinAgent, agents, daemons]
+    [openModal, router, orgPath, firstAgent, builtinAgent, agents, placeableDaemons]
   )
 
   return { runAction, firstAgent }

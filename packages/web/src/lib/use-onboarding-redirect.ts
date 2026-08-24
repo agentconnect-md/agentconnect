@@ -2,8 +2,9 @@
 
 // Fresh-workspace redirect to the full-screen /onboarding route, shared by every
 // console landing surface (Home is the default landing, Agents keeps it for deep
-// links). A fresh org = no placed agent AND no serving daemon AND no daemon in ANY
-// of the caller's orgs (needsOnboarding); the per-tab "Explore the console first"
+// links). A fresh org = no placed agent AND no serving daemon of its OWN (pool Pods
+// are install-wide, not this org's machine) AND no daemon in ANY of the caller's orgs
+// (needsOnboarding); the per-tab "Explore the console first"
 // skip flag suppresses the bounce-back.
 //
 // Returns true while the caller should hold a spinner instead of rendering: either
@@ -14,7 +15,7 @@ import { useEffect, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { useConsoleData } from '@/lib/data-context'
 import { useOrgs } from '@/lib/org-context'
-import { agentIsPlaced } from '@/lib/data'
+import { agentIsPlaced, localDaemons } from '@/lib/data'
 import { daemonCompletesOnboarding, isOnboardingSkipped, needsOnboarding } from '@/lib/onboarding'
 
 export function useOnboardingRedirect(): boolean {
@@ -39,7 +40,9 @@ export function useOnboardingRedirect(): boolean {
       agentsLoading,
       daemonsLoading,
       agents.some(agentIsPlaced),
-      daemons.some(daemonCompletesOnboarding),
+      // Pool Pods are not a machine this org connected, and on the pool the wizard is where
+      // the built-in agent is configured — a hidden Pod must not mark the org initialized.
+      localDaemons(daemons).some(daemonCompletesOnboarding),
       orgs.some((org) => (org.daemonCount ?? 0) > 0)
     )
   const redirect = notInitialized && skipped === false
