@@ -53,9 +53,16 @@ export interface BillingAccount {
 //            a statement line is a reconciliation fact. The service rounds in exactly
 //            two places and a history row is neither of them, so it hands the exact
 //            value over and formatting it for a human is this side's job.
-// `note` and `agents` are each on ONE arm, and each is optional for the same reason `type`
-// is: a service that predates it omits it, and the console routinely runs ahead of that
-// image. Absent or null ⇒ the row renders without that detail.
+// `note` is optional for the same reason `type` is: a service that predates it omits it, and
+// the console routinely runs ahead of that image. Absent or null ⇒ the row renders without it.
+//
+// The debit arm's `agents` — the control plane's per-agent split of a charge — is DELIBERATELY
+// not mirrored. The billing service authorizes on org membership alone; it holds no Agent or
+// Session visibility, so its `agentId`s are the org's, not the viewer's. Naming one to every
+// member is the discovery that `docs/designs/authorization-policy.md` §4 forbids and a second
+// attribution surface beside the viewer-scoped one in `session-visibility.md` §5, whose whole
+// rule is that withheld usage comes back id-less. An opaque id is still an existence
+// disclosure. Mirroring it needs a viewer-scoped response first — see #1480.
 export interface BillingCredit {
   type: 'credit'
   id: string
@@ -81,20 +88,6 @@ export interface BillingDebit {
   amount: string
   /** ISO 8601 instant. */
   at: string
-  /** Which agents the charge came from, descending by amount. ATTRIBUTION, not a second
-   *  amount: it is the control plane's split of the same observation `amount` was
-   *  differenced from, so this side must not present it as a proof of the total.
-   *
-   *  Absent or null ⇒ the row carries no attribution. `[]` is the different claim that a
-   *  breakdown arrived and named nobody; both render as no agents, and neither is an error.
-   *  A credit has no agent at all, which is why the field is on this arm only. */
-  agents?: BillingDebitAgent[] | null
-}
-
-/** One agent's share of a debit. `amount` is a decimal STRING, same reason as the debit's. */
-export interface BillingDebitAgent {
-  agentId: string
-  amount: string
 }
 
 export type BillingTransaction = BillingCredit | BillingDebit
@@ -245,16 +238,9 @@ export function assertTransactionsPage(
       // A string, and never coerced to a number here — the exact value is what the
       // service sent, and only the display rounds it.
       if (typeof t.amount !== 'string' || typeof t.period !== 'string') throw new BillingShapeError('transaction')
-      // Attribution. ABSENT is the older contract and `null` is "no breakdown"; a present
-      // list must be entirely readable, since a half-rendered split is worse than none.
-      if (!(t.agents === undefined || t.agents === null)) {
-        if (!Array.isArray(t.agents)) throw new BillingShapeError('transaction')
-        for (const a of t.agents as unknown[]) {
-          const agent = a as Record<string, unknown> | null
-          if (!agent || typeof agent.agentId !== 'string' || typeof agent.amount !== 'string')
-            throw new BillingShapeError('transaction')
-        }
-      }
+      // `agents` is checked by its ABSENCE from this list, not by a rule: an unmirrored field
+      // passes through unread, which is what keeps a service that sends one from failing the
+      // page. Nothing downstream can render what nothing here declares.
     } else {
       throw new BillingShapeError('transaction')
     }

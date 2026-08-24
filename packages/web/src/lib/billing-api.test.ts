@@ -102,33 +102,30 @@ describe('assertTransactionsPage', () => {
     expect(() => assertTransactionsPage({ items: [legacy], nextCursor: null })).not.toThrow()
   })
 
-  it("accepts a credit's note and a debit's agent split, each on its own arm", () => {
-    // Absent is the older contract; null is the service's "no note" / "no breakdown".
+  it("accepts an operator's note on a credit, and refuses one it cannot read", () => {
+    // Absent is the older contract; null is the service's "no note on this kind".
     expect(() =>
       assertTransactionsPage({
         items: [
           { ...tx, kind: 'adjustment', note: 'goodwill credit' },
-          { ...tx, note: null },
-          { ...debit, agents: [{ agentId: 'agt_1', amount: '0.4' }] },
-          // `[]` is "a breakdown arrived and named nobody" — a different claim from null,
-          // and neither is an error.
-          { ...debit, agents: [] },
-          { ...debit, agents: null }
+          { ...tx, note: null }
         ],
         nextCursor: null
       })
     ).not.toThrow()
+    expect(() => assertTransactionsPage({ items: [{ ...tx, note: 7 }], nextCursor: null })).toThrow(BillingShapeError)
   })
 
-  it('refuses an attribution it cannot read rather than rendering half of it', () => {
-    // A per-agent amount is a decimal string for the same reason the debit's is.
+  it('passes a debit’s agent split through UNREAD rather than refusing the page', () => {
+    // Deliberately unmirrored: this feed is authorized on org membership alone, so its agent
+    // ids are the org's and not the viewer's. Nothing declares the field, so nothing can
+    // render it — and a service that sends one must still not take the page down.
     expect(() =>
-      assertTransactionsPage({ items: [{ ...debit, agents: [{ agentId: 'agt_1', amount: 0.4 }] }], nextCursor: null })
-    ).toThrow(BillingShapeError)
-    expect(() => assertTransactionsPage({ items: [{ ...debit, agents: 'agt_1' }], nextCursor: null })).toThrow(
-      BillingShapeError
-    )
-    expect(() => assertTransactionsPage({ items: [{ ...tx, note: 7 }], nextCursor: null })).toThrow(BillingShapeError)
+      assertTransactionsPage({
+        items: [{ ...debit, agents: [{ agentId: 'agt_1', amount: '0.4' }] }],
+        nextCursor: null
+      })
+    ).not.toThrow()
   })
 
   it('refuses a row whose type this build cannot read', () => {

@@ -988,21 +988,9 @@ export default function BillingView() {
                         >
                           {credit ? t.kind : 'usage'}
                         </span>
-                        {/* Attribution, not a second amount: the lead agent named, the rest
-                            counted, and the split itself only in the tooltip — a per-agent
-                            figure printed beside the charge would read as proof of it. */}
-                        {!credit && t.agents && t.agents.length > 0 && (
-                          <span
-                            className="mono inline-flex h-[19px] max-w-[190px] flex-none items-center gap-1 rounded-[4px] bg-(--surface-active) px-[7px] text-[10.5px] text-(--text-secondary)"
-                            title={t.agents.map((a) => `${a.agentId} — $${a.amount}`).join('\n')}
-                          >
-                            <Icon name="bot" size={11} />
-                            <span className="truncate">{t.agents[0]!.agentId}</span>
-                            {t.agents.length > 1 && (
-                              <span className="flex-none text-(--text-tertiary)">+{t.agents.length - 1}</span>
-                            )}
-                          </span>
-                        )}
+                        {/* No agent attribution here, deliberately: this feed is authorized on
+                            org membership alone, so naming the agent behind a charge would
+                            hand every member a resource-existence oracle. See billing-api.ts. */}
                         {/* Free operator text, rendered as TEXT — truncated, with the whole
                             note on hover, so a long one cannot push the amount column out. */}
                         {credit && t.note && (
