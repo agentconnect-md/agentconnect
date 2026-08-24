@@ -35,12 +35,12 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 let host: HTMLDivElement | undefined
 let root: Root | undefined
 
-async function render(daemon: DaemonRow | undefined): Promise<string> {
+async function render(daemon: DaemonRow | undefined, canEdit = true): Promise<string> {
   host = document.createElement('div')
   document.body.appendChild(host)
   root = createRoot(host)
   await act(async () => {
-    root!.render(<AgentToolsCard agentId="a1" runtime="claude" daemon={daemon} canEdit />)
+    root!.render(<AgentToolsCard agentId="a1" runtime="claude" daemon={daemon} canEdit={canEdit} />)
   })
   return host.textContent ?? ''
 }
@@ -101,6 +101,15 @@ describe('AgentToolsCard', () => {
 
   it('shows the empty state when the agent has nothing attached', async () => {
     expect(await render(undefined)).toContain('No MCP servers')
+  })
+
+  // A read-only agent is never asked for its spec, so the card must settle on the
+  // empty state instead of sitting on its loading line forever.
+  it('does not hang on the loading line for an agent the caller cannot edit', async () => {
+    const text = await render(undefined, false)
+    expect(text).toContain('No MCP servers')
+    expect(text).not.toContain('Loading tools')
+    expect(text).not.toContain('Add')
   })
 
   it('says so in the menu when the org registry is empty too', async () => {

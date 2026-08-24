@@ -124,7 +124,7 @@ export function AgentSkillsCard({ agentId, canEdit }: { agentId: string; canEdit
     if (managedEnabled === null || saving) return
     const prev = managedEnabled
     const activeIds = new Set((managedLibrary ?? []).filter((skill) => !skill.archivedAt).map((skill) => skill.id))
-    const valid = next.filter((id) => activeIds.has(id))
+    const valid = [...new Set(next)].filter((id) => activeIds.has(id))
     setManagedEnabled(valid)
     setSaving(true)
     setErr(null)

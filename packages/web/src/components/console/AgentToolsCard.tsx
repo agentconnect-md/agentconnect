@@ -84,9 +84,11 @@ export function AgentToolsCard({
   useEffect(() => {
     if (fetched.current) return
     // Demo agents (canEdit false) have no spec to fetch — mock mode seeds a plausible
-    // saved set instead so the card isn't uniformly empty.
+    // saved set instead so the card isn't uniformly empty. A read-only agent settles
+    // on the empty list rather than null: null means "still asking", and nobody is
+    // going to ask, so the card would sit on its loading line forever.
     if (!canEdit) {
-      if (MOCK_MODE) setEnabled(['grafana', 'linear'])
+      setEnabled(MOCK_MODE ? ['grafana', 'linear'] : [])
       return
     }
     fetched.current = true
