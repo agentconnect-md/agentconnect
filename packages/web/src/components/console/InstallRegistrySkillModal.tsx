@@ -51,11 +51,14 @@ export function registrySourceName(skill: string, taken: Iterable<string>): stri
 
 export function InstallRegistrySkillModal({
   existing,
-  onClose
+  onClose,
+  onCreated
 }: {
   /** The org's current sources — for the "already in your library" state. */
   existing: SkillSourceDto[]
   onClose: () => void
+  /** Fired with the registered source, so a caller can enable it on an agent. */
+  onCreated?: (created: SkillSourceDto) => void
 }) {
   const { createSkillSource } = useConsoleData()
   const { me } = useProfile()
@@ -124,7 +127,7 @@ export function InstallRegistrySkillModal({
     setBusy(true)
     setErr(null)
     try {
-      await createSkillSource({
+      const created = await createSkillSource({
         name: name.trim(),
         source: picked.source,
         skills: [picked.name],
@@ -132,6 +135,7 @@ export function InstallRegistrySkillModal({
           ? { visibility: 'restricted' as const, sharedWith: sharing.sharedWith }
           : {})
       })
+      onCreated?.(created)
       onClose()
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))

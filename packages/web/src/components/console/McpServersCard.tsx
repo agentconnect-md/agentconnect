@@ -22,6 +22,7 @@ import {
   fetchConnectorCatalog,
   fmtDate,
   type McpProviderDto,
+  type McpProviderCreatedDto,
   type McpHeaderInput,
   type ConnectorAuthDefinition
 } from '@/lib/api'
@@ -307,7 +308,15 @@ function cleanHeaders(rows: HeaderRow[]): McpHeaderInput[] {
 
 // ── create dialog (form → mint; the grant key is minted server-side and pushed to
 // the relay, but never surfaced here — agents enable the provider by name) ────────
-function CreateMcpProviderModal({ onClose }: { onClose: () => void }) {
+/** Register an upstream MCP server. Reused by the agent detail view's Tools card,
+ *  which passes `onCreated` to attach the new provider to that agent right away. */
+export function CreateMcpProviderModal({
+  onClose,
+  onCreated
+}: {
+  onClose: () => void
+  onCreated?: (created: McpProviderCreatedDto) => void
+}) {
   const { createMcpProvider } = useConsoleData()
   const { me } = useProfile()
   const [name, setName] = useState('')
@@ -324,7 +333,7 @@ function CreateMcpProviderModal({ onClose }: { onClose: () => void }) {
     setBusy(true)
     setErr(null)
     try {
-      await createMcpProvider({
+      const created = await createMcpProvider({
         name: name.trim(),
         url: url.trim(),
         headers: cleanHeaders(headers),
@@ -333,6 +342,7 @@ function CreateMcpProviderModal({ onClose }: { onClose: () => void }) {
           ? { visibility: 'restricted' as const, sharedWith: sharing.sharedWith }
           : {})
       })
+      onCreated?.(created)
       onClose()
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
