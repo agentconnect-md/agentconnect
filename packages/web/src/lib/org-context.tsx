@@ -55,6 +55,28 @@ export function subPath(pathname: string, slug: string): string {
   return pathname === '/' ? '/home' : pathname
 }
 
+/** Deep sub-paths built from STATIC segments only, so they still name something in another
+ *  org. Everything else deeper than one segment is a detail view of an id scoped to ONE org. */
+const PORTABLE_DEEP_PATHS = new Set(['/daemons/cluster'])
+
+/** Where a sub-path lands after an org SWITCH — the same path, or `/home`.
+ *
+ *  A session, agent, cron, daemon or conversation id belongs to one org, so carrying one
+ *  across a switch lands on the other org's not-found page — and sessions answer 404 rather
+ *  than 403, so it is not even a hint about what was there. Home is the honest destination.
+ *
+ *  Deny by default, allow the few static deep paths: a new `[id]` route is covered here
+ *  without a change, and forgetting to list a new static one only sends someone home.
+ *
+ *  This is NOT `subPath`'s job — that one also canonicalizes a bare URL inside the SAME org
+ *  (`/sessions/abc` → `/acme/sessions/abc`), where dropping the id would break every deep
+ *  link into the console. */
+export function switchOrgPath(pathname: string, slug: string): string {
+  const sub = subPath(pathname, slug)
+  const deep = sub.split('/').filter(Boolean).length > 1
+  return deep && !PORTABLE_DEEP_PATHS.has(sub) ? '/home' : sub
+}
+
 /** The URL prefix shown next to the org slug ("appears in the URL") — THIS
  *  deployment's host, not a hardcoded domain. Client-only components call it
  *  after mount, so `window` is present; SSR falls back to a bare slash. */
@@ -207,7 +229,7 @@ export function OrgProvider({ children }: { children: ReactNode }) {
       const org = orgs.find((o) => o.id === orgId)
       if (!org) return
       writeLastSlug(org.slug)
-      router.push(`/${org.slug}${subPath(pathname, slug)}`)
+      router.push(`/${org.slug}${switchOrgPath(pathname, slug)}`)
     },
     [orgs, pathname, slug, router]
   )
@@ -217,8 +239,9 @@ export function OrgProvider({ children }: { children: ReactNode }) {
       const org = await apiCreateOrg(input)
       // Append optimistically BEFORE switching so activeOrg never goes null.
       setOrgs((prev) => (prev.some((candidate) => candidate.id === org.id) ? prev : [...prev, org]))
+      // A brand-new org holds nothing at all, so the same rule applies even more plainly.
       writeLastSlug(org.slug)
-      router.push(`/${org.slug}${subPath(pathname, slug)}`)
+      router.push(`/${org.slug}${switchOrgPath(pathname, slug)}`)
       await refreshOrgs()
       return org
     },
