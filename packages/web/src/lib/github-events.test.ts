@@ -33,7 +33,7 @@ describe('GH_TRIGGER_PILL', () => {
     expect(githubTriggerTooltip('first', 'reviewer')).toContain('@reviewer')
     expect(githubTriggerTooltip('mention', 'reviewer')).toContain('@reviewer')
     expect(githubTriggerTooltip('every', 'reviewer')).toBe(
-      'Runs when an issue or PR is opened and on supported updates and replies (close, reopen and edits are ignored).'
+      'Runs when an issue or PR is opened and on supported updates and replies (close, reopen and title/body edits are ignored).'
     )
   })
 
@@ -47,7 +47,7 @@ describe('GH_TRIGGER_PILL', () => {
 
 describe('GH_FAMILIES', () => {
   it('describes the supported update signals without promising silent lifecycle or metadata events', () => {
-    expect(GH_FAMILIES.find(({ fam }) => fam === 'pull_request')?.desc).toBe('opened, new commits, replies')
+    expect(GH_FAMILIES.find(({ fam }) => fam === 'pull_request')?.desc).toBe('opened, revision changes, replies')
     expect(GH_FAMILIES.find(({ fam }) => fam === 'issues')?.desc).toBe('opened, labels, replies')
   })
 

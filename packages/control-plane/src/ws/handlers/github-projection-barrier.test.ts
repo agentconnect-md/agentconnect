@@ -116,7 +116,7 @@ describe('GitHub projection request barriers', () => {
     expect(conn.replyTo).toHaveBeenCalledWith(frame, 'github/review-result/ok', { accepted: true })
   })
 
-  it('keeps a legacy completion-first PR edit out of revision projection', async () => {
+  it('recovers a completion-first target-branch change as a revision projection', async () => {
     const recordReport = vi.fn(async () => true)
     const barrier = deferred()
     const afterReport = vi.fn(() => barrier.promise)
@@ -164,7 +164,7 @@ describe('GitHub projection request barriers', () => {
       DAEMON_ID,
       expect.objectContaining({
         event: 'pull_request:edited',
-        projectionIntent: 'review_action_only',
+        projectionIntent: 'revision_event',
         repoId: 42n,
         reportSha: 'head'
       }),

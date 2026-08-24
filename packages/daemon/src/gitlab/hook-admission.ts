@@ -40,8 +40,8 @@ function mergeRequestRevisionStream(
   const headSha = headShaOf(hook)
   if (!lane || !headSha) return undefined
   const event = hook?.event ?? ''
-  if (MERGE_REQUEST_REVISION_EVENTS.has(event)) return { lane, headSha, pinned: false }
-  if (MERGE_REQUEST_RERUN_EVENTS.has(event)) return { lane, headSha, pinned: true }
+  if (MERGE_REQUEST_REVISION_EVENTS.has(event)) return { lane, revision: headSha, pinned: false }
+  if (MERGE_REQUEST_RERUN_EVENTS.has(event)) return { lane, revision: headSha, pinned: true }
   return undefined
 }
 
@@ -95,8 +95,7 @@ export const gitlabHookAdmission: CodeHostHookAdmission = {
   claims: (hook) => hook?.gitlab !== undefined,
   reviewSubjectLane: mergeRequestLane,
   revisionStream: mergeRequestRevisionStream,
-  headSha: headShaOf,
-  rerunsCurrentHead: (hook: Pick<HookDispatchContext, 'event'> | undefined) =>
+  rerunsCurrentRevision: (hook: Pick<HookDispatchContext, 'event'> | undefined) =>
     MERGE_REQUEST_RERUN_EVENTS.has(hook?.event ?? ''),
   reviewBatchStream: noteBatchStream,
   openReviewBatch,

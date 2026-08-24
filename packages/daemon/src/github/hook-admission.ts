@@ -1,5 +1,6 @@
 /** GitHub's implementation of the daemon hook-admission contract (§6.5): pull-request
  *  lanes, check-run re-run semantics, and submitted-review inline-comment batching. */
+import { isGithubPullRequestRevisionEvent } from '@agentconnect.md/protocol'
 import {
   codeHostLane,
   type CodeHostCoordinatedHook,
@@ -8,9 +9,6 @@ import {
   type CodeHostRevisionStream
 } from '../codehost/hook-admission.js'
 import type { GithubReviewBatch, GithubReviewBatchItem, HookDispatchContext } from './hook-coords.js'
-
-/** Deliveries that establish a new head. */
-const PULL_REVISION_EVENTS = new Set(['pull_request:opened', 'pull_request:synchronize'])
 
 /** Deliveries that re-run the head already current; a burst of them is one review asked for repeatedly. */
 const PULL_RERUN_EVENTS = new Set([
@@ -35,11 +33,13 @@ function pullRevisionStream(
   coords: CodeHostHookCoordinates
 ): CodeHostRevisionStream | undefined {
   const lane = pullRequestLane(hook, coords)
-  const headSha = hook?.github?.headSha
+  const github = hook?.github
+  const headSha = github?.headSha
   if (!lane || !headSha) return undefined
   const event = hook?.event ?? ''
-  if (PULL_REVISION_EVENTS.has(event)) return { lane, headSha, pinned: false }
-  if (PULL_RERUN_EVENTS.has(event)) return { lane, headSha, pinned: true }
+  const revision = JSON.stringify([github.baseSha ?? null, headSha])
+  if (isGithubPullRequestRevisionEvent(event, github)) return { lane, revision, pinned: false }
+  if (PULL_RERUN_EVENTS.has(event)) return { lane, revision, pinned: true }
   return undefined
 }
 
@@ -119,8 +119,8 @@ export const githubHookAdmission: CodeHostHookAdmission = {
   claims: (hook) => hook?.github !== undefined,
   reviewSubjectLane: pullRequestLane,
   revisionStream: pullRevisionStream,
-  headSha: (hook) => hook?.github?.headSha,
-  rerunsCurrentHead: (hook: Pick<HookDispatchContext, 'event'> | undefined) => PULL_RERUN_EVENTS.has(hook?.event ?? ''),
+  rerunsCurrentRevision: (hook: Pick<HookDispatchContext, 'event'> | undefined) =>
+    PULL_RERUN_EVENTS.has(hook?.event ?? ''),
   reviewBatchStream,
   openReviewBatch,
   batchItemKey: threadRoot,

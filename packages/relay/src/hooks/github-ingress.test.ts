@@ -965,6 +965,24 @@ describe('github ingress', () => {
       }
     )
 
+    it('keeps an external PR target change behind a maintainer review request', async () => {
+      h.table.upsert(rule({}, { events: ['pull_request:*'], appSlug: 'example-review-app' }))
+      h.authzResult = false
+
+      await post('pull_request', pullPayload({ action: 'edited', changes: { base: { ref: { from: 'main' } } } }))
+      await flush()
+
+      expect(h.sent).toHaveLength(0)
+      expect(h.reports).toEqual([
+        expect.objectContaining({
+          event: 'pull_request:edited',
+          status: 'failed',
+          reason: HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED,
+          github: expect.objectContaining({ baseChanged: true })
+        })
+      ])
+    })
+
     it.each(['opened', 'synchronize'] as const)(
       'dispatches a same-repository PR %s authored by this App without human-author authorization',
       async (action) => {
@@ -1266,7 +1284,7 @@ describe('github ingress', () => {
       expect(h.sent).toHaveLength(0)
     })
 
-    it('silences all PR edits, including base-branch retargets', async () => {
+    it('keeps PR content edits silent but dispatches a target-branch change as a revision', async () => {
       h.table.upsert(rule({}, { events: ['pull_request:edited'] }))
       const basePayload = {
         action: 'edited',
@@ -1275,6 +1293,7 @@ describe('github ingress', () => {
         sender: { login: 'alice', type: 'User' },
         pull_request: {
           number: 77,
+          user: { login: 'alice', type: 'User' },
           head: { sha: 'a'.repeat(40), repo: { full_name: 'alice/infra' } },
           base: { sha: 'b'.repeat(40), repo: { full_name: 'acme/infra' } },
           labels: []
@@ -1295,8 +1314,19 @@ describe('github ingress', () => {
         }
       )
       await flush()
-      expect(h.sent).toHaveLength(0)
-      expect(h.reports).toHaveLength(0)
+      expect(h.authzRequests).toHaveLength(1)
+      expect(h.sent).toHaveLength(1)
+      expect(h.sent[0]).toMatchObject({
+        event: 'pull_request:edited',
+        github: {
+          subjectKind: 'pull_request',
+          pullNumber: 77,
+          headSha: 'a'.repeat(40),
+          baseSha: 'b'.repeat(40),
+          baseChanged: true
+        }
+      })
+      expect(h.reports).toEqual([expect.objectContaining({ status: 'accepted', event: 'pull_request:edited' })])
     })
 
     it('identifies a PR issue_comment but leaves revision unresolved for hook/start', async () => {
@@ -2443,7 +2473,6 @@ describe('githubRuleVerdict (pure predicate)', () => {
     ['issues', 'issues:reopened'],
     ['pull_request', 'pull_request:closed'],
     ['pull_request', 'pull_request:deleted'],
-    ['pull_request', 'pull_request:edited'],
     ['pull_request', 'pull_request:reopened'],
     ['pull_request', 'pull_request:ready_for_review'],
     ['pull_request', 'pull_request:converted_to_draft'],
@@ -2453,11 +2482,12 @@ describe('githubRuleVerdict (pure predicate)', () => {
     expect(matches(rule({}, { events: [eventAction] }), { ...ctx, event, eventAction })).toBe(false)
   })
 
-  it('keeps PR synchronize while vetoing every edited action', () => {
+  it('keeps PR head and target changes while vetoing content-only edits', () => {
     const r = rule({}, { events: ['pull_request:*'] })
     const pr = { ...ctx, event: 'pull_request' }
     expect(githubRuleVerdict(r, { ...pr, eventAction: 'pull_request:synchronize' })).toBe('needs-authz')
     expect(matches(r, { ...pr, eventAction: 'pull_request:edited' })).toBe(false)
+    expect(githubRuleVerdict(r, { ...pr, eventAction: 'pull_request:edited', baseChanged: true })).toBe('needs-authz')
   })
 
   it('trusts only same-repository revisions authored by this App', () => {

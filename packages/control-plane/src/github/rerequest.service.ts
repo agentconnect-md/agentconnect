@@ -1,5 +1,6 @@
 import {
   HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED,
+  isGithubPullRequestRevisionEvent,
   type RcGithubRerequest,
   type RcGithubRerequestResult
 } from '@agentconnect.md/protocol'
@@ -191,7 +192,7 @@ export class GithubRerequestService {
     return (
       run.status === 'failed' &&
       run.reason === HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED &&
-      (run.event === 'pull_request:opened' || run.event === 'pull_request:synchronize') &&
+      isGithubPullRequestRevisionEvent(run.event ?? undefined, { baseChanged: run.baseChanged === true }) &&
       run.projectionIntent === 'revision_event' &&
       run.repoId === BigInt(req.repoId) &&
       run.sourceInstallationId === BigInt(req.installationId) &&
