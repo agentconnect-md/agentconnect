@@ -14,7 +14,7 @@
 // pending|ready|auth_required|failed probe status ships. Same for the per-item
 // "Ask agentconnect" automation (§6.3/§6.4 delegated writes).
 
-import { agentIsPlaced } from './data'
+import { agentIsPlaced, localDaemons } from './data'
 import type { Agent, DaemonRow, IntegrationRow, Session } from './data'
 import type { MemberDto } from './api'
 
@@ -126,8 +126,9 @@ export function computeGettingStarted(input: {
             label: 'Connect a daemon',
             expl: 'Run one command on the host where your agents should live. It stays connected and runs agents locally over ACP.',
             // Registered is enough — an offline daemon has still been set up, and a laptop
-            // that's merely asleep shouldn't un-tick a step the user already completed.
-            done: daemons.length > 0,
+            // that's merely asleep shouldn't un-tick a step the user already completed. Pool
+            // Pods don't count: this step is about a machine, and they are hidden here anyway.
+            done: localDaemons(daemons).length > 0,
             ctaLabel: 'Add a daemon',
             action: { kind: 'daemon' } as const
           }

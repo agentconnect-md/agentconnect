@@ -311,16 +311,17 @@ describe('onboarding — cloud pool', () => {
     expect(host.textContent).toContain('Configure')
     expect(host.textContent).not.toContain('just connected') // no "Runs on" row
     await click('Save and continue')
-    // No daemon reports runtimes on the pool, so the static fallback seeds the picker.
+    // No daemon reports runtimes on the pool, so the static fallback seeds the picker. With no
+    // pool member either there is nothing to place onto — the agent editor owns that choice.
     expect(mocks.updateAgent).toHaveBeenCalledWith('ag_ac', { runtime: FALLBACK_RUNTIME_IDS[0] })
     expect(mocks.moveAgent).not.toHaveBeenCalled()
     expect(host.textContent).toContain('Welcome to AgentConnect')
   })
 
   // GET /daemons carries the install-wide pool's member Pods in every org's fleet. They are
-  // replaceable identities: one may seed the runtime/model pickers, but pinning the preset
-  // to a Pod (or calling it "just connected") is never right — Cloud is picked in the editor.
-  it('reads runtimes from a pool member without placing the agent onto it', async () => {
+  // replaceable identities: one may seed the runtime/model pickers, but the placement names
+  // the POOL, never a Pod, and nothing here "just connected".
+  it('reads runtimes from a pool member but places on the pool, not the Pod', async () => {
     mocks.daemons = [
       {
         daemonId: 'pool-pod-1',
@@ -337,6 +338,6 @@ describe('onboarding — cloud pool', () => {
     expect(host.textContent).not.toContain('ac-cloud-7f9')
     await click('Save and continue')
     expect(mocks.updateAgent).toHaveBeenCalledWith('ag_ac', { runtime: 'claude', model: 'claude-sonnet-4-5' })
-    expect(mocks.moveAgent).not.toHaveBeenCalled()
+    expect(mocks.moveAgent).toHaveBeenCalledWith('ag_ac', { kind: 'pool' })
   })
 })

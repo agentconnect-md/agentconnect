@@ -26,7 +26,9 @@ import {
   FALLBACK_RUNTIME_IDS,
   agentIsPlaced,
   agentLabel,
+  localDaemons,
   modelLabel,
+  poolLabel,
   preferredModelFor,
   loginRequiredRuntimeIds
 } from '@/lib/data'
@@ -90,9 +92,9 @@ export default function OnboardingView() {
   const cloudDaemon = featureFlagEnabled('daemon-pool')
   // Pool Pods are never a machine the user connected, so the connect step ignores them —
   // off the pool the console hides them entirely, and a reconnect token for one is nonsense.
-  const localDaemons = daemons.filter((d) => !d.pool)
-  const daemonReady = cloudDaemon || localDaemons.some(daemonCompletesOnboarding)
-  const offlineDaemonId = firstReconnectableDaemonId(localDaemons)
+  const machines = localDaemons(daemons)
+  const daemonReady = cloudDaemon || machines.some(daemonCompletesOnboarding)
+  const offlineDaemonId = firstReconnectableDaemonId(machines)
   const loading = (agentsLoading || daemonsLoading) && daemons.length === 0 && agents.length === 0
 
   // Once a daemon is serving, configure the org's built-in `agentconnect` preset before
@@ -101,7 +103,7 @@ export default function OnboardingView() {
   // ships unplaced (daemon '—', deferred runtime); it's ready once both are set. Older
   // orgs without the preset just skip straight to the reveal.
   const builtinAgent = agents.find((a) => a.builtin)
-  const servingDaemon = localDaemons.find((d) => d.status === 'online') ?? localDaemons.find(daemonCompletesOnboarding)
+  const servingDaemon = machines.find((d) => d.status === 'online') ?? machines.find(daemonCompletesOnboarding)
   // The fleet list includes the install-wide pool's member Pods, which are replaceable
   // identities — pinning the preset to one is never right. So pool mode has NO concrete
   // placement target here (the agent editor owns the Cloud choice); one live member still
@@ -111,6 +113,8 @@ export default function OnboardingView() {
   const capabilityDaemon = cloudDaemon
     ? (daemons.find((d) => d.pool && d.status === 'online') ?? daemons.find((d) => d.pool))
     : servingDaemon
+  // Placing on the pool needs a pool that exists; without one the agent editor owns the choice.
+  const poolTarget = cloudDaemon && capabilityDaemon !== undefined
   const needsAgentSetup = !!builtinAgent && (cloudDaemon || !!placementDaemon) && !agentIsPlaced(builtinAgent)
   const [skipSetup, setSkipSetup] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -125,8 +129,10 @@ export default function OnboardingView() {
     setSaveErr(null)
     try {
       await updateAgent(builtinAgent.id, { runtime, ...(model ? { model } : {}) })
-      // Onboarding places onto a concrete machine; Cloud is chosen from the agent editor.
+      // Onto the machine just connected, or — on the pool — onto the POOL itself. A pool
+      // placement names the pool, never the member Pod whose capabilities seeded the form.
       if (placementDaemon) await moveAgent(builtinAgent.id, { kind: 'daemon', daemonId: placementDaemon.daemonId })
+      else if (poolTarget) await moveAgent(builtinAgent.id, { kind: 'pool' })
       await refresh()
       setSkipSetup(true)
     } catch (e) {
@@ -256,6 +262,7 @@ export default function OnboardingView() {
           agent={builtinAgent!}
           daemon={capabilityDaemon}
           runsOn={placementDaemon}
+          poolTarget={poolTarget}
           saving={saving}
           err={saveErr}
           onSave={saveAgentSetup}
@@ -406,6 +413,7 @@ function ConfigureAgent({
   agent,
   daemon,
   runsOn,
+  poolTarget,
   saving,
   err,
   onSave,
@@ -415,9 +423,11 @@ function ConfigureAgent({
   /** Whose reported runtimes/models seed the pickers — a pool member on the pool, else the
    *  just-connected daemon. Absent ⇒ the static fallback list. Never a placement. */
   daemon?: DaemonRow
-  /** The daemon this agent is being placed onto — absent on the pool, where nothing was
-   *  connected and Cloud is picked from the agent editor. */
+  /** The machine this agent is being placed onto — absent on the pool, which has no member
+   *  identity to pin to. */
   runsOn?: DaemonRow
+  /** Pool mode with a live pool: the agent lands on the pool itself. */
+  poolTarget: boolean
   saving: boolean
   err: string | null
   onSave: (runtime: string, model: string) => void
@@ -450,19 +460,28 @@ function ConfigureAgent({
         <p className="max-w-[430px] font-sans text-[14.5px] font-normal leading-[1.55] text-(--text-secondary)">
           {runsOn
             ? 'Your org’s built-in agent runs on the daemon you just connected. Pick a runtime and model, and it’s ready to work.'
-            : 'Every org ships with a built-in agent. Pick the runtime and model it should use, and it’s ready to work.'}
+            : `Your org’s built-in agent runs on ${poolTarget ? poolLabel() : 'your infrastructure'}. Pick a runtime and model, and it’s ready to work.`}
         </p>
       </div>
 
       <div className="flex flex-col gap-[14px] rounded-[10px] border border-(--border-default) bg-(--surface-card) p-4 shadow-(--shadow-xs)">
-        {runsOn && (
+        {(runsOn || poolTarget) && (
           <div className="fld">
             <span className="fldlbl">Runs on</span>
-            <div className="inp cursor-not-allowed" title="Set to the daemon you just connected">
-              <span className="truncate text-(--text-primary)">{runsOn.name}</span>
-              <span className="ml-auto flex-none font-sans text-[11.5px] leading-none text-(--text-tertiary)">
-                just connected
-              </span>
+            <div
+              className="inp cursor-not-allowed"
+              title={
+                runsOn
+                  ? 'Set to the daemon you just connected'
+                  : 'Move it to a machine any time from the agent’s settings'
+              }
+            >
+              <span className="truncate text-(--text-primary)">{runsOn ? runsOn.name : poolLabel()}</span>
+              {runsOn && (
+                <span className="ml-auto flex-none font-sans text-[11.5px] leading-none text-(--text-tertiary)">
+                  just connected
+                </span>
+              )}
             </div>
           </div>
         )}

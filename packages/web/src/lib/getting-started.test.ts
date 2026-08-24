@@ -42,6 +42,15 @@ describe('computeGettingStarted', () => {
     ])
   })
 
+  // A pool Pod is install-wide infrastructure, not a machine this org connected — and with the
+  // pool hidden the console does not show it at all. It must not tick "Connect a daemon".
+  it('does not tick the daemon step from a pool member Pod', () => {
+    const done = (rows: DaemonRow[]) =>
+      computeGettingStarted({ ...empty, daemons: rows }).items.find((i) => i.key === 'daemon')!.done
+    expect(done([{ daemonId: 'pool-1', status: 'online', pool: true } as DaemonRow])).toBe(false)
+    expect(done([{ daemonId: 'd1', status: 'online' } as DaemonRow])).toBe(true)
+  })
+
   // Cloud pool on: agents run there, so there is no daemon to connect and the step goes.
   it('drops the daemon step where the deployment offers the cloud pool', () => {
     const pooled = computeGettingStarted({ ...empty, poolEnabled: true })
