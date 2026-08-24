@@ -3632,10 +3632,19 @@ export const UsageDto = z.object({
   agents: z.array(UsageAgentDto),
   models: z.array(UsageModelDto),
   sources: z.array(UsageSourceDto),
+  // What `totals` holds that this caller may not attribute to an agent, as one rollup
+  // with no id. Present only when something was hidden, so a reader can tell "nothing
+  // hidden" from "hidden, and it cost 0" — and it carries no COUNT of hidden agents,
+  // which would tell the caller the residual is one agent's spend.
+  unattributed: UsageAgentDto.omit({ agentId: true }).optional(),
   // Spend-over-time chart: cost bucketed by hour (a window of two days or less) or day,
   // empty buckets filled to 0. `start` is a UTC-aligned ISO instant. `byAgent`/
   // `byModel` split each bucket's total for the grouped/stacked chart (model
   // key ''=unreported; only non-zero deltas get a key).
+  //
+  // Viewer-scoped, per-bucket total included: a residual resolved per hour would BE a
+  // restricted agent's spend curve. So the series does not sum to `totals` whenever
+  // `unattributed` is present, and a caller that shows both must say which is which.
   series: z.object({
     bucket: z.enum(['hour', 'day']),
     points: z.array(

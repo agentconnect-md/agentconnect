@@ -9,7 +9,9 @@
  * sessions and daemon restarts.
  *
  * ONE route serves two callers. The console asks with a human credential and its
- * preset-derived window, and stays inside session visibility; a settlement job asks
+ * preset-derived window, and stays inside session visibility for ATTRIBUTION — what it
+ * may not attribute is returned as an id-less residual rather than dropped, so its total
+ * is the org's; a settlement job asks
  * with a workload credential (`usage-service-auth.ts`), `source=gateway`, and a closed
  * accounting period, and reads the org whole. Both get the same aggregation code, so a
  * figure on the dashboard and a figure on an invoice cannot come from two different
@@ -49,6 +51,8 @@ export function usageRoutes(deps: HttpDeps) {
         // total that silently omitted the sessions no human may read would be wrong in
         // the direction that costs someone money. There is no human to attribute the
         // read to, which is exactly why it takes an install-level principal to make it.
+        // No viewer ⇒ every row is attributable ⇒ the aggregate carries no `unattributed`,
+        // so this arm reads exactly as it did before the residual existed.
         if (req.usageServiceOrgId) {
           const agg = await deps.repos.sessionUsage.aggregate(
             req.usageServiceOrgId,
@@ -68,9 +72,11 @@ export function usageRoutes(deps: HttpDeps) {
             series: agg.series
           }
         }
-        // Viewer-scoped: both agent visibility and the request-time Session
-        // predicate apply to counts, tokens, costs, and buckets. Roles do not
-        // widen either resource boundary.
+        // Viewer-scoped ATTRIBUTION: agent visibility and the request-time Session
+        // predicate decide which rows this caller may see attributed to an agent, and the
+        // spend series is scoped to those. They do NOT narrow `totals` — an org's spend is
+        // a fact about the org — so what they withhold lands in `unattributed` instead.
+        // Roles still never widen either resource boundary.
         const ctx = ctxOf(req)
         const visibleAgentIds = (await deps.repos.agent.list(orgOf(req), ctx)).map((agent) => agent.id)
         const access = await sessionAccess.forQuery(req, { agentIds: visibleAgentIds })
@@ -95,6 +101,7 @@ export function usageRoutes(deps: HttpDeps) {
           agents: agg.agents,
           models: agg.models,
           sources: agg.sources,
+          ...(agg.unattributed ? { unattributed: agg.unattributed } : {}),
           series: agg.series
         }
       }

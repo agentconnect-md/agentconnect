@@ -1,5 +1,6 @@
 /**
- * `observability/usage-ingest.ts` — one counter for the usage write path.
+ * `observability/usage-ingest.ts` — the usage path's counters: one for the write path,
+ * one for a read that failed its own arithmetic.
  *
  * A cumulative checkpoint only ever moves forward. When a late retry arrives carrying
  * LOWER counters than the checkpoint already stored at that instant, the store ignores
@@ -24,5 +25,21 @@ export function countCheckpointRegression(source: UsageSource): void {
     checkpointRegressions.add(1, { source })
   } catch {
     // A metrics exporter never participates in whether usage is stored.
+  }
+}
+
+const attributionDrift = meter.createCounter('agentconnect.usage.attribution.drift', {
+  unit: '{aggregate}',
+  description: 'Usage aggregates whose per-agent rollup plus residual did not equal the totals'
+})
+
+/** Count one aggregate that failed its attribution invariant. The caller throws right
+ *  after, so this exists to make a bug that only reproduces in production visible
+ *  without waiting for someone to reconcile a dashboard against an invoice. */
+export function countUsageAttributionDrift(): void {
+  try {
+    attributionDrift.add(1)
+  } catch {
+    // A metrics exporter never decides whether the caller reports the failure.
   }
 }
