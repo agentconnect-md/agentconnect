@@ -294,6 +294,12 @@ export const CP_URL_ENV = 'AC_CP_URL'
  *  env and not a config key alone: an in-cluster daemon has no config file to carry one. Read
  *  as a boolean — `false`/`0` disable, anything else leaves reporting on. */
 export const USAGE_REPORTING_ENV = 'AC_USAGE_REPORTING'
+/** Env var carrying the operator's workspace clone-origin allowlist into an in-cluster daemon,
+ *  comma-separated. The policy is the OPERATOR's — a tenant can never widen it — and in a cluster
+ *  the deployment is who that is, with no config file to say it in. Absent leaves the daemon's own
+ *  default; a malformed entry is fatal rather than dropped, because a silently missing origin is a
+ *  clone refused later with no trace of why. */
+export const WORKSPACE_GIT_ORIGINS_ENV = 'AC_WORKSPACE_GIT_ALLOWED_ORIGINS'
 /** A pool member's rollout generation (its pod-template hash), reported on register (frames/register.ts). */
 export const POD_TEMPLATE_HASH_ENV = 'AC_POD_TEMPLATE_HASH'
 

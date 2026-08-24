@@ -1,7 +1,13 @@
 import { chmodSync, readFileSync, existsSync, writeFileSync, mkdirSync, statSync } from 'node:fs'
 import { dirname } from 'node:path'
-import { CP_URL_ENV, USAGE_REPORTING_ENV, type RelayRosterEntry } from '@agentconnect.md/protocol'
-import { ConfigSchema, type Config } from './config-schema.js'
+import {
+  CP_URL_ENV,
+  USAGE_REPORTING_ENV,
+  WORKSPACE_GIT_ORIGINS_ENV,
+  type RelayRosterEntry
+} from '@agentconnect.md/protocol'
+import { z } from 'zod'
+import { ConfigSchema, WorkspaceGitOrigin, type Config } from './config-schema.js'
 import { resolveRoot, configPath, defaultAgentsDir } from '../paths.js'
 
 export interface FlatOverrides {
@@ -92,6 +98,30 @@ export function loadConfig(
   const envUsageReporting = process.env[USAGE_REPORTING_ENV]?.trim().toLowerCase()
   if (declaredUsageReporting === undefined && (envUsageReporting === 'false' || envUsageReporting === '0')) {
     cfg.usageReporting.enabled = false
+  }
+
+  // Same shape again, for the one policy a self-managed code host makes unavoidable: the clone
+  // origins this daemon will serve. A file that states them wins — read from the RAW document for
+  // the same reason as above, since the schema's default and an explicit list parse alike.
+  const declaredOrigins = (raw as { security?: { workspaceGitAllowedOrigins?: unknown } } | null)?.security
+    ?.workspaceGitAllowedOrigins
+  const envOrigins = process.env[WORKSPACE_GIT_ORIGINS_ENV]?.trim()
+  if (declaredOrigins === undefined && envOrigins) {
+    const parsed = z
+      .array(WorkspaceGitOrigin)
+      .nonempty()
+      .safeParse(
+        envOrigins
+          .split(',')
+          .map((entry) => entry.trim())
+          .filter(Boolean)
+      )
+    if (!parsed.success) {
+      throw new Error(
+        `${WORKSPACE_GIT_ORIGINS_ENV} must be a comma-separated list of exact credential-free https/ssh origins`
+      )
+    }
+    cfg.security.workspaceGitAllowedOrigins = parsed.data
   }
 
   cfg.agentsDir = o.agentsDir ?? cfg.agentsDir ?? defaultAgentsDir(root)

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { loadConfig } from '../src/config/load-config.js'
 import { McpServerDefSchema, RuntimeDefSchema, sessionRetentionMs } from '../src/config/config-schema.js'
-import { CP_URL_ENV } from '@agentconnect.md/protocol'
+import { CP_URL_ENV, WORKSPACE_GIT_ORIGINS_ENV } from '@agentconnect.md/protocol'
 
 function tmpRoot(config: unknown): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-cfg-'))
@@ -14,6 +14,57 @@ function tmpRoot(config: unknown): string {
 }
 
 describe('loadConfig', () => {
+  describe(`${WORKSPACE_GIT_ORIGINS_ENV} (the operator's clone policy, in a cluster)`, () => {
+    const withEnv = <T>(value: string | undefined, run: () => T): T => {
+      const previous = process.env[WORKSPACE_GIT_ORIGINS_ENV]
+      if (value === undefined) delete process.env[WORKSPACE_GIT_ORIGINS_ENV]
+      else process.env[WORKSPACE_GIT_ORIGINS_ENV] = value
+      try {
+        return run()
+      } finally {
+        if (previous === undefined) delete process.env[WORKSPACE_GIT_ORIGINS_ENV]
+        else process.env[WORKSPACE_GIT_ORIGINS_ENV] = previous
+      }
+    }
+
+    it('replaces the default list, so a self-managed host can be the only one served', () => {
+      const cfg = withEnv('https://gitlab.example.test', () => loadConfig({ root: tmpRoot({ version: 1 }) }))
+      expect(cfg.security.workspaceGitAllowedOrigins).toEqual(['https://gitlab.example.test'])
+    })
+
+    it('takes a list, trimming the spacing a values file is likely to hand it', () => {
+      const cfg = withEnv(' https://github.com , https://gitlab.example.test:8443 ', () =>
+        loadConfig({ root: tmpRoot({ version: 1 }) })
+      )
+      expect(cfg.security.workspaceGitAllowedOrigins).toEqual([
+        'https://github.com',
+        'https://gitlab.example.test:8443'
+      ])
+    })
+
+    it('never overrides a list the config file states', () => {
+      const root = tmpRoot({ version: 1, security: { workspaceGitAllowedOrigins: ['https://gitlab.example.test'] } })
+      const cfg = withEnv('https://elsewhere.example.test', () => loadConfig({ root }))
+      expect(cfg.security.workspaceGitAllowedOrigins).toEqual(['https://gitlab.example.test'])
+    })
+
+    // Fatal, not dropped: a silently missing origin is a clone refused later with nothing pointing here.
+    it('refuses a malformed entry rather than serving a shorter list', () => {
+      expect(() =>
+        withEnv('https://gitlab.example.test/group', () => loadConfig({ root: tmpRoot({ version: 1 }) }))
+      ).toThrow(WORKSPACE_GIT_ORIGINS_ENV)
+    })
+
+    it('is ignored when blank', () => {
+      const cfg = withEnv('   ', () => loadConfig({ root: tmpRoot({ version: 1 }) }))
+      expect(cfg.security.workspaceGitAllowedOrigins).toEqual([
+        'https://github.com',
+        'ssh://github.com',
+        'https://gitlab.com'
+      ])
+    })
+  })
+
   it('loads and validates a minimal config, applying defaults', () => {
     const root = tmpRoot({
       version: 1,

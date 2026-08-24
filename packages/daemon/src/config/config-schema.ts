@@ -66,7 +66,7 @@ const ProcessValue = z
   .string()
   .max(16 * 1024)
   .refine((value) => !value.includes('\0'), 'process value contains NUL')
-const WorkspaceGitOrigin = z.string().transform((value, ctx) => {
+export const WorkspaceGitOrigin = z.string().transform((value, ctx) => {
   try {
     return normalizeWorkspaceGitOrigin(value)
   } catch {
