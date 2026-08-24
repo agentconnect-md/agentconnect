@@ -1,9 +1,14 @@
 # Slack Native Streaming Turn Output
 
-**Status:** Implemented — ships with the PR that adds this document (Layer 1 of the
-Slack-native agent experience; Layer 0 is merged). One carve-out is deliberately still
-closed: turns on a shareable (multi-agent) bot keep the legacy pipeline until §10 Q1 is
-verified live (§7.1).
+**Status:** Implemented and shipped (Layer 1 of the Slack-native agent experience; Layer 0 is
+merged). One carve-out is deliberately still closed: turns on a shareable (multi-agent) bot keep
+the legacy pipeline, and lifting it now requires teaching ingress to read a stop-time
+finalization first (§7.1).
+
+Presentation was revised once after seeing it live: streams open in `plan` display mode rather
+than `timeline`, the §5.5 finalization rides `chat.stopStream` instead of a closing `chat.update`
+that was erasing the task cards, and the documented loading state was restored for the window
+before the stream has anything to show. §4, §3.3 and §5 carry those decisions.
 
 Layer 0 ([#1462](https://github.com/agentconnect-md/agentconnect/pull/1462),
 [#1471](https://github.com/agentconnect-md/agentconnect/pull/1471)) adopted Slack's Agent
@@ -126,11 +131,8 @@ Everything that is _chrome around the answer_ rather than the answer:
 - **Transcript.** The paired `recordOnly` posts and `appendTranscript` rows are emitted exactly as
   today. The stream is display; the transcript is the record.
 - **Permalinks** (`workspaceUrl`), thread coordinates, `protectedAddresses` splitting.
-- **§5.5 response finalization.** `finalizeResponse` still issues its closing `chat.update` on the
-  streamed message's `ts`, carrying `delivery_state: 'final'` and the recipient set resolved from
-  the complete response. This is load-bearing: relay and Socket Mode ingress recognise an agent's
-  finished answer by _that edit_, so replacing it with stop-time metadata would silently break
-  agent-to-agent routing over Slack. §7 Q1 makes verifying it a merge gate.
+- **§5.5 response finalization** — but **carried by the stop, not by a follow-up edit.** See
+  below; this is the one item in this list that streaming genuinely changes.
 
 ### 3.3 The attribution footer gets simpler
 
@@ -145,6 +147,24 @@ where two messages carry a footer. It stays for the fallback path, and `onSettle
 This satisfies
 [`product-conventions.md` §"Slack message attribution footer"](../product-conventions.md) — the
 footer is attached to the final message of the response and is never a separate message.
+
+**And §5.5's finalization rides the same stop.** The original plan kept the closing `chat.update`
+on the streamed message, carrying `delivery_state: 'final'` and the resolved recipient set. That
+turned out to be the single most destructive call in the pipeline: `chat.update` **replaces** a
+message's whole content, so it wiped every task card the turn had rendered and left the answer
+marked "(edited)". `chat.stopStream` takes both of the things that edit was for — `blocks`, which
+are appended below everything already streamed rather than replacing it, and `metadata` — so the
+final delivery state is stamped at stop time and no edit is issued at all. The samples corroborate
+the shape: none of them calls `chat.update` on a streamed message.
+
+**Why that is safe to do now, and what the carve-out lift owes.** Nothing reads the finalization
+event except agent-to-agent routing, and A2A happens only on shareable bots — which §7.1 keeps
+off the streaming path entirely. So today no consumer can miss it. That makes it a **prerequisite
+of lifting the carve-out**, not an afterthought: before a shareable bot may stream, relay and
+Socket Mode ingress must first learn to recognise the finalization from stop-time metadata, since
+the `message_changed` edit they key on today will no longer be emitted. Until then the two facts
+hold each other up — the carve-out is what makes stop-carried finalization safe, and teaching
+ingress is what makes the carve-out liftable.
 
 ### 3.4 Length and continuation
 
@@ -205,29 +225,49 @@ All streaming calls go through the connection's single `PlatformSendQueue` (350 
 ## 4. ACP → stream mapping
 
 Slack's streaming chunk vocabulary — as the resolved SDK declares it, see §10 Q3 — is
-`{ type: 'markdown_text', text }`, `{ type: 'task_update', id, title, status, details? }`
+`{ type: 'markdown_text', text }`, `{ type: 'task_update', id, title, status, details?, output? }`
 (256 chars, status `pending` | `in_progress` | `complete` | `error`),
 `{ type: 'plan_update', title }` and `{ type: 'blocks', blocks }`.
 
-| ACP `session/update`             | today                                                  | streaming                                                                                                                                                                                                               |
-| -------------------------------- | ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `agent_message_chunk`            | buffered → `post` / `live-reply`                       | appended as `markdown_text` (coalesced, §3.5)                                                                                                                                                                           |
-| `tool_call` / `tool_call_update` | in-place `progress` message + rotating status text     | `medium`/`high`: `task_update` keyed by `toolCallId`; ACP `pending`/`in_progress` → `in_progress`, `completed` → `complete`, `failed` → `error`. `minimal`/`low`: nothing, as today                                     |
-| `agent_thought_chunk`            | `high`: in-place Thinking message; others: status text | `medium`/`high`: one `task_update` per thinking run (`title: "Thinking"`, `details` = newest clamped line). `high` additionally keeps its full in-place Thinking message — 2,800 characters do not fit a 256-char chunk |
-| `plan`                           | in-place `plan` message                                | unchanged (see below)                                                                                                                                                                                                   |
-| tool output, terminal (`high`)   | separate code-block message                            | unchanged                                                                                                                                                                                                               |
-| `usage_update`                   | dropped                                                | dropped                                                                                                                                                                                                                 |
+**The fields do not all behave the same way, and that is the single most load-bearing fact
+here.** `title` and `status` REPLACE per card id — re-send them as often as you like. `details`
+**appends** server-side, and `output` is written once at completion. Refreshing an appending
+field per update therefore concatenates on Slack's side instead of replacing it: streaming a
+thinking line into `details` on every chunk is what ran repeated `**bold**` fragments together
+into literal `****`, since card fields render as plain text and never interpret emphasis. The
+rule this design follows is **write-once for anything that appends**: `output` at completion,
+`details` at most once per card, and everything else expressed through `title`/`status`.
 
-**`task_display_mode`.** `timeline` (the default) "renders task updates as individual task cards
-interleaved with streamed text" — that is precisely a stream of ACP tool calls, which arrive
-interleaved with the answer and are append-only. `plan` renders the updates together as one
-checklist block — that is precisely an ACP `plan`, which resends the full entry list with
-per-entry statuses on every update.
+| ACP `session/update`             | today                                                  | streaming                                                                                                                                                                                                                                     |
+| -------------------------------- | ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `agent_message_chunk`            | buffered → `post` / `live-reply`                       | appended as `markdown_text` (coalesced, §3.5)                                                                                                                                                                                                 |
+| `tool_call` / `tool_call_update` | in-place `progress` message + rotating status text     | `medium`/`high`: `task_update` keyed by `toolCallId`; ACP `pending`/`in_progress` → `in_progress`, `completed` → `complete`, `failed` → `error`; the tool's result written ONCE as `output` at completion. `minimal`/`low`: nothing, as today |
+| `agent_thought_chunk`            | `high`: in-place Thinking message; others: status text | `medium`/`high`: one `task_update` per thinking run, `title: "Thinking"` and status only — no per-line detail, because that field appends. `high` keeps its full in-place Thinking message, which is where 2,800 characters belong anyway     |
+| `plan`                           | in-place `plan` message                                | unchanged (see below)                                                                                                                                                                                                                         |
+| tool output, terminal (`high`)   | separate code-block message                            | unchanged                                                                                                                                                                                                                                     |
+| `usage_update`                   | dropped                                                | dropped                                                                                                                                                                                                                                       |
 
-The catch is that `task_display_mode` is a `chat.startStream` argument, and a turn does not know
-at start whether the runtime will ever emit a plan. So: **open every stream in `timeline`, and
-leave the ACP plan on its existing separate in-place message.** Moving it into `plan_update`
-chunks is a follow-up gated on §7 Q4, not a prerequisite.
+**`task_display_mode`: `plan`, not `timeline`.** The first version reasoned from the names —
+`timeline` "renders task updates as individual task cards interleaved with streamed text", which
+sounded like a stream of ACP tool calls — and shipped that. Seeing it rendered settled the
+question the other way: flat, separate cards bury the answer under a column of tool chrome, and
+what a reader wants is the answer with the activity folded away.
+
+`plan` is that shape. Every task card is collected into ONE collapsed-by-default container, and
+`{ type: 'plan_update', title }` is the line printed on it. So the container gets a small arc of
+its own:
+
+- **while working** — a generic honest label (`Working…`), written once when the stream opens;
+- **at the terminal stop** — a counted summary: `Completed 3 steps`, `Completed 3 steps · 1
+failed`, or `Done` when the turn ran no steps at all.
+
+Counted rather than narrated, deliberately: it is derived from the cards the turn actually
+emitted, so it needs no second model call and cannot disagree with what is inside the container.
+`minimal` and `low` open no container and get no label — they stream body text alone.
+
+The ACP `plan` keeps its existing separate in-place message. That is now a stronger decision than
+it was: the container's label is one plain-text line, and an ACP plan is a full entry list with
+per-entry statuses that it resends on every update, which is a checklist, not a label.
 
 **Output modes.** `none` never streams (transcript only, unchanged). `minimal` and `low` stream
 body text only. `medium` and `high` add task chunks. This is the same ladder the modes already
@@ -235,21 +275,47 @@ express — streaming changes the _transport_ of each rung, not which rung shows
 
 ## 5. Status choreography
 
-On a streaming turn the daemon makes **no status call of either kind**. The stream is the
-lifecycle:
+On a streaming turn the daemon never writes the **session enum**. It does write the **loading
+text**, for exactly one window. The stream is the lifecycle; the loading state is what covers the
+gap before the stream has anything in it:
 
 | Moment                               | Today                                                                                 | Streaming                                                                       |
 | ------------------------------------ | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| `dispatch`, before the session opens | `showActivity(…, plan.startupActivityLabel)` → legacy text (+ enum, first write only) | nothing                                                                         |
-| `openTurnChrome`                     | `showActivity(…, 'is thinking…')`                                                     | `chat.startStream` — creates the session, sets `processing`                     |
-| each activity change                 | `set-status` → legacy text, enum deduped away                                         | `task_update` chunk on the stream                                               |
+| `dispatch`, before the session opens | `showActivity(…, plan.startupActivityLabel)` → legacy text (+ enum, first write only) | the same legacy text and `loading_messages`, **text only** — never the enum     |
+| `openTurnChrome`                     | `showActivity(…, 'is thinking…')`                                                     | `chat.startStream` — creates the session, sets `processing`. No second write    |
+| pre-stream loading                   | (the status simply persists)                                                          | the loading text stands until the stream's first visible chunk, then one clear  |
+| each activity change                 | `set-status` → legacy text, enum deduped away                                         | `task_update` chunk on the stream; the plan card's `in_progress` is the signal  |
 | turn end (`onFinal`)                 | `set-status ''` → legacy clear + enum `active`                                        | `chat.stopStream` with the footer blocks; `session_status` defaults to `active` |
 
-The legacy free-text path is **retired where streaming works and kept verbatim as the fallback**.
-Concretely: `showActivity` and the applier's `set-status` case each grow one guard — _is a stream
-open for this turn?_ — and skip the write if so. Nothing about `setStatus`,
-`setSessionLifecycle`, or their dedup map changes; on a non-streaming turn they run exactly as
-they do today.
+**Why the loading state came back.** The first version wrote no status of either kind and read
+well on paper — the stream is the lifecycle, so why narrate it? In practice a cold start opens a
+visible empty bubble and then shows nothing until the first token, which is a blank wait exactly
+where a user most wants a sign of life.
+[Slack's own loading-state guidance](https://docs.slack.dev/ai/developing-agents) and the
+official assistant templates both do the obvious thing instead: set the free-text status with
+`loading_messages` while working, and let the message carry the content. So does this design now.
+
+Three rules keep it from re-opening the one-slot conflict of §1:
+
+- **Text only, never the enum.** `chat.startStream` already set the session `processing`, and the
+  enum cannot carry custom text anyway — writing it would replace the native rendering with the
+  legacy one for nothing. The connection therefore exposes a `setLoadingStatus` that writes the
+  free text alone, and a streaming turn uses only that.
+- **One window, closed explicitly.** The status is written once, before the stream, and cleared
+  the moment the stream first shows a body chunk or a task card — not when the stream _opens_,
+  because the gap between opening and first content is the whole point. The clear has to be
+  explicit now: Slack's bridge cleared the legacy status when the app posted a message, and a
+  streaming turn no longer posts one. A turn that ends without ever showing anything clears it at
+  the terminal stop, so it cannot be left hanging.
+- **Nothing mid-turn.** After the clear, the plan card's `in_progress` state is the activity
+  signal. The applier's `set-status` case still skips while a stream is open.
+
+This covers the pre-stream window only, so it is independent of the separate, deferred question
+of whether `minimal`/`low` should keep a rotating status _during_ a streaming turn.
+
+The legacy free-text path is otherwise **retired where streaming works and kept verbatim as the
+fallback**. Nothing about `setStatus`, `setSessionLifecycle`, or their dedup map changes; on a
+non-streaming turn they run exactly as they do today.
 
 Per-agent authorship moves to where it belongs. `username` / `icon_url` / `icon_emoji` are
 per-message arguments on `chat.startStream`, populated from the same
@@ -450,21 +516,26 @@ the large majority of installs (dedicated bots), and one live check on a shareab
 whether the carve-out is lifted. Until then the risk is bounded to _no change_ — a shareable bot
 behaves exactly as it does today.
 
-Two properties make this honest rather than a permanent hedge:
+It gates on the codebase's **existing** shareable predicate — the same
+`platformIntegrationConfig('slack', …).shareable` fact that decides whether the status bar offers
+"Switch agent" — not on a new flag invented for this change. Nothing new becomes configurable, so
+nothing new can acquire callers and become permanent.
 
-- It gates on the codebase's **existing** shareable predicate — the same
-  `platformIntegrationConfig('slack', …).shareable` fact that decides whether the status bar
-  offers "Switch agent" — not on a new flag invented for this change. Nothing new becomes
-  configurable, so nothing new can acquire callers and become permanent.
-- The closing edit is **still issued on every streaming turn**. Skipping it on the streamed path
-  would leave nothing to verify; issuing it is what makes the follow-up a measurement rather
-  than another round of speculation.
+**The carve-out has since become load-bearing for a second reason, and that raised its lift
+price.** §3.3 moved the §5.5 finalization onto `chat.stopStream`, because the closing
+`chat.update` it replaced was erasing the task cards. That means a streamed turn no longer emits
+the `message_changed` event ingress keys on. Harmless today — the only consumer is A2A routing,
+which happens only on shareable bots, which do not stream — but it makes the lift a two-part
+change, in order:
 
-The follow-up is one line plus its test: delete the predicate from the eligibility check once a
-live shareable-bot turn is observed to route. If instead the edit turns out to be rejected or
-invisible, the carve-out stops being temporary and this section becomes its permanent
-justification — which is the same outcome §10 Q1 already recommended, reached without blocking
-the rest.
+1. **Teach relay and Socket Mode ingress to recognise a finalization from stop-time metadata**,
+   alongside the edit they read today.
+2. **Then** delete the predicate from the eligibility check.
+
+Doing (2) without (1) would silently stop agent-to-agent routing on exactly the bots that use it.
+So the lift is no longer "one line plus its test" — the line is still one line, but it is the
+second of two changes, and the first belongs to the ingress seam this design otherwise leaves
+alone.
 
 **SDK note.** `@slack/web-api` resolves to 8.0.0 in this workspace, and — checked against the
 resolved package, not assumed — it **does** type all three methods (`chat.startStream`,
@@ -563,10 +634,13 @@ eval guard.
 ingress needs?** §5.5 routing depends on the closing edit being _seen_: relay and Socket Mode both
 recognise a finished agent answer by `normalizeSlackResponseFinalization` on that edit, and
 without it agent-to-agent mentions over Slack stop resolving. Undocumented either way.
-_Resolved as a rollout decision, not a merge gate:_ §7.1 ships the shareable-bot carve-out up
-front, so the only population a wrong answer could hurt never streams. The closing edit is still
-issued on every streaming turn, so the live check has something to observe. Verify post-deploy;
-lift the carve-out in a follow-up if it routes, keep it permanently if it does not.
+_Resolved, and then made moot._ §7.1 ships the shareable-bot carve-out up front, so the only
+population a wrong answer could hurt never streams. Seeing the edit run in a real workspace then
+answered the question in the worst way available: it works, and it is destructive — `chat.update`
+replaces the message wholesale, erasing every task card and marking the answer "(edited)". So the
+edit is gone from the streamed path entirely (§3.3), and what replaces it is stop-time metadata.
+The open question is no longer "does the edit survive" but "can ingress read a finalization that
+never arrives as an edit" — see §7.1, where it is now the first half of the carve-out lift.
 
 **Q2. What is the accumulated-length cap of a streamed message, and does `chat.stopStream` accept
 `session_status: "processing"`?** The 12,000 figure is documented per call, not per message;
@@ -590,10 +664,11 @@ details?, output?, sources? }`, alongside `{ type: 'markdown_text', text }`. So 
 still ride the same per-error degrade as everything else, so a shape Slack later rejects costs the
 task cards, not the answer.
 
-**Q4. Can `task_display_mode` change mid-stream?** It is a `chat.startStream` argument, and a turn
-cannot know at start whether its runtime will emit an ACP plan. _Recommended:_ open every stream in
-`timeline`, leave the ACP plan on its existing separate in-place message, and revisit moving it to
-`plan_update` chunks only if a mid-stream switch turns out to be supported.
+**Q4. Can `task_display_mode` change mid-stream?** _Answered, and the question turned out not to
+matter._ Every stream now opens in `plan` (§4), which is the mode we want for the whole turn, so
+nothing needs to switch. `plan_update` is used for the container's own label, not for the ACP
+plan, which keeps its separate in-place message — a full entry list with per-entry statuses is a
+checklist, and the container's label is one plain-text line.
 
 **Q5. On the fallback path, keep main's current enum-last order, or land #1478's reorder?** Once
 streaming ships, the legacy path runs only where streaming is impossible — and #1478's order means

@@ -407,6 +407,9 @@ export class VirtualSlackConnection implements PlatformConnection {
   /** Ephemeral presence (assistant status) — not a message; not recorded. */
   async setStatus(): Promise<void> {}
 
+  /** The loading-state half of the same presence, for streaming turns. Equally ephemeral. */
+  async setLoadingStatus(): Promise<void> {}
+
   async setTitle(): Promise<void> {}
 
   /**
