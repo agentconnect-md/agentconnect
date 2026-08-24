@@ -47,8 +47,6 @@ export function useGsActions() {
   const runAction = useCallback(
     (action: GsAction) => {
       switch (action.kind) {
-        case 'daemon':
-          return openModal('daemon')
         case 'agent':
           return builtinAgent ? openModal('editAgent', builtinAgent, { focusSection: 'basics' }) : openModal('agent')
         case 'slack': {

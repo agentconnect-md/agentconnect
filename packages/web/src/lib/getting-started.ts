@@ -4,8 +4,9 @@
 // item is incomplete and vanishes for good once the list is complete — there is no
 // manual dismiss, so the only state this module owns is the pure derivation.
 //
-// Steps in the design's order: daemon → meet your agent → Slack → GitHub+repo (one
-// merged step) → first conversation → invite. Still not derivable client-side (left
+// Steps in the design's order: meet your agent → Slack → GitHub+repo (one merged
+// step) → first conversation → invite. Connecting a daemon is no longer a step —
+// agents are placed from the agent editor and onboarding never asks for one. Still not derivable client-side (left
 // out rather than faked, preset-agents.md §6.2): the "Runtime signed in"
 // needs-attention item — neither `authRequired` (absence also means probe
 // pending/failed) nor advertised models (a usable runtime may legitimately have no
@@ -14,13 +15,12 @@
 // "Ask agentconnect" automation (§6.3/§6.4 delegated writes).
 
 import { agentIsPlaced } from './data'
-import type { Agent, DaemonRow, IntegrationRow, Session } from './data'
+import type { Agent, IntegrationRow, Session } from './data'
 import type { MemberDto } from './api'
 
 // What the item's primary CTA drives. The component maps kind → a real handler
 // (open a modal, route to a page) so this stays pure and testable.
 export type GsAction =
-  | { kind: 'daemon' }
   | { kind: 'agent' }
   | { kind: 'slack'; agentId: string | null }
   | { kind: 'github'; agentId: string | null }
@@ -62,7 +62,6 @@ const RING_CIRCUMFERENCE = 2 * Math.PI * 10.5
 
 export function computeGettingStarted(input: {
   agents: Agent[]
-  daemons: DaemonRow[]
   integrations: IntegrationRow[]
   sessions: Session[]
   members: MemberDto[]
@@ -90,7 +89,6 @@ export function computeGettingStarted(input: {
 }): GettingStarted {
   const {
     agents,
-    daemons,
     integrations,
     sessions,
     members,
@@ -111,16 +109,6 @@ export function computeGettingStarted(input: {
   const placedAgent = builtin ? agentIsPlaced(builtin) : agents.some(agentIsPlaced)
 
   const items: GsItem[] = [
-    {
-      key: 'daemon',
-      label: 'Connect a daemon',
-      expl: 'Run one command on the host where your agents should live. It stays connected and runs agents locally over ACP.',
-      // Registered is enough — an offline daemon has still been set up, and a laptop
-      // that's merely asleep shouldn't un-tick a step the user already completed.
-      done: daemons.length > 0,
-      ctaLabel: 'Add a daemon',
-      action: { kind: 'daemon' }
-    },
     {
       key: 'agent',
       label: 'Set up your agent',
