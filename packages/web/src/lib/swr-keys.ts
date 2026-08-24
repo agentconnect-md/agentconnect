@@ -38,8 +38,13 @@ export const consoleKeys = {
     orgId: string | null | undefined,
     provider: Provider
   ) => consoleKey(orgId, 'session-access', provider),
-  usage: <const Range extends string>(orgId: string | null | undefined, range: Range) =>
-    consoleKey(orgId, 'usage', range),
+  /** `source` is a REQUEST parameter (the CP scopes the whole aggregate to one metering
+   *  ingress), so it keys apart from the unscoped read rather than being filtered out of it. */
+  usage: <const Range extends string, const Source extends string = 'all'>(
+    orgId: string | null | undefined,
+    range: Range,
+    source: Source = 'all' as Source
+  ) => consoleKey(orgId, 'usage', range, source),
   /** Billing rows come from the separate billing service (lib/billing-api), but they
    *  are org-scoped like everything else here, so they key the same way. */
   billingAccount: (orgId: string | null | undefined) => consoleKey(orgId, 'billing-account'),
@@ -47,6 +52,11 @@ export const consoleKeys = {
   /** The credit rows of the last 30 days — paged out of the same feed, so it keys apart
    *  from the first page `billingTransactions` serves the Billing table. */
   billingTopUps: (orgId: string | null | undefined) => consoleKey(orgId, 'billing-top-ups'),
+  /** The Activity chart's window, keyed per range: a wider range is not a superset it can
+   *  slice, because the page cap truncates a long ledger and a 90-day answer may already
+   *  have lost days a 24-hour answer carries in full. */
+  billingActivity: <const Range extends string>(orgId: string | null | undefined, range: Range) =>
+    consoleKey(orgId, 'billing-activity', range),
   sessions: (
     orgId: string | null | undefined,
     cursor: string,

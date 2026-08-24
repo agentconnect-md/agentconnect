@@ -24,7 +24,7 @@ import { useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import useSWR from 'swr'
 import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis } from 'recharts'
-import { isPoolPlacementKind, poolFleetStatus, poolLabel, status, type Agent, type DaemonRow } from '@/lib/data'
+import { isPoolPlacementKind, poolFleetStatus, poolLabel, status, type DaemonRow } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { consoleKeys } from '@/lib/swr-keys'
 import { fetchUsage } from '@/lib/api'
@@ -32,7 +32,7 @@ import { amountToNumber, sumAmounts } from '@/lib/amount'
 import { SEG_FILL, bucketLabel, tickInterval } from '@/lib/spend-chart'
 import {
   fetchBillingAccount,
-  fetchBillingTransactions,
+  fetchBillingTransactionsSince,
   fmtDecimalUsd,
   fmtMicroUsd,
   type BillingCredit
@@ -217,7 +217,7 @@ export default function ClusterDetailView() {
             report. Neither borrows the other's figure — a plan's included usage cannot be
             derived from load telemetry, and a self-hoster is billed nothing here. */}
         {managed ? (
-          billingOffered && <CloudCreditsCard hosted={hosted} placementLoading={agentsLoading || memberSetsLoading} />
+          billingOffered && <CloudCreditsCard />
         ) : (
           <ClusterCapacityCard {...{ capacityLabel, capacityPct, unbounded, cpu, mem }} />
         )}
@@ -304,78 +304,45 @@ function MetaItem({ icon, text, mono = false }: { icon: string; text: string; mo
 // The spend is NOT read off the billing debits, and scope is the whole reason. A debit's
 // `period` is `YYYY-MM`, so it is a monthly aggregate of the org's ENTIRE usage — quoting it
 // here would contradict this page's own footnote about agents on daemons you connected
-// yourself. `fetchUsage('d30')` buckets cost per day with a `byAgent` split, so the pool's
-// agents can be summed out of it and nothing else is counted. A CP predating that split can
-// only answer for the whole org, so the card reports the figure as unavailable rather than
-// quoting a number this page has just promised it is not.
+// yourself. `fetchUsage('d30', …, 'gateway')` buckets cost per day already scoped to the
+// gateway collector — the ingress the hosted pool meters through, and the same figure the
+// billing service bills — so the series total IS the Cloud figure and this card sums nothing.
 //
-// One approximation remains, and it is the axis the rollup does not have: placement is
-// CURRENT-state while the series is historical, so an agent moved onto the pool brings its
-// whole 30 days along (spend it incurred on a self-connected daemon), and one moved off drops
-// its real Cloud spend. Exact scoping needs a placement dimension in the CP's rollup.
+// Scoping by metering source rather than by current placement is also what makes the number
+// historically true: placement is CURRENT-state, so filtering the per-agent split by it made
+// an agent moved onto the pool bring along 30 days of spend it incurred on a self-connected
+// daemon, and one moved off drop its real Cloud spend.
 const CREDITS_WINDOW_DAYS = 30
 const DAY_MS = 24 * 60 * 60 * 1000
 // Two series, one shared axis: both are USD, and a second axis scaled to make a $0.40 day
 // look like a $50 top-up would be the misleading chart. SVG `fill` can't take a `var()`
 // attribute, so the hues are descendant rules on the wrapper — the trick `SEG_FILL` uses.
 const SERIES_FILL = '[&_.bar-spend_path]:fill-(--brand) [&_.bar-topup_path]:fill-(--green-500)'
-// The window goes to the service as `from`, so a long ledger costs one page here instead of
-// however many it takes to walk back 30 days. The client-side cut stays: a billing image that
-// predates the parameter ignores it and answers with everything, and this console deploys
-// ahead of that image — summing what came back would then quote the wrong figure, silently.
-//
-// The page cap is a runaway guard, not a policy: an org that tops up more times than this in
-// 30 days under-reports rather than paging its whole ledger for one total.
-const TOPUP_MAX_PAGES = 10
+// Only the credit side of the window: this card charts top-ups against the CP's own usage
+// series, so the ledger's debit rows would double-count what `usage` already carries.
+const fetchTopUps = async (orgId: string, sinceMs: number): Promise<BillingCredit[]> =>
+  (await fetchBillingTransactionsSince(orgId, sinceMs)).filter((t): t is BillingCredit => t.type === 'credit')
 
-async function fetchTopUps(orgId: string, sinceMs: number): Promise<BillingCredit[]> {
-  const from = new Date(sinceMs).toISOString()
-  const credits: BillingCredit[] = []
-  let cursor: string | undefined
-  for (let page = 0; page < TOPUP_MAX_PAGES; page++) {
-    const { items, nextCursor } = await fetchBillingTransactions(orgId, cursor, { from })
-    // Rows are newest-first, so the window ends at the first row older than it. An unparseable
-    // `at` compares false and stays — a row this side cannot date must not silently truncate
-    // the ones behind it.
-    const older = items.findIndex((t) => Date.parse(t.at) < sinceMs)
-    for (const row of older < 0 ? items : items.slice(0, older)) if (row.type === 'credit') credits.push(row)
-    if (older >= 0 || !nextCursor) break
-    cursor = nextCursor
-  }
-  return credits
-}
-
-function CloudCreditsCard({ hosted, placementLoading }: { hosted: readonly Agent[]; placementLoading: boolean }) {
+function CloudCreditsCard() {
   const { activeOrg } = useOrgs()
   const orgId = activeOrg?.id ?? null
   // Same `billingAccount` key the Billing page reads, so the two pages cannot disagree.
   const account = useSWR(consoleKeys.billingAccount(orgId), () => fetchBillingAccount(orgId!))
-  const usage = useSWR(consoleKeys.usage(orgId, 'd30'), () => fetchUsage('d30', orgId!))
+  // `source=gateway` is the scope, as a request parameter: the CP answers with the
+  // gateway-metered aggregate only, so nothing here filters or re-sums it.
+  const usage = useSWR(consoleKeys.usage(orgId, 'd30', 'gateway'), () => fetchUsage('d30', orgId!, 'gateway'))
   const topUps = useSWR(consoleKeys.billingTopUps(orgId), () =>
     fetchTopUps(orgId!, Date.now() - CREDITS_WINDOW_DAYS * DAY_MS)
   )
 
   const points = usage.data?.series?.points ?? []
-  const poolIds = new Set(hosted.map((a) => a.id))
-  // `byAgent` is optional on the wire; without it there is no Cloud-only figure to quote.
-  const scoped = points.some((p) => p.byAgent)
-  const daily = scoped
-    ? points.map((p) => sumAmounts(Object.entries(p.byAgent ?? {}).flatMap(([id, c]) => (poolIds.has(id) ? [c] : []))))
-    : []
+  const daily = points.map((p) => p.costAmount)
   const spent = sumAmounts(daily)
-  // The spend figure needs BOTH sides settled: the series, and the placement that scopes it.
-  // `hosted` is empty while agents load, and worse, group-placed agents classify as pool-placed
-  // while `orgSetIds` is empty — either would render a confident wrong figure for a round trip.
-  const spendLoading = usage.isLoading || placementLoading
+  const spendLoading = usage.isLoading
   // An error is the figure's state only while there is nothing to show: SWR keeps `data` across
   // a failed revalidation, and flipping the header to "unavailable" beside a chart still drawn
   // from that same retained series would have the card disagree with itself.
-  const spendError =
-    usage.error && !usage.data
-      ? (usage.error as Error).message
-      : usage.data && !scoped
-        ? 'this control plane does not split spend per agent, so the Cloud-only figure cannot be separated from the org total'
-        : undefined
+  const spendError = usage.error && !usage.data ? (usage.error as Error).message : undefined
 
   const credits = topUps.data ?? []
   // The NET of the credit side — a negative adjustment subtracts, which is what the balance
@@ -458,12 +425,12 @@ function CloudCreditsCard({ hosted, placementLoading }: { hosted: readonly Agent
         <span className="w-px flex-none self-stretch bg-(--border-subtle)" />
         <Figure
           label={`Spent · ${CREDITS_WINDOW_DAYS}d`}
-          value={scoped ? fmtDecimalUsd(spent) : '—'}
+          value={usage.data ? fmtDecimalUsd(spent) : '—'}
           // Divided by the labelled window, not `daily.length`: the CP floors the window's
           // start to a local day boundary, so a 30-day span is 31 buckets whenever "now" is
           // not midnight, and the edge two are partial days.
           note={
-            scoped
+            usage.data
               ? `avg ${fmtMicroUsd(Math.round((amountToNumber(spent) / CREDITS_WINDOW_DAYS) * 1_000_000))} / day`
               : ' '
           }

@@ -10,6 +10,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import useSWR from 'swr'
+import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis } from 'recharts'
 import {
   BillingError,
   BillingShapeError,
@@ -19,15 +20,25 @@ import {
   fetchBillingAccount,
   fetchBillingPurchase,
   fetchBillingTransactions,
+  fetchBillingTransactionsSince,
   fmtDecimalUsd,
   fmtMicroUsd,
   type BillingAccount,
   type BillingPurchase,
   type BillingTransaction
 } from '@/lib/billing-api'
+import {
+  ACTIVITY_RANGES,
+  activityRange,
+  activityWindowStart,
+  bucketActivity,
+  type ActivityMode,
+  type ActivityRange
+} from '@/lib/billing-activity'
 import { balanceBanner, ledgerHistory } from '@/lib/billing-banner'
 import { featureFlagEnabled } from '@/lib/feature-flags'
 import { useOrgs } from '@/lib/org-context'
+import { SEG_FILL, tickInterval } from '@/lib/spend-chart'
 import { consoleKeys } from '@/lib/swr-keys'
 import { LoadingState } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
@@ -402,6 +413,152 @@ function AddCreditsCard({ orgId, returnPath }: { orgId: string; returnPath: stri
   )
 }
 
+// ── Activity: the ledger, bucketed ──────────────────────────────────────────
+// Both series come out of the SAME feed the transactions table reads — this page has no
+// other source, and the service exposes no time series of its own. So the chart states
+// what the ledger says and nothing more: no burn rate, no projection, no "days left".
+//
+// SVG `fill` can't take a `var()` presentation attribute, so the hues are descendant rules
+// on the wrapper — the trick `SEG_FILL` uses. Usage is the brand hue (money leaving),
+// top-ups green (money arriving), the same pairing as the Cluster page's credits chart.
+const ACTIVITY_FILL = '[&_.bar-usage_path]:fill-(--brand) [&_.bar-topup_path]:fill-(--green-500)'
+
+function ActivityCard({ orgId }: { orgId: string }) {
+  const [range, setRange] = useState<ActivityRange>('d7')
+  const [mode, setMode] = useState<ActivityMode>('usage')
+  const cfg = activityRange(range)
+
+  const rows = useSWR(consoleKeys.billingActivity(orgId, range), () =>
+    fetchBillingTransactionsSince(orgId, activityWindowStart(range))
+  )
+  const buckets = bucketActivity(rows.data ?? [], range, mode)
+  const total = buckets.reduce((sum, b) => sum + b.amount, 0)
+
+  const Tip = ({ active, payload }: { active?: boolean; payload?: { payload: (typeof buckets)[number] }[] }) => {
+    const row = active ? payload?.[0]?.payload : undefined
+    if (!row) return null
+    return (
+      <div className="rounded-md border border-(--border-subtle) bg-(--surface-card) px-2.5 py-2 shadow-(--shadow-md)">
+        <div className="mono text-[11px] font-semibold">{row.label}</div>
+        <div className="mt-1 flex items-center gap-1.5 font-sans text-[11px] leading-normal text-(--text-secondary)">
+          <span
+            className={`h-[9px] w-[9px] flex-none rounded-[2px] ${mode === 'usage' ? 'bg-(--brand)' : 'bg-(--green-500)'}`}
+          />
+          {mode === 'usage' ? 'usage' : 'topped up'}{' '}
+          <span className="mono text-(--text-primary)">{fmtMicroUsd(Math.round(row.amount * 1_000_000))}</span>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    // `min-w-0`: recharts measures this box, and an auto min-width would let the plot
+    // widen its own container.
+    <div className="card mb-[18px] min-w-0">
+      <div className="cardhead flex-wrap justify-between gap-2">
+        <span className="inline-flex items-baseline gap-2">
+          <span className="cardtitle">Activity</span>
+          <span className="mono text-[11.5px] text-(--text-tertiary)">{cfg.note}</span>
+        </span>
+        <span className="flex items-center gap-2">
+          <span className="pillbar">
+            {ACTIVITY_RANGES.map((r) => (
+              <button key={r.key} className={range === r.key ? 'pill on' : 'pill'} onClick={() => setRange(r.key)}>
+                {r.label}
+              </button>
+            ))}
+          </span>
+          <span className="pillbar">
+            <button className={mode === 'usage' ? 'pill on' : 'pill'} onClick={() => setMode('usage')}>
+              Usage
+            </button>
+            <button className={mode === 'topups' ? 'pill on' : 'pill'} onClick={() => setMode('topups')}>
+              Top-ups
+            </button>
+          </span>
+        </span>
+      </div>
+      {rows.error ? (
+        <div className="flex items-center gap-3 px-4 py-3">
+          <Icon name="triangle-alert" size={18} color="var(--status-error)" />
+          <span className="flex-1 font-sans text-[13px] font-normal leading-[1.55]">
+            Could not load activity: {(rows.error as Error).message}
+          </span>
+          <Button size="sm" variant="secondary" onClick={() => void rows.mutate()}>
+            Retry
+          </Button>
+        </div>
+      ) : !rows.data ? (
+        // Bar count is the range's real bucket count, so the placeholder has the plot's own
+        // rhythm and switching range doesn't reflow the card's height. Each bar is an equal
+        // flex SLOT with the bar 88% wide inside it, which is `barCategoryGap="12%"` below —
+        // a fixed px gap would leave 7 wide bars glued together and 90 narrow ones as gap.
+        <div className="p-4">
+          <div className="flex h-[124px] animate-pulse items-end pb-[22px]">
+            {Array.from({ length: cfg.buckets }, (_, i) => (
+              <span
+                key={i}
+                className="flex min-w-0 flex-1 justify-center"
+                style={{ height: `${24 + ((i * 23 + 13) % 60)}%` }}
+              >
+                <span className="w-[88%] rounded-t-[3px] bg-(--surface-active)" />
+              </span>
+            ))}
+          </div>
+          <div className="mt-2 flex justify-center">
+            <span className="h-[11px] w-[160px] animate-pulse rounded-[3px] bg-(--surface-active)" />
+          </div>
+        </div>
+      ) : (
+        <div className="p-4">
+          {/* An all-zero plot reads as broken rather than as empty, so an empty range says so
+              in words and keeps the chart out of it. */}
+          {total > 0 ? (
+            <div className={`h-[124px] text-(--text-tertiary) ${SEG_FILL} ${ACTIVITY_FILL}`}>
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={buckets} margin={{ top: 4, right: 4, bottom: 0, left: 4 }} barCategoryGap="12%">
+                  <XAxis
+                    dataKey="label"
+                    interval={tickInterval(buckets.length)}
+                    tickLine={false}
+                    axisLine={false}
+                    tickMargin={6}
+                    tick={{ fill: 'currentColor', fontSize: 10.5 }}
+                    className="mono"
+                  />
+                  <Tooltip content={<Tip />} cursor={{ fill: 'var(--surface-hover)' }} />
+                  {/* A pixel floor under any nonzero bucket, so a cent beside a $50 top-up is
+                      still visible — and 0 for a bucket with nothing, so an idle day draws
+                      nothing at all. */}
+                  <Bar
+                    dataKey="amount"
+                    name={mode === 'usage' ? 'usage' : 'top-up'}
+                    className={mode === 'usage' ? 'bar-usage' : 'bar-topup'}
+                    radius={[3, 3, 0, 0]}
+                    minPointSize={(_: number | null | undefined, i: number) => ((buckets[i]?.amount ?? 0) > 0 ? 3 : 0)}
+                  />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          ) : (
+            <div className="py-8 text-center font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-tertiary)">
+              {mode === 'usage'
+                ? `Nothing was deducted in the ${cfg.note.replace('last ', '')}.`
+                : `No credits were added in the ${cfg.note.replace('last ', '')}.`}
+            </div>
+          )}
+          <div className="mt-2 text-center font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
+            {mode === 'usage' ? 'usage' : 'top-ups'} · {cfg.note.replace('last ', '')}{' '}
+            <span className="mono text-[11px] text-(--text-secondary)">
+              {fmtMicroUsd(Math.round(total * 1_000_000))}
+            </span>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function MembersDontPayCard() {
   return (
     <div className="card flex flex-col">
@@ -666,6 +823,10 @@ export default function BillingView() {
             ) : null}
           </div>
 
+          {/* Design: the chart only appears once the ledger has something to draw — an
+              unfunded org gets the banner and the empty table, not an empty plot. */}
+          {txItems.length > 0 && <ActivityCard orgId={orgId} />}
+
           <div className="card">
             <div className="cardhead justify-between">
               <span className="inline-flex items-baseline gap-2">
@@ -692,8 +853,28 @@ export default function BillingView() {
                 </Button>
               </div>
             ) : !transactions.data ? (
-              <div className="px-4 py-8 text-center font-sans text-[13px] font-normal leading-[1.55] text-(--text-tertiary)">
-                Loading…
+              // Placeholder rows on the real column template, so the header the loaded table
+              // will carry lines up with them instead of arriving over a centred word.
+              <div className="animate-pulse">
+                <div className={`row h rounded-none ${TX_GRID}`}>
+                  <span />
+                  <span>Description</span>
+                  <span className="text-right">Amount</span>
+                  <span />
+                  <span className="truncate">Posted ({LOCAL_TZ})</span>
+                </div>
+                {Array.from({ length: 5 }, (_, i) => (
+                  <div key={i} className={`row ${TX_GRID}`}>
+                    <span className="h-[26px] w-[26px] rounded-[7px] bg-(--surface-active)" />
+                    <span
+                      className="h-[13px] rounded-[3px] bg-(--surface-active)"
+                      style={{ width: `${44 + i * 9}%` }}
+                    />
+                    <span className="ml-auto h-[13px] w-[68px] rounded-[3px] bg-(--surface-active)" />
+                    <span />
+                    <span className="h-[13px] w-[112px] rounded-[3px] bg-(--surface-active)" />
+                  </div>
+                ))}
               </div>
             ) : txItems.length === 0 ? (
               <div className="flex flex-col items-center px-4 py-10 text-center">
