@@ -29,6 +29,7 @@ import {
   fetchAgentHooks,
   fetchAgentRepos,
   fetchGithubInstallations,
+  fetchGitlabConnections,
   fetchHookRuns,
   fetchSessionDetail,
   sessionFromDetailDto,
@@ -86,6 +87,7 @@ import {
   type GlFamily,
   type GlTriggerMode
 } from '@/lib/gitlab-events'
+import { gitlabInstanceHost } from '@/lib/gitlab-projects'
 import { AgentIconPicker } from '@/components/console/AgentIconPicker'
 import { BuiltinBadge } from '@/components/console/BuiltinBadge'
 import { NotFound } from '@/components/console/NotFound'
@@ -242,6 +244,15 @@ export default function AgentDetailView() {
     fetchGithubInstallations().then((result) => result.installations)
   )
   const githubInstallations = githubInstallationsData ?? []
+  // One deployment talks to exactly one GitLab instance (§24.1), so any connection names the host.
+  const gitlabConnectionsKey =
+    activeOrg && gitlabHooks.length > 0 ? (['gitlab-connections', activeOrg.id] as const) : null
+  const { data: gitlabConnectionsData } = useSWR(gitlabConnectionsKey, () =>
+    fetchGitlabConnections().then((result) => result.connections)
+  )
+  // A pending read and a failed one both arrive as undefined, and neither is evidence of an
+  // instance, so the host is named only once a connection has said it.
+  const gitlabInstanceUrl = gitlabConnectionsData?.[0]?.instanceUrl ?? null
 
   // Authorization provenance for the unauthorized-watch badge (multi-repo
   // design §web 3): numeric repo ids first, names only for rolling legacy rows.
@@ -1678,9 +1689,11 @@ export default function AgentDetailView() {
                               connected
                             </span>
                           </div>
-                          <div className="mono mt-[3px] text-[11.5px] font-normal text-(--text-tertiary)">
-                            gitlab.com
-                          </div>
+                          {gitlabInstanceUrl && (
+                            <div className="mono mt-[3px] text-[11.5px] font-normal text-(--text-tertiary)">
+                              {gitlabInstanceHost(gitlabInstanceUrl)}
+                            </div>
+                          )}
                         </div>
                       </div>
                       <div className="border-t border-(--border-subtle) bg-(--surface-app)">
