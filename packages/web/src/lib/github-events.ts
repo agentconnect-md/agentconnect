@@ -11,8 +11,8 @@ import type { GithubCommentFamily, HookCommentFamily } from './api'
  *              — a push subscription is inherently per-push, so `push:*` rides
  *              along unchanged)
  *   updated  → `family:*` + `issue_comment:created` when a thread family is
- *              selected. The relay ignores close/reopen and every issue/PR
- *              `edited` action; supported updates and replies still run.
+ *              selected. The relay ignores close/reopen and content edits;
+ *              PR target-branch changes, other supported updates, and replies run.
  *   mention only → the same subscriptions as updated, with `mentionOnly: true` —
  *              an event fires ONLY when its text (issue/PR body, comment body,
  *              commit message) @-mentions the assigned agent or the App. The
@@ -39,7 +39,7 @@ export const GH_FAMILIES: { fam: GhFamily; pill: string; icon: string; label: st
     pill: 'PRs',
     icon: 'git-pull-request',
     label: 'Pull requests',
-    desc: 'opened, new commits, replies'
+    desc: 'opened, revision changes, replies'
   },
   {
     fam: 'issues',
@@ -72,7 +72,7 @@ export function githubTriggerTooltip(mode: GhTriggerMode, agentName: string): st
     case 'first':
       return `Runs when an issue or PR opens, plus later @${agentName} mentions.`
     case 'every':
-      return 'Runs when an issue or PR is opened and on supported updates and replies (close, reopen and edits are ignored).'
+      return 'Runs when an issue or PR is opened and on supported updates and replies (close, reopen and title/body edits are ignored).'
     case 'mention':
       // Not "only @agent": the App handle is the repository-wide broadcast, and
       // an authorized native App review request bypasses cadence/mention/label.

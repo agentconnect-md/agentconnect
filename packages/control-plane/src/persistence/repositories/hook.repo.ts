@@ -12,6 +12,7 @@ import {
   HOOK_DELIVERY_REASON_DAEMON_OFFLINE,
   HOOK_DELIVERY_REASON_DISPATCH_TIMEOUT,
   HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED,
+  isGithubPullRequestRevisionEvent,
   isRetryableHookDeliveryReason,
   normalizeGitUrl,
   type Platform
@@ -351,8 +352,6 @@ const DURABLE_GITHUB_REDELIVERY_EVENTS = new Set([
   'pull_request_review_comment',
   'push'
 ])
-const REVIEW_REQUEST_REQUIRED_EVENTS = new Set(['pull_request:opened', 'pull_request:synchronize'])
-
 /** Only ordinary GitHub webhook families can be reconstructed from the App's
  * delivery list. Generic webhooks and Check rererequests use the Relay's short
  * retry only; scheduling them here would create a gate no reconciler can own. */
@@ -1976,7 +1975,7 @@ export class PgHookRepo implements HookRepo {
           row.status === 'failed' &&
           row.reason === HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED &&
           row.event !== null &&
-          REVIEW_REQUEST_REQUIRED_EVENTS.has(row.event) &&
+          isGithubPullRequestRevisionEvent(row.event, { baseChanged: row.baseChanged === true }) &&
           row.projectionIntent === 'revision_event' &&
           row.subjectKind === 'pull_request' &&
           row.completedAt !== null &&

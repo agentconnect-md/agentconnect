@@ -229,14 +229,16 @@ filters require at least one current subject label to match.
 comments because GitHub sends both through `issue_comment`.
 
 The matcher rejects bot-authored comments and review comments, plus unrelated bot
-events, to prevent self-reply loops and agent-to-agent mention loops. PR `opened` and
-`synchronize` revisions authored by the configured App are admitted as the lifecycle
+events, to prevent self-reply loops and agent-to-agent mention loops. Revision-bearing
+PR events authored by the configured App are admitted as the lifecycle
 exception: same-repository PRs are treated as an internal CI lane and may start review
 without a human-author permission lookup, while fork PRs remain on the maintainer
 workflow-approval path.
 
-Closed, deleted, reopened, and edited issue or pull-request lifecycle events do
-not start turns. Signed issue-close, issue-delete, and merged-pull-request
+Closed, deleted, and reopened issue or pull-request lifecycle events do not start
+turns. Ordinary issue/PR title and body edits are also silent. A PR edit carrying
+signed `changes.base` metadata is a target-branch revision and starts a new review.
+Signed issue-close, issue-delete, and merged-pull-request
 deliveries instead fan out as maintenance-only requests that apply the daemon's
 safe session-worktree cleanup without deleting session metadata or transcripts.
 Deleted issue comments and review comments are silent no-ops. A diff-line review
@@ -285,7 +287,7 @@ explicitly mentioning the Agent or App in a comment. An ordinary unmentioned
 comment cannot silently activate an external thread; both its commenter and
 the original subject author must pass the same live role check.
 
-For external PR revision-bearing events such as open and synchronize, the system records a body-free
+For external PR revision-bearing events such as open, synchronize, and target-branch change, the system records a body-free
 `review_request_required` outcome and may project an informational Check with a
 maintainer action. A maintainer can then request execution through:
 

@@ -879,9 +879,12 @@ historical. A request that supersedes an incomplete generation keeps that active
 instead of leaving it permanently unfinished.
 
 Automatic PR revision reviews are latest-wins while active or queued. When a newer
-`pull_request:synchronize` delivery for the same Agent, integration, repository, and pull
-request is durably admitted, the daemon cancels the older active review, suppresses all of
-its remaining output, and removes intermediate queued heads. Relay ingest time determines
+revision-bearing delivery for the same Agent, integration, repository, and pull request is
+durably admitted, the daemon cancels the older active review, suppresses all of its remaining
+output, and removes intermediate queued revisions. A head change arrives as
+`pull_request:synchronize`; a target-branch change arrives as `pull_request:edited` with
+signed `changes.base` metadata. Revision identity includes both base and head, so retargeting
+an unchanged head still preempts work for the old diff. Relay ingest time determines
 recency even if asynchronous authorization reorders delivery; the delivery key breaks
 same-timestamp ties deterministically. Draft state does not change review eligibility: an
 open draft PR follows the same formal review path as a ready PR, including approval when
@@ -938,9 +941,9 @@ the configured review cadence.
 
 Mention routing does not bypass the integration's event family, label filter,
 installation attribution, or live maintainer authorization. Bot-sender veto still
-applies to comments and review comments. An `opened`/`synchronize` PR authored by
-the installed App is admitted as a lifecycle event: same-repository PRs follow the
-internal CI review lane, while fork PRs wait for workflow approval. A targeted agent
+applies to comments and review comments. A revision-bearing PR event authored by the
+installed App is admitted as a lifecycle event: same-repository PRs follow the internal
+CI review lane, while fork PRs wait for workflow approval. A targeted agent
 mention narrows an otherwise broader `updated` fan-out, while an event with no
 AgentConnect mention continues to follow its configured cadence.
 In a pull request conversation, an authorized explicit AgentConnect mention

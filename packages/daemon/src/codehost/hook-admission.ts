@@ -32,10 +32,10 @@ export interface CodeHostHookCoordinates {
 /** The trusted identity an admission decision may read — never model-visible text. */
 export type CodeHostCoordinatedHook = Pick<HookDispatchContext, 'hookId' | 'agentId' | 'event' | 'github' | 'gitlab'>
 
-/** One lane's contest for the next generation; a re-run is `pinned` to its own head and contests that alone. */
+/** One lane's contest for the next generation; a re-run is `pinned` to its exact provider revision. */
 export interface CodeHostRevisionStream {
   lane: string
-  headSha: string
+  revision: string
   pinned: boolean
 }
 
@@ -62,10 +62,8 @@ export interface CodeHostHookAdmission {
     hook: CodeHostCoordinatedHook | undefined,
     coords: CodeHostHookCoordinates
   ): CodeHostRevisionStream | undefined
-  /** The head revision this delivery names, for the preemption comparison. */
-  headSha(hook: CodeHostCoordinatedHook | undefined): string | undefined
-  /** True when this delivery re-runs the head already current, so an older generation is dead work. */
-  rerunsCurrentHead(hook: Pick<HookDispatchContext, 'event'> | undefined): boolean
+  /** True when this delivery re-runs the exact revision already current, so an older generation is dead work. */
+  rerunsCurrentRevision(hook: Pick<HookDispatchContext, 'event'> | undefined): boolean
   /** Identity of the comment stream this delivery coalesces into, or undefined when it batches with nothing. */
   reviewBatchStream(hook: CodeHostCoordinatedHook | undefined, coords: CodeHostHookCoordinates): string | undefined
   /** This delivery's own single-item batch, or undefined when it coalesces with nothing. */
@@ -127,9 +125,9 @@ export function batchPublishesItems(hook: CodeHostCoordinatedHook | undefined): 
   return hookAdmissionFor(hook)?.batchPublishesItems === true
 }
 
-/** Contenders share a lane, and share a head whenever either only re-runs its own. */
+/** Contenders share a lane, and share an exact provider revision whenever either only re-runs its own. */
 export function revisionStreamsContest(a: CodeHostRevisionStream, b: CodeHostRevisionStream): boolean {
-  return a.lane === b.lane && (!(a.pinned || b.pinned) || a.headSha === b.headSha)
+  return a.lane === b.lane && (!(a.pinned || b.pinned) || a.revision === b.revision)
 }
 
 /** Recency of one delivery against another; the delivery key breaks an identical fire instant. */

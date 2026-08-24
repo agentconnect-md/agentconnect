@@ -28,6 +28,7 @@ import type { Clock } from '@agentconnect.md/connection'
 import {
   GITHUB_REQUEST_REVIEW_ACTION,
   HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED,
+  isGithubPullRequestRevisionEvent,
   type RcGithubCommentAuthz,
   type RcGithubRerequest,
   type RcGithubRerequestResult,
@@ -83,6 +84,7 @@ export interface GithubIngressDeps {
  *  `installationIds` set (security boundary 3). */
 interface GithubPayload {
   action?: string
+  changes?: { base?: unknown }
   installation?: { id?: number }
   repository?: { id?: number; full_name?: string }
   sender?: { login?: string; type?: string; avatar_url?: string }
@@ -163,12 +165,20 @@ export interface GithubMatchCtx {
   /** GitHub's native reviewer request target. Only this App's `[bot]` login
    * turns `pull_request:review_requested` into a manual review request. */
   requestedReviewerLogin?: string
+  /** Signed `pull_request:edited` proof that the target branch changed. */
+  baseChanged?: boolean
   /** The derived family of the comment's subject/thread. `issue_comment` uses
    *  the issue object's `pull_request` marker; review comments are always PR. */
   commentSubjectFamily: 'issues' | 'pull_request' | undefined
 }
 
-const EXTERNAL_PR_REVISION_EVENTS = new Set(['pull_request:opened', 'pull_request:synchronize'])
+function isGithubPullRequestRevision(ctx: Pick<GithubMatchCtx, 'eventAction' | 'baseChanged'>): boolean {
+  return isGithubPullRequestRevisionEvent(ctx.eventAction, ctx)
+}
+
+function githubPullRequestBaseChanged(event: string, payload: GithubPayload): boolean {
+  return event === 'pull_request' && payload.action === 'edited' && payload.changes?.base !== undefined
+}
 
 /** Lifecycle deliveries that close a GitHub thread's daemon-owned workspace.
  * PR `closed` is cleanup only when GitHub also proves it was merged; an
@@ -216,7 +226,7 @@ function githubRuleSupportsPullRequests(rule: RcHookAssign): boolean {
 function isConfiguredAppPullRequest(rule: RcHookAssign, ctx: GithubMatchCtx): boolean {
   if (
     ctx.event !== 'pull_request' ||
-    !EXTERNAL_PR_REVISION_EVENTS.has(ctx.eventAction) ||
+    !isGithubPullRequestRevision(ctx) ||
     !rule.github?.appSlug ||
     ctx.subjectAuthorType !== 'Bot' ||
     !ctx.subjectAuthorLogin
@@ -268,9 +278,7 @@ export function githubRuleVerdict(rule: RcHookAssign, ctx: GithubMatchCtx): Gith
   // is handled separately as maintenance cleanup; comment/review-comment
   // deletion remains a silent no-op even for explicit legacy wildcards.
   if (ctx.eventAction === `${ctx.event}:deleted`) return 'no-match'
-  // Lifecycle and edited actions are not new agent turns. Keep these as hard
-  // vetoes so both family wildcards and explicit legacy subscriptions stay
-  // silent, including PR base-branch retargets.
+  // Lifecycle/content edits are silent; a signed target-branch change is revision-bearing despite action `edited`.
   if (
     (ctx.event === 'issues' &&
       (ctx.eventAction === 'issues:closed' ||
@@ -279,7 +287,7 @@ export function githubRuleVerdict(rule: RcHookAssign, ctx: GithubMatchCtx): Gith
     (ctx.event === 'pull_request' &&
       (ctx.eventAction === 'pull_request:closed' ||
         ctx.eventAction === 'pull_request:reopened' ||
-        ctx.eventAction === 'pull_request:edited' ||
+        (ctx.eventAction === 'pull_request:edited' && !isGithubPullRequestRevision(ctx)) ||
         ctx.eventAction === 'pull_request:ready_for_review' ||
         ctx.eventAction === 'pull_request:converted_to_draft'))
   )
@@ -437,6 +445,7 @@ export function buildTrustedGithubMetadata(
       mentionsGithubHandle(payload.comment?.body, rule.github.agentName))
   const pr = payload.pull_request
   const headSha = pr?.head?.sha
+  const baseChanged = githubPullRequestBaseChanged(event, payload)
   const rawReviewCommentId = event === 'pull_request_review_comment' ? payload.comment?.id : undefined
   const rawPullRequestReviewId =
     event === 'pull_request_review_comment' ? payload.comment?.pull_request_review_id : undefined
@@ -471,6 +480,7 @@ export function buildTrustedGithubMetadata(
     ...(pr?.head?.repo?.full_name ? { headRepoFullName: pr.head.repo.full_name } : {}),
     ...(pr?.merge_commit_sha ? { mergeCommitSha: pr.merge_commit_sha } : {}),
     ...(pr?.draft !== undefined ? { isDraft: pr.draft } : {}),
+    ...(event === 'pull_request' && payload.action === 'edited' ? { baseChanged } : {}),
     ...(explicitReviewRequest ? { explicitReviewRequest: true } : {}),
     ...(pullRequestReviewId !== undefined ? { pullRequestReviewId: String(pullRequestReviewId) } : {}),
     ...(reviewCommentId !== undefined ? { reviewCommentId: String(reviewCommentId) } : {}),
@@ -874,6 +884,7 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
         baseRepoFullName: subject?.base?.repo?.full_name,
         commentAuthorLogin: payload.comment?.user?.login,
         requestedReviewerLogin: payload.requested_reviewer?.login,
+        baseChanged: githubPullRequestBaseChanged(event, payload),
         commentSubjectFamily:
           event === 'pull_request_review_comment'
             ? 'pull_request'
@@ -927,7 +938,7 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
           // No third-party-authored PR lifecycle payload reaches the daemon.
           // Revision events still create a durable, actionable informational
           // Check so a maintainer can request the first review explicitly.
-          if (EXTERNAL_PR_REVISION_EVENTS.has(ctx.eventAction)) {
+          if (isGithubPullRequestRevision(ctx)) {
             reportReviewRequestRequired(deps, rule, msg)
             deps.log.info(
               `github ingress: waiting for maintainer request ${rule.hookId}:${deliveryKey} (${ctx.eventAction} ${msg.sessionKey})`
