@@ -378,7 +378,11 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
     // lets billing ask for gateway spend alone through the console's own route.
     const sourceScope = (alias: string) =>
       source ? Prisma.sql`AND ${Prisma.raw(`${alias}."source"`)} = ${source}::"UsageSource"` : Prisma.empty
-    const sessionScope = sessionViewerSql(sessionViewer)
+    // A gateway-metered row's sessionId (a hash minted for the model credential) matches no
+    // session_meta, so the viewer predicate's equality arms would silently drop it; an unlinked
+    // row has no per-session content to protect, so it falls back to agent visibility alone.
+    const viewerScope = sessionViewerSql(sessionViewer)
+    const sessionScope = viewerScope ? Prisma.sql`(s."id" IS NULL OR ${viewerScope})` : null
 
     // EVERY figure in this answer comes from the spend timeline inside `[from, to)`,
     // diffed against each session's last checkpoint before the window. Tokens too, not

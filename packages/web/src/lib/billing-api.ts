@@ -341,3 +341,31 @@ export function fmtMicroUsd(micro: number): string {
   const sign = micro < 0 ? '-' : ''
   return `${sign}$${(Math.abs(micro) / MICRO_PER_USD).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
+
+/** Every transaction posted at or after `sinceMs`, newest first. The window goes to the
+ *  service as `from`, so a long ledger costs one page instead of however many it takes to
+ *  walk back; the client-side cut stays because a billing image that predates the parameter
+ *  ignores it and answers with everything, and this console deploys ahead of that image.
+ *
+ *  `maxPages` is a runaway guard, not a policy: a ledger busier than that under-reports
+ *  rather than paging all of it for one total. */
+export async function fetchBillingTransactionsSince(
+  orgId: string,
+  sinceMs: number,
+  maxPages = 10
+): Promise<BillingTransaction[]> {
+  const from = new Date(sinceMs).toISOString()
+  const out: BillingTransaction[] = []
+  let cursor: string | undefined
+  for (let page = 0; page < maxPages; page++) {
+    const { items, nextCursor } = await fetchBillingTransactions(orgId, cursor, { from })
+    // Rows are newest-first, so the window ends at the first row older than it. An unparseable
+    // `at` compares false and stays — a row this side cannot date must not silently truncate
+    // the ones behind it.
+    const older = items.findIndex((t) => Date.parse(t.at) < sinceMs)
+    out.push(...(older < 0 ? items : items.slice(0, older)))
+    if (older >= 0 || !nextCursor) break
+    cursor = nextCursor
+  }
+  return out
+}

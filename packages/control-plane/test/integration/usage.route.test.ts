@@ -728,6 +728,39 @@ describe('GET /usage — aggregates the persisted usage store by agent over a ra
     }
   })
 
+  it('keeps a gateway row whose sessionId matches no session_meta (hashed credential id)', async () => {
+    await seedAgent(prisma, AGENT_A)
+    const repo = new PgSessionUsageRepo(prisma)
+    const at = new Date(Date.now() - 60_000)
+    // The hub reports the model credential's hashed session id — no session_meta row exists
+    // for it, so the row must fall back to agent visibility instead of being filtered out.
+    await repo.record({
+      agentId: AgentId(AGENT_A),
+      sessionId: 'a'.repeat(64),
+      source: 'gateway',
+      lastActivityAt: at,
+      usage: { totalTokens: 100, costAmount: '12.75', costCurrency: 'USD' }
+    })
+
+    const { app, close } = buildHttpApp(prisma)
+    try {
+      const res = await app.inject({ method: 'GET', url: `${ORG}/usage?${preset('d1')}` })
+      expect(res.statusCode).toBe(200)
+      const body = res.json() as {
+        totals: { sessions: number; totalTokens: number; costAmount: string; costCurrency: string | null }
+        sources: { source: string; costAmount: string }[]
+      }
+      expect(body.totals.sessions).toBe(1)
+      expect(body.totals.totalTokens).toBe(100)
+      expect(body.totals.costAmount).toBe('12.75')
+      // The currency read shares the viewer predicate, so it must see the unlinked row too.
+      expect(body.totals.costCurrency).toBe('USD')
+      expect(body.sources).toEqual([expect.objectContaining({ source: 'gateway', costAmount: '12.75' })])
+    } finally {
+      await close()
+    }
+  })
+
   it('keeps a session that spent in the window but reported again after it', async () => {
     await seedAgent(prisma, AGENT_A)
     const repo = new PgSessionUsageRepo(prisma)

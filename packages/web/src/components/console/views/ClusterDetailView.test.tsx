@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => ({
   balance: { data: { orgId: 'org-pool', balanceMicro: 38_740_000 } } as Record<string, unknown>,
   usage: {} as Record<string, unknown>,
   topUps: {} as Record<string, unknown>,
+  keys: [] as unknown[][],
   push: vi.fn()
 }))
 
@@ -43,6 +44,7 @@ vi.mock('@/lib/acp-registry', () => ({ useAcpRegistry: () => ({}), acpRuntime: (
 // the stub answers per KEY — one shared response would hide a card that wired the wrong one.
 vi.mock('swr', () => ({
   default: (key: unknown) => {
+    if (Array.isArray(key)) mocks.keys.push(key)
     const resource = Array.isArray(key) ? key[2] : null
     if (resource === 'billing-account') return mocks.balance
     if (resource === 'usage') return mocks.usage
@@ -108,9 +110,10 @@ const onPool = (id: string, over: Partial<Agent> = {}): Agent =>
     ...over
   }) as Agent
 
-/** A 30-day spend series where only SOME of the cost is the pool's — the other agent is the
- *  whole point: a card that summed the org's total would pass against a single-agent series. */
-function usageOverPool(pool: Record<number, string> = { 3: '1.50', 10: '4.00', 29: '2.50' }) {
+/** The 30-day series a `source=gateway` request answers with: already scoped, so a bucket's
+ *  `costAmount` IS the Cloud figure for that day. `byAgent` carries a deliberately different
+ *  number — a card that still scoped the split itself would quote that instead. */
+function gatewayUsage(daily: Record<number, string> = { 3: '1.50', 10: '4.00', 29: '2.50' }) {
   return {
     from: '',
     to: '',
@@ -122,8 +125,8 @@ function usageOverPool(pool: Record<number, string> = { 3: '1.50', 10: '4.00', 2
       bucket: 'day' as const,
       points: Array.from({ length: 30 }, (_, day) => ({
         start: new Date(Date.UTC(2026, 6, 22 + day)).toISOString(),
-        costAmount: '9.99',
-        byAgent: { ...(pool[day] ? { a1: pool[day] } : {}), 'not-on-pool': '7.00' }
+        costAmount: daily[day] ?? '0',
+        byAgent: { a1: '99.00' }
       }))
     }
   }
@@ -162,8 +165,9 @@ beforeEach(() => {
   mocks.agentsLoading = false
   mocks.memberSetsLoading = false
   mocks.balance = { data: { orgId: 'org-pool', balanceMicro: 38_740_000 } }
-  mocks.usage = { data: usageOverPool() }
+  mocks.usage = { data: gatewayUsage() }
   mocks.topUps = { data: [] }
+  mocks.keys = []
   mocks.push.mockClear()
   setFlags('daemon-pool')
 })
@@ -340,19 +344,20 @@ describe('ClusterDetailView — managed (AgentConnect Cloud)', () => {
     expect(html).not.toContain('pool-member-p1')
   })
 
-  it('bills the org for what ran on the POOL, not for what the org spent', () => {
+  it('asks the CP for the gateway-metered slice rather than scoping the org total itself', () => {
     // The footnote right below this card promises agents on your own daemons are never billed
-    // here, so the spend is the `byAgent` split filtered to the pool — never the bucket total.
+    // here. Scope is now the REQUEST — `source=gateway`, the ingress the pool meters through —
+    // so the bucket total is already the Cloud figure and the per-agent split is not read.
     mocks.daemons = [member('p1')]
     mocks.agents = [onPool('a1')]
 
     const html = render()
 
+    expect(mocks.keys.find((k) => k[2] === 'usage')).toEqual(['console', 'org-pool', 'usage', 'd30', 'gateway'])
     expect(html).toContain('Credits')
     expect(html).toContain('$8.00')
-    // 30 buckets × $7.00 belonging to an agent that does not run here.
-    expect(html).not.toContain('$218.00')
-    expect(html).not.toContain('$210.00')
+    // 30 buckets × $99.00 is what scoping the split by placement would have quoted.
+    expect(html).not.toContain('$297.00')
   })
 
   it('shows the REAL balance beside them', () => {
@@ -378,18 +383,17 @@ describe('ClusterDetailView — managed (AgentConnect Cloud)', () => {
     expect(html).toContain('2 top-ups')
   })
 
-  it('claims nothing while placement is still loading, even with the series in hand', () => {
-    // `hosted` is empty while agents load — and group-placed agents classify as pool-placed
-    // while the set ids load — so a figure rendered now would be a confident wrong number.
+  it('quotes the spend while placement is still loading — placement no longer scopes it', () => {
+    // It used to: the figure was the per-agent split filtered by current placement, so it had
+    // to wait for the agent list AND the set ids. A server-scoped series needs neither.
     mocks.daemons = [member('p1')]
-    mocks.agents = [onPool('a1')]
+    mocks.agents = []
     mocks.agentsLoading = true
+    mocks.memberSetsLoading = true
 
     const html = render()
 
-    expect(html).toContain('animate-pulse')
-    expect(html).not.toContain('$8.00')
-    expect(html).not.toContain('$0.00 / day')
+    expect(html).toContain('$8.00')
   })
 
   it('keeps the stale figure through a failed revalidation instead of contradicting the chart', () => {
@@ -397,7 +401,7 @@ describe('ClusterDetailView — managed (AgentConnect Cloud)', () => {
     // so the header must not flip to "unavailable" beside it.
     mocks.daemons = [member('p1')]
     mocks.agents = [onPool('a1')]
-    mocks.usage = { data: usageOverPool(), error: new Error('fetch failed') }
+    mocks.usage = { data: gatewayUsage(), error: new Error('fetch failed') }
     mocks.topUps = { data: [credit(4, 20_000_000)], error: new Error('fetch failed') }
     mocks.balance = { data: { orgId: 'org-pool', balanceMicro: 38_740_000 }, error: new Error('fetch failed') }
 
@@ -440,21 +444,18 @@ describe('ClusterDetailView — managed (AgentConnect Cloud)', () => {
     expect(html).not.toContain('$0.00')
   })
 
-  it('refuses to quote a spend it cannot scope to the pool', () => {
-    // A CP predating the `byAgent` split can only answer for the whole org, and answering with
-    // that number is the one thing this card must not do.
+  it('quotes a series that carries no per-agent split at all', () => {
+    // The split used to BE the scope, so a CP without it left the figure unavailable. Now the
+    // scope is the request and the split is not read — an older CP answers this card fine.
     mocks.daemons = [member('p1')]
     mocks.agents = [onPool('a1')]
-    // The split absent on every point — the shape an older CP actually sends (a current CP
-    // never returns an empty series; its bucket count is floored at 1).
-    const noSplit = usageOverPool().series.points.map(({ byAgent: _, ...p }) => p)
-    mocks.usage = { data: { ...usageOverPool(), series: { bucket: 'day' as const, points: noSplit } } }
+    const noSplit = gatewayUsage().series.points.map(({ byAgent: _, ...p }) => p)
+    mocks.usage = { data: { ...gatewayUsage(), series: { bucket: 'day' as const, points: noSplit } } }
 
     const html = render()
 
-    expect(html).toContain('unavailable')
-    expect(html).toContain('does not split spend per agent')
-    // The balance is a different source and still answers.
+    expect(html).toContain('$8.00')
+    expect(html).not.toContain('unavailable')
     expect(html).toContain('$38.74')
   })
 
