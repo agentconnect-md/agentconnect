@@ -470,15 +470,19 @@ export class HttpBotOrchestrator {
   private async sessionOwnerHasSiblingBot(botId: string, agentId: string): Promise<boolean> {
     const bot = await this.bots.getUnscoped(BotId(botId))
     if (!bot) return false
-    const tenant = bot.externalTenantId ?? bot.workspaceId ?? bot.teamId
-    if (!tenant) return false
+    const provider = this.platforms.get(bot.platform)
+    const realmOf = (candidate: BotRecord): string | null =>
+      provider?.threadFallbackRealm
+        ? provider.threadFallbackRealm(candidate)
+        : (candidate.externalTenantId ?? candidate.workspaceId ?? candidate.teamId)
+    const realm = realmOf(bot)
+    if (!realm) return false
     return (await this.bots.listForOrg(bot.orgId)).some((candidate) => {
-      const candidateTenant = candidate.externalTenantId ?? candidate.workspaceId ?? candidate.teamId
       return (
         candidate.id !== bot.id &&
         candidate.revokedAt === null &&
         candidate.platform === bot.platform &&
-        candidateTenant === tenant &&
+        realmOf(candidate) === realm &&
         candidate.agentIds.some((id) => id === agentId)
       )
     })

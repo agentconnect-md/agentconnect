@@ -375,6 +375,11 @@ export function createFeishuCpProvider(deps: FeishuCpProviderDeps): CpPlatformPr
       }
     },
 
+    threadFallbackRealm: (bot) => {
+      const appId = bot.feishuAppId ?? bot.externalAppId
+      return appId ? `${bot.feishuRegion ?? 'feishu'}:${appId}` : null
+    },
+
     // Feishu reuses the established two-slot shape (`install-feishu.ts`):
     // botToken = app SECRET (the credential), appToken = app ID (the
     // identifier) — the overloading the audit found spelled only in comments,
