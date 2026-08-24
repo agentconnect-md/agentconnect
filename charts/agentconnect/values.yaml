@@ -217,6 +217,12 @@ daemonPool:
   # These reach a runtime at spawn and OUTRANK an agent's own variable of the same name, because
   # a credential pair travels whole rather than merging with another. Leave it empty to let every
   # agent carry its own credential.
+  #
+  # Named, this Secret is the install's ONLY source for those variables: setting one of them in
+  # `daemonPool.extraEnv`, or letting `modelEgress.clients` render one, is refused at render time.
+  # A pair assembled from two sources is the failure worth refusing — a Secret holding only a
+  # token is a supported shape, and the base URL it omits would otherwise survive from the other
+  # source, aiming a real provider key at a gateway that never issued it.
   modelCredentials:
     existingSecret: ''
   # Extra plain env (name: value), the same hook and conventions as controlPlane.extraEnv.

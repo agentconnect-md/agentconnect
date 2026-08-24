@@ -87,6 +87,22 @@ model_credential_env = container.fetch('env').select { |item| item.fetch('name')
   abort("#{name} must read its own name from the named Secret") unless
     entry.dig('valueFrom', 'secretKeyRef') == { 'name' => 'example-model-credentials', 'key' => name, 'optional' => true }
 end
+
+# One source per install. An entry the Secret omits is a supported shape, so a second source
+# filling that same variable assembles a pair out of two halves — a provider key aimed at a
+# gateway base URL, or a gateway key at a provider's. The chart cannot see inside the Secret, so
+# it must refuse the overlap rather than render it.
+[['daemonPool.extraEnv.DEEPSEEK_MODEL_TOKEN=example-key', 'collides'],
+ ['modelEgress.enabled=true', 'both write this pool']].each do |setting, expected|
+  extra = setting.start_with?('modelEgress') ? [
+    '--set', setting, '--set-json', 'modelEgress.ports=[8080]',
+    '--set', 'modelEgress.clients.claude.baseUrl=http://gateway.example.test:8080',
+    '--set', 'modelEgress.clients.claude.apiKey=example'
+  ] : ['--set', setting]
+  _, refused, refused_status = Open3.capture3(*command, *extra)
+  abort("#{setting} must be refused beside a model-credential Secret") if refused_status.success?
+  abort("refusal for #{setting} must say why:\n#{refused}") unless refused.include?(expected)
+end
 readiness = container['readinessProbe'] || abort('daemon pool member must have a readiness probe')
 abort('readiness probe must GET /readyz on the readiness port') unless readiness['httpGet'] == { 'path' => '/readyz', 'port' => 8081 }
 abort('readiness probe timings must match #1056') unless readiness.reject { |key, _| key == 'httpGet' } == {
