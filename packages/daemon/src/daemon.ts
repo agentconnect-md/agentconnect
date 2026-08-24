@@ -7709,6 +7709,21 @@ export class Daemon {
     if (dreamRun && dreamRun.definition !== dream) await this.store.setDreamLastRun(a.id, now, dream)
   }
 
+  // Catch-up fires in flight. A fire stays OFF the settle path — it is a whole turn, and duty
+  // convergence must never wait on one — but dropping the promise also erased when it finished.
+  private readonly catchUpFires = new Set<Promise<void>>()
+
+  // Joinable for its own lifetime; registering changes nothing about when the fire runs.
+  private trackCatchUpFire(fire: Promise<void>): void {
+    const tracked = fire.finally(() => this.catchUpFires.delete(tracked))
+    this.catchUpFires.add(tracked)
+  }
+
+  /** Settle the catch-up fires a duty handover launched — the completion signal a bare `void` loses. */
+  async joinCatchUpFires(): Promise<void> {
+    while (this.catchUpFires.size > 0) await Promise.allSettled([...this.catchUpFires])
+  }
+
   /**
    * Compensate the fires a duty handover swallowed (#1031). The old holder unregisters an agent's
    * schedules before the moment and the new holder arms a `Cron` that knows nothing of a moment
@@ -7732,8 +7747,10 @@ export class Daemon {
         if (due === undefined || !(await this.store.claimCronCatchUp(key, due, now, fingerprint))) continue
         this.log.info(`cron "${cron.id}" of agent "${agentId}": firing the occurrence a duty handover missed`)
         const { msg } = buildSyntheticMessage(agentId, cron, randomUUID())
-        void this.onCronFire(agentId, msg, cron).catch((err) =>
-          this.log.error(`cron catch-up dispatch failed for agent "${agentId}": ${formatErr(err)}`)
+        this.trackCatchUpFire(
+          this.onCronFire(agentId, msg, cron).catch((err) =>
+            this.log.error(`cron catch-up dispatch failed for agent "${agentId}": ${formatErr(err)}`)
+          )
         )
       }
       const dream = this.dreamDefinition(agent)

@@ -131,8 +131,9 @@ const editSchedules = (root: string, members: { inner: any }[], over: { schedule
     for (const target of [agent.crons[0], agent.memory.dreaming]) Object.assign(target, over)
   })
 
-/** croner fires are async under the hood; let the stubbed dispatch settle. */
-const settle = () => new Promise((r) => setTimeout(r, 30))
+/** A cron fire leaves the settle path, so a returned `hold` proves only that the decision was made;
+ *  join the fires themselves, never a wall clock. The dream half is awaited inside the catch-up. */
+const settle = (...members: { inner: any }[]) => Promise.all(members.map((member) => member.inner.joinCatchUpFires()))
 
 describe('missed-fire compensation across a duty handover', () => {
   it('replays a cron and a dream that fell inside the handover, on the member that gained the duty', async () => {
@@ -144,7 +145,7 @@ describe('missed-fire compensation across a duty handover', () => {
     a.crons.length = 0
     a.dreams.length = 0
     await hold(b.inner)
-    await settle()
+    await settle(a, b)
     expect(b.crons).toEqual([AGENT])
     expect(b.dreams).toEqual([AGENT])
     // The released member neither fires nor holds anything to fire.
@@ -159,7 +160,7 @@ describe('missed-fire compensation across a duty handover', () => {
     await stampsBefore(a.inner, 0)
     await drop(a.inner)
     await hold(b.inner)
-    await settle()
+    await settle(b)
     expect(b.crons).toEqual([])
     expect(b.dreams).toEqual([])
     await stop()
@@ -170,7 +171,7 @@ describe('missed-fire compensation across a duty handover', () => {
     await hold(a.inner)
     await drop(a.inner)
     await hold(b.inner)
-    await settle()
+    await settle(b)
     expect(b.crons).toEqual([])
     expect(b.dreams).toEqual([])
     await stop()
@@ -182,7 +183,7 @@ describe('missed-fire compensation across a duty handover', () => {
     // Both claim the group — the overlap a handover leaves behind.
     await hold(a.inner)
     await hold(b.inner)
-    await settle()
+    await settle(a, b)
     expect(a.crons.length + b.crons.length).toBe(1)
     expect(a.dreams.length + b.dreams.length).toBe(1)
     await stop()
@@ -192,12 +193,12 @@ describe('missed-fire compensation across a duty handover', () => {
     const { a, stop } = await bootPool()
     await stampsBefore(a.inner, 2 * HOUR_MS)
     await hold(a.inner)
-    await settle()
+    await settle(a)
     expect(a.crons).toEqual([AGENT])
     a.crons.length = 0
     a.dreams.length = 0
     await hold(a.inner)
-    await settle()
+    await settle(a)
     expect(a.crons).toEqual([])
     expect(a.dreams).toEqual([])
     await stop()
@@ -206,8 +207,8 @@ describe('missed-fire compensation across a duty handover', () => {
   it('a real fire stamps the dream schedule, so the next handover sees the moment as served', async () => {
     const { a, stop } = await bootPool()
     expect(await a.inner.store.dreamRun(AGENT)).toBeUndefined()
+    // The fire stamps before its gates, so awaiting it is already proof the row is durable.
     await a.inner.onDreamScheduleFire(AGENT)
-    await settle()
     const run = await a.inner.store.dreamRun(AGENT)
     expect(run.lastRunAt).toBeGreaterThan(0)
     expect(run.definition).toBe(scheduleFingerprint(a.inner.dreamDefinition(agentOf(a.inner))))
@@ -223,7 +224,7 @@ describe('missed-fire compensation across a duty handover', () => {
     // evidence about the :00 schedule that no longer exists.
     await editSchedules(root, [a, b], { schedule: '30 * * * *' })
     await hold(b.inner)
-    await settle()
+    await settle(b)
     expect(b.crons).toEqual([])
     expect(b.dreams).toEqual([])
     await stop()
@@ -260,7 +261,7 @@ describe('missed-fire compensation across a duty handover', () => {
     })
     await drop(a.inner)
     await hold(b.inner)
-    await settle()
+    await settle(b)
     expect(b.crons).toEqual([])
     expect(b.dreams).toEqual([])
     await stop()
@@ -274,7 +275,7 @@ describe('missed-fire compensation across a duty handover', () => {
     await editSchedules(root, [a, b], { enabled: true })
     await drop(a.inner)
     await hold(b.inner)
-    await settle()
+    await settle(b)
     expect(b.crons).toEqual([])
     expect(b.dreams).toEqual([])
     await stop()
