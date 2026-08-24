@@ -597,6 +597,26 @@ describe('the rendezvous claim ordering', () => {
     await daemon.stop()
   })
 
+  it('releases a won duty when its platform connections fail to converge', async () => {
+    const releaseDuties = vi.fn(async () => {})
+    const daemon = await boot({
+      claimDuty: vi.fn(async () => ({ granted: true, grant: grant() })),
+      fetchDutyAgent: vi.fn(async () => ({ bundle: bundle() })),
+      releaseDuties
+    })
+    const flush = (daemon as any).flushReconcile.bind(daemon)
+    ;(daemon as any).flushReconcile = async () => {
+      await flush()
+      if (duties(daemon).holdsAgent(AGENT)) throw new Error('platform connection failed')
+    }
+
+    await expect((daemon as any).dutyCoordinator.claimDutyForTrigger(AGENT)).resolves.toEqual({ granted: false })
+
+    expect(duties(daemon).digest()).toEqual([])
+    expect(releaseDuties).toHaveBeenCalledWith([GROUP])
+    await daemon.stop()
+  })
+
   it('answers granted:false on an empty reply, without ever holding the group', async () => {
     const daemon = await boot({
       claimDuty: vi.fn(async () => ({ granted: true, grant: grant() })),

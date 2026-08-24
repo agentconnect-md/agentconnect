@@ -595,7 +595,20 @@ export class DutyCoordinator {
         this.log.warn(`duty: claimed ${grant.groupId} but could not install ${agentId} — handing the trigger back`)
         return { granted: false }
       }
-      await this.host.flushReconcile()
+      try {
+        await this.host.flushReconcile()
+      } catch (err) {
+        this.log.warn(`duty: claimed ${grant.groupId} but its connections did not converge: ${formatErr(err)}`)
+        await this.applyDutyRevoke([{ groupId: grant.groupId, reason: 'superseded' }]).finally(() =>
+          this.host
+            .cpClient()
+            ?.releaseDuties([grant.groupId])
+            .catch((releaseErr) =>
+              this.log.warn(`duty: handing back ${grant.groupId} failed: ${formatErr(releaseErr)}`)
+            )
+        )
+        return { granted: false }
+      }
       return { granted: true }
     } catch (err) {
       // A CP blip must not look like "someone else holds it" — answering with no
