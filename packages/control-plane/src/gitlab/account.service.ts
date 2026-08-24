@@ -113,6 +113,18 @@ export class GitlabAccountLeaseLost extends Error {
   }
 }
 
+/**
+ * §24.3: the instance refused to create a service account or one of its tokens.
+ * Authority is not probeable, so this refusal IS the answer — and it is a
+ * settled one: nothing retries it until an operator changes the instance
+ * setting, connects an administrator, and re-attempts through Repair.
+ */
+export const CREATION_FORBIDDEN_REASON = 'service_account_creation_forbidden'
+
+/** §24.3: the instance capped personal-access-token lifetime below what this
+ *  policy asks for and rejected the create outright instead of clamping it. */
+export const PAT_LIFETIME_CAPPED_REASON = 'pat_lifetime_exceeds_instance_maximum'
+
 /** An account the write could not provision, said the way a console can act on
  *  it. The reasons are this module's own repair categories (§8.2). */
 export function gitlabAccountUnavailableMessage(reason: string): string {
@@ -136,18 +148,6 @@ export function gitlabAccountUnavailableMessage(reason: string): string {
   }
   return `the agent’s GitLab bot account could not be provisioned (${reason})`
 }
-
-/**
- * §24.3: the instance refused to create a service account or one of its tokens.
- * Authority is not probeable, so this refusal IS the answer — and it is a
- * settled one: nothing retries it until an operator changes the instance
- * setting, connects an administrator, and re-attempts through Repair.
- */
-export const CREATION_FORBIDDEN_REASON = 'service_account_creation_forbidden'
-
-/** §24.3: the instance capped personal-access-token lifetime below what this
- *  policy asks for and rejected the create outright instead of clamping it. */
-export const PAT_LIFETIME_CAPPED_REASON = 'pat_lifetime_exceeds_instance_maximum'
 
 /** A cleanup failure's honest category: `gitlab_unreachable` is reserved for a
  *  transport failure, the only thing `gitlabRequest` reports as status 0. */
