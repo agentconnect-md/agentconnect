@@ -1908,9 +1908,13 @@ export function fmtCountCompact(n: number | null | undefined): string {
   // Strip trailing zeros only AFTER a decimal point — never the integer part.
   // A bare `/\.?0+$/` would turn "10" → "1", rendering 10M as "1M".
   const trim = (s: string) => (s.includes('.') ? s.replace(/\.?0+$/, '') : s)
-  if (n >= 1_000_000) return trim((n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 2)) + 'M'
-  if (n >= 1_000) return trim((n / 1_000).toFixed(n >= 10_000 ? 0 : 1)) + 'K'
-  return String(n)
+  // Group the integer part — "B" is the largest unit, so past 1000B the digits keep going.
+  const fmt = (v: number, digits: number) =>
+    trim(v.toFixed(digits)).replace(/^-?\d+/, (i) => Number(i).toLocaleString('en-US'))
+  if (n >= 1_000_000_000) return fmt(n / 1_000_000_000, n >= 10_000_000_000 ? 0 : 2) + 'B'
+  if (n >= 1_000_000) return fmt(n / 1_000_000, n >= 10_000_000 ? 0 : 2) + 'M'
+  if (n >= 1_000) return fmt(n / 1_000, n >= 10_000 ? 0 : 1) + 'K'
+  return n.toLocaleString('en-US')
 }
 
 // Format the daemon-metered session cost. Currency is an ISO code (e.g. "USD");
