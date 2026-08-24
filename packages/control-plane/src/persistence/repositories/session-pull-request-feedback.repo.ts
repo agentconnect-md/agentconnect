@@ -109,6 +109,7 @@ export class PgSessionPullRequestFeedbackRepo implements SessionPullRequestFeedb
   async enqueue(
     orgId: OrgId,
     signal: Parameters<SessionPullRequestFeedbackRepo['enqueue']>[1],
+    signalAt: Date,
     nextAttemptAt: Date
   ): Promise<void> {
     const repoId = BigInt(signal.repoId)
@@ -123,6 +124,7 @@ export class PgSessionPullRequestFeedbackRepo implements SessionPullRequestFeedb
           repoFullName: signal.repoFullName,
           pullNumber: signal.pullNumber,
           latestDeliveryKey: signal.deliveryKey,
+          lastSignalAt: signalAt,
           nextAttemptAt
         },
         update: {}
@@ -135,6 +137,7 @@ export class PgSessionPullRequestFeedbackRepo implements SessionPullRequestFeedb
             repoFullName: signal.repoFullName,
             latestDeliveryKey: signal.deliveryKey,
             generation: { increment: 1 },
+            lastSignalAt: signalAt,
             nextAttemptAt,
             deliveredAt: null
           }
@@ -214,7 +217,7 @@ export class PgSessionPullRequestFeedbackRepo implements SessionPullRequestFeedb
     const deleted = await this.db.sessionPullRequestWake.deleteMany({
       where: {
         OR: [
-          { sessionId: null, updatedAt: { lt: unmatchedBefore } },
+          { sessionId: null, lastSignalAt: { lt: unmatchedBefore } },
           { deliveredAt: { not: null, lt: deliveredBefore } }
         ]
       }

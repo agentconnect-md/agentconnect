@@ -105,6 +105,36 @@ async function runOnce(h: ReturnType<typeof harness>): Promise<void> {
 }
 
 describe('SessionPullRequestFeedbackService', () => {
+  it('wakes immediately for older due work without globally extending the new PR debounce', async () => {
+    const due = wake('already-due')
+    const h = harness()
+    h.service.start()
+    h.clock.advance(0)
+    await h.service.settle()
+    h.clock.advance(5_000)
+    h.feedbackRepo.claimNext.mockResolvedValueOnce(due).mockResolvedValueOnce(null)
+
+    const signal = {
+      deliveryKey: 'delivery-new',
+      installationId: INSTALLATION_ID.toString(),
+      repoId: '999',
+      repoFullName: 'acme/infra',
+      pullNumber: 999
+    }
+    await h.service.enqueue(signal)
+    h.clock.advance(0)
+    await h.service.settle()
+    h.service.stop()
+
+    expect(h.feedbackRepo.enqueue).toHaveBeenCalledWith(ORG_ID, signal, new Date(NOW + 5_000), new Date(NOW + 15_000))
+    expect(h.feedbackRepo.markDelivered).toHaveBeenCalledWith(
+      due.id,
+      due.generation,
+      expect.any(String),
+      new Date(NOW + 5_000)
+    )
+  })
+
   it('delivers one dirty PR generation to the exact linked session', async () => {
     const item = wake('review')
     const h = harness()

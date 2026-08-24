@@ -18,6 +18,7 @@ CREATE TABLE "session_pull_request_wake" (
   "latestDeliveryKey" TEXT NOT NULL,
   "generation" INTEGER NOT NULL DEFAULT 1,
   "sessionId" TEXT,
+  "lastSignalAt" TIMESTAMPTZ(6) NOT NULL,
   "nextAttemptAt" TIMESTAMPTZ(6) NOT NULL,
   "claimOwner" UUID,
   "claimUntil" TIMESTAMPTZ(6),

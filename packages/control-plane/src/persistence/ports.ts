@@ -1500,7 +1500,7 @@ export interface SessionPullRequestFeedbackRepo {
     at: Date
   }): Promise<boolean>
   /** Idempotently dirty one PR wake generation and attach it when the PR is already linked. */
-  enqueue(orgId: OrgId, signal: PullRequestFeedbackSignal, nextAttemptAt: Date): Promise<void>
+  enqueue(orgId: OrgId, signal: PullRequestFeedbackSignal, signalAt: Date, nextAttemptAt: Date): Promise<void>
   /** Cross-process CAS lease for the next due linked or discovery wake. */
   claimNext(owner: string, now: Date, until: Date): Promise<PullRequestWakeRecord | null>
   /** Complete only the generation that was delivered; a concurrent newer generation remains dirty. */

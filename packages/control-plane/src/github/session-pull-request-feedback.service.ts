@@ -103,8 +103,8 @@ export class SessionPullRequestFeedbackService {
     const installation = await this.deps.installations.getByInstallationId(BigInt(signal.installationId))
     if (!installation || installation.revokedAt || installation.suspendedAt) return false
     const now = this.deps.clock.now()
-    await this.deps.feedback.enqueue(installation.orgId, signal, new Date(now + FEEDBACK_DEBOUNCE_MS))
-    this.kick(FEEDBACK_DEBOUNCE_MS)
+    await this.deps.feedback.enqueue(installation.orgId, signal, new Date(now), new Date(now + FEEDBACK_DEBOUNCE_MS))
+    this.kick()
     return true
   }
 
