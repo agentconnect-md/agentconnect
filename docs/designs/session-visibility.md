@@ -349,6 +349,14 @@ Notes:
   same recheck `inherited_pending` rows get. Its own `explicit`
   re-classification survives the convergence; only a human tighten of the parent
   overrides that.
+- **The lineage fence.** Both halves of that convergence read rows that may not
+  exist yet, and a row lock cannot serialize two rows that are both still
+  uncommitted — each transaction would see no counterpart and commit its own
+  view. Ingest, §4.3 reclassification, and the post-commit recheck therefore
+  take a transaction-scoped advisory lock keyed on the session id
+  (`persistence/session-lineage-lock.ts`) before any row lock, so one side waits
+  and observes the other's committed state. Taken lock-first, never while
+  holding rows, which is what keeps a blocking lock deadlock-free.
 
 ### 4.3 Changing visibility after the fact
 

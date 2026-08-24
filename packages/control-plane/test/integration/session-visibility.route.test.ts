@@ -14,6 +14,8 @@ import { seedPoolMember } from '../fakes/member-set.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
 import { PgSessionRepo } from '../../src/persistence/repositories/session.repo.js'
+import { sessionLineageLockKey } from '../../src/persistence/session-lineage-lock.js'
+import { Prisma } from '../../src/generated/prisma/client.js'
 import { PgAgentRepo } from '../../src/persistence/repositories/agent.repo.js'
 import { PgDutyGroupRepo } from '../../src/persistence/repositories/duty-group.repo.js'
 import { PlacementResolver } from '../../src/orchestrator/placementResolver.js'
@@ -663,6 +665,64 @@ describe('session visibility — external conversation audiences', () => {
       ownerIdentity: 'user:origin-owner',
       visibilitySource: 'inherited'
     })
+  })
+
+  // …and the fence that removes the window itself: two rows of one lineage can BOTH be
+  // uncommitted, which no row lock can serialize. Ingest takes the lineage's advisory lock ahead
+  // of every row lock, so a child's classification cannot run beside an uncommitted parent.
+  it('fences a child ingest behind a concurrent writer of the same lineage', async () => {
+    const daemonId = await seedDaemon(prisma, randomUUID())
+    const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
+    const repo = new PgSessionRepo(prisma)
+    const parentId = `s-fence-parent-${randomUUID()}`
+    const childId = `s-fence-child-${randomUUID()}`
+
+    // Stand in for the parent's in-flight transaction: hold its lineage lock and nothing else,
+    // so what the ingest waits on can only be the fence.
+    let release!: () => void
+    const held = new Promise<void>((resolve) => (release = resolve))
+    let acquired!: () => void
+    const holding = new Promise<void>((resolve) => (acquired = resolve))
+    const holder = prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${sessionLineageLockKey(parentId)}, 0))`
+      acquired()
+      await held
+    })
+    await holding
+
+    const ingest = repo.recordMilestone({
+      sessionId: SessionId(childId),
+      parentSessionId: SessionId(parentId),
+      agentId,
+      phase: 'start',
+      platform: 'slack',
+      channel: 'C_POSTED',
+      at: new Date(),
+      classification: { visibility: 'org', ownerIdentity: null, source: 'default' }
+    })
+    // The waiter itself is the assertion: an unfenced ingest commits instead of queueing, and
+    // no ungranted advisory lock ever appears. Polled, not slept — a slow runner cannot make a
+    // correct run fail, and the loop ends the moment the waiter shows up.
+    for (let attempt = 0; ; attempt++) {
+      const [row] = await prisma.$queryRaw<Array<{ count: number }>>(Prisma.sql`
+        SELECT COUNT(*)::int AS "count"
+        FROM pg_locks
+        WHERE locktype = 'advisory'
+          AND granted = false
+          AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+      `)
+      if ((row?.count ?? 0) > 0) break
+      expect(attempt, 'the child ingest never waited on the lineage fence').toBeLessThan(500)
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+    // …and it is waiting BEFORE it wrote anything. Without the fence in ingest the row is already
+    // committed by now (only the post-commit recheck would be queueing), which is the whole point:
+    // a classification that has already landed cannot observe the parent this fence is waiting for.
+    expect(await prisma.sessionMeta.findUnique({ where: { id: childId } })).toBeNull()
+
+    release()
+    await holder
+    expect((await ingest).recorded).toBe(true)
   })
 
   // The post-commit settlement path (§4.5) inherits the parent's audience after

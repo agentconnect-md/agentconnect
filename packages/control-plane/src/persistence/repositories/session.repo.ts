@@ -20,6 +20,7 @@ import {
   type SessionMeta
 } from '../../generated/prisma/client.js'
 import { withAmbientTx, type PrismaLike } from '../prisma.js'
+import { lockSessionLineage } from '../session-lineage-lock.js'
 import type {
   SessionRepo,
   SessionMilestoneResult,
@@ -818,6 +819,8 @@ export class PgSessionRepo implements SessionRepo {
    */
   private async convergeFromParent(orgId: OrgId, parentSessionId: SessionId): Promise<SessionMetaRecord[]> {
     return withAmbientTx(this.db, async (tx) => {
+      // The parent may still be committing; the fence makes this recheck observe it.
+      await lockSessionLineage(tx, [parentSessionId])
       const parent = await tx.$queryRaw<
         Array<{ visibility: string; ownerIdentity: string | null; visibilitySource: string }>
       >(
@@ -846,6 +849,10 @@ export class PgSessionRepo implements SessionRepo {
   ): Promise<SessionMilestoneResult & { parentUnsettled?: boolean }> {
     const endedAt = ev.phase === 'end' ? ev.at : undefined
     const lastActivityAt = ev.lastActivityAt ?? ev.at
+    // §4.2/§4.5 lineage fence, ahead of every row lock in this transaction: this row and its
+    // parent may both be uncommitted, and no row lock can serialize two rows that do not exist
+    // yet (`lockSessionLineage`). Own id included because this row may itself be a parent.
+    await lockSessionLineage(tx, [ev.sessionId, ev.parentSessionId])
     // Webchat current-session fence: lock the durable conversation row BEFORE
     // the session upsert. Pointer maintenance (below), authorization reads
     // (which lock the same conversation row FOR UPDATE), and any concurrent
@@ -1671,6 +1678,9 @@ export class PgSessionRepo implements SessionRepo {
     }) => boolean
   ): Promise<SessionVisibilityChange> {
     return withAmbientTx(this.db, async (tx) => {
+      // Same fence as ingest, before this transaction's first row lock: the cascade below scans
+      // for children, and a child whose row is still uncommitted is invisible to that scan.
+      await lockSessionLineage(tx, [sessionId])
       const locked = await tx.$queryRaw<
         Array<{ visibility: string; ownerIdentity: string | null; externalProvider: string | null }>
       >(Prisma.sql`
