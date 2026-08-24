@@ -30,8 +30,9 @@ async function main(): Promise<void> {
   // instance.ts). Resolve it here, then rewrite argv into the `--root` form the
   // daemon understands so run/delegate never see the flag.
   const instance = parseInstanceFlag(argv)
+  const rootFlag = parseRootFlag(argv)
   const target = resolveServiceTarget({
-    ...(parseRootFlag(argv) !== undefined ? { root: parseRootFlag(argv)! } : {}),
+    ...(rootFlag !== undefined ? { root: rootFlag } : {}),
     ...(instance !== undefined ? { instance } : {})
   })
   const root = target.root

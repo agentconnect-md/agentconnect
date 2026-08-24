@@ -56,12 +56,27 @@ export function resolveController(target: ControllerTarget = {}): ServiceControl
   })
 }
 
-/** Install the unit AND record which unit owns the root, so later commands that
- *  only know the root address this instance rather than the default one. */
+/**
+ * Install the unit AND record which unit owns the root, so later commands that
+ * only know the root address this instance rather than the default one.
+ *
+ * One root, one service: two units pointing at the same root would fight over
+ * that root's `daemon.lock`, sqlite and MCP socket, and the loser would just
+ * crash-loop. Refuse before writing rather than after.
+ */
 export async function installService(target: ControllerTarget, opts: InstallOpts): Promise<ServiceController> {
+  const { root, instance } = resolved(target)
+  const conflict = listInstances({
+    ...(target.home ? { home: target.home } : {}),
+    ...(target.platform ? { platform: target.platform } : {})
+  }).find((unit) => unit.root === root && unit.instance !== instance)
+  if (conflict) {
+    throw new Error(
+      `root ${root} already belongs to ${conflict.label} — uninstall that service first, or give this instance its own --root`
+    )
+  }
   const controller = resolveController(target)
   await controller.install(opts)
-  const { root, instance } = resolved(target)
   writeInstancePointer(root, { ...(instance ? { instance } : {}), label: controller.label })
   return controller
 }

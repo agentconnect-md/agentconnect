@@ -8,7 +8,7 @@ import { join, resolve } from 'node:path'
  * change here must be mirrored there.
  */
 export function resolveRoot(root?: string): string {
-  const r = root ?? process.env.AGENTCONNECT_ROOT ?? join(homedir(), '.agentconnect')
+  const r = root ?? process.env.AGENTCONNECT_ROOT ?? defaultRoot()
   return resolve(r.replace(/^~(?=$|\/)/, homedir()))
 }
 

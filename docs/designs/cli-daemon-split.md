@@ -287,7 +287,15 @@ that separates them (`packages/cli/src/service/instance.ts`):
 - `--instance` is CLI vocabulary only. `run` and delegated commands are rewritten
   to the `--root <dir>` form before argv reaches the daemon;
 - `agentconnect instances` lists what is installed (instance, state, root, unit)
-  by scanning the OS's own unit directory, so nothing can go stale.
+  by scanning the OS's own unit directory, so nothing can go stale;
+- **one root, one service**: `install-service` refuses a unit whose root another
+  instance's unit already claims, since both daemons would fight over that root's
+  `daemon.lock`, sqlite and MCP socket and the loser would crash-loop.
+  Re-installing the SAME instance stays idempotent (the legacy-unit migration).
+
+Every actionable message repeats the selector in the command it suggests
+(`commandSelector`), so a copy-paste after `--instance dev login` manages `dev`
+and not the default instance.
 
 `AGENTCONNECT_ROOT` is baked in whenever the RESOLVED root is non-default, not
 when a `--root` flag happened to be typed — an env-driven install would

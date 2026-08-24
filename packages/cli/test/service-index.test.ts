@@ -104,6 +104,28 @@ describe('installService / uninstallService', () => {
   })
 })
 
+describe('installService conflicts', () => {
+  it('refuses a second unit on a root another instance already owns', async () => {
+    const home = tmp('ac-home-')
+    const root = tmp('ac-root-')
+    const opts = { execPath: '/usr/bin/node', includeRootEnv: true }
+    await installService({ root, platform: 'linux', home, exec }, opts)
+    // Two units on one root would fight over its lock, sqlite and MCP socket.
+    await expect(installService({ root, instance: 'dev', platform: 'linux', home, exec }, opts)).rejects.toThrow(
+      /already belongs to agentconnect\.service/
+    )
+    expect(listInstances({ home, platform: 'linux' }).map((u) => u.label)).toEqual(['agentconnect.service'])
+  })
+
+  it('still re-installs the same instance in place (the legacy-unit migration path)', async () => {
+    const home = tmp('ac-home-')
+    const root = tmp('ac-root-')
+    const opts = { execPath: '/usr/bin/node', includeRootEnv: true }
+    await installService({ root, instance: 'dev', platform: 'linux', home, exec }, opts)
+    await expect(installService({ root, instance: 'dev', platform: 'linux', home, exec }, opts)).resolves.toBeTruthy()
+  })
+})
+
 describe('controllerFor', () => {
   it('takes the instance from the unit on disk, not from the root pointer', async () => {
     const home = tmp('ac-home-')
