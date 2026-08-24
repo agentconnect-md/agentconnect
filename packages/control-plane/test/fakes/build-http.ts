@@ -413,8 +413,14 @@ export function buildHttpApp(
     depsOverrides?.gitlab ? new PgGitlabProjectBindingRepo(prisma) : undefined,
     depsOverrides?.gitlab ? new PgGitlabWebhookSecretStore(prisma, cipher) : undefined,
     depsOverrides?.gitlab ? new PgGitlabAgentAccountRepo(prisma) : undefined,
-    // §24.4: the axis the fake GitLab edge serves rides every compiled gitlab rule.
-    depsOverrides?.gitlab?.api.baseUrl
+    // §24.4: the axis the fake GitLab edge serves rides every compiled gitlab rule, and the
+    // hook agent's spec is re-projected in the same ordered sequence production uses.
+    depsOverrides?.gitlab?.api.baseUrl,
+    async (orgId, agentId) => {
+      const agent = await agentRepo.get(orgId, agentId)
+      if (!agent) return
+      await (depsOverrides?.agentDelivery ?? agentDelivery).upsert(agent, () => {})
+    }
   )
   // The §16.1 rerun authorizer rides the gitlab seam; a suite may still override it.
   if (coreOverrides.gitlab && !coreOverrides.gitlab.hookRerun) {

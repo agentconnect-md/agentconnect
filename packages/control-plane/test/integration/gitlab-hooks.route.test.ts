@@ -110,9 +110,14 @@ async function harness(options: FakeGitlabOptions = {}, agentDelivery?: AgentDel
     onConverged: (orgId, projectId) => {
       const app = running
       if (!app) return
-      void hookRepo.listForOrgKind(OrgId(orgId), 'gitlab').then(async (rows) => {
+      // Tracked like convergeProject below: this rebroadcast queries and sends AFTER the
+      // converge resolves, so leaving it untracked lets `settled()` return while it runs
+      // and afterEach closes the pool under it.
+      const run = hookRepo.listForOrgKind(OrgId(orgId), 'gitlab').then(async (rows) => {
         for (const row of rows) if (row.repoId === projectId) await app.deps.hooks.broadcast(row)
       })
+      inFlightConvergence.add(run)
+      void run.finally(() => inFlightConvergence.delete(run))
     },
     api: fake.api
   })
@@ -1327,12 +1332,15 @@ describe('§24.4 a hook write converges the agent spec it changes', () => {
       payload: glBody(h.secondAgentId)
     })
     expect(moved.statusCode).toBe(200)
+    await vi.waitFor(() => expect(t.events).toContain('assign'), { timeout: 20_000 })
 
-    // Joining lands first, leaving last — the same order a repo retarget uses, for the same
-    // reason: the agent joins one and leaves the other, and joining must land first.
+    // The gaining agent carries the host before the rule is assigned to it — the guarantee
+    // `broadcast` makes atomically, so no caller has to remember the order.
     const joined = t.events.indexOf(`spec:${h.secondAgentId}`)
-    const left = t.events.indexOf(`spec:${h.agentId}`)
     expect(joined).toBeGreaterThanOrEqual(0)
-    expect(left).toBeGreaterThan(joined)
+    expect(joined).toBeLessThan(t.events.indexOf('assign'))
+    // And the agent the hook moved OFF is re-projected too, dropping a host it no longer
+    // earns. Its timing against the new assign is free: no rule points at it any more.
+    expect(t.events).toContain(`spec:${h.agentId}`)
   })
 })

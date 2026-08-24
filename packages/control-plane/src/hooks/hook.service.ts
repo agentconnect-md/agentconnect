@@ -68,7 +68,13 @@ export class HookService {
     private readonly gitlabAccounts?: Pick<GitlabAgentAccountRepo, 'listForBinding'>,
     /** The deployment's normalized GitLab instance base URL (§24.1); it rides every
      *  compiled gitlab rule as the turn-time fence host. */
-    private readonly gitlabHost?: string
+    private readonly gitlabHost?: string,
+    /** Re-project the hook agent's spec (§24.4). An enabled gitlab hook is a GitLab consumer,
+     *  so it puts `gitlabHost` on that agent's spec — and the spec is what the daemon fences a
+     *  delivery against. It lives HERE rather than in the CRUD routes because a route is not
+     *  the only thing that assigns a rule: the gitlab provisioning bracket commits the row and
+     *  rebroadcasts from inside the write, before any route code after it runs. Best-effort. */
+    private readonly projectAgentSpec?: (orgId: OrgId, agentId: AgentId) => Promise<void>
   ) {}
 
   /**
@@ -221,11 +227,24 @@ export class HookService {
     }
   }
 
-  /** Converge the pool on one hook: assign when compilable, remove otherwise. */
+  /**
+   * Converge the pool on one hook: assign when compilable, remove otherwise.
+   *
+   * The spec projection is ordered against the rule, never merely paired with it (§24.4): the
+   * agent must carry the host for as long as a rule that can fire exists, so a GAINING
+   * projection lands before the assign and a LOSING one after the remove. Every caller
+   * inherits that — the CRUD routes, the gitlab provisioning rebroadcast, and a placement
+   * re-converge alike — which is the point of it living here.
+   */
   async broadcast(hook: HookRecord): Promise<void> {
     const rule = await this.compile(hook)
-    if (rule) this.relayControl.hookAssign(rule)
-    else this.relayControl.hookRemove(hook.id)
+    if (rule) {
+      if (hook.agentId) await this.projectAgentSpec?.(hook.orgId, hook.agentId)
+      this.relayControl.hookAssign(rule)
+    } else {
+      this.relayControl.hookRemove(hook.id)
+      if (hook.agentId) await this.projectAgentSpec?.(hook.orgId, hook.agentId)
+    }
   }
 
   /** Explicit pool-wide removal (hook deleted — no row left to compile). */

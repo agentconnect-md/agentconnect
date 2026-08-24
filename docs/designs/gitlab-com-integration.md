@@ -2419,10 +2419,16 @@ Merge order, GitLab.com green at every step:
   none, so asking it would collect a `replay_pending` refusal — and the first
   answered verdict is final, so that refusal would end the walk before an
   eligible peer was asked. And because an enabled hook is a spec consumer, a
-  hook write is a spec edit: the CRUD routes re-project the agent it fires at,
-  ordered against the rule — the agent gaining the consumer before the rule is
-  exposed, the one losing it after the rule is gone, joining before leaving on a
-  retarget, exactly as a repo retarget orders its two projects.
+  hook write is a spec edit, ordered against the rule: the agent GAINING the
+  consumer is re-projected before the rule is assigned, the one LOSING it after
+  the rule is gone. That ordering lives in the rule convergence itself, not in
+  the CRUD routes, because a route is not the only thing that assigns a rule —
+  the GitLab provisioning bracket commits the row and rebroadcasts from inside
+  the write, before any route code after it runs, so a route-level push is
+  simply too late. Convergence therefore projects and then assigns as one
+  sequence, and every caller inherits it. The routes keep only the two cases an
+  assign cannot see: the agent a retarget moved the hook off, and a delete,
+  which leaves no row to converge.
   Exit: mixed-version tests in both directions,
   including a self-managed additional repository on a scratch workspace and
   a hook targeting a non-GitLab-workspace agent on an old daemon.

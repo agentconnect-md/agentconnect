@@ -709,7 +709,19 @@ export function buildContainer(
     gitlabAppCfg ? repos.gitlabProjectBinding : undefined,
     gitlabWebhookSecretStore,
     gitlabAppCfg ? repos.gitlabAgentAccount : undefined,
-    gitlabAppCfg?.baseUrl
+    gitlabAppCfg?.baseUrl,
+    async (orgId, agentId) => {
+      // Re-read: the hook write advanced this agent's configRevision in its own transaction.
+      const agent = await repos.agent.get(orgId, agentId)
+      if (!agent) return
+      await agentDelivery.upsert(agent, (err, daemonId) => {
+        if (err instanceof NoConnection) {
+          http.log.debug({ agentId, daemonId }, 'agent/upsert skipped: daemon offline')
+        } else {
+          http.log.warn({ err, agentId, daemonId }, 'hook converge: agent spec reconcile failed')
+        }
+      })
+    }
   )
 
   // The single fencing site (allocates seq, stamps epoch/launchId on C→D frames).

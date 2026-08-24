@@ -132,12 +132,10 @@ export function hookRoutes(deps: HttpDeps) {
       void deps.hooks.broadcast(hook).catch((err) => app.log.warn({ hookId: hook.id, err }, 'hook broadcast failed'))
     }
 
-    // An enabled gitlab hook is a GitLab consumer, so it puts `gitlabHost` on its agent's
-    // spec (§24.4) even when the workspace is scratch or github. That makes a hook write a
-    // SPEC edit, and the spec is what the daemon fences a delivery against — so it must be
-    // ordered against the rule: an agent GAINING the consumer is re-projected before the
-    // rule is exposed, one LOSING it after the rule is gone. Best-effort, exactly like the
-    // agents route's replicateUpsert: the register/ok roster is the backstop.
+    // §24.4: the hook's OWN agent is re-projected by `HookService.broadcast`, which is the
+    // only place that sees every rule assignment. This covers the two an assign cannot: the
+    // agent a retarget moved the hook OFF, and a delete, which leaves no row to broadcast.
+    // Best-effort, like the agents route's replicateUpsert: the register/ok roster backstops.
     const replicateUpsert = async (orgId: OrgId, agentId: AgentId | null): Promise<void> => {
       if (!agentId) return
       // Re-read: the hook write advanced the agent's configRevision in its own transaction.
@@ -616,8 +614,6 @@ export function hookRoutes(deps: HttpDeps) {
           .catch(() => {})
         // Re-read so hmacConfigured reflects the secret written above.
         const fresh = (await deps.repos.hook.get(orgId, hookId)) ?? hook
-        // Gaining: the daemon needs the host on disk before a delivery can quote it.
-        await replicateUpsert(orgId, AgentId(agent.id))
         converge(fresh)
         if (fresh.kind === 'gitlab') convergeGitlabWebhook(orgId, fresh.repoId)
         return { ...toDto(fresh, deps.config.PUBLIC_RELAY_URL), hmacSecret }
@@ -921,9 +917,6 @@ export function hookRoutes(deps: HttpDeps) {
             details: { hookId: hook.id, kind: hook.kind, enabled: hook.enabled }
           })
           .catch(() => {})
-        // The agent this hook now fires at gains (or keeps) the consumer — spec first. A
-        // disable re-projects here too, dropping the host just before the rule leaves.
-        await replicateUpsert(orgOf(req), AgentId(agent.id))
         converge(hook)
         // A retarget moved the hook OFF `existing.agentId`, which may have just lost its
         // last GitLab consumer. That one is re-projected after the rule moved, never before.
