@@ -205,7 +205,7 @@ hidden unresolved candidate after GitHub sync is enabled.
 
 ### 4.1 Protocol: new telemetry fields
 
-`EventSession` (`packages/protocol/src/frames/telemetry.ts`) gains four
+`EventSession` (`packages/protocol/src/frames/telemetry.ts`) gains five
 optional fields:
 
 ```ts
@@ -213,6 +213,7 @@ conversationKind?: 'dm' | 'group_dm' | 'channel'
 transportScope?: string // trusted workspace/tenant scope for ownerIdentity, §2
 launchCorrelationId?: string // Web API launch provenance, §4.4
 sourceBindingKind?: 'local' | 'external' // daemon-pinned source provenance
+directDestination?: true // this row's coordinates are its own conversation, §4.2
 ```
 
 Shared-source sessions additionally report a provider-specific
@@ -330,6 +331,32 @@ Notes:
   agent. The child takes the parent's `visibility` + `ownerIdentity` at
   ingest; §4.5 defines the durable reconciliation semantics for out-of-order
   arrival and later parent changes.
+- **A self-post channel root binds where it landed, not where it came from.**
+  An agent's channel-ROOT post seeds a new session for the thread it just
+  created, so that thread's own conversation is its external source scope. The
+  origin session travels as lineage only: inheriting its scope would bind the
+  seed to a conversation it does not live in — readable by that channel's
+  audience, and rejecting the first human reply as a cross-source turn.
+  Such a row reports `directDestination` and is classified here rather than by
+  inheritance, even though it keeps `parentSessionId`: a DM destination (which
+  binds no audience by design) becomes `private`, any other conversation `org`,
+  and both are unowned — the reporting trigger is the agent, not a person. A
+  shared destination re-binds its own trusted candidate, which outranks both.
+  Classifying itself does not exempt it from privacy travelling DOWN the
+  lineage: a settled-private parent tightens it exactly as §4.3 would, whichever
+  of the two rows arrives first — and if the parent landed inside the child's own
+  classification window, the child re-runs that tightening after it commits, the
+  same recheck `inherited_pending` rows get. Its own `explicit`
+  re-classification survives the convergence; only a human tighten of the parent
+  overrides that.
+- **The lineage fence.** Both halves of that convergence read rows that may not
+  exist yet, and a row lock cannot serialize two rows that are both still
+  uncommitted — each transaction would see no counterpart and commit its own
+  view. Ingest, §4.3 reclassification, and the post-commit recheck therefore
+  take a transaction-scoped advisory lock keyed on the session id
+  (`persistence/session-lineage-lock.ts`) before any row lock, so one side waits
+  and observes the other's committed state. Taken lock-first, never while
+  holding rows, which is what keeps a blocking lock deadlock-free.
 
 ### 4.3 Changing visibility after the fact
 

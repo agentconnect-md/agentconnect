@@ -112,6 +112,7 @@ describe('EventSession visibility-classification fields (session-visibility.md ย
     expect(parsed.transportScope).toBeUndefined()
     expect(parsed.launchCorrelationId).toBeUndefined()
     expect(parsed.sourceBindingKind).toBeUndefined()
+    expect(parsed.directDestination).toBeUndefined()
   })
 
   it('carries conversationKind + durable transportScope + launchCorrelationId + source provenance', () => {
@@ -129,6 +130,15 @@ describe('EventSession visibility-classification fields (session-visibility.md ย
     expect(EventSession.safeParse({ ...legacyMilestone, conversationKind: 'group_dm' }).success).toBe(true)
     expect(EventSession.safeParse({ ...legacyMilestone, conversationKind: 'channel' }).success).toBe(true)
     expect(EventSession.safeParse({ ...legacyMilestone, sourceBindingKind: 'external' }).success).toBe(true)
+  })
+
+  // ยง4.2: the row's coordinates ARE its own conversation, so its parent is lineage only. Only the
+  // true case is on the wire โ€” `false` would be a claim the classifier has no use for.
+  it('carries directDestination beside the parent link, true-only', () => {
+    const parsed = EventSession.parse({ ...legacyMilestone, parentSessionId: 'acp-parent-1', directDestination: true })
+    expect(parsed.directDestination).toBe(true)
+    expect(parsed.parentSessionId).toBe('acp-parent-1')
+    expect(EventSession.safeParse({ ...legacyMilestone, directDestination: false }).success).toBe(false)
   })
 
   it('carries the exact accepted GitHub delivery as repository-scope proof', () => {

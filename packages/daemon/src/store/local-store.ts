@@ -250,6 +250,9 @@ export interface SessionRecord {
   // Null is legacy/unknown. New rows pin either an external shared input or a
   // non-external origin so a later turn cannot silently change audiences.
   sourceBindingKind?: 'local' | 'external' | null
+  /** 1 when this session's coordinates are its own conversation, so a parent link is
+   *  lineage only and the CP must not inherit the parent's audience (§4.2). */
+  directDestination?: number | null
   // session-concept §5.3: the origin (parent) session's stable acpSessionId, when this session
   // was spawned by another session's `sendMessage` (case 2a / A2A). DURABLE parent link (first-wins):
   // it authorizes this session's SessionTarget replies back to the parent on EVERY turn, not just
@@ -960,7 +963,10 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean }) => Promise<v
         sessionId TEXT NOT NULL,
         mintedAt INTEGER NOT NULL
       );
-    `)
+    `),
+  // Whether a child session's coordinates are its OWN conversation (§4.2). Left null on
+  // existing rows: absent keeps the CP's ordinary child inheritance, which is what they got.
+  async (db) => await db.exec('ALTER TABLE sessions ADD COLUMN directDestination INTEGER')
 ]
 
 export class LocalStore {
@@ -1059,7 +1065,7 @@ export class LocalStore {
         originSessionId TEXT, lastTurnOutcome TEXT, needsParentReply INTEGER,
         externalProvider TEXT, externalRealmKey TEXT, externalResourceKind TEXT,
         externalResourceKey TEXT, externalIntegrationId TEXT, externalOriginJson TEXT,
-        sourceBindingKind TEXT,
+        sourceBindingKind TEXT, directDestination INTEGER,
         -- session-visibility.md §4.1: persisted so EVERY event/session re-emit
         -- carries them, not just the one dispatch that knew the message.
         conversationKind TEXT, tenantScope TEXT, launchCorrelationId TEXT
@@ -2443,6 +2449,7 @@ export class LocalStore {
       externalIntegrationId?: string
       externalOrigin?: ExternalSessionOrigin
       sourceBindingKind?: 'local' | 'external'
+      directDestination?: boolean
     }
   ): Promise<void> {
     await this.db
@@ -2458,7 +2465,8 @@ export class LocalStore {
            -- Unlike the source tuple, the credential locator is replaceable.
            externalIntegrationId = COALESCE(?, externalIntegrationId),
            externalOriginJson = COALESCE(externalOriginJson, ?),
-           sourceBindingKind = COALESCE(sourceBindingKind, ?)
+           sourceBindingKind = COALESCE(sourceBindingKind, ?),
+           directDestination = COALESCE(directDestination, ?)
          WHERE key = ?`
       )
       .run(
@@ -2472,6 +2480,7 @@ export class LocalStore {
         c.externalIntegrationId ?? null,
         c.externalOrigin ? JSON.stringify(c.externalOrigin) : null,
         c.sourceBindingKind ?? null,
+        c.directDestination === undefined ? null : c.directDestination ? 1 : 0,
         key
       )
   }
@@ -2492,6 +2501,7 @@ export class LocalStore {
         externalIntegrationId?: string
         externalOrigin?: ExternalSessionOrigin
         sourceBindingKind?: 'local' | 'external'
+        directDestination?: boolean
       }
     | undefined
   > {
@@ -2500,7 +2510,7 @@ export class LocalStore {
         `SELECT conversationKind, tenantScope, launchCorrelationId,
                 externalProvider, externalRealmKey, externalResourceKind,
                 externalResourceKey, externalIntegrationId, externalOriginJson,
-                sourceBindingKind
+                sourceBindingKind, directDestination
          FROM sessions WHERE agentId = ? AND acpSessionId = ?`
       )
       .get(agentId, acpSessionId)) as
@@ -2515,6 +2525,7 @@ export class LocalStore {
           externalIntegrationId: string | null
           externalOriginJson: string | null
           sourceBindingKind: 'local' | 'external' | null
+          directDestination: number | null
         }
       | undefined
     if (!row) return undefined
@@ -2530,7 +2541,8 @@ export class LocalStore {
       ...(row.externalOriginJson
         ? { externalOrigin: JSON.parse(row.externalOriginJson) as ExternalSessionOrigin }
         : {}),
-      ...(row.sourceBindingKind ? { sourceBindingKind: row.sourceBindingKind } : {})
+      ...(row.sourceBindingKind ? { sourceBindingKind: row.sourceBindingKind } : {}),
+      ...(row.directDestination ? { directDestination: true } : {})
     }
   }
 

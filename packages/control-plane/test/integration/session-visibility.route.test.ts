@@ -14,6 +14,8 @@ import { seedPoolMember } from '../fakes/member-set.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
 import { PgSessionRepo } from '../../src/persistence/repositories/session.repo.js'
+import { sessionLineageLockKey } from '../../src/persistence/session-lineage-lock.js'
+import { Prisma } from '../../src/generated/prisma/client.js'
 import { PgAgentRepo } from '../../src/persistence/repositories/agent.repo.js'
 import { PgDutyGroupRepo } from '../../src/persistence/repositories/duty-group.repo.js'
 import { PlacementResolver } from '../../src/orchestrator/placementResolver.js'
@@ -477,6 +479,250 @@ describe('session visibility — external conversation audiences', () => {
     })
     expect(await repo.countExternalUnresolved(OrgId(DEFAULT_ORG_ID), 'slack')).toBe(1)
     expect((await repo.getExternalAccessPolicy(OrgId(DEFAULT_ORG_ID), 'slack'))?.state).toBe('degraded')
+  })
+
+  // §4.2 direct destination: a child whose coordinates are its OWN conversation (an agent's
+  // channel-ROOT post) reports a settled classification instead of `inherit`. It keeps the
+  // parent for lineage, but must not take the parent's audience — a DM seeded from a public
+  // channel session would otherwise be readable by that channel's audience.
+  it('keeps a direct-destination child out of its parent audience while keeping the lineage', async () => {
+    const daemonId = await seedDaemon(prisma, randomUUID())
+    const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
+    const repo = new PgSessionRepo(prisma)
+    const parentId = `s-dd-parent-${randomUUID()}`
+    const childId = `s-dd-child-${randomUUID()}`
+
+    // The origin turn: an org-visible Slack channel session with a human owner.
+    await seedSessionMeta(prisma, parentId, agentId, {
+      daemonId,
+      channel: 'C_ORIGIN',
+      ownerIdentity: 'slack:T1:U1'
+    })
+
+    const child = await repo.recordMilestone({
+      sessionId: SessionId(childId),
+      parentSessionId: SessionId(parentId),
+      agentId,
+      phase: 'start',
+      platform: 'slack',
+      channel: 'D_PEER',
+      at: new Date(),
+      classification: { visibility: 'private', ownerIdentity: null, source: 'default' }
+    })
+    expect(child.session).toMatchObject({
+      parentSessionId: parentId,
+      visibility: 'private',
+      ownerIdentity: null,
+      // Not `inherited`/`inherited_pending`: this row classified itself, so no settlement
+      // scan will ever hand it the parent's audience either.
+      visibilitySource: 'default',
+      externalProvider: null,
+      externalScopeId: null
+    })
+  })
+
+  // …but a TIGHTENED parent still reaches it: the §4.3 cascade rewrites every descendant it
+  // can see, so a row that classifies itself must land in the same state whether it arrives
+  // before the tightening (cascade catches it) or after (this path applies it). Otherwise the
+  // outcome is commit-order dependent.
+  it('applies a tightened parent to a direct-destination child that arrives after the cascade', async () => {
+    const owner = await makeUser('sv-dd-tighten', 'owner')
+    const daemonId = await seedDaemon(prisma, randomUUID())
+    const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
+    const repo = new PgSessionRepo(prisma)
+    const parentId = `s-dd-tight-parent-${randomUUID()}`
+    const early = `s-dd-tight-early-${randomUUID()}`
+    const late = `s-dd-tight-late-${randomUUID()}`
+
+    await seedSessionMeta(prisma, parentId, agentId, { daemonId, ownerIdentity: `user:${owner}` })
+    const settled = { visibility: 'org' as const, ownerIdentity: null, source: 'default' as const }
+    // One child arrives BEFORE the tightening and is swept by the cascade…
+    await repo.recordMilestone({
+      sessionId: SessionId(early),
+      parentSessionId: SessionId(parentId),
+      agentId,
+      phase: 'start',
+      platform: 'slack',
+      channel: 'C_POSTED',
+      at: new Date(),
+      classification: settled
+    })
+    await appAs(owner).app.inject({
+      method: 'PUT',
+      url: `${ORG}/sessions/${parentId}/visibility`,
+      payload: { visibility: 'private' }
+    })
+    // …the other arrives after it, and must not read as the wider row the cascade already removed.
+    const after = await repo.recordMilestone({
+      sessionId: SessionId(late),
+      parentSessionId: SessionId(parentId),
+      agentId,
+      phase: 'start',
+      platform: 'slack',
+      channel: 'C_POSTED',
+      at: new Date(),
+      classification: settled
+    })
+    const expected = { visibility: 'private', ownerIdentity: `user:${owner}`, visibilitySource: 'inherited' }
+    expect(await prisma.sessionMeta.findUnique({ where: { id: early } })).toMatchObject(expected)
+    expect(after.session).toMatchObject(expected)
+  })
+
+  // The inverse arrival order: the self-classifying child lands FIRST, so there is no parent to
+  // read. Settlement alone only rewrites `inherited_pending` rows, so without convergence on the
+  // parent's own milestone this row would stay org-visible under a private parent — the same
+  // lineage, a different outcome, decided by which telemetry arrived first.
+  it('converges a direct-destination child that arrived before its private parent', async () => {
+    const daemonId = await seedDaemon(prisma, randomUUID())
+    const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
+    const repo = new PgSessionRepo(prisma)
+    const parentId = `s-dd-first-parent-${randomUUID()}`
+    const childId = `s-dd-first-child-${randomUUID()}`
+    const widened = `s-dd-first-widened-${randomUUID()}`
+
+    // Two self-classifying children of a parent that has not been reported yet.
+    for (const id of [childId, widened]) {
+      await repo.recordMilestone({
+        sessionId: SessionId(id),
+        parentSessionId: SessionId(parentId),
+        agentId,
+        phase: 'start',
+        platform: 'slack',
+        channel: 'C_POSTED',
+        at: new Date(),
+        classification: { visibility: 'org', ownerIdentity: null, source: 'default' }
+      })
+    }
+    // …one of which its owner then deliberately widened. A human decision on the CHILD is not
+    // reconciliation's to undo (§4.5): only an explicit tighten of the parent may override it.
+    await prisma.sessionMeta.update({ where: { id: widened }, data: { visibilitySource: 'explicit' } })
+
+    // The parent finally arrives, private from birth (a webchat/DM origin).
+    await repo.recordMilestone({
+      sessionId: SessionId(parentId),
+      agentId,
+      phase: 'start',
+      platform: 'webchat',
+      channel: randomUUID(),
+      at: new Date(),
+      classification: { visibility: 'private', ownerIdentity: 'user:someone', source: 'default' }
+    })
+
+    expect(await prisma.sessionMeta.findUnique({ where: { id: childId } })).toMatchObject({
+      visibility: 'private',
+      ownerIdentity: 'user:someone',
+      visibilitySource: 'inherited'
+    })
+    expect(await prisma.sessionMeta.findUnique({ where: { id: widened } })).toMatchObject({
+      visibility: 'org',
+      visibilitySource: 'explicit'
+    })
+  })
+
+  // The concurrent window between those two orders: the child reads no parent (there is no row to
+  // lock), the parent then inserts and finishes its own descendant scan before the child is
+  // visible to it, and the child commits its own classification. Neither side would revisit the
+  // row, so a committed self-classifying child re-runs the parent's tightening. Straddling that
+  // window is not reachable through the public API without a concurrency hook, so the post-commit
+  // half is driven directly here; the two fully ordered paths are covered above.
+  it('converges a direct-destination child whose parent landed inside its classification window', async () => {
+    const daemonId = await seedDaemon(prisma, randomUUID())
+    const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
+    const repo = new PgSessionRepo(prisma)
+    const parentId = `s-dd-race-parent-${randomUUID()}`
+    const childId = `s-dd-race-child-${randomUUID()}`
+
+    // The child commits with no parent row in sight, keeping its own classification.
+    const child = await repo.recordMilestone({
+      sessionId: SessionId(childId),
+      parentSessionId: SessionId(parentId),
+      agentId,
+      phase: 'start',
+      platform: 'slack',
+      channel: 'C_POSTED',
+      at: new Date(),
+      classification: { visibility: 'org', ownerIdentity: null, source: 'default' }
+    })
+    expect(child.session).toMatchObject({ visibility: 'org', visibilitySource: 'default' })
+
+    // The parent is now present, private, and its descendant scan already ran without seeing
+    // this child (seeded raw, exactly like a cascade that finished a moment too early).
+    await seedSessionMeta(prisma, parentId, agentId, {
+      daemonId,
+      visibility: 'private',
+      ownerIdentity: 'user:origin-owner'
+    })
+    const converged = await (
+      repo as unknown as {
+        convergeFromParent(orgId: string, parentSessionId: string): Promise<Array<{ id: string }>>
+      }
+    ).convergeFromParent(DEFAULT_ORG_ID, parentId)
+
+    // Reported back so the caller owes this row a §5.1 gate push at its new tier.
+    expect(converged.map((row) => row.id)).toContain(childId)
+    expect(await prisma.sessionMeta.findUnique({ where: { id: childId } })).toMatchObject({
+      visibility: 'private',
+      ownerIdentity: 'user:origin-owner',
+      visibilitySource: 'inherited'
+    })
+  })
+
+  // …and the fence that removes the window itself: two rows of one lineage can BOTH be
+  // uncommitted, which no row lock can serialize. Ingest takes the lineage's advisory lock ahead
+  // of every row lock, so a child's classification cannot run beside an uncommitted parent.
+  it('fences a child ingest behind a concurrent writer of the same lineage', async () => {
+    const daemonId = await seedDaemon(prisma, randomUUID())
+    const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
+    const repo = new PgSessionRepo(prisma)
+    const parentId = `s-fence-parent-${randomUUID()}`
+    const childId = `s-fence-child-${randomUUID()}`
+
+    // Stand in for the parent's in-flight transaction: hold its lineage lock and nothing else,
+    // so what the ingest waits on can only be the fence.
+    let release!: () => void
+    const held = new Promise<void>((resolve) => (release = resolve))
+    let acquired!: () => void
+    const holding = new Promise<void>((resolve) => (acquired = resolve))
+    const holder = prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${sessionLineageLockKey(parentId)}, 0))`
+      acquired()
+      await held
+    })
+    await holding
+
+    const ingest = repo.recordMilestone({
+      sessionId: SessionId(childId),
+      parentSessionId: SessionId(parentId),
+      agentId,
+      phase: 'start',
+      platform: 'slack',
+      channel: 'C_POSTED',
+      at: new Date(),
+      classification: { visibility: 'org', ownerIdentity: null, source: 'default' }
+    })
+    // The waiter itself is the assertion: an unfenced ingest commits instead of queueing, and
+    // no ungranted advisory lock ever appears. Polled, not slept — a slow runner cannot make a
+    // correct run fail, and the loop ends the moment the waiter shows up.
+    for (let attempt = 0; ; attempt++) {
+      const [row] = await prisma.$queryRaw<Array<{ count: number }>>(Prisma.sql`
+        SELECT COUNT(*)::int AS "count"
+        FROM pg_locks
+        WHERE locktype = 'advisory'
+          AND granted = false
+          AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+      `)
+      if ((row?.count ?? 0) > 0) break
+      expect(attempt, 'the child ingest never waited on the lineage fence').toBeLessThan(500)
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+    // …and it is waiting BEFORE it wrote anything. Without the fence in ingest the row is already
+    // committed by now (only the post-commit recheck would be queueing), which is the whole point:
+    // a classification that has already landed cannot observe the parent this fence is waiting for.
+    expect(await prisma.sessionMeta.findUnique({ where: { id: childId } })).toBeNull()
+
+    release()
+    await holder
+    expect((await ingest).recorded).toBe(true)
   })
 
   // The post-commit settlement path (§4.5) inherits the parent's audience after

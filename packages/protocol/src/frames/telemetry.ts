@@ -119,6 +119,12 @@ export const EventSession = z.object({
   // for session-key compatibility. Absent keeps mixed-version ingest on the
   // conservative legacy path.
   sourceBindingKind: z.enum(['local', 'external']).optional(),
+  // This session's coordinates ARE its own conversation — an agent's channel-ROOT
+  // post, or a peer woken by a platform-observed mention there. Its `parentSessionId`
+  // is lineage, not an audience ancestor: the row classifies by the conversation it
+  // lives in instead of inheriting one it was never posted to (§4.2). Absent keeps
+  // the ordinary child-inheritance path.
+  directDestination: z.literal(true).optional(),
   // Immutable audience candidate for a supported shared input. This is
   // metadata-only: the CP validates the integration before binding a scope and
   // resolves current provider membership only on authorized read paths.

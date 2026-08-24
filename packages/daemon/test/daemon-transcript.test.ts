@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { MAX_AGENT_CALL_HOPS } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
-import { transcriptChannelKey, type TranscriptEntry } from '../src/store/local-store.js'
+import { sessionKey, transcriptChannelKey, type TranscriptEntry } from '../src/store/local-store.js'
 import { stableTurnId } from '../src/messages/normalized.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import type { SlackPostOptions } from '../src/slack/connection.js'
@@ -331,6 +331,62 @@ describe('Daemon transcript records the agent reply', () => {
       expect.stringContaining('already belongs to a session created from another source'),
       'T1'
     )
+    await daemon.stop()
+  }, 15_000)
+
+  // A cross-channel root post used to seed its new thread with the ORIGIN conversation's audience,
+  // so the first human reply there rejected as a cross-source turn — and the session claimed the
+  // readers of a channel it does not live in. The seed binds where the post LANDED.
+  it('binds an agent root post in another channel to that channel, not the origin', async () => {
+    const { factory, host } = replyingHost('here is my answer')
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold('medium'),
+      hostFactory: factory
+    })
+    await daemon.start()
+    const conn = makeRoutable(daemon)
+
+    // The origin turn runs in C1 and binds that channel's audience.
+    await (daemon as any).dispatch('bot-a', channelMsg('100', 'say hi in C2'), 'int-a')
+    // …then the agent posts a channel ROOT into C2, which seeds C2's new thread.
+    await (daemon as any).collab.spawnChannelRootSession({
+      agentId: 'bot-a',
+      platform: 'slack',
+      integrationId: 'int-a',
+      channel: 'C2',
+      thread: '300.1',
+      postTs: '300.1',
+      text: 'Hi! 👋',
+      originTransportScope: TRANSPORT_SCOPE,
+      originChannel: 'C1',
+      originThread: 'T1'
+    })
+    const seededKey = sessionKey('slack', 'C2', '300.1', 'bot-a', TRANSPORT_SCOPE)
+    await vi.waitFor(async () => {
+      expect(await (daemon as any).store.getSession(seededKey)).toBeTruthy()
+    }, WAIT)
+    expect(await (daemon as any).store.getSession(seededKey)).toMatchObject({
+      sourceBindingKind: 'external',
+      // Reported to the CP so the row is classified by THIS conversation instead of
+      // inheriting the parent's audience (session-visibility.md §4.2).
+      directDestination: 1,
+      externalProvider: 'slack',
+      externalRealmKey: 'T1',
+      externalResourceKind: 'conversation',
+      // Pre-fix: 'C1', inherited from the origin session — the reply below then rejected.
+      externalResourceKey: 'C2'
+    })
+
+    const reply = { ...channelMsg('400', 'hello'), msgId: 'slack:C2:400', channel: 'C2', thread: '300.1' }
+    await (daemon as any).dispatch('bot-a', reply, 'int-a')
+
+    expect(conn.postMessage).not.toHaveBeenCalledWith(
+      'C2',
+      expect.stringContaining('already belongs to a session created from another source'),
+      '300.1'
+    )
+    expect(host.prompt).toHaveBeenCalledTimes(2)
     await daemon.stop()
   }, 15_000)
 

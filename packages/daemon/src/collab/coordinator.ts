@@ -1327,6 +1327,12 @@ export class CollabCoordinator {
    * with `Parent session` = the origin session. This is initialization only: the root is recorded
    * for replay with the first real reply, but no model turn runs. `headless` remains a transport
    * backstop, and the hop count remains a defense for replay from an older durable inbox row.
+   *
+   * Lineage travels; the AUDIENCE does not. The seed classifies against the conversation the post
+   * landed in (`platformOrigin`), because a cross-conversation post that inherited the origin's
+   * external binding would leave the new thread bound to a channel it does not live in — every
+   * later human reply there then rejects as a cross-source turn, and the session claims the
+   * origin channel's readers (§3.3, `session-visibility.md` §4.2).
    */
   async spawnChannelRootSession(req: {
     agentId: string
@@ -1340,6 +1346,8 @@ export class CollabCoordinator {
     thread: string
     /** The post's RAW platform ts, which on Telegram differs from `thread`. */
     postTs: string
+    /** Whether the DESTINATION is a direct message, as the platform reports it. */
+    isDm?: boolean
     text: string
     originPlatform?: string
     originTransportScope?: string
@@ -1370,7 +1378,6 @@ export class CollabCoordinator {
     const originSessionId = originRec
       ? await this.host.store().ensureOutwardSessionId(originKey, req.agentId, this.host.clock().now())
       : undefined
-    const externalOrigin = await this.host.externalOriginForSession(req.agentId, originAcpSessionId)
     const originCoordPlatform = originPlatform
     const deliveryId = randomUUID()
     const callMeta: CallMeta = {
@@ -1378,8 +1385,11 @@ export class CollabCoordinator {
       hopCount,
       deliveryId,
       initializeOnly: true,
+      // The seed's audience is the conversation the post LANDED in, never the origin's: it is
+      // keyed by a thread this post just created there, and inheriting the origin conversation
+      // would claim an audience this content was never posted to (§3.3).
+      platformOrigin: true,
       ...(originSessionId ? { originSessionId } : {}),
-      ...(externalOrigin ? { externalOrigin } : {}),
       originCoords: {
         platform: originCoordPlatform,
         channel: req.originChannel,
@@ -1410,7 +1420,9 @@ export class CollabCoordinator {
       sender: { id: req.agentId, isBot: true },
       text: req.text,
       mentionedBots: [],
-      isDm: false,
+      // Load-bearing for classification, not cosmetic: the audience strategy asks whether the
+      // DESTINATION is a DM, and a Slack DM binds no conversation audience (§7.4).
+      isDm: req.isDm === true,
       // No model turn runs for this seed; headless is retained as a transport backstop.
       headless: true
     }

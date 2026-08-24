@@ -9,6 +9,45 @@ describe('classifySession — the §4.2 default rules', () => {
     })
   })
 
+  // A self-post channel ROOT (or a peer woken by a mention there) keeps its parent for lineage
+  // but lives in its own conversation, so inheriting would hand it that conversation's readers.
+  it('classifies a direct-destination child by its own conversation, unowned', () => {
+    expect(
+      classifySession({
+        parentSessionId: 'parent-1',
+        directDestination: true,
+        platform: 'slack',
+        conversationKind: 'dm',
+        transportScope: 'T1',
+        triggeredBy: 'agent-uuid'
+      })
+    ).toEqual({ visibility: 'private', ownerIdentity: null, source: 'default' })
+    expect(
+      classifySession({
+        parentSessionId: 'parent-1',
+        directDestination: true,
+        platform: 'slack',
+        conversationKind: 'channel',
+        transportScope: 'T1',
+        triggeredBy: 'agent-uuid'
+      })
+    ).toEqual({ visibility: 'org', ownerIdentity: null, source: 'default' })
+    // Without the flag the same row still inherits — the ordinary A2A path is untouched.
+    expect(classifySession({ parentSessionId: 'parent-1', platform: 'slack', conversationKind: 'dm' })).toEqual({
+      inherit: true
+    })
+    // And the flag never widens a ROOT session: with no parent the ordinary IM rules own it.
+    expect(
+      classifySession({
+        directDestination: true,
+        platform: 'slack',
+        conversationKind: 'dm',
+        transportScope: 'T1',
+        triggeredBy: 'U1'
+      })
+    ).toEqual({ visibility: 'private', ownerIdentity: 'slack:T1:U1', source: 'default' })
+  })
+
   it('classifies webchat private and owns it via the resolved binding', () => {
     expect(classifySession({ platform: 'webchat', triggeredBy: 'dev@example.com', webchatOwnerUserId: 'u1' })).toEqual({
       visibility: 'private',

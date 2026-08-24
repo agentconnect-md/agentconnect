@@ -20,6 +20,7 @@ import {
   type SessionMeta
 } from '../../generated/prisma/client.js'
 import { withAmbientTx, type PrismaLike } from '../prisma.js'
+import { lockSessionLineage } from '../session-lineage-lock.js'
 import type {
   SessionRepo,
   SessionMilestoneResult,
@@ -413,6 +414,11 @@ type ResolvedSessionClassification = {
   visibility: SessionVisibility
   ownerIdentity: string | null
   source: VisibilitySource
+  /** Internal, never a column: this row classified ITSELF while its parent was absent or still
+   *  `inherited_pending`, so no parent state could be consumed under the lock. Such a row owes a
+   *  post-commit recheck — the parent may have inserted and finished its own descendant scan
+   *  while this one was invisible to it. */
+  parentUnsettled?: boolean
   externalProvider: string | null
   externalScopeId: string | null
   externalResolution: ExternalResolution | null
@@ -473,6 +479,53 @@ export class PgSessionRepo implements SessionRepo {
             legacyUnresolved: false,
             classifiedPolicyRev: null
           }
+    // The parent under `FOR SHARE`, read for EVERY row that keeps a parent link — not only
+    // the inheriting ones. A row that classifies itself must still land in the state a §4.3
+    // tightening would have left it in: the cascade re-scans each level only after locking
+    // it, so a child that merely waited on the lock and then ignored what it read would
+    // commit `org` after the cascade finished, and the outcome would depend on which
+    // committed first. `applyParentTightening` below is that convergence.
+    const parent = ev.parentSessionId
+      ? await tx.$queryRaw<
+          Array<{
+            visibility: string
+            ownerIdentity: string | null
+            visibilitySource: string
+            externalProvider: string | null
+            externalScopeId: string | null
+            externalResolution: string | null
+            legacyUnresolved: boolean
+            classifiedPolicyRev: bigint | null
+          }>
+        >(
+          Prisma.sql`
+            SELECT "visibility", "ownerIdentity", "visibilitySource",
+                   "externalProvider", "externalScopeId", "externalResolution",
+                   "legacyUnresolved", "classifiedPolicyRev"
+            FROM "session_meta"
+            WHERE "id" = ${ev.parentSessionId} AND "orgId" = ${orgId}
+            FOR SHARE
+          `
+        )
+      : []
+    // A parent that is settled-private has either been tightened (§4.3) or was private from
+    // birth; either way the cascade rewrites this row's level the moment it runs, so ingest
+    // applies the same rewrite now. Tightening only — it never widens a row, and a parent
+    // still holding the `inherited_pending` placeholder is NOT evidence of privacy (copying
+    // it would strand this row private when the real ancestor settles `org`).
+    const parentSettled = parent.length === 1 && parent[0]!.visibilitySource !== 'inherited_pending'
+    const parentTightened = parentSettled && parent[0]!.visibility === 'private'
+    // Only meaningful for a row that classifies itself; the inheriting path below marks the same
+    // situation `inherited_pending` and is rechecked by `settleFromParent`.
+    const parentUnsettled = ev.parentSessionId !== undefined && !parentSettled
+    const applyParentTightening = (row: ResolvedSessionClassification): ResolvedSessionClassification =>
+      !parentTightened
+        ? row
+        : row.externalProvider !== null
+          ? // The cascade quarantines a shared descendant instead of hiding it: the audience is
+            // immutable, so its resolution is invalidated and it reads to nobody.
+            { ...row, visibility: 'external', ownerIdentity: null, externalResolution: 'invalid', source: 'inherited' }
+          : { ...row, visibility: 'private', ownerIdentity: parent[0]!.ownerIdentity, source: 'inherited' }
     if (ev.externalCandidate) {
       const candidate = ev.externalCandidate
       await tx.sessionExternalAccessPolicy.upsert({
@@ -523,8 +576,9 @@ export class PgSessionRepo implements SessionRepo {
         resolution = 'invalid'
       }
       const base = direct ?? { visibility: 'org' as const, ownerIdentity: null, source: 'default' as const }
-      return {
+      return applyParentTightening({
         ...base,
+        ...(parentUnsettled ? { parentUnsettled } : {}),
         // A Feishu/Lark p2p conversation is both a private direct session and a
         // provider-bound candidate. Keep its owner-only baseline while sync is
         // disabled; enabling the policy atomically switches every candidate to
@@ -535,9 +589,9 @@ export class PgSessionRepo implements SessionRepo {
         externalResolution: resolution,
         legacyUnresolved: false,
         classifiedPolicyRev: policy.currentRev
-      }
+      })
     }
-    if (direct) return direct
+    if (direct) return applyParentTightening({ ...direct, ...(parentUnsettled ? { parentUnsettled } : {}) })
     if (!classification) {
       return {
         visibility: 'org',
@@ -550,29 +604,6 @@ export class PgSessionRepo implements SessionRepo {
         classifiedPolicyRev: null
       }
     }
-    const parent = ev.parentSessionId
-      ? await tx.$queryRaw<
-          Array<{
-            visibility: string
-            ownerIdentity: string | null
-            visibilitySource: string
-            externalProvider: string | null
-            externalScopeId: string | null
-            externalResolution: string | null
-            legacyUnresolved: boolean
-            classifiedPolicyRev: bigint | null
-          }>
-        >(
-          Prisma.sql`
-            SELECT "visibility", "ownerIdentity", "visibilitySource",
-                   "externalProvider", "externalScopeId", "externalResolution",
-                   "legacyUnresolved", "classifiedPolicyRev"
-            FROM "session_meta"
-            WHERE "id" = ${ev.parentSessionId} AND "orgId" = ${orgId}
-            FOR SHARE
-          `
-        )
-      : []
     // Parent not here yet (it may live on another daemon, or simply arrive
     // later): start private + unowned and mark the row for one-time settlement.
     //
@@ -738,13 +769,18 @@ export class PgSessionRepo implements SessionRepo {
       `)
       if (rows.length !== 1) return []
       const self = toRecord(rows[0]!)
-      // We just settled — anything that was waiting on US can settle now too.
-      return [self, ...(await this.settlePendingChildren(tx, self))]
+      // We just settled — anything that was waiting on US can settle now too, and a private
+      // outcome converges the descendants that classified themselves (see `upsertMilestone`).
+      const settled = await this.settlePendingChildren(tx, self)
+      if (self.visibility === 'private') {
+        settled.push(...(await this.tightenDescendants(tx, self, { includeExplicit: false })))
+      }
+      return [self, ...settled]
     })
   }
 
   async recordMilestone(ev: EventSessionInput): Promise<SessionMilestoneResult> {
-    const result = await withAmbientTx(this.db, async (tx) => this.upsertMilestone(tx, ev))
+    const { parentUnsettled, ...result } = await withAmbientTx(this.db, async (tx) => this.upsertMilestone(tx, ev))
     if (!result.recorded || !result.session) return result
     // Out-of-order arrival: our parent may have landed while we were writing.
     // Settling ourselves can in turn settle descendants that were waiting on us,
@@ -756,13 +792,67 @@ export class PgSessionRepo implements SessionRepo {
         result.session.parentSessionId
       )
       if (self) return { ...result, session: self, settled: [...result.settled, ...descendants] }
+      return result
+    }
+    // The same window for a row that classified ITSELF: our parent could have inserted AND
+    // finished its descendant scan while this row was still invisible to it, so neither side
+    // would revisit us. Re-run the parent's tightening now that we are committed — it is
+    // idempotent, and a non-private parent leaves this row's own classification alone.
+    if (parentUnsettled && result.session.parentSessionId) {
+      const converged = await this.convergeFromParent(result.session.orgId, result.session.parentSessionId)
+      if (converged.length > 0) {
+        const self = converged.find((row) => row.id === result.session!.id)
+        return {
+          ...result,
+          ...(self ? { session: self } : {}),
+          settled: [...result.settled, ...converged.filter((row) => row.id !== result.session!.id)]
+        }
+      }
     }
     return result
   }
 
-  private async upsertMilestone(tx: PrismaLike, ev: EventSessionInput): Promise<SessionMilestoneResult> {
+  /**
+   * Post-commit half of §4.2 direct-destination convergence, mirroring `settleFromParent` for
+   * rows that classify themselves: tightening only, never inheritance. Runs the parent's own
+   * descendant rewrite, so it also catches siblings that raced through the same window.
+   */
+  private async convergeFromParent(orgId: OrgId, parentSessionId: SessionId): Promise<SessionMetaRecord[]> {
+    return withAmbientTx(this.db, async (tx) => {
+      // The parent may still be committing; the fence makes this recheck observe it.
+      await lockSessionLineage(tx, [parentSessionId])
+      const parent = await tx.$queryRaw<
+        Array<{ visibility: string; ownerIdentity: string | null; visibilitySource: string }>
+      >(
+        Prisma.sql`
+          SELECT "visibility", "ownerIdentity", "visibilitySource"
+          FROM "session_meta"
+          WHERE "id" = ${parentSessionId} AND "orgId" = ${orgId}
+          FOR SHARE
+        `
+      )
+      // Still absent, still a placeholder, or not private: nothing to converge — and when it
+      // settles later, its own milestone runs this rewrite from the other side.
+      if (parent.length !== 1 || parent[0]!.visibilitySource === 'inherited_pending') return []
+      if (parent[0]!.visibility !== 'private') return []
+      return await this.tightenDescendants(
+        tx,
+        { id: parentSessionId, orgId, ownerIdentity: parent[0]!.ownerIdentity },
+        { includeExplicit: false }
+      )
+    })
+  }
+
+  private async upsertMilestone(
+    tx: PrismaLike,
+    ev: EventSessionInput
+  ): Promise<SessionMilestoneResult & { parentUnsettled?: boolean }> {
     const endedAt = ev.phase === 'end' ? ev.at : undefined
     const lastActivityAt = ev.lastActivityAt ?? ev.at
+    // §4.2/§4.5 lineage fence, ahead of every row lock in this transaction: this row and its
+    // parent may both be uncommitted, and no row lock can serialize two rows that do not exist
+    // yet (`lockSessionLineage`). Own id included because this row may itself be a parent.
+    await lockSessionLineage(tx, [ev.sessionId, ev.parentSessionId])
     // Webchat current-session fence: lock the durable conversation row BEFORE
     // the session upsert. Pointer maintenance (below), authorization reads
     // (which lock the same conversation row FOR UPDATE), and any concurrent
@@ -977,6 +1067,13 @@ export class PgSessionRepo implements SessionRepo {
     // would drop it out of the scan when the real ancestor finally lands.
     const settled =
       session.visibilitySource === 'inherited_pending' ? [] : await this.settlePendingChildren(tx, session)
+    // Settlement alone only rewrites `inherited_pending` descendants, so a descendant that
+    // classified ITSELF (a direct destination, §4.2) would stay org-visible under a private
+    // parent purely because it arrived first. Converge it the way a §4.3 tighten would — its
+    // own explicit re-classification survives, and a non-private parent changes nothing.
+    if (session.visibility === 'private' && session.visibilitySource !== 'inherited_pending') {
+      settled.push(...(await this.tightenDescendants(tx, session, { includeExplicit: false })))
+    }
     if (rebound) settled.push(...(await this.settleExternalDescendants(tx, session)))
     // Keep the durable policy state aligned with the actual unresolved set.
     // A trusted retry may settle the final historical candidate after enable;
@@ -1017,7 +1114,7 @@ export class PgSessionRepo implements SessionRepo {
           AND p."state" <> 'disabled'::"ExternalAccessPolicyState"
       `)
     }
-    return { recorded: true, session, settled }
+    return { recorded: true, session, settled, ...(cls.parentUnsettled ? { parentUnsettled: true } : {}) }
   }
 
   async listPage(q: SessionPageQuery): Promise<SessionPageRecord> {
@@ -1581,6 +1678,9 @@ export class PgSessionRepo implements SessionRepo {
     }) => boolean
   ): Promise<SessionVisibilityChange> {
     return withAmbientTx(this.db, async (tx) => {
+      // Same fence as ingest, before this transaction's first row lock: the cascade below scans
+      // for children, and a child whose row is still uncommitted is invisible to that scan.
+      await lockSessionLineage(tx, [sessionId])
       const locked = await tx.$queryRaw<
         Array<{ visibility: string; ownerIdentity: string | null; externalProvider: string | null }>
       >(Prisma.sql`
@@ -1619,63 +1719,90 @@ export class PgSessionRepo implements SessionRepo {
       `)
       const affected = target.map(toRecord)
       if (visibility === 'org') return { affected }
-
-      const seen = new Set<string>([sessionId])
-      let frontier: string[] = [sessionId]
-      while (frontier.length > 0) {
-        // Lock this level's children BEFORE reading them as a set to update: a
-        // concurrent child insert either waits here or is caught by the re-scan.
-        // `parentSessionId` is a daemon-reported free string with NO foreign key,
-        // so a session in another organization can name this one as its parent.
-        // Every lineage hop is therefore confined to the root's org: without it a
-        // tighten here would lock, rewrite, and push another tenant's row
-        // (org-scoped-data-layer.md §3 — the fence is per-hop, not just per-root).
-        const children = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
-          SELECT "id" FROM "session_meta"
-          WHERE "parentSessionId" = ANY(${frontier}::text[]) AND "orgId" = ${orgId}
-          ORDER BY "id"
-          FOR UPDATE
-        `)
-        const next = children.map((c) => c.id).filter((id) => !seen.has(id))
-        if (next.length === 0) break
-        for (const id of next) seen.add(id)
-        // Every descendant is rewritten, including ones ALREADY private: their
-        // transcripts hold text copied from this session, so they must inherit
-        // ITS owner. Leaving a private-but-differently-owned child alone would
-        // keep that other owner's access to the tightened session's content.
-        const rows = await tx.$queryRaw<SessionMeta[]>(Prisma.sql`
-          UPDATE "session_meta" SET
-            "visibility" = CASE
-              WHEN "externalProvider" IS NULL THEN 'private'::"SessionVisibility"
-              ELSE 'external'::"SessionVisibility"
-            END,
-            "ownerIdentity" = CASE
-              WHEN "externalProvider" IS NULL THEN ${ownerIdentity}
-              ELSE NULL
-            END,
-            "externalResolution" = CASE
-              WHEN "externalProvider" IS NULL THEN "externalResolution"
-              ELSE 'invalid'::"ExternalResolution"
-            END,
-            "visibilitySource" = 'inherited'::"VisibilitySource",
-            "visibilityRev" = "visibilityRev" + 1,
-            "updatedAt" = CURRENT_TIMESTAMP
-          WHERE "id" = ANY(${next}::text[])
-            AND "orgId" = ${orgId}
-            AND (
-              ("externalProvider" IS NULL AND "visibility" <> 'private'::"SessionVisibility")
-              OR ("externalProvider" IS NULL AND "ownerIdentity" IS DISTINCT FROM ${ownerIdentity})
-              OR ("externalProvider" IS NOT NULL AND "visibility" <> 'external'::"SessionVisibility")
-              OR ("externalProvider" IS NOT NULL AND "externalResolution" <> 'invalid'::"ExternalResolution")
-              OR "visibilitySource" <> 'inherited'::"VisibilitySource"
-            )
-          RETURNING *
-        `)
-        affected.push(...rows.map(toRecord))
-        frontier = next
-      }
+      // A human tightening overrides a descendant's own re-classification — privacy wins.
+      affected.push(
+        ...(await this.tightenDescendants(
+          tx,
+          { id: sessionId, orgId, ownerIdentity: current.ownerIdentity },
+          { includeExplicit: true }
+        ))
+      )
       return { affected }
     })
+  }
+
+  /**
+   * The §4.3 descendant rewrite, shared with §4.5 settlement: privacy travels DOWN a lineage.
+   * A plain descendant takes the root's owner — including one already private, whose transcript
+   * holds text copied from the root and must not keep a different owner's access. A shared
+   * descendant's audience is immutable, so it is quarantined (`invalid`) rather than hidden.
+   *
+   * Lock-then-scan per level: a concurrent child insert either waits on the level's lock or is
+   * caught by the next scan. `parentSessionId` is a daemon-reported free string with NO foreign
+   * key, so a session in another organization can name this one as its parent — every hop is
+   * confined to the root's org, or a tighten here would rewrite and push another tenant's row
+   * (org-scoped-data-layer.md §3: the fence is per-hop, not just per-root).
+   *
+   * `includeExplicit` separates the callers. A human tightening (§4.3) overrides a descendant's
+   * own decision; convergence on data ARRIVAL must not, because widening a child stays its
+   * owner's own decision (§4.5) and would otherwise be undone by the parent's next milestone.
+   * Idempotent either way — the predicate matches only rows that still differ.
+   */
+  private async tightenDescendants(
+    tx: PrismaLike,
+    root: { id: string; orgId: string; ownerIdentity: string | null },
+    { includeExplicit }: { includeExplicit: boolean }
+  ): Promise<SessionMetaRecord[]> {
+    const { id, orgId, ownerIdentity } = root
+    const keepExplicit = includeExplicit
+      ? Prisma.empty
+      : Prisma.sql`AND "visibilitySource" <> 'explicit'::"VisibilitySource"`
+    const affected: SessionMetaRecord[] = []
+    const seen = new Set<string>([id])
+    let frontier: string[] = [id]
+    while (frontier.length > 0) {
+      const children = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+        SELECT "id" FROM "session_meta"
+        WHERE "parentSessionId" = ANY(${frontier}::text[]) AND "orgId" = ${orgId}
+        ORDER BY "id"
+        FOR UPDATE
+      `)
+      const next = children.map((c) => c.id).filter((childId) => !seen.has(childId))
+      if (next.length === 0) break
+      for (const childId of next) seen.add(childId)
+      const rows = await tx.$queryRaw<SessionMeta[]>(Prisma.sql`
+        UPDATE "session_meta" SET
+          "visibility" = CASE
+            WHEN "externalProvider" IS NULL THEN 'private'::"SessionVisibility"
+            ELSE 'external'::"SessionVisibility"
+          END,
+          "ownerIdentity" = CASE
+            WHEN "externalProvider" IS NULL THEN ${ownerIdentity}
+            ELSE NULL
+          END,
+          "externalResolution" = CASE
+            WHEN "externalProvider" IS NULL THEN "externalResolution"
+            ELSE 'invalid'::"ExternalResolution"
+          END,
+          "visibilitySource" = 'inherited'::"VisibilitySource",
+          "visibilityRev" = "visibilityRev" + 1,
+          "updatedAt" = CURRENT_TIMESTAMP
+        WHERE "id" = ANY(${next}::text[])
+          AND "orgId" = ${orgId}
+          AND (
+            ("externalProvider" IS NULL AND "visibility" <> 'private'::"SessionVisibility")
+            OR ("externalProvider" IS NULL AND "ownerIdentity" IS DISTINCT FROM ${ownerIdentity})
+            OR ("externalProvider" IS NOT NULL AND "visibility" <> 'external'::"SessionVisibility")
+            OR ("externalProvider" IS NOT NULL AND "externalResolution" <> 'invalid'::"ExternalResolution")
+            OR "visibilitySource" <> 'inherited'::"VisibilitySource"
+          )
+          ${keepExplicit}
+        RETURNING *
+      `)
+      affected.push(...rows.map(toRecord))
+      frontier = next
+    }
+    return affected
   }
 
   async recordVisibilityAck(sessionId: SessionId, visibilityRev: number): Promise<void> {
