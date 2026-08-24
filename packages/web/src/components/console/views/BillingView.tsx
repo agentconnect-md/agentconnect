@@ -9,7 +9,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
-import useSWR from 'swr'
+import useSWR, { useSWRConfig } from 'swr'
 import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis } from 'recharts'
 import {
   BillingError,
@@ -621,10 +621,16 @@ export default function BillingView() {
 
   // Poll until the service reports a terminal status. Each poll also makes the
   // service reconcile against Stripe directly, so a lost webhook delays nothing.
+  const { mutate: mutateKey } = useSWRConfig()
   const refreshMoney = useCallback(() => {
     void account.mutate()
     void transactions.mutate()
-  }, [account.mutate, transactions.mutate])
+    // The Activity chart reads the same ledger through its OWN key, one per range, and its
+    // fetch usually landed while the purchase was still pending. Settlement has to reach
+    // every range it can show — leaving the cached ones alone had the Top-ups chart disagree
+    // with the table right beside it until a refocus or a reload.
+    if (orgId) for (const r of ACTIVITY_RANGES) void mutateKey(consoleKeys.billingActivity(orgId, r.key))
+  }, [account.mutate, transactions.mutate, mutateKey, orgId])
   useEffect(() => {
     if (!orgId || checkout?.phase !== 'confirming') return
     const { purchaseId, attempt } = checkout

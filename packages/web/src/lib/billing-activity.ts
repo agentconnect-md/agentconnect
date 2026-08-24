@@ -2,13 +2,23 @@
 // `fetchBillingTransactionsSince` and the drawing is recharts; this only decides which
 // bucket a ledger row lands in and how much it adds.
 //
-// Buckets are LOCAL calendar hours/days, matching the transactions table below the chart
-// (which posts in the viewer's own timezone) and `bucketLabel`, which reads a bucket start
-// as local time. Walking the boundaries with setHours/setDate rather than adding a fixed
-// 3_600_000/86_400_000 is what keeps a DST day one day wide.
+// Buckets are the viewer's own local hours/days, matching the transactions table below the
+// chart (which posts in local time) and `bucketLabel`, which reads a bucket start as local.
+//
+// The two units are walked DIFFERENTLY, and DST is the whole reason:
+//
+//   day  → local calendar arithmetic (`setDate`), because a local day is a calendar fact and
+//          a DST day must stay one bucket wide even though it is 23 or 25 hours long.
+//   hour → elapsed milliseconds, because an hour is a fixed duration and the local clock is
+//          not. Setting the wall-clock hour would land twice on the same instant across a
+//          spring-forward — the skipped local hour normalises onto the next one — so `h24`
+//          would carry a duplicate start, 23 distinct buckets, and a window beginning late
+//          enough that an hour of the ledger was never requested at all.
 
 import type { BillingTransaction } from '@/lib/billing-api'
 import { bucketLabel } from '@/lib/spend-chart'
+
+const HOUR_MS = 60 * 60 * 1000
 
 export type ActivityRange = 'h24' | 'd7' | 'd30' | 'd90'
 export type ActivityMode = 'usage' | 'topups'
@@ -28,7 +38,8 @@ export const ACTIVITY_RANGES = [
 
 export const activityRange = (key: ActivityRange) => ACTIVITY_RANGES.find((r) => r.key === key)!
 
-/** UTC ms of every bucket start in the range, oldest first, the last one holding `nowMs`. */
+/** UTC ms of every bucket start in the range, strictly ascending and distinct, the last one
+ *  holding `nowMs`. */
 function bucketStarts(range: ActivityRange, nowMs: number): number[] {
   const { buckets, unit } = activityRange(range)
   const last = new Date(nowMs)
@@ -36,9 +47,12 @@ function bucketStarts(range: ActivityRange, nowMs: number): number[] {
   else last.setHours(0, 0, 0, 0)
   const starts: number[] = []
   for (let back = buckets - 1; back >= 0; back--) {
+    if (unit === 'hour') {
+      starts.push(last.getTime() - back * HOUR_MS)
+      continue
+    }
     const d = new Date(last)
-    if (unit === 'hour') d.setHours(d.getHours() - back)
-    else d.setDate(d.getDate() - back)
+    d.setDate(d.getDate() - back)
     starts.push(d.getTime())
   }
   return starts
