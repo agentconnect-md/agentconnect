@@ -1,13 +1,12 @@
-import { Prisma, type SessionPullRequestWake } from '../../generated/prisma/client.js'
+import { Prisma, type SessionPullRequest } from '../../generated/prisma/client.js'
+import { AgentId, OrgId, SessionId } from '../../domain/ids.js'
 import { withAmbientTx, type PrismaLike } from '../prisma.js'
 import type { PullRequestWakeRecord, SessionPullRequestFeedbackRepo } from '../ports.js'
-import { AgentId, OrgId, SessionId } from '../../domain/ids.js'
 
-function toRecord(row: SessionPullRequestWake): PullRequestWakeRecord {
+function toRecord(row: SessionPullRequest): PullRequestWakeRecord {
+  if (!row.deliveryKey) throw new Error('claimed pull request has no delivery key')
   return {
-    id: row.id,
-    deliveryKey: row.latestDeliveryKey,
-    generation: row.generation,
+    deliveryKey: row.deliveryKey,
     orgId: OrgId(row.orgId),
     installationId: row.installationId,
     repoId: row.repoId,
@@ -15,6 +14,10 @@ function toRecord(row: SessionPullRequestWake): PullRequestWakeRecord {
     pullNumber: row.pullNumber,
     sessionId: row.sessionId ? SessionId(row.sessionId) : null
   }
+}
+
+function identity(item: Pick<PullRequestWakeRecord, 'orgId' | 'repoId' | 'pullNumber'>) {
+  return { orgId: item.orgId, repoId: item.repoId, pullNumber: item.pullNumber }
 }
 
 export class PgSessionPullRequestFeedbackRepo implements SessionPullRequestFeedbackRepo {
@@ -32,73 +35,28 @@ export class PgSessionPullRequestFeedbackRepo implements SessionPullRequestFeedb
     repoFullName: string
     installationId: bigint
     pullNumber: number
-    at: Date
   }): Promise<boolean> {
     try {
       return await this.transaction(async (tx) => {
-        const current = await tx.sessionMeta.findUnique({
+        const session = await tx.sessionMeta.findUnique({
           where: { id: input.sessionId },
-          select: {
-            agentId: true,
-            orgId: true,
-            contentPurgedAt: true,
-            pullRequestRepoId: true,
-            pullRequestNumber: true
-          }
+          select: { agentId: true, orgId: true, contentPurgedAt: true }
         })
-        if (!current || current.agentId !== input.agentId || current.orgId !== input.orgId || current.contentPurgedAt) {
+        if (!session || session.agentId !== input.agentId || session.orgId !== input.orgId || session.contentPurgedAt) {
           return false
         }
-        const same = current.pullRequestRepoId === input.repoId && current.pullRequestNumber === input.pullNumber
-        if (current.pullRequestRepoId !== null && !same) return false
-        if (!same) {
-          const linked = await tx.sessionMeta.updateMany({
-            where: { id: input.sessionId, pullRequestRepoId: null, pullRequestNumber: null },
-            data: {
-              pullRequestRepoId: input.repoId,
-              pullRequestRepoFullName: input.repoFullName,
-              pullRequestInstallationId: input.installationId,
-              pullRequestNumber: input.pullNumber,
-              pullRequestLinkedAt: input.at
-            }
-          })
-          if (linked.count !== 1) return false
-        } else {
-          await tx.sessionMeta.update({
-            where: { id: input.sessionId },
-            data: {
-              pullRequestRepoFullName: input.repoFullName,
-              pullRequestInstallationId: input.installationId
-            }
-          })
-        }
-        const attached = await tx.sessionPullRequestWake.updateMany({
-          where: {
-            orgId: input.orgId,
-            repoId: input.repoId,
-            pullNumber: input.pullNumber,
-            sessionId: null
-          },
-          data: {
-            sessionId: input.sessionId,
-            repoFullName: input.repoFullName,
-            installationId: input.installationId,
-            claimOwner: null,
-            claimUntil: null
-          }
+
+        const key = { orgId: input.orgId, repoId: input.repoId, pullNumber: input.pullNumber }
+        await tx.sessionPullRequest.upsert({
+          where: { orgId_repoId_pullNumber: key },
+          create: { ...key, installationId: input.installationId, repoFullName: input.repoFullName },
+          update: { installationId: input.installationId, repoFullName: input.repoFullName }
         })
-        if (attached.count === 0) {
-          await tx.sessionPullRequestWake.updateMany({
-            where: {
-              orgId: input.orgId,
-              repoId: input.repoId,
-              pullNumber: input.pullNumber,
-              sessionId: input.sessionId
-            },
-            data: { repoFullName: input.repoFullName, installationId: input.installationId }
-          })
-        }
-        return true
+        const linked = await tx.sessionPullRequest.updateMany({
+          where: { ...key, OR: [{ sessionId: null }, { sessionId: input.sessionId }] },
+          data: { sessionId: input.sessionId, claimOwner: null, claimUntil: null }
+        })
+        return linked.count === 1
       })
     } catch (err) {
       if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') return false
@@ -109,74 +67,53 @@ export class PgSessionPullRequestFeedbackRepo implements SessionPullRequestFeedb
   async enqueue(
     orgId: OrgId,
     signal: Parameters<SessionPullRequestFeedbackRepo['enqueue']>[1],
-    signalAt: Date,
     nextAttemptAt: Date
   ): Promise<void> {
-    const repoId = BigInt(signal.repoId)
+    const key = { orgId, repoId: BigInt(signal.repoId), pullNumber: signal.pullNumber }
     const installationId = BigInt(signal.installationId)
     await this.transaction(async (tx) => {
-      const wake = await tx.sessionPullRequestWake.upsert({
-        where: { orgId_repoId_pullNumber: { orgId, repoId, pullNumber: signal.pullNumber } },
+      const row = await tx.sessionPullRequest.upsert({
+        where: { orgId_repoId_pullNumber: key },
         create: {
-          orgId,
+          ...key,
           installationId,
-          repoId,
           repoFullName: signal.repoFullName,
-          pullNumber: signal.pullNumber,
-          latestDeliveryKey: signal.deliveryKey,
-          lastSignalAt: signalAt,
+          deliveryKey: signal.deliveryKey,
           nextAttemptAt
         },
         update: {}
       })
-      if (wake.latestDeliveryKey !== signal.deliveryKey) {
-        await tx.sessionPullRequestWake.updateMany({
-          where: { id: wake.id, latestDeliveryKey: { not: signal.deliveryKey } },
-          data: {
-            installationId,
-            repoFullName: signal.repoFullName,
-            latestDeliveryKey: signal.deliveryKey,
-            generation: { increment: 1 },
-            lastSignalAt: signalAt,
-            nextAttemptAt,
-            deliveredAt: null
-          }
-        })
-      }
-      const linked = await tx.sessionMeta.findFirst({
-        where: {
-          orgId,
-          pullRequestRepoId: repoId,
-          pullRequestNumber: signal.pullNumber,
-          contentPurgedAt: null
-        },
-        select: { id: true }
+      if (row.deliveryKey === signal.deliveryKey) return
+      await tx.sessionPullRequest.updateMany({
+        where: { ...key, OR: [{ deliveryKey: null }, { deliveryKey: { not: signal.deliveryKey } }] },
+        data: {
+          installationId,
+          repoFullName: signal.repoFullName,
+          deliveryKey: signal.deliveryKey,
+          nextAttemptAt
+        }
       })
-      if (linked) {
-        await tx.sessionPullRequestWake.updateMany({
-          where: { id: wake.id, sessionId: null },
-          data: { sessionId: linked.id }
-        })
-      }
     })
   }
 
   async claimNext(owner: string, now: Date, until: Date): Promise<PullRequestWakeRecord | null> {
-    const candidates = await this.db.sessionPullRequestWake.findMany({
+    const candidates = await this.db.sessionPullRequest.findMany({
       where: {
-        deliveredAt: null,
+        deliveryKey: { not: null },
         nextAttemptAt: { lte: now },
         OR: [{ claimUntil: null }, { claimUntil: { lt: now } }]
       },
-      orderBy: [{ nextAttemptAt: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }],
+      orderBy: [{ nextAttemptAt: 'asc' }, { createdAt: 'asc' }, { repoId: 'asc' }, { pullNumber: 'asc' }],
       take: 20
     })
     for (const candidate of candidates) {
-      const claimed = await this.db.sessionPullRequestWake.updateMany({
+      if (!candidate.deliveryKey) continue
+      const claimed = await this.db.sessionPullRequest.updateMany({
         where: {
-          id: candidate.id,
-          generation: candidate.generation,
-          deliveredAt: null,
+          orgId: candidate.orgId,
+          repoId: candidate.repoId,
+          pullNumber: candidate.pullNumber,
+          deliveryKey: candidate.deliveryKey,
           nextAttemptAt: { lte: now },
           OR: [{ claimUntil: null }, { claimUntil: { lt: now } }]
         },
@@ -187,40 +124,37 @@ export class PgSessionPullRequestFeedbackRepo implements SessionPullRequestFeedb
     return null
   }
 
-  async markDelivered(id: string, generation: number, owner: string, at: Date): Promise<void> {
-    const completed = await this.db.sessionPullRequestWake.updateMany({
-      where: { id, generation, claimOwner: owner, deliveredAt: null },
-      data: { deliveredAt: at, claimOwner: null, claimUntil: null }
+  async complete(item: PullRequestWakeRecord, owner: string): Promise<void> {
+    const key = identity(item)
+    const completed = await this.db.sessionPullRequest.updateMany({
+      where: { ...key, deliveryKey: item.deliveryKey, claimOwner: owner },
+      data: { deliveryKey: null, nextAttemptAt: null, claimOwner: null, claimUntil: null }
     })
     if (completed.count === 0) {
-      await this.db.sessionPullRequestWake.updateMany({
-        where: { id, claimOwner: owner },
+      await this.db.sessionPullRequest.updateMany({
+        where: { ...key, claimOwner: owner },
         data: { claimOwner: null, claimUntil: null }
       })
     }
   }
 
-  async defer(id: string, generation: number, owner: string, nextAttemptAt: Date): Promise<void> {
-    const deferred = await this.db.sessionPullRequestWake.updateMany({
-      where: { id, generation, claimOwner: owner, deliveredAt: null },
+  async defer(item: PullRequestWakeRecord, owner: string, nextAttemptAt: Date): Promise<void> {
+    const key = identity(item)
+    const deferred = await this.db.sessionPullRequest.updateMany({
+      where: { ...key, deliveryKey: item.deliveryKey, claimOwner: owner },
       data: { nextAttemptAt, claimOwner: null, claimUntil: null }
     })
     if (deferred.count === 0) {
-      await this.db.sessionPullRequestWake.updateMany({
-        where: { id, claimOwner: owner },
+      await this.db.sessionPullRequest.updateMany({
+        where: { ...key, claimOwner: owner },
         data: { claimOwner: null, claimUntil: null }
       })
     }
   }
 
-  async deleteExpired(unmatchedBefore: Date, deliveredBefore: Date): Promise<number> {
-    const deleted = await this.db.sessionPullRequestWake.deleteMany({
-      where: {
-        OR: [
-          { sessionId: null, lastSignalAt: { lt: unmatchedBefore } },
-          { deliveredAt: { not: null, lt: deliveredBefore } }
-        ]
-      }
+  async deleteExpired(unmatchedBefore: Date): Promise<number> {
+    const deleted = await this.db.sessionPullRequest.deleteMany({
+      where: { sessionId: null, createdAt: { lt: unmatchedBefore } }
     })
     return deleted.count
   }

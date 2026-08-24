@@ -1163,12 +1163,6 @@ model SessionMeta {
   // First-wins: an at-least-once re-report keeps the original stamp.
   contentPurgedAt     DateTime?           @db.Timestamptz(6)
   contentPurgedReason String? // SessionPurgeReason ('retention'); null while not purged
-  // Durable identity for a PR opened from this session's checkout. Numeric repo id survives renames.
-  pullRequestRepoId         BigInt?             @db.BigInt
-  pullRequestRepoFullName   String?
-  pullRequestInstallationId BigInt?             @db.BigInt
-  pullRequestNumber         Int?
-  pullRequestLinkedAt       DateTime?           @db.Timestamptz(6)
   lastActivityAt      DateTime            @db.Timestamptz(3)
   startedAt           DateTime            @default(now()) @db.Timestamptz(3)
   endedAt             DateTime?           @db.Timestamptz(6)
@@ -1183,9 +1177,8 @@ model SessionMeta {
   webchatCurrentFor      WebchatConversation[]      @relation("WebchatCurrentSession")
   webchatAgentCurrentFor WebchatConversationAgent[] @relation("WebchatAgentCurrentSession")
   webchatTargetedBy      WebchatConversation[]      @relation("WebchatTargetSession")
-  pullRequestWakes       SessionPullRequestWake[]
+  pullRequest            SessionPullRequest?
 
-  @@unique([pullRequestRepoId, pullRequestNumber], map: "session_meta_pull_request_key")
   @@index([agentId, startedAt])
   @@index([lastActivityAt(sort: Desc), startedAt(sort: Desc), id(sort: Desc), agentId], map: "session_meta_activity_page_idx")
   @@index([agentId, lastActivityAt(sort: Desc), startedAt(sort: Desc), id(sort: Desc)], map: "session_meta_agent_activity_page_idx")
@@ -1204,30 +1197,25 @@ model SessionMeta {
   @@map("session_meta")
 }
 
-// One level-triggered wake per PR. Bodies and CI logs remain daemon-local/provider-side.
-model SessionPullRequestWake {
-  id                String    @id @default(uuid()) @db.Uuid
-  orgId             String
-  installationId    BigInt    @db.BigInt
-  repoId            BigInt    @db.BigInt
-  repoFullName      String
-  pullNumber        Int
-  latestDeliveryKey String
-  generation        Int       @default(1)
-  sessionId         String?
-  lastSignalAt      DateTime  @db.Timestamptz(6)
-  nextAttemptAt     DateTime  @db.Timestamptz(6)
-  claimOwner        String?   @db.Uuid
-  claimUntil        DateTime? @db.Timestamptz(6)
-  deliveredAt       DateTime? @db.Timestamptz(6)
-  createdAt         DateTime  @default(now()) @db.Timestamptz(6)
-  updatedAt         DateTime  @updatedAt @db.Timestamptz(6)
+// Durable PR ownership plus an optional level-triggered wake; no feedback bodies or CI logs.
+model SessionPullRequest {
+  orgId          String
+  repoId         BigInt    @db.BigInt
+  pullNumber     Int
+  installationId BigInt    @db.BigInt
+  repoFullName   String
+  sessionId      String?   @unique(map: "session_pull_request_session_key")
+  deliveryKey    String?
+  nextAttemptAt  DateTime? @db.Timestamptz(6)
+  claimOwner     String?   @db.Uuid
+  claimUntil     DateTime? @db.Timestamptz(6)
+  createdAt      DateTime  @default(now()) @db.Timestamptz(6)
 
   session SessionMeta? @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 
-  @@unique([orgId, repoId, pullNumber], map: "session_pr_wake_key")
-  @@index([deliveredAt, nextAttemptAt, claimUntil], map: "session_pr_wake_pending_idx")
-  @@map("session_pull_request_wake")
+  @@id([orgId, repoId, pullNumber], map: "session_pull_request_pkey")
+  @@index([nextAttemptAt, claimUntil], map: "session_pull_request_pending_idx")
+  @@map("session_pull_request")
 }
 
 // Stable provider resource referenced by SessionMeta. Provider ACLs themselves

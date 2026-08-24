@@ -50,9 +50,7 @@ const INSTALLATION = {
 
 function wake(id: string, repoId = REPO_ID, sessionId: SessionId | null = SESSION_ID): PullRequestWakeRecord {
   return {
-    id,
     deliveryKey: `delivery-${id}`,
-    generation: 1,
     orgId: ORG_ID,
     installationId: INSTALLATION_ID,
     repoId,
@@ -68,7 +66,7 @@ function harness(over: Partial<SessionPullRequestFeedbackServiceDeps> = {}) {
     linkSession: vi.fn(async () => true),
     enqueue: vi.fn(async () => {}),
     claimNext: vi.fn<SessionPullRequestFeedbackServiceDeps['feedback']['claimNext']>(async () => null),
-    markDelivered: vi.fn(async () => {}),
+    complete: vi.fn(async () => {}),
     defer: vi.fn(async () => {}),
     deleteExpired: vi.fn(async () => 0)
   }
@@ -126,13 +124,8 @@ describe('SessionPullRequestFeedbackService', () => {
     await h.service.settle()
     h.service.stop()
 
-    expect(h.feedbackRepo.enqueue).toHaveBeenCalledWith(ORG_ID, signal, new Date(NOW + 5_000), new Date(NOW + 15_000))
-    expect(h.feedbackRepo.markDelivered).toHaveBeenCalledWith(
-      due.id,
-      due.generation,
-      expect.any(String),
-      new Date(NOW + 5_000)
-    )
+    expect(h.feedbackRepo.enqueue).toHaveBeenCalledWith(ORG_ID, signal, new Date(NOW + 15_000))
+    expect(h.feedbackRepo.complete).toHaveBeenCalledWith(due, expect.any(String))
   })
 
   it('delivers one dirty PR generation to the exact linked session', async () => {
@@ -152,7 +145,7 @@ describe('SessionPullRequestFeedbackService', () => {
       }),
       ORG_ID
     )
-    expect(h.feedbackRepo.markDelivered).toHaveBeenCalledWith(item.id, 1, expect.any(String), new Date(NOW))
+    expect(h.feedbackRepo.complete).toHaveBeenCalledWith(item, expect.any(String))
   })
 
   it('defers an unavailable session and continues to a healthy PR in the same pass', async () => {
@@ -166,13 +159,8 @@ describe('SessionPullRequestFeedbackService', () => {
 
     await runOnce(h)
 
-    expect(h.feedbackRepo.defer).toHaveBeenCalledWith(
-      blocked.id,
-      blocked.generation,
-      expect.any(String),
-      new Date(NOW + 10_000)
-    )
-    expect(h.feedbackRepo.markDelivered).toHaveBeenCalledWith(healthy.id, 1, expect.any(String), new Date(NOW))
+    expect(h.feedbackRepo.defer).toHaveBeenCalledWith(blocked, expect.any(String), new Date(NOW + 10_000))
+    expect(h.feedbackRepo.complete).toHaveBeenCalledWith(healthy, expect.any(String))
   })
 
   it('defers one unmatched PR and still reverse-discovers the next manual PR', async () => {
@@ -192,12 +180,7 @@ describe('SessionPullRequestFeedbackService', () => {
 
     await runOnce(h)
 
-    expect(h.feedbackRepo.defer).toHaveBeenCalledWith(
-      unrelated.id,
-      unrelated.generation,
-      expect.any(String),
-      new Date(NOW + 60_000)
-    )
+    expect(h.feedbackRepo.defer).toHaveBeenCalledWith(unrelated, expect.any(String), new Date(NOW + 60_000))
     expect(h.feedbackRepo.linkSession).toHaveBeenCalledWith(
       expect.objectContaining({ sessionId: SESSION_ID, repoId: REPO_ID, pullNumber: Number(REPO_ID) })
     )

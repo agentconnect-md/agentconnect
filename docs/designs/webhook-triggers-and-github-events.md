@@ -331,12 +331,13 @@ reuse its directory.
 
 A pull request opened from an ordinary or issue-originated session must keep
 that session as its owner after the creating turn ends. The CP therefore stores
-the numeric repository id, pull-request number, installation id, and display
-name on `SessionMeta`. Terminal session milestones force the same
-session-branch lookup used by the console PR panel and persist the result. If a
-PR was opened manually after the terminal milestone, the first feedback signal
-creates an unmatched wake marker. Due unmatched markers each drive a bounded
-scan of recent terminal sessions until that branch-to-PR identity converges;
+one `SessionPullRequest` row keyed by organization, numeric repository id, and
+pull-request number; its optional `sessionId` is the durable owner. Terminal
+session milestones force the same session-branch lookup used by the console PR
+panel and persist the result. If a PR was opened manually after the terminal
+milestone, the first feedback signal creates an unowned row. Due unowned rows
+each drive a bounded scan of recent terminal sessions until that branch-to-PR
+identity converges;
 an unsuccessful scan moves only that PR's next-attempt time forward, so it
 cannot hide later manual PRs.
 
@@ -350,13 +351,13 @@ its actionable verdict as an App-authored PR comment. The ordinary hook matcher
 keeps its bot-loop filter unchanged.
 
 The relay sends no review body or check log to the CP. The CP stores one
-level-triggered wake marker per numeric repository and pull request, not one
-row per GitHub event. Every new delivery advances that marker's generation and
-resets a short quiet window; the daemon later reads the current review and
-check state from GitHub, so event ordering and payload detail are unnecessary.
-A concurrent delivery cannot be erased by completion of an older generation.
-Deferred delivery moves only that PR's next-attempt time forward, allowing the
-worker to continue with other due PRs in the same pass.
+level-triggered `deliveryKey` on the ownership row, not one row per GitHub
+event. Every new delivery resets a short quiet window; the daemon later reads
+the current review and check state from GitHub, so payload detail is
+unnecessary. Successful admission clears the wake only if its delivery key is
+still current, so a concurrent delivery remains pending. Deferred delivery
+moves only that PR's next-attempt time forward, allowing the worker to continue
+with other due PRs in the same pass.
 
 The relay acknowledges GitHub only after the marker is durable. A transient
 persistence failure returns 503 instead of falsely acknowledging the delivery;

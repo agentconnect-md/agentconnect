@@ -99,11 +99,6 @@ function toRecord(s: SessionMeta): SessionMetaRecord {
     classifiedPolicyRev: s.classifiedPolicyRev,
     contentPurgedAt: s.contentPurgedAt,
     contentPurgedReason: s.contentPurgedReason,
-    pullRequestRepoId: s.pullRequestRepoId,
-    pullRequestRepoFullName: s.pullRequestRepoFullName,
-    pullRequestInstallationId: s.pullRequestInstallationId,
-    pullRequestNumber: s.pullRequestNumber,
-    pullRequestLinkedAt: s.pullRequestLinkedAt,
     startedAt: s.startedAt,
     endedAt: s.endedAt
   }
@@ -1327,7 +1322,7 @@ export class PgSessionRepo implements SessionRepo {
         orgId,
         phase: { in: ['end', 'problem'] },
         contentPurgedAt: null,
-        pullRequestRepoId: null
+        pullRequest: null
       },
       orderBy: [{ lastActivityAt: 'desc' }, { startedAt: 'desc' }, { id: 'desc' }],
       take: Math.max(1, Math.min(limit, 50))

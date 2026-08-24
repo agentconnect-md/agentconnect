@@ -1202,11 +1202,6 @@ export interface SessionMetaRecord {
    *  nothing left to proxy; the metadata here is the whole remaining record. */
   contentPurgedAt: Date | null
   contentPurgedReason: string | null
-  pullRequestRepoId: bigint | null
-  pullRequestRepoFullName: string | null
-  pullRequestInstallationId: bigint | null
-  pullRequestNumber: number | null
-  pullRequestLinkedAt: Date | null
   startedAt: Date
   endedAt: Date | null
 }
@@ -1370,7 +1365,7 @@ export interface SessionRepo {
    *  (webchat-side-panels.md §12.6). Rides `session_meta_agent_activity_page_idx`. */
   latestSessionIdForAgent(orgId: OrgId, agentId: AgentId): Promise<SessionId | null>
   /** Recent terminal sessions eligible for branch→PR discovery after feedback arrived first. */
-  recentTerminalForPullRequestDiscovery?(orgId: OrgId, limit: number): Promise<SessionMetaRecord[]>
+  recentTerminalForPullRequestDiscovery(orgId: OrgId, limit: number): Promise<SessionMetaRecord[]>
   /** One latest representative per distinct facet value after applying every
    *  other active facet. The database reduces the full history before returning
    *  this compact index to the HTTP layer. */
@@ -1475,9 +1470,7 @@ export interface SessionRepo {
 }
 
 export interface PullRequestWakeRecord {
-  id: string
   deliveryKey: string
-  generation: number
   orgId: OrgId
   installationId: bigint
   repoId: bigint
@@ -1488,7 +1481,7 @@ export interface PullRequestWakeRecord {
 
 /** Durable PR→session identity plus one level-triggered wake marker per PR. */
 export interface SessionPullRequestFeedbackRepo {
-  /** First session to claim a numeric repo+PR wins; an early wake marker is attached in the same transaction. */
+  /** First session to claim a numeric repo+PR wins. */
   linkSession(input: {
     sessionId: SessionId
     agentId: AgentId
@@ -1497,17 +1490,16 @@ export interface SessionPullRequestFeedbackRepo {
     repoFullName: string
     installationId: bigint
     pullNumber: number
-    at: Date
   }): Promise<boolean>
-  /** Idempotently dirty one PR wake generation and attach it when the PR is already linked. */
-  enqueue(orgId: OrgId, signal: PullRequestFeedbackSignal, signalAt: Date, nextAttemptAt: Date): Promise<void>
-  /** Cross-process CAS lease for the next due linked or discovery wake. */
+  /** Idempotently dirty one PR wake. */
+  enqueue(orgId: OrgId, signal: PullRequestFeedbackSignal, nextAttemptAt: Date): Promise<void>
+  /** Cross-process lease for the next due linked or discovery wake. */
   claimNext(owner: string, now: Date, until: Date): Promise<PullRequestWakeRecord | null>
-  /** Complete only the generation that was delivered; a concurrent newer generation remains dirty. */
-  markDelivered(id: string, generation: number, owner: string, at: Date): Promise<void>
-  /** Move one failed/discovery generation into the future so later PRs remain eligible. */
-  defer(id: string, generation: number, owner: string, nextAttemptAt: Date): Promise<void>
-  deleteExpired(unmatchedBefore: Date, deliveredBefore: Date): Promise<number>
+  /** Clear only the delivery key that was accepted; a concurrent newer wake remains dirty. */
+  complete(item: PullRequestWakeRecord, owner: string): Promise<void>
+  /** Move one failed/discovery wake into the future so later PRs remain eligible. */
+  defer(item: PullRequestWakeRecord, owner: string, nextAttemptAt: Date): Promise<void>
+  deleteExpired(unmatchedBefore: Date): Promise<number>
 }
 
 // ───────────────────────────────────────────────────────────────────────────

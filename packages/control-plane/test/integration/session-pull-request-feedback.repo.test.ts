@@ -32,8 +32,7 @@ function link(repo: PgSessionPullRequestFeedbackRepo, sessionId: string, pullNum
     repoId: REPO_ID,
     repoFullName: 'acme/infra',
     installationId: INSTALLATION_ID,
-    pullNumber,
-    at: NOW
+    pullNumber
   })
 }
 
@@ -50,54 +49,60 @@ describe('PgSessionPullRequestFeedbackRepo', () => {
     await seedSessionMeta(prisma, earlySessionId, AGENT_ID, { daemonId: DAEMON_ID })
     await seedSessionMeta(prisma, linkedSessionId, AGENT_ID, { daemonId: DAEMON_ID })
 
-    await repo.enqueue(ORG_ID, signal('delivery-early', 77), NOW, NOW)
+    await repo.enqueue(ORG_ID, signal('delivery-early', 77), NOW)
     expect(
-      await prisma.sessionPullRequestWake.findUnique({
+      await prisma.sessionPullRequest.findUnique({
         where: { orgId_repoId_pullNumber: { orgId: ORG_ID, repoId: REPO_ID, pullNumber: 77 } }
       })
     ).toMatchObject({ sessionId: null })
     await expect(link(repo, earlySessionId, 77)).resolves.toBe(true)
     expect(
-      await prisma.sessionPullRequestWake.findUnique({
+      await prisma.sessionPullRequest.findUnique({
         where: { orgId_repoId_pullNumber: { orgId: ORG_ID, repoId: REPO_ID, pullNumber: 77 } }
       })
     ).toMatchObject({ sessionId: earlySessionId })
 
     await expect(link(repo, linkedSessionId, 78)).resolves.toBe(true)
-    await repo.enqueue(ORG_ID, signal('delivery-linked', 78), NOW, NOW)
+    await repo.enqueue(ORG_ID, signal('delivery-linked', 78), NOW)
     expect(
-      await prisma.sessionPullRequestWake.findUnique({
+      await prisma.sessionPullRequest.findUnique({
         where: { orgId_repoId_pullNumber: { orgId: ORG_ID, repoId: REPO_ID, pullNumber: 78 } }
       })
     ).toMatchObject({ sessionId: linkedSessionId })
   })
 
-  it('coalesces each PR into one dirty generation and preserves a concurrent newer wake', async () => {
+  it('coalesces each PR and preserves a concurrent newer wake', async () => {
     const repo = new PgSessionPullRequestFeedbackRepo(prisma)
     const sessionId = randomUUID()
     await seedSessionMeta(prisma, sessionId, AGENT_ID, { daemonId: DAEMON_ID })
     await expect(link(repo, sessionId, 77)).resolves.toBe(true)
 
-    await repo.enqueue(ORG_ID, signal('delivery-1', 77), NOW, NOW)
+    await repo.enqueue(ORG_ID, signal('delivery-1', 77), NOW)
     const owner = randomUUID()
     const claimed = await repo.claimNext(owner, NOW, new Date(NOW.getTime() + 60_000))
-    expect(claimed).toMatchObject({ deliveryKey: 'delivery-1', generation: 1 })
+    expect(claimed).toMatchObject({ deliveryKey: 'delivery-1' })
 
-    await repo.enqueue(ORG_ID, signal('delivery-2', 77), NOW, new Date(NOW.getTime() + 10_000))
-    await repo.markDelivered(claimed!.id, claimed!.generation, owner, NOW)
-    await repo.enqueue(ORG_ID, signal('delivery-2', 77), NOW, new Date(NOW.getTime() + 20_000))
+    await repo.enqueue(ORG_ID, signal('delivery-2', 77), new Date(NOW.getTime() + 10_000))
+    await repo.complete(claimed!, owner)
+    await repo.enqueue(ORG_ID, signal('delivery-2', 77), new Date(NOW.getTime() + 20_000))
 
     expect(
-      await prisma.sessionPullRequestWake.findUnique({
+      await prisma.sessionPullRequest.findUnique({
         where: { orgId_repoId_pullNumber: { orgId: ORG_ID, repoId: REPO_ID, pullNumber: 77 } }
       })
     ).toMatchObject({
-      latestDeliveryKey: 'delivery-2',
-      generation: 2,
-      deliveredAt: null,
+      deliveryKey: 'delivery-2',
       claimOwner: null,
       nextAttemptAt: new Date(NOW.getTime() + 10_000)
     })
+
+    const newer = await repo.claimNext(owner, new Date(NOW.getTime() + 10_000), new Date(NOW.getTime() + 70_000))
+    await repo.complete(newer!, owner)
+    expect(
+      await prisma.sessionPullRequest.findUnique({
+        where: { orgId_repoId_pullNumber: { orgId: ORG_ID, repoId: REPO_ID, pullNumber: 77 } }
+      })
+    ).toMatchObject({ sessionId, deliveryKey: null, nextAttemptAt: null })
   })
 
   it('defers one unavailable PR without blocking the next due PR', async () => {
@@ -108,13 +113,13 @@ describe('PgSessionPullRequestFeedbackRepo', () => {
     await seedSessionMeta(prisma, secondSessionId, AGENT_ID, { daemonId: DAEMON_ID })
     await expect(link(repo, firstSessionId, 77)).resolves.toBe(true)
     await expect(link(repo, secondSessionId, 78)).resolves.toBe(true)
-    await repo.enqueue(ORG_ID, signal('delivery-1', 77), NOW, NOW)
-    await repo.enqueue(ORG_ID, signal('delivery-2', 78), NOW, NOW)
+    await repo.enqueue(ORG_ID, signal('delivery-1', 77), NOW)
+    await repo.enqueue(ORG_ID, signal('delivery-2', 78), NOW)
 
     const owner = randomUUID()
     const first = await repo.claimNext(owner, NOW, new Date(NOW.getTime() + 60_000))
     expect(first?.pullNumber).toBe(77)
-    await repo.defer(first!.id, first!.generation, owner, new Date(NOW.getTime() + 10_000))
+    await repo.defer(first!, owner, new Date(NOW.getTime() + 10_000))
 
     const second = await repo.claimNext(owner, NOW, new Date(NOW.getTime() + 60_000))
     expect(second?.pullNumber).toBe(78)
@@ -122,12 +127,18 @@ describe('PgSessionPullRequestFeedbackRepo', () => {
 
   it('expires an unmatched wake by signal age even after a retry updates the row', async () => {
     const repo = new PgSessionPullRequestFeedbackRepo(prisma)
-    await repo.enqueue(ORG_ID, signal('delivery-unmatched', 79), NOW, NOW)
+    await repo.enqueue(ORG_ID, signal('delivery-unmatched', 79), NOW)
     const owner = randomUUID()
     const claimed = await repo.claimNext(owner, NOW, new Date(NOW.getTime() + 60_000))
-    await repo.defer(claimed!.id, claimed!.generation, owner, new Date(NOW.getTime() + 60_000))
+    const createdAt = (
+      await prisma.sessionPullRequest.findUniqueOrThrow({
+        where: { orgId_repoId_pullNumber: { orgId: ORG_ID, repoId: REPO_ID, pullNumber: 79 } },
+        select: { createdAt: true }
+      })
+    ).createdAt
+    await repo.defer(claimed!, owner, new Date(NOW.getTime() + 60_000))
 
-    await expect(repo.deleteExpired(new Date(NOW.getTime() + 1), new Date(0))).resolves.toBe(1)
-    await expect(prisma.sessionPullRequestWake.count()).resolves.toBe(0)
+    await expect(repo.deleteExpired(new Date(createdAt.getTime() + 1))).resolves.toBe(1)
+    await expect(prisma.sessionPullRequest.count()).resolves.toBe(0)
   })
 })

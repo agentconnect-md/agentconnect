@@ -1220,8 +1220,7 @@ export function buildContainer(
               repoId: link.repoId,
               repoFullName: link.repoFullName,
               installationId: link.installationId,
-              pullNumber: link.pullNumber,
-              at: new Date(clock.now())
+              pullNumber: link.pullNumber
             })
             if (linked) sessionPullRequestFeedback?.kick()
           },
