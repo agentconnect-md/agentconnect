@@ -138,10 +138,17 @@ export function AttachMenu({
       {({ close }) => (
         <>
           {groups.map((group) => (
-            <div key={group.heading}>
-              <div className="fhdr">{group.heading}</div>
+            // `role="group"` keeps the heading from putting a bare div between the
+            // flyout's role="menu" and its menuitems, which invalidates both.
+            <div key={group.heading} role="group" aria-label={group.heading}>
+              <div className="fhdr" aria-hidden="true">
+                {group.heading}
+              </div>
               {group.options.length === 0 ? (
-                <div className="px-[10px] py-[9px] font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
+                <div
+                  role="none"
+                  className="px-[10px] py-[9px] font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)"
+                >
                   {group.emptyLabel}
                 </div>
               ) : (
@@ -165,7 +172,7 @@ export function AttachMenu({
               )}
             </div>
           ))}
-          {actions.length > 0 && <div className="dmsep" />}
+          {actions.length > 0 && <div className="dmsep" role="separator" />}
           {actions.map((action) => (
             <button
               key={action.key}

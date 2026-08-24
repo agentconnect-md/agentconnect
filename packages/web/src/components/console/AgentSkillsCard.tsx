@@ -307,10 +307,8 @@ export function AgentSkillsCard({ agentId, canEdit }: { agentId: string; canEdit
                       {sel.all ? 'all skills' : `${sel.skills.size} selected`}
                     </span>
                   }
-                  // Picking individual skills is a secondary move, so the chevron only
-                  // surfaces on hover/keyboard focus (and stays put once open). An
-                  // agent-scoped source has no picker: the CP would reject re-adding a
-                  // ref to a source this caller can't see.
+                  // An agent-scoped source has no per-skill picker: the CP would reject
+                  // re-adding a ref to a source this caller can't see.
                   actions={
                     s.registry ? (
                       <button
