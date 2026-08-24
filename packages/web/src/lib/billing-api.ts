@@ -53,9 +53,9 @@ export interface BillingAccount {
 //            a statement line is a reconciliation fact. The service rounds in exactly
 //            two places and a history row is neither of them, so it hands the exact
 //            value over and formatting it for a human is this side's job.
-// `agentId` / `note` are optional on BOTH arms for the same reason `type` is: a service
-// that predates them omits them, and the console routinely runs ahead of that image.
-// Absent or null ⇒ the row simply renders without that detail.
+// `note` and `agents` are each on ONE arm, and each is optional for the same reason `type`
+// is: a service that predates it omits it, and the console routinely runs ahead of that
+// image. Absent or null ⇒ the row renders without that detail.
 export interface BillingCredit {
   type: 'credit'
   id: string
@@ -67,9 +67,8 @@ export interface BillingCredit {
   // `type` is: a service that predates it omits it, and the console runs ahead of that
   // image. Absent or null ⇒ the row renders with no receipt link, never a broken one.
   receiptUrl?: string | null
-  /** The agent the row is attributed to. */
-  agentId?: string | null
-  /** Free-text note from the service, shown verbatim. */
+  /** Why an operator moved this money, on an `adjustment` row only — null on every other
+   *  kind. Free operator text, so it renders as TEXT: never as markup, never as a link. */
   note?: string | null
 }
 
@@ -82,8 +81,20 @@ export interface BillingDebit {
   amount: string
   /** ISO 8601 instant. */
   at: string
-  agentId?: string | null
-  note?: string | null
+  /** Which agents the charge came from, descending by amount. ATTRIBUTION, not a second
+   *  amount: it is the control plane's split of the same observation `amount` was
+   *  differenced from, so this side must not present it as a proof of the total.
+   *
+   *  Absent or null ⇒ the row carries no attribution. `[]` is the different claim that a
+   *  breakdown arrived and named nobody; both render as no agents, and neither is an error.
+   *  A credit has no agent at all, which is why the field is on this arm only. */
+  agents?: BillingDebitAgent[] | null
+}
+
+/** One agent's share of a debit. `amount` is a decimal STRING, same reason as the debit's. */
+export interface BillingDebitAgent {
+  agentId: string
+  amount: string
 }
 
 export type BillingTransaction = BillingCredit | BillingDebit
@@ -205,11 +216,6 @@ export function assertTransactionsPage(
     // to `never`.
     const t = row as unknown as Record<string, unknown> | null
     if (!t || typeof t.id !== 'string' || typeof t.at !== 'string') throw new BillingShapeError('transaction')
-    // Both arms may carry them; a non-string, non-null value is a shape error, ABSENT is the
-    // older contract.
-    for (const k of ['agentId', 'note'] as const) {
-      if (!(t[k] === undefined || t[k] === null || typeof t[k] === 'string')) throw new BillingShapeError('transaction')
-    }
     // An ABSENT `type` is the shape this API had before the history merged both ledger
     // sides, and it is read as a credit — which is exactly what it was.
     //
@@ -232,10 +238,23 @@ export function assertTransactionsPage(
       // A non-string, non-null receipt is a shape error; ABSENT is the older contract.
       if (!(t.receiptUrl === undefined || t.receiptUrl === null || typeof t.receiptUrl === 'string'))
         throw new BillingShapeError('transaction')
+      // An operator's note, on `adjustment` only. ABSENT is the older contract.
+      if (!(t.note === undefined || t.note === null || typeof t.note === 'string'))
+        throw new BillingShapeError('transaction')
     } else if (t.type === 'debit') {
       // A string, and never coerced to a number here — the exact value is what the
       // service sent, and only the display rounds it.
       if (typeof t.amount !== 'string' || typeof t.period !== 'string') throw new BillingShapeError('transaction')
+      // Attribution. ABSENT is the older contract and `null` is "no breakdown"; a present
+      // list must be entirely readable, since a half-rendered split is worse than none.
+      if (!(t.agents === undefined || t.agents === null)) {
+        if (!Array.isArray(t.agents)) throw new BillingShapeError('transaction')
+        for (const a of t.agents as unknown[]) {
+          const agent = a as Record<string, unknown> | null
+          if (!agent || typeof agent.agentId !== 'string' || typeof agent.amount !== 'string')
+            throw new BillingShapeError('transaction')
+        }
+      }
     } else {
       throw new BillingShapeError('transaction')
     }
@@ -275,21 +294,24 @@ export async function fetchBillingAccount(orgId: string): Promise<BillingAccount
   return body
 }
 
-/** `window` narrows the feed to a half-open `[from, to)` on the row's own instant, the same
- *  shape the CP's usage query takes; both ends are optional and an omitted one is open.
+/** `filter` narrows the feed. `from`/`to` are a half-open `[from, to)` on the row's own
+ *  instant, the same shape the CP's usage query takes; both ends are optional and an omitted
+ *  one is open. `type` narrows it to one ledger side, and an omitted one is both.
  *
- *  It is a REQUEST, not a guarantee: a billing image that predates the parameters ignores
- *  them and answers with the whole ledger, and this console routinely runs ahead of that
- *  image. A caller that needs the window to hold must still check `at` on the rows it keeps. */
+ *  Every part is a REQUEST, not a guarantee: a billing image that predates a parameter
+ *  ignores it and answers with the whole ledger, and this console routinely runs ahead of
+ *  that image. A caller that needs a narrowing to hold must check the rows it keeps — `at`
+ *  for the window, `type` for the side. */
 export async function fetchBillingTransactions(
   orgId: string,
   cursor?: string,
-  window?: { from?: string; to?: string }
+  filter?: { from?: string; to?: string; type?: 'credit' | 'debit' }
 ): Promise<BillingTransactionsPage> {
   const params = new URLSearchParams()
   if (cursor) params.set('cursor', cursor)
-  if (window?.from) params.set('from', window.from)
-  if (window?.to) params.set('to', window.to)
+  if (filter?.from) params.set('from', filter.from)
+  if (filter?.to) params.set('to', filter.to)
+  if (filter?.type) params.set('type', filter.type)
   const query = params.size > 0 ? `?${params}` : ''
   const body = await request<unknown>(`${orgPath(orgId)}/transactions${query}`)
   assertTransactionsPage(body)

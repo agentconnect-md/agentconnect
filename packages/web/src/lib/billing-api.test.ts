@@ -102,20 +102,33 @@ describe('assertTransactionsPage', () => {
     expect(() => assertTransactionsPage({ items: [legacy], nextCursor: null })).not.toThrow()
   })
 
-  it('accepts agentId and note on either arm, and refuses an unusable one', () => {
-    // Absent is the older contract; null is the natural serialization of "not attributed".
+  it("accepts a credit's note and a debit's agent split, each on its own arm", () => {
+    // Absent is the older contract; null is the service's "no note" / "no breakdown".
     expect(() =>
       assertTransactionsPage({
         items: [
-          { ...tx, agentId: 'agt_1', note: 'manual top-up' },
-          { ...debit, agentId: null, note: null }
+          { ...tx, kind: 'adjustment', note: 'goodwill credit' },
+          { ...tx, note: null },
+          { ...debit, agents: [{ agentId: 'agt_1', amount: '0.4' }] },
+          // `[]` is "a breakdown arrived and named nobody" — a different claim from null,
+          // and neither is an error.
+          { ...debit, agents: [] },
+          { ...debit, agents: null }
         ],
         nextCursor: null
       })
     ).not.toThrow()
-    expect(() => assertTransactionsPage({ items: [{ ...debit, agentId: 7 }], nextCursor: null })).toThrow(
+  })
+
+  it('refuses an attribution it cannot read rather than rendering half of it', () => {
+    // A per-agent amount is a decimal string for the same reason the debit's is.
+    expect(() =>
+      assertTransactionsPage({ items: [{ ...debit, agents: [{ agentId: 'agt_1', amount: 0.4 }] }], nextCursor: null })
+    ).toThrow(BillingShapeError)
+    expect(() => assertTransactionsPage({ items: [{ ...debit, agents: 'agt_1' }], nextCursor: null })).toThrow(
       BillingShapeError
     )
+    expect(() => assertTransactionsPage({ items: [{ ...tx, note: 7 }], nextCursor: null })).toThrow(BillingShapeError)
   })
 
   it('refuses a row whose type this build cannot read', () => {
