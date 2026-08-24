@@ -40,6 +40,7 @@ const PLATFORMS = buildCpPlatformRegistry([
 // ── ids ──────────────────────────────────────────────────────────────────────
 const ORG = OrgId('11111111-1111-4111-8111-111111111111')
 const BOT = BotId('22222222-2222-4222-8222-222222222222')
+const OTHER_BOT = BotId('22222222-2222-4222-8222-222222222223')
 const RELAY = '55555555-5555-4555-8555-555555555555'
 const D1 = '33333333-3333-4333-8333-333333333331'
 const D2 = '33333333-3333-4333-8333-333333333332'
@@ -121,6 +122,7 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
   let relayReg: RelayRegistry
   let ch: FakeChannel
   let botRow: BotRecord
+  let siblingBots: BotRecord[]
   let integrations: IntegrationRecord[]
   let channels: IntegrationChannelRecord[]
   let upserts: {
@@ -164,7 +166,7 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       [BOB]: agent(BOB, 'bob', unplacedAgents.has(BOB) ? null : D2)
     }
     let getCalls = 0
-    const bots: Pick<BotRepo, 'getUnscoped' | 'listHttpActive' | 'revokeIfCurrent'> = {
+    const bots: Pick<BotRepo, 'getUnscoped' | 'listForOrg' | 'listHttpActive' | 'revokeIfCurrent'> = {
       getUnscoped: async () => {
         getCalls += 1
         if (bumpRevisionAfterFirstGet && getCalls > 1) {
@@ -172,6 +174,7 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
         }
         return botRow
       },
+      listForOrg: async () => [botRow, ...siblingBots],
       listHttpActive: async () => [botRow],
       // Mirrors the SQL CAS: both arms conjunctive, each skipped when the report
       // didn't carry it, and `credentialInstalledAt: null` passes the time arm.
@@ -341,6 +344,7 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
     ch = new FakeChannel(RELAY)
     relayReg.add(ch)
     botRow = bot()
+    siblingBots = []
     integrations = [integration(INT_A, ALICE), integration(INT_B, BOB)]
     channels = [channel({ integrationId: INT_B, channelId: 'C1', agentId: BOB, trigger: 'mention' })]
     upserts = []
@@ -405,6 +409,74 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       threadOwner = null
       const res = await orch.lookupThread({ botId: BOT, sessionKey: SK })
       expect(res.target).toBeNull()
+    })
+
+    it('does not let SessionMeta create a second owner across sibling Slack bots', async () => {
+      botRow = bot({ externalTenantId: 'T1', workspaceId: 'T1' })
+      siblingBots = [
+        bot({ id: OTHER_BOT, externalTenantId: null, workspaceId: 'T1', shareable: false, agentIds: [ALICE] })
+      ]
+      threadOwner = { agentId: ALICE }
+
+      const res = await makeOrch().lookupThread({ botId: BOT, sessionKey: SK })
+
+      expect(res.target).toBeNull()
+      expect(res.participants).toEqual([])
+    })
+
+    it('keeps Feishu and Lark apps in distinct thread fallback realms', async () => {
+      botRow = bot({
+        platform: 'feishu',
+        externalAppId: 'cli_cn',
+        externalTenantId: '-',
+        feishuAppId: 'cli_cn',
+        feishuRegion: null
+      })
+      siblingBots = [
+        bot({
+          id: OTHER_BOT,
+          platform: 'feishu',
+          externalAppId: 'cli_global',
+          externalTenantId: '-',
+          feishuAppId: 'cli_global',
+          feishuRegion: 'lark',
+          shareable: false,
+          agentIds: [ALICE]
+        })
+      ]
+      threadOwner = { agentId: ALICE }
+
+      const res = await makeOrch().lookupThread({ botId: BOT, sessionKey: SK })
+
+      expect(res.target).toEqual({ agentId: ALICE, daemonId: D1 })
+    })
+
+    it('treats different Feishu apps in one region as sibling tenant routes', async () => {
+      botRow = bot({
+        platform: 'feishu',
+        externalAppId: 'cli_a',
+        externalTenantId: '-',
+        feishuAppId: 'cli_a',
+        feishuRegion: null
+      })
+      siblingBots = [
+        bot({
+          id: OTHER_BOT,
+          platform: 'feishu',
+          externalAppId: 'cli_b',
+          externalTenantId: '-',
+          feishuAppId: 'cli_b',
+          feishuRegion: 'feishu',
+          shareable: false,
+          agentIds: [ALICE]
+        })
+      ]
+      threadOwner = { agentId: ALICE }
+
+      const res = await makeOrch().lookupThread({ botId: BOT, sessionKey: SK })
+
+      expect(res.target).toBeNull()
+      expect(res.participants).toEqual([])
     })
 
     it('persists and broadcasts participant joins independently of the compatibility owner', async () => {

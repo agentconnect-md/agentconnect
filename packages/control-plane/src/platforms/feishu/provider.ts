@@ -375,6 +375,9 @@ export function createFeishuCpProvider(deps: FeishuCpProviderDeps): CpPlatformPr
       }
     },
 
+    // Every Bot App admitted in a region was verified against that region's one configured Login App tenant.
+    threadFallbackRealm: (bot) => bot.feishuRegion ?? 'feishu',
+
     // Feishu reuses the established two-slot shape (`install-feishu.ts`):
     // botToken = app SECRET (the credential), appToken = app ID (the
     // identifier) — the overloading the audit found spelled only in comments,

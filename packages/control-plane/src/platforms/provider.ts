@@ -493,6 +493,9 @@ export interface CpPlatformProvider<TCredentials = unknown> {
    */
   projectBotIdentity?(input: CreateBotInput): BotIdentityColumns
 
+  /** Normalize the provider realm used to fence bot-agnostic SessionMeta thread fallback. */
+  threadFallbackRealm?(bot: BotRecord): string | null
+
   /** Pending-install funnel state models + their TTL reapers. Absent ⇒ the
    *  platform has no funnel (Telegram/Discord). */
   pendingInstalls?: readonly CpPendingInstallDecl[]
