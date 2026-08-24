@@ -443,7 +443,7 @@ export class HttpBotOrchestrator {
       const thread = m.sessionKey.slice(slash + 1)
       const owner = await this.sessions.findThreadOwner(BotId(m.botId), channel, thread)
       const ambiguous = owner ? await this.sessionOwnerHasSiblingBot(m.botId, owner.agentId) : false
-      if (ambiguous) {
+      if (ambiguous && owner) {
         this.log.debug?.(
           { botId: m.botId, agentId: owner.agentId, channel },
           'http-bot: SessionMeta thread owner is ambiguous across bots — leaving the thread unowned'
