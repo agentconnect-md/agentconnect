@@ -1623,7 +1623,7 @@ export class Daemon {
     // whether a spec names an instance of its own, which stays cloneable either way, is per-agent.
     if (permitsNoHttpsOrigin()) {
       this.log.warn(
-        'workspace policy: workspaceGitAllowedOrigins permits no https origin — only the instance a spec names can clone here, and an empty list not even that'
+        'workspace policy: workspaceGitAllowedOrigins lists no https origin — the only https clone left is the instance a spec names, and an empty list permits nothing at all'
       )
     }
     return { root, cfg }
