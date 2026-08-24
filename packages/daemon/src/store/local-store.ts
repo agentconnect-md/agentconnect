@@ -830,9 +830,12 @@ function restrictPath(path: string, mode: number): void {
 /**
  * Schema version a freshly created database is stamped with. Bump it in the same
  * change that edits a `CREATE TABLE` below, and append the matching step to
- * {@link SCHEMA_MIGRATIONS}.
+ * {@link SCHEMA_MIGRATIONS}. Appending a step WITHOUT bumping this leaves the step
+ * unreachable — `upgradeSchema` stops at this number — so the column exists only on
+ * fresh databases and every established one fails at query time. `SCHEMA_MIGRATIONS`
+ * asserts the two stay in lockstep for exactly that reason.
  */
-const SCHEMA_VERSION = 12
+const SCHEMA_VERSION = 13
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -968,6 +971,16 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean }) => Promise<v
   // existing rows: absent keeps the CP's ordinary child inheritance, which is what they got.
   async (db) => await db.exec('ALTER TABLE sessions ADD COLUMN directDestination INTEGER')
 ]
+
+// The list and the version are two halves of one fact: step `i` moves a database from
+// `user_version === i + 1` to `i + 2`, so the last step must land exactly on SCHEMA_VERSION.
+// A step appended without the bump is silently dead code — the failure mode that shipped
+// `directDestination` to fresh databases only, and broke every established one at query time.
+if (SCHEMA_MIGRATIONS.length !== SCHEMA_VERSION - 1) {
+  throw new Error(
+    `local store schema is inconsistent: ${SCHEMA_MIGRATIONS.length} migration step(s) cannot reach v${SCHEMA_VERSION}`
+  )
+}
 
 export class LocalStore {
   /** The backend as given. Only the tool-write flush uses it directly; everything else goes
