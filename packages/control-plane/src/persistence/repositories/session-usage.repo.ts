@@ -110,7 +110,15 @@ function countersOf(row: Omit<SpendRow, 'visible'>): Counters {
   }
 }
 
+/** This interval's consumption. A LOWER token total at a LATER instant is a counter RESET,
+ *  not a correction: a runtime reporting live context occupancy as the session total shrinks
+ *  on compaction, and diffing through that made "Tokens 24h" negative — so on a reset the
+ *  whole of `current` is what the interval consumed. The token total alone decides and the
+ *  whole checkpoint resets with it, because cost DOES fall legitimately later (a late
+ *  `usage_update` replacing a fallback estimate with a smaller native price) without
+ *  lowering tokens — deciding per field would read every such correction as a reset. */
 function subtractCounters(current: Counters, previous: Counters): Counters {
+  if (current.totalTokens < previous.totalTokens) return current
   return {
     totalTokens: current.totalTokens - previous.totalTokens,
     inputTokens: current.inputTokens - previous.inputTokens,
@@ -521,9 +529,9 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
 
     // Per-session running state, seeded from the pre-window checkpoint. `inRange` is
     // globally at-ascending, so each session's rows are visited chronologically —
-    // exactly what the running diff needs. A replay contributes 0 (nothing changed) and
-    // a downward correction contributes a negative delta that nets out, so the cards and
-    // the chart always show the same numbers.
+    // exactly what the running diff needs. A replay contributes 0, a downward cost
+    // correction a negative delta that nets out, a restarted token counter its whole
+    // checkpoint (`subtractCounters`) — cards and chart always show the same numbers.
     const SEP = '\0'
     const key = (row: Omit<SpendRow, 'visible'>) => row.agentId + SEP + row.sessionId + SEP + row.source
     const previous = new Map<string, Counters>(baselineRows.map((row) => [key(row), countersOf(row)]))

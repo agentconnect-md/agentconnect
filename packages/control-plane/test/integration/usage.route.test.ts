@@ -545,6 +545,49 @@ describe('GET /usage — aggregates the persisted usage store by agent over a ra
     }
   })
 
+  it('reads a token counter that restarted as a reset, not as a negative delta', async () => {
+    await seedAgent(prisma, AGENT_A)
+    const repo = new PgSessionUsageRepo(prisma)
+    const min = (m: number) => new Date(Date.now() - m * 60_000)
+    await seedVisibleSession(AGENT_A, 'compacted', min(10))
+    // A runtime reporting live context occupancy as the session total: the third
+    // checkpoint is SMALLER than the second because the context was compacted. Shape and
+    // magnitudes taken from a real claude-acp session that made this column go negative.
+    for (const [m, totalTokens, cachedReadTokens, cost] of [
+      [40, 358828, 317889, '0.6389545'],
+      [30, 154615, 130954, '0.329797'],
+      [20, 124906, 121259, '0.1112345'],
+      [10, 126082, 122436, '0.1512345']
+    ] as const) {
+      await repo.record({
+        agentId: AgentId(AGENT_A),
+        sessionId: 'compacted',
+        source: 'daemon',
+        lastActivityAt: min(m),
+        usage: { totalTokens, cachedReadTokens, costAmount: cost, costCurrency: 'USD' }
+      })
+    }
+
+    const { app, close } = buildHttpApp(prisma)
+    try {
+      const res = await app.inject({ method: 'GET', url: `${ORG}/usage?${preset('d1')}` })
+      const body = res.json() as {
+        totals: { totalTokens: number; costAmount: string }
+        agents: { agentId: string; totalTokens: number; cachedReadTokens: number }[]
+      }
+      // Each restart contributes its whole checkpoint, the one advance contributes its
+      // diff: 358828 + 154615 + 124906 + (126082 − 124906).
+      expect(body.totals.totalTokens).toBe(358828 + 154615 + 124906 + 1176)
+      const agent = body.agents.find((a) => a.agentId === AGENT_A)!
+      expect(agent.totalTokens).toBe(body.totals.totalTokens)
+      expect(agent.cachedReadTokens).toBe(317889 + 130954 + 121259 + 1177)
+      // Cost resets with the token total it belongs to, so it cannot go negative either.
+      expect(body.totals.costAmount).toBe('1.119986')
+    } finally {
+      await close()
+    }
+  })
+
   it('serves an amount at the column’s full precision without rounding a digit', async () => {
     await seedAgent(prisma, AGENT_A)
     const repo = new PgSessionUsageRepo(prisma)
