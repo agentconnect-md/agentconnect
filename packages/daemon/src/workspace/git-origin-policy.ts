@@ -14,40 +14,41 @@ export function configureWorkspaceGitOrigins(origins: readonly string[]): void {
   allowedOrigins = origins.map(normalizeWorkspaceGitOrigin)
 }
 
-// The one code host this deployment's control plane names — deployment configuration, not tenant
-// input, and the same value that already decides which host this daemon hands an agent's git
-// credential to. Adopting it is what keeps a self-managed instance from having to be restated here.
-let deploymentCodeHostOrigin: string | undefined
-
-/** Adopt the code host a spec names, so cloning from it needs no second statement anywhere. A
- *  deployment addresses ONE GitLab instance, so the latest spec is the current answer. */
-export function adoptDeploymentCodeHost(gitlabHost: string | undefined): void {
+/** The origin form of a GitLab base URL, which may carry a path prefix (§24.1) an origin may not. */
+function codeHostOrigin(gitlabHost: string | undefined): string | undefined {
   const host = gitlabHost?.trim()
-  // Absent means this AGENT addresses GitLab.com or no GitLab at all (§24.1) — never that the
-  // deployment stopped having an instance. Leave the answer alone: with several agents on one
-  // daemon, clearing here would make the policy depend on whose spec arrived last. A disconnected
-  // instance is forgotten at restart, when nothing names it again.
-  if (!host) return
+  if (!host) return undefined
   try {
-    // The base URL may carry a path prefix (§24.1), which an origin may not: keep scheme, host, port.
     const url = new URL(gitlabManagedHost(host).baseUrl)
-    deploymentCodeHostOrigin = normalizeWorkspaceGitOrigin(`${url.protocol}//${url.host}`)
+    return normalizeWorkspaceGitOrigin(`${url.protocol}//${url.host}`)
   } catch {
-    // Not addressable as a clone origin: leave the previous answer rather than a broken one.
+    return undefined // not addressable as a clone origin; the caller's own boundary reports that
   }
 }
 
-/** The operator's list plus the deployment's own host — except when the operator turned remote
- *  workspaces off entirely, which is a decision about this daemon and not about one host. */
-function effectiveOrigins(): readonly string[] {
+/**
+ * The operator's list plus the code host THIS agent's spec names. Deployment configuration, not
+ * tenant input — the same value that already decides which host the daemon hands this agent's git
+ * credential to, so refusing to clone it protected nothing and made every self-managed install
+ * restate an address the control plane had already sent.
+ *
+ * Derived per call from the spec in hand rather than remembered: a daemon installs specs through
+ * four paths (live upsert, the register/ok snapshot, activate, a move), and a policy carried in
+ * process state is only as correct as whichever path last happened to run.
+ *
+ * An explicit empty list is a decision about this daemon — no remote Git workspaces at all — and
+ * nothing widens past it.
+ */
+function effectiveOrigins(deploymentCodeHost?: string): readonly string[] {
   if (allowedOrigins.length === 0) return allowedOrigins
-  if (!deploymentCodeHostOrigin || allowedOrigins.includes(deploymentCodeHostOrigin)) return allowedOrigins
-  return [...allowedOrigins, deploymentCodeHostOrigin]
+  const origin = codeHostOrigin(deploymentCodeHost)
+  if (!origin || allowedOrigins.includes(origin)) return allowedOrigins
+  return [...allowedOrigins, origin]
 }
 
 /** Final daemon boundary for every tenant-selected workspace network target. */
-export function authorizeWorkspaceGitUrl(input: string): string {
-  return normalizeAllowedWorkspaceGitUrl(input, effectiveOrigins())
+export function authorizeWorkspaceGitUrl(input: string, deploymentCodeHost?: string): string {
+  return normalizeAllowedWorkspaceGitUrl(input, effectiveOrigins(deploymentCodeHost))
 }
 
 /**
@@ -55,9 +56,9 @@ export function authorizeWorkspaceGitUrl(input: string): string {
  * policy admits it (§24.4). The policy is the operator's list plus the deployment's own code host,
  * so what this reports is a repository somewhere neither of them names.
  */
-export function unauthorizedWorkspaceGitOrigin(repository: string): string | undefined {
+export function unauthorizedWorkspaceGitOrigin(repository: string, deploymentCodeHost?: string): string | undefined {
   try {
-    authorizeWorkspaceGitUrl(repository)
+    authorizeWorkspaceGitUrl(repository, deploymentCodeHost)
     return undefined
   } catch {
     try {
@@ -68,8 +69,9 @@ export function unauthorizedWorkspaceGitOrigin(repository: string): string | und
   }
 }
 
-/** True when no HTTPS origin is permitted at all: managed GitLab is HTTPS-only (§13.2), so on such
- *  a daemon no GitLab instance — GitLab.com or self-managed — can ever be cloned. */
+/** True when the OPERATOR list carries no HTTPS origin. Managed GitLab is HTTPS-only (§13.2), so
+ *  such a daemon serves no GitLab instance beyond the one its own deployment names — which is a
+ *  per-agent answer this startup-time check cannot have. */
 export function permitsNoHttpsOrigin(): boolean {
-  return !effectiveOrigins().some((origin) => origin.toLowerCase().startsWith('https://'))
+  return !allowedOrigins.some((origin) => origin.toLowerCase().startsWith('https://'))
 }

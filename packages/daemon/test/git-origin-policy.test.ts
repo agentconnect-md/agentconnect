@@ -1,18 +1,12 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS } from '@agentconnect.md/protocol'
 import {
-  adoptDeploymentCodeHost,
   authorizeWorkspaceGitUrl,
   configureWorkspaceGitOrigins,
   permitsNoHttpsOrigin
 } from '../src/workspace/git-origin-policy.js'
 
-afterEach(() => {
-  configureWorkspaceGitOrigins(DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS)
-  // Adoption is process state that only a named instance moves: park it on a host no case names,
-  // so one test's instance cannot widen the next one's.
-  adoptDeploymentCodeHost('https://adoption-parked.example.test')
-})
+afterEach(() => configureWorkspaceGitOrigins(DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS))
 
 describe('workspace Git origin policy', () => {
   it('denies an unconfigured host at the daemon boundary', () => {
@@ -48,64 +42,45 @@ describe('workspace Git origin policy', () => {
 })
 
 describe("the deployment's own code host", () => {
+  const INSTANCE = 'https://gitlab.example.test'
+
   // It is deployment configuration, and this daemon already trusts it to decide where an agent's
   // git credential may go. Making an operator restate it bought nothing and drifted.
-  it('is cloneable once a spec names it, with nothing configured locally', () => {
-    adoptDeploymentCodeHost('https://gitlab.example.test')
-    expect(authorizeWorkspaceGitUrl('https://gitlab.example.test/team/repo.git')).toBe(
-      'https://gitlab.example.test/team/repo.git'
-    )
+  it('is cloneable when the spec in hand names it, with nothing configured locally', () => {
+    expect(authorizeWorkspaceGitUrl(`${INSTANCE}/team/repo.git`, INSTANCE)).toBe(`${INSTANCE}/team/repo.git`)
+    // ...and only for the spec that names it: no process state leaks to the next caller.
+    expect(() => authorizeWorkspaceGitUrl(`${INSTANCE}/team/repo.git`)).toThrow('git clone origin is not allowed')
   })
 
   it('admits that origin only, never anywhere else', () => {
-    adoptDeploymentCodeHost('https://gitlab.example.test/gitlab')
-    expect(authorizeWorkspaceGitUrl('https://gitlab.example.test/gitlab/team/repo.git')).toBe(
-      'https://gitlab.example.test/gitlab/team/repo.git'
+    const prefixed = 'https://gitlab.example.test/gitlab'
+    expect(authorizeWorkspaceGitUrl(`${INSTANCE}/gitlab/team/repo.git`, prefixed)).toBe(
+      `${INSTANCE}/gitlab/team/repo.git`
     )
-    expect(() => authorizeWorkspaceGitUrl('https://elsewhere.example.test/team/repo.git')).toThrow(
+    expect(() => authorizeWorkspaceGitUrl('https://elsewhere.example.test/team/repo.git', prefixed)).toThrow(
       'git clone origin is not allowed'
-    )
-  })
-
-  it('replaces the previous answer, because a deployment addresses one instance', () => {
-    adoptDeploymentCodeHost('https://first.example.test')
-    adoptDeploymentCodeHost('https://second.example.test')
-    expect(() => authorizeWorkspaceGitUrl('https://first.example.test/team/repo.git')).toThrow(
-      'git clone origin is not allowed'
-    )
-    expect(authorizeWorkspaceGitUrl('https://second.example.test/team/repo.git')).toBe(
-      'https://second.example.test/team/repo.git'
     )
   })
 
   // `[]` is a decision about this daemon — no remote workspaces at all — not about one host.
-  it('does not adopt past an explicit deny-all', () => {
+  it('does not widen past an explicit deny-all', () => {
     configureWorkspaceGitOrigins([])
-    adoptDeploymentCodeHost('https://gitlab.example.test')
-    expect(() => authorizeWorkspaceGitUrl('https://gitlab.example.test/team/repo.git')).toThrow(
+    expect(() => authorizeWorkspaceGitUrl(`${INSTANCE}/team/repo.git`, INSTANCE)).toThrow(
       'git clone origin is not allowed'
     )
     expect(permitsNoHttpsOrigin()).toBe(true)
   })
 
-  // Managed GitLab is HTTPS-only (§13.2), and the adopted instance counts for that check — an
-  // operator list with no https origin no longer means no GitLab workspace can ever clone here.
-  it('counts toward the https check the managed-GitLab warning reads', () => {
+  // The startup warning reads the operator list alone: whether an instance is named is per-agent.
+  it('leaves the https-only warning to the operator list', () => {
     configureWorkspaceGitOrigins(['ssh://github.com'])
-    adoptDeploymentCodeHost('https://gitlab.example.test')
-    expect(permitsNoHttpsOrigin()).toBe(false)
-    expect(authorizeWorkspaceGitUrl('https://gitlab.example.test/team/repo.git')).toBe(
-      'https://gitlab.example.test/team/repo.git'
-    )
+    expect(permitsNoHttpsOrigin()).toBe(true)
+    expect(authorizeWorkspaceGitUrl(`${INSTANCE}/team/repo.git`, INSTANCE)).toBe(`${INSTANCE}/team/repo.git`)
   })
 
-  // An agent without GitLab is not a statement about the deployment. Clearing here would make the
-  // policy depend on whose spec arrived last; a disconnected instance is forgotten at restart.
-  it('is left alone by a spec that names no instance', () => {
-    adoptDeploymentCodeHost('https://gitlab.example.test')
-    adoptDeploymentCodeHost(undefined)
-    expect(authorizeWorkspaceGitUrl('https://gitlab.example.test/team/repo.git')).toBe(
-      'https://gitlab.example.test/team/repo.git'
+  it('ignores a host that is not addressable as an origin', () => {
+    expect(() => authorizeWorkspaceGitUrl(`${INSTANCE}/team/repo.git`, 'not a url')).toThrow(
+      'git clone origin is not allowed'
     )
   })
 })

@@ -41,11 +41,7 @@ import {
   sessionGitConfig,
   daemonGitCredentialTarget
 } from '../src/workspace/git-injection.js'
-import {
-  adoptDeploymentCodeHost,
-  configureWorkspaceGitOrigins,
-  unauthorizedWorkspaceGitOrigin
-} from '../src/workspace/git-origin-policy.js'
+import { configureWorkspaceGitOrigins, unauthorizedWorkspaceGitOrigin } from '../src/workspace/git-origin-policy.js'
 
 // A prefixed, non-default-port install: the shape a relative URL root produces, and the one every
 // bare-hostname classifier gets wrong.
@@ -461,14 +457,9 @@ describe('glab target resolution against the configured instance (§13.3, §24.4
 })
 
 describe('spec-admission origin refusal (§24.4)', () => {
-  afterAll(() => {
-    configureWorkspaceGitOrigins([...DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS])
-    adoptDeploymentCodeHost('https://adoption-parked.example.test')
-  })
+  afterAll(() => configureWorkspaceGitOrigins([...DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS]))
 
   it('names the origin the operator policy excludes, and admits a permitted one', () => {
-    // Park adoption on a host no case names: this one is about the operator list on its own.
-    adoptDeploymentCodeHost('https://adoption-parked.example.test')
     configureWorkspaceGitOrigins(['https://github.com', 'https://gitlab.com'])
     expect(unauthorizedWorkspaceGitOrigin('https://gitlab.example.test:8443/gitlab/group/proj.git')).toBe(
       'https://gitlab.example.test:8443'
@@ -537,7 +528,7 @@ describe('spec-admission origin refusal (§24.4)', () => {
       } as unknown as AgentSpec
       const ack = await (daemon as any).cpConfigApply().applyAgentUpsert({ agentId: AGENT, spec })
       expect(ack).toEqual({ ok: true })
-      expect(unauthorizedWorkspaceGitOrigin(`${INSTANCE}/example-group/example-project.git`)).toBeUndefined()
+      expect(unauthorizedWorkspaceGitOrigin(`${INSTANCE}/example-group/example-project.git`, INSTANCE)).toBeUndefined()
     } finally {
       await daemon.stop()
       rmSync(root, { recursive: true, force: true })

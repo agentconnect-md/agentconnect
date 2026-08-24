@@ -53,7 +53,7 @@ import {
 import type { LocalStore } from '../store/local-store.js'
 import type { AcpHost } from '../acp/acp-host.js'
 import type { WorkspaceManager, PrepareSessionWorkspaceRequest } from '../workspace/workspace-manager.js'
-import { adoptDeploymentCodeHost, unauthorizedWorkspaceGitOrigin } from '../workspace/git-origin-policy.js'
+import { unauthorizedWorkspaceGitOrigin } from '../workspace/git-origin-policy.js'
 import type { KeyServerClient } from '../key-server/client.js'
 import type { GitCredentialCache } from './git-credential.js'
 import type { GitCredServer } from './gitcred-server.js'
@@ -340,7 +340,7 @@ export async function applyReconcileSnapshot(host: ConfigApplyHost, snap: Regist
 function gitlabOriginRefusal(spec: AgentUpsert['spec']): string | undefined {
   const workspace = spec.workspace
   if (workspace?.mode !== 'gitlab') return undefined
-  const origin = unauthorizedWorkspaceGitOrigin(workspace.gitRepo)
+  const origin = unauthorizedWorkspaceGitOrigin(workspace.gitRepo, spec.gitlabHost)
   return origin === undefined
     ? undefined
     : `workspace refused: ${origin} is neither this deployment's code host nor in security.workspaceGitAllowedOrigins on this daemon`
@@ -349,11 +349,6 @@ function gitlabOriginRefusal(spec: AgentUpsert['spec']): string | undefined {
 export function applyAgentUpsert(host: ConfigApplyHost, { agentId, spec }: AgentUpsert): Promise<Ack> {
   return host.queueAgentLifecycle(agentId, async () => {
     if (host.moveStagedAgents().has(agentId)) return { ok: false, reason: 'agent is staged for a move' }
-    // Keyed on the instance itself, not on the primary workspace: a github or scratch workspace
-    // holding a GitLab additional-repository grant carries `gitlabHost` too, and adopting only for
-    // a gitlab-mode workspace would leave that agent's clone waiting on whichever OTHER agent
-    // happened to upsert first.
-    adoptDeploymentCodeHost(spec.gitlabHost)
     const originRefusal = gitlabOriginRefusal(spec)
     if (originRefusal !== undefined) {
       host.log().warn(`cp: agent "${agentId}" ${originRefusal}`)
