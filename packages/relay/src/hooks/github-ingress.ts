@@ -514,36 +514,29 @@ const FAILED_CHECK_CONCLUSIONS = new Set([
 function pullRequestFeedbackSignals(
   event: string,
   payload: GithubPayload,
-  deliveryKey: string,
-  observedAt: string
+  deliveryKey: string
 ): RcPullRequestFeedback[] {
   const installationId = payload.installation?.id
   const repoId = payload.repository?.id
   const repoFullName = payload.repository?.full_name?.trim()
   if (!positiveSafeInteger(installationId) || !positiveSafeInteger(repoId) || !repoFullName) return []
-  const build = (pullNumber: number, kind: RcPullRequestFeedback['kind'], detail?: string): RcPullRequestFeedback => ({
+  const build = (pullNumber: number): RcPullRequestFeedback => ({
     deliveryKey: `${deliveryKey.slice(0, 150)}:${event}:${pullNumber}`,
     installationId: String(installationId),
     repoId: String(repoId),
     repoFullName,
-    pullNumber,
-    event: `${event}:${payload.action}` as RcPullRequestFeedback['event'],
-    kind,
-    ...(detail ? { detail: detail.slice(0, 80) } : {}),
-    observedAt
+    pullNumber
   })
 
   if (event === 'pull_request_review' && payload.action === 'submitted') {
     const pullNumber = payload.pull_request?.number
     const state = payload.review?.state?.toLowerCase()
     const hasBody = Boolean(payload.review?.body?.trim())
-    return positiveSafeInteger(pullNumber) && (state === 'changes_requested' || hasBody)
-      ? [build(pullNumber, 'review', state)]
-      : []
+    return positiveSafeInteger(pullNumber) && (state === 'changes_requested' || hasBody) ? [build(pullNumber)] : []
   }
   if (event === 'pull_request_review_comment' && (payload.action === 'created' || payload.action === 'edited')) {
     const pullNumber = payload.pull_request?.number
-    return positiveSafeInteger(pullNumber) ? [build(pullNumber, 'review_comment')] : []
+    return positiveSafeInteger(pullNumber) ? [build(pullNumber)] : []
   }
   if (
     event === 'issue_comment' &&
@@ -551,7 +544,7 @@ function pullRequestFeedbackSignals(
     payload.issue?.pull_request !== undefined
   ) {
     const pullNumber = payload.issue.number
-    return positiveSafeInteger(pullNumber) ? [build(pullNumber, 'comment')] : []
+    return positiveSafeInteger(pullNumber) ? [build(pullNumber)] : []
   }
   if (event === 'check_suite' && payload.action === 'completed') {
     const conclusion = payload.check_suite?.conclusion?.toLowerCase()
@@ -561,7 +554,7 @@ function pullRequestFeedbackSignals(
         .map((pull) => pull.number)
         .filter((pull): pull is number => positiveSafeInteger(pull))
     )
-    return [...pulls].map((pullNumber) => build(pullNumber, 'ci_failure', conclusion))
+    return [...pulls].map((pullNumber) => build(pullNumber))
   }
   return []
 }
@@ -896,12 +889,7 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
         return reply.code(400).send({ error: 'Bad Request', statusCode: 400 })
       }
 
-      const feedbackSignals = pullRequestFeedbackSignals(
-        event,
-        payload,
-        deliveryKey,
-        new Date(deps.clock.now()).toISOString()
-      )
+      const feedbackSignals = pullRequestFeedbackSignals(event, payload, deliveryKey)
       try {
         if (deps.reportPullRequestFeedback) {
           await Promise.all(feedbackSignals.map((signal) => deps.reportPullRequestFeedback!(signal)))

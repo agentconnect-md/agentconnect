@@ -385,9 +385,7 @@ describe('github ingress', () => {
           installationId: String(INSTALLATION),
           repoId: String(REPO_ID),
           repoFullName: 'acme/infra',
-          pullNumber: 77,
-          event: 'issue_comment:created',
-          kind: 'comment'
+          pullNumber: 77
         })
       ])
     })
@@ -400,10 +398,7 @@ describe('github ingress', () => {
         check_suite: { conclusion: 'failure', pull_requests: [{ number: 77 }, { number: 78 }] }
       })
       expect(failed.statusCode).toBe(202)
-      expect(h.feedback.map((signal) => [signal.pullNumber, signal.kind, signal.detail])).toEqual([
-        [77, 'ci_failure', 'failure'],
-        [78, 'ci_failure', 'failure']
-      ])
+      expect(h.feedback.map((signal) => signal.pullNumber)).toEqual([77, 78])
 
       await post('check_suite', {
         action: 'completed',
@@ -414,7 +409,7 @@ describe('github ingress', () => {
       expect(h.feedback).toHaveLength(2)
     })
 
-    it('returns 503 so GitHub redelivers when the CP cannot persist feedback', async () => {
+    it('returns 503 instead of acknowledging feedback that the CP did not persist', async () => {
       h.feedbackError = true
       const res = await post(
         'pull_request_review_comment',

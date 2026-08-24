@@ -12,19 +12,29 @@ const AGENT_ID = '22222222-2222-4222-8222-222222222222'
 const ORG_ID = OrgId(DEFAULT_ORG_ID)
 const INSTALLATION_ID = 123n
 const REPO_ID = 456n
+const NOW = new Date('2026-08-24T00:00:00.000Z')
 
-function signal(deliveryKey: string, pullNumber: number, kind: PullRequestFeedbackSignal['kind'] = 'comment') {
+function signal(deliveryKey: string, pullNumber: number): PullRequestFeedbackSignal {
   return {
     deliveryKey,
     installationId: INSTALLATION_ID.toString(),
     repoId: REPO_ID.toString(),
     repoFullName: 'acme/infra',
+    pullNumber
+  }
+}
+
+function link(repo: PgSessionPullRequestFeedbackRepo, sessionId: string, pullNumber: number): Promise<boolean> {
+  return repo.linkSession({
+    sessionId: SessionId(sessionId),
+    agentId: AgentId(AGENT_ID),
+    orgId: ORG_ID,
+    repoId: REPO_ID,
+    repoFullName: 'acme/infra',
+    installationId: INSTALLATION_ID,
     pullNumber,
-    event: kind === 'ci_failure' ? ('check_suite:completed' as const) : ('issue_comment:created' as const),
-    kind,
-    ...(kind === 'ci_failure' ? { detail: 'failure' } : {}),
-    observedAt: new Date().toISOString()
-  } satisfies PullRequestFeedbackSignal
+    at: NOW
+  })
 }
 
 describe('PgSessionPullRequestFeedbackRepo', () => {
@@ -33,69 +43,80 @@ describe('PgSessionPullRequestFeedbackRepo', () => {
     await seedAgent(prisma, AGENT_ID, { daemonId: DAEMON_ID })
   })
 
-  it('converges both enqueue/link orders and leases one session batch', async () => {
+  it('converges both wake-before-link and link-before-wake orders', async () => {
     const repo = new PgSessionPullRequestFeedbackRepo(prisma)
     const earlySessionId = randomUUID()
     const linkedSessionId = randomUUID()
     await seedSessionMeta(prisma, earlySessionId, AGENT_ID, { daemonId: DAEMON_ID })
     await seedSessionMeta(prisma, linkedSessionId, AGENT_ID, { daemonId: DAEMON_ID })
 
-    await repo.enqueue(ORG_ID, signal('delivery-early', 77))
+    await repo.enqueue(ORG_ID, signal('delivery-early', 77), NOW)
     expect(
-      await prisma.sessionPullRequestFeedback.findUnique({ where: { deliveryKey: 'delivery-early' } })
-    ).toMatchObject({ sessionId: null })
-    await expect(
-      repo.linkSession({
-        sessionId: SessionId(earlySessionId),
-        agentId: AgentId(AGENT_ID),
-        orgId: ORG_ID,
-        repoId: REPO_ID,
-        repoFullName: 'acme/infra',
-        installationId: INSTALLATION_ID,
-        pullNumber: 77,
-        at: new Date()
+      await prisma.sessionPullRequestWake.findUnique({
+        where: { orgId_repoId_pullNumber: { orgId: ORG_ID, repoId: REPO_ID, pullNumber: 77 } }
       })
-    ).resolves.toBe(true)
+    ).toMatchObject({ sessionId: null })
+    await expect(link(repo, earlySessionId, 77)).resolves.toBe(true)
     expect(
-      await prisma.sessionPullRequestFeedback.findUnique({ where: { deliveryKey: 'delivery-early' } })
+      await prisma.sessionPullRequestWake.findUnique({
+        where: { orgId_repoId_pullNumber: { orgId: ORG_ID, repoId: REPO_ID, pullNumber: 77 } }
+      })
     ).toMatchObject({ sessionId: earlySessionId })
 
-    await expect(
-      repo.linkSession({
-        sessionId: SessionId(linkedSessionId),
-        agentId: AgentId(AGENT_ID),
-        orgId: ORG_ID,
-        repoId: REPO_ID,
-        repoFullName: 'acme/infra',
-        installationId: INSTALLATION_ID,
-        pullNumber: 78,
-        at: new Date()
-      })
-    ).resolves.toBe(true)
-    await repo.enqueue(ORG_ID, signal('delivery-linked', 78))
+    await expect(link(repo, linkedSessionId, 78)).resolves.toBe(true)
+    await repo.enqueue(ORG_ID, signal('delivery-linked', 78), NOW)
     expect(
-      await prisma.sessionPullRequestFeedback.findUnique({ where: { deliveryKey: 'delivery-linked' } })
+      await prisma.sessionPullRequestWake.findUnique({
+        where: { orgId_repoId_pullNumber: { orgId: ORG_ID, repoId: REPO_ID, pullNumber: 78 } }
+      })
     ).toMatchObject({ sessionId: linkedSessionId })
+  })
 
-    await repo.enqueue(ORG_ID, signal('delivery-ci', 77, 'ci_failure'))
-    const now = new Date()
+  it('coalesces each PR into one dirty generation and preserves a concurrent newer wake', async () => {
+    const repo = new PgSessionPullRequestFeedbackRepo(prisma)
+    const sessionId = randomUUID()
+    await seedSessionMeta(prisma, sessionId, AGENT_ID, { daemonId: DAEMON_ID })
+    await expect(link(repo, sessionId, 77)).resolves.toBe(true)
+
+    await repo.enqueue(ORG_ID, signal('delivery-1', 77), NOW)
     const owner = randomUUID()
-    const batch = await repo.claimPendingBatch(
-      owner,
-      now,
-      new Date(now.getTime() + 60_000),
-      new Date(now.getTime() + 60_000)
-    )
-    expect(batch.map((row) => row.deliveryKey).sort()).toEqual(['delivery-ci', 'delivery-early'])
-    await repo.markDelivered(
-      batch.map((row) => row.id),
-      owner,
-      now
-    )
+    const claimed = await repo.claimNext(owner, NOW, new Date(NOW.getTime() + 60_000))
+    expect(claimed).toMatchObject({ deliveryKey: 'delivery-1', generation: 1 })
+
+    await repo.enqueue(ORG_ID, signal('delivery-2', 77), new Date(NOW.getTime() + 10_000))
+    await repo.markDelivered(claimed!.id, claimed!.generation, owner, NOW)
+    await repo.enqueue(ORG_ID, signal('delivery-2', 77), new Date(NOW.getTime() + 20_000))
+
     expect(
-      await prisma.sessionPullRequestFeedback.count({
-        where: { sessionId: earlySessionId, deliveredAt: { not: null } }
+      await prisma.sessionPullRequestWake.findUnique({
+        where: { orgId_repoId_pullNumber: { orgId: ORG_ID, repoId: REPO_ID, pullNumber: 77 } }
       })
-    ).toBe(2)
+    ).toMatchObject({
+      latestDeliveryKey: 'delivery-2',
+      generation: 2,
+      deliveredAt: null,
+      claimOwner: null,
+      nextAttemptAt: new Date(NOW.getTime() + 10_000)
+    })
+  })
+
+  it('defers one unavailable PR without blocking the next due PR', async () => {
+    const repo = new PgSessionPullRequestFeedbackRepo(prisma)
+    const firstSessionId = randomUUID()
+    const secondSessionId = randomUUID()
+    await seedSessionMeta(prisma, firstSessionId, AGENT_ID, { daemonId: DAEMON_ID })
+    await seedSessionMeta(prisma, secondSessionId, AGENT_ID, { daemonId: DAEMON_ID })
+    await expect(link(repo, firstSessionId, 77)).resolves.toBe(true)
+    await expect(link(repo, secondSessionId, 78)).resolves.toBe(true)
+    await repo.enqueue(ORG_ID, signal('delivery-1', 77), NOW)
+    await repo.enqueue(ORG_ID, signal('delivery-2', 78), NOW)
+
+    const owner = randomUUID()
+    const first = await repo.claimNext(owner, NOW, new Date(NOW.getTime() + 60_000))
+    expect(first?.pullNumber).toBe(77)
+    await repo.defer(first!.id, first!.generation, owner, new Date(NOW.getTime() + 10_000))
+
+    const second = await repo.claimNext(owner, NOW, new Date(NOW.getTime() + 60_000))
+    expect(second?.pullNumber).toBe(78)
   })
 })

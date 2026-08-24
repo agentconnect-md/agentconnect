@@ -1,22 +1,19 @@
-import { Prisma, type SessionPullRequestFeedback } from '../../generated/prisma/client.js'
+import { Prisma, type SessionPullRequestWake } from '../../generated/prisma/client.js'
 import { withAmbientTx, type PrismaLike } from '../prisma.js'
-import type { PullRequestFeedbackRecord, PullRequestFeedbackTarget, SessionPullRequestFeedbackRepo } from '../ports.js'
+import type { PullRequestWakeRecord, SessionPullRequestFeedbackRepo } from '../ports.js'
 import { AgentId, OrgId, SessionId } from '../../domain/ids.js'
 
-function toRecord(row: SessionPullRequestFeedback & { sessionId: string }): PullRequestFeedbackRecord {
+function toRecord(row: SessionPullRequestWake): PullRequestWakeRecord {
   return {
     id: row.id,
-    deliveryKey: row.deliveryKey,
+    deliveryKey: row.latestDeliveryKey,
+    generation: row.generation,
     orgId: OrgId(row.orgId),
     installationId: row.installationId,
     repoId: row.repoId,
     repoFullName: row.repoFullName,
     pullNumber: row.pullNumber,
-    event: row.event as PullRequestFeedbackRecord['event'],
-    kind: row.kind as PullRequestFeedbackRecord['kind'],
-    detail: row.detail,
-    observedAt: row.observedAt,
-    sessionId: SessionId(row.sessionId)
+    sessionId: row.sessionId ? SessionId(row.sessionId) : null
   }
 }
 
@@ -75,15 +72,32 @@ export class PgSessionPullRequestFeedbackRepo implements SessionPullRequestFeedb
             }
           })
         }
-        await tx.sessionPullRequestFeedback.updateMany({
+        const attached = await tx.sessionPullRequestWake.updateMany({
           where: {
             orgId: input.orgId,
             repoId: input.repoId,
             pullNumber: input.pullNumber,
             sessionId: null
           },
-          data: { sessionId: input.sessionId }
+          data: {
+            sessionId: input.sessionId,
+            repoFullName: input.repoFullName,
+            installationId: input.installationId,
+            claimOwner: null,
+            claimUntil: null
+          }
         })
+        if (attached.count === 0) {
+          await tx.sessionPullRequestWake.updateMany({
+            where: {
+              orgId: input.orgId,
+              repoId: input.repoId,
+              pullNumber: input.pullNumber,
+              sessionId: input.sessionId
+            },
+            data: { repoFullName: input.repoFullName, installationId: input.installationId }
+          })
+        }
         return true
       })
     } catch (err) {
@@ -92,133 +106,115 @@ export class PgSessionPullRequestFeedbackRepo implements SessionPullRequestFeedb
     }
   }
 
-  async enqueue(orgId: OrgId, signal: Parameters<SessionPullRequestFeedbackRepo['enqueue']>[1]): Promise<void> {
+  async enqueue(
+    orgId: OrgId,
+    signal: Parameters<SessionPullRequestFeedbackRepo['enqueue']>[1],
+    nextAttemptAt: Date
+  ): Promise<void> {
     const repoId = BigInt(signal.repoId)
     const installationId = BigInt(signal.installationId)
-    await this.db.sessionPullRequestFeedback.upsert({
-      where: { deliveryKey: signal.deliveryKey },
-      create: {
-        deliveryKey: signal.deliveryKey,
-        orgId,
-        installationId,
-        repoId,
-        repoFullName: signal.repoFullName,
-        pullNumber: signal.pullNumber,
-        event: signal.event,
-        kind: signal.kind,
-        detail: signal.detail,
-        observedAt: new Date(signal.observedAt)
-      },
-      update: {}
-    })
-    // Link and enqueue each attach from their side, so either transaction order converges.
-    const linked = await this.db.sessionMeta.findFirst({
-      where: {
-        orgId,
-        pullRequestRepoId: repoId,
-        pullRequestNumber: signal.pullNumber,
-        contentPurgedAt: null
-      },
-      select: { id: true }
-    })
-    if (linked) {
-      await this.db.sessionPullRequestFeedback.updateMany({
-        where: { deliveryKey: signal.deliveryKey, sessionId: null },
-        data: { sessionId: linked.id }
+    await this.transaction(async (tx) => {
+      const wake = await tx.sessionPullRequestWake.upsert({
+        where: { orgId_repoId_pullNumber: { orgId, repoId, pullNumber: signal.pullNumber } },
+        create: {
+          orgId,
+          installationId,
+          repoId,
+          repoFullName: signal.repoFullName,
+          pullNumber: signal.pullNumber,
+          latestDeliveryKey: signal.deliveryKey,
+          nextAttemptAt
+        },
+        update: {}
       })
-    }
-  }
-
-  async unmatchedTargets(limit: number): Promise<PullRequestFeedbackTarget[]> {
-    const rows = await this.db.sessionPullRequestFeedback.findMany({
-      where: { sessionId: null, deliveredAt: null },
-      orderBy: { createdAt: 'asc' },
-      take: Math.max(1, Math.min(limit * 10, 200)),
-      select: { orgId: true, repoId: true, pullNumber: true }
+      if (wake.latestDeliveryKey !== signal.deliveryKey) {
+        await tx.sessionPullRequestWake.updateMany({
+          where: { id: wake.id, latestDeliveryKey: { not: signal.deliveryKey } },
+          data: {
+            installationId,
+            repoFullName: signal.repoFullName,
+            latestDeliveryKey: signal.deliveryKey,
+            generation: { increment: 1 },
+            nextAttemptAt,
+            deliveredAt: null
+          }
+        })
+      }
+      const linked = await tx.sessionMeta.findFirst({
+        where: {
+          orgId,
+          pullRequestRepoId: repoId,
+          pullRequestNumber: signal.pullNumber,
+          contentPurgedAt: null
+        },
+        select: { id: true }
+      })
+      if (linked) {
+        await tx.sessionPullRequestWake.updateMany({
+          where: { id: wake.id, sessionId: null },
+          data: { sessionId: linked.id }
+        })
+      }
     })
-    const seen = new Set<string>()
-    const targets: PullRequestFeedbackTarget[] = []
-    for (const row of rows) {
-      const key = `${row.orgId}:${row.repoId}:${row.pullNumber}`
-      if (seen.has(key)) continue
-      seen.add(key)
-      targets.push({ orgId: OrgId(row.orgId), repoId: row.repoId, pullNumber: row.pullNumber })
-      if (targets.length >= limit) break
-    }
-    return targets
   }
 
-  async claimPendingBatch(
-    owner: string,
-    now: Date,
-    until: Date,
-    readyBefore: Date
-  ): Promise<PullRequestFeedbackRecord[]> {
-    const candidates = await this.db.sessionPullRequestFeedback.findMany({
+  async claimNext(owner: string, now: Date, until: Date): Promise<PullRequestWakeRecord | null> {
+    const candidates = await this.db.sessionPullRequestWake.findMany({
       where: {
-        sessionId: { not: null },
         deliveredAt: null,
+        nextAttemptAt: { lte: now },
         OR: [{ claimUntil: null }, { claimUntil: { lt: now } }]
       },
-      orderBy: { createdAt: 'asc' },
+      orderBy: [{ nextAttemptAt: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }],
       take: 20
     })
-    const visited = new Set<string>()
     for (const candidate of candidates) {
-      if (!candidate.sessionId) continue
-      if (visited.has(candidate.sessionId)) continue
-      visited.add(candidate.sessionId)
-      const [latest, activeClaim] = await Promise.all([
-        this.db.sessionPullRequestFeedback.findFirst({
-          where: { sessionId: candidate.sessionId, deliveredAt: null },
-          orderBy: { createdAt: 'desc' },
-          select: { createdAt: true }
-        }),
-        this.db.sessionPullRequestFeedback.findFirst({
-          where: { sessionId: candidate.sessionId, deliveredAt: null, claimUntil: { gte: now } },
-          select: { id: true }
-        })
-      ])
-      if (!latest || latest.createdAt > readyBefore || activeClaim) continue
-      const claimed = await this.db.sessionPullRequestFeedback.updateMany({
+      const claimed = await this.db.sessionPullRequestWake.updateMany({
         where: {
-          sessionId: candidate.sessionId,
+          id: candidate.id,
+          generation: candidate.generation,
           deliveredAt: null,
+          nextAttemptAt: { lte: now },
           OR: [{ claimUntil: null }, { claimUntil: { lt: now } }]
         },
         data: { claimOwner: owner, claimUntil: until }
       })
-      if (claimed.count === 0) continue
-      const batch = await this.db.sessionPullRequestFeedback.findMany({
-        where: { sessionId: candidate.sessionId, deliveredAt: null, claimOwner: owner, claimUntil: until },
-        orderBy: { createdAt: 'asc' }
-      })
-      return batch.flatMap((row) => (row.sessionId ? [toRecord({ ...row, sessionId: row.sessionId })] : []))
+      if (claimed.count === 1) return toRecord(candidate)
     }
-    return []
+    return null
   }
 
-  async markDelivered(ids: string[], owner: string, at: Date): Promise<void> {
-    if (ids.length === 0) return
-    await this.db.sessionPullRequestFeedback.updateMany({
-      where: { id: { in: ids }, claimOwner: owner, deliveredAt: null },
+  async markDelivered(id: string, generation: number, owner: string, at: Date): Promise<void> {
+    const completed = await this.db.sessionPullRequestWake.updateMany({
+      where: { id, generation, claimOwner: owner, deliveredAt: null },
       data: { deliveredAt: at, claimOwner: null, claimUntil: null }
     })
+    if (completed.count === 0) {
+      await this.db.sessionPullRequestWake.updateMany({
+        where: { id, claimOwner: owner },
+        data: { claimOwner: null, claimUntil: null }
+      })
+    }
   }
 
-  async release(ids: string[], owner: string): Promise<void> {
-    if (ids.length === 0) return
-    await this.db.sessionPullRequestFeedback.updateMany({
-      where: { id: { in: ids }, claimOwner: owner, deliveredAt: null },
-      data: { claimOwner: null, claimUntil: null }
+  async defer(id: string, generation: number, owner: string, nextAttemptAt: Date): Promise<void> {
+    const deferred = await this.db.sessionPullRequestWake.updateMany({
+      where: { id, generation, claimOwner: owner, deliveredAt: null },
+      data: { nextAttemptAt, claimOwner: null, claimUntil: null }
     })
+    if (deferred.count === 0) {
+      await this.db.sessionPullRequestWake.updateMany({
+        where: { id, claimOwner: owner },
+        data: { claimOwner: null, claimUntil: null }
+      })
+    }
   }
 
   async deleteExpired(unmatchedBefore: Date, deliveredBefore: Date): Promise<number> {
-    const deleted = await this.db.sessionPullRequestFeedback.deleteMany({
+    const deleted = await this.db.sessionPullRequestWake.deleteMany({
       where: {
         OR: [
-          { sessionId: null, createdAt: { lt: unmatchedBefore } },
+          { sessionId: null, updatedAt: { lt: unmatchedBefore } },
           { deliveredAt: { not: null, lt: deliveredBefore } }
         ]
       }

@@ -36,8 +36,6 @@ import type {
   CodeHostReviewState,
   CodeHostProvider,
   HookKind,
-  PullRequestFeedbackEvent,
-  PullRequestFeedbackKind,
   PullRequestFeedbackSignal
 } from '@agentconnect.md/protocol'
 import type {
@@ -1476,30 +1474,21 @@ export interface SessionRepo {
   findThreadOwner(botId: BotId, channel: string, thread: string): Promise<{ agentId: string } | null>
 }
 
-export interface PullRequestFeedbackRecord {
+export interface PullRequestWakeRecord {
   id: string
   deliveryKey: string
+  generation: number
   orgId: OrgId
   installationId: bigint
   repoId: bigint
   repoFullName: string
   pullNumber: number
-  event: PullRequestFeedbackEvent
-  kind: PullRequestFeedbackKind
-  detail: string | null
-  observedAt: Date
-  sessionId: SessionId
+  sessionId: SessionId | null
 }
 
-export interface PullRequestFeedbackTarget {
-  orgId: OrgId
-  repoId: bigint
-  pullNumber: number
-}
-
-/** Durable PR→session identity plus body-free GitHub feedback delivery queue. */
+/** Durable PR→session identity plus one level-triggered wake marker per PR. */
 export interface SessionPullRequestFeedbackRepo {
-  /** First session to claim a numeric repo+PR wins; pending early feedback is attached in the same transaction. */
+  /** First session to claim a numeric repo+PR wins; an early wake marker is attached in the same transaction. */
   linkSession(input: {
     sessionId: SessionId
     agentId: AgentId
@@ -1510,14 +1499,14 @@ export interface SessionPullRequestFeedbackRepo {
     pullNumber: number
     at: Date
   }): Promise<boolean>
-  /** Idempotently persist one signed signal, attaching it immediately when the PR is already linked. */
-  enqueue(orgId: OrgId, signal: PullRequestFeedbackSignal): Promise<void>
-  /** Oldest distinct PRs whose feedback arrived before any session link was known. */
-  unmatchedTargets(limit: number): Promise<PullRequestFeedbackTarget[]>
-  /** Cross-process lease claim after a quiet window; signals for one session are returned as one batch. */
-  claimPendingBatch(owner: string, now: Date, until: Date, readyBefore: Date): Promise<PullRequestFeedbackRecord[]>
-  markDelivered(ids: string[], owner: string, at: Date): Promise<void>
-  release(ids: string[], owner: string): Promise<void>
+  /** Idempotently dirty one PR wake generation and attach it when the PR is already linked. */
+  enqueue(orgId: OrgId, signal: PullRequestFeedbackSignal, nextAttemptAt: Date): Promise<void>
+  /** Cross-process CAS lease for the next due linked or discovery wake. */
+  claimNext(owner: string, now: Date, until: Date): Promise<PullRequestWakeRecord | null>
+  /** Complete only the generation that was delivered; a concurrent newer generation remains dirty. */
+  markDelivered(id: string, generation: number, owner: string, at: Date): Promise<void>
+  /** Move one failed/discovery generation into the future so later PRs remain eligible. */
+  defer(id: string, generation: number, owner: string, nextAttemptAt: Date): Promise<void>
   deleteExpired(unmatchedBefore: Date, deliveredBefore: Date): Promise<number>
 }
 

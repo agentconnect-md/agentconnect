@@ -367,10 +367,7 @@ describe('RelayCpClient', () => {
       installationId: '1234567',
       repoId: '987654321',
       repoFullName: 'acme/infra',
-      pullNumber: 77,
-      event: 'issue_comment:created',
-      kind: 'comment',
-      observedAt: '2026-07-07T00:00:00.000Z'
+      pullNumber: 77
     } as const
 
     const pending = client.reportPullRequestFeedback(signal)

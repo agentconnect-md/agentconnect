@@ -816,10 +816,7 @@ describe('RelayConnection FSM', () => {
       installationId: '123',
       repoId: '456',
       repoFullName: 'acme/infra',
-      pullNumber: 77,
-      event: 'issue_comment:created',
-      kind: 'comment',
-      observedAt: '2026-08-24T00:00:00.000Z'
+      pullNumber: 77
     } as const
     const request = buildRelayCpFrame('rc/pull-request-feedback', signal)
 

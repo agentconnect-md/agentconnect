@@ -46,9 +46,7 @@ describe('pull request feedback continuation', () => {
       deliveryKey: 'delivery-review-1',
       repoId: '456',
       repoFullName: 'acme/infra',
-      pullNumber: 1465,
-      event: 'issue_comment:created',
-      kind: 'comment'
+      pullNumber: 1465
     }
 
     await expect(inner.dispatchPullRequestFeedback(request)).resolves.toEqual({

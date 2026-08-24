@@ -1183,7 +1183,7 @@ model SessionMeta {
   webchatCurrentFor      WebchatConversation[]      @relation("WebchatCurrentSession")
   webchatAgentCurrentFor WebchatConversationAgent[] @relation("WebchatAgentCurrentSession")
   webchatTargetedBy      WebchatConversation[]      @relation("WebchatTargetSession")
-  pullRequestFeedback    SessionPullRequestFeedback[]
+  pullRequestWakes       SessionPullRequestWake[]
 
   @@unique([pullRequestRepoId, pullRequestNumber], map: "session_meta_pull_request_key")
   @@index([agentId, startedAt])
@@ -1204,31 +1204,29 @@ model SessionMeta {
   @@map("session_meta")
 }
 
-// Signed GitHub feedback control metadata. Bodies and CI logs remain daemon-local/provider-side.
-model SessionPullRequestFeedback {
-  id             String    @id @default(uuid()) @db.Uuid
-  deliveryKey    String    @unique
-  orgId          String
-  installationId BigInt    @db.BigInt
-  repoId         BigInt    @db.BigInt
-  repoFullName   String
-  pullNumber     Int
-  event          String
-  kind           String
-  detail         String?
-  observedAt     DateTime  @db.Timestamptz(6)
-  sessionId      String?
-  claimOwner     String?   @db.Uuid
-  claimUntil     DateTime? @db.Timestamptz(6)
-  deliveredAt    DateTime? @db.Timestamptz(6)
-  createdAt      DateTime  @default(now()) @db.Timestamptz(6)
-  updatedAt      DateTime  @updatedAt @db.Timestamptz(6)
+// One level-triggered wake per PR. Bodies and CI logs remain daemon-local/provider-side.
+model SessionPullRequestWake {
+  id                String    @id @default(uuid()) @db.Uuid
+  orgId             String
+  installationId    BigInt    @db.BigInt
+  repoId            BigInt    @db.BigInt
+  repoFullName      String
+  pullNumber        Int
+  latestDeliveryKey String
+  generation        Int       @default(1)
+  sessionId         String?
+  nextAttemptAt     DateTime  @db.Timestamptz(6)
+  claimOwner        String?   @db.Uuid
+  claimUntil        DateTime? @db.Timestamptz(6)
+  deliveredAt       DateTime? @db.Timestamptz(6)
+  createdAt         DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime  @updatedAt @db.Timestamptz(6)
 
   session SessionMeta? @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 
-  @@index([sessionId, deliveredAt, createdAt], map: "session_pr_feedback_pending_idx")
-  @@index([orgId, repoId, pullNumber, sessionId], map: "session_pr_feedback_link_idx")
-  @@map("session_pull_request_feedback")
+  @@unique([orgId, repoId, pullNumber], map: "session_pr_wake_key")
+  @@index([deliveredAt, nextAttemptAt, claimUntil], map: "session_pr_wake_pending_idx")
+  @@map("session_pull_request_wake")
 }
 
 // Stable provider resource referenced by SessionMeta. Provider ACLs themselves

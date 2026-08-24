@@ -12,7 +12,7 @@ import type {
   AgentRepo,
   GithubInstallationRepo,
   MemberSetRepo,
-  PullRequestFeedbackRecord,
+  PullRequestWakeRecord,
   SessionMetaRecord,
   SessionPullRequestFeedbackRepo,
   SessionRepo
@@ -22,11 +22,10 @@ import type { SessionPullRequestLinkService } from './session-pull-request-link.
 const RETRY_MS = 10_000
 const CLAIM_MS = 60_000
 const FEEDBACK_DEBOUNCE_MS = 10_000
+const DISCOVERY_RETRY_MS = 60_000
 const UNMATCHED_TTL_MS = 7 * 24 * 60 * 60 * 1000
 const DELIVERED_TTL_MS = 24 * 60 * 60 * 1000
 const MAX_PER_TICK = 20
-const DISCOVERY_COOLDOWN_MS = 60_000
-const DISCOVERY_TARGETS = 5
 const DISCOVERY_SESSIONS = 20
 
 export interface SessionPullRequestFeedbackServiceDeps {
@@ -57,7 +56,6 @@ export class SessionPullRequestFeedbackService {
   private running?: Promise<void>
   private lastCleanupAt = 0
   private readonly tracking = new Map<string, Promise<void>>()
-  private readonly discoveryAttemptAt = new Map<string, number>()
 
   constructor(private readonly deps: SessionPullRequestFeedbackServiceDeps) {}
 
@@ -104,8 +102,9 @@ export class SessionPullRequestFeedbackService {
   async enqueue(signal: PullRequestFeedbackSignal): Promise<boolean> {
     const installation = await this.deps.installations.getByInstallationId(BigInt(signal.installationId))
     if (!installation || installation.revokedAt || installation.suspendedAt) return false
-    await this.deps.feedback.enqueue(installation.orgId, signal)
-    this.kick()
+    const now = this.deps.clock.now()
+    await this.deps.feedback.enqueue(installation.orgId, signal, new Date(now + FEEDBACK_DEBOUNCE_MS))
+    this.kick(FEEDBACK_DEBOUNCE_MS)
     return true
   }
 
@@ -126,62 +125,69 @@ export class SessionPullRequestFeedbackService {
       this.lastCleanupAt = nowMs
       await this.deps.feedback.deleteExpired(new Date(nowMs - UNMATCHED_TTL_MS), new Date(nowMs - DELIVERED_TTL_MS))
     }
-    await this.discoverUnmatched(nowMs)
     for (let i = 0; i < MAX_PER_TICK; i++) {
       const now = new Date(this.deps.clock.now())
-      const batch = await this.deps.feedback.claimPendingBatch(
-        this.owner,
-        now,
-        new Date(now.getTime() + CLAIM_MS),
-        new Date(now.getTime() - FEEDBACK_DEBOUNCE_MS)
-      )
-      if (batch.length === 0) return
-      const item = [...batch].reverse().find((entry) => entry.kind !== 'ci_failure') ?? batch.at(-1)!
-      const ids = batch.map((entry) => entry.id)
+      const item = await this.deps.feedback.claimNext(this.owner, now, new Date(now.getTime() + CLAIM_MS))
+      if (!item) return
       try {
-        if (await this.deliver(item)) await this.deps.feedback.markDelivered(ids, this.owner, now)
-        else {
-          await this.deps.feedback.release(ids, this.owner)
-          return
-        }
-      } catch (err) {
-        await this.deps.feedback.release(ids, this.owner)
-        this.deps.log.warn({ err, feedbackIds: ids }, 'session PR feedback: delivery failed')
-        return
-      }
-    }
-  }
-
-  private async discoverUnmatched(nowMs: number): Promise<void> {
-    const recent = this.deps.sessions.recentTerminalForPullRequestDiscovery
-    if (!recent) return
-    const targets = await this.deps.feedback.unmatchedTargets(DISCOVERY_TARGETS)
-    for (const target of targets) {
-      const key = `${target.orgId}:${target.repoId}:${target.pullNumber}`
-      const attemptedAt = this.discoveryAttemptAt.get(key) ?? 0
-      if (nowMs - attemptedAt < DISCOVERY_COOLDOWN_MS) continue
-      this.discoveryAttemptAt.set(key, nowMs)
-      try {
-        const sessions = await recent.call(this.deps.sessions, target.orgId, DISCOVERY_SESSIONS)
-        const agents = new Map<string, Awaited<ReturnType<AgentRepo['getUnscoped']>>>()
-        for (const session of sessions) {
-          let agent = agents.get(session.agentId)
-          if (agent === undefined) {
-            agent = await this.deps.agents.getUnscoped(session.agentId)
-            agents.set(session.agentId, agent)
+        if (!item.sessionId) {
+          if (!(await this.discover(item))) {
+            await this.deps.feedback.defer(
+              item.id,
+              item.generation,
+              this.owner,
+              new Date(this.deps.clock.now() + DISCOVERY_RETRY_MS)
+            )
           }
-          if (!agent) continue
-          const link = await this.deps.links.resolve(agent, session, true)
-          if (link?.repoId === target.repoId && link.pullNumber === target.pullNumber) break
+          continue
+        }
+        if (await this.deliver(item)) {
+          await this.deps.feedback.markDelivered(item.id, item.generation, this.owner, now)
+        } else {
+          await this.deps.feedback.defer(
+            item.id,
+            item.generation,
+            this.owner,
+            new Date(this.deps.clock.now() + RETRY_MS)
+          )
         }
       } catch (err) {
-        this.deps.log.warn({ err, target: key }, 'session PR feedback: unmatched link discovery failed')
+        await this.deps.feedback.defer(item.id, item.generation, this.owner, new Date(this.deps.clock.now() + RETRY_MS))
+        this.deps.log.warn({ err, wakeId: item.id }, 'session PR feedback: delivery failed')
       }
     }
-    if (this.discoveryAttemptAt.size > 1000) this.discoveryAttemptAt.clear()
   }
 
-  private async deliver(item: PullRequestFeedbackRecord): Promise<boolean> {
+  private async discover(item: PullRequestWakeRecord): Promise<boolean> {
+    const recent = this.deps.sessions.recentTerminalForPullRequestDiscovery
+    if (!recent) return false
+    const sessions = await recent.call(this.deps.sessions, item.orgId, DISCOVERY_SESSIONS)
+    const agents = new Map<string, Awaited<ReturnType<AgentRepo['getUnscoped']>>>()
+    for (const session of sessions) {
+      let agent = agents.get(session.agentId)
+      if (agent === undefined) {
+        agent = await this.deps.agents.getUnscoped(session.agentId)
+        agents.set(session.agentId, agent)
+      }
+      if (!agent) continue
+      const link = await this.deps.links.resolve(agent, session, true)
+      if (link?.repoId !== item.repoId || link.pullNumber !== item.pullNumber) continue
+      return await this.deps.feedback.linkSession({
+        sessionId: session.id,
+        agentId: agent.id,
+        orgId: agent.orgId,
+        repoId: link.repoId,
+        repoFullName: link.repoFullName,
+        installationId: link.installationId,
+        pullNumber: link.pullNumber,
+        at: new Date(this.deps.clock.now())
+      })
+    }
+    return false
+  }
+
+  private async deliver(item: PullRequestWakeRecord): Promise<boolean> {
+    if (!item.sessionId) return false
     const session = await this.deps.sessions.getUnscoped(item.sessionId)
     if (!session || session.contentPurgedAt) return true
     const agent = await this.deps.agents.getUnscoped(session.agentId)
@@ -207,15 +213,12 @@ export class SessionPullRequestFeedbackService {
         deliveryKey: item.deliveryKey,
         repoId: item.repoId.toString(),
         repoFullName: item.repoFullName,
-        pullNumber: item.pullNumber,
-        event: item.event,
-        kind: item.kind,
-        ...(item.detail ? { detail: item.detail } : {})
+        pullNumber: item.pullNumber
       },
       item.orgId
     )
     if (!result.accepted) {
-      const detail = { feedbackId: item.id, reason: result.reason }
+      const detail = { wakeId: item.id, reason: result.reason }
       if (result.reason === 'not_found') {
         this.deps.log.warn(detail, 'session PR feedback: linked daemon no longer has the session')
         return true

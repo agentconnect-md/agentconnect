@@ -335,8 +335,10 @@ the numeric repository id, pull-request number, installation id, and display
 name on `SessionMeta`. Terminal session milestones force the same
 session-branch lookup used by the console PR panel and persist the result. If a
 PR was opened manually after the terminal milestone, the first feedback signal
-is queued and drives a bounded scan of recent terminal sessions until that
-branch-to-PR identity converges.
+creates an unmatched wake marker. Due unmatched markers each drive a bounded
+scan of recent terminal sessions until that branch-to-PR identity converges;
+an unsuccessful scan moves only that PR's next-attempt time forward, so it
+cannot hide later manual PRs.
 
 The signature-verified relay ingress has a separate metadata lane before hook
 subscription matching. It reports submitted reviews with actionable text or a
@@ -347,11 +349,19 @@ can reject the App's formal review submission and the review worker then leaves
 its actionable verdict as an App-authored PR comment. The ordinary hook matcher
 keeps its bot-loop filter unchanged.
 
-The relay sends no review body or check log to the CP and acknowledges GitHub
-only after the body-free signal is durably queued; a transient persistence
-failure returns 503 so GitHub can redeliver. Signals for one session wait for a
-short quiet window and become one continuation, preferring reviewer feedback
-over the accompanying failed-check notification.
+The relay sends no review body or check log to the CP. The CP stores one
+level-triggered wake marker per numeric repository and pull request, not one
+row per GitHub event. Every new delivery advances that marker's generation and
+resets a short quiet window; the daemon later reads the current review and
+check state from GitHub, so event ordering and payload detail are unnecessary.
+A concurrent delivery cannot be erased by completion of an older generation.
+Deferred delivery moves only that PR's next-attempt time forward, allowing the
+worker to continue with other due PRs in the same pass.
+
+The relay acknowledges GitHub only after the marker is durable. A transient
+persistence failure returns 503 instead of falsely acknowledging the delivery;
+GitHub records it as a failed webhook delivery for explicit redelivery rather
+than retrying it automatically.
 
 The CP dispatches that continuation only to a ready daemon that can serve the
 original session content and advertises `pull-request-feedback-v1`. The daemon

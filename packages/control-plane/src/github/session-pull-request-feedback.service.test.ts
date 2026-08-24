@@ -5,7 +5,7 @@ import { AgentId, OrgId, SessionId } from '../domain/ids.js'
 import type {
   AgentRecord,
   GithubInstallationRecord,
-  PullRequestFeedbackRecord,
+  PullRequestWakeRecord,
   SessionMetaRecord
 } from '../persistence/ports.js'
 import {
@@ -48,25 +48,17 @@ const INSTALLATION = {
   suspendedAt: null
 } as unknown as GithubInstallationRecord
 
-function feedback(
-  id: string,
-  kind: PullRequestFeedbackRecord['kind'],
-  event: PullRequestFeedbackRecord['event'],
-  detail: string | null
-): PullRequestFeedbackRecord {
+function wake(id: string, repoId = REPO_ID, sessionId: SessionId | null = SESSION_ID): PullRequestWakeRecord {
   return {
     id,
     deliveryKey: `delivery-${id}`,
+    generation: 1,
     orgId: ORG_ID,
     installationId: INSTALLATION_ID,
-    repoId: REPO_ID,
+    repoId,
     repoFullName: 'acme/infra',
-    pullNumber: 77,
-    event,
-    kind,
-    detail,
-    observedAt: new Date(NOW),
-    sessionId: SESSION_ID
+    pullNumber: Number(repoId),
+    sessionId
   }
 }
 
@@ -75,18 +67,15 @@ function harness(over: Partial<SessionPullRequestFeedbackServiceDeps> = {}) {
   const feedbackRepo = {
     linkSession: vi.fn(async () => true),
     enqueue: vi.fn(async () => {}),
-    unmatchedTargets: vi.fn(async () => []),
-    claimPendingBatch: vi.fn(async () => []),
+    claimNext: vi.fn<SessionPullRequestFeedbackServiceDeps['feedback']['claimNext']>(async () => null),
     markDelivered: vi.fn(async () => {}),
-    release: vi.fn(async () => {}),
+    defer: vi.fn(async () => {}),
     deleteExpired: vi.fn(async () => 0)
   }
-  const links = {
-    resolve: vi.fn(async (): Promise<SessionPullRequestLink | null> => null)
-  }
-  const send = vi.fn(async (daemonId, request) => ({
+  const links = { resolve: vi.fn(async (): Promise<SessionPullRequestLink | null> => null) }
+  const send = vi.fn<SessionPullRequestFeedbackServiceDeps['send']>(async (_daemonId, request) => ({
     deliveryKey: request.deliveryKey,
-    accepted: daemonId === DAEMON_ID
+    accepted: true
   }))
   const deps = {
     clock,
@@ -100,10 +89,7 @@ function harness(over: Partial<SessionPullRequestFeedbackServiceDeps> = {}) {
     memberSets: { sharedStoreMemberIdsOf: vi.fn(async () => []) },
     placement: { dispatchDaemon: vi.fn(async () => DAEMON_ID) },
     links,
-    daemon: vi.fn(() => ({
-      state: 'READY',
-      capabilities: { features: [PULL_REQUEST_FEEDBACK_FEATURE] }
-    })),
+    daemon: vi.fn(() => ({ state: 'READY', capabilities: { features: [PULL_REQUEST_FEEDBACK_FEATURE] } })),
     send,
     log: { debug: vi.fn(), warn: vi.fn() },
     ...over
@@ -111,54 +97,79 @@ function harness(over: Partial<SessionPullRequestFeedbackServiceDeps> = {}) {
   return { service: new SessionPullRequestFeedbackService(deps), clock, feedbackRepo, links, send, deps }
 }
 
+async function runOnce(h: ReturnType<typeof harness>): Promise<void> {
+  h.service.start()
+  h.clock.advance(0)
+  await h.service.settle()
+  h.service.stop()
+}
+
 describe('SessionPullRequestFeedbackService', () => {
-  it('coalesces a failed check and reviewer comment into one exact-session continuation', async () => {
-    const ci = feedback('ci', 'ci_failure', 'check_suite:completed', 'failure')
-    const comment = feedback('comment', 'comment', 'issue_comment:created', null)
+  it('delivers one dirty PR generation to the exact linked session', async () => {
+    const item = wake('review')
     const h = harness()
-    vi.mocked(h.deps.feedback.claimPendingBatch).mockResolvedValueOnce([ci, comment]).mockResolvedValueOnce([])
+    h.feedbackRepo.claimNext.mockResolvedValueOnce(item).mockResolvedValueOnce(null)
 
-    h.service.start()
-    h.clock.advance(0)
-    await h.service.settle()
-    h.service.stop()
+    await runOnce(h)
 
-    expect(h.send).toHaveBeenCalledTimes(1)
     expect(h.send).toHaveBeenCalledWith(
       DAEMON_ID,
       expect.objectContaining({
         agentId: AGENT_ID,
         sessionId: SESSION_ID,
-        deliveryKey: comment.deliveryKey,
-        kind: 'comment',
-        pullNumber: 77
+        deliveryKey: item.deliveryKey,
+        pullNumber: Number(REPO_ID)
       }),
       ORG_ID
     )
-    expect(h.feedbackRepo.markDelivered).toHaveBeenCalledWith(['ci', 'comment'], expect.any(String), new Date(NOW))
+    expect(h.feedbackRepo.markDelivered).toHaveBeenCalledWith(item.id, 1, expect.any(String), new Date(NOW))
   })
 
-  it('reverse-discovers a manually opened PR from a terminal GitHub issue session', async () => {
+  it('defers an unavailable session and continues to a healthy PR in the same pass', async () => {
+    const blocked = wake('blocked')
+    const healthy = wake('healthy', 457n)
     const h = harness()
-    vi.mocked(h.deps.feedback.unmatchedTargets).mockResolvedValueOnce([
-      { orgId: ORG_ID, repoId: REPO_ID, pullNumber: 77 }
-    ])
-    h.links.resolve.mockResolvedValueOnce({
+    h.feedbackRepo.claimNext.mockResolvedValueOnce(blocked).mockResolvedValueOnce(healthy).mockResolvedValueOnce(null)
+    h.send
+      .mockResolvedValueOnce({ deliveryKey: blocked.deliveryKey, accepted: false, reason: 'busy' })
+      .mockResolvedValueOnce({ deliveryKey: healthy.deliveryKey, accepted: true })
+
+    await runOnce(h)
+
+    expect(h.feedbackRepo.defer).toHaveBeenCalledWith(
+      blocked.id,
+      blocked.generation,
+      expect.any(String),
+      new Date(NOW + 10_000)
+    )
+    expect(h.feedbackRepo.markDelivered).toHaveBeenCalledWith(healthy.id, 1, expect.any(String), new Date(NOW))
+  })
+
+  it('defers one unmatched PR and still reverse-discovers the next manual PR', async () => {
+    const unrelated = wake('unrelated', 455n, null)
+    const manual = wake('manual', REPO_ID, null)
+    const h = harness()
+    h.feedbackRepo.claimNext.mockResolvedValueOnce(unrelated).mockResolvedValueOnce(manual).mockResolvedValueOnce(null)
+    h.links.resolve.mockResolvedValueOnce(null).mockResolvedValueOnce({
       repoId: REPO_ID,
       repoFullName: 'acme/infra',
       installationId: INSTALLATION_ID,
-      pullNumber: 77,
+      pullNumber: Number(REPO_ID),
       branch: 'fix/manual-pr',
       scope: 'session',
       ambiguous: false
     })
 
-    h.service.start()
-    h.clock.advance(0)
-    await h.service.settle()
-    h.service.stop()
+    await runOnce(h)
 
-    expect(h.deps.sessions.recentTerminalForPullRequestDiscovery).toHaveBeenCalledWith(ORG_ID, 20)
-    expect(h.links.resolve).toHaveBeenCalledWith(AGENT, SESSION, true)
+    expect(h.feedbackRepo.defer).toHaveBeenCalledWith(
+      unrelated.id,
+      unrelated.generation,
+      expect.any(String),
+      new Date(NOW + 60_000)
+    )
+    expect(h.feedbackRepo.linkSession).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: SESSION_ID, repoId: REPO_ID, pullNumber: Number(REPO_ID) })
+    )
   })
 })
