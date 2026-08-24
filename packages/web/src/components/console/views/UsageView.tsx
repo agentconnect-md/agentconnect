@@ -11,6 +11,7 @@ import { agentLabel, modelLabel, runtimeLabel } from '@/lib/data'
 import { featureFlagEnabled } from '@/lib/feature-flags'
 import { useConsoleData } from '@/lib/data-context'
 import { AgentIconView, ModelMark, Spinner } from '@/components/marks'
+import { Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
 import { useIsMobile } from '@/lib/use-is-mobile'
 import { consoleKeys } from '@/lib/swr-keys'
@@ -31,6 +32,16 @@ const MOBILE_RANGES: { key: UsageRange; label: string }[] = [
 ]
 
 const GRID = 'grid-cols-[2fr_1fr_1fr_1fr_1.4fr]'
+
+/** Stands in for the residual row's icon. Deliberately not an agent avatar: the row is a
+ *  sum over usage this viewer cannot attribute — a restricted agent's, but equally another
+ *  user's private session on an agent right there in the table — and dressing it as one
+ *  agent would say the opposite of what it means. */
+const ResidualMark = () => (
+  <span className="flex h-full w-full items-center justify-center bg-(--surface-active) text-(--text-tertiary)">
+    <Icon name="eye-off" size={14} />
+  </span>
+)
 
 // Metering-source filter, answered by the API's own `source` param: which authenticated
 // ingress metered the session — the gateway collector (Cloud) or a daemon's EVT. The CP
@@ -135,6 +146,9 @@ export default function UsageView() {
   type Entry = {
     key: string
     kind: GroupBy
+    /** The id-less rollup of what this viewer may not attribute. Not an agent: it never
+     *  navigates, never carries an icon, and is pinned last however large it is. */
+    residual?: true
     navId?: string
     name: string
     icon?: (typeof enriched)[number]['icon']
@@ -179,6 +193,33 @@ export default function UsageView() {
   } else {
     entries = enriched.map((e) => ({ ...e, key: e.agentId, kind: 'agent', navId: e.agentId, model: '' }))
   }
+  // The totals are the ORG's; these rows are only what this viewer may attribute. Without
+  // this line the table silently fails to add up to the card above it and the % column
+  // silently fails to reach 100 — so the difference gets a row of its own, in every
+  // grouping, appended after the sort so it reads as a footnote and not as the top agent.
+  //
+  // Named for the USAGE and not for agents: the server withholds a row when EITHER agent
+  // visibility or session visibility fails, so this also holds another user's private
+  // session on an agent listed right above it.
+  //
+  // It is the server's own independently-summed figure, never `totals` minus these rows:
+  // a subtraction here would absorb any bug in the rollup and still add up perfectly.
+  if (data?.unattributed) {
+    entries = [
+      ...entries,
+      {
+        key: '\0unattributed',
+        kind: groupBy,
+        residual: true,
+        name: 'Restricted usage',
+        runtime: '',
+        model: '',
+        totalTokens: data.unattributed.totalTokens,
+        sessions: data.unattributed.sessions,
+        costAmount: data.unattributed.costAmount
+      }
+    ]
+  }
 
   // Two bar geometries from one map: `pct` is the desktop share (percent of the
   // range TOTAL, shown with a % label); `barPct` is the mobile bar, normalized to
@@ -187,6 +228,7 @@ export default function UsageView() {
   const rows = entries.map((e) => ({
     key: e.key,
     kind: e.kind,
+    residual: e.residual,
     navId: e.navId,
     name: e.name,
     icon: e.icon,
@@ -486,6 +528,16 @@ export default function UsageView() {
               <div className="cardhead">
                 <span className="cardtitle">Spend over time</span>
                 <span className="mono text-[11px] text-(--text-tertiary)">{tzName}</span>
+                {/* The series is scoped to the agents this viewer may attribute, so it does
+                    not reach the org total in the card above. Said out loud, and only when
+                    the two actually differ — a note explaining a difference that isn't
+                    there is its own kind of wrong. The repo's own precedent for two honest
+                    figures side by side: neither is a bug, so name which is which. */}
+                {data.unattributed && (
+                  <span className="font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
+                    · visible usage only
+                  </span>
+                )}
                 <span className="mono ml-auto text-[11px] text-(--text-tertiary)">
                   {unit} / {data.series.bucket}
                 </span>
@@ -588,7 +640,9 @@ export default function UsageView() {
             >
               <span className="flex w-full items-center gap-[10px]">
                 <span className="flex h-6 w-6 flex-none items-center justify-center overflow-hidden rounded-sm">
-                  {r.kind === 'model' ? (
+                  {r.residual ? (
+                    <ResidualMark />
+                  ) : r.kind === 'model' ? (
                     <ModelMark model={r.model} fallbackRuntime={r.runtime} />
                   ) : (
                     <AgentIconView icon={r.icon} runtime={r.runtime} size={24} />
@@ -619,7 +673,9 @@ export default function UsageView() {
             <div key={r.key} className={`row hidden desktop:grid ${GRID}`}>
               <div className="flex items-center gap-[10px]">
                 <span className="av h-7 w-7 rounded-[7px]">
-                  {r.kind === 'model' ? (
+                  {r.residual ? (
+                    <ResidualMark />
+                  ) : r.kind === 'model' ? (
                     <ModelMark model={r.model} fallbackRuntime={r.runtime} />
                   ) : (
                     <AgentIconView icon={r.icon} runtime={r.runtime} size={28} />

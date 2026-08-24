@@ -40,7 +40,7 @@ import type {
   ViewCtx,
   SessionFilterQuery
 } from '../ports.js'
-import { countCheckpointRegression } from '../../observability/usage-ingest.js'
+import { countCheckpointRegression, countUsageAttributionDrift } from '../../observability/usage-ingest.js'
 import type { AgentId, OrgId } from '../../domain/ids.js'
 import { sessionViewerSql } from './session-access-sql.js'
 
@@ -52,11 +52,13 @@ interface ScaledBucket {
   byModel: Map<string, bigint>
 }
 
-/** One `session_spend` row as the walk reads it. */
+/** One `session_spend` row as the walk reads it. `visible` says whether the reading
+ *  viewer may attribute it — always true for a credential that reads the org whole. */
 interface SpendRow {
   agentId: string
   sessionId: string
   at: Date
+  visible: boolean
   source: UsageSource
   model: string | null
   cumulativeTotalTokens: number
@@ -96,7 +98,7 @@ interface Rollup extends Counters {
   sessions: Set<string>
 }
 
-function countersOf(row: SpendRow): Counters {
+function countersOf(row: Omit<SpendRow, 'visible'>): Counters {
   return {
     totalTokens: row.cumulativeTotalTokens,
     inputTokens: row.cumulativeInputTokens,
@@ -369,13 +371,47 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
     source?: UsageSource
   ): Promise<UsageAggregate> {
     const { from, to } = window
-    // Derived visibility: usage rows inherit their agent's visibility, so scope through
-    // the `agent` relation (`agentViewerSql`). A restricted agent the caller cannot see
-    // drops out of BOTH the per-agent breakdown and the totals. Organization roles never
-    // widen that resource-level visibility.
+    // ── What the viewer predicates scope, and what they do NOT ──────────────────
+    // They scope ATTRIBUTION, not the sums. An org's spend is a fact about the org, and
+    // a total that silently omitted the rows no human may read is wrong in the direction
+    // that costs someone money — the same argument the settlement credential already
+    // rests on, and the org's own figure is anyway published to every member by the
+    // billing ledger. What the viewer may not learn is WHOSE spend it was.
     //
-    // One ingress or both. Scoping the WHOLE answer (totals, breakdowns, series) is what
-    // lets billing ask for gateway spend alone through the console's own route.
+    // So the predicates stop being a WHERE and become a SELECTed boolean: a row the
+    // viewer may not attribute still lands in `totals` and in the ingress rollup, but is
+    // folded into ONE id-less `unattributed` bucket instead of into its agent's row.
+    //
+    // That bucket is aggregated INDEPENDENTLY — it is a fifth grouping of the same set of
+    // deltas, never `totals` minus the visible rows. The distinction is the whole point:
+    // a subtraction is a plug figure that absorbs any attribution bug and leaves the page
+    // adding up perfectly, while an independent sum turns `Σ agents + unattributed =
+    // totals` into an invariant that a bug BREAKS, and that the check below catches.
+    //
+    // The SERIES stays viewer-scoped, splits and per-bucket total alike, so a bucket never
+    // hands over withheld spend resolved in time.
+    //
+    // Be exact about what that is and is not worth, because the comfortable version is
+    // wrong: it is NOT a security boundary. `from`/`to` are the caller's, bounded only by
+    // a maximum span, so a member who wants the timeline can ask for consecutive narrow
+    // windows — and split them again by `source` — and difference the residual out at
+    // whatever resolution they choose. An accurate total over a caller-chosen window IS a
+    // timeline; no scoping inside the response changes that, and no k-anonymity rule can,
+    // because the residual is implied by subtraction whether or not it is sent.
+    //
+    // What the scoping does buy is that the timeline is never handed over incidentally —
+    // it takes a deliberate scripted read rather than one glance at a chart, which is a
+    // real difference between an accidental disclosure and an attack, and not much more
+    // than that. Bounding it properly would mean a minimum window span (day resolution at
+    // best, and the 24-hour view stops reconciling) or dropping accurate totals. Neither
+    // is free, and the trade as it stands is recorded in session-visibility.md.
+    //
+    // The INGRESS rollup counts every row, unlike the other two, because `daemon` vs
+    // `gateway` is not a resource identity — nobody is named by it — and keeping it whole
+    // means `Σ sources = totals` for the settlement reader that lives off that line.
+    //
+    // One ingress or both. Scoping the WHOLE answer to a source is separate from all of
+    // the above, and is what lets billing ask for gateway spend through this same route.
     const sourceScope = (alias: string) =>
       source ? Prisma.sql`AND ${Prisma.raw(`${alias}."source"`)} = ${source}::"UsageSource"` : Prisma.empty
     // A gateway-metered row's sessionId (a hash minted for the model credential) matches no
@@ -383,6 +419,12 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
     // row has no per-session content to protect, so it falls back to agent visibility alone.
     const viewerScope = sessionViewerSql(sessionViewer)
     const sessionScope = viewerScope ? Prisma.sql`(s."id" IS NULL OR ${viewerScope})` : null
+    // `visible` is evaluated only over rows already inside the org, the window and the
+    // source, so the residual means exactly one thing: "this viewer may not attribute
+    // it". It is never a catch-all — a row that fails the `agent` JOIN outright still
+    // drops out of every figure, as it did before, and hiding that in here would rebuild
+    // the plug figure the independent sum exists to avoid.
+    const visibleSql = Prisma.sql`(${agentViewerSql(orgId, viewer)}) AND (${sessionScope ?? Prisma.sql`TRUE`}) AS visible`
 
     // EVERY figure in this answer comes from the spend timeline inside `[from, to)`,
     // diffed against each session's last checkpoint before the window. Tokens too, not
@@ -403,9 +445,8 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
         FROM "session_spend" sp
         JOIN "agent" a ON a."id" = sp."agentId"
         LEFT JOIN "session_meta" s ON s."id" = sp."sessionId" AND s."agentId" = sp."agentId"
-        WHERE ${agentViewerSql(orgId, viewer)}
-          ${sourceScope('sp')}
-          AND ${sessionScope ?? Prisma.sql`TRUE`}`
+        WHERE a."orgId" = ${orgId}
+          ${sourceScope('sp')}`
 
     const HOUR_MS = 60 * 60 * 1000
     const spanMs = to.getTime() - from.getTime()
@@ -421,6 +462,7 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
     const [inRange, baselineRows, currencies] = await Promise.all([
       this.db.$queryRaw<SpendRow[]>(Prisma.sql`
         SELECT sp."agentId", sp."sessionId", sp."at", sp."source", NULLIF(sp."model", '') AS model,
+               ${visibleSql},
         ${spendColumns}
         ${spendScope}
           AND sp."at" >= ${from}
@@ -428,8 +470,10 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
         ORDER BY sp."at" ASC
       `),
       // The baseline is the session's state entering the window, per source, so the
-      // first in-window delta counts only what the window itself consumed.
-      this.db.$queryRaw<SpendRow[]>(Prisma.sql`
+      // first in-window delta counts only what the window itself consumed. It needs no
+      // `visible` flag: it only seeds a running counter, and the delta it seeds is
+      // attributed by the IN-RANGE row that consumes it.
+      this.db.$queryRaw<Omit<SpendRow, 'visible'>[]>(Prisma.sql`
         SELECT DISTINCT ON (sp."agentId", sp."sessionId", sp."source")
                sp."agentId", sp."sessionId", sp."at", sp."source", NULLIF(sp."model", '') AS model,
         ${spendColumns}
@@ -443,11 +487,9 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
         SELECT DISTINCT u."costCurrency"
         FROM "session_usage" u
         JOIN "agent" a ON a."id" = u."agentId"
-        LEFT JOIN "session_meta" s ON s."id" = u."sessionId" AND s."agentId" = u."agentId"
-        WHERE ${agentViewerSql(orgId, viewer)}
+        WHERE a."orgId" = ${orgId}
           AND u."costCurrency" IS NOT NULL
           ${sourceScope('u')}
-          AND ${sessionScope ?? Prisma.sql`TRUE`}
           AND EXISTS (
             SELECT 1 FROM "session_spend" w
             WHERE w."agentId" = u."agentId" AND w."sessionId" = u."sessionId"
@@ -483,12 +525,15 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
     // a downward correction contributes a negative delta that nets out, so the cards and
     // the chart always show the same numbers.
     const SEP = '\0'
-    const key = (row: SpendRow) => row.agentId + SEP + row.sessionId + SEP + row.source
+    const key = (row: Omit<SpendRow, 'visible'>) => row.agentId + SEP + row.sessionId + SEP + row.source
     const previous = new Map<string, Counters>(baselineRows.map((row) => [key(row), countersOf(row)]))
     const totals = emptyRollup()
     const byAgent = new Map<string, Rollup>()
     const byModel = new Map<string, Rollup>()
     const bySource = new Map<UsageSource, Rollup>()
+    // The fifth grouping. It stays empty whenever the caller may attribute everything,
+    // which is every read that passes no viewer.
+    const unattributed = emptyRollup()
 
     for (const row of inRange) {
       const skey = key(row)
@@ -496,14 +541,16 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
       const delta = subtractCounters(current, previous.get(skey) ?? ZERO_COUNTERS)
       previous.set(skey, current)
       const modelKey = row.model ?? ''
-      for (const target of [
-        totals,
-        rollupOf(byAgent, row.agentId),
-        rollupOf(byModel, modelKey),
-        rollupOf(bySource, row.source)
-      ]) {
-        addDelta(target, delta, skey)
-      }
+      // The two attribution groupings and the residual are mutually exclusive, so this is
+      // a branch and not two entries in the list: pointing both the agent arm and the
+      // model arm at `unattributed` would add the same delta to it twice.
+      const targets = row.visible
+        ? [totals, rollupOf(byAgent, row.agentId), rollupOf(byModel, modelKey), rollupOf(bySource, row.source)]
+        : [totals, unattributed, rollupOf(bySource, row.source)]
+      for (const target of targets) addDelta(target, delta, skey)
+      // Series: visible rows only, so no bucket resolves a restricted agent's spend in
+      // time. Its per-bucket total is therefore the visible sum, NOT `totals` split up.
+      if (!row.visible) continue
       const idx = Math.floor((row.at.getTime() - floorSince) / stepMs)
       if (idx >= 0 && idx < n) {
         const pt = points[idx]!
@@ -513,6 +560,31 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
           pt.byModel.set(modelKey, (pt.byModel.get(modelKey) ?? 0n) + delta.cost)
         }
       }
+    }
+
+    // The invariant, CHECKED. `Σ agents + unattributed = totals` holds by construction —
+    // one fold, one set of deltas, mutually exclusive targets — which is exactly why a
+    // violation means the fold itself is broken rather than the data being odd. Every
+    // quantity here is exact integer arithmetic (tokens are ints well inside 2^53, cost is
+    // a scaled bigint), so this is an equality and not a tolerance.
+    //
+    // Throwing beats serving it, for the same reason the window guard above throws: the
+    // alternative is a money figure that is wrong and looks right, on a page whose whole
+    // job is to be reconciled against an invoice. The counter is incremented first so the
+    // failure is observable even though the request does not survive it.
+    const attributedCost = [...byAgent.values()].reduce((sum, r) => sum + r.cost, 0n) + unattributed.cost
+    const attributedTokens = [...byAgent.values()].reduce((sum, r) => sum + r.totalTokens, 0) + unattributed.totalTokens
+    const attributedSessions =
+      [...byAgent.values()].reduce((sum, r) => sum + r.sessions.size, 0) + unattributed.sessions.size
+    if (
+      attributedCost !== totals.cost ||
+      attributedTokens !== totals.totalTokens ||
+      attributedSessions !== totals.sessions.size
+    ) {
+      countUsageAttributionDrift()
+      throw new Error(
+        'usage aggregate failed its attribution invariant: the per-agent rollup plus the unattributed residual does not equal the totals'
+      )
     }
 
     const agents: AgentUsageAggregate[] = [...byAgent].map(([agentId, r]) => ({ agentId, ...rollupDto(r) }))
@@ -536,6 +608,9 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
     }))
 
     const overall = rollupDto(totals)
+    // Omitted rather than zeroed when the viewer could attribute everything: a reader
+    // must be able to tell "nothing was hidden" from "something was hidden and cost 0".
+    const residual = unattributed.sessions.size > 0 ? rollupDto(unattributed) : undefined
     return {
       totals: {
         sessions: overall.sessions,
@@ -546,6 +621,7 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
       agents,
       models,
       sources,
+      ...(residual ? { unattributed: residual } : {}),
       series: { bucket, points: series }
     }
   }

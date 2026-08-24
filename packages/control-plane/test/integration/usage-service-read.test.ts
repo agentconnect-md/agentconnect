@@ -2,8 +2,9 @@
  * The org usage aggregate's SECOND credential — a Kubernetes workload instead of a
  * person (`http/usage-service-auth.ts`).
  *
- * What this pins: the reader ServiceAccount reads the org whole, past the visibility a
- * human would be held to; the collector's ServiceAccount cannot use it, so writing spend
+ * What this pins: the reader ServiceAccount reads the org whole with every row ATTRIBUTED,
+ * where a human gets the same total but the rows they may not attribute folded into an
+ * id-less residual; the collector's ServiceAccount cannot use it, so writing spend
  * and reading it stay separate capabilities; a review outage is retryable rather than a
  * verdict; a console request never costs a TokenReview round trip; and with no cluster
  * surface configured the workload path simply does not exist.
@@ -94,7 +95,7 @@ function windowQuery(extra: Record<string, string> = {}): string {
 }
 
 describe('GET /usage — the workload credential', () => {
-  it('reads the org whole, past the visibility a human is held to', async () => {
+  it('attributes every row, where a human gets the same total as a residual', async () => {
     await seedSpend()
     const token = workloadToken()
     await withApp(fakeClusterIdentity({ accepts: token }), async (app) => {
@@ -104,18 +105,31 @@ describe('GET /usage — the workload credential', () => {
         headers: { authorization: `Bearer ${token}` }
       })
       expect(asService.statusCode).toBe(200)
-      const service = asService.json() as { totals: { costAmount: string }; agents: { agentId: string }[] }
+      type Read = {
+        totals: { costAmount: string }
+        agents: { agentId: string }[]
+        unattributed?: { costAmount: string }
+      }
+      const service = asService.json() as Read
 
       // The same window through the console's own credential (devAuth's seeded owner).
       const asHuman = await app.inject({ method: 'GET', url: `${ORG}/usage?${windowQuery()}` })
       expect(asHuman.statusCode).toBe(200)
-      const human = asHuman.json() as { totals: { costAmount: string }; agents: { agentId: string }[] }
+      const human = asHuman.json() as Read
 
-      // A settlement total that omitted the sessions no human may read would undercharge.
+      // A settlement total that omitted the sessions no human may read would undercharge —
+      // which is why the HUMAN's total is now the same figure. An org's spend is a fact
+      // about the org, so the two credentials cannot disagree about it.
       expect(service.totals.costAmount).toBe('42')
+      expect(human.totals.costAmount).toBe('42')
+
+      // What the credential buys is ATTRIBUTION. The workload names both agents and has
+      // nothing to withhold; the human gets one row plus an id-less residual.
       expect(service.agents.map((a) => a.agentId).sort()).toEqual([OPEN_AGENT, RESTRICTED_AGENT].sort())
-      expect(human.totals.costAmount).toBe('10')
+      expect(service.unattributed).toBeUndefined()
       expect(human.agents.map((a) => a.agentId)).toEqual([OPEN_AGENT])
+      expect(human.unattributed?.costAmount).toBe('32')
+      expect(JSON.stringify(human)).not.toContain(RESTRICTED_AGENT)
     })
   })
 

@@ -3521,10 +3521,21 @@ export interface UsageDto {
   agents: UsageAgentDto[]
   models: UsageModelDto[]
   sources: UsageSourceDto[]
+  /** What `totals` holds that this caller may not attribute to an agent, as one rollup
+   *  with no id — so `Σ agents + unattributed = totals`, and the same for `models`.
+   *  Withheld by EITHER predicate: a restricted agent, or another user's private session
+   *  on an agent this caller CAN see. So a UI names it for the USAGE, never for agents.
+   *  Absent (never zeroed) when the caller could attribute every row, and it carries no
+   *  count. Optional on the wire for a CP that predates it. */
+  unattributed?: Omit<UsageAgentDto, 'agentId'>
   // Spend-over-time chart: cost bucketed by hour (a window of two days or less) or day,
   // empty buckets filled to 0. `start` is a UTC-aligned ISO instant. `byAgent`/
   // `byModel` split each bucket's total for the grouped/stacked view (model key
   // ''=unreported); optional so a CP predating them degrades to flat bars.
+  //
+  // Viewer-scoped, per-bucket total included, so a bucket never hands over withheld spend
+  // resolved in time. So it does NOT sum to `totals` when `unattributed` is present, and
+  // anything showing both has to say which is which.
   series: {
     bucket: 'hour' | 'day'
     points: {

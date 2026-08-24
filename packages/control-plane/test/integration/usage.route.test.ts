@@ -40,6 +40,8 @@ const AUTH_ID = '44444444-4444-4444-8444-444444444444'
 const REG_ID = '55555555-5555-4555-8555-555555555555'
 const AGENT_A = '11111111-1111-4111-8111-111111111111'
 const AGENT_B = '22222222-2222-4222-8222-222222222222'
+/** A user who is NOT the reader, for sharing a restricted agent away from them. */
+const SOMEONE_ELSE = '99999999-9999-4999-8999-999999999999'
 const DAY_MS = 24 * 60 * 60 * 1000
 
 async function seedVisibleSession(
@@ -723,6 +725,148 @@ describe('GET /usage — aggregates the persisted usage store by agent over a ra
       expect(daemon.totals.costAmount).toBe('3.25')
       expect(daemon.agents.map((a) => a.agentId)).toEqual([AGENT_B])
       expect(sum(daemon.series.points)).toBe('3.25')
+    } finally {
+      await close()
+    }
+  })
+
+  // ── Attribution vs. sums ───────────────────────────────────────────────────
+  // A restricted agent's spend belongs in the org's total (an org's spend is a fact
+  // about the org, and it is anyway published to every member by the billing ledger)
+  // but its identity does not. So the total is whole, the id never appears, and the
+  // difference is one id-less residual — INDEPENDENTLY summed, so `Σ agents +
+  // unattributed = totals` is an invariant a bug breaks rather than a plug figure.
+  it('keeps a hidden agent’s spend in the totals, as an id-less residual', async () => {
+    await seedAgent(prisma, AGENT_A)
+    // Restricted and shared with someone else — invisible to this reader, who IS the org
+    // owner: roles never widen resource visibility. (`sharedWith` cannot be empty; the
+    // schema's `agent_selected_audience_nonempty` check refuses an audience of nobody.)
+    await seedAgent(prisma, AGENT_B, { visibility: 'restricted', sharedWith: [SOMEONE_ELSE] })
+    const repo = new PgSessionUsageRepo(prisma)
+    const at = new Date(Date.now() - 60_000)
+    const spend = async (agentId: string, sessionId: string, model: string, costAmount: string) => {
+      await seedVisibleSession(agentId, sessionId, at, model)
+      await repo.record({
+        agentId: AgentId(agentId),
+        sessionId,
+        source: 'daemon',
+        model,
+        lastActivityAt: at,
+        usage: { totalTokens: 100, costAmount, costCurrency: 'USD' }
+      })
+    }
+    await spend(AGENT_A, 'visible', 'claude-sonnet-4-5', '12.75')
+    await spend(AGENT_B, 'hidden', 'secret-model-only-b-uses', '3.25')
+
+    const { app, close } = buildHttpApp(prisma)
+    try {
+      const res = await app.inject({ method: 'GET', url: `${ORG}/usage?${preset('d1')}` })
+      expect(res.statusCode).toBe(200)
+      const body = res.json() as {
+        totals: { sessions: number; totalTokens: number; costAmount: string }
+        agents: { agentId: string; costAmount: string }[]
+        models: { model: string | null; costAmount: string }[]
+        unattributed?: { sessions: number; totalTokens: number; costAmount: string }
+        series: { points: { costAmount: string; byAgent: Record<string, string> }[] }
+      }
+
+      // The total is the org's, not the reader's slice.
+      expect(body.totals.costAmount).toBe('16')
+      expect(body.totals.totalTokens).toBe(200)
+      expect(body.totals.sessions).toBe(2)
+      // The identity is not.
+      expect(body.agents.map((a) => a.agentId)).toEqual([AGENT_A])
+      expect(body.unattributed).toMatchObject({ sessions: 1, totalTokens: 100, costAmount: '3.25' })
+      // Not one field anywhere — not an id, and not the model only the hidden agent ran.
+      const raw = JSON.stringify(body)
+      expect(raw).not.toContain(AGENT_B)
+      expect(raw).not.toContain('secret-model-only-b-uses')
+
+      // THE invariant, on both attribution groupings.
+      expect(sumAmounts([...body.agents.map((a) => a.costAmount), body.unattributed!.costAmount])).toBe(
+        body.totals.costAmount
+      )
+      expect(sumAmounts([...body.models.map((m) => m.costAmount), body.unattributed!.costAmount])).toBe(
+        body.totals.costAmount
+      )
+
+      // The series stays viewer-scoped, per-bucket total included: a residual resolved
+      // per bucket would be the hidden agent's spend curve. So it does NOT reach the
+      // total, and that is the deliberate difference rather than a drift.
+      expect(sum(body.series.points)).toBe('12.75')
+      expect(body.series.points.flatMap((p) => Object.keys(p.byAgent))).not.toContain(AGENT_B)
+    } finally {
+      await close()
+    }
+  })
+
+  it('withholds a private session on a VISIBLE agent into the same residual', async () => {
+    // The predicate is agent visibility AND session visibility, so the residual is not
+    // "hidden agents": here the agent is listed in the very same table, and what it holds
+    // is one of that agent's sessions belonging to somebody else. Which is why every
+    // surface names the residual for the USAGE and never for agents.
+    await seedAgent(prisma, AGENT_A)
+    const repo = new PgSessionUsageRepo(prisma)
+    const at = new Date(Date.now() - 60_000)
+    await seedSessionMeta(prisma, 'shared', AGENT_A, { lastActivityAt: at })
+    await seedSessionMeta(prisma, 'someone-elses', AGENT_A, {
+      lastActivityAt: at,
+      visibility: 'private',
+      ownerIdentity: SOMEONE_ELSE
+    })
+    for (const [sessionId, costAmount] of [
+      ['shared', '4'],
+      ['someone-elses', '7']
+    ] as const) {
+      await repo.record({
+        agentId: AgentId(AGENT_A),
+        sessionId,
+        source: 'daemon',
+        lastActivityAt: at,
+        usage: { totalTokens: 100, costAmount, costCurrency: 'USD' }
+      })
+    }
+
+    const { app, close } = buildHttpApp(prisma)
+    try {
+      const res = await app.inject({ method: 'GET', url: `${ORG}/usage?${preset('d1')}` })
+      expect(res.statusCode).toBe(200)
+      const body = res.json() as {
+        totals: { costAmount: string }
+        agents: { agentId: string; costAmount: string }[]
+        unattributed?: { costAmount: string }
+      }
+      expect(body.totals.costAmount).toBe('11')
+      // The agent is right there, carrying only the session this reader may attribute.
+      expect(body.agents).toEqual([expect.objectContaining({ agentId: AGENT_A, costAmount: '4' })])
+      expect(body.unattributed?.costAmount).toBe('7')
+    } finally {
+      await close()
+    }
+  })
+
+  it('omits the residual entirely when the reader can attribute every row', async () => {
+    // Absent, never a zero: a caller must be able to tell "nothing was hidden" from
+    // "something was hidden and it cost nothing".
+    await seedAgent(prisma, AGENT_A)
+    const repo = new PgSessionUsageRepo(prisma)
+    const at = new Date(Date.now() - 60_000)
+    await seedVisibleSession(AGENT_A, 'only', at)
+    await repo.record({
+      agentId: AgentId(AGENT_A),
+      sessionId: 'only',
+      source: 'daemon',
+      lastActivityAt: at,
+      usage: { totalTokens: 100, costAmount: '1.5', costCurrency: 'USD' }
+    })
+
+    const { app, close } = buildHttpApp(prisma)
+    try {
+      const res = await app.inject({ method: 'GET', url: `${ORG}/usage?${preset('d1')}` })
+      expect(res.statusCode).toBe(200)
+      const body = res.json() as { totals: { costAmount: string }; unattributed?: unknown }
+      expect(body.totals.costAmount).toBe('1.5')
+      expect(body).not.toHaveProperty('unattributed')
     } finally {
       await close()
     }

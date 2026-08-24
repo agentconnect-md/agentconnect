@@ -1848,10 +1848,28 @@ export const MAX_USAGE_WINDOW_DAYS = 400
  *  `series` is the spend-over-time chart data: cost bucketed by hour (a window of two
  *  days or less) or day, with empty buckets filled to 0 across the whole window. */
 export interface UsageAggregate {
+  /** The ORG's figures, whoever is reading. A total that omitted the rows a viewer may
+   *  not read would be wrong in the direction that costs someone money, and the org's own
+   *  spend is published to every member by the billing ledger anyway. */
   totals: { sessions: number; totalTokens: number; costAmount: DecimalAmount; costCurrency: string | null }
   agents: AgentUsageAggregate[]
   models: ModelUsageAggregate[]
   sources: SourceUsageAggregate[]
+  /** What `totals` holds that the reader may not attribute, as one id-less rollup — so
+   *  `Σ agents + unattributed = totals` and `Σ models + unattributed = totals`. Absent
+   *  when the reader could attribute everything (which is every read with no `viewer`).
+   *
+   *  Withheld by EITHER predicate: a restricted agent, or another user's private session
+   *  on an agent the reader can see. So it is unattributable usage, not hidden agents.
+   *
+   *  Aggregated independently, never `totals` minus the visible rows: a subtraction is a
+   *  plug figure that would absorb any attribution bug and leave the caller adding up
+   *  perfectly, where an independent sum makes the equality a checkable invariant. */
+  unattributed?: Omit<AgentUsageAggregate, 'agentId'>
+  /** Viewer-scoped, splits and per-bucket total alike, so a bucket never hands over
+   *  withheld spend resolved in time. It therefore does NOT sum to `totals` — see
+   *  `unattributed`. This is a convenience boundary, NOT a security one: `from`/`to` are
+   *  the caller's, so consecutive narrow windows reconstruct the residual timeline anyway. */
   series: { bucket: 'hour' | 'day'; points: SpendBucket[] }
 }
 
@@ -1865,9 +1883,10 @@ export interface SessionUsageRepo {
   /** Aggregate usage for an org over the half-open window `[from, to)`.
    *  `source` scopes the whole answer — totals, every breakdown, and the series — to
    *  one ingress; omitted, it counts both.
-   *  When a `viewer` is supplied, sessions of restricted agents they can't see are
-   *  excluded from the totals and every breakdown (derived visibility,
-   *  via the `agent` relation — undefined alone is unfiltered).
+   *  `viewer`/`sessionViewer` scope ATTRIBUTION, not the sums: see `UsageAggregate`.
+   *  When a `viewer` is supplied, sessions of restricted agents they can't see keep their
+   *  place in `totals` but are folded into `unattributed` instead of into their agent's
+   *  row (derived visibility, via the `agent` relation — undefined alone attributes all).
    *  `tzOffsetMin` (UTC − local, as `getTimezoneOffset()` reports) aligns the spend
    *  `series` buckets to the viewer's local day/hour; 0 (default) ⇒ UTC. */
   aggregate(

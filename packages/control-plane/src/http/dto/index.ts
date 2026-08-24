@@ -3661,10 +3661,25 @@ export const UsageDto = z.object({
   agents: z.array(UsageAgentDto),
   models: z.array(UsageModelDto),
   sources: z.array(UsageSourceDto),
+  // What `totals` holds that this caller may not attribute to an agent, as one rollup
+  // with no id. Withheld by EITHER predicate — a restricted agent, or another user's
+  // private session on an agent the caller CAN see — so it is unattributable usage rather
+  // than hidden agents, and a UI naming it must say so. Present only when something was
+  // hidden, so a reader can tell "nothing hidden" from "hidden, and it cost 0" — and it
+  // carries no COUNT, which would tell the caller the residual is one agent's spend.
+  unattributed: UsageAgentDto.omit({ agentId: true }).optional(),
   // Spend-over-time chart: cost bucketed by hour (a window of two days or less) or day,
   // empty buckets filled to 0. `start` is a UTC-aligned ISO instant. `byAgent`/
   // `byModel` split each bucket's total for the grouped/stacked chart (model
   // key ''=unreported; only non-zero deltas get a key).
+  //
+  // Viewer-scoped, per-bucket total included, so a bucket never hands over withheld spend
+  // resolved in time. So the series does not sum to `totals` whenever `unattributed` is
+  // present, and a caller that shows both must say which is which.
+  //
+  // A convenience boundary, NOT a security one: `from`/`to` are the caller's, bounded only
+  // by a maximum span, so consecutive narrow windows difference the residual timeline out
+  // regardless. See the trade in docs/designs/session-visibility.md.
   series: z.object({
     bucket: z.enum(['hour', 'day']),
     points: z.array(
