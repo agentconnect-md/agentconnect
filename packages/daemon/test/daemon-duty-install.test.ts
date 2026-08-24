@@ -9,6 +9,7 @@ import { join } from 'node:path'
 import type { DutyGrantEntry } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
 import type { DutyRegistry } from '../src/cp/duty-registry.js'
+import type { SlackAppFactory } from '../src/slack/connection.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 
 const AGENT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1'
@@ -114,8 +115,8 @@ const bundleWithDefinitions = (grantKey?: string, issuedAt?: number) => ({
 })
 
 /** A daemon started with a stub CP client — only the duty surface is exercised. */
-async function boot(client: Record<string, unknown>) {
-  const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
+async function boot(client: Record<string, unknown>, slackAppFactory: SlackAppFactory = fakeSlackAppFactory()) {
+  const daemon = new Daemon({ slackAppFactory, root: scaffold() })
   await daemon.start()
   ;(daemon as any).cpClient = {
     organizationScope: () => 'frame',
@@ -528,19 +529,29 @@ describe('a group is not held until it is servable', () => {
 })
 
 describe('the rendezvous claim ordering', () => {
-  it('resolves granted only AFTER the granted agent is installed', async () => {
+  it('resolves granted only AFTER the granted agent is installed and connected', async () => {
     let releaseFetch!: () => void
     const fetched = new Promise<void>((resolve) => {
       releaseFetch = resolve
     })
+    let releaseSlack!: () => void
+    const slackReady = new Promise<void>((resolve) => {
+      releaseSlack = resolve
+    })
+    const baseSlackAppFactory = fakeSlackAppFactory()
+    const startSlack = vi.fn(async () => slackReady)
+    const slackAppFactory: SlackAppFactory = (opts) => ({ ...baseSlackAppFactory(opts), start: startSlack })
     const fetchDutyAgent = vi.fn(async () => {
       await fetched
       return { bundle: bundle() }
     })
-    const daemon = await boot({
-      claimDuty: vi.fn(async () => ({ granted: true, grant: grant() })),
-      fetchDutyAgent
-    })
+    const daemon = await boot(
+      {
+        claimDuty: vi.fn(async () => ({ granted: true, grant: grant() })),
+        fetchDutyAgent
+      },
+      slackAppFactory
+    )
     const cp = registries(daemon)
 
     let settled = false
@@ -557,9 +568,13 @@ describe('the rendezvous claim ordering', () => {
     expect(settled).toBe(false)
 
     releaseFetch()
-    await expect(claim).resolves.toEqual({ granted: true })
+    await vi.waitFor(() => expect(startSlack).toHaveBeenCalled())
     expect(cp.agents.has(AGENT)).toBe(true)
     expect(duties(daemon).holdsAgent(AGENT)).toBe(true)
+    expect(settled).toBe(false)
+
+    releaseSlack()
+    await expect(claim).resolves.toEqual({ granted: true })
     await daemon.stop()
   })
 
@@ -579,6 +594,26 @@ describe('the rendezvous claim ordering', () => {
     expect(duties(daemon).digest()).toEqual([])
     expect(duties(daemon).holdsAgent(AGENT)).toBe(false)
     expect(registries(daemon).agents.has(AGENT)).toBe(false)
+    await daemon.stop()
+  })
+
+  it('withdraws a won duty without releasing it before teardown is confirmed', async () => {
+    const releaseDuties = vi.fn(async () => {})
+    const daemon = await boot({
+      claimDuty: vi.fn(async () => ({ granted: true, grant: grant() })),
+      fetchDutyAgent: vi.fn(async () => ({ bundle: bundle() })),
+      releaseDuties
+    })
+    const flush = (daemon as any).flushReconcile.bind(daemon)
+    ;(daemon as any).flushReconcile = async () => {
+      await flush()
+      if (duties(daemon).holdsAgent(AGENT)) throw new Error('platform connection failed')
+    }
+
+    await expect((daemon as any).dutyCoordinator.claimDutyForTrigger(AGENT)).resolves.toEqual({ granted: false })
+
+    expect(duties(daemon).digest()).toEqual([])
+    expect(releaseDuties).not.toHaveBeenCalled()
     await daemon.stop()
   })
 
