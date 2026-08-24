@@ -35,6 +35,7 @@ import { GitlabProjectClaimConflict } from '../../persistence/errors.js'
  *  scheduled follow-up finish the job rather than holding the connection. */
 const REPAIR_CONTENTION_ATTEMPTS = 6
 import { unionGitlabWebhookEvents } from '../../gitlab/webhook-events.js'
+import { GITLAB_MINIMUM_VERSION_LABEL, parseGitlabVersion } from '../../gitlab/version.js'
 import {
   CreateGitlabProjectBody,
   ErrorDto,
@@ -60,6 +61,9 @@ type GitlabWebhookState = 'not_needed' | 'installed' | 'repairing' | 'failed'
 interface GitlabInstanceFacts {
   instanceUrl: string
   instanceVersion: string | null
+  /** Null until first credentialed contact — unobserved is not "unsupported". */
+  instanceVersionSupported: boolean | null
+  instanceVersionFloor: string
 }
 
 function toDto(
@@ -214,7 +218,12 @@ export function gitlabRoutes(deps: HttpDeps) {
     // stamped on every connection row rather than joined per row.
     const instanceFacts = async (): Promise<GitlabInstanceFacts> => {
       const observed = await deps.repos.gitlabInstanceState.get(gitlab.api.baseUrl)
-      return { instanceUrl: gitlab.api.baseUrl, instanceVersion: observed?.version ?? null }
+      return {
+        instanceUrl: gitlab.api.baseUrl,
+        instanceVersion: observed?.version ?? null,
+        instanceVersionSupported: observed ? parseGitlabVersion(observed.version).supported : null,
+        instanceVersionFloor: GITLAB_MINIMUM_VERSION_LABEL
+      }
     }
 
     // Whether a project wants ingress, from the same authority the provisioner converges against:

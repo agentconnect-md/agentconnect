@@ -244,7 +244,7 @@ export const SETUP_HTML = String.raw`<!doctype html>
 
       <section id="gitlab-section" class="panel setup-section" aria-labelledby="gitlab-heading">
         <div class="provider-head">
-          <div><h3 id="gitlab-heading">GitLab</h3><p class="muted">OAuth application used to administer GitLab.com projects.</p></div>
+          <div><h3 id="gitlab-heading">GitLab</h3><p class="muted">OAuth application used to administer projects on this deployment's GitLab instance.</p></div>
           <span id="gitlab-match" class="badge">Not configured</span>
         </div>
         <dl class="credentials">
@@ -258,7 +258,9 @@ export const SETUP_HTML = String.raw`<!doctype html>
         <p>Redirect URI:</p><ul id="gitlab-callbacks" class="uris"></ul>
         <p>Scopes:</p><ul id="gitlab-scopes" class="uris"></ul>
         <p class="muted">GitLab does not expose OAuth application creation through an API. In User settings &rarr; Applications, or a group's Settings &rarr; Applications, add an application whose redirect URI is exactly the value above, keep Confidential selected, grant the scopes above, then save the generated Application ID and Secret here. GitLab shows the secret only once.</p>
-        <div class="row"><a class="button" href="https://gitlab.com/-/user_settings/applications" target="_blank" rel="noopener">Open GitLab applications</a></div>
+        <p class="muted">Use your own user applications unless you are an instance administrator registering one application for everyone; an instance-wide application lives in the Admin area instead.</p>
+        <p class="muted">Creating each agent's bot account later needs authority this page cannot verify — no GitLab API reports it: either connect an instance administrator (whose API token cannot act as one while Admin Mode is enabled), or, on Premium and Ultimate, turn on Admin &rarr; Settings &rarr; General &rarr; Account and limit &rarr; &ldquo;Allow top-level group Owners to create service accounts&rdquo;.</p>
+        <div class="row"><a id="gitlab-applications" class="button" href="https://gitlab.com/-/user_settings/applications" target="_blank" rel="noopener">Open GitLab applications</a><a id="gitlab-admin-applications" class="button" href="https://gitlab.com/admin/applications" target="_blank" rel="noopener">Open admin applications</a></div>
         <div id="gitlab-config-controls" class="subsection">
           <label class="field">Instance base URL<input id="gitlab-base-url" autocomplete="off" placeholder="Leave empty for https://gitlab.com"></label>
           <label class="field">Application ID<input id="gitlab-id" autocomplete="off"></label>
@@ -643,13 +645,19 @@ export const SETUP_HTML = String.raw`<!doctype html>
       showIdentityEditors('gitlab', Boolean(gitlab));
       el('gitlab-id').value = gitlab ? gitlab.clientId : '';
       text('gitlab-instance', (gitlab && gitlab.baseUrl) || 'https://gitlab.com');
+      // Host-aware application links (§24.1): composed by the server against the
+      // configured base, so a path-prefixed install keeps its prefix here too.
+      if (expectedGitlab) {
+        el('gitlab-applications').href = expectedGitlab.applicationsUrl;
+        el('gitlab-admin-applications').href = expectedGitlab.adminApplicationsUrl;
+      }
       el('gitlab-base-url').value = (gitlab && gitlab.baseUrl) || '';
       // A probe verdict belongs to the save that produced it, never to a reload.
       el('gitlab-probe').hidden = true;
       el('gitlab-status').textContent = gitlab
         ? gitlab.clientId + ' is configured.'
         : expectedGitlab
-          ? 'Register the OAuth application on GitLab.com, then save its Application ID and Secret here.'
+          ? 'Register the OAuth application on the configured GitLab instance, then save its Application ID and Secret here.'
           : 'Publishing the redirect URI needs an HTTPS API public URL.';
       showDiff('gitlab-drift', gitlab && !expectedGitlab
         ? [{ field: 'Startup public URLs', current: 'Unavailable', expected: 'An HTTPS API URL' }]

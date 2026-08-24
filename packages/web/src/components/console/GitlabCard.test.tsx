@@ -105,6 +105,10 @@ const CONNECTION: GitlabConnectionDto = {
   mine: true,
   accessExpiresAt: null,
   assignedProjects: 0,
+  instanceUrl: 'https://gitlab.com',
+  instanceVersion: '18.11.0-ee',
+  instanceVersionSupported: true,
+  instanceVersionFloor: '18.11',
   createdAt: '2026-08-01T00:00:00.000Z'
 }
 
@@ -413,6 +417,100 @@ describe('GitlabCard', () => {
     expect(refused.querySelector('a[href^="https://gitlab.com/"]')).toBeNull()
     // The group falls back to its number rather than borrowing another project's path.
     expect(refused.textContent).toContain('group 900')
+  })
+
+  it('names the configured instance, not a gitlab.com literal, and links the bots there (\u00a724.1)', async () => {
+    const SELF_MANAGED = {
+      ...CONNECTION,
+      instanceUrl: 'https://gitlab.example.test:8443/gitlab',
+      instanceVersion: '18.11.4-ee'
+    }
+    mocks.fetchConnections.mockResolvedValue({ enabled: true, connections: [SELF_MANAGED] })
+    mocks.fetchProjects.mockResolvedValue([BINDING])
+    roster = [BOT]
+    await render()
+
+    const row = connectionRow('conn-1')
+    // Host and port, without the scheme or the install prefix — it is a badge.
+    expect(row.textContent).toContain('gitlab.example.test:8443')
+    expect(row.textContent).not.toContain('gitlab.com')
+    // The chip link keeps the prefix: every path on that instance lives under it.
+    const link = botRow('agent-1').querySelector('a[href*="gitlab-pilot"]')
+    expect(link!.getAttribute('href')).toBe('https://gitlab.example.test:8443/gitlab/gitlab-pilot-5b350c0aeba7-2bivoj')
+  })
+
+  it('reports the instance version, and says what a below-floor one still serves (\u00a724.2)', async () => {
+    mocks.fetchConnections.mockResolvedValue({
+      enabled: true,
+      connections: [{ ...CONNECTION, instanceVersion: '18.11.4-ee', instanceVersionSupported: true }]
+    })
+    await render()
+    const healthy = connectionRow('conn-1')
+    expect(healthy.textContent).toContain('GitLab 18.11.4-ee')
+    expect(healthy.textContent).not.toContain('below 18.11')
+
+    document.body.innerHTML = ''
+    mocks.fetchConnections.mockResolvedValue({
+      enabled: true,
+      connections: [{ ...CONNECTION, instanceVersion: '18.4.1', instanceVersionSupported: false }]
+    })
+    await render()
+    const old = connectionRow('conn-1')
+    expect(old.textContent).toContain('GitLab 18.4.1')
+    expect(old.textContent).toContain('below 18.11')
+    // Bounded degradation, said plainly: what is already set up keeps working.
+    expect(old.textContent).toContain('keep working until their credentials expire')
+  })
+
+  it('says nothing about a version the deployment has not observed yet', async () => {
+    mocks.fetchConnections.mockResolvedValue({
+      enabled: true,
+      connections: [{ ...CONNECTION, instanceVersion: null, instanceVersionSupported: null }]
+    })
+    await render()
+    expect(connectionRow('conn-1').textContent).not.toContain('GitLab 1')
+  })
+
+  it('tells an operator how to grant withdrawn bot-creation authority (\u00a724.3)', async () => {
+    mocks.fetchConnections.mockResolvedValue({ enabled: true, connections: [CONNECTION] })
+    roster = [
+      {
+        ...BOT,
+        userId: null,
+        state: 'service_account_creation_forbidden',
+        stateReason: 'service_account_creation_forbidden',
+        bindingIds: []
+      }
+    ]
+    await render()
+
+    const row = botRow('agent-1')
+    // Its own badge: this is not "setup incomplete", it is a missing permission.
+    expect(row.textContent).toContain('not allowed on GitLab')
+    expect(row.textContent).not.toContain('service_account_creation_forbidden')
+    // Every way to grant it: the administrator, the tier-gated setting, the caveat.
+    expect(row.textContent).toContain('Connect an instance administrator')
+    expect(row.textContent).toContain('Admin Mode')
+    expect(row.textContent).toContain('Allow top-level group Owners to create service accounts')
+    expect(row.textContent).toContain('Premium and Ultimate')
+  })
+
+  it('keeps a bot serving while a refused rotation asks for the same authority (\u00a724.3)', async () => {
+    mocks.fetchConnections.mockResolvedValue({ enabled: true, connections: [CONNECTION] })
+    roster = [
+      {
+        ...BOT,
+        state: 'service_account_creation_forbidden',
+        stateReason: 'rotation_service_account_creation_forbidden'
+      }
+    ]
+    await render()
+
+    const row = botRow('agent-1')
+    // The named reason wins over the generic rotation line, which would bury it.
+    expect(row.textContent).toContain('it keeps working until they expire')
+    expect(row.textContent).toContain('Connect an instance administrator')
+    expect(row.textContent).not.toContain('The project bot credential needs repair')
   })
 
   it('marks a retiring account as leaving', async () => {

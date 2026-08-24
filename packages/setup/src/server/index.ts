@@ -521,7 +521,8 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
     }
     let gitlab: ReturnType<typeof gitlabConfiguredUrls> | null = null
     try {
-      gitlab = gitlabConfiguredUrls(providerAppConfig(localAuthBootstrap.services))
+      // The instance the card's links must target (§24.1); absent ⇒ GitLab.com.
+      gitlab = gitlabConfiguredUrls(providerAppConfig(localAuthBootstrap.services), values.gitlab?.baseUrl ?? undefined)
     } catch {
       // GitLab needs an HTTPS Control Plane URL before its redirect URI is publishable.
     }

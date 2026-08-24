@@ -41,6 +41,10 @@ const CONNECTION: GitlabConnectionDto = {
   mine: true,
   accessExpiresAt: null,
   assignedProjects: 0,
+  instanceUrl: 'https://gitlab.com',
+  instanceVersion: '18.11.0-ee',
+  instanceVersionSupported: true,
+  instanceVersionFloor: '18.11',
   createdAt: '2026-08-01T00:00:00.000Z'
 }
 

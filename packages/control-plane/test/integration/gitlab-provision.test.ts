@@ -59,6 +59,8 @@ async function harness(
 ) {
   const fake = new FakeGitlab(options)
   const avatarRenders: string[] = []
+  /** What an operator reads: every account-service warning, with its reason. */
+  const warnings: { obj: Record<string, unknown>; msg: string }[] = []
   const connections = new PgGitlabConnectionRepo(prisma)
   const bindings = new PgGitlabProjectBindingRepo(prisma)
   const accounts = new PgGitlabAgentAccountRepo(prisma)
@@ -88,6 +90,7 @@ async function harness(
       avatarRenders.push(agent.id)
       return AVATAR_PNG
     },
+    log: { warn: (obj, msg) => warnings.push({ obj: obj as Record<string, unknown>, msg }) },
     api: fake.api
   })
   const buildProvisioner = (): GitlabProvisioner =>
@@ -131,6 +134,7 @@ async function harness(
   return {
     fake,
     avatarRenders,
+    warnings,
     bindings,
     accounts,
     credentials,
@@ -270,10 +274,91 @@ describe('GitlabProvisioner (§10.2) — per-agent identity', () => {
     const h = await harness({ refuseServiceAccountCreate: true })
     expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toEqual({
       state: 'admin_degraded',
-      reason: 'service_account_create_forbidden'
+      reason: 'service_account_creation_forbidden'
     })
     h.fake.opts.refuseServiceAccountCreate = false
     expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toEqual({ state: 'ready' })
+  })
+
+  it('an admin-only instance lands the account in its own authority state, and Repair clears it (§24.3)', async () => {
+    const h = await harness({ adminOnly: true })
+    expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toEqual({
+      state: 'admin_degraded',
+      reason: 'service_account_creation_forbidden'
+    })
+    const [account] = await h.accounts.listForAgent(DEFAULT_ORG_ID, AGENT)
+    // Its OWN state, never admin_degraded: authority is what is missing, and an
+    // account that already exists elsewhere must keep serving through it.
+    expect(account).toMatchObject({
+      state: 'service_account_creation_forbidden',
+      stateReason: 'service_account_creation_forbidden'
+    })
+    // A settled verdict owes nothing: no sweep re-attempts it until a human acts.
+    expect((await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))!.convergeOwedAt).toBeNull()
+
+    // The operator grants the authority; the ordinary Repair path re-attempts.
+    h.fake.opts.adminOnly = false
+    expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toEqual({ state: 'ready' })
+    expect(await h.accounts.get(account!.id)).toMatchObject({ state: 'ready', stateReason: null })
+  })
+
+  it('the inline pre-activation ensure refuses an admin-only instance without retrying it (§24.3)', async () => {
+    const h = await harness({ adminOnly: true })
+    const committed: string[] = []
+    const outcome = await h.provisioner.provisionAgentAccount(
+      DEFAULT_ORG_ID,
+      PROJECT,
+      { agentId: AGENT, accessLevel: 30 },
+      async () => {
+        committed.push('commit')
+        return 'ok'
+      }
+    )
+    expect(outcome).toEqual({ ok: false, reason: 'service_account_creation_forbidden', retryable: false })
+    // The write never happened, and the budget loop never spun: exactly one
+    // create was attempted, because authority cannot resolve itself.
+    expect(committed).toHaveLength(0)
+    const creates = h.fake.requests.filter((r) => r.method === 'POST' && /\/service_accounts$/.test(r.url))
+    expect(creates).toHaveLength(1)
+    expect(await h.accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP)).toMatchObject({
+      state: 'service_account_creation_forbidden'
+    })
+  })
+
+  it('names the instance token-lifetime cap when the create is rejected for it (§24.3)', async () => {
+    const h = await harness({ refusePatLifetime: true })
+    expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toEqual({
+      state: 'admin_degraded',
+      reason: 'pat_lifetime_exceeds_instance_maximum'
+    })
+    const [account] = await h.accounts.listForAgent(DEFAULT_ORG_ID, AGENT)
+    expect(account).toMatchObject({
+      state: 'admin_degraded',
+      stateReason: 'pat_lifetime_exceeds_instance_maximum'
+    })
+    expect(gitlabAccountUnavailableMessage(account!.stateReason!)).toContain('maximum access-token lifetime')
+  })
+
+  it('accepts an expiry the instance clamped below the request and records the granted one (§24.3)', async () => {
+    const h = await harness({ patLifetimeCapDays: 30 })
+    expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toEqual({ state: 'ready' })
+    const account = (await h.accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP))!
+    const read = (await h.credentials.get(account.id, 'read'))!
+    // The 90-day request was answered with 30 days, and the ROW carries what the
+    // instance granted — nothing was revoked and nothing failed closed.
+    expect(read.providerExpiresAt.getTime()).toBeLessThan(Date.now() + 31 * 86_400_000)
+    expect(read.providerExpiresAt.getTime()).toBeGreaterThan(Date.now() + 29 * 86_400_000)
+    expect(h.fake.tokens.get(Number(read.externalTokenId))!.revoked).toBe(false)
+  })
+
+  it('revokes an expiry LATER than requested and fails closed (§7.3)', async () => {
+    const h = await harness({ patExpiryOverride: '2099-01-01' })
+    expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toEqual({
+      state: 'admin_degraded',
+      reason: 'out_of_policy_token'
+    })
+    expect([...h.fake.tokens.values()].every((token) => token.revoked)).toBe(true)
+    expect(await prisma.gitlabProjectCredential.count()).toBe(0)
   })
 
   it('revokes an out-of-policy token and fails closed (§7.3)', async () => {
@@ -1549,6 +1634,51 @@ describe('GitlabAccountService rotation (§7.4)', () => {
     await h.accounts.update(account.id, { state: 'admin_degraded', stateReason: 'rotation_gitlab_503' })
     await h.accountService.rotateDueCredentials(14 * 86_400_000)
     expect(await h.accounts.get(account.id)).toMatchObject({ state: 'ready', stateReason: null })
+  })
+
+  it('a rotation the instance forbids is named as withdrawn authority and keeps serving (§24.3)', async () => {
+    const h = await harness()
+    await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
+    const account = (await h.accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP))!
+    const before = (await h.credentials.get(account.id, 'read'))!
+    await prisma.gitlabProjectCredential.update({
+      where: { id: before.id },
+      data: { providerExpiresAt: new Date(Date.now() + 3 * 86_400_000) }
+    })
+    // The instance takes the delegation away under a live account.
+    h.fake.opts.adminOnly = true
+    await h.accountService.rotateDueCredentials(14 * 86_400_000)
+
+    expect(await h.accounts.get(account.id)).toMatchObject({
+      state: 'service_account_creation_forbidden',
+      stateReason: 'rotation_service_account_creation_forbidden'
+    })
+    // The horizon warning names the authority, not a bare upstream status: an
+    // operator learns this from the warning rather than from a silent bot.
+    expect(h.warnings.at(-1)).toMatchObject({
+      obj: { reason: 'rotation_service_account_creation_forbidden' },
+      msg: 'gitlab credential rotation failed'
+    })
+    // The existing credential is untouched and still serves to its own expiry.
+    expect((await h.credentials.get(account.id, 'read'))!.externalTokenId).toBe(before.externalTokenId)
+    expect(h.fake.tokens.get(Number(before.externalTokenId))!.revoked).toBe(false)
+
+    h.fake.opts.adminOnly = false
+    await h.accountService.rotateDueCredentials(14 * 86_400_000)
+    expect(await h.accounts.get(account.id)).toMatchObject({ state: 'ready', stateReason: null })
+  })
+
+  it('re-derives the rotation horizon from a clamped expiry, not from the requested one (§24.3)', async () => {
+    const h = await harness({ patLifetimeCapDays: 30 })
+    await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
+    const account = (await h.accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP))!
+    // The ordinary horizon does not reach a credential 30 days out.
+    await h.accountService.rotateDueCredentials(14 * 86_400_000)
+    expect((await h.credentials.get(account.id, 'read'))!.generation).toBe(1n)
+    // A horizon inside the 30-day cap does — which it could not if the row still
+    // carried the 90-day expiry that was ASKED for rather than the granted one.
+    await h.accountService.rotateDueCredentials(35 * 86_400_000)
+    expect((await h.credentials.get(account.id, 'read'))!.generation).toBe(2n)
   })
 
   it('a live foreign account lease defers rotation to the next sweep', async () => {

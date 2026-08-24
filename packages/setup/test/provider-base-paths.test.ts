@@ -83,8 +83,27 @@ describe('provider service base paths', () => {
 
     expect(gitlabConfiguredUrls(config)).toEqual({
       callbackUrl: 'https://gateway.example.test/cp/v1/gitlab/oauth/callback',
-      scopes: ['api']
+      scopes: ['api'],
+      instanceUrl: 'https://gitlab.com',
+      applicationsUrl: 'https://gitlab.com/-/user_settings/applications',
+      adminApplicationsUrl: 'https://gitlab.com/admin/applications'
     })
     expect(() => gitlabConfiguredUrls({ services: { controlPlane: 'http://localhost:8080' } })).toThrow(/HTTPS/)
+  })
+
+  it('targets the application links at a self-managed instance, prefix and port intact (§24.1)', () => {
+    const config = { services: loadDeploymentEnvironment(PREFIXED_ENVIRONMENT).services }
+
+    // Concatenation, never resolution: resolving an absolute path against this
+    // base would drop `/gitlab` and send the operator to the wrong page.
+    expect(gitlabConfiguredUrls(config, 'https://gitlab.example.test:8443/gitlab')).toMatchObject({
+      instanceUrl: 'https://gitlab.example.test:8443/gitlab',
+      applicationsUrl: 'https://gitlab.example.test:8443/gitlab/-/user_settings/applications',
+      adminApplicationsUrl: 'https://gitlab.example.test:8443/gitlab/admin/applications'
+    })
+    // The redirect URI is the Control Plane's own, unchanged by the instance.
+    expect(gitlabConfiguredUrls(config, 'https://gitlab.example.test/gitlab').callbackUrl).toBe(
+      'https://gateway.example.test/cp/v1/gitlab/oauth/callback'
+    )
   })
 })

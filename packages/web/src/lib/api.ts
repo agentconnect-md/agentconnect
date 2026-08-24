@@ -5272,6 +5272,14 @@ export interface GitlabConnectionDto {
   mine: boolean
   accessExpiresAt: string | null
   assignedProjects: number // managed projects this connection still administers
+  /** The instance this deployment talks to — the same on every connection, because
+   *  one deployment has exactly one host axis. Never secret. */
+  instanceUrl: string
+  /** What that instance last reported, and whether it clears the floor the CP
+   *  enforces. Both null until the first credentialed contact. */
+  instanceVersion: string | null
+  instanceVersionSupported: boolean | null
+  instanceVersionFloor: string
   createdAt: string
 }
 
@@ -5298,6 +5306,10 @@ export type GitlabProjectBindingState =
   'provisioning' | 'ready' | 'admin_degraded' | 'runtime_degraded' | 'cleanup_pending'
 
 /** One managed project — its lifecycle state and non-secret external identity. */
+/** A bot account's own health: the binding vocabulary plus the one state only an
+ *  account can be in — the instance withdrew authority to create service accounts. */
+export type GitlabAgentAccountState = GitlabProjectBindingState | 'service_account_creation_forbidden'
+
 /** One agent's GitLab identity on a managed project. */
 export interface GitlabProjectAccountDto {
   agentId: string
@@ -5305,7 +5317,7 @@ export interface GitlabProjectAccountDto {
   displayName: string | null
   userId: string | null
   /** The account's OWN health: an agent's identity can be broken on a ready project. */
-  state: GitlabProjectBindingState
+  state: GitlabAgentAccountState
   stateReason: string | null
 }
 
@@ -5420,7 +5432,7 @@ export interface GitlabOrgAccountDto {
   username: string
   displayName: string | null
   userId: string | null // numeric GitLab user id; null until the account exists
-  state: GitlabProjectBindingState
+  state: GitlabAgentAccountState
   stateReason: string | null
   lifecycle: 'active' | 'retiring'
   /** The bound projects this account is a member of — which, not how: a project is managed

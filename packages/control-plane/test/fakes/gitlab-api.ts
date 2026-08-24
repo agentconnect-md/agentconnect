@@ -26,10 +26,19 @@ export interface FakeGitlabOptions {
   namespaceKind?: 'group' | 'user'
   /** Refuse service-account creation (Owner verification, §5). */
   refuseServiceAccountCreate?: boolean
+  /** §24.3 admin-only instance: creating a service account or one of its tokens
+   *  is reserved for an instance administrator, so both answer 403. */
+  adminOnly?: boolean
   /** Refuse service-account creation for the root's 100-account quota (§7.2). */
   refuseServiceAccountQuota?: boolean
   /** Return this expires_at instead of echoing the request (out-of-policy). */
   patExpiryOverride?: string | null
+  /** §24.3 instance token-lifetime cap: grant an EARLIER expiry than requested. */
+  patLifetimeCapDays?: number
+  /** §24.3: reject the create outright for exceeding that cap instead of clamping. */
+  refusePatLifetime?: boolean
+  /** The clock the lifetime cap measures from; defaults to the wall clock. */
+  now?: () => number
   /** Fail PAT revocations with a 500 (ambiguous cleanup). */
   failTokenRevoke?: boolean
   /** GitLab deletes a user asynchronously: accept the DELETE but keep listing
@@ -110,6 +119,15 @@ export class FakeGitlab {
   /** One project's namespaced path — per-id when a test holds several bindings. */
   private pathOf(projectId: number): string {
     return this.opts.pathById?.[String(projectId)] ?? this.opts.path
+  }
+
+  /** §24.3: an instance maximum token lifetime clamps the requested expiry down;
+   *  anything at or under the cap is granted exactly as asked. */
+  private grantedExpiry(requested: unknown): unknown {
+    const capDays = this.opts.patLifetimeCapDays
+    if (capDays === undefined) return requested
+    const cap = new Date((this.opts.now?.() ?? Date.now()) + capDays * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+    return typeof requested === 'string' && requested <= cap ? requested : cap
   }
 
   /** The asynchronous half of a deferred deletion finally landing. */
@@ -295,7 +313,7 @@ export class FakeGitlab {
         if (this.opts.refuseServiceAccountQuota) {
           return Response.json({ message: 'Maximum number of service accounts reached' }, { status: 400 })
         }
-        if (this.opts.refuseServiceAccountCreate) {
+        if (this.opts.refuseServiceAccountCreate || this.opts.adminOnly) {
           return Response.json({ message: 'forbidden' }, { status: 403 })
         }
         const payload = json()
@@ -342,9 +360,16 @@ export class FakeGitlab {
       }
       if (/\/api\/v4\/groups\/\d+\/service_accounts\/\d+\/personal_access_tokens$/.test(url) && method === 'POST') {
         const userId = Number(/service_accounts\/(\d+)\//.exec(url)![1])
+        if (this.opts.adminOnly) return Response.json({ message: 'forbidden' }, { status: 403 })
+        if (this.opts.refusePatLifetime) {
+          return Response.json({ message: 'expires_at exceeds the maximum allowable lifetime' }, { status: 400 })
+        }
         const payload = json()
         const id = ++this.nextId
-        const expires = this.opts.patExpiryOverride !== undefined ? this.opts.patExpiryOverride : payload.expires_at
+        const expires =
+          this.opts.patExpiryOverride !== undefined
+            ? this.opts.patExpiryOverride
+            : this.grantedExpiry(payload.expires_at)
         this.tokens.set(id, {
           name: String(payload.name),
           scopes: payload.scopes as string[],

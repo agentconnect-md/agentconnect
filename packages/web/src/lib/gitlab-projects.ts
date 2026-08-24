@@ -13,7 +13,13 @@
  * project that is about to change underneath it.
  */
 
-import type { GitlabProjectBindingDto, GitlabProjectBindingState, GitlabProjectDto, GitlabWebhookState } from './api'
+import type {
+  GitlabAgentAccountState,
+  GitlabProjectBindingDto,
+  GitlabProjectBindingState,
+  GitlabProjectDto,
+  GitlabWebhookState
+} from './api'
 
 export const GITLAB_PROJECT_STATE: Record<GitlabProjectBindingState, { label: string; badge: string }> = {
   provisioning: { label: 'setting up', badge: 'bg-(--status-info-soft) text-(--status-info)' },
@@ -21,6 +27,17 @@ export const GITLAB_PROJECT_STATE: Record<GitlabProjectBindingState, { label: st
   admin_degraded: { label: 'setup incomplete', badge: 'bg-(--status-paused-soft) text-(--amber-500)' },
   runtime_degraded: { label: 'bot access degraded', badge: 'bg-(--status-paused-soft) text-(--amber-500)' },
   cleanup_pending: { label: 'removal incomplete', badge: 'bg-(--status-error-soft) text-(--status-error)' }
+}
+
+/** An agent's own bot account carries one state a project binding cannot: §24.3's
+ *  withdrawn creation authority, which is not "setup incomplete" — the bot that
+ *  exists keeps working, and what is missing is a permission on the instance. */
+export const GITLAB_ACCOUNT_STATE: Record<GitlabAgentAccountState, { label: string; badge: string }> = {
+  ...GITLAB_PROJECT_STATE,
+  service_account_creation_forbidden: {
+    label: 'not allowed on GitLab',
+    badge: 'bg-(--status-paused-soft) text-(--amber-500)'
+  }
 }
 
 // Only the two webhook states a person can act on are worth saying. A webhook that is not
@@ -39,10 +56,30 @@ export function gitlabWebhookBadge(state: GitlabWebhookState): { label: string; 
 /** Account convergence runs behind hook and workspace CRUD; this is how often we ask whether it landed. */
 export const GITLAB_CONVERGENCE_POLL_MS = 5_000
 
-/** gitlab.com is pinned in v1 — no host override exists to thread through here. */
-export function gitlabProfileUrl(username: string): string {
-  return `https://gitlab.com/${username}`
+/** The default value of the host axis (§24.1) — what an unset base URL means. */
+export const GITLAB_DEFAULT_INSTANCE_URL = 'https://gitlab.com'
+
+/** The instance this deployment talks to, as a badge reads it: host and any
+ *  non-default port, without the scheme or an install path prefix (§24.1). */
+export function gitlabInstanceHost(instanceUrl: string): string {
+  try {
+    return new URL(instanceUrl).host
+  } catch {
+    return instanceUrl
+  }
 }
+
+/** A bot account's page on the configured instance. Composed by CONCATENATION
+ *  onto the base (§24.1): a prefixed install root is part of every path under it. */
+export function gitlabProfileUrl(instanceUrl: string, username: string): string {
+  return `${instanceUrl.replace(/\/+$/, '')}/${username}`
+}
+
+/** §24.3: authority to create service accounts is not API-readable, so the copy
+ *  has to name every way an operator can grant it — the tier-gated delegation
+ *  setting, the administrator connection, and why Admin Mode defeats the latter. */
+const CREATION_AUTHORITY_REMEDY =
+  'Connect an instance administrator — whose API token cannot act as one while Admin Mode is enabled — or, on Premium and Ultimate, turn on “Allow top-level group Owners to create service accounts” in Admin → Settings → General → Account and limit. Then run Repair.'
 
 // The CP records a machine category in `stateReason`; these are the ones a user can act on, in GitLab
 // vocabulary. Every rotation_* variant collapses to one line — the tail (rotation_gitlab_<status>) is open-ended.
@@ -51,7 +88,10 @@ export const GITLAB_STATE_REASON: Record<string, string> = {
   project_not_accessible: 'GitLab project is no longer accessible',
   personal_namespace_unsupported: 'Projects in a personal namespace are not supported',
   project_namespace_unknown: 'GitLab did not report the group this project belongs to',
-  service_account_create_forbidden: 'Not allowed to create a project bot on GitLab',
+  service_account_creation_forbidden: `This GitLab instance does not let the connected account create bot accounts. ${CREATION_AUTHORITY_REMEDY}`,
+  rotation_service_account_creation_forbidden: `This GitLab instance stopped letting AgentConnect renew this bot's credentials — it keeps working until they expire. ${CREATION_AUTHORITY_REMEDY}`,
+  pat_lifetime_exceeds_instance_maximum:
+    'This GitLab instance refuses a credential as long-lived as AgentConnect asks for — raise the maximum allowable access token lifetime in Admin → Settings → General → Account and limit, then run Repair',
   service_account_quota:
     'This GitLab group has reached its limit of bot accounts — remove one that is no longer used, then run Repair',
   service_account_create_failed: 'GitLab refused to create the bot account — run Repair to try again',
@@ -75,12 +115,16 @@ export const GITLAB_STATE_REASON: Record<string, string> = {
  *  unmapped category is an implementation identifier and never belongs on this surface. */
 export function gitlabStateReasonText(reason: string | null): string | null {
   if (!reason) return null
+  // A named category wins over its family: `rotation_service_account_creation_forbidden`
+  // is the one reason an operator can act on, and the family line would bury it.
+  const named = GITLAB_STATE_REASON[reason]
+  if (named) return named
   if (reason.startsWith('rotation_')) return 'The project bot credential needs repair'
   // The gitlab_<status> family is open-ended; the actionable part is the same for all of it.
   if (reason.startsWith('gitlab_')) {
     return 'GitLab refused the last administration request — reconnect the account that manages this project, or transfer it to your own'
   }
-  return GITLAB_STATE_REASON[reason] ?? null
+  return null
 }
 
 /** One pickable project: `binding` null means picking it sets it up first. */
