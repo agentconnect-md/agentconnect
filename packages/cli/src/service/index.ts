@@ -3,13 +3,15 @@
  *  `installService`/`uninstallService` wrap install with the `<root>/service.json`
  *  pointer, and `listInstances` enumerates every instance installed on the host. */
 import { homedir } from 'node:os'
+import { findInstanceUnit, listInstances } from './discover.js'
 import { defaultExec } from './exec.js'
 import { clearInstancePointer, resolveServiceTarget, writeInstancePointer } from './instance.js'
-import { LaunchdController, scanLaunchAgents } from './launchd.js'
-import { scanSystemdUnits, SystemdController } from './systemd.js'
+import { LaunchdController } from './launchd.js'
+import { SystemdController } from './systemd.js'
 import type { ControllerDeps, Exec, InstalledUnit, InstallOpts, ServiceController } from './types.js'
 
 export type { ServiceController, ServiceStatus, InstallOpts, InstalledUnit } from './types.js'
+export { findInstanceUnit, listInstances, type DiscoveryScope } from './discover.js'
 export {
   assertInstanceName,
   commandSelector,
@@ -41,7 +43,9 @@ export interface ControllerTarget {
 function resolved(target: ControllerTarget): { root: string; instance?: string } {
   return resolveServiceTarget({
     ...(target.root !== undefined ? { root: target.root } : {}),
-    ...(target.instance !== undefined ? { instance: target.instance } : {})
+    ...(target.instance !== undefined ? { instance: target.instance } : {}),
+    ...(target.home !== undefined ? { home: target.home } : {}),
+    ...(target.platform !== undefined ? { platform: target.platform } : {})
   })
 }
 
@@ -66,15 +70,21 @@ export function resolveController(target: ControllerTarget = {}): ServiceControl
  */
 export async function installService(target: ControllerTarget, opts: InstallOpts): Promise<ServiceController> {
   const { root, instance } = resolved(target)
-  const conflict = listInstances({
-    ...(target.home ? { home: target.home } : {}),
-    ...(target.platform ? { platform: target.platform } : {})
-  }).find((unit) => unit.root === root && unit.instance !== instance)
+  const scope = {
+    ...(target.home !== undefined ? { home: target.home } : {}),
+    ...(target.platform !== undefined ? { platform: target.platform } : {})
+  }
+  const conflict = listInstances(scope).find((unit) => unit.root === root && unit.instance !== instance)
   if (conflict) {
     throw new Error(
       `root ${root} already belongs to ${conflict.label} — uninstall that service first, or give this instance its own --root`
     )
   }
+  // Moving an instance to a new root leaves the old root's pointer claiming this
+  // unit, which would make a later `--root <old>` address a unit that no longer
+  // drives it. Drop it as part of the move.
+  const previous = findInstanceUnit(instance, scope)
+  if (previous && previous.root !== root) clearInstancePointer(previous.root)
   const controller = resolveController(target)
   await controller.install(opts)
   writeInstancePointer(root, { ...(instance ? { instance } : {}), label: controller.label })
@@ -101,13 +111,4 @@ export function controllerFor(
     exec: opts.exec ?? defaultExec,
     ...(unit.instance ? { instance: unit.instance } : {})
   })
-}
-
-/** Every AgentConnect service installed for this user, one entry per instance. */
-export function listInstances(opts: { home?: string; platform?: NodeJS.Platform } = {}): InstalledUnit[] {
-  const home = opts.home ?? homedir()
-  const platform = opts.platform ?? process.platform
-  if (platform === 'darwin') return scanLaunchAgents(home)
-  if (platform === 'linux') return scanSystemdUnits(home)
-  return []
 }

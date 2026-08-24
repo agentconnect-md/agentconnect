@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   controllerFor,
+  resolveServiceTarget,
   installService,
   listInstances,
   pickController,
@@ -101,6 +102,53 @@ describe('installService / uninstallService', () => {
     // Removing the named instance leaves the default one installed.
     await uninstallService({ root: rootB, instance: 'b', platform: 'linux', home, exec })
     expect(listInstances({ home, platform: 'linux' }).map((u) => u.label)).toEqual(['agentconnect.service'])
+  })
+})
+
+describe('named instance root resolution', () => {
+  it('takes the root its installed unit drives, not the ~/.agentconnect-<name> default', async () => {
+    const home = tmp('ac-home-')
+    const root = tmp('ac-root-')
+    await installService(
+      { root, instance: 'dev', platform: 'linux', home, exec },
+      {
+        execPath: '/usr/bin/node',
+        includeRootEnv: true
+      }
+    )
+    // Otherwise `--instance dev restart` would drive this unit while
+    // `--instance dev chat` delegated to ~/.agentconnect-dev — two daemons.
+    expect(resolveServiceTarget({ instance: 'dev', home, platform: 'linux' })).toEqual({ root, instance: 'dev' })
+  })
+
+  it('falls back to the name-derived default when nothing is installed yet', () => {
+    const home = tmp('ac-home-')
+    const fakeUserHome = tmp('ac-userhome-')
+    vi.stubEnv('HOME', fakeUserHome)
+    vi.stubEnv('AGENTCONNECT_ROOT', undefined)
+    expect(resolveServiceTarget({ instance: 'dev', home, platform: 'linux' })).toEqual({
+      root: join(fakeUserHome, '.agentconnect-dev'),
+      instance: 'dev'
+    })
+  })
+
+  it("moves an instance to a new root and drops the abandoned root's pointer", async () => {
+    const home = tmp('ac-home-')
+    const [oldRoot, newRoot] = [tmp('ac-root-'), tmp('ac-root-')]
+    const opts = { execPath: '/usr/bin/node', includeRootEnv: true }
+    await installService({ root: oldRoot, instance: 'dev', platform: 'linux', home, exec }, opts)
+    await installService({ root: newRoot, instance: 'dev', platform: 'linux', home, exec }, opts)
+
+    expect(existsSync(join(oldRoot, 'service.json'))).toBe(false)
+    expect(existsSync(join(newRoot, 'service.json'))).toBe(true)
+    expect(listInstances({ home, platform: 'linux' })).toEqual([
+      {
+        instance: 'dev',
+        label: 'agentconnect@dev.service',
+        root: newRoot,
+        unitPath: join(home, '.config', 'systemd', 'user', 'agentconnect@dev.service')
+      }
+    ])
   })
 })
 

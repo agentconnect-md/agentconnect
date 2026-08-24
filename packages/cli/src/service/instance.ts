@@ -15,6 +15,7 @@
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { defaultRoot, resolveRoot, servicePointerPath } from '../paths.js'
+import { findInstanceUnit, type DiscoveryScope } from './discover.js'
 
 /** Instance names must be safe in a systemd unit name AND a launchd label, and
  *  short enough to keep `<root>/run/mcp.sock` under the ~104-byte UDS cap. */
@@ -35,16 +36,32 @@ export function instanceRoot(name: string): string {
 }
 
 /**
- * Resolve the (root, instance) pair a command operates on. An explicit `--root`
- * always wins — an operator may point a named instance at any directory — and a
- * bare `--root` with no `--instance` adopts the instance recorded in that root.
+ * Resolve the (root, instance) pair a command operates on:
+ *
+ * - an explicit `--root` always wins — an operator may point a named instance at
+ *   any directory;
+ * - otherwise a named instance takes the root ITS INSTALLED UNIT drives, since
+ *   the unit on disk is the authority. Without this, `--instance dev restart`
+ *   would restart a unit running `/srv/ac-dev` while `--instance dev chat`
+ *   delegated to `~/.agentconnect-dev` — one selector, two daemons. The
+ *   `~/.agentconnect-<name>` default applies only when nothing is installed yet;
+ * - a bare `--root` with no `--instance` adopts the instance recorded in that root.
  */
-export function resolveServiceTarget(opts: { root?: string; instance?: string } = {}): {
+export function resolveServiceTarget(opts: { root?: string; instance?: string } & DiscoveryScope = {}): {
   root: string
   instance?: string
 } {
   const named = opts.instance === undefined ? undefined : assertInstanceName(opts.instance)
-  const root = opts.root !== undefined ? resolveRoot(opts.root) : named ? instanceRoot(named) : resolveRoot()
+  const scope: DiscoveryScope = {
+    ...(opts.home !== undefined ? { home: opts.home } : {}),
+    ...(opts.platform !== undefined ? { platform: opts.platform } : {})
+  }
+  const root =
+    opts.root !== undefined
+      ? resolveRoot(opts.root)
+      : named
+        ? (findInstanceUnit(named, scope)?.root ?? instanceRoot(named))
+        : resolveRoot()
   const instance = named ?? readInstancePointer(root)
   return { root, ...(instance ? { instance } : {}) }
 }
@@ -52,9 +69,9 @@ export function resolveServiceTarget(opts: { root?: string; instance?: string } 
 /**
  * The selector to reproduce in a suggested follow-up command, so an operator who
  * copies it addresses the target they are working on instead of the default one.
- * `--root` travels along whenever the root is not the one the rest of the
- * selector would resolve by itself — `--instance dev` alone means
- * `~/.agentconnect-dev`, so a custom root paired with a name must be kept.
+ * `--root` travels along whenever the root is not the instance's own default —
+ * spelling it out is always correct (an explicit root wins), and never assumes
+ * the unit that resolution would consult is still installed.
  */
 export function commandSelector(target: { root?: string; instance?: string }): string {
   const parts: string[] = []
