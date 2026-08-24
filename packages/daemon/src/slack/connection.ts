@@ -1814,6 +1814,9 @@ export class SlackConnection implements PlatformConnection {
   // The lifecycle half of setStatus. Posting a message does NOT end the loading UX — only `active` does.
   // Deduped per (channel, thread); no username/icon, because Slack keeps those sticky until cleared.
   private async setSessionLifecycle(channel: string, threadTs: string, status: 'processing' | 'active'): Promise<void> {
+    // Send-only (HTTP) bots take inbound from the relay, which does not forward the stop event —
+    // so `processing` here would render a Stop button nothing on this side could ever answer.
+    if (this.deps.sendOnly) return
     const key = `${channel}:${threadTs}`
     if (this.sessionLifecycle.get(key) === status) return
     try {

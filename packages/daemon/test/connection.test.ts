@@ -1040,6 +1040,31 @@ describe('SlackConnection.setStatus', () => {
     expect(lifecycle).toEqual([{ channel_id: 'C1', thread_ts: '123.45', status: 'processing' }])
   })
 
+  // HTTP bots take inbound from the relay, which does not forward the stop event. Setting
+  // `processing` there would render a Stop button this side could never answer.
+  it('makes no lifecycle call on a send-only (HTTP) connection', async () => {
+    const calls: any[] = []
+    const legacy: any[] = []
+    const conn = new SlackConnection(
+      { ...deps(), sendOnly: true, sendIntervalMs: 0 } as any,
+      () =>
+        fakeAppWith(
+          async (a) => void legacy.push(a),
+          async (method, a) => {
+            calls.push([method, a])
+            return {}
+          }
+        ) as any
+    )
+
+    await conn.setStatus('C1', '123.45', 'is thinking…')
+    await conn.setStatus('C1', '123.45', '')
+
+    // The legacy free-text status still runs — only the lifecycle enum is withheld.
+    expect(legacy).toHaveLength(2)
+    expect(calls).toEqual([])
+  })
+
   it('keeps a failing lifecycle call out of dispatch', async () => {
     const conn = new SlackConnection(
       { ...deps(), sendIntervalMs: 0 } as any,
