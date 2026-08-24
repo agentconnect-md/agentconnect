@@ -27,8 +27,16 @@ const mocks = vi.hoisted(() => ({
   searchGitlabProjects: vi.fn(),
   createGitlabProject: vi.fn(),
   fetchAgentRepos: vi.fn(),
+  startGitlabOauth: vi.fn(),
   daemons: [] as unknown[]
 }))
+
+/** `window.open` is the connect flow's only visible effect — record it rather than navigate. */
+const opened: unknown[][] = []
+window.open = ((...args: unknown[]) => {
+  opened.push(args)
+  return null
+}) as typeof window.open
 
 vi.mock('@/lib/profile', () => ({ useProfile: () => ({ me: null }) }))
 vi.mock('@/lib/org-context', () => ({
@@ -58,7 +66,8 @@ vi.mock('@/lib/api', async (importOriginal) => ({
   fetchGitlabProjects: mocks.fetchGitlabProjects,
   fetchGitlabConnections: mocks.fetchGitlabConnections,
   searchGitlabProjects: mocks.searchGitlabProjects,
-  createGitlabProject: mocks.createGitlabProject
+  createGitlabProject: mocks.createGitlabProject,
+  startGitlabOauth: mocks.startGitlabOauth
 }))
 
 const AddIntegrationModal = (await import('./AddIntegrationModal')).default
@@ -158,6 +167,8 @@ afterEach(async () => {
   mocks.searchGitlabProjects.mockReset()
   mocks.createGitlabProject.mockReset()
   mocks.fetchAgentRepos.mockReset()
+  mocks.startGitlabOauth.mockReset()
+  opened.length = 0
   mocks.daemons = []
 })
 
@@ -320,16 +331,35 @@ describe('AddIntegrationModal, GitLab trigger', () => {
     expect(tileNamed('Discord')?.getAttribute('aria-disabled')).toBe('true')
   })
 
-  it('points at the connection surface when no GitLab account is connected', async () => {
+  it('connects GitLab in place instead of sending the user to another surface', async () => {
+    mocks.fetchGitlabProjects.mockResolvedValue([])
+    mocks.fetchGitlabConnections.mockResolvedValue({ enabled: true, connections: [] })
+    mocks.startGitlabOauth.mockResolvedValue('https://gitlab.example.test/oauth/authorize?state=one-shot')
+    await render()
+    await act(async () => tileNamed('GitLab')?.click())
+
+    expect(document.querySelector('a[href="/acme/integrations"]')).toBeNull()
+    // Nothing to search through: an unusable connection never reaches the picker.
+    expect(mocks.searchGitlabProjects).not.toHaveBeenCalled()
+
+    await act(async () => clickText('Connect GitLab')?.click())
+    expect(mocks.startGitlabOauth).toHaveBeenCalled()
+    expect(opened).toEqual([['https://gitlab.example.test/oauth/authorize?state=one-shot', '_blank', 'noopener']])
+  })
+
+  it('re-reads the picker when the user reports having connected', async () => {
     mocks.fetchGitlabProjects.mockResolvedValue([])
     mocks.fetchGitlabConnections.mockResolvedValue({ enabled: true, connections: [] })
     await render()
     await act(async () => tileNamed('GitLab')?.click())
+    expect(mocks.fetchGitlabConnections).toHaveBeenCalledTimes(1)
 
-    expect(document.body.textContent).toContain('No GitLab account is connected yet')
-    expect(document.querySelector('a[href="/acme/integrations"]')).not.toBeNull()
-    // Nothing to search through: an unusable connection never reaches the picker.
-    expect(mocks.searchGitlabProjects).not.toHaveBeenCalled()
+    mocks.fetchGitlabProjects.mockResolvedValue([project])
+    mocks.fetchGitlabConnections.mockResolvedValue({ enabled: true, connections: [connection] })
+    await act(async () => clickText('I’ve connected it — sync')?.click())
+
+    expect(mocks.fetchGitlabConnections).toHaveBeenCalledTimes(2)
+    expect(document.body.textContent).not.toContain('Connect GitLab to watch projects')
   })
 
   it('sets up a project the organization has not added, then picks it', async () => {
