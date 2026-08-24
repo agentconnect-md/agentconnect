@@ -536,8 +536,11 @@ export function agentSlugFinalize(v: string): string {
 }
 
 // Runtime ids offered when no daemon is selected (or it reports no profiles). When a
-// daemon IS selected, the ids come from its reported runtime profiles instead.
-export const FALLBACK_RUNTIME_IDS = ['claude', 'codex', 'opencode']
+// daemon IS selected, the ids come from its reported runtime profiles instead. Spelled as
+// the public ACP registry spells them — Claude and Codex carry its `-acp` suffix and
+// opencode does not — because a chosen id that no daemon reports is one the daemon rejects
+// at activation ("runtime is unavailable"), and nothing between here and there rewrites it.
+export const FALLBACK_RUNTIME_IDS = ['claude-acp', 'codex-acp', 'opencode']
 
 const REGISTRY_RUNTIME_NAME_OVERRIDES: Record<string, string> = {
   'Claude Agent': 'Claude Code'
