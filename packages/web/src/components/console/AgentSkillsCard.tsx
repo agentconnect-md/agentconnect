@@ -6,30 +6,40 @@ import {
   fetchAgentSkillSources,
   fetchSkillSourceSkills,
   listManagedSkills,
+  repoLabel,
   type AgentSkillSourceDto,
   type ManagedSkillDto,
+  type SkillSourceDto,
   type SkillSourceSkillsDto
 } from '@/lib/api'
 import { useConsoleData } from '@/lib/data-context'
 import { MOCK_MODE } from '@/lib/data'
-import { SkillMark, SkillSourceLine, ToolTile, ToolTileGrid } from '@/components/console/ToolTile'
-import { VisibilityValue } from '@/components/console/VisibilityField'
+import { AttachedEmpty, AttachedNote, AttachedRow, AttachMenu } from '@/components/console/AttachedList'
+import { InstallRegistrySkillModal } from '@/components/console/InstallRegistrySkillModal'
+import { CreateSkillSourceModal } from '@/components/console/SkillSourcesCard'
+import { SkillMark, SkillSourceLine } from '@/components/console/ToolTile'
 import { Icon, Toggle } from '@/components/ui'
 
 /**
- * The agent's shared-skills enable-list (docs/designs/shared-skills.md). Lists the
- * org's visible skill sources; each can be enabled whole (`<source>/*`) or, when the
- * source's SKILL.md manifest is scannable, expanded to toggle individual skills
+ * The agent's shared-skills enable-list (docs/designs/shared-skills.md), rendered
+ * as the design's attached-roster: one row per skill this agent installs, with the
+ * header's Add menu offering the org's managed bundles and Git sources it hasn't
+ * attached yet. A Git source can be enabled whole (`<source>/*`) or, when its
+ * SKILL.md manifest is scannable, expanded to toggle individual skills
  * (`<source>/<skill>`). The agent stores the explicit ref list and the CP resolves
  * it into installable entries.
  *
- * The tiles are the org registry the caller can see, PLUS whatever this agent
- * already enables — `GET /agents/:id/skill-sources` resolves the agent's refs
- * regardless of the source's own sharing, so a source restricted away from the
- * caller still shows its name and repo rather than a bare, unexplained row. A ref
- * whose source is genuinely gone resolves to nothing and is not rendered: it
- * installs nothing (the CP resolver drops it) and there is nothing truthful to say
- * about it.
+ * The attached rows are the agent's own refs — `GET /agents/:id/skill-sources`
+ * resolves them regardless of the source's own sharing, so a source restricted away
+ * from the caller still shows its name and repo rather than a bare, unexplained row,
+ * and can be removed. A ref whose source is genuinely gone resolves to nothing and
+ * is not rendered: it installs nothing (the CP resolver drops it) and there is
+ * nothing truthful to say about it. Only sources the caller can SEE are offered in
+ * the Add menu — the CP rejects enabling an unseen one (`enablingUnseenSkillDenied`).
+ *
+ * The menu's quick-add items open the skills library's OWN dialogs
+ * (`InstallRegistrySkillModal`, `CreateSkillSourceModal`), and a source registered
+ * through either is enabled on this agent immediately.
  */
 
 const sourceOf = (ref: string) => (ref.includes('/') ? ref.slice(0, ref.indexOf('/')) : ref)
@@ -52,12 +62,14 @@ export function AgentSkillsCard({ agentId, canEdit }: { agentId: string; canEdit
   const [err, setErr] = useState<string | null>(null)
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [manifests, setManifests] = useState<Record<string, SkillSourceSkillsDto | 'loading'>>({})
+  const [creating, setCreating] = useState(false)
+  const [browsing, setBrowsing] = useState(false)
   const fetched = useRef(false)
 
   useEffect(() => {
     if (fetched.current) return
     // Demo agents (canEdit false) have no spec to fetch — mock mode seeds a selection
-    // so both tile states (whole source vs a picked subset) are visible.
+    // so both row states (whole source vs a picked subset) are visible.
     if (!canEdit) {
       if (MOCK_MODE) {
         setEnabled(['example-ai-kit/*', 'internal-runbooks/safe-deploy'])
@@ -81,9 +93,9 @@ export function AgentSkillsCard({ agentId, canEdit }: { agentId: string; canEdit
         setErr(e instanceof Error ? e.message : String(e))
       }
     )
-    // Resolving the agent's own refs is best-effort decoration: it only ADDS tiles
+    // Resolving the agent's own refs is best-effort decoration: it only ADDS rows
     // for sources missing from the registry list, so a failure degrades to the
-    // registry view rather than blocking the toggles.
+    // registry view rather than blocking the card.
     if (canEdit) {
       fetchAgentSkillSources(agentId).then(
         (rows) => setOwn(rows),
@@ -101,7 +113,7 @@ export function AgentSkillsCard({ agentId, canEdit }: { agentId: string; canEdit
     try {
       await updateAgent(agentId, { skills: next })
     } catch (e) {
-      setEnabled(prev) // revert so the toggles never lie about what's saved
+      setEnabled(prev) // revert so the rows never lie about what's saved
       setErr(e instanceof Error ? e.message : String(e))
     } finally {
       setSaving(false)
@@ -148,6 +160,10 @@ export function AgentSkillsCard({ agentId, canEdit }: { agentId: string; canEdit
     void save([...base, ...[...set].map((s) => `${name}/${s}`)])
   }
 
+  // A source registered from this card is what the operator wanted on THIS agent,
+  // so it is enabled whole as soon as the library accepts it.
+  const enableCreated = (created: SkillSourceDto) => toggleSource(created.name, true)
+
   const expand = (id: string) => {
     setExpanded((cur) => {
       const next = new Set(cur)
@@ -165,14 +181,13 @@ export function AgentSkillsCard({ agentId, canEdit }: { agentId: string; canEdit
   }
 
   // Registry rows the caller can see, then the agent's own sources that sharing keeps
-  // out of that list. The second group is `registry: false` — the CP still gates
-  // ADDING a ref on seeing the source (`enablingUnseenSkillDenied`), so those tiles
-  // are off-only and offer no per-skill picker; they exist to say what the agent
-  // installs and to let it be turned off, like the MCP card's ineligible names.
-  const tiles = useMemo(() => {
+  // out of that list. The second group is `registry: false` — off-only, with no
+  // per-skill picker, because the CP gates ADDING a ref on seeing the source; they
+  // exist to say what the agent installs and to let it be removed.
+  const sources = useMemo(() => {
     const known = new Set(skillSources.map((s) => s.name))
     // `registry` is a literal so it discriminates the union: only the registry arm
-    // carries the sharing fields the footer reads.
+    // carries the fields the menu's repo hint reads.
     return [
       ...skillSources.map((s) => ({ ...s, registry: true as const })),
       ...(own ?? []).filter((s) => !known.has(s.name)).map((s) => ({ ...s, registry: false as const }))
@@ -180,162 +195,151 @@ export function AgentSkillsCard({ agentId, canEdit }: { agentId: string; canEdit
   }, [skillSources, own])
 
   // Nothing is known yet while either list is in flight; rendering the empty state
-  // then would claim the org has no sources when we simply haven't asked.
-  const loading = skillSourcesLoading || (canEdit && own === null)
-
+  // then would claim the agent has nothing when we simply haven't asked.
+  const loading = skillSourcesLoading || (canEdit && own === null) || managedLibrary === null || enabled === null
   const interactive = canEdit && enabled !== null && !saving
+
+  const library = managedLibrary ?? []
+  const managedIds = managedEnabled ?? []
+  const attachedManaged = library.filter((skill) => managedIds.includes(skill.id))
+  const attachedSources = sources.filter((s) => {
+    const sel = enabled ? selectionFor(enabled, s.name) : null
+    return !!sel && (sel.all || sel.skills.size > 0)
+  })
+  const empty = attachedManaged.length === 0 && attachedSources.length === 0
+
+  const menu = canEdit ? (
+    <AttachMenu
+      ariaLabel="Add a skill to this agent"
+      disabled={!interactive || managedEnabled === null}
+      groups={[
+        {
+          heading: 'Managed skills',
+          icon: 'package',
+          options: library
+            .filter((skill) => !skill.archivedAt && !managedIds.includes(skill.id))
+            .map((skill) => ({
+              key: skill.id,
+              name: skill.name,
+              meta: `rev ${skill.currentRevision}`,
+              onPick: () => void saveManaged([...managedIds, skill.id])
+            })),
+          emptyLabel: 'No further approved managed skills to add.'
+        },
+        {
+          heading: 'Git skill sources',
+          icon: 'book-open',
+          // Only registry sources are offerable — the CP rejects enabling a ref to a
+          // source this caller can't see.
+          options: sources
+            .filter((s) => s.registry && !attachedSources.some((a) => a.name === s.name))
+            .map((s) => ({
+              key: s.id,
+              name: s.name,
+              meta: repoLabel(s.source),
+              onPick: () => toggleSource(s.name, true)
+            })),
+          emptyLabel: 'Every source in your organization is already enabled.'
+        }
+      ]}
+      actions={[
+        { key: 'registry', label: 'Search skills.sh…', icon: 'search', onPick: () => setBrowsing(true) },
+        { key: 'custom', label: 'Add custom skill source…', icon: 'plus', onPick: () => setCreating(true) }
+      ]}
+    />
+  ) : undefined
 
   return (
     <div className="card overflow-hidden max-desktop:rounded-lg desktop:max-w-[760px]">
-      <div className="border-b border-(--border-subtle) px-4 py-3 font-sans text-[14px] font-semibold leading-normal desktop:py-[13px]">
-        Skills
+      <div className="cardhead flex-wrap gap-2">
+        <span className="cardtitle">Skills</span>
+        <span className="mono ml-auto text-[11px] text-(--text-tertiary)">managed bundles · Git sources</span>
+        {menu}
       </div>
 
-      <div className="border-b border-(--border-subtle)">
-        <div className="flex items-baseline justify-between px-4 pt-3 pb-2">
-          <span className="font-sans text-[12.5px] font-semibold text-(--text-secondary)">
-            Managed organization skills
-          </span>
-          <span className="font-sans text-[10.5px] text-(--text-tertiary)">owner-approved · pinned revision</span>
-        </div>
-        {managedLibrary === null || managedEnabled === null ? (
-          <div className="px-4 pb-3 font-sans text-[12px] text-(--text-tertiary)">Loading managed skills…</div>
-        ) : managedLibrary.length === 0 ? (
-          <div className="px-4 pb-3 font-sans text-[12px] text-(--text-tertiary)">
-            No approved managed skills are available yet.
-          </div>
-        ) : (
-          <ToolTileGrid columns={2}>
-            {managedLibrary.map((skill) => {
-              const checked = managedEnabled.includes(skill.id) && !skill.archivedAt
-              return (
-                <ToolTile
-                  key={skill.id}
-                  mark={<SkillMark />}
-                  name={skill.name}
-                  badge={
-                    <span
-                      className={`badge flex-none text-[9.5px] ${skill.archivedAt ? 'bg-(--surface-sunken) text-(--text-disabled)' : 'bg-(--status-online-soft) text-(--status-online)'}`}
-                    >
-                      {skill.archivedAt ? 'archived' : `rev ${skill.currentRevision}`}
-                    </span>
-                  }
-                  subtitle={skill.description}
-                  footer={
-                    <span className="mono text-[10.5px] text-(--text-disabled)">
-                      {skill.fileCount} file{skill.fileCount === 1 ? '' : 's'} · immutable bundle
-                    </span>
-                  }
-                  action={
-                    <Toggle
-                      checked={checked}
-                      disabled={!canEdit || saving || !!skill.archivedAt}
-                      onChange={(next) =>
-                        void saveManaged(
-                          next
-                            ? [...managedEnabled.filter((id) => id !== skill.id), skill.id]
-                            : managedEnabled.filter((id) => id !== skill.id)
-                        )
-                      }
-                    />
-                  }
-                />
-              )
-            })}
-          </ToolTileGrid>
-        )}
-      </div>
-
-      <div className="px-4 pt-3 pb-2 font-sans text-[12.5px] font-semibold text-(--text-secondary)">
-        Git skill sources
-      </div>
-
-      {tiles.length === 0 ? (
-        <div className="flex items-center gap-2 px-4 py-[13px] font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary) desktop:py-3">
-          {loading ? (
-            'Loading skill sources…'
-          ) : (
-            <>
-              <Icon name="book-open" size={14} />
-              No skill sources in your organization yet.
-            </>
-          )}
-        </div>
+      {empty ? (
+        <AttachedEmpty
+          title={loading ? 'Loading skills…' : 'No skills'}
+          hint={
+            loading
+              ? 'Reading this agent’s enabled skills.'
+              : canEdit
+                ? 'Enable a managed bundle or a Git source from your organization, or register a new one.'
+                : 'This agent has no skills enabled.'
+          }
+          action={loading ? undefined : menu}
+        />
       ) : (
-        <ToolTileGrid columns={2}>
-          {tiles.map((s) => {
-            const sel = enabled ? selectionFor(enabled, s.name) : { all: false, skills: new Set<string>() }
-            const on = sel.all || sel.skills.size > 0
-            const manifest = manifests[s.id]
-            const isOpen = expanded.has(s.id)
-            return (
-              <ToolTile
-                key={s.id}
+        <>
+          <div>
+            {attachedManaged.map((skill) => (
+              <AttachedRow
+                key={skill.id}
                 mark={<SkillMark />}
-                name={s.name}
-                // What's selected rides as a badge so the second line can stay the repo,
-                // matching the registry card's tile.
+                name={skill.name}
+                meta={`rev ${skill.currentRevision} · ${skill.fileCount} file${skill.fileCount === 1 ? '' : 's'} · immutable bundle`}
+                dimmed={!!skill.archivedAt}
                 badge={
-                  on ? (
-                    <span className="badge flex-none bg-(--status-info-soft) text-[9.5px] text-(--status-info)">
+                  <span
+                    className={`badge flex-none ${skill.archivedAt ? 'bg-(--surface-sunken) text-(--text-disabled)' : 'bg-(--status-online-soft) text-(--status-online)'}`}
+                  >
+                    {skill.archivedAt ? 'archived' : 'managed'}
+                  </span>
+                }
+                onRemove={
+                  canEdit && !saving ? () => void saveManaged(managedIds.filter((id) => id !== skill.id)) : undefined
+                }
+                removeTitle="Remove from this agent"
+              />
+            ))}
+            {attachedSources.map((s) => {
+              const sel = enabled ? selectionFor(enabled, s.name) : { all: false, skills: new Set<string>() }
+              const manifest = manifests[s.id]
+              const isOpen = expanded.has(s.id)
+              return (
+                <AttachedRow
+                  key={s.id}
+                  mark={<SkillMark />}
+                  name={s.name}
+                  meta={<SkillSourceLine source={s.source} subDir={s.subDir} />}
+                  badge={
+                    <span className="badge flex-none bg-(--status-info-soft) text-(--status-info)">
                       {sel.all ? 'all skills' : `${sel.skills.size} selected`}
                     </span>
-                  ) : undefined
-                }
-                subtitle={<SkillSourceLine source={s.source} subDir={s.subDir} />}
-                // Who the source belongs to, worded exactly as its registry tile words it.
-                // Only the registry rows carry a share set — the agent-scoped resolution
-                // deliberately omits it (seeing an agent isn't seeing the source).
-                footer={
-                  s.registry ? <VisibilityValue visibility={s.visibility} sharedWith={s.sharedWith} /> : undefined
-                }
-                action={
-                  <>
-                    {/* Expanding is a secondary move, so the chevron only surfaces on
-                        hover/keyboard focus (and stays put once open). Its box is always
-                        reserved, so revealing it never shifts the toggle. Touch has no
-                        hover, so below the desktop breakpoint it stays visible. */}
-                    {s.registry && (
+                  }
+                  // Picking individual skills is a secondary move, so the chevron only
+                  // surfaces on hover/keyboard focus (and stays put once open). An
+                  // agent-scoped source has no picker: the CP would reject re-adding a
+                  // ref to a source this caller can't see.
+                  actions={
+                    s.registry ? (
                       <button
                         type="button"
-                        className={`iconbtn h-6 w-6 transition-opacity focus-visible:opacity-100 group-hover:opacity-100 max-desktop:opacity-100 ${isOpen ? 'opacity-100' : 'opacity-0'}`}
+                        className="iconbtn h-[26px] w-[26px] flex-none"
                         onClick={() => expand(s.id)}
-                        aria-label="Show skills"
+                        aria-label="Choose individual skills"
                         aria-expanded={isOpen}
-                        title="Show skills"
+                        title="Choose individual skills"
                       >
                         <Icon name={isOpen ? 'chevron-down' : 'chevron-right'} size={13} />
                       </button>
-                    )}
-                    {/* No picker for an agent-scoped source, but keep its slot so the
-                        toggles line up with the registry tiles beside it. */}
-                    {!s.registry && <span className="block h-6 w-6" />}
-                    <span className="ml-[6px]">
-                      <Toggle
-                        checked={on}
-                        // Off-only for a non-registry source: the CP would reject
-                        // re-adding a ref to a source this caller can't see.
-                        disabled={!interactive || (!s.registry && !on)}
-                        onChange={(next) => toggleSource(s.name, next)}
-                      />
-                    </span>
-                  </>
-                }
-              >
-                {isOpen && s.registry && (
-                  <div className="border-t border-(--border-subtle) bg-(--surface-sunken) px-[14px] py-2">
-                    {manifest === 'loading' || manifest === undefined ? (
-                      <div className="py-1 font-sans text-[12px] text-(--text-tertiary)">Loading skills…</div>
-                    ) : !manifest.resolvable || manifest.skills.length === 0 ? (
-                      <div className="py-1 font-sans text-[12px] leading-[1.5] text-(--text-tertiary)">
-                        {manifest.resolvable
-                          ? 'No SKILL.md found in this source.'
-                          : 'Can’t list individual skills for this source — enable the whole source above.'}
-                      </div>
-                    ) : (
-                      manifest.skills.map((sk) => {
-                        const checked = sel.all || sel.skills.has(sk.name)
-                        return (
+                    ) : undefined
+                  }
+                  onRemove={canEdit && !saving ? () => toggleSource(s.name, false) : undefined}
+                  removeTitle="Remove from this agent"
+                >
+                  {isOpen && s.registry && (
+                    <div className="border-t border-(--border-subtle) bg-(--surface-sunken) px-[14px] py-2">
+                      {manifest === 'loading' || manifest === undefined ? (
+                        <div className="py-1 font-sans text-[12px] text-(--text-tertiary)">Loading skills…</div>
+                      ) : !manifest.resolvable || manifest.skills.length === 0 ? (
+                        <div className="py-1 font-sans text-[12px] leading-[1.5] text-(--text-tertiary)">
+                          {manifest.resolvable
+                            ? 'No SKILL.md found in this source.'
+                            : 'Can’t list individual skills for this source — the whole source is enabled.'}
+                        </div>
+                      ) : (
+                        manifest.skills.map((sk) => (
                           <div key={sk.name} className="flex items-center gap-[11px] py-[7px]">
                             <div className="min-w-0 flex-1">
                               <div className="truncate font-mono text-[12px] font-medium leading-normal text-(--text-primary)">
@@ -346,7 +350,7 @@ export function AgentSkillsCard({ agentId, canEdit }: { agentId: string; canEdit
                               </div>
                             </div>
                             <Toggle
-                              checked={checked}
+                              checked={sel.all || sel.skills.has(sk.name)}
                               disabled={!interactive}
                               onChange={() =>
                                 toggleSkill(
@@ -357,20 +361,44 @@ export function AgentSkillsCard({ agentId, canEdit }: { agentId: string; canEdit
                               }
                             />
                           </div>
-                        )
-                      })
-                    )}
-                  </div>
-                )}
-              </ToolTile>
-            )
-          })}
-        </ToolTileGrid>
+                        ))
+                      )}
+                    </div>
+                  )}
+                </AttachedRow>
+              )
+            })}
+          </div>
+          <AttachedNote>
+            Managed bundles install from their pinned revision; Git sources install with{' '}
+            <span className="mono text-[11.5px]">npx skills</span> on session start. Removing one stops installing it
+            for this agent.
+          </AttachedNote>
+        </>
       )}
 
       {err && (
         <div className="border-t border-(--border-subtle) px-4 py-[11px] font-sans text-[12px] font-normal leading-normal text-(--red-600)">
           {err}
+        </div>
+      )}
+
+      {browsing && (
+        <div className="scrim">
+          <div className="modal">
+            <InstallRegistrySkillModal
+              existing={skillSources}
+              onClose={() => setBrowsing(false)}
+              onCreated={enableCreated}
+            />
+          </div>
+        </div>
+      )}
+      {creating && (
+        <div className="scrim">
+          <div className="modal">
+            <CreateSkillSourceModal onClose={() => setCreating(false)} onCreated={enableCreated} />
+          </div>
         </div>
       )}
     </div>

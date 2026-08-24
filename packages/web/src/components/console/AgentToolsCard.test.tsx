@@ -9,7 +9,8 @@ const mocks = vi.hoisted(() => ({
   mcpProviders: [
     { name: 'grafana', visibility: 'org' },
     { name: 'linear', visibility: 'org' }
-  ] as unknown[]
+  ] as unknown[],
+  saved: [] as string[]
 }))
 
 vi.mock('@/lib/data-context', () => ({
@@ -20,7 +21,7 @@ vi.mock('@/lib/data-context', () => ({
   })
 }))
 vi.mock('@/lib/api', () => ({
-  fetchAgentDto: vi.fn(async () => ({ mcpServers: [] })),
+  fetchAgentDto: vi.fn(async () => ({ mcpServers: mocks.saved })),
   fetchConnectorCatalog: vi.fn(async () => ({ providers: [] })),
   repoLabel: (r: unknown) => String(r),
   repoWebUrl: () => undefined
@@ -44,11 +45,23 @@ async function render(daemon: DaemonRow | undefined): Promise<string> {
   return host.textContent ?? ''
 }
 
+/** Open the header's Add menu and read what it offers. It portals to the body,
+ *  so the attachable names are never in the card's own subtree. */
+async function openAddMenu(): Promise<string> {
+  const trigger = [...document.querySelectorAll('button')].find((b) => b.textContent?.includes('Add'))
+  expect(trigger).toBeTruthy()
+  await act(async () => {
+    trigger!.click()
+  })
+  return document.querySelector('[data-anchored-flyout]')?.textContent ?? ''
+}
+
 afterEach(() => {
   act(() => root?.unmount())
   host?.remove()
   root = undefined
   host = undefined
+  mocks.saved = []
 })
 
 describe('AgentToolsCard', () => {
@@ -56,27 +69,46 @@ describe('AgentToolsCard', () => {
   // console resolves no owning daemon for it. Gating the whole candidate list on that lookup hid
   // every org-registry server such an agent could attach — and those are http-proxied, so they
   // never needed a daemon in the first place.
-  it('lists the org registry servers for an agent with no resolved daemon', async () => {
-    const text = await render(undefined)
-    expect(text).toContain('grafana')
-    expect(text).toContain('linear')
+  it('offers the org registry servers for an agent with no resolved daemon', async () => {
+    await render(undefined)
+    const menu = await openAddMenu()
+    expect(menu).toContain('grafana')
+    expect(menu).toContain('linear')
   })
 
   it('unions the daemon-reported servers with the registry when a daemon does resolve', async () => {
     const daemon = {
+      name: 'mac-studio',
       mcpServers: [{ name: 'daemon-local', transport: 'stdio' }],
       runtimeModels: []
     } as unknown as DaemonRow
-    const text = await render(daemon)
-    expect(text).toContain('daemon-local')
-    expect(text).toContain('grafana')
+    await render(daemon)
+    const menu = await openAddMenu()
+    expect(menu).toContain('daemon-local')
+    expect(menu).toContain('grafana')
   })
 
-  it('still shows the empty state when the org registry is empty too', async () => {
+  // The rows are the saved allow-list, so an attached server leaves the Add menu.
+  it('rows the attached servers and drops them from the Add menu', async () => {
+    mocks.saved = ['grafana']
+    const text = await render(undefined)
+    expect(text).toContain('grafana')
+    expect(text).not.toContain('linear')
+    const menu = await openAddMenu()
+    expect(menu).toContain('linear')
+    expect(menu).not.toContain('grafana')
+  })
+
+  it('shows the empty state when the agent has nothing attached', async () => {
+    expect(await render(undefined)).toContain('No MCP servers')
+  })
+
+  it('says so in the menu when the org registry is empty too', async () => {
     const saved = mocks.mcpProviders
     mocks.mcpProviders = []
     try {
-      expect(await render(undefined)).toContain('No MCP servers available to this agent.')
+      await render(undefined)
+      expect(await openAddMenu()).toContain('already attached')
     } finally {
       mocks.mcpProviders = saved
     }

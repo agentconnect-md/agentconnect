@@ -270,7 +270,15 @@ function SourceTile({
   )
 }
 
-function CreateSkillSourceModal({ onClose }: { onClose: () => void }) {
+/** Register a Git skill source. Reused by the agent detail view's Skills card,
+ *  which passes `onCreated` to enable the new source on that agent right away. */
+export function CreateSkillSourceModal({
+  onClose,
+  onCreated
+}: {
+  onClose: () => void
+  onCreated?: (created: SkillSourceDto) => void
+}) {
   const { createSkillSource } = useConsoleData()
   const { me } = useProfile()
   const [name, setName] = useState('')
@@ -299,7 +307,7 @@ function CreateSkillSourceModal({ onClose }: { onClose: () => void }) {
     setBusy(true)
     setErr(null)
     try {
-      await createSkillSource({
+      const created = await createSkillSource({
         name: derivedName,
         source: source.trim(),
         ...(ref.trim() ? { ref: ref.trim() } : {}),
@@ -309,6 +317,7 @@ function CreateSkillSourceModal({ onClose }: { onClose: () => void }) {
           ? { visibility: 'restricted' as const, sharedWith: sharing.sharedWith }
           : {})
       })
+      onCreated?.(created)
       onClose()
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
