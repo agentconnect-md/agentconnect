@@ -99,6 +99,11 @@ function toRecord(s: SessionMeta): SessionMetaRecord {
     classifiedPolicyRev: s.classifiedPolicyRev,
     contentPurgedAt: s.contentPurgedAt,
     contentPurgedReason: s.contentPurgedReason,
+    pullRequestRepoId: s.pullRequestRepoId,
+    pullRequestRepoFullName: s.pullRequestRepoFullName,
+    pullRequestInstallationId: s.pullRequestInstallationId,
+    pullRequestNumber: s.pullRequestNumber,
+    pullRequestLinkedAt: s.pullRequestLinkedAt,
     startedAt: s.startedAt,
     endedAt: s.endedAt
   }
@@ -1314,6 +1319,20 @@ export class PgSessionRepo implements SessionRepo {
       select: { id: true }
     })
     return row ? SessionId(row.id) : null
+  }
+
+  async recentTerminalForPullRequestDiscovery(orgId: OrgId, limit: number): Promise<SessionMetaRecord[]> {
+    const rows = await this.db.sessionMeta.findMany({
+      where: {
+        orgId,
+        phase: { in: ['end', 'problem'] },
+        contentPurgedAt: null,
+        pullRequestRepoId: null
+      },
+      orderBy: [{ lastActivityAt: 'desc' }, { startedAt: 'desc' }, { id: 'desc' }],
+      take: Math.max(1, Math.min(limit, 50))
+    })
+    return rows.map(toRecord)
   }
 
   async listFacets(q: SessionFacetQuery): Promise<SessionFacetIndex> {

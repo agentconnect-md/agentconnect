@@ -46,6 +46,7 @@ import { GithubRerequestService } from './github/rerequest.service.js'
 import { GithubReviewBrokerService } from './github/review-broker.service.js'
 import { PullRequestViewService } from './github/pull-request-view.service.js'
 import { SessionPullRequestLinkService } from './github/session-pull-request-link.service.js'
+import { SessionPullRequestFeedbackService } from './github/session-pull-request-feedback.service.js'
 import { GithubRunCoordinator, GithubRunReporter } from './github/run-reporter.js'
 import { CodeHostNoteProjectionService } from './codehost/note-projection.service.js'
 import { githubProjectionIntent } from './github/projection-intent.js'
@@ -68,6 +69,7 @@ import {
   PgMemoryConnectionWriter,
   PgAssignmentRepo,
   PgSessionRepo,
+  PgSessionPullRequestFeedbackRepo,
   PgSessionUsageRepo,
   PgWebchatConversationRepo,
   PgWebchatMcpDelegationRepo,
@@ -369,6 +371,7 @@ export function buildContainer(
     agent: new PgAgentRepo(prisma),
     assignment: new PgAssignmentRepo(prisma),
     session: new PgSessionRepo(prisma),
+    sessionPullRequestFeedback: new PgSessionPullRequestFeedbackRepo(prisma),
     sessionUsage: new PgSessionUsageRepo(prisma),
     webchatConversation: new PgWebchatConversationRepo(prisma),
     webchatMcpDelegation: new PgWebchatMcpDelegationRepo(prisma, defaultWebchatMcpMetrics),
@@ -1209,10 +1212,41 @@ export function buildContainer(
             }
           },
           latestSessionIdOfAgent: (agent) => repos.session.latestSessionIdForAgent(agent.orgId, agent.id),
+          onResolved: async (agent, session, link) => {
+            const linked = await repos.sessionPullRequestFeedback.linkSession({
+              sessionId: session.id,
+              agentId: agent.id,
+              orgId: agent.orgId,
+              repoId: link.repoId,
+              repoFullName: link.repoFullName,
+              installationId: link.installationId,
+              pullNumber: link.pullNumber,
+              at: new Date(clock.now())
+            })
+            if (linked) sessionPullRequestFeedback?.kick()
+          },
           log: { warn: (obj, message) => http.log.warn(obj, message) },
           ...(opts.githubFetch ? { fetchImpl: opts.githubFetch } : {})
         })
       : undefined
+  const sessionPullRequestFeedback = sessionPullRequestLink
+    ? new SessionPullRequestFeedbackService({
+        clock,
+        feedback: repos.sessionPullRequestFeedback,
+        sessions: repos.session,
+        agents: repos.agent,
+        installations: repos.githubInstallation,
+        memberSets: repos.memberSet,
+        placement: placementResolver,
+        links: sessionPullRequestLink,
+        daemon: (daemonId) => connReg.get(daemonId),
+        send: (daemonId, request, orgId) => sender.sessionPullRequestFeedback(daemonId, orgId, request),
+        log: {
+          debug: (obj, message) => http.log.debug(obj, message),
+          warn: (obj, message) => http.log.warn(obj, message)
+        }
+      })
+    : undefined
   const githubReviewBroker = github
     ? new GithubReviewBrokerService({
         hook: repos.hook,
@@ -1781,6 +1815,7 @@ export function buildContainer(
     webchatRemoteMcp,
     launch: repos.launch,
     visibilityPush,
+    ...(sessionPullRequestFeedback ? { pullRequestFeedback: sessionPullRequestFeedback } : {}),
     events,
     usageWriter,
     integration: repos.integration,
@@ -1884,6 +1919,7 @@ export function buildContainer(
     authorizeGithubComment: async (req) => (githubCommentAuthz ? githubCommentAuthz.allowed(req) : false),
     authorizeGithubRerequest: async (req) => (githubRerequest ? githubRerequest.resolve(req) : { allowed: false }),
     authorizeCodeHostMembership: async (req) => (gitlabMembershipAuthz ? gitlabMembershipAuthz.allowed(req) : false),
+    onPullRequestFeedback: async (signal) => (await sessionPullRequestFeedback?.enqueue(signal)) ?? false,
     // A relay just (re)registered — refresh every daemon's roster, (re)assign every
     // HTTP bots' ingress + routes (§5, idempotent), AND replay the compiled hook
     // rules to the fresh connection (its table is a memory copy). All fire-and-forget,
@@ -2170,6 +2206,7 @@ export function buildContainer(
       relaySweeper.start()
       dutyRecompute.start()
       sessionAccessWarmer.start()
+      sessionPullRequestFeedback?.start()
       for (const loop of backgroundLoops) loop.start()
       // One-shot (not a re-arming loop): the worklist empties itself; a partially
       // failed boot resumes on the next one. Never blocks listen.
@@ -2192,6 +2229,7 @@ export function buildContainer(
       poolMetrics.stop()
       orgMetrics.stop()
       sessionAccessWarmer.stop()
+      sessionPullRequestFeedback?.stop()
       for (const loop of backgroundLoops) loop.stop()
       visibilityPush.stop()
       await Promise.allSettled([
@@ -2200,6 +2238,7 @@ export function buildContainer(
         visibilityPush.settle(),
         sessionAccessWarmer.settle(),
         dutyRecompute.settle(),
+        ...(sessionPullRequestFeedback ? [sessionPullRequestFeedback.settle()] : []),
         ...(installationDoorbell ? [installationDoorbell.settle()] : [])
       ])
       await rootPrisma.$disconnect()

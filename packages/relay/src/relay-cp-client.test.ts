@@ -5,6 +5,7 @@ import {
   GITLAB_COM_V1_FEATURE,
   GITLAB_INSTANCE_V1_FEATURE,
   GITLAB_RERUN_V1_FEATURE,
+  PULL_REQUEST_FEEDBACK_FEATURE,
   WEBCHAT_SESSION_CONTINUATION_FEATURE,
   type RelayCpFrame
 } from '@agentconnect.md/protocol'
@@ -95,7 +96,8 @@ class FakeTransport implements Transport {
 async function completeHandshake(
   transport: FakeTransport,
   heartbeatSec = 15,
-  deploymentConfig?: { revision: number; githubWebhookSecret?: string }
+  deploymentConfig?: { revision: number; githubWebhookSecret?: string },
+  serverFeatures: string[] = []
 ): Promise<void> {
   const auth = transport.lastReq('rc/auth')!
   transport.inject(
@@ -111,7 +113,7 @@ async function completeHandshake(
   )
   await flush()
   const reg = transport.lastReq('rc/register')!
-  transport.inject(buildRelayCpFrame('rc/registered', { relayId: RELAY_ID }, { corr: reg.id }))
+  transport.inject(buildRelayCpFrame('rc/registered', { relayId: RELAY_ID, serverFeatures }, { corr: reg.id }))
   await flush()
 }
 
@@ -197,7 +199,8 @@ describe('RelayCpClient', () => {
         WEBCHAT_SESSION_CONTINUATION_FEATURE,
         GITLAB_COM_V1_FEATURE,
         GITLAB_RERUN_V1_FEATURE,
-        GITLAB_INSTANCE_V1_FEATURE
+        GITLAB_INSTANCE_V1_FEATURE,
+        PULL_REQUEST_FEEDBACK_FEATURE
       ]
     })
 
@@ -352,6 +355,38 @@ describe('RelayCpClient', () => {
     client.emitGithubInstallation({ installationId: '1234567', action: 'created' })
     const poke = transport.lastReq('rc/github-installation')!
     expect(poke.payload).toEqual({ installationId: '1234567', action: 'created' })
+  })
+
+  it('persists PR feedback only after the CP advertises the compatible receiver', async () => {
+    const { client, transport } = makeClient()
+    client.start()
+    await flush()
+    await completeHandshake(transport, 15, undefined, [PULL_REQUEST_FEEDBACK_FEATURE])
+    const signal = {
+      deliveryKey: 'delivery-feedback-1',
+      installationId: '1234567',
+      repoId: '987654321',
+      repoFullName: 'acme/infra',
+      pullNumber: 77,
+      event: 'issue_comment:created',
+      kind: 'comment',
+      observedAt: '2026-07-07T00:00:00.000Z'
+    } as const
+
+    const pending = client.reportPullRequestFeedback(signal)
+    await flush()
+    const request = transport.lastReq('rc/pull-request-feedback')!
+    transport.inject(
+      buildRelayCpFrame(
+        'rc/pull-request-feedback/ok',
+        { deliveryKey: signal.deliveryKey, accepted: true },
+        { corr: request.id }
+      )
+    )
+    await expect(pending).resolves.toBe(true)
+
+    transport.simulateClose(1012)
+    await expect(client.reportPullRequestFeedback(signal)).rejects.toMatchObject({ retryable: true })
   })
 
   it('emitBotChannels reports the snapshot when READY and signals deferral otherwise', async () => {

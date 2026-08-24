@@ -226,6 +226,7 @@ async function recordEventSession(
     (s) => s.visibilityAckedRev < s.visibilityRev
   )
   if (confirm.length > 0) void deps.visibilityPush?.notifySessions(confirm)
+  if (session) deps.pullRequestFeedback?.trackSession(session)
   // Publish only after the metadata commit. Browser subscribers use this as an
   // invalidation signal and immediately re-read `/sessions`; publishing first
   // would race that GET against the upsert and leave the new row invisible.

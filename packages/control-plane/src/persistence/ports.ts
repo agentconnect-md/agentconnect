@@ -35,7 +35,10 @@ import type {
   CodeHostReviewOpState,
   CodeHostReviewState,
   CodeHostProvider,
-  HookKind
+  HookKind,
+  PullRequestFeedbackEvent,
+  PullRequestFeedbackKind,
+  PullRequestFeedbackSignal
 } from '@agentconnect.md/protocol'
 import type {
   CodeHostReviewLockReason,
@@ -1201,6 +1204,11 @@ export interface SessionMetaRecord {
    *  nothing left to proxy; the metadata here is the whole remaining record. */
   contentPurgedAt: Date | null
   contentPurgedReason: string | null
+  pullRequestRepoId: bigint | null
+  pullRequestRepoFullName: string | null
+  pullRequestInstallationId: bigint | null
+  pullRequestNumber: number | null
+  pullRequestLinkedAt: Date | null
   startedAt: Date
   endedAt: Date | null
 }
@@ -1363,6 +1371,8 @@ export interface SessionRepo {
    *  agent with one checkout has one branch, so that branch only speaks for the session using it now
    *  (webchat-side-panels.md §12.6). Rides `session_meta_agent_activity_page_idx`. */
   latestSessionIdForAgent(orgId: OrgId, agentId: AgentId): Promise<SessionId | null>
+  /** Recent terminal sessions eligible for branch→PR discovery after feedback arrived first. */
+  recentTerminalForPullRequestDiscovery?(orgId: OrgId, limit: number): Promise<SessionMetaRecord[]>
   /** One latest representative per distinct facet value after applying every
    *  other active facet. The database reduces the full history before returning
    *  this compact index to the HTTP layer. */
@@ -1464,6 +1474,51 @@ export interface SessionRepo {
    *  owner. Null when none. Placement is deliberately NOT a predicate here: which daemon serves
    *  the agent is {@link PlacementResolver}'s answer, and a pool agent names no machine. */
   findThreadOwner(botId: BotId, channel: string, thread: string): Promise<{ agentId: string } | null>
+}
+
+export interface PullRequestFeedbackRecord {
+  id: string
+  deliveryKey: string
+  orgId: OrgId
+  installationId: bigint
+  repoId: bigint
+  repoFullName: string
+  pullNumber: number
+  event: PullRequestFeedbackEvent
+  kind: PullRequestFeedbackKind
+  detail: string | null
+  observedAt: Date
+  sessionId: SessionId
+}
+
+export interface PullRequestFeedbackTarget {
+  orgId: OrgId
+  repoId: bigint
+  pullNumber: number
+}
+
+/** Durable PR→session identity plus body-free GitHub feedback delivery queue. */
+export interface SessionPullRequestFeedbackRepo {
+  /** First session to claim a numeric repo+PR wins; pending early feedback is attached in the same transaction. */
+  linkSession(input: {
+    sessionId: SessionId
+    agentId: AgentId
+    orgId: OrgId
+    repoId: bigint
+    repoFullName: string
+    installationId: bigint
+    pullNumber: number
+    at: Date
+  }): Promise<boolean>
+  /** Idempotently persist one signed signal, attaching it immediately when the PR is already linked. */
+  enqueue(orgId: OrgId, signal: PullRequestFeedbackSignal): Promise<void>
+  /** Oldest distinct PRs whose feedback arrived before any session link was known. */
+  unmatchedTargets(limit: number): Promise<PullRequestFeedbackTarget[]>
+  /** Cross-process lease claim after a quiet window; signals for one session are returned as one batch. */
+  claimPendingBatch(owner: string, now: Date, until: Date, readyBefore: Date): Promise<PullRequestFeedbackRecord[]>
+  markDelivered(ids: string[], owner: string, at: Date): Promise<void>
+  release(ids: string[], owner: string): Promise<void>
+  deleteExpired(unmatchedBefore: Date, deliveredBefore: Date): Promise<number>
 }
 
 // ───────────────────────────────────────────────────────────────────────────

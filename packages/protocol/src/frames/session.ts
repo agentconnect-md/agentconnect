@@ -307,3 +307,50 @@ export const SessionVisibilitySnapshot = z.object({
   entries: z.array(SessionVisibilityPush).max(1000)
 })
 export type SessionVisibilitySnapshot = z.infer<typeof SessionVisibilitySnapshot>
+
+/** Body-free GitHub signal that asks the daemon to continue an existing PR session. */
+export const PullRequestFeedbackKind = z.enum(['review', 'review_comment', 'comment', 'ci_failure'])
+export type PullRequestFeedbackKind = z.infer<typeof PullRequestFeedbackKind>
+
+export const PullRequestFeedbackEvent = z.enum([
+  'pull_request_review:submitted',
+  'pull_request_review_comment:created',
+  'pull_request_review_comment:edited',
+  'issue_comment:created',
+  'issue_comment:edited',
+  'check_suite:completed'
+])
+export type PullRequestFeedbackEvent = z.infer<typeof PullRequestFeedbackEvent>
+
+/** R→C persistence request. It contains routing/control metadata only; review bodies and CI logs stay off the CP. */
+export const PullRequestFeedbackSignal = z.object({
+  deliveryKey: z.string().min(1).max(200),
+  installationId: z.string().regex(/^[1-9]\d*$/),
+  repoId: z.string().regex(/^[1-9]\d*$/),
+  repoFullName: z.string().min(3).max(300),
+  pullNumber: z.number().int().positive(),
+  event: PullRequestFeedbackEvent,
+  kind: PullRequestFeedbackKind,
+  detail: z.string().min(1).max(80).optional(),
+  observedAt: z.string().datetime()
+})
+export type PullRequestFeedbackSignal = z.infer<typeof PullRequestFeedbackSignal>
+
+/** C→D exact-session continuation. The daemon constructs the prompt locally and fetches GitHub content itself. */
+export const SessionPullRequestFeedback = PullRequestFeedbackSignal.omit({
+  installationId: true,
+  observedAt: true
+}).extend({
+  agentId: z.string().uuid(),
+  sessionId: z.string().min(1)
+})
+export type SessionPullRequestFeedback = z.infer<typeof SessionPullRequestFeedback>
+
+export const SessionPullRequestFeedbackResult = z.object({
+  deliveryKey: z.string().min(1).max(200),
+  accepted: z.boolean(),
+  reason: z
+    .enum(['not_found', 'not_ready', 'paused', 'busy', 'draining', 'integration_offline', 'durability'])
+    .optional()
+})
+export type SessionPullRequestFeedbackResult = z.infer<typeof SessionPullRequestFeedbackResult>

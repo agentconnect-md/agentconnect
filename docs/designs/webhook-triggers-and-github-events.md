@@ -327,6 +327,41 @@ under that Agent's `worktrees` directory; concurrent pull requests therefore
 use different working directories while later events for one pull request
 reuse its directory.
 
+### Pull Request Feedback Continuation
+
+A pull request opened from an ordinary or issue-originated session must keep
+that session as its owner after the creating turn ends. The CP therefore stores
+the numeric repository id, pull-request number, installation id, and display
+name on `SessionMeta`. Terminal session milestones force the same
+session-branch lookup used by the console PR panel and persist the result. If a
+PR was opened manually after the terminal milestone, the first feedback signal
+is queued and drives a bounded scan of recent terminal sessions until that
+branch-to-PR identity converges.
+
+The signature-verified relay ingress has a separate metadata lane before hook
+subscription matching. It reports submitted reviews with actionable text or a
+changes-requested state, created or edited review comments, created or edited
+PR issue comments, and failed completed check suites. This lane intentionally
+does not reject comments authored by the deployment's own GitHub App: GitHub
+can reject the App's formal review submission and the review worker then leaves
+its actionable verdict as an App-authored PR comment. The ordinary hook matcher
+keeps its bot-loop filter unchanged.
+
+The relay sends no review body or check log to the CP and acknowledges GitHub
+only after the body-free signal is durably queued; a transient persistence
+failure returns 503 so GitHub can redeliver. Signals for one session wait for a
+short quiet window and become one continuation, preferring reviewer feedback
+over the accompanying failed-check notification.
+
+The CP dispatches that continuation only to a ready daemon that can serve the
+original session content and advertises `pull-request-feedback-v1`. The daemon
+reopens the exact agent-scoped session, constructs a local system turn that
+asks the agent to inspect current GitHub review and check state, and durably
+admits it under the webhook delivery key. Chat and webchat sessions retain
+their normal reply surface; hook and dream sessions continue headlessly while
+recording the result in their transcript. This is a continuation, not a new
+`HookRun`, and all reviewer text and CI output remain provider- or daemon-local.
+
 ### Revision Admission
 
 Deliveries for one pull request contend for the next generation rather than each

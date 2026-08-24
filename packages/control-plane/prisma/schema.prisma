@@ -1163,6 +1163,12 @@ model SessionMeta {
   // First-wins: an at-least-once re-report keeps the original stamp.
   contentPurgedAt     DateTime?           @db.Timestamptz(6)
   contentPurgedReason String? // SessionPurgeReason ('retention'); null while not purged
+  // Durable identity for a PR opened from this session's checkout. Numeric repo id survives renames.
+  pullRequestRepoId         BigInt?             @db.BigInt
+  pullRequestRepoFullName   String?
+  pullRequestInstallationId BigInt?             @db.BigInt
+  pullRequestNumber         Int?
+  pullRequestLinkedAt       DateTime?           @db.Timestamptz(6)
   lastActivityAt      DateTime            @db.Timestamptz(3)
   startedAt           DateTime            @default(now()) @db.Timestamptz(3)
   endedAt             DateTime?           @db.Timestamptz(6)
@@ -1177,7 +1183,9 @@ model SessionMeta {
   webchatCurrentFor      WebchatConversation[]      @relation("WebchatCurrentSession")
   webchatAgentCurrentFor WebchatConversationAgent[] @relation("WebchatAgentCurrentSession")
   webchatTargetedBy      WebchatConversation[]      @relation("WebchatTargetSession")
+  pullRequestFeedback    SessionPullRequestFeedback[]
 
+  @@unique([pullRequestRepoId, pullRequestNumber], map: "session_meta_pull_request_key")
   @@index([agentId, startedAt])
   @@index([lastActivityAt(sort: Desc), startedAt(sort: Desc), id(sort: Desc), agentId], map: "session_meta_activity_page_idx")
   @@index([agentId, lastActivityAt(sort: Desc), startedAt(sort: Desc), id(sort: Desc)], map: "session_meta_agent_activity_page_idx")
@@ -1194,6 +1202,33 @@ model SessionMeta {
   @@index([daemonId])
   @@index([orgId, externalProvider, externalScopeId])
   @@map("session_meta")
+}
+
+// Signed GitHub feedback control metadata. Bodies and CI logs remain daemon-local/provider-side.
+model SessionPullRequestFeedback {
+  id             String    @id @default(uuid()) @db.Uuid
+  deliveryKey    String    @unique
+  orgId          String
+  installationId BigInt    @db.BigInt
+  repoId         BigInt    @db.BigInt
+  repoFullName   String
+  pullNumber     Int
+  event          String
+  kind           String
+  detail         String?
+  observedAt     DateTime  @db.Timestamptz(6)
+  sessionId      String?
+  claimOwner     String?   @db.Uuid
+  claimUntil     DateTime? @db.Timestamptz(6)
+  deliveredAt    DateTime? @db.Timestamptz(6)
+  createdAt      DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt      DateTime  @updatedAt @db.Timestamptz(6)
+
+  session SessionMeta? @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, deliveredAt, createdAt], map: "session_pr_feedback_pending_idx")
+  @@index([orgId, repoId, pullNumber, sessionId], map: "session_pr_feedback_link_idx")
+  @@map("session_pull_request_feedback")
 }
 
 // Stable provider resource referenced by SessionMeta. Provider ACLs themselves
