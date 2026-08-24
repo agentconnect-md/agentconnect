@@ -598,15 +598,11 @@ export class DutyCoordinator {
       try {
         await this.host.flushReconcile()
       } catch (err) {
-        this.log.warn(`duty: claimed ${grant.groupId} but its connections did not converge: ${formatErr(err)}`)
-        await this.applyDutyRevoke([{ groupId: grant.groupId, reason: 'superseded' }]).finally(() =>
-          this.host
-            .cpClient()
-            ?.releaseDuties([grant.groupId])
-            .catch((releaseErr) =>
-              this.log.warn(`duty: handing back ${grant.groupId} failed: ${formatErr(releaseErr)}`)
-            )
+        this.log.warn(
+          `duty: claimed ${grant.groupId} but its connections did not converge — withdrawing locally and ` +
+            `letting the lease lapse: ${formatErr(err)}`
         )
+        await this.applyDutyRevoke([{ groupId: grant.groupId, reason: 'superseded' }])
         return { granted: false }
       }
       return { granted: true }

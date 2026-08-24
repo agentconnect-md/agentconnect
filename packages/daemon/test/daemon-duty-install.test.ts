@@ -597,7 +597,7 @@ describe('the rendezvous claim ordering', () => {
     await daemon.stop()
   })
 
-  it('releases a won duty when its platform connections fail to converge', async () => {
+  it('withdraws a won duty without releasing it before teardown is confirmed', async () => {
     const releaseDuties = vi.fn(async () => {})
     const daemon = await boot({
       claimDuty: vi.fn(async () => ({ granted: true, grant: grant() })),
@@ -613,7 +613,7 @@ describe('the rendezvous claim ordering', () => {
     await expect((daemon as any).dutyCoordinator.claimDutyForTrigger(AGENT)).resolves.toEqual({ granted: false })
 
     expect(duties(daemon).digest()).toEqual([])
-    expect(releaseDuties).toHaveBeenCalledWith([GROUP])
+    expect(releaseDuties).not.toHaveBeenCalled()
     await daemon.stop()
   })
 
