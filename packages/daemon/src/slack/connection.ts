@@ -115,6 +115,16 @@ export interface SlackTurnStream {
   readonly ts: string
 }
 
+/**
+ * What Slack did with an append — three outcomes, because two of them are not the same
+ * failure. `refused` means the content did not land and the caller still owes it to the
+ * channel some other way (§7). `stopped` means the PERSON ended the stream: the content must
+ * NOT be re-delivered by any route, because a fallback post would be exactly the replacement
+ * message §6 forbids after a Stop. Collapsing the two into one boolean is how a stopped
+ * conversation gets a new reply posted into it.
+ */
+export type SlackStreamAppendOutcome = 'ok' | 'refused' | 'stopped'
+
 /** Optional per-status identity overrides supported by assistant.threads.setStatus.
  * Unlike chat.postMessage customization, Slack accepts these with chat:write. */
 export interface SlackStatusOptions {
@@ -700,6 +710,10 @@ export class SlackConnection implements PlatformConnection {
   /** Streaming messages still open, `channel:thread` → message ts. An entry disappears the
    *  moment the stream settles — by our stop, by a refused append, or by the person's Stop. */
   private openStreams = new Map<string, string>()
+  /** Conversations whose stream the PERSON ended. A queued append arriving after the event is
+   *  answered `stopped` rather than `refused`, so it is never re-delivered by another route
+   *  (§6). Cleared when a later turn opens a stream in the same conversation. */
+  private userStoppedStreams = new Set<string>()
   botUserId = ''
   /** The appToken this socket is keyed by (one socket per unique appToken). */
   readonly appToken: string
@@ -1317,6 +1331,8 @@ export class SlackConnection implements PlatformConnection {
           }
           this.streamingUnavailableUntil = 0
           this.openStreams.set(`${channel}:${threadTs}`, ts)
+          // A new turn's stream: whatever the person stopped before was a different message.
+          this.userStoppedStreams.delete(`${channel}:${threadTs}`)
           return { channel, threadTs, ts }
         } catch (err) {
           this.rememberMissingScopes(err)
@@ -1329,26 +1345,34 @@ export class SlackConnection implements PlatformConnection {
       .catch(() => undefined)
   }
 
-  /** Append chunks to an open stream. `false` means this content did NOT reach Slack, so the
-   *  caller owes it to the channel some other way (§7) — it never means "silently dropped". */
-  async appendTurnStream(stream: SlackTurnStream, chunks: SlackStreamChunk[]): Promise<boolean> {
+  /** Append chunks to an open stream. See {@link SlackStreamAppendOutcome}: a refusal the
+   *  caller must make good on is NOT the same answer as the person having pressed Stop. */
+  async appendTurnStream(stream: SlackTurnStream, chunks: SlackStreamChunk[]): Promise<SlackStreamAppendOutcome> {
     const append = this.app.client.chat.appendStream
-    if (chunks.length === 0) return true
-    if (typeof append !== 'function' || this.openStreams.get(`${stream.channel}:${stream.threadTs}`) !== stream.ts)
-      return false
+    if (chunks.length === 0) return 'ok'
+    const key = `${stream.channel}:${stream.threadTs}`
+    // The stop event already landed. Whatever this append carried is not shown here and must
+    // not be shown anywhere else either — the cancellation is on its way (§6).
+    if (this.userStoppedStreams.has(key)) return 'stopped'
+    if (typeof append !== 'function') return 'refused'
+    // The handle is retired but the person did not do it, so we settled it ourselves and the
+    // caller is holding a stale one; the content is still owed to the channel.
+    if (this.openStreams.get(key) !== stream.ts) return 'refused'
     try {
       return await this.queue.enqueue(async () => {
         await append({ channel: stream.channel, ts: stream.ts, chunks })
-        return true
+        return 'ok' as const
       })
     } catch (err) {
       this.rememberMissingScopes(err)
       this.noteStreamFailure(err, 'chat.appendStream', stream.channel)
-      // Only a DEFINITE already-stopped answer proves the message is settled. A transient
-      // failure leaves it streaming, so the handle stays and the stop that must still land
-      // has something to land on.
-      if (isStreamAlreadyStopped(err)) this.closeStream(stream.channel, stream.threadTs)
-      return false
+      // Only a DEFINITE already-stopped answer proves the message is settled — and since our
+      // own stop would have been caught by the guard above, something else settled it, which
+      // in practice is the person's Stop racing its own event. A transient failure instead
+      // leaves the message streaming, so the handle stays and the stop still has a target.
+      if (!isStreamAlreadyStopped(err)) return 'refused'
+      this.closeStream(stream.channel, stream.threadTs)
+      return 'stopped'
     }
   }
 
@@ -2014,8 +2038,10 @@ export class SlackConnection implements PlatformConnection {
     // Slack already ended any stream this conversation had open before firing the event, and
     // a stopped stream is unrecoverable (§3.4/§6). Drop the handle FIRST so the cancel below
     // can neither append to the dead message nor issue a second stop against it — the message
-    // is settled before the session is told it is idle.
+    // is settled before the session is told it is idle. Remembering WHO ended it is what keeps
+    // a late append from being re-delivered as an ordinary post afterwards.
     this.closeStream(channel, threadTs)
+    this.userStoppedStreams.add(`${channel}:${threadTs}`)
     const sessionKey = await this.deps.onMessageShortcut?.({ channel, thread: threadTs, ...(userId ? { userId } : {}) })
     if (sessionKey) this.deps.onStatusAction?.({ kind: 'cancel', sessionKey, ...(userId ? { actor: { userId } } : {}) })
     await this.queue.enqueue(() => this.setSessionLifecycle(channel, threadTs, 'active'))

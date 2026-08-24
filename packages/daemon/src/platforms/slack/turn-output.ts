@@ -65,6 +65,11 @@ export interface SlackTurnState {
   /** A stop Slack has not accepted yet, kept verbatim so settlement reissues THAT stop: a
    *  bare abort retry would settle the message but drop its attribution footer. */
   streamStopOwed?: Extract<SlackAction, { kind: 'stream-stop' }>
+  /** The PERSON ended this turn's stream. Terminal and absolute: nothing more is appended,
+   *  buffered, posted, or opened, and the cancellation already in flight settles the turn.
+   *  Distinct from `streamFallback` precisely because that one re-delivers and this one must
+   *  not — a fallback post here would be the replacement message §6 forbids. */
+  streamStopped?: boolean
   /** The human a streamed message is addressed to (`recipient_user_id`, required outside
    *  DMs). Absent on a cron / hook / dream / agent-to-agent turn, which is exactly why
    *  those cannot stream in a channel (§7). */
@@ -667,8 +672,9 @@ export async function applySlackAction<TTurn extends SlackTurn>(
     case 'stream-start': {
       // Streamed messages must be thread replies (§7), and a rollover only ever opens the
       // NEXT message — never a second stream beside a live one. Once the turn has degraded,
-      // a fresh message would be a second answer bubble rather than a continuation.
-      if (state.streamFallback !== undefined || state.stream || !p.plan.thread) return
+      // a fresh message would be a second answer bubble rather than a continuation; once the
+      // person has stopped, opening one at all is what §6 forbids.
+      if (state.streamStopped || state.streamFallback !== undefined || state.stream || !p.plan.thread) return
       state.stream = await conn.startTurnStream(p.plan.channel, p.plan.thread, {
         ...(state.recipient ? { recipientUserId: state.recipient } : {}),
         // Per-agent authorship moves here from the status text: same username/icon a reply
@@ -678,7 +684,9 @@ export async function applySlackAction<TTurn extends SlackTurn>(
       return
     }
     case 'stream-append': {
-      if (action.chunks.length === 0) return
+      // The person ended this conversation's stream: the remaining output is not re-routed,
+      // it is dropped, and the cancellation already in flight settles the turn (§6).
+      if (state.streamStopped || action.chunks.length === 0) return
       const body = streamChunkText(action.chunks)
       // Already degraded. Application is asynchronous, so appends the converger produced
       // BEFORE the refusal — and the terminal ones after it — are still arriving; they carry
@@ -688,19 +696,36 @@ export async function applySlackAction<TTurn extends SlackTurn>(
         return
       }
       if (!state.stream) return
-      if (await conn.appendTurnStream(state.stream, action.chunks)) return
+      const outcome = await conn.appendTurnStream(state.stream, action.chunks)
+      if (outcome === 'ok') return
+      if (outcome === 'stopped') {
+        // Not a failure to make good on — a decision by the person. Anything still queued for
+        // this turn stops here, and no fallback post may follow it (§6).
+        state.streamStopped = true
+        state.stream = undefined
+        return
+      }
       // A mid-turn append failure must not lose the answer. Open the buffer with exactly the
       // text this append carried — the converger has already advanced its cursor past it, so
-      // this is the only remaining copy — and settle the message.
+      // this is the only remaining copy.
       state.streamFallback = body
-      await settleTurnStream(conn, p, state, { kind: 'stream-stop', settle: 'abort' })
+      // Settle the message only when the answer has actually MOVED off it. A refusal that
+      // dropped nothing but task chrome leaves the stream holding the whole visible answer,
+      // so it stays open for its terminal attributed stop — aborting it here is what left a
+      // "body → tool card → end" turn footerless and with nothing for §5.5 to finalize.
+      if (body) await settleTurnStream(conn, p, state, { kind: 'stream-stop', settle: 'abort' })
       return
     }
     case 'stream-stop': {
-      // A degraded turn's tail owns the footer and the §5.5 anchor, so the stop that follows
-      // is never the "final" one: it settles the dead message and nothing more.
+      if (state.streamStopped) return
+      // Degradation moves the RESPONSE off the stream only once the buffer actually holds
+      // body text. A refusal that dropped nothing but task chrome leaves the accepted stream
+      // holding the whole visible answer, so it must still be closed as the attributed final
+      // message — otherwise a "body → tool card → end" turn ends footerless and with nothing
+      // for §5.5 to finalize.
       const degraded = state.streamFallback !== undefined
-      const final = action.settle === 'final' && !degraded
+      const fallbackOwnsResponse = (state.streamFallback ?? '').length > 0
+      const final = action.settle === 'final' && !fallbackOwnsResponse
       if (state.stream) {
         const agentOptions = final
           ? slackAgentPostOptions({ ...p.plan, ...(p.reply.responseId ? { responseId: p.reply.responseId } : {}) })
@@ -731,6 +756,14 @@ export async function applySlackAction<TTurn extends SlackTurn>(
             }
           }
         }
+        // A ROLLOVER whose stop Slack would not accept owes a replacement message, and the
+        // retained handle is emphatically not it: appending the tail there would put
+        // post-boundary output back above the boundary, defeat the size cap, and — because
+        // the converger has already reset its per-message text — let the closing edit replace
+        // the combined message with just the tail. Degrade the tail instead, so it lands
+        // BELOW as an ordinary reply (which is what the rollover wanted) while the old
+        // message keeps its prefix and settlement keeps retrying its stop.
+        if (!settled && action.settle === 'rollover') state.streamFallback ??= ''
       }
       // Suppression drops the buffer with the rest of the turn's output; every other stop is
       // where the tail Slack never showed reaches the channel.
