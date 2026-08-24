@@ -73,7 +73,6 @@ export interface PullRequestView {
   threads: PrThread[]
   unresolvedCount: number // unresolved threads on the carried page — a floor when `threadsTruncated`
   threadsTruncated: boolean
-  autoMergeArmed: boolean | null // null while degraded — only GitHub holds the auto-merge fact
   // Degraded ⇒ identity is Postgres's, the live lists are empty, and the panel says why.
   degraded: boolean
   degradedReason: 'rate_limited' | 'denied' | 'unreachable' | null
@@ -89,7 +88,6 @@ query PanelPullRequest($owner:String!,$name:String!,$number:Int!,$threads:Int!,$
     pullRequest(number:$number){
       number title bodyText state isDraft merged additions deletions url
       baseRefName headRefName headRefOid reviewDecision
-      autoMergeRequest{enabledAt}
       latestReviews(first:$reviews){nodes{state author{login __typename}}}
       commits(last:1){nodes{commit{statusCheckRollup{contexts(first:$checks){pageInfo{hasNextPage} nodes{
         __typename
@@ -120,7 +118,6 @@ interface GqlAnswer {
       headRefName: string
       headRefOid: string | null
       reviewDecision: 'APPROVED' | 'CHANGES_REQUESTED' | 'REVIEW_REQUIRED' | null
-      autoMergeRequest: { enabledAt: string | null } | null
       latestReviews: { nodes: Array<{ state: string; author: { login: string; __typename: string } | null }> | null }
       commits: {
         nodes: Array<{
@@ -326,7 +323,6 @@ export class PullRequestViewService {
       threads: [],
       unresolvedCount: 0,
       threadsTruncated: false,
-      autoMergeArmed: null,
       degraded: false,
       degradedReason: null,
       agentReview: null
@@ -421,60 +417,15 @@ export class PullRequestViewService {
       reviews,
       threads,
       unresolvedCount: unresolved.length,
-      threadsTruncated: (pr.reviewThreads?.totalCount ?? 0) > THREAD_LIMIT,
-      autoMergeArmed: pr.autoMergeRequest != null
-    }
-  }
-
-  /** Arm or disarm GitHub auto-merge, with a token the CALLER minted under the agent's clamp — this
-   *  service's own token facility is the read floor and must never sign a write. Idempotent: the fresh
-   *  node read decides whether the mutation runs at all, and the cached view is dropped either way. */
-  async setAutoMerge(
-    target: { repoId: bigint; repoFullName: string; pullNumber: number },
-    token: string,
-    enabled: boolean
-  ): Promise<{ armed: boolean }> {
-    const [owner, name] = target.repoFullName.split('/')
-    if (!owner || !name) throw new GithubApiError('malformed repository name', 0, 'LEASE_DENIED', false)
-    const opts = {
-      auth: token,
-      ...(this.fetchImpl ? { fetchImpl: this.fetchImpl } : {}),
-      ...(this.baseUrl ? { baseUrl: this.baseUrl } : {})
-    }
-    const node = await githubGraphql<AutoMergeNodeAnswer>(
-      'query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){id autoMergeRequest{enabledAt}}}}',
-      { owner, name, number: target.pullNumber },
-      opts
-    )
-    const pr = node.repository?.pullRequest
-    if (!pr) throw new GithubApiError('pull request not visible to the installation', 200, 'LEASE_DENIED', false)
-    try {
-      if (enabled === (pr.autoMergeRequest != null)) return { armed: enabled }
-      // strictErrors: a refused mutation is `{ data: { …: null }, errors: [...] }` — success must not be claimed off the truthy half.
-      if (enabled) {
-        await githubGraphql(
-          'mutation($id:ID!){enablePullRequestAutoMerge(input:{pullRequestId:$id,mergeMethod:SQUASH}){clientMutationId}}',
-          { id: pr.id },
-          { ...opts, strictErrors: true }
-        )
-      } else {
-        await githubGraphql(
-          'mutation($id:ID!){disablePullRequestAutoMerge(input:{pullRequestId:$id}){clientMutationId}}',
-          { id: pr.id },
-          { ...opts, strictErrors: true }
-        )
-      }
-      return { armed: enabled }
-    } finally {
-      this.invalidate(target.repoId, target.pullNumber)
+      threadsTruncated: (pr.reviewThreads?.totalCount ?? 0) > THREAD_LIMIT
     }
   }
 
   /** Merge the PR (squash) now, with a token the CALLER minted under the agent's clamp. `expectedHeadOid`
    *  pins the merge to the head the operator was shown — GitHub refuses if the head moved, which the
-   *  caller maps to a 409. `setAutoMerge` never had this exposure: GitHub re-evaluates at merge time, so
-   *  arming could not merge a revision nobody reviewed. Idempotent on the fresh node read; the cached
-   *  view is dropped either way so the next read shows the merged state. */
+   *  caller maps to a 409. The edge's merge-when-ready watcher pins the head it JUDGED instead, which is
+   *  a different rule for a different act: arming allows the fix commit, one press must not. Idempotent on
+   *  the fresh node read; the cached view is dropped either way so the next read shows the merged state. */
   async merge(
     target: { repoId: bigint; repoFullName: string; pullNumber: number },
     token: string,
@@ -506,10 +457,6 @@ export class PullRequestViewService {
       this.invalidate(target.repoId, target.pullNumber)
     }
   }
-}
-
-interface AutoMergeNodeAnswer {
-  repository: { pullRequest: { id: string; autoMergeRequest: { enabledAt: string | null } | null } | null } | null
 }
 
 interface MergeNodeAnswer {

@@ -67,6 +67,8 @@ import {
 import { writeGhShim } from './cp/gh-shim.js'
 import { glabSessionEnv, writeGlabShim } from './cp/glab-shim.js'
 import { GitCredServer, gitcredShimPath, gitcredSocketPath, writeGitcredShim } from './cp/gitcred-server.js'
+import { AutoMergeWatcher } from './github/auto-merge/watcher.js'
+import { SandboxHolds } from './k8s/sandbox-hold.js'
 import {
   daemonGitCredentialTarget,
   initGitInjection,
@@ -289,6 +291,8 @@ import {
   MAX_TASK_DETAIL,
   MAX_TASK_LIST_TASKS,
   TASK_LIST_FEATURE,
+  AUTO_MERGE_FEATURE,
+  SANDBOX_KEEP_ALIVE_FEATURE,
   RUNTIME_COMMANDS_FEATURE,
   AGENT_WAKE_FEATURE,
   WORKSPACE_GIT_MESSAGE_FEATURE,
@@ -657,6 +661,12 @@ export class Daemon {
   /** Public commit attribution selected by the CP deployment's GitHub App. */
   private gitCommitIdentity?: GitCommitIdentity
   private gitCredServer?: GitCredServer
+  /** Console keep-alive leases over cluster agents' pods — in memory, renewed by an open page. */
+  private readonly sandboxHolds = new SandboxHolds({ now: () => Date.now() })
+  /** Merge-when-ready's in-memory armed set (github/auto-merge). Built with the credential server,
+   *  because a watcher that cannot mint a gh token has nothing to poll with. Never persisted: this
+   *  process going away is what unchecks the box. */
+  private autoMergeWatcher?: AutoMergeWatcher
   /** run/bin with the gh wrapper (multi-repo #457) — prepended to github-app
    *  agents' PATH at host spawn; unset ⇒ shim write failed, spawn without it. */
   private ghBinDir?: string
@@ -1809,6 +1819,20 @@ export class Daemon {
       this.log.warn(`gitcred: glab wrapper shim write failed — spawning agents without it (${formatErr(err)})`)
     }
     this.gitCredServer.start()
+    // The watcher dispatches on placement: a cluster agent's pod gets the `automerge` channel and
+    // owns the loop, a local agent gets a loop in this process. Both read a token through the same
+    // clamped credential path the agent's own gh does.
+    this.autoMergeWatcher = new AutoMergeWatcher({
+      knownAgent: (agentId) => this.agents.has(agentId),
+      // A `--k8s` daemon runs every agent in a pod (the plane refuses to run one locally), so the
+      // plane's presence — not a channel's attachment — is what decides where a watcher may live.
+      clusterPlaced: () => this.k8sPlane !== undefined,
+      sandboxFor: (agentId) => this.k8sPlane?.autoMergeFor(agentId),
+      capabilityFor: (agentId) => this.gitCredServer!.capabilityFor(agentId),
+      tokenFor: async (agentId, repoFullName) =>
+        (await this.gitCreds.get(agentId, 'helper', { plane: 'gh', repo: repoFullName })).token,
+      log: { info: (m) => this.log.info(m), warn: (m) => this.log.warn(m) }
+    })
     probeGitVersion((m) => this.log.warn(m))
   }
 
@@ -3766,6 +3790,9 @@ export class Daemon {
       WORKSPACE_SESSION_READ_FEATURE,
       WORKSPACE_REPO_SCOPE_FEATURE,
       TASK_LIST_FEATURE,
+      AUTO_MERGE_FEATURE,
+      // Only a cluster daemon has a pod to hold; elsewhere every request answers `placement:'daemon'`.
+      ...(this.k8s ? [SANDBOX_KEEP_ALIVE_FEATURE] : []),
       RUNTIME_COMMANDS_FEATURE,
       // Only a cluster daemon has a sandbox to wake; elsewhere the CP answers `unsupported` unsent.
       ...(this.k8s ? [AGENT_WAKE_FEATURE] : []),
@@ -14047,6 +14074,15 @@ export class Daemon {
       // Shared-store activity, floored at when this member took the launch: a full window, not epoch-idle.
       const last = Math.max((await this.store.agentLastActivityTs(agentId)) ?? 0, since)
       if (now - last <= ttl) continue
+      // A console page is watching work a suspend would throw away — uncommitted edits on the pod's
+      // volume, or an armed in-pod merge watcher. The lease is renewed by that page and lapses on
+      // its own within one TTL once it closes, so this defers the suspend rather than cancelling it.
+      if (this.sandboxHolds.holds(agentId)) {
+        this.log.debug?.(
+          `idle: holding the sandbox for agent "${agentId}" — ${this.sandboxHolds.reasons(agentId).join(', ')}`
+        )
+        continue
+      }
       void plane
         .suspendIdle(agentId)
         .then((outcome) => {
@@ -14953,6 +14989,8 @@ export class Daemon {
       sessionThreadUrl: (session) => this.sessionThreadUrl(session),
       childSessionStatusProbe: (probe) => this.collab.childSessionStatusProbe(probe),
       listBackgroundTasks: (req) => this.listBackgroundTasks(req),
+      autoMerge: () => this.autoMergeWatcher,
+      sandboxHolds: () => this.sandboxHolds,
       withWorkspaceFileWrite: <T>(agentId: string, write: () => Promise<T>): Promise<T> =>
         this.withWorkspaceFileWrite(agentId, write),
       withWorkspaceIndexWrite: <T>(agentId: string, write: () => Promise<T>): Promise<T> =>
@@ -15941,6 +15979,8 @@ export class Daemon {
     // so server.close() isn't left waiting on a live bridge connection.
     await Promise.resolve(this.mcp?.stop()).catch((e) => errors.push(e))
     this.gitCredServer?.stop()
+    // Local loops end with the process; dropping them here just makes the timers stop promptly.
+    this.autoMergeWatcher?.stop()
     // The projection resweep runs on its own clock, so it must be disarmed before the store closes.
     this.noteProjector?.stop()
     this.gitlabReviews?.stop()

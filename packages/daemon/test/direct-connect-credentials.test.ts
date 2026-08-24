@@ -76,8 +76,9 @@ describe('provider credentials in the direct-connect stage', () => {
 
   it('grants the runtime exactly the channels it needs and nothing else', () => {
     // Credentials arrive over the shim, so `materialize` is required; the set stays closed so
-    // a future capability is an explicit decision rather than a side effect.
-    expect([...RUNTIME_GRANTS].sort()).toEqual(['acp', 'exec', 'materialize', 'read', 'tunnel'])
+    // a future capability is an explicit decision rather than a side effect. `automerge` is one such
+    // decision: the merge-when-ready watcher runs IN the pod, so the daemon must be able to arm it.
+    expect([...RUNTIME_GRANTS].sort()).toEqual(['acp', 'automerge', 'exec', 'materialize', 'read', 'tunnel'])
   })
 
   it('classifies a provider auth rejection by the type the provider itself sends', () => {

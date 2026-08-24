@@ -6,6 +6,7 @@ import { SandboxApi } from './sandbox-api.js'
 import { PROBE_CLAIM_EXPIRES_ANNOTATION, PROBE_CLAIM_LABEL, PROBE_CLAIM_TTL_MS, probeAgentId } from './probe-claim.js'
 import { clusterMetrics } from '../metrics/cluster-metrics.js'
 import { ShimDialer } from '../shim/dialer.js'
+import { ShimAutoMergeClient } from '../shim/auto-merge-client.js'
 import { ShimGitRunner } from '../shim/git-exec.js'
 import { ShimFileSink } from '../shim/channels.js'
 import { ChannelLossWatcher } from './channel-loss-watcher.js'
@@ -145,6 +146,9 @@ export interface K8sRuntimePlane {
    *  filesystem twin of `gitRunnerFor`, answering on the same condition. Undefined keeps the caller
    *  on this daemon's own disk, which is what a self-hosted agent beside a cluster one needs. */
   workspaceFsFor: (agentId: string) => WorkspacePlacement | undefined
+  /** The pod's merge-when-ready channel, on the same condition — the watcher runs IN the sandbox so
+   *  its armed set dies with the pod, which is the lifetime the console projects. */
+  autoMergeFor: (agentId: string) => ShimAutoMergeClient | undefined
   /** The agent's managed memory tree on that same volume, on the same condition: one root beside
    *  the checkout (`<mount>/.agentconnect/memory`), so it follows the agent across members and
    *  survives a rollout, and is reachable exactly when the sandbox is. */
@@ -330,6 +334,10 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
       if (!runsInSandbox(agentId)) return undefined
       const mount = driver.workspaceRootFor(agentId) ?? DEFAULT_SHIM_WORKSPACE_ROOT
       return { fs: new ShimWorkspaceFs(driver.sessionFor(agentId)!, mount), mount }
+    },
+    autoMergeFor: (agentId) => {
+      if (!runsInSandbox(agentId)) return undefined
+      return new ShimAutoMergeClient(driver.sessionFor(agentId)!)
     },
     memoryFsFor: (agentId) => {
       if (!runsInSandbox(agentId)) return undefined

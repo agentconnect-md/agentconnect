@@ -206,6 +206,7 @@ export function createFakeK8sRuntimePlane(workspaceRoot: string): FakeK8sRuntime
     workspaceFilesFor: () => undefined,
     workspaceFsFor: () => undefined,
     memoryFsFor: () => undefined,
+    autoMergeFor: () => undefined,
     runsInSandbox: () => true,
     clearPath: async () => undefined,
     workspaceRootFor: () => workspaceRoot,

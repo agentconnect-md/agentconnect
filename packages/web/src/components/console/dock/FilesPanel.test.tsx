@@ -867,7 +867,10 @@ describe('FilesPanel auto refresh', () => {
     expect(text()).toContain('Matched 1 of 2 loaded files')
   })
 
-  it('polls while on screen, and stops when the tab is hidden', async () => {
+  it('keeps polling behind another tab — the open PAGE is what stays fresh, not one tab', async () => {
+    // The workspace read continues whatever tab is selected: the operator left the page open, and the
+    // same reads are what tell the daemon whether this session's sandbox is worth holding. Document
+    // visibility remains the fence, and `auto-refresh.test.tsx` pins that half.
     vi.useFakeTimers()
     await render({ active: true })
     await act(async () => {
@@ -877,8 +880,9 @@ describe('FilesPanel auto refresh', () => {
 
     await rerender({ active: false })
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(DOCK_POLL_MS * 4)
+      await vi.advanceTimersByTimeAsync(DOCK_POLL_MS * 2)
     })
-    expect(rootReads()).toBe(2)
+    // The count, not the exact number of ticks: what matters is that a hidden tab keeps reading.
+    expect(rootReads()).toBeGreaterThan(2)
   })
 })

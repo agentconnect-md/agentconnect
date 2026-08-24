@@ -25,7 +25,7 @@ export function resolvePodIp(sandbox: Sandbox): string | undefined {
 
 /** Capabilities a runtime launch receives. Narrow by construction: a launch gets exactly
  *  what the channels it uses require, so a future capability is an explicit decision. */
-export const RUNTIME_GRANTS: ShimCapability[] = ['acp', 'materialize', 'exec', 'read', 'tunnel']
+export const RUNTIME_GRANTS: ShimCapability[] = ['acp', 'materialize', 'exec', 'read', 'tunnel', 'automerge']
 
 /** A probe sandbox asks the image what it provides and then RUNS those runtimes to read the
  *  models they advertise, so it gets those two channels and nothing else — no workspace, no

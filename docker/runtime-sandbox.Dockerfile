@@ -126,8 +126,12 @@ COPY --from=shim-builder --chown=0:0 /build/packages/daemon/dist/shim/gh-token.j
 # Path must match SANDBOX_MCP_BRIDGE_ENTRY in packages/daemon/src/shim/sandbox-paths.ts — the daemon puts this path
 # in the spec, so a rename here is a runtime that retries a missing module until it gives up.
 COPY --from=shim-builder --chown=0:0 /build/packages/daemon/dist/shim/mcp-bridge.js /opt/agentconnect/shim/mcp-bridge.js
+# The merge-when-ready watcher, a fifth disjoint bundle: the shim spawns one per armed pull request, so the
+# armed set lives and dies with this pod. Path must match SANDBOX_AUTO_MERGE_ENTRY in
+# packages/daemon/src/shim/sandbox-paths.ts — the handler reports its absence as an unsupported image.
+COPY --from=shim-builder --chown=0:0 /build/packages/daemon/dist/shim/auto-merge.js /opt/agentconnect/shim/auto-merge.js
 RUN chmod 0444 /opt/agentconnect/shim/index.js /opt/agentconnect/shim/git-credential.js \
-  /opt/agentconnect/shim/gh-token.js /opt/agentconnect/shim/mcp-bridge.js \
+  /opt/agentconnect/shim/gh-token.js /opt/agentconnect/shim/mcp-bridge.js /opt/agentconnect/shim/auto-merge.js \
   && chmod 0555 /opt/agentconnect/shim
 
 # The executable git runs as its credential helper. A wrapper because git needs something

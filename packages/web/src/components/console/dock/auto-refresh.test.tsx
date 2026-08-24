@@ -1,9 +1,10 @@
 // @vitest-environment happy-dom
 
 // The dock's shared refresh cadence: which of the three signals reaches a panel in which state. The
-// distinctions under test are the ones that cost requests — a background tab and a background BROWSER
-// both stop polling, a hidden panel with a badge still takes a turn's edge, and one without a badge
-// defers that read to the moment it is revealed instead of dropping it.
+// distinctions under test are the ones that cost requests — a background BROWSER stops polling
+// outright, a background TAB stops unless the panel opts into `pollWhileHidden` (Files, Git, PR, whose
+// freshness the open page itself depends on), a hidden panel with a badge still takes a turn's edge,
+// and one without a badge defers that read to the moment it is revealed instead of dropping it.
 
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
@@ -80,6 +81,19 @@ describe('useDockRefresh', () => {
     await setVisibility('visible')
     await act(async () => vi.advanceTimersByTime(DOCK_POLL_MS))
     expect(reasons).toEqual(['poll'])
+  })
+
+  it('polls behind another tab with `pollWhileHidden`, and still stops with the BROWSER', async () => {
+    // The three panels the page's own state depends on (Files, Git, PR) keep polling whatever tab is
+    // selected: an operator who leaves the page open left the whole page, not one tab. The document
+    // stays the fence, because it is the same one that decides whether the sandbox is held.
+    await render({ active: false, pollWhileHidden: true, intervalMs: DOCK_POLL_MS })
+    await act(async () => vi.advanceTimersByTime(DOCK_POLL_MS * 2))
+    expect(reasons).toEqual(['poll', 'poll'])
+
+    await setVisibility('hidden')
+    await act(async () => vi.advanceTimersByTime(DOCK_POLL_MS * 3))
+    expect(reasons).toEqual(['poll', 'poll'])
   })
 
   it('never polls without a cadence — a panel that must not spend a budget passes none', async () => {

@@ -44,6 +44,9 @@ import type { SessionMetadataOutbox } from '../store/session-metadata-outbox.js'
 import type { WebchatMcpRevocations } from '../webchat/mcp-revocations.js'
 import type { WorkspaceManager } from '../workspace/workspace-manager.js'
 import type { K8sRuntimePlane } from '../k8s/runtime-plane.js'
+import type { AutoMergeWatcher } from '../github/auto-merge/watcher.js'
+import type { SandboxHolds } from '../k8s/sandbox-hold.js'
+import { createSandboxKeepAlive } from './sandbox-keepalive.js'
 import type { SystemMetrics } from '../metrics/system-metrics.js'
 import type { ReadinessGate } from '../readiness.js'
 import type { MemoryFs } from '../memory/store.js'
@@ -140,6 +143,10 @@ export interface CpClientSeamHost {
   sessionThreadUrl(session: SessionRecord): string | undefined
   childSessionStatusProbe(probe: ChildSessionStatusProbe): Promise<ChildSessionStatus>
   listBackgroundTasks(req: TaskListReq): Promise<TaskList>
+  /** The edge's in-memory merge-when-ready registry, or undefined before agents are loaded. */
+  autoMerge(): AutoMergeWatcher | undefined
+  /** The console keep-alive leases over this daemon's sandboxes (`k8s/sandbox-hold.ts`). */
+  sandboxHolds(): SandboxHolds
   withWorkspaceFileWrite<T>(agentId: string, write: () => Promise<T>): Promise<T>
   withWorkspaceIndexWrite<T>(agentId: string, write: () => Promise<T>): Promise<T>
   runCommitMessagePass: CommitMessagePass
@@ -330,6 +337,23 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
     // A pure projection of the in-memory lease — no I/O, no runtime, and nothing it can do to a
     // reclaim decision, so it needs neither of the workspace coordinators.
     taskReader: { list: async (req) => host.listBackgroundTasks(req) },
+    // Merge-when-ready lives at the EDGE and nowhere else — the CP relays these two frames and
+    // stores nothing, so an unarmed answer is the truth about this process, not a lost row.
+    ...(host.autoMerge() ? { autoMerge: host.autoMerge()! } : {}),
+    // The keep-alive lease is the daemon's own decision, from facts the console cannot assert. Only
+    // a cluster daemon has a pod to hold; elsewhere the handler answers `placement:'daemon'` unasked.
+    ...(host.k8sPlane()
+      ? {
+          sandboxKeepAlive: createSandboxKeepAlive({
+            runsInSandbox: (id) => host.k8sPlane()!.runsInSandbox(id),
+            knownAgent: (id) => host.agents().has(id),
+            armedFor: async (id) => (await host.autoMerge()?.armedFor(id)) === true,
+            gitStatus: (id, sessionId) => workspaceGit.status(id, sessionId),
+            holds: host.sandboxHolds(),
+            log: { debug: (m) => host.log().debug?.(m) }
+          })
+        }
+      : {}),
     // §16 desired projection generations, converged by the only GitLab Notes writer for this surface.
     codeHostNoteProjection: (desired, orgId) => host.noteProjector().apply(desired, orgId),
     // The console's "start this agent's sandbox": duty claim + channel bind, no host — the same

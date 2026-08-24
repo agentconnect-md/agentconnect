@@ -8,13 +8,17 @@
 //  - the falling edge of a streaming TURN, which is when the agent's own writes (commits, pushes, an
 //    opened pull request, resolved threads) have landed — the single highest-value signal, and the
 //    only one that fires for a panel whose tab is hidden but whose BADGE is on screen;
-//  - a poll while the tab is on screen AND the document is visible, for the changes nobody here made
-//    (a coworker's push, a check turning green);
+//  - a poll while the document is visible, for the changes nobody here made (a coworker's push, a
+//    check turning green) — for the three panels whose reads also decide whether the session's SANDBOX
+//    is held (`pollWhileHidden`) this runs whatever tab is selected, because the page's whole state is
+//    what an operator leaves open, not the one tab they last clicked;
 //  - the reveal edge — a tab becoming active, or the document coming back — which is where a refresh
 //    deferred by a hidden panel is actually spent.
 //
-// A background tab polls NOTHING: these reads reach a daemon and, for the PR panel, an installation's
-// rate limit, and a browser nobody is looking at must not spend either.
+// A background DOCUMENT polls nothing, `pollWhileHidden` included: these reads reach a daemon and, for
+// the PR panel, an installation's rate limit, and a browser nobody is looking at must not spend either.
+// Document visibility is the whole fence — the same one the sandbox keep-alive uses, so a page that
+// stops refreshing is also a page that stops holding a pod.
 import { useEffect, useRef, useState } from 'react'
 
 /** Poll cadence for the daemon-backed panels (Files, Git) while their tab is on screen. */
@@ -58,9 +62,12 @@ export function useDockRefresh(opts: {
   turnActive?: boolean
   /** Fire the turn refresh even while the tab is hidden; otherwise it waits for the reveal edge. */
   whileHidden?: boolean
+  /** Keep POLLING while this panel's tab is not the selected one (the document must still be visible).
+   *  For the panels whose freshness the page itself depends on — Files, Git and the pull request. */
+  pollWhileHidden?: boolean
   onRefresh: (reason: DockRefreshReason) => void
 }): void {
-  const { active, intervalMs = 0, turnActive = false, whileHidden = false } = opts
+  const { active, intervalMs = 0, turnActive = false, whileHidden = false, pollWhileHidden = false } = opts
   const visible = useDocumentVisible()
   // Held in a ref so a caller's fresh closure per render never re-arms the timer below.
   const onRefresh = useRef(opts.onRefresh)
@@ -93,8 +100,9 @@ export function useDockRefresh(opts: {
   }, [active, visible])
 
   useEffect(() => {
-    if (!active || !visible || intervalMs <= 0) return
+    if (!visible || intervalMs <= 0) return
+    if (!active && !pollWhileHidden) return
     const timer = window.setInterval(() => onRefresh.current('poll'), intervalMs)
     return () => window.clearInterval(timer)
-  }, [active, visible, intervalMs])
+  }, [active, visible, intervalMs, pollWhileHidden])
 }

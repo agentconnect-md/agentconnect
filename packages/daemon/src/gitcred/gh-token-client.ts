@@ -5,9 +5,9 @@
 // Exit codes are the wrapper's contract: 0 = token on stdout, 1 = refused/unreachable (reason on stderr),
 // 2 = "not ours" (the target names a non-github.com host), which makes the wrapper run the real gh untouched.
 import { execFileSync } from 'node:child_process'
-import { createConnection } from 'node:net'
 import { resolveGhTargetRepo } from '../cp/gh-target.js'
 import { GITCRED_CAPABILITY_ENV } from './env.js'
+import { gitcredIpc } from './gh-token-ipc.js'
 
 /** Fetch the token for this gh invocation and print it — nothing else ever reaches stdout. */
 export async function emitGhToken(agentId: string, ghArgv: readonly string[], socketPath: string): Promise<void> {
@@ -17,7 +17,7 @@ export async function emitGhToken(agentId: string, ghArgv: readonly string[], so
     return
   }
 
-  const res = await ipc(socketPath, {
+  const res = await gitcredIpc(socketPath, {
     op: 'get',
     agentId,
     capability: process.env[GITCRED_CAPABILITY_ENV],
@@ -46,35 +46,4 @@ function cwdOriginRemote(): string | undefined {
   } catch {
     return undefined
   }
-}
-
-interface IpcReply {
-  ok: boolean
-  password?: string
-  error?: string
-}
-
-function ipc(path: string, msg: unknown): Promise<IpcReply> {
-  return new Promise((resolve) => {
-    const sock = createConnection(path)
-    let buf = ''
-    const fail = (error: string) => resolve({ ok: false, error })
-    sock.setTimeout(15_000, () => {
-      sock.destroy()
-      fail('daemon did not answer in time')
-    })
-    sock.on('connect', () => sock.write(JSON.stringify(msg) + '\n'))
-    sock.on('data', (c) => {
-      buf += c.toString('utf8')
-      const nl = buf.indexOf('\n')
-      if (nl === -1) return
-      sock.destroy()
-      try {
-        resolve(JSON.parse(buf.slice(0, nl)) as IpcReply)
-      } catch {
-        fail('malformed daemon reply')
-      }
-    })
-    sock.on('error', (e) => fail(`cannot reach the daemon socket at ${path}: ${e.message}`))
-  })
 }

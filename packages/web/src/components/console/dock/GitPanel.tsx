@@ -186,6 +186,9 @@ export function GitPanel({
     active,
     turnActive,
     whileHidden: true,
+    // The page's state, not the selected tab's: this read is also what tells the daemon whether the
+    // session's sandbox is worth holding, so it keeps polling behind another tab (document visible).
+    pollWhileHidden: true,
     intervalMs: DOCK_POLL_MS,
     onRefresh: () => {
       if (writing.current) return

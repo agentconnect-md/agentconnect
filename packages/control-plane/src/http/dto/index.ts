@@ -3497,7 +3497,19 @@ export const SessionPullRequestDto = z.object({
   threads: z.array(SessionPullRequestThreadDto),
   unresolvedCount: z.number().int(), // a floor when `threadsTruncated`
   threadsTruncated: z.boolean(),
-  autoMergeArmed: z.boolean().nullable(), // null while degraded — only GitHub holds the auto-merge fact
+  // Whether a merge-when-ready watcher is armed for this pull request RIGHT NOW, read live from the
+  // edge that would perform the merge. null ⇒ nobody could be asked (no live daemon, or one too old
+  // to serve the frame), which is different from a confident "not armed".
+  autoMergeArmed: z.boolean().nullable(),
+  // Where that watcher runs, and therefore how long it lives: `sandbox` dies with the agent's pod,
+  // `daemon` with the daemon process. Null when nothing is armed.
+  autoMergePlacement: z.enum(['sandbox', 'daemon']).nullable(),
+  // The watcher's own last verdict — "checks running: build", "changes requested", "conflicts with
+  // the base branch". The answer GitHub's auto-merge never gave; null when it has none.
+  autoMergeWaitingOn: z.string().nullable(),
+  // A GitHub refusal or an unreachable GitHub on the last tick. The watcher stays ARMED through it:
+  // the usual cure is the next commit, so this is a status line, not a terminal state.
+  autoMergeError: z.string().nullable(),
   // Whether THIS caller may arm auto-merge: the owning agent is write-tier and the installation accepted
   // pull_requests:write. Postgres-only, so a read-tier agent renders a disabled control, not a failed call.
   canArmAutoMerge: z.boolean(),
@@ -3519,8 +3531,25 @@ export const SessionPullRequestDto = z.object({
 export type SessionPullRequestDtoT = z.infer<typeof SessionPullRequestDto>
 
 export const SessionPullRequestAutoMergeBodyDto = z.object({ enabled: z.boolean() })
-/** `POST /sessions/:id/pull-request/auto-merge` — the armed state after the call (idempotent). */
-export const SessionPullRequestAutoMergeDto = z.object({ armed: z.boolean() })
+/** `POST /sessions/:id/pull-request/auto-merge` — the edge watcher's state after the call
+ *  (idempotent). `waitingOn` is what it is holding for on its first tick, when it already knows. */
+export const SessionPullRequestAutoMergeDto = z.object({
+  armed: z.boolean(),
+  placement: z.enum(['sandbox', 'daemon']).nullable(),
+  waitingOn: z.string().nullable(),
+  error: z.string().nullable()
+})
+/** `POST /sessions/:id/sandbox-keep-alive` — whether the agent's pod is being held for this page,
+ *  and why. `held:false` with no reasons is the ordinary answer for a clean tree and no armed merge;
+ *  `asleep` means the pod is already suspended (a keep-alive never wakes one). */
+export const SessionSandboxKeepAliveDto = z.object({
+  held: z.boolean(),
+  reasons: z.array(z.enum(['uncommitted-files', 'auto-merge-armed'])),
+  ttlMs: z.number().int().positive().nullable(),
+  placement: z.enum(['sandbox', 'daemon']).nullable(),
+  asleep: z.boolean()
+})
+
 /** `POST /sessions/:id/pull-request/merge` — the merged outcome after the call (idempotent on an already-merged PR). */
 export const SessionPullRequestMergeDto = z.object({ merged: z.boolean() })
 

@@ -16,6 +16,9 @@ import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
 import { PgSessionRepo } from '../../src/persistence/repositories/session.repo.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 import { systemClock } from '../../src/domain/clock.js'
+import { AUTO_MERGE_FEATURE, SANDBOX_KEEP_ALIVE_FEATURE } from '@agentconnect.md/protocol'
+import type { ControlSender } from '../../src/orchestrator/outbound.js'
+import { ProtocolError } from '../../src/domain/errors.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
 const DAEMON = 'd5d5d5d5-dddd-4ddd-8ddd-dddddddddddd'
@@ -128,9 +131,10 @@ function app(
   view?: PullRequestViewService,
   userId?: string,
   github?: GithubService,
-  sessionPullRequestLink?: SessionPullRequestLinkService
+  sessionPullRequestLink?: SessionPullRequestLinkService,
+  control?: ControlSender
 ): HttpApp {
-  const running = buildHttpApp(prisma, userId ? { DEFAULT_OWNER_ID: userId } : undefined, undefined, undefined, {
+  const running = buildHttpApp(prisma, userId ? { DEFAULT_OWNER_ID: userId } : undefined, undefined, control, {
     ...(view ? { pullRequestView: view } : {}),
     ...(github ? { github } : {}),
     ...(sessionPullRequestLink ? { sessionPullRequestLink } : {})
@@ -165,8 +169,53 @@ async function makeUser(sub: string): Promise<string> {
   return userId
 }
 
+// Merge-when-ready is served by the EDGE, so the fixture daemon advertises the feature the route gates on.
+const EDGE_CAPABILITIES = {
+  platforms: ['slack', 'telegram', 'discord'],
+  runtimes: ['claude'],
+  acp: true,
+  features: [AUTO_MERGE_FEATURE]
+}
+
+/** The daemon's watcher as the route sees it: `automerge/set` flips a per-PR entry, `automerge/state`
+ *  reads it back. In-memory here exactly as it is at the real edge — there is no row to fake. */
+function fakeEdge(opts: { fail?: Error; placement?: 'sandbox' | 'daemon' } = {}) {
+  const armed = new Map<string, { waitingOn?: string }>()
+  const calls: Array<{ op: 'set' | 'state'; enabled?: boolean }> = []
+  const state = (repoFullName: string, prNumber: number) => {
+    const held = armed.get(`${repoFullName}#${prNumber}`)
+    return {
+      agentId: AGENT,
+      repoFullName,
+      prNumber,
+      armed: held !== undefined,
+      ...(held ? { placement: opts.placement ?? 'daemon', waitingOn: 'checks running: unit' } : {})
+    }
+  }
+  const control = {
+    autoMergeSet: async (
+      _daemonId: string,
+      _orgId: string,
+      req: { repoFullName: string; prNumber: number; enabled: boolean }
+    ) => {
+      calls.push({ op: 'set', enabled: req.enabled })
+      if (opts.fail) throw opts.fail
+      const key = `${req.repoFullName}#${req.prNumber}`
+      if (req.enabled) armed.set(key, {})
+      else armed.delete(key)
+      return state(req.repoFullName, req.prNumber)
+    },
+    autoMergeState: async (_daemonId: string, _orgId: string, req: { repoFullName: string; prNumber: number }) => {
+      calls.push({ op: 'state' })
+      if (opts.fail) throw opts.fail
+      return state(req.repoFullName, req.prNumber)
+    }
+  }
+  return { control: control as unknown as ControlSender, calls, armed }
+}
+
 async function seedAgentAndSession(opts: { visibility?: 'org' | 'private'; ownerIdentity?: string } = {}) {
-  await seedDaemon(prisma, DAEMON)
+  await seedDaemon(prisma, DAEMON, { capabilities: EDGE_CAPABILITIES })
   await seedAgent(prisma, AGENT, { daemonId: DAEMON })
   return seedSessionMeta(prisma, randomUUID(), AGENT, { daemonId: DAEMON, ...opts })
 }
@@ -243,7 +292,11 @@ describe('GET /sessions/:id/pull-request', () => {
       threads: [{ location: 'src/app.ts:12', body: 'rename this', author: 'dana', isOutdated: false }],
       unresolvedCount: 1,
       threadsTruncated: false,
-      autoMergeArmed: false,
+      // No live daemon in this fixture, so the edge could not be asked: unknown, not "not armed".
+      autoMergeArmed: null,
+      autoMergePlacement: null,
+      autoMergeWaitingOn: null,
+      autoMergeError: null,
       canArmAutoMerge: false,
       degraded: false,
       degradedReason: null,
@@ -482,12 +535,10 @@ describe('GET /sessions/:id/pull-request', () => {
   })
 })
 
-// The M6 write (§7): auto-merge armed under the owning agent's clamp, refusals as data-bearing statuses.
+// Merge-when-ready (§7, rebuilt): the CP RELAYS an arm to the edge and stores nothing. GitHub's own
+// `enablePullRequestAutoMerge` is gone from this path — it refuses every PR that is not BLOCKED, which
+// is what made the box unarmable on any repository without required checks.
 describe('POST /sessions/:id/pull-request/auto-merge', () => {
-  const nodeAnswer = (armed: boolean) =>
-    graphqlOk({
-      data: { repository: { pullRequest: { id: 'PR_node1', autoMergeRequest: armed ? { enabledAt: 'now' } : null } } }
-    })
   const post = (running: HttpApp, sessionId: string, enabled = true) =>
     running.app.inject({
       method: 'POST',
@@ -495,80 +546,145 @@ describe('POST /sessions/:id/pull-request/auto-merge', () => {
       payload: { enabled }
     })
 
-  it('arms auto-merge end to end and reports canArmAutoMerge on the read', async () => {
-    const session = await seedAgentAndSession()
-    await seedPullRequestRun(session)
-    const github = githubStub([
-      nodeAnswer(false),
-      graphqlOk({ data: { enablePullRequestAutoMerge: { clientMutationId: null } } }),
-      graphqlOk(fullAnswer())
-    ])
-    const running = app(github.view, undefined, fakeGithub())
-
-    const res = await post(running, session)
-    expect(res.statusCode).toBe(200)
-    expect(res.json()).toEqual({ armed: true })
-    expect((github.calls[1] as { body: { query: string } }).body.query).toContain('enablePullRequestAutoMerge')
-
-    // The write-capable caller reads canArmAutoMerge: true — the flag behind the panel's enabled control.
-    const read = await running.app.inject({ method: 'GET', url: `${ORG}/sessions/${session}/pull-request` })
-    expect(read.json()).toMatchObject({ canArmAutoMerge: true })
-  })
-
-  it('refuses a read-tier agent with 403 before any GitHub call — the disabled-control contract', async () => {
+  it('arms at the edge, spends NO GitHub call, and the read projects the watcher back', async () => {
     const session = await seedAgentAndSession()
     await seedPullRequestRun(session)
     const github = githubStub([graphqlOk(fullAnswer())])
-    const running = app(github.view, undefined, fakeGithub('SCOPE_DENIED'))
+    const edge = fakeEdge({ placement: 'sandbox' })
+    const running = app(github.view, undefined, fakeGithub(), undefined, edge.control)
+
+    const res = await post(running, session)
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual({ armed: true, placement: 'sandbox', waitingOn: 'checks running: unit', error: null })
+    // The arm is a relay, not a mutation: nothing was asked of GitHub.
+    expect(github.calls).toHaveLength(0)
+    expect(edge.calls).toEqual([{ op: 'set', enabled: true }])
+
+    // And the panel's read carries the edge's own verdict, which GitHub auto-merge never gave.
+    const read = await running.app.inject({ method: 'GET', url: `${ORG}/sessions/${session}/pull-request` })
+    expect(read.json()).toMatchObject({
+      canArmAutoMerge: true,
+      autoMergeArmed: true,
+      autoMergePlacement: 'sandbox',
+      autoMergeWaitingOn: 'checks running: unit',
+      autoMergeError: null
+    })
+  })
+
+  it('disarms, and the next read reports an unarmed box', async () => {
+    const session = await seedAgentAndSession()
+    await seedPullRequestRun(session)
+    const github = githubStub([graphqlOk(fullAnswer())])
+    const edge = fakeEdge()
+    const running = app(github.view, undefined, fakeGithub(), undefined, edge.control)
+
+    await post(running, session)
+    const off = await post(running, session, false)
+    expect(off.json()).toMatchObject({ armed: false, placement: null })
+
+    const read = await running.app.inject({ method: 'GET', url: `${ORG}/sessions/${session}/pull-request` })
+    expect(read.json()).toMatchObject({ autoMergeArmed: false, autoMergePlacement: null })
+  })
+
+  it('refuses a read-tier agent with 403 before reaching the edge — the disabled-control contract', async () => {
+    const session = await seedAgentAndSession()
+    await seedPullRequestRun(session)
+    const github = githubStub([graphqlOk(fullAnswer())])
+    const edge = fakeEdge()
+    const running = app(github.view, undefined, fakeGithub('SCOPE_DENIED'), undefined, edge.control)
 
     const res = await post(running, session)
     expect(res.statusCode).toBe(403)
-    expect(github.calls).toHaveLength(0)
+    expect(edge.calls).toHaveLength(0)
 
     // And the read-side flag agrees, so the console never offered the control in the first place.
     const read = await running.app.inject({ method: 'GET', url: `${ORG}/sessions/${session}/pull-request` })
     expect(read.json()).toMatchObject({ canArmAutoMerge: false })
   })
 
-  it('relays GitHub declining the state change as 409, not a 5xx', async () => {
-    const session = await seedAgentAndSession()
+  it('409s a daemon that does not serve the frame, naming the upgrade rather than 503-ing', async () => {
+    await seedDaemon(prisma, DAEMON)
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    const session = await seedSessionMeta(prisma, randomUUID(), AGENT, { daemonId: DAEMON })
     await seedPullRequestRun(session)
-    const github = githubStub([
-      nodeAnswer(false),
-      graphqlOk({ data: null, errors: [{ type: 'UNPROCESSABLE', message: 'Pull request is in clean status' }] })
-    ])
-    const running = app(github.view, undefined, fakeGithub())
+    const edge = fakeEdge()
+    const running = app(githubStub([]).view, undefined, fakeGithub(), undefined, edge.control)
 
     const res = await post(running, session)
     expect(res.statusCode).toBe(409)
-    expect(res.json().message).toContain('clean status')
+    expect(res.json().code).toBe('DAEMON_FEATURE_MISSING')
+    expect(edge.calls).toHaveLength(0)
   })
 
-  it('403s a run whose owning agent is gone — the write rides the agent authorization, which no longer exists', async () => {
+  it('relays a runtime image with no watcher as 409 with its machine code', async () => {
+    const session = await seedAgentAndSession()
+    await seedPullRequestRun(session)
+    const edge = fakeEdge({
+      fail: new ProtocolError('BAD_PAYLOAD', 'automerge/set failed: this runtime image ships no watcher', {
+        details: { reason: 'unsupported-image' }
+      })
+    })
+    const running = app(githubStub([]).view, undefined, fakeGithub(), undefined, edge.control)
+
+    const res = await post(running, session)
+    expect(res.statusCode).toBe(409)
+    expect(res.json().code).toBe('AUTO_MERGE_UNSUPPORTED_IMAGE')
+  })
+
+  it('relays a sleeping sandbox and an already-mergeable pull request as their own 409 codes', async () => {
+    const session = await seedAgentAndSession()
+    await seedPullRequestRun(session)
+    for (const [reason, code] of [
+      ['sandbox-asleep', 'AUTO_MERGE_SANDBOX_ASLEEP'],
+      ['already-mergeable', 'AUTO_MERGE_ALREADY_MERGEABLE']
+    ] as const) {
+      const edge = fakeEdge({
+        fail: new ProtocolError('BAD_PAYLOAD', `automerge/set failed: ${reason}`, { details: { reason } })
+      })
+      const running = app(githubStub([]).view, undefined, fakeGithub(), undefined, edge.control)
+      const res = await post(running, session)
+      expect(res.statusCode).toBe(409)
+      expect(res.json().code).toBe(code)
+    }
+  })
+
+  it('reads back autoMergeArmed:null when the edge cannot be asked — unknown, not "off"', async () => {
+    const session = await seedAgentAndSession()
+    await seedPullRequestRun(session)
+    const github = githubStub([graphqlOk(fullAnswer())])
+    const edge = fakeEdge({ fail: new Error('connection closed') })
+    const running = app(github.view, undefined, fakeGithub(), undefined, edge.control)
+
+    const read = await running.app.inject({ method: 'GET', url: `${ORG}/sessions/${session}/pull-request` })
+    expect(read.statusCode).toBe(200) // a lost toggle state must not fail the whole panel read
+    expect(read.json()).toMatchObject({ autoMergeArmed: null, autoMergeWaitingOn: null })
+  })
+
+  it('403s a run whose owning agent is gone — the arm rides the agent authorization, which no longer exists', async () => {
     const session = await seedAgentAndSession()
     await seedPullRequestRun(session, { agentId: null })
-    const github = githubStub([])
-    const running = app(github.view, undefined, fakeGithub())
+    const edge = fakeEdge()
+    const running = app(githubStub([]).view, undefined, fakeGithub(), undefined, edge.control)
 
     const res = await post(running, session)
     expect(res.statusCode).toBe(403)
-    expect(github.calls).toHaveLength(0)
+    expect(edge.calls).toHaveLength(0)
   })
 
   it('404s a session with no linked run, with the GET route\u2019s exact body', async () => {
-    const github = githubStub([])
-    const running = app(github.view, undefined, fakeGithub())
+    const edge = fakeEdge()
+    const running = app(githubStub([]).view, undefined, fakeGithub(), undefined, edge.control)
     const bare = await seedAgentAndSession()
 
     const res = await post(running, bare)
     expect(res.statusCode).toBe(404)
     expect(res.json()).toEqual(NOT_FOUND)
-    expect(github.calls).toHaveLength(0)
+    expect(edge.calls).toHaveLength(0)
   })
 
   it('hides another member\u2019s private session behind the same 404, spending nothing', async () => {
-    const github = githubStub([])
-    const running = app(github.view, undefined, fakeGithub())
+    const edge = fakeEdge()
+    const running = app(githubStub([]).view, undefined, fakeGithub(), undefined, edge.control)
     const owner = await makeUser(`owner-${randomUUID().slice(0, 8)}`)
     const priv = await seedAgentAndSession({ visibility: 'private', ownerIdentity: `user:${owner}` })
     await seedPullRequestRun(priv)
@@ -576,7 +692,101 @@ describe('POST /sessions/:id/pull-request/auto-merge', () => {
     const res = await post(running, priv)
     expect(res.statusCode).toBe(404)
     expect(res.json()).toEqual(NOT_FOUND)
-    expect(github.calls).toHaveLength(0)
+    expect(edge.calls).toHaveLength(0)
+  })
+})
+
+// The sandbox keep-alive: an open page renewing a lease the DAEMON decides on. The CP relays and
+// stores nothing, so every assertion here is about what it forwards and how it maps a refusal.
+describe('POST /sessions/:id/sandbox-keep-alive', () => {
+  const KEEP_ALIVE_CAPABILITIES = { ...EDGE_CAPABILITIES, features: [SANDBOX_KEEP_ALIVE_FEATURE] }
+  const post = (running: HttpApp, sessionId: string) =>
+    running.app.inject({ method: 'POST', url: `${ORG}/sessions/${sessionId}/sandbox-keep-alive`, payload: {} })
+
+  function fakeKeepAlive(answer: Record<string, unknown> | Error) {
+    const calls: Array<{ agentId: string; sessionId?: string }> = []
+    const control = {
+      sandboxKeepAlive: async (_d: string, _o: string, req: { agentId: string; sessionId?: string }) => {
+        calls.push(req)
+        if (answer instanceof Error) throw answer
+        return { agentId: req.agentId, ...answer }
+      }
+    }
+    return { control: control as unknown as ControlSender, calls }
+  }
+
+  it('relays the daemon’s hold, naming the session whose worktree decides it', async () => {
+    await seedDaemon(prisma, DAEMON, { capabilities: KEEP_ALIVE_CAPABILITIES })
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    const session = await seedSessionMeta(prisma, randomUUID(), AGENT, { daemonId: DAEMON })
+    const edge = fakeKeepAlive({
+      held: true,
+      reasons: ['uncommitted-files', 'auto-merge-armed'],
+      ttlMs: 180_000,
+      placement: 'sandbox'
+    })
+    const running = app(githubStub([]).view, undefined, undefined, undefined, edge.control)
+
+    const res = await post(running, session)
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual({
+      held: true,
+      reasons: ['uncommitted-files', 'auto-merge-armed'],
+      ttlMs: 180_000,
+      placement: 'sandbox',
+      asleep: false
+    })
+    expect(edge.calls).toEqual([{ agentId: AGENT, sessionId: session }])
+  })
+
+  it('passes an unheld answer through unchanged — a clean tree is not an error', async () => {
+    await seedDaemon(prisma, DAEMON, { capabilities: KEEP_ALIVE_CAPABILITIES })
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    const session = await seedSessionMeta(prisma, randomUUID(), AGENT, { daemonId: DAEMON })
+    const edge = fakeKeepAlive({ held: false, reasons: [], placement: 'sandbox', asleep: true })
+    const running = app(githubStub([]).view, undefined, undefined, undefined, edge.control)
+
+    expect((await post(running, session)).json()).toEqual({
+      held: false,
+      reasons: [],
+      ttlMs: null,
+      placement: 'sandbox',
+      asleep: true
+    })
+  })
+
+  it('409s a daemon too old to hold a lease, without asking it', async () => {
+    await seedDaemon(prisma, DAEMON)
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    const session = await seedSessionMeta(prisma, randomUUID(), AGENT, { daemonId: DAEMON })
+    const edge = fakeKeepAlive({ held: true, reasons: ['uncommitted-files'] })
+    const running = app(githubStub([]).view, undefined, undefined, undefined, edge.control)
+
+    const res = await post(running, session)
+    expect(res.statusCode).toBe(409)
+    expect(res.json().code).toBe('DAEMON_FEATURE_MISSING')
+    expect(edge.calls).toHaveLength(0)
+  })
+
+  it('503s an offline daemon — the page simply stops holding', async () => {
+    await seedDaemon(prisma, DAEMON, { capabilities: KEEP_ALIVE_CAPABILITIES })
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    const session = await seedSessionMeta(prisma, randomUUID(), AGENT, { daemonId: DAEMON })
+    const edge = fakeKeepAlive(new Error('connection closed'))
+    const running = app(githubStub([]).view, undefined, undefined, undefined, edge.control)
+
+    expect((await post(running, session)).statusCode).toBe(503)
+  })
+
+  it('hides another member’s private session behind a 404, spending nothing', async () => {
+    const edge = fakeKeepAlive({ held: true, reasons: ['uncommitted-files'] })
+    const running = app(githubStub([]).view, undefined, undefined, undefined, edge.control)
+    const owner = await makeUser(`owner-${randomUUID().slice(0, 8)}`)
+    const priv = await seedAgentAndSession({ visibility: 'private', ownerIdentity: `user:${owner}` })
+
+    const res = await post(running, priv)
+    expect(res.statusCode).toBe(404)
+    expect(edge.calls).toHaveLength(0)
   })
 })
 
@@ -811,14 +1021,12 @@ describe('GET /sessions/:id/pull-request — the head-branch link', () => {
     expect(link.calls).toHaveLength(0)
   })
 
-  it('arms auto-merge on a branch-linked session, under that session’s own agent', async () => {
+  it('arms merge-when-ready on a branch-linked session, under that session’s own agent', async () => {
     const session = await seedSessionWorktree()
-    const github = githubStub([
-      graphqlOk({ data: { repository: { pullRequest: { id: 'PR_node1', autoMergeRequest: null } } } }),
-      graphqlOk({ data: { enablePullRequestAutoMerge: { clientMutationId: null } } })
-    ])
+    const github = githubStub([])
     const link = linkStub()
-    const running = app(github.view, undefined, fakeGithub(), link.links)
+    const edge = fakeEdge()
+    const running = app(github.view, undefined, fakeGithub(), link.links, edge.control)
 
     const res = await running.app.inject({
       method: 'POST',
@@ -827,6 +1035,9 @@ describe('GET /sessions/:id/pull-request — the head-branch link', () => {
     })
 
     expect(res.statusCode).toBe(200)
-    expect(res.json()).toEqual({ armed: true })
+    expect(res.json()).toMatchObject({ armed: true })
+    // The branch arm reaches the edge too, and asks GitHub for nothing.
+    expect(edge.calls).toEqual([{ op: 'set', enabled: true }])
+    expect(github.calls).toHaveLength(0)
   })
 })

@@ -3394,7 +3394,14 @@ export interface SessionPullRequestDto {
   threads: SessionPullRequestThreadDto[]
   unresolvedCount: number // a floor when `threadsTruncated`
   threadsTruncated: boolean
-  autoMergeArmed: boolean | null // null while degraded — only GitHub holds the auto-merge fact
+  /** Whether a merge-when-ready watcher is armed at the EDGE right now; null ⇒ nobody could be asked (no live daemon, or one too old to serve the read), which the panel draws as unknown rather than as "off". */
+  autoMergeArmed: boolean | null
+  /** Where that watcher runs, and so how long it lives: `sandbox` dies with the agent's pod, `daemon` with the daemon process. Null when nothing is armed. */
+  autoMergePlacement?: 'sandbox' | 'daemon' | null
+  /** The watcher's own last verdict — "checks running: build", "changes requested", "conflicts with the base branch". */
+  autoMergeWaitingOn?: string | null
+  /** A GitHub refusal or unreachable GitHub on the last tick. The watcher stays armed through it. */
+  autoMergeError?: string | null
   canArmAutoMerge: boolean // the owning agent's clamp allows the write; false renders a disabled control
   degraded: boolean
   degradedReason: 'rate_limited' | 'denied' | 'unreachable' | null
@@ -3420,12 +3427,50 @@ export async function fetchSessionPullRequest(
   return apiGet<SessionPullRequestDto>(`${orgBase()}/sessions/${encodeURIComponent(sessionId)}/pull-request${query}`)
 }
 
-// Arm/disarm GitHub auto-merge (squash) on the session's PR, under the owning agent's clamped grant.
-// Idempotent on the CP; a 409 relays GitHub declining the state change (e.g. checks already pass).
-export async function setSessionPullRequestAutoMerge(sessionId: string, enabled: boolean): Promise<{ armed: boolean }> {
-  return apiPost<{ armed: boolean }>(`${orgBase()}/sessions/${encodeURIComponent(sessionId)}/pull-request/auto-merge`, {
-    enabled
-  })
+/** The edge watcher's state after an arm/disarm. */
+export interface SessionPullRequestAutoMergeDto {
+  armed: boolean
+  placement: 'sandbox' | 'daemon' | null
+  waitingOn: string | null
+  error: string | null
+}
+
+// Arm/disarm merge-when-ready on the session's PR. The watcher runs at the EDGE — in the agent's
+// sandbox, or its daemon's process — and squash-merges once the PR is open, undrafted, conflict-free,
+// with no failing or running check and no requested changes. Deliberately NOT GitHub's own
+// auto-merge, which refuses every PR that is not BLOCKED and so can never be armed on a repository
+// without required checks. Nothing is persisted: the armed set is in memory at the edge, so a
+// reclaimed sandbox or a restarted daemon reads back unchecked. 409 ⇒ no daemon, or an image with no
+// watcher; 503 ⇒ the daemon is offline.
+export async function setSessionPullRequestAutoMerge(
+  sessionId: string,
+  enabled: boolean
+): Promise<SessionPullRequestAutoMergeDto> {
+  return apiPost<SessionPullRequestAutoMergeDto>(
+    `${orgBase()}/sessions/${encodeURIComponent(sessionId)}/pull-request/auto-merge`,
+    { enabled }
+  )
+}
+
+/** What the edge is holding this session's sandbox for, and for how long. */
+export interface SessionSandboxKeepAliveDto {
+  held: boolean
+  reasons: Array<'uncommitted-files' | 'auto-merge-armed'>
+  ttlMs: number | null
+  placement: 'sandbox' | 'daemon' | null
+  asleep: boolean
+}
+
+// Renew this page's lease on the session agent's sandbox pod, so the idle sweep does not suspend work
+// the page is watching. The DAEMON decides whether to hold — uncommitted files in this session's
+// worktree, or an armed merge-when-ready watcher, which for a cluster agent lives inside that very pod.
+// A lease, not a flag: there is nothing to release, and it lapses within one TTL once this stops being
+// called (page closed, tab backgrounded, machine asleep). Never wakes a suspended pod.
+export async function keepSessionSandboxAlive(sessionId: string): Promise<SessionSandboxKeepAliveDto> {
+  return apiPost<SessionSandboxKeepAliveDto>(
+    `${orgBase()}/sessions/${encodeURIComponent(sessionId)}/sandbox-keep-alive`,
+    {}
+  )
 }
 
 // Merge the session's PR (squash) now, under the owning agent's clamped grant. A 409 relays GitHub

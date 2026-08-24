@@ -107,6 +107,7 @@ import { useCrumbSlot } from '@/components/console/Shell'
 import { DockPanel, SessionDock, SessionDockSlot, type DockTab } from '@/components/console/dock/SessionDock'
 import { SessionsPanel, SessionsPanelSkeleton, sessionsTabStatus } from '@/components/console/dock/SessionsPanel'
 import { FilesPanel, filesTabStatus } from '@/components/console/dock/FilesPanel'
+import { useSandboxKeepAlive } from '@/components/console/dock/sandbox-keep-alive'
 import { GitPanel, gitTabStatus, type GitPanelVerdict } from '@/components/console/dock/GitPanel'
 import { TasksPanel, tasksTabStatus, type TasksPanelVerdict } from '@/components/console/dock/TasksPanel'
 import {
@@ -1991,6 +1992,11 @@ export default function SessionDetailView() {
     MOCK_MODE || !session || (syntheticPlayground && !session.realSessionId)
       ? null
       : (session.realSessionId ?? session.id)
+  // While this page is open and on screen, hold the agent's sandbox against the daemon's idle sweep —
+  // but only for what the DAEMON finds worth holding (uncommitted files in this session's worktree, an
+  // armed merge-when-ready watcher). A lease with nothing to release: closing the page stops the
+  // renewals and the hold lapses on its own, which is what the whole feature rests on.
+  useSandboxKeepAlive(prSessionId)
   // Whether the Git tab's read is about the SAME worktree the PR tab is keyed to. The two scopes are
   // deliberately different — Files/Git follow header focus, the PR tab follows the open session — so
   // only an exact match makes the branch it read this session's branch, and only then may the PR tab

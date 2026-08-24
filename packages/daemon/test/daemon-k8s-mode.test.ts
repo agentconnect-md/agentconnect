@@ -326,6 +326,39 @@ describe('daemon --k8s mode', () => {
     }
   })
 
+  it('leaves a HELD sandbox alone — an open page is watching work a suspend would throw away', async () => {
+    const suspended: string[] = []
+    const k8sDaemon = daemon({
+      root: root({ declared: { runtimes: [{ id: 'claude' }] } }),
+      k8s: true,
+      plane: {
+        launchedAgents: () => [
+          { agentId: 'watched', since: 0 },
+          { agentId: 'abandoned', since: 0 }
+        ],
+        suspendIdle: async (agentId: string) => {
+          suspended.push(agentId)
+          return 'suspended'
+        }
+      }
+    })
+    try {
+      await k8sDaemon.start()
+      // What the keep-alive route renews: a lease taken because that session's worktree is dirty.
+      ;(k8sDaemon as any).sandboxHolds.renew('watched', 'session-1', ['uncommitted-files'])
+      ;(k8sDaemon as any).sweepIdle()
+      await vi.waitFor(() => expect(suspended).toEqual(['abandoned']))
+
+      // The page closes: nothing renews, the lease lapses, and the next sweep suspends normally. The
+      // fake plane re-answers for `abandoned` too, so the assertion is about the held one arriving.
+      ;(k8sDaemon as any).sandboxHolds.release('watched', 'session-1')
+      ;(k8sDaemon as any).sweepIdle()
+      await vi.waitFor(() => expect(suspended).toContain('watched'))
+    } finally {
+      await k8sDaemon.stop()
+    }
+  })
+
   it('counts idleness from when the launch was taken over when no activity is recorded', async () => {
     const suspended: string[] = []
     const k8sDaemon = daemon({
