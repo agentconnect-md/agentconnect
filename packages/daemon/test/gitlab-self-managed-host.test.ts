@@ -463,12 +463,12 @@ describe('glab target resolution against the configured instance (§13.3, §24.4
 describe('spec-admission origin refusal (§24.4)', () => {
   afterAll(() => {
     configureWorkspaceGitOrigins([...DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS])
-    adoptDeploymentCodeHost(undefined)
+    adoptDeploymentCodeHost('https://adoption-parked.example.test')
   })
 
   it('names the origin the operator policy excludes, and admits a permitted one', () => {
-    // No instance adopted here: this is the operator list on its own.
-    adoptDeploymentCodeHost(undefined)
+    // Park adoption on a host no case names: this one is about the operator list on its own.
+    adoptDeploymentCodeHost('https://adoption-parked.example.test')
     configureWorkspaceGitOrigins(['https://github.com', 'https://gitlab.com'])
     expect(unauthorizedWorkspaceGitOrigin('https://gitlab.example.test:8443/gitlab/group/proj.git')).toBe(
       'https://gitlab.example.test:8443'
@@ -520,6 +520,24 @@ describe('spec-admission origin refusal (§24.4)', () => {
       const ack = await (daemon as any).cpConfigApply().applyAgentUpsert({ agentId: AGENT, spec: gitlabSpec() })
       expect(ack).toEqual({ ok: true })
       expect((daemon as any).agents.get(AGENT).gitlabHost).toBe(INSTANCE)
+    } finally {
+      await daemon.stop()
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  // The bot's case: the instance rides `gitlabHost`, not the primary workspace mode.
+  it('adopts from a non-gitlab workspace that still names the instance', async () => {
+    const { daemon, root } = await daemonWithOrigins(['https://github.com', 'https://gitlab.com'])
+    try {
+      const spec = {
+        name: 'gh-with-gitlab-grant',
+        gitlabHost: INSTANCE,
+        workspace: { mode: 'scratch', isolation: 'shared', additionalRepos: [] }
+      } as unknown as AgentSpec
+      const ack = await (daemon as any).cpConfigApply().applyAgentUpsert({ agentId: AGENT, spec })
+      expect(ack).toEqual({ ok: true })
+      expect(unauthorizedWorkspaceGitOrigin(`${INSTANCE}/example-group/example-project.git`)).toBeUndefined()
     } finally {
       await daemon.stop()
       rmSync(root, { recursive: true, force: true })

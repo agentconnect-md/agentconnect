@@ -23,12 +23,11 @@ let deploymentCodeHostOrigin: string | undefined
  *  deployment addresses ONE GitLab instance, so the latest spec is the current answer. */
 export function adoptDeploymentCodeHost(gitlabHost: string | undefined): void {
   const host = gitlabHost?.trim()
-  // Absent means GitLab.com (§24.1), which needs no adoption — and stops adopting whatever
-  // self-managed instance a previous spec named, so disconnecting one narrows the policy back.
-  if (!host) {
-    deploymentCodeHostOrigin = undefined
-    return
-  }
+  // Absent means this AGENT addresses GitLab.com or no GitLab at all (§24.1) — never that the
+  // deployment stopped having an instance. Leave the answer alone: with several agents on one
+  // daemon, clearing here would make the policy depend on whose spec arrived last. A disconnected
+  // instance is forgotten at restart, when nothing names it again.
+  if (!host) return
   try {
     // The base URL may carry a path prefix (§24.1), which an origin may not: keep scheme, host, port.
     const url = new URL(gitlabManagedHost(host).baseUrl)
@@ -52,10 +51,9 @@ export function authorizeWorkspaceGitUrl(input: string): string {
 }
 
 /**
- * The origin a workspace repository needs but the operator policy excludes; undefined when the
- * policy admits it (§24.4). The operator allowlist stays authoritative — the managed GitLab feature
- * allows exactly the configured origin and never widens the list — so a spec naming an excluded
- * instance is refused by NAMING the origin an operator has to add.
+ * The origin a workspace repository needs but this daemon's policy excludes; undefined when the
+ * policy admits it (§24.4). The policy is the operator's list plus the deployment's own code host,
+ * so what this reports is a repository somewhere neither of them names.
  */
 export function unauthorizedWorkspaceGitOrigin(repository: string): string | undefined {
   try {

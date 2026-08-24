@@ -340,7 +340,6 @@ export async function applyReconcileSnapshot(host: ConfigApplyHost, snap: Regist
 function gitlabOriginRefusal(spec: AgentUpsert['spec']): string | undefined {
   const workspace = spec.workspace
   if (workspace?.mode !== 'gitlab') return undefined
-  adoptDeploymentCodeHost(spec.gitlabHost)
   const origin = unauthorizedWorkspaceGitOrigin(workspace.gitRepo)
   return origin === undefined
     ? undefined
@@ -350,6 +349,11 @@ function gitlabOriginRefusal(spec: AgentUpsert['spec']): string | undefined {
 export function applyAgentUpsert(host: ConfigApplyHost, { agentId, spec }: AgentUpsert): Promise<Ack> {
   return host.queueAgentLifecycle(agentId, async () => {
     if (host.moveStagedAgents().has(agentId)) return { ok: false, reason: 'agent is staged for a move' }
+    // Keyed on the instance itself, not on the primary workspace: a github or scratch workspace
+    // holding a GitLab additional-repository grant carries `gitlabHost` too, and adopting only for
+    // a gitlab-mode workspace would leave that agent's clone waiting on whichever OTHER agent
+    // happened to upsert first.
+    adoptDeploymentCodeHost(spec.gitlabHost)
     const originRefusal = gitlabOriginRefusal(spec)
     if (originRefusal !== undefined) {
       host.log().warn(`cp: agent "${agentId}" ${originRefusal}`)

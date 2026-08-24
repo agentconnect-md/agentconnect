@@ -9,7 +9,9 @@ import {
 
 afterEach(() => {
   configureWorkspaceGitOrigins(DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS)
-  adoptDeploymentCodeHost(undefined)
+  // Adoption is process state that only a named instance moves: park it on a host no case names,
+  // so one test's instance cannot widen the next one's.
+  adoptDeploymentCodeHost('https://adoption-parked.example.test')
 })
 
 describe('workspace Git origin policy', () => {
@@ -86,18 +88,24 @@ describe("the deployment's own code host", () => {
     expect(permitsNoHttpsOrigin()).toBe(true)
   })
 
-  it('makes an ssh-only operator list serve managed GitLab again', () => {
+  // Managed GitLab is HTTPS-only (§13.2), and the adopted instance counts for that check — an
+  // operator list with no https origin no longer means no GitLab workspace can ever clone here.
+  it('counts toward the https check the managed-GitLab warning reads', () => {
     configureWorkspaceGitOrigins(['ssh://github.com'])
-    expect(permitsNoHttpsOrigin()).toBe(true)
     adoptDeploymentCodeHost('https://gitlab.example.test')
     expect(permitsNoHttpsOrigin()).toBe(false)
+    expect(authorizeWorkspaceGitUrl('https://gitlab.example.test/team/repo.git')).toBe(
+      'https://gitlab.example.test/team/repo.git'
+    )
   })
 
-  it('stops adopting when the deployment no longer names an instance', () => {
+  // An agent without GitLab is not a statement about the deployment. Clearing here would make the
+  // policy depend on whose spec arrived last; a disconnected instance is forgotten at restart.
+  it('is left alone by a spec that names no instance', () => {
     adoptDeploymentCodeHost('https://gitlab.example.test')
     adoptDeploymentCodeHost(undefined)
-    expect(() => authorizeWorkspaceGitUrl('https://gitlab.example.test/team/repo.git')).toThrow(
-      'git clone origin is not allowed'
+    expect(authorizeWorkspaceGitUrl('https://gitlab.example.test/team/repo.git')).toBe(
+      'https://gitlab.example.test/team/repo.git'
     )
   })
 })

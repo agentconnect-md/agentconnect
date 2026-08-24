@@ -118,8 +118,8 @@ supported yet.
 
 Nothing to do for the instance you configured: a daemon adopts the code host its
 control plane names — the same address it already uses to decide where an agent's
-git credential may go — so a workspace on your instance clones with no local
-configuration anywhere.
+git credential may go — so a workspace on your instance, or an additional
+repository on it, clones with no local configuration anywhere.
 
 The operator policy behind that is `security.workspaceGitAllowedOrigins` in a
 daemon's config file (`daemonPool.workspaceGitAllowedOrigins` in the Helm chart,
