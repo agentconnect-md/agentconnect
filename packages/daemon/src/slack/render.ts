@@ -26,7 +26,7 @@ import { isNoResponseBody, isNoResponsePrefix } from '../session/no-response.js'
  *  - `post`        a finalized body/result section → chat.postMessage in the thread.
  *  - `notice`      a system line (e.g. the done footer) posted to the thread but not recorded.
  *  - `set-status`  the transient assistant status bar (assistant.threads.setStatus).
- *  - `set-title`   the native Slack app-thread title (assistant.threads.setTitle).
+ *  - `set-title`   the native Slack app-thread title (agents.sessions.rename).
  *  - `progress`    the SINGLE in-place "main progress" message (medium/high) — posted
  *                  once then chat.update-ed in place as tool activity changes (in-place update).
  *  - `reasoning`   the SINGLE in-place reasoning "context block" (high only) — the
