@@ -47,6 +47,8 @@ export function useGsActions() {
   const runAction = useCallback(
     (action: GsAction) => {
       switch (action.kind) {
+        case 'daemon':
+          return openModal('daemon')
         case 'agent':
           if (!builtinAgent) return openModal('agent')
           // Same chain the Agents / Agent detail "Add daemon" chips use (preset-agents.md

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { daemonCompletesOnboarding, needsOnboarding } from './onboarding'
+import { daemonCompletesOnboarding, firstReconnectableDaemonId, needsOnboarding } from './onboarding'
 
 describe('needsOnboarding', () => {
   it('recovers a fresh org (only the unplaced built-in preset, daemon offline)', () => {
@@ -20,6 +20,7 @@ describe('needsOnboarding', () => {
   it('keeps a fresh org initialized during a planned daemon relaunch', () => {
     const restarting = { daemonId: 'edge-1', status: 'offline' as const, lifecycleStatus: 'restarting' as const }
     expect(daemonCompletesOnboarding(restarting)).toBe(true)
+    expect(firstReconnectableDaemonId([restarting])).toBeUndefined()
     expect(needsOnboarding(false, false, false, daemonCompletesOnboarding(restarting), false)).toBe(false)
   })
 })
