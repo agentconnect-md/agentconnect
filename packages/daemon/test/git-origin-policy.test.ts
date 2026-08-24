@@ -1,8 +1,16 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS } from '@agentconnect.md/protocol'
-import { authorizeWorkspaceGitUrl, configureWorkspaceGitOrigins } from '../src/workspace/git-origin-policy.js'
+import {
+  adoptDeploymentCodeHost,
+  authorizeWorkspaceGitUrl,
+  configureWorkspaceGitOrigins,
+  permitsNoHttpsOrigin
+} from '../src/workspace/git-origin-policy.js'
 
-afterEach(() => configureWorkspaceGitOrigins(DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS))
+afterEach(() => {
+  configureWorkspaceGitOrigins(DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS)
+  adoptDeploymentCodeHost(undefined)
+})
 
 describe('workspace Git origin policy', () => {
   it('denies an unconfigured host at the daemon boundary', () => {
@@ -32,6 +40,63 @@ describe('workspace Git origin policy', () => {
       'https://git.example:8443/acme/repo.git'
     )
     expect(() => authorizeWorkspaceGitUrl('https://git.example/acme/repo.git')).toThrow(
+      'git clone origin is not allowed'
+    )
+  })
+})
+
+describe("the deployment's own code host", () => {
+  // It is deployment configuration, and this daemon already trusts it to decide where an agent's
+  // git credential may go. Making an operator restate it bought nothing and drifted.
+  it('is cloneable once a spec names it, with nothing configured locally', () => {
+    adoptDeploymentCodeHost('https://gitlab.example.test')
+    expect(authorizeWorkspaceGitUrl('https://gitlab.example.test/team/repo.git')).toBe(
+      'https://gitlab.example.test/team/repo.git'
+    )
+  })
+
+  it('admits that origin only, never anywhere else', () => {
+    adoptDeploymentCodeHost('https://gitlab.example.test/gitlab')
+    expect(authorizeWorkspaceGitUrl('https://gitlab.example.test/gitlab/team/repo.git')).toBe(
+      'https://gitlab.example.test/gitlab/team/repo.git'
+    )
+    expect(() => authorizeWorkspaceGitUrl('https://elsewhere.example.test/team/repo.git')).toThrow(
+      'git clone origin is not allowed'
+    )
+  })
+
+  it('replaces the previous answer, because a deployment addresses one instance', () => {
+    adoptDeploymentCodeHost('https://first.example.test')
+    adoptDeploymentCodeHost('https://second.example.test')
+    expect(() => authorizeWorkspaceGitUrl('https://first.example.test/team/repo.git')).toThrow(
+      'git clone origin is not allowed'
+    )
+    expect(authorizeWorkspaceGitUrl('https://second.example.test/team/repo.git')).toBe(
+      'https://second.example.test/team/repo.git'
+    )
+  })
+
+  // `[]` is a decision about this daemon — no remote workspaces at all — not about one host.
+  it('does not adopt past an explicit deny-all', () => {
+    configureWorkspaceGitOrigins([])
+    adoptDeploymentCodeHost('https://gitlab.example.test')
+    expect(() => authorizeWorkspaceGitUrl('https://gitlab.example.test/team/repo.git')).toThrow(
+      'git clone origin is not allowed'
+    )
+    expect(permitsNoHttpsOrigin()).toBe(true)
+  })
+
+  it('makes an ssh-only operator list serve managed GitLab again', () => {
+    configureWorkspaceGitOrigins(['ssh://github.com'])
+    expect(permitsNoHttpsOrigin()).toBe(true)
+    adoptDeploymentCodeHost('https://gitlab.example.test')
+    expect(permitsNoHttpsOrigin()).toBe(false)
+  })
+
+  it('stops adopting when the deployment no longer names an instance', () => {
+    adoptDeploymentCodeHost('https://gitlab.example.test')
+    adoptDeploymentCodeHost(undefined)
+    expect(() => authorizeWorkspaceGitUrl('https://gitlab.example.test/team/repo.git')).toThrow(
       'git clone origin is not allowed'
     )
   })

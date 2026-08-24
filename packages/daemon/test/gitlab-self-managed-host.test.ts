@@ -41,7 +41,11 @@ import {
   sessionGitConfig,
   daemonGitCredentialTarget
 } from '../src/workspace/git-injection.js'
-import { configureWorkspaceGitOrigins, unauthorizedWorkspaceGitOrigin } from '../src/workspace/git-origin-policy.js'
+import {
+  adoptDeploymentCodeHost,
+  configureWorkspaceGitOrigins,
+  unauthorizedWorkspaceGitOrigin
+} from '../src/workspace/git-origin-policy.js'
 
 // A prefixed, non-default-port install: the shape a relative URL root produces, and the one every
 // bare-hostname classifier gets wrong.
@@ -457,9 +461,14 @@ describe('glab target resolution against the configured instance (§13.3, §24.4
 })
 
 describe('spec-admission origin refusal (§24.4)', () => {
-  afterAll(() => configureWorkspaceGitOrigins([...DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS]))
+  afterAll(() => {
+    configureWorkspaceGitOrigins([...DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS])
+    adoptDeploymentCodeHost(undefined)
+  })
 
   it('names the origin the operator policy excludes, and admits a permitted one', () => {
+    // No instance adopted here: this is the operator list on its own.
+    adoptDeploymentCodeHost(undefined)
     configureWorkspaceGitOrigins(['https://github.com', 'https://gitlab.com'])
     expect(unauthorizedWorkspaceGitOrigin('https://gitlab.example.test:8443/gitlab/group/proj.git')).toBe(
       'https://gitlab.example.test:8443'
@@ -502,13 +511,30 @@ describe('spec-admission origin refusal (§24.4)', () => {
       }
     }) as unknown as AgentSpec
 
-  it('refuses the workspace and reports the required origin on the upsert ack', async () => {
+  // The instance is the deployment's own configuration, and this daemon already trusts it to decide
+  // where an agent's git credential may go — so admission adopts it rather than asking an operator
+  // to restate an address the control plane just sent.
+  it('admits the deployment instance with nothing configured for it', async () => {
     const { daemon, root } = await daemonWithOrigins(['https://github.com', 'https://gitlab.com'])
     try {
       const ack = await (daemon as any).cpConfigApply().applyAgentUpsert({ agentId: AGENT, spec: gitlabSpec() })
+      expect(ack).toEqual({ ok: true })
+      expect((daemon as any).agents.get(AGENT).gitlabHost).toBe(INSTANCE)
+    } finally {
+      await daemon.stop()
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  // What admission still refuses: a repository somewhere the deployment never named.
+  it('refuses a repository off the deployment instance, and names that origin on the ack', async () => {
+    const { daemon, root } = await daemonWithOrigins(['https://github.com', 'https://gitlab.com'])
+    try {
+      const spec = gitlabSpec() as unknown as { workspace: { gitRepo: string } }
+      spec.workspace.gitRepo = 'https://elsewhere.example.test/group/proj.git'
+      const ack = await (daemon as any).cpConfigApply().applyAgentUpsert({ agentId: AGENT, spec })
       expect(ack.ok).toBe(false)
-      expect(ack.reason).toContain('https://gitlab.example.test:8443')
-      expect(ack.reason).toContain('workspaceGitAllowedOrigins')
+      expect(ack.reason).toContain('https://elsewhere.example.test')
       expect((daemon as any).agents.has(AGENT)).toBe(false)
     } finally {
       await daemon.stop()

@@ -116,20 +116,16 @@ supported yet.
 
 ## Allow the daemon to clone your instance
 
-A daemon serves a workspace only from an origin its **operator** allowed — a policy
-no tenant can widen, and one that ships allowing GitHub and GitLab.com alone. Until
-your instance is on that list, attaching a project answers:
+Nothing to do for the instance you configured: a daemon adopts the code host its
+control plane names — the same address it already uses to decide where an agent's
+git credential may go — so a workspace on your instance clones with no local
+configuration anywhere.
 
-```text
-workspace preparation failed: git clone origin is not allowed by this daemon
-```
-
-Add the exact origin — scheme, host, and port, no path — wherever that daemon is
-configured. On a host daemon that is `security.workspaceGitAllowedOrigins` in its
-config file; in Kubernetes the members have no config file, so the deployment states
-it instead (`daemonPool.workspaceGitAllowedOrigins` in the chart's values). Naming any
-origin replaces the default list rather than adding to it, so an install that also uses
-the public hosts names them alongside yours.
+The operator policy behind that is `security.workspaceGitAllowedOrigins` in a
+daemon's config file (`daemonPool.workspaceGitAllowedOrigins` in the Helm chart,
+where members have no config file). Reach for it only to allow something _else_ —
+a second host, an SSH remote — or to restrict: an explicit empty list turns remote
+Git workspaces off entirely, and nothing is adopted past that.
 
 ## Let GitLab reach the webhook endpoint
 
