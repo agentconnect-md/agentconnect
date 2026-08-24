@@ -1075,7 +1075,11 @@ Decisions recorded while building it:
   `tick` re-reads synchronously in the instant before the merge mutation — so
   once `stop()` has returned, no merge can still BEGIN — and `disarm` awaits
   `settle()` before answering, so `armed: false` is never reported while one could
-  still be in the air. The in-pod child runs the same fence off `SIGTERM`, and the
+  still be in the air. That last check has to sit past the MERGE TOKEN's own
+  await: fetching the token is a round trip of its own (over the gitcred tunnel,
+  in a pod), so `squashMerge` resolves it FIRST and gates immediately before the
+  POST — a fence placed before that await has already passed by the time the
+  request goes out. The in-pod child runs the same fence off `SIGTERM`, and the
   handler's disarm waits for that exit (SIGKILL bounds a wedged child) rather than
   answering the moment the signal is sent.
 - **Both status strings are clamped where they are PROJECTED, not per hop.**

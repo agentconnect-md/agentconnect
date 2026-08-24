@@ -108,11 +108,22 @@ export interface GithubAccess {
 
 /** One GraphQL round trip. GraphQL reports refusals inside a 200, so `errors` decides here. */
 async function graphql<T>(access: GithubAccess, query: string, variables: Record<string, unknown>): Promise<T> {
+  return send(access, await access.token(), query, variables)
+}
+
+/** The round trip with the token ALREADY in hand. Split out so a caller that must not await anything
+ *  between its last abort check and the request can acquire the token first — see `squashMerge`. */
+async function send<T>(
+  access: GithubAccess,
+  token: string,
+  query: string,
+  variables: Record<string, unknown>
+): Promise<T> {
   const fetchImpl = access.fetchImpl ?? ((input: string, init?: RequestInit) => fetch(input, init))
   const res = await fetchImpl(access.endpoint ?? 'https://api.github.com/graphql', {
     method: 'POST',
     headers: {
-      authorization: `Bearer ${await access.token()}`,
+      authorization: `Bearer ${token}`,
       accept: 'application/vnd.github+json',
       'content-type': 'application/json',
       'user-agent': 'agentconnect-auto-merge'
@@ -190,11 +201,22 @@ function toCheck(node: Record<string, unknown>): PrCheck {
   return { name: String(node.name ?? ''), outcome }
 }
 
-/** Squash-merge, pinned to the head the readiness verdict was formed against — never to a head
- *  the operator saw in the panel minutes ago. A commit landing mid-tick refuses here and the
- *  next tick judges the new head on its own merits, which is the whole point of "when ready". */
-export async function squashMerge(access: GithubAccess, pr: PrSnapshot): Promise<void> {
-  await graphql(access, MERGE_MUTATION, { id: pr.prId, oid: pr.headOid })
+/**
+ * Squash-merge, pinned to the head the readiness verdict was formed against — never to a head
+ * the operator saw in the panel minutes ago. A commit landing mid-tick refuses here and the
+ * next tick judges the new head on its own merits, which is the whole point of "when ready".
+ *
+ * The token is fetched BEFORE the last abort check, not inside the request: fetching it is itself an
+ * await (a pod reads it over the gitcred tunnel), and a disarm landing in that window would otherwise
+ * be invisible — the check would have passed already and the POST would go out regardless. Answers
+ * `false` when the fence closed instead, so nothing was sent.
+ */
+export async function squashMerge(access: GithubAccess, pr: PrSnapshot, aborted?: () => boolean): Promise<boolean> {
+  const token = await access.token()
+  // Nothing may be awaited between here and the request; `send` takes the token already resolved.
+  if (aborted?.()) return false
+  await send(access, token, MERGE_MUTATION, { id: pr.prId, oid: pr.headOid })
+  return true
 }
 
 /** What one tick did, for the caller to project as `waitingOn` / `lastError` / `merged`. */
@@ -210,11 +232,12 @@ export type TickOutcome =
 
 export interface TickOptions {
   /**
-   * Checked once, synchronously, in the instant before the merge mutation is sent.
+   * Checked synchronously in the instant before the merge mutation is sent, with the token already
+   * resolved so nothing can be awaited in between.
    *
    * A tick awaits a snapshot and a token before it decides anything, and a disarm arriving inside
    * that window used to be invisible to it: the continuation went on to squash-merge a pull request
-   * whose box the operator had already unticked and been told was off. Because the check is
+   * whose box the operator had already unticked and been told was off. Because the last check is
    * synchronous and immediately precedes the only mutation here, a caller that flips this predicate
    * knows that once it has, no merge can still BEGIN — which is what lets `disarm` answer honestly.
    */
@@ -238,9 +261,11 @@ export async function tick(
     if (pr.state === 'CLOSED') return { kind: 'closed' }
     const verdict = readiness(pr)
     if (!verdict.ready) return { kind: 'waiting', waitingOn: verdict.waitingOn }
-    // The last gate before an irreversible act: everything above is a read, this is the mutation.
+    // Everything above is a read; below is the irreversible act. The gate is checked here to avoid
+    // fetching a token at all for a watch already disarmed, and again inside `squashMerge` with the
+    // token in hand — that second one is the check no further await can slip behind.
     if (opts.aborted?.()) return { kind: 'aborted' }
-    await squashMerge(access, pr)
+    if (!(await squashMerge(access, pr, opts.aborted))) return { kind: 'aborted' }
     return { kind: 'merged' }
   } catch (err) {
     return { kind: 'error', error: err instanceof Error ? err.message : String(err) }

@@ -150,6 +150,43 @@ describe('AutoMergeLoop', () => {
     expect(loop.current().merged).toBe(false)
   })
 
+  it('does NOT merge when disarm lands while the MERGE TOKEN is being fetched', async () => {
+    // The narrower window: the snapshot is back, readiness said go, and the tick is awaiting the token
+    // the merge will be sent with. A fence checked only before that await has already passed.
+    const calls: string[] = []
+    const fetchImpl = vi.fn((_url: string, init?: RequestInit) => {
+      calls.push(String(init?.body).includes('mergePullRequest') ? 'merge' : 'snapshot')
+      return Promise.resolve(json(prAnswer()))
+    })
+    // One resolver per `token()` call: the snapshot's, then the merge's.
+    const tokenAsks: Array<(token: string) => void> = []
+    const { timers } = fakeTimers()
+    const loop = new AutoMergeLoop({
+      access: {
+        // The pod fetches this over the gitcred tunnel, so it really is an await of its own.
+        token: () => new Promise<string>((resolve) => tokenAsks.push(resolve)),
+        fetchImpl
+      },
+      repoFullName: 'acme/repo',
+      prNumber: 7,
+      timers
+    })
+
+    loop.start()
+    await vi.waitFor(() => expect(tokenAsks).toHaveLength(1))
+    tokenAsks[0]!('ghs_snapshot')
+    // Readiness passed, so the tick is now parked on the SECOND token — the merge's.
+    await vi.waitFor(() => expect(tokenAsks).toHaveLength(2))
+    expect(calls).toEqual(['snapshot'])
+
+    loop.stop()
+    tokenAsks[1]!('ghs_merge')
+    await loop.settle()
+
+    expect(calls).toEqual(['snapshot'])
+    expect(loop.current().merged).toBe(false)
+  })
+
   it('does not stack ticks behind a slow GitHub', async () => {
     let release: ((value: Response) => void) | undefined
     const fetchImpl = vi.fn(() => new Promise<Response>((resolve) => (release = resolve)))
