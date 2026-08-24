@@ -88,8 +88,11 @@ export default function OnboardingView() {
   // Cloud pool on ⇒ agents run there, so onboarding never asks for a daemon: treat the
   // blocking step as already satisfied, which also latches off the mint/poll effects below.
   const cloudDaemon = featureFlagEnabled('daemon-pool')
-  const daemonReady = cloudDaemon || daemons.some(daemonCompletesOnboarding)
-  const offlineDaemonId = firstReconnectableDaemonId(daemons)
+  // Pool Pods are never a machine the user connected, so the connect step ignores them —
+  // off the pool the console hides them entirely, and a reconnect token for one is nonsense.
+  const localDaemons = daemons.filter((d) => !d.pool)
+  const daemonReady = cloudDaemon || localDaemons.some(daemonCompletesOnboarding)
+  const offlineDaemonId = firstReconnectableDaemonId(localDaemons)
   const loading = (agentsLoading || daemonsLoading) && daemons.length === 0 && agents.length === 0
 
   // Once a daemon is serving, configure the org's built-in `agentconnect` preset before
@@ -98,9 +101,16 @@ export default function OnboardingView() {
   // ships unplaced (daemon '—', deferred runtime); it's ready once both are set. Older
   // orgs without the preset just skip straight to the reveal.
   const builtinAgent = agents.find((a) => a.builtin)
-  const placementDaemon = daemons.find((d) => d.status === 'online') ?? daemons.find(daemonCompletesOnboarding)
-  // Off the pool the daemon we just brought online is the placement target; on the pool
-  // there may be no daemon row to place onto, and the agent editor owns that choice.
+  const servingDaemon = localDaemons.find((d) => d.status === 'online') ?? localDaemons.find(daemonCompletesOnboarding)
+  // The fleet list includes the install-wide pool's member Pods, which are replaceable
+  // identities — pinning the preset to one is never right. So pool mode has NO concrete
+  // placement target here (the agent editor owns the Cloud choice); one live member still
+  // stands in for the pool's REPORTED runtimes/models, the same seam the edit form's
+  // capability source uses. Off the pool both are the daemon we just brought online.
+  const placementDaemon = cloudDaemon ? undefined : servingDaemon
+  const capabilityDaemon = cloudDaemon
+    ? (daemons.find((d) => d.pool && d.status === 'online') ?? daemons.find((d) => d.pool))
+    : servingDaemon
   const needsAgentSetup = !!builtinAgent && (cloudDaemon || !!placementDaemon) && !agentIsPlaced(builtinAgent)
   const [skipSetup, setSkipSetup] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -115,7 +125,7 @@ export default function OnboardingView() {
     setSaveErr(null)
     try {
       await updateAgent(builtinAgent.id, { runtime, ...(model ? { model } : {}) })
-      // Onboarding places onto a concrete machine; the pool is chosen from the agent editor.
+      // Onboarding places onto a concrete machine; Cloud is chosen from the agent editor.
       if (placementDaemon) await moveAgent(builtinAgent.id, { kind: 'daemon', daemonId: placementDaemon.daemonId })
       await refresh()
       setSkipSetup(true)
@@ -244,7 +254,8 @@ export default function OnboardingView() {
       ) : needsAgentSetup && !skipSetup ? (
         <ConfigureAgent
           agent={builtinAgent!}
-          daemon={placementDaemon}
+          daemon={capabilityDaemon}
+          runsOn={placementDaemon}
           saving={saving}
           err={saveErr}
           onSave={saveAgentSetup}
@@ -394,14 +405,19 @@ function ConnectDaemon({
 function ConfigureAgent({
   agent,
   daemon,
+  runsOn,
   saving,
   err,
   onSave,
   onSkip
 }: {
   agent: Agent
-  /** The just-connected daemon — absent on the cloud pool, where nothing was connected. */
+  /** Whose reported runtimes/models seed the pickers — a pool member on the pool, else the
+   *  just-connected daemon. Absent ⇒ the static fallback list. Never a placement. */
   daemon?: DaemonRow
+  /** The daemon this agent is being placed onto — absent on the pool, where nothing was
+   *  connected and Cloud is picked from the agent editor. */
+  runsOn?: DaemonRow
   saving: boolean
   err: string | null
   onSave: (runtime: string, model: string) => void
@@ -432,18 +448,18 @@ function ConfigureAgent({
           Configure {agentLabel(agent)}
         </h1>
         <p className="max-w-[430px] font-sans text-[14.5px] font-normal leading-[1.55] text-(--text-secondary)">
-          {daemon
+          {runsOn
             ? 'Your org’s built-in agent runs on the daemon you just connected. Pick a runtime and model, and it’s ready to work.'
             : 'Every org ships with a built-in agent. Pick the runtime and model it should use, and it’s ready to work.'}
         </p>
       </div>
 
       <div className="flex flex-col gap-[14px] rounded-[10px] border border-(--border-default) bg-(--surface-card) p-4 shadow-(--shadow-xs)">
-        {daemon && (
+        {runsOn && (
           <div className="fld">
             <span className="fldlbl">Runs on</span>
             <div className="inp cursor-not-allowed" title="Set to the daemon you just connected">
-              <span className="truncate text-(--text-primary)">{daemon.name}</span>
+              <span className="truncate text-(--text-primary)">{runsOn.name}</span>
               <span className="ml-auto flex-none font-sans text-[11.5px] leading-none text-(--text-tertiary)">
                 just connected
               </span>

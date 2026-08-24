@@ -149,6 +149,17 @@ describe('onboarding — connect step', () => {
     expect(host.textContent).toContain('Listening for dmn_new')
   })
 
+  // With the pool flag off the console hides pool Pods, so an org whose fleet carries them
+  // is still daemon-less here: mint a real join command, never a reconnect token for a Pod.
+  it('ignores pool member Pods when the deployment does not offer the pool', async () => {
+    mocks.daemons = [{ daemonId: 'pool-pod-1', pool: true, status: 'online', name: 'ac-cloud-7f9' }]
+    mocks.provisionDaemon.mockResolvedValue({ daemonId: 'dmn_new', command: 'agentconnect run' })
+    await render()
+    expect(mocks.provisionDaemon).toHaveBeenCalledTimes(1)
+    expect(mocks.reconnectDaemon).not.toHaveBeenCalled()
+    expect(host.textContent).toContain('Connect your daemon')
+  })
+
   it('reconnects an existing offline daemon instead of provisioning a new one', async () => {
     mocks.daemons = [{ daemonId: 'offline-1', status: 'offline' }]
     mocks.reconnectDaemon.mockResolvedValue({ command: 'agentconnect run --resume' })
@@ -304,5 +315,28 @@ describe('onboarding — cloud pool', () => {
     expect(mocks.updateAgent).toHaveBeenCalledWith('ag_ac', { runtime: FALLBACK_RUNTIME_IDS[0] })
     expect(mocks.moveAgent).not.toHaveBeenCalled()
     expect(host.textContent).toContain('Welcome to AgentConnect')
+  })
+
+  // GET /daemons carries the install-wide pool's member Pods in every org's fleet. They are
+  // replaceable identities: one may seed the runtime/model pickers, but pinning the preset
+  // to a Pod (or calling it "just connected") is never right — Cloud is picked in the editor.
+  it('reads runtimes from a pool member without placing the agent onto it', async () => {
+    mocks.daemons = [
+      {
+        daemonId: 'pool-pod-1',
+        pool: true,
+        status: 'online',
+        name: 'ac-cloud-7f9',
+        runtimeModels: [{ runtime: 'claude', models: ['claude-sonnet-4-5'] }]
+      }
+    ]
+    mocks.agents = [{ id: 'ag_ac', builtin: true, name: 'agentconnect', daemon: '—', runtime: '' }]
+    await render()
+    expect(host.textContent).toContain('runtime-claude') // seeded from the pool member
+    expect(host.textContent).not.toContain('just connected')
+    expect(host.textContent).not.toContain('ac-cloud-7f9')
+    await click('Save and continue')
+    expect(mocks.updateAgent).toHaveBeenCalledWith('ag_ac', { runtime: 'claude', model: 'claude-sonnet-4-5' })
+    expect(mocks.moveAgent).not.toHaveBeenCalled()
   })
 })
