@@ -217,7 +217,7 @@ function projector(
     scheduler: clock.sched,
     resweepBaseMs: RESWEEP_BASE_MS,
     resweepCapMs: RESWEEP_CAP_MS,
-    baseUrl: 'https://gitlab.example.test/api/v4',
+    apiBaseUrl: () => 'https://gitlab.example.test/api/v4',
     fetchImpl
   })
   return { projector, results, invalidated, clock, mints: () => mint }

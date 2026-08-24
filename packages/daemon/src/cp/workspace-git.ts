@@ -59,10 +59,11 @@ import {
   assertSafeWorkspaceGitConfig,
   canonicalWorkspaceGitUrl,
   gitCommitIdentityEnv,
-  managedCredentialHostOf,
+  GITHUB_CREDENTIAL_SCOPE,
   pullWorkspaceRef,
   workspaceGitLocalEnv,
-  workspaceGitRemoteTarget
+  workspaceGitRemoteTarget,
+  type ManagedCredentialScope
 } from '../workspace/git-injection.js'
 import { WorkspaceManager } from '../workspace/workspace-manager.js'
 import { GitTransportError, type GitRunner } from '../workspace/git-runner.js'
@@ -207,6 +208,8 @@ export interface WorkspaceGitTarget {
   repo: string
   branch: string
   githubApp: boolean
+  /** The managed host this scope's credential channel pins, resolved from the spec (§24.4). */
+  managed?: ManagedCredentialScope
 }
 
 export function createWorkspaceGit(
@@ -284,18 +287,18 @@ export function createWorkspaceGit(
     agentId: string,
     git: GitRunner,
     repo?: string
-  ): Promise<{ origin: string; branch: string } | undefined> {
+  ): Promise<{ origin: string; branch: string; managed: ManagedCredentialScope } | undefined> {
     const target = await workspaceTargetByAgent(agentId, repo)
     let currentOrigin: string | undefined
     let expectedOrigin: string
     try {
       currentOrigin = safeExplicitOrigin(await git.raw(['remote', 'get-url', 'origin']))
       if (!target) throw new Error('workspace target is unavailable')
-      // Canonicalization follows the PROVIDER HOST, never the managed flag: a github grant is tied
-      // to exactly owner/repo, while a gitlab project keeps its full subgroup namespace.
-      const github = target.githubApp && managedCredentialHostOf(target.repo) !== 'gitlab.com'
+      // Canonicalization follows the spec's PROVIDER: only a gitlab project keeps its subgroups.
+      const provider = target.managed?.host.provider ?? 'github'
+      const github = target.githubApp && provider === 'github'
       expectedOrigin = authorizeWorkspaceGitUrl(
-        canonicalWorkspaceGitUrl(github ? normalizeGithubRepoUrl(target.repo) : target.repo)
+        canonicalWorkspaceGitUrl(github ? normalizeGithubRepoUrl(target.repo) : target.repo, provider)
       )
     } catch {
       return undefined
@@ -303,7 +306,7 @@ export function createWorkspaceGit(
     if (!currentOrigin || (target.githubApp === true && currentOrigin.toLowerCase() !== expectedOrigin.toLowerCase())) {
       return undefined
     }
-    return { origin: expectedOrigin, branch: target.branch }
+    return { origin: expectedOrigin, branch: target.branch, managed: target.managed ?? GITHUB_CREDENTIAL_SCOPE }
   }
 
   /** Shared by `status` and by both index writes, which answer with the fresh status. */
@@ -561,7 +564,11 @@ export function createWorkspaceGit(
         }
         await assertSafeWorkspaceGitConfig(base)
         const pullBranch = authorized.branch
-        const pullTarget = workspaceGitRemoteTarget(authorized.origin, credentialAgentIdFor(agentId, repo))
+        const pullTarget = workspaceGitRemoteTarget(
+          authorized.origin,
+          credentialAgentIdFor(agentId, repo),
+          authorized.managed
+        )
         timer = setTimeout(() => abort.abort(), PULL_TIMEOUT_MS)
         const res = await pullWorkspaceRef(
           git.withEnv({
@@ -730,7 +737,11 @@ export function createWorkspaceGit(
         }
         // check-ref-format so a checkout-chosen branch cannot read as an option or a second refspec.
         await git.raw(['check-ref-format', '--branch', branch])
-        const pushTarget = workspaceGitRemoteTarget(authorized.origin, credentialAgentIdFor(agentId, req.repo))
+        const pushTarget = workspaceGitRemoteTarget(
+          authorized.origin,
+          credentialAgentIdFor(agentId, req.repo),
+          authorized.managed
+        )
         timer = setTimeout(() => abort.abort(), PUSH_TIMEOUT_MS)
         // NEVER --force / --force-with-lease: a console push must not drop a commit the remote has
         // and this checkout does not — divergence is data that says "pull first". Both refspec sides

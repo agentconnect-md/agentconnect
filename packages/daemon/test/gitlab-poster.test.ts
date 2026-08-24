@@ -71,6 +71,7 @@ function poster(
       token: deps.token ?? (async () => 'glpat-effect'),
       ...(deps.invalidateToken ? { invalidateToken: deps.invalidateToken } : {}),
       log,
+      apiBaseUrl: () => 'https://gitlab.com/api/v4',
       fetchImpl: deps.fetchImpl,
       scheduler: fakeScheduler({ ...(deps.fireDeadline ? { fireDeadline: true } : {}) }).sched
     },

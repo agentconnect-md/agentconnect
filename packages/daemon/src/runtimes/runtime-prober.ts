@@ -30,7 +30,9 @@ const CERTIFICATE_ENV_KEYS = new Set([
   'SSL_CERT_DIR',
   'NODE_EXTRA_CA_CERTS',
   'REQUESTS_CA_BUNDLE',
-  'CURL_CA_BUNDLE'
+  'CURL_CA_BUNDLE',
+  // A probe may fetch through git; the same operator bundle has to reach it (§24.5).
+  'GIT_SSL_CAINFO'
 ])
 const PROVIDER_ENV_KEYS = new Set([
   'OPENAI_API_KEY',

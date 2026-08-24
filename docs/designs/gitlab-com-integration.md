@@ -2432,12 +2432,28 @@ Merge order, GitLab.com green at every step:
   Exit: mixed-version tests in both directions,
   including a self-managed additional repository on a scratch workspace and
   a hook targeting a non-GitLab-workspace agent on an old daemon.
-- **N3 — daemon plumbing.** The managed host resolved from the spec's
+- **N3 — daemon plumbing. Landed.** The managed host resolved from the spec's
   `gitlabHost`, the injected helper table with prefix stripping, the
   spec-admission origin refusal, per-turn client bases, the `glab` export at
   spawn. Exit additionally covers a warm session receiving a hook whose
   fence host disagrees with the spec. Daemons carrying N3 advertise the
-  feature.
+  feature, on the control connection and on `rd/hello` alike — the relay's
+  dispatch fence reads the latter. The two-literal classifier is replaced by a
+  resolved `{provider, baseUrl}` pair threaded through the workspace roots, so
+  the trusted-origin check, the `.git`-suffix canonicalization (now keyed on
+  provider) and the materialization key all take the spec's answer instead of
+  re-deriving one from the clone URL. The helper table travels on
+  `AC_GITCRED_HOSTS` beside the capability it is minted with, carries GitHub
+  plus the one GitLab instance the spec names — a GitLab consumer is not always
+  the workspace — and is stripped from the daemon's own inherited environment so
+  an ambient value can never be read as a hint. The `glab` token entry reads the
+  instance off that same table rather than off the `GITLAB_HOST` it exports,
+  which it only compares against. The spec-admission refusal rides the
+  `agent/upsert` ack, which is the control plane's own record of why the daemon
+  will not serve the agent; the reconnect snapshot deliberately still stores a
+  spec it cannot clone, because one unservable roster entry must not fail
+  registration, and the clone boundary refuses it as it always did. The boot
+  warning survives only as "no https origin is permitted at all".
 - **N4 — authority and surfaces.** `service_account_creation_forbidden`
   with tier-aware copy, the expiry clamp with the re-derived horizon, Setup
   and Console surfaces, operator documentation (authority bundle, egress for

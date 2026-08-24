@@ -8,6 +8,7 @@ import { workspaceGitOriginOf, type AgentSkillEntry } from '@agentconnect.md/pro
 import { extract as extractTar, list as listTar, type ReadEntry } from 'tar'
 import { authorizeWorkspaceGitUrl } from '../workspace/git-origin-policy.js'
 import { cloneGitEnv, workspaceGitEnvBase } from '../workspace/git-injection.js'
+import { TLS_TRUST_ENV } from '../config/tls-trust-env.js'
 
 const GITHUB_SHORTHAND = /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/
 const GITHUB_TREE = /^\/([^/]+)\/([^/]+)\/tree\/([^/]+)(?:\/(.*))?$/
@@ -185,8 +186,7 @@ export function buildSkillGitAcquisitionEnv(opts: {
     if (
       upper.startsWith('GIT_') ||
       upper.startsWith('AC_GITCRED_') ||
-      upper === 'SSL_CERT_FILE' ||
-      upper === 'SSL_CERT_DIR' ||
+      TLS_TRUST_ENV.includes(upper as (typeof TLS_TRUST_ENV)[number]) ||
       upper === 'LANG' ||
       upper === 'LC_ALL'
     ) {

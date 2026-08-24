@@ -29,6 +29,7 @@ import {
   UNTRUSTED_CONTENT_END
 } from '../src/messages/hook-message.js'
 import { GithubReplyCollector } from '../src/github/poster.js'
+import { GITLAB_HOST_MISMATCH_REASON } from '../src/gitlab/host-fence.js'
 import { NO_ACTIVE_REVIEW_TURN } from '../src/codehost/review-adapter.js'
 import { transcriptCoords } from '../src/session/session-manager.js'
 import { DatabaseSync } from 'node:sqlite'
@@ -3451,6 +3452,74 @@ describe('Daemon rd/msg hook fires', () => {
     expect(secondAnchor.postMessage).not.toHaveBeenCalled()
     await second.stop()
   }, 15_000)
+
+  // §24.4: the host is established at spawn — the credential git-config block, the injected helper
+  // table and the `GITLAB_HOST` export — so a hook reaching an already-running session may not
+  // re-target it. A disagreement between the spec and the delivery is refused under its own reason.
+  describe('the turn-time gitlab host fence (§24.4)', () => {
+    const INSTANCE = 'https://gitlab.example.test:8443/gitlab'
+    const hostedFire = (host?: string): RdMsgHook => {
+      const base = gitlabFire()
+      return { ...base, gitlab: { ...base.gitlab!, ...(host !== undefined ? { host } : {}) } }
+    }
+
+    it.each([
+      { name: 'the delivery means GitLab.com but the spec names an instance', spec: INSTANCE, delivered: undefined },
+      { name: 'the delivery names an instance but the spec means GitLab.com', spec: undefined, delivered: INSTANCE },
+      {
+        name: 'the two name different instances',
+        spec: INSTANCE,
+        delivered: 'https://gitlab.other.test'
+      }
+    ])(
+      'refuses a warm session when $name',
+      async ({ spec, delivered }) => {
+        const { factory } = streamingHost()
+        const daemon = new Daemon({
+          slackAppFactory: fakeSlackAppFactory(),
+          root: scaffold(spec === undefined ? undefined : { gitlabHost: spec }),
+          hostFactory: factory
+        })
+        await daemon.start()
+        const cp = fakeCpClient()
+        ;(daemon as never as { cpClient: unknown }).cpClient = cp
+
+        const ack = await (daemon as any).handleRelayMsg(hostedFire(delivered), () => {})
+
+        expect(ack).toEqual({
+          msgId: `${HOOK_ID}:d-1`,
+          accepted: false,
+          reason: GITLAB_HOST_MISMATCH_REASON
+        })
+        expect(cp.hookReports).toHaveLength(0)
+        await daemon.stop()
+      },
+      15_000
+    )
+
+    it('accepts the delivery whose host the spec agrees with, prefix and port included', async () => {
+      const { factory } = streamingHost()
+      const daemon = new Daemon({
+        slackAppFactory: fakeSlackAppFactory(),
+        root: scaffold({ gitlabHost: INSTANCE }),
+        hostFactory: factory
+      })
+      await daemon.start()
+      const cp = fakeCpClient()
+      ;(daemon as never as { cpClient: unknown }).cpClient = cp
+      ;(daemon as any).githubReviews.makeGithubReply = vi.fn(() => ({
+        poster: { publish: vi.fn(async () => ({ provider: 'gitlab', kind: 'note', externalId: '9001' })) },
+        collector: new GithubReplyCollector()
+      }))
+
+      const ack = await (daemon as any).handleRelayMsg(hostedFire(INSTANCE), () => {})
+
+      expect(ack).toEqual({ msgId: `${HOOK_ID}:d-1`, accepted: true })
+      await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1), WAIT)
+      expect(cp.hookReports[0]).toMatchObject({ status: 'success' })
+      await daemon.stop()
+    }, 15_000)
+  })
 })
 
 describe('buildHookMessage', () => {

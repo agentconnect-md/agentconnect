@@ -7,10 +7,16 @@ import { execFileSync } from 'node:child_process'
 import { createConnection } from 'node:net'
 import { resolveGlabTargetProject } from '../cp/glab-target.js'
 import { GITCRED_CAPABILITY_ENV } from './env.js'
+import { decodeManagedHostTable, GITCRED_HOSTS_ENV, gitlabManagedHost } from './managed-hosts.js'
 
 /** Fetch the read token for this glab invocation and print it — nothing else ever reaches stdout. */
 export async function emitGlabToken(agentId: string, glabArgv: readonly string[], socketPath: string): Promise<void> {
-  const target = resolveGlabTargetProject(glabArgv, process.env, cwdOriginRemote)
+  // The instance comes off the INJECTED table (§24.4), never off an agent-set GITLAB_HOST.
+  const expectedHost = (
+    decodeManagedHostTable(process.env[GITCRED_HOSTS_ENV]).find((entry) => entry.provider === 'gitlab') ??
+    gitlabManagedHost()
+  ).baseUrl
+  const target = resolveGlabTargetProject(glabArgv, process.env, cwdOriginRemote, expectedHost)
   if (target.defer) {
     process.exitCode = 2
     return

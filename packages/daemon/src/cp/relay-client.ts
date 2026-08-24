@@ -26,7 +26,8 @@ import {
   type RdAgentMsgAck,
   type RdChatEvent,
   type RdWebchatPost,
-  GITLAB_COM_V1_FEATURE
+  GITLAB_COM_V1_FEATURE,
+  GITLAB_INSTANCE_V1_FEATURE
 } from '@agentconnect.md/protocol'
 import { Backoff, ReqRep, WireError, type Clock, type TimerHandle, type Transport } from '@agentconnect.md/connection'
 import type { Logger } from '../log.js'
@@ -46,7 +47,9 @@ const DAEMON_RD_CAPABILITIES: readonly string[] = [
   RD_AGENT_IMPLICIT_ROUTING_V1,
   RD_GITHUB_THREAD_WORKTREE_CLEANUP_V2,
   // The relay gates gitlab rd/msg dispatch on this capability.
-  GITLAB_COM_V1_FEATURE
+  GITLAB_COM_V1_FEATURE,
+  // §24.4: and gates a SELF-MANAGED gitlab delivery on this one, per delivery attempt.
+  GITLAB_INSTANCE_V1_FEATURE
 ]
 
 export type RelayClientState = 'CONNECTING' | 'HELLO' | 'READY' | 'CLOSED' | 'DEGRADED'

@@ -31,7 +31,7 @@
  * and an UNEXPIRED cached token keeps serving — CP downtime only breaks remote
  * git once the hour runs out.
  */
-import type { GitCredCapability, GitCredGrant } from '@agentconnect.md/protocol'
+import { GITLAB_DEFAULT_BASE_URL, type GitCredCapability, type GitCredGrant } from '@agentconnect.md/protocol'
 
 /** Hand out only while more than this remains (nests under the CP's 15min floor). */
 const HANDOUT_MIN_MS = 10 * 60 * 1000
@@ -125,6 +125,10 @@ export interface GitCredentialCacheDeps {
   /** §17.3 negotiation: `purpose: 'gitlab_effect'` is a NEW ENUM VALUE, so naming it to an
    *  older CP is frame-fatal rather than silently stripped — ask only after gitlab-effect-v1. */
   gitlabEffectSupported?: () => boolean
+  /** §24.4: the GitLab instance this agent's spec names, absent ⇒ GitLab.com. Every gitlab grant's
+   *  echoed host is verified against it exactly as provider and project id are — a mismatch means
+   *  the credential authenticates against a different instance and is never served. */
+  gitlabHostFor?: (agentId: string) => string | undefined
   /** Monotonic ms; injectable for tests. */
   monoNow?: () => number
 }
@@ -422,6 +426,17 @@ export class GitCredentialCache {
         `control plane answered project ${grant.externalRepoId ?? 'unknown'} for project ${payload.externalRepoId}`,
         false
       )
+    }
+    // …and the instance it authenticates against (§24.4); absent means GitLab.com on both sides.
+    if (payload.provider === 'gitlab') {
+      const expected = this.deps.gitlabHostFor?.(payload.agentId) ?? GITLAB_DEFAULT_BASE_URL
+      const echoed = grant.host ?? GITLAB_DEFAULT_BASE_URL
+      if (echoed !== expected) {
+        throw new GitCredUnavailableError(
+          `control plane answered a credential for gitlab instance ${echoed} for an agent bound to ${expected}`,
+          false
+        )
+      }
     }
     const entry: Entry = {
       username: grant.username,

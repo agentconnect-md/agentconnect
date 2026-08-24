@@ -9,7 +9,12 @@ import { describe, it, expect } from 'vitest'
 import type { GitCredGrant } from '@agentconnect.md/protocol'
 import { GitCredentialCache, GitCredUnavailableError } from '../../src/cp/git-credential.js'
 import { projectFromPath, repoFromPath } from '../../src/gitcred/helper.js'
-import { initGitInjection, managedCredentialHostOf, sessionGitConfig } from '../../src/workspace/git-injection.js'
+import {
+  GITHUB_CREDENTIAL_SCOPE,
+  initGitInjection,
+  managedCredentialScope,
+  sessionGitConfig
+} from '../../src/workspace/git-injection.js'
 
 const AGENT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const HOOK = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
@@ -128,27 +133,28 @@ describe('helper path parsing (§13.2)', () => {
       'https://gitlab.com/example-group/example-project',
       'https://gitlab.com/example-group/example-project.git'
     ]) {
-      const path = new URL(canonicalWorkspaceGitUrl(configured)).pathname
+      const path = new URL(canonicalWorkspaceGitUrl(configured, 'gitlab')).pathname
       expect(path).toBe('/example-group/example-project.git')
       expect(projectFromPath(path)).toBe('example-group/example-project')
     }
-    const subgroup = new URL(canonicalWorkspaceGitUrl('https://gitlab.com/example-group/sub/deeper/proj')).pathname
+    const subgroup = new URL(canonicalWorkspaceGitUrl('https://gitlab.com/example-group/sub/deeper/proj', 'gitlab'))
+      .pathname
     expect(projectFromPath(subgroup)).toBe('example-group/sub/deeper/proj')
     expect(projectFromPath(`${subgroup}/info/lfs`)).toBe('example-group/sub/deeper/proj')
   })
 })
 
 describe('managed origin convergence trust (round 2)', () => {
-  it('a managed root trusts exactly ITS provider host', async () => {
+  it('a managed root trusts exactly the host its SPEC resolved', async () => {
     const { WorkspaceManager } = await import('../../src/workspace/workspace-manager.js')
     const wm = new WorkspaceManager()
-    const gitlabRoot = 'https://gitlab.com/example-group/example-project'
-    expect(wm.isTrustedManagedOrigin('https://gitlab.com/example-group/example-project.git', gitlabRoot)).toBe(true)
-    expect(wm.isTrustedManagedOrigin('git@gitlab.com:example-group/example-project.git', gitlabRoot)).toBe(true)
-    expect(wm.isTrustedManagedOrigin('https://github.com/acme/infra.git', gitlabRoot)).toBe(false)
-    const githubRoot = 'https://github.com/acme/infra'
-    expect(wm.isTrustedManagedOrigin('https://github.com/acme/infra.git', githubRoot)).toBe(true)
-    expect(wm.isTrustedManagedOrigin('https://gitlab.com/g/p.git', githubRoot)).toBe(false)
+    const gitlab = managedCredentialScope('gitlab')
+    expect(wm.isTrustedManagedOrigin('https://gitlab.com/example-group/example-project.git', gitlab)).toBe(true)
+    expect(wm.isTrustedManagedOrigin('git@gitlab.com:example-group/example-project.git', gitlab)).toBe(true)
+    expect(wm.isTrustedManagedOrigin('https://github.com/acme/infra.git', gitlab)).toBe(false)
+    const github = managedCredentialScope('github')
+    expect(wm.isTrustedManagedOrigin('https://github.com/acme/infra.git', github)).toBe(true)
+    expect(wm.isTrustedManagedOrigin('https://gitlab.com/g/p.git', github)).toBe(false)
   })
 })
 
@@ -160,15 +166,17 @@ describe('injection host selection (§13.2)', () => {
     capabilityFor: () => 'cap-test'
   })
 
-  it('derives the managed host from the workspace URL, exactly one per workspace', () => {
-    expect(managedCredentialHostOf('https://gitlab.com/example-group/example-project')).toBe('gitlab.com')
-    expect(managedCredentialHostOf('https://github.com/acme/infra')).toBe('github.com')
-    expect(managedCredentialHostOf('https://code.example.test/x/y')).toBeUndefined()
-    expect(managedCredentialHostOf(undefined)).toBeUndefined()
+  it('derives the managed host from the SPEC provider and host, not from the clone URL', () => {
+    expect(managedCredentialScope('gitlab').host.baseUrl).toBe('https://gitlab.com')
+    expect(managedCredentialScope('github').host.baseUrl).toBe('https://github.com')
+    expect(managedCredentialScope('gitlab', 'https://gitlab.example.test:8443/gitlab').host.baseUrl).toBe(
+      'https://gitlab.example.test:8443/gitlab'
+    )
+    expect(managedCredentialScope(undefined)).toEqual(GITHUB_CREDENTIAL_SCOPE)
   })
 
   it('pins the session gitconfig to the workspace host only', () => {
-    const gitlab = sessionGitConfig(AGENT, undefined, target, 'gitlab.com')
+    const gitlab = sessionGitConfig(AGENT, undefined, target, managedCredentialScope('gitlab'))
     expect(gitlab.content).toContain('[credential "https://gitlab.com"]')
     expect(gitlab.content).not.toContain('github.com')
     const github = sessionGitConfig(AGENT, undefined, target)

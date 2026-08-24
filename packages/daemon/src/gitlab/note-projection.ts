@@ -39,7 +39,6 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 30_000
 /** Unsettled rows retry on the projector's own clock: a healthy control socket never triggers a sweep. */
 const DEFAULT_RESWEEP_BASE_MS = 30_000
 const DEFAULT_RESWEEP_CAP_MS = 300_000
-const DEFAULT_BASE_URL = 'https://gitlab.com/api/v4'
 /** The projection is a comment-class effect, so the hook-authorized lease must clamp at least here. */
 const REQUIRED_CAPABILITY: BrokerCapability = 'comment'
 const CAPABILITY_RANK: Record<BrokerCapability, number> = { read: 0, comment: 1, write: 2 }
@@ -168,7 +167,8 @@ export interface CodeHostNoteProjectorDeps {
   scheduler?: PosterScheduler
   resweepBaseMs?: number
   resweepCapMs?: number
-  baseUrl?: string
+  /** The instance's `/api/v4` root for THIS projection's agent, resolved per turn (§24.4). */
+  apiBaseUrl: (input: { agentId: string; projectId: string }) => string
   fetchImpl?: typeof fetch
   requestTimeoutMs?: number
 }
@@ -512,7 +512,9 @@ export class CodeHostNoteProjector {
     let readopted = false
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const path = target === undefined ? this.notesPath(row) : `${this.notesPath(row)}/${encodeURIComponent(target)}`
-      const res = await this.call(target === undefined ? 'POST' : 'PUT', path, current.token, { body: row.body })
+      const res = await this.call(row, target === undefined ? 'POST' : 'PUT', path, current.token, {
+        body: row.body
+      })
       if (res.kind === 'unavailable') return { kind: 'ambiguous', code: res.code }
       if (res.status >= 200 && res.status < 300) {
         const id = noteIdOf(idFromBody(res.body))
@@ -555,7 +557,7 @@ export class CodeHostNoteProjector {
   ): Promise<{ kind: 'resolved'; noteId?: string } | { kind: 'unavailable' }> {
     const marker = projectionMarker(row.projectionKey)
     for (let page = 1; page <= MAX_LIST_PAGES; page += 1) {
-      const res = await this.call('GET', `${this.notesPath(row)}?per_page=${LIST_PAGE_SIZE}&page=${page}`, token)
+      const res = await this.call(row, 'GET', `${this.notesPath(row)}?per_page=${LIST_PAGE_SIZE}&page=${page}`, token)
       if (res.kind === 'unavailable' || res.status < 200 || res.status >= 300) return { kind: 'unavailable' }
       let notes: unknown
       try {
@@ -581,6 +583,7 @@ export class CodeHostNoteProjector {
 
   /** One bounded provider call. A timeout or transport error is UNAVAILABLE, never a no-effect answer. */
   private async call(
+    row: NoteProjectionRow,
     method: 'GET' | 'POST' | 'PUT',
     path: string,
     token: string,
@@ -590,7 +593,7 @@ export class CodeHostNoteProjector {
     const abort = new AbortController()
     const timer = setTimeout(() => abort.abort(), this.deps.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS)
     try {
-      const res = await doFetch(`${this.deps.baseUrl ?? DEFAULT_BASE_URL}${path}`, {
+      const res = await doFetch(`${this.deps.apiBaseUrl(row)}${path}`, {
         method,
         headers: {
           'private-token': token,

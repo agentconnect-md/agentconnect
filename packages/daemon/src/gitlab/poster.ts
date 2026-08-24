@@ -23,7 +23,8 @@ export interface GitlabFinalPosterDeps {
   /** Drop a cached token GitLab just rejected (401/403) so the retry re-mints. */
   invalidateToken?: (token: string) => void
   log: { warn: (message: string) => void }
-  baseUrl?: string
+  /** The instance's `/api/v4` root, resolved per turn from the spec or hook metadata (§24.4). */
+  apiBaseUrl: () => string
   fetchImpl?: typeof fetch
   scheduler?: PosterScheduler
   finalizeTimeoutMs?: number
@@ -121,7 +122,7 @@ export class GitlabFinalPoster {
         this.abandonTimedOut()
         return
       }
-      const res = await doFetch(`${this.deps.baseUrl ?? 'https://gitlab.com/api/v4'}${notePath}`, {
+      const res = await doFetch(`${this.deps.apiBaseUrl()}${notePath}`, {
         method: 'POST',
         headers: {
           'private-token': token,

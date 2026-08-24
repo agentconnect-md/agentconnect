@@ -80,6 +80,8 @@ const NPM_ENV_ALLOWLIST = [
   'NODE_EXTRA_CA_CERTS',
   'SSL_CERT_DIR',
   'SSL_CERT_FILE',
+  // A git-backed dependency reaches its remote through git's own bundle (§24.5).
+  'GIT_SSL_CAINFO',
   'SystemRoot',
   'ComSpec',
   'PATHEXT',
