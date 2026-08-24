@@ -880,6 +880,9 @@ export class OutputConverger {
   private streamSent = 0
   private streamMessageText = ''
   private streamEmitted = false
+  /** A chronological boundary was posted below the open message, so the next thing the stream
+   *  shows must move to a new one (see `reanchorStream`). */
+  private streamReanchor = false
   // Task cards awaiting the next append, keyed by tool call id so a burst of updates for
   // one call collapses to its newest state; `emittedTasks` suppresses an unchanged repeat.
   private pendingTasks = new Map<string, Extract<SlackStreamChunk, { type: 'task_update' }>>()
@@ -923,9 +926,17 @@ export class OutputConverger {
     if (this.mode !== 'none' && !this.streamEmitted) this.streaming = true
   }
 
-  /** One-way demotion to today's pipeline: the stream never opened, or an append failed
-   *  mid-turn (§7). A turn is never half-streamed, so this only ever runs before the first
-   *  chunk or after the stream has been settled. */
+  /**
+   * One-way demotion to today's pipeline, for the TURN-START branch point only: the stream
+   * never opened, so nothing has been shown and the whole turn runs unchanged (§7).
+   *
+   * A mid-turn failure deliberately does NOT come here. The axis owns the display cursor —
+   * how much of the answer Slack has already been shown — and the transcript cursor advances
+   * on its own, slower clock; flipping the axis mid-answer would post the overlap between
+   * them a second time and lose whatever the refused append carried. There the APPLIER
+   * changes sink instead, replaying the exact uncommitted tail through the post boundary,
+   * and this converger keeps producing the same stream actions it always would.
+   */
   disableStreaming(): void {
     this.streaming = false
   }
@@ -968,8 +979,22 @@ export class OutputConverger {
     return this.streamText.length - this.streamSent
   }
 
+  /**
+   * A chronological boundary — a human-input card, or visible agent-authored text — was
+   * posted below this stream. Everything the stream shows from here belongs BELOW it, and a
+   * streamed message can only grow at its own timestamp, so the tail has to move to a new
+   * message: the §3.4 rollover, triggered by ORDER instead of by size.
+   *
+   * Lazy on purpose, exactly like the legacy live reply's `liveReplyReanchor`: an empty tail
+   * keeps the current message and its footer rather than opening one to say nothing.
+   */
+  reanchorStream(): void {
+    if (this.streaming && this.streamMessageText) this.streamReanchor = true
+  }
+
   /** Drain the pending body and task cards into appends, settling and reopening the message
-   *  when it would pass Slack's 12,000-character block limit (§3.4). */
+   *  when it would pass Slack's 12,000-character block limit — or when a boundary was posted
+   *  below it (§3.4). */
   streamUpdate(): SlackAction[] {
     if (!this.streaming) return []
     const out: SlackAction[] = []
@@ -978,22 +1003,29 @@ export class OutputConverger {
       if (chunks.length > 0) out.push({ kind: 'stream-append', chunks })
       chunks = []
     }
+    // Settle the current message and open the next. Never releases the session: `active` is
+    // the default, and the turn is still working.
+    const rollover = () => {
+      flush()
+      out.push({ kind: 'stream-stop', settle: 'rollover', text: this.streamMessageText }, { kind: 'stream-start' })
+      this.streamMessageText = ''
+      this.streamReanchor = false
+    }
+    let parts: string[] = []
     if (this.releasableLength() > 0) {
       const body = this.streamText.slice(this.streamSent)
       this.streamSent = this.streamText.length
       // One flush is normally far under the cap; only a huge one needs the splitter, which
       // is also what keeps a compound shared-bot address from being cut in half (§5.3).
-      const parts =
+      parts =
         body.length > SLACK_MARKDOWN_BLOCK_LIMIT ? splitIntoSections(body, undefined, this.protectedAddresses) : [body]
-      for (const part of parts) {
-        if (this.streamMessageText && this.streamMessageText.length + part.length > SLACK_MARKDOWN_BLOCK_LIMIT) {
-          flush()
-          out.push({ kind: 'stream-stop', settle: 'rollover', text: this.streamMessageText }, { kind: 'stream-start' })
-          this.streamMessageText = ''
-        }
-        chunks.push({ type: 'markdown_text', text: part })
-        this.streamMessageText += part
-      }
+    }
+    // Order first, then size: anything at all to show after a boundary goes below it.
+    if (this.streamReanchor && this.streamMessageText && (parts.length > 0 || this.pendingTasks.size > 0)) rollover()
+    for (const part of parts) {
+      if (this.streamMessageText && this.streamMessageText.length + part.length > SLACK_MARKDOWN_BLOCK_LIMIT) rollover()
+      chunks.push({ type: 'markdown_text', text: part })
+      this.streamMessageText += part
     }
     for (const task of this.pendingTasks.values()) chunks.push(task)
     this.pendingTasks.clear()

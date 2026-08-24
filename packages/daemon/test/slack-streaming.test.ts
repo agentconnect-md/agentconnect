@@ -8,6 +8,7 @@ import { OutputConverger, type SlackAction, type SlackStreamChunk } from '../src
 import {
   applySlackAction,
   slackStreamRecipient,
+  type SlackTurn,
   type SlackTurnHost,
   type SlackTurnState
 } from '../src/platforms/slack/turn-output.js'
@@ -194,6 +195,58 @@ describe('OutputConverger streaming axis', () => {
     })
   })
 
+  it('re-anchors the tail below a chronological boundary, reusing the rollover', () => {
+    const converger = streaming('low')
+    converger.onUpdate(chunk('before the card'))
+    converger.streamUpdate()
+    // A human-input card (or visible agent-authored text) was posted below the stream.
+    converger.reanchorStream()
+    converger.onUpdate(chunk('after the card'))
+    const rolled = converger.streamUpdate()
+    expect(rolled).toEqual([
+      { kind: 'stream-stop', settle: 'rollover', text: 'before the card' },
+      { kind: 'stream-start' },
+      { kind: 'stream-append', chunks: [{ type: 'markdown_text', text: 'after the card' }] }
+    ])
+    // The closing stop names only the NEW message's text, so §5.5 re-sends what it shows.
+    expect(converger.onFinal(attribution()).at(-1)).toEqual({
+      kind: 'stream-stop',
+      settle: 'final',
+      text: 'after the card'
+    })
+  })
+
+  it('keeps the current message and its footer when the post-boundary tail is empty', () => {
+    const converger = streaming('low')
+    converger.onUpdate(chunk('all of it'))
+    converger.streamUpdate()
+    converger.reanchorStream()
+    expect(converger.streamUpdate()).toEqual([])
+    const finals = converger.onFinal(attribution())
+    expect(finals.some((a) => a.kind === 'stream-start')).toBe(false)
+    expect(finals.at(-1)).toEqual({ kind: 'stream-stop', settle: 'final', text: 'all of it' })
+  })
+
+  it('moves a post-boundary task card below the boundary too', () => {
+    const converger = streaming('medium')
+    converger.onUpdate(chunk('before'))
+    converger.streamUpdate()
+    converger.reanchorStream()
+    converger.onUpdate(tool('t1', 'Read file'))
+    const rolled = converger.streamUpdate()
+    expect(rolled[0]).toMatchObject({ kind: 'stream-stop', settle: 'rollover' })
+    expect(rolled[1]).toEqual({ kind: 'stream-start' })
+  })
+
+  it('ignores a boundary before the stream has shown anything', () => {
+    const converger = streaming('low')
+    converger.reanchorStream()
+    converger.onUpdate(chunk('first words'))
+    expect(converger.streamUpdate()).toEqual([
+      { kind: 'stream-append', chunks: [{ type: 'markdown_text', text: 'first words' }] }
+    ])
+  })
+
   it('never cuts a compound shared-bot address across a rollover', () => {
     const address = '<@U09SHARED> reviewer'
     const converger = streaming('low', [address])
@@ -264,10 +317,10 @@ describe('applySlackAction — streaming actions', () => {
       stopTurnStream: vi.fn(async (_stream: SlackTurnStream, _options?: Record<string, unknown>) => true),
       deleteMessage: vi.fn(async (_channel: string, _ts: string) => true),
       setStatus: vi.fn(async () => {}),
-      postMessage: vi.fn(async () => 'p1'),
+      postMessage: vi.fn(async (_channel: string, _text: string, _thread?: string, _options?: unknown) => 'p1'),
       ...over
     }
-    const turn = {
+    const turn: SlackTurn = {
       conn,
       plan: {
         channel: 'C1',
@@ -293,8 +346,7 @@ describe('applySlackAction — streaming actions', () => {
       setStatusBarTs: vi.fn(),
       clearStatusBarTs: vi.fn(),
       monotonicTs: () => '1',
-      debug: vi.fn(),
-      degradeStreaming: vi.fn()
+      debug: vi.fn()
     }
     return {
       conn,
@@ -329,14 +381,120 @@ describe('applySlackAction — streaming actions', () => {
     expect(conn.startTurnStream).not.toHaveBeenCalled()
   })
 
-  it('settles the stream and demotes the turn when an append is refused', async () => {
-    const { apply, conn, state, host } = fixture({ appendTurnStream: vi.fn(async () => false) })
+  it('settles the stream and degrades the turn when an append is refused', async () => {
+    const { apply, conn, state } = fixture({
+      appendTurnStream: vi.fn(async (_s: SlackTurnStream, _c: SlackStreamChunk[]) => false)
+    })
     await apply({ kind: 'stream-start' })
     await apply({ kind: 'stream-append', chunks: [{ type: 'markdown_text', text: 'hi' }] })
     expect(conn.stopTurnStream).toHaveBeenCalledOnce()
     expect(state.stream).toBeUndefined()
-    // The rest of the answer must reach the channel the ordinary way (§7).
-    expect(host.degradeStreaming).toHaveBeenCalledOnce()
+    // The refused text is the only remaining copy of that display body — the converger has
+    // already advanced past it — so it must be held for the ordinary post boundary (§7).
+    expect(state.streamFallback).toBe('hi')
+  })
+
+  it('replays the whole uncommitted tail exactly once through the legacy post boundary', async () => {
+    // Application is asynchronous: appends the converger produced before the refusal, and the
+    // terminal ones after it, are already queued when the refusal lands. None may be dropped,
+    // and none may be shown twice.
+    let accept = true
+    const { apply, conn, turn } = fixture({
+      appendTurnStream: vi.fn(async (_s: SlackTurnStream, _c: SlackStreamChunk[]) => accept)
+    })
+    await apply({ kind: 'stream-start' })
+    await apply({ kind: 'stream-append', chunks: [{ type: 'markdown_text', text: 'accepted. ' }] })
+    accept = false
+    await apply({ kind: 'stream-append', chunks: [{ type: 'markdown_text', text: 'refused. ' }] })
+    // Queued before the refusal was known — a task card is chrome and has no legacy form.
+    await apply({
+      kind: 'stream-append',
+      chunks: [
+        { type: 'task_update', id: 't1', title: 'Read file', status: 'complete' },
+        { type: 'markdown_text', text: 'and the tail.' }
+      ]
+    })
+    await apply({ kind: 'stream-stop', settle: 'final', text: 'accepted. refused. and the tail.' })
+
+    // Exactly one legacy post, carrying exactly what Slack never displayed.
+    expect(conn.postMessage).toHaveBeenCalledOnce()
+    expect(conn.postMessage.mock.calls[0]![1]).toBe('refused. and the tail.')
+    // …with the footer and the §5.5 anchor on the message that actually holds the answer,
+    // never on the dead stream.
+    expect(conn.postMessage.mock.calls[0]![3]).toMatchObject({ trailingBlocks: [{ type: 'context' }] })
+    expect(turn.reply.lastResponse).toEqual({ ts: 'p1', text: 'refused. and the tail.' })
+  })
+
+  it('a degraded turn opens no replacement stream, and its cleanup stop carries no footer', async () => {
+    const { apply, conn } = fixture({
+      appendTurnStream: vi.fn(async (_s: SlackTurnStream, _c: SlackStreamChunk[]) => false)
+    })
+    await apply({ kind: 'stream-start' })
+    await apply({ kind: 'stream-append', chunks: [{ type: 'markdown_text', text: 'tail' }] })
+    // The converger keeps producing rollovers; a second bubble is not a continuation.
+    await apply({ kind: 'stream-stop', settle: 'rollover', text: 'tail' })
+    await apply({ kind: 'stream-start' })
+    expect(conn.startTurnStream).toHaveBeenCalledOnce()
+    expect(conn.stopTurnStream.mock.calls[0]![1]).toEqual({})
+  })
+
+  it('drops the buffered tail when suppression tears the turn down', async () => {
+    const { apply, conn, state } = fixture({
+      appendTurnStream: vi.fn(async (_s: SlackTurnStream, _c: SlackStreamChunk[]) => false)
+    })
+    await apply({ kind: 'stream-start' })
+    await apply({ kind: 'stream-append', chunks: [{ type: 'markdown_text', text: 'never shown' }] })
+    await apply({ kind: 'stream-stop', settle: 'abort' })
+    expect(conn.postMessage).not.toHaveBeenCalled()
+    expect(state.streamFallback).toBe('never shown')
+  })
+
+  it('keeps the handle and the exact stop when Slack leaves the message streaming', async () => {
+    let settled = false
+    const { apply, conn, state } = fixture({
+      stopTurnStream: vi.fn(async (_s: SlackTurnStream, _o?: Record<string, unknown>) => settled)
+    })
+    await apply({ kind: 'stream-start' })
+    const closing = { kind: 'stream-stop', settle: 'final', text: 'the answer' } as const
+    await apply(closing)
+    // Nothing may be retired while the message might still be streaming.
+    expect(state.stream).toEqual({ channel: 'C1', threadTs: 'T1', ts: '900.1' })
+    expect(state.streamStopOwed).toEqual(closing)
+
+    // The settlement backstop reissues THAT stop, so the retry keeps its footer.
+    settled = true
+    await apply(state.streamStopOwed!)
+    expect(state.stream).toBeUndefined()
+    expect(state.streamStopOwed).toBeUndefined()
+    expect(conn.stopTurnStream).toHaveBeenCalledTimes(2)
+    expect(conn.stopTurnStream.mock.calls[1]![1]).toMatchObject({ blocks: [{ type: 'context' }] })
+  })
+
+  it('does not claim the response, or delete the message, until Slack accepts the stop', async () => {
+    const { apply, conn, turn } = fixture({
+      stopTurnStream: vi.fn(async (_s: SlackTurnStream, _o?: Record<string, unknown>) => false)
+    })
+    await apply({ kind: 'stream-start' })
+    await apply({ kind: 'stream-stop', settle: 'final', text: 'the answer', discard: true })
+    expect(conn.deleteMessage).not.toHaveBeenCalled()
+    expect(turn.reply).not.toHaveProperty('lastResponse')
+  })
+
+  it('re-anchors below a chronological boundary: settle, reopen, then append the tail', async () => {
+    const { apply, conn, state } = fixture()
+    await apply({ kind: 'stream-start' })
+    await apply({ kind: 'stream-append', chunks: [{ type: 'markdown_text', text: 'before the card' }] })
+    // What the converger emits once a boundary was posted below the open message.
+    conn.startTurnStream.mockResolvedValueOnce({ channel: 'C1', threadTs: 'T1', ts: '900.2' })
+    await apply({ kind: 'stream-stop', settle: 'rollover', text: 'before the card' })
+    await apply({ kind: 'stream-start' })
+    await apply({ kind: 'stream-append', chunks: [{ type: 'markdown_text', text: 'after the card' }] })
+
+    // A fresh message below the boundary, and the session was never released mid-turn.
+    expect(state.stream).toEqual({ channel: 'C1', threadTs: 'T1', ts: '900.2' })
+    expect(conn.stopTurnStream.mock.calls[0]![1]).toMatchObject({ sessionStatus: 'processing' })
+    expect(conn.stopTurnStream.mock.calls[0]![1]).not.toHaveProperty('blocks')
+    expect(conn.appendTurnStream.mock.calls[1]![0]).toMatchObject({ ts: '900.2' })
   })
 
   it('attaches the attribution footer to the final stop only, and hands §5.5 the message it closes', async () => {
@@ -518,7 +676,56 @@ describe('SlackConnection streaming', () => {
     const { conn, app } = await connect()
     const stream = (await conn.startTurnStream('C1', 'T1'))!
     expect(await conn.stopTurnStream(stream)).toBe(true)
+    // Still "settled" — the caller's question is whether the message is streaming, and it
+    // is not; only an unresolved answer asks for a retry.
+    expect(await conn.stopTurnStream(stream)).toBe(true)
+    expect(app.client.chat.stopStream).toHaveBeenCalledOnce()
+  })
+
+  it('keeps a stop retryable while Slack leaves the message streaming', async () => {
+    let attempts = 0
+    const stopStream = vi.fn(async () => {
+      if (++attempts === 1) throw slackError('ratelimited')
+      return {}
+    })
+    const { conn } = await connect({ chat: { stopStream } })
+    const stream = (await conn.startTurnStream('C1', 'T1'))!
+    // A transient failure must NOT retire the handle: the message is still streaming and the
+    // session still processing, which is exactly what the settlement backstop exists to fix.
     expect(await conn.stopTurnStream(stream)).toBe(false)
+    expect(await conn.stopTurnStream(stream)).toBe(true)
+    expect(stopStream).toHaveBeenCalledTimes(2)
+    // …and once accepted, it is retired for good.
+    expect(await conn.stopTurnStream(stream)).toBe(true)
+    expect(stopStream).toHaveBeenCalledTimes(2)
+  })
+
+  it('retires the handle on a DEFINITE already-stopped answer, without retrying', async () => {
+    for (const code of ['message_not_in_streaming_state', 'stopped_by_user']) {
+      const stopStream = vi.fn(async () => {
+        throw slackError(code)
+      })
+      const { conn } = await connect({ chat: { stopStream } })
+      const stream = (await conn.startTurnStream('C1', 'T1'))!
+      expect(await conn.stopTurnStream(stream)).toBe(true)
+      expect(await conn.stopTurnStream(stream)).toBe(true)
+      expect(stopStream).toHaveBeenCalledOnce()
+      // A settled message is not a lost capability.
+      expect(conn.streamingLikely()).toBe(true)
+    }
+  })
+
+  it('keeps the handle after a TRANSIENT append failure, so the stop can still land', async () => {
+    const { conn, app } = await connect({
+      chat: {
+        appendStream: vi.fn(async () => {
+          throw slackError('ratelimited')
+        })
+      }
+    })
+    const stream = (await conn.startTurnStream('C1', 'T1'))!
+    expect(await conn.appendTurnStream(stream, [{ type: 'markdown_text', text: 'x' }])).toBe(false)
+    expect(await conn.stopTurnStream(stream)).toBe(true)
     expect(app.client.chat.stopStream).toHaveBeenCalledOnce()
   })
 
@@ -535,7 +742,8 @@ describe('SlackConnection streaming', () => {
     await conn.agentSessionStopped('C1', 'T1', 'U1')
 
     expect(await conn.appendTurnStream(stream, [{ type: 'markdown_text', text: 'more' }])).toBe(false)
-    expect(await conn.stopTurnStream(stream)).toBe(false)
+    // Settled, and settled by the person — so nothing is retried against it either.
+    expect(await conn.stopTurnStream(stream)).toBe(true)
     expect(app.client.chat.appendStream).not.toHaveBeenCalled()
     expect(app.client.chat.stopStream).not.toHaveBeenCalled()
     // The turn is still cancelled and the session still transitions exactly once.
@@ -546,7 +754,7 @@ describe('SlackConnection streaming', () => {
   })
 
   it('treats a post-stop append refusal as benign rather than a capability loss', async () => {
-    const { conn } = await connect({
+    const { conn, app } = await connect({
       chat: {
         appendStream: vi.fn(async () => {
           throw slackError('message_not_in_streaming_state')
@@ -556,6 +764,9 @@ describe('SlackConnection streaming', () => {
     const stream = (await conn.startTurnStream('C1', 'T1'))!
     expect(await conn.appendTurnStream(stream, [{ type: 'markdown_text', text: 'x' }])).toBe(false)
     expect(conn.streamingLikely()).toBe(true)
+    // A DEFINITE already-stopped answer proves the message is settled, so no stop is owed.
+    expect(await conn.stopTurnStream(stream)).toBe(true)
+    expect(app.client.chat.stopStream).not.toHaveBeenCalled()
   })
 })
 
@@ -724,6 +935,46 @@ describe('Daemon Slack streaming turn', () => {
     expect(conn.appendTurnStream).not.toHaveBeenCalled()
     expect(conn.setStatus).toHaveBeenCalled()
     expect(conn.postMessage).toHaveBeenCalledWith('C1', 'streamed answer', 'T1', expect.anything())
+    await daemon.stop()
+  }, 15_000)
+
+  it('settlement retries a stop Slack left unresolved, so no message is stranded streaming', async () => {
+    const { daemon } = booted(scaffold())
+    await daemon.start()
+    let attempts = 0
+    const conn = connect(daemon, {
+      stopTurnStream: vi.fn(async (_s: SlackTurnStream, _o?: Record<string, unknown>) => ++attempts > 1)
+    })
+
+    await (daemon as never as { dispatch: (a: string, m: NormalizedMessage, i: string) => Promise<unknown> }).dispatch(
+      'bot-a',
+      inbound(),
+      'int-a'
+    )
+
+    // Turn end could not settle the message; the settlement backstop reissued the same stop.
+    expect(conn.stopTurnStream).toHaveBeenCalledTimes(2)
+    expect(conn.stopTurnStream.mock.calls[1]![1]).toMatchObject({ agentAuthorId: 'bot-a' })
+    await daemon.stop()
+  }, 15_000)
+
+  it('moves the stream below a chronological boundary the turn posts under it', async () => {
+    const { daemon } = booted(scaffold())
+    await daemon.start()
+    connect(daemon)
+    const converger = new OutputConverger('low')
+    converger.enableStreaming()
+    converger.onUpdate(chunk('before the card'))
+    converger.streamUpdate()
+
+    // The one place the daemon marks live chrome to continue below a new boundary message.
+    ;(daemon as never as { markInPlaceChromeForReanchor: (p: unknown) => void }).markInPlaceChromeForReanchor({
+      chrome: {},
+      conv: converger
+    })
+
+    converger.onUpdate(chunk('after the card'))
+    expect(converger.streamUpdate()[0]).toMatchObject({ kind: 'stream-stop', settle: 'rollover' })
     await daemon.stop()
   }, 15_000)
 })

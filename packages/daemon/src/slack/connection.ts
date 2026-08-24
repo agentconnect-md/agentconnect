@@ -557,6 +557,13 @@ const STREAM_CAPABILITY_REFUSALS = new Set([
  *  A stopped stream is unrecoverable (§3.4), so there is nothing to retry or report. */
 const STREAM_ALREADY_STOPPED = new Set(['message_not_in_streaming_state', 'stopped_by_user'])
 
+/** Does this error PROVE the message is no longer streaming? Only a definite answer retires a
+ *  handle — a rate limit or a dropped connection leaves the message live and must stay retryable. */
+function isStreamAlreadyStopped(err: unknown): boolean {
+  const code = slackApiErrorCode(err)
+  return code !== undefined && STREAM_ALREADY_STOPPED.has(code)
+}
+
 /** Per-request bound on every Slack egress call. Shared with the byte upload, which rides the
  *  same serial queue and would otherwise block all delivery on undici's 300 s defaults. */
 const SLACK_API_TIMEOUT_MS = 30_000
@@ -1277,71 +1284,83 @@ export class SlackConnection implements PlatformConnection {
       this.streamingUnavailableUntil = Date.now() + STREAM_REPROBE_MS
       return undefined
     }
-    return this.queue.enqueue(async () => {
-      // `timeline` interleaves task cards with streamed text, which is exactly how ACP
-      // tool calls arrive; the ACP plan keeps its own message instead (§4).
-      const payload: Record<string, unknown> = {
-        channel,
-        thread_ts: threadTs,
-        task_display_mode: 'timeline',
-        ...(options.recipientUserId ? { recipient_user_id: options.recipientUserId } : {}),
-        ...(options.recipientUserId && this.teamId ? { recipient_team_id: this.teamId } : {})
-      }
-      const username = Date.now() < this.customUsernameRetryAt ? undefined : options.identity?.username?.trim()
-      const iconUrl = Date.now() < this.customUsernameRetryAt ? undefined : options.identity?.icon_url?.trim()
-      const customize = { ...(username ? { username } : {}), ...(iconUrl ? { icon_url: iconUrl } : {}) }
-      try {
-        let res: { ts?: string } | undefined
-        try {
-          res = await start({ ...payload, ...customize })
-          if (Object.keys(customize).length > 0) this.customUsernameRetryAt = 0
-        } catch (err) {
-          // Same cooldown the post boundary uses: retry undecorated, re-probe in 5 minutes.
-          if (Object.keys(customize).length === 0 || !isMissingCustomizeScope(err)) throw err
-          this.customUsernameRetryAt = Date.now() + CUSTOM_USERNAME_REPROBE_MS
-          this.deps.log?.debug('slack: chat:write.customize missing — streaming with the app default identity')
-          res = await start(payload)
+    return this.queue
+      .enqueue(async () => {
+        // `timeline` interleaves task cards with streamed text, which is exactly how ACP
+        // tool calls arrive; the ACP plan keeps its own message instead (§4).
+        const payload: Record<string, unknown> = {
+          channel,
+          thread_ts: threadTs,
+          task_display_mode: 'timeline',
+          ...(options.recipientUserId ? { recipient_user_id: options.recipientUserId } : {}),
+          ...(options.recipientUserId && this.teamId ? { recipient_team_id: this.teamId } : {})
         }
-        const ts = res?.ts
-        if (!ts) {
-          this.deps.log?.debug(`slack: chat.startStream returned no ts (ch=${channel} thread=${threadTs})`)
+        const username = Date.now() < this.customUsernameRetryAt ? undefined : options.identity?.username?.trim()
+        const iconUrl = Date.now() < this.customUsernameRetryAt ? undefined : options.identity?.icon_url?.trim()
+        const customize = { ...(username ? { username } : {}), ...(iconUrl ? { icon_url: iconUrl } : {}) }
+        try {
+          let res: { ts?: string } | undefined
+          try {
+            res = await start({ ...payload, ...customize })
+            if (Object.keys(customize).length > 0) this.customUsernameRetryAt = 0
+          } catch (err) {
+            // Same cooldown the post boundary uses: retry undecorated, re-probe in 5 minutes.
+            if (Object.keys(customize).length === 0 || !isMissingCustomizeScope(err)) throw err
+            this.customUsernameRetryAt = Date.now() + CUSTOM_USERNAME_REPROBE_MS
+            this.deps.log?.debug('slack: chat:write.customize missing — streaming with the app default identity')
+            res = await start(payload)
+          }
+          const ts = res?.ts
+          if (!ts) {
+            this.deps.log?.debug(`slack: chat.startStream returned no ts (ch=${channel} thread=${threadTs})`)
+            return undefined
+          }
+          this.streamingUnavailableUntil = 0
+          this.openStreams.set(`${channel}:${threadTs}`, ts)
+          return { channel, threadTs, ts }
+        } catch (err) {
+          this.rememberMissingScopes(err)
+          this.noteStreamFailure(err, 'chat.startStream', channel)
           return undefined
         }
-        this.streamingUnavailableUntil = 0
-        this.openStreams.set(`${channel}:${threadTs}`, ts)
-        return { channel, threadTs, ts }
-      } catch (err) {
-        this.rememberMissingScopes(err)
-        this.noteStreamFailure(err, 'chat.startStream', channel)
-        return undefined
-      }
-    })
+        // The send queue's own timeout rejects outside the task; a turn that cannot open a
+        // stream degrades, it does not throw into dispatch.
+      })
+      .catch(() => undefined)
   }
 
-  /** Append chunks to an open stream. `false` means the stream is finished — the caller
-   *  settles it and delivers the rest of the answer the ordinary way (§7). */
+  /** Append chunks to an open stream. `false` means this content did NOT reach Slack, so the
+   *  caller owes it to the channel some other way (§7) — it never means "silently dropped". */
   async appendTurnStream(stream: SlackTurnStream, chunks: SlackStreamChunk[]): Promise<boolean> {
     const append = this.app.client.chat.appendStream
     if (chunks.length === 0) return true
     if (typeof append !== 'function' || this.openStreams.get(`${stream.channel}:${stream.threadTs}`) !== stream.ts)
       return false
-    return this.queue.enqueue(async () => {
-      try {
+    try {
+      return await this.queue.enqueue(async () => {
         await append({ channel: stream.channel, ts: stream.ts, chunks })
         return true
-      } catch (err) {
-        this.rememberMissingScopes(err)
-        this.noteStreamFailure(err, 'chat.appendStream', stream.channel)
-        // A stream that refused an append is over: nothing may append to it again.
-        this.closeStream(stream.channel, stream.threadTs)
-        return false
-      }
-    })
+      })
+    } catch (err) {
+      this.rememberMissingScopes(err)
+      this.noteStreamFailure(err, 'chat.appendStream', stream.channel)
+      // Only a DEFINITE already-stopped answer proves the message is settled. A transient
+      // failure leaves it streaming, so the handle stays and the stop that must still land
+      // has something to land on.
+      if (isStreamAlreadyStopped(err)) this.closeStream(stream.channel, stream.threadTs)
+      return false
+    }
   }
 
-  /** Settle a stream. Idempotent per message — a turn-end stop that follows the person's
-   *  Stop makes no API call at all, because the handle is already gone. `blocks` are the
-   *  attribution footer (last stop only); `sessionStatus` keeps a rollover in `processing`. */
+  /**
+   * Settle a stream. Answers whether the message is now DEFINITELY not streaming: true on
+   * success, and true when it was already settled — by our own earlier stop, or by the person
+   * pressing Stop. `false` means Slack left it unresolved, which is the caller's cue to keep
+   * the handle and let the settlement backstop retry; dropping it there would strand the
+   * message streaming and the session in `processing`, the one state that backstop exists to
+   * prevent. `blocks` are the attribution footer (last stop only); `sessionStatus` keeps a
+   * rollover in `processing`.
+   */
   async stopTurnStream(
     stream: SlackTurnStream,
     options: {
@@ -1352,11 +1371,12 @@ export class SlackConnection implements PlatformConnection {
     } = {}
   ): Promise<boolean> {
     const stop = this.app.client.chat.stopStream
+    // Nothing left to settle: no such method (so no stream was ever opened here) or the handle
+    // is already retired. Idempotent by construction — a stopped stream is unrecoverable.
     if (typeof stop !== 'function' || this.openStreams.get(`${stream.channel}:${stream.threadTs}`) !== stream.ts)
-      return false
-    this.closeStream(stream.channel, stream.threadTs)
-    return this.queue.enqueue(async () => {
-      try {
+      return true
+    try {
+      return await this.queue.enqueue(async () => {
         await stop({
           channel: stream.channel,
           ts: stream.ts,
@@ -1369,13 +1389,17 @@ export class SlackConnection implements PlatformConnection {
             ...(options.response ? { response: options.response } : {})
           })
         })
+        // Retired only now that Slack has accepted it.
+        this.closeStream(stream.channel, stream.threadTs)
         return true
-      } catch (err) {
-        this.rememberMissingScopes(err)
-        this.noteStreamFailure(err, 'chat.stopStream', stream.channel)
-        return false
-      }
-    })
+      })
+    } catch (err) {
+      this.rememberMissingScopes(err)
+      this.noteStreamFailure(err, 'chat.stopStream', stream.channel)
+      if (!isStreamAlreadyStopped(err)) return false
+      this.closeStream(stream.channel, stream.threadTs)
+      return true
+    }
   }
 
   /** A stopped stream is unrecoverable (§3.4): drop the handle so nothing appends to it and
@@ -1388,8 +1412,8 @@ export class SlackConnection implements PlatformConnection {
    *  window; everything else — a bad channel, a rate limit, a queue timeout — degrades only
    *  the turn that hit it, because a per-channel error must never kill streaming workspace-wide. */
   private noteStreamFailure(err: unknown, method: string, channel: string): void {
+    if (isStreamAlreadyStopped(err)) return
     const code = slackApiErrorCode(err)
-    if (code && STREAM_ALREADY_STOPPED.has(code)) return
     if (code && STREAM_CAPABILITY_REFUSALS.has(code)) {
       this.streamingUnavailableUntil = Date.now() + STREAM_REPROBE_MS
       this.deps.log?.info(`slack: streaming unavailable (${code}) — using the legacy pipeline, re-probing in 5m`)

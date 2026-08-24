@@ -798,11 +798,19 @@ export class Daemon {
           if (turnState<SlackTurnState>(p).stream)
             this.enqueueApply(p, { kind: 'stream-stop', settle: 'abort' }, { allowWhenSuppressed: true })
         },
-        // Terminal settlement: a stream must never be left open (§5), and stale footer
-        // removals the final attribution action may have bypassed still need retrying.
+        // Terminal settlement: a stream must never be left open (§5), a degraded turn's
+        // buffered tail must still reach the channel (§7), and stale footer removals the
+        // final attribution action may have bypassed still need retrying.
         onSettle: async (p) => {
-          if (p.conn && turnState<SlackTurnState>(p).stream)
-            await this.applySlackAction(p, { kind: 'stream-stop', settle: 'abort' })
+          const state = turnState<SlackTurnState>(p)
+          // Reissue the exact stop Slack refused, so the retry keeps its footer; a stream
+          // still open for any other reason gets a plain settling stop.
+          const owed =
+            state.streamStopOwed ??
+            (state.stream || state.streamFallback
+              ? ({ kind: 'stream-stop', settle: state.streamFallback !== undefined ? 'final' : 'abort' } as const)
+              : undefined)
+          if (p.conn && owed) await this.applySlackAction(p, owed)
           if (p.conn && turnState<SlackTurnState>(p).staleReplyFooters?.length) {
             await clearStaleSlackReplyFootersExternal(
               { debug: (message) => this.log.debug(message) },
@@ -11250,13 +11258,7 @@ export class Daemon {
         setStatusBarTs: async (sessionKey, ts) => await this.store.setStatusBarTs(sessionKey, ts),
         clearStatusBarTs: async (sessionKey) => await this.store.clearStatusBarTs(sessionKey),
         monotonicTs: () => monotonicTs(),
-        debug: (message) => this.log.debug(message),
-        // The applier saw the append refused; only core can flip the converger's axis so the
-        // rest of the answer posts the ordinary way (slack-streaming-turn-output.md §7).
-        degradeStreaming: (turn) => {
-          const pending = turn as Pending
-          if (pending.conv instanceof OutputConverger) pending.conv.disableStreaming()
-        }
+        debug: (message) => this.log.debug(message)
       },
       p,
       turnState<SlackTurnState>(p),
@@ -11860,6 +11862,10 @@ export class Daemon {
     p.chrome.planAttempted = false
     p.chrome.reasoningTs = undefined
     p.chrome.reasoningAttempted = false
+    // A native stream is in-place chrome too, and the only one that cannot simply re-post:
+    // it grows at its own timestamp. Moving its tail to a fresh message is the same lazy
+    // re-anchor the live reply does (slack-streaming-turn-output.md §3.4).
+    if (p.conv instanceof OutputConverger) p.conv.reanchorStream()
   }
 
   /** Copy-on-write mask of an agent's write-only secret values over any JSON-ish

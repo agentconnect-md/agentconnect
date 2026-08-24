@@ -166,6 +166,15 @@ Two rules on a rollover stop:
   rejects that value, the immediately-following `startTurnStream` restores `processing` anyway,
   at the cost of a sub-second flicker. See §7 Q2.
 
+**A rollover is also how the stream re-anchors.** The daemon already marks live chrome to
+continue below a newly posted chronological boundary — a permission/elicitation card, or
+visible agent-authored text — via `liveReplyReanchor`, because an in-place message that keeps
+being edited above a card makes the conversation read out of order. A streamed message has
+that problem in its strongest form: it can only ever grow at its own timestamp. So a boundary
+triggers the same rollover, on ORDER instead of on size — settle the current message, open the
+next, tail continues below the card — and, exactly like the live reply, it is **lazy**: an
+empty tail keeps the current message and its footer rather than opening one to say nothing.
+
 **A stopped stream is unrecoverable, and a rollover is a new message by construction.**
 `chat.appendStream` against a settled message fails `message_not_in_streaming_state` (or
 `stopped_by_user` when the person ended it), and `chat.startStream` takes no existing `ts` —
@@ -355,6 +364,38 @@ A fifth carve-out is not structural but a staged rollout — see §7.1.
 **Mid-turn failure.** If an append fails, stop the stream best-effort and finish the remaining
 body through the ordinary `post` path — the same shape Feishu already ships (_"A final CardKit
 update failure must not lose the answer"_: cancel the card, fall back to `postMessage`).
+
+**The APPLIER changes sink; the converger's axis does not flip.** This is the one place where
+the obvious implementation is wrong, so it is worth stating as a rule. Production and
+application are separated by the apply chain, so when a refusal lands, later appends — and
+often `onFinal` itself — are already converged and queued. Flipping the axis then affects only
+_future_ convergence, which leaves two holes: the queued actions no-op and the text they
+carried is never shown, and text already drained as `recordOnly` can never take the post
+boundary. Worse, the axis owns the _display_ cursor while the transcript cursor advances on
+its own slower clock, so resuming ordinary `post` output from the transcript buffer re-posts
+the overlap between them. Truncation and duplication, from the same one-line change.
+
+So the converger keeps streaming and keeps its cursors — they are the only exact record of
+what Slack has been shown — and the applier redirects. From the refusal on, every stream
+action feeds a fallback buffer instead of a message: the refused append first (its text is the
+only remaining copy, the converger having already advanced past it), then every later one,
+including the terminal stop. The buffer is delivered at the closing stop through the ordinary
+reply boundary, so it arrives with the attribution footer, the response metadata and the §5.5
+anchor. Task chunks are dropped — chrome with no legacy form, and a task card rendered as
+prose is worse than an omitted one. Net effect: the answer lands exactly once, and no queued
+action silently discards the content it carried.
+
+**A stop is retryable until Slack accepts it.** `chat.stopStream` failing transiently — a rate
+limit, a dropped connection, the send queue's own timeout — is precisely the case the §5
+settlement backstop exists for, so neither the turn's handle nor the connection's is retired
+on it; doing so would leave the message streaming and the session in `processing` with nothing
+to retry, the exact terminal state that backstop prevents. Only a definite answer retires a
+handle: success, or `message_not_in_streaming_state` / `stopped_by_user`, which prove the
+message is already settled. The unaccepted stop is remembered verbatim so settlement reissues
+_that_ stop rather than a bare abort — otherwise the retry would settle the message but
+silently drop its attribution footer. The same rule governs an append refusal: it retires the
+handle only when the error proves the message stopped, so a transient one still leaves
+something for the stop to land on.
 
 ### 7.1 The shareable-bot carve-out, and why it is temporary
 
