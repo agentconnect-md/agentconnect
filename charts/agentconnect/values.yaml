@@ -202,6 +202,23 @@ daemonPool:
     timeoutSeconds: 2
     successThreshold: 1
     failureThreshold: 3
+  # Install-wide model credentials, referenced BY NAME like every other secret here — the chart
+  # never holds the value. Create the Secret with one entry per variable the daemon reads:
+  # `<PREFIX>MODEL_TOKEN` and `<PREFIX>MODEL_BASE_URL`, where PREFIX is `ANTHROPIC_` (claude),
+  # `OPENAI_` (codex), `DEEPSEEK_`, or empty for the pair every runtime falls back to. A token
+  # with no base URL is a plain provider key on that provider's own endpoint; a base URL with no
+  # token aims a runtime at an endpoint that issues its own credential. Every entry is optional,
+  # so the Secret names only the providers this install pays for and may land in either order
+  # with this reference.
+  #
+  #   kubectl -n <namespace> create secret generic agentconnect-model-credentials \
+  #     --from-literal=DEEPSEEK_MODEL_TOKEN=<key>
+  #
+  # These reach a runtime at spawn and OUTRANK an agent's own variable of the same name, because
+  # a credential pair travels whole rather than merging with another. Leave it empty to let every
+  # agent carry its own credential.
+  modelCredentials:
+    existingSecret: ''
   # Extra plain env (name: value), the same hook and conventions as controlPlane.extraEnv.
   # OpenTelemetry goes here: the daemon already carries the instruments — sandbox launch
   # latency and its stages, shim handshake/TokenReview rejections, drain timeouts, k8s API

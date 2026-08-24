@@ -238,6 +238,20 @@ spec:
             - name: {{ $k }}
               value: {{ $v | quote }}
             {{- end }}
+            {{- $modelCredentials := .Values.daemonPool.modelCredentials.existingSecret }}
+            {{- if $modelCredentials }}
+            # Install-wide model credentials, by reference. Every entry is optional: one Secret
+            # names only the providers this install pays for, and a missing entry is a runtime
+            # that keeps whatever credential it already had.
+            {{- range $name := list "MODEL_TOKEN" "MODEL_BASE_URL" "ANTHROPIC_MODEL_TOKEN" "ANTHROPIC_MODEL_BASE_URL" "OPENAI_MODEL_TOKEN" "OPENAI_MODEL_BASE_URL" "DEEPSEEK_MODEL_TOKEN" "DEEPSEEK_MODEL_BASE_URL" }}
+            - name: {{ $name }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $modelCredentials }}
+                  key: {{ $name }}
+                  optional: true
+            {{- end }}
+            {{- end }}
           # Ready ⇔ servable: startup complete, CP-registered, runtime probe done, not draining.
           # It is what holds a replacement back until it can take duty groups, and what removes a
           # draining member from readiness while its pod keeps running out the grace period.
