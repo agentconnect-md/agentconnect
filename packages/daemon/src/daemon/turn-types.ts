@@ -123,6 +123,11 @@ export interface CallMeta {
    * thread — so it must bind, or it can never wake an agent that already holds an
    * externally-bound session there, which is every agent already talking in the thread.
    *
+   * A channel-ROOT self-post seed carries it for the same reason: the post landed, so its
+   * channel and thread are the provider's own coordinates for a thread that did not exist
+   * before — there is no shared conversation to claim, and the alternative (inheriting the
+   * origin session's audience) binds the seed to a channel it does not live in.
+   *
    * Persisted with the inbox row alongside the rest of CallMeta, so a replayed turn makes
    * the same classification it would have made live.
    */

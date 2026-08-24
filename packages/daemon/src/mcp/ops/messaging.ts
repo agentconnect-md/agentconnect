@@ -326,6 +326,9 @@ export interface MessagingDeps extends GatewayDeps {
      *  platform ts (see the dedup note in `spawnChannelRootSession`), which on Telegram is
      *  NOT the same string as `thread`. */
     postTs: string
+    /** Whether the destination is a DM, as the platform reports it — it decides the new
+     *  session's audience the same way it decides the thread key. */
+    isDm?: boolean
     text: string
     /** Current (origin) session coords, for the new session's origin lineage. The origin
      *  may be on a DIFFERENT platform than the post (e.g. a Telegram turn posting to Slack),
@@ -659,6 +662,7 @@ export async function sendMessage(
         channel: postChannel,
         thread: postedThread,
         postTs: ts,
+        isDm: isDmTarget || directMessage,
         text: body,
         originPlatform: ctx.platform,
         ...(ctx.transportScope !== undefined ? { originTransportScope: ctx.transportScope } : {}),

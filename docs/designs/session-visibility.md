@@ -330,6 +330,12 @@ Notes:
   agent. The child takes the parent's `visibility` + `ownerIdentity` at
   ingest; §4.5 defines the durable reconciliation semantics for out-of-order
   arrival and later parent changes.
+- **A self-post channel root binds where it landed, not where it came from.**
+  An agent's channel-ROOT post seeds a new session for the thread it just
+  created, so that thread's own conversation is its external source scope. The
+  origin session travels as lineage only: inheriting its scope would bind the
+  seed to a conversation it does not live in — readable by that channel's
+  audience, and rejecting the first human reply as a cross-source turn.
 
 ### 4.3 Changing visibility after the fact
 
