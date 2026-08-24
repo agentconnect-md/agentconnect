@@ -473,18 +473,50 @@ export class PgSessionRepo implements SessionRepo {
             legacyUnresolved: false,
             classifiedPolicyRev: null
           }
-    // A row that keeps a parent link but classifies ITSELF (a direct destination, or a
-    // trusted candidate of its own) still serializes against a concurrent §4.3 tightening
-    // cascade: that cascade re-scans each level only after locking it `FOR UPDATE`, so a
-    // child committing without `FOR SHARE` on its parent could slip past the scan. The
-    // inheriting path below takes the same lock, for the values too.
-    if (ev.parentSessionId && (direct || ev.externalCandidate)) {
-      await tx.$queryRaw(Prisma.sql`
-        SELECT 1 FROM "session_meta"
-        WHERE "id" = ${ev.parentSessionId} AND "orgId" = ${orgId}
-        FOR SHARE
-      `)
-    }
+    // The parent under `FOR SHARE`, read for EVERY row that keeps a parent link — not only
+    // the inheriting ones. A row that classifies itself must still land in the state a §4.3
+    // tightening would have left it in: the cascade re-scans each level only after locking
+    // it, so a child that merely waited on the lock and then ignored what it read would
+    // commit `org` after the cascade finished, and the outcome would depend on which
+    // committed first. `applyParentTightening` below is that convergence.
+    const parent = ev.parentSessionId
+      ? await tx.$queryRaw<
+          Array<{
+            visibility: string
+            ownerIdentity: string | null
+            visibilitySource: string
+            externalProvider: string | null
+            externalScopeId: string | null
+            externalResolution: string | null
+            legacyUnresolved: boolean
+            classifiedPolicyRev: bigint | null
+          }>
+        >(
+          Prisma.sql`
+            SELECT "visibility", "ownerIdentity", "visibilitySource",
+                   "externalProvider", "externalScopeId", "externalResolution",
+                   "legacyUnresolved", "classifiedPolicyRev"
+            FROM "session_meta"
+            WHERE "id" = ${ev.parentSessionId} AND "orgId" = ${orgId}
+            FOR SHARE
+          `
+        )
+      : []
+    // A parent that is settled-private has either been tightened (§4.3) or was private from
+    // birth; either way the cascade rewrites this row's level the moment it runs, so ingest
+    // applies the same rewrite now. Tightening only — it never widens a row, and a parent
+    // still holding the `inherited_pending` placeholder is NOT evidence of privacy (copying
+    // it would strand this row private when the real ancestor settles `org`).
+    const parentTightened =
+      parent.length === 1 && parent[0]!.visibility === 'private' && parent[0]!.visibilitySource !== 'inherited_pending'
+    const applyParentTightening = (row: ResolvedSessionClassification): ResolvedSessionClassification =>
+      !parentTightened
+        ? row
+        : row.externalProvider !== null
+          ? // The cascade quarantines a shared descendant instead of hiding it: the audience is
+            // immutable, so its resolution is invalidated and it reads to nobody.
+            { ...row, visibility: 'external', ownerIdentity: null, externalResolution: 'invalid', source: 'inherited' }
+          : { ...row, visibility: 'private', ownerIdentity: parent[0]!.ownerIdentity, source: 'inherited' }
     if (ev.externalCandidate) {
       const candidate = ev.externalCandidate
       await tx.sessionExternalAccessPolicy.upsert({
@@ -535,7 +567,7 @@ export class PgSessionRepo implements SessionRepo {
         resolution = 'invalid'
       }
       const base = direct ?? { visibility: 'org' as const, ownerIdentity: null, source: 'default' as const }
-      return {
+      return applyParentTightening({
         ...base,
         // A Feishu/Lark p2p conversation is both a private direct session and a
         // provider-bound candidate. Keep its owner-only baseline while sync is
@@ -547,9 +579,9 @@ export class PgSessionRepo implements SessionRepo {
         externalResolution: resolution,
         legacyUnresolved: false,
         classifiedPolicyRev: policy.currentRev
-      }
+      })
     }
-    if (direct) return direct
+    if (direct) return applyParentTightening(direct)
     if (!classification) {
       return {
         visibility: 'org',
@@ -562,29 +594,6 @@ export class PgSessionRepo implements SessionRepo {
         classifiedPolicyRev: null
       }
     }
-    const parent = ev.parentSessionId
-      ? await tx.$queryRaw<
-          Array<{
-            visibility: string
-            ownerIdentity: string | null
-            visibilitySource: string
-            externalProvider: string | null
-            externalScopeId: string | null
-            externalResolution: string | null
-            legacyUnresolved: boolean
-            classifiedPolicyRev: bigint | null
-          }>
-        >(
-          Prisma.sql`
-            SELECT "visibility", "ownerIdentity", "visibilitySource",
-                   "externalProvider", "externalScopeId", "externalResolution",
-                   "legacyUnresolved", "classifiedPolicyRev"
-            FROM "session_meta"
-            WHERE "id" = ${ev.parentSessionId} AND "orgId" = ${orgId}
-            FOR SHARE
-          `
-        )
-      : []
     // Parent not here yet (it may live on another daemon, or simply arrive
     // later): start private + unowned and mark the row for one-time settlement.
     //

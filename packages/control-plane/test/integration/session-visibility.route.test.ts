@@ -519,6 +519,53 @@ describe('session visibility — external conversation audiences', () => {
     })
   })
 
+  // …but a TIGHTENED parent still reaches it: the §4.3 cascade rewrites every descendant it
+  // can see, so a row that classifies itself must land in the same state whether it arrives
+  // before the tightening (cascade catches it) or after (this path applies it). Otherwise the
+  // outcome is commit-order dependent.
+  it('applies a tightened parent to a direct-destination child that arrives after the cascade', async () => {
+    const owner = await makeUser('sv-dd-tighten', 'owner')
+    const daemonId = await seedDaemon(prisma, randomUUID())
+    const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
+    const repo = new PgSessionRepo(prisma)
+    const parentId = `s-dd-tight-parent-${randomUUID()}`
+    const early = `s-dd-tight-early-${randomUUID()}`
+    const late = `s-dd-tight-late-${randomUUID()}`
+
+    await seedSessionMeta(prisma, parentId, agentId, { daemonId, ownerIdentity: `user:${owner}` })
+    const settled = { visibility: 'org' as const, ownerIdentity: null, source: 'default' as const }
+    // One child arrives BEFORE the tightening and is swept by the cascade…
+    await repo.recordMilestone({
+      sessionId: SessionId(early),
+      parentSessionId: SessionId(parentId),
+      agentId,
+      phase: 'start',
+      platform: 'slack',
+      channel: 'C_POSTED',
+      at: new Date(),
+      classification: settled
+    })
+    await appAs(owner).app.inject({
+      method: 'PUT',
+      url: `${ORG}/sessions/${parentId}/visibility`,
+      payload: { visibility: 'private' }
+    })
+    // …the other arrives after it, and must not read as the wider row the cascade already removed.
+    const after = await repo.recordMilestone({
+      sessionId: SessionId(late),
+      parentSessionId: SessionId(parentId),
+      agentId,
+      phase: 'start',
+      platform: 'slack',
+      channel: 'C_POSTED',
+      at: new Date(),
+      classification: settled
+    })
+    const expected = { visibility: 'private', ownerIdentity: `user:${owner}`, visibilitySource: 'inherited' }
+    expect(await prisma.sessionMeta.findUnique({ where: { id: early } })).toMatchObject(expected)
+    expect(after.session).toMatchObject(expected)
+  })
+
   // The post-commit settlement path (§4.5) inherits the parent's audience after
   // the child's own transaction closed — including the interleaving where the
   // parent lands and is stamped legacy in between. Provenance must ride along, or
