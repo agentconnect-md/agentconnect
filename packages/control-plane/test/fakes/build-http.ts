@@ -76,7 +76,6 @@ import { PlaintextSecretCipher } from '../../src/secrets/cipher.js'
 import { runWithSharedTx, withSharedTxRouting } from '../../src/persistence/ambient-tx.js'
 import { AgentSpecAssembler } from '../../src/orchestrator/agentSpecAssembler.js'
 import { DaemonRegistryService } from '../../src/registry/registryService.js'
-import { DaemonId } from '../../src/domain/ids.js'
 import { DaemonAuthService } from '../../src/registry/authService.js'
 import { ApiKeyCodec } from '../../src/registry/apiKey.js'
 import { ApiKeyService } from '../../src/registry/apiKeyService.js'
@@ -414,10 +413,8 @@ export function buildHttpApp(
     depsOverrides?.gitlab ? new PgGitlabProjectBindingRepo(prisma) : undefined,
     depsOverrides?.gitlab ? new PgGitlabWebhookSecretStore(prisma, cipher) : undefined,
     depsOverrides?.gitlab ? new PgGitlabAgentAccountRepo(prisma) : undefined,
-    // §24.4: the axis the fake GitLab edge serves, and the persisted advertisement of the
-    // rule's dispatch-target daemon.
-    depsOverrides?.gitlab?.api.baseUrl,
-    async (daemonId) => (await registryService.getUnscoped(DaemonId(daemonId)))?.capabilities.features
+    // §24.4: the axis the fake GitLab edge serves rides every compiled gitlab rule.
+    depsOverrides?.gitlab?.api.baseUrl
   )
   // The §16.1 rerun authorizer rides the gitlab seam; a suite may still override it.
   if (coreOverrides.gitlab && !coreOverrides.gitlab.hookRerun) {

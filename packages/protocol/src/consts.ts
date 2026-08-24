@@ -309,6 +309,13 @@ export const GITLAB_DEFAULT_BASE_URL = 'https://gitlab.com'
  *  work, so it cannot fall back to GitLab.com for it. */
 export const GITLAB_INSTANCE_V1_FEATURE = 'gitlab-instance-v1'
 
+/** True when a carried host names an instance other than GitLab.com — the only case anything
+ *  gates (§24.4). Absent is the default value of the axis, so it is never self-managed. Lives
+ *  here, not in one consumer: the control plane, the relay, and the daemon all read it. */
+export function isSelfManagedGitlabHost(host: string | undefined): boolean {
+  return host !== undefined && host !== GITLAB_DEFAULT_BASE_URL
+}
+
 /** Relay decodes `rc/hook-rerun` and answers its correlated admission REP
  *  (§16.1 Console "Run again"). Strictly newer than `gitlab-com-v1`: a relay
  *  advertising only that one cannot decode the frame, so the CP must select

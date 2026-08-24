@@ -709,8 +709,7 @@ export function buildContainer(
     gitlabAppCfg ? repos.gitlabProjectBinding : undefined,
     gitlabWebhookSecretStore,
     gitlabAppCfg ? repos.gitlabAgentAccount : undefined,
-    gitlabAppCfg?.baseUrl,
-    async (daemonId) => (await registry.getUnscoped(DaemonId(daemonId)))?.capabilities.features
+    gitlabAppCfg?.baseUrl
   )
 
   // The single fencing site (allocates seq, stamps epoch/launchId on C→D frames).

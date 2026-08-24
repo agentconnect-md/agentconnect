@@ -15,7 +15,7 @@
  * `gitlab-instance-v1`, so a daemon that cannot carry a host per agent never
  * sees self-managed work and cannot fall back to GitLab.com for it.
  */
-import { GITLAB_COM_V1_FEATURE, GITLAB_DEFAULT_BASE_URL, GITLAB_INSTANCE_V1_FEATURE } from '@agentconnect.md/protocol'
+import { GITLAB_COM_V1_FEATURE, GITLAB_INSTANCE_V1_FEATURE, isSelfManagedGitlabHost } from '@agentconnect.md/protocol'
 
 // Structural on purpose: the predicate reads the workspace-mode discriminant, the
 // assembled additional-repository list, and the assembled host axis — so DOMAIN
@@ -25,11 +25,6 @@ import { GITLAB_COM_V1_FEATURE, GITLAB_DEFAULT_BASE_URL, GITLAB_INSTANCE_V1_FEAT
 type WorkspaceShapedAgent = {
   workspace?: { mode: string; additionalRepos?: readonly { provider?: string }[] }
   gitlabHost?: string
-}
-
-/** True when the axis names an instance other than GitLab.com, the only case anything gates (§24.4). */
-export function isSelfManagedGitlabHost(host: string | undefined): boolean {
-  return host !== undefined && host !== GITLAB_DEFAULT_BASE_URL
 }
 
 /** The §24.4 addition ALONE — for a gate that must not start requiring §17.3's bit as well.
@@ -43,6 +38,8 @@ export function requiredGitlabInstanceFeatures(host: string | undefined): readon
 export function requiredGitlabFeatures(host: string | undefined): readonly string[] {
   return [GITLAB_COM_V1_FEATURE, ...requiredGitlabInstanceFeatures(host)]
 }
+
+export { isSelfManagedGitlabHost }
 
 /** Fail-closed: unknown/absent advertised features support only feature-free values. */
 export function advertises(advertisedFeatures: readonly string[] | undefined, required: readonly string[]): boolean {

@@ -3,6 +3,7 @@ import {
   buildRelayCpFrame,
   RELAY_CP_SUBPROTOCOL,
   GITLAB_COM_V1_FEATURE,
+  GITLAB_INSTANCE_V1_FEATURE,
   GITLAB_RERUN_V1_FEATURE,
   WEBCHAT_SESSION_CONTINUATION_FEATURE,
   type RelayCpFrame
@@ -192,7 +193,12 @@ describe('RelayCpClient', () => {
     expect(reg.payload).toEqual({
       name: 'relay-0',
       daemonUrl: 'wss://relay-0.example',
-      features: [WEBCHAT_SESSION_CONTINUATION_FEATURE, GITLAB_COM_V1_FEATURE, GITLAB_RERUN_V1_FEATURE]
+      features: [
+        WEBCHAT_SESSION_CONTINUATION_FEATURE,
+        GITLAB_COM_V1_FEATURE,
+        GITLAB_RERUN_V1_FEATURE,
+        GITLAB_INSTANCE_V1_FEATURE
+      ]
     })
 
     expect(client.state).toBe('READY')

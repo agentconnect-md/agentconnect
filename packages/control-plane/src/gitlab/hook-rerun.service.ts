@@ -37,6 +37,14 @@ export interface GitlabRerunSubject {
   iid: number
 }
 
+/** What a compiled rule pins for one rerun: its revision pair, plus the §24.4 host the
+ *  daemon fences the turn on. Absent host ⇒ GitLab.com, as everywhere else. */
+interface DispatchFence {
+  configRevision: string
+  dispatchRevision: string
+  host?: string
+}
+
 /** Machine-readable refusal reasons; the console branches on these, not on prose. */
 export type GitlabRerunCode =
   /** Emitted by the route, not this service: no GitLab application is configured. */
@@ -181,7 +189,14 @@ export class GitlabHookRerunService {
       configRevision: refreshedFence.configRevision,
       dispatchRevision: refreshedFence.dispatchRevision,
       event: subject.kind === 'issue' ? 'issues:rerun' : 'merge_request:rerun',
-      gitlab: { projectId: projectId.toString(), projectPath: binding.projectPath, target }
+      gitlab: {
+        projectId: projectId.toString(),
+        projectPath: binding.projectPath,
+        // §24.4: the same fence a webhook delivery carries. Absent means GitLab.com, so the
+        // N3 daemon refuses a rerun whose host disagrees with its spec instead of retargeting.
+        ...(refreshedFence.host !== undefined ? { host: refreshedFence.host } : {}),
+        target
+      }
     }
     // Only a relay's own admission proves a turn was queued and a run row opened.
     const outcome = await this.deps.relayControl.hookRerun(frame)
@@ -204,13 +219,19 @@ export class GitlabHookRerunService {
     return { ok: true, deliveryKey: frame.deliveryKey, event: frame.event, headSha }
   }
 
-  /** The compiled rule's revision pair, or null when the hook is undispatchable.
-   *  The rule itself carries the project signing token — NEVER log or return it. */
-  private async dispatchFence(hook: HookRecord): Promise<{ configRevision: string; dispatchRevision: string } | null> {
+  /** The compiled rule's revision pair and host, or null when the hook is undispatchable.
+   *  The host is the §24.4 fence the daemon checks against its spec, so it must come from the
+   *  RULE rather than be recomposed here. The rule itself carries the project signing token —
+   *  NEVER log or return it. */
+  private async dispatchFence(hook: HookRecord): Promise<DispatchFence | null> {
     const rule = await this.deps.hookService.compile(hook)
     if (!rule || rule.kind !== 'gitlab') return null
     if (rule.configRevision === undefined || rule.dispatchRevision === undefined) return null
-    return { configRevision: rule.configRevision, dispatchRevision: rule.dispatchRevision }
+    return {
+      configRevision: rule.configRevision,
+      dispatchRevision: rule.dispatchRevision,
+      ...(rule.gitlab?.host !== undefined ? { host: rule.gitlab.host } : {})
+    }
   }
 
   private async readToken(orgId: string, agentId: string, bindingId: string): Promise<string | null> {

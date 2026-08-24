@@ -2404,11 +2404,25 @@ Merge order, GitLab.com green at every step:
   nothing. The two feature lists stay apart: the projection and
   hook-assignment gates extend the §17.3 requirement, while the hook's
   dispatch-target daemon — never gated on `gitlab-com-v1` — is gated on the new
-  bit alone, so a GitLab.com fleet is unchanged. That target gate sits in the
-  rule compile, which is why one omission covers delivery, the relay's retry
-  ladder, and an authorized re-run alike, and why it reads the daemon's
-  PERSISTED advertisement rather than its live socket: a momentarily
-  disconnected daemon must not have its rules torn out of the pool.
+  bit alone. That target gate is a DISPATCH-time fence at the relay, beside the
+  `gitlab-com-v1` one it mirrors, not a compile-time decision: a compiled rule
+  caches the daemon's advertisement, which changes under a standing rule in both
+  directions — a daemon gaining the bit would stay ruleless until an unrelated
+  event, and one losing it would keep a live rule, the very thing the gate
+  exists to prevent. The fence sits on the live connection and is re-read per
+  delivery attempt, so a rollout heals with no convergence pass; both the
+  webhook path and the authorized re-run reach it through the same dispatch,
+  which is what makes one fence cover delivery, retries, and re-runs alike. The
+  relay advertises the feature because carrying the host through is its whole
+  share of the work. The rerun walk also takes the host into its relay
+  ELIGIBILITY, not just its frame: a relay denied the self-managed rule holds
+  none, so asking it would collect a `replay_pending` refusal — and the first
+  answered verdict is final, so that refusal would end the walk before an
+  eligible peer was asked. And because an enabled hook is a spec consumer, a
+  hook write is a spec edit: the CRUD routes re-project the agent it fires at,
+  ordered against the rule — the agent gaining the consumer before the rule is
+  exposed, the one losing it after the rule is gone, joining before leaving on a
+  retarget, exactly as a repo retarget orders its two projects.
   Exit: mixed-version tests in both directions,
   including a self-managed additional repository on a scratch workspace and
   a hook targeting a non-GitLab-workspace agent on an old daemon.

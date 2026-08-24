@@ -17,7 +17,7 @@
  * NEVER log.
  */
 import { type RcHookAssign } from '@agentconnect.md/protocol'
-import { advertises, requiredGitlabFeatures, requiredGitlabInstanceFeatures } from '../domain/daemon-features.js'
+import { advertises, requiredGitlabFeatures } from '../domain/daemon-features.js'
 import type { AgentId, OrgId } from '../domain/ids.js'
 import type {
   AgentRecord,
@@ -68,12 +68,7 @@ export class HookService {
     private readonly gitlabAccounts?: Pick<GitlabAgentAccountRepo, 'listForBinding'>,
     /** The deployment's normalized GitLab instance base URL (§24.1); it rides every
      *  compiled gitlab rule as the turn-time fence host. */
-    private readonly gitlabHost?: string,
-    /** What the rule's dispatch-target daemon last ADVERTISED — the persisted row, not the
-     *  live socket: a momentarily disconnected daemon must not have its rules torn out of
-     *  the pool. §24.4 gates the target itself, not just the relay, because a hook may fire
-     *  at an agent whose workspace never passed the placement gate. */
-    private readonly daemonFeatures?: (daemonId: string) => Promise<readonly string[] | undefined>
+    private readonly gitlabHost?: string
   ) {}
 
   /**
@@ -146,13 +141,6 @@ export class HookService {
       // no signing key, no ready agent account, or entering cleanup) must leave
       // the pool — a rule the relay holds is always verifiable and dispatchable.
       if (hook.repoId === null || !this.gitlabBindings || !this.gitlabWebhookSecrets || !this.gitlabAccounts) {
-        return null
-      }
-      // §24.4 dispatch gate, fail-closed by omission: no rule at all rather than one
-      // naming a daemon that would resolve the host to GitLab.com. It covers delivery,
-      // the relay's retry ladder, and the authorized re-run alike, because all three
-      // dispatch the rule this compile either produced or did not.
-      if (!advertises(await this.daemonFeatures?.(agentDaemonId), requiredGitlabInstanceFeatures(this.gitlabHost))) {
         return null
       }
       const binding = await this.gitlabBindings.byProject(hook.orgId, hook.repoId)

@@ -24,7 +24,7 @@ import type {
   RcMemoryConnectionUnassign
 } from '@agentconnect.md/protocol'
 import { GITLAB_RERUN_V1_FEATURE, RcHookRerunResult } from '@agentconnect.md/protocol'
-import { advertises, requiredGitlabFeatures } from '../domain/daemon-features.js'
+import { advertises, requiredGitlabFeatures, requiredGitlabInstanceFeatures } from '../domain/daemon-features.js'
 
 /** What one Console rerun attempt achieved across the eligible relay pool. */
 export type RelayRerunOutcome =
@@ -85,10 +85,16 @@ export class RelayControlSender {
    * The walk therefore only skips relays that could not answer at all —
    * ineligible (`gitlab-rerun-v1`; `gitlab-com-v1` predates the frame and its
    * holder cannot decode it, §17.3) or unreachable before the frame was written.
+   *
+   * §24.4 adds the host to that eligibility, not just to the frame: a relay denied the
+   * self-managed RULE holds none, so asking it would collect a `replay_pending` refusal —
+   * and the first answered verdict is final, so that refusal would end the walk before an
+   * eligible peer was ever asked.
    */
   async hookRerun(rerun: RcHookRerun): Promise<RelayRerunOutcome> {
+    const required = [GITLAB_RERUN_V1_FEATURE, ...requiredGitlabInstanceFeatures(rerun.gitlab.host)]
     for (const ch of this.relays.all()) {
-      if (!ch.features?.includes(GITLAB_RERUN_V1_FEATURE) || typeof ch.request !== 'function') continue
+      if (!advertises(ch.features, required) || typeof ch.request !== 'function') continue
       let result: RcHookRerunResult
       try {
         result = RcHookRerunResult.parse(await ch.request('rc/hook-rerun', rerun))

@@ -47,6 +47,7 @@ import {
   type RcHookRerun,
   type RcHookRerunResult
 } from '@agentconnect.md/protocol'
+import type { AgentDelivery } from '../../src/orchestrator/agentDelivery.js'
 import { RelayNotWritten } from '../../src/ws/relay-registry.js'
 import type { RelayChannel } from '../../src/ws/relay-registry.js'
 
@@ -65,7 +66,7 @@ afterEach(async () => {
   running = undefined
 })
 
-async function harness(options: FakeGitlabOptions = {}, daemonFeatures?: string[]) {
+async function harness(options: FakeGitlabOptions = {}, agentDelivery?: AgentDelivery) {
   const fake = new FakeGitlab(options)
   const hookRepo = new PgHookRepo(prisma)
   const bindings = new PgGitlabProjectBindingRepo(prisma)
@@ -136,7 +137,10 @@ async function harness(options: FakeGitlabOptions = {}, daemonFeatures?: string[
     { PUBLIC_CP_URL: 'https://api.example.test', PUBLIC_RELAY_URL: RELAY_URL },
     undefined,
     undefined,
-    { gitlab: { oauth, provisioner, accounts: accountService, api: fake.api } }
+    {
+      gitlab: { oauth, provisioner, accounts: accountService, api: fake.api },
+      ...(agentDelivery ? { agentDelivery } : {})
+    }
   )
   // A live relay row so the ingress gate passes.
   await prisma.relay.create({
@@ -167,11 +171,7 @@ async function harness(options: FakeGitlabOptions = {}, daemonFeatures?: string[
   })
   expect(await provisioner.provision(DEFAULT_ORG_ID, binding.id)).toEqual({ state: 'ready' })
   const daemonId = randomUUID()
-  await seedDaemon(
-    prisma,
-    daemonId,
-    daemonFeatures ? { capabilities: { platforms: [], runtimes: ['claude'], acp: true, features: daemonFeatures } } : {}
-  )
+  await seedDaemon(prisma, daemonId)
   const agentId = randomUUID()
   await seedAgent(prisma, agentId, { daemonId })
   // A second agent, so a test needing two hooks on one project clears the per-agent fence.
@@ -960,6 +960,46 @@ describe('gitlab hook rerun — the Console "Run again" route (§16.1/§18.2)', 
     expect((nowhere.json() as { code: string }).code).toBe('RELAY_UNAVAILABLE')
   })
 
+  it('carries the §24.4 fence and skips a relay that was denied the self-managed rule', async () => {
+    const SELF_MANAGED = 'https://gitlab.example.test/gitlab'
+    const h = await harness({ baseUrl: SELF_MANAGED })
+    const modern = channel([...RERUN_FEATURES, GITLAB_INSTANCE_V1_FEATURE])
+    h.a.relayReg.add(modern.ch)
+    const created = await h.a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: glBody(h.agentId) })
+    expect(created.statusCode).toBe(200)
+    const hookId = (created.json() as { id: string }).id
+    await vi.waitFor(
+      () => {
+        expect(h.fake.webhooks.size).toBe(1)
+        expect(modern.sent.some((frame) => frame.type === 'rc/hook-assign')).toBe(true)
+      },
+      { timeout: 20_000 }
+    )
+    h.fake.mergeRequests.set(MR_IID, {
+      state: 'opened',
+      headSha: CURRENT_HEAD,
+      baseSha: 'ba5e0000000000000000000000000000000ba5e0'
+    })
+
+    // A relay denied the self-managed RULE holds none, so it would answer
+    // `replay_pending` — and the first answered verdict is final, so asking it would end
+    // the walk before an eligible peer was reached. It must not be asked at all.
+    const legacy = channel(RERUN_FEATURES, { admitted: false, code: 'replay_pending' })
+    h.a.relayReg.remove(modern.ch.relayId, modern.ch)
+    h.a.relayReg.add(legacy.ch)
+    const denied = await rerun(h.a, hookId, { kind: 'merge_request', iid: MR_IID })
+    expect(denied.statusCode).toBe(503)
+    expect((denied.json() as { code: string }).code).toBe('RELAY_UNAVAILABLE')
+    expect(reruns(legacy.requests)).toHaveLength(0)
+    expect(await runsFor(hookId)).toHaveLength(0)
+
+    // The eligible relay is asked, and the frame carries the host the rule carried.
+    h.a.relayReg.remove(legacy.ch.relayId, legacy.ch)
+    h.a.relayReg.add(modern.ch)
+    expect((await rerun(h.a, hookId, { kind: 'merge_request', iid: MR_IID })).statusCode).toBe(200)
+    expect(reruns(modern.requests).at(-1)!.gitlab.host).toBe(SELF_MANAGED)
+  })
+
   it('treats a relay that only advertises gitlab-com-v1 as no relay at all (§17.3)', async () => {
     const { h, hookId } = await rerunHarness()
     // Drop the rerun-capable relay; only the older one is left.
@@ -1170,24 +1210,8 @@ describe('§24.4 the gitlab hook on a self-managed instance', () => {
   const removed = (frames: Array<{ type: string; payload: unknown }>): number =>
     frames.filter((frame) => frame.type === 'rc/hook-remove').length
 
-  it('assigns nothing while the dispatch-target daemon has not advertised the feature', async () => {
-    // The agent's own workspace is not GitLab-backed, so no placement gate ever ran on it.
-    const h = await harness({ baseUrl: SELF_MANAGED }, [GITLAB_COM_V1_FEATURE])
-    const relay = channel(BOTH)
-    h.a.relayReg.add(relay.ch)
-
-    const res = await h.a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: glBody(h.agentId) })
-    expect(res.statusCode).toBe(200)
-    await h.settled()
-
-    // Fail closed by OMISSION: no rule, so delivery, the relay's retry ladder, and an
-    // authorized re-run all have nothing to dispatch.
-    expect(assigned(relay.sent)).toBeUndefined()
-    expect(removed(relay.sent)).toBeGreaterThan(0)
-  })
-
-  it('assigns the host-carrying rule once both the target daemon and the relay advertise it', async () => {
-    const h = await harness({ baseUrl: SELF_MANAGED }, BOTH)
+  it('assigns the host-carrying rule only to a relay that can forward the fence', async () => {
+    const h = await harness({ baseUrl: SELF_MANAGED })
     const modern = channel(BOTH)
     const legacy = channel([GITLAB_COM_V1_FEATURE])
     h.a.relayReg.add(modern.ch)
@@ -1198,11 +1222,11 @@ describe('§24.4 the gitlab hook on a self-managed instance', () => {
     await vi.waitFor(() => expect(assigned(modern.sent)?.gitlab?.signingToken).toBeDefined(), { timeout: 20_000 })
 
     expect(assigned(modern.sent)?.gitlab?.host).toBe(SELF_MANAGED)
-    // The relay that cannot forward the fence host is not a target for this rule.
+    // A relay that would drop the host forwards a delivery the daemon cannot fence.
     expect(assigned(legacy.sent)).toBeUndefined()
   })
 
-  it('gates nothing on the GitLab.com axis, whatever either peer advertises', async () => {
+  it('gates nothing on the GitLab.com axis, whatever the relay advertises', async () => {
     const h = await harness()
     const legacy = channel([GITLAB_COM_V1_FEATURE])
     h.a.relayReg.add(legacy.ch)
@@ -1211,7 +1235,104 @@ describe('§24.4 the gitlab hook on a self-managed instance', () => {
     expect(res.statusCode).toBe(200)
     await vi.waitFor(() => expect(assigned(legacy.sent)?.gitlab?.signingToken).toBeDefined(), { timeout: 20_000 })
 
-    // The daemon advertised nothing at all and still gets the rule — today's fleet.
+    // The default value of the axis requires nothing new — today's fleet.
     expect(assigned(legacy.sent)?.gitlab?.host).toBe(GITLAB_DEFAULT_BASE_URL)
+  })
+})
+
+/**
+ * §24.4: an enabled gitlab hook is a GitLab consumer, so it puts `gitlabHost` on its agent's
+ * spec even when the workspace is scratch or github. That makes a hook write a SPEC edit, and
+ * the spec is what the daemon fences a delivery against — so the two writes are ordered: the
+ * agent GAINING the consumer is re-projected before the rule is exposed, the one LOSING it
+ * after the rule is gone. What the re-projected spec then CARRIES is covered by the roster
+ * projection tests; this asserts that the route re-projects at all, and in which order.
+ */
+describe('§24.4 a hook write converges the agent spec it changes', () => {
+  /** One timeline of both writes, so the ORDER between them is observable. */
+  function timeline() {
+    const events: string[] = []
+    const agentDelivery = {
+      upsert: async (agent: { id: string }): Promise<void> => {
+        events.push(`spec:${agent.id}`)
+      }
+    } as unknown as AgentDelivery
+    const relay = channel([GITLAB_COM_V1_FEATURE])
+    const origSend = relay.ch.send.bind(relay.ch)
+    relay.ch.send = ((type: string, payload: unknown) => {
+      if (type === 'rc/hook-assign') events.push('assign')
+      if (type === 'rc/hook-remove') events.push('remove')
+      ;(origSend as (t: string, p: unknown) => void)(type, payload)
+    }) as typeof relay.ch.send
+    return { events, agentDelivery, relay }
+  }
+
+  it('re-projects on create before the rule, and on delete after it', async () => {
+    const t = timeline()
+    const h = await harness({}, t.agentDelivery)
+    h.a.relayReg.add(t.relay.ch)
+
+    const created = await h.a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: glBody(h.agentId) })
+    expect(created.statusCode).toBe(200)
+    const hookId = (created.json() as { id: string }).id
+
+    // Gaining: the spec push is awaited inside the handler, so it lands before the rule is
+    // ever ASSIGNED. (Earlier `remove` frames are the pre-webhook null compile — a removal
+    // carries no delivery, so it needs no host on the spec.)
+    await vi.waitFor(() => expect(t.events).toContain('assign'), { timeout: 20_000 })
+    expect(t.events.indexOf(`spec:${h.agentId}`)).toBeGreaterThanOrEqual(0)
+    expect(t.events.indexOf(`spec:${h.agentId}`)).toBeLessThan(t.events.indexOf('assign'))
+
+    await h.settled()
+    t.events.length = 0
+    expect((await h.a.app.inject({ method: 'DELETE', url: `${ORG}/hooks/${hookId}` })).statusCode).toBe(204)
+    // Losing: the rule is gone first, so dropping the host cannot orphan a live delivery.
+    expect(t.events).toEqual(['remove', `spec:${h.agentId}`])
+  })
+
+  it('re-projects on a disable and on the re-enable that follows', async () => {
+    const t = timeline()
+    const h = await harness({}, t.agentDelivery)
+    h.a.relayReg.add(t.relay.ch)
+    const created = await h.a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: glBody(h.agentId) })
+    const hookId = (created.json() as { id: string }).id
+    await h.settled()
+
+    const put = (enabled: boolean) =>
+      h.a.app.inject({ method: 'PUT', url: `${ORG}/hooks/${hookId}`, payload: glBody(h.agentId, { enabled }) })
+
+    for (const enabled of [false, true]) {
+      t.events.length = 0
+      expect((await put(enabled)).statusCode).toBe(200)
+      await h.settled()
+      // A disabled hook is not a consumer, so either direction is a spec change.
+      expect(t.events).toContain(`spec:${h.agentId}`)
+    }
+  })
+
+  it('retarget re-projects the gaining agent before the rule and the losing one after', async () => {
+    const t = timeline()
+    const h = await harness({}, t.agentDelivery)
+    h.a.relayReg.add(t.relay.ch)
+    // §8.3: the incoming agent must already hold the project.
+    await h.authorize(h.secondAgentId)
+    const created = await h.a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: glBody(h.agentId) })
+    const hookId = (created.json() as { id: string }).id
+    await h.settled()
+
+    t.events.length = 0
+    const moved = await h.a.app.inject({
+      method: 'PUT',
+      url: `${ORG}/hooks/${hookId}`,
+      payload: glBody(h.secondAgentId)
+    })
+    expect(moved.statusCode).toBe(200)
+
+    // Joining lands first, leaving last — the same order a repo retarget uses, for the same
+    // reason: the agent joins one and leaves the other, and joining must land first.
+    const joined = t.events.indexOf(`spec:${h.secondAgentId}`)
+    const left = t.events.indexOf(`spec:${h.agentId}`)
+    expect(joined).toBeGreaterThanOrEqual(0)
+    expect(left).toBeGreaterThan(joined)
   })
 })
