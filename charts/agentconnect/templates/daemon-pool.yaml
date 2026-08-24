@@ -238,6 +238,12 @@ spec:
             - name: {{ $k }}
               value: {{ $v | quote }}
             {{- end }}
+            {{- with .Values.daemonPool.workspaceGitAllowedOrigins }}
+            # The operator's clone-origin policy. A member in a cluster has no config file to carry
+            # it, and nothing a tenant sends may widen it, so the deployment states it here.
+            - name: AC_WORKSPACE_GIT_ALLOWED_ORIGINS
+              value: {{ join "," . | quote }}
+            {{- end }}
             {{- $modelCredentials := .Values.daemonPool.modelCredentials.existingSecret }}
             {{- if $modelCredentials }}
             {{- $modelVars := list "MODEL_TOKEN" "MODEL_BASE_URL" "ANTHROPIC_MODEL_TOKEN" "ANTHROPIC_MODEL_BASE_URL" "OPENAI_MODEL_TOKEN" "OPENAI_MODEL_BASE_URL" "DEEPSEEK_MODEL_TOKEN" "DEEPSEEK_MODEL_BASE_URL" }}

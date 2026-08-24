@@ -14,6 +14,7 @@ Replace it with your own instance URL.
 | GitLab **18.11 or later** | Group service accounts reached every tier, Community Edition included, at 18.11. Below that the Free-tier answer sits behind instance feature flags the API does not report, so AgentConnect refuses to provision rather than guess. |
 | **HTTPS**, one address    | Clone URLs, OAuth redirects, and GitLab's own `web_url` values only agree if there is a single address. Split internal and external addressing belongs in DNS.                                                                       |
 | A trusted certificate     | There is no skip-verify option at any layer. A private authority is supported by installing its bundle — see below.                                                                                                                  |
+| Projects in a **group**   | Each agent acts as a group service account, so a project in a personal namespace cannot be set up — AgentConnect reports `personal_namespace_unsupported`. Move the project into a group first.                                      |
 
 An instance that drops below the floor after projects are already set up keeps
 serving them: existing sessions and credentials work until they expire, and
@@ -112,6 +113,23 @@ Three components need to reach the instance, and one does not:
 Traffic runs to the one base URL you configured. SSH remotes and mutual TLS are
 outside the contract, and there is no HTTP option. An outbound HTTP proxy is not
 supported yet.
+
+## Allow the daemon to clone your instance
+
+A daemon serves a workspace only from an origin its **operator** allowed — a policy
+no tenant can widen, and one that ships allowing GitHub and GitLab.com alone. Until
+your instance is on that list, attaching a project answers:
+
+```text
+workspace preparation failed: git clone origin is not allowed by this daemon
+```
+
+Add the exact origin — scheme, host, and port, no path — wherever that daemon is
+configured. On a host daemon that is `security.workspaceGitAllowedOrigins` in its
+config file; in Kubernetes the members have no config file, so the deployment states
+it instead (`daemonPool.workspaceGitAllowedOrigins` in the chart's values). Naming any
+origin replaces the default list rather than adding to it, so an install that also uses
+the public hosts names them alongside yours.
 
 ## Let GitLab reach the webhook endpoint
 
